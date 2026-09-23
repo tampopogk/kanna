@@ -622,6 +622,8 @@ const TOOL_CALL_ONLY_TOOLS: &[&str] = &[
     "kanna_close_artifact",
     "kanna_record_artifact_comment",
     "kanna_record_artifact_decision",
+    "kanna_push_artifact",
+    "kanna_fetch_artifact",
 ];
 
 fn command_for_path<'a>(command: &'a Command, path: &[&str]) -> Option<&'a Command> {

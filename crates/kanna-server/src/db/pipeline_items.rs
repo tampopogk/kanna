@@ -1564,6 +1564,7 @@ impl Db {
                 current.1.as_deref(),
                 workflow_def,
                 edit,
+                channel,
                 event_floor,
             )?;
             Ok(true)
@@ -1584,6 +1585,7 @@ impl Db {
         before: Option<&str>,
         after: &str,
         edit: Option<WorkflowReplacement<'_>>,
+        channel: &ChannelIdentity,
         event_floor: i64,
     ) -> Result<(), rusqlite::Error> {
         let result_id = edit.and_then(|edit| edit.ledger_result_id);
@@ -1613,7 +1615,11 @@ impl Db {
             historical: false,
             recorded_at: None,
             run_id: None,
-            declared_role: None,
+            declared_role: super::task_store::declared_workflow_role(
+                edit.map(|edit| edit.source).unwrap_or("unspecified"),
+            )
+            .as_deref(),
+            channel_identity: channel,
             body: json!({
                 "operation": if edit.is_some() { "replace" } else { "select" },
                 "source": edit.map(|edit| edit.source).unwrap_or("unspecified"),
@@ -1756,6 +1762,7 @@ impl Db {
             recorded_at: None,
             run_id: None,
             declared_role: super::task_store::declared_transition_role(trigger.as_str()).as_deref(),
+            channel_identity: channel,
             body,
             message: None,
             hold_events_after: None,

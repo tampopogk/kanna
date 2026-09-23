@@ -533,3 +533,15 @@ export interface TaskDetail extends TaskSummary {
   /** The most recent human merge authorization recorded on this task. */
   humanReviewDecision?: HumanReviewDecision | null;
 }
+
+// Artifact descriptors are owned by the artifact store (T6) and defined once in
+// packages/core; the phone reads the same wire shapes.
+export type {
+  ArtifactAnchor,
+  ArtifactComment,
+  ArtifactDecision,
+  ArtifactDetail,
+  ArtifactFileContent,
+  ArtifactFileEntry,
+  ArtifactVersion
+} from "../../../../../packages/core/src/artifacts/types";

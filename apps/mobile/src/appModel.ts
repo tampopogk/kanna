@@ -1326,6 +1326,8 @@ function createDisconnectedClient(): KannaClient {
     readTaskFileRange: unavailable,
     resolveTaskFileMentions: unavailable,
     readTaskDiff: unavailable,
+    getArtifact: unavailable,
+    readArtifactFile: unavailable,
     observeTaskTerminal(taskId, listener) {
       listener({
         type: "error",
@@ -1631,6 +1633,10 @@ function createTrustedLanFallbackClient({
       ),
     readTaskDiff: async (taskId, request) =>
       (await resolveClient(desktopId)).readTaskDiff(taskId, request),
+    getArtifact: async (repoId, artifactId) =>
+      (await resolveClient(desktopId)).getArtifact(repoId, artifactId),
+    readArtifactFile: async (repoId, artifactId, path) =>
+      (await resolveClient(desktopId)).readArtifactFile(repoId, artifactId, path),
     observeTaskTerminal: (taskId, listener) =>
       currentClient(desktopId).observeTaskTerminal(taskId, listener),
     observeTaskAgent: (taskId, listener) =>
@@ -1866,6 +1872,9 @@ function createDelegatingClient(getClient: () => KannaClient): KannaClient {
     resolveTaskFileMentions: (taskId, mentions) =>
       getClient().resolveTaskFileMentions(taskId, mentions),
     readTaskDiff: (taskId, request) => getClient().readTaskDiff(taskId, request),
+    getArtifact: (repoId, artifactId) => getClient().getArtifact(repoId, artifactId),
+    readArtifactFile: (repoId, artifactId, path) =>
+      getClient().readArtifactFile(repoId, artifactId, path),
     observeTaskTerminal: (taskId, listener) =>
       getClient().observeTaskTerminal(taskId, listener),
     observeTaskAgent: (taskId, listener) =>

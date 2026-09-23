@@ -6,6 +6,7 @@ export type TaskAction =
   | "browse-files"
   | "mentioned-files"
   | "view-diff"
+  | "open-artifact"
   | TaskStageAction;
 
 interface TaskActionDefinition {
@@ -18,6 +19,7 @@ export interface TaskActionMenuOptions {
   mentionedFilesLabel: string;
   taskCreation?: boolean;
   previewAvailable?: boolean;
+  artifactsAvailable?: boolean;
 }
 
 const MENU_TITLE = "Task Actions";
@@ -35,6 +37,9 @@ export function showTaskActionMenu(
     { id: "browse-files", label: "Browse Files" },
     { id: "mentioned-files", label: options.mentionedFilesLabel },
     { id: "view-diff", label: "View Diff" },
+    ...(options.artifactsAvailable
+      ? [{ id: "open-artifact" as const, label: "Open Artifact…" }]
+      : []),
     { id: "advance-stage", label: "Advance Stage" },
     { id: "close-task", label: "Close Task", style: "destructive" }
   ];

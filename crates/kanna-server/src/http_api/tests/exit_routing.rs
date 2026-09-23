@@ -217,6 +217,12 @@ async fn success_with_revise_loops_to_its_destination_and_records_the_exit() {
         transition["triggering_result_id"],
         results[0].entry_id().unwrap()
     );
+    // The loop is the engine applying the workflow: its transition records the
+    // server's channel, while the result keeps the caller's.
+    let transition_channel = &transitions.last().unwrap().envelope["channel_identity"];
+    assert_eq!(transition_channel["kind"], "server", "{transition_channel}");
+    assert_eq!(results[0].envelope["declared_role"], "agent");
+    assert_ne!(results[0].envelope["channel_identity"]["kind"], "server");
 }
 
 #[tokio::test]

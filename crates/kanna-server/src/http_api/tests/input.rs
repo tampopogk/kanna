@@ -2584,7 +2584,13 @@ async fn send_task_input_delivers_to_a_live_session_after_a_finished_run() {
     assert_eq!(inputs[0].message.as_deref(), Some("One more change"));
     assert_eq!(inputs[0].body()["source"], "operator");
     assert_eq!(inputs[0].envelope["declared_role"], "operator");
-    assert!(inputs[0].envelope["channel_identity"].is_null());
+    // The test harness makes this call with no socket peer, so the verified
+    // channel is the explicit tagged `unknown` — recorded beside, never
+    // merged with, the caller-declared `operator` role above.
+    assert_eq!(
+        inputs[0].envelope["channel_identity"],
+        serde_json::json!({ "kind": "unknown" })
+    );
     assert_eq!(inputs[0].envelope["source"]["kind"], "task_input");
     // Recorded after the run had finished: attributed to no run.
     assert!(inputs[0].envelope["run_id"].is_null());

@@ -37,7 +37,9 @@ import type {
   TaskInputResult,
   TaskDetail,
   TaskPreviewOpenResult,
-  TaskSummary
+  TaskSummary,
+  ArtifactDetail,
+  ArtifactFileContent
 } from "../api/types";
 import { parseAgentProviderInventory } from "../api/agentProviders";
 
@@ -426,6 +428,30 @@ export function createLanTransport(
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ mentions })
         }
+      );
+    },
+    getArtifact: async (repoId: string, artifactId: string): Promise<ArtifactDetail> => {
+      if (!authenticated) {
+        throw new Error(
+          "Opening an artifact requires a paired device or an authenticated relay connection."
+        );
+      }
+      return request<ArtifactDetail>(
+        `/v1/repos/${encodeURIComponent(repoId)}/artifacts/${encodeURIComponent(artifactId)}`
+      );
+    },
+    readArtifactFile: async (
+      repoId: string,
+      artifactId: string,
+      path: string
+    ): Promise<ArtifactFileContent> => {
+      if (!authenticated) {
+        throw new Error(
+          "Opening an artifact requires a paired device or an authenticated relay connection."
+        );
+      }
+      return request<ArtifactFileContent>(
+        `/v1/repos/${encodeURIComponent(repoId)}/artifacts/${encodeURIComponent(artifactId)}/files?path=${encodeURIComponent(path)}`
       );
     },
     readTaskDiff: (

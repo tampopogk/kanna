@@ -232,6 +232,14 @@ async fn a_multi_file_mockup_publishes_opens_by_tree_id_and_serves_every_relativ
         assert!(csp.contains(directive), "{csp}");
     }
     assert!(!csp.contains("allow-same-origin"));
+    // The desktop hosts the page in a sandboxed iframe; only its webview
+    // origins may frame it.
+    assert!(
+        csp.contains("frame-ancestors tauri://localhost http://tauri.localhost"),
+        "{csp}"
+    );
+    assert!(!csp.contains("frame-ancestors 'none'"), "{csp}");
+    assert!(!csp.contains("frame-ancestors *"), "{csp}");
     assert_eq!(index.headers()["referrer-policy"], "no-referrer");
     assert_eq!(index.headers()["x-content-type-options"], "nosniff");
     // CORP same-origin would block the opaque-origin page's own assets.
@@ -635,6 +643,109 @@ async fn missing_and_malformed_identities_are_reported_explicitly() {
 }
 
 #[tokio::test]
+async fn a_client_without_the_preview_listener_reads_each_file_by_exact_tree_id() {
+    use base64::Engine as _;
+    let env = setup("files", None);
+    let (_, v1) = publish(&env.app, json!({ "path": "mock", "kind": "mockup" })).await;
+    let v1_id = v1["artifactId"].as_str().unwrap().to_string();
+    write_mockup(&env.workspace, "mock", "body{color:#456}");
+    let (_, v2) = publish(
+        &env.app,
+        json!({ "path": "mock", "kind": "mockup", "previous": v1_id }),
+    )
+    .await;
+    let v2_id = v2["artifactId"].as_str().unwrap().to_string();
+
+    for (id, path, media_type, bytes) in [
+        (
+            &v1_id,
+            "index.html",
+            "text/html; charset=utf-8",
+            INDEX_HTML.to_vec(),
+        ),
+        (
+            &v1_id,
+            "css/site.css",
+            "text/css; charset=utf-8",
+            b"body{color:#123}".to_vec(),
+        ),
+        (
+            &v2_id,
+            "css/site.css",
+            "text/css; charset=utf-8",
+            b"body{color:#456}".to_vec(),
+        ),
+        (&v1_id, "img/logo.png", "image/png", LOGO_PNG.to_vec()),
+        (
+            &v1_id,
+            "pages/about.html",
+            "text/html; charset=utf-8",
+            ABOUT_HTML.to_vec(),
+        ),
+    ] {
+        let (status, file) = call(
+            &env.app,
+            "GET",
+            &format!(
+                "/v1/repos/repo-a/artifacts/{id}/files?path={}",
+                path.replace('/', "%2F")
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{id} {path}: {file}");
+        assert_eq!(file["artifactId"], id.as_str());
+        assert_eq!(file["repoId"], "repo-a");
+        assert_eq!(file["path"], path);
+        assert_eq!(file["mediaType"], media_type);
+        assert_eq!(file["size"], bytes.len());
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(file["dataBase64"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(decoded, bytes, "{id} {path}");
+    }
+
+    let unknown = "0123456789abcdef0123456789abcdef01234567";
+    for (path, status, code) in [
+        (
+            format!("/v1/repos/repo-a/artifacts/{v1_id}/files?path=nope.css"),
+            StatusCode::NOT_FOUND,
+            "artifact_file_not_found",
+        ),
+        (
+            format!("/v1/repos/repo-a/artifacts/{v1_id}/files?path=..%2Frepo"),
+            StatusCode::BAD_REQUEST,
+            "invalid_path",
+        ),
+        (
+            format!("/v1/repos/repo-a/artifacts/{unknown}/files?path=index.html"),
+            StatusCode::NOT_FOUND,
+            "artifact_not_found",
+        ),
+    ] {
+        let (actual, body) = call(&env.app, "GET", &path, None).await;
+        assert_eq!(actual, status, "{path}: {body}");
+        assert_eq!(body["error"], code, "{path}: {body}");
+    }
+
+    // One file above the relay-sized bound is refused, not truncated.
+    let large = vec![b'x'; crate::task_files::MAX_TASK_FILE_BYTES as usize + 1];
+    write(&env.workspace.join("big/huge.txt"), &large);
+    let (_, big) = publish(&env.app, json!({ "path": "big", "kind": "document" })).await;
+    let big_id = big["artifactId"].as_str().unwrap();
+    let (status, body) = call(
+        &env.app,
+        "GET",
+        &format!("/v1/repos/repo-a/artifacts/{big_id}/files?path=huge.txt"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+    assert_eq!(body["error"], "file_too_large");
+    assert!(body.get("dataBase64").is_none());
+}
+
+#[tokio::test]
 async fn artifact_routes_refuse_an_unpaired_lan_peer() {
     let env = setup("lan", None);
     let request = Request::builder()
@@ -677,4 +788,172 @@ async fn a_configured_location_inside_the_working_repository_is_refused() {
     assert_eq!(body["version"]["retention"], "discard-on-close");
     assert!(outside.join("HEAD").exists());
     assert!(!env2.home.join(".kanna").exists());
+}
+
+/// Two servers with separate homes and databases share one artifact through
+/// a bare remote named only in each repository's local config.
+#[tokio::test]
+async fn two_homes_share_an_artifact_and_its_discussion_through_the_configured_remote() {
+    let shared = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.tmp/artifact-http-tests")
+        .join(format!("share-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&shared);
+    std::fs::create_dir_all(&shared).unwrap();
+    let shared = std::fs::canonicalize(shared).unwrap();
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(shared.clone());
+    run_git(&shared, &["init", "--bare", "--quiet", "remote.git"]);
+    let remote = shared.join("remote.git");
+    let config = json!({ "artifacts": { "remote": remote.to_str().unwrap() } });
+    let a = setup("share-a", Some(config.clone()));
+    let b = setup("share-b", Some(config));
+
+    let (status, v1) = publish(&a.app, json!({ "path": "mock", "kind": "mockup" })).await;
+    assert_eq!(status, StatusCode::CREATED, "{v1}");
+    let v1 = v1["artifactId"].as_str().unwrap().to_string();
+    write_mockup(&a.workspace, "mock", "body{color:#456}");
+    let (_, v2) = publish(
+        &a.app,
+        json!({ "path": "mock", "kind": "mockup", "previous": v1 }),
+    )
+    .await;
+    let v2 = v2["artifactId"].as_str().unwrap().to_string();
+
+    let (status, pushed) = call(
+        &a.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{v2}/push"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{pushed}");
+    assert_eq!(pushed["artifactIds"], json!([v2, v1]));
+    assert_eq!(pushed["remote"], remote.to_str().unwrap());
+
+    let (status, fetched) = call(
+        &b.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{v2}/fetch"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{fetched}");
+    assert_eq!(fetched["detail"]["artifactId"], v2);
+    assert_eq!(fetched["detail"]["versions"][0]["previous"], v1);
+
+    // B decides about the older revision and pushes; A fetches it back.
+    let (status, _) = call(
+        &b.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{v1}/decisions"),
+        Some(json!({ "who": "stakeholder", "what": "approved" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = call(
+        &b.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{v2}/push"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, fetched) = call(
+        &a.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{v2}/fetch"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{fetched}");
+    assert_eq!(fetched["recordsImported"], 1);
+    let (_, older) = call(
+        &a.app,
+        "GET",
+        &format!("/v1/repos/repo-a/artifacts/{v1}"),
+        None,
+    )
+    .await;
+    assert_eq!(older["decisions"][0]["what"], "approved");
+    assert_eq!(older["decisions"][0]["aboutArtifactId"], v1);
+    // A received "approved" is data: the task it might concern did not move.
+    let db = Db::open(&a.state.config().db_path).unwrap();
+    let item = db.get_pipeline_item("task-a").unwrap().unwrap();
+    assert_eq!(item.stage.as_deref(), Some("in progress"));
+    assert!(item.closed_at.is_none());
+
+    let unknown = "0123456789abcdef0123456789abcdef01234567";
+    let (status, body) = call(
+        &b.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{unknown}/fetch"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["error"], "artifact_not_on_remote");
+    assert_eq!(body["artifactId"], unknown);
+}
+
+#[tokio::test]
+async fn sharing_needs_a_usable_configured_remote() {
+    let env = setup("no-remote", None);
+    let (_, published) = publish(&env.app, json!({ "path": "mock", "kind": "mockup" })).await;
+    let id = published["artifactId"].as_str().unwrap().to_string();
+    for action in ["push", "fetch"] {
+        let (status, body) = call(
+            &env.app,
+            "POST",
+            &format!("/v1/repos/repo-a/artifacts/{id}/{action}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["error"], "artifact_remote_not_configured");
+    }
+
+    let helper = setup(
+        "helper-remote",
+        Some(json!({ "artifacts": { "remote": "ext::sh -c 'touch pwned'" } })),
+    );
+    let (_, published) = publish(&helper.app, json!({ "path": "mock", "kind": "mockup" })).await;
+    let id = published["artifactId"].as_str().unwrap().to_string();
+    let (status, body) = call(
+        &helper.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{id}/push"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "artifact_remote_invalid");
+
+    // The remote is configuration, never a request parameter.
+    let (status, _) = call(
+        &env.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{id}/push"),
+        Some(json!({ "remote": "/tmp/elsewhere.git" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    for action in ["push", "fetch"] {
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/v1/repos/repo-a/artifacts/{id}/{action}"))
+            .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                [192, 168, 1, 50],
+                50000,
+            ))))
+            .body(Body::empty())
+            .unwrap();
+        let response = env.app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{action}");
+    }
 }

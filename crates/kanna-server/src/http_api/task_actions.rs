@@ -2698,6 +2698,7 @@ pub(super) async fn complete_stage(
                     &stage_result,
                     requested_digest.as_deref(),
                     event_floor,
+                    &result_provenance,
                     routed.as_ref().map(RoutedResult::ledger_json).as_ref(),
                 )
                 .map_err(|e| db_write_error("db error", e))?;
@@ -2935,6 +2936,7 @@ fn enqueue_completion_result(
     stage_result: &str,
     requested_digest: Option<&str>,
     event_floor: i64,
+    provenance: &MutationProvenance,
     routing: Option<&serde_json::Value>,
 ) -> rusqlite::Result<crate::db::task_store::LedgerEntryRef> {
     use sha2::{Digest, Sha256};
@@ -2959,7 +2961,8 @@ fn enqueue_completion_result(
         historical: false,
         recorded_at: None,
         run_id: Some(&run.id),
-        declared_role: None,
+        declared_role: Some(&provenance.declared_role),
+        channel_identity: &provenance.channel_identity,
         body: {
             let mut body = crate::task_store::result_body(
                 status,
@@ -3720,7 +3723,14 @@ pub(super) async fn request_revision(
                         true,
                     )?;
                     if let Some(review) = review_result.as_ref() {
-                        review.enqueue(db, &source_task_id, &payload, origin, event_floor)?;
+                        review.enqueue(
+                            db,
+                            &source_task_id,
+                            &payload,
+                            origin,
+                            event_floor,
+                            &provenance,
+                        )?;
                     }
                     // The reviser's spawn is owed from this commit on, whatever
                     // happens to the detached worker: the round is spent and the
@@ -4064,6 +4074,7 @@ fn park_exhausted_revision_in_transaction(
                 payload,
                 payload.origin.unwrap_or_default(),
                 event_floor,
+                provenance,
             )
             .map_err(|error| db_write_error("db error", error))?;
     }
@@ -4102,6 +4113,7 @@ impl RevisionResult {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn enqueue(
         &self,
         db: &Db,
@@ -4109,6 +4121,7 @@ impl RevisionResult {
         payload: &crate::mobile_api::RequestRevisionRequest,
         origin: crate::mobile_api::RevisionOrigin,
         event_floor: i64,
+        provenance: &MutationProvenance,
     ) -> rusqlite::Result<crate::db::task_store::LedgerEntryRef> {
         let prior = db.ledger_result_count_for_run(task_id, &self.run.id)?;
         let source_id = if prior == 0 {
@@ -4127,7 +4140,8 @@ impl RevisionResult {
             historical: false,
             recorded_at: None,
             run_id: Some(&self.run.id),
-            declared_role: None,
+            declared_role: Some(&provenance.declared_role),
+            channel_identity: &provenance.channel_identity,
             // The verdict a revision request records on the run it closes;
             // routing by exit instead of status is T1's.
             body: crate::task_store::result_body(

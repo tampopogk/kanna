@@ -13,6 +13,8 @@ import type {
 } from "@kanna/stream-client";
 import type {
   AbortTaskCreationRequest,
+  ArtifactDetail,
+  ArtifactFileContent,
   CreateTaskRequest,
   CreateTaskResponse,
   MobileBuildReport,
@@ -258,6 +260,10 @@ export interface KannaTransport {
     mentions: readonly TaskFileMentionInput[]
   ): Promise<TaskFileMentionResolution>;
   readTaskDiff(taskId: string, request?: TaskDiffRequest): Promise<TaskDiffContent>;
+  /** A repository's artifact by exact tree id (spec §8); no task is involved. */
+  getArtifact(repoId: string, artifactId: string): Promise<ArtifactDetail>;
+  /** One file of a retained artifact tree, as the phone renders it itself. */
+  readArtifactFile(repoId: string, artifactId: string, path: string): Promise<ArtifactFileContent>;
   observeTaskTerminal(
     taskId: string,
     listener: (event: TaskTerminalStreamEvent) => void
@@ -342,6 +348,10 @@ export interface KannaClient {
     mentions: readonly TaskFileMentionInput[]
   ): Promise<TaskFileMentionResolution>;
   readTaskDiff(taskId: string, request?: TaskDiffRequest): Promise<TaskDiffContent>;
+  /** A repository's artifact by exact tree id (spec §8); no task is involved. */
+  getArtifact(repoId: string, artifactId: string): Promise<ArtifactDetail>;
+  /** One file of a retained artifact tree, as the phone renders it itself. */
+  readArtifactFile(repoId: string, artifactId: string, path: string): Promise<ArtifactFileContent>;
   observeTaskTerminal(
     taskId: string,
     listener: (event: TaskTerminalStreamEvent) => void
@@ -492,6 +502,9 @@ export function createKannaClient(transport: KannaTransport): KannaClient {
     resolveTaskFileMentions: (taskId, mentions) =>
       transport.resolveTaskFileMentions(taskId, mentions),
     readTaskDiff: (taskId, request) => transport.readTaskDiff(taskId, request),
+    getArtifact: (repoId, artifactId) => transport.getArtifact(repoId, artifactId),
+    readArtifactFile: (repoId, artifactId, path) =>
+      transport.readArtifactFile(repoId, artifactId, path),
     observeTaskTerminal: (taskId, listener) =>
       transport.observeTaskTerminal(taskId, listener),
     observeTaskAgent: (taskId, listener) =>
