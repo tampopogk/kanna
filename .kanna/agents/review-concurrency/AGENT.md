@@ -5,13 +5,20 @@ providers: claude, codex, copilot, opencode, antigravity
 ---
 
 ## Produces
-Exactly one verdict as your only result, dispatched as a child of a QA dispatcher's joined panel: PASS with what you checked and why the concurrency behavior is sound, or FAIL with at most five blocking findings, most important first, each naming file and line — everything else goes in the same summary under `Follow-ups (non-blocking):`, one line each, even when you can see improvements.
+Exactly one verdict as your only result, dispatched as a child of a QA dispatcher's joined panel: status `success` for PASS, with what you checked and why the concurrency behavior is sound, or status `failure` for FAIL, with at most five blocking findings, most important first, each naming file and line — everything else goes in the same summary under `Follow-ups (non-blocking):`, one line each, even when you can see improvements. Do not request a revision or advance a stage yourself; the dispatcher collects your verdict and closes this task.
 
 ## Reads
-Judge the review range your prompt names (`<sha>..HEAD`, what changed since the last review round). Read the full branch for context, but anchor every finding in that range. Map what runs concurrently on the changed paths (threads, async tasks, processes, sessions, event handlers) and the state they share; look for races (check-then-act, time-of-check/time-of-use gaps, unsynchronized shared state, unguaranteed event ordering), lifecycle and cancellation hazards (work outliving its owner, teardown mid-flight, kill/respawn misattribution, missing replacement guards), retry/reconnect paths that must stay idempotent, and deadlock risk (lock ordering, locks held across await points, blocking calls in async contexts); run the most relevant focused tests when practical.
+Judge the review range your prompt names (`<sha>..HEAD` — what changed since the last review round). Read the full branch for context, but anchor every finding in that range. In it:
+
+1. Map what runs concurrently on the changed paths — threads, async tasks, processes, sessions, event handlers — and which state they share.
+2. Look for races: check-then-act sequences, time-of-check/time-of-use gaps, unsynchronized shared state, assumptions about event ordering or delivery the transport does not guarantee.
+3. Examine lifecycle and cancellation: work that can outlive its owner, teardown while operations are in flight, kill/respawn windows where a stale actor's signal can be misattributed to a new one, missing replacement guards.
+4. Examine retry and reconnect paths: are the retried operations idempotent, can messages be delivered or applied twice, does reconnection race with in-flight work?
+5. Check deadlock risk: lock ordering, locks held across await points, blocking calls inside async contexts.
+6. Run the most relevant focused tests when practical, and note where a hazard is untestable without stress or fault-injection harnesses.
 
 ## Must not
-Fail this review for anything but a defect **caused by this diff** that genuinely blocks: wrong behavior, a regression, a security or data-integrity defect, a broken contract, or missing coverage this diff introduces — never for work the original task did not ask for, the design you would have chosen, or a problem the change merely sits near. Flag a theoretical interleaving with no realistic trigger. Change code, tests, documentation, or configuration, or request a revision yourself — the dispatcher owns the aggregate decision.
+Fail this review for anything but a defect **caused by this diff** that genuinely blocks: wrong behavior, a regression, a security or data-integrity defect, a broken contract, or missing coverage for behavior this diff introduces. Not for work the original task did not ask for, not for the design you would have chosen, and not for problems the change merely sits near. Flag a theoretical interleaving with no realistic trigger. Change code, tests, documentation, or configuration — you are an oversight checkpoint.
 
 ## Stop when
-A hazard is untestable without stress or fault-injection harnesses this repository does not have — note it as a follow-up instead of failing the review. Otherwise record PASS or FAIL as your one result before ending the task.
+A hazard is untestable without stress or fault-injection harnesses this repository does not have — note it as a follow-up instead of failing the review. Otherwise record your one verdict — status `success` for PASS, status `failure` for FAIL — before ending the task.

@@ -606,6 +606,37 @@ describe("QA workflow assets", () => {
     }
   });
 
+  it("states the verdict-to-status mapping so a specialty can't silently pass a FAIL", () => {
+    // qa-dispatcher reads every `success` child result as PASS (round-1 QA
+    // finding): a reviewer that records status success with a FAIL-worded
+    // summary would silently clear a blocking review. Each specialty states
+    // the mapping explicitly, in both its Produces and Stop when sections,
+    // without repeating the kanna_complete_stage call shape the runtime
+    // preamble already teaches.
+    const specialties = readdirSync(resolve(repoRoot, ".kanna/agents")).filter((name) =>
+      name.startsWith("review-")
+    );
+    expect(specialties.length).toBeGreaterThan(0);
+
+    for (const name of specialties) {
+      const agent = readRepoFile(`.kanna/agents/${name}/AGENT.md`);
+      const produces = agent.split("## Reads")[0] ?? "";
+      const stopWhen = agent.split("## Stop when")[1] ?? "";
+
+      expect(produces, name).toContain("status `success`");
+      expect(produces, name).toContain("PASS");
+      expect(produces, name).toContain("status `failure`");
+      expect(produces, name).toContain("FAIL");
+      expect(stopWhen, name).toContain("status `success`");
+      expect(stopWhen, name).toContain("PASS");
+      expect(stopWhen, name).toContain("status `failure`");
+      expect(stopWhen, name).toContain("FAIL");
+      // Formula agents stay lean by not repeating what the runtime preamble
+      // already injects — the leanness goal, never an enforced shape.
+      expect(agent, name).not.toContain("kanna_complete_stage");
+    }
+  });
+
   it("tells the deciding review agent (legacy routing) that revision rounds are budgeted", () => {
     const agent = readRepoPhrases(".kanna/agents/review/AGENT.md");
     expect(agent).toContain("revisionRounds");
@@ -691,7 +722,7 @@ describe("QA workflow assets", () => {
     expect(dispatcher).toContain("a review workspace never commits");
     expect(dispatcher).toContain("falling back to the full branch when that point cannot be established");
     expect(dispatcher).toContain("keeps the last verdict its own prior child recorded, never a fresh dispatch");
-    expect(dispatcher).toContain("A carried verdict for an untouched specialty is a FAIL");
+    expect(dispatcher).toContain("a carried FAIL stays blocking regardless of this round's own dispatch");
     expect(dispatcher).toContain("never treated as fixed merely because its surface went untouched");
     expect(dispatcher).not.toContain("git for-each-ref");
     expect(dispatcher).not.toContain("git merge-base");

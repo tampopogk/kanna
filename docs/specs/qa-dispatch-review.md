@@ -10,15 +10,19 @@
 > dispatcher records its revision through `kanna_complete_stage`'s `exit`
 > parameter (`exit: "revise"`) on that routing, falling back to
 > `kanna_request_revision` only for a task still pinned to a legacy-routed
-> snapshot. Cross-round carried-verdict history-walking (a previous
-> specialty's PASS/FAIL surviving an untouched surface across rounds) was
-> dropped in the conversion: each review-stage loop is a fresh session that
-> re-dispatches against the branch's current full diff, since T5 delivers
-> results per-call rather than requiring the dispatcher to reconstruct a
-> cross-round ledger by hand. The sections below describe the pre-T10c
-> mechanism and are kept for historical context; read `.kanna/agents/
-> qa-dispatcher/AGENT.md` and `.kanna/workflows/specialized-reviewers.json`
-> for the current behavior.
+> snapshot. Incremental round scoping and cross-round verdict carry-forward
+> are kept, but as policy rather than a prescribed git recipe: on a later
+> loop the dispatcher reviews only what changed since the previous review
+> round (that round's own stage workspace branch still points at exactly
+> what it reviewed, since a review workspace never commits — falling back to
+> the full branch when that point cannot be established) and carries
+> forward each untouched specialty's last recorded verdict from its own
+> prior child instead of re-dispatching it; a carried FAIL still blocks. The
+> old manual `kanna_list_task_children` cross-round history-walk this
+> depended on is what T5 retires — not the round-scoping policy itself. The
+> sections below describe the pre-T10c mechanism and are kept for historical
+> context; read `.kanna/agents/qa-dispatcher/AGENT.md` and
+> `.kanna/workflows/specialized-reviewers.json` for the current behavior.
 
 Dispatched specialty reviews for the review stage: a QA dispatcher agent
 decides at review time which specialty reviews a branch needs (UI, security,
