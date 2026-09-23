@@ -88,8 +88,14 @@ describe("built-in agent completion protocol", () => {
     expect(agent).not.toContain("--task-id $KANNA_TASK_ID");
   });
 
-  const formulaAgentNames = builtInAgentNames().filter((name) =>
-    usesDefinitionFormula(readRepoFile(`.kanna/agents/${name}/AGENT.md`))
+  // `pr` is the one formula-format agent with a genuine, role-specific
+  // exception: the runtime preamble's manual-transition completion guidance
+  // only fires when the stage prompt asks (prompt-builder.ts's
+  // COMPLETION_GUIDANCE.manual), and every workflow that binds `pr` invokes
+  // it with a prompt that never asks. Its own result-publication obligation
+  // (CONTRACT.md) has to be carried in the definition itself.
+  const formulaAgentNames = builtInAgentNames().filter(
+    (name) => usesDefinitionFormula(readRepoFile(`.kanna/agents/${name}/AGENT.md`)) && name !== "pr"
   );
 
   it.each(formulaAgentNames)(
@@ -104,6 +110,19 @@ describe("built-in agent completion protocol", () => {
       expect(agent).toContain("## Stop when");
     }
   );
+
+  it("keeps pr's own result-publication obligation in its Produces section (CONTRACT.md)", () => {
+    const agent = readRepoFile(".kanna/agents/pr/AGENT.md");
+    const produces = agent.split("## Reads")[0] ?? "";
+
+    expect(produces).toContain("## Produces");
+    expect(produces).toContain("kanna_complete_stage");
+    expect(produces).toContain("status `success`");
+    expect(produces).toContain("metadata.pr_url");
+    expect(readRepoPhrases(".kanna/agents/pr/CONTRACT.md")).toContain(
+      "include `metadata.pr_url`",
+    );
+  });
 });
 
 describe("built-in agent tool references", () => {

@@ -3710,6 +3710,99 @@ mod merge_handoff_on_close {
         harness.cleanup();
     }
 
+    /// T10's bundled `mechanical` workflow (spec §10: `implement -> pr(M)`)
+    /// shares the same final-stage `policy.handoff: merge` shape as the
+    /// synthetic workflow above. `pr`'s definition-formula "Produces" section
+    /// (CONTRACT.md) obliges it to record `metadata.pr_url` on success since
+    /// the stage prompt never asks; this proves that obligation, once met,
+    /// persists `task.prUrl` and clears the handoff backstop that refuses to
+    /// close a promised-handoff task with no recorded PR
+    /// (`ensure_merge_handoff_before_close`,
+    /// "no PR URL was ever recorded") -- complementing
+    /// `mechanical_workflow_runs_its_commit_step_and_hands_off_to_merge_with_no_result_variables`
+    /// in task_creator::tests::stage, which stops after the "in progress"
+    /// stage's commit-step preparation and never reaches this close path.
+    #[tokio::test]
+    async fn a_pr_stage_success_verdict_with_a_pr_url_persists_it_and_clears_the_handoff_backstop()
+    {
+        let workflow = serde_json::json!({
+            "name": "mechanical",
+            "routing": "exits",
+            "stages": [
+                {
+                    "name": "in progress",
+                    "agent": "implement",
+                    "prompt": "$TASK_PROMPT",
+                    "policy": { "transition": "manual" },
+                    "exit_commit": true
+                },
+                {
+                    "name": "pr",
+                    "agent": "pr",
+                    "prompt": "Create a PR for the work on branch $BRANCH.",
+                    "policy": { "transition": "manual", "handoff": "merge" }
+                }
+            ]
+        })
+        .to_string();
+        let harness = Harness::with_source_run(
+            "mechanical-handoff",
+            &workflow,
+            None,
+            ("run-pr", "pr", "main"),
+        );
+        let pr_url = "https://github.com/acme/repo/pull/91";
+        let app = super::router(Arc::new(super::AppState::new(harness.config.clone())));
+        let (status, text) = super::actions::post_json(
+            &app,
+            "/v1/tasks/task-source/actions/complete-stage",
+            serde_json::json!({
+                "runId": "run-pr", "status": "success",
+                "summary": format!("Created PR {pr_url}"),
+                "metadata": { "pr_url": pr_url },
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+
+        let db = harness.db();
+        assert_eq!(
+            db.get_pipeline_item("task-source").unwrap().unwrap().pr_url,
+            Some(pr_url.to_string()),
+            "the recorded metadata.pr_url must persist as task.prUrl"
+        );
+        drop(db);
+        assert!(
+            harness.merge_messages().is_empty(),
+            "a manual stage's result hands nothing off; leaving it does"
+        );
+
+        let (status, text) = super::actions::post_json(
+            &app,
+            "/v1/tasks/task-source/actions/advance-stage",
+            serde_json::json!({ "source": "operator" }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the handoff backstop must not refuse to close: {text}"
+        );
+
+        let messages = harness.wait_for_merge_messages(1).await;
+        assert_eq!(
+            messages,
+            vec![format!(
+                "MERGE task-source -> main [TASK task-source] [PR {pr_url}]: Ship the thing"
+            )]
+        );
+        let db = harness.db();
+        wait_for_closed(&db, "task-source").await;
+        assert_eq!(merge_event_sources(&db, "task-source"), vec!["engine"]);
+        drop(db);
+        harness.cleanup();
+    }
+
     /// The control: the no-review path, where the approve post signals for
     /// itself. The engine must record that and send nothing of its own —
     /// a second MERGE line would be a duplicate request, not a backstop.

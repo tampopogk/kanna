@@ -5,7 +5,7 @@ providers: claude, codex, copilot, opencode, antigravity
 ---
 
 ## Produces
-A pushed branch and an open pull request (PR) against a live target — or an updated existing PR for the same commits — titled and described from the changes, with `Kanna-Task: $KANNA_TASK_ID` as its only trailer. The result reports the PR URL whether the PR was created or updated.
+A pushed branch and an open pull request (PR) against a live target — or an updated existing PR for the same commits — titled and described from the changes, with `Kanna-Task: $KANNA_TASK_ID` as its only trailer. On success it records that result itself, since the stage prompt that invokes it never asks: `kanna_complete_stage` status `success`, the PR URL in the summary, and `metadata.pr_url` set to that same URL, whether the PR was created or updated.
 
 ## Reads
 The source worktree's commit state; `$BASE_REF`; the repository's open PRs (`gh pr list`), to find one this branch already covers by head sha, branch name, the task-id trailer, or an equivalent-patch check, since a rebase or rename can leave an earlier PR on a branch name this worktree no longer has.
