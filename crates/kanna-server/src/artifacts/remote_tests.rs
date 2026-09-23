@@ -1,14 +1,18 @@
 //! Two independent artifact repositories sharing through one local bare
 //! remote. Everything lives under this worktree's `.tmp/`.
 
-use super::remote::{fetch, push, ArtifactRemote};
+use super::remote::{fetch, push, run_git_bounded, ArtifactRemote};
 use super::store::{ArtifactStore, CommentRequest, DecisionRequest};
 use super::tests::{git, publish, write_mockup, Fixture};
-use super::types::{ArtifactComment, ArtifactContentKind, ARTIFACT_RECORD_SCHEMA_VERSION};
+use super::types::{
+    ArtifactComment, ArtifactContentKind, ArtifactProducer, ArtifactRetention, ArtifactStorage,
+    ArtifactVersion, ARTIFACT_RECORD_SCHEMA_VERSION,
+};
 use super::ArtifactError;
 use git2::{Oid, Repository, Signature, Time};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 const SENTINEL: &str = "KANNA-SHARING-SENTINEL-d41c";
 
@@ -460,6 +464,26 @@ impl Forger {
             .unwrap()
     }
 
+    /// A record commit exactly as Kanna builds one, so it passes the
+    /// canonical-commit check: only its content is forged.
+    fn canonical_record(&self, directory: &str, about: &str, record_id: &str, bytes: &[u8]) -> Oid {
+        let mut builder = self.repository.treebuilder(None).unwrap();
+        let blob = self.repository.blob(bytes).unwrap();
+        builder.insert("record.json", blob, 0o100_644).unwrap();
+        let tree = self.repository.find_tree(builder.write().unwrap()).unwrap();
+        let signature = Signature::new("Kanna", "kanna@localhost", &Time::new(0, 0)).unwrap();
+        self.repository
+            .commit(
+                None,
+                &signature,
+                &signature,
+                &format!("kanna artifact {directory} {about} {record_id}\n"),
+                &tree,
+                &[],
+            )
+            .unwrap()
+    }
+
     fn push(&self, commit: Oid, name: &str) {
         git(
             self.repository.path(),
@@ -667,4 +691,280 @@ fn remote_configuration_refuses_helpers_options_and_relative_paths() {
             .code(),
         "artifact_remote_invalid"
     );
+}
+
+/// A peer with write access plants a well-formed version record for a
+/// shared tree whose `previous` names a tree the receiver published but never
+/// shared. The receiver's ordinary reply push must not follow that link.
+#[test]
+fn a_planted_previous_link_never_pulls_an_unshared_tree_into_a_push() {
+    let homes = Homes::new("remote-planted-previous");
+    write_mockup(&homes.fixture, "shared", "body{}");
+    let shared = publish(
+        &homes.a,
+        &homes.workspace(),
+        "shared",
+        ArtifactContentKind::Mockup,
+        None,
+    )
+    .unwrap()
+    .artifact_id;
+    push(&homes.a, &homes.remote, &shared).unwrap();
+
+    // B's private work, never pushed.
+    homes
+        .fixture
+        .write("workspace/private/plan.md", b"B's unshared plan");
+    let private = publish(
+        &homes.b,
+        &homes.workspace(),
+        "private",
+        ArtifactContentKind::Document,
+        None,
+    )
+    .unwrap()
+    .artifact_id;
+
+    let forger = Forger::new(&homes.fixture.root, &homes.remote_path);
+    let record_id = "1790000000000-00000000000000dd";
+    let planted = serde_json::to_vec_pretty(&ArtifactVersion {
+        schema_version: ARTIFACT_RECORD_SCHEMA_VERSION,
+        record_id: record_id.to_string(),
+        repo_id: "repo-b".to_string(),
+        artifact_id: shared.clone(),
+        kind: ArtifactContentKind::Mockup,
+        entrypoint: Some("index.html".to_string()),
+        created_at: "2026-09-23T00:00:00.000Z".to_string(),
+        previous: Some(private.clone()),
+        retention: ArtifactRetention::Keep,
+        produced_by: ArtifactProducer {
+            task_id: "task-1".to_string(),
+        },
+        file_count: 3,
+        total_bytes: 1,
+        storage: ArtifactStorage {
+            commit: shared.clone(),
+            ref_name: "refs/kanna/artifacts/trees/x".to_string(),
+        },
+    })
+    .unwrap();
+    forger.push(
+        forger.canonical_record("versions", &shared, record_id, &planted),
+        &format!("refs/kanna/artifacts/shared/records/{shared}/versions/{record_id}"),
+    );
+
+    // B receives the shared tree, planted record included, and replies.
+    let fetched = fetch(&homes.b, &homes.remote, &shared).unwrap();
+    assert!(
+        fetched
+            .detail
+            .versions
+            .iter()
+            .any(|version| version.record_id == record_id),
+        "the planted record is well formed and imported as data"
+    );
+    comment(&homes.b, &shared, "bob", "looks fine");
+    let pushed = push(&homes.b, &homes.remote, &shared).unwrap();
+    assert_eq!(pushed.artifact_ids, std::slice::from_ref(&shared));
+
+    let refs = homes.remote_git(&["for-each-ref", "--format=%(refname)"]);
+    for name in refs.lines() {
+        assert!(
+            !name.contains(&private),
+            "the unshared tree reached the remote: {name}"
+        );
+    }
+    assert!(
+        refs.contains(&format!("records/{shared}/comments/")),
+        "{refs}"
+    );
+}
+
+/// Two overlapping pushes of the same records: a pre-receive hook on the
+/// remote holds both after ref advertisement, so the second to update finds
+/// every name already created by the first. Both must succeed.
+#[test]
+fn racing_pushes_of_the_same_records_both_succeed() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let homes = Homes::new("remote-race");
+    write_mockup(&homes.fixture, "raced", "body{}");
+    let id = publish(
+        &homes.a,
+        &homes.workspace(),
+        "raced",
+        ArtifactContentKind::Mockup,
+        None,
+    )
+    .unwrap()
+    .artifact_id;
+    comment(&homes.a, &id, "alice", "raced comment");
+
+    let log = homes.fixture.root.join("pre-receive.log");
+    let hook = homes.remote_path.join("hooks/pre-receive");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\ncat >/dev/null\necho run >> '{}'\nsleep 2\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let store_path = homes.fixture.root.join("a/artifacts.git");
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let pushes = (0..2)
+        .map(|_| {
+            let barrier = std::sync::Arc::clone(&barrier);
+            let remote = homes.remote.clone();
+            let store_path = store_path.clone();
+            let id = id.clone();
+            std::thread::spawn(move || {
+                let store = ArtifactStore::open_existing(&store_path, "repo-a")
+                    .unwrap()
+                    .unwrap();
+                barrier.wait();
+                push(&store, &remote, &id)
+            })
+        })
+        .collect::<Vec<_>>();
+    let outcomes = pushes
+        .into_iter()
+        .map(|handle| handle.join().unwrap().expect("no false conflict"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap().lines().count(),
+        2,
+        "both pushes reached the update phase, so they raced"
+    );
+    let created = outcomes
+        .iter()
+        .map(|outcome| outcome.created_refs.len())
+        .sum::<usize>();
+    let settled = outcomes
+        .iter()
+        .map(|outcome| outcome.up_to_date_refs)
+        .sum::<usize>();
+    // Content, version and comment: each created once, found once.
+    assert_eq!((created, settled), (3, 3), "{outcomes:?}");
+    let refs = homes.remote_git(&["for-each-ref", "--format=%(refname)"]);
+    assert_eq!(refs.lines().count(), 3, "{refs}");
+    assert_eq!(
+        refs.lines()
+            .filter(|name| name.contains(&format!("records/{id}/comments/")))
+            .count(),
+        1
+    );
+}
+
+fn fake_git(fixture: &Fixture, name: &str, script: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = fixture.write(name, format!("#!/bin/sh\n{script}").as_bytes());
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+fn process_gone(pid: i32) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        // SAFETY: signal 0 only checks for existence.
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+fn recorded_pids(path: &Path) -> Vec<i32> {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .split_whitespace()
+        .map(|pid| pid.parse().unwrap())
+        .collect()
+}
+
+fn fault_remote(fixture: &Fixture) -> ArtifactRemote {
+    ArtifactRemote::parse(
+        fixture.root.join("unused.git").to_str().unwrap(),
+        &fixture.root,
+        &fixture.root.join("artifacts.git"),
+    )
+    .unwrap()
+}
+
+/// Git exits at once, but a descendant (as ssh or a credential helper might)
+/// inherits stdout and stderr and keeps them open far past the deadline.
+#[test]
+fn a_descendant_holding_git_pipes_cannot_hold_the_caller() {
+    let fixture = Fixture::new("fake-git-descendant");
+    let pids = fixture.root.join("pids");
+    let program = fake_git(
+        &fixture,
+        "bin/git",
+        &format!(
+            "sleep 60 &\necho $! > '{}'\necho reported\nexit 0\n",
+            pids.display()
+        ),
+    );
+    let started = Instant::now();
+    let output = run_git_bounded(
+        &program,
+        &fixture.root,
+        &fault_remote(&fixture),
+        &[],
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(output.success);
+    assert_eq!(output.stdout, "reported\n", "what git wrote is kept");
+    for pid in recorded_pids(&pids) {
+        assert!(process_gone(pid), "descendant {pid} left running");
+    }
+}
+
+/// Git never exits: the caller gets the timeout error at the deadline, and
+/// git and its descendants are gone.
+#[test]
+fn a_git_that_never_exits_is_killed_with_its_descendants_at_the_deadline() {
+    let fixture = Fixture::new("fake-git-hang");
+    let pids = fixture.root.join("pids");
+    let program = fake_git(
+        &fixture,
+        "bin/git",
+        &format!(
+            "echo $$ > '{0}'\nsleep 60 &\necho $! >> '{0}'\nwait\n",
+            pids.display()
+        ),
+    );
+    let started = Instant::now();
+    let error = run_git_bounded(
+        &program,
+        &fixture.root,
+        &fault_remote(&fixture),
+        &[],
+        Duration::from_secs(1),
+    )
+    .err()
+    .expect("a hung git is a timeout");
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(error.code(), "artifact_remote_failed");
+    assert!(error.to_string().contains("did not finish"), "{error}");
+    let pids = recorded_pids(&pids);
+    assert_eq!(pids.len(), 2);
+    for pid in pids {
+        assert!(process_gone(pid), "process {pid} left running");
+    }
 }

@@ -186,30 +186,36 @@ pub(crate) fn push(
             artifact_id: artifact_id.to_string(),
         });
     }
-    let chain = local_chain(store, requested)?;
+    let chain = local_chain(store, remote, requested)?;
     let repository = store.repository();
-    let mut refspecs = Vec::new();
+    // (commit this push names, remote ref it names it under)
+    let mut updates: Vec<(Oid, String)> = Vec::new();
     for &artifact in &chain {
         if let Some(commit) = store.retained_commit(artifact)? {
-            refspecs.push(format!("{commit}:{}", shared_content_ref(artifact, commit)));
+            updates.push((commit, shared_content_ref(artifact, commit)));
         }
         for record in store.stored_records(artifact)? {
             let commit = record_commit(repository, &record)?;
-            refspecs.push(format!("{commit}:{}", shared_record_ref(&record)));
+            updates.push((commit, shared_record_ref(&record)));
         }
     }
 
     let mut created = Vec::new();
     let mut up_to_date = 0;
-    let mut rejected = Vec::new();
-    for batch in refspecs.chunks(PUSH_BATCH) {
+    // (remote ref, git's reason)
+    let mut rejected: Vec<(String, String)> = Vec::new();
+    for batch in updates.chunks(PUSH_BATCH) {
         let mut args = vec![
             "push".to_string(),
             "--porcelain".to_string(),
             "--no-verify".to_string(),
             remote.url.clone(),
         ];
-        args.extend(batch.iter().cloned());
+        args.extend(
+            batch
+                .iter()
+                .map(|(commit, name)| format!("{commit}:{name}")),
+        );
         let output = run_git(store.path(), remote, &args)?;
         let mut reported = 0;
         for line in output.stdout.lines() {
@@ -225,20 +231,49 @@ pub(crate) fn push(
             match flag {
                 "*" => created.push(destination.to_string()),
                 "=" => up_to_date += 1,
-                "!" => rejected.push(format!("{destination} ({summary})")),
+                "!" => rejected.push((destination.to_string(), summary.to_string())),
                 // A fast-forward, forced update or deletion of an immutable
                 // name is never requested; report it rather than trust it.
-                _ => rejected.push(format!("{destination} (unexpected update {flag:?})")),
+                _ => rejected.push((
+                    destination.to_string(),
+                    format!("unexpected update {flag:?}"),
+                )),
             }
         }
         if !output.success && reported == 0 {
             return Err(remote_failure(remote, "push", &output.stderr));
         }
     }
+    // A creation loses a race when another push (from another home, or an
+    // overlapping request on this one) creates the same name between ref
+    // advertisement and update. The remote then holds exactly the commit
+    // this push named, which is success, not a conflict.
+    if !rejected.is_empty() {
+        let held = remote_ref_values(store, remote, &rejected)?;
+        rejected.retain(|(name, _)| {
+            let expected = updates
+                .iter()
+                .find(|(_, update)| update == name)
+                .map(|(commit, _)| *commit);
+            if expected.is_some()
+                && held
+                    .iter()
+                    .any(|(value, held_name)| held_name == name && Some(*value) == expected)
+            {
+                up_to_date += 1;
+                false
+            } else {
+                true
+            }
+        });
+    }
     if !rejected.is_empty() {
         return Err(ArtifactError::RemoteConflict {
             remote: remote.display.clone(),
-            refs: rejected,
+            refs: rejected
+                .into_iter()
+                .map(|(name, reason)| format!("{name} ({reason})"))
+                .collect(),
         });
     }
     Ok(ArtifactPushOutcome {
@@ -250,14 +285,58 @@ pub(crate) fn push(
     })
 }
 
+/// What the remote holds now under each of these names.
+fn remote_ref_values(
+    store: &ArtifactStore,
+    remote: &ArtifactRemote,
+    names: &[(String, String)],
+) -> Result<Vec<(Oid, String)>, ArtifactError> {
+    let mut held = Vec::new();
+    for batch in names.chunks(PUSH_BATCH) {
+        let mut args = vec![
+            "ls-remote".to_string(),
+            "--refs".to_string(),
+            remote.url.clone(),
+        ];
+        args.extend(batch.iter().map(|(name, _)| name.clone()));
+        let output = run_git(store.path(), remote, &args)?;
+        if !output.success {
+            return Err(remote_failure(remote, "ls-remote", &output.stderr));
+        }
+        for line in output.stdout.lines() {
+            let Some((value, name)) = line.split_once('\t') else {
+                continue;
+            };
+            if let Ok(value) = Oid::from_str(value) {
+                held.push((value, name.to_string()));
+            }
+        }
+    }
+    Ok(held)
+}
+
 /// The id and every earlier version reachable through `previous` links that
 /// is published here, breadth first.
-fn local_chain(store: &ArtifactStore, start: Oid) -> Result<Vec<Oid>, ArtifactError> {
+///
+/// A `previous` link is followed freely only when a version record this home
+/// wrote itself names it. A link that only a record received from a remote
+/// supplies is followed only when the remote already holds valid content for
+/// that tree: otherwise a peer could plant a version record whose `previous`
+/// names a tree this home never shared, and the next reply push would send
+/// it.
+fn local_chain(
+    store: &ArtifactStore,
+    remote: &ArtifactRemote,
+    start: Oid,
+) -> Result<Vec<Oid>, ArtifactError> {
     let mut chain = vec![start];
     let mut index = 0;
     while index < chain.len() && chain.len() < MAX_CHAIN {
-        for previous in store.previous_links(chain[index])? {
-            if !chain.contains(&previous) && store.is_published(previous)? {
+        for (previous, own) in store.previous_links_with_provenance(chain[index])? {
+            if chain.contains(&previous) || !store.is_published(previous)? {
+                continue;
+            }
+            if own || !fetch_one(store, remote, previous)?.content.is_empty() {
                 chain.push(previous);
             }
         }
@@ -791,10 +870,10 @@ fn bounded(name: &str, value: &str, limit: usize) -> Result<(), String> {
 // Running git
 // ---------------------------------------------------------------------------
 
-struct GitOutput {
-    success: bool,
-    stdout: String,
-    stderr: String,
+pub(super) struct GitOutput {
+    pub(super) success: bool,
+    pub(super) stdout: String,
+    pub(super) stderr: String,
 }
 
 /// Run `git` against the artifact repository with the user's own transport
@@ -805,7 +884,29 @@ fn run_git(
     remote: &ArtifactRemote,
     args: &[String],
 ) -> Result<GitOutput, ArtifactError> {
-    let mut command = Command::new("git");
+    run_git_bounded(Path::new("git"), git_dir, remote, args, GIT_TIMEOUT)
+}
+
+/// How long output may keep arriving after git itself has exited. Git has
+/// written everything it reports by then; anything still holding the pipes
+/// is a descendant (ssh, a credential helper, an askpass program).
+const DRAIN_GRACE: Duration = Duration::from_secs(2);
+
+/// [`run_git`] with the program and time limit injectable for fault tests.
+/// Git runs in a process group of its own. Nothing here waits past
+/// `timeout`: on expiry the whole group is killed, and output pipes a
+/// descendant keeps open are abandoned rather than joined.
+pub(super) fn run_git_bounded(
+    program: &Path,
+    git_dir: &Path,
+    remote: &ArtifactRemote,
+    args: &[String],
+    timeout: Duration,
+) -> Result<GitOutput, ArtifactError> {
+    use std::os::unix::process::CommandExt as _;
+
+    let deadline = Instant::now() + timeout;
+    let mut command = Command::new(program);
     command
         .arg("--git-dir")
         .arg(git_dir)
@@ -816,6 +917,7 @@ fn run_git(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .process_group(0)
         // The server inherits the environment of whatever launched it; a
         // nested git must address only the artifact repository.
         .env_remove("GIT_DIR")
@@ -829,9 +931,25 @@ fn run_git(
     let mut child = command.spawn().map_err(|error| {
         ArtifactError::RemoteFailed(format!("cannot run git for the artifact remote: {error}"))
     })?;
-    let stdout = drain(child.stdout.take());
-    let stderr = drain(child.stderr.take());
-    let deadline = Instant::now() + GIT_TIMEOUT;
+    // The group id is git's pid; it stays reserved while any member lives.
+    let group = child.id() as libc::pid_t;
+    let kill_group = || {
+        // SAFETY: plain syscall on a process group this function created.
+        unsafe {
+            libc::kill(-group, libc::SIGKILL);
+        }
+    };
+    let (finished, drained) = std::sync::mpsc::channel();
+    let stdout = drain(child.stdout.take(), finished.clone());
+    let stderr = drain(child.stderr.take(), finished);
+    let timed_out = || {
+        ArtifactError::RemoteFailed(format!(
+            "git did not finish with artifact remote {} within {} seconds",
+            remote.display,
+            timeout.as_secs_f32()
+        ))
+    };
+
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -839,36 +957,77 @@ fn run_git(
                 std::thread::sleep(Duration::from_millis(20));
             }
             Ok(None) => {
-                let _ = child.kill();
+                kill_group();
                 let _ = child.wait();
-                return Err(ArtifactError::RemoteFailed(format!(
-                    "git did not finish with artifact remote {} within {} seconds",
-                    remote.display,
-                    GIT_TIMEOUT.as_secs()
-                )));
+                return Err(timed_out());
             }
             Err(error) => {
+                kill_group();
+                let _ = child.wait();
                 return Err(ArtifactError::RemoteFailed(format!(
                     "cannot wait for git: {error}"
-                )))
+                )));
             }
         }
     };
+
+    // Git has exited. Collect its output until both pipes close, for at most
+    // the grace period and never past the deadline.
+    let drain_deadline = deadline.min(Instant::now() + DRAIN_GRACE);
+    let mut open = 2;
+    while open > 0 {
+        let remaining = drain_deadline.saturating_duration_since(Instant::now());
+        if drained.recv_timeout(remaining).is_err() {
+            break;
+        }
+        open -= 1;
+    }
+    if open > 0 {
+        // A descendant still holds a pipe: end it, and keep what git wrote.
+        kill_group();
+        if Instant::now() >= deadline {
+            return Err(timed_out());
+        }
+    }
+    let collected = |buffer: &std::sync::Arc<std::sync::Mutex<Vec<u8>>>| {
+        let bytes = buffer.lock().map(|bytes| bytes.clone()).unwrap_or_default();
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
     Ok(GitOutput {
         success: status.success(),
-        stdout: stdout.join().unwrap_or_default(),
-        stderr: stderr.join().unwrap_or_default(),
+        stdout: collected(&stdout),
+        stderr: collected(&stderr),
     })
 }
 
-fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<String> {
+/// Read a pipe into a shared buffer on a detached thread, signalling when it
+/// reaches end of file. The caller never joins it, so a pipe held open by
+/// some other process cannot hold the caller.
+fn drain(
+    pipe: Option<impl Read + Send + 'static>,
+    finished: std::sync::mpsc::Sender<()>,
+) -> std::sync::Arc<std::sync::Mutex<Vec<u8>>> {
+    let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = std::sync::Arc::clone(&buffer);
     std::thread::spawn(move || {
-        let mut bytes = Vec::new();
         if let Some(mut pipe) = pipe {
-            let _ = pipe.read_to_end(&mut bytes);
+            let mut chunk = [0_u8; 8192];
+            loop {
+                match pipe.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(read) => {
+                        if let Ok(mut bytes) = sink.lock() {
+                            bytes.extend_from_slice(&chunk[..read]);
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(_) => break,
+                }
+            }
         }
-        String::from_utf8_lossy(&bytes).into_owned()
-    })
+        let _ = finished.send(());
+    });
+    buffer
 }
 
 fn remote_failure(remote: &ArtifactRemote, operation: &str, stderr: &str) -> ArtifactError {

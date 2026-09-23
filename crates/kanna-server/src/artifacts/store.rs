@@ -47,6 +47,10 @@ pub(super) const VERSIONS_DIR: &str = "versions";
 pub(super) const COMMENTS_DIR: &str = "comments";
 pub(super) const DECISIONS_DIR: &str = "decisions";
 pub(super) const RECORD_DIRS: [&str; 3] = [VERSIONS_DIR, COMMENTS_DIR, DECISIONS_DIR];
+/// Local-only provenance: an entry here marks a version record that arrived
+/// from an artifact remote rather than from a publication on this home. It
+/// is written at import and never at publish, and it is never shared.
+const RECEIVED_VERSIONS_DIR: &str = "received-versions";
 pub(super) const FILE_MODE_BLOB: i32 = 0o100_644;
 pub(super) const FILE_MODE_TREE: i32 = 0o040_000;
 
@@ -741,13 +745,42 @@ impl ArtifactStore {
 
     /// The `previous` ids this tree's version records name.
     pub(super) fn previous_links(&self, artifact: Oid) -> Result<Vec<Oid>, ArtifactError> {
-        let mut links = Vec::new();
+        Ok(self
+            .previous_links_with_provenance(artifact)?
+            .into_iter()
+            .map(|(previous, _)| previous)
+            .collect())
+    }
+
+    /// The `previous` ids this tree's version records name, each with
+    /// whether a version record this home wrote itself names it (`true`) or
+    /// only records received from an artifact remote do (`false`).
+    pub(super) fn previous_links_with_provenance(
+        &self,
+        artifact: Oid,
+    ) -> Result<Vec<(Oid, bool)>, ArtifactError> {
+        let root = self
+            .metadata_tip()?
+            .map(|commit| commit.tree())
+            .transpose()
+            .map_err(storage)?;
+        let mut links: Vec<(Oid, bool)> = Vec::new();
         for version in self.list_records::<ArtifactVersion>(VERSIONS_DIR, artifact)? {
-            if let Some(previous) = version.previous.as_deref() {
-                let previous = parse_object_id(previous)?;
-                if !links.contains(&previous) {
-                    links.push(previous);
-                }
+            let Some(previous) = version.previous.as_deref() else {
+                continue;
+            };
+            let previous = parse_object_id(previous)?;
+            let own = self
+                .stored_record_blob(
+                    root.as_ref(),
+                    RECEIVED_VERSIONS_DIR,
+                    artifact,
+                    &version.record_id,
+                )?
+                .is_none();
+            match links.iter_mut().find(|(seen, _)| *seen == previous) {
+                Some((_, seen_own)) => *seen_own |= own,
+                None => links.push((previous, own)),
             }
         }
         Ok(links)
@@ -856,6 +889,15 @@ impl ArtifactStore {
             }
         }
         report.records_imported = accepted.len();
+        let received_marks = accepted
+            .iter()
+            .filter(|record| record.directory == VERSIONS_DIR)
+            .map(|record| StoredRecord {
+                directory: RECEIVED_VERSIONS_DIR,
+                ..record.clone()
+            })
+            .collect::<Vec<_>>();
+        accepted.extend(received_marks);
         self.append_blobs(&accepted, "import records from artifact remote")?;
         Ok(report)
     }
