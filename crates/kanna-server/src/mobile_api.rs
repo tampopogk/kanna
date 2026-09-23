@@ -1187,7 +1187,7 @@ impl MobileApi {
             .map(|item| {
                 let blocked_by_task_ids = self
                     ._db
-                    .list_open_task_blocker_ids(&item.id)
+                    .list_blocking_task_ids(&item.id)
                     .map_err(|e| format!("db error: {}", e))?;
                 let repo_name = repo_names.get(&item.repo_id).cloned();
                 let agent = self
@@ -1255,7 +1255,7 @@ impl MobileApi {
         };
         let blocked_by_task_ids = self
             ._db
-            .list_open_task_blocker_ids(&item.id)
+            .list_blocking_task_ids(&item.id)
             .map_err(|e| format!("db error: {}", e))?;
         let child_task_ids = self
             ._db

@@ -216,7 +216,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "096_task_ledger_bridge",
     "097_stage_exit_budget",
     "098_stage_workspaces",
-    "099_task_stage_edges",
+    "100_task_stage_edges",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2694,7 +2694,7 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     // Spec §9/§16.4 (T4): stage dependency edges and the completions parked
     // on them. Legacy `task_blocker` rows are untouched and keep their own
     // readiness; edges are only ever created by new requests.
-    run_migration(conn, "099_task_stage_edges", |conn| {
+    run_migration(conn, "100_task_stage_edges", |conn| {
         conn.execute_batch(stage_edges::SCHEMA)
     })?;
 

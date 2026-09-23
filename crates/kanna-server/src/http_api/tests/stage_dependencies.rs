@@ -286,3 +286,254 @@ async fn invalid_dependencies_are_refused_before_a_task_exists() {
         .unwrap();
     assert_eq!(tasks, 1, "only the upstream exists");
 }
+
+async fn get_json(app: &axum::Router, uri: &str) -> serde_json::Value {
+    let response = app
+        .clone()
+        .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    serde_json::from_slice(&body).unwrap()
+}
+
+fn blocked_event_ids(db: &Db, task_id: &str) -> Vec<serde_json::Value> {
+    let payload: String = db
+        .connection_for_e2e_tests()
+        .query_row(
+            "SELECT payload FROM task_event WHERE task_id = ? AND type = 'task.blocked'
+             ORDER BY seq DESC LIMIT 1",
+            [task_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    serde_json::from_str::<serde_json::Value>(&payload).unwrap()["blockerTaskIds"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+/// A start interrupted after its workspace row exists but before its first
+/// run is recorded is rolled back and started once by the next sweep.
+#[tokio::test]
+async fn an_interrupted_first_start_is_recovered_and_starts_exactly_once() {
+    let scenario = Scenario::new("stage-edge-interrupted-start");
+    let upstream_worktree =
+        commit_branch_change(&scenario.repo_root, "task-a-plan", "plan.md", "the plan");
+    let recorded = head_of(&upstream_worktree);
+    let app = super::router(Arc::new(AppState::new(scenario.config.clone())));
+    let (status, body) = create(
+        &app,
+        serde_json::json!({
+            "repoId": "repo-1",
+            "prompt": "Build on the plan",
+            "workflowName": TEST_PROVIDER_NEUTRAL_WORKFLOW,
+            "agentProvider": "claude",
+            "dependencies": [{ "taskId": "task-a", "stage": "plan" }]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let dependent: CreateTaskResponse = from_slice(body.as_bytes()).unwrap();
+    let db = scenario.db();
+    db.record_test_stage_result("task-a", "plan", "success", Some(&recorded));
+    db.update_pipeline_item_stage("task-a", "build").unwrap();
+
+    // The start gets as far as its workspace, then the server dies before
+    // the run is recorded (the prepared spawn is simply dropped).
+    let prepared = crate::task_creator::prepare_start_dormant_task_for_api(
+        &db,
+        &scenario.config,
+        &dependent.task_id,
+        Vec::new(),
+    )
+    .unwrap()
+    .expect("satisfied edge prepares a start");
+    drop(prepared);
+    assert!(db
+        .get_task_worktree_path(&dependent.task_id)
+        .unwrap()
+        .is_some());
+    assert!(db.latest_stage_run(&dependent.task_id).unwrap().is_none());
+
+    let listener = tokio::net::UnixListener::bind(&scenario.socket_path).unwrap();
+    let (daemon_server, mut spawned) =
+        spawn_dependent_start_daemon(listener, dependent.task_id.clone());
+    let restarted = Arc::new(AppState::new(scenario.config.clone()));
+    crate::http_api::stage_dependencies::resume_stage_dependency_readiness(Arc::clone(&restarted))
+        .await;
+    crate::http_api::stage_dependencies::resume_stage_dependency_readiness(restarted).await;
+    expect_one_spawn(&mut spawned, "sweep after an interrupted start").await;
+    daemon_server.abort();
+
+    let db = scenario.db();
+    assert_eq!(
+        db.list_stage_runs_for_task(&dependent.task_id)
+            .unwrap()
+            .len(),
+        1
+    );
+    let worktree = db
+        .get_task_worktree_path(&dependent.task_id)
+        .unwrap()
+        .expect("dependent started");
+    assert_eq!(head_of(Path::new(&worktree)), recorded);
+    let edge = db
+        .list_stage_edges_into(&dependent.task_id)
+        .unwrap()
+        .remove(0);
+    assert_eq!(edge.consumed_sha.as_deref(), Some(recorded.as_str()));
+}
+
+/// `blockedByTaskIds` in list and detail is the set `task.blocked` names.
+#[tokio::test]
+async fn detail_blocked_by_matches_the_blocked_event_for_a_dependency_gated_task() {
+    let scenario = Scenario::new("stage-edge-blocked-by");
+    let app = super::router(Arc::new(AppState::new(scenario.config.clone())));
+    let (status, body) = create(
+        &app,
+        serde_json::json!({
+            "repoId": "repo-1",
+            "prompt": "Wait for the plan",
+            "workflowName": TEST_PROVIDER_NEUTRAL_WORKFLOW,
+            "agentProvider": "claude",
+            "dependencies": [{ "taskId": "task-a", "stage": "plan" }]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let dependent: CreateTaskResponse = from_slice(body.as_bytes()).unwrap();
+    let event_ids = blocked_event_ids(&scenario.db(), &dependent.task_id);
+    assert_eq!(event_ids, vec![serde_json::json!("task-a")]);
+
+    let detail = get_json(&app, &format!("/v1/tasks/{}", dependent.task_id)).await;
+    assert_eq!(
+        detail["blockedByTaskIds"].as_array().unwrap(),
+        &event_ids,
+        "{detail}"
+    );
+    let list = get_json(&app, "/v1/tasks").await;
+    let listed = list
+        .as_array()
+        .or_else(|| list["tasks"].as_array())
+        .unwrap()
+        .iter()
+        .find(|task| task["id"] == dependent.task_id.as_str())
+        .expect("dependent listed")
+        .clone();
+    assert_eq!(listed["blockedByTaskIds"].as_array().unwrap(), &event_ids);
+}
+
+/// A completion parked on edges, then close and reopen: the upstream's
+/// departure does not advance the reopened task.
+#[tokio::test]
+async fn a_reopened_task_does_not_replay_a_parked_completion() {
+    let scenario = Scenario::new("stage-edge-reopen-wait");
+    let db = scenario.db();
+    db.insert_test_pipeline_item(
+        "task-b",
+        "repo-1",
+        "Gated",
+        Some("Gated"),
+        "work",
+        "2026-09-23 00:00:00",
+    )
+    .unwrap();
+    db.pin_test_stages("task-b", &["work", "review"]);
+    db.upsert_worktree("wt-task-b", "task-b", "/tmp/task-b", "branch-task-b")
+        .unwrap();
+    db.insert_stage_run(crate::db::NewStageRun {
+        id: "task-b-work",
+        task_id: "task-b",
+        stage: "work",
+        kind: "main",
+        agent: None,
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "succeeded",
+        result: None,
+        feedback: None,
+        session_id: Some("task-b"),
+        provider_session_id: None,
+        cwd: None,
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+    db.insert_stage_edges(
+        "task-b",
+        &[crate::db::NewStageEdge {
+            upstream_task_id: "task-a".into(),
+            upstream_stage: "plan".into(),
+            dependent_stage: Some("review".into()),
+        }],
+    )
+    .unwrap();
+    db.record_dependency_wait(
+        "task-b",
+        "work",
+        "review",
+        &serde_json::json!({"kind": "main", "completionTransition": "auto"}),
+    )
+    .unwrap();
+    db.close_pipeline_item("task-b").unwrap();
+    db.reopen_pipeline_item("task-b").unwrap();
+    db.record_test_stage_result("task-a", "plan", "success", None);
+    db.update_pipeline_item_stage("task-a", "build").unwrap();
+
+    let state = Arc::new(AppState::new(scenario.config.clone()));
+    let moved = super::super::stage_dependencies::ensure_dependencies_ready(&state, "task-b")
+        .await
+        .unwrap();
+    assert!(!moved, "a pre-close completion must not advance the task");
+    let db = scenario.db();
+    assert_eq!(
+        db.get_pipeline_item("task-b")
+            .unwrap()
+            .unwrap()
+            .stage
+            .as_deref(),
+        Some("work")
+    );
+    assert_eq!(db.list_stage_runs_for_task("task-b").unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_dependency_on_a_stage_left_before_the_ledger_is_refused() {
+    let scenario = Scenario::new("stage-edge-pre-ledger");
+    let db = scenario.db();
+    // An old task, moved past `plan` before any ledger entry was recorded.
+    db.insert_test_pipeline_item(
+        "task-old",
+        "repo-1",
+        "Old",
+        Some("Old"),
+        "build",
+        "2026-01-01 00:00:00",
+    )
+    .unwrap();
+    db.pin_test_stages("task-old", &["plan", "build"]);
+    let app = super::router(Arc::new(AppState::new(scenario.config.clone())));
+    let (status, body) = create(
+        &app,
+        serde_json::json!({
+            "repoId": "repo-1",
+            "prompt": "Refused",
+            "workflowName": TEST_PROVIDER_NEUTRAL_WORKFLOW,
+            "agentProvider": "claude",
+            "dependencies": [{ "taskId": "task-old", "stage": "plan" }]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.contains("never be satisfied"), "{body}");
+    let tasks: i64 = scenario
+        .db()
+        .connection_for_e2e_tests()
+        .query_row("SELECT COUNT(*) FROM pipeline_item", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(tasks, 2, "no dependent was created");
+}

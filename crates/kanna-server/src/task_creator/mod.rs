@@ -3087,6 +3087,34 @@ pub(crate) fn create_dormant_task_with_stage_edges(
     })
 }
 
+/// Undo a dependency start that was interrupted after its workspace was
+/// recorded but before its first run was: the run row is written before the
+/// daemon is asked to spawn, so no session can exist. The worktree, its
+/// branch and the rows `prepare_start_dormant_task_for_api` wrote are removed
+/// and the task is unstarted again; the edges keep their reserved (or
+/// consumed) inputs, so the start that follows forks from the same commit.
+pub(crate) fn rollback_interrupted_dependency_start(db: &Db, task_id: &str) -> Result<(), String> {
+    let item = db
+        .get_pipeline_item(task_id)
+        .map_err(|e| format!("db error: {}", e))?
+        .ok_or_else(|| format!("task not found: {}", task_id))?;
+    let branch = item
+        .branch
+        .clone()
+        .filter(|branch| !branch.trim().is_empty())
+        .unwrap_or_else(|| format!("task-{}", task_id));
+    if let Some(worktree_path) = db
+        .get_task_worktree_path(task_id)
+        .map_err(|e| format!("db error: {}", e))?
+    {
+        if std::path::Path::new(&worktree_path).exists() {
+            remove_prepared_worktree(&worktree_path, &branch)?;
+        }
+    }
+    db.delete_dormant_task_start_artifacts(task_id, None)
+        .map_err(|e| format!("db error: {}", e))
+}
+
 pub(crate) fn prepare_start_dormant_task_for_api(
     db: &Db,
     config: &Config,
@@ -3128,6 +3156,11 @@ pub(crate) fn prepare_start_dormant_task_for_api(
         Some(inputs) => inputs,
         None => return Ok(None),
     };
+    // Durable before any workspace exists: the start records exactly these
+    // inputs, a retried or recovered start reuses them, and an upstream
+    // departure in the meantime is recorded as superseding them.
+    db.reserve_stage_edge_inputs(&stage_inputs)
+        .map_err(|e| format!("db error: {}", e))?;
     let blocker_branches = if stage_inputs.is_empty() {
         blocker_branches
     } else {

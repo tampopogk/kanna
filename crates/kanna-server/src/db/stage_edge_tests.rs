@@ -378,3 +378,164 @@ fn a_transition_settles_a_parked_completion_and_its_blocked_state() {
     db.update_pipeline_item_stage("task-b", "review").unwrap();
     assert!(db.dependency_wait("task-b").unwrap().is_none());
 }
+
+/// A first-stage start snapshots its inputs, does its git and session work,
+/// then records the start. An upstream departure in that window must not
+/// change what is recorded, and must be recorded as superseding it.
+#[test]
+fn departure_between_start_snapshot_and_record_supersedes_the_reserved_input() {
+    let db = test_db("stage-edge-start-window");
+    task(&db, "task-a", &["plan", "build"]);
+    task(&db, "task-b", &["work"]);
+    db.insert_stage_edges("task-b", &[edge("task-a", "plan", None)])
+        .unwrap();
+    let first = depart(&db, "task-a", "plan", "build", "success", "5000001");
+
+    // What prepare_start_dormant_task_for_api does first: snapshot, reserve.
+    let inputs = db
+        .stage_edge_inputs("task-b", "work", true)
+        .unwrap()
+        .unwrap();
+    db.reserve_stage_edge_inputs(&inputs).unwrap();
+    let given_to_session = inputs[0].input.committed_sha.clone();
+    assert_eq!(given_to_session.as_deref(), Some("5000001"));
+
+    // The upstream loops back and leaves again while the start is working.
+    depart(&db, "task-a", "build", "plan", "success", "5000002");
+    let newer = depart(&db, "task-a", "plan", "build", "success", "5000003");
+    // A re-read keeps the reserved input rather than the newer result.
+    assert_eq!(
+        db.stage_edge_inputs("task-b", "work", true)
+            .unwrap()
+            .unwrap()[0]
+            .input
+            .committed_sha,
+        given_to_session
+    );
+
+    // What it does last: record the start with the snapshot.
+    db.record_dependency_start("task-b", "work", "task-b", &inputs)
+        .unwrap();
+    let edge = db.list_stage_edges_into("task-b").unwrap().remove(0);
+    assert_eq!(edge.consumed_result_id.as_deref(), Some(first.as_str()));
+    assert_eq!(edge.consumed_sha, given_to_session);
+    assert_eq!(edge.superseded_result_id.as_deref(), Some(newer.as_str()));
+    assert_eq!(edge.superseded_sha.as_deref(), Some("5000003"));
+    let superseded = events(&db, "task-b", "task.dependency_superseded");
+    assert_eq!(superseded.len(), 1);
+    assert_eq!(superseded[0]["consumedResultId"], first);
+    assert_eq!(superseded[0]["consumed"], false);
+    assert_eq!(superseded[0]["supersedingResultId"], newer);
+    let start = transition_bodies(&db, "task-b").pop().unwrap();
+    assert_eq!(start["operation"], "dependency_start");
+    assert_eq!(start["dependencies"][0]["committed_sha"], "5000001");
+}
+
+#[test]
+fn a_parked_completion_does_not_survive_close_and_reopen() {
+    let db = test_db("stage-edge-wait-close");
+    task(&db, "task-a", &["plan", "build"]);
+    task(&db, "task-b", &["work", "review"]);
+    db.upsert_worktree("wt-task-b", "task-b", "/tmp/task-b", "branch-task-b")
+        .unwrap();
+    db.insert_stage_edges("task-b", &[edge("task-a", "plan", Some("review"))])
+        .unwrap();
+    db.record_dependency_wait(
+        "task-b",
+        "work",
+        "review",
+        &serde_json::json!({"kind": "main", "completionTransition": "auto"}),
+    )
+    .unwrap();
+
+    db.close_pipeline_item("task-b").unwrap();
+    assert!(db.dependency_wait("task-b").unwrap().is_none());
+    db.reopen_pipeline_item("task-b").unwrap();
+    depart(&db, "task-a", "plan", "build", "success", "6000001");
+
+    assert!(db.dependency_wait("task-b").unwrap().is_none());
+    assert!(db
+        .list_waiting_stage_edge_upstreams("task-b")
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        db.get_pipeline_item("task-b")
+            .unwrap()
+            .unwrap()
+            .stage
+            .as_deref(),
+        Some("work")
+    );
+}
+
+/// An upstream from before the task ledger (migration 096): it moved past
+/// the named stage, or closed, with no result entries at all, or with only
+/// a backfilled transition that names no triggering result.
+#[test]
+fn edges_on_stages_left_before_the_ledger_are_refused_without_a_sha() {
+    let db = test_db("stage-edge-pre-ledger");
+    task(&db, "task-old", &["plan", "build", "pr"]);
+    db.conn
+        .execute(
+            "UPDATE pipeline_item SET stage = 'build' WHERE id = 'task-old'",
+            [],
+        )
+        .unwrap();
+    task(&db, "task-b", &["work"]);
+    assert!(matches!(
+        db.insert_stage_edges("task-b", &[edge("task-old", "plan", None)]),
+        Err(StageEdgeError::UnsatisfiableHistory { .. })
+    ));
+
+    // A backfilled transition out of `plan` carries no triggering result.
+    db.enqueue_ledger_entry(crate::db::task_store::NewLedgerEntry {
+        task_id: "task-old",
+        kind: crate::db::task_store::LedgerEntryKind::Transition,
+        operation_id: None,
+        source_kind: "task_event",
+        source_id: "1",
+        source_origin: None,
+        historical: true,
+        recorded_at: Some("2026-01-01T00:00:00Z"),
+        run_id: None,
+        declared_role: None,
+        channel_identity: &crate::mutation_provenance::ChannelIdentity::Unknown,
+        body: serde_json::json!({
+            "from_stage": "plan",
+            "to_stage": "build",
+            "triggering_result_id": Value::Null,
+        }),
+        message: None,
+        hold_events_after: None,
+        reserved_sequence: None,
+    })
+    .unwrap();
+    let refused = db
+        .insert_stage_edges("task-b", &[edge("task-old", "plan", None)])
+        .unwrap_err();
+    assert!(matches!(
+        refused,
+        StageEdgeError::UnsatisfiableHistory { .. }
+    ));
+    assert!(refused.to_string().contains("never be satisfied"));
+
+    // A closed historical task with no result at its final stage.
+    db.close_pipeline_item("task-old").unwrap();
+    assert!(matches!(
+        db.insert_stage_edges("task-b", &[edge("task-old", "pr", None)]),
+        Err(StageEdgeError::UnsatisfiableHistory { .. })
+    ));
+    assert!(db.list_stage_edges_into("task-b").unwrap().is_empty());
+
+    // An old task still at the named stage can leave it later: accepted.
+    task(&db, "task-at-stage", &["plan", "build"]);
+    db.insert_stage_edges("task-b", &[edge("task-at-stage", "plan", None)])
+        .unwrap();
+    // A closed task can never leave a stage again, whichever it was.
+    db.insert_stage_edges("task-b", &[edge("task-old", "build", None)])
+        .unwrap_err();
+    // An open task that has not reached the named stage yet: accepted.
+    task(&db, "task-early", &["plan", "build", "pr"]);
+    db.insert_stage_edges("task-b", &[edge("task-early", "build", None)])
+        .unwrap();
+}

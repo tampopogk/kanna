@@ -34,6 +34,25 @@ fn decide(db: &Db, config: &crate::config::Config, task_id: &str) -> Result<Read
     if item.closed_at.is_some() {
         return Ok(Readiness::Waiting);
     }
+    let has_stage_edges = !db
+        .list_stage_edges_into(task_id)
+        .map_err(db_error)?
+        .is_empty();
+    if has_stage_edges
+        && db
+            .get_task_worktree_path(task_id)
+            .map_err(db_error)?
+            .is_some()
+        && db.latest_stage_run(task_id).map_err(db_error)?.is_none()
+    {
+        // A start interrupted between recording its workspace and recording
+        // its first run (a restart, or a daemon that could not be reached).
+        // The run is written before any spawn, so no session exists: undo
+        // the partial start and decide again as an unstarted task. Its edges
+        // keep their reserved inputs, so it forks from the same commit.
+        log::warn!("rolling back the interrupted dependency start of {task_id}");
+        crate::task_creator::rollback_interrupted_dependency_start(db, task_id)?;
+    }
     if db
         .get_task_worktree_path(task_id)
         .map_err(db_error)?
@@ -41,12 +60,7 @@ fn decide(db: &Db, config: &crate::config::Config, task_id: &str) -> Result<Read
     {
         // Not started. Only tasks with stage edges start here; a legacy
         // dormant task keeps its own blocker path.
-        if db
-            .list_stage_edges_into(task_id)
-            .map_err(db_error)?
-            .is_empty()
-            || db.count_open_task_blockers(task_id).map_err(db_error)? > 0
-        {
+        if !has_stage_edges || db.count_open_task_blockers(task_id).map_err(db_error)? > 0 {
             return Ok(Readiness::Waiting);
         }
         let stage = item.stage.clone().unwrap_or_default();

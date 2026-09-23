@@ -101,14 +101,7 @@ impl Db {
         let Some(baseline) = baseline else {
             return Ok(());
         };
-        // Legacy blockers, then the upstreams of stage edges (T4) holding
-        // the task at the stage it is waiting to enter.
-        let mut blocker_task_ids = self.list_open_task_blocker_ids(task_id)?;
-        for upstream in self.list_waiting_stage_edge_upstreams(task_id)? {
-            if !blocker_task_ids.contains(&upstream) {
-                blocker_task_ids.push(upstream);
-            }
-        }
+        let blocker_task_ids = self.list_blocking_task_ids(task_id)?;
         let blocked = !blocker_task_ids.is_empty();
         if baseline == i64::from(blocked) {
             return Ok(());
@@ -258,6 +251,20 @@ impl Db {
             [blocked_item_id],
             |row| row.get(0),
         )
+    }
+
+    /// Every task holding `task_id` right now: its unresolved legacy
+    /// blockers, then the upstreams of stage edges (T4) holding it at the
+    /// stage it is waiting to enter. The one set behind `task.blocked` and
+    /// every `blockedByTaskIds` a client reads.
+    pub fn list_blocking_task_ids(&self, task_id: &str) -> Result<Vec<String>, rusqlite::Error> {
+        let mut blocker_task_ids = self.list_open_task_blocker_ids(task_id)?;
+        for upstream in self.list_waiting_stage_edge_upstreams(task_id)? {
+            if !blocker_task_ids.contains(&upstream) {
+                blocker_task_ids.push(upstream);
+            }
+        }
+        Ok(blocker_task_ids)
     }
 
     /// Ids of blockers that are still unresolved, for surfacing why a task

@@ -229,7 +229,7 @@ fn open_creates_and_migrates_fresh_profile_database() {
             |row| row.get(0),
         )
         .expect("latest migration");
-    assert_eq!(latest_migration, "099_task_stage_edges");
+    assert_eq!(latest_migration, "100_task_stage_edges");
     assert_eq!(
         index_columns(&db.conn, "idx_pipeline_item_parent_created_id"),
         vec!["parent_task_id", "created_at", "id"],
@@ -1936,6 +1936,13 @@ fn server_connection_opens_with_desktop_like_wal_client_active() {
                   superseded_sha TEXT,
                   superseded_at TEXT
                 );
+                CREATE TABLE task_dependency_wait (
+                  task_id TEXT PRIMARY KEY,
+                  from_stage TEXT NOT NULL,
+                  to_stage TEXT NOT NULL,
+                  generation INTEGER NOT NULL,
+                  payload TEXT NOT NULL
+                );
                 INSERT INTO pipeline_item (id, stage) VALUES ('task-1', 'in progress');
                 "#,
         )
@@ -2028,6 +2035,13 @@ fn close_pipeline_item_sets_closed_at_without_changing_stage() {
               superseded_result_id TEXT,
               superseded_sha TEXT,
               superseded_at TEXT
+            );
+            CREATE TABLE task_dependency_wait (
+              task_id TEXT PRIMARY KEY,
+              from_stage TEXT NOT NULL,
+              to_stage TEXT NOT NULL,
+              generation INTEGER NOT NULL,
+              payload TEXT NOT NULL
             );
             INSERT INTO pipeline_item (id, stage) VALUES ('task-1', 'in progress');
             "#,

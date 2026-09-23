@@ -381,3 +381,96 @@ fn later_stage_edge_gates_the_advance_without_changing_its_base() {
     let _ = std::fs::remove_dir_all(&repo_root);
     let _ = std::fs::remove_file(config.db_path);
 }
+
+/// A later-stage entry prepares its session with the edge's input, then the
+/// transition commits. An upstream departure in between must not change the
+/// consumed record away from what the session was told; the newer result is
+/// recorded as superseding it.
+#[test]
+fn departure_between_prepare_and_entry_commit_keeps_the_session_input() {
+    let repo_root = init_git_repo_with_workflow(
+        "stage-edge-entry-window",
+        "gated",
+        "in progress",
+        "auto",
+        "claude",
+    );
+    let config = test_config("stage-edge-entry-window");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+    let definition =
+        std::fs::read_to_string(repo_root.join(".kanna/workflows/gated.json")).unwrap();
+    upstream_task(&db, "task-a", &["plan", "build"]);
+    let given = commit_on_branch(&repo_root, "task-a", "main", "first.md");
+    db.insert_test_pipeline_item(
+        "task-b",
+        "repo-1",
+        "Gated work",
+        Some("Gated work"),
+        "in progress",
+        "2026-09-23 00:00:00",
+    )
+    .unwrap();
+    run_git_fixture(&repo_root, &["branch", "task-b-branch", "main"]);
+    db.update_test_pipeline_item_stage_context("task-b", "task-b-branch", "gated", None, "claude")
+        .unwrap();
+    db.update_test_pipeline_item_pipeline_def("task-b", &definition)
+        .unwrap();
+    insert_finished_stage_run(
+        &db,
+        "task-b",
+        "in progress",
+        "{\"status\":\"success\",\"summary\":\"done\"}",
+    );
+    db.insert_stage_edges(
+        "task-b",
+        &[NewStageEdge {
+            upstream_task_id: "task-a".to_string(),
+            upstream_stage: "plan".to_string(),
+            dependent_stage: Some("pr".to_string()),
+        }],
+    )
+    .unwrap();
+    let given_result = depart(&db, "task-a", "plan", "build", &given);
+
+    let run = match prepare_advance_stage_for_api(&db, &config, "task-b").unwrap() {
+        PreparedStageTransition::Run(run) => run,
+        _ => panic!("expected the gated stage to start"),
+    };
+    let text = session_text(&run.session);
+    assert!(text.contains(&format!("result `{given_result}` at commit `{given}`")));
+
+    // The upstream loops back and leaves again before the entry commits.
+    db.record_test_stage_result("task-a", "build", "success", Some(&given));
+    db.update_pipeline_item_stage("task-a", "plan").unwrap();
+    let newer = commit_on_branch(&repo_root, "task-a", "main", "second.md");
+    let newer_result = depart(&db, "task-a", "plan", "build", &newer);
+
+    // The transition's commit (what spawning the prepared run records).
+    db.update_pipeline_item_stage("task-b", "pr").unwrap();
+    let edge = db.list_stage_edges_into("task-b").unwrap().remove(0);
+    assert_eq!(
+        edge.consumed_result_id.as_deref(),
+        Some(given_result.as_str())
+    );
+    assert_eq!(edge.consumed_sha.as_deref(), Some(given.as_str()));
+    assert_eq!(
+        edge.superseded_result_id.as_deref(),
+        Some(newer_result.as_str())
+    );
+    assert_eq!(edge.superseded_sha.as_deref(), Some(newer.as_str()));
+    let superseded: i64 = db
+        .connection_for_e2e_tests()
+        .query_row(
+            "SELECT COUNT(*) FROM task_event
+             WHERE task_id = 'task-b' AND type = 'task.dependency_superseded'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(superseded, 1);
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+    let _ = std::fs::remove_file(config.db_path);
+}

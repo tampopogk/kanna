@@ -1370,6 +1370,9 @@ impl Db {
             }
             db.cancel_running_stage_runs(&pipeline_item_id)?;
             db.release_task_ports(&pipeline_item_id)?;
+            // A completion parked on dependency edges is owed only to the
+            // open task: a reopen must not replay it (T4).
+            db.clear_dependency_wait(&pipeline_item_id)?;
             db.append_task_event(
                 &pipeline_item_id,
                 TaskEventKind::TaskClosed,

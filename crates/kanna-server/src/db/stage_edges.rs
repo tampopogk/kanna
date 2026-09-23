@@ -40,6 +40,12 @@ pub(super) const SCHEMA: &str = r#"
         superseded_result_id TEXT,
         superseded_sha TEXT,
         superseded_at TEXT,
+        -- The input a start or transition was prepared with, before the
+        -- entry that consumes it commits: consumption records exactly this,
+        -- and a newer upstream success in between supersedes it.
+        reserved_result_id TEXT,
+        reserved_sha TEXT,
+        reserved_at TEXT,
         UNIQUE (dependent_task_id, dependent_stage, upstream_task_id, upstream_stage)
     );
     CREATE INDEX IF NOT EXISTS idx_task_stage_edge_upstream
@@ -69,6 +75,9 @@ pub struct StageEdge {
     pub superseded_result_id: Option<String>,
     pub superseded_sha: Option<String>,
     pub superseded_at: Option<String>,
+    pub reserved_result_id: Option<String>,
+    pub reserved_sha: Option<String>,
+    pub reserved_at: Option<String>,
 }
 
 /// An edge a caller asks for. The upstream may be named by id or branch;
@@ -160,9 +169,19 @@ pub enum StageEdgeError {
     Database(rusqlite::Error),
     TaskNotFound(String),
     UpstreamNotFound(String),
-    StageNotFound { task_id: String, stage: String },
+    StageNotFound {
+        task_id: String,
+        stage: String,
+    },
     SelfDependency,
     CircularDependency,
+    /// The upstream already left (or closed past) the named stage without a
+    /// recorded success result for that departure — typically history from
+    /// before the task ledger — so the edge could never be satisfied.
+    UnsatisfiableHistory {
+        task_id: String,
+        stage: String,
+    },
 }
 
 impl fmt::Display for StageEdgeError {
@@ -183,6 +202,11 @@ impl fmt::Display for StageEdgeError {
             Self::CircularDependency => write!(
                 formatter,
                 "cannot add dependency because it would create a circular dependency"
+            ),
+            Self::UnsatisfiableHistory { task_id, stage } => write!(
+                formatter,
+                "dependency can never be satisfied: {task_id} already left stage {stage} \
+                 without a recorded success result for it"
             ),
         }
     }
@@ -205,7 +229,8 @@ impl From<rusqlite::Error> for StageEdgeError {
 
 const EDGE_COLUMNS: &str = "id, dependent_task_id, dependent_stage, upstream_task_id, \
     upstream_stage, position, consumed_result_id, consumed_sha, consumed_at, \
-    superseded_result_id, superseded_sha, superseded_at";
+    superseded_result_id, superseded_sha, superseded_at, reserved_result_id, reserved_sha, \
+    reserved_at";
 
 fn edge_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StageEdge> {
     Ok(StageEdge {
@@ -221,6 +246,9 @@ fn edge_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StageEdge> {
         superseded_result_id: row.get(9)?,
         superseded_sha: row.get(10)?,
         superseded_at: row.get(11)?,
+        reserved_result_id: row.get(12)?,
+        reserved_sha: row.get(13)?,
+        reserved_at: row.get(14)?,
     })
 }
 
@@ -262,6 +290,12 @@ impl Db {
                     .contains(&edge.upstream_stage)
                 {
                     return Err(StageEdgeError::StageNotFound {
+                        task_id: upstream_id,
+                        stage: edge.upstream_stage.clone(),
+                    });
+                }
+                if !db.upstream_stage_can_satisfy(&upstream, &edge.upstream_stage)? {
+                    return Err(StageEdgeError::UnsatisfiableHistory {
                         task_id: upstream_id,
                         stage: edge.upstream_stage.clone(),
                     });
@@ -444,8 +478,25 @@ impl Db {
             if edge.dependent_stage != stage {
                 continue;
             }
-            let EdgeSatisfaction::Satisfied(input) = self.stage_edge_satisfaction(&edge)? else {
+            let EdgeSatisfaction::Satisfied(current) = self.stage_edge_satisfaction(&edge)? else {
                 return Ok(None);
+            };
+            // What this stage already took, or was already prepared with,
+            // stays its input: a retried or recovered start and the entry
+            // that commits a prepared transition record the snapshot the
+            // session was given, never a newer result read afterwards.
+            let input = if edge.consumed_at.is_some() {
+                StageEdgeInput {
+                    result_id: edge.consumed_result_id.clone(),
+                    committed_sha: edge.consumed_sha.clone(),
+                }
+            } else if edge.reserved_at.is_some() {
+                StageEdgeInput {
+                    result_id: edge.reserved_result_id.clone(),
+                    committed_sha: edge.reserved_sha.clone(),
+                }
+            } else {
+                current
             };
             let role = match (starting, inputs.is_empty()) {
                 (true, true) => DependencyRole::Base,
@@ -455,6 +506,36 @@ impl Db {
             inputs.push(ConsumedDependency { edge, role, input });
         }
         Ok(Some(inputs))
+    }
+
+    /// Durably reserve the inputs a start or transition is being prepared
+    /// with, before any workspace or session work. Consumption later records
+    /// these exact results, and an upstream departure in between is recorded
+    /// as superseding them. A reservation that changes clears the previous
+    /// one's supersession, which no longer describes this input.
+    pub(crate) fn reserve_stage_edge_inputs(
+        &self,
+        inputs: &[ConsumedDependency],
+    ) -> Result<(), rusqlite::Error> {
+        self.in_immediate_transaction_if_needed(|db| {
+            for dependency in inputs {
+                db.conn.execute(
+                    "UPDATE task_stage_edge
+                     SET reserved_result_id = ?1, reserved_sha = ?2,
+                         reserved_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                         superseded_result_id = NULL, superseded_sha = NULL,
+                         superseded_at = NULL
+                     WHERE id = ?3 AND consumed_at IS NULL
+                       AND (reserved_at IS NULL OR reserved_result_id IS NOT ?1)",
+                    params![
+                        dependency.input.result_id,
+                        dependency.input.committed_sha,
+                        dependency.edge.id
+                    ],
+                )?;
+            }
+            Ok(())
+        })
     }
 
     /// Record, inside the caller's transaction, that `task_id` entered
@@ -535,8 +616,17 @@ impl Db {
             return Ok(());
         };
         for edge in edges {
-            if edge.consumed_at.is_none()
-                || edge.consumed_result_id.as_deref() == result.result_id.as_deref()
+            // Against what the dependent consumed, or — between preparing a
+            // start or transition and committing it — what it was prepared
+            // with and will consume.
+            let (taken_result, taken_sha) = if edge.consumed_at.is_some() {
+                (&edge.consumed_result_id, &edge.consumed_sha)
+            } else if edge.reserved_at.is_some() {
+                (&edge.reserved_result_id, &edge.reserved_sha)
+            } else {
+                continue;
+            };
+            if taken_result.as_deref() == result.result_id.as_deref()
                 || edge.superseded_result_id.as_deref() == result.result_id.as_deref()
             {
                 continue;
@@ -556,8 +646,9 @@ impl Db {
                     "upstreamTaskId": edge.upstream_task_id,
                     "upstreamStage": edge.upstream_stage,
                     "dependentStage": edge.dependent_stage,
-                    "consumedResultId": edge.consumed_result_id,
-                    "consumedSha": edge.consumed_sha,
+                    "consumedResultId": taken_result,
+                    "consumedSha": taken_sha,
+                    "consumed": edge.consumed_at.is_some(),
                     "supersedingResultId": result.result_id,
                     "supersedingSha": result.committed_sha,
                 }),
@@ -738,6 +829,39 @@ impl Db {
                 })
             })
             .collect())
+    }
+
+    /// Can an edge on `upstream`'s `stage` still be satisfied? Not when the
+    /// upstream already left that non-final stage (or closed) and no forward
+    /// departure from it was caused by a recorded success result, nor when a
+    /// closed upstream never recorded a success at its final stage. History
+    /// from before the task ledger records no triggering result, and closed
+    /// historical tasks were never backfilled; no SHA is invented for them.
+    fn upstream_stage_can_satisfy(
+        &self,
+        upstream: &super::PipelineItem,
+        stage: &str,
+    ) -> Result<bool, rusqlite::Error> {
+        let stages = pinned_stage_names(upstream.pipeline_def.as_deref());
+        if stages.last().map(String::as_str) == Some(stage) {
+            return Ok(upstream.closed_at.is_none()
+                || self
+                    .latest_success_result_at_stage(&upstream.id, stage)?
+                    .is_some());
+        }
+        let position = |name: &str| stages.iter().position(|candidate| candidate == name);
+        let left = upstream.closed_at.is_some()
+            || match (
+                upstream.stage.as_deref().and_then(position),
+                position(stage),
+            ) {
+                (Some(current), Some(named)) => current > named,
+                _ => false,
+            };
+        Ok(!left
+            || self
+                .latest_success_departure(&upstream.id, stage, &stages)?
+                .is_some())
     }
 
     /// The newest forward departure from `stage` caused by a success result.
