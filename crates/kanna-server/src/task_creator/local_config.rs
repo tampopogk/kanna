@@ -110,6 +110,13 @@ const OVERRIDABLE_KEYS: &[OverridableKey] = &[
 pub(super) struct LocalConfigOverride {
     path: String,
     keys: Vec<String>,
+    /// Named entries a [`LocalMerge::Entries`] key wrote, as `key.entry`
+    /// (for example `artifacts.remote`), sorted. `keys` says a key was
+    /// touched; this says which of its entries now come from this machine,
+    /// so a caller can attribute one resolved value to its file. Not
+    /// serialized: the recorded provenance shape is unchanged.
+    #[serde(skip)]
+    entries: Vec<String>,
 }
 
 impl LocalConfigOverride {
@@ -123,6 +130,14 @@ impl LocalConfigOverride {
     /// Config keys the local file replaced or merged into, sorted.
     pub(super) fn keys(&self) -> &[String] {
         &self.keys
+    }
+
+    /// Whether the local file wrote the named entry of an entries-merged key,
+    /// e.g. `("artifacts", "remote")`.
+    pub(super) fn wrote_entry(&self, key: &str, entry: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|written| written.split_once('.') == Some((key, entry)))
     }
 }
 
@@ -154,6 +169,7 @@ pub(super) fn apply_local_config_override(
     };
 
     let mut keys = Vec::new();
+    let mut entries = Vec::new();
     for (key, value) in &local {
         // Editors resolve `$schema` for completion; it configures nothing.
         if key == "$schema" {
@@ -195,6 +211,7 @@ pub(super) fn apply_local_config_override(
                 if let (Some(base), Some(overrides)) = (entry.as_object_mut(), value.as_object()) {
                     for (name, value) in overrides {
                         base.insert(name.clone(), value.clone());
+                        entries.push(format!("{canonical_key}.{name}"));
                     }
                 }
             }
@@ -208,9 +225,11 @@ pub(super) fn apply_local_config_override(
         return Ok(None);
     }
     keys.sort();
+    entries.sort();
     Ok(Some(LocalConfigOverride {
         path: path.to_string_lossy().into_owned(),
         keys,
+        entries,
     }))
 }
 
@@ -580,6 +599,16 @@ mod tests {
             .expect("local artifacts override applies");
 
         assert_eq!(applied.keys(), ["artifacts"]);
+        // Which entry came from this machine is recorded per entry, so a
+        // committed remote under a local location is still the committed one.
+        assert!(applied.wrote_entry("artifacts", "repositoryPath"));
+        assert!(!applied.wrote_entry("artifacts", "remote"));
+        assert!(!applied.wrote_entry("artifacts", "retention"));
+        // The entry list is provenance for callers, not recorded output.
+        assert_eq!(
+            serde_json::to_value(&applied).unwrap(),
+            json!({"path": applied.path(), "keys": ["artifacts"]})
+        );
         assert_eq!(
             config["artifacts"],
             json!({"repositoryPath": "/Volumes/fast/artifacts.git", "retention": "30-days",
@@ -591,7 +620,11 @@ mod tests {
             temp.path(),
             &json!({"artifacts": {"remote": "/Volumes/shared/artifacts.git"}}).to_string(),
         );
-        apply_local_config_override(temp.path(), &mut config).unwrap();
+        let applied = apply_local_config_override(temp.path(), &mut config)
+            .unwrap()
+            .expect("local remote override applies");
+        assert!(applied.wrote_entry("artifacts", "remote"));
+        assert!(!applied.wrote_entry("artifacts", "repositoryPath"));
         assert_eq!(
             config["artifacts"]["remote"], "/Volumes/shared/artifacts.git",
             "a local remote replaces only the remote"

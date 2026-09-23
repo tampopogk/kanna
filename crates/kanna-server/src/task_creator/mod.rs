@@ -643,6 +643,18 @@ pub(crate) struct RepoArtifactPolicy {
     pub(crate) repository_path: Option<String>,
     pub(crate) retention: crate::artifacts::ArtifactRetention,
     pub(crate) remote: Option<String>,
+    /// Which file the `remote` in force came from; `None` when no remote is
+    /// configured.
+    pub(crate) remote_source: Option<ArtifactRemoteSource>,
+}
+
+/// The configuration layer an `artifacts.remote` was resolved from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArtifactRemoteSource {
+    /// `.kanna/config.json` at the resolved default-branch snapshot.
+    Committed,
+    /// This machine's `.kanna/config.local.json`.
+    MachineLocal,
 }
 
 pub(crate) fn load_repo_artifact_policy(
@@ -651,11 +663,24 @@ pub(crate) fn load_repo_artifact_policy(
 ) -> Result<RepoArtifactPolicy, String> {
     cache
         .with_definitions(repo, |definitions| {
-            let artifacts = definitions.config().artifacts.clone().unwrap_or_default();
+            let config = definitions.config();
+            let artifacts = config.artifacts.clone().unwrap_or_default();
+            let remote_source = artifacts.remote.as_ref().map(|_| {
+                if config
+                    .local_override
+                    .as_ref()
+                    .is_some_and(|local| local.wrote_entry("artifacts", "remote"))
+                {
+                    ArtifactRemoteSource::MachineLocal
+                } else {
+                    ArtifactRemoteSource::Committed
+                }
+            });
             Ok(RepoArtifactPolicy {
                 repository_path: artifacts.repository_path,
                 retention: artifacts.retention.unwrap_or_default(),
                 remote: artifacts.remote,
+                remote_source,
             })
         })
         .map_err(|error| error.to_string())

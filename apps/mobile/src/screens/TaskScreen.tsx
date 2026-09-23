@@ -67,7 +67,7 @@ import type {
 import { AgentMessageView } from "./AgentMessageView";
 import { TaskDiffPreview } from "./TaskDiffPreview";
 import { TaskPreviewModal } from "./TaskPreviewModal";
-import { ArtifactViewer } from "./ArtifactViewer";
+import { ArtifactViewer, type ArtifactViewerActions } from "./ArtifactViewer";
 import { TaskFilePreview } from "./TaskFilePreview";
 import { TaskMentionedFiles } from "./TaskMentionedFiles";
 import { RepoExplorer } from "./RepoExplorer";
@@ -170,6 +170,8 @@ interface TaskScreenProps {
   /** Artifacts of this task's repository, by tree id; absent where unsupported. */
   onGetArtifact?(repoId: string, artifactId: string): Promise<ArtifactDetail>;
   onReadArtifactFile?(repoId: string, artifactId: string, path: string): Promise<ArtifactFileContent>;
+  /** Comments, decisions, push and fetch for the artifact viewer; absent where unsupported. */
+  artifactActions?: ArtifactViewerActions;
   taskPreviewRouteAvailable?: boolean;
   onOpenTaskPreview?(portName?: string): Promise<TaskPreviewOpenResult>;
   onCloseTaskPreview?(): Promise<void>;
@@ -264,6 +266,7 @@ export function TaskScreen({
   onReadTaskDiff,
   onGetArtifact,
   onReadArtifactFile,
+  artifactActions,
   taskPreviewRouteAvailable = true,
   onOpenTaskPreview = () =>
     Promise.reject(new Error("This desktop does not support dev-server preview.")),
@@ -1673,6 +1676,7 @@ export function TaskScreen({
           repoId={task.repoId}
           getArtifact={onGetArtifact}
           readArtifactFile={onReadArtifactFile}
+          actions={artifactActions}
           onClose={() => setArtifactViewerTaskId(null)}
         />
       ) : null}

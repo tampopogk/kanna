@@ -146,6 +146,11 @@ export interface MobileController {
   readTaskDiff(taskId: string, request?: TaskDiffRequest): Promise<TaskDiffContent>;
   getArtifact(repoId: string, artifactId: string): Promise<ArtifactDetail>;
   readArtifactFile(repoId: string, artifactId: string, path: string): Promise<ArtifactFileContent>;
+  getArtifactRemote: KannaClient["getArtifactRemote"];
+  recordArtifactComment: KannaClient["recordArtifactComment"];
+  recordArtifactDecision: KannaClient["recordArtifactDecision"];
+  pushArtifact: KannaClient["pushArtifact"];
+  fetchArtifact: KannaClient["fetchArtifact"];
   canOpenTaskPreview?(taskId: string): boolean;
   openTaskPreview(taskId: string, portName?: string): Promise<TaskPreviewOpenResult>;
   closeTaskPreview(taskId: string): Promise<void>;
@@ -4088,6 +4093,26 @@ export function createMobileController(
 
     readArtifactFile(repoId, artifactId, path) {
       return client.readArtifactFile(repoId, artifactId, path);
+    },
+
+    getArtifactRemote(repoId) {
+      return client.getArtifactRemote(repoId);
+    },
+
+    recordArtifactComment(repoId, artifactId, input) {
+      return client.recordArtifactComment(repoId, artifactId, input);
+    },
+
+    recordArtifactDecision(repoId, artifactId, input) {
+      return client.recordArtifactDecision(repoId, artifactId, input);
+    },
+
+    pushArtifact(repoId, artifactId, binding) {
+      return client.pushArtifact(repoId, artifactId, binding);
+    },
+
+    fetchArtifact(repoId, artifactId) {
+      return client.fetchArtifact(repoId, artifactId);
     },
 
     downloadTaskFile(taskId, path) {

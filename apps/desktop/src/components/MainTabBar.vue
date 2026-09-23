@@ -81,8 +81,14 @@ function present(tab: MainTab): MainTabPresentation {
     };
   }
   if (tab.kind === "artifact") {
-    const id = tab.artifactId ?? "";
-    return { id: tab.id, label: id ? `Artifact: ${id.slice(0, 8)}` : "Artifact", title: id ? `Artifact ${id}` : "Open an artifact by tree id", closable };
+    // The version on screen, which following `previous` can change.
+    const id = tab.artifactShownId ?? tab.artifactId ?? "";
+    return {
+      id: tab.id,
+      label: id ? t("mainTabs.artifactLabel", { id: id.slice(0, 8) }) : t("mainTabs.artifact"),
+      title: id ? t("mainTabs.artifactTitle", { id }) : t("mainTabs.artifactEmptyTitle"),
+      closable,
+    };
   }
   if (tab.kind === "shell") {
     const label = t(tab.shellScope === "repo" ? "mainTabs.repoShell" : "mainTabs.shell");
