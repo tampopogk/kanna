@@ -693,37 +693,77 @@ describe("QA workflow assets", () => {
     expect(dispatcher).toContain("never a follow-up task");
   });
 
-  it("names every dispatched child distinctly by specialty", () => {
+  it("names every dispatched child distinctly by specialty and round", () => {
     const dispatcher = readRepoPhrases(".kanna/agents/qa-dispatcher/AGENT.md");
 
-    // kanna_create_subtasks children are titled by an explicit display name
-    // (falling back to the shared prompt otherwise), so the definition still
-    // has to say the name must disambiguate specialties from each other —
-    // the mechanics of the call itself are the tool's own schema, not policy.
+    // `display_name` is optional in the tool schema and falls back to the
+    // prompt, and every child's prompt opens with the same dispatch line — so
+    // a fan-out that omits it renders as a column of identical sidebar rows.
     expect(dispatcher).toContain("display name");
-    expect(dispatcher).toContain("two children never render identically");
+    expect(dispatcher).toContain("(round <n>)");
+    expect(dispatcher).toContain("no two children of any round ever render identically");
+    expect(dispatcher).toContain("under about sixty characters");
+    // A label per built-in specialty, so the rule is applicable and not just
+    // aspirational; a repo-added reviewer derives its own.
+    for (const label of [
+      "| `review-ui` | `UI` |",
+      "| `review-security` | `Security` |",
+      "| `review-perf` | `Performance` |",
+      "| `review-concurrency` | `Concurrency` |",
+      "| `review-migration` | `Migration` |",
+      "| `review-compat` | `Compatibility` |",
+    ]) {
+      expect(dispatcher, label).toContain(label);
+    }
+    expect(dispatcher).toContain("A repo-added `review-*` agent takes its label from its own");
+    expect(dispatcher).toContain("what tells this round's children from the previous round's");
+  });
+
+  it("gives each dispatched child's fresh session a full prompt envelope", () => {
+    // Round-2 QA finding 3: kanna_create_subtasks and the runtime preamble
+    // supply the child's workflow/agent/display name, but a child starts a
+    // brand-new session with none of the dispatcher's own context — the
+    // prompt itself has to carry the range, the reviewed task's id, and the
+    // focus, or the child has nothing to judge the diff against.
+    const dispatcher = readRepoPhrases(".kanna/agents/qa-dispatcher/AGENT.md");
+
+    expect(dispatcher).toContain("fresh session with none of this context");
+    expect(dispatcher).toContain("its prompt must open with the same specialty-and-round line");
+    expect(dispatcher).toContain("the branch under review");
+    expect(dispatcher).toContain("the round range (`<previous review point>..HEAD`)");
+    expect(dispatcher).toContain("the full-branch range (`$BASE_REF..HEAD`)");
+    expect(dispatcher).toContain("the reviewed task's own id");
+    expect(dispatcher).toContain("never on the child's own");
+    expect(dispatcher).toContain("a one-paragraph summary of the original task");
+    expect(dispatcher).toContain("a specific focus naming what this specialty must scrutinize");
   });
 
   it("reviews only what changed since the previous review round, as policy rather than a git recipe", () => {
-    // T5 joins are engine-delivered per call, so the manual create/wait/close
-    // pattern and its cross-round kanna_list_task_children history-walk are
-    // retired — but re-reviewing the whole branch every loop would multiply
-    // panel cost for no reason, since T2's workspace branches already mark
-    // each round's reviewed point (a review workspace never commits). The
-    // definition states this as an outcome — "since the previous round",
-    // "carry forward" — and trusts the agent to find the range itself,
+    // T5 joins retire the manual create/wait/close pattern for THIS round's
+    // children — but not the cross-round durable ledger, since a legacy-
+    // pinned task's earlier rounds are pre-join children no join delivers,
+    // and re-reviewing the whole branch every loop would multiply panel cost
+    // for no reason (T2's workspace branches already mark each round's
+    // reviewed point). The definition states the range as an outcome —
+    // "since the previous round" — and trusts the agent to find it itself,
     // rather than dictating the git incantations (spec §12: engine
-    // mechanics, including how the engine happens to expose that point,
-    // do not belong in a definition).
+    // mechanics, including how the engine happens to expose that point, do
+    // not belong in a definition).
     const dispatcher = readRepoPhrases(".kanna/agents/qa-dispatcher/AGENT.md");
     const workflow = readRepoFile(".kanna/workflows/specialized-reviewers.json");
 
     expect(dispatcher).toContain("only what changed since the previous review round");
     expect(dispatcher).toContain("a review workspace never commits");
     expect(dispatcher).toContain("falling back to the full branch when that point cannot be established");
+    expect(dispatcher).toContain("A revision resumes the implementer in its existing worktree");
+    expect(dispatcher).toContain("workspace topology alone proves nothing about history");
     expect(dispatcher).toContain("keeps the last verdict its own prior child recorded, never a fresh dispatch");
-    expect(dispatcher).toContain("a carried FAIL stays blocking regardless of this round's own dispatch");
-    expect(dispatcher).toContain("never treated as fixed merely because its surface went untouched");
+    // Round-2 QA finding 1: a carried FAIL is re-evaluated against the
+    // current scope, not treated as unconditionally blocking forever.
+    expect(dispatcher).toContain("Re-evaluate a carried FAIL's underlying finding against the current full branch, the task's terms, and the scope bar below");
+    expect(dispatcher).toContain("report why it is now non-blocking without rewriting the recorded verdict to PASS");
+    expect(dispatcher).toContain("it remains an unresolved blocking finding");
+    expect(dispatcher).toContain("Never treat an untouched surface as evidence a carried FAIL was fixed");
     expect(dispatcher).not.toContain("git for-each-ref");
     expect(dispatcher).not.toContain("git merge-base");
     expect(dispatcher).not.toContain("git range-diff");
@@ -741,6 +781,45 @@ describe("QA workflow assets", () => {
     const implement = parsed.stages.find((stage) => stage.name === "in progress");
     expect(implement?.exit_commit).toBe(true);
     expect(implement?.policy).toMatchObject({ loop_transition: "auto" });
+  });
+
+  it("reduces the durable specialty ledger from direct children, not just this round's join", () => {
+    // Round-2 QA finding 2: carry-forward names no way to find or classify
+    // prior verdicts without this. Restored from c6f6f4fbd step 1 — a T5
+    // join only ever covers this round's own dispatch, never earlier rounds'
+    // pre-join children.
+    const dispatcher = readRepoPhrases(".kanna/agents/qa-dispatcher/AGENT.md");
+    const listChildrenMcp = "kanna_list_task_children";
+    const listChildrenCli = "kanna-cli task children";
+
+    expect(dispatcher).toContain(listChildrenMcp);
+    expect(dispatcher).toContain(listChildrenCli);
+    expect(dispatcher.indexOf(listChildrenMcp)).toBeLessThan(dispatcher.indexOf(listChildrenCli));
+    expect(dispatcher).toContain('`workflowName == "specialty-review"`');
+    expect(dispatcher).toContain("ignore every other child, even one whose `agent` starts with `review-`");
+    expect(dispatcher).toContain("latest terminal verdict per specialty");
+    expect(dispatcher).toContain("a later terminal verdict replaces an earlier one for the same specialty");
+    expect(dispatcher).toContain("current discoverability only controls what may be newly dispatched, never what a stored key means");
+    expect(dispatcher).toContain("A missing `agent`, one that does not match `review-*`, or a child record missing `workflowName` is malformed or version-incomplete history that blocks aggregate success");
+    expect(dispatcher).toContain("treat it as broken dispatch once");
+    expect(dispatcher).toContain("do not retry or re-dispatch it");
+    expect(dispatcher).toContain("may be joined if it is still running, or re-dispatched at most once");
+    expect(dispatcher).toContain("ends in a single broken-dispatch outcome");
+    expect(dispatcher).toContain("Do not start a repeated retry loop");
+  });
+
+  it("bounds a surviving blocker to concrete evidence and the smallest useful proof", () => {
+    // Round-2 QA finding 4, restored from c6f6f4fbd step 5: a blocker must
+    // name a concrete trigger/impact/evidence, missing coverage asks for the
+    // smallest useful proof rather than a generic full gate, settled
+    // evidence is reused, and a later round does not reopen settled ground.
+    const dispatcher = readRepoPhrases(".kanna/agents/qa-dispatcher/AGENT.md");
+
+    expect(dispatcher).toContain("Reopen ground a previous round already settled");
+    expect(dispatcher).toContain("demand a generic full gate or visual matrix");
+    expect(dispatcher).toContain("a specific material failure mode left unverified needs only the smallest useful proof");
+    expect(dispatcher).toContain("reuse settled evidence for unchanged surfaces");
+    expect(dispatcher).toContain("Carry a blocker forward without a concrete trigger, impact, and evidence linking it to the changed code");
   });
 
   it("closes each specialty child once its T5 join verdict is read", () => {
