@@ -54,16 +54,19 @@ function usesDefinitionFormula(agentBody: string): boolean {
 }
 
 /**
- * The detailed policy prose for an agent: for a definition-formula agent
- * (T10e), the compressed 15-40-line AGENT.md points to CONTRACT.md for it;
- * for a legacy agent, AGENT.md still carries it directly.
+ * The policy prose an agent is actually prompted with: its `AGENT.md` plus,
+ * when this repository answers it, the repo's `EXTEND.md`. Never
+ * `CONTRACT.md` — that is maintainer documentation the engine does not
+ * resolve into any prompt, so a policy assertion that passed on it would pass
+ * while the agent never saw the policy.
  */
 function detailPhrases(name: string): string {
-  const agentPath = `.kanna/agents/${name}/AGENT.md`;
-  if (usesDefinitionFormula(readRepoFile(agentPath))) {
-    return readRepoPhrases(`.kanna/agents/${name}/CONTRACT.md`);
+  const extendPath = `.kanna/agents/${name}/EXTEND.md`;
+  const parts = [readRepoPhrases(`.kanna/agents/${name}/AGENT.md`)];
+  if (existsSync(resolve(repoRoot, extendPath))) {
+    parts.push(readRepoPhrases(extendPath));
   }
-  return readRepoPhrases(agentPath);
+  return parts.join(" ");
 }
 
 describe("built-in agent completion protocol", () => {
@@ -107,7 +110,7 @@ describe("built-in agent completion protocol", () => {
   // only fires when the stage prompt asks (prompt-builder.ts's
   // COMPLETION_GUIDANCE.manual), and every workflow that binds `pr` invokes
   // it with a prompt that never asks. Its own result-publication obligation
-  // (CONTRACT.md) has to be carried in the definition itself.
+  // has to be carried in the definition itself.
   const formulaAgentNames = builtInAgentNames().filter(
     (name) => usesDefinitionFormula(readRepoFile(`.kanna/agents/${name}/AGENT.md`)) && name !== "pr"
   );
@@ -125,7 +128,7 @@ describe("built-in agent completion protocol", () => {
     }
   );
 
-  it("keeps pr's own result-publication obligation in its Produces section (CONTRACT.md)", () => {
+  it("keeps pr's own result-publication obligation in its Produces section", () => {
     const agent = readRepoFile(".kanna/agents/pr/AGENT.md");
     const produces = agent.split("## Reads")[0] ?? "";
 
@@ -133,9 +136,6 @@ describe("built-in agent completion protocol", () => {
     expect(produces).toContain("kanna_complete_stage");
     expect(produces).toContain("status `success`");
     expect(produces).toContain("metadata.pr_url");
-    expect(readRepoPhrases(".kanna/agents/pr/CONTRACT.md")).toContain(
-      "include `metadata.pr_url`",
-    );
   });
 });
 
@@ -386,14 +386,10 @@ describe("QA workflow assets", () => {
   it("keeps product research public, standalone, and distinct from planning", () => {
     const researcherFile = readRepoFile(".kanna/agents/researcher/AGENT.md");
     const researcher = parseAgentDefinition(researcherFile);
-    // T10e: researcher opts into spec §12's definition formula, so the
-    // detailed grounding/exploration/presentation policy this test checks
-    // moved into CONTRACT.md — the compressed AGENT.md keeps only the
-    // 15-40-line formula body and points there for detail.
-    const researcherPhrases = readRepoPhrases(".kanna/agents/researcher/CONTRACT.md");
+    const researcherPhrases = detailPhrases("researcher");
     const researchFile = readRepoFile(".kanna/workflows/research.json");
     const research = parseWorkflowJson(researchFile);
-    const plan = readRepoPhrases(".kanna/agents/plan/CONTRACT.md");
+    const plan = detailPhrases("plan");
     const manager = readRepoPhrases(".kanna/agents/task-manager/AGENT.md");
 
     expect(researcher.name).toBe("researcher");
@@ -438,10 +434,7 @@ describe("QA workflow assets", () => {
   });
 
   it("lets one task grow its own delivery stages from its plan", () => {
-    // T10e: this detail moved to CONTRACT.md; `$PLAN_RESULT` in particular is
-    // a definition-formula forbidden token, so plan's own compressed
-    // AGENT.md can no longer name it directly.
-    const plan = readRepoPhrases(".kanna/agents/plan/CONTRACT.md");
+    const plan = detailPhrases("plan");
     const research = JSON.parse(
       readRepoFile(".kanna/workflows/research.json")
     ) as { description?: string };
@@ -465,7 +458,12 @@ describe("QA workflow assets", () => {
     expect(plan).toContain('"expected_definition": <the workflowDefinition you read>');
     expect(plan).toContain("Confirm `workflowExtended: true` in the response");
     expect(plan).toContain("a plain success then means the stages were **not** published");
-    expect(plan).toContain("Your recorded result becomes `$PLAN_RESULT`");
+    // Agent instructions pass through the same prompt-variable substitution
+    // as stage prompts (task_creator/prompt.rs), so a literal `$PLAN_RESULT`
+    // here would reach the plan agent as an empty string. It names the
+    // variable without writing the token.
+    expect(plan).toContain("Your recorded result becomes the `PLAN_RESULT` prompt variable");
+    expect(plan).not.toContain("$PLAN_RESULT");
 
     expect(research.description).toContain(
       "the task manager appends a manual plan stage to this same task"
@@ -498,7 +496,7 @@ describe("QA workflow assets", () => {
     // moves to the runtime preamble like every other formula agent (see
     // "leaves completion mechanics to the runtime preamble" above); its own
     // APPROVE/REVISE/STOP-and-escalate vocabulary maps to success/failure in
-    // prose instead, and the verdict template detail lives in CONTRACT.md.
+    // prose instead.
     expect(architect.prompt).not.toContain("kanna_complete_stage");
     expect(architect.prompt).not.toContain("kanna-cli stage-complete");
     expect(architect.prompt).toContain("The task manager remains accountable");
@@ -1045,7 +1043,6 @@ describe("QA workflow assets", () => {
 
   it("resolves PR head/base refs with gh pr view even when task metadata has the URL", () => {
     const approveAgent = readRepoPhrases(".kanna/agents/approve/AGENT.md");
-    const approveContract = readRepoPhrases(".kanna/agents/approve/CONTRACT.md");
 
     // The server-owned handoff envelope is built from headRefName/baseRefName,
     // which task metadata never carries — it only has prUrl. Taking the
@@ -1056,8 +1053,7 @@ describe("QA workflow assets", () => {
     // prUrl, so a missing one is a failure, not a branch guess.
     expect(approveAgent).not.toContain("$BRANCH");
     expect(approveAgent).toContain("do not guess a branch");
-    expect(approveContract).toContain("including when task metadata already carried `prUrl`");
-    expect(approveContract).toMatch(/headRefName.*baseRefName/);
+    expect(approveAgent).toMatch(/needs `headRefName` and `baseRefName`/);
   });
 
   it("does not build flipping draft PRs ready into the stock approve post", () => {
@@ -1067,7 +1063,6 @@ describe("QA workflow assets", () => {
     // (approve/EXTEND.md) — which is why merge@github refuses to run a bare
     // `gh pr merge` on one.
     expect(readRepoPhrases(".kanna/agents/approve/AGENT.md")).not.toContain("gh pr ready");
-    expect(readRepoPhrases(".kanna/agents/approve/CONTRACT.md")).not.toContain("gh pr ready");
     expect(readRepoPhrases(".kanna/agents/setup/AGENT.md")).not.toContain("mark this PR ready");
     expect(readRepoPhrases(".kanna/agents/merge/flavors/github/AGENT.md")).toContain(
       "GitHub refuses this while a PR is still a draft",
@@ -1097,10 +1092,9 @@ describe("QA workflow assets", () => {
     expect(mergeAgent).toContain("Do not push directly to the target branch.");
     expect(mergeAgent).toContain("never pass a branch-deletion flag such as `--delete-branch`");
 
-    const mergeContract = readRepoFile(".kanna/agents/merge/CONTRACT.md");
     const gitFlavor = readRepoFile(".kanna/agents/merge/flavors/git/AGENT.md");
     const githubFlavor = readRepoFile(".kanna/agents/merge/flavors/github/AGENT.md");
-    for (const definition of [mergeContract, gitFlavor, githubFlavor]) {
+    for (const definition of [gitFlavor, githubFlavor]) {
       expect(definition).toMatch(/leave every merged|leave merged local and remote branches/i);
       expect(definition).not.toContain("kanna_is_dependent_tasks_exist");
     }
@@ -1139,10 +1133,6 @@ describe("QA workflow assets", () => {
       // abandoned.
       expect(agent, path).toContain("Do not trigger on how far the base is behind the default branch");
     }
-
-    expect(readRepoPhrases(".kanna/agents/pr/CONTRACT.md")).toContain(
-      "still a live path to the default branch",
-    );
   });
 
   it("makes every recipe-form PR-creating agent find an existing PR the rename step hid", () => {
@@ -1163,10 +1153,6 @@ describe("QA workflow assets", () => {
       expect(agent, path).toContain("git push --force-with-lease origin HEAD:refs/heads/<headRefName>");
       expect(agent, path).toContain("Do not rename the branch");
     }
-
-    expect(readRepoPhrases(".kanna/agents/pr/CONTRACT.md")).toContain(
-      "must not open a second pull request",
-    );
   });
 
   it("keeps the formula-form pr agent's base-ref and duplicate-PR guards as outcome invariants", () => {
@@ -1196,9 +1182,6 @@ describe("QA workflow assets", () => {
     expect(draftFlavor).toContain("gh pr create --draft --base <target>");
     expect(draftFlavor).toContain("Ready PRs count as matches too, not just drafts");
     expect(draftFlavor).toContain("never convert a ready PR back to a draft");
-    expect(readRepoPhrases(".kanna/agents/pr/CONTRACT.md")).toContain(
-      "it must leave that PR's draft state alone",
-    );
   });
 
   it("stops the merge master from shipping into an orphaned base", () => {
@@ -1208,11 +1191,61 @@ describe("QA workflow assets", () => {
     // the mistake is invisible — so it is worth paying for on every flavor.
     const mergeAgent = readRepoPhrases(".kanna/agents/merge/AGENT.md");
     const mergeGithub = readRepoPhrases(".kanna/agents/merge/flavors/github/AGENT.md");
-    const mergeContract = readRepoPhrases(".kanna/agents/merge/CONTRACT.md");
 
     expect(mergeAgent).toContain("A requested target is not automatically a live one");
     expect(mergeAgent).toContain("ask the operator whether to retarget before merging");
     expect(mergeGithub).toContain("Confirm the resolved target is live before merging");
-    expect(mergeContract).toContain("report the orphaned target to the operator instead of merging");
+  });
+});
+
+describe("agent policy reaches the prompt", () => {
+  // CONTRACT.md is maintainer documentation: the engine never resolves it into
+  // an agent's prompt (AGENT.md, its flavors, and a repo EXTEND.md are all it
+  // reads), so a definition that defers to it hands the agent nothing.
+  function promptFiles(dir: string): string[] {
+    return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const path = resolve(dir, entry.name);
+      if (entry.isDirectory()) return promptFiles(path);
+      return entry.name === "AGENT.md" || entry.name === "EXTEND.md" ? [path] : [];
+    });
+  }
+
+  it("never points an agent at CONTRACT.md", () => {
+    const files = promptFiles(resolve(repoRoot, ".kanna/agents"));
+    expect(files.length).toBeGreaterThan(0);
+    for (const path of files) {
+      expect(readFileSync(path, "utf8"), path).not.toContain("CONTRACT.md");
+    }
+  });
+
+  it("states in the prompt the rules that once lived only in CONTRACT.md", () => {
+    const review = detailPhrases("review");
+    expect(review).toContain("When E2E coverage is required but not feasible");
+    expect(review).toContain("what would make full E2E coverage testable");
+    expect(review).toContain("file:line anchor");
+
+    expect(detailPhrases("commit")).toContain("Do not push or create a pull request");
+    expect(detailPhrases("pr")).toContain("never absorbing the base's commits");
+
+    const setup = detailPhrases("setup");
+    expect(setup).toContain("not author a workflow file of its own");
+    expect(setup).toContain("must not select `pr@draft-pr`");
+    expect(setup).toContain("Never select a built-in workflow with push-only");
+    expect(setup).toContain("Manual merge likewise requires omitting the `approve` post");
+    expect(setup).toContain("readies the draft before signaling");
+    expect(setup).toContain("This list is closed");
+    expect(setup).toContain('"candidate_path":"<absolute setup worktree path>"');
+    expect(setup).toContain("Preserve an existing local config bootstrap if valid");
+
+    const architect = detailPhrases("architect");
+    expect(architect).toContain("stale versions");
+    expect(architect).toContain("Keep acceptance criteria bounded to work causally required");
+    expect(architect).toContain("must identify the durable work item being assessed");
+
+    const plan = detailPhrases("plan");
+    expect(plan).toContain("The what/why boundary is a contract to enforce");
+    expect(plan).toContain("do not pick the reading that lets you proceed");
+    expect(plan).toContain("a three-step task deserves a three-step plan");
+    expect(plan).toContain("If the extension is refused, fix what the error names");
   });
 });
