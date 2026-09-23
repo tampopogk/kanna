@@ -5,14 +5,14 @@ Status: owner-directed target design, 2026-09-22, produced by research task `482
 ## 1. Goals
 
 1. Structured workflows: a task moves through stages; each transition is manual or automatic; humans read at few, deliberate points (design accepted, stakeholders satisfied, PR brief) and agents do the work between.
-2. One agent session per task at a time. Parallel work on a stage is subtasks, each a task with its own session. **Owner.**
+2. One agent per stage in V1. Parallel work is subtasks, each a task with its own session. **Owner.** (Deferred, not precluded: several agents in one stage's workspace, one writing and others reviewing the same worktree.)
 3. Artifacts pass from stage to stage and can be shared with other users, including users on other machines and accounts.
 4. Dependencies between tasks, including a task depending on another task at a specific stage.
 5. Front-loaded design: iterate with an agent on a mockup, get stakeholders to agree, then let agents implement and test so the PR comes out right.
 6. Simple, formulaic agent definitions; sensible defaults; policy overridable per repo and per user.
 7. The database stays local to one machine and never has to converge with another. **Owner.**
 
-Non-goals for this iteration: a cloud or organizational database, CRDTs, engine-computed merging of subtask outputs, drift detection at gates (**Owner:** try it, fix it if it is a problem), transcript resume across machines as something the design depends on (**Owner:** transfer is unreliable; resume is opportunistic).
+Non-goals for this iteration: several agents sharing one stage's workspace (**Owner:** keep V1 simple, one agent per stage), a cloud or organizational database, CRDTs, engine-computed merging of subtask outputs, drift detection at gates (**Owner:** try it, fix it if it is a problem), transcript resume across machines as something the design depends on (**Owner:** transfer is unreliable; resume is opportunistic).
 
 ## 2. Vocabulary
 
@@ -21,7 +21,8 @@ Non-goals for this iteration: a cloud or organizational database, CRDTs, engine-
 | **Task** | A durable unit of intent: id, title, origin prompt, ledger, stage chain, links (parent, dependencies), owning machine, PR link. |
 | **Stage** | One step of a task with a role. A task is *in* a stage from the transition that entered it until the transition that leaves it. |
 | **Transition** | The move from one stage to the next, or back to an earlier one. Manual (someone advances) or automatic (a success result fires it). A manual transition is a gate. **Owner.** |
-| **Session** | The one agent session working the task's current stage: one provider process, one worktree, one branch. A stage may run more than one session over time (a loop back, a rerun, a resume), never two at once. |
+| **Workspace** | What a stage works in: a worktree, the task's reserved ports, the setup that ran there, and anything else the stage's tooling needs. One workspace per stage; a new stage gets a new workspace forked from the committed sha it starts from. |
+| **Session** | The one agent session working the task's current stage, in that stage's workspace, on its own branch. A stage may run more than one session over time (a loop back, a rerun, a resume), never two at once in V1. |
 | **Result** | What a session records at the end of its work: a status and a message, optionally naming artifacts. The engine attaches the committed sha and the session reference. |
 | **Ledger** | The task's durable, ordered record on disk: results, transitions with who operated them, plan changes, and inputs delivered by tools. What a later stage or a dependent task reads. |
 | **Artifact** | Content a session produced for people to look at or for another stage to consume: mockup, plan, brief, test report, video, PR reference. Hashed, shareable, stored outside the ledger. Commits are artifacts identified by sha. |
@@ -40,7 +41,7 @@ The engine guarantees structure. Everything in the right column is configurable 
 | Structure (engine) | Policy (repo, person, defaults) |
 |---|---|
 | A task has stages; every session ends by recording one result; every transition is recorded with its operator | Which stages a workflow has; which transitions are manual |
-| One session per task at a time; it owns exactly one worktree and one branch | Provider, model, effort; setup and teardown commands |
+| One workspace per stage; one agent session in it at a time; each session on its own branch | Provider, model, effort; setup and teardown commands |
 | Branch counter `task-<id>-<n>` is monotonic per task and never reused | Whether finished worktrees are kept, and for how long |
 | The ledger is stored on disk under `~/.kanna/repos/<repo-id>/tasks/<task-id>/` and indexed locally | Whether ledger text is additionally committed on the task branch |
 | Artifacts are identified by hash; a result's hashes must resolve while the task is open | Where artifact bytes live (separate artifact git repo by default), retention (keep, 30 days, discard on close) |
@@ -71,12 +72,13 @@ The engine guarantees structure. Everything in the right column is configurable 
 
 ## 6. Session
 
-- Spawned for a stage; one per task at a time. Gets a fresh worktree forked from the committed sha in the previous stage's latest success result (or the base ref for the first stage), on branch `task-<id>-<n>` with `n` the task's next counter value. Setup runs in the new worktree per policy. Provider, model, effort and provider session id are recorded on the session.
+- Spawned for a stage; one per task at a time. Entering a new stage creates that stage's workspace: a fresh worktree forked from the committed sha in the previous stage's latest success result (or the base ref for the first stage), with setup run per policy. Every session gets its own branch `task-<id>-<n>`, `n` the task's next counter value, checked out in the stage's workspace. Provider, model, effort and provider session id are recorded on the session.
+- **Loop back**: a transition back to an earlier stage reuses that stage's workspace. The new session checks out a new branch there (the counter increments; an earlier branch is never reused) and, where the provider allows, resumes the previous session's conversation, which works because the working directory is unchanged. **Owner.**
 - **Name**: stage-scoped, set by the stage template from the task title and stage (for example `Implement: <title>`); the agent may rename its session. Task lists show task titles; session views show session names. **Owner.**
-- **Resume**: a new session of the same stage may resume the previous session's conversation in its worktree when the provider supports it and the transcript and worktree are present; otherwise it starts fresh from the ledger. Resume is opportunistic. Transfer bundles transcripts best-effort; the design never depends on them.
+- **Resume**: opportunistic. If the provider supports it and the transcript and workspace are present, the new session resumes; otherwise it starts fresh from the ledger. Transfer bundles transcripts best-effort; the design never depends on them.
 - **Transcript**: a reference (provider, session id, path) recorded on the session. Later sessions may search it for a specific fact; it is not an input. **Owner:** review does not read the whole transcript.
-- **Worktree lifetime**: a worktree lives while its session is live or resumable; cleanup afterwards is policy. Committed work is the only thing that crosses to the next session; uncommitted work in an abandoned worktree is lost by design.
-- The operator's shell and editor open in the current session's worktree; they are tools on the worktree, not sessions of the task. A stakeholder looking at a mockup is an artifact share (§8), not a session of the task.
+- **Workspace lifetime**: a stage's workspace lives while the task can still loop back to that stage or its session is resumable; cleanup afterwards is policy. Committed work is the only thing that crosses to the next stage; uncommitted work left in a workspace is lost when it is cleaned up.
+- The operator's shell and editor open in the current stage's workspace; they are tools on the workspace, not sessions of the task. A stakeholder looking at a mockup is an artifact share (§8), not a session of the task.
 
 ## 7. Result and ledger
 
@@ -158,14 +160,14 @@ Two accounts on two of the owner's machines (one signed in as each identity) for
 
 ## 15. Retired by this specification
 
-The input ledger as it exists, recording tool-delivered input only (**Owner**; replaced by the task ledger of §7); reusing an earlier branch on a loop (**Owner:** an incrementing counter instead); the origin prompt as the task's authority (**Owner**); posts as a distinct concept (committing is part of the agent's work); a stamped plan context and hard-coded stage recipes (replaced by `$RESULT[stage]` and plan replacement); separate resume, rerun and revision mechanisms (all are a new session of a stage, with resume opportunistic); the engine-level distinction between a blocker and a stage dependency.
+The input ledger as it exists, recording tool-delivered input only (**Owner**; replaced by the task ledger of §7); reusing an earlier branch on a loop (**Owner:** an incrementing counter instead, in the same workspace); the origin prompt as the task's authority (**Owner**); posts as a distinct concept (committing is part of the agent's work); a stamped plan context and hard-coded stage recipes (replaced by `$RESULT[stage]` and plan replacement); separate resume, rerun and revision mechanisms (all are a new session of a stage, with resume opportunistic); the engine-level distinction between a blocker and a stage dependency.
 
 ## 16. Independent components for the planner
 
 Listed so the planning stage can see what can proceed in parallel; no order or estimate is implied.
 
 1. Task directory and ledger: result call contract, ledger entry files, `$RESULT`, `$RESULT[stage]`, `$LEDGER` binding.
-2. Session model: worktree per session, monotonic branch counter, opportunistic resume, session naming, transcript reference.
+2. Workspace and session model: workspace per stage (worktree, ports, setup), one session at a time, branch per session with a monotonic counter, loop-back reuse of the stage's workspace, opportunistic resume, session naming, transcript reference.
 3. Artifact repository: hash identity, types, publish/share/decision/comment records, retention policy, peer-channel fetch.
 4. Dependency edges, subtask readiness, staleness notification, cycle refusal.
 5. Workflow template schema, plan replacement with the single validation rule, the initial lineup, transition semantics (result completes a session; transition exits a stage).
