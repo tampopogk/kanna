@@ -969,11 +969,14 @@ async fn repo_definition_routes_use_bundled_only_values_without_a_remote_ref() {
     assert_eq!(
         manifest["workflows"],
         json!([
+            "designed",
             "mechanical",
             "no-review",
             "plan-build-review",
+            "planned",
             "pr-review",
             "research",
+            "shaped",
             "single-reviewer",
             "specialized-reviewers"
         ])
