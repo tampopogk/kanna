@@ -923,11 +923,14 @@ impl RepoDefinitions {
         // name. The requested name wins when both paths exist.
         let repo_agent_dirs = agent_repo_dirs(&selector.role);
         let mut definition = None;
+        let mut uses_formula = false;
         for dir in &repo_agent_dirs {
             let agent_path = format!(".kanna/agents/{dir}/AGENT.md");
             if let Some(content) = read_snapshot_utf8(&self.snapshot, &agent_path)? {
                 let content = self
                     .expand_partials(&content, &agent_path)
+                    .map_err(|error| definition_error(&self.snapshot, &agent_path, error))?;
+                uses_formula |= content_uses_formula(&content)
                     .map_err(|error| definition_error(&self.snapshot, &agent_path, error))?;
                 definition = Some(
                     parse_agent_definition(&content)
@@ -951,6 +954,12 @@ impl RepoDefinitions {
                             selector.display()
                         )
                     })?;
+                uses_formula |= content_uses_formula(&content).map_err(|error| {
+                    format!(
+                        "invalid compiled agent resource for selector `{}`: {error}",
+                        selector.display()
+                    )
+                })?;
                 parse_agent_definition(&content).map_err(|error| {
                     format!(
                         "invalid compiled agent resource for selector `{}`: {error}",
@@ -966,10 +975,26 @@ impl RepoDefinitions {
                 let extension = self
                     .expand_partials(&extension, &extension_path)
                     .map_err(|error| definition_error(&self.snapshot, &extension_path, error))?;
+                uses_formula |= content_uses_formula(&extension)
+                    .map_err(|error| definition_error(&self.snapshot, &extension_path, error))?;
                 apply_agent_extension(&mut definition, &extension)
                     .map_err(|error| definition_error(&self.snapshot, &extension_path, error))?;
                 break;
             }
+        }
+        // A base or extension that opts into the definition formula must still
+        // satisfy it once EXTEND.md is merged in: an extension can otherwise
+        // push a compliant base past the 40-line cap, or smuggle in a legacy
+        // result variable, with nothing checking the *resolved* document (see
+        // `check_definition_formula`, which only ever saw the base file).
+        if uses_formula {
+            let resolved = render_agent_md(&definition)?;
+            check_definition_formula(&resolved).map_err(|error| {
+                format!(
+                    "invalid resolved agent `{}` (AGENT.md merged with EXTEND.md): {error}",
+                    selector.display()
+                )
+            })?;
         }
         Ok(Some(definition))
     }
@@ -2260,11 +2285,27 @@ fn parse_agent_definition(content: &str) -> Result<AgentDefinition, String> {
     Ok(definition)
 }
 
+/// Whether an AGENT.md/EXTEND.md's frontmatter declares `role` or `providers`
+/// (see `AgentFrontmatter`), the definition-formula opt-in. Checked
+/// separately from `parse_agent_definition`/`parse_agent_extension` so a
+/// caller merging a base with an extension can tell whether *either* side
+/// opted in, before either one's own formula check has necessarily run.
+fn content_uses_formula(content: &str) -> Result<bool, String> {
+    let (frontmatter, _) = split_frontmatter(content);
+    let fm: AgentFrontmatter = match frontmatter {
+        Some(raw) => {
+            serde_yaml::from_str(raw).map_err(|e| format!("invalid AGENT.md frontmatter: {}", e))?
+        }
+        None => AgentFrontmatter::default(),
+    };
+    Ok(fm.role.is_some() || fm.providers.is_some())
+}
+
 /// Spec §12's definition formula: a definition that opts in (by declaring
 /// `role` or `providers` in its frontmatter, see `AgentFrontmatter`) must
 /// resolve to 15-40 lines total and carry the four required section headers,
-/// in order, in its body. `check_definition_formula_resolved` in the core
-/// package's `agent-loader.ts` mirrors this on the resolved-definition text.
+/// in order, in its body. `checkDefinitionFormula` in the core package's
+/// `agent-loader.ts` mirrors this on the resolved-definition text.
 const DEFINITION_FORMULA_SECTIONS: [&str; 4] =
     ["## Produces", "## Reads", "## Must not", "## Stop when"];
 const DEFINITION_FORMULA_RESULT_VARS: [&str; 3] =

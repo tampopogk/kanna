@@ -193,6 +193,62 @@ export function parseAgentExtension(content: string): AgentExtension {
   return ext;
 }
 
+// Whether an AGENT.md/EXTEND.md's frontmatter declares `role` or `providers`
+// (the definition-formula opt-in), checked ahead of a full parse so a caller
+// merging a base with an extension can tell whether *either* side opted in.
+function contentUsesFormula(content: string): boolean {
+  const { frontmatter } = parseFrontmatter(content);
+  const fm: Record<string, unknown> = frontmatter ?? {};
+  return fm.role !== undefined || fm.providers !== undefined;
+}
+
+// Renders a resolved `AgentDefinition` back into AGENT.md text: frontmatter
+// followed by the prompt body. Mirrors the server's `render_agent_md`, and
+// exists for the same reason — producing the single resolved document a
+// post-extension formula check (or `agent eject`) runs against.
+export function renderAgentMd(def: AgentDefinition): string {
+  const frontmatter: Record<string, unknown> = {
+    name: def.name,
+    description: def.description,
+  };
+  if (def.agent_provider !== undefined) frontmatter.agent_provider = def.agent_provider;
+  if (def.model !== undefined) frontmatter.model = def.model;
+  if (def.effort !== undefined) frontmatter.effort = def.effort;
+  if (def.permission_mode !== undefined) frontmatter.permission_mode = def.permission_mode;
+  if (def.allowed_tools !== undefined) frontmatter.allowed_tools = def.allowed_tools;
+
+  const lines = ["---"];
+  for (const [key, value] of Object.entries(frontmatter)) {
+    lines.push(`${key}: ${JSON.stringify(value)}`);
+  }
+  lines.push("---", "", def.prompt.trim(), "");
+  return lines.join("\n");
+}
+
+/**
+ * Parses a base AGENT.md and an EXTEND.md together, and — when either side
+ * opts into the definition formula (spec §12) — re-checks the formula
+ * against the *resolved*, merged document. `parseAgentDefinition` alone only
+ * ever validated the base file: an extension could push a compliant base
+ * past the 40-line cap, or smuggle in a legacy result variable, with nothing
+ * checking the document a session actually receives. Mirrors the server's
+ * `agent_optional` in `definitions.rs`.
+ */
+export function resolveAgentWithExtension(baseContent: string, extensionContent: string): AgentDefinition {
+  const base = parseAgentDefinition(baseContent);
+  const extension = parseAgentExtension(extensionContent);
+  const merged = applyAgentExtension(base, extension);
+
+  if (contentUsesFormula(baseContent) || contentUsesFormula(extensionContent)) {
+    const formulaErrors = checkDefinitionFormula(renderAgentMd(merged));
+    if (formulaErrors.length > 0) {
+      throw new Error(`Invalid resolved agent (AGENT.md merged with EXTEND.md): ${formulaErrors.join("; ")}`);
+    }
+  }
+
+  return merged;
+}
+
 export function applyAgentExtension(base: AgentDefinition, extension: AgentExtension): AgentDefinition {
   if (base.agent_provider && extension.agent_provider) {
     const previous = parseAgentSelection(base.agent_provider, false);

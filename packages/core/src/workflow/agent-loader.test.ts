@@ -5,6 +5,7 @@ import {
   checkDefinitionFormula,
   parseAgentDefinition,
   parseAgentExtension,
+  resolveAgentWithExtension,
   validateAgentDefinition,
 } from "./agent-loader";
 import type { AgentDefinition, AgentExtension } from "./workflow-types";
@@ -548,5 +549,34 @@ describe("definition formula (spec §12, T10)", () => {
       if (!/^\s*role:|^\s*providers:/m.test(content.split(/\n---/)[0] ?? "")) continue;
       expect(checkDefinitionFormula(content), name).toEqual([]);
     }
+  });
+
+  describe("resolveAgentWithExtension (T10 follow-up: check after EXTEND merge)", () => {
+    const base = `---\nname: test\nrole: A role\nproviders: claude\n---\n${FORMULA_TEXT}\n${pad(8)}`;
+
+    it("passes through a formula base with a short, compliant extension", () => {
+      const merged = resolveAgentWithExtension(base, "One more sentence.");
+      expect(merged.prompt).toContain("One more sentence.");
+    });
+
+    it("rejects an extension that pushes a compliant base past 40 lines", () => {
+      expect(() => resolveAgentWithExtension(base, pad(30))).toThrow(/15-40 lines/);
+    });
+
+    it("rejects an extension that reintroduces a legacy result variable", () => {
+      expect(() => resolveAgentWithExtension(base, "Uses $PREV_MAIN_RESULT.")).toThrow(/PREV_MAIN_RESULT/);
+    });
+
+    it("does not enforce the formula when neither base nor extension opts in", () => {
+      const legacyBase = "---\nname: test\ndescription: Legacy\nagent_provider: claude\n---\nOne short line.";
+      expect(() => resolveAgentWithExtension(legacyBase, pad(50))).not.toThrow();
+    });
+
+    it("enforces the formula when only the extension opts in", () => {
+      const legacyBase = "---\nname: test\ndescription: Legacy\nagent_provider: claude\n---\nOne short line.";
+      expect(() => resolveAgentWithExtension(legacyBase, "---\nrole: Adds formula opt-in\n---\nToo short.")).toThrow(
+        /15-40 lines/
+      );
+    });
   });
 });

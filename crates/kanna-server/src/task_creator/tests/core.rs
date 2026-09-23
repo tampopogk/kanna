@@ -3191,6 +3191,53 @@ fn bundled_definition_formula_agents_resolve_from_compiled_resources() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
+/// T10 follow-up: the formula must be re-checked on the *resolved* document
+/// once EXTEND.md is merged in, not only on the base AGENT.md — an extension
+/// can otherwise push a compliant base past the 40-line cap with nothing
+/// catching it.
+#[test]
+fn agent_definition_formula_rejects_an_extension_that_exceeds_the_line_cap() {
+    let agent_md = "---\nname: reviewer\nrole: A one-sentence role\nproviders: claude\n---\n## Produces\nsomething\n## Reads\nsomething\n## Must not\nsomething\n## Stop when\nsomething\nextra\nextra\nextra\nextra";
+    let extend_md = "extra\n".repeat(30);
+    let repo_root = write_agent_repo("formula-extend-too-long", agent_md, Some(&extend_md));
+
+    let error = resolve_test_agent_definition(&repo_root, "reviewer")
+        .expect_err("an extension pushing a compliant base past 40 lines must be refused");
+    assert!(error.contains("15-40 lines"), "{error}");
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// Same follow-up: an extension must not be able to reintroduce a legacy
+/// result variable the base was checked to be free of.
+#[test]
+fn agent_definition_formula_rejects_an_extension_with_a_legacy_result_variable() {
+    let agent_md = "---\nname: reviewer\nrole: A one-sentence role\nproviders: claude\n---\n## Produces\nsomething\n## Reads\nsomething\n## Must not\nsomething\n## Stop when\nsomething\nextra\nextra\nextra\nextra";
+    let extend_md = "Uses $PREV_MAIN_RESULT.";
+    let repo_root = write_agent_repo("formula-extend-result-var", agent_md, Some(extend_md));
+
+    let error = resolve_test_agent_definition(&repo_root, "reviewer")
+        .expect_err("an extension referencing a legacy result variable must be refused");
+    assert!(error.contains("PREV_MAIN_RESULT"), "{error}");
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// A short, compliant extension on a formula base still resolves cleanly —
+/// the post-merge check is not stricter than the pre-merge one for a
+/// legitimately small addition.
+#[test]
+fn agent_definition_formula_accepts_a_short_compliant_extension() {
+    let agent_md = "---\nname: reviewer\nrole: A one-sentence role\nproviders: claude\n---\n## Produces\nsomething\n## Reads\nsomething\n## Must not\nsomething\n## Stop when\nsomething\nextra\nextra\nextra\nextra";
+    let extend_md = "One more sentence.";
+    let repo_root = write_agent_repo("formula-extend-ok", agent_md, Some(extend_md));
+
+    let definition = resolve_test_agent_definition(&repo_root, "reviewer").unwrap();
+    assert!(definition.prompt.contains("One more sentence."));
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
 const MALFORMED_AGENT_PROVIDER_CASES: &[(&str, &str, &str)] = &[
     (
         "mixed-array",
