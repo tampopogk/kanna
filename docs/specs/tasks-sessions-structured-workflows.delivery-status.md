@@ -4,8 +4,11 @@ Coordinating parent: task `482a02db`. Specification: `docs/specs/tasks-sessions-
 This manifest is the parent's durable record of component children, their prerequisite commits, reviewed results and
 integrated commits, so a resumed or revising parent can reconcile without duplicating children.
 
-Child workflow: `plan-build-review`, edited per child after its plan settles to
-`plan[M] -> in progress[a]+commit -> review[M, final]` (no `pr`/`approve`). The parent operates each child's plan and
+Child workflow: first wave (T0, T6, T8) ran `plan-build-review`, edited after its plan settled to
+`plan[M] -> in progress[a]+commit -> review[M, final]` (no `pr`/`approve`). Owner direction 2026-09-23: later children
+skip the child plan stage — create on `specialized-reviewers` (panel) or `single-reviewer` (UI/definition-only), building
+straight from the card, and edit only the tail to `review[M, final]` with no `pr`. Publication stays in this parent's
+single PR stage. The parent operates each child's plan and
 final review gates as manager; children return reviewed local commits only.
 
 | Task | Child id | Scope / current checkpoint | Base / prerequisites consumed | State | Reviewed commit(s) | Integrated as |
