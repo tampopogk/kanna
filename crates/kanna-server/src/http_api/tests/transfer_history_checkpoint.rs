@@ -113,7 +113,18 @@ async fn create_transferred_task(
     task_id: &str,
     transfer_id: &str,
     head_oid: &str,
+    body: serde_json::Value,
+) -> (StatusCode, String) {
+    create_transferred_task_with_state(fixture, task_id, transfer_id, head_oid, body, None).await
+}
+
+async fn create_transferred_task_with_state(
+    fixture: &GateFixture,
+    task_id: &str,
+    transfer_id: &str,
+    head_oid: &str,
     mut body: serde_json::Value,
+    carried: Option<crate::transfer_engine::task_state::ImportedTaskState>,
 ) -> (StatusCode, String) {
     for suffix in ["head", "base"] {
         let reference = format!("refs/kanna/transfers/{transfer_id}/{head_oid}/{suffix}");
@@ -188,6 +199,12 @@ async fn create_transferred_task(
                 "sha256": "c".repeat(64),
                 "count": 0
             },
+            "task_state": carried.as_ref().map(|carried| serde_json::json!({
+                "version": crate::transfer_engine::payload::TASK_STATE_VERSION,
+                "artifact_id": "unused-task-state-artifact",
+                "filename": crate::transfer_engine::payload::TASK_STATE_FILENAME,
+                "sha256": carried.sha256,
+            })),
             "artifacts": []
         }))
         .unwrap();
@@ -198,6 +215,7 @@ async fn create_transferred_task(
         task_id.to_string(),
         Vec::new(),
         source_payload,
+        carried,
     )
     .await
     {
@@ -533,5 +551,180 @@ async fn a_transfer_with_no_history_field_is_unaffected() {
     assert!(db.transferred_task_history("abcd0002").unwrap().is_empty());
     assert!(db.get_pipeline_item("abcd0002").unwrap().is_some());
 
+    fixture.cleanup();
+}
+
+/// A transfer that carries its task state (T9) and no transcript: the
+/// destination starts a fresh session in its own worktree, whose environment
+/// names the destination ledger, whose preamble names the carried result that
+/// caused the source's session, and whose prompt states why it is fresh. The
+/// ledger, the rows and the reason are all recorded before the session starts.
+#[tokio::test]
+async fn a_carried_ledger_without_a_transcript_starts_a_fresh_session_that_reads_it() {
+    use crate::transfer_engine::task_state::{
+        CarriedLedgerFile, ImportedTaskState, SessionStart, TaskStateDocument,
+    };
+    use kanna_daemon::protocol::{Command as DaemonCommand, Event as DaemonEvent};
+    use tokio::io::{AsyncWriteExt, BufReader};
+
+    let fixture = build_gate_fixture("carried-ledger-fresh");
+    let expected_head = repo_head_oid(&fixture.repo_root);
+    let db = Db::open(&fixture.config.db_path).unwrap();
+    db.upsert_transferred_task_manifest(
+        "transfer-carried",
+        "repo-1",
+        Some("abcd0002"),
+        &expected_head,
+        &expected_head,
+    )
+    .unwrap();
+    drop(db);
+
+    let envelope = serde_json::json!({
+        "schema_version": 1,
+        "entry_id": "source-task-000001",
+        "task_id": "source-task",
+        "sequence": 1,
+        "kind": "result",
+        "operation_id": "op-source-task-000001",
+        "source": {"kind": "stage_run", "id": "run-1", "origin": null},
+        "recorded_at": "2026-09-23T00:00:00Z",
+        "historical": false,
+        "run_id": "run-1",
+        "session_ref": {"kind": "stage_run", "id": "run-1"},
+        "declared_role": "agent",
+        "channel_identity": {"kind": "server"},
+        "artifacts": {},
+        "result": {"result_id": "source-task-000001", "status": "needs_revision",
+                   "stage": "in progress", "branch": "task-source-task", "committed_sha": null},
+    });
+    let content = String::from_utf8(crate::db::task_store::render_ledger_entry(
+        &envelope,
+        Some("please rename the flag"),
+    ))
+    .unwrap();
+    let mut document = TaskStateDocument {
+        version: crate::transfer_engine::payload::TASK_STATE_VERSION,
+        source_peer_id: "peer-source".into(),
+        source_task_id: "source-task".into(),
+        source_repo_id: "repo-source".into(),
+        stage: "in progress".into(),
+        task_json: Some("{}\n".into()),
+        ledger: vec![CarriedLedgerFile {
+            file_name: "000001-result.md".into(),
+            content,
+        }],
+        rows: Default::default(),
+        artifacts: Vec::new(),
+        history_refs: Vec::new(),
+    };
+    document.rows.branch_counter = Some(2);
+    document.rows.ownership_generation = 1;
+    document
+        .rows
+        .stage_budgets
+        .push(crate::db::transfer_task_state::CarriedStageBudget {
+            stage: "in progress".into(),
+            spent: 1,
+        });
+    let bytes = crate::transfer_engine::task_state::encode(&document).unwrap();
+    let reason = "the source recorded no provider session to resume";
+    let carried = ImportedTaskState {
+        transfer_id: "transfer-carried".into(),
+        sha256: crate::transfer_engine::payload::sha256_hex(&bytes),
+        document,
+        destination_repo_id: "repo-1".into(),
+        session_start: SessionStart::Fresh(reason.into()),
+    };
+
+    let mut body = transfer_import_body("transfer-carried", &expected_head);
+    // The engine's import always names the source stage (build_create_request).
+    body["stage"] = serde_json::json!("in progress");
+    body["transferImport"]["freshStartReason"] = serde_json::json!(reason);
+    let listener = tokio::net::UnixListener::bind(&fixture.socket_path).unwrap();
+    let daemon = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let (read_half, mut write_half) = stream.into_split();
+        let mut reader = BufReader::new(read_half);
+        let command = read_test_daemon_command(&mut reader, &mut write_half).await;
+        let (session_id, args, cwd, env) = match command {
+            DaemonCommand::Spawn {
+                session_id,
+                args,
+                cwd,
+                env,
+                ..
+            } => (session_id, args, cwd, env),
+            other => panic!("expected PTY Spawn command, got {other:?}"),
+        };
+        write_half
+            .write_all(
+                format!(
+                    "{}\n",
+                    serde_json::to_string(&DaemonEvent::SessionCreated { session_id }).unwrap()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        (args, cwd, env)
+    });
+    let (status, resp_body) = create_transferred_task_with_state(
+        &fixture,
+        "abcd0002",
+        "transfer-carried",
+        &expected_head,
+        body,
+        Some(carried),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp_body}");
+    let (args, cwd, env) = daemon.await.unwrap();
+
+    let db = Db::open(&fixture.config.db_path).unwrap();
+    let task_dir =
+        crate::task_store::task_dir_for(&db, &fixture.config.db_path, "abcd0002").unwrap();
+    assert_eq!(
+        env.get(crate::task_store::LEDGER_PATH_ENV)
+            .map(String::as_str),
+        Some(task_dir.to_string_lossy().as_ref()),
+        "the fresh session is pointed at the destination ledger"
+    );
+    assert!(
+        cwd.ends_with(".kanna-worktrees/task-abcd0002"),
+        "one session, in the destination task's own worktree: {cwd}"
+    );
+    let command = args.join("\n");
+    assert!(
+        command.contains(&format!("started this session fresh because {reason}")),
+        "{command}"
+    );
+    assert!(
+        command.contains("ledger entry `abcd0002-000001`")
+            && command.contains("please rename the flag"),
+        "the preamble names the carried trigger by its destination entry: {command}"
+    );
+
+    // Everything the preamble names is on disk before the session started.
+    let files = crate::task_store::read_ledger(&task_dir).unwrap();
+    assert_eq!(files.len(), 2, "{files:?}");
+    assert_eq!(files[0].entry_id(), Some("abcd0002-000001"));
+    assert_eq!(
+        files[0].envelope["source"]["origin"]["ledger_entry"],
+        "source-task-000001"
+    );
+    assert_eq!(files[1].body()["operation"], "transfer_import");
+    assert_eq!(files[1].body()["transfer"]["fresh_start_reason"], reason);
+    let recorded = db.transferred_task_state("abcd0002").unwrap().unwrap();
+    assert_eq!(recorded.session_start, "fresh");
+    assert_eq!(recorded.fresh_start_reason.as_deref(), Some(reason));
+    assert_eq!(recorded.ownership_generation, 1);
+    assert_eq!(db.stage_budget_spent("abcd0002", "in progress").unwrap(), 1);
+    // The preparation proof covered the carried state.
+    assert!(db
+        .transferred_task_manifest_content_commitment("transfer-carried")
+        .unwrap()
+        .is_some());
+    let _ = std::fs::remove_dir_all(&task_dir);
     fixture.cleanup();
 }

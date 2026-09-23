@@ -2147,11 +2147,14 @@ fn legacy_builtin_workflow_names_still_resolve_for_committed_repo_config() {
         assert_eq!(
             names,
             vec![
+                "designed",
                 "mechanical",
                 "no-review",
                 "plan-build-review",
+                "planned",
                 "pr-review",
                 "research",
+                "shaped",
                 "single-reviewer",
                 "specialized-reviewers"
             ]
@@ -3032,12 +3035,15 @@ fn workflow_names_are_sorted_deduped_remote_and_compiled_union() {
         definitions.workflow_names().unwrap(),
         vec![
             "alpha",
+            "designed",
             "mechanical",
             "no-review",
             "plan-build-review",
+            "planned",
             "pr-review",
             "qa",
             "research",
+            "shaped",
             "single-reviewer",
             "specialized-reviewers",
             "zeta"
@@ -3129,13 +3135,14 @@ fn write_agent_repo(label: &str, agent_md: &str, extend_md: Option<&str>) -> std
     repo_root
 }
 
-/// The definition formula (spec §12, T10): declaring `role`/`providers`
-/// resolves them as `description`/`agent_provider` aliases and opts the
-/// definition into the 15-40-line, four-section shape.
+/// Owner decision (2026-09-23, spec §12): Kanna never checks a definition's
+/// length or shape. `role`/`providers` remain harmless parsing aliases for
+/// `description`/`agent_provider` — nothing about declaring them opts a
+/// definition into any enforced shape.
 #[test]
-fn agent_definition_formula_resolves_role_and_providers_aliases() {
-    let agent_md = "---\nname: reviewer\nrole: A one-sentence role\nproviders: claude, codex\n---\n## Produces\nsomething\n## Reads\nsomething\n## Must not\nsomething\n## Stop when\nsomething\nextra\nextra\nextra\nextra";
-    let repo_root = write_agent_repo("formula-aliases", agent_md, None);
+fn agent_definition_role_and_providers_resolve_as_harmless_aliases() {
+    let agent_md = "---\nname: reviewer\nrole: A one-sentence role\nproviders: claude, codex\n---\nShort prompt.";
+    let repo_root = write_agent_repo("alias-role-providers", agent_md, None);
 
     let definition = resolve_test_agent_definition(&repo_root, "reviewer").unwrap();
     assert_eq!(definition.description, "A one-sentence role");
@@ -3149,34 +3156,26 @@ fn agent_definition_formula_resolves_role_and_providers_aliases() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
+/// A definition of any length, missing whatever sections it likes, resolves
+/// fine: Kanna does not check a definition's length or shape.
 #[test]
-fn agent_definition_formula_rejects_a_definition_missing_a_required_section() {
+fn agent_definition_of_any_length_or_shape_resolves() {
     let agent_md =
-        "---\nname: reviewer\nrole: A role\n---\n## Produces\nx\n## Reads\ny\nextra\nextra\nextra\nextra\nextra\nextra\nextra\nextra";
-    let repo_root = write_agent_repo("formula-missing-section", agent_md, None);
+        "---\nname: reviewer\nrole: A role\n---\n## Produces\nx\n## Reads\ny\nno other sections here";
+    let repo_root = write_agent_repo("any-length-or-shape", agent_md, None);
 
-    let error = resolve_test_agent_definition(&repo_root, "reviewer")
-        .expect_err("a formula definition missing a section must be refused");
-    assert!(error.contains("## Must not"), "{error}");
-
-    let _ = std::fs::remove_dir_all(&repo_root);
-}
-
-#[test]
-fn agent_definition_formula_rejects_a_legacy_result_variable() {
-    let agent_md = "---\nname: reviewer\nrole: A role\n---\n## Produces\nUses $PREV_MAIN_RESULT.\n## Reads\ny\n## Must not\nz\n## Stop when\nw\nextra\nextra\nextra\nextra\nextra";
-    let repo_root = write_agent_repo("formula-result-var", agent_md, None);
-
-    let error = resolve_test_agent_definition(&repo_root, "reviewer")
-        .expect_err("a formula definition referencing a legacy result variable must be refused");
-    assert!(error.contains("PREV_MAIN_RESULT"), "{error}");
+    let definition = resolve_test_agent_definition(&repo_root, "reviewer")
+        .expect("a definition missing sections must still resolve");
+    assert!(definition.prompt.contains("no other sections here"));
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
-/// Both bundled T10 agents (`implement`, `pr`) resolve through the same path
-/// production task creation uses, proving the formula check passes for them
-/// as shipped and that resolution needs no local override.
+/// Bundled definition-formula agents (`implement`, `pr` from T10; `mockup`
+/// from T10d) resolve through the same path production task creation uses, and
+/// remain lean by not repeating what the runtime preamble injects — that
+/// leanness is a goal for what Kanna ships, never something the loader
+/// enforces (spec §12).
 #[test]
 fn bundled_definition_formula_agents_resolve_from_compiled_resources() {
     let repo_root = init_git_repo_without_provider_fixtures("formula-builtins");
@@ -3185,6 +3184,8 @@ fn bundled_definition_formula_agents_resolve_from_compiled_resources() {
     for name in [
         "implement",
         "pr",
+        // T10d
+        "mockup",
         // T10c: qa-dispatcher and the specialty reviewers, converted to the
         // same formula.
         "qa-dispatcher",
@@ -3199,6 +3200,49 @@ fn bundled_definition_formula_agents_resolve_from_compiled_resources() {
         assert!(!definition.description.trim().is_empty(), "{name}");
         assert!(!definition.agent_providers.is_empty(), "{name}");
     }
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// A long EXTEND.md merged over a long base definition resolves fine — no
+/// length or shape check runs on the resolved document either. The extension
+/// content is this repo's own original 30-line `review/EXTEND.md` (from
+/// 890e30b50, "Verification Proportional to the Change"), layered over the
+/// current bundled `review` agent, which by itself is already well past any
+/// formula the engine used to enforce.
+#[test]
+fn agent_definition_long_base_and_long_extension_merge_resolves_fine() {
+    const REVIEW_EXTEND: &str = "## Verification Proportional to the Change\n\nOwner feedback (2026-09-10): small terminology and MCP-output changes took\nhours through repeated verification and review. Choose checks from the actual\nchanged behavior and failure modes; do not run `./kd test all` automatically\nfor every review or revision.\n\nFor terminology, documentation, and bounded presentation changes, review the\ndiff and run the relevant definition, compatibility, or component contracts.\nA label change does not by itself require a desktop/mobile appearance matrix\nor justify adjacent layout or accessibility behavior changes. For bounded\nAPI output changes, exercise the real affected routes and consumers, including\nunknown/error and compatibility cases; unrelated native UI gates add no proof.\n\nReuse recorded verification when its command, result, and reviewed head are\nknown and the relevant code is unchanged. Check patch equivalence after a\nrebase. A fresh stage worktree alone is not a reason to repeat a full build.\nIndependent review means independently assessing the code and evidence; it\ndoes not require duplicating every author's test run.\n\nRun `./kd test all` for broad changes or changes whose impact cannot be bounded\nby focused checks, and when explicitly required for a release. Keep meaningful\nintegration tests for changed process, persistence, and protocol boundaries.\nAfter a revision, verify the correction and affected contracts; repeat broader\nchecks only when the new diff, a failure, or an unresolved risk justifies them.\n\nRequest revisions for concrete defects caused by the task. Keep unrelated\nfailures and improvements as follow-ups. Record actual exits and skipped or\ncancelled checks honestly; an accepted review with a qualified gate failure\nmust never be reported as a full gate pass.";
+    assert_eq!(REVIEW_EXTEND.lines().count(), 30, "fixture drifted");
+
+    let repo_root = init_git_repo_without_provider_fixtures("long-base-long-extend");
+    let extend_dir = repo_root.join(".kanna/agents/review");
+    std::fs::create_dir_all(&extend_dir).unwrap();
+    std::fs::write(extend_dir.join("EXTEND.md"), REVIEW_EXTEND).unwrap();
+    publish_origin_main(&repo_root, "publish review EXTEND.md fixture");
+
+    let definition = resolve_test_agent_definition(&repo_root, "review")
+        .expect("a long base merged with a long EXTEND.md must resolve fine");
+    assert!(definition
+        .prompt
+        .contains("Verification Proportional to the Change"));
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// A short extension on a base still resolves cleanly, and legacy result
+/// variables in an extension are no longer rejected (T13 retires the
+/// substitution mechanism itself; this loader never checked for it).
+#[test]
+fn agent_definition_extension_with_legacy_result_variable_resolves() {
+    let agent_md =
+        "---\nname: reviewer\nrole: A one-sentence role\nproviders: claude\n---\nBase prompt.";
+    let extend_md = "Uses $PREV_MAIN_RESULT.";
+    let repo_root = write_agent_repo("extend-result-var-ok", agent_md, Some(extend_md));
+
+    let definition = resolve_test_agent_definition(&repo_root, "reviewer")
+        .expect("an extension referencing a legacy result variable must resolve fine");
+    assert!(definition.prompt.contains("$PREV_MAIN_RESULT"));
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }

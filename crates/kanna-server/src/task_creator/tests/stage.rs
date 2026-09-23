@@ -45,6 +45,167 @@ fn builtin_single_reviewer_workflow_ships_approve_as_pr_stage_post() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
+/// Loader parity for the T10d intake lineup (spec §10): `shaped` is
+/// implement -> review(A) -> pr(M), the review stage's only loop exit is
+/// `revise` back to "in progress", and the final `pr` stage hands off to the
+/// merge master under budgeted named-exit routing.
+#[test]
+fn builtin_shaped_workflow_declares_a_revise_exit_and_hands_off_at_pr() {
+    let repo_root = init_git_repo_without_provider_fixtures("builtin-shaped-workflow");
+    let repo = crate::db::Repo {
+        id: "repo-builtin-shaped".to_string(),
+        path: repo_root.to_string_lossy().into_owned(),
+        name: "Builtin shaped".to_string(),
+        default_branch: Some("main".to_string()),
+        default_branch_source: None,
+        remote_url_hash: None,
+        hidden: None,
+        sort_order: None,
+        created_at: None,
+        last_opened_at: None,
+    };
+    let workflow = super::super::definitions::RepoDefinitions::resolve(&repo)
+        .unwrap()
+        .workflow("shaped")
+        .unwrap();
+    assert!(workflow.routes_by_exits());
+    assert_eq!(
+        workflow
+            .stages
+            .iter()
+            .map(|stage| stage.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["in progress", "review", "pr"]
+    );
+    let implement = &workflow.stages[0];
+    assert!(implement.exit_commit);
+    let review = &workflow.stages[1];
+    assert_eq!(
+        review
+            .exits
+            .as_ref()
+            .unwrap()
+            .get("revise")
+            .map(String::as_str),
+        Some("in progress")
+    );
+    let pr_stage = &workflow.stages[2];
+    assert_eq!(
+        pr_stage.policy.handoff,
+        Some(super::super::definitions::WorkflowHandoff::Merge)
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// `planned` is plan(M) -> implement(A) -> review(A) -> pr(M); the review
+/// stage's two loop exits split by the nature of the findings (spec §10).
+#[test]
+fn builtin_planned_workflow_declares_revise_and_replan_exits() {
+    let repo_root = init_git_repo_without_provider_fixtures("builtin-planned-workflow");
+    let repo = crate::db::Repo {
+        id: "repo-builtin-planned".to_string(),
+        path: repo_root.to_string_lossy().into_owned(),
+        name: "Builtin planned".to_string(),
+        default_branch: Some("main".to_string()),
+        default_branch_source: None,
+        remote_url_hash: None,
+        hidden: None,
+        sort_order: None,
+        created_at: None,
+        last_opened_at: None,
+    };
+    let workflow = super::super::definitions::RepoDefinitions::resolve(&repo)
+        .unwrap()
+        .workflow("planned")
+        .unwrap();
+    assert!(workflow.routes_by_exits());
+    assert_eq!(
+        workflow
+            .stages
+            .iter()
+            .map(|stage| stage.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["plan", "in progress", "review", "pr"]
+    );
+    let review = workflow
+        .stages
+        .iter()
+        .find(|stage| stage.name == "review")
+        .unwrap();
+    let exits = review.exits.as_ref().unwrap();
+    assert_eq!(exits.get("revise").map(String::as_str), Some("in progress"));
+    assert_eq!(exits.get("replan").map(String::as_str), Some("plan"));
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// `designed` is the front-loaded flow (spec §10): mockup -> stakeholder(M,
+/// no role) -> plan(A) -> implement(A) -> review(M) -> pr(M) -> pr-review(M,
+/// hands off to merge). The stakeholder gate declares no exits of its own
+/// (roleless stages cannot yet declare them); a person iterates it back to
+/// mockup with an operator-origin revision instead.
+#[test]
+fn builtin_designed_workflow_chains_mockup_gate_plan_and_pr_review_with_handoff() {
+    let repo_root = init_git_repo_without_provider_fixtures("builtin-designed-workflow");
+    let repo = crate::db::Repo {
+        id: "repo-builtin-designed".to_string(),
+        path: repo_root.to_string_lossy().into_owned(),
+        name: "Builtin designed".to_string(),
+        default_branch: Some("main".to_string()),
+        default_branch_source: None,
+        remote_url_hash: None,
+        hidden: None,
+        sort_order: None,
+        created_at: None,
+        last_opened_at: None,
+    };
+    let definitions = super::super::definitions::RepoDefinitions::resolve(&repo).unwrap();
+    let workflow = definitions.workflow("designed").unwrap();
+    assert!(workflow.routes_by_exits());
+    assert_eq!(
+        workflow
+            .stages
+            .iter()
+            .map(|stage| stage.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "mockup",
+            "stakeholder",
+            "plan",
+            "in progress",
+            "review",
+            "pr",
+            "pr-review"
+        ]
+    );
+    let mockup = &workflow.stages[0];
+    assert_eq!(mockup.agent.as_deref(), Some("mockup"));
+    let stakeholder = &workflow.stages[1];
+    assert!(
+        workflow.is_roleless_stage(stakeholder),
+        "stakeholder has no agent: it is a gate"
+    );
+    assert!(stakeholder.exits.is_none());
+    let pr_review = &workflow.stages[6];
+    assert_eq!(pr_review.agent.as_deref(), Some("pr-reviewer"));
+    assert_eq!(
+        pr_review.policy.handoff,
+        Some(super::super::definitions::WorkflowHandoff::Merge)
+    );
+
+    let mockup_agent = definitions.agent("mockup").unwrap();
+    assert!(!mockup_agent.description.trim().is_empty());
+    for var in ["$PREV_RESULT", "$PREV_MAIN_RESULT", "$PLAN_RESULT"] {
+        assert!(
+            !mockup_agent.prompt.contains(var),
+            "mockup must not reference {var}; the engine delivers results through the ledger"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
 #[test]
 fn one_stage_operation_keeps_prompt_spawn_and_teardown_on_pinned_revision() {
     let repo_root = init_git_repo("stage-operation-pinned-revision");

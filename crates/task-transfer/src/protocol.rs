@@ -403,6 +403,10 @@ pub enum ControlResponse {
         transfer_id: String,
         source_peer_id: String,
         target_has_repo: bool,
+        /// The destination server's capabilities reply. Absent from an older
+        /// sidecar, which a server reads as "confirmed nothing".
+        #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+        peer_capabilities: serde_json::Value,
     },
     RequestTaskPull {
         request_id: String,

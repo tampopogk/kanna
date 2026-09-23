@@ -4254,7 +4254,18 @@ restart or repeat work solely because task ownership moved."
                 // active-stage context, including the pinned plan and source
                 // predecessor/revision snapshots.
                 agent_instructions = fresh_session.agent_instructions;
-                fresh_session.prompt
+                // Appended, never prepended: relocated agent instructions are
+                // matched at the head of the prompt.
+                match import.fresh_start_reason.as_deref() {
+                    Some(reason) => format!(
+                        "{}\n\nKanna transferred this task to this machine and started this \
+session fresh because {reason}. The task's recorded results, inputs and stage transitions, \
+including those from before the transfer, are in its ledger (`$KANNA_TASK_LEDGER_PATH`); read \
+what you need there before continuing, and do not repeat work the ledger shows was done.",
+                        fresh_session.prompt
+                    ),
+                    None => fresh_session.prompt,
+                }
             }
         } else {
             original_prompt.clone()

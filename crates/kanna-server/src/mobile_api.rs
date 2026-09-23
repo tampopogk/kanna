@@ -92,6 +92,12 @@ pub struct MobileServerStatus {
     /// than read a missing route as an empty join.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subtask_joins_version: Option<u8>,
+    /// Version of the carried-task-state transfer contract (T9): this server
+    /// imports a transferred task's ledger, workflow rows and artifact
+    /// objects. The peer-to-peer check a source relies on is the transfer
+    /// protocol's own capabilities reply; this mirrors it for clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_state_transfer_version: Option<u8>,
     /// This desktop's secure-channel public key (unpadded base64url X25519),
     /// present when the desktop can serve end-to-end encrypted sessions.
     /// Read over plaintext LAN it is *not* a trust anchor - a typed-code
@@ -669,6 +675,11 @@ pub struct TransferImportSummary {
     /// `transferred_task_history` rather than from this in-flight request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history: Vec<TransferredHistoryRecordSummary>,
+    /// Why the destination's first session starts fresh instead of resuming
+    /// the transferred transcript (T9). Stated in that session's prompt; the
+    /// ledger's `transfer_import` transition records it durably.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fresh_start_reason: Option<String>,
 }
 
 /// [`TransferImportSummary::history`]'s entry shape — a copy of
@@ -2217,6 +2228,9 @@ pub fn build_mobile_server_status(
         task_input_attachment_version: Some(TASK_INPUT_ATTACHMENT_VERSION),
         stage_dependencies_version: Some(kanna_tool_catalog::STAGE_DEPENDENCIES_VERSION),
         subtask_joins_version: Some(kanna_tool_catalog::SUBTASK_JOINS_VERSION),
+        task_state_transfer_version: Some(
+            crate::transfer_engine::payload::TASK_STATE_VERSION as u8,
+        ),
         channel_public_key: None,
         secure_channel_version: None,
         agent_providers: Some(crate::agent_inventory::installed_agent_providers()),

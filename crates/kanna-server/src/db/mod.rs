@@ -44,6 +44,7 @@ pub(crate) mod stage_run_prompt;
 pub(crate) mod stage_runs;
 pub(crate) mod subtask_joins;
 pub(crate) mod terminal_archives;
+pub(crate) mod transfer_task_state;
 pub use terminal_archives::AgentTerminalAttempt;
 pub(crate) mod workspace_setup;
 pub use stage_run_prompt::StageRunPrompt;
@@ -226,6 +227,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "099_transition_commit",
     "100_task_stage_edges",
     "101_subtask_joins",
+    "102_transferred_task_state",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2718,6 +2720,13 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     // join are members; existing parent/child rows are untouched.
     run_migration(conn, "101_subtask_joins", |conn| {
         conn.execute_batch(subtask_joins::SCHEMA)
+    })?;
+
+    // Spec §11 (T9): what a destination recorded when it imported a task's
+    // carried state — ownership generation, links to tasks and directories
+    // on other machines, and how its first session started.
+    run_migration(conn, "102_transferred_task_state", |conn| {
+        conn.execute_batch(transfer_task_state::SCHEMA)
     })?;
 
     Ok(())

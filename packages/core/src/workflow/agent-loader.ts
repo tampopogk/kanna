@@ -63,10 +63,9 @@ export function parseAgentDefinition(content: string): AgentDefinition {
   const fm: Record<string, unknown> = frontmatter ?? {};
   const prompt = body.trim();
 
-  // `role`/`providers` are the definition-formula aliases (spec §12) for
-  // `description`/`agent_provider`; declaring either opts the definition into
-  // the formula's line-count and four-section shape (checkDefinitionFormula).
-  const usesFormula = fm.role !== undefined || fm.providers !== undefined;
+  // `role`/`providers` are harmless parsing aliases (spec §12) for
+  // `description`/`agent_provider`. Kanna never checks a definition's length
+  // or shape, so declaring either opts a definition into nothing.
   const description = fm.description ?? fm.role;
   const providerValue = fm.agent_provider ?? fm.providers;
 
@@ -103,53 +102,7 @@ export function parseAgentDefinition(content: string): AgentDefinition {
     throw new Error(`Invalid AGENT.md: ${errors.join("; ")}`);
   }
 
-  if (usesFormula) {
-    const formulaErrors = checkDefinitionFormula(content);
-    if (formulaErrors.length > 0) {
-      throw new Error(`Invalid AGENT.md: ${formulaErrors.join("; ")}`);
-    }
-  }
-
   return def;
-}
-
-/**
- * Spec §12's definition formula: a definition that opts in (by declaring
- * `role` or `providers` in its frontmatter) must resolve to 15-40 lines
- * total and carry these four section headers, in order, in its body. Mirrors
- * `check_definition_formula` in the server's `definitions.rs`.
- */
-const DEFINITION_FORMULA_SECTIONS = ["## Produces", "## Reads", "## Must not", "## Stop when"] as const;
-const DEFINITION_FORMULA_RESULT_VARS = ["$PREV_RESULT", "$PREV_MAIN_RESULT", "$PLAN_RESULT"] as const;
-
-export function checkDefinitionFormula(content: string): string[] {
-  const errors: string[] = [];
-  const lineCount = content.replace(/\n+$/, "").split("\n").length;
-  if (lineCount < 15 || lineCount > 40) {
-    errors.push(`definition-formula definitions must be 15-40 lines, got ${lineCount}`);
-  }
-
-  let searchFrom = 0;
-  for (const section of DEFINITION_FORMULA_SECTIONS) {
-    const offset = content.indexOf(section, searchFrom);
-    if (offset === -1) {
-      errors.push(
-        `definition-formula definitions require the section "${section}", in order after ${JSON.stringify(DEFINITION_FORMULA_SECTIONS)}`
-      );
-      break;
-    }
-    searchFrom = offset + section.length;
-  }
-
-  for (const variable of DEFINITION_FORMULA_RESULT_VARS) {
-    if (content.includes(variable)) {
-      errors.push(
-        `definition-formula definitions must not reference the legacy result variable ${variable}; the engine delivers results through the ledger`
-      );
-    }
-  }
-
-  return errors;
 }
 
 // An extension (`.kanna/agents/{name}/EXTEND.md`) customizes the resolved
@@ -191,6 +144,17 @@ export function parseAgentExtension(content: string): AgentExtension {
 
   if (ext.agent_provider) validateSelectionSiblings(parseAgentSelection(ext.agent_provider, false), ext.model, ext.effort);
   return ext;
+}
+
+/**
+ * Parses a base AGENT.md and an EXTEND.md together and returns the resolved,
+ * merged definition. Mirrors the server's `agent_optional` in
+ * `definitions.rs`.
+ */
+export function resolveAgentWithExtension(baseContent: string, extensionContent: string): AgentDefinition {
+  const base = parseAgentDefinition(baseContent);
+  const extension = parseAgentExtension(extensionContent);
+  return applyAgentExtension(base, extension);
 }
 
 export function applyAgentExtension(base: AgentDefinition, extension: AgentExtension): AgentDefinition {

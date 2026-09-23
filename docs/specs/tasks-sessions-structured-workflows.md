@@ -140,7 +140,7 @@ The engine guarantees structure. Everything in the right column is configurable 
 ## 12. Agent definitions
 
 - Layers: bundled default → repo `.kanna/agents/<name>/` (team) → person (`config.local.json`). Repo config selects which agent runs which stage.
-- Formula, four sections, 15 to 40 lines, nothing mechanical:
+- Formula the definitions Kanna ships aim for: four sections, lean, nothing mechanical. It is a goal for our own definitions, not a limit: **Owner** (2026-09-23): Kanna never checks a definition's length or shape, since a repository's or person's definition is theirs; our shipped definitions stay lean by not repeating what the preamble already injects, and substantive policy is never cut or moved out of the prompt to meet a size.
 
 ```
 ---

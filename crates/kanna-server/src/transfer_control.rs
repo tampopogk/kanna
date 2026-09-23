@@ -623,6 +623,12 @@ async fn prepare_outgoing_transfer(
                 "transferId": required_string(&response, &["transfer_id", "transferId"])?,
                 "sourcePeerId": required_string(&response, &["source_peer_id", "sourcePeerId"])?,
                 "targetHasRepo": required_bool(&response, &["target_has_repo", "targetHasRepo"])?,
+                // Relayed verbatim; an older sidecar sends none, which reads as
+                // a destination that confirmed nothing.
+                "peerCapabilities": response
+                    .get("peer_capabilities")
+                    .cloned()
+                    .unwrap_or(Value::Null),
             }))
         }
         "commit" => {

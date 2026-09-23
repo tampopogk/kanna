@@ -19,6 +19,7 @@ pub mod git;
 pub mod payload;
 pub mod queue;
 pub mod session;
+pub mod task_state;
 
 mod finalize;
 pub(crate) mod import;

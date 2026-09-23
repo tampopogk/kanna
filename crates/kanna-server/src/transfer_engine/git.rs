@@ -40,7 +40,7 @@ pub fn is_credential_free_clone_source(source: &str) -> bool {
 /// Arguments are passed as a vector, never as a shell string: a repository
 /// name, a branch, or a ref from a peer payload must not be able to become a
 /// second command.
-fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
+pub(super) fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .args(args)
         .current_dir(cwd)
