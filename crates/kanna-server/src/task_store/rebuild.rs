@@ -34,11 +34,17 @@
 //! `session_ref`, and budgets replayed from routed results and reset by a
 //! person's send-back.
 //!
+//! **The ledger is newer than a stale `task.json`.** A crash between
+//! publishing an entry and rewriting `task.json` leaves `state` behind the
+//! ledger; the entries after `ledger.published_through` are applied on top
+//! of its rows (a verdict or engine-observed ending closes its run, a routed
+//! result spends its budget, a send-back resets it).
+//!
 //! **Owed work is never re-done.** Rows are restored; nothing is executed.
-//! An owed transition (`task_ledger_continuation`) is restored only when the
-//! `state` it came with is at least as new as the ledger: a `task.json`
-//! older than the ledger's last entry may predate the transition that paid
-//! it, and restoring it would run that transition twice.
+//! An owed transition (`task_ledger_continuation`) from a stale `task.json`
+//! is dropped only when a newer entry paid or replaced it — a transition, or
+//! a verdict under another operation — since restoring it would run that
+//! transition twice; after unrelated newer entries it stays owed.
 //!
 //! Unknown facts stay unknown: a column the disk does not carry is left NULL
 //! or at its schema default, never guessed.
@@ -128,11 +134,6 @@ pub const NOT_REBUILT: &[NotRebuilt] = &[
         fact: "publication_window",
         gap: Gap::Unrecoverable,
         reason: "a change committed in SQL but not yet written to disk when the database is lost (the publisher writes within seconds, and at every startup)",
-    },
-    NotRebuilt {
-        fact: "continuation.older_than_ledger",
-        gap: Gap::Unrecoverable,
-        reason: "an owed transition carried by a task.json older than the ledger's last entry is dropped, not restored: the newer entries may be the transition that paid it",
     },
     NotRebuilt {
         fact: "history.never_captured",
@@ -748,6 +749,99 @@ fn stage_result_column(file: &LedgerFile, message: &str) -> String {
     result.to_string()
 }
 
+/// The stage run a verdict result entry stands for.
+fn verdict_run_row(task_id: &str, run_id: &str, file: &LedgerFile) -> StageRunRow {
+    let envelope = &file.envelope;
+    let body = file.body();
+    let message = file.message.as_deref().unwrap_or("");
+    let status = text(body, "status").unwrap_or_else(|| "unknown".into());
+    // A revision request records its summary and findings apart (T13);
+    // older entries only joined them in the message.
+    let request = body.get("request").cloned().unwrap_or(Value::Null);
+    let revision = (text(&request, "kind").as_deref() == Some("revision_request"))
+        .then(|| (text(&request, "summary"), text(&request, "findings")));
+    let (summary, feedback) = match revision {
+        Some((Some(summary), Some(findings))) => (summary, findings),
+        _ => (message.to_string(), message.to_string()),
+    };
+    StageRunRow {
+        id: run_id.to_string(),
+        task_id: task_id.to_string(),
+        stage: text(body, "stage").unwrap_or_default(),
+        kind: text(body, "run_kind").unwrap_or_else(|| "main".into()),
+        status: if status == "success" {
+            "succeeded".into()
+        } else {
+            "failed".into()
+        },
+        result: Some(stage_result_column(file, &summary)),
+        feedback: Some(feedback),
+        no_work_termination: None,
+        started_at: String::new(),
+        finished_at: iso_to_sqlite_time(&recorded_at(file)),
+        result_declared_role: text(envelope, "declared_role"),
+        result_channel_identity: json_column(envelope.get("channel_identity")),
+        workspace_id: None,
+        session_branch: None,
+        session_name: None,
+        transcript_ref: None,
+    }
+}
+
+/// The stage run an engine-observed ending stands for, when nothing else
+/// records it.
+fn ending_run_row(task_id: &str, run_id: &str, file: &LedgerFile) -> StageRunRow {
+    let body = file.body();
+    let ending = body.get("ending").cloned().unwrap_or(Value::Null);
+    StageRunRow {
+        id: run_id.to_string(),
+        task_id: task_id.to_string(),
+        stage: text(body, "stage").unwrap_or_default(),
+        kind: text(body, "run_kind").unwrap_or_else(|| "main".into()),
+        status: text(&ending, "run_status").unwrap_or_else(|| "failed".into()),
+        result: None,
+        feedback: None,
+        no_work_termination: text(&ending, "no_work_termination"),
+        started_at: String::new(),
+        finished_at: iso_to_sqlite_time(&recorded_at(file)),
+        result_declared_role: None,
+        result_channel_identity: None,
+        workspace_id: None,
+        session_branch: None,
+        session_name: None,
+        transcript_ref: None,
+    }
+}
+
+/// The destination budget a routed result spent (T1), and whether the claim
+/// was exhausted.
+fn budget_claim(task_id: &str, file: &LedgerFile) -> Option<(BudgetRow, bool)> {
+    let budget = file
+        .body()
+        .get("budget")
+        .filter(|budget| budget.is_object())?;
+    Some((
+        BudgetRow {
+            task_id: task_id.to_string(),
+            stage: text(budget, "stage")?,
+            spent: budget.get("spent").and_then(Value::as_i64)?,
+            updated_at: iso_to_sqlite_time(&recorded_at(file)),
+        },
+        budget.get("exhausted").and_then(Value::as_bool) == Some(true),
+    ))
+}
+
+/// The stage a person's send-back gives a fresh budget: an operator exit
+/// other than `advance` (operating a gate does not reset it).
+fn send_back_stage(file: &LedgerFile) -> Option<String> {
+    let body = file.body();
+    (file.kind == LedgerEntryKind::Transition
+        && text(body, "exit_source").as_deref() == Some("operator")
+        && text(body, "exit").as_deref() != Some("advance"))
+    .then(|| text(body, "to_stage"))
+    .flatten()
+}
+
 fn project_task(directory: &TaskDirectory, projection: &mut Projection) {
     let snapshot = &directory.snapshot;
     let task_id = snapshot.task_id.as_str();
@@ -841,85 +935,16 @@ fn project_task(directory: &TaskDirectory, projection: &mut Projection) {
                 // stands for the run only when nothing else does.
                 if crate::db::task_store::is_engine_observed_result(body) {
                     if !runs.contains_key(&run_id) {
-                        let ending = body.get("ending").cloned().unwrap_or(Value::Null);
-                        runs.insert(
-                            run_id.clone(),
-                            StageRunRow {
-                                id: run_id.clone(),
-                                task_id: task_id.to_string(),
-                                stage: text(body, "stage").unwrap_or_default(),
-                                kind: text(body, "run_kind").unwrap_or_else(|| "main".into()),
-                                status: text(&ending, "run_status")
-                                    .unwrap_or_else(|| "failed".into()),
-                                result: None,
-                                feedback: None,
-                                no_work_termination: text(&ending, "no_work_termination"),
-                                started_at: String::new(),
-                                finished_at: iso_to_sqlite_time(&at),
-                                result_declared_role: None,
-                                result_channel_identity: None,
-                                workspace_id: None,
-                                session_branch: None,
-                                session_name: None,
-                                transcript_ref: None,
-                            },
-                        );
+                        runs.insert(run_id.clone(), ending_run_row(task_id, &run_id, file));
                     }
                     continue;
                 }
-                let status = text(body, "status").unwrap_or_else(|| "unknown".into());
-                // A revision request records its summary and findings apart
-                // (T13); older entries only joined them in the message.
-                let request = body.get("request").cloned().unwrap_or(Value::Null);
-                let revision = (text(&request, "kind").as_deref() == Some("revision_request"))
-                    .then(|| (text(&request, "summary"), text(&request, "findings")));
-                let (summary, feedback) = match revision {
-                    Some((Some(summary), Some(findings))) => (summary, findings),
-                    _ => (message.to_string(), message.to_string()),
-                };
-                runs.insert(
-                    run_id.clone(),
-                    StageRunRow {
-                        id: run_id.clone(),
-                        task_id: task_id.to_string(),
-                        stage: text(body, "stage").unwrap_or_default(),
-                        kind: text(body, "run_kind").unwrap_or_else(|| "main".into()),
-                        status: if status == "success" {
-                            "succeeded".into()
-                        } else {
-                            "failed".into()
-                        },
-                        result: Some(stage_result_column(file, &summary)),
-                        feedback: Some(feedback),
-                        no_work_termination: None,
-                        started_at: String::new(),
-                        finished_at: iso_to_sqlite_time(&at),
-                        result_declared_role: text(envelope, "declared_role"),
-                        result_channel_identity: json_column(envelope.get("channel_identity")),
-                        workspace_id: None,
-                        session_branch: None,
-                        session_name: None,
-                        transcript_ref: None,
-                    },
-                );
-                if let Some(budget) = body.get("budget").filter(|budget| budget.is_object()) {
-                    let stage = text(budget, "stage");
-                    let spent = budget.get("spent").and_then(Value::as_i64);
-                    let exhausted = budget.get("exhausted").and_then(Value::as_bool) == Some(true);
-                    if let (Some(stage), Some(spent)) = (stage, spent) {
-                        // An exhausted claim changes nothing in SQL; it only
-                        // proves the destination's spend if nothing else did.
-                        if !exhausted || !budgets.contains_key(&stage) {
-                            budgets.insert(
-                                stage.clone(),
-                                BudgetRow {
-                                    task_id: task_id.to_string(),
-                                    stage,
-                                    spent,
-                                    updated_at: iso_to_sqlite_time(&at),
-                                },
-                            );
-                        }
+                runs.insert(run_id.clone(), verdict_run_row(task_id, &run_id, file));
+                if let Some(budget) = budget_claim(task_id, file) {
+                    // An exhausted claim changes nothing in SQL; it only
+                    // proves the destination's spend if nothing else did.
+                    if !budget.1 || !budgets.contains_key(&budget.0.stage) {
+                        budgets.insert(budget.0.stage.clone(), budget.0);
                     }
                 }
             }
@@ -960,12 +985,8 @@ fn project_task(directory: &TaskDirectory, projection: &mut Projection) {
             }
             LedgerEntryKind::Transition => {
                 let to_stage = text(body, "to_stage");
-                // A person sending the task back gives it a fresh budget
-                // there; operating a gate (`advance`) does not.
-                let send_back = text(body, "exit_source").as_deref() == Some("operator")
-                    && text(body, "exit").as_deref() != Some("advance");
-                if let (true, Some(stage)) = (send_back, &to_stage) {
-                    budgets.remove(stage);
+                if let Some(stage) = send_back_stage(file) {
+                    budgets.remove(&stage);
                 }
                 last_transition_to = Some(to_stage);
             }
@@ -1045,10 +1066,167 @@ fn branch_suffix(task_id: &str, branch: &str) -> Option<i64> {
         .and_then(|suffix| suffix.parse().ok())
 }
 
-/// A task's `state`, row for row. Two rules on top of copying:
+/// A result entry that is a verdict recorded live on this machine: not an
+/// engine-observed ending, not history (backfilled or carried by a transfer,
+/// whose runs the rows already hold or never held).
+fn is_live_verdict(file: &LedgerFile) -> bool {
+    file.kind == LedgerEntryKind::Result
+        && file.envelope.get("historical").and_then(Value::as_bool) != Some(true)
+        && !crate::db::task_store::is_engine_observed_result(file.body())
+}
+
+/// An owed transition carried in `state` stays owed unless a ledger entry
+/// newer than `task.json` shows it was paid or replaced: a transition (the
+/// dispatch it owed, or any move that fences it stale), or a newer verdict
+/// under another operation (a corrected result replaces or clears it).
+/// Unrelated newer entries (inputs, engine-observed endings, plans) leave it
+/// owed; the continuation's own stage/generation fence still applies when
+/// it is dispatched.
+fn retain_unpaid_continuations(
+    task_id: &str,
+    newer: &[&LedgerFile],
+    carried: &mut Vec<CarriedRow>,
+    projection: &mut Projection,
+) {
+    carried.retain(|row| {
+        if row.table != "task_ledger_continuation" {
+            return true;
+        }
+        let operation = row.row.get("operation_id").and_then(Value::as_str);
+        let paid = newer.iter().find(|file| {
+            file.kind == LedgerEntryKind::Transition
+                || (is_live_verdict(file)
+                    && text(&file.envelope, "operation_id").as_deref() != operation)
+        });
+        match paid {
+            Some(file) => {
+                projection.diagnostics.push(format!(
+                    "{task_id}: owed transition {} is not restored: {} was recorded after task.json and paid or replaced it",
+                    operation.unwrap_or("?"),
+                    file.file_name
+                ));
+                false
+            }
+            None => {
+                if !newer.is_empty() {
+                    projection.diagnostics.push(format!(
+                        "{task_id}: owed transition {} is restored: no entry recorded after task.json paid or replaced it",
+                        operation.unwrap_or("?")
+                    ));
+                }
+                true
+            }
+        }
+    });
+}
+
+/// Ledger entries newer than `task.json` happened after its `state` was
+/// taken (a crash between publishing an entry and rewriting `task.json`).
+/// Their effects on runs and budgets are applied on top of the rows: a
+/// verdict or engine-observed ending closes its run, a routed result spends
+/// its budget, a send-back resets it. A run the rows do not hold yet is
+/// projected from the ledger alone.
+fn apply_newer_entries(
+    task_id: &str,
+    newer: &[&LedgerFile],
+    carried: &mut Vec<CarriedRow>,
+    projection: &mut Projection,
+) {
+    let mut ledger_runs: BTreeMap<String, StageRunRow> = BTreeMap::new();
+    let mut ledger_budgets: BTreeMap<String, BudgetRow> = BTreeMap::new();
+    for file in newer {
+        if file.kind == LedgerEntryKind::Transition {
+            if let Some(stage) = send_back_stage(file) {
+                carried.retain(|row| {
+                    !(row.table == "task_stage_budget"
+                        && row.row.get("stage").and_then(Value::as_str) == Some(stage.as_str()))
+                });
+                ledger_budgets.remove(&stage);
+            }
+            continue;
+        }
+        if file.kind != LedgerEntryKind::Result
+            || file.envelope.get("historical").and_then(Value::as_bool) == Some(true)
+        {
+            continue;
+        }
+        let Some(run_id) = text(&file.envelope, "run_id") else {
+            continue;
+        };
+        let ending = crate::db::task_store::is_engine_observed_result(file.body());
+        let row = if ending {
+            ending_run_row(task_id, &run_id, file)
+        } else {
+            verdict_run_row(task_id, &run_id, file)
+        };
+        let existing = carried.iter_mut().find(|carried| {
+            carried.table == "stage_run"
+                && carried.row.get("id").and_then(Value::as_str) == Some(run_id.as_str())
+        });
+        match existing {
+            Some(existing) => {
+                let columns = &mut existing.row;
+                columns.insert("status".into(), json!(row.status));
+                columns.insert("finished_at".into(), json!(row.finished_at));
+                columns.insert("no_work_termination".into(), json!(row.no_work_termination));
+                if !ending {
+                    columns.insert("result".into(), json!(row.result));
+                    columns.insert("feedback".into(), json!(row.feedback));
+                    columns.insert(
+                        "result_declared_role".into(),
+                        json!(row.result_declared_role),
+                    );
+                    columns.insert(
+                        "result_channel_identity".into(),
+                        json!(row.result_channel_identity),
+                    );
+                }
+            }
+            None if ending && ledger_runs.contains_key(&run_id) => {}
+            None => {
+                let mut row = row;
+                row.started_at = row.finished_at.clone();
+                if let Some(identity) = session_identity(&file.envelope) {
+                    row.workspace_id = identity.workspace_id;
+                    row.session_branch = identity.branch;
+                    row.session_name = identity.name;
+                    row.transcript_ref = identity.transcript_ref;
+                }
+                ledger_runs.insert(run_id.clone(), row);
+            }
+        }
+        if let Some((budget, exhausted)) = budget_claim(task_id, file) {
+            let carried_budget = carried.iter_mut().find(|carried| {
+                carried.table == "task_stage_budget"
+                    && carried.row.get("stage").and_then(Value::as_str)
+                        == Some(budget.stage.as_str())
+            });
+            match carried_budget {
+                // An exhausted claim changes nothing in SQL.
+                Some(_) if exhausted => {}
+                Some(existing) => {
+                    existing.row.insert("spent".into(), json!(budget.spent));
+                    existing
+                        .row
+                        .insert("updated_at".into(), json!(budget.updated_at));
+                }
+                None if exhausted && ledger_budgets.contains_key(&budget.stage) => {}
+                None => {
+                    ledger_budgets.insert(budget.stage.clone(), budget);
+                }
+            }
+        }
+    }
+    projection.stage_runs.extend(ledger_runs.into_values());
+    projection.budgets.extend(ledger_budgets.into_values());
+}
+
+/// A task's `state`, row for row. Three rules on top of copying:
 ///
-/// - an owed transition (`task_ledger_continuation`) is restored only when
-///   `task.json` is at least as new as the ledger (see the module docs);
+/// - ledger entries newer than `task.json` are applied on top of its rows
+///   ([`apply_newer_entries`]);
+/// - an owed transition (`task_ledger_continuation`) is dropped only when a
+///   newer entry paid or replaced it ([`retain_unpaid_continuations`]);
 /// - the branch counter is raised to the highest `task-<id>-<n>` suffix any
 ///   record of the task names, so a rebuilt counter never hands out a
 ///   number already in use.
@@ -1063,7 +1241,6 @@ fn project_state(
         .entries
         .last()
         .map_or(0, |entry| entry.file.sequence);
-    let state_is_current = ledger_reaches <= snapshot.published_through;
     let mut named_suffix: Option<i64> = None;
     let mut name = |branch: Option<&str>| {
         if let Some(n) = branch.and_then(|branch| branch_suffix(task_id, branch)) {
@@ -1096,17 +1273,11 @@ fn project_state(
                 .and_then(Value::as_str),
         );
     }
+    let mut carried = Vec::new();
     for table in CARRIED_TABLES {
         let Some(rows) = tables.get(table.table).and_then(Value::as_array) else {
             continue;
         };
-        if table.table == "task_ledger_continuation" && !state_is_current {
-            projection.diagnostics.push(format!(
-                "{task_id}: task.json (through sequence {}) is older than the ledger (sequence {ledger_reaches}); its owed transition is not restored, since a newer entry may be the transition that paid it",
-                snapshot.published_through
-            ));
-            continue;
-        }
         for row in rows {
             let Some(row) = row.as_object() else {
                 continue;
@@ -1123,13 +1294,29 @@ fn project_state(
                     }
                 }
             }
-            projection.carried.push(CarriedRow {
+            carried.push(CarriedRow {
                 table: table.table,
                 task_id: task_id.to_string(),
                 row,
             });
         }
     }
+    let newer: Vec<&LedgerFile> = directory
+        .entries
+        .iter()
+        .map(|entry| &entry.file)
+        .filter(|file| file.sequence > snapshot.published_through)
+        .collect();
+    if !newer.is_empty() {
+        projection.diagnostics.push(format!(
+            "{task_id}: task.json was written through sequence {} and the ledger reaches {ledger_reaches}; the {} newer entries are applied on top of its state",
+            snapshot.published_through,
+            newer.len()
+        ));
+    }
+    retain_unpaid_continuations(task_id, &newer, &mut carried, projection);
+    apply_newer_entries(task_id, &newer, &mut carried, projection);
+    projection.carried.extend(carried);
     if let Some(task) = projection
         .tasks
         .iter_mut()

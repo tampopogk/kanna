@@ -595,7 +595,7 @@ fn the_reader_refuses_state_it_does_not_understand() {
 #[test]
 fn state_rows_are_projected_instead_of_what_the_ledger_implies() {
     let root = store_root("state-rows");
-    let snapshot = with_state(
+    let mut snapshot = with_state(
         task_json("t-1", "review"),
         json!({
             "pipeline_item": [task_row("t-1", "task-t-1")],
@@ -606,6 +606,8 @@ fn state_rows_are_projected_instead_of_what_the_ledger_implies() {
                                     "spent": 3, "updated_at": "2026-09-23 10:00:00" }],
         }),
     );
+    // The entry below was published before task.json was written.
+    snapshot["ledger"]["published_through"] = json!(1);
     let mut files = TaskFiles::new(&root, snapshot);
     files.result(
         "run-old",
@@ -653,7 +655,7 @@ fn state_rows_are_projected_instead_of_what_the_ledger_implies() {
 }
 
 #[test]
-fn an_owed_transition_older_than_the_ledger_is_not_restored() {
+fn an_owed_transition_paid_after_task_json_is_not_restored() {
     let root = store_root("state-continuation");
     let continuation = json!({
         "task_ledger_continuation": [{ "rowid": 1, "task_id": "t-1", "operation_id": "op-1",
@@ -676,7 +678,7 @@ fn an_owed_transition_older_than_the_ledger_is_not_restored() {
         .iter()
         .any(|row| row.table == "task_ledger_continuation"));
 
-    // Stale: the ledger moved on after task.json was written.
+    // Stale: the transition it owed was recorded after task.json.
     files.transition(json!({ "from_stage": "review", "to_stage": "pr" }));
     let projection = project(&[read(&files.dir)]);
     assert!(!projection
@@ -686,7 +688,213 @@ fn an_owed_transition_older_than_the_ledger_is_not_restored() {
     assert!(projection
         .diagnostics
         .iter()
-        .any(|note| note.contains("owed transition is not restored")));
+        .any(|note| note.contains("owed transition op-1 is not restored")));
+}
+
+/// A completion held by a child join is snapshotted, then an unrelated
+/// operator input is published and the process dies before task.json is
+/// rewritten: the transition is still owed and must survive the rebuild.
+#[test]
+fn an_owed_transition_survives_an_unrelated_newer_entry() {
+    let root = store_root("state-continuation-unrelated");
+    let mut snapshot = with_state(
+        task_json("t-1", "review"),
+        json!({
+            "pipeline_item": [task_row("t-1", "task-t-1")],
+            "task_ledger_continuation": [{ "rowid": 1, "task_id": "t-1",
+                                           "operation_id": "op-t-1-000001",
+                                           "kind": "stage_completion", "payload": "{}",
+                                           "created_at": "2026-09-23 10:00:00" }],
+        }),
+    );
+    snapshot["ledger"]["published_through"] = json!(1);
+    let mut files = TaskFiles::new(&root, snapshot);
+    // The completion that created it (its own operation), then the input.
+    files.result(
+        "run-1",
+        json!({ "status": "success", "stage": "review" }),
+        "done",
+    );
+    files.entry(
+        LedgerEntryKind::Input,
+        json!({ "input_id": 9, "source": "operator", "stage": "review",
+                "delivered_at": "2026-09-23T10:02:00Z" }),
+        json!({}),
+        Some("while you wait"),
+    );
+    let projection = project(&[read(&files.dir)]);
+    assert!(
+        projection
+            .carried
+            .iter()
+            .any(|row| row.table == "task_ledger_continuation"),
+        "{:?}",
+        projection.diagnostics
+    );
+    assert!(projection
+        .diagnostics
+        .iter()
+        .any(|note| note.contains("owed transition op-t-1-000001 is restored")));
+
+    // A corrected verdict under another operation replaces it.
+    files.result(
+        "run-1",
+        json!({ "status": "failure", "stage": "review" }),
+        "on second thought",
+    );
+    let projection = project(&[read(&files.dir)]);
+    assert!(!projection
+        .carried
+        .iter()
+        .any(|row| row.table == "task_ledger_continuation"));
+}
+
+/// The publisher writes a completion (or an engine-observed ending) to the
+/// ledger and dies before task.json is rewritten: the ledger's newer facts
+/// win over the stale rows.
+#[test]
+fn ledger_entries_newer_than_task_json_apply_on_top_of_its_state() {
+    let root = store_root("state-crash-window");
+    let running = |id: &str, rowid: i64| {
+        json!({ "rowid": rowid, "id": id, "task_id": "t-1", "stage": "review", "kind": "main",
+                "status": "running", "completion_bound": 0,
+                "started_at": "2026-09-23 10:00:00", "feedback": "keep me" })
+    };
+    let mut snapshot = with_state(
+        task_json("t-1", "review"),
+        json!({
+            "pipeline_item": [task_row("t-1", "task-t-1")],
+            "stage_run": [running("run-done", 1), running("run-lost", 2)],
+            "task_stage_budget": [{ "rowid": 1, "task_id": "t-1", "stage": "in progress",
+                                    "spent": 1, "updated_at": "2026-09-23 10:00:00" }],
+        }),
+    );
+    snapshot["ledger"]["published_through"] = json!(0);
+    let mut files = TaskFiles::new(&root, snapshot);
+    files.entry(
+        LedgerEntryKind::Result,
+        json!({ "status": "success", "stage": "review", "run_kind": "main",
+                "budget": { "stage": "in progress", "spent": 2, "exhausted": false } }),
+        json!({ "run_id": "run-done", "declared_role": "agent" }),
+        Some("reviewed"),
+    );
+    files.entry(
+        LedgerEntryKind::Result,
+        json!({ "status": null, "observed_by": "engine", "stage": "review", "run_kind": "main",
+                "ending": { "run_status": "failed",
+                            "no_work_termination": "session_interrupted" } }),
+        json!({ "run_id": "run-lost" }),
+        Some("ended"),
+    );
+    files.result(
+        "run-new",
+        json!({ "status": "success", "stage": "pr" }),
+        "opened",
+    );
+
+    let target = PathBuf::from(Db::test_db_path("rebuild-crash-window"));
+    let _ = std::fs::remove_file(&target);
+    rebuild_into_new_database(&root, &target).unwrap();
+    let db = Db::open(target.to_str().unwrap()).unwrap();
+    let done = db.stage_run("run-done").unwrap().unwrap();
+    assert_eq!(done.status, "succeeded");
+    assert_eq!(done.feedback.as_deref(), Some("reviewed"));
+    let result: Value = serde_json::from_str(done.result.as_deref().unwrap()).unwrap();
+    assert_eq!(result["summary"], "reviewed");
+    let lost = db.stage_run("run-lost").unwrap().unwrap();
+    assert_eq!(lost.status, "failed");
+    assert_eq!(
+        lost.no_work_termination.as_deref(),
+        Some("session_interrupted")
+    );
+    assert_eq!(lost.feedback.as_deref(), Some("keep me"));
+    assert_eq!(
+        db.stage_run("run-new").unwrap().unwrap().status,
+        "succeeded"
+    );
+    assert_eq!(db.stage_budget_spent("t-1", "in progress").unwrap(), 2);
+}
+
+/// Tasks whose task.json predates `state` get rowids SQLite allocates;
+/// carried rows keep theirs. The two must never collide, whatever order the
+/// task ids sort in, and a re-application must still change nothing.
+#[test]
+fn legacy_and_state_tasks_with_colliding_rowids_both_rebuild() {
+    let root = store_root("state-rowids");
+    // "a-legacy" sorts first and has no `state`.
+    let mut legacy = TaskFiles::new(&root, task_json("a-legacy", "review"));
+    legacy.result(
+        "legacy-run",
+        json!({ "status": "success", "stage": "review" }),
+        "old",
+    );
+    let snapshot = with_state(
+        task_json("b-state", "review"),
+        json!({
+            "pipeline_item": [task_row("b-state", "task-b-state")],
+            "stage_run": [{ "rowid": 1, "id": "state-run", "task_id": "b-state",
+                            "stage": "review", "kind": "main", "status": "running",
+                            "completion_bound": 0, "started_at": "2026-09-23 10:00:00" }],
+            "task_stage_budget": [{ "rowid": 1, "task_id": "b-state", "stage": "review",
+                                    "spent": 1, "updated_at": "2026-09-23 10:00:00" }],
+        }),
+    );
+    let mut snapshot = snapshot;
+    snapshot["task_id"] = json!("b-state");
+    TaskFiles::new(&root, snapshot);
+
+    let target = PathBuf::from(Db::test_db_path("rebuild-rowids"));
+    let _ = std::fs::remove_file(&target);
+    let report = rebuild_into_new_database(&root, &target).unwrap();
+    assert_eq!(report.tasks, 2);
+    let db = Db::open(target.to_str().unwrap()).unwrap();
+    let rowid = |table: &str, id: &str| -> i64 {
+        db.connection_for_e2e_tests()
+            .query_row(
+                &format!("SELECT rowid FROM {table} WHERE id = ?"),
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(rowid("pipeline_item", "b-state"), 1);
+    assert_ne!(rowid("pipeline_item", "a-legacy"), 1);
+    assert_eq!(rowid("stage_run", "state-run"), 1);
+    assert!(db.stage_run("legacy-run").unwrap().is_some());
+    assert_eq!(db.stage_budget_spent("b-state", "review").unwrap(), 1);
+
+    let before = db.disk_rebuild_dump_for_tests();
+    let scan = scan_store_records(&root).unwrap();
+    db.apply_disk_projection(&project_store(&scan)).unwrap();
+    assert_eq!(db.disk_rebuild_dump_for_tests(), before);
+}
+
+/// A carried row whose rowid holds a different row is a collision, refused
+/// rather than skipped as if it were already applied.
+#[test]
+fn a_carried_row_colliding_with_another_row_refuses_the_rebuild() {
+    let root = store_root("state-collision");
+    TaskFiles::new(
+        &root,
+        with_state(
+            task_json("t-1", "review"),
+            json!({ "pipeline_item": [task_row("t-1", "task-t-1")] }),
+        ),
+    );
+    let target = PathBuf::from(Db::test_db_path("rebuild-collision"));
+    let _ = std::fs::remove_file(&target);
+    rebuild_into_new_database(&root, &target).unwrap();
+    let db = Db::open(target.to_str().unwrap()).unwrap();
+    let scan = scan_store_records(&root).unwrap();
+    let mut projection = project_store(&scan);
+    let task = projection
+        .carried
+        .iter_mut()
+        .find(|row| row.table == "pipeline_item")
+        .unwrap();
+    task.row.insert("id".into(), json!("t-other"));
+    let error = db.apply_disk_projection(&projection).unwrap_err();
+    assert!(error.to_string().contains("collides"), "{error}");
 }
 
 #[test]

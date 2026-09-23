@@ -9,20 +9,85 @@
 use super::task_state::json_to_sql;
 use super::Db;
 use crate::task_store::rebuild::{CarriedRow, Projection};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde_json::{Map, Value};
 
-/// Insert one row as carried, `rowid` included. A row already present under
-/// its rowid (a re-application) is left as it is.
+/// The primary-key columns of `table`, in key order; empty for a table
+/// without a declared primary key.
+fn primary_key(db: &Db, table: &str) -> Result<Vec<String>, rusqlite::Error> {
+    let mut statement = db
+        .conn
+        .prepare("SELECT name FROM pragma_table_info(?) WHERE pk > 0 ORDER BY pk")?;
+    let columns = statement.query_map([table], |row| row.get(0))?;
+    columns.collect()
+}
+
+/// Insert one row as carried, `rowid` included. A re-application finds the
+/// same row (same primary key) under its rowid and leaves it as it is; any
+/// other row under that rowid, or the same key under another rowid, is a
+/// collision and refuses the rebuild rather than dropping the carried row.
 fn insert_row(db: &Db, table: &str, row: &Map<String, Value>) -> Result<(), rusqlite::Error> {
-    if let Some(rowid) = row.get("rowid").and_then(Value::as_i64) {
-        let present: bool = db.conn.query_row(
-            &format!("SELECT EXISTS(SELECT 1 FROM \"{table}\" WHERE rowid = ?)"),
-            [rowid],
-            |row| row.get(0),
-        )?;
-        if present {
-            return Ok(());
+    let collision = |detail: String| {
+        rusqlite::Error::InvalidParameterName(format!("{table}: carried row collides: {detail}"))
+    };
+    let key: Vec<String> = primary_key(db, table)?
+        .into_iter()
+        .filter(|column| row.contains_key(column))
+        .collect();
+    let key_values = key
+        .iter()
+        .map(|column| {
+            json_to_sql(&row[column]).map_err(|error| {
+                rusqlite::Error::InvalidParameterName(format!("{table}.{column}: {error}"))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let key_where = key
+        .iter()
+        .map(|column| format!("\"{column}\" IS ?"))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let rowid = row.get("rowid").and_then(Value::as_i64);
+    if let Some(rowid) = rowid {
+        let occupant: Option<bool> = db
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT {} FROM \"{table}\" WHERE rowid = ?",
+                    if key.is_empty() {
+                        "1".to_string()
+                    } else {
+                        format!("({key_where})")
+                    }
+                ),
+                rusqlite::params_from_iter(
+                    key_values
+                        .iter()
+                        .cloned()
+                        .chain([rusqlite::types::Value::Integer(rowid)]),
+                ),
+                |row| row.get(0),
+            )
+            .optional()?;
+        match occupant {
+            Some(true) => return Ok(()),
+            Some(false) => return Err(collision(format!("rowid {rowid} holds another row"))),
+            None => {}
+        }
+    }
+    if !key.is_empty() {
+        let elsewhere: Option<i64> = db
+            .conn
+            .query_row(
+                &format!("SELECT rowid FROM \"{table}\" WHERE {key_where}"),
+                rusqlite::params_from_iter(key_values.iter().cloned()),
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(elsewhere) = elsewhere {
+            return Err(collision(format!(
+                "its key is already held by rowid {elsewhere}"
+            )));
         }
     }
     let mut columns = Vec::with_capacity(row.len());
@@ -113,9 +178,20 @@ impl Db {
                     params![repo_id, revision],
                 )?;
             }
+            // Carried rows keep their rowids, so they go in before any row
+            // whose rowid SQLite allocates: first the carried task rows,
+            // then the tasks of task.json files without `state` (whose rows
+            // other tasks' carried edges may name), then everything else
+            // carried, table by table in foreign-key order.
+            let (carried_tasks, carried_rest): (Vec<&CarriedRow>, Vec<&CarriedRow>) = projection
+                .carried
+                .iter()
+                .partition(|carried| carried.table == "pipeline_item");
+            for CarriedRow { table, row, .. } in carried_tasks {
+                insert_row(db, table, row)?;
+            }
             // Required columns the snapshot leaves empty take the schema's
-            // own default, as an insert that omitted them would. A task whose
-            // row is carried in `state` is written with the carried rows.
+            // own default, as an insert that omitted them would.
             for task in projection.tasks.iter().filter(|task| !task.from_state) {
                 db.conn.execute(
                     "INSERT INTO pipeline_item
@@ -151,8 +227,7 @@ impl Db {
                     ],
                 )?;
             }
-            // Carried rows, table by table in foreign-key order.
-            for CarriedRow { table, row, .. } in &projection.carried {
+            for CarriedRow { table, row, .. } in carried_rest {
                 insert_row(db, table, row)?;
             }
             for (blocked, blocker) in &projection.blockers {

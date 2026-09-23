@@ -112,11 +112,19 @@ projects them into a new database created with the production migrations:
 
 Two rules on top of copying:
 
+- **The ledger wins over a stale `task.json`.** A crash between publishing
+  an entry and rewriting `task.json` leaves `state` behind the ledger. The
+  entries after `ledger.published_through` are applied on top of its rows:
+  a verdict or engine-observed ending closes its run (a run the rows do not
+  hold yet is projected from the ledger), a routed result spends its
+  budget, a send-back resets it.
 - **Owed work is restored, never re-done.** Nothing is executed. An owed
-  transition (`task_ledger_continuation`) is restored only when the
-  `task.json` carrying it is at least as new as the ledger; an older one may
-  predate the transition that paid it, and restoring it would run that
-  transition twice. Lifecycle intents, commit steps, dependency waits and
+  transition (`task_ledger_continuation`) from a stale `task.json` is
+  dropped only when a newer entry paid or replaced it: a transition (the
+  dispatch it owed, or any move that fences it stale) or a verdict under
+  another operation (a corrected result). After unrelated newer entries
+  (inputs, endings, plans) it is restored, with a diagnostic either way.
+  Lifecycle intents, commit steps, dependency waits and
   join members are restored as they were; restart reconciliation, which is
   built to be idempotent, resumes them.
 - **The branch counter is never below a recorded suffix.** A restored
@@ -162,7 +170,6 @@ is.
 | transfer claim token | cannot rebuild | a capability that never leaves the database, with a 30-second lease expiry that means nothing after a restart; restart recovery re-claims a claimed transfer under a new token |
 | machine pairing and preferences | cannot rebuild | `trusted_peer`, `settings` belong to the machine (its pairing store, its local config), not a task |
 | publication window | cannot rebuild | a change committed in SQL but not yet written when the database is lost (the publisher writes within seconds and at every startup) |
-| owed transition older than the ledger | cannot rebuild | dropped rather than restored (see above) |
 | history never captured | cannot rebuild | backfilled history's branch, commit, triggering result and channel; numbers a branch-counter reservation spent without leaving a branch, directory or record |
 
 ## Table inventory
@@ -198,7 +205,7 @@ not rebuilt, with the reason above.
 |---|---|---|
 | `create_task_intent` | state | |
 | `lifecycle_operation_intent` | state | restored as is; restart reconciliation resumes it |
-| `task_ledger_continuation` | state | restored only when `task.json` is as new as the ledger |
+| `task_ledger_continuation` | state | dropped only when a ledger entry newer than `task.json` paid or replaced it |
 | `task_stage_edge`, `task_dependency_wait` (T4) | state (the dependent task's) | an edge whose upstream task is not rebuilt is reported and dropped |
 | `task_join`, `task_join_member` (T5) | state (the parent's) | |
 | `task_ledger_entry` | the ledger itself | unpublished rows are, by definition, not on disk yet |
