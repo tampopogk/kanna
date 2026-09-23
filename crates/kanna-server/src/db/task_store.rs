@@ -734,6 +734,23 @@ impl Db {
         Ok(())
     }
 
+    /// The task's run generation: the highest agent stage-run rowid, or 0
+    /// when it has none. Every lifecycle operation that replaces the task's
+    /// session (a spawn, resume, rerun, transition or revision) inserts a run
+    /// and so advances it; a continuation is fenced to the generation it was
+    /// accepted against.
+    pub(crate) fn task_run_generation(&self, task_id: &str) -> Result<i64, rusqlite::Error> {
+        self.conn.query_row(
+            &format!(
+                "SELECT COALESCE(MAX(rowid), 0) FROM stage_run
+                 WHERE task_id = ? AND kind IN {}",
+                super::stage_runs::AGENT_RUN_KINDS
+            ),
+            [task_id],
+            |row| row.get(0),
+        )
+    }
+
     pub(crate) fn clear_ledger_continuation(&self, task_id: &str) -> Result<(), rusqlite::Error> {
         self.conn.execute(
             "DELETE FROM task_ledger_continuation WHERE task_id = ?",

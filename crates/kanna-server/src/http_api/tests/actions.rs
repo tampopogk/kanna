@@ -9097,3 +9097,249 @@ async fn a_human_revision_of_a_finished_run_is_not_dispatched_over_a_resumed_run
     let _ = std::fs::remove_dir_all(&daemon_dir);
     let _ = std::fs::remove_dir_all(&repo_root);
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RevisionFenceCase {
+    /// An agent revision concluding the reviewer's running run.
+    BoundRun,
+    /// An agent revision of a task that never had a run.
+    Runless,
+    /// A human revision of a finished run; the operator then resumes the
+    /// stage with a new run before the ledger recovers.
+    FinishedRunSuperseded,
+    /// A runless revision; a run then appears at the stage before the ledger
+    /// recovers.
+    RunlessSuperseded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RevisionFenceRecovery {
+    /// The request's own claim was deferred; the publisher resumes it in the
+    /// same server generation.
+    DeferredFlush,
+    /// The server restarts before anything claims the continuation.
+    Restart,
+}
+
+/// One cell of the revision-continuation fence matrix. Returns
+/// (reviser spawns, rounds after the request, rounds after recovery,
+/// continuation still present).
+async fn run_revision_fence_case(
+    case: RevisionFenceCase,
+    recovery: RevisionFenceRecovery,
+) -> (usize, i64, i64, bool) {
+    let label = format!("{case:?}-{recovery:?}").to_lowercase();
+    let repo_root = crate::test_paths::unique_test_path(&format!("kanna-fence-{label}"));
+    init_test_git_repo(&repo_root);
+    std::fs::write(
+        repo_root.join(".kanna/workflows/reviewable.json"),
+        serde_json::json!({
+            "name": "reviewable",
+            "revision_limit": 5,
+            "stages": [
+                { "name": "in progress", "prompt": "$TASK_PROMPT", "policy": { "transition": "manual" } },
+                { "name": "review", "policy": { "transition": "auto" } }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    for args in [
+        vec!["add", ".kanna/workflows/reviewable.json"],
+        vec!["commit", "-qm", "add reviewable workflow"],
+    ] {
+        assert!(Command::new("git")
+            .args(&args)
+            .current_dir(&repo_root)
+            .status()
+            .unwrap()
+            .success());
+    }
+    publish_test_origin_main(&repo_root);
+    let source_worktree =
+        commit_branch_change(&repo_root, "task-fence", "work.txt", "reviewed work");
+    let daemon_dir = crate::test_paths::unique_test_path(&format!("kanna-fence-{label}-d"));
+    std::fs::create_dir_all(&daemon_dir).unwrap();
+    let commands = spawn_recording_daemon(&daemon_dir);
+    let config = ledger_fixture_config(&format!("fence-{label}"), &daemon_dir);
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+    db.insert_test_pipeline_item(
+        "fence",
+        "repo-1",
+        "Implement reviewed work",
+        Some("Reviewed work"),
+        "review",
+        "2026-09-23 10:00:00",
+    )
+    .unwrap();
+    db.update_test_pipeline_item_stage_context("fence", "task-fence", "reviewable", None, "claude")
+        .unwrap();
+    db.upsert_worktree(
+        "wt-fence",
+        "fence",
+        &source_worktree.to_string_lossy(),
+        "task-fence",
+    )
+    .unwrap();
+    let run = |id: &'static str| crate::db::NewStageRun {
+        id,
+        task_id: "fence",
+        stage: "review",
+        kind: "main",
+        agent: Some("review"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: Some("fence"),
+        provider_session_id: None,
+        cwd: None,
+        resumed_from_run_id: None,
+    };
+    match case {
+        RevisionFenceCase::BoundRun => db.insert_stage_run(run("review-run")).unwrap(),
+        RevisionFenceCase::FinishedRunSuperseded => {
+            db.insert_stage_run(run("review-run")).unwrap();
+            db.finish_stage_run(
+                "review-run",
+                "failed",
+                Some(r#"{"status":"partial","summary":"review incomplete","metadata":null}"#),
+                Some("review incomplete"),
+            )
+            .unwrap();
+        }
+        RevisionFenceCase::Runless | RevisionFenceCase::RunlessSuperseded => {}
+    }
+    // An earlier accepted entry the ledger cannot publish yet, so the
+    // request's own claim of its continuation is deferred.
+    db.record_task_input("fence", crate::db::TaskInputSource::Operator, "context")
+        .unwrap()
+        .unwrap();
+    drop(db);
+
+    let state = Arc::new(super::AppState::new(config.clone()));
+    let app = super::router(Arc::clone(&state));
+    crate::task_store::inject_fault(
+        &crate::task_store::root_for_db(&config.db_path),
+        crate::task_store::FlushFault::BeforePublish(1),
+    );
+    let request = match case {
+        RevisionFenceCase::BoundRun => serde_json::json!({
+            "runId": "review-run",
+            "targetStage": "in progress",
+            "summary": "Review found a defect",
+            "prompt": "Fix the defect",
+        }),
+        RevisionFenceCase::FinishedRunSuperseded => serde_json::json!({
+            "runId": "review-run",
+            "origin": "human",
+            "targetStage": "in progress",
+            "summary": "Please fix the defect",
+            "prompt": "Fix the defect the review found",
+        }),
+        RevisionFenceCase::Runless | RevisionFenceCase::RunlessSuperseded => serde_json::json!({
+            "targetStage": "in progress",
+            "summary": "Revise before any run",
+            "prompt": "Implement it properly",
+        }),
+    };
+    let (status, body) = post_json(&app, "/v1/tasks/fence/actions/request-revision", request).await;
+    assert_eq!(status, StatusCode::OK, "{label}: {body}");
+    assert!(body.contains("Do not request it again"), "{label}: {body}");
+    crate::http_api::wait_for_task_mutation_to_finish(&state, "fence").await;
+    let db = Db::open(&config.db_path).unwrap();
+    assert!(db.has_ledger_continuation("fence").unwrap(), "{label}");
+    assert_eq!(
+        spawn_count(&commands),
+        0,
+        "{label}: nothing before publication"
+    );
+    let rounds_after_request = db.task_revision_rounds("fence").unwrap();
+
+    if matches!(
+        case,
+        RevisionFenceCase::FinishedRunSuperseded | RevisionFenceCase::RunlessSuperseded
+    ) {
+        // A later lifecycle operation (the operator's resume) starts a run.
+        db.insert_stage_run(run("resumed-run")).unwrap();
+    }
+
+    let state = match recovery {
+        RevisionFenceRecovery::DeferredFlush => state,
+        RevisionFenceRecovery::Restart => {
+            drop(app);
+            drop(state);
+            let restarted = Arc::new(super::AppState::new(config.clone()));
+            crate::task_store::recover_on_startup(
+                &Db::open(&config.db_path).unwrap(),
+                &config.db_path,
+            );
+            restarted
+        }
+    };
+    crate::http_api::task_actions::resume_ledger_continuations(Arc::clone(&state)).await;
+    crate::http_api::wait_for_task_mutation_to_finish(&state, "fence").await;
+    if matches!(
+        case,
+        RevisionFenceCase::BoundRun | RevisionFenceCase::Runless
+    ) {
+        wait_for_running_task_stage(&db, "fence", "in progress").await;
+        crate::http_api::wait_for_task_mutation_to_finish(&state, "fence").await;
+    }
+    // A second pass never adds anything.
+    crate::http_api::task_actions::resume_ledger_continuations(Arc::clone(&state)).await;
+    crate::http_api::wait_for_task_mutation_to_finish(&state, "fence").await;
+
+    let outcome = (
+        spawn_count(&commands),
+        rounds_after_request,
+        db.task_revision_rounds("fence").unwrap(),
+        db.has_ledger_continuation("fence").unwrap(),
+    );
+    let _ = std::fs::remove_dir_all(&daemon_dir);
+    let _ = std::fs::remove_dir_all(&repo_root);
+    outcome
+}
+
+/// Both sides of the revision fence, each across a deferred flush and a
+/// restart: an owed reviser starts exactly once (bound run, and a task that
+/// never ran), and a continuation superseded by a later lifecycle operation
+/// never starts (a finished run the operator resumed, and a runless task a
+/// run later appeared on).
+#[tokio::test]
+async fn revision_continuations_are_fenced_to_their_run_generation() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    for recovery in [
+        RevisionFenceRecovery::DeferredFlush,
+        RevisionFenceRecovery::Restart,
+    ] {
+        for case in [
+            RevisionFenceCase::BoundRun,
+            RevisionFenceCase::Runless,
+            RevisionFenceCase::FinishedRunSuperseded,
+            RevisionFenceCase::RunlessSuperseded,
+        ] {
+            let (spawns, rounds_after_request, rounds_after, continuation_left) =
+                run_revision_fence_case(case, recovery).await;
+            let cell = format!("{case:?}/{recovery:?}");
+            let owed = matches!(
+                case,
+                RevisionFenceCase::BoundRun | RevisionFenceCase::Runless
+            );
+            assert_eq!(spawns, usize::from(owed), "{cell}: reviser spawns");
+            assert_eq!(
+                rounds_after, rounds_after_request,
+                "{cell}: round spent once"
+            );
+            if case != RevisionFenceCase::FinishedRunSuperseded {
+                // Agent-origin requests spend exactly one round.
+                assert_eq!(rounds_after, 1, "{cell}");
+            }
+            assert!(!continuation_left, "{cell}: continuation settled");
+        }
+    }
+}

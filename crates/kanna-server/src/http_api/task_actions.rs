@@ -2383,11 +2383,14 @@ pub(super) async fn complete_stage(
                             "completionTransition": current_run.completion_transition,
                             "trigger": current_run.trigger,
                             "resultId": result_entry.entry_id,
-                            // The fence: this transition is owed only while
-                            // the task is still at this stage with this run
-                            // as its latest.
                             "runId": current_run.id,
+                            // The fence: owed until claimed, stale once the
+                            // task leaves this stage or a later lifecycle
+                            // operation advances its run generation.
                             "stage": task_stage,
+                            "generation": db
+                                .task_run_generation(&task_id)
+                                .map_err(|e| db_write_error("db error", e))?,
                         }),
                     )
                 } else {
@@ -2672,22 +2675,23 @@ fn continuation_still_owed(
         return Ok(false);
     }
     let payload = &continuation.payload;
-    // Every continuation is written with its fence; one without it cannot be
-    // proven current.
-    let Some(stage) = payload.get("stage").and_then(serde_json::Value::as_str) else {
+    // Every continuation is written with its fence — the stage and the run
+    // generation its operation was accepted against. One without it cannot
+    // be proven current.
+    let (Some(stage), Some(generation)) = (
+        payload.get("stage").and_then(serde_json::Value::as_str),
+        payload
+            .get("generation")
+            .and_then(serde_json::Value::as_i64),
+    ) else {
         return Ok(false);
     };
     if item.stage.as_deref() != Some(stage) {
         return Ok(false);
     }
-    // Without a recorded run the continuation cannot be tied to the session
-    // it concluded, so it is never treated as matching whatever run is live.
-    let Some(run_id) = payload.get("runId").and_then(serde_json::Value::as_str) else {
-        return Ok(false);
-    };
-    Ok(db
-        .latest_stage_run(&continuation.task_id)?
-        .is_some_and(|latest| latest.id == run_id))
+    // Owed until claimed; superseded only by a later lifecycle operation
+    // (resume, rerun, another transition), each of which starts a run.
+    Ok(db.task_run_generation(&continuation.task_id)? == generation)
 }
 
 fn owed_transition(
@@ -3216,6 +3220,10 @@ pub(super) async fn request_revision(
                     // run, whether or not this request was the one allowed to
                     // finish it (a human may revise a run that already ended).
                     let concluded_run_id = db.latest_stage_run(&source_task_id)?.map(|run| run.id);
+                    // The fence every revision continuation has, whether or
+                    // not a run preceded it: the run generation it was
+                    // accepted against (0 for a task that never ran).
+                    let generation = db.task_run_generation(&source_task_id)?;
                     let continuation_operation_id =
                         format!("revision:{source_task_id}:{event_floor}");
                     db.put_ledger_continuation(
@@ -3224,6 +3232,7 @@ pub(super) async fn request_revision(
                         crate::db::task_store::REVISION_CONTINUATION,
                         &serde_json::json!({
                             "stage": source_stage,
+                            "generation": generation,
                             "runId": concluded_run_id,
                             "targetStage": payload.target_stage,
                             "prompt": revision_prompt,
