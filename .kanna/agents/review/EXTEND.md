@@ -1,4 +1,4 @@
-## Verification Proportional to the Change
+## Kanna Repository Test Requirements
 
 Owner feedback (2026-09-10): small terminology and MCP-output changes took
 hours through repeated verification and review. Choose checks from the actual

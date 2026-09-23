@@ -3172,16 +3172,30 @@ fn agent_definition_of_any_length_or_shape_resolves() {
 }
 
 /// Bundled definition-formula agents (`implement`, `pr` from T10; `mockup`
-/// from T10d) resolve through the same path production task creation uses, and
-/// remain lean by not repeating what the runtime preamble injects — that
-/// leanness is a goal for what Kanna ships, never something the loader
-/// enforces (spec §12).
+/// from T10d; `plan`, `architect`, `researcher`, `review`, `commit`, `setup`,
+/// `workflow-factory`, `agent-factory` from T10e) resolve through the same
+/// path production task creation uses, and remain lean by not repeating what
+/// the runtime preamble injects — that leanness is a goal for what Kanna
+/// ships, never something the loader enforces (spec §12; T10g removed the
+/// enforcement this test used to also prove).
 #[test]
 fn bundled_definition_formula_agents_resolve_from_compiled_resources() {
     let repo_root = init_git_repo_without_provider_fixtures("formula-builtins");
     publish_origin_main(&repo_root, "publish empty repo for formula builtins");
 
-    for name in ["implement", "pr", "mockup"] {
+    for name in [
+        "implement",
+        "pr",
+        "mockup",
+        "plan",
+        "architect",
+        "researcher",
+        "review",
+        "commit",
+        "setup",
+        "workflow-factory",
+        "agent-factory",
+    ] {
         let definition = resolve_test_agent_definition(&repo_root, name).unwrap();
         assert!(!definition.description.trim().is_empty(), "{name}");
         assert!(!definition.agent_providers.is_empty(), "{name}");
@@ -3193,9 +3207,10 @@ fn bundled_definition_formula_agents_resolve_from_compiled_resources() {
 /// A long EXTEND.md merged over a long base definition resolves fine — no
 /// length or shape check runs on the resolved document either. The extension
 /// content is this repo's own original 30-line `review/EXTEND.md` (from
-/// 890e30b50, "Verification Proportional to the Change"), layered over the
-/// current bundled `review` agent, which by itself is already well past any
-/// formula the engine used to enforce.
+/// 890e30b50, "Verification Proportional to the Change", restored in full by
+/// T10e's round-2 revision per the owner's decision that the formula is a
+/// leanness goal, never an enforced limit), layered over the current bundled
+/// `review` agent.
 #[test]
 fn agent_definition_long_base_and_long_extension_merge_resolves_fine() {
     const REVIEW_EXTEND: &str = "## Verification Proportional to the Change\n\nOwner feedback (2026-09-10): small terminology and MCP-output changes took\nhours through repeated verification and review. Choose checks from the actual\nchanged behavior and failure modes; do not run `./kd test all` automatically\nfor every review or revision.\n\nFor terminology, documentation, and bounded presentation changes, review the\ndiff and run the relevant definition, compatibility, or component contracts.\nA label change does not by itself require a desktop/mobile appearance matrix\nor justify adjacent layout or accessibility behavior changes. For bounded\nAPI output changes, exercise the real affected routes and consumers, including\nunknown/error and compatibility cases; unrelated native UI gates add no proof.\n\nReuse recorded verification when its command, result, and reviewed head are\nknown and the relevant code is unchanged. Check patch equivalence after a\nrebase. A fresh stage worktree alone is not a reason to repeat a full build.\nIndependent review means independently assessing the code and evidence; it\ndoes not require duplicating every author's test run.\n\nRun `./kd test all` for broad changes or changes whose impact cannot be bounded\nby focused checks, and when explicitly required for a release. Keep meaningful\nintegration tests for changed process, persistence, and protocol boundaries.\nAfter a revision, verify the correction and affected contracts; repeat broader\nchecks only when the new diff, a failure, or an unresolved risk justifies them.\n\nRequest revisions for concrete defects caused by the task. Keep unrelated\nfailures and improvements as follow-ups. Record actual exits and skipped or\ncancelled checks honestly; an accepted review with a qualified gate failure\nmust never be reported as a full gate pass.";
