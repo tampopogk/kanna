@@ -1,0 +1,39 @@
+{
+  "created": {
+    "claims": [
+      {
+        "agent": "merge",
+        "remoteUrlHash": "identity-remote-hash",
+        "taskId": "$CREATED_TASK"
+      }
+    ],
+    "runs": [
+      {
+        "agent": "merge",
+        "kind": "main",
+        "stage": "in progress"
+      }
+    ],
+    "task": {
+      "displayName": "Merge Master",
+      "pinned": 1,
+      "pipeline": "singleton-merge",
+      "prompt": "MERGE feature/login -> main [TASK handoff-source] [PR https://github.com/acme/repo/pull/123]: Add the login form",
+      "stage": "in progress"
+    }
+  },
+  "delivered": {
+    "inputs": [
+      {
+        "input": "MERGE feature/login -> main [TASK handoff-source] [PR https://github.com/acme/repo/pull/123]: Add the login form",
+        "taskId": "resident-master"
+      }
+    ],
+    "response": {
+      "created": false,
+      "ownerDesktopId": "desktop-merge-identity",
+      "ownerLocalRepoId": "repo-1",
+      "taskId": "resident-master"
+    }
+  }
+}

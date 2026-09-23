@@ -316,6 +316,7 @@ mod e2e_sql_routes;
 mod exit_routing;
 mod input;
 mod machine_stats_routes;
+mod merge_singleton_identity;
 mod mutation_provenance;
 mod raw_input;
 mod recent_workflows;
