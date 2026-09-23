@@ -23,6 +23,7 @@ import type {
 import {
   artifactNavigationPath,
   buildArtifactDocument,
+  isolateArtifactDocument,
   type ArtifactDocument
 } from "./buildArtifactDocument";
 
@@ -38,7 +39,12 @@ import {
  * native bridge (no `onMessage`, no injected script), no storage, no cookies,
  * no file access and no new windows, and it refuses every navigation: an
  * in-tree link arrives as `kanna-artifact:<path>` and the host opens that file
- * itself. The whitelist is `*` on purpose — react-native-webview hands any URL
+ * itself. That callback is not the barrier on its own: on Android the library
+ * allows a navigation the JS thread has not answered within 250 ms, so the page
+ * runs inside a sandboxed frame of a script-free host document
+ * (`isolateArtifactDocument`), where the engine refuses top-level navigation
+ * and new windows and the host policy refuses any frame navigation but an
+ * in-tree link. The whitelist is `*` on purpose — react-native-webview hands any URL
  * that fails the whitelist to `Linking.openURL`, which would let a page open
  * Safari or another app.
  */
@@ -95,7 +101,8 @@ export function shouldStartArtifactLoad(
   request: Pick<WebViewNavigation, "url">,
   open: (path: string) => void
 ): boolean {
-  if (request.url === "about:blank") return true;
+  // The host document itself, and the sandboxed frame it hosts the page in.
+  if (request.url === "about:blank" || request.url === "about:srcdoc") return true;
   const path = artifactNavigationPath(request.url);
   if (path) open(path);
   return false;
@@ -274,7 +281,7 @@ export function ArtifactViewer({
           </Pressable>
         </View>
 
-        {detail ? (
+        {detail || newer.length > 0 ? (
           <View style={styles.navBar}>
             <Pressable
               accessibilityRole="button"
@@ -373,7 +380,7 @@ export function ArtifactViewer({
                 originWhitelist={["*"]}
                 setSupportMultipleWindows={false}
                 sharedCookiesEnabled={false}
-                source={{ html: visibleDocument.document.html }}
+                source={{ html: isolateArtifactDocument(visibleDocument.document.html) }}
                 style={styles.webView}
                 testID="artifact-viewer-webview"
                 thirdPartyCookiesEnabled={false}

@@ -25,6 +25,34 @@ import { callVueMethod, execDb } from "../helpers/vue";
 const WORKTREE_ROOT = fileURLToPath(new URL("../../../../../", import.meta.url));
 const SCREENSHOT_DIR = join(WORKTREE_ROOT, ".tmp", "visual");
 
+/** Every attempt the probe makes; each must report blocked, or an opaque origin. */
+const PROBES = [
+  "origin",
+  "read host document",
+  "Tauri bridge",
+  "React Native bridge",
+  "cookies",
+  "localStorage",
+  "window.open",
+  "fetch control API",
+  "navigate top window",
+];
+
+/**
+ * A test-only listener for the probe's reports, installed through WebDriver:
+ * nothing in the app listens for these messages. Only messages from the
+ * artifact frame's own window count.
+ */
+const INSTALL_PROBE_LISTENER = `
+  window.__artifactProbeReports = [];
+  window.addEventListener("message", (event) => {
+    const frame = document.querySelector('[data-testid="artifact-frame"]');
+    if (!frame || event.source !== frame.contentWindow) return;
+    if (event.data && event.data.kind === "artifact-probe") {
+      window.__artifactProbeReports.push({ name: event.data.name, outcome: event.data.outcome, origin: event.origin });
+    }
+  });`;
+
 function probeHtml(controlBaseUrl: string, heading: string): string {
   return `<!doctype html>
 <html><head>
@@ -45,6 +73,9 @@ function report(name, outcome) {
   item.textContent = name + ": " + outcome;
   item.className = /^(blocked|absent|opaque)/.test(outcome) ? "ok" : "bad";
   probe.appendChild(item);
+  // The host cannot read into this opaque-origin frame, so the outcome is
+  // also posted out for the test's own listener to check.
+  window.parent.postMessage({ kind: "artifact-probe", name, outcome }, "*");
 }
 function attempt(name, action, blockedWhen) {
   try {
@@ -153,6 +184,7 @@ describe("artifact viewer", () => {
     });
     await api("POST", `/v1/repos/${repoId}/artifacts/${v2Id}/decisions`, { who: "owner", what: "approved with the accent change" });
 
+    await client.executeSync(INSTALL_PROBE_LISTENER);
     const opened = await callVueMethod(client, "appModals.openArtifact", repoId, v2Id);
     expect(opened).not.toMatchObject({ __error: expect.anything() });
     await client.waitForElement('[data-testid="artifact-frame"]', 10_000);
@@ -165,8 +197,22 @@ describe("artifact viewer", () => {
       `return Array.from(document.querySelectorAll('[data-testid="artifact-comment"]')).map((node) => node.textContent);`,
     )).toEqual([expect.stringContaining("Header accent is too loud")]);
 
-    // Give the probe time to try everything, including the delayed top navigation.
-    await sleep(2_500);
+    // Every probe ran, from inside the frame, and was refused.
+    type ProbeReport = { name: string; outcome: string; origin: string };
+    const deadline = Date.now() + 10_000;
+    let reports: ProbeReport[] = [];
+    while (Date.now() < deadline) {
+      reports = await client.executeSync<ProbeReport[]>("return window.__artifactProbeReports ?? [];");
+      if (PROBES.every((name) => reports.some((report) => report.name === name))) break;
+      await sleep(200);
+    }
+    expect(reports.map((report) => report.name).sort()).toEqual([...PROBES].sort());
+    for (const report of reports) {
+      expect(report.outcome, report.name).toMatch(/^(blocked|opaque)/);
+      // Posted by the sandboxed page itself, which has no origin of its own.
+      expect(report.origin, report.name).toBe("null");
+    }
+    await sleep(500);
     await mkdir(SCREENSHOT_DIR, { recursive: true });
     await client.screenshot(join(SCREENSHOT_DIR, "desktop-artifact-viewer.png"));
 

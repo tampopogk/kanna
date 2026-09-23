@@ -409,3 +409,41 @@ export function artifactNavigationPath(url: string): string | null {
 function encodeArtifactPath(path: string): string {
   return path.split("/").map(encodeURIComponent).join("/");
 }
+
+/**
+ * The policy of the host document that frames an artifact page. A `srcdoc`
+ * frame inherits it, so it is the page's policy except that the host may
+ * navigate its one child frame to an in-tree `kanna-artifact:` link.
+ */
+export const ARTIFACT_HOST_POLICY = ARTIFACT_DOCUMENT_POLICY
+  .replace("frame-src 'none'", `frame-src ${ARTIFACT_NAVIGATION_SCHEME}`)
+  .replace("child-src 'none'", `child-src ${ARTIFACT_NAVIGATION_SCHEME}`);
+
+/** Sandbox flags for the frame that runs an artifact page: scripts, nothing else. */
+export const ARTIFACT_FRAME_SANDBOX = "allow-scripts";
+
+/**
+ * Put an artifact page inside a script-free host document, in a frame
+ * sandboxed with `allow-scripts` alone.
+ *
+ * The WebView's navigation callback cannot be the only thing standing between
+ * a page and a top-level navigation: on Android, react-native-webview allows a
+ * navigation whenever the JS thread has not answered within 250 ms. Inside
+ * this frame the engine itself refuses the page's attempts to navigate the
+ * top-level document, open a window or submit a form, without asking the JS
+ * thread. The frame can only navigate itself, and the host policy lets that
+ * happen only for `kanna-artifact:` links, which carry no network request.
+ */
+export function isolateArtifactDocument(page: string): string {
+  const srcdoc = page
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  return `<!doctype html>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="${ARTIFACT_HOST_POLICY}">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>html,body{margin:0;height:100%;background:#fff}iframe{display:block;border:0;width:100%;height:100%}</style>
+<iframe sandbox="${ARTIFACT_FRAME_SANDBOX}" referrerpolicy="no-referrer" srcdoc="${srcdoc}"></iframe>`;
+}

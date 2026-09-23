@@ -23,7 +23,13 @@ vi.mock("react-native", () => ({
 vi.mock("react-native-webview", () => ({ WebView: "WebView" }));
 
 import { ArtifactViewer, shouldStartArtifactLoad } from "./ArtifactViewer";
-import { decodeBase64, decodeUtf8, encodeBase64, encodeUtf8 } from "./buildArtifactDocument";
+import {
+  ARTIFACT_DOCUMENT_POLICY,
+  decodeBase64,
+  decodeUtf8,
+  encodeBase64,
+  encodeUtf8
+} from "./buildArtifactDocument";
 
 const V1 = "1".repeat(40);
 const V2 = "2".repeat(40);
@@ -145,6 +151,18 @@ function webView(): ReactTestInstance {
   return view;
 }
 
+/** The artifact page the host document frames, decoded from its `srcdoc`. */
+function framedPage(): string {
+  const host = webView().props.source.html as string;
+  const srcdoc = host.match(/<iframe [^>]*srcdoc="([^"]*)"><\/iframe>/)?.[1];
+  expect(srcdoc).toBeDefined();
+  return srcdoc!
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
 function inlinedStylesheet(html: string): string {
   const url = html.match(/href="data:text\/css[^,]*,([^"]+)"/)?.[1] ?? "";
   return decodeUtf8(decodeBase64(url));
@@ -166,7 +184,7 @@ describe("ArtifactViewer (mobile)", () => {
       [V2, "index.html"],
       [V2, "css/site.css"]
     ]);
-    const html = webView().props.source.html as string;
+    const html = framedPage();
     expect(html).toContain("Version two");
     expect(inlinedStylesheet(html)).toContain("height: 120px");
     expect(text(byTestId("artifact-viewer-current-id")[0])).toContain(V2.slice(0, 12));
@@ -178,7 +196,7 @@ describe("ArtifactViewer (mobile)", () => {
       expect(webView().props.onShouldStartLoadWithRequest({ url: "kanna-artifact:pages/about.html" })).toBe(false);
     });
     await flush();
-    const html = webView().props.source.html as string;
+    const html = framedPage();
     expect(html).toContain("About v2");
     expect(inlinedStylesheet(html)).toContain("height: 120px");
     expect(api.readArtifactFile).toHaveBeenCalledWith("repo-1", V2, "pages/about.html");
@@ -187,11 +205,11 @@ describe("ArtifactViewer (mobile)", () => {
   it("follows the previous link to the older tree id and comes back", async () => {
     await open(V2);
     await press("artifact-viewer-previous");
-    expect(webView().props.source.html).toContain("Version one");
+    expect(framedPage()).toContain("Version one");
     expect(byTestId("artifact-viewer-comment").map(text)).toEqual([expect.stringContaining("first pass")]);
     expect(byTestId("artifact-viewer-previous")[0].props.disabled).toBe(true);
     await press("artifact-viewer-newer");
-    expect(webView().props.source.html).toContain("Version two");
+    expect(framedPage()).toContain("Version two");
   });
 
   it("shows comment anchors and decisions recorded on the exact version only", async () => {
@@ -210,7 +228,7 @@ describe("ArtifactViewer (mobile)", () => {
 
     // The anchor opens that file of the same tree at the anchored line.
     await press("artifact-viewer-anchor");
-    const html = webView().props.source.html as string;
+    const html = framedPage();
     expect(html).toContain("const targetLine = 2;");
     expect(api.readArtifactFile).toHaveBeenLastCalledWith("repo-1", V2, "css/site.css");
   });
@@ -265,11 +283,67 @@ describe("ArtifactViewer (mobile)", () => {
       expect(props.onShouldStartLoadWithRequest({ url }), url).toBe(false);
     }
     expect(props.onShouldStartLoadWithRequest({ url: "about:blank" })).toBe(true);
+    expect(props.onShouldStartLoadWithRequest({ url: "about:srcdoc" })).toBe(true);
     expect(linking.openURL).not.toHaveBeenCalled();
     // The page carries a no-network policy ahead of its own markup.
-    const html = props.source.html as string;
+    const html = framedPage();
     expect(html.indexOf(`<meta http-equiv="Content-Security-Policy" content="default-src 'none';`)).toBeLessThan(html.indexOf("<link"));
     expect(html).toContain("connect-src 'none'");
+  });
+
+  it("does not rely on the JS navigation callback: the page runs in a sandboxed frame of a script-free host", async () => {
+    // On Android, react-native-webview allows a navigation the JS thread has
+    // not answered within 250 ms. The engine must refuse top-level navigation
+    // itself, which a frame sandboxed without allow-top-navigation does.
+    await open(V2);
+    const host = webView().props.source.html as string;
+    const withoutFrame = host.replace(/<iframe [^>]*><\/iframe>/, "");
+    // Exactly one frame, and the host has no script, link, form or refresh of
+    // its own that could navigate the top-level document.
+    expect(host.match(/<iframe /g)).toHaveLength(1);
+    expect(withoutFrame).not.toMatch(/<script|<a |<form|http-equiv="refresh"|<base/i);
+    const frame = host.match(/<iframe ([^>]*?) srcdoc=/)?.[1] ?? "";
+    expect(frame).toContain('sandbox="allow-scripts"');
+    for (const flag of ["allow-top-navigation", "allow-popups", "allow-same-origin", "allow-forms", "allow-modals"]) {
+      expect(frame).not.toContain(flag);
+    }
+    // The host policy is the page's policy, except that its one frame may
+    // navigate only to an in-tree link, which has no network request.
+    const hostPolicy = host.match(/<meta http-equiv="Content-Security-Policy" content="([^"]+)">/)?.[1] ?? "";
+    expect(hostPolicy).toContain("frame-src kanna-artifact:;");
+    expect(hostPolicy).toContain("child-src kanna-artifact:;");
+    expect(hostPolicy.replace(/frame-src [^;]+|child-src [^;]+/g, ""))
+      .toBe(ARTIFACT_DOCUMENT_POLICY.replace(/frame-src [^;]+|child-src [^;]+/g, ""));
+    expect(hostPolicy).not.toMatch(/https?:|\*/);
+    // The page inside the frame is intact, quotes and ampersands included.
+    expect(framedPage()).toContain('<h1>Version two</h1>');
+  });
+
+  it("keeps Newer available when the previous version cannot be read", async () => {
+    const api = client();
+    api.getArtifact.mockImplementation(async (_repoId: string, artifactId: string) => {
+      if (artifactId === V1) throw new Error(`Remote request failed (404): {"error":"artifact_not_found","artifactId":"${V1}"}`);
+      return DETAILS[artifactId];
+    });
+    await act(async () => {
+      renderer = create(
+        <ArtifactViewer
+          repoId="repo-1"
+          initialArtifactId={V2}
+          getArtifact={api.getArtifact}
+          readArtifactFile={api.readArtifactFile}
+          onClose={() => undefined}
+        />
+      );
+    });
+    await flush();
+    await press("artifact-viewer-previous");
+    expect(text(byTestId("artifact-viewer-unavailable")[0])).toContain("No artifact with this id");
+    const [newer] = byTestId("artifact-viewer-newer");
+    expect(newer.props.disabled).toBe(false);
+    await press("artifact-viewer-newer");
+    expect(text(byTestId("artifact-viewer-current-id")[0])).toContain(V2.slice(0, 12));
+    expect(framedPage()).toContain("Version two");
   });
 
   it("maps only in-tree navigations to the host and refuses the rest", () => {
@@ -277,5 +351,8 @@ describe("ArtifactViewer (mobile)", () => {
     expect(shouldStartArtifactLoad({ url: "kanna-artifact:pages/a%20b.html#x" }, (path) => opened.push(path))).toBe(false);
     expect(shouldStartArtifactLoad({ url: "https://example.com/pages/a.html" }, (path) => opened.push(path))).toBe(false);
     expect(opened).toEqual(["pages/a b.html"]);
+    // The host's own document and the sandboxed frame it loads are the only
+    // loads the callback lets through.
+    expect(shouldStartArtifactLoad({ url: "about:srcdoc" }, (path) => opened.push(path))).toBe(true);
   });
 });
