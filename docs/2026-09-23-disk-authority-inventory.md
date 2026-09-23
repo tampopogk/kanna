@@ -35,6 +35,14 @@ numbers, text as strings, NULL as null) plus its SQLite `rowid`, because
 several readers order runs, intents and transfers by it. Tables with no
 rows are omitted.
 
+`state.reflects_through` is the highest ledger sequence whose effects the
+rows already hold: the highest committed entry, published or still pending,
+read in the same SQLite transaction as the rows (every entry commits with
+the mutation it records). `state.unreflected_reservations` lists sequences
+below it that were only reserved then, whose effects are not in the rows
+yet. `ledger.published_through` stays the publication watermark only; the
+rows can be ahead of it.
+
 `repo.json` is `{ schema_version, repo_id, registration: {<repo columns>},
 sidebar_order, snapshot_revision }`.
 
@@ -114,7 +122,10 @@ Two rules on top of copying:
 
 - **The ledger wins over a stale `task.json`.** A crash between publishing
   an entry and rewriting `task.json` leaves `state` behind the ledger. The
-  entries after `ledger.published_through` are applied on top of its rows:
+  entries after `state.reflects_through` (and any reservation it lists as
+  unreflected) are applied on top of its rows, and only they can pay an
+  owed transition; a `state` without the field falls back to
+  `ledger.published_through`:
   a verdict or engine-observed ending closes its run (a run the rows do not
   hold yet is projected from the ledger), a routed result spends its
   budget, a send-back resets it.

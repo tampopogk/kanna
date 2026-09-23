@@ -31,9 +31,11 @@
 //! `owning_machine` (null until recorded per task), `created_at`,
 //! `updated_at`, `closed_at`, `snapshot_revision`,
 //! `ledger.published_through` (the highest published sequence) and, since
-//! T13, `state {version, tables}`: the task's rows of every table that holds
-//! durable task state, verbatim with their rowids
-//! ([`crate::db::task_state`]). A carried row's change owes a new
+//! T13, `state {version, reflects_through, unreflected_reservations,
+//! tables}`: the task's rows of every table that holds durable task state,
+//! verbatim with their rowids ([`crate::db::task_state`]), and the ledger
+//! boundary those rows reflect (the highest committed sequence, pending
+//! included, read with them; reservations below it not yet filled). A carried row's change owes a new
 //! `task.json` in the changing statement (a trigger bumps the snapshot
 //! revision). A task removed from the database gets a tombstone
 //! `{schema_version, task_id, repo_id, removed: true}` in place of its

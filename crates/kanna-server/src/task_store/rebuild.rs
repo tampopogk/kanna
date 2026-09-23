@@ -36,7 +36,9 @@
 //!
 //! **The ledger is newer than a stale `task.json`.** A crash between
 //! publishing an entry and rewriting `task.json` leaves `state` behind the
-//! ledger; the entries after `ledger.published_through` are applied on top
+//! ledger; the entries after `state.reflects_through` (the highest ledger
+//! sequence the rows already reflect, read with them; a reservation below
+//! it that was still unfilled counts as not reflected) are applied on top
 //! of its rows (a verdict or engine-observed ending closes its run, a routed
 //! result spends its budget, a send-back resets it).
 //!
@@ -167,6 +169,12 @@ pub struct TaskSnapshot {
     /// `state.tables` (T13): the task's rows of each carried table. `None`
     /// for a `task.json` written before `state` existed.
     pub state: Option<Map<String, Value>>,
+    /// `state.reflects_through` (T13): the highest ledger sequence whose
+    /// effects the `state` rows already hold, and the reserved sequences
+    /// below it they do not. `None` for a `state` written before the field
+    /// existed; the rebuild then falls back to `published_through`.
+    pub state_reflects_through: Option<i64>,
+    pub state_unreflected: Vec<i64>,
 }
 
 /// One published ledger file and its exact bytes.
@@ -229,8 +237,17 @@ pub fn parse_task_snapshot(bytes: &[u8]) -> Result<TaskSnapshot, String> {
         None | Some(Value::Null) => None,
         Some(state) => Some(parse_state(state)?),
     };
+    let state_value = value.get("state").cloned().unwrap_or(Value::Null);
+    let state_reflects_through = state_value.get("reflects_through").and_then(Value::as_i64);
+    let state_unreflected = state_value
+        .get("unreflected_reservations")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_i64).collect())
+        .unwrap_or_default();
     Ok(TaskSnapshot {
         state,
+        state_reflects_through,
+        state_unreflected,
         schema_version,
         task_id: required("task_id")?,
         repo_id: required("repo_id")?,
@@ -1301,16 +1318,24 @@ fn project_state(
             });
         }
     }
+    // Entries whose effects the rows do not hold yet: above the boundary
+    // the rows were read at, or reserved below it and filled afterwards. A
+    // `state` from before `reflects_through` existed falls back to the
+    // publication watermark.
+    let boundary = snapshot
+        .state_reflects_through
+        .unwrap_or(snapshot.published_through);
     let newer: Vec<&LedgerFile> = directory
         .entries
         .iter()
         .map(|entry| &entry.file)
-        .filter(|file| file.sequence > snapshot.published_through)
+        .filter(|file| {
+            file.sequence > boundary || snapshot.state_unreflected.contains(&file.sequence)
+        })
         .collect();
     if !newer.is_empty() {
         projection.diagnostics.push(format!(
-            "{task_id}: task.json was written through sequence {} and the ledger reaches {ledger_reaches}; the {} newer entries are applied on top of its state",
-            snapshot.published_through,
+            "{task_id}: task.json state reflects the ledger through sequence {boundary} and the ledger reaches {ledger_reaches}; the {} newer entries are applied on top of it",
             newer.len()
         ));
     }

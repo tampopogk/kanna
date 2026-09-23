@@ -1039,7 +1039,45 @@ impl Db {
                 tables.insert(table.table.to_string(), Value::Array(rows));
             }
         }
-        Ok(json!({ "version": DISK_STATE_VERSION, "tables": tables }))
+        // The ledger boundary these rows reflect, read in the same snapshot:
+        // every committed entry (published or still pending) was written in
+        // the transaction of the mutation it records, so its effects are in
+        // the rows. A sequence only reserved (`kind` NULL) is not: the
+        // operation that reserved it has not committed what it records.
+        let (reflects_through, unreflected) = match self.ledger_state_boundary(task_id) {
+            Ok(boundary) => boundary,
+            Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+                if message.starts_with("no such table") =>
+            {
+                (0, Vec::new())
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(json!({
+            "version": DISK_STATE_VERSION,
+            "reflects_through": reflects_through,
+            "unreflected_reservations": unreflected,
+            "tables": tables,
+        }))
+    }
+
+    /// The highest committed ledger sequence of the task, pending entries
+    /// included, and the reserved-but-unfilled sequences below it.
+    fn ledger_state_boundary(&self, task_id: &str) -> Result<(i64, Vec<i64>), rusqlite::Error> {
+        let through: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(sequence), 0) FROM task_ledger_entry
+             WHERE task_id = ? AND kind IS NOT NULL",
+            [task_id],
+            |row| row.get(0),
+        )?;
+        let mut statement = self.conn.prepare(
+            "SELECT sequence FROM task_ledger_entry
+             WHERE task_id = ? AND kind IS NULL AND sequence < ? ORDER BY sequence",
+        )?;
+        let reserved = statement
+            .query_map(params![task_id, through], |row| row.get(0))?
+            .collect::<Result<Vec<i64>, _>>()?;
+        Ok((through, reserved))
     }
 
     /// `repo.json`: the registration row and the sidebar order of its

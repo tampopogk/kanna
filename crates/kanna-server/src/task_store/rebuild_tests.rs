@@ -961,3 +961,197 @@ fn tombstones_and_repository_records_are_read() {
     assert!(db.get_pipeline_item("t-gone").unwrap().is_none());
     assert!(db.repos_with_pending_disk_record().unwrap().is_empty());
 }
+
+/// The rows task.json carries can already reflect entries that are not
+/// published yet (committed behind a reservation, or after the publisher
+/// read its pending list). Here the engine records a lost session's ending,
+/// the daemon proves the session alive and the run is restored, and a
+/// transition is owed — all while publication is held at a reservation, so
+/// task.json is written with state newer than its publication watermark.
+/// The next flush publishes the ending but leaves task.json as it was.
+/// The rebuild must neither replay the ending over the restored run nor
+/// take anything it already reflects as payment for the owed transition.
+#[test]
+fn entries_the_state_already_reflects_are_not_replayed() {
+    let path = Db::test_db_path("rebuild-reflected");
+    let _ = std::fs::remove_file(&path);
+    let db = Db::open_migrated(&path).unwrap();
+    let root = super::root_for_db(&path);
+    db.insert_test_repo_with_path(REPO, "/tmp/repo-one", "Repo One")
+        .unwrap();
+    db.insert_test_pipeline_item(
+        "t-1",
+        REPO,
+        "Prompt",
+        Some("t-1"),
+        "review",
+        "2026-09-23 00:00:00",
+    )
+    .unwrap();
+    db.mark_task_ledger_backfilled("t-1", 0).unwrap();
+    fn run(id: &str) -> crate::db::NewStageRun<'_> {
+        crate::db::NewStageRun {
+            id,
+            task_id: "t-1",
+            stage: "review",
+            kind: "main",
+            agent: Some("review"),
+            agent_provider: Some("claude"),
+            model: None,
+            effort: None,
+            status: "running",
+            result: None,
+            feedback: None,
+            session_id: Some("t-1"),
+            provider_session_id: None,
+            cwd: None,
+            resumed_from_run_id: None,
+        }
+    }
+    // An earlier run with a verdict under its own operation, published.
+    db.insert_stage_run(run("run-0")).unwrap();
+    db.finish_stage_run(
+        "run-0",
+        "succeeded",
+        Some(r#"{"status":"success","summary":"ok","metadata":null}"#),
+        None,
+    )
+    .unwrap();
+    db.enqueue_ledger_entry(crate::db::task_store::NewLedgerEntry {
+        task_id: "t-1",
+        kind: LedgerEntryKind::Result,
+        operation_id: Some("op-verdict-0"),
+        source_kind: "stage_run",
+        source_id: "run-0",
+        source_origin: None,
+        historical: false,
+        recorded_at: None,
+        run_id: Some("run-0"),
+        declared_role: Some("agent"),
+        channel_identity: &crate::mutation_provenance::ChannelIdentity::Server,
+        body: json!({ "status": "success", "stage": "review", "run_kind": "main" }),
+        message: Some("ok"),
+        hold_events_after: None,
+        reserved_sequence: None,
+    })
+    .unwrap();
+    db.insert_stage_run(run("run-1")).unwrap();
+    super::flush_task(&db, &path, "t-1").unwrap();
+
+    // Publication is held at a reservation while the mutations commit.
+    let reserved = db.reserve_ledger_sequence("t-1").unwrap();
+    db.finish_latest_running_stage_run("t-1", "failed", None, Some("lost"))
+        .unwrap()
+        .unwrap();
+    assert!(db
+        .restore_latest_interrupted_stage_run("t-1", "lost")
+        .unwrap());
+    db.put_ledger_continuation(
+        "t-1",
+        "op-owed",
+        "stage_completion",
+        &json!({ "runId": "run-1" }),
+    )
+    .unwrap();
+    let outcome = super::flush_task(&db, &path, "t-1").unwrap();
+    assert!(outcome.waiting_on_reservation);
+    let dir = super::task_dir(&root, REPO, "t-1");
+    let written: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("task.json")).unwrap()).unwrap();
+    assert_eq!(written["ledger"]["published_through"], json!(reserved - 1));
+    assert_eq!(written["state"]["reflects_through"], json!(reserved + 1));
+    assert_eq!(
+        written["state"]["unreflected_reservations"],
+        json!([reserved])
+    );
+
+    // The reservation is given up; the next flush publishes the ending.
+    // Nothing it publishes owes a new task.json, so the one on disk keeps
+    // the older watermark with state that already reflects the ending, as a
+    // crash before the rewrite would leave it too.
+    db.release_ledger_reservation("t-1", reserved).unwrap();
+    super::flush_task(&db, &path, "t-1").unwrap();
+    let after: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("task.json")).unwrap()).unwrap();
+    assert_eq!(after, written);
+    assert!(dir
+        .join("ledger")
+        .join(ledger_file_name(reserved + 1, LedgerEntryKind::Result))
+        .exists());
+
+    let target = PathBuf::from(Db::test_db_path("rebuild-reflected-target"));
+    let _ = std::fs::remove_file(&target);
+    let report = rebuild_into_new_database(&root, &target).unwrap();
+    let rebuilt = Db::open(target.to_str().unwrap()).unwrap();
+    let restored = rebuilt.stage_run("run-1").unwrap().unwrap();
+    assert_eq!(restored.status, "running", "{:?}", report.diagnostics);
+    assert_eq!(restored.no_work_termination, None);
+    assert_eq!(
+        rebuilt.stage_run("run-0").unwrap().unwrap().status,
+        "succeeded"
+    );
+    assert!(rebuilt.has_ledger_continuation("t-1").unwrap());
+    let continuations: i64 = rebuilt
+        .connection_for_e2e_tests()
+        .query_row("SELECT COUNT(*) FROM task_ledger_continuation", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(continuations, 1);
+    // The ledger itself is complete in the rebuilt outbox.
+    assert_eq!(
+        rebuilt.ledger_published_through("t-1").unwrap(),
+        reserved + 1
+    );
+}
+
+/// A `state` from before `reflects_through` existed falls back to the
+/// publication watermark; with the field, an entry at or below it is not
+/// replayed and does not pay a carried continuation.
+#[test]
+fn the_state_boundary_decides_which_entries_are_newer() {
+    let root = store_root("state-boundary");
+    let tables = json!({
+        "pipeline_item": [task_row("t-1", "task-t-1")],
+        "stage_run": [{ "rowid": 1, "id": "run-1", "task_id": "t-1", "stage": "review",
+                        "kind": "main", "status": "running", "completion_bound": 0,
+                        "started_at": "2026-09-23 10:00:00" }],
+        "task_ledger_continuation": [{ "rowid": 1, "task_id": "t-1", "operation_id": "op-owed",
+                                       "kind": "stage_completion", "payload": "{}",
+                                       "created_at": "2026-09-23 10:00:00" }],
+    });
+    let mut snapshot = with_state(task_json("t-1", "review"), tables);
+    snapshot["state"]["reflects_through"] = json!(1);
+    let mut files = TaskFiles::new(&root, snapshot);
+    files.result(
+        "run-1",
+        json!({ "status": "failure", "stage": "review" }),
+        "reflected",
+    );
+    let projection = project(&[read(&files.dir)]);
+    let run = projection
+        .carried
+        .iter()
+        .find(|row| row.table == "stage_run")
+        .unwrap();
+    assert_eq!(run.row["status"], "running");
+    assert!(projection
+        .carried
+        .iter()
+        .any(|row| row.table == "task_ledger_continuation"));
+
+    // Without the field the watermark (0) decides, as before.
+    let mut directory = read(&files.dir);
+    directory.snapshot.state_reflects_through = None;
+    let projection = project(&[directory]);
+    let run = projection
+        .carried
+        .iter()
+        .find(|row| row.table == "stage_run")
+        .unwrap();
+    assert_eq!(run.row["status"], "failed");
+    assert!(!projection
+        .carried
+        .iter()
+        .any(|row| row.table == "task_ledger_continuation"));
+}
