@@ -1,0 +1,31 @@
+{
+  "$schema": "./schema.json",
+  "name": "shaped",
+  "description": "Use when you know the shape of the change but want a second reader before it ships — the cost of being wrong is worth catching but not worth a plan gate. Implement, then a review agent checks it and can send it back for revision under budget; a human reads the verdict before the PR is opened. Not for work small enough that the test suite alone is review (mechanical), or whose approach still needs deciding before anyone builds it (planned).",
+  "routing": "exits",
+  "stages": [
+    {
+      "name": "in progress",
+      "description": "Agent implements the task; the transition commits its work",
+      "agent": "implement",
+      "prompt": "$TASK_PROMPT",
+      "policy": { "transition": "auto", "loop_transition": "auto" },
+      "exit_commit": true
+    },
+    {
+      "name": "review",
+      "description": "Review agent checks quality and test coverage before the human reads the verdict",
+      "agent": "review",
+      "prompt": "Review branch $BRANCH against base $BASE_REF.",
+      "policy": { "transition": "manual" },
+      "exits": { "revise": "in progress" }
+    },
+    {
+      "name": "pr",
+      "description": "Agent creates a GitHub PR and hands off to the merge master",
+      "agent": "pr",
+      "prompt": "Create a PR for the reviewed work on branch $BRANCH.",
+      "policy": { "transition": "manual", "handoff": "merge" }
+    }
+  ]
+}

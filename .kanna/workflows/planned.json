@@ -1,0 +1,38 @@
+{
+  "$schema": "./schema.json",
+  "name": "planned",
+  "description": "Use when the outcome is already decided and what remains is deciding how to deliver it. Plan (manual gate) -> implement -> review, which chooses by the nature of its findings whether to send the branch back for revision or the approach itself back to plan -> PR, with a human reading the review verdict before it opens. If the product direction itself is still open, route to research first. Skip the plan gate when the shape is already obvious enough to just build (shaped).",
+  "routing": "exits",
+  "stages": [
+    {
+      "name": "plan",
+      "description": "Planning agent studies the task and records the implementation plan; the human reviews it before advancing",
+      "agent": "plan",
+      "prompt": "$TASK_PROMPT",
+      "policy": { "transition": "manual" }
+    },
+    {
+      "name": "in progress",
+      "description": "Agent implements the approved plan; the transition commits its work",
+      "agent": "implement",
+      "prompt": "$TASK_PROMPT",
+      "policy": { "transition": "auto", "loop_transition": "auto" },
+      "exit_commit": true
+    },
+    {
+      "name": "review",
+      "description": "Review agent checks quality and coverage, choosing the revision target by the nature of the findings, before the human reads the verdict",
+      "agent": "review",
+      "prompt": "Review branch $BRANCH against base $BASE_REF. This workflow has a separate plan stage before implementation, so choose the exit by the nature of the blocking findings: implementation defects take \"revise\", back to \"in progress\" as usual; findings that show the approach itself is structurally wrong — the plan cannot produce a correct result however well it is executed — take \"replan\", back to \"plan\", framed as what the revised plan must address.",
+      "policy": { "transition": "manual" },
+      "exits": { "revise": "in progress", "replan": "plan" }
+    },
+    {
+      "name": "pr",
+      "description": "Agent creates a GitHub PR and hands off to the merge master",
+      "agent": "pr",
+      "prompt": "Create a PR for the reviewed work on branch $BRANCH.",
+      "policy": { "transition": "manual", "handoff": "merge" }
+    }
+  ]
+}

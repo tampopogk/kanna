@@ -1,0 +1,57 @@
+{
+  "$schema": "./schema.json",
+  "name": "designed",
+  "description": "Use for front-loaded design: iterate a mockup with an agent, get stakeholders to agree on it and on the plan, then let agents implement, review, and open the PR. The front-loaded flow for work whose shape matters enough to see before anyone builds it. Not for work that is already obvious enough to just build (shaped, planned) or whose outcome is not yet chosen (research).",
+  "routing": "exits",
+  "stages": [
+    {
+      "name": "mockup",
+      "description": "Agent builds an HTML mockup of the task and publishes it as an artifact",
+      "agent": "mockup",
+      "prompt": "$TASK_PROMPT",
+      "policy": { "transition": "manual" }
+    },
+    {
+      "name": "stakeholder",
+      "description": "Gate with no role: stakeholders read the mockup in the artifact viewer and record their decision; approve advances to plan, and an operator sends the task back to mockup (kanna_request_revision, target \"mockup\") to iterate",
+      "policy": { "transition": "manual" }
+    },
+    {
+      "name": "plan",
+      "description": "Planning agent turns the approved mockup into an implementation plan",
+      "agent": "plan",
+      "prompt": "$TASK_PROMPT",
+      "policy": { "transition": "auto" }
+    },
+    {
+      "name": "in progress",
+      "description": "Agent implements the approved plan; the transition commits its work",
+      "agent": "implement",
+      "prompt": "$TASK_PROMPT",
+      "policy": { "transition": "auto", "loop_transition": "auto" },
+      "exit_commit": true
+    },
+    {
+      "name": "review",
+      "description": "Review agent checks quality and coverage, choosing the revision target by the nature of the findings, before the human reads the verdict",
+      "agent": "review",
+      "prompt": "Review branch $BRANCH against base $BASE_REF. This workflow has separate mockup and plan stages before implementation, so choose the exit by the nature of the blocking findings: implementation defects take \"revise\", back to \"in progress\" as usual; findings that show the plan itself is structurally wrong take \"replan\", back to \"plan\".",
+      "policy": { "transition": "manual" },
+      "exits": { "revise": "in progress", "replan": "plan" }
+    },
+    {
+      "name": "pr",
+      "description": "Agent creates a GitHub PR",
+      "agent": "pr",
+      "prompt": "Create a PR for the reviewed work on branch $BRANCH.",
+      "policy": { "transition": "manual" }
+    },
+    {
+      "name": "pr-review",
+      "description": "PR reviewer briefs the human on the pull request, then hands off to the merge master",
+      "agent": "pr-reviewer",
+      "prompt": "$TASK_PROMPT",
+      "policy": { "transition": "manual", "handoff": "merge" }
+    }
+  ]
+}

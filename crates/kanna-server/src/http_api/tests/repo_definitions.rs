@@ -786,14 +786,17 @@ async fn repo_definition_routes_return_one_remote_revision_and_normalized_snake_
         manifest["workflows"],
         json!([
             "broken",
+            "designed",
             "mechanical",
             "no-review",
             "plan-build-review",
+            "planned",
             "pr-review",
             "qa",
             "release.v2",
             "remote-qa",
             "research",
+            "shaped",
             "single-reviewer",
             "specialized-reviewers",
             "zeta"

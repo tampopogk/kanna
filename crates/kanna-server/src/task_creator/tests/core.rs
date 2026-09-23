@@ -2147,11 +2147,14 @@ fn legacy_builtin_workflow_names_still_resolve_for_committed_repo_config() {
         assert_eq!(
             names,
             vec![
+                "designed",
                 "mechanical",
                 "no-review",
                 "plan-build-review",
+                "planned",
                 "pr-review",
                 "research",
+                "shaped",
                 "single-reviewer",
                 "specialized-reviewers"
             ]
@@ -3032,12 +3035,15 @@ fn workflow_names_are_sorted_deduped_remote_and_compiled_union() {
         definitions.workflow_names().unwrap(),
         vec![
             "alpha",
+            "designed",
             "mechanical",
             "no-review",
             "plan-build-review",
+            "planned",
             "pr-review",
             "qa",
             "research",
+            "shaped",
             "single-reviewer",
             "specialized-reviewers",
             "zeta"
@@ -3174,15 +3180,16 @@ fn agent_definition_formula_rejects_a_legacy_result_variable() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
-/// Both bundled T10 agents (`implement`, `pr`) resolve through the same path
-/// production task creation uses, proving the formula check passes for them
-/// as shipped and that resolution needs no local override.
+/// Bundled definition-formula agents (`implement`, `pr` from T10; `mockup`
+/// from T10d) resolve through the same path production task creation uses,
+/// proving the formula check passes for them as shipped and that resolution
+/// needs no local override.
 #[test]
 fn bundled_definition_formula_agents_resolve_from_compiled_resources() {
     let repo_root = init_git_repo_without_provider_fixtures("formula-builtins");
     publish_origin_main(&repo_root, "publish empty repo for formula builtins");
 
-    for name in ["implement", "pr"] {
+    for name in ["implement", "pr", "mockup"] {
         let definition = resolve_test_agent_definition(&repo_root, name).unwrap();
         assert!(!definition.description.trim().is_empty(), "{name}");
         assert!(!definition.agent_providers.is_empty(), "{name}");
