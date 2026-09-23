@@ -754,7 +754,20 @@ fn a_planted_previous_link_never_pulls_an_unshared_tree_into_a_push() {
     );
 
     // B receives the shared tree, planted record included, and replies.
+    let b_repository = homes.fixture.root.join("b/artifacts.git");
+    let metadata_tip = || {
+        Oid::from_str(
+            git(
+                &b_repository,
+                &["rev-parse", "refs/kanna/artifacts/metadata"],
+            )
+            .trim(),
+        )
+        .unwrap()
+    };
+    let before_import = metadata_tip();
     let fetched = fetch(&homes.b, &homes.remote, &shared).unwrap();
+    let after_import = metadata_tip();
     assert!(
         fetched
             .detail
@@ -763,6 +776,39 @@ fn a_planted_previous_link_never_pulls_an_unshared_tree_into_a_push() {
             .any(|version| version.record_id == record_id),
         "the planted record is well formed and imported as data"
     );
+    // The planted record and its received mark land in one import commit,
+    // so any one snapshot classifies the link the same way: absent before
+    // the import, received (never this home's own) after it.
+    let shared_oid = Oid::from_str(&shared).unwrap();
+    let private_oid = Oid::from_str(&private).unwrap();
+    assert!(
+        git(
+            &b_repository,
+            &["rev-list", &format!("{before_import}..{after_import}")]
+        )
+        .lines()
+        .count()
+            == 1
+    );
+    assert_eq!(
+        homes
+            .b
+            .previous_links_at(Some(before_import), shared_oid)
+            .unwrap(),
+        []
+    );
+    assert_eq!(
+        homes
+            .b
+            .previous_links_at(Some(after_import), shared_oid)
+            .unwrap(),
+        [(private_oid, false)]
+    );
+    assert_eq!(
+        homes.b.previous_links_with_provenance(shared_oid).unwrap(),
+        [(private_oid, false)]
+    );
+
     comment(&homes.b, &shared, "bob", "looks fine");
     let pushed = push(&homes.b, &homes.remote, &shared).unwrap();
     assert_eq!(pushed.artifact_ids, std::slice::from_ref(&shared));

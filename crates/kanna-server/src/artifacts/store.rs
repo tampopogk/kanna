@@ -755,24 +755,43 @@ impl ArtifactStore {
     /// The `previous` ids this tree's version records name, each with
     /// whether a version record this home wrote itself names it (`true`) or
     /// only records received from an artifact remote do (`false`).
+    ///
+    /// Records and received marks are read from one metadata snapshot. An
+    /// import writes a received record and its mark in one commit, so a
+    /// single snapshot holds both or neither; reading them from two tips
+    /// could see the record without its mark and call it this home's own.
     pub(super) fn previous_links_with_provenance(
         &self,
         artifact: Oid,
     ) -> Result<Vec<(Oid, bool)>, ArtifactError> {
+        let tip = self.metadata_tip()?.map(|commit| commit.id());
+        self.previous_links_at(tip, artifact)
+    }
+
+    /// [`Self::previous_links_with_provenance`] as of one metadata commit
+    /// (`None`: no metadata yet).
+    pub(super) fn previous_links_at(
+        &self,
+        metadata: Option<Oid>,
+        artifact: Oid,
+    ) -> Result<Vec<(Oid, bool)>, ArtifactError> {
+        let Some(metadata) = metadata else {
+            return Ok(Vec::new());
+        };
         let root = self
-            .metadata_tip()?
-            .map(|commit| commit.tree())
-            .transpose()
+            .repository
+            .find_commit(metadata)
+            .and_then(|commit| commit.tree())
             .map_err(storage)?;
         let mut links: Vec<(Oid, bool)> = Vec::new();
-        for version in self.list_records::<ArtifactVersion>(VERSIONS_DIR, artifact)? {
+        for version in self.list_records_in::<ArtifactVersion>(&root, VERSIONS_DIR, artifact)? {
             let Some(previous) = version.previous.as_deref() else {
                 continue;
             };
             let previous = parse_object_id(previous)?;
             let own = self
                 .stored_record_blob(
-                    root.as_ref(),
+                    Some(&root),
                     RECEIVED_VERSIONS_DIR,
                     artifact,
                     &version.record_id,
@@ -911,6 +930,16 @@ impl ArtifactStore {
             return Ok(Vec::new());
         };
         let root = tip.tree().map_err(storage)?;
+        self.list_records_in(&root, directory, artifact)
+    }
+
+    /// [`Self::list_records`] from one given metadata tree.
+    fn list_records_in<T: DeserializeOwned + RecordSchema>(
+        &self,
+        root: &Tree<'_>,
+        directory: &str,
+        artifact: Oid,
+    ) -> Result<Vec<T>, ArtifactError> {
         let artifact_hex = artifact.to_string();
         let path = format!("{directory}/{}/{artifact_hex}", &artifact_hex[..2]);
         let entry = match root.get_path(Path::new(&path)) {
