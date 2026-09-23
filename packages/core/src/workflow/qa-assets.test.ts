@@ -672,21 +672,35 @@ describe("QA workflow assets", () => {
     expect(dispatcher).toContain("two children never render identically");
   });
 
-  it("dispatches against the current full diff rather than manual per-round git archaeology", () => {
-    // T5 joins are engine-delivered per call: each review-stage loop is a
-    // fresh session that re-dispatches against the branch as it stands, so
-    // the old workspace-branch/git-range-diff round bookkeeping — worked
-    // around the lack of an engine join primitive — is retired along with
-    // the manual create/wait/close pattern it supported (spec §12: engine
-    // mechanics do not belong in a definition).
+  it("reviews only what changed since the previous review round, as policy rather than a git recipe", () => {
+    // T5 joins are engine-delivered per call, so the manual create/wait/close
+    // pattern and its cross-round kanna_list_task_children history-walk are
+    // retired — but re-reviewing the whole branch every loop would multiply
+    // panel cost for no reason, since T2's workspace branches already mark
+    // each round's reviewed point (a review workspace never commits). The
+    // definition states this as an outcome — "since the previous round",
+    // "carry forward" — and trusts the agent to find the range itself,
+    // rather than dictating the git incantations (spec §12: engine
+    // mechanics, including how the engine happens to expose that point,
+    // do not belong in a definition).
     const dispatcher = readRepoPhrases(".kanna/agents/qa-dispatcher/AGENT.md");
     const workflow = readRepoFile(".kanna/workflows/specialized-reviewers.json");
 
+    expect(dispatcher).toContain("only what changed since the previous review round");
+    expect(dispatcher).toContain("a review workspace never commits");
+    expect(dispatcher).toContain("falling back to the full branch when that point cannot be established");
+    expect(dispatcher).toContain("keeps the last verdict its own prior child recorded, never a fresh dispatch");
+    expect(dispatcher).toContain("A carried verdict for an untouched specialty is a FAIL");
+    expect(dispatcher).toContain("never treated as fixed merely because its surface went untouched");
     expect(dispatcher).not.toContain("git for-each-ref");
+    expect(dispatcher).not.toContain("git merge-base");
     expect(dispatcher).not.toContain("git range-diff");
     expect(dispatcher).not.toContain("$PREV_RESULT");
     expect(dispatcher).not.toContain("$PREV_MAIN_RESULT");
     expect(dispatcher).toContain("declined");
+
+    expect(workflow).toContain("review only what changed since the previous review round");
+    expect(workflow).toContain("carrying forward each untouched specialty's last recorded verdict");
 
     const parsed = parseWorkflowJson(workflow);
     expect(parsed.routing).toBe("exits");
