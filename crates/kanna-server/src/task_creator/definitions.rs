@@ -924,6 +924,12 @@ impl RepoDefinitions {
         let repo_agent_dirs = agent_repo_dirs(&selector.role);
         let mut definition = None;
         let mut uses_formula = false;
+        // The base file's own frontmatter, verbatim, and whether its body
+        // opened with the conventional blank separator line, for the
+        // post-merge formula recheck below — never a re-serialization of the
+        // frontmatter (see that check for why).
+        let mut base_frontmatter: Option<String> = None;
+        let mut base_has_leading_blank = false;
         for dir in &repo_agent_dirs {
             let agent_path = format!(".kanna/agents/{dir}/AGENT.md");
             if let Some(content) = read_snapshot_utf8(&self.snapshot, &agent_path)? {
@@ -932,6 +938,9 @@ impl RepoDefinitions {
                     .map_err(|error| definition_error(&self.snapshot, &agent_path, error))?;
                 uses_formula |= content_uses_formula(&content)
                     .map_err(|error| definition_error(&self.snapshot, &agent_path, error))?;
+                let (frontmatter, body) = split_frontmatter(&content);
+                base_frontmatter = frontmatter.map(str::to_string);
+                base_has_leading_blank = body.starts_with('\n') || body.starts_with("\r\n");
                 definition = Some(
                     parse_agent_definition(&content)
                         .map_err(|error| definition_error(&self.snapshot, &agent_path, error))?,
@@ -960,6 +969,9 @@ impl RepoDefinitions {
                         selector.display()
                     )
                 })?;
+                let (frontmatter, body) = split_frontmatter(&content);
+                base_frontmatter = frontmatter.map(str::to_string);
+                base_has_leading_blank = body.starts_with('\n') || body.starts_with("\r\n");
                 parse_agent_definition(&content).map_err(|error| {
                     format!(
                         "invalid compiled agent resource for selector `{}`: {error}",
@@ -987,8 +999,24 @@ impl RepoDefinitions {
         // push a compliant base past the 40-line cap, or smuggle in a legacy
         // result variable, with nothing checking the *resolved* document (see
         // `check_definition_formula`, which only ever saw the base file).
+        //
+        // This counts the base file's own frontmatter lines, verbatim, plus
+        // the merged prompt body — not a re-serialization of the resolved
+        // `AgentDefinition` (`render_agent_md`, used by `agent eject`, is the
+        // wrong tool here): serde_yaml writes `agent_provider` one entry per
+        // line, so a one-line `providers: claude, codex, copilot, opencode,
+        // antigravity` frontmatter re-renders as six lines, inflating a
+        // compliant definition past the cap the base check never saw it
+        // fail. The base-only check above counted the file as authored; this
+        // recheck must count the resolved document the same way, or a
+        // formula-compliant base with no EXTEND.md at all could start failing
+        // here that the base check just accepted.
         if uses_formula {
-            let resolved = render_agent_md(&definition)?;
+            let resolved = resolved_formula_text(
+                base_frontmatter.as_deref(),
+                base_has_leading_blank,
+                &definition.prompt,
+            );
             check_definition_formula(&resolved).map_err(|error| {
                 format!(
                     "invalid resolved agent `{}` (AGENT.md merged with EXTEND.md): {error}",
@@ -2299,6 +2327,29 @@ fn content_uses_formula(content: &str) -> Result<bool, String> {
         None => AgentFrontmatter::default(),
     };
     Ok(fm.role.is_some() || fm.providers.is_some())
+}
+
+/// The document `check_definition_formula` counts and section-scans after
+/// EXTEND.md is merged in: the base file's own frontmatter, verbatim
+/// (never re-serialized — see the caller in `agent_optional` for why), the
+/// `---` frame around it exactly as the base file had it (including whether
+/// its body opened with the conventional blank separator line), and the
+/// merged prompt body. With no frontmatter this is just the prompt, matching
+/// how a frontmatter-less base would have counted on its own.
+fn resolved_formula_text(
+    base_frontmatter: Option<&str>,
+    base_has_leading_blank: bool,
+    prompt: &str,
+) -> String {
+    match base_frontmatter {
+        Some(frontmatter) => format!(
+            "---\n{}\n---\n{}{}\n",
+            frontmatter.trim_end_matches('\n'),
+            if base_has_leading_blank { "\n" } else { "" },
+            prompt.trim()
+        ),
+        None => format!("{}\n", prompt.trim()),
+    }
 }
 
 /// Spec §12's definition formula: a definition that opts in (by declaring

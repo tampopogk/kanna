@@ -578,5 +578,26 @@ describe("definition formula (spec §12, T10)", () => {
         /15-40 lines/
       );
     });
+
+    // Review follow-up: shared, byte-for-byte, with the Rust test
+    // `agent_definition_formula_counts_the_resolved_document_like_a_source_file`
+    // in core.rs. render_agent_md/renderAgentMd re-serialized the resolved
+    // AgentDefinition instead of counting the resolved document the way the
+    // base check counts a source file — Rust's serde_yaml wrote
+    // `agent_provider` one entry per line (turning this fixture's one-line,
+    // 5-provider frontmatter into six lines), while core's old
+    // JSON.stringify-based renderer inflated it differently. Both sides must
+    // now accept and reject this fixture identically.
+    it("counts the resolved document the way the base check counts a source file", () => {
+      const fiveProviderBase =
+        "---\nname: reviewer\nrole: A one-sentence role\nproviders: claude, codex, copilot, opencode, antigravity\n---\n\n" +
+        "## Produces\nsomething\n## Reads\nsomething\n## Must not\nsomething\n## Stop when\nsomething\n" +
+        "extra\n".repeat(25).trimEnd();
+      expect(fiveProviderBase.split("\n").length).toBe(39);
+
+      expect(() => resolveAgentWithExtension(fiveProviderBase, "")).not.toThrow();
+
+      expect(() => resolveAgentWithExtension(fiveProviderBase, "One more line.")).toThrow(/got 41/);
+    });
   });
 });
