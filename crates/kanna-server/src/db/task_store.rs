@@ -428,6 +428,58 @@ impl Db {
         )
     }
 
+    /// Did work reach `run_id` after its latest result? True when tool input
+    /// was delivered to the task after that result, or when the run's
+    /// workspace now holds a different commit than the result recorded.
+    ///
+    /// Completion treats a byte-identical result as a retry of the one already
+    /// recorded; a person who kept working with a parked session and has it
+    /// record the same words again is making a new result, and this is how
+    /// the two are told apart (T1). `false` when the run has no result entry.
+    pub(crate) fn ledger_work_after_latest_result(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        observed_sha: Option<&str>,
+    ) -> Result<bool, rusqlite::Error> {
+        let latest = self
+            .conn
+            .query_row(
+                "SELECT sequence, file_name, payload FROM task_ledger_entry
+                 WHERE task_id = ?1 AND kind = 'result' AND source_kind = 'stage_run'
+                   AND (source_id = ?2 OR substr(source_id, 1, length(?2) + 1) = ?2 || '#')
+                 ORDER BY sequence DESC LIMIT 1",
+                params![task_id, run_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((sequence, file_name, payload)) = latest else {
+            return Ok(false);
+        };
+        let input_since: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM task_ledger_entry
+                           WHERE task_id = ? AND kind = 'input' AND sequence > ?)",
+            params![task_id, sequence],
+            |row| row.get(0),
+        )?;
+        if input_since {
+            return Ok(true);
+        }
+        let recorded_sha = crate::task_store::parse_ledger_file(&file_name, &payload)
+            .ok()
+            .and_then(|entry| entry.body()["committed_sha"].as_str().map(str::to_string));
+        Ok(match (recorded_sha.as_deref(), observed_sha) {
+            (Some(recorded), Some(observed)) => recorded != observed,
+            _ => false,
+        })
+    }
+
     /// The result that caused the transition being recorded now: the newest
     /// result entered since the task's previous transition. `None` when no
     /// result was recorded in between (a manual advance without one); a

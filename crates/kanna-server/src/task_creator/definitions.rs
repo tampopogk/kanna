@@ -245,7 +245,45 @@ pub(super) struct WorkflowDefinition {
     /// `$PLAN_RESULT` for every stage and post of the extended workflow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) plan_context: Option<WorkflowPlanContext>,
+    /// How results route (spec §5). Absent means legacy, so every snapshot
+    /// pinned before named exits existed reads, serializes and routes exactly
+    /// as it did.
+    #[serde(default, skip_serializing_if = "WorkflowRouting::is_legacy")]
+    pub(super) routing: WorkflowRouting,
+    /// Routing `exits` only: the budget of a stage that declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) budget: Option<i64>,
 }
+
+/// How a stage's result chooses where the task goes.
+///
+/// `Legacy` is today's contract: success follows the stage's transition
+/// policy, and a reviewer names a target *stage* through the revision API
+/// under one task-wide round budget. `Exits` is the target contract: a result
+/// names one of its stage's declared exits (or none, taking the default), and
+/// each loop spends its destination stage's own budget. It is opt-in per
+/// workflow, so a pinned legacy task keeps the adapter it was started under.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WorkflowRouting {
+    #[default]
+    Legacy,
+    Exits,
+}
+
+impl WorkflowRouting {
+    fn is_legacy(&self) -> bool {
+        matches!(self, Self::Legacy)
+    }
+}
+
+/// The exit every stage has: the next stage, under the stage's transition
+/// policy. Never declared, so a workflow cannot remap it.
+pub(crate) const ADVANCE_EXIT: &str = "advance";
+
+/// Agent-chosen loops into a stage before a further one parks the task, for
+/// a routing `exits` workflow that sets no budget (spec §5).
+pub(crate) const DEFAULT_STAGE_BUDGET: i64 = 5;
 
 /// The stamped plan carried by an extended workflow. `result` is the full
 /// recorded stage result of the publishing run, in the same shape
@@ -281,6 +319,67 @@ impl WorkflowDefinition {
     pub(super) fn revision_limit(&self) -> i64 {
         self.revision_limit.unwrap_or(DEFAULT_REVISION_LIMIT)
     }
+
+    /// True when results route by named exits rather than the legacy
+    /// revision adapter.
+    pub(crate) fn routes_by_exits(&self) -> bool {
+        self.routing == WorkflowRouting::Exits
+    }
+
+    /// Loops back into `stage_name` the task may take before a further one
+    /// parks it: the stage's own budget, else the workflow default, else 5.
+    pub(crate) fn stage_budget(&self, stage_name: &str) -> i64 {
+        self.stages
+            .iter()
+            .find(|stage| stage.name == stage_name)
+            .and_then(|stage| stage.budget)
+            .or(self.budget)
+            .unwrap_or(DEFAULT_STAGE_BUDGET)
+    }
+
+    /// Where `exit` leads from `stage_name`: `Ok(None)` for `advance` (the
+    /// next stage, under the transition policy), `Ok(Some(destination))` for a
+    /// declared loop exit, and an error naming the stage's exits otherwise.
+    pub(crate) fn resolve_exit(
+        &self,
+        stage_name: &str,
+        exit: &str,
+    ) -> Result<Option<String>, String> {
+        if exit == ADVANCE_EXIT {
+            return Ok(None);
+        }
+        let stage = self
+            .stages
+            .iter()
+            .find(|stage| stage.name == stage_name)
+            .ok_or_else(|| format!("stage '{stage_name}' is not a stage of this workflow"))?;
+        stage
+            .exits
+            .as_ref()
+            .and_then(|exits| exits.get(exit))
+            .cloned()
+            .map(Some)
+            .ok_or_else(|| {
+                format!(
+                    "stage '{stage_name}' declares no exit '{exit}'; its exits are {}",
+                    describe_stage_exits(stage)
+                )
+            })
+    }
+}
+
+/// `advance`, then every declared loop exit with its destination.
+pub(crate) fn describe_stage_exits(stage: &WorkflowStage) -> String {
+    std::iter::once(format!("'{ADVANCE_EXIT}'"))
+        .chain(
+            stage
+                .exits
+                .iter()
+                .flatten()
+                .map(|(name, destination)| format!("'{name}' (to '{destination}')")),
+        )
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -296,6 +395,14 @@ pub(super) struct WorkflowStage {
     pub(super) agent_provider: Option<Vec<AgentSelectionEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) environment: Option<String>,
+    /// Routing `exits` only: loop exits by name, each mapped to this stage or
+    /// an earlier one. `advance` is implicit and never listed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) exits: Option<BTreeMap<String, String>>,
+    /// Routing `exits` only: agent-chosen loops into this stage before a
+    /// further one parks the task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) budget: Option<i64>,
     pub(super) policy: WorkflowStagePolicy,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) post: Option<WorkflowPost>,
@@ -323,11 +430,20 @@ pub(super) struct WorkflowStagePolicy {
     pub(super) transition: WorkflowStageTransition,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) revision_transition: Option<WorkflowStageTransition>,
+    /// Routing `exits` only: how a stage re-entered by a loop leaves through
+    /// `advance`. Never set together with `revision_transition`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) loop_transition: Option<WorkflowStageTransition>,
 }
 
 impl WorkflowStagePolicy {
+    /// How a run entered by a loop (a legacy revision, or a loop exit) leaves
+    /// the stage. The two fields belong to different routing contracts and
+    /// are never both set.
     pub(super) fn revision_transition(&self) -> WorkflowStageTransition {
-        self.revision_transition.unwrap_or(self.transition)
+        self.revision_transition
+            .or(self.loop_transition)
+            .unwrap_or(self.transition)
     }
 }
 
@@ -399,9 +515,12 @@ pub(super) fn post_as_stage(owner: &WorkflowStage) -> Option<WorkflowStage> {
         prompt: post.prompt.clone(),
         agent_provider: post.agent_provider.clone(),
         environment: owner.environment.clone(),
+        exits: None,
+        budget: None,
         policy: WorkflowStagePolicy {
             transition: WorkflowStageTransition::Auto,
             revision_transition: None,
+            loop_transition: None,
         },
         post: None,
     })
@@ -418,6 +537,9 @@ struct RawWorkflowDefinition {
     visibility: DefinitionVisibility,
     #[serde(default)]
     plan_context: Option<WorkflowPlanContext>,
+    #[serde(default)]
+    routing: WorkflowRouting,
+    budget: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -429,6 +551,8 @@ struct RawWorkflowStage {
     #[serde(default, deserialize_with = "deserialize_optional_provider_list")]
     agent_provider: Option<Vec<AgentSelectionEntry>>,
     environment: Option<String>,
+    exits: Option<BTreeMap<String, String>>,
+    budget: Option<i64>,
     policy: Option<RawWorkflowStagePolicy>,
     transition: Option<WorkflowStageTransition>,
     mode: Option<RawWorkflowStageExecution>,
@@ -440,6 +564,7 @@ struct RawWorkflowStage {
 struct RawWorkflowStagePolicy {
     transition: WorkflowStageTransition,
     revision_transition: Option<WorkflowStageTransition>,
+    loop_transition: Option<WorkflowStageTransition>,
     execution: Option<RawWorkflowStageExecution>,
 }
 
@@ -1346,8 +1471,23 @@ pub(super) fn parse_workflow_definition(content: &str) -> Result<WorkflowDefinit
     reject_explicit_null_workflow_providers(&value)?;
     let raw: RawWorkflowDefinition = serde_json::from_value(value)
         .map_err(|error| format!("invalid workflow definition: {error}"))?;
-    normalize_workflow_definition(raw)
-        .map_err(|error| format!("invalid workflow definition: {error}"))
+    let workflow = normalize_workflow_definition(raw)
+        .map_err(|error| format!("invalid workflow definition: {error}"))?;
+    // A legacy definition keeps its historical tolerance of fields this build
+    // ignores. A named-exit definition opts into a contract whose remaining
+    // execution fields (exit_commit, per-stage setup/teardown) this build does
+    // not run yet, so an unknown field there is refused, not dropped.
+    if workflow.routes_by_exits() {
+        let unknown = super::workflow_edit::unknown_workflow_fields(content);
+        if !unknown.is_empty() {
+            return Err(format!(
+                "invalid workflow definition: routing \"exits\" does not support {} in this \
+                 version of Kanna; remove them rather than rely on them being ignored",
+                unknown.join(", ")
+            ));
+        }
+    }
+    Ok(workflow)
 }
 
 fn reject_explicit_null_workflow_providers(value: &serde_json::Value) -> Result<(), String> {
@@ -2122,6 +2262,8 @@ fn normalize_workflow_definition(raw: RawWorkflowDefinition) -> Result<WorkflowD
             prompt,
             agent_provider,
             environment,
+            exits,
+            budget,
             policy,
             transition,
             mode,
@@ -2129,14 +2271,16 @@ fn normalize_workflow_definition(raw: RawWorkflowDefinition) -> Result<WorkflowD
             post_action,
         } = stage;
 
-        let (transition, revision_transition, continues) = match policy {
+        let (transition, revision_transition, loop_transition, continues) = match policy {
             Some(policy) => (
                 policy.transition,
                 policy.revision_transition,
+                policy.loop_transition,
                 matches!(policy.execution, Some(RawWorkflowStageExecution::Continue)),
             ),
             None => (
                 transition.ok_or_else(|| format!("stage {name:?} is missing policy.transition"))?,
+                None,
                 None,
                 matches!(mode, Some(RawWorkflowStageExecution::Continue)),
             ),
@@ -2186,9 +2330,12 @@ fn normalize_workflow_definition(raw: RawWorkflowDefinition) -> Result<WorkflowD
             prompt,
             agent_provider,
             environment,
+            exits,
+            budget,
             policy: WorkflowStagePolicy {
                 transition,
                 revision_transition,
+                loop_transition,
             },
             post,
         });
@@ -2206,7 +2353,7 @@ fn normalize_workflow_definition(raw: RawWorkflowDefinition) -> Result<WorkflowD
         }
     }
 
-    Ok(WorkflowDefinition {
+    let workflow = WorkflowDefinition {
         name: raw.name,
         description: raw.description,
         stages,
@@ -2214,7 +2361,123 @@ fn normalize_workflow_definition(raw: RawWorkflowDefinition) -> Result<WorkflowD
         revision_limit: raw.revision_limit,
         visibility: raw.visibility,
         plan_context: raw.plan_context,
-    })
+        routing: raw.routing,
+        budget: raw.budget,
+    };
+    validate_workflow_routing(&workflow)?;
+    Ok(workflow)
+}
+
+/// The routing contract's own rules (spec §5), checked wherever a definition
+/// is read — a repo file, a replacement, or a pinned snapshot — so a
+/// definition cannot mix the two contracts or reach an exit that goes
+/// nowhere.
+fn validate_workflow_routing(workflow: &WorkflowDefinition) -> Result<(), String> {
+    let uses_exit_fields = workflow.budget.is_some()
+        || workflow.stages.iter().any(|stage| {
+            stage.exits.is_some()
+                || stage.budget.is_some()
+                || stage.policy.loop_transition.is_some()
+        });
+    if !workflow.routes_by_exits() {
+        if uses_exit_fields {
+            return Err(
+                "exits, budget and loop_transition belong to named-exit routing; declare \
+                 \"routing\": \"exits\" to use them"
+                    .into(),
+            );
+        }
+        return Ok(());
+    }
+    if workflow.revision_limit.is_some() {
+        return Err(
+            "routing \"exits\" budgets each destination stage (budget); revision_limit is \
+             the legacy task-wide cap and cannot be combined with it"
+                .into(),
+        );
+    }
+    if workflow.plan_context.is_some() {
+        return Err(
+            "routing \"exits\" keeps the plan in the task ledger; plan_context belongs to \
+             legacy plan publication"
+                .into(),
+        );
+    }
+    if let Some(budget) = workflow.budget.filter(|budget| *budget < 0) {
+        return Err(format!("budget must be zero or greater, got {budget}"));
+    }
+    for (index, stage) in workflow.stages.iter().enumerate() {
+        if stage.policy.revision_transition.is_some() {
+            return Err(format!(
+                "stage '{}': routing \"exits\" uses policy.loop_transition; \
+                 revision_transition is the legacy revision policy",
+                stage.name
+            ));
+        }
+        if let Some(budget) = stage.budget.filter(|budget| *budget < 0) {
+            return Err(format!(
+                "stage '{}': budget must be zero or greater, got {budget}",
+                stage.name
+            ));
+        }
+        // A stage with no role enters, runs setup and parks (spec §5). This
+        // engine would spawn a default agent there instead, so such a stage
+        // is refused until roleless gates exist rather than run as something
+        // it does not say.
+        if stage
+            .agent
+            .as_deref()
+            .is_none_or(|agent| agent.trim().is_empty())
+        {
+            return Err(format!(
+                "stage '{}': routing \"exits\" requires every stage to name its agent; \
+                 stages without a role are not supported yet",
+                stage.name
+            ));
+        }
+        for (exit, destination) in stage.exits.iter().flatten() {
+            let valid_name = exit
+                .chars()
+                .next()
+                .is_some_and(|first| first.is_ascii_lowercase())
+                && exit.chars().all(|character| {
+                    character.is_ascii_lowercase()
+                        || character.is_ascii_digit()
+                        || character == '_'
+                        || character == '-'
+                });
+            if !valid_name {
+                return Err(format!(
+                    "stage '{}': exit name '{exit}' must be lowercase letters, digits, '_' or '-', \
+                     starting with a letter",
+                    stage.name
+                ));
+            }
+            if exit == ADVANCE_EXIT {
+                return Err(format!(
+                    "stage '{}': '{ADVANCE_EXIT}' is every stage's implicit exit to the next \
+                     stage and cannot be declared",
+                    stage.name
+                ));
+            }
+            // A loop goes back: to this stage or an earlier one. A forward
+            // jump would be a route the linear stage order does not show.
+            match workflow.stages[..=index]
+                .iter()
+                .position(|candidate| &candidate.name == destination)
+            {
+                Some(_) => {}
+                None => {
+                    return Err(format!(
+                        "stage '{}': exit '{exit}' leads to '{destination}', which is not this \
+                         stage or an earlier stage of the workflow",
+                        stage.name
+                    ))
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn deserialize_optional_provider_list<'de, D>(

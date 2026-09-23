@@ -312,6 +312,7 @@ mod brief_task;
 mod core_routes;
 mod create_task;
 mod e2e_sql_routes;
+mod exit_routing;
 mod input;
 mod machine_stats_routes;
 mod mutation_provenance;

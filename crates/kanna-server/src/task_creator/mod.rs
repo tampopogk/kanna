@@ -25,9 +25,9 @@ pub(crate) use definitions::WorkflowPlanContext;
 pub(crate) use workflow_edit::unknown_workflow_fields;
 
 pub(crate) use workflow_edit::{
-    validate_plan_workflow_extension, validate_task_workflow_replacement,
-    validate_task_workflow_replacement_with_plan_context, PlanContextPolicy,
-    ValidatedWorkflowReplacement,
+    validate_plan_workflow_extension, validate_remaining_plan_replacement,
+    validate_task_workflow_replacement, validate_task_workflow_replacement_with_plan_context,
+    PlanContextPolicy, ValidatedWorkflowReplacement,
 };
 
 #[cfg(test)]
@@ -94,6 +94,10 @@ pub(crate) use lifecycle::{
 pub(crate) use merge::prepare_merge_agent_for_api;
 pub use merge::run_merge_agent;
 pub(crate) use prompt::RevisionRound;
+pub(crate) use stages::{
+    describe_current_stage_exits, exit_leading_to, resolve_result_exit, resolve_stage_budget_limit,
+    task_routes_by_exits, ResolvedResultExit,
+};
 pub(crate) use stages::{
     main_completion_continuation, prepare_advance_stage_for_api_with_intent,
     prepare_fresh_restart_after_rejected_resume, prepare_provider_fallback_for_api,
@@ -1745,6 +1749,7 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
         completion_transition,
         trigger,
         entry_channel: crate::mutation_provenance::ChannelIdentity::Unknown,
+        entry_exit: None,
         provider_override,
         feedback,
         provider_session_id,
@@ -2455,15 +2460,20 @@ pub(crate) fn prepare_singleton_agent_task_for_api(
             prompt: Some("$TASK_PROMPT".to_string()),
             agent_provider: None,
             environment: None,
+            exits: None,
+            budget: None,
             policy: WorkflowStagePolicy {
                 transition: WorkflowStageTransition::Manual,
                 revision_transition: None,
+                loop_transition: None,
             },
             post: None,
         }],
         environments: None,
         revision_limit: None,
         plan_context: None,
+        routing: Default::default(),
+        budget: None,
         // Kanna binds this synthetic workflow itself; it is never a listed
         // choice, and visibility is never consulted on resolution anyway.
         visibility: definitions::DefinitionVisibility::Internal,
@@ -2711,9 +2721,12 @@ completion with status success so Kanna can run the commit post and close this i
             prompt: Some("$TASK_PROMPT".to_string()),
             agent_provider: None,
             environment: None,
+            exits: None,
+            budget: None,
             policy: WorkflowStagePolicy {
                 transition: WorkflowStageTransition::Auto,
                 revision_transition: None,
+                loop_transition: None,
             },
             post: Some(definitions::WorkflowPost {
                 name: "commit".to_string(),
@@ -2728,6 +2741,8 @@ completion with status success so Kanna can run the commit post and close this i
         environments: None,
         revision_limit: None,
         plan_context: None,
+        routing: Default::default(),
+        budget: None,
         // Kanna binds this synthetic workflow itself; it is never a listed
         // choice, and visibility is never consulted on resolution anyway.
         visibility: definitions::DefinitionVisibility::Internal,

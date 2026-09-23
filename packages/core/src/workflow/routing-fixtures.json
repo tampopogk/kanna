@@ -1,0 +1,410 @@
+{
+  "description": "Routing-contract fixtures shared by the TypeScript loader (workflow-loader.test.ts) and the server loader (task_creator/tests/stage.rs); both must accept the valid ones and refuse the rest with an error containing `rejects`.",
+  "cases": [
+    {
+      "name": "named exits with a per-stage budget and loop_transition",
+      "valid": true,
+      "definition": {
+        "name": "shaped",
+        "routing": "exits",
+        "stages": [
+          {
+            "name": "plan",
+            "agent": "plan",
+            "policy": {
+              "transition": "manual"
+            }
+          },
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "policy": {
+              "transition": "auto",
+              "loop_transition": "auto"
+            }
+          },
+          {
+            "name": "review",
+            "agent": "review",
+            "policy": {
+              "transition": "auto"
+            },
+            "exits": {
+              "revise": "in progress",
+              "replan": "plan"
+            },
+            "budget": 3
+          },
+          {
+            "name": "pr",
+            "agent": "pr",
+            "policy": {
+              "transition": "manual"
+            }
+          }
+        ],
+        "budget": 4
+      }
+    },
+    {
+      "name": "a loop exit back into its own stage",
+      "valid": true,
+      "definition": {
+        "name": "iterate",
+        "routing": "exits",
+        "stages": [
+          {
+            "name": "mockup",
+            "agent": "implement",
+            "policy": {
+              "transition": "manual"
+            },
+            "exits": {
+              "again": "mockup"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "explicit legacy routing",
+      "valid": true,
+      "definition": {
+        "name": "legacy",
+        "routing": "legacy",
+        "stages": [
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "policy": {
+              "transition": "manual"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "legacy tolerates a field this build ignores",
+      "valid": true,
+      "definition": {
+        "name": "legacy",
+        "stages": [
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "policy": {
+              "transition": "manual"
+            },
+            "exit_commit": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "exits without routing exits",
+      "valid": false,
+      "definition": {
+        "name": "legacy",
+        "stages": [
+          {
+            "name": "plan",
+            "agent": "implement",
+            "policy": {
+              "transition": "manual"
+            }
+          },
+          {
+            "name": "review",
+            "agent": "implement",
+            "policy": {
+              "transition": "manual"
+            },
+            "exits": {
+              "revise": "plan"
+            }
+          }
+        ]
+      },
+      "rejects": "declare \"routing\": \"exits\""
+    },
+    {
+      "name": "loop_transition without routing exits",
+      "valid": false,
+      "definition": {
+        "name": "legacy",
+        "stages": [
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "policy": {
+              "transition": "manual",
+              "loop_transition": "auto"
+            }
+          }
+        ]
+      },
+      "rejects": "declare \"routing\": \"exits\""
+    },
+    {
+      "name": "workflow budget without routing exits",
+      "valid": false,
+      "definition": {
+        "name": "legacy",
+        "budget": 2,
+        "stages": [
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "policy": {
+              "transition": "manual"
+            }
+          }
+        ]
+      },
+      "rejects": "declare \"routing\": \"exits\""
+    },
+    {
+      "name": "revision_limit with routing exits",
+      "valid": false,
+      "definition": {
+        "name": "shaped",
+        "routing": "exits",
+        "stages": [
+          {
+            "name": "plan",
+            "agent": "plan",
+            "policy": {
+              "transition": "manual"
+            }
+          },
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "policy": {
+              "transition": "auto",
+              "loop_transition": "auto"
+            }
+          },
+          {
+            "name": "review",
+            "agent": "review",
+            "policy": {
+              "transition": "auto"
+            },
+            "exits": {
+              "revise": "in progress",
+              "replan": "plan"
+            },
+            "budget": 3
+          },
+          {
+            "name": "pr",
+            "agent": "pr",
+            "policy": {
+              "transition": "manual"
+            }
+          }
+        ],
+        "revision_limit": 5
+      },
+      "rejects": "revision_limit"
+    },
+    {
+      "name": "revision_transition with routing exits",
+      "valid": false,
+      "definition": {
+        "name": "x",
+        "routing": "exits",
+        "stages": [
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "policy": {
+              "transition": "manual",
+              "revision_transition": "auto"
+            }
+          }
+        ]
+      },
+      "rejects": "revision_transition"
+    },
+    {
+      "name": "an exit leading forward",
+      "valid": false,
+      "definition": {
+        "name": "x",
+        "routing": "exits",
+        "stages": [
+          {
+            "name": "review",
+            "agent": "review",
+            "policy": {
+              "transition": "manual"
+            },
+            "exits": {
+              "skip": "pr"
+            }
+          },
+          {
+            "name": "pr",
+            "agent": "pr",
+            "policy": {
+              "transition": "manual"
+            }
+          }
+        ]
+      },
+      "rejects": "not this stage or an earlier stage"
+    },
+    {
+      "name": "an exit leading to an unknown stage",
+      "valid": false,
+      "definition": {
+        "name": "x",
+        "routing": "exits",
+        "stages": [
+          {
+            "name": "review",
+            "agent": "review",
+            "policy": {
+              "transition": "manual"
+            },
+            "exits": {
+              "revise": "nowhere"
+            }
+          }
+        ]
+      },
+      "rejects": "not this stage or an earlier stage"
+    },
+    {
+      "name": "declaring advance",
+      "valid": false,
+      "definition": {
+        "name": "x",
+        "routing": "exits",
+        "stages": [
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "policy": {
+              "transition": "manual"
+            }
+          },
+          {
+            "name": "review",
+            "agent": "review",
+            "policy": {
+              "transition": "manual"
+            },
+            "exits": {
+              "advance": "in progress"
+            }
+          }
+        ]
+      },
+      "rejects": "implicit exit"
+    },
+    {
+      "name": "an exit name that is not lowercase",
+      "valid": false,
+      "definition": {
+        "name": "x",
+        "routing": "exits",
+        "stages": [
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "policy": {
+              "transition": "manual"
+            }
+          },
+          {
+            "name": "review",
+            "agent": "review",
+            "policy": {
+              "transition": "manual"
+            },
+            "exits": {
+              "Revise": "in progress"
+            }
+          }
+        ]
+      },
+      "rejects": "lowercase"
+    },
+    {
+      "name": "a stage without a role",
+      "valid": false,
+      "definition": {
+        "name": "x",
+        "routing": "exits",
+        "stages": [
+          {
+            "name": "gate",
+            "policy": {
+              "transition": "manual"
+            }
+          }
+        ]
+      },
+      "rejects": "requires every stage to name its agent"
+    },
+    {
+      "name": "an unsupported execution field",
+      "valid": false,
+      "definition": {
+        "name": "x",
+        "routing": "exits",
+        "stages": [
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "policy": {
+              "transition": "manual"
+            },
+            "exit_commit": true
+          }
+        ]
+      },
+      "rejects": "exit_commit"
+    },
+    {
+      "name": "a negative stage budget",
+      "valid": false,
+      "definition": {
+        "name": "x",
+        "routing": "exits",
+        "stages": [
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "policy": {
+              "transition": "manual"
+            },
+            "budget": -1
+          }
+        ]
+      },
+      "rejects": "budget"
+    },
+    {
+      "name": "an unknown routing value",
+      "valid": false,
+      "definition": {
+        "name": "x",
+        "routing": "stages",
+        "stages": [
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "policy": {
+              "transition": "manual"
+            }
+          }
+        ]
+      },
+      "rejects": "legacy"
+    }
+  ]
+}

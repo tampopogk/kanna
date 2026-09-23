@@ -90,6 +90,18 @@
         "internal"
       ]
     },
+    "routing": {
+      "description": "How a stage's result chooses where the task goes. Omitted means \"legacy\": success follows the stage's transition policy and a review names a target stage through kanna_request_revision under the task-wide revision_limit. \"exits\" opts into named exits (spec \u00a75): every stage has an implicit `advance` exit to the next stage, a stage may declare loop exits mapped to earlier stages, a session names one of its stage's exits in its result (never a stage), and each loop spends the destination stage's own budget. A workflow that uses exits, budget or loop_transition must declare \"exits\"; one that declares \"exits\" may not use revision_limit, revision_transition or plan_context.",
+      "enum": [
+        "legacy",
+        "exits"
+      ]
+    },
+    "budget": {
+      "description": "Routing \"exits\" only: the default budget of every stage that declares none -- how many agent-chosen loop exits may move the task back into that stage before a further one records its result and parks the task instead. Defaults to 5. 0 means agent loops into the stage always park. A person or manager sending the task back to a stage resets that stage's count.",
+      "type": "integer",
+      "minimum": 0
+    },
     "plan_context": {
       "description": "Planning context Kanna stamps onto a task's pinned workflow when a plan stage publishes the remaining stages through kanna_complete_stage. It is written by the server, never authored by hand: an edit that changes it is refused, and an edit that omits it carries the stamped value forward. Its `result` is bound to the reserved $PLAN_RESULT prompt variable for every stage and post of the extended workflow, so the approved plan stays reachable after later stages, revisions, resume, and recovery.",
       "type": "object",
@@ -121,7 +133,7 @@
       }
     },
     "revision_limit": {
-      "description": "Agent-requested revision rounds a task may spend before Kanna stops forking revisions and parks the task for its human. Defaults to 5 when omitted; 0 disables the cap. A human-requested revision is never refused and resets the count.",
+      "description": "Legacy routing: agent-requested revision rounds a task may spend before Kanna stops forking revisions and parks the task for its human. Defaults to 5 when omitted; 0 disables the cap. A human-requested revision is never refused and resets the count. Routing \"exits\" budgets each destination stage instead (budget).",
       "type": "integer",
       "minimum": 0
     },
@@ -176,6 +188,25 @@
           "environment": {
             "type": "string"
           },
+          "exits": {
+            "description": "Routing \"exits\" only: loop exits this stage's session may name in its result, each mapped to this stage or an earlier one, e.g. {\"revise\": \"in progress\", \"replan\": \"plan\"}. `advance` is implicit (the next stage) and cannot be declared. A loop exit taken with status success moves the task back to its destination, carries the result message there, and spends one unit of the destination's budget; any other status parks the task whatever exit is named.",
+            "type": "object",
+            "propertyNames": {
+              "pattern": "^[a-z][a-z0-9_-]*$",
+              "not": {
+                "const": "advance"
+              }
+            },
+            "additionalProperties": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "budget": {
+            "description": "Routing \"exits\" only: agent-chosen loops back into this stage the task may take before a further one parks it. Overrides the workflow's budget (default 5); 0 means every agent loop into this stage parks. A person or manager sending the task back here resets the count.",
+            "type": "integer",
+            "minimum": 0
+          },
           "policy": {
             "type": "object",
             "additionalProperties": false,
@@ -190,7 +221,14 @@
                 ]
               },
               "revision_transition": {
-                "description": "Completion policy for main runs entered through a revision request. Defaults to transition when omitted.",
+                "description": "Legacy routing: completion policy for main runs entered through a revision request. Defaults to transition when omitted. Routing \"exits\" uses loop_transition instead.",
+                "enum": [
+                  "manual",
+                  "auto"
+                ]
+              },
+              "loop_transition": {
+                "description": "Routing \"exits\" only: how the task leaves this stage through its advance exit when the stage was re-entered by a loop. Defaults to transition. Independent of the stage's budget and of its first-entry transition.",
                 "enum": [
                   "manual",
                   "auto"
@@ -268,6 +306,57 @@
         {
           "name": "review",
           "prompt": "$TASK_PROMPT",
+          "policy": {
+            "transition": "manual"
+          }
+        }
+      ]
+    },
+    {
+      "$schema": "./schema.json",
+      "name": "shaped-exits",
+      "description": "Implement, review with named exits, then PR; the reviewer chooses revise or replan and never names a stage",
+      "routing": "exits",
+      "budget": 5,
+      "stages": [
+        {
+          "name": "plan",
+          "agent": "plan",
+          "prompt": "$TASK_PROMPT",
+          "policy": {
+            "transition": "manual"
+          }
+        },
+        {
+          "name": "in progress",
+          "agent": "implement",
+          "prompt": "$TASK_PROMPT",
+          "policy": {
+            "transition": "auto",
+            "loop_transition": "auto"
+          },
+          "post": {
+            "name": "commit",
+            "agent": "commit",
+            "prompt": "Commit the relevant work for this task before review."
+          }
+        },
+        {
+          "name": "review",
+          "agent": "review",
+          "prompt": "Review branch $BRANCH against base $BASE_REF.",
+          "policy": {
+            "transition": "auto"
+          },
+          "exits": {
+            "revise": "in progress",
+            "replan": "plan"
+          }
+        },
+        {
+          "name": "pr",
+          "agent": "pr",
+          "prompt": "Create a PR for the reviewed work on branch $BRANCH.",
           "policy": {
             "transition": "manual"
           }

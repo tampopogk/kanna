@@ -60,15 +60,20 @@ fn build_merge_task_request() -> Result<TaskCreationRequest, String> {
             prompt: Some("$TASK_PROMPT".to_string()),
             agent_provider: None,
             environment: None,
+            exits: None,
+            budget: None,
             policy: WorkflowStagePolicy {
                 transition: WorkflowStageTransition::Manual,
                 revision_transition: None,
+                loop_transition: None,
             },
             post: None,
         }],
         environments: None,
         revision_limit: None,
         plan_context: None,
+        routing: Default::default(),
+        budget: None,
         // Kanna binds this synthetic workflow itself; it is never a listed
         // choice, and visibility is never consulted on resolution anyway.
         visibility: DefinitionVisibility::Internal,

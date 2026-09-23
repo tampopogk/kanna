@@ -422,6 +422,9 @@ pub(crate) struct CompleteStageRequest {
     pub(crate) workflow_definition: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) expected_definition: Option<Value>,
+    /// Named-exit routing: the stage exit this result takes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) exit: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -595,6 +598,9 @@ pub(crate) struct TaskActionResponse {
     /// is why the CLI treats anything but `Some(true)` as "not published".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) workflow_extended: Option<bool>,
+    /// Named-exit routing: which exit the result took and what happened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) routing: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]

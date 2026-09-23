@@ -4613,9 +4613,12 @@ fn build_target_stage_prompt_sections_a_carried_task_without_rescanning_it() {
         prompt: None,
         agent_provider: None,
         environment: None,
+        exits: None,
+        budget: None,
         policy: super::super::definitions::WorkflowStagePolicy {
             transition: WorkflowStageTransition::Manual,
             revision_transition: None,
+            loop_transition: None,
         },
         post: None,
     };

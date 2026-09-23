@@ -1,5 +1,12 @@
+import { readFileSync } from "node:fs";
 import { describe, it, expect } from "vitest";
-import { parseWorkflowJson, validateWorkflow } from "./workflow-loader";
+import {
+  parseWorkflowJson,
+  validateWorkflow,
+  WORKFLOW_POST_KEYS,
+  WORKFLOW_ROOT_KEYS,
+  WORKFLOW_STAGE_KEYS,
+} from "./workflow-loader";
 
 describe("parseWorkflowJson", () => {
   it("parses valid workflow JSON", () => {
@@ -652,5 +659,62 @@ describe("plan context", () => {
     expect(() =>
       parseWorkflowJson(JSON.stringify({ ...base, plan_context: { source_run_id: "run-1" } }))
     ).toThrow(/invalid plan_context/);
+  });
+});
+
+describe("named-exit routing (parity with the server loader)", () => {
+  interface RoutingFixture {
+    name: string;
+    valid: boolean;
+    rejects?: string;
+    definition: unknown;
+  }
+  const fixtures = (
+    JSON.parse(readFileSync(new URL("./routing-fixtures.json", import.meta.url), "utf8")) as {
+      cases: RoutingFixture[];
+    }
+  ).cases;
+
+  for (const fixture of fixtures) {
+    it(`${fixture.valid ? "accepts" : "refuses"} ${fixture.name}`, () => {
+      const parse = () => parseWorkflowJson(JSON.stringify(fixture.definition));
+      if (fixture.valid) {
+        expect(parse).not.toThrow();
+      } else {
+        expect(parse).toThrow(fixture.rejects);
+      }
+    });
+  }
+
+  it("keeps the named-exit fields a routed workflow declares", () => {
+    const parsed = parseWorkflowJson(JSON.stringify(fixtures[0].definition));
+    expect(parsed.routing).toBe("exits");
+    expect(parsed.budget).toBe(4);
+    const review = parsed.stages.find((stage) => stage.name === "review");
+    expect(review?.exits).toEqual({ revise: "in progress", replan: "plan" });
+    expect(review?.budget).toBe(3);
+    expect(parsed.stages.find((stage) => stage.name === "in progress")?.policy).toEqual({
+      transition: "auto",
+      loop_transition: "auto",
+    });
+  });
+
+  it("names exactly the keys the bundled schema defines", () => {
+    const schema = JSON.parse(
+      readFileSync(new URL("../../../../.kanna/workflows/schema.json", import.meta.url), "utf8"),
+    );
+    const keys = (node: { properties: Record<string, unknown> }) => Object.keys(node.properties).sort();
+    expect([...WORKFLOW_ROOT_KEYS].sort()).toEqual(keys(schema));
+    expect([...WORKFLOW_STAGE_KEYS].sort()).toEqual(keys(schema.properties.stages.items));
+    expect([...WORKFLOW_POST_KEYS].sort()).toEqual(keys(schema.properties.stages.items.properties.post));
+  });
+
+  it("ships a schema example that loads", () => {
+    const schema = JSON.parse(
+      readFileSync(new URL("../../../../.kanna/workflows/schema.json", import.meta.url), "utf8"),
+    ) as { examples: unknown[] };
+    for (const example of schema.examples) {
+      expect(() => parseWorkflowJson(JSON.stringify(example))).not.toThrow();
+    }
   });
 });

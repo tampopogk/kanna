@@ -2125,6 +2125,7 @@ async fn run_merge_agent_route_uses_merge_agent_runner() {
                 follow_task: None,
                 revision_budget: None,
                 workflow_extended: None,
+                routing: None,
             })
         }),
     );
