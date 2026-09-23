@@ -138,9 +138,6 @@ struct Registered {
 
 static REGISTRY: LazyLock<Mutex<HashMap<PathBuf, Registered>>> = LazyLock::new(Default::default);
 
-/// Tasks the publisher found the disk ahead of the database for, by root.
-static DIVERGED: LazyLock<Mutex<BTreeSet<(PathBuf, String)>>> = LazyLock::new(Default::default);
-
 /// Name the installation that publishes under `root`. Its mode stays what
 /// it was (`sql` until [`start`] says otherwise).
 pub fn register(root: &Path, db_path: &str) {
@@ -185,41 +182,29 @@ pub fn mode_for_root(root: &Path) -> Mode {
 /// The publisher found the disk ahead of the database for this task (a
 /// ledger file it would have written already holds other bytes, or
 /// `task.json` is newer than any revision the database reached). In `disk`
-/// mode the task is reconciled from the disk before anything is written
-/// over it.
-pub(crate) fn flag_divergence(root: &Path, task_id: &str, why: &str) {
+/// mode nothing of the task is published until it is reconciled from the
+/// disk. The fence is a row of the database (`disk_divergence`), so a
+/// restart between the finding and the repair keeps it.
+pub(crate) fn flag_divergence(db: &Db, task_id: &str, why: &str) {
     log::warn!("task {task_id}: the disk is ahead of the database ({why}); reconciling from disk");
-    DIVERGED
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .insert((root.to_path_buf(), task_id.to_string()));
+    if let Err(error) = db.flag_disk_divergence(task_id, why) {
+        log::error!("task {task_id}: could not record that its disk is ahead: {error}");
+    }
     super::wake_publisher();
 }
 
-pub(crate) fn diverged_tasks(root: &Path) -> Vec<String> {
-    DIVERGED
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .iter()
-        .filter(|(flagged, _)| flagged == root)
-        .map(|(_, task)| task.clone())
-        .collect()
+pub(crate) fn diverged_tasks(db: &Db) -> Vec<String> {
+    db.disk_divergent_task_ids().unwrap_or_else(|error| {
+        log::error!("could not read the tasks whose disk is ahead: {error}");
+        Vec::new()
+    })
 }
 
 /// Flagged, and not yet repaired: nothing of the task is published over
-/// the disk, and its differing `task.json` is taken as the disk's.
-pub(crate) fn is_diverged(root: &Path, task_id: &str) -> bool {
-    DIVERGED
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .contains(&(root.to_path_buf(), task_id.to_string()))
-}
-
-fn clear_divergence(root: &Path, task_id: &str) {
-    DIVERGED
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .remove(&(root.to_path_buf(), task_id.to_string()));
+/// the disk, and its differing `task.json` is taken as the disk's. A task
+/// whose flag cannot be read is treated as flagged.
+pub(crate) fn is_diverged(db: &Db, task_id: &str) -> bool {
+    db.is_disk_divergent(task_id).unwrap_or(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -828,6 +813,7 @@ pub fn reconcile_from_disk(
     let mut targets = BTreeSet::new();
     let mut disk_revisions = BTreeMap::new();
     let mut compared_at = BTreeMap::new();
+    let mut in_sync = BTreeSet::new();
     let mut reasons: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for directory in scan
         .tasks
@@ -836,13 +822,17 @@ pub fn reconcile_from_disk(
     {
         let task_id = directory.snapshot.task_id.clone();
         let mut compared = compare_task(db, directory).map_err(db_error)?;
-        compared.diverged = is_diverged(&root, &task_id);
+        compared.diverged = is_diverged(db, &task_id);
         compared_at.insert(task_id.clone(), compared.sql.map(|(revision, _)| revision));
         match verdict(&compared) {
-            Verdict::InSync => {}
+            Verdict::InSync => {
+                in_sync.insert(task_id.clone());
+            }
             Verdict::CountersBehind(disk_revision) => {
+                // The rows are the disk's; only the revision was behind.
                 db.raise_task_snapshot_revision(&task_id, disk_revision)
                     .map_err(db_error)?;
+                in_sync.insert(task_id.clone());
             }
             Verdict::DiskAhead(why) => {
                 targets.insert(task_id.clone());
@@ -982,15 +972,11 @@ pub fn reconcile_from_disk(
             }
         }
     }
-    for (task, _) in &report.reconciled {
-        clear_divergence(&root, task);
-    }
-    // A flagged task found in sync (or removed) needs nothing more; one that
-    // failed stays flagged, and is retried at the publisher's next pass.
-    for task in only.into_iter().flatten() {
-        if !report.failed.iter().any(|(failed, _)| failed == task) {
-            clear_divergence(&root, task);
-        }
+    // A reconciled task's fence came down with its repair. A flagged task
+    // found in sync needs nothing more; one that failed stays flagged, and
+    // is retried at the publisher's next pass (or the next startup).
+    for task in &in_sync {
+        db.clear_disk_divergence(task).map_err(db_error)?;
     }
     for (task, error) in flush_all(db, db_path) {
         report.diagnostics.push(format!(

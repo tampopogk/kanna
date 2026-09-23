@@ -405,7 +405,7 @@ fn flagged_installation(label: &str) -> (Db, String, PathBuf) {
     db.mark_task_snapshot_dirty("t1").unwrap();
     let error = flush_task(&db, &db_path, "t1").unwrap_err();
     assert!(error.contains("beyond the database's"), "{error}");
-    assert!(is_diverged(&root, "t1"));
+    assert!(is_diverged(&db, "t1"));
     let task_json = task_dir(&root, &format!("repo-{label}"), "t1").join("task.json");
     (db, db_path, task_json)
 }
@@ -420,7 +420,6 @@ fn display_name(db: &Db) -> Option<String> {
 #[test]
 fn a_flagged_task_publishes_nothing_until_it_is_repaired() {
     let (db, db_path, task_json) = flagged_installation("fence");
-    let root = root_for_db(&db_path);
     let on_disk = std::fs::read(&task_json).unwrap();
     let disk_revision = serde_json::from_slice::<Value>(&on_disk).unwrap()["snapshot_revision"]
         .as_i64()
@@ -437,12 +436,12 @@ fn a_flagged_task_publishes_nothing_until_it_is_repaired() {
     assert!(flush_task(&db, &db_path, "t1").is_err());
     assert!(!flush_all(&db, &db_path).is_empty());
     assert_eq!(std::fs::read(&task_json).unwrap(), on_disk);
-    assert!(is_diverged(&root, "t1"));
+    assert!(is_diverged(&db, "t1"));
 
     let report =
         reconcile_from_disk(&db, &db_path, Some(&BTreeSet::from(["t1".to_string()]))).unwrap();
     assert_eq!(report.reconciled.len(), 1, "{report:#?}");
-    assert!(!is_diverged(&root, "t1"));
+    assert!(!is_diverged(&db, "t1"));
     assert_eq!(display_name(&db).as_deref(), Some("on disk"));
     assert!(flush_all(&db, &db_path).is_empty());
     let rewritten: Value = serde_json::from_slice(&std::fs::read(&task_json).unwrap()).unwrap();
@@ -461,10 +460,11 @@ fn a_write_after_the_comparison_survives_the_repair() {
         Db::open(&writer_path)
             .unwrap()
             .connection_for_e2e_tests()
-            .execute(
-                "INSERT INTO task_transfer_workflow_claim (pipeline_item_id, transfer_id)
-                 VALUES ('t1', 'xfer-live')",
-                [],
+            .execute_batch(
+                "INSERT INTO task_transfer (id, direction, status, source_task_id, local_task_id)
+                 VALUES ('xfer-live', 'outgoing', 'streaming', 't1', 't1');
+                 INSERT INTO task_transfer_workflow_claim (pipeline_item_id, transfer_id)
+                 VALUES ('t1', 'xfer-live');",
             )
             .unwrap();
     });
@@ -478,7 +478,7 @@ fn a_write_after_the_comparison_survives_the_repair() {
             .any(|(task, error)| task == "t1" && error.contains(crate::db::CHANGED_SINCE_COMPARED)),
         "{report:#?}"
     );
-    assert!(is_diverged(&root, "t1"));
+    assert!(is_diverged(&db, "t1"));
     let claims = |db: &Db| -> i64 {
         db.connection_for_e2e_tests()
             .query_row(
@@ -495,7 +495,7 @@ fn a_write_after_the_comparison_survives_the_repair() {
     // The next pass compares again and repairs, keeping the live claim.
     let report = reconcile_from_disk(&db, &db_path, Some(&only)).unwrap();
     assert_eq!(report.reconciled.len(), 1, "{report:#?}");
-    assert!(!is_diverged(&root, "t1"));
+    assert!(!is_diverged(&db, "t1"));
     assert_eq!(display_name(&db).as_deref(), Some("on disk"));
     assert_eq!(claims(&db), 1);
 }
@@ -616,4 +616,243 @@ fn an_explicit_request_for_the_current_mode_withdraws_a_pending_switch() {
         .all(|checkpoint| !checkpoint.checkpoint.starts_with("to_disk")));
     // And nothing is pending for the next start either.
     assert_eq!(start(&db, &db_path, None).unwrap().mode, Mode::Sql);
+}
+
+// ---------------------------------------------------------------------------
+// Review round 2
+// ---------------------------------------------------------------------------
+
+fn inputs(db: &Db) -> Vec<(i64, String, String)> {
+    db.connection_for_e2e_tests()
+        .prepare("SELECT id, task_id, message FROM task_input ORDER BY id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+/// Disk mode; task `a` records `a_inputs` on disk only (the database is
+/// restored from before them), then task `b` takes the first of their ids.
+/// `before_flush` runs on the live database before its records reach disk.
+fn restored_with_reused_input_id(
+    label: &str,
+    a_inputs: &[&str],
+    before_flush: impl FnOnce(&Db, &[i64]),
+) -> (Db, String, Vec<i64>, i64) {
+    let (db, db_path) = installation(label, &format!("repo-{label}"), &["a", "b"]);
+    assert!(flush_all(&db, &db_path).is_empty());
+    assert_eq!(
+        start(&db, &db_path, Some(Mode::Disk)).unwrap().mode,
+        Mode::Disk
+    );
+    let copy = backup(&db, &db_path);
+    let a_ids: Vec<i64> = a_inputs
+        .iter()
+        .map(|text| operator_input(&db, "a", text))
+        .collect();
+    before_flush(&db, &a_ids);
+    assert!(flush_all(&db, &db_path).is_empty());
+    drop(db);
+    let db = restore(&db_path, &copy);
+    let b_id = operator_input(&db, "b", "B's input");
+    assert_eq!(
+        b_id, a_ids[0],
+        "the restored database hands the id out again"
+    );
+    assert!(flush_all(&db, &db_path).is_empty());
+    (db, db_path, a_ids, b_id)
+}
+
+/// Round 2, finding 1: two disk-only inputs, the first colliding. The moved
+/// one never lands on the other's id: every projected id is reserved first.
+#[test]
+fn a_moved_input_never_lands_on_another_projected_input() {
+    let (db, db_path, a_ids, b_id) =
+        restored_with_reused_input_id("two-inputs", &["A first", "A second"], |_, _| {});
+    let report = start(&db, &db_path, None).unwrap().reconcile.unwrap();
+    assert_eq!(report.reconciled.len(), 1, "{report:#?}");
+    let rows = inputs(&db);
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    assert!(
+        rows.contains(&(b_id, "b".into(), "B's input".into())),
+        "{rows:?}"
+    );
+    assert!(
+        rows.contains(&(a_ids[1], "a".into(), "A second".into())),
+        "{rows:?}"
+    );
+    let moved = rows
+        .iter()
+        .find(|(_, task, message)| task == "a" && message == "A first")
+        .expect("A's first input is recovered");
+    assert!(moved.0 != b_id && moved.0 != a_ids[1], "{rows:?}");
+}
+
+/// Round 2, finding 2: a join member's delivered outcome names the input
+/// that moved; it follows the input, so the parent's notice is its own.
+#[test]
+fn a_join_member_follows_its_moved_input() {
+    let (db, db_path, a_ids, b_id) =
+        restored_with_reused_input_id("join-input", &["the child's outcome"], |db, ids| {
+            db.connection_for_e2e_tests()
+                .execute_batch(&format!(
+                    "INSERT INTO task_join (id, parent_task_id, base_sha)
+                     VALUES ('join-a', 'a', 'sha');
+                     INSERT INTO task_join_member
+                        (join_id, position, child_task_id, spec, resolved_at, outcome, input_id)
+                     VALUES ('join-a', 1, 'child-a', '{{}}', '2026-09-23T10:00:00Z',
+                             'success', {});",
+                    ids[0]
+                ))
+                .unwrap();
+        });
+    let report = start(&db, &db_path, None).unwrap().reconcile.unwrap();
+    assert_eq!(report.reconciled.len(), 1, "{report:#?}");
+    let member: i64 = db
+        .connection_for_e2e_tests()
+        .query_row(
+            "SELECT input_id FROM task_join_member WHERE join_id = 'join-a'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_ne!(member, a_ids[0]);
+    assert_ne!(member, b_id);
+    // No member names an input of another task, or none at all.
+    let dangling: i64 = db
+        .connection_for_e2e_tests()
+        .query_row(
+            "SELECT COUNT(*) FROM task_join_member member
+             JOIN task_join ON task_join.id = member.join_id
+             LEFT JOIN task_input input ON input.id = member.input_id
+             WHERE member.input_id IS NOT NULL
+               AND (input.id IS NULL OR input.task_id != task_join.parent_task_id)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(dangling, 0);
+    let notices = db.pending_join_notices().unwrap();
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].parent_task_id, "a");
+    assert_eq!(notices[0].message, "the child's outcome");
+}
+
+/// Every carried column that holds an input id is one a moved input is
+/// applied to.
+#[test]
+fn every_carried_input_reference_follows_a_moved_input() {
+    for table in crate::db::task_state::CARRIED_TABLES {
+        for column in table.columns {
+            if column.ends_with("input_id") {
+                assert!(
+                    crate::db::INPUT_ID_REFERENCES.contains(&(table.table, column)),
+                    "{}.{column} holds an input id and is not in INPUT_ID_REFERENCES",
+                    table.table
+                );
+            }
+        }
+    }
+}
+
+/// Round 2, finding 3: the fence is durable. Flagged, a live write lifts
+/// the database past the disk's revision, and the process dies before the
+/// repair: the restart still takes the disk's rows and never writes the
+/// database's over them.
+#[test]
+fn the_fence_survives_a_restart_after_the_database_caught_up() {
+    let (db, db_path, task_json) = flagged_installation("restart");
+    let on_disk = std::fs::read(&task_json).unwrap();
+    let disk_revision = serde_json::from_slice::<Value>(&on_disk).unwrap()["snapshot_revision"]
+        .as_i64()
+        .unwrap();
+    db.connection_for_e2e_tests()
+        .execute(
+            "UPDATE pipeline_item SET display_name = 'live write' WHERE id = 't1'",
+            [],
+        )
+        .unwrap();
+    while revision(&db, "t1") <= disk_revision + 1 {
+        db.mark_task_snapshot_dirty("t1").unwrap();
+    }
+    drop(db);
+
+    // A new process: nothing is remembered but the database and the disk.
+    let db = Db::open(&db_path).unwrap();
+    assert!(is_diverged(&db, "t1"));
+    assert!(flush_task(&db, &db_path, "t1").is_err());
+    assert_eq!(std::fs::read(&task_json).unwrap(), on_disk);
+    let outcome = start(&db, &db_path, None).unwrap();
+    let report = outcome.reconcile.unwrap();
+    assert_eq!(report.reconciled.len(), 1, "{report:#?}");
+    assert!(!is_diverged(&db, "t1"));
+    assert_eq!(display_name(&db).as_deref(), Some("on disk"));
+    let rewritten: Value = serde_json::from_slice(&std::fs::read(&task_json).unwrap()).unwrap();
+    assert_eq!(rewritten["title"], "on disk");
+}
+
+/// Round 2, finding 4: a transfer whose display status is failed but whose
+/// finalization retry is still pending owns its source, so its claim (and
+/// its row) survive the repair. A settled transfer's claim does not.
+#[test]
+fn a_claim_held_by_a_failed_transfers_retry_survives_the_repair() {
+    let (db, db_path, _) = flagged_installation("failed-transfer");
+    db.connection_for_e2e_tests()
+        .execute_batch(
+            "INSERT INTO task_transfer (id, direction, status, source_task_id, local_task_id)
+             VALUES ('xfer-retry', 'outgoing', 'failed', 't1', 't1');
+             INSERT INTO transfer_work (id, kind, transfer_id, payload_json, status)
+             VALUES ('work-retry', 'finalize', 'xfer-retry', '{}', 'pending');
+             INSERT INTO task_transfer_workflow_claim (pipeline_item_id, transfer_id)
+             VALUES ('t1', 'xfer-retry');",
+        )
+        .unwrap();
+    assert_eq!(
+        db.task_workflow_is_claimed_by_transfer("t1")
+            .unwrap()
+            .as_deref(),
+        Some("xfer-retry")
+    );
+    let only = BTreeSet::from(["t1".to_string()]);
+    let report = reconcile_from_disk(&db, &db_path, Some(&only)).unwrap();
+    assert_eq!(report.reconciled.len(), 1, "{report:#?}");
+    assert_eq!(display_name(&db).as_deref(), Some("on disk"));
+    assert_eq!(
+        db.task_workflow_is_claimed_by_transfer("t1")
+            .unwrap()
+            .as_deref(),
+        Some("xfer-retry")
+    );
+}
+
+/// The contrast: display status and ownership agree that a failed transfer
+/// with no retry left is done, and a repair takes the disk's word for its
+/// claim.
+#[test]
+fn a_claim_whose_transfer_has_finished_is_the_disks_to_decide() {
+    let (db, db_path, _) = flagged_installation("finished-transfer");
+    db.connection_for_e2e_tests()
+        .execute_batch(
+            "INSERT INTO task_transfer (id, direction, status, source_task_id, local_task_id)
+             VALUES ('xfer-done', 'outgoing', 'failed', 't1', 't1');
+             INSERT INTO transfer_work (id, kind, transfer_id, payload_json, status)
+             VALUES ('work-done', 'finalize', 'xfer-done', '{}', 'failed');
+             INSERT INTO task_transfer_workflow_claim (pipeline_item_id, transfer_id)
+             VALUES ('t1', 'xfer-done');",
+        )
+        .unwrap();
+    assert_eq!(db.task_workflow_is_claimed_by_transfer("t1").unwrap(), None);
+    let only = BTreeSet::from(["t1".to_string()]);
+    let report = reconcile_from_disk(&db, &db_path, Some(&only)).unwrap();
+    assert_eq!(report.reconciled.len(), 1, "{report:#?}");
+    let claims: i64 = db
+        .connection_for_e2e_tests()
+        .query_row(
+            "SELECT COUNT(*) FROM task_transfer_workflow_claim WHERE pipeline_item_id = 't1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(claims, 0);
 }

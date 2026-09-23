@@ -1,6 +1,6 @@
 # Disk authority inventory (spec §11, §16.11, T13)
 
-Date: 2026-09-23. Schema: migrations through `103_disk_state_records`.
+Date: 2026-09-23. Schema: migrations through `104_disk_divergence`.
 
 This is the input to the T13 cutover. It lists every durable table in
 `crates/kanna-server/src/db` and says, for each, which disk record is its
@@ -252,6 +252,7 @@ not rebuilt, with the reason above.
 | `repo` | `repo.json` | `last_opened_at` is carried but does not by itself owe a rewrite |
 | `repo_sidebar_order` | `repo.json` (order of the repository's remote) | |
 | `repo_disk_snapshot`, `disk_record_removal` | bookkeeping (this database's outbox for `repo.json` and tombstones) | |
+| `disk_divergence` | bookkeeping (this database's fence on a task whose disk is ahead of it, T13c) | a database rebuilt from disk is not behind it |
 | `settings` | — | machine preferences (local config) |
 | `schema_migrations`, `sqlite_sequence` | — | describe the database file |
 
@@ -330,7 +331,15 @@ stamp is owed again at the next `disk`-mode startup.
   bytes, or a `task.json` at a revision beyond the database's, it writes
   nothing over it: the task is flagged and reconciled from its directory
   under the task's mutation lease (deferred while an operation holds a
-  ledger reservation on it).
+  ledger reservation on it). The flag is a row of `disk_divergence`
+  (migration `104`), so it survives a restart; until the repair deletes it
+  the task publishes nothing, and the repair takes its differing
+  `task.json` as the disk's whatever the revisions say. A repair aborts if
+  the task's rows changed after they were compared, never lowers a counter,
+  keeps a transfer (and its workflow claim) that still owns the task by
+  T9's rule, and never rewrites another task's input: an input whose id a
+  restored older database handed out again moves to a new id, and the join
+  member naming it follows.
 
 **Switching to `disk`.** Ask for it; the next server start performs it:
 

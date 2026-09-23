@@ -16,7 +16,17 @@ pub(crate) async fn reconcile_diverged_tasks(state: Arc<AppState>) {
     if authority::mode_for_root(&root) != Mode::Disk {
         return;
     }
-    for task_id in authority::diverged_tasks(&root) {
+    let diverged = {
+        let db_path = db_path.clone();
+        tokio::task::spawn_blocking(move || {
+            Db::open(&db_path)
+                .map(|db| authority::diverged_tasks(&db))
+                .unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default()
+    };
+    for task_id in diverged {
         let _lease = state.begin_requested_task_mutation(&task_id).await;
         let db_path = db_path.clone();
         let task = task_id.clone();

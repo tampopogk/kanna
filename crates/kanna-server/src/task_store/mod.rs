@@ -377,7 +377,7 @@ pub fn flush_task_at(db: &Db, root: &Path, task_id: &str) -> Result<FlushOutcome
     // finding may have raised the database's revision past the disk's, so
     // no revision check can tell a later flush it is safe to write over it.
     if authority::mode_for_root(root) == authority::Mode::Disk
-        && authority::is_diverged(root, task_id)
+        && authority::is_diverged(db, task_id)
     {
         let error =
             "the disk is ahead of the database; awaiting reconciliation from disk".to_string();
@@ -413,7 +413,7 @@ pub fn flush_task_at(db: &Db, root: &Path, task_id: &str) -> Result<FlushOutcome
             if error.contains("already exists with different content")
                 && authority::mode_for_root(root) == authority::Mode::Disk
             {
-                authority::flag_divergence(root, task_id, &error);
+                authority::flag_divergence(db, task_id, &error);
             }
             return fail(error);
         }
@@ -450,7 +450,7 @@ pub fn flush_task_at(db: &Db, root: &Path, task_id: &str) -> Result<FlushOutcome
                     let error = format!(
                         "task.json on disk is at revision {on_disk}, beyond the database's {revision}"
                     );
-                    authority::flag_divergence(root, task_id, &error);
+                    authority::flag_divergence(db, task_id, &error);
                     let _ = db.record_task_snapshot_error(task_id, &error);
                     return Err(error);
                 }

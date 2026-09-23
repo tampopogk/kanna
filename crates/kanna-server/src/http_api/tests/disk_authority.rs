@@ -606,12 +606,12 @@ async fn the_publisher_finds_the_disk_ahead_and_the_disk_wins() {
             && error.contains("already exists with different content")),
         "{failures:?}"
     );
-    assert_eq!(authority::diverged_tasks(&copy.root), ["active"]);
+    assert_eq!(authority::diverged_tasks(&copy.db()), ["active"]);
 
     // The publisher's reconciliation, under the task's lease.
     let state = Arc::new(super::AppState::new(copy.config()));
     crate::http_api::storage_authority::reconcile_diverged_tasks(state).await;
-    assert!(authority::diverged_tasks(&copy.root).is_empty());
+    assert!(authority::diverged_tasks(&copy.db()).is_empty());
     let db = copy.db();
     assert!(crate::task_store::flush_all(&db, &copy.db_path).is_empty());
     assert_same_state(&with_first, &db);
@@ -640,10 +640,10 @@ async fn the_publisher_finds_the_disk_ahead_and_the_disk_wins() {
     let error = crate::task_store::flush_task(&db, &copy.db_path, "gate").unwrap_err();
     assert!(error.contains("beyond the database's"), "{error}");
     assert_eq!(std::fs::read(&task_json).unwrap(), ahead);
-    assert_eq!(authority::diverged_tasks(&copy.root), ["gate"]);
+    assert_eq!(authority::diverged_tasks(&copy.db()), ["gate"]);
     let state = Arc::new(super::AppState::new(copy.config()));
     crate::http_api::storage_authority::reconcile_diverged_tasks(state).await;
-    assert!(authority::diverged_tasks(&copy.root).is_empty());
+    assert!(authority::diverged_tasks(&copy.db()).is_empty());
     assert!(crate::task_store::flush_all(&db, &copy.db_path).is_empty());
     let rewritten: Value = serde_json::from_slice(&std::fs::read(&task_json).unwrap()).unwrap();
     assert!(rewritten["snapshot_revision"].as_i64().unwrap() > revision + 10);

@@ -289,19 +289,19 @@ async fn run_task_ledger_publisher(state: Arc<http_api::AppState>) {
         let flushed = tokio::task::spawn_blocking(move || {
             let db = db::Db::open(&db_path)?;
             let failures = crate::task_store::flush_all(&db, &db_path);
-            Ok::<_, rusqlite::Error>((failures, db.ledger_continuation_task_ids()?))
+            let diverged = crate::task_store::authority::diverged_tasks(&db);
+            Ok::<_, rusqlite::Error>((failures, db.ledger_continuation_task_ids()?, diverged))
         })
         .await;
         match flushed {
-            Ok(Ok((failures, continuations))) => {
+            Ok(Ok((failures, continuations, diverged))) => {
                 for (task_id, error) in failures {
                     log::warn!("task ledger for {task_id} is pending publication: {error}");
                 }
                 // Disk authority (T13c): a task whose disk the flush found
                 // ahead is reconciled under its mutation lease, which a live
                 // transition may hold; like resuming, never inline.
-                let root = crate::task_store::root_for_db(&state.config().db_path);
-                if !crate::task_store::authority::diverged_tasks(&root).is_empty()
+                if !diverged.is_empty()
                     && !RECONCILING.swap(true, std::sync::atomic::Ordering::AcqRel)
                 {
                     let state = Arc::clone(&state);
