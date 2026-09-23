@@ -713,15 +713,14 @@ enum RawWorkflowStageExecution {
 struct AgentFrontmatter {
     name: Option<String>,
     description: Option<String>,
-    /// Definition-formula alias for `description` (spec §12): "one sentence"
-    /// naming the role. `description` wins when both are present; a
-    /// definition that declares `role` opts into the formula's line-count and
-    /// four-section shape, checked by `check_definition_formula`.
+    /// Alias for `description`: "one sentence" naming the role. `description`
+    /// wins when both are present. Kanna never checks a definition's length
+    /// or shape (spec §12); this is a harmless parsing alias only.
     role: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_yaml_value")]
     agent_provider: Option<YamlValue>,
-    /// Definition-formula alias for `agent_provider` ("ordered candidates").
-    /// `agent_provider` wins when both are present.
+    /// Alias for `agent_provider` ("ordered candidates"). `agent_provider`
+    /// wins when both are present.
     #[serde(default, deserialize_with = "deserialize_optional_yaml_value")]
     providers: Option<YamlValue>,
     model: Option<String>,
@@ -923,24 +922,12 @@ impl RepoDefinitions {
         // name. The requested name wins when both paths exist.
         let repo_agent_dirs = agent_repo_dirs(&selector.role);
         let mut definition = None;
-        let mut uses_formula = false;
-        // The base file's own frontmatter, verbatim, and whether its body
-        // opened with the conventional blank separator line, for the
-        // post-merge formula recheck below — never a re-serialization of the
-        // frontmatter (see that check for why).
-        let mut base_frontmatter: Option<String> = None;
-        let mut base_has_leading_blank = false;
         for dir in &repo_agent_dirs {
             let agent_path = format!(".kanna/agents/{dir}/AGENT.md");
             if let Some(content) = read_snapshot_utf8(&self.snapshot, &agent_path)? {
                 let content = self
                     .expand_partials(&content, &agent_path)
                     .map_err(|error| definition_error(&self.snapshot, &agent_path, error))?;
-                uses_formula |= content_uses_formula(&content)
-                    .map_err(|error| definition_error(&self.snapshot, &agent_path, error))?;
-                let (frontmatter, body) = split_frontmatter(&content);
-                base_frontmatter = frontmatter.map(str::to_string);
-                base_has_leading_blank = body.starts_with('\n') || body.starts_with("\r\n");
                 definition = Some(
                     parse_agent_definition(&content)
                         .map_err(|error| definition_error(&self.snapshot, &agent_path, error))?,
@@ -963,15 +950,6 @@ impl RepoDefinitions {
                             selector.display()
                         )
                     })?;
-                uses_formula |= content_uses_formula(&content).map_err(|error| {
-                    format!(
-                        "invalid compiled agent resource for selector `{}`: {error}",
-                        selector.display()
-                    )
-                })?;
-                let (frontmatter, body) = split_frontmatter(&content);
-                base_frontmatter = frontmatter.map(str::to_string);
-                base_has_leading_blank = body.starts_with('\n') || body.starts_with("\r\n");
                 parse_agent_definition(&content).map_err(|error| {
                     format!(
                         "invalid compiled agent resource for selector `{}`: {error}",
@@ -987,42 +965,10 @@ impl RepoDefinitions {
                 let extension = self
                     .expand_partials(&extension, &extension_path)
                     .map_err(|error| definition_error(&self.snapshot, &extension_path, error))?;
-                uses_formula |= content_uses_formula(&extension)
-                    .map_err(|error| definition_error(&self.snapshot, &extension_path, error))?;
                 apply_agent_extension(&mut definition, &extension)
                     .map_err(|error| definition_error(&self.snapshot, &extension_path, error))?;
                 break;
             }
-        }
-        // A base or extension that opts into the definition formula must still
-        // satisfy it once EXTEND.md is merged in: an extension can otherwise
-        // push a compliant base past the 40-line cap, or smuggle in a legacy
-        // result variable, with nothing checking the *resolved* document (see
-        // `check_definition_formula`, which only ever saw the base file).
-        //
-        // This counts the base file's own frontmatter lines, verbatim, plus
-        // the merged prompt body — not a re-serialization of the resolved
-        // `AgentDefinition` (`render_agent_md`, used by `agent eject`, is the
-        // wrong tool here): serde_yaml writes `agent_provider` one entry per
-        // line, so a one-line `providers: claude, codex, copilot, opencode,
-        // antigravity` frontmatter re-renders as six lines, inflating a
-        // compliant definition past the cap the base check never saw it
-        // fail. The base-only check above counted the file as authored; this
-        // recheck must count the resolved document the same way, or a
-        // formula-compliant base with no EXTEND.md at all could start failing
-        // here that the base check just accepted.
-        if uses_formula {
-            let resolved = resolved_formula_text(
-                base_frontmatter.as_deref(),
-                base_has_leading_blank,
-                &definition.prompt,
-            );
-            check_definition_formula(&resolved).map_err(|error| {
-                format!(
-                    "invalid resolved agent `{}` (AGENT.md merged with EXTEND.md): {error}",
-                    selector.display()
-                )
-            })?;
         }
         Ok(Some(definition))
     }
@@ -2309,8 +2255,6 @@ fn parse_agent_definition(content: &str) -> Result<AgentDefinition, String> {
         }
         None => AgentFrontmatter::default(),
     };
-    let uses_formula = fm.role.is_some() || fm.providers.is_some();
-
     let definition = AgentDefinition {
         name: fm.name.unwrap_or_default(),
         description: fm.description.or(fm.role).unwrap_or_default(),
@@ -2323,88 +2267,7 @@ fn parse_agent_definition(content: &str) -> Result<AgentDefinition, String> {
         visibility: validate_visibility(fm.visibility)?.unwrap_or_default(),
     };
     validate_agent_definition(&definition).map_err(|error| format!("invalid AGENT.md: {error}"))?;
-    if uses_formula {
-        check_definition_formula(content).map_err(|error| format!("invalid AGENT.md: {error}"))?;
-    }
     Ok(definition)
-}
-
-/// Whether an AGENT.md/EXTEND.md's frontmatter declares `role` or `providers`
-/// (see `AgentFrontmatter`), the definition-formula opt-in. Checked
-/// separately from `parse_agent_definition`/`parse_agent_extension` so a
-/// caller merging a base with an extension can tell whether *either* side
-/// opted in, before either one's own formula check has necessarily run.
-fn content_uses_formula(content: &str) -> Result<bool, String> {
-    let (frontmatter, _) = split_frontmatter(content);
-    let fm: AgentFrontmatter = match frontmatter {
-        Some(raw) => {
-            serde_yaml::from_str(raw).map_err(|e| format!("invalid AGENT.md frontmatter: {}", e))?
-        }
-        None => AgentFrontmatter::default(),
-    };
-    Ok(fm.role.is_some() || fm.providers.is_some())
-}
-
-/// The document `check_definition_formula` counts and section-scans after
-/// EXTEND.md is merged in: the base file's own frontmatter, verbatim
-/// (never re-serialized — see the caller in `agent_optional` for why), the
-/// `---` frame around it exactly as the base file had it (including whether
-/// its body opened with the conventional blank separator line), and the
-/// merged prompt body. With no frontmatter this is just the prompt, matching
-/// how a frontmatter-less base would have counted on its own.
-fn resolved_formula_text(
-    base_frontmatter: Option<&str>,
-    base_has_leading_blank: bool,
-    prompt: &str,
-) -> String {
-    match base_frontmatter {
-        Some(frontmatter) => format!(
-            "---\n{}\n---\n{}{}\n",
-            frontmatter.trim_end_matches('\n'),
-            if base_has_leading_blank { "\n" } else { "" },
-            prompt.trim()
-        ),
-        None => format!("{}\n", prompt.trim()),
-    }
-}
-
-/// Spec §12's definition formula: a definition that opts in (by declaring
-/// `role` or `providers` in its frontmatter, see `AgentFrontmatter`) must
-/// resolve to 15-40 lines total and carry the four required section headers,
-/// in order, in its body. `checkDefinitionFormula` in the core package's
-/// `agent-loader.ts` mirrors this on the resolved-definition text.
-const DEFINITION_FORMULA_SECTIONS: [&str; 4] =
-    ["## Produces", "## Reads", "## Must not", "## Stop when"];
-const DEFINITION_FORMULA_RESULT_VARS: [&str; 3] =
-    ["$PREV_RESULT", "$PREV_MAIN_RESULT", "$PLAN_RESULT"];
-
-fn check_definition_formula(content: &str) -> Result<(), String> {
-    let line_count = content.trim_end_matches('\n').lines().count();
-    if !(15..=40).contains(&line_count) {
-        return Err(format!(
-            "definition-formula definitions must be 15-40 lines, got {line_count}"
-        ));
-    }
-    let mut search_from = 0usize;
-    for section in DEFINITION_FORMULA_SECTIONS {
-        match content[search_from..].find(section) {
-            Some(offset) => search_from += offset + section.len(),
-            None => {
-                return Err(format!(
-                    "definition-formula definitions require the section \"{section}\", in order after {:?}",
-                    &DEFINITION_FORMULA_SECTIONS
-                ));
-            }
-        }
-    }
-    for var in DEFINITION_FORMULA_RESULT_VARS {
-        if content.contains(var) {
-            return Err(format!(
-                "definition-formula definitions must not reference the legacy result variable {var}; the engine delivers results through the ledger"
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn parse_agent_extension(content: &str) -> Result<AgentExtension, String> {

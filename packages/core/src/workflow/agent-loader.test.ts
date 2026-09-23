@@ -1,8 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import {
   applyAgentExtension,
-  checkDefinitionFormula,
   parseAgentDefinition,
   parseAgentExtension,
   resolveAgentWithExtension,
@@ -488,15 +487,12 @@ it("refuses EXTEND attaching a different structured harness to inherited sibling
   expect(() => applyAgentExtension(base, { prompt: "", agent_provider: { harness: "opencode" } })).toThrow(/conflicting selection/);
 });
 
-describe("definition formula (spec §12, T10)", () => {
-  const FORMULA_TEXT = [
-    "## Produces\nsomething", "## Reads\nsomething", "## Must not\nsomething", "## Stop when\nsomething",
-  ].join("\n\n");
+describe("role/providers aliases (spec §12); Kanna never checks a definition's length or shape", () => {
   const pad = (lines: number) => "extra\n".repeat(lines);
 
   it("resolves role/providers as description/agent_provider aliases", () => {
     const def = parseAgentDefinition(
-      `---\nname: test\nrole: A one-sentence role\nproviders: claude, codex\n---\n${FORMULA_TEXT}\n${pad(8)}`
+      "---\nname: test\nrole: A one-sentence role\nproviders: claude, codex\n---\nShort prompt."
     );
     expect(def.description).toBe("A one-sentence role");
     expect(def.agent_provider).toEqual(["claude", "codex"]);
@@ -504,100 +500,60 @@ describe("definition formula (spec §12, T10)", () => {
 
   it("prefers legacy description/agent_provider when both are present", () => {
     const def = parseAgentDefinition(
-      `---\nname: test\ndescription: Legacy\nrole: Formula\nagent_provider: claude\nproviders: codex\n---\n${FORMULA_TEXT}\n${pad(8)}`
+      "---\nname: test\ndescription: Legacy\nrole: Formula\nagent_provider: claude\nproviders: codex\n---\nShort prompt."
     );
     expect(def.description).toBe("Legacy");
     expect(def.agent_provider).toEqual(["claude"]);
   });
 
-  it("does not enforce the formula on legacy (description/agent_provider) definitions", () => {
+  it("does not enforce any length or shape on a definition declaring role/providers", () => {
     expect(() =>
-      parseAgentDefinition("---\nname: test\ndescription: Legacy\nagent_provider: claude\n---\nOne short line.")
+      parseAgentDefinition("---\nname: test\nrole: A role\n---\n## Produces\nx\n## Reads\ny\n## Must not\nz\n## Stop when\nw")
     ).not.toThrow();
   });
 
-  it("rejects a formula definition (role declared) that is too short", () => {
-    expect(() =>
-      parseAgentDefinition("---\nname: test\nrole: A role\n---\n## Produces\nx\n## Reads\ny\n## Must not\nz\n## Stop when\nw")
-    ).toThrow(/15-40 lines/);
-  });
-
-  it("rejects a formula definition missing a required section", () => {
+  it("resolves a definition missing every section header", () => {
     expect(() =>
       parseAgentDefinition(`---\nname: test\nrole: A role\n---\n## Produces\nx\n\n## Reads\ny\n${pad(20)}`)
-    ).toThrow(/## Must not/);
+    ).not.toThrow();
   });
 
-  it("rejects a formula definition referencing a legacy result variable", () => {
+  it("resolves a definition referencing the legacy result variables", () => {
     expect(() =>
-      parseAgentDefinition(
-        `---\nname: test\nrole: A role\n---\n${FORMULA_TEXT}\nUses $PREV_MAIN_RESULT.\n${pad(6)}`
-      )
-    ).toThrow(/PREV_MAIN_RESULT/);
+      parseAgentDefinition("---\nname: test\nrole: A role\n---\nUses $PREV_MAIN_RESULT and $PLAN_RESULT.")
+    ).not.toThrow();
   });
 
-  it("checks every bundled definition that declares role/providers against the formula", () => {
-    const agentsDir = new URL("../../../../.kanna/agents/", import.meta.url);
-    for (const name of readdirSync(agentsDir)) {
-      const path = new URL(`${name}/AGENT.md`, agentsDir);
-      let content: string;
-      try {
-        content = readFileSync(path, "utf8");
-      } catch {
-        continue;
-      }
-      if (!/^\s*role:|^\s*providers:/m.test(content.split(/\n---/)[0] ?? "")) continue;
-      expect(checkDefinitionFormula(content), name).toEqual([]);
-    }
-  });
-
-  describe("resolveAgentWithExtension (T10 follow-up: check after EXTEND merge)", () => {
-    const base = `---\nname: test\nrole: A role\nproviders: claude\n---\n${FORMULA_TEXT}\n${pad(8)}`;
-
-    it("passes through a formula base with a short, compliant extension", () => {
+  describe("resolveAgentWithExtension", () => {
+    it("merges a base with a short extension", () => {
+      const base = "---\nname: test\nrole: A role\nproviders: claude\n---\nBase prompt.";
       const merged = resolveAgentWithExtension(base, "One more sentence.");
       expect(merged.prompt).toContain("One more sentence.");
     });
 
-    it("rejects an extension that pushes a compliant base past 40 lines", () => {
-      expect(() => resolveAgentWithExtension(base, pad(30))).toThrow(/15-40 lines/);
+    it("merges a long base with a long extension, whatever their combined length", () => {
+      const base = `---\nname: test\nrole: A role\nproviders: claude\n---\n${pad(20)}`;
+      const merged = resolveAgentWithExtension(base, pad(30));
+      expect(merged.prompt.split("\n").filter((line) => line === "extra")).toHaveLength(50);
     });
 
-    it("rejects an extension that reintroduces a legacy result variable", () => {
-      expect(() => resolveAgentWithExtension(base, "Uses $PREV_MAIN_RESULT.")).toThrow(/PREV_MAIN_RESULT/);
+    it("merges an extension that references a legacy result variable", () => {
+      const base = "---\nname: test\nrole: A role\nproviders: claude\n---\nBase prompt.";
+      const merged = resolveAgentWithExtension(base, "Uses $PREV_MAIN_RESULT.");
+      expect(merged.prompt).toContain("$PREV_MAIN_RESULT");
     });
 
-    it("does not enforce the formula when neither base nor extension opts in", () => {
-      const legacyBase = "---\nname: test\ndescription: Legacy\nagent_provider: claude\n---\nOne short line.";
-      expect(() => resolveAgentWithExtension(legacyBase, pad(50))).not.toThrow();
-    });
-
-    it("enforces the formula when only the extension opts in", () => {
-      const legacyBase = "---\nname: test\ndescription: Legacy\nagent_provider: claude\n---\nOne short line.";
-      expect(() => resolveAgentWithExtension(legacyBase, "---\nrole: Adds formula opt-in\n---\nToo short.")).toThrow(
-        /15-40 lines/
+    it("merges the repo's original review/EXTEND.md over the current bundled review agent", () => {
+      const agentContent = readFileSync(
+        new URL("../../../../.kanna/agents/review/AGENT.md", import.meta.url),
+        "utf8"
       );
-    });
-
-    // Review follow-up: shared, byte-for-byte, with the Rust test
-    // `agent_definition_formula_counts_the_resolved_document_like_a_source_file`
-    // in core.rs. render_agent_md/renderAgentMd re-serialized the resolved
-    // AgentDefinition instead of counting the resolved document the way the
-    // base check counts a source file — Rust's serde_yaml wrote
-    // `agent_provider` one entry per line (turning this fixture's one-line,
-    // 5-provider frontmatter into six lines), while core's old
-    // JSON.stringify-based renderer inflated it differently. Both sides must
-    // now accept and reject this fixture identically.
-    it("counts the resolved document the way the base check counts a source file", () => {
-      const fiveProviderBase =
-        "---\nname: reviewer\nrole: A one-sentence role\nproviders: claude, codex, copilot, opencode, antigravity\n---\n\n" +
-        "## Produces\nsomething\n## Reads\nsomething\n## Must not\nsomething\n## Stop when\nsomething\n" +
-        "extra\n".repeat(25).trimEnd();
-      expect(fiveProviderBase.split("\n").length).toBe(39);
-
-      expect(() => resolveAgentWithExtension(fiveProviderBase, "")).not.toThrow();
-
-      expect(() => resolveAgentWithExtension(fiveProviderBase, "One more line.")).toThrow(/got 41/);
+      const extendContent = readFileSync(
+        new URL("../../../../.kanna/agents/review/EXTEND.md", import.meta.url),
+        "utf8"
+      );
+      const merged = resolveAgentWithExtension(agentContent, extendContent);
+      expect(merged.prompt).toContain("Do not create a PR yourself.");
     });
   });
 });
