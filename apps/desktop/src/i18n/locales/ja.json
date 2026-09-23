@@ -517,7 +517,8 @@
   "taskHeader": {
     "branchLabel": "ブランチ:",
     "prPrefix": "PR #",
-    "stageAdvancePending": "ステージ変更を処理中"
+    "stageAdvancePending": "ステージ変更を処理中",
+    "exitLabel": "終了:"
   },
   "app": {
     "selectRepoFirst": "リポジトリを先に選択してください",

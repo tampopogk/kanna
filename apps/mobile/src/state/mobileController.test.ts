@@ -3029,6 +3029,96 @@ describe("createMobileController", () => {
     });
   });
 
+  /**
+   * T11a: `selectedTaskLatestRun` mirrors `selectedTaskReviewState`'s
+   * detail-only, per-task lifecycle so `TaskScreen` can show the task's most
+   * recent recorded result.
+   */
+  describe("latest run state (T11a)", () => {
+    const runTask: TaskSummary = {
+      id: "task-run",
+      repoId: "repo-1",
+      title: "Ship the thing",
+      prompt: "Ship the thing",
+      stage: "review"
+    };
+    const otherTask: TaskSummary = {
+      id: "task-other-run",
+      repoId: "repo-1",
+      title: "Something else",
+      prompt: "Do the other thing",
+      stage: "in progress"
+    };
+    const latestRun = {
+      id: "run-1",
+      stage: "review",
+      kind: "main",
+      status: "failed",
+      verdict: "declined",
+      summary: "Already fixed upstream.",
+      resumedFromRunId: null,
+      resumeFallbackReason: null,
+      finishedAt: "2026-09-12T00:05:00Z"
+    };
+
+    function createLatestRunClient(): ClientMock {
+      const client = createClientMock();
+      client.listRecentTasks.mockResolvedValue([runTask, otherTask]);
+      client.listRepoTasks.mockResolvedValue([runTask, otherTask]);
+      return client;
+    }
+
+    it("projects the latest recorded result from task detail", async () => {
+      const store = createSessionStore();
+      const client = createLatestRunClient();
+      client.getTask = vi.fn(async () => ({ ...runTask, latestRun }));
+      const controller = createMobileController(client, store);
+      await controller.bootstrap();
+      controller.openTask(runTask.id);
+      await flushMicrotasks();
+      expect(store.getState().selectedTaskLatestRun).toMatchObject({
+        taskId: runTask.id,
+        latestRun: { verdict: "declined", summary: "Already fixed upstream." }
+      });
+    });
+
+    it("clears on selection change and restores from cache on re-entry", async () => {
+      const store = createSessionStore();
+      const client = createLatestRunClient();
+      client.getTask = vi.fn(async (taskId: string) => {
+        if (taskId !== runTask.id) {
+          throw new Error("owner offline");
+        }
+        return { ...runTask, latestRun };
+      });
+      const controller = createMobileController(client, store);
+
+      await controller.bootstrap();
+      controller.openTask(runTask.id);
+      await flushMicrotasks();
+      expect(store.getState().selectedTaskLatestRun?.latestRun).toMatchObject({
+        verdict: "declined"
+      });
+      const detailReads = client.getTask.mock.calls.length;
+
+      controller.openTask(otherTask.id);
+      await flushMicrotasks();
+      // A latest result belongs to one task and must not follow the
+      // selection to another.
+      expect(store.getState().selectedTaskLatestRun).toBeNull();
+
+      controller.openTask(runTask.id);
+      await flushMicrotasks();
+      expect(store.getState().selectedTaskLatestRun?.latestRun).toMatchObject({
+        verdict: "declined"
+      });
+      // Restored from the cache, not by asking the owner again.
+      expect(client.getTask.mock.calls.filter(
+        ([taskId]) => taskId === runTask.id
+      )).toHaveLength(detailReads);
+    });
+  });
+
   it("keeps the bounded prompt fallback when owner task detail fails", async () => {
     const promptSnippet = "p".repeat(500);
     const cloudTask: TaskSummary = {

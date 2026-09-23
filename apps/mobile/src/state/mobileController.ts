@@ -430,6 +430,9 @@ export function createMobileController(
          * present on first open and gone forever afterwards.
          */
         reviewState: SessionState["selectedTaskReviewState"];
+        /** The latest-result read this detail carried, kept beside the
+         * prompt for the same cache-hit reason as `reviewState`. */
+        latestRun: SessionState["selectedTaskLatestRun"];
       }
     | null = null;
   /**
@@ -716,6 +719,7 @@ export function createMobileController(
       store.setTaskPrompt(taskId, loadedTaskPrompt.prompt);
       store.setTaskPorts(taskId, loadedTaskPrompt.ports);
       store.setSelectedTaskReviewState(loadedTaskPrompt.reviewState);
+      store.setSelectedTaskLatestRun(loadedTaskPrompt.latestRun);
       return;
     }
     if (!force && activeTaskDetailIdentity === detailIdentity) {
@@ -747,6 +751,11 @@ export function createMobileController(
               }
             : null;
         store.setSelectedTaskReviewState(reviewState);
+        const latestRun: SessionState["selectedTaskLatestRun"] = {
+          taskId,
+          latestRun: detail.latestRun ?? null
+        };
+        store.setSelectedTaskLatestRun(latestRun);
         observedTaskWorkflow = {
           taskId,
           routeIdentity,
@@ -758,7 +767,8 @@ export function createMobileController(
             routeIdentity,
             prompt: detail.prompt,
             ports: detail.ports,
-            reviewState
+            reviewState,
+            latestRun
           };
           store.setTaskPrompt(taskId, detail.prompt);
         }

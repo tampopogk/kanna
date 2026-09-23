@@ -5,6 +5,9 @@ import type {
   TaskTerminalStatus
 } from "../state/sessionStore";
 import type {
+  ArtifactDetail,
+  ArtifactFileContent,
+  ArtifactReference,
   TaskReviewContext
 } from "../lib/api/types";
 import {
@@ -305,6 +308,18 @@ interface RenderTaskScreenOptions {
     | "advance-stage"
     | "close-task"
     | null;
+  latestRun?: {
+    id?: string;
+    stage?: string;
+    kind?: string;
+    status?: string;
+    verdict?: string | null;
+    summary?: string | null;
+    exit?: string | null;
+    artifacts?: Record<string, ArtifactReference> | null;
+  } | null;
+  onGetArtifact?: (repoId: string, artifactId: string) => Promise<ArtifactDetail>;
+  onReadArtifactFile?: (repoId: string, artifactId: string, path: string) => Promise<ArtifactFileContent>;
 }
 
 function renderTaskScreen(options: RenderTaskScreenOptions = {}): ElementNode {
@@ -376,6 +391,9 @@ function renderTaskScreen(options: RenderTaskScreenOptions = {}): ElementNode {
     onCompanionOpenChange = vi.fn(),
     onSendCompanionEvent = vi.fn(),
     pendingTaskAction = null,
+    latestRun = null,
+    onGetArtifact,
+    onReadArtifactFile,
   } = options;
 
   hookHarness.callbackIndex = 0;
@@ -448,7 +466,24 @@ function renderTaskScreen(options: RenderTaskScreenOptions = {}): ElementNode {
     onCloseTaskPreview,
     taskPreviewRouteAvailable,
     onCompanionOpenChange,
-    onSendCompanionEvent
+    onSendCompanionEvent,
+    latestRun: latestRun
+      ? {
+          id: latestRun.id ?? "run-1",
+          stage: latestRun.stage ?? "in progress",
+          kind: latestRun.kind ?? "main",
+          status: latestRun.status ?? "failed",
+          verdict: latestRun.verdict,
+          summary: latestRun.summary,
+          exit: latestRun.exit,
+          artifacts: latestRun.artifacts,
+          resumedFromRunId: null,
+          resumeFallbackReason: null,
+          finishedAt: null
+        }
+      : null,
+    onGetArtifact,
+    onReadArtifactFile
   }) as ElementNode;
 }
 
@@ -2352,6 +2387,92 @@ describe("TaskScreen", () => {
       zIndex: 4
     });
     expect(styleEntries(titleDismissLayer)).toContainEqual({ top: 64 });
+  });
+
+  describe("latest result (T11a)", () => {
+    const SIX_VERDICTS = ["success", "unverified", "partial", "needs-input", "declined", "failure"];
+
+    function expandedTreeWithLatestRun(
+      latestRun: RenderTaskScreenOptions["latestRun"],
+      extra: Partial<RenderTaskScreenOptions> = {}
+    ): ElementNode {
+      let tree = renderTaskScreen({ latestRun, ...extra });
+      pressByTestId(tree, MOBILE_E2E_IDS.taskTitleButton);
+      tree = renderTaskScreen({ latestRun, ...extra });
+      return tree;
+    }
+
+    it.each(SIX_VERDICTS)("renders the %s verdict verbatim", (verdict) => {
+      const tree = expandedTreeWithLatestRun({ verdict, summary: null });
+      expect(findByTestId(tree, MOBILE_E2E_IDS.taskLatestResultVerdict)?.props.children).toBe(
+        verdict
+      );
+    });
+
+    it("shows the result message", () => {
+      const tree = expandedTreeWithLatestRun({
+        verdict: "success",
+        summary: "Tests pass; verified in browser."
+      });
+      expect(findByTestId(tree, MOBILE_E2E_IDS.taskLatestResultMessage)?.props.children).toBe(
+        "Tests pass; verified in browser."
+      );
+    });
+
+    it("shows the exit taken when present", () => {
+      const tree = expandedTreeWithLatestRun({
+        verdict: "success",
+        summary: "Done.",
+        exit: "needs-followup"
+      });
+      expect(findByTestId(tree, MOBILE_E2E_IDS.taskLatestResultExit)?.props.children).toBe(
+        "exit: needs-followup"
+      );
+    });
+
+    it("shows no exit element when absent", () => {
+      const tree = expandedTreeWithLatestRun({ verdict: "success", summary: "Done." });
+      expect(findByTestId(tree, MOBILE_E2E_IDS.taskLatestResultExit)).toBeNull();
+    });
+
+    it("opens a named stored artifact reference in the artifact viewer on press", () => {
+      const onGetArtifact = vi.fn();
+      const onReadArtifactFile = vi.fn();
+      const tree = expandedTreeWithLatestRun(
+        {
+          verdict: "success",
+          summary: "Done.",
+          artifacts: {
+            "review-notes": { type: "stored", repoId: "repo-1", artifactId: "abc123", kind: "report" }
+          }
+        },
+        { onGetArtifact, onReadArtifactFile }
+      );
+
+      pressByTestId(tree, MOBILE_E2E_IDS.taskLatestResultArtifact("review-notes"));
+      const reopened = renderTaskScreen({
+        latestRun: {
+          verdict: "success",
+          summary: "Done.",
+          artifacts: {
+            "review-notes": { type: "stored", repoId: "repo-1", artifactId: "abc123", kind: "report" }
+          }
+        },
+        onGetArtifact,
+        onReadArtifactFile
+      });
+
+      const viewer = findByType(reopened, "ArtifactViewer");
+      expect(viewer?.props).toMatchObject({
+        repoId: "repo-1",
+        initialArtifactId: "abc123"
+      });
+    });
+
+    it("renders exactly as today when the server omits latestRun entirely", () => {
+      const tree = expandedTreeWithLatestRun(null);
+      expect(findByTestId(tree, MOBILE_E2E_IDS.taskLatestResult)).toBeNull();
+    });
   });
 
   it("keeps the collapsed header's task ID complete when the title truncates", () => {

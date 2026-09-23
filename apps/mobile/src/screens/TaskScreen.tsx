@@ -30,8 +30,10 @@ import type {
   TaskPort,
   TaskPreviewOpenResult,
   TaskSummary,
+  TaskLatestRun,
   ArtifactDetail,
-  ArtifactFileContent
+  ArtifactFileContent,
+  ArtifactReference
 } from "../lib/api/types";
 import { isTaskBlocked, type BlockerTaskRef } from "../lib/api/taskIdentity";
 import {
@@ -126,6 +128,9 @@ const EMPTY_MENTIONED_FILES: TerminalFileMentionHistory = {
 
 interface TaskScreenProps {
   task: TaskSummary;
+  /** The task's most recent recorded result (spec §16.8), when task detail
+   * has reported one; absent on an older server or before detail loads. */
+  latestRun?: TaskLatestRun | null;
   desktopWorkspace?: boolean;
   blockerTasks?: readonly BlockerTaskRef[];
   e2eTaskSnapshotMarker?: string;
@@ -228,6 +233,7 @@ function composerInputFailureMessage(
 
 export function TaskScreen({
   task,
+  latestRun = null,
   desktopWorkspace = false,
   blockerTasks = [],
   e2eTaskSnapshotMarker,
@@ -371,6 +377,7 @@ export function TaskScreen({
   const [diffModalTaskId, setDiffModalTaskId] = useState<string | null>(null);
   const [previewModalTaskId, setPreviewModalTaskId] = useState<string | null>(null);
   const [artifactViewerTaskId, setArtifactViewerTaskId] = useState<string | null>(null);
+  const [artifactViewerInitialId, setArtifactViewerInitialId] = useState<string | null>(null);
   const [explorerTaskId, setExplorerTaskId] = useState<string | null>(null);
   const [terminalDirectInputEnabled, setTerminalDirectInputEnabled] =
     useState(false);
@@ -841,6 +848,13 @@ export function TaskScreen({
     };
   }, [task.id]);
 
+  /** Opens a named stored artifact reference from the task's latest result (spec §16.8) in the existing artifact viewer. */
+  const openLatestResultArtifact = (reference: ArtifactReference) => {
+    if (reference.type !== "stored") return;
+    setArtifactViewerInitialId(reference.artifactId);
+    setArtifactViewerTaskId(task.id);
+  };
+
   const openCompanion = () => {
     setCompanionModalTaskId(task.id);
     const lifecycle = companionLifecycleRef.current;
@@ -1246,6 +1260,53 @@ export function TaskScreen({
                   {expandedTaskId}
                 </Text>
               </View>
+              {latestRun ? (
+                <View style={styles.latestResult} testID={MOBILE_E2E_IDS.taskLatestResult}>
+                  {latestRun.verdict ? (
+                    <Text
+                      accessible={false}
+                      style={styles.latestResultVerdict}
+                      testID={MOBILE_E2E_IDS.taskLatestResultVerdict}
+                    >
+                      {latestRun.verdict}
+                    </Text>
+                  ) : null}
+                  {latestRun.summary ? (
+                    <Text
+                      accessible={false}
+                      selectable
+                      style={styles.latestResultMessage}
+                      testID={MOBILE_E2E_IDS.taskLatestResultMessage}
+                    >
+                      {latestRun.summary}
+                    </Text>
+                  ) : null}
+                  {latestRun.exit ? (
+                    <Text
+                      accessible={false}
+                      style={styles.latestResultExit}
+                      testID={MOBILE_E2E_IDS.taskLatestResultExit}
+                    >
+                      {`exit: ${latestRun.exit}`}
+                    </Text>
+                  ) : null}
+                  {latestRun.artifacts
+                    ? Object.entries(latestRun.artifacts).map(([name, reference]) => (
+                        <Pressable
+                          key={name}
+                          accessibilityLabel={`Open artifact ${name}`}
+                          accessibilityRole="button"
+                          disabled={reference.type !== "stored"}
+                          style={styles.latestResultArtifactChip}
+                          testID={MOBILE_E2E_IDS.taskLatestResultArtifact(name)}
+                          onPress={() => openLatestResultArtifact(reference)}
+                        >
+                          <Text style={styles.latestResultArtifactChipLabel}>{name}</Text>
+                        </Pressable>
+                      ))
+                    : null}
+                </View>
+              ) : null}
             </>
           ) : (
             <>
@@ -1674,10 +1735,14 @@ export function TaskScreen({
       {artifactViewerTaskId === task.id && onGetArtifact && onReadArtifactFile ? (
         <ArtifactViewer
           repoId={task.repoId}
+          initialArtifactId={artifactViewerInitialId ?? undefined}
           getArtifact={onGetArtifact}
           readArtifactFile={onReadArtifactFile}
           actions={artifactActions}
-          onClose={() => setArtifactViewerTaskId(null)}
+          onClose={() => {
+            setArtifactViewerTaskId(null);
+            setArtifactViewerInitialId(null);
+          }}
         />
       ) : null}
       {previewModalTaskId === task.id ? (
@@ -1969,6 +2034,42 @@ const styles = StyleSheet.create({
     color: "#9BB0CC",
     fontSize: 11,
     lineHeight: 16
+  },
+  latestResult: {
+    borderTopColor: "#22304D",
+    borderTopWidth: 1,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 8,
+    paddingTop: 8
+  },
+  latestResultVerdict: {
+    color: "#D5DEEC",
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.4,
+    textTransform: "uppercase"
+  },
+  latestResultMessage: {
+    color: "#D5DEEC",
+    flexBasis: "100%",
+    fontSize: 12,
+    lineHeight: 16
+  },
+  latestResultExit: {
+    color: "#9BB0CC",
+    fontSize: 11
+  },
+  latestResultArtifactChip: {
+    backgroundColor: "#1B2740",
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2
+  },
+  latestResultArtifactChipLabel: {
+    color: "#7FA7D9",
+    fontSize: 11
   },
   /**
    * The badge is a flag, so it is a glyph beside the stage. Font scaling is off

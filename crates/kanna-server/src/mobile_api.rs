@@ -467,6 +467,16 @@ pub struct TaskLatestRun {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict: Option<String>,
     pub summary: Option<String>,
+    /// The named exit (spec §5) this result took, when the pinned workflow
+    /// routes by exits and the agent named one. Absent on a legacy-routed
+    /// task, on a result that took none, or when the run recorded no result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<String>,
+    /// Named artifact references (spec §7, §8) this result carries, keyed by
+    /// the name the agent gave them. Absent when the result named none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifacts:
+        Option<std::collections::BTreeMap<String, crate::artifacts::types::ArtifactReference>>,
     pub resumed_from_run_id: Option<String>,
     pub resume_fallback_reason: Option<String>,
     pub finished_at: Option<String>,
@@ -1808,6 +1818,20 @@ fn map_task_latest_run(run: crate::db::StageRun) -> TaskLatestRun {
         .and_then(|result| result.get("status"))
         .and_then(serde_json::Value::as_str)
         .map(str::to_string);
+    let exit = recorded
+        .as_ref()
+        .and_then(|result| result.get("exit"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let artifacts = recorded
+        .as_ref()
+        .and_then(|result| result.get("artifacts"))
+        .and_then(|artifacts| {
+            serde_json::from_value::<
+                std::collections::BTreeMap<String, crate::artifacts::types::ArtifactReference>,
+            >(artifacts.clone())
+            .ok()
+        });
     let summary = recorded
         .and_then(|result| {
             result
@@ -1832,6 +1856,8 @@ fn map_task_latest_run(run: crate::db::StageRun) -> TaskLatestRun {
         status: run.status,
         verdict,
         summary,
+        exit,
+        artifacts,
         resumed_from_run_id: run.resumed_from_run_id,
         resume_fallback_reason: run.resume_fallback_reason,
         finished_at: run.finished_at,
@@ -2182,6 +2208,84 @@ mod tests {
         let result = serde_json::to_value(super::map_task_latest_run(run)).unwrap();
         assert_eq!(result["agentProvider"], "opencode");
         assert_eq!(result["model"], "local/Qwen-Coder");
+    }
+
+    fn base_run(result: Option<String>) -> crate::db::StageRun {
+        crate::db::StageRun {
+            id: "run-one".into(),
+            task_id: "task-one".into(),
+            stage: "review".into(),
+            kind: "main".into(),
+            agent: None,
+            agent_provider: None,
+            model: None,
+            effort: None,
+            status: "failed".into(),
+            result,
+            feedback: None,
+            session_id: None,
+            provider_session_id: None,
+            cwd: None,
+            no_work_termination: None,
+            replaces_run_id: None,
+            resumed_from_run_id: None,
+            resume_fallback_reason: None,
+            completion_transition: None,
+            trigger: "operator".into(),
+            provider_override: None,
+            entry_channel_identity: Default::default(),
+            result_provenance: None,
+            started_at: "2026-09-12 00:00:00".into(),
+            finished_at: Some("2026-09-12 00:05:00".into()),
+        }
+    }
+
+    #[test]
+    fn latest_run_surfaces_exit_and_artifacts_from_the_recorded_result() {
+        let run = base_run(Some(
+            json!({
+                "status": "declined",
+                "summary": "Already fixed upstream.",
+                "exit": "needs-followup",
+                "artifacts": {
+                    "review-notes": {
+                        "type": "stored",
+                        "repoId": "repo-1",
+                        "artifactId": "abc123",
+                        "kind": "report",
+                    },
+                },
+            })
+            .to_string(),
+        ));
+        let mapped = super::map_task_latest_run(run);
+        assert_eq!(mapped.verdict.as_deref(), Some("declined"));
+        assert_eq!(mapped.summary.as_deref(), Some("Already fixed upstream."));
+        assert_eq!(mapped.exit.as_deref(), Some("needs-followup"));
+        let artifacts = mapped.artifacts.expect("artifacts present");
+        assert_eq!(artifacts.len(), 1);
+        match &artifacts["review-notes"] {
+            crate::artifacts::types::ArtifactReference::Stored {
+                repo_id,
+                artifact_id,
+                ..
+            } => {
+                assert_eq!(repo_id, "repo-1");
+                assert_eq!(artifact_id, "abc123");
+            }
+            other => panic!("expected a stored reference, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn latest_run_omits_exit_and_artifacts_when_the_result_names_none() {
+        let run = base_run(Some(
+            json!({ "status": "success", "summary": "Done." }).to_string(),
+        ));
+        let mapped = super::map_task_latest_run(run);
+        assert_eq!(mapped.verdict.as_deref(), Some("success"));
+        assert!(mapped.exit.is_none());
+        assert!(mapped.artifacts.is_none());
     }
 
     #[test]
