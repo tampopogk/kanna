@@ -81,6 +81,9 @@ export const CONNECTION_REFUSAL_CODES: ReadonlySet<string> = new Set([
   "peer_identity_unavailable",
   "peer_upgrade_required",
   "peer_identity_mismatch",
+  // The pin on one side does not place both machines in one account (a
+  // legacy or other-account pairing); only re-pairing changes that.
+  "peer_account_boundary",
 ]);
 
 export interface AgentStreamHandlers {
