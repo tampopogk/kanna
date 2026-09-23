@@ -34,7 +34,7 @@ final review gates as manager; children return reviewed local commits only.
 | T12 artifact viewer | `6d3d22f8` | increment 1: local open-by-hash desktop/mobile, anchors, isolation; remote + §14 walkthrough → T12b | parent `01f5c8972` (T6 dc9c09bfa, T8/T8b) | reviewed (round 4), integrated, closed | `beffdbe8b` … `f38895884` | T12 merge commit |
 | T13a inventory + offline rebuild | `e3991858` | T13 increment 1: authority inventory, projector, fixture round trip (panel) | parent `e69577ba6`, merged `b70608f54` | reviewed (round 1), integrated, closed | `0d4a8a1c7`, `710ecb046`, `1c20d3622` | T13a merge commit |
 | T13 remainder (cutover) | — | — | needs T1–T12, T14 review | not created | — | — |
-| T14 release workflow | — | — | needs T3, T8 review | not created | — | — |
+| T14 release workflow | `6b069969` | first increment + card (panel incl. release/security) | parent `c05999e0f` (T3 2f91f9ad2, T8/T8b) | in progress | — | — |
 
 ## Log
 
@@ -109,3 +109,4 @@ final review gates as manager; children return reviewed local commits only.
 - 2026-09-23: T3 review round 1 failed: concurrency — a resumed/replaced commit-step run drops its transition_commit binding, so its result bypasses settle-once/no-exit/failure-parks. Revision 1/5.
 - 2026-09-23: T4 review round 2 at `7467d2f68`: select+reserve not one transaction; DB that ran branch-only 099_task_stage_edges lacks reserved_* columns (parent ruling: that id never left the child branch — no repair migration); pre-T4 server silently drops `dependencies` (fix: capability advertisement + client refusal). Revision 2/5 with parent guidance.
 - 2026-09-23: T3 passed panel review round 2 at `2f91f9ad2` (restarted commit step keeps its operation; concurrency pass). Merged cleanly. Combined check: FULL kanna-server suite 2252 passed, 1 failed (ksp pre-existing); clippy clean; core workflow-loader 77/77 + tsc. T3 closed. Follow-ups: repo-wide downgrade/version gate for lifecycle intents and stored workflow fields (T13); fault-injection tests for provider fallback/rerun supersession; semantic schema-parity fixtures; gate summary/artifacts in catalog/CLI; commitStep in desktop/mobile TS types (T11); transition_commit not carried by transfer (T9); gates not first stage / loop target / rerun.
+- 2026-09-23: T14 `6b069969` created from parent `c05999e0f` after T3 review. T4 told to merge parent (T3's 099) before its next review.
