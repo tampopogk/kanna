@@ -49,13 +49,20 @@ impl Drop for ReleaseFixture {
 
 impl ReleaseFixture {
     fn new(label: &str) -> Self {
+        Self::with_daemon(label, spawn_recording_daemon)
+    }
+
+    fn with_daemon(
+        label: &str,
+        spawn_daemon: impl FnOnce(&Path) -> Arc<std::sync::Mutex<Vec<DaemonCommand>>>,
+    ) -> Self {
         let repo_root = crate::test_paths::unique_test_path(&format!("kanna-release-{label}"));
         init_test_git_repo(&repo_root);
         publish_test_origin_main(&repo_root);
         let worktree = commit_branch_change(&repo_root, "task-merge-1", "MERGED.md", "merged\n");
         let daemon_dir = crate::test_paths::unique_test_path(&format!("kanna-release-{label}-d"));
         std::fs::create_dir_all(&daemon_dir).unwrap();
-        let commands = spawn_recording_daemon(&daemon_dir);
+        let commands = spawn_daemon(&daemon_dir);
         let config = ledger_fixture_config(&format!("release-{label}"), &daemon_dir);
         let db = Db::open_for_tests(&config.db_path).unwrap();
         db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
@@ -340,10 +347,14 @@ async fn a_live_merge_master_moves_onto_the_release_workflow_only_at_a_quiescent
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].id, "merge-run");
     assert_eq!(runs[0].session_id.as_deref(), Some(MASTER));
-    assert_eq!(
-        fixture.commands.lock().unwrap().len(),
-        commands_before,
-        "migration sends the daemon nothing"
+    let sent: Vec<String> = fixture.commands.lock().unwrap()[commands_before..]
+        .iter()
+        .filter(|command| !matches!(command, DaemonCommand::List))
+        .map(|command| format!("{command:?}"))
+        .collect();
+    assert!(
+        sent.is_empty(),
+        "migration only asks the daemon for its sessions: {sent:?}"
     );
     // Recorded as a workflow change made by the server.
     crate::task_store::flush_task(&db, &fixture.db_path, MASTER).unwrap();
@@ -510,4 +521,140 @@ async fn a_release_task_walks_every_stage_with_gates_parking_and_no_handoff_outs
         2,
         "only the two ship sessions"
     );
+}
+
+/// A daemon that lists the merge master's live session with the status the
+/// test sets, and accepts input into it.
+fn spawn_live_session_daemon(
+    daemon_dir: &Path,
+    status: Arc<std::sync::Mutex<kanna_daemon::protocol::SessionStatus>>,
+) -> Arc<std::sync::Mutex<Vec<DaemonCommand>>> {
+    use kanna_daemon::protocol::{Event as DaemonEvent, SessionInfo, SessionState};
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::net::UnixListener;
+
+    let socket_path = daemon_socket_path_for_dir(&daemon_dir.to_string_lossy());
+    let _ = std::fs::remove_file(&socket_path);
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&commands);
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let recorded = Arc::clone(&recorded);
+            let status = Arc::clone(&status);
+            tokio::spawn(async move {
+                let (read_half, mut write_half) = stream.into_split();
+                let mut reader = BufReader::new(read_half);
+                while let Some(command) =
+                    read_test_daemon_command_optional(&mut reader, &mut write_half).await
+                {
+                    if super::answer_terminal_carryover_probe(&command, &mut write_half).await {
+                        continue;
+                    }
+                    let response = match &command {
+                        DaemonCommand::List => DaemonEvent::SessionList {
+                            sessions: vec![SessionInfo {
+                                session_id: MASTER.to_string(),
+                                pid: 42,
+                                cwd: "/tmp".to_string(),
+                                state: SessionState::Active,
+                                idle_seconds: 0,
+                                status: *status.lock().unwrap(),
+                                status_observed: true,
+                                kind: Default::default(),
+                                composer_text: None,
+                                composer_attestation: Default::default(),
+                                attempt_id: None,
+                            }],
+                        },
+                        DaemonCommand::Spawn { session_id, .. }
+                        | DaemonCommand::SpawnAgent { session_id, .. } => {
+                            DaemonEvent::SessionCreated {
+                                session_id: session_id.clone(),
+                            }
+                        }
+                        _ => DaemonEvent::Ok,
+                    };
+                    recorded.lock().unwrap().push(command);
+                    if write_half
+                        .write_all(
+                            format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes(),
+                        )
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    commands
+}
+
+/// A merge master that has recorded a turn keeps a terminal run while a later
+/// handoff starts a new turn in the same session; migration must wait for the
+/// session, not the run, to be between turns.
+#[tokio::test]
+async fn a_merge_master_mid_turn_after_a_handoff_is_not_migrated_until_its_session_is_idle() {
+    use kanna_daemon::protocol::SessionStatus;
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let status = Arc::new(std::sync::Mutex::new(SessionStatus::Idle));
+    let daemon_status = Arc::clone(&status);
+    let fixture = ReleaseFixture::with_daemon("mid-turn", move |dir| {
+        spawn_live_session_daemon(dir, daemon_status)
+    });
+    let before = fixture.pinned();
+
+    // First turn recorded: the run is terminal from here on.
+    fixture.complete("in progress", "Merged PR 91").await;
+    assert_eq!(fixture.run_for("in progress").status, "succeeded");
+
+    // A handoff arrives and the merge master starts working on it.
+    let (status_code, text) = fixture.hand_off().await;
+    assert_eq!(status_code, StatusCode::OK, "{text}");
+    assert_eq!(
+        fixture.session_writes(),
+        1,
+        "the handoff reached the session"
+    );
+    *status.lock().unwrap() = SessionStatus::Busy;
+    assert_eq!(
+        fixture.run_for("in progress").status,
+        "succeeded",
+        "the new turn reopened no run"
+    );
+    assert!(matches!(
+        fixture.migrate().await,
+        MergeSingletonMigration::Deferred(reason) if reason.contains("mid-turn")
+    ));
+    assert_eq!(fixture.pinned(), before, "nothing changed mid-turn");
+
+    // Waiting on a prompt is still mid-turn.
+    *status.lock().unwrap() = SessionStatus::Waiting;
+    assert!(matches!(
+        fixture.migrate().await,
+        MergeSingletonMigration::Deferred(_)
+    ));
+    assert_eq!(fixture.pinned(), before);
+
+    // The turn ends; the session is idle at its composer.
+    *status.lock().unwrap() = SessionStatus::Idle;
+    assert_eq!(fixture.migrate().await, MergeSingletonMigration::Migrated);
+    assert_eq!(fixture.pinned().1["name"], "release");
+}
+
+/// A daemon that cannot be asked is not evidence that the session is idle.
+#[tokio::test]
+async fn a_merge_master_whose_daemon_cannot_be_asked_is_not_migrated() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let fixture =
+        ReleaseFixture::with_daemon("no-daemon", |_| Arc::new(std::sync::Mutex::new(Vec::new())));
+    fixture.complete("in progress", "Merged PR 91").await;
+    let before = fixture.pinned();
+    assert!(matches!(
+        fixture.migrate().await,
+        MergeSingletonMigration::Deferred(reason) if reason.contains("cannot be checked")
+    ));
+    assert_eq!(fixture.pinned(), before);
 }

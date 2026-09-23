@@ -133,8 +133,10 @@ pub(crate) enum MergeSingletonMigration {
 /// boundary: fenced on the exact definition read (a concurrent change wins and
 /// this does nothing), recorded as a workflow change with the server's
 /// channel, and validated so the current stage keeps its name and role. It
-/// happens at a quiescent boundary or not at all: no stage run running (the
-/// merge master records its result at the end of every turn), no owed ledger
+/// happens at a quiescent boundary or not at all: the caller's check of the
+/// live session (`session`: `Err` names why it is not between turns -- the
+/// merge master starts a new turn on every handoff without reopening its run,
+/// so the run status alone cannot say), no stage run running, no owed ledger
 /// continuation, no lifecycle operation in flight, and no change to the merge
 /// window's agent, prompt, provider or environment, so no run is superseded.
 /// Running it again finds the release workflow pinned and does nothing.
@@ -142,6 +144,7 @@ pub(crate) fn migrate_merge_singleton_to_release_workflow(
     db: &Db,
     db_path: &str,
     task_id: &str,
+    session: Result<(), String>,
 ) -> Result<MergeSingletonMigration, String> {
     let db_error = |error: rusqlite::Error| format!("db error: {error}");
     let Some(item) = db.get_pipeline_item(task_id).map_err(db_error)? else {
@@ -165,6 +168,9 @@ pub(crate) fn migrate_merge_singleton_to_release_workflow(
         && prior.stages[0].post.is_none();
     if !synthetic {
         return Ok(MergeSingletonMigration::NotApplicable);
+    }
+    if let Err(reason) = session {
+        return Ok(MergeSingletonMigration::Deferred(reason));
     }
     let runs = db.list_stage_runs_for_task(task_id).map_err(db_error)?;
     if runs.iter().any(|run| run.status == "running") {
