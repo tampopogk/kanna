@@ -1469,7 +1469,7 @@ fn record_gate_departure(
 /// Execute a prepared transition: swap to the next stage's run, dispatch a
 /// post into the running session, or close past the final stage. Shared by
 /// `advance_stage` and `complete_stage`.
-async fn execute_stage_transition(
+pub(super) async fn execute_stage_transition(
     state: &Arc<AppState>,
     daemon: &mut crate::daemon_client::DaemonClient,
     task_id: &str,
@@ -1491,6 +1491,8 @@ async fn execute_stage_transition(
             .await
             .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
             state.publish_state_changed(StateChangeScope::Tasks);
+            // Leaving a stage can satisfy edges of tasks that depend on it.
+            super::stage_dependencies::spawn_dependents_readiness(state, task_id);
             Ok(Json(advanced))
         }
         crate::task_creator::PreparedStageTransition::Post(prepared) => {
@@ -1518,6 +1520,8 @@ async fn execute_stage_transition(
             .await
             .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
             state.publish_state_changed(StateChangeScope::Tasks);
+            // Entering a gate leaves the previous stage, like a run swap.
+            super::stage_dependencies::spawn_dependents_readiness(state, task_id);
             Ok(Json(entered))
         }
         crate::task_creator::PreparedStageTransition::Close {
@@ -1573,7 +1577,7 @@ impl StageTransitionOwnership {
 
 /// Failure is a lifecycle fact, separate from the successful run that asked
 /// the engine to advance. Subscription selection must not infer it from idle.
-fn record_stage_transition_failure(state: &AppState, task_id: &str, error: &str) {
+pub(super) fn record_stage_transition_failure(state: &AppState, task_id: &str, error: &str) {
     let recorded = Db::open(&state.config.db_path).and_then(|db| {
         db.append_task_event(
             task_id,
@@ -3531,6 +3535,7 @@ async fn dispatch_completion_transition(
     let transition = {
         let state = Arc::clone(&state);
         let task_id = task_id.clone();
+        let exit = exit.clone();
         super::blocking::run_handler_blocking("stage completion prepare", move || {
             let db = Db::open(&state.config.db_path).map_err(|e| {
                 (
@@ -3545,6 +3550,7 @@ async fn dispatch_completion_transition(
                 Some(finished_run.kind.as_str()),
                 finished_run.completion_transition.as_deref(),
                 Some(finished_run.trigger.as_str()),
+                exit.as_ref(),
             )
             .map_err(|e| {
                 record_stage_transition_failure(&state, &task_id, &e);

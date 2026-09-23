@@ -3239,6 +3239,7 @@ fn post_completion_preserves_declared_advance_trigger() {
         Some("post"),
         None,
         Some(post.fallback.trigger.as_str()),
+        None,
     )
     .unwrap();
     match next {

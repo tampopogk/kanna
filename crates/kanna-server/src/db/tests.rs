@@ -229,7 +229,7 @@ fn open_creates_and_migrates_fresh_profile_database() {
             |row| row.get(0),
         )
         .expect("latest migration");
-    assert_eq!(latest_migration, "099_transition_commit");
+    assert_eq!(latest_migration, "100_task_stage_edges");
     assert_eq!(
         index_columns(&db.conn, "idx_pipeline_item_parent_created_id"),
         vec!["parent_task_id", "created_at", "id"],
@@ -1922,6 +1922,27 @@ fn server_connection_opens_with_desktop_like_wal_client_active() {
                   payload TEXT,
                   created_at TEXT NOT NULL DEFAULT (datetime('now'))
                 );
+                CREATE TABLE task_stage_edge (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  dependent_task_id TEXT NOT NULL,
+                  dependent_stage TEXT NOT NULL,
+                  upstream_task_id TEXT NOT NULL,
+                  upstream_stage TEXT NOT NULL,
+                  position INTEGER NOT NULL,
+                  consumed_result_id TEXT,
+                  consumed_sha TEXT,
+                  consumed_at TEXT,
+                  superseded_result_id TEXT,
+                  superseded_sha TEXT,
+                  superseded_at TEXT
+                );
+                CREATE TABLE task_dependency_wait (
+                  task_id TEXT PRIMARY KEY,
+                  from_stage TEXT NOT NULL,
+                  to_stage TEXT NOT NULL,
+                  generation INTEGER NOT NULL,
+                  payload TEXT NOT NULL
+                );
                 INSERT INTO pipeline_item (id, stage) VALUES ('task-1', 'in progress');
                 "#,
         )
@@ -2000,6 +2021,27 @@ fn close_pipeline_item_sets_closed_at_without_changing_stage() {
               type TEXT NOT NULL,
               payload TEXT,
               created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE task_stage_edge (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              dependent_task_id TEXT NOT NULL,
+              dependent_stage TEXT NOT NULL,
+              upstream_task_id TEXT NOT NULL,
+              upstream_stage TEXT NOT NULL,
+              position INTEGER NOT NULL,
+              consumed_result_id TEXT,
+              consumed_sha TEXT,
+              consumed_at TEXT,
+              superseded_result_id TEXT,
+              superseded_sha TEXT,
+              superseded_at TEXT
+            );
+            CREATE TABLE task_dependency_wait (
+              task_id TEXT PRIMARY KEY,
+              from_stage TEXT NOT NULL,
+              to_stage TEXT NOT NULL,
+              generation INTEGER NOT NULL,
+              payload TEXT NOT NULL
             );
             INSERT INTO pipeline_item (id, stage) VALUES ('task-1', 'in progress');
             "#,
@@ -3712,6 +3754,7 @@ fn task_event_type_names_are_stable() {
             "task.transfer_finalizing",
             "task.blocked",
             "task.unblocked",
+            "task.dependency_superseded",
             "task.provider_quota_rejected",
             "task.provider_quota_parked",
             "task.provider_capacity_refused",

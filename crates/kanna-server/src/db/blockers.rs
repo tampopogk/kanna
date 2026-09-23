@@ -1,7 +1,12 @@
+//! Legacy task-level blockers (`task_blocker`). Kept as an explicit adapter
+//! during the migration to stage dependency edges (T4, `stage_edges.rs`):
+//! existing tasks keep exactly the readiness, dormant start and branch
+//! inheritance they had. New dependencies are stage edges; the two share one
+//! cycle check and one derived blocked state.
+
 use super::{pipeline_items::update_open_pipeline_item_activity, Db, TaskEventKind};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::json;
-use std::collections::HashSet;
 use std::fmt;
 
 #[derive(Debug)]
@@ -96,7 +101,7 @@ impl Db {
         let Some(baseline) = baseline else {
             return Ok(());
         };
-        let blocker_task_ids = self.list_open_task_blocker_ids(task_id)?;
+        let blocker_task_ids = self.list_blocking_task_ids(task_id)?;
         let blocked = !blocker_task_ids.is_empty();
         if baseline == i64::from(blocked) {
             return Ok(());
@@ -128,7 +133,13 @@ impl Db {
         &self,
         blocker_item_id: &str,
     ) -> Result<(), rusqlite::Error> {
-        for blocked_item_id in self.list_tasks_blocked_by(blocker_item_id)? {
+        let mut dependents = self.list_tasks_blocked_by(blocker_item_id)?;
+        for dependent in self.list_stage_edge_dependents(blocker_item_id)? {
+            if !dependents.contains(&dependent) {
+                dependents.push(dependent);
+            }
+        }
+        for blocked_item_id in dependents {
             self.sync_blocked_event(&blocked_item_id)?;
         }
         Ok(())
@@ -182,8 +193,10 @@ impl Db {
                 resolved_blocker_ids.push(blocker_id);
             }
         }
+        // The legacy rows share one dependency graph with stage edges (T4):
+        // a blocker cycle through any stage path is refused as before.
         for blocker_id in &resolved_blocker_ids {
-            if dependency_has_path_to(&transaction, blocker_id, &task_id)? {
+            if super::stage_edges::legacy_blocker_would_cycle(self, &task_id, blocker_id)? {
                 return Err(ReplaceTaskBlockersError::CircularDependency);
             }
         }
@@ -240,6 +253,20 @@ impl Db {
         )
     }
 
+    /// Every task holding `task_id` right now: its unresolved legacy
+    /// blockers, then the upstreams of stage edges (T4) holding it at the
+    /// stage it is waiting to enter. The one set behind `task.blocked` and
+    /// every `blockedByTaskIds` a client reads.
+    pub fn list_blocking_task_ids(&self, task_id: &str) -> Result<Vec<String>, rusqlite::Error> {
+        let mut blocker_task_ids = self.list_open_task_blocker_ids(task_id)?;
+        for upstream in self.list_waiting_stage_edge_upstreams(task_id)? {
+            if !blocker_task_ids.contains(&upstream) {
+                blocker_task_ids.push(upstream);
+            }
+        }
+        Ok(blocker_task_ids)
+    }
+
     /// Ids of blockers that are still unresolved, for surfacing why a task
     /// is blocked. Keep the resolution predicate in sync with
     /// `count_open_task_blockers` above.
@@ -293,46 +320,4 @@ fn resolve_pipeline_item_id(
             |row| row.get(0),
         )
         .optional()
-}
-
-fn dependency_has_path_to(
-    connection: &Connection,
-    from_blocked_item_id: &str,
-    target_item_id: &str,
-) -> Result<bool, rusqlite::Error> {
-    fn visit(
-        connection: &Connection,
-        current_id: &str,
-        target_id: &str,
-        visited: &mut HashSet<String>,
-    ) -> Result<bool, rusqlite::Error> {
-        if current_id == target_id {
-            return Ok(true);
-        }
-        if !visited.insert(current_id.to_string()) {
-            return Ok(false);
-        }
-        let mut statement = connection.prepare(
-            "SELECT blocker_item_id
-             FROM task_blocker
-             WHERE blocked_item_id = ?
-             ORDER BY blocker_item_id",
-        )?;
-        let blockers = statement
-            .query_map([current_id], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        for blocker_id in blockers {
-            if visit(connection, &blocker_id, target_id, visited)? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
-    visit(
-        connection,
-        from_blocked_item_id,
-        target_item_id,
-        &mut HashSet::new(),
-    )
 }

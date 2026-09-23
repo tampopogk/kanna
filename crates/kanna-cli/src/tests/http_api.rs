@@ -1108,6 +1108,7 @@ async fn create_task_via_api_omits_agent_type_when_flags_are_absent() {
         allowed_tool: Vec::new(),
         blocker_task_id: Vec::new(),
         parent_task: None,
+        dependency: Vec::new(),
     });
 
     let created = create_task_via_api(&format!("http://{addr}"), &request)
@@ -1517,4 +1518,145 @@ async fn artifact_tools_round_trip_through_tool_call_and_surface_missing_ids() {
     server.await.expect("fixture server");
     assert!(error.contains("artifact_not_found"), "{error}");
     assert!(error.contains(newer), "{error}");
+}
+
+/// Serves `status_body` to every request and records each request line, so
+/// a test can prove which requests were (not) made.
+async fn serve_status_recording_requests(
+    status_body: serde_json::Value,
+) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    let listener = TokioTcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = std::sync::Arc::clone(&requests);
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buffer = vec![0; 8192];
+            let Ok(bytes_read) = socket.read(&mut buffer).await else {
+                continue;
+            };
+            let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+            recorded
+                .lock()
+                .unwrap()
+                .push(request.lines().next().unwrap_or_default().to_string());
+            let response = http_json_response("200 OK", &status_body.to_string());
+            let _ = socket.write_all(response.as_bytes()).await;
+        }
+    });
+    (format!("http://{addr}"), requests)
+}
+
+fn pre_t4_status() -> serde_json::Value {
+    json!({
+        "state": "running",
+        "desktopId": "old-desktop",
+        "desktopName": "Old Mac",
+        "version": "0.0.1",
+        "environment": "production",
+        "lanHost": "127.0.0.1",
+        "lanPort": 48120,
+        "kspStreamVersion": 2
+    })
+}
+
+/// A `dependencies` create against a server that does not advertise stage
+/// dependencies is refused before anything is sent that could create a task
+/// — through the typed CLI and through the catalog tool-call path alike.
+#[tokio::test]
+async fn create_with_dependencies_is_refused_by_a_server_without_stage_dependencies() {
+    let (base_url, requests) = serve_status_recording_requests(pre_t4_status()).await;
+    let request = build_create_task_request(TaskCreateOptions {
+        repo_id: "repo-1".to_string(),
+        prompt: "Build on the plan".to_string(),
+        display_name: None,
+        workflow_name: None,
+        base_ref: None,
+        diff_base_ref: None,
+        review_context: None,
+        agent: None,
+        agent_provider: None,
+        model: None,
+        effort: None,
+        permission_mode: None,
+        allowed_tool: Vec::new(),
+        blocker_task_id: Vec::new(),
+        parent_task: None,
+        dependency: vec![crate::commands::task::parse_stage_dependency("task-a:plan").unwrap()],
+    });
+    let typed = create_task_via_api(&base_url, &request).await.unwrap_err();
+    assert!(typed.contains("stage_dependencies_unsupported"), "{typed}");
+    assert!(typed.contains("Upgrade that server"), "{typed}");
+
+    let catalog = kanna_tool_catalog::bundled_catalog();
+    let generic = call_catalog_tool_with_task_id(
+        &base_url,
+        &catalog,
+        "kanna_create_task",
+        &json!({
+            "repo_id": "repo-1",
+            "prompt": "Build on the plan",
+            "dependencies": [{ "taskId": "task-a", "stage": "plan" }]
+        }),
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        generic.contains("stage_dependencies_unsupported"),
+        "{generic}"
+    );
+
+    let seen = requests.lock().unwrap().clone();
+    assert!(!seen.is_empty(), "the status was consulted");
+    assert!(
+        seen.iter().all(|line| line.starts_with("GET /v1/status ")),
+        "nothing but the status read was sent: {seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn create_with_dependencies_proceeds_when_the_server_advertises_them() {
+    let mut status = pre_t4_status();
+    status["stageDependenciesVersion"] = json!(1);
+    let created = json!({
+        "taskId": "task-1",
+        "repoId": "repo-1",
+        "title": "Build on the plan",
+        "stage": "in progress",
+        "agentType": "agent",
+        "worktreePath": null
+    });
+    let (base_url, handle) = serve_http_responses(vec![
+        http_json_response("200 OK", &status.to_string()),
+        http_json_response("200 OK", &created.to_string()),
+    ])
+    .await;
+    let request = build_create_task_request(TaskCreateOptions {
+        repo_id: "repo-1".to_string(),
+        prompt: "Build on the plan".to_string(),
+        display_name: None,
+        workflow_name: None,
+        base_ref: None,
+        diff_base_ref: None,
+        review_context: None,
+        agent: None,
+        agent_provider: None,
+        model: None,
+        effort: None,
+        permission_mode: None,
+        allowed_tool: Vec::new(),
+        blocker_task_id: Vec::new(),
+        parent_task: None,
+        dependency: vec![crate::commands::task::parse_stage_dependency("task-a:plan").unwrap()],
+    });
+    let response = create_task_via_api(&base_url, &request).await.unwrap();
+    assert_eq!(response.task_id, "task-1");
+    let requests = handle.await.unwrap();
+    assert!(requests[0].starts_with("GET /v1/status "));
+    assert!(requests[1].starts_with("POST /v1/tasks "));
+    assert!(requests[1].contains(r#""dependencies":[{"taskId":"task-a","stage":"plan"}]"#));
 }

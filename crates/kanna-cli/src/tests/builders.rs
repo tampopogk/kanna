@@ -376,6 +376,7 @@ fn builds_camel_case_task_request_payload() {
         allowed_tool: vec!["Bash".to_string(), "Edit".to_string()],
         blocker_task_id: vec!["blocker-1".to_string(), "blocker-2".to_string()],
         parent_task: None,
+        dependency: Vec::new(),
     });
 
     assert_eq!(
@@ -427,6 +428,7 @@ fn builds_task_request_without_exposing_agent_type() {
         allowed_tool: Vec::new(),
         blocker_task_id: Vec::new(),
         parent_task: None,
+        dependency: Vec::new(),
     });
 
     assert_eq!(

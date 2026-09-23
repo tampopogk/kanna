@@ -2042,6 +2042,7 @@ fn every_declared_parameter_round_trips_a_cli_spelling() {
                     .and_then(|values| values.first().cloned())
                     .unwrap_or_else(|| "57808275".to_string()),
                 ParamType::Object => "{}".to_string(),
+                ParamType::ObjectArray => "[{}]".to_string(),
             };
             let value = param
                 .parse_cli_value(&raw)
@@ -2052,6 +2053,7 @@ fn every_declared_parameter_round_trips_a_cli_spelling() {
                 ParamType::Boolean => value.is_boolean(),
                 ParamType::StringArray => value.is_array(),
                 ParamType::Object => value.is_object(),
+                ParamType::ObjectArray => value.is_array(),
             };
             assert!(
                 expected_type_ok,
@@ -2079,6 +2081,7 @@ fn every_declared_parameter_round_trips_a_cli_spelling() {
                         .and_then(|values| values.first().cloned())
                         .unwrap_or_else(|| "57808275".to_string()),
                     ParamType::Object => "{}".to_string(),
+                    ParamType::ObjectArray => "[{}]".to_string(),
                 };
                 (
                     param.name.clone(),
@@ -3402,4 +3405,86 @@ fn artifact_tools_name_exact_ids_and_state_how_retention_is_enforced() {
     )
     .unwrap_err();
     assert!(error.contains("kind must be one of"), "{error}");
+}
+
+/// Mixed versions: a `dependencies` create is only sent to a server whose
+/// `GET /v1/status` confirms stage dependencies. An older server would
+/// ignore the field and start an ordinary, ungated task, so the adapters
+/// refuse before any request that could create one.
+#[test]
+fn dependencies_require_a_server_that_advertises_stage_dependencies() {
+    let catalog = bundled_catalog();
+    let with_dependencies = resolve_request(
+        &catalog,
+        "kanna_create_task",
+        &json!({
+            "repo_id": "repo-1",
+            "prompt": "Build on the plan",
+            "dependencies": [{ "taskId": "task-a", "stage": "plan" }]
+        }),
+    )
+    .unwrap();
+    assert!(kanna_tool_catalog::requires_stage_dependencies(
+        &with_dependencies
+    ));
+    for without in [
+        json!({ "repo_id": "repo-1", "prompt": "Plain" }),
+        json!({ "repo_id": "repo-1", "prompt": "Plain", "dependencies": [] }),
+    ] {
+        let request = resolve_request(&catalog, "kanna_create_task", &without).unwrap();
+        assert!(!kanna_tool_catalog::requires_stage_dependencies(&request));
+    }
+
+    let pre_t4_status = json!({
+        "state": "running",
+        "desktopId": "old",
+        "desktopName": "Old Mac",
+        "version": "0.0.1",
+        "environment": "production",
+        "lanHost": "127.0.0.1",
+        "lanPort": 48120,
+        "kspStreamVersion": 2
+    });
+    let refused =
+        kanna_tool_catalog::confirm_stage_dependencies_supported(&pre_t4_status).unwrap_err();
+    assert!(
+        refused.starts_with("stage_dependencies_unsupported"),
+        "{refused}"
+    );
+    assert!(refused.contains("Upgrade that server"), "{refused}");
+    assert!(refused.contains("No task was created"), "{refused}");
+
+    let mut current_status = pre_t4_status.clone();
+    current_status["stageDependenciesVersion"] =
+        json!(kanna_tool_catalog::STAGE_DEPENDENCIES_VERSION);
+    kanna_tool_catalog::confirm_stage_dependencies_supported(&current_status).unwrap();
+
+    // kanna_info reports the capability beside kspStream.
+    let info = runtime_info_snapshot(
+        "http://127.0.0.1:49199",
+        RuntimeAdapterIdentity {
+            name: "kanna-mcp",
+            version: "0.1.0",
+            mcp_protocol_version: None,
+            task_id: None,
+        },
+        Ok(current_status),
+        &["kanna_create_task".to_string()],
+    );
+    assert_eq!(
+        info["serverStatus"]["capabilityVersions"]["stageDependencies"],
+        1
+    );
+    let old_info = runtime_info_snapshot(
+        "http://127.0.0.1:49199",
+        RuntimeAdapterIdentity {
+            name: "kanna-mcp",
+            version: "0.1.0",
+            mcp_protocol_version: None,
+            task_id: None,
+        },
+        Ok(pre_t4_status),
+        &["kanna_create_task".to_string()],
+    );
+    assert!(old_info["serverStatus"]["capabilityVersions"]["stageDependencies"].is_null());
 }

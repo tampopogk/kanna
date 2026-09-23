@@ -797,6 +797,10 @@ impl Db {
             "links": {
                 "parent": item.parent_task_id,
                 "dependencies": dependencies,
+                // T4 stage edges into this task, in edge order, with what
+                // each consumed and what superseded it. `dependencies`
+                // above keeps listing the legacy task-level blockers.
+                "stage_dependencies": self.stage_edge_links(task_id)?,
                 "pr": item.pr_url.as_ref().map(|url| json!({
                     "url": url,
                     "number": item.pr_number,

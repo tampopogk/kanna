@@ -399,6 +399,8 @@ struct SafeServerStatus {
     #[serde(default)]
     ksp_stream_version: Option<u8>,
     #[serde(default)]
+    stage_dependencies_version: Option<u8>,
+    #[serde(default)]
     agent_api_tools: Option<Vec<String>>,
     #[serde(default)]
     write_path_health: Option<SafeWritePathHealth>,
@@ -423,6 +425,9 @@ pub enum ParamType {
     Boolean,
     StringArray,
     Object,
+    /// A JSON array whose every element is an object (e.g. the stage
+    /// dependency edges `kanna_create_task` takes).
+    ObjectArray,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -756,6 +761,7 @@ pub fn runtime_info_snapshot(
                     },
                     "capabilityVersions": {
                         "kspStream": status.ksp_stream_version,
+                        "stageDependencies": status.stage_dependencies_version,
                     },
                     "writePathHealth": status.write_path_health,
                 });
@@ -972,6 +978,11 @@ impl ParamDef {
                 }
                 Ok(parsed)
             }
+            ParamType::ObjectArray => {
+                let parsed = serde_json::from_str::<Value>(raw)
+                    .map_err(|e| format!("{} must be a JSON array of objects: {e}", self.name))?;
+                object_array_value(parsed, &self.name)
+            }
         }
     }
 }
@@ -1010,6 +1021,9 @@ fn input_schema(tool: &ToolDef) -> Value {
                 serde_json::json!({ "type": "array", "items": { "type": "string" } })
             }
             ParamType::Object => serde_json::json!({ "type": "object" }),
+            ParamType::ObjectArray => {
+                serde_json::json!({ "type": "array", "items": { "type": "object" } })
+            }
         };
 
         if let Some(description) = &param.description {
@@ -1450,6 +1464,7 @@ fn value_for_param(
                 .collect(),
         ),
         ParamType::Object => value,
+        ParamType::ObjectArray => object_array_value(value, &param.name)?,
     };
     Ok(Some(value))
 }
@@ -1504,6 +1519,13 @@ fn integer_value(
         number = number.min(max);
     }
     Ok(number)
+}
+
+fn object_array_value(value: Value, name: &str) -> Result<Value, String> {
+    match &value {
+        Value::Array(entries) if entries.iter().all(Value::is_object) => Ok(value),
+        _ => Err(format!("{name} must be an array of objects")),
+    }
 }
 
 fn string_array_value(value: &Value, name: &str) -> Result<Vec<String>, String> {
@@ -1795,6 +1817,43 @@ pub fn is_relevant_subscription_event(event: &Value) -> bool {
         ) => true,
         _ => is_actionable_task_event(event),
     }
+}
+
+/// The stage-dependency contract (spec §9) a server serves: `dependencies`
+/// on task creation installs stage edges on an unstarted task. Advertised as
+/// `stageDependenciesVersion` on `GET /v1/status`, beside `kspStreamVersion`.
+pub const STAGE_DEPENDENCIES_VERSION: u8 = 1;
+
+/// Does this request need the target server to honour stage dependencies?
+/// A task creation carrying a non-empty `dependencies` list does: a server
+/// that predates them ignores the unknown field and starts an ordinary,
+/// ungated task.
+pub fn requires_stage_dependencies(request: &ResolvedRequest) -> bool {
+    request.method == Method::Post
+        && request.path == "/v1/tasks"
+        && request
+            .body
+            .get("dependencies")
+            .and_then(Value::as_array)
+            .is_some_and(|dependencies| !dependencies.is_empty())
+}
+
+/// Refuse, before anything is created, unless the target server's
+/// `GET /v1/status` confirms it serves stage dependencies.
+pub fn confirm_stage_dependencies_supported(status: &Value) -> Result<(), String> {
+    let advertised = status
+        .get("stageDependenciesVersion")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if advertised >= u64::from(STAGE_DEPENDENCIES_VERSION) {
+        return Ok(());
+    }
+    Err(format!(
+        "stage_dependencies_unsupported: the destination server did not confirm \
+         stageDependenciesVersion {STAGE_DEPENDENCIES_VERSION}, so it would ignore `dependencies` \
+         and start an ordinary task with no stage gate and no recorded base. Upgrade that server, \
+         or create the task without dependencies. No task was created."
+    ))
 }
 
 /// A peer predating brief mode may silently ignore unknown query parameters.

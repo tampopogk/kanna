@@ -5135,6 +5135,7 @@ fn ledger_preamble_matches_the_typescript_builder() {
             committed_sha: Some("0123abc".into()),
             message: "Plan ready.\n\nUse {{COMPLETION}} and $& and $PREV_RESULT literally.".into(),
         }),
+        dependencies: Vec::new(),
     };
     let preamble = super::build_kanna_preamble(
         &AgentProvider::Claude,
@@ -5168,6 +5169,7 @@ fn ledger_preamble_matches_the_typescript_builder() {
         Some(&crate::task_store::SessionLedger {
             task_dir: "/home/u/.kanna/repos/repo-1/tasks/task-1".into(),
             trigger: None,
+            dependencies: Vec::new(),
         }),
     );
     assert!(untriggered.contains(&format!(

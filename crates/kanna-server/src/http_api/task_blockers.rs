@@ -347,6 +347,9 @@ pub(super) async fn start_dependents_unblocked_by_close_with_daemon(
     daemon: &mut DaemonClient,
     blocker_task_id: &str,
 ) {
+    // Stage-edge dependents (T4) are brought forward on their own detached
+    // path; everything below is the legacy blocker adapter.
+    super::stage_dependencies::spawn_dependents_readiness(state, blocker_task_id);
     // Discover durable dependent ids first. Readiness is deliberately not
     // decided here: a concurrent re-block or another last-blocker close may
     // commit before this dependent acquires its shared mutation lease.

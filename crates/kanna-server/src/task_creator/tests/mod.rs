@@ -13,7 +13,8 @@ use super::types::{
 };
 use super::{
     build_agent_command, build_kanna_preamble, build_prepared_session, build_spawn_env,
-    build_stage_prompt, create_dormant_task_for_api_with_error, prepare_advance_stage_for_api,
+    build_stage_prompt, create_dormant_task_for_api_with_error,
+    create_dormant_task_with_stage_edges, prepare_advance_stage_for_api,
     prepare_merge_agent_for_api, prepare_rerun_stage_for_api, prepare_resume_task_for_api,
     prepare_revision_task_for_api, prepare_singleton_agent_task_for_api,
     prepare_stage_completion_for_api, prepare_start_dormant_task_for_api, prepare_task_for_api,
@@ -44,6 +45,7 @@ static CLAUDE_CONFIG_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static CODEX_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 mod core;
+mod dependencies;
 mod local_config;
 mod provider_session;
 mod quota_recovery;

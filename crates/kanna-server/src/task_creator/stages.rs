@@ -289,9 +289,12 @@ pub(crate) fn prepare_stage_completion_for_api(
         finished_run_kind,
         completion_transition,
         None,
+        None,
     )
 }
 
+/// `exit` is the exit the completion took; it is only kept so a completion
+/// parked on stage dependency edges replays with it.
 pub(crate) fn prepare_stage_completion_for_api_with_trigger(
     db: &Db,
     config: &Config,
@@ -299,6 +302,7 @@ pub(crate) fn prepare_stage_completion_for_api_with_trigger(
     finished_run_kind: Option<&str>,
     completion_transition: Option<&str>,
     finished_run_trigger: Option<&str>,
+    exit: Option<&crate::db::TransitionExit>,
 ) -> Result<Option<PreparedStageTransition>, String> {
     let identity = load_stage_identity(db, source_task_id)?;
     if identity.source_task.closed_at.is_some() {
@@ -319,27 +323,31 @@ pub(crate) fn prepare_stage_completion_for_api_with_trigger(
     match position {
         // Legacy in-flight task parked at a folded post name: success means
         // the post finished, which always advances past its owner.
-        StagePosition::Post { owner } => prepare_swap_to_index(
+        StagePosition::Post { owner } => swap_or_wait_on_dependencies(
             db,
             config,
             &context,
             owner + 1,
             stage_trigger_from_stored(finished_run_trigger),
-            None,
-        )
-        .map(Some),
+            finished_run_kind,
+            completion_transition,
+            finished_run_trigger,
+            exit,
+        ),
         StagePosition::Stage(index) => {
             let stage = &loaded.workflow.stages[index];
             if finished_run_kind == Some("post") {
-                return prepare_swap_to_index(
+                return swap_or_wait_on_dependencies(
                     db,
                     config,
                     &context,
                     index + 1,
                     stage_trigger_from_stored(finished_run_trigger),
-                    None,
-                )
-                .map(Some);
+                    finished_run_kind,
+                    completion_transition,
+                    finished_run_trigger,
+                    exit,
+                );
             }
             let transition = match completion_transition {
                 Some("manual") => WorkflowStageTransition::Manual,
@@ -362,13 +370,139 @@ pub(crate) fn prepare_stage_completion_for_api_with_trigger(
                 // final stage.
                 return Ok(None);
             }
-            prepare_swap_to_index(db, config, &context, index + 1, StageTrigger::Auto, None)
-                .map(Some)
+            swap_or_wait_on_dependencies(
+                db,
+                config,
+                &context,
+                index + 1,
+                StageTrigger::Auto,
+                finished_run_kind,
+                completion_transition,
+                finished_run_trigger,
+                exit,
+            )
         }
     }
 }
 
+/// Swap to `next_index`, gated on the stage dependency edges into that stage
+/// (T4): with any unsatisfied the move is refused as blocked, and otherwise
+/// the new session is told which upstream results held it. Gating never
+/// changes the new stage's base.
 fn prepare_swap_to_index(
+    db: &Db,
+    config: &Config,
+    context: &StageTransitionContext<'_>,
+    next_index: usize,
+    trigger: StageTrigger,
+    provider_override: Option<StageProviderOverride>,
+) -> Result<PreparedStageTransition, String> {
+    let Some(next_stage) = context.workflow.stages.get(next_index) else {
+        return prepare_swap_to_index_ungated(
+            db,
+            config,
+            context,
+            next_index,
+            trigger,
+            provider_override,
+        );
+    };
+    let pending = db
+        .unsatisfied_stage_edges_into(context.source_task_id, &next_stage.name)
+        .map_err(|e| format!("db error: {}", e))?;
+    if !pending.is_empty() {
+        return Err(stage_dependencies_pending_error(
+            context.source_task_id,
+            &next_stage.name,
+            &pending,
+        ));
+    }
+    // The session is told these inputs; the entry that commits this
+    // transition records exactly them, not a result that lands meanwhile.
+    // Selected and reserved in one immediate transaction.
+    let inputs = db
+        .select_and_reserve_stage_edge_inputs(context.source_task_id, &next_stage.name, false)
+        .map_err(|e| format!("db error: {}", e))?
+        .unwrap_or_default();
+    crate::task_store::with_dependency_inputs(
+        inputs
+            .iter()
+            .map(crate::db::ConsumedDependency::to_session_input)
+            .collect(),
+        || {
+            prepare_swap_to_index_ungated(
+                db,
+                config,
+                context,
+                next_index,
+                trigger,
+                provider_override,
+            )
+        },
+    )
+}
+
+fn stage_dependencies_pending_error(
+    task_id: &str,
+    stage: &str,
+    pending: &[crate::db::StageEdge],
+) -> String {
+    let edges = pending
+        .iter()
+        .map(|edge| format!("{} ({})", edge.upstream_task_id, edge.upstream_stage))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("task is blocked: {task_id} cannot enter stage '{stage}' until its dependencies leave their stages: {edges}")
+}
+
+/// A completion's automatic swap to `next_index`, or — when edges into that
+/// stage are not satisfied yet — a recorded wait that replays this
+/// completion once they are. The task parks in its stage meanwhile.
+#[allow(clippy::too_many_arguments)]
+fn swap_or_wait_on_dependencies(
+    db: &Db,
+    config: &Config,
+    context: &StageTransitionContext<'_>,
+    next_index: usize,
+    trigger: StageTrigger,
+    finished_run_kind: Option<&str>,
+    completion_transition: Option<&str>,
+    finished_run_trigger: Option<&str>,
+    exit: Option<&crate::db::TransitionExit>,
+) -> Result<Option<PreparedStageTransition>, String> {
+    if let Some(next_stage) = context.workflow.stages.get(next_index) {
+        let pending = db
+            .unsatisfied_stage_edges_into(context.source_task_id, &next_stage.name)
+            .map_err(|e| format!("db error: {}", e))?;
+        if !pending.is_empty() {
+            let from_stage = context.source_task.stage.clone().unwrap_or_default();
+            db.record_dependency_wait(
+                context.source_task_id,
+                &from_stage,
+                &next_stage.name,
+                &serde_json::json!({
+                    "kind": finished_run_kind,
+                    "completionTransition": completion_transition,
+                    "trigger": finished_run_trigger,
+                    "exit": exit,
+                }),
+            )
+            .map_err(|e| format!("db error: {}", e))?;
+            log::info!(
+                "{}",
+                stage_dependencies_pending_error(
+                    context.source_task_id,
+                    &next_stage.name,
+                    &pending
+                )
+            );
+            return Ok(None);
+        }
+    }
+    prepare_swap_to_index(db, config, context, next_index, trigger, None).map(Some)
+}
+
+fn prepare_swap_to_index_ungated(
     db: &Db,
     config: &Config,
     context: &StageTransitionContext<'_>,

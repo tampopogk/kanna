@@ -80,6 +80,12 @@ pub struct MobileServerStatus {
     /// attach control rather than sending into that silence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_input_attachment_version: Option<u8>,
+    /// Version of the stage-dependency contract (T4): task creation accepts
+    /// `dependencies`. Absent on a build that predates it, which would ignore
+    /// the field and start an ungated task — so a client refuses to send
+    /// `dependencies` unless this is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_dependencies_version: Option<u8>,
     /// This desktop's secure-channel public key (unpadded base64url X25519),
     /// present when the desktop can serve end-to-end encrypted sessions.
     /// Read over plaintext LAN it is *not* a trust anchor - a typed-code
@@ -1227,7 +1233,7 @@ impl MobileApi {
             .map(|item| {
                 let blocked_by_task_ids = self
                     ._db
-                    .list_open_task_blocker_ids(&item.id)
+                    .list_blocking_task_ids(&item.id)
                     .map_err(|e| format!("db error: {}", e))?;
                 let repo_name = repo_names.get(&item.repo_id).cloned();
                 let agent = self
@@ -1295,7 +1301,7 @@ impl MobileApi {
         };
         let blocked_by_task_ids = self
             ._db
-            .list_open_task_blocker_ids(&item.id)
+            .list_blocking_task_ids(&item.id)
             .map_err(|e| format!("db error: {}", e))?;
         let child_task_ids = self
             ._db
@@ -2203,6 +2209,7 @@ pub fn build_mobile_server_status(
         pairing_code,
         ksp_stream_version: Some(2),
         task_input_attachment_version: Some(TASK_INPUT_ATTACHMENT_VERSION),
+        stage_dependencies_version: Some(kanna_tool_catalog::STAGE_DEPENDENCIES_VERSION),
         channel_public_key: None,
         secure_channel_version: None,
         agent_providers: Some(crate::agent_inventory::installed_agent_providers()),

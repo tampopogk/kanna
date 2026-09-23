@@ -746,6 +746,16 @@ pub(crate) async fn create_task_via_api(
     base_url: &str,
     request: &CreateTaskRequest,
 ) -> Result<CreateTaskResponse, String> {
+    // Before anything is created: a server that predates stage dependencies
+    // would ignore them and start an ungated task.
+    if request
+        .dependencies
+        .as_ref()
+        .is_some_and(|dependencies| !dependencies.is_empty())
+    {
+        let status: serde_json::Value = get_json(base_url, "/v1/status").await?;
+        kanna_tool_catalog::confirm_stage_dependencies_supported(&status)?;
+    }
     post_json(base_url, "/v1/tasks", request).await
 }
 

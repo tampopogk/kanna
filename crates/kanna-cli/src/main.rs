@@ -585,6 +585,14 @@ pub(crate) enum TaskCommands {
         /// ordinary top-level work and creator/orchestrator ownership.
         #[arg(long)]
         parent_task: Option<String>,
+
+        /// Stage dependency edge `<task>:<stage>[:<dependent stage>]`: this
+        /// task's dependent stage (default: its first) waits until <task>
+        /// leaves <stage> with a success result (its final stage: until it
+        /// closes). Repeat for several, in order; the first edge into the
+        /// first stage gives the fork point.
+        #[arg(long, value_parser = crate::commands::task::parse_stage_dependency)]
+        dependency: Vec<crate::models::StageDependency>,
     },
     /// Request a new revision task from an existing task branch
     RequestRevision {
