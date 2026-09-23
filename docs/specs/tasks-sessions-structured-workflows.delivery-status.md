@@ -29,9 +29,11 @@ final review gates as manager; children return reviewed local commits only.
 | T7 artifact remote | `a07d574f` | increment 1: two homes publish/fetch/comment via one Git remote (CLI/API) | parent `01f5c8972` (T6 dc9c09bfa, T8 7c06a0de4, T8b a00800e67) | reviewed (round 3), integrated, closed | `1019f2221`, `225525c97`, `373127ab4` | merge after `6ea23d959` |
 | T9 transfer | — | — | needs T1–T5, T8 (T6) review | not created | — | — |
 | T10 definitions | — | — | needs T3, T5, T6 review | not created | — | — |
-| T11 task/session UI | — | — | needs T0 (first), T2–T4 review | not created | — | — |
+| T11a latest result UI | `c719f2d9` | T11 increment 1: latest result/exit/artifact refs on desktop+mobile (single reviewer, sonnet); session name after T2 | parent `e69577ba6` | in progress | — | — |
+| T11 remainder (session/gate/dependency UI) | — | — | needs T2–T4 review | not created | — | — |
 | T12 artifact viewer | `6d3d22f8` | increment 1: local open-by-hash desktop/mobile, anchors, isolation; remote + §14 walkthrough → T12b | parent `01f5c8972` (T6 dc9c09bfa, T8/T8b) | reviewed (round 4), integrated, closed | `beffdbe8b` … `f38895884` | T12 merge commit |
-| T13 disk authority / migration | — | — | needs T1–T12, T14 review | not created | — | — |
+| T13a inventory + offline rebuild | `e3991858` | T13 increment 1: authority inventory, projector, fixture round trip (panel) | parent `e69577ba6` | in progress | — | — |
+| T13 remainder (cutover) | — | — | needs T1–T12, T14 review | not created | — | — |
 | T14 release workflow | — | — | needs T3, T8 review | not created | — | — |
 
 ## Log
@@ -93,3 +95,4 @@ final review gates as manager; children return reviewed local commits only.
 - OUTSTANDING HUMAN CHECKS (owner): (1) §14 two-account walkthrough, two signed-in accounts on two unpaired machines with a real shared remote; (2) physical iOS and Android react-native-webview checks — both in docs/2026-09-23-section-14-two-account-artifact-walkthrough.md. Until performed, §14/V1 acceptance is unverified.
 - 2026-09-23: T2 review round 5 at `02e091e8e`: round-4 findings closed; new blocker caused by the parent's round-4 guidance — td-<directory> teardown naming lets a stale teardown supervisor kill a later teardown in the same directory. Revision 5/5 (budget now spent; a further failure parks T2 for the owner). Parent correction: unique teardown identity per operation recorded against the workspace; supervisors kill only their own session id/pid.
 - 2026-09-23: OWNER AUTHORIZATION (in the parent session): up to 5 additional revision rounds for T2 (`cb28da39`). When T2's budget is exhausted and it parks, the parent relays this with kanna_request_revision origin "human" (resets the budget).
+- 2026-09-23: T11a `c719f2d9` and T13a `e3991858` created from parent `e69577ba6` (both unblocked by T0; cutover/session parts remain gated).
