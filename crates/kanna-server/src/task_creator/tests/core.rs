@@ -2147,6 +2147,7 @@ fn legacy_builtin_workflow_names_still_resolve_for_committed_repo_config() {
         assert_eq!(
             names,
             vec![
+                "mechanical",
                 "no-review",
                 "plan-build-review",
                 "pr-review",
@@ -3031,6 +3032,7 @@ fn workflow_names_are_sorted_deduped_remote_and_compiled_union() {
         definitions.workflow_names().unwrap(),
         vec![
             "alpha",
+            "mechanical",
             "no-review",
             "plan-build-review",
             "pr-review",
@@ -3125,6 +3127,68 @@ fn write_agent_repo(label: &str, agent_md: &str, extend_md: Option<&str>) -> std
     }
     publish_origin_main(&repo_root, "publish agent definition fixture");
     repo_root
+}
+
+/// The definition formula (spec §12, T10): declaring `role`/`providers`
+/// resolves them as `description`/`agent_provider` aliases and opts the
+/// definition into the 15-40-line, four-section shape.
+#[test]
+fn agent_definition_formula_resolves_role_and_providers_aliases() {
+    let agent_md = "---\nname: reviewer\nrole: A one-sentence role\nproviders: claude, codex\n---\n## Produces\nsomething\n## Reads\nsomething\n## Must not\nsomething\n## Stop when\nsomething\nextra\nextra\nextra\nextra";
+    let repo_root = write_agent_repo("formula-aliases", agent_md, None);
+
+    let definition = resolve_test_agent_definition(&repo_root, "reviewer").unwrap();
+    assert_eq!(definition.description, "A one-sentence role");
+    assert_eq!(
+        definition.agent_providers.len(),
+        2,
+        "{:?}",
+        definition.agent_providers
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn agent_definition_formula_rejects_a_definition_missing_a_required_section() {
+    let agent_md =
+        "---\nname: reviewer\nrole: A role\n---\n## Produces\nx\n## Reads\ny\nextra\nextra\nextra\nextra\nextra\nextra\nextra\nextra";
+    let repo_root = write_agent_repo("formula-missing-section", agent_md, None);
+
+    let error = resolve_test_agent_definition(&repo_root, "reviewer")
+        .expect_err("a formula definition missing a section must be refused");
+    assert!(error.contains("## Must not"), "{error}");
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn agent_definition_formula_rejects_a_legacy_result_variable() {
+    let agent_md = "---\nname: reviewer\nrole: A role\n---\n## Produces\nUses $PREV_MAIN_RESULT.\n## Reads\ny\n## Must not\nz\n## Stop when\nw\nextra\nextra\nextra\nextra\nextra";
+    let repo_root = write_agent_repo("formula-result-var", agent_md, None);
+
+    let error = resolve_test_agent_definition(&repo_root, "reviewer")
+        .expect_err("a formula definition referencing a legacy result variable must be refused");
+    assert!(error.contains("PREV_MAIN_RESULT"), "{error}");
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// Both bundled T10 agents (`implement`, `pr`) resolve through the same path
+/// production task creation uses, proving the formula check passes for them
+/// as shipped and that resolution needs no local override.
+#[test]
+fn bundled_definition_formula_agents_resolve_from_compiled_resources() {
+    let repo_root = init_git_repo_without_provider_fixtures("formula-builtins");
+    publish_origin_main(&repo_root, "publish empty repo for formula builtins");
+
+    for name in ["implement", "pr"] {
+        let definition = resolve_test_agent_definition(&repo_root, name).unwrap();
+        assert!(!definition.description.trim().is_empty(), "{name}");
+        assert!(!definition.agent_providers.is_empty(), "{name}");
+    }
+
+    let _ = std::fs::remove_dir_all(&repo_root);
 }
 
 const MALFORMED_AGENT_PROVIDER_CASES: &[(&str, &str, &str)] = &[
@@ -4319,8 +4383,10 @@ fn read_agent_definition_falls_back_to_builtin_default_for_missing_flavor() {
 
     let definition = resolve_test_agent_definition(&repo_root, "pr").unwrap();
 
-    assert!(definition.prompt.contains("create a GitHub pull request"));
-    assert!(definition.prompt.contains("gh pr create"));
+    // `pr` is a T10 definition-formula agent (spec §12): its prompt is the
+    // four required sections rather than a git-command recipe.
+    assert!(definition.prompt.contains("## Produces"));
+    assert!(definition.prompt.contains("pull request"));
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
