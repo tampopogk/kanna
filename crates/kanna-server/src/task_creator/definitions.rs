@@ -1942,6 +1942,10 @@ const BUILTIN_AGENT_RESOURCES: &[(&str, &str)] = &[
         include_str!("../../../../.kanna/agents/plan/AGENT.md"),
     ),
     (
+        ".kanna/agents/mockup/AGENT.md",
+        include_str!("../../../../.kanna/agents/mockup/AGENT.md"),
+    ),
+    (
         ".kanna/agents/merge/AGENT.md",
         include_str!("../../../../.kanna/agents/merge/AGENT.md"),
     ),
@@ -2122,6 +2126,18 @@ const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
     (
         "mechanical",
         include_str!("../../../../.kanna/workflows/mechanical.json"),
+    ),
+    (
+        "shaped",
+        include_str!("../../../../.kanna/workflows/shaped.json"),
+    ),
+    (
+        "planned",
+        include_str!("../../../../.kanna/workflows/planned.json"),
+    ),
+    (
+        "designed",
+        include_str!("../../../../.kanna/workflows/designed.json"),
     ),
     (
         "plan-build-review",
