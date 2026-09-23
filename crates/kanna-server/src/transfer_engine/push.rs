@@ -803,6 +803,7 @@ pub(super) fn require_task_state_support(
 
 /// Stage the task's carried state ([`task_state`]): the document itself,
 /// and bundles for the history commits and artifact objects it names.
+#[allow(clippy::too_many_arguments)]
 async fn stage_task_state(
     state: &Arc<AppState>,
     source: &SourceTask,
