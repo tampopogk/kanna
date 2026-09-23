@@ -13,12 +13,14 @@ final review gates as manager; children return reviewed local commits only.
 
 | Task | Child id | Scope / current checkpoint | Base / prerequisites consumed | State | Reviewed commit(s) | Integrated as |
 |---|---|---|---|---|---|---|
-| T0 ledger bridge | `1dc3da40` | full card | `task-482a02db-3` @ `9a4198da8` | reviewed (round 4), integrated; gate open until T6/T8 ledger follow-ons land | `c91542a2c`, `b18b06b29`, `976ecdf37`, `472068345` | merge commit below |
-| T6 local artifacts | `ed3533d4` | first increment (publish/open by tree id); result binding after T0.review | `task-482a02db-3` @ `9a4198da8` | increment 1 reviewed + integrated; parked at review awaiting T0 for checkpoint 2 | `dc9c09bfa` | `20fd89157` |
+| T0 ledger bridge | `1dc3da40` | full card | `task-482a02db-3` @ `9a4198da8` | reviewed (round 4), integrated, closed | `c91542a2c`, `b18b06b29`, `976ecdf37`, `472068345` | merge commit below |
+| T6 local artifacts | `ed3533d4` | first increment (publish/open by tree id); result binding after T0.review | `task-482a02db-3` @ `9a4198da8` | increment 1 reviewed + integrated; closed (checkpoint 2 moved to T6b) | `dc9c09bfa` | `20fd89157` |
 | T8 provenance | `d06e30e1` | first increment (channel identity capture); account boundary split to T8b | `task-482a02db-3` @ `9a4198da8` | increment 1 reviewed (round 2), integrated, closed | `65e1943e5`, `7c06a0de4` | `a609c5aec` |
 | T8b same-account boundary | `216cf1c2` | account-boundary enforcement + T8 follow-ups (build-first, specialized-reviewers; build gate manual) | parent `e679678d0` (T6+T8 integrated) | reviewed (round 2), integrated, closed | `7863ff1f0`, `a00800e67` | `bab127907` |
-| T1 workflow contract | — | — | needs T0.review | not created | — | — |
-| T2 stage workspaces | — | — | needs T0.review | not created | — | — |
+| T1 workflow contract | `e3ef840c` | first increment + card | parent `cc8125f85` (T0 472068345 + T6/T8/T8b) | in progress | — | — |
+| T2 stage workspaces | `cb28da39` | first increment + card | parent `cc8125f85` (T0 472068345 + T6/T8/T8b) | in progress | — | — |
+| T6b artifact result refs + retention | `d6fb5ce0` | T6 checkpoint 2 + T6 follow-ups | parent `cc8125f85` | in progress | — | — |
+| T8c ledger channel identity | `7049470b` | T8 ledger fill (single reviewer, sonnet) | parent `cc8125f85` | in progress | — | — |
 | T3 commit transitions / roleless gates | — | — | needs T1, T2 review | not created | — | — |
 | T4 stage dependency edges | — | — | needs T1, T2 review | not created | — | — |
 | T5 subtask joins | — | — | needs T4 review | not created | — | — |
@@ -55,3 +57,4 @@ final review gates as manager; children return reviewed local commits only.
 - 2026-09-23: T0 passed panel review round 4 at `472068345` (continuation fence by operation id + run generation; 8-cell matrix). Merged into parent after T6/T8/T8b. Parent-resolved conflicts: migrations — kept `095_mutation_provenance`, renumbered T0's to `096_task_ledger_bridge` (latest-migration assert updated); `task_input.rs` — T8 channel argument into T0's record+flush; `task_actions.rs` — T0's deferred completion dispatch/continuation structure with T8 provenance: engine-driven completion transitions and continuation-recovered revisions record ChannelIdentity::Server, request-driven revisions record the caller's channel, park path threads provenance; T0 tests updated for T8 signatures; one T8 test now polls for `run.started` since T0 releases it after publication.
 - Combined verification (T0+T6+T8+T8b): full `kanna-server` bin suite 2140 passed, 1 failed (`ksp::tests::bounded_request_saturation_keeps_terminal_input_responsive`); control at base `9a4198da8` fails identically ("timed out waiting for frame") in 4 of 5 runs at load 15–19 → pre-existing, load-sensitive. packages/core prompt-builder + config vitest 120/120, tsc clean.
 - 2026-09-23: T7 review round 1 failed (3 blocking, reproduced): push follows remote-imported `previous` links into never-shared local artifacts (disclosure); git timeout reaps only git so descendants holding pipes hang the request; racing identical record pushes report a false conflict. Revision 1/5. Owner decision to raise at T7 integration: committed repo config can set `artifacts.remote`, so a cloned repo chooses where pushes go.
+- 2026-09-23: from parent `cc8125f85`: created T1 `e3ef840c`, T2 `cb28da39` (panel), T6b `d6fb5ce0` (panel), T8c `7049470b` (single reviewer, sonnet). T0 and T6 closed via their review gates.
