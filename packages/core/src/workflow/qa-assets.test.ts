@@ -283,6 +283,8 @@ describe("QA workflow assets", () => {
     expect(agent.prompt).toContain("resumes observation automatically");
     expect(agent.prompt).toContain("task.runtime_changed");
     expect(agent.prompt).toContain("`task.blocked` / `task.unblocked`");
+    expect(agent.prompt).toContain("task.dependency_superseded");
+    expect(agent.prompt).toContain("Never rerun or rebase the dependent task silently");
     expect(agent.prompt).toContain("task.runtime_settled");
     expect(agent.prompt).toContain("task.awaiting_advance");
     expect(agent.prompt).toContain("Notify human blockers");
