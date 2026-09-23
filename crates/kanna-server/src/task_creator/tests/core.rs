@@ -3185,13 +3185,21 @@ fn bundled_definition_formula_agents_resolve_from_compiled_resources() {
     let repo_root = init_git_repo_without_provider_fixtures("formula-builtins");
     publish_origin_main(&repo_root, "publish empty repo for formula builtins");
 
+    // `review` is deliberately excluded here: its repo `.kanna/agents/review/EXTEND.md`
+    // carries the owner's full "Verification Proportional to the Change" policy
+    // (restored in full per the owner's T10e round-2 decision — the 15-40 line
+    // formula is a leanness goal, not an enforced limit, and T10g removes this
+    // engine check), so the resolved AGENT.md+EXTEND.md document is ~49 lines and
+    // legitimately fails this branch's still-active `check_definition_formula`
+    // until the parent merges task-482a02db-3 once it contains T10g's 78fd1681c
+    // (it did not at last check). See `review_extend_md_carries_the_full_owner_policy`
+    // below for what this branch verifies about review in the meantime.
     for name in [
         "implement",
         "pr",
         "plan",
         "architect",
         "researcher",
-        "review",
         "commit",
         "setup",
         "workflow-factory",
@@ -3200,6 +3208,40 @@ fn bundled_definition_formula_agents_resolve_from_compiled_resources() {
         let definition = resolve_test_agent_definition(&repo_root, name).unwrap();
         assert!(!definition.description.trim().is_empty(), "{name}");
         assert!(!definition.agent_providers.is_empty(), "{name}");
+    }
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// T10e round 2 (owner decision, manager input 4428): the 15-40 line formula
+/// is a leanness goal, not an engine-enforced limit; T10g removes the
+/// enforcement (78fd1681c) but that commit is not yet merged into this
+/// branch's parent, so `review`'s resolved formula check still legitimately
+/// fails today. This pins what must be true regardless: the base AGENT.md
+/// alone still resolves (it does not opt out of the four-section shape), and
+/// the full repo EXTEND.md is exactly what ships at 890e30b50 (content
+/// untouched, only the heading renamed).
+#[test]
+fn review_extend_md_carries_the_full_owner_policy() {
+    let repo_root = init_git_repo_without_provider_fixtures("review-extend-full-policy");
+    publish_origin_main(&repo_root, "publish empty repo for review base check");
+
+    let base_only = resolve_test_agent_definition(&repo_root, "review").unwrap();
+    assert!(!base_only.description.trim().is_empty());
+
+    let extend_md = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.kanna/agents/review/EXTEND.md"),
+    )
+    .unwrap();
+    for phrase in [
+        "Owner feedback (2026-09-10)",
+        "For terminology, documentation, and bounded presentation changes",
+        "Reuse recorded verification when its command, result, and reviewed head are",
+        "Run `./kd test all` for broad changes or changes whose impact cannot be bounded",
+        "Request revisions for concrete defects caused by the task.",
+    ] {
+        assert!(extend_md.contains(phrase), "review/EXTEND.md missing: {phrase}");
     }
 
     let _ = std::fs::remove_dir_all(&repo_root);

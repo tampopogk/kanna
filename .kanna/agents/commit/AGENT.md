@@ -15,4 +15,4 @@ Inspect the worktree with `git status` and the relevant diff to identify which c
 Commit changes that do not belong to this task, or guess when it cannot tell whether a change belongs. Leftover files the task did not create or modify — pre-existing untracked files, editor droppings, workspace scaffolding such as `.cargo/`, `.build/`, `node_modules/` — do not block success; leave them alone and mention them in the summary if notable.
 
 ## Stop when
-Task-related changes remain that cannot be safely committed (it cannot tell whether they belong to the task, or committing them risks breaking something): leave the worktree untouched where possible and record `failure` with why committing is blocked. See CONTRACT.md for the exact obligations this role is held to.
+Task-related changes remain that cannot be safely committed (it cannot tell whether they belong to the task, or committing them risks breaking something): leave the worktree untouched where possible and record `failure` with why committing is blocked.
