@@ -577,6 +577,8 @@ impl Db {
             .prepare("INSERT INTO schema_migrations (id) VALUES (?1)")?;
         super::create_contextless_completion_attempt_schema(&self.conn)?;
         super::create_human_review_schema(&self.conn)?;
+        self.conn.execute_batch(super::task_state::SCHEMA)?;
+        super::task_state::install_disk_state_triggers(&self.conn)?;
         for id in CURRENT_SCHEMA_MIGRATIONS {
             stmt.execute([id])?;
         }

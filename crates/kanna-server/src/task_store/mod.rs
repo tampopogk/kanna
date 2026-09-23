@@ -29,12 +29,27 @@
 //! `subtask_joins` the T5 joins the task created and each member's
 //! outcome), `stage`, `branch`, `base_ref`,
 //! `owning_machine` (null until recorded per task), `created_at`,
-//! `updated_at`, `closed_at`, `snapshot_revision` and
-//! `ledger.published_through` (the highest published sequence).
+//! `updated_at`, `closed_at`, `snapshot_revision`,
+//! `ledger.published_through` (the highest published sequence) and, since
+//! T13, `state {version, reflects_through, unreflected_reservations,
+//! tables}`: the task's rows of every table that holds durable task state,
+//! verbatim with their rowids ([`crate::db::task_state`]), and the ledger
+//! boundary those rows reflect (the highest committed sequence, pending
+//! included, read with them; reservations below it not yet filled). A carried row's change owes a new
+//! `task.json` in the changing statement (a trigger bumps the snapshot
+//! revision). A task removed from the database gets a tombstone
+//! `{schema_version, task_id, repo_id, removed: true}` in place of its
+//! `task.json`; its ledger stays.
+//!
+//! **`repos/<repo-id>/repo.json`** (T13) — the repository's registration and
+//! sidebar order, rewritten the same way; a tombstone once unregistered.
 //!
 //! **`ledger/NNNNNN-<kind>.<ext>`** — immutable. `NNNNNN` is the per-task
 //! sequence, zero-padded to six digits (order by the number, not the text,
-//! should a task ever pass 999999 entries). `result` and `input` entries are
+//! should a task ever pass 999999 entries). Sequences are a strict
+//! high-water mark (T13, `task_ledger_sequence`): a number is never handed
+//! out twice, so a released or abandoned reservation leaves a permanent gap,
+//! which readers treat as nothing. `result` and `input` entries are
 //! Markdown: a `---` line, the pretty-printed JSON envelope, a `---` line, an
 //! empty line, then the message verbatim to end of file. `transition` and
 //! `plan` entries are the JSON envelope alone. A published file is never
@@ -67,7 +82,11 @@
 //!   `timestamp`, the caller's legacy `metadata` (kept, never trusted as
 //!   engine evidence), `request {kind, ...}` naming the call that recorded it,
 //!   and `legacy_format` for results that predate `{status, summary}`. The
-//!   message is the Markdown body.
+//!   message is the Markdown body. A revision request's `request` also
+//!   carries its `summary` and `findings` apart (T13). An **engine-observed
+//!   ending** (T13, source kind `stage_run_ending`) records a run that closed
+//!   without a verdict: `status` null, `observed_by: "engine"`, `ending
+//!   {run_status, no_work_termination}`; it is never read as a verdict.
 //! - `input`: `input_id`, `source` (the stored label), `stage`,
 //!   `delivered_at`. The delivered text is the Markdown body.
 //! - `transition`: `from_stage`, `to_stage`, `branch`, `trigger`,
@@ -420,20 +439,133 @@ pub fn flush_task_best_effort(db: &Db, db_path: &str, task_id: &str) {
     }
 }
 
-/// Flush every task with pending work. Returns the tasks that failed.
+/// Flush every task with pending work, then every owed `repo.json` and
+/// tombstone. Returns the tasks (or `repo:<id>`, `removed:<kind>:<id>`) that
+/// failed.
 pub fn flush_all(db: &Db, db_path: &str) -> Vec<(String, String)> {
+    let root = root_for_db(db_path);
     let tasks = match db.ledger_tasks_with_pending_work() {
         Ok(tasks) => tasks,
         Err(error) => return vec![(String::new(), format!("db error: {error}"))],
     };
-    tasks
+    let mut failures: Vec<(String, String)> = tasks
         .into_iter()
         .filter_map(|task_id| {
             flush_task(db, db_path, &task_id)
                 .err()
                 .map(|error| (task_id, error))
         })
-        .collect()
+        .collect();
+    failures.extend(flush_disk_records_at(db, &root));
+    failures
+}
+
+/// Publish every owed `repo.json` and tombstone under `root` (T13).
+pub fn flush_disk_records_at(db: &Db, root: &Path) -> Vec<(String, String)> {
+    let mut failures = Vec::new();
+    match db.repos_with_pending_disk_record() {
+        Ok(repos) => {
+            for repo_id in repos {
+                if let Err(error) = flush_repo_at(db, root, &repo_id) {
+                    failures.push((format!("repo:{repo_id}"), error));
+                }
+            }
+        }
+        Err(error) => failures.push((String::new(), format!("db error: {error}"))),
+    }
+    match db.pending_disk_removals() {
+        Ok(removals) => {
+            for (kind, id, repo_id) in removals {
+                if let Err(error) = publish_removal_at(db, root, &kind, &id, &repo_id) {
+                    let _ = db.record_disk_removal_error(&kind, &id, &error);
+                    failures.push((format!("removed:{kind}:{id}"), error));
+                }
+            }
+        }
+        Err(error) => failures.push((String::new(), format!("db error: {error}"))),
+    }
+    failures
+}
+
+pub fn repo_dir(root: &Path, repo_id: &str) -> PathBuf {
+    root.join("repos").join(repo_id)
+}
+
+/// Rewrite `repos/<repo-id>/repo.json` if it is owed.
+pub fn flush_repo_at(db: &Db, root: &Path, repo_id: &str) -> Result<(), String> {
+    let lock = task_flush_lock(root, &format!("repo:{repo_id}"));
+    let _guard = lock.lock().unwrap_or_else(|poison| poison.into_inner());
+    let Some((revision, published)) = db
+        .repo_disk_revisions(repo_id)
+        .map_err(|error| format!("db error: {error}"))?
+    else {
+        return Ok(());
+    };
+    if revision <= published {
+        return Ok(());
+    }
+    // A removed repository has no row here any more; its tombstone is
+    // written from the removal outbox.
+    let Some(record) = db
+        .repo_disk_record(repo_id)
+        .map_err(|error| format!("db error: {error}"))?
+    else {
+        return Ok(());
+    };
+    let mut bytes =
+        serde_json::to_vec_pretty(&record).map_err(|error| format!("render repo.json: {error}"))?;
+    bytes.push(b'\n');
+    if let Err(error) = replace_atomically(&repo_dir(root, repo_id), "repo.json", &bytes) {
+        let _ = db.record_repo_disk_record_error(repo_id, &error);
+        return Err(error);
+    }
+    db.acknowledge_repo_disk_record(repo_id, revision)
+        .map_err(|error| format!("db error: {error}"))
+}
+
+/// Replace a removed task's `task.json` (or a removed repository's
+/// `repo.json`) with a tombstone, so a rebuild does not bring it back. The
+/// ledger stays. Nothing to do when the record was never published.
+fn publish_removal_at(
+    db: &Db,
+    root: &Path,
+    kind: &str,
+    id: &str,
+    repo_id: &str,
+) -> Result<(), String> {
+    let (lock_key, dir, file, identity) = match kind {
+        "task" => (
+            id.to_string(),
+            task_dir(root, repo_id, id),
+            "task.json",
+            serde_json::json!({ "task_id": id, "repo_id": repo_id }),
+        ),
+        _ => (
+            format!("repo:{id}"),
+            repo_dir(root, id),
+            "repo.json",
+            serde_json::json!({ "repo_id": id }),
+        ),
+    };
+    let lock = task_flush_lock(root, &lock_key);
+    let _guard = lock.lock().unwrap_or_else(|poison| poison.into_inner());
+    // Re-created meanwhile: the live record is owed instead.
+    let recreated = match kind {
+        "task" => db.get_pipeline_item(id).map(|item| item.is_some()),
+        _ => db.get_repo(id).map(|repo| repo.is_some()),
+    }
+    .map_err(|error| format!("db error: {error}"))?;
+    if !recreated && dir.join(file).exists() {
+        let mut tombstone = identity;
+        tombstone["schema_version"] = serde_json::json!(SCHEMA_VERSION);
+        tombstone[crate::db::task_state::REMOVED_KEY] = serde_json::json!(true);
+        let mut bytes = serde_json::to_vec_pretty(&tombstone)
+            .map_err(|error| format!("render tombstone: {error}"))?;
+        bytes.push(b'\n');
+        replace_atomically(&dir, file, &bytes)?;
+    }
+    db.acknowledge_disk_removal(kind, id)
+        .map_err(|error| format!("db error: {error}"))
 }
 
 /// Startup recovery, run before any service can schedule or dispatch work:
@@ -772,11 +904,13 @@ pub fn resolve_trigger_in(files: &[LedgerFile], stage: &str) -> Option<Triggerin
         .rev()
         .find(|file| file.kind == LedgerEntryKind::Transition);
     let floor = last_transition.map_or(0, |file| file.sequence);
-    if let Some(result) = files
-        .iter()
-        .rev()
-        .find(|file| file.kind == LedgerEntryKind::Result && file.sequence > floor)
-    {
+    // An engine-observed ending (T13) is not a result a session recorded,
+    // so it never causes one.
+    if let Some(result) = files.iter().rev().find(|file| {
+        file.kind == LedgerEntryKind::Result
+            && file.sequence > floor
+            && !crate::db::task_store::is_engine_observed_result(file.body())
+    }) {
         return TriggeringResult::from_file(result);
     }
     let transition = last_transition?;

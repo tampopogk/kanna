@@ -4453,6 +4453,8 @@ fn park_exhausted_revision_in_transaction(
             run: run.clone(),
             observed: observed.clone(),
             message,
+            summary: parked_summary.to_string(),
+            findings: payload.prompt.clone(),
             reserved_sequence: None,
         };
         review
@@ -4475,6 +4477,9 @@ struct RevisionResult {
     run: crate::db::StageRun,
     observed: crate::task_store::WorkspaceObservation,
     message: String,
+    /// The two parts `message` joins, recorded apart as well (T13).
+    summary: String,
+    findings: String,
     reserved_sequence: Option<i64>,
 }
 
@@ -4541,6 +4546,8 @@ impl RevisionResult {
                     "kind": "revision_request",
                     "targetStage": payload.target_stage,
                     "origin": if origin.is_agent() { "agent" } else { "human" },
+                    "summary": self.summary,
+                    "findings": self.findings,
                 }),
             ),
             message: Some(&self.message),
@@ -4596,6 +4603,8 @@ fn reserve_revision_result(
         run,
         observed,
         message,
+        summary: payload.summary.clone(),
+        findings: findings.to_string(),
         reserved_sequence: Some(sequence),
     }))
 }

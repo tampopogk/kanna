@@ -723,10 +723,15 @@ impl Db {
             .collect()
     }
 
-    /// The task's highest ledger sequence, reservations included; 0 for none.
+    /// The task's highest ledger sequence ever allocated (T13's high-water
+    /// mark, which a released reservation leaves above every row),
+    /// reservations included; 0 for none. The next allocation is this + 1.
     pub fn last_ledger_sequence(&self, task_id: &str) -> Result<i64, rusqlite::Error> {
         self.conn.query_row(
-            "SELECT COALESCE(MAX(sequence), 0) FROM task_ledger_entry WHERE task_id = ?",
+            "SELECT MAX(
+                 COALESCE((SELECT MAX(sequence) FROM task_ledger_entry WHERE task_id = ?1), 0),
+                 COALESCE((SELECT high_water FROM task_ledger_sequence WHERE task_id = ?1), 0)
+             )",
             [task_id],
             |row| row.get(0),
         )

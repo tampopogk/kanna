@@ -53,6 +53,7 @@ pub use workspace_setup::{WorkspaceSetupOutcome, WorkspaceSetupRun};
 pub use worktrees::StageWorkspaceRecord;
 mod task_events;
 mod task_inputs;
+pub(crate) mod task_state;
 pub(crate) mod task_store;
 #[cfg(test)]
 mod test_support;
@@ -228,6 +229,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "100_task_stage_edges",
     "101_subtask_joins",
     "102_transferred_task_state",
+    "103_disk_state_records",
 ];
 
 #[derive(Debug, Serialize)]
@@ -1053,6 +1055,9 @@ fn run_migration(
         if has_migration(conn, id)? {
             return Ok(());
         }
+        // A migration may reshape any table; the disk-state triggers come
+        // back after the last one (`task_state::sync_disk_state_triggers`).
+        task_state::drop_disk_state_triggers(conn)?;
         migrate(conn)?;
         record_migration(conn, id)
     })();
@@ -2734,6 +2739,15 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
         conn.execute_batch(transfer_task_state::SCHEMA)
     })?;
 
+    // Spec §11/§16.11 (T13): the durable task state task.json carries beside
+    // the ledger, repo.json, and removal tombstones. Triggers owe a new
+    // record in the statement that changes what it carries; the backfill
+    // owes one to every open task and repository.
+    run_migration(conn, "103_disk_state_records", |conn| {
+        task_state::migrate_disk_state_records(conn)
+    })?;
+    task_state::sync_disk_state_triggers(conn)?;
+
     Ok(())
 }
 
@@ -2811,6 +2825,7 @@ fn rebuild_stage_run_for_teardown_kind(
         if has_migration(conn, STAGE_RUN_TEARDOWN_KIND_MIGRATION)? {
             return Ok(());
         }
+        task_state::drop_disk_state_triggers(conn)?;
         conn.execute_batch(&format!(
             r#"
             DROP TABLE IF EXISTS {STAGE_RUN_KIND_REBUILD_TABLE};

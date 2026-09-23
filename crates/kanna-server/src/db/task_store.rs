@@ -195,6 +195,18 @@ pub const STAGE_COMPLETION_CONTINUATION: &str = "stage_completion";
 /// spent and the reviewer's run already finished).
 pub const REVISION_CONTINUATION: &str = "revision";
 
+/// Source kind of a result entry the engine wrote because it saw a run end
+/// without a verdict (T13). Such an entry has `status: null`, `observed_by:
+/// "engine"` and an `ending` object; it is never a verdict, so no reader
+/// takes it as one (a session's trigger, a join member's outcome, a
+/// dependency's success, a transition's triggering result).
+pub const ENGINE_ENDING_SOURCE_KIND: &str = "stage_run_ending";
+
+/// Is this result body an engine-observed ending rather than a verdict?
+pub fn is_engine_observed_result(body: &Value) -> bool {
+    body.get("observed_by").and_then(Value::as_str) == Some("engine")
+}
+
 /// The envelope's session reference. T0 defined `{kind: "stage_run", id}`;
 /// T2 adds the session's identity beside those keys when the run recorded
 /// one — `workspace_id`, `branch`, `name` and `transcript {provider,
@@ -293,12 +305,45 @@ impl Db {
             .execute("DELETE FROM task_ledger_entry WHERE kind IS NULL", [])
     }
 
+    /// Allocate the task's next sequence, inside the caller's transaction.
+    ///
+    /// Sequences are a strict high-water mark (T13), as T2's branch numbers
+    /// are: `task_ledger_sequence.high_water` is every number ever handed
+    /// out, persisted in the allocating transaction, so a released or
+    /// abandoned reservation leaves a permanent gap and is never handed out
+    /// again — across restarts, and across a rebuild from disk, which raises
+    /// the mark to every sequence the task directory records or reflects.
+    /// Readers treat a gap as nothing.
     fn next_ledger_sequence(&self, task_id: &str) -> Result<i64, rusqlite::Error> {
-        self.conn.query_row(
-            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM task_ledger_entry WHERE task_id = ?",
+        let next: i64 = self.conn.query_row(
+            "SELECT MAX(
+                 COALESCE((SELECT MAX(sequence) FROM task_ledger_entry WHERE task_id = ?1), 0),
+                 COALESCE((SELECT high_water FROM task_ledger_sequence WHERE task_id = ?1), 0)
+             ) + 1",
             [task_id],
             |row| row.get(0),
         )
+        .or_else(|error| {
+            // Schema-only fixtures that predate the mark.
+            if is_missing_ledger_table(&error) {
+                self.conn.query_row(
+                    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM task_ledger_entry WHERE task_id = ?",
+                    [task_id],
+                    |row| row.get(0),
+                )
+            } else {
+                Err(error)
+            }
+        })?;
+        match self.conn.execute(
+            "INSERT INTO task_ledger_sequence (task_id, high_water) VALUES (?1, ?2)
+             ON CONFLICT(task_id) DO UPDATE SET high_water = MAX(high_water, excluded.high_water)",
+            params![task_id, next],
+        ) {
+            Ok(_) => Ok(next),
+            Err(error) if is_missing_ledger_table(&error) => Ok(next),
+            Err(error) => Err(error),
+        }
     }
 
     /// Enqueue one immutable entry inside the caller's transaction (or a new
@@ -440,7 +485,10 @@ impl Db {
             db.mark_task_snapshot_dirty(entry.task_id)?;
             // A join member's first result resolves it and is delivered to
             // its parent in this same transaction (T5).
-            if entry.kind == LedgerEntryKind::Result && !entry.historical {
+            if entry.kind == LedgerEntryKind::Result
+                && !entry.historical
+                && entry.source_kind != ENGINE_ENDING_SOURCE_KIND
+            {
                 if let Some(result) = envelope.get(entry.kind.as_str()) {
                     db.resolve_join_member_on_result(
                         entry.task_id,
@@ -563,6 +611,7 @@ impl Db {
             .query_row(
                 "SELECT entry_id FROM task_ledger_entry
                  WHERE task_id = ?1 AND kind = 'result'
+                   AND source_kind IS NOT 'stage_run_ending'
                    AND sequence > COALESCE(
                        (SELECT MAX(sequence) FROM task_ledger_entry
                         WHERE task_id = ?1 AND kind = 'transition'),
@@ -572,6 +621,84 @@ impl Db {
                 |row| row.get(0),
             )
             .optional()
+    }
+
+    /// Record, as the engine's observation, that `run_id` ended without a
+    /// verdict: the session exited, could not be spawned, was replaced or
+    /// cancelled (T13). Not a result the session recorded, so its status is
+    /// null and it names what the engine saw (`ending`). Nothing is recorded
+    /// for a workspace teardown run (it has no session to end), or once a
+    /// transfer has exported the task's final ledger (the task is leaving
+    /// this machine, and the ending is not part of what it carried).
+    pub(crate) fn enqueue_engine_observed_ending(
+        &self,
+        run_id: &str,
+    ) -> Result<(), rusqlite::Error> {
+        let Some(run) = self.stage_run(run_id)? else {
+            return Ok(());
+        };
+        if run.kind == super::stage_runs::TEARDOWN_RUN_KIND {
+            return Ok(());
+        }
+        if self
+            .refuse_ledger_after_transfer_export(&run.task_id)
+            .is_err()
+        {
+            return Ok(());
+        }
+        let prior: i64 = match self.conn.query_row(
+            "SELECT COUNT(*) FROM task_ledger_entry
+             WHERE task_id = ? AND source_kind = ? AND substr(source_id, 1, length(?) + 1) = ? || '#'",
+            params![run.task_id, ENGINE_ENDING_SOURCE_KIND, run.id, run.id],
+            |row| row.get(0),
+        ) {
+            Ok(prior) => prior,
+            // Schema-only fixtures that predate the bridge have no ledger.
+            Err(error) if is_missing_ledger_table(&error) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        let source_id = format!("{}#ending-{}", run.id, prior + 1);
+        let ending = run
+            .no_work_termination
+            .clone()
+            .unwrap_or_else(|| format!("run_{}", run.status));
+        let message =
+            format!("The engine observed this session end without recording a result ({ending}).");
+        self.enqueue_ledger_entry(NewLedgerEntry {
+            task_id: &run.task_id,
+            kind: LedgerEntryKind::Result,
+            operation_id: None,
+            source_kind: ENGINE_ENDING_SOURCE_KIND,
+            source_id: &source_id,
+            source_origin: None,
+            historical: false,
+            recorded_at: None,
+            run_id: Some(&run.id),
+            declared_role: None,
+            channel_identity: &ChannelIdentity::Server,
+            body: json!({
+                "status": Value::Null,
+                "observed_by": "engine",
+                "ending": {
+                    "run_status": run.status,
+                    "no_work_termination": run.no_work_termination,
+                },
+                "stage": run.stage,
+                "run_kind": run.kind,
+                // Nothing was committed on the session's behalf, and the
+                // engine does not read the workspace for an ending.
+                "branch": Value::Null,
+                "committed_sha": Value::Null,
+                "provenance": { "branch": "not_observed", "committed_sha": "not_observed" },
+                "metadata": Value::Null,
+                "legacy_format": false,
+                "request": { "kind": "engine_observed" },
+            }),
+            message: Some(&message),
+            hold_events_after: None,
+            reserved_sequence: None,
+        })?;
+        Ok(())
     }
 
     /// Move this task's events appended after `floor` off the feed and return
@@ -785,11 +912,22 @@ impl Db {
         Ok(())
     }
 
-    /// The facts `task.json` projects, read from current rows.
+    /// The facts `task.json` projects, read from current rows in one
+    /// snapshot, so its `state` is internally consistent (an owed
+    /// continuation and the run it waits on are never from different
+    /// moments).
     pub(crate) fn task_snapshot_facts(
         &self,
         task_id: &str,
     ) -> Result<Option<Value>, rusqlite::Error> {
+        if self.conn.is_autocommit() {
+            self.with_read_transaction(|db| db.task_snapshot_facts_now(task_id))
+        } else {
+            self.task_snapshot_facts_now(task_id)
+        }
+    }
+
+    fn task_snapshot_facts_now(&self, task_id: &str) -> Result<Option<Value>, rusqlite::Error> {
         let Some(item) = self.get_pipeline_item(task_id)? else {
             return Ok(None);
         };
@@ -839,6 +977,9 @@ impl Db {
             "ledger": {
                 "published_through": self.ledger_published_through(task_id)?,
             },
+            // T13: every other durable fact of the task, row by row
+            // (`crate::db::task_state`).
+            "state": self.task_state_record(task_id)?,
         })))
     }
 

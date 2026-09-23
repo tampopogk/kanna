@@ -1,40 +1,62 @@
-//! Offline rebuild of SQL projections from task directories (spec §16.11,
-//! component T13, first increment).
+//! Offline rebuild of SQL projections from task directories (spec §11,
+//! §16.11 — component T13, first and second increments).
 //!
-//! Reads `<root>/repos/<repo-id>/tasks/<task-id>/` (`task.json` and the
-//! published `ledger/`) with a versioned reader, projects them
-//! deterministically, and writes the projection into a **new** database
-//! created with the current schema. It never opens an existing database:
-//! SQLite stays authoritative, and this is a dry run whose output is compared
-//! against it. `docs/2026-09-23-disk-authority-inventory.md` says which disk
-//! record will own each table and which facts are not on disk yet
-//! ([`NOT_REBUILT`]).
+//! Reads `<root>/repos/<repo-id>/repo.json` and
+//! `<root>/repos/<repo-id>/tasks/<task-id>/` (`task.json` and the published
+//! `ledger/`) with a versioned reader, projects them deterministically, and
+//! writes the projection into a **new** database created with the current
+//! schema. It never opens an existing database: SQLite stays authoritative,
+//! and this is a dry run whose output is compared against it.
+//! `docs/2026-09-23-disk-authority-inventory.md` says which disk record owns
+//! each table; [`NOT_REBUILT`] lists what a rebuilt database lacks by design.
 //!
 //! What is projected, and from where:
 //!
-//! - **task** (`pipeline_item`) and **workflow pin**: from `task.json`.
+//! - **repository registration** (`repo`, `repo_sidebar_order`): `repo.json`.
+//!   A repository with task directories but no `repo.json` gets a
+//!   placeholder row (empty path, name = id) so its tasks satisfy the schema.
+//! - **every carried table** ([`crate::db::task_state::CARRIED_TABLES`]: the
+//!   task row, runs and their sessions and prompts, workspaces, branch
+//!   counter, budgets, commit steps, edges and waits, joins, owed work,
+//!   review and transfer records): `task.json`'s `state`, row for row,
+//!   keeping each row's `rowid`. The branch counter is never below a
+//!   `task-<id>-<n>` suffix any record names.
 //! - **dependency blockers** (`task_blocker`): `task.json` `links.dependencies`.
-//! - **stage runs** (`stage_run`): one row per run that recorded a result
-//!   entry; the newest result of a run wins, as a corrected verdict does in
-//!   SQL. A run with no result entry (running, or ended without a verdict)
-//!   is not on disk and is not invented.
 //! - **inputs** (`task_input`): one row per `input` entry, keeping its row id.
-//! - **transitions and plans**: the ledger itself, mirrored into the
-//!   `task_ledger_entry` outbox as published rows with the file's exact bytes,
-//!   so a server started on the rebuilt database continues the sequence
-//!   instead of colliding with files already on disk.
-//! - **stage budgets** (`task_stage_budget`): replayed from the budget each
-//!   routed result records, reset by a person's send-back (an operator exit
-//!   other than `advance`).
+//! - **the ledger** (`task_ledger_entry`): the files' exact bytes as published
+//!   rows, so a server started on the rebuilt database continues each
+//!   sequence.
+//!
+//! A `task.json` written before `state` existed (or by a peer that does not
+//! write it) is projected as the first increment did: one stage run per run
+//! that recorded a result (the newest wins; an engine-observed ending only
+//! when the run recorded nothing else), T2's session identity from
+//! `session_ref`, and budgets replayed from routed results and reset by a
+//! person's send-back.
+//!
+//! **The ledger is newer than a stale `task.json`.** A crash between
+//! publishing an entry and rewriting `task.json` leaves `state` behind the
+//! ledger; the entries after `state.reflects_through` (the highest ledger
+//! sequence the rows already reflect, read with them; a reservation below
+//! it that was still unfilled counts as not reflected) are applied on top
+//! of its rows (a verdict or engine-observed ending closes its run, a routed
+//! result spends its budget, a send-back resets it).
+//!
+//! **Owed work is never re-done.** Rows are restored; nothing is executed.
+//! An owed transition (`task_ledger_continuation`) from a stale `task.json`
+//! is dropped only when a newer entry paid or replaced it — a transition, or
+//! a verdict under another operation — since restoring it would run that
+//! transition twice; after unrelated newer entries it stays owed.
 //!
 //! Unknown facts stay unknown: a column the disk does not carry is left NULL
-//! or at its schema default; where the schema requires a value the ledger
-//! only approximates (a run's start time), the approximation is named in
-//! [`NOT_REBUILT`] and never compared as if it were the fact.
+//! or at its schema default, never guessed.
 
 use super::{parse_ledger_file, LedgerFile};
+use crate::db::task_state::{
+    json_to_sql, CarriedTable, CARRIED_TABLES, DISK_STATE_VERSION, REMOVED_KEY, REPO_COLUMNS,
+};
 use crate::db::task_store::LedgerEntryKind;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -42,126 +64,83 @@ use std::path::{Path, PathBuf};
 /// understands. Anything else is refused, never guessed at.
 pub const SUPPORTED_SCHEMA_VERSIONS: &[u64] = &[1];
 
-/// One class of fact the projector does not rebuild from disk yet.
+/// Why a rebuilt database lacks a fact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NotRebuilt {
-    /// The fact class, as the round-trip comparison names it.
-    pub fact: &'static str,
-    /// Why, and where its disk authority will come from.
-    pub reason: &'static str,
-    /// `false` for a required column the projector fills with a documented
-    /// approximation: comparing it would only measure clock timing.
-    pub compared: bool,
+pub enum Gap {
+    /// Statistics: a rebuilt database starts them empty.
+    Statistics,
+    /// Live-session or in-flight state, re-derived at runtime.
+    Transient,
+    /// Durable, but not rebuildable; the reason says why.
+    Unrecoverable,
 }
 
-/// Facts a rebuild from task directories cannot yet restore — the input to
-/// later T13 increments. The fixture round trip asserts that exactly the
-/// compared ones differ.
+/// One class of fact a rebuild from task directories does not restore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotRebuilt {
+    pub fact: &'static str,
+    pub gap: Gap,
+    pub reason: &'static str,
+}
+
+/// What a rebuilt database lacks, by design. Everything else a task's
+/// database rows hold is rebuilt exactly; the fixture round trip compares
+/// it all and asserts no difference.
 pub const NOT_REBUILT: &[NotRebuilt] = &[
     NotRebuilt {
-        fact: "repo.registration",
-        reason: "repository path, name, default branch and remote live only in SQL (their authority will be the repo directory / local config); the rebuild writes a placeholder row (empty path, name = repo id, schema defaults) only so tasks satisfy the schema's foreign key",
-        compared: true,
+        fact: "statistics",
+        gap: Gap::Statistics,
+        reason: "activity_log, task_activity_interval, operator_event, provider_token_usage, provider_usage_scan, provider_usage_discovery, task_revision, task_pull_request",
     },
     NotRebuilt {
-        fact: "task.agent_type",
-        reason: "task-level agent defaults are not in task.json",
-        compared: true,
+        fact: "task.live_state",
+        gap: Gap::Transient,
+        reason: "the task row's live columns (activity, runtime status, read state, output preview, unsent drafts, port lease, live session mirror, event debounce baselines, teardown-in-progress marker): re-derived from the sessions",
     },
     NotRebuilt {
-        fact: "task.agent_provider",
-        reason: "task-level provider default is not in task.json",
-        compared: true,
+        fact: "session.transport",
+        gap: Gap::Transient,
+        reason: "terminal_session, task_port, copilot_wake_*, claude_channel_*: a live session's bindings",
     },
     NotRebuilt {
-        fact: "task.initial_pipeline",
-        reason: "the workflow the task was created with is not in task.json; only later plan entries name a from_workflow",
-        compared: true,
+        fact: "transfer.work_queue",
+        gap: Gap::Transient,
+        reason: "transfer_work, transfer_work_phase: the transfer engine's in-flight queue, re-derived from task_transfer by restart recovery",
     },
     NotRebuilt {
-        fact: "task.revision_rounds",
-        reason: "legacy revision round counter: legacy revision entries record no round number",
-        compared: true,
+        fact: "events.feed",
+        gap: Gap::Transient,
+        reason: "task_event and task_event_cursor_handle: an announcement feed pruned after 14 days; the ledger is the record",
     },
     NotRebuilt {
-        fact: "task.attention_requested",
-        reason: "attention badge is SQL-only",
-        compared: true,
+        fact: "subscription.position",
+        gap: Gap::Unrecoverable,
+        reason: "event_subscription and task_serviced_watermark hold task_event sequence numbers, and a rebuilt database restarts that feed empty: a restored position would skip or replay events, so subscribers subscribe again",
     },
     NotRebuilt {
-        fact: "task.pinned",
-        reason: "sidebar pin is SQL-only (a local preference)",
-        compared: true,
+        fact: "run.terminal_capture",
+        gap: Gap::Unrecoverable,
+        reason: "agent_terminal_attempt holds a run's final terminal frame, a capture of session output rather than task state; the run keeps its transcript reference",
     },
     NotRebuilt {
-        fact: "task.worktree",
-        reason: "the task's worktree row (path, branch, setup state) is not in the ledger",
-        compared: true,
+        fact: "transfer.claim_token",
+        gap: Gap::Unrecoverable,
+        reason: "an incoming transfer's claim token is a capability and never leaves the database, and its 30-second lease expiry means nothing after a restart; restart recovery re-claims a claimed transfer under a new token",
     },
     NotRebuilt {
-        fact: "task.stage_workspace",
-        reason: "T2's stage_workspace rows (directory path per stage) are not in the ledger; session_ref names only the workspace id",
-        compared: true,
+        fact: "machine.pairing_and_preferences",
+        gap: Gap::Unrecoverable,
+        reason: "trusted_peer and settings belong to the machine (its pairing store and local config), not to any task directory",
     },
     NotRebuilt {
-        fact: "task.branch_counter",
-        reason: "T2's task_branch_counter is not in the ledger; T2 re-seeds it above repository refs and every branch the task's records name, so only numbers spent by attempts that left no branch, directory or record can be reissued",
-        compared: true,
+        fact: "publication_window",
+        gap: Gap::Unrecoverable,
+        reason: "a change committed in SQL but not yet written to disk when the database is lost (the publisher writes within seconds, and at every startup)",
     },
     NotRebuilt {
-        fact: "run.exists",
-        reason: "a stage run with no result entry (running, or ended without a verdict: session exit, spawn failure, teardown) writes nothing to the ledger",
-        compared: true,
-    },
-    NotRebuilt {
-        fact: "run.session",
-        reason: "agent, provider, model, effort, provider session id, cwd, resume/replace links, entry trigger and channel, and T2's workspace_report: not in any ledger entry (T2's session_ref restores workspace id, session branch, name and transcript)",
-        compared: true,
-    },
-    NotRebuilt {
-        fact: "run.completion",
-        reason: "completion_transition and completion_bound are engine bookkeeping on the run, not in result entries",
-        compared: true,
-    },
-    NotRebuilt {
-        fact: "run.resolved_prompt",
-        reason: "the prompt a session was started with (stage_run_prompt) is not in the ledger",
-        compared: true,
-    },
-    NotRebuilt {
-        fact: "run.summary",
-        reason: "a revision request's ledger message joins its summary and findings; complete-stage summaries rebuild exactly",
-        compared: true,
-    },
-    NotRebuilt {
-        fact: "run.feedback",
-        reason: "a revision request's findings are only inside the joined ledger message; complete-stage feedback rebuilds exactly",
-        compared: true,
-    },
-    NotRebuilt {
-        fact: "run.result_declared_role",
-        reason: "a backfilled (historical) result records no declared role, by T0's rule that history is never attributed after the fact; live results rebuild exactly",
-        compared: true,
-    },
-    NotRebuilt {
-        fact: "run.result_channel",
-        reason: "a backfilled (historical) result records the channel as unknown, by the same rule; live results rebuild exactly",
-        compared: true,
-    },
-    NotRebuilt {
-        fact: "input.run_id",
-        reason: "an input to a run that recorded no result names a run the rebuild cannot create, and the schema's foreign key forbids a dangling reference: projected as NULL",
-        compared: true,
-    },
-    NotRebuilt {
-        fact: "run.started_at",
-        reason: "a run's start is not recorded; projected as its first ledger mention",
-        compared: false,
-    },
-    NotRebuilt {
-        fact: "run.finished_at",
-        reason: "projected as its newest result's recorded_at, which is written in the same transaction but not the same clock read",
-        compared: false,
+        fact: "history.never_captured",
+        gap: Gap::Unrecoverable,
+        reason: "facts no record ever held stay unknown: backfilled history's branch, commit, triggering result and channel; which numbers a branch-counter reservation spent without leaving a branch, directory or record",
     },
 ];
 
@@ -187,6 +166,15 @@ pub struct TaskSnapshot {
     pub closed_at: Option<String>,
     pub snapshot_revision: i64,
     pub published_through: i64,
+    /// `state.tables` (T13): the task's rows of each carried table. `None`
+    /// for a `task.json` written before `state` existed.
+    pub state: Option<Map<String, Value>>,
+    /// `state.reflects_through` (T13): the highest ledger sequence whose
+    /// effects the `state` rows already hold, and the reserved sequences
+    /// below it they do not. `None` for a `state` written before the field
+    /// existed; the rebuild then falls back to `published_through`.
+    pub state_reflects_through: Option<i64>,
+    pub state_unreflected: Vec<i64>,
 }
 
 /// One published ledger file and its exact bytes.
@@ -245,7 +233,21 @@ pub fn parse_task_snapshot(bytes: &[u8]) -> Result<TaskSnapshot, String> {
             .collect::<Result<_, _>>()?,
         Some(_) => return Err("task.json links.dependencies is not a list".into()),
     };
+    let state = match value.get("state") {
+        None | Some(Value::Null) => None,
+        Some(state) => Some(parse_state(state)?),
+    };
+    let state_value = value.get("state").cloned().unwrap_or(Value::Null);
+    let state_reflects_through = state_value.get("reflects_through").and_then(Value::as_i64);
+    let state_unreflected = state_value
+        .get("unreflected_reservations")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_i64).collect())
+        .unwrap_or_default();
     Ok(TaskSnapshot {
+        state,
+        state_reflects_through,
+        state_unreflected,
         schema_version,
         task_id: required("task_id")?,
         repo_id: required("repo_id")?,
@@ -273,6 +275,63 @@ pub fn parse_task_snapshot(bytes: &[u8]) -> Result<TaskSnapshot, String> {
             .and_then(Value::as_i64)
             .unwrap_or(0),
     })
+}
+
+/// `task.json`'s `state`: a known version, and each table a list of rows
+/// (objects). Tables this reader does not carry are refused rather than
+/// dropped: a newer writer's state is not half-read.
+fn parse_state(state: &Value) -> Result<Map<String, Value>, String> {
+    let version = state.get("version").and_then(Value::as_u64);
+    if version != Some(DISK_STATE_VERSION) {
+        return Err(format!(
+            "task.json state has version {version:?}; this reader understands {DISK_STATE_VERSION}"
+        ));
+    }
+    let tables = match state.get("tables") {
+        Some(Value::Object(tables)) => tables.clone(),
+        _ => return Err("task.json state has no tables".into()),
+    };
+    for (table, rows) in &tables {
+        let Some(carried) = carried_table(table) else {
+            return Err(format!("task.json state carries unknown table {table}"));
+        };
+        let Some(rows) = rows.as_array() else {
+            return Err(format!("task.json state.{table} is not a list"));
+        };
+        for row in rows {
+            let Some(row) = row.as_object() else {
+                return Err(format!("task.json state.{table} holds a non-object"));
+            };
+            if !row.get("rowid").is_some_and(Value::is_i64) {
+                return Err(format!("task.json state.{table} row has no rowid"));
+            }
+            if let Some(column) = row
+                .keys()
+                .find(|column| *column != "rowid" && !carried.columns.contains(&column.as_str()))
+            {
+                return Err(format!(
+                    "task.json state.{table} has unknown column {column}"
+                ));
+            }
+            for (column, value) in row {
+                json_to_sql(value)
+                    .map_err(|error| format!("task.json state.{table}.{column}: {error}"))?;
+            }
+        }
+    }
+    Ok(tables)
+}
+
+fn carried_table(name: &str) -> Option<&'static CarriedTable> {
+    CARRIED_TABLES.iter().find(|table| table.table == name)
+}
+
+/// Is this `task.json`/`repo.json` a tombstone for a removed record?
+fn is_tombstone(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(bytes)
+        .ok()
+        .and_then(|value| value.get(REMOVED_KEY).and_then(Value::as_bool))
+        == Some(true)
 }
 
 /// Read one task directory. Every entry's envelope must agree with its file
@@ -365,10 +424,73 @@ fn validate_entry(file: &LedgerFile, task_id: &str) -> Result<(), String> {
 /// A task directory that could not be read, and why.
 pub type Unreadable = (PathBuf, String);
 
+/// `repos/<repo-id>/repo.json`, as the reader understands it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RepoRecord {
+    pub repo_id: String,
+    /// The registration row, column by column ([`REPO_COLUMNS`]).
+    pub registration: Map<String, Value>,
+    pub sidebar_order: Option<i64>,
+    pub snapshot_revision: i64,
+}
+
+pub fn parse_repo_record(bytes: &[u8]) -> Result<RepoRecord, String> {
+    let value: Value =
+        serde_json::from_slice(bytes).map_err(|error| format!("repo.json: {error}"))?;
+    version_of(&value, "repo.json")?;
+    let repo_id = text(&value, "repo_id").ok_or("repo.json has no repo_id")?;
+    let registration = value
+        .get("registration")
+        .and_then(Value::as_object)
+        .cloned()
+        .ok_or("repo.json has no registration")?;
+    if registration.get("id").and_then(Value::as_str) != Some(repo_id.as_str()) {
+        return Err("repo.json registration names another repository".into());
+    }
+    if let Some(column) = registration
+        .keys()
+        .find(|column| !REPO_COLUMNS.contains(&column.as_str()))
+    {
+        return Err(format!(
+            "repo.json registration has unknown column {column}"
+        ));
+    }
+    for (column, value) in &registration {
+        json_to_sql(value).map_err(|error| format!("repo.json {column}: {error}"))?;
+    }
+    Ok(RepoRecord {
+        repo_id,
+        registration,
+        sidebar_order: value.get("sidebar_order").and_then(Value::as_i64),
+        snapshot_revision: value
+            .get("snapshot_revision")
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
+    })
+}
+
+/// Everything a store root holds, read.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StoreScan {
+    pub tasks: Vec<TaskDirectory>,
+    pub repos: Vec<RepoRecord>,
+    /// Directories or `repo.json` files that could not be read, and why.
+    pub unreadable: Vec<Unreadable>,
+    /// Tombstoned tasks and repositories: removed from their database,
+    /// never rebuilt.
+    pub removed: Vec<PathBuf>,
+}
+
 /// Every task directory under a store root, ordered by repo then task id.
 /// Directories that cannot be read are returned separately rather than
 /// dropped silently.
 pub fn scan_store(root: &Path) -> Result<(Vec<TaskDirectory>, Vec<Unreadable>), String> {
+    let scan = scan_store_records(root)?;
+    Ok((scan.tasks, scan.unreadable))
+}
+
+/// [`scan_store`], with repository records and tombstones.
+pub fn scan_store_records(root: &Path) -> Result<StoreScan, String> {
     let sorted_dirs = |dir: &Path| -> Result<Vec<PathBuf>, String> {
         let mut dirs = match std::fs::read_dir(dir) {
             Ok(listing) => listing
@@ -387,17 +509,44 @@ pub fn scan_store(root: &Path) -> Result<(Vec<TaskDirectory>, Vec<Unreadable>), 
         dirs.sort();
         Ok(dirs)
     };
-    let mut read = Vec::new();
-    let mut unreadable = Vec::new();
+    let mut scan = StoreScan::default();
     for repo in sorted_dirs(&root.join("repos"))? {
+        let record_path = repo.join("repo.json");
+        match std::fs::read(&record_path) {
+            Ok(bytes) if is_tombstone(&bytes) => {
+                scan.removed.push(record_path);
+                continue;
+            }
+            Ok(bytes) => match parse_repo_record(&bytes) {
+                Ok(record)
+                    if repo
+                        .file_name()
+                        .map(|name| name.to_string_lossy().to_string())
+                        == Some(record.repo_id.clone()) =>
+                {
+                    scan.repos.push(record)
+                }
+                Ok(record) => scan.unreadable.push((
+                    record_path,
+                    format!("repo.json names repository {}", record.repo_id),
+                )),
+                Err(error) => scan.unreadable.push((record_path, error)),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => scan.unreadable.push((record_path, error.to_string())),
+        }
         for task in sorted_dirs(&repo.join("tasks"))? {
+            if std::fs::read(task.join("task.json")).is_ok_and(|bytes| is_tombstone(&bytes)) {
+                scan.removed.push(task);
+                continue;
+            }
             match read_task_directory(&task) {
-                Ok(directory) => read.push(directory),
-                Err(error) => unreadable.push((task, error)),
+                Ok(directory) => scan.tasks.push(directory),
+                Err(error) => scan.unreadable.push((task, error)),
             }
         }
     }
-    Ok((read, unreadable))
+    Ok(scan)
 }
 
 // ---------------------------------------------------------------------------
@@ -421,6 +570,9 @@ pub struct TaskRow {
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
     pub closed_at: Option<String>,
+    /// The task's row comes from `state` ([`Projection::carried`]); this
+    /// one only names it.
+    pub from_state: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -430,8 +582,10 @@ pub struct StageRunRow {
     pub stage: String,
     pub kind: String,
     pub status: String,
-    pub result: String,
+    /// `None` for a run known only by an engine-observed ending.
+    pub result: Option<String>,
     pub feedback: Option<String>,
+    pub no_work_termination: Option<String>,
     pub started_at: String,
     pub finished_at: String,
     pub result_declared_role: Option<String>,
@@ -520,13 +674,28 @@ pub struct TaskLedgerMarker {
     pub marked_at: String,
 }
 
+/// One row of a carried table, from a task's `state`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CarriedRow {
+    pub table: &'static str,
+    pub task_id: String,
+    /// Column → value, `rowid` included (absent only for a row the
+    /// projection itself added).
+    pub row: Map<String, Value>,
+}
+
 /// Everything one rebuild writes, in a stable order.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Projection {
-    /// Repository ids the tasks belong to. Only ids: the registration is not
-    /// on disk (see [`NOT_REBUILT`]).
+    /// Repository ids the tasks belong to.
     pub repos: Vec<String>,
+    /// Registrations from `repo.json`, by repo id. A repository in `repos`
+    /// with none gets a placeholder row.
+    pub repo_records: Vec<RepoRecord>,
     pub tasks: Vec<TaskRow>,
+    /// Rows of the carried tables, in [`CARRIED_TABLES`] order, then task,
+    /// then rowid.
+    pub carried: Vec<CarriedRow>,
     pub blockers: Vec<(String, String)>,
     pub stage_runs: Vec<StageRunRow>,
     pub inputs: Vec<InputRow>,
@@ -597,6 +766,99 @@ fn stage_result_column(file: &LedgerFile, message: &str) -> String {
     result.to_string()
 }
 
+/// The stage run a verdict result entry stands for.
+fn verdict_run_row(task_id: &str, run_id: &str, file: &LedgerFile) -> StageRunRow {
+    let envelope = &file.envelope;
+    let body = file.body();
+    let message = file.message.as_deref().unwrap_or("");
+    let status = text(body, "status").unwrap_or_else(|| "unknown".into());
+    // A revision request records its summary and findings apart (T13);
+    // older entries only joined them in the message.
+    let request = body.get("request").cloned().unwrap_or(Value::Null);
+    let revision = (text(&request, "kind").as_deref() == Some("revision_request"))
+        .then(|| (text(&request, "summary"), text(&request, "findings")));
+    let (summary, feedback) = match revision {
+        Some((Some(summary), Some(findings))) => (summary, findings),
+        _ => (message.to_string(), message.to_string()),
+    };
+    StageRunRow {
+        id: run_id.to_string(),
+        task_id: task_id.to_string(),
+        stage: text(body, "stage").unwrap_or_default(),
+        kind: text(body, "run_kind").unwrap_or_else(|| "main".into()),
+        status: if status == "success" {
+            "succeeded".into()
+        } else {
+            "failed".into()
+        },
+        result: Some(stage_result_column(file, &summary)),
+        feedback: Some(feedback),
+        no_work_termination: None,
+        started_at: String::new(),
+        finished_at: iso_to_sqlite_time(&recorded_at(file)),
+        result_declared_role: text(envelope, "declared_role"),
+        result_channel_identity: json_column(envelope.get("channel_identity")),
+        workspace_id: None,
+        session_branch: None,
+        session_name: None,
+        transcript_ref: None,
+    }
+}
+
+/// The stage run an engine-observed ending stands for, when nothing else
+/// records it.
+fn ending_run_row(task_id: &str, run_id: &str, file: &LedgerFile) -> StageRunRow {
+    let body = file.body();
+    let ending = body.get("ending").cloned().unwrap_or(Value::Null);
+    StageRunRow {
+        id: run_id.to_string(),
+        task_id: task_id.to_string(),
+        stage: text(body, "stage").unwrap_or_default(),
+        kind: text(body, "run_kind").unwrap_or_else(|| "main".into()),
+        status: text(&ending, "run_status").unwrap_or_else(|| "failed".into()),
+        result: None,
+        feedback: None,
+        no_work_termination: text(&ending, "no_work_termination"),
+        started_at: String::new(),
+        finished_at: iso_to_sqlite_time(&recorded_at(file)),
+        result_declared_role: None,
+        result_channel_identity: None,
+        workspace_id: None,
+        session_branch: None,
+        session_name: None,
+        transcript_ref: None,
+    }
+}
+
+/// The destination budget a routed result spent (T1), and whether the claim
+/// was exhausted.
+fn budget_claim(task_id: &str, file: &LedgerFile) -> Option<(BudgetRow, bool)> {
+    let budget = file
+        .body()
+        .get("budget")
+        .filter(|budget| budget.is_object())?;
+    Some((
+        BudgetRow {
+            task_id: task_id.to_string(),
+            stage: text(budget, "stage")?,
+            spent: budget.get("spent").and_then(Value::as_i64)?,
+            updated_at: iso_to_sqlite_time(&recorded_at(file)),
+        },
+        budget.get("exhausted").and_then(Value::as_bool) == Some(true),
+    ))
+}
+
+/// The stage a person's send-back gives a fresh budget: an operator exit
+/// other than `advance` (operating a gate does not reset it).
+fn send_back_stage(file: &LedgerFile) -> Option<String> {
+    let body = file.body();
+    (file.kind == LedgerEntryKind::Transition
+        && text(body, "exit_source").as_deref() == Some("operator")
+        && text(body, "exit").as_deref() != Some("advance"))
+    .then(|| text(body, "to_stage"))
+    .flatten()
+}
+
 fn project_task(directory: &TaskDirectory, projection: &mut Projection) {
     let snapshot = &directory.snapshot;
     let task_id = snapshot.task_id.as_str();
@@ -616,6 +878,7 @@ fn project_task(directory: &TaskDirectory, projection: &mut Projection) {
         created_at: snapshot.created_at.clone(),
         updated_at: snapshot.updated_at.clone(),
         closed_at: snapshot.closed_at.clone(),
+        from_state: false,
     });
     let mut dependencies = snapshot.dependencies.clone();
     dependencies.sort();
@@ -651,6 +914,20 @@ fn project_task(directory: &TaskDirectory, projection: &mut Projection) {
         if envelope.get("historical").and_then(Value::as_bool) == Some(true) {
             historical += 1;
         }
+        // Every entry is mirrored into the outbox, whatever else it projects.
+        let source = envelope.get("source").cloned().unwrap_or(Value::Null);
+        projection.ledger.push(LedgerRow {
+            task_id: task_id.to_string(),
+            sequence: file.sequence,
+            entry_id: file.entry_id().unwrap_or_default().to_string(),
+            kind: file.kind.as_str().to_string(),
+            operation_id: text(envelope, "operation_id"),
+            source_kind: text(&source, "kind"),
+            source_id: text(&source, "id"),
+            file_name: file.file_name.clone(),
+            payload: bytes.clone(),
+            recorded_at: at.clone(),
+        });
         let body = file.body();
         let message = file.message.as_deref().unwrap_or("");
         match file.kind {
@@ -671,49 +948,20 @@ fn project_task(directory: &TaskDirectory, projection: &mut Projection) {
                     ));
                     continue;
                 };
-                let status = text(body, "status").unwrap_or_else(|| "unknown".into());
-                runs.insert(
-                    run_id.clone(),
-                    StageRunRow {
-                        id: run_id.clone(),
-                        task_id: task_id.to_string(),
-                        stage: text(body, "stage").unwrap_or_default(),
-                        kind: text(body, "run_kind").unwrap_or_else(|| "main".into()),
-                        status: if status == "success" {
-                            "succeeded".into()
-                        } else {
-                            "failed".into()
-                        },
-                        result: stage_result_column(file, message),
-                        feedback: Some(message.to_string()),
-                        started_at: String::new(),
-                        finished_at: iso_to_sqlite_time(&at),
-                        result_declared_role: text(envelope, "declared_role"),
-                        result_channel_identity: json_column(envelope.get("channel_identity")),
-                        workspace_id: None,
-                        session_branch: None,
-                        session_name: None,
-                        transcript_ref: None,
-                    },
-                );
-                if let Some(budget) = body.get("budget").filter(|budget| budget.is_object()) {
-                    let stage = text(budget, "stage");
-                    let spent = budget.get("spent").and_then(Value::as_i64);
-                    let exhausted = budget.get("exhausted").and_then(Value::as_bool) == Some(true);
-                    if let (Some(stage), Some(spent)) = (stage, spent) {
-                        // An exhausted claim changes nothing in SQL; it only
-                        // proves the destination's spend if nothing else did.
-                        if !exhausted || !budgets.contains_key(&stage) {
-                            budgets.insert(
-                                stage.clone(),
-                                BudgetRow {
-                                    task_id: task_id.to_string(),
-                                    stage,
-                                    spent,
-                                    updated_at: iso_to_sqlite_time(&at),
-                                },
-                            );
-                        }
+                // An ending the engine observed (T13) is not a verdict: it
+                // stands for the run only when nothing else does.
+                if crate::db::task_store::is_engine_observed_result(body) {
+                    if !runs.contains_key(&run_id) {
+                        runs.insert(run_id.clone(), ending_run_row(task_id, &run_id, file));
+                    }
+                    continue;
+                }
+                runs.insert(run_id.clone(), verdict_run_row(task_id, &run_id, file));
+                if let Some(budget) = budget_claim(task_id, file) {
+                    // An exhausted claim changes nothing in SQL; it only
+                    // proves the destination's spend if nothing else did.
+                    if !budget.1 || !budgets.contains_key(&budget.0.stage) {
+                        budgets.insert(budget.0.stage.clone(), budget.0);
                     }
                 }
             }
@@ -754,12 +1002,8 @@ fn project_task(directory: &TaskDirectory, projection: &mut Projection) {
             }
             LedgerEntryKind::Transition => {
                 let to_stage = text(body, "to_stage");
-                // A person sending the task back gives it a fresh budget
-                // there; operating a gate (`advance`) does not.
-                let send_back = text(body, "exit_source").as_deref() == Some("operator")
-                    && text(body, "exit").as_deref() != Some("advance");
-                if let (true, Some(stage)) = (send_back, &to_stage) {
-                    budgets.remove(stage);
+                if let Some(stage) = send_back_stage(file) {
+                    budgets.remove(&stage);
                 }
                 last_transition_to = Some(to_stage);
             }
@@ -767,19 +1011,6 @@ fn project_task(directory: &TaskDirectory, projection: &mut Projection) {
                 last_plan_after = body.get("after").cloned();
             }
         }
-        let source = envelope.get("source").cloned().unwrap_or(Value::Null);
-        projection.ledger.push(LedgerRow {
-            task_id: task_id.to_string(),
-            sequence: file.sequence,
-            entry_id: file.entry_id().unwrap_or_default().to_string(),
-            kind: file.kind.as_str().to_string(),
-            operation_id: text(envelope, "operation_id"),
-            source_kind: text(&source, "kind"),
-            source_id: text(&source, "id"),
-            file_name: file.file_name.clone(),
-            payload: bytes.clone(),
-            recorded_at: at,
-        });
     }
     for (run_id, row) in runs.iter_mut() {
         row.started_at = first_mention.get(run_id).cloned().unwrap_or_default();
@@ -790,8 +1021,15 @@ fn project_task(directory: &TaskDirectory, projection: &mut Projection) {
             row.transcript_ref = identity.transcript_ref;
         }
     }
+    let state_runs: BTreeSet<String> = snapshot
+        .state
+        .as_ref()
+        .and_then(|tables| tables.get("stage_run"))
+        .and_then(Value::as_array)
+        .map(|rows| rows.iter().filter_map(|row| text(row, "id")).collect())
+        .unwrap_or_default();
     for (run_id, file_name) in referenced_runs {
-        if !runs.contains_key(&run_id) {
+        if !runs.contains_key(&run_id) && !state_runs.contains(&run_id) {
             projection.diagnostics.push(format!(
                 "{task_id}: run {run_id} is named by {file_name} but recorded no result; not projected, and the input's reference to it is dropped"
             ));
@@ -820,8 +1058,22 @@ fn project_task(directory: &TaskDirectory, projection: &mut Projection) {
             ));
         }
     }
-    projection.stage_runs.extend(runs.into_values());
-    projection.budgets.extend(budgets.into_values());
+    match &snapshot.state {
+        // The rows themselves: runs, budgets and everything else.
+        Some(tables) => project_state(directory, tables, projection),
+        // A task.json from before `state`: what the ledger alone says.
+        None => {
+            projection.stage_runs.extend(runs.into_values());
+            projection.budgets.extend(budgets.into_values());
+            let mut carried = Vec::new();
+            let highest = directory
+                .entries
+                .last()
+                .map_or(0, |entry| entry.file.sequence);
+            raise_sequence_high_water(task_id, highest, &mut carried);
+            projection.carried.extend(carried);
+        }
+    }
     projection.markers.push(TaskLedgerMarker {
         task_id: task_id.to_string(),
         snapshot_revision: snapshot.snapshot_revision.max(1),
@@ -830,9 +1082,338 @@ fn project_task(directory: &TaskDirectory, projection: &mut Projection) {
     });
 }
 
+/// The number `n` of a `task-<task-id>-<n>` branch of this task.
+fn branch_suffix(task_id: &str, branch: &str) -> Option<i64> {
+    branch
+        .strip_prefix(&format!("task-{task_id}-"))
+        .filter(|suffix| !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|suffix| suffix.parse().ok())
+}
+
+/// Raise the task's ledger sequence high-water mark to `highest`, adding
+/// the row when `task.json` carried none.
+fn raise_sequence_high_water(task_id: &str, highest: i64, carried: &mut Vec<CarriedRow>) {
+    let existing = carried
+        .iter_mut()
+        .find(|row| row.table == "task_ledger_sequence");
+    match existing {
+        Some(row) => {
+            let high_water = row
+                .row
+                .get("high_water")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            row.row
+                .insert("high_water".into(), json!(high_water.max(highest)));
+        }
+        None if highest > 0 => {
+            let mut row = Map::new();
+            row.insert("task_id".into(), json!(task_id));
+            row.insert("high_water".into(), json!(highest));
+            carried.push(CarriedRow {
+                table: "task_ledger_sequence",
+                task_id: task_id.to_string(),
+                row,
+            });
+        }
+        None => {}
+    }
+}
+
+/// A result entry that is a verdict recorded live on this machine: not an
+/// engine-observed ending, not history (backfilled or carried by a transfer,
+/// whose runs the rows already hold or never held).
+fn is_live_verdict(file: &LedgerFile) -> bool {
+    file.kind == LedgerEntryKind::Result
+        && file.envelope.get("historical").and_then(Value::as_bool) != Some(true)
+        && !crate::db::task_store::is_engine_observed_result(file.body())
+}
+
+/// An owed transition carried in `state` stays owed unless a ledger entry
+/// newer than `task.json` shows it was paid or replaced: a transition (the
+/// dispatch it owed, or any move that fences it stale), or a newer verdict
+/// under another operation (a corrected result replaces or clears it).
+/// Unrelated newer entries (inputs, engine-observed endings, plans) leave it
+/// owed; the continuation's own stage/generation fence still applies when
+/// it is dispatched.
+fn retain_unpaid_continuations(
+    task_id: &str,
+    newer: &[&LedgerFile],
+    carried: &mut Vec<CarriedRow>,
+    projection: &mut Projection,
+) {
+    carried.retain(|row| {
+        if row.table != "task_ledger_continuation" {
+            return true;
+        }
+        let operation = row.row.get("operation_id").and_then(Value::as_str);
+        let paid = newer.iter().find(|file| {
+            file.kind == LedgerEntryKind::Transition
+                || (is_live_verdict(file)
+                    && text(&file.envelope, "operation_id").as_deref() != operation)
+        });
+        match paid {
+            Some(file) => {
+                projection.diagnostics.push(format!(
+                    "{task_id}: owed transition {} is not restored: {} was recorded after task.json and paid or replaced it",
+                    operation.unwrap_or("?"),
+                    file.file_name
+                ));
+                false
+            }
+            None => {
+                if !newer.is_empty() {
+                    projection.diagnostics.push(format!(
+                        "{task_id}: owed transition {} is restored: no entry recorded after task.json paid or replaced it",
+                        operation.unwrap_or("?")
+                    ));
+                }
+                true
+            }
+        }
+    });
+}
+
+/// Ledger entries newer than `task.json` happened after its `state` was
+/// taken (a crash between publishing an entry and rewriting `task.json`).
+/// Their effects on runs and budgets are applied on top of the rows: a
+/// verdict or engine-observed ending closes its run, a routed result spends
+/// its budget, a send-back resets it. A run the rows do not hold yet is
+/// projected from the ledger alone.
+fn apply_newer_entries(
+    task_id: &str,
+    newer: &[&LedgerFile],
+    carried: &mut Vec<CarriedRow>,
+    projection: &mut Projection,
+) {
+    let mut ledger_runs: BTreeMap<String, StageRunRow> = BTreeMap::new();
+    let mut ledger_budgets: BTreeMap<String, BudgetRow> = BTreeMap::new();
+    for file in newer {
+        if file.kind == LedgerEntryKind::Transition {
+            if let Some(stage) = send_back_stage(file) {
+                carried.retain(|row| {
+                    !(row.table == "task_stage_budget"
+                        && row.row.get("stage").and_then(Value::as_str) == Some(stage.as_str()))
+                });
+                ledger_budgets.remove(&stage);
+            }
+            continue;
+        }
+        if file.kind != LedgerEntryKind::Result
+            || file.envelope.get("historical").and_then(Value::as_bool) == Some(true)
+        {
+            continue;
+        }
+        let Some(run_id) = text(&file.envelope, "run_id") else {
+            continue;
+        };
+        let ending = crate::db::task_store::is_engine_observed_result(file.body());
+        let row = if ending {
+            ending_run_row(task_id, &run_id, file)
+        } else {
+            verdict_run_row(task_id, &run_id, file)
+        };
+        let existing = carried.iter_mut().find(|carried| {
+            carried.table == "stage_run"
+                && carried.row.get("id").and_then(Value::as_str) == Some(run_id.as_str())
+        });
+        match existing {
+            Some(existing) => {
+                let columns = &mut existing.row;
+                columns.insert("status".into(), json!(row.status));
+                columns.insert("finished_at".into(), json!(row.finished_at));
+                columns.insert("no_work_termination".into(), json!(row.no_work_termination));
+                if !ending {
+                    columns.insert("result".into(), json!(row.result));
+                    columns.insert("feedback".into(), json!(row.feedback));
+                    columns.insert(
+                        "result_declared_role".into(),
+                        json!(row.result_declared_role),
+                    );
+                    columns.insert(
+                        "result_channel_identity".into(),
+                        json!(row.result_channel_identity),
+                    );
+                }
+            }
+            None if ending && ledger_runs.contains_key(&run_id) => {}
+            None => {
+                let mut row = row;
+                row.started_at = row.finished_at.clone();
+                if let Some(identity) = session_identity(&file.envelope) {
+                    row.workspace_id = identity.workspace_id;
+                    row.session_branch = identity.branch;
+                    row.session_name = identity.name;
+                    row.transcript_ref = identity.transcript_ref;
+                }
+                ledger_runs.insert(run_id.clone(), row);
+            }
+        }
+        if let Some((budget, exhausted)) = budget_claim(task_id, file) {
+            let carried_budget = carried.iter_mut().find(|carried| {
+                carried.table == "task_stage_budget"
+                    && carried.row.get("stage").and_then(Value::as_str)
+                        == Some(budget.stage.as_str())
+            });
+            match carried_budget {
+                // An exhausted claim changes nothing in SQL.
+                Some(_) if exhausted => {}
+                Some(existing) => {
+                    existing.row.insert("spent".into(), json!(budget.spent));
+                    existing
+                        .row
+                        .insert("updated_at".into(), json!(budget.updated_at));
+                }
+                None if exhausted && ledger_budgets.contains_key(&budget.stage) => {}
+                None => {
+                    ledger_budgets.insert(budget.stage.clone(), budget);
+                }
+            }
+        }
+    }
+    projection.stage_runs.extend(ledger_runs.into_values());
+    projection.budgets.extend(ledger_budgets.into_values());
+}
+
+/// A task's `state`, row for row. Three rules on top of copying:
+///
+/// - ledger entries newer than `task.json` are applied on top of its rows
+///   ([`apply_newer_entries`]);
+/// - an owed transition (`task_ledger_continuation`) is dropped only when a
+///   newer entry paid or replaced it ([`retain_unpaid_continuations`]);
+/// - the branch counter is raised to the highest `task-<id>-<n>` suffix any
+///   record of the task names, so a rebuilt counter never hands out a
+///   number already in use.
+fn project_state(
+    directory: &TaskDirectory,
+    tables: &Map<String, Value>,
+    projection: &mut Projection,
+) {
+    let snapshot = &directory.snapshot;
+    let task_id = snapshot.task_id.as_str();
+    let ledger_reaches = directory
+        .entries
+        .last()
+        .map_or(0, |entry| entry.file.sequence);
+    let mut named_suffix: Option<i64> = None;
+    let mut name = |branch: Option<&str>| {
+        if let Some(n) = branch.and_then(|branch| branch_suffix(task_id, branch)) {
+            named_suffix = Some(named_suffix.map_or(n, |current: i64| current.max(n)));
+        }
+    };
+    for (table, column) in [
+        ("pipeline_item", "branch"),
+        ("worktree", "branch"),
+        ("stage_workspace", "branch"),
+        ("stage_run", "session_branch"),
+    ] {
+        for row in tables
+            .get(table)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            name(row.get(column).and_then(Value::as_str));
+        }
+    }
+    for entry in &directory.entries {
+        name(entry.file.body().get("branch").and_then(Value::as_str));
+        name(
+            entry
+                .file
+                .envelope
+                .get("session_ref")
+                .and_then(|reference| reference.get("branch"))
+                .and_then(Value::as_str),
+        );
+    }
+    let mut carried = Vec::new();
+    for table in CARRIED_TABLES {
+        let Some(rows) = tables.get(table.table).and_then(Value::as_array) else {
+            continue;
+        };
+        for row in rows {
+            let Some(row) = row.as_object() else {
+                continue;
+            };
+            let mut row = row.clone();
+            if table.table == "task_branch_counter" {
+                let last = row.get("last_allocated").and_then(Value::as_i64);
+                if let (Some(last), Some(named)) = (last, named_suffix) {
+                    if named > last {
+                        projection.diagnostics.push(format!(
+                            "{task_id}: branch counter {last} is below the recorded branch suffix {named}; raised"
+                        ));
+                        row.insert("last_allocated".into(), json!(named));
+                    }
+                }
+            }
+            carried.push(CarriedRow {
+                table: table.table,
+                task_id: task_id.to_string(),
+                row,
+            });
+        }
+    }
+    // Entries whose effects the rows do not hold yet: above the boundary
+    // the rows were read at, or reserved below it and filled afterwards. A
+    // `state` from before `reflects_through` existed falls back to the
+    // publication watermark.
+    let boundary = snapshot
+        .state_reflects_through
+        .unwrap_or(snapshot.published_through);
+    let newer: Vec<&LedgerFile> = directory
+        .entries
+        .iter()
+        .map(|entry| &entry.file)
+        .filter(|file| {
+            file.sequence > boundary || snapshot.state_unreflected.contains(&file.sequence)
+        })
+        .collect();
+    if !newer.is_empty() {
+        projection.diagnostics.push(format!(
+            "{task_id}: task.json state reflects the ledger through sequence {boundary} and the ledger reaches {ledger_reaches}; the {} newer entries are applied on top of it",
+            newer.len()
+        ));
+    }
+    retain_unpaid_continuations(task_id, &newer, &mut carried, projection);
+    apply_newer_entries(task_id, &newer, &mut carried, projection);
+    // Sequences are never handed out twice: the rebuilt allocator starts
+    // above every sequence the directory records, reflects or reserved.
+    let highest = snapshot
+        .state_unreflected
+        .iter()
+        .copied()
+        .chain([ledger_reaches, boundary])
+        .max()
+        .unwrap_or(0);
+    raise_sequence_high_water(task_id, highest, &mut carried);
+    projection.carried.extend(carried);
+    if let Some(task) = projection
+        .tasks
+        .iter_mut()
+        .rev()
+        .find(|task| task.id == task_id)
+    {
+        task.from_state = tables
+            .get("pipeline_item")
+            .and_then(Value::as_array)
+            .is_some_and(|rows| !rows.is_empty());
+    }
+}
+
 /// Project task directories into rows. Pure and deterministic: the same
 /// directories in any order give the same projection.
 pub fn project(directories: &[TaskDirectory]) -> Projection {
+    project_records(directories, &[])
+}
+
+/// [`project`] over a whole scanned store, repository records included.
+pub fn project_store(scan: &StoreScan) -> Projection {
+    project_records(&scan.tasks, &scan.repos)
+}
+
+fn project_records(directories: &[TaskDirectory], repos: &[RepoRecord]) -> Projection {
     let mut ordered: Vec<&TaskDirectory> = directories.iter().collect();
     ordered.sort_by(|a, b| {
         (&a.snapshot.repo_id, &a.snapshot.task_id).cmp(&(&b.snapshot.repo_id, &b.snapshot.task_id))
@@ -841,13 +1422,44 @@ pub fn project(directories: &[TaskDirectory]) -> Projection {
     for directory in ordered {
         project_task(directory, &mut projection);
     }
+    let mut records: Vec<RepoRecord> = repos.to_vec();
+    records.sort_by(|a, b| a.repo_id.cmp(&b.repo_id));
+    records.dedup_by(|a, b| a.repo_id == b.repo_id);
     projection.repos = projection
         .tasks
         .iter()
         .map(|task| task.repo_id.clone())
+        .chain(records.iter().map(|record| record.repo_id.clone()))
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
+    for repo_id in &projection.repos {
+        if !records.iter().any(|record| &record.repo_id == repo_id) {
+            projection.diagnostics.push(format!(
+                "repo {repo_id}: no repo.json; its registration is a placeholder (empty path, name = id)"
+            ));
+        }
+    }
+    projection.repo_records = records;
+    // Every table's rows in their original insertion order, all tasks'
+    // task rows before anything that references one.
+    let table_index = |name: &str| {
+        CARRIED_TABLES
+            .iter()
+            .position(|table| table.table == name)
+            .unwrap_or(usize::MAX)
+    };
+    projection.carried.sort_by_key(|carried| {
+        (
+            table_index(carried.table),
+            carried
+                .row
+                .get("rowid")
+                .and_then(Value::as_i64)
+                .unwrap_or(i64::MAX),
+            carried.task_id.clone(),
+        )
+    });
     // The schema refuses references to rows that are not rebuilt; they are
     // reported rather than invented.
     let tasks: BTreeSet<String> = projection
@@ -855,12 +1467,46 @@ pub fn project(directories: &[TaskDirectory]) -> Projection {
         .iter()
         .map(|task| task.id.clone())
         .collect();
+    let carried_ids = |projection: &Projection, table: &str, column: &str| -> BTreeSet<String> {
+        projection
+            .carried
+            .iter()
+            .filter(|carried| carried.table == table)
+            .filter_map(|carried| text(&Value::Object(carried.row.clone()), column))
+            .collect()
+    };
     let runs: BTreeSet<String> = projection
         .stage_runs
         .iter()
         .map(|run| run.id.clone())
+        .chain(carried_ids(&projection, "stage_run", "id"))
         .collect();
+    let joins = carried_ids(&projection, "task_join", "id");
     let mut notes = Vec::new();
+    projection.carried.retain(|carried| {
+        let row = Value::Object(carried.row.clone());
+        let dangling = match carried.table {
+            "task_stage_edge" => text(&row, "upstream_task_id")
+                .filter(|upstream| !tasks.contains(upstream))
+                .map(|upstream| format!("upstream task {upstream}")),
+            "stage_run_prompt" | "workspace_setup_run" | "contextless_completion_attempt" => {
+                text(&row, "run_id")
+                    .filter(|run| !runs.contains(run))
+                    .map(|run| format!("run {run}"))
+            }
+            "task_join_member" => text(&row, "join_id")
+                .filter(|join| !joins.contains(join))
+                .map(|join| format!("join {join}")),
+            _ => None,
+        };
+        if let Some(missing) = &dangling {
+            notes.push(format!(
+                "{}: a {} row names {missing}, which is not rebuilt; not projected",
+                carried.task_id, carried.table
+            ));
+        }
+        dangling.is_none()
+    });
     projection.blockers.retain(|(blocked, blocker)| {
         let known = tasks.contains(blocker);
         if !known {
@@ -891,9 +1537,13 @@ pub struct RebuildReport {
     pub inputs: usize,
     pub blockers: usize,
     pub budgets: usize,
+    /// Rows of the carried tables written from `state`.
+    pub carried_rows: usize,
     /// Task directories that could not be read, and why. Their tasks are not
     /// in the rebuilt database.
     pub unreadable: Vec<Unreadable>,
+    /// Tombstones: tasks and repositories their database removed.
+    pub removed: Vec<PathBuf>,
     pub diagnostics: Vec<String>,
 }
 
@@ -907,8 +1557,8 @@ pub fn rebuild_into_new_database(root: &Path, target: &Path) -> Result<RebuildRe
             target.display()
         ));
     }
-    let (directories, unreadable) = scan_store(root)?;
-    let projection = project(&directories);
+    let scan = scan_store_records(root)?;
+    let projection = project_store(&scan);
     let target_path = target
         .to_str()
         .ok_or_else(|| format!("{} is not a UTF-8 path", target.display()))?;
@@ -922,14 +1572,23 @@ pub fn rebuild_into_new_database(root: &Path, target: &Path) -> Result<RebuildRe
     }
     db.apply_disk_projection(&projection)
         .map_err(|error| format!("write projection: {error}"))?;
+    let carried_count = |table: &str| {
+        projection
+            .carried
+            .iter()
+            .filter(|carried| carried.table == table)
+            .count()
+    };
     Ok(RebuildReport {
         tasks: projection.tasks.len(),
         ledger_entries: projection.ledger.len(),
-        stage_runs: projection.stage_runs.len(),
+        stage_runs: projection.stage_runs.len() + carried_count("stage_run"),
         inputs: projection.inputs.len(),
         blockers: projection.blockers.len(),
-        budgets: projection.budgets.len(),
-        unreadable,
+        budgets: projection.budgets.len() + carried_count("task_stage_budget"),
+        carried_rows: projection.carried.len(),
+        unreadable: scan.unreadable,
+        removed: scan.removed,
         diagnostics: projection.diagnostics,
     })
 }

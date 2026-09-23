@@ -6,9 +6,113 @@
 //! relies on a `datetime('now')` default, so applying the same projection
 //! again leaves the database byte-for-byte as it was.
 
+use super::task_state::json_to_sql;
 use super::Db;
-use crate::task_store::rebuild::Projection;
-use rusqlite::params;
+use crate::task_store::rebuild::{CarriedRow, Projection};
+use rusqlite::{params, OptionalExtension};
+use serde_json::{Map, Value};
+
+/// The primary-key columns of `table`, in key order; empty for a table
+/// without a declared primary key.
+fn primary_key(db: &Db, table: &str) -> Result<Vec<String>, rusqlite::Error> {
+    let mut statement = db
+        .conn
+        .prepare("SELECT name FROM pragma_table_info(?) WHERE pk > 0 ORDER BY pk")?;
+    let columns = statement.query_map([table], |row| row.get(0))?;
+    columns.collect()
+}
+
+/// Insert one row as carried, `rowid` included. A re-application finds the
+/// same row (same primary key) under its rowid and leaves it as it is; any
+/// other row under that rowid, or the same key under another rowid, is a
+/// collision and refuses the rebuild rather than dropping the carried row.
+fn insert_row(db: &Db, table: &str, row: &Map<String, Value>) -> Result<(), rusqlite::Error> {
+    let collision = |detail: String| {
+        rusqlite::Error::InvalidParameterName(format!("{table}: carried row collides: {detail}"))
+    };
+    let key: Vec<String> = primary_key(db, table)?
+        .into_iter()
+        .filter(|column| row.contains_key(column))
+        .collect();
+    let key_values = key
+        .iter()
+        .map(|column| {
+            json_to_sql(&row[column]).map_err(|error| {
+                rusqlite::Error::InvalidParameterName(format!("{table}.{column}: {error}"))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let key_where = key
+        .iter()
+        .map(|column| format!("\"{column}\" IS ?"))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let rowid = row.get("rowid").and_then(Value::as_i64);
+    if let Some(rowid) = rowid {
+        let occupant: Option<bool> = db
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT {} FROM \"{table}\" WHERE rowid = ?",
+                    if key.is_empty() {
+                        "1".to_string()
+                    } else {
+                        format!("({key_where})")
+                    }
+                ),
+                rusqlite::params_from_iter(
+                    key_values
+                        .iter()
+                        .cloned()
+                        .chain([rusqlite::types::Value::Integer(rowid)]),
+                ),
+                |row| row.get(0),
+            )
+            .optional()?;
+        match occupant {
+            Some(true) => return Ok(()),
+            Some(false) => return Err(collision(format!("rowid {rowid} holds another row"))),
+            None => {}
+        }
+    }
+    if !key.is_empty() {
+        let elsewhere: Option<i64> = db
+            .conn
+            .query_row(
+                &format!("SELECT rowid FROM \"{table}\" WHERE {key_where}"),
+                rusqlite::params_from_iter(key_values.iter().cloned()),
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(elsewhere) = elsewhere {
+            // A row the projection added (no carried rowid) is applied
+            // once; its key already present is a re-application.
+            if rowid.is_none() {
+                return Ok(());
+            }
+            return Err(collision(format!(
+                "its key is already held by rowid {elsewhere}"
+            )));
+        }
+    }
+    let mut columns = Vec::with_capacity(row.len());
+    let mut values = Vec::with_capacity(row.len());
+    for (column, value) in row {
+        columns.push(format!("\"{column}\""));
+        values.push(json_to_sql(value).map_err(|error| {
+            rusqlite::Error::InvalidParameterName(format!("{table}.{column}: {error}"))
+        })?);
+    }
+    let placeholders = vec!["?"; values.len()].join(", ");
+    db.conn.execute(
+        &format!(
+            "INSERT INTO \"{table}\" ({}) VALUES ({placeholders})",
+            columns.join(", ")
+        ),
+        rusqlite::params_from_iter(values),
+    )?;
+    Ok(())
+}
 
 impl Db {
     /// A database a rebuild may write into: no tasks, runs, inputs or
@@ -30,18 +134,70 @@ impl Db {
         projection: &Projection,
     ) -> Result<(), rusqlite::Error> {
         self.with_immediate_transaction(|db| {
-            // Placeholders that satisfy `pipeline_item.repo_id`'s foreign key:
-            // the registration itself is not on disk.
+            // Registrations from repo.json; a placeholder only satisfies
+            // `pipeline_item.repo_id`'s foreign key for a repository whose
+            // registration is not on disk.
             for repo_id in &projection.repos {
-                db.conn.execute(
-                    "INSERT OR IGNORE INTO repo (id, path, name, created_at, last_opened_at)
-                     VALUES (?1, '', ?1, '', '')",
-                    params![repo_id],
+                let record = projection
+                    .repo_records
+                    .iter()
+                    .find(|record| &record.repo_id == repo_id);
+                let present: bool = db.conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM repo WHERE id = ?)",
+                    [repo_id],
+                    |row| row.get(0),
                 )?;
+                match record {
+                    Some(_) if present => {}
+                    Some(record) => insert_row(db, "repo", &record.registration)?,
+                    None => {
+                        db.conn.execute(
+                            "INSERT OR IGNORE INTO repo (id, path, name, created_at, last_opened_at)
+                             VALUES (?1, '', ?1, '', '')",
+                            params![repo_id],
+                        )?;
+                    }
+                }
+                if let Some(record) = record {
+                    let hash = record
+                        .registration
+                        .get("remote_url_hash")
+                        .and_then(Value::as_str);
+                    if let (Some(hash), Some(order)) = (hash, record.sidebar_order) {
+                        db.conn.execute(
+                            "INSERT OR IGNORE INTO repo_sidebar_order (remote_url_hash, sort_order)
+                             VALUES (?, ?)",
+                            params![hash, order],
+                        )?;
+                    }
+                }
+                // Current as written: nothing is owed to publish.
+                let revision = record.map_or(1, |record| record.snapshot_revision.max(1));
+                db.conn.execute(
+                    "INSERT INTO repo_disk_snapshot (repo_id, revision, published_revision)
+                     VALUES (?1, ?2, ?2)
+                     ON CONFLICT(repo_id) DO UPDATE SET
+                        revision = excluded.revision,
+                        published_revision = excluded.published_revision,
+                        publish_error = NULL",
+                    params![repo_id, revision],
+                )?;
+            }
+            // Carried rows keep their rowids, so they go in before any row
+            // whose rowid SQLite allocates: first the carried task rows,
+            // then the tasks of task.json files without `state` (whose rows
+            // other tasks' carried edges may name), then everything else
+            // carried, table by table in foreign-key order.
+            let (carried_tasks, carried_rest): (Vec<&CarriedRow>, Vec<&CarriedRow>) = projection
+                .carried
+                .iter()
+                .partition(|carried| carried.table == "pipeline_item");
+            for CarriedRow { table, row, .. } in carried_tasks {
+                insert_row(db, table, row)?;
             }
             // Required columns the snapshot leaves empty take the schema's
             // own default, as an insert that omitted them would.
-            for task in &projection.tasks {
+            for task in projection.tasks.iter().filter(|task| !task.from_state) {
                 db.conn.execute(
                     "INSERT INTO pipeline_item
                         (id, repo_id, prompt, display_name, pipeline, pipeline_def, stage,
@@ -76,6 +232,9 @@ impl Db {
                     ],
                 )?;
             }
+            for CarriedRow { table, row, .. } in carried_rest {
+                insert_row(db, table, row)?;
+            }
             for (blocked, blocker) in &projection.blockers {
                 db.conn.execute(
                     "INSERT OR IGNORE INTO task_blocker (blocked_item_id, blocker_item_id)
@@ -88,12 +247,14 @@ impl Db {
                     "INSERT INTO stage_run
                         (id, task_id, stage, kind, status, result, feedback, started_at,
                          finished_at, result_declared_role, result_channel_identity,
-                         workspace_id, session_branch, session_name, transcript_ref)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         workspace_id, session_branch, session_name, transcript_ref,
+                         no_work_termination)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                      ON CONFLICT(id) DO UPDATE SET
                         task_id = excluded.task_id, stage = excluded.stage,
                         kind = excluded.kind, status = excluded.status,
                         result = excluded.result, feedback = excluded.feedback,
+                        no_work_termination = excluded.no_work_termination,
                         started_at = excluded.started_at, finished_at = excluded.finished_at,
                         result_declared_role = excluded.result_declared_role,
                         result_channel_identity = excluded.result_channel_identity,
@@ -117,6 +278,7 @@ impl Db {
                         run.session_branch,
                         run.session_name,
                         run.transcript_ref,
+                        run.no_work_termination,
                     ],
                 )?;
             }

@@ -656,25 +656,35 @@ impl Db {
                 },
             )
             .optional()?;
-        let rows_affected = self.conn.execute(
-            "UPDATE stage_run
-             SET status = ?, result = ?, feedback = ?, no_work_termination = ?,
-                 result_declared_role = ?, result_channel_identity = ?,
-                 finished_at = datetime('now')
-             WHERE id = ?",
-            params![
-                status,
-                result,
-                feedback,
-                no_work_termination,
-                result_provenance.map(|provenance| provenance.declared_role.as_str()),
-                result_provenance.map(|provenance| provenance.channel_identity.to_column()),
-                id,
-            ],
-        )?;
-        if rows_affected == 0 {
-            return Err(rusqlite::Error::QueryReturnedNoRows);
-        }
+        // A close that records no verdict is still a fact about the run: the
+        // engine records what it observed in the task's ledger, in the same
+        // transaction (T13).
+        let engine_observed = no_work_termination.is_some() || result.is_none();
+        self.in_immediate_transaction_if_needed(|db| {
+            let rows_affected = db.conn.execute(
+                "UPDATE stage_run
+                 SET status = ?, result = ?, feedback = ?, no_work_termination = ?,
+                     result_declared_role = ?, result_channel_identity = ?,
+                     finished_at = datetime('now')
+                 WHERE id = ?",
+                params![
+                    status,
+                    result,
+                    feedback,
+                    no_work_termination,
+                    result_provenance.map(|provenance| provenance.declared_role.as_str()),
+                    result_provenance.map(|provenance| provenance.channel_identity.to_column()),
+                    id,
+                ],
+            )?;
+            if rows_affected == 0 {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+            if engine_observed && status != "running" {
+                db.enqueue_engine_observed_ending(id)?;
+            }
+            Ok(())
+        })?;
         // `run.finished` is a fact about a task's agent: subscribers treat a
         // non-succeeded one as urgent and enrich it with the task's latest
         // run. A workspace teardown has neither an agent nor a verdict, so
@@ -1098,17 +1108,28 @@ impl Db {
     }
 
     pub fn cancel_running_stage_runs(&self, task_id: &str) -> Result<(), rusqlite::Error> {
-        match self.conn.execute(
-            "UPDATE stage_run
-             SET status = 'cancelled', finished_at = COALESCE(finished_at, datetime('now'))
-             WHERE task_id = ? AND status IN ('pending', 'running')",
-            [task_id],
-        ) {
-            Ok(_) => {}
-            Err(err) if is_missing_stage_run_table(&err) => return Ok(()),
-            Err(err) => return Err(err),
+        let cancelled = self.in_immediate_transaction_if_needed(|db| {
+            let mut statement = db.conn.prepare(
+                "UPDATE stage_run
+                 SET status = 'cancelled', finished_at = COALESCE(finished_at, datetime('now'))
+                 WHERE task_id = ? AND status IN ('pending', 'running')
+                 RETURNING id",
+            )?;
+            let cancelled = statement
+                .query_map([task_id], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(statement);
+            // Each cancelled session ended without a verdict (T13).
+            for run_id in &cancelled {
+                db.enqueue_engine_observed_ending(run_id)?;
+            }
+            Ok(cancelled)
+        });
+        match cancelled {
+            Ok(_) => Ok(()),
+            Err(err) if is_missing_stage_run_table(&err) => Ok(()),
+            Err(err) => Err(err),
         }
-        Ok(())
     }
 
     /// The task's most recently finished run result, whatever its kind. This

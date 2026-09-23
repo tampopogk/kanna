@@ -1,13 +1,13 @@
 //! Offline rebuild from task directories, round-tripped against a migrated
-//! fixture database (spec §16.11, T13 first increment).
+//! fixture database (spec §11, §16.11 — T13 first and second increments).
 //!
 //! The fixture is a database created with the production migrations and
 //! driven through the real endpoints and writers to the representative open
-//! task shapes; T0's startup recovery backfills and flushes its ledgers; the
-//! store is rebuilt into fresh databases; and the stable semantic state of
-//! both is compared. Statistics and transient live-session state are not
-//! compared. What differs must be exactly the facts
-//! [`crate::task_store::rebuild::NOT_REBUILT`] declares.
+//! task shapes; T0's startup recovery backfills and flushes its ledgers and
+//! records; the store is rebuilt into fresh databases; and every durable row
+//! of both is compared. Statistics and transient live-session state
+//! ([`crate::task_store::rebuild::NOT_REBUILT`]) are not compared; everything
+//! else must be identical.
 use super::actions::{
     commit_branch_change, ledger_fixture_config, post_json, spawn_recording_daemon,
     wait_for_running_task_stage,
@@ -408,7 +408,10 @@ async fn build_fixture() -> Fixture {
     let db = fixture.db();
     let conn = db.connection_for_e2e_tests();
     conn.execute(
-        "UPDATE pipeline_item SET agent_provider = 'codex', pinned = 1 WHERE id = 'active'",
+        "UPDATE pipeline_item SET agent_provider = 'codex', pinned = 1, pin_order = 3,
+                initial_pipeline = 'first-flow', issue_number = 42, issue_title = 'Issue',
+                pr_branch = 'feature/x', merge_signaled_at = '2026-09-23 12:00:00'
+         WHERE id = 'active'",
         [],
     )
     .unwrap();
@@ -417,23 +420,322 @@ async fn build_fixture() -> Fixture {
         [],
     )
     .unwrap();
-    // Every creation path marks task.json; the fixture's direct inserts do
-    // not, so mark them before T0's startup recovery backfills and flushes.
-    for task in [
-        "gate", "active", "blocked", "revision", "post", "exits", "artifact", "history",
-    ] {
-        db.mark_task_snapshot_dirty(task).unwrap();
-    }
+    // The repository's registration and sidebar order.
+    conn.execute(
+        "UPDATE repo SET remote_url = 'git@example.test:o/r.git', remote_url_hash = 'hash-1',
+                default_branch_source = 'remote', sort_order = 2
+         WHERE id = 'repo-1'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO repo_sidebar_order (remote_url_hash, sort_order) VALUES ('hash-1', 5)",
+        [],
+    )
+    .unwrap();
+
+    // Active/recovered session: the session is lost (the engine records the
+    // ending), then the daemon proves it alive and the run is restored.
+    db.finish_latest_running_stage_run("active", "failed", None, Some("session lost"))
+        .unwrap()
+        .expect("active had a running run");
+    assert!(db
+        .restore_latest_interrupted_stage_run("active", "session lost")
+        .unwrap());
+    // Its session identity, workspace, branch number, prompt and setup.
+    let active_dir = db
+        .get_task_worktree_path("active")
+        .unwrap()
+        .expect("active has a worktree");
+    let number = db.reserve_task_branch_number("active", 0).unwrap();
+    let session_branch = format!("task-active-{number}");
+    db.upsert_stage_workspace(
+        "ws-active",
+        "active",
+        "in progress",
+        &active_dir,
+        &session_branch,
+    )
+    .unwrap();
+    db.set_stage_run_session(
+        "active-run",
+        &crate::db::StageRunSession {
+            workspace_id: Some("ws-active".into()),
+            branch: Some(session_branch.clone()),
+            name: Some("Implement: Title of active".into()),
+            transcript: Some(crate::db::TranscriptRef {
+                provider: "claude".into(),
+                session_id: "sess-active".into(),
+                path: None,
+            }),
+            workspace_report: Some("kept 1 uncommitted file".into()),
+        },
+    )
+    .unwrap();
+    db.record_stage_run_prompt("active-run", "Implement: Prompt of active")
+        .unwrap();
+    db.record_workspace_setup_run(
+        "active-run",
+        &crate::db::WorkspaceSetupOutcome {
+            exit_code: Some(0),
+            timed_out: false,
+            truncated: false,
+            commands: vec!["pnpm install".into()],
+            output: "ok".into(),
+            duration_ms: 1200,
+        },
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO task_provider_rejection
+            (task_id, stage_run_id, stage, provider, source, rule_id, matched_text, scope, recovery)
+         VALUES ('active', 'active-run', 'in progress', 'claude', 'pty', 'quota-1',
+                 'usage limit reached', 'account', 'none')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO task_provider_capacity_notice
+            (task_id, stage_run_id, stage, provider, source, rule_id, matched_text, scope)
+         VALUES ('active', 'active-run', 'in progress', 'claude', 'pty', 'cap-1',
+                 'capacity', 'model')",
+        [],
+    )
+    .unwrap();
+    // A completion retry key on the parked gate, and the PR it reviews.
+    db.record_contextless_completion_attempt("attempt-1", "gate-run", "success")
+        .unwrap();
+    db.upsert_task_review_context(
+        "gate",
+        &crate::db::ReviewContextInput {
+            pr_url: "https://example.test/pull/9".into(),
+            head_sha: "a".repeat(40),
+            base_ref: "main".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO human_review_decision
+            (id, task_id, review_context_version, pr_url, head_sha, base_ref, action_text, origin)
+         VALUES ('decision-1', 'gate', 1, 'https://example.test/pull/9', ?, 'main',
+                 'approve', 'desktop')",
+        [&"a".repeat(40)],
+    )
+    .unwrap();
+    db.insert_create_task_intent(
+        "blocked",
+        r#"{"repoId":"repo-1","prompt":"Prompt of blocked"}"#,
+    )
+    .unwrap();
+
+    // Blocked first stage: an edge into the dependent's first stage, before
+    // it started. Blocked later stage: an edge into review, and the
+    // completion parked on it.
+    insert_task(
+        &db,
+        &fixture.repo_root,
+        "downstream",
+        "in progress",
+        &legacy_workflow(),
+    );
+    db.insert_stage_edges(
+        "downstream",
+        &[crate::db::NewStageEdge {
+            upstream_task_id: "active".into(),
+            upstream_stage: "in progress".into(),
+            dependent_stage: None,
+        }],
+    )
+    .unwrap();
+    insert_task(
+        &db,
+        &fixture.repo_root,
+        "waits",
+        "in progress",
+        &legacy_workflow(),
+    );
+    db.insert_stage_edges(
+        "waits",
+        &[crate::db::NewStageEdge {
+            upstream_task_id: "gate".into(),
+            upstream_stage: "review".into(),
+            dependent_stage: Some("review".into()),
+        }],
+    )
+    .unwrap();
+    db.record_dependency_wait("waits", "in progress", "review", &json!({ "kind": "main" }))
+        .unwrap();
+
+    // Subtask join: a member not created yet holds the parent's owed
+    // transition.
+    let joiner = insert_task(
+        &db,
+        &fixture.repo_root,
+        "joiner",
+        "in progress",
+        &legacy_workflow(),
+    );
+    insert_run(
+        &db,
+        "joiner-run",
+        "joiner",
+        "in progress",
+        "implement",
+        &joiner,
+    );
+    db.create_task_join(&crate::db::NewTaskJoin {
+        id: "join-1".into(),
+        parent_task_id: "joiner".into(),
+        parent_stage: Some("in progress".into()),
+        parent_run_id: Some("joiner-run".into()),
+        base_sha: git_head(&joiner),
+        base_branch: Some("task-joiner".into()),
+        members: vec![crate::db::NewJoinMember {
+            child_task_id: "c0ffee99".into(),
+            spec: json!({ "prompt": "child" }).to_string(),
+        }],
+    })
+    .unwrap();
+    db.put_ledger_continuation(
+        "joiner",
+        "op-joiner",
+        crate::db::task_store::STAGE_COMPLETION_CONTINUATION,
+        &json!({ "runId": "joiner-run", "generation": 1 }),
+    )
+    .unwrap();
+
+    // Pending commit step: requested, with its delivery in flight.
+    let commit = insert_task(
+        &db,
+        &fixture.repo_root,
+        "commit",
+        "in progress",
+        &legacy_workflow(),
+    );
+    insert_run(
+        &db,
+        "commit-run",
+        "commit",
+        "in progress",
+        "implement",
+        &commit,
+    );
+    db.insert_transition_commit("commit-run", "commit", "in progress", None)
+        .unwrap();
+    db.insert_lifecycle_operation_intent(
+        "op-commit",
+        "commit",
+        "post",
+        "submitted",
+        &json!({ "version": 1, "task_id": "commit", "run_id": "commit-run" }).to_string(),
+    )
+    .unwrap();
+
+    // Pending transfer claim: an incoming transfer claimed for this task.
+    insert_task(
+        &db,
+        &fixture.repo_root,
+        "incoming",
+        "in progress",
+        &legacy_workflow(),
+    );
+    db.insert_task_transfer(&crate::db::NewTaskTransfer {
+        id: "xfer-in".into(),
+        direction: "incoming".into(),
+        status: "pending".into(),
+        source_peer_id: Some("peer-b".into()),
+        target_peer_id: None,
+        source_desktop_id: None,
+        target_desktop_id: None,
+        source_task_id: Some("remote-1".into()),
+        local_task_id: Some("incoming".into()),
+        error: None,
+        payload_json: Some("{}".into()),
+    })
+    .unwrap();
+    assert!(db
+        .claim_pending_incoming_transfer("xfer-in", CLAIM_TOKEN, false)
+        .unwrap());
+    db.insert_task_transfer_provenance(&crate::db::NewTaskTransferProvenance {
+        pipeline_item_id: "incoming".into(),
+        source_peer_id: "peer-b".into(),
+        source_task_id: "remote-1".into(),
+        source_machine_task_label: Some("remote task".into()),
+    })
+    .unwrap();
+    conn.execute_batch(
+        "INSERT INTO transferred_task_context (task_id, transfer_id, workflow_definition)
+         VALUES ('incoming', 'xfer-in', '{}');
+         INSERT INTO transferred_task_manifest
+            (transfer_id, repo_id, local_task_id, head_oid, base_oid, state)
+         VALUES ('xfer-in', 'repo-1', 'incoming', 'h', 'b', 'prepared');
+         INSERT INTO transferred_task_history
+            (task_id, sequence, origin_peer_id, origin_task_id, origin_run_id, stage, kind)
+         VALUES ('incoming', 1, 'peer-b', 'remote-1', 'remote-run', 'in progress', 'main');
+         INSERT INTO transferred_task_state
+            (pipeline_item_id, transfer_id, source_peer_id, source_task_id,
+             ownership_generation, state_sha256, links, session_start, fresh_start_reason)
+         VALUES ('incoming', 'xfer-in', 'peer-b', 'remote-1', 1, 'sha', '{}', 'fresh',
+                 'no transcript');",
+    )
+    .unwrap();
+    // An outgoing transfer holding a task's workflow, its ledger fenced.
+    insert_task(
+        &db,
+        &fixture.repo_root,
+        "outgoing",
+        "in progress",
+        &legacy_workflow(),
+    );
+    db.insert_task_transfer(&crate::db::NewTaskTransfer {
+        id: "xfer-out".into(),
+        direction: "outgoing".into(),
+        status: "streaming".into(),
+        source_peer_id: None,
+        target_peer_id: Some("peer-c".into()),
+        source_desktop_id: None,
+        target_desktop_id: None,
+        source_task_id: Some("outgoing".into()),
+        local_task_id: Some("outgoing".into()),
+        error: None,
+        payload_json: None,
+    })
+    .unwrap();
+    db.claim_task_workflow_for_transfer("xfer-out", "outgoing")
+        .unwrap()
+        .unwrap();
+    db.fence_ledger_for_transfer_export("outgoing", "xfer-out")
+        .unwrap()
+        .unwrap();
+
+    // A task whose creation was rolled back after its task.json was written.
+    insert_task(
+        &db,
+        &fixture.repo_root,
+        "doomed",
+        "in progress",
+        &legacy_workflow(),
+    );
+    crate::task_store::flush_task(&db, &fixture.db_path, "doomed").unwrap();
+    db.delete_task_creation_artifacts("doomed").unwrap();
+
     crate::task_store::recover_on_startup(&db, &fixture.db_path);
     assert!(db.ledger_tasks_with_pending_work().unwrap().is_empty());
+    assert!(db.repos_with_pending_disk_record().unwrap().is_empty());
+    assert!(db.pending_disk_removals().unwrap().is_empty());
     fixture
 }
 
-/// The stable semantic state of a database, keyed `<fact class>|<instance>`.
-/// Statistics, timestamps of live bookkeeping and transient session state
-/// are left out.
-fn semantic_state(db: &Db) -> BTreeMap<String, Value> {
-    use rusqlite::types::Value as Sql;
+/// The claim token of the pending incoming transfer: a capability that must
+/// never reach disk.
+const CLAIM_TOKEN: &str = "claim-capability-7f3a";
+
+/// Every durable row of a database, keyed `<table>|<identity>`, with the
+/// columns a rebuild restores. Statistics and transient live-session state
+/// (`rebuild::NOT_REBUILT`) are left out, and so is `pipeline_item.updated_at`,
+/// which unrelated live writes move without owing a new task.json.
+fn durable_state(db: &Db) -> BTreeMap<String, Value> {
     let conn = db.connection_for_e2e_tests();
     let rows = |sql: &str| -> Vec<Vec<Value>> {
         let mut statement = conn.prepare(sql).unwrap();
@@ -441,237 +743,87 @@ fn semantic_state(db: &Db) -> BTreeMap<String, Value> {
         statement
             .query_map([], |row| {
                 (0..columns)
-                    .map(|index| {
-                        Ok(match row.get::<_, Sql>(index)? {
-                            Sql::Null => Value::Null,
-                            Sql::Integer(value) => json!(value),
-                            Sql::Real(value) => json!(value),
-                            Sql::Text(value) => json!(value),
-                            Sql::Blob(value) => json!(String::from_utf8_lossy(&value)),
-                        })
-                    })
+                    .map(|index| row.get_ref(index).map(crate::db::task_state::sql_to_json))
                     .collect::<Result<Vec<_>, _>>()
             })
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap()
     };
-    let parse = |value: &Value| {
+    let id = |value: &Value| {
         value
             .as_str()
-            .and_then(|text| serde_json::from_str::<Value>(text).ok())
-            .unwrap_or(Value::Null)
+            .map_or_else(|| value.to_string(), str::to_string)
     };
-    let channel = |value: &Value| ChannelIdentity::from_column(value.as_str()).to_json();
     let mut state = BTreeMap::new();
-    let mut put = |class: &str, instance: &str, value: Value| {
-        state.insert(format!("{class}|{instance}"), value);
-    };
-    for row in rows("SELECT id, path, name, default_branch, remote_url FROM repo") {
-        put(
-            "repo.registration",
-            row[0].as_str().unwrap(),
-            json!([row[1], row[2], row[3], row[4]]),
-        );
-    }
-    let task_columns = [
-        "repo_id",
-        "prompt",
-        "display_name",
-        "stage",
-        "branch",
-        "base_ref",
-        "parent_task_id",
-        "pr_url",
-        "pr_number",
-        "created_at",
-        "closed_at",
-        "agent_type",
-        "agent_provider",
-        "initial_pipeline",
-        "revision_rounds",
-        "attention_requested",
-        "pinned",
-    ];
-    for row in rows(&format!(
-        "SELECT id, pipeline, pipeline_def, {} FROM pipeline_item",
-        task_columns.join(", ")
-    )) {
-        let id = row[0].as_str().unwrap().to_string();
-        put("pin.name", &id, row[1].clone());
-        put("pin.definition", &id, parse(&row[2]));
-        for (column, value) in task_columns.iter().zip(&row[3..]) {
-            put(&format!("task.{column}"), &id, value.clone());
+    for table in crate::db::task_state::CARRIED_TABLES {
+        let columns: Vec<&str> = table
+            .columns
+            .iter()
+            .copied()
+            .filter(|column| !(table.table == "pipeline_item" && *column == "updated_at"))
+            .collect();
+        let quoted: Vec<String> = columns
+            .iter()
+            .map(|column| format!("\"{column}\""))
+            .collect();
+        for row in rows(&format!(
+            "SELECT rowid, {} FROM {}",
+            quoted.join(", "),
+            table.table
+        )) {
+            let object: serde_json::Map<String, Value> = columns
+                .iter()
+                .zip(&row[1..])
+                .map(|(column, value)| (column.to_string(), value.clone()))
+                .collect();
+            state.insert(format!("{}|{}", table.table, row[0]), Value::Object(object));
         }
     }
-    for row in rows("SELECT pipeline_item_id, path, branch FROM worktree ORDER BY id") {
-        put(
-            "task.worktree",
-            &format!("{}/{}", row[0].as_str().unwrap(), row[2].as_str().unwrap()),
-            row[1].clone(),
-        );
+    let repo_columns = crate::db::task_state::REPO_COLUMNS.join(", ");
+    for row in rows(&format!("SELECT {repo_columns} FROM repo")) {
+        state.insert(format!("repo|{}", id(&row[0])), json!(row));
     }
-    for row in rows("SELECT id, task_id, stage, path, branch FROM stage_workspace") {
-        put(
-            "task.stage_workspace",
-            row[0].as_str().unwrap(),
-            json!([row[1], row[2], row[3], row[4]]),
-        );
-    }
-    for row in rows("SELECT task_id, last_allocated FROM task_branch_counter") {
-        put(
-            "task.branch_counter",
-            row[0].as_str().unwrap(),
+    for row in rows("SELECT remote_url_hash, sort_order FROM repo_sidebar_order") {
+        state.insert(
+            format!("repo_sidebar_order|{}", id(&row[0])),
             row[1].clone(),
         );
     }
     for row in rows("SELECT blocked_item_id, blocker_item_id FROM task_blocker") {
-        put(
-            "blocker",
-            &format!("{}->{}", row[0].as_str().unwrap(), row[1].as_str().unwrap()),
+        state.insert(
+            format!("task_blocker|{}->{}", id(&row[0]), id(&row[1])),
             json!(true),
         );
     }
-    for row in rows("SELECT task_id, stage, spent FROM task_stage_budget") {
-        put(
-            "budget",
-            &format!("{}/{}", row[0].as_str().unwrap(), row[1].as_str().unwrap()),
-            row[2].clone(),
-        );
-    }
-    let runs = rows(
-        "SELECT stage_run.id, stage, kind, status, result, feedback, result_declared_role,
-                result_channel_identity, workspace_id, session_branch, session_name,
-                transcript_ref, agent, agent_provider, model, effort, session_id,
-                provider_session_id, cwd, resumed_from_run_id, replaces_run_id, trigger,
-                entry_channel_identity, no_work_termination, workspace_report,
-                completion_transition, completion_bound, stage_run_prompt.resolved_prompt
-         FROM stage_run LEFT JOIN stage_run_prompt ON stage_run_prompt.run_id = stage_run.id
-         WHERE kind IN ('main', 'post')",
-    );
-    for row in runs {
-        let id = row[0].as_str().unwrap().to_string();
-        put("run.exists", &id, json!(true));
-        let (verdict, summary, metadata, _) = crate::db::task_store::normalize_recorded_result(
-            row[3].as_str().unwrap(),
-            row[4].as_str().unwrap_or(""),
-        );
-        let result = parse(&row[4]);
-        let recorded = |value: Value| if row[4].is_null() { Value::Null } else { value };
-        let artifact_names: Vec<String> = result
-            .get("artifacts")
-            .and_then(Value::as_object)
-            .map(|map| map.keys().cloned().collect())
-            .unwrap_or_default();
-        let fields = [
-            ("run.stage", row[1].clone()),
-            ("run.kind", row[2].clone()),
-            ("run.status", row[3].clone()),
-            ("run.verdict", recorded(json!(verdict))),
-            ("run.summary", recorded(json!(summary))),
-            ("run.metadata", recorded(metadata)),
-            (
-                "run.exit",
-                result.get("exit").cloned().unwrap_or(Value::Null),
-            ),
-            ("run.artifacts", json!(artifact_names)),
-            ("run.feedback", row[5].clone()),
-            ("run.result_declared_role", row[6].clone()),
-            ("run.result_channel", recorded(channel(&row[7]))),
-            ("run.workspace_id", row[8].clone()),
-            ("run.session_branch", row[9].clone()),
-            ("run.session_name", row[10].clone()),
-            ("run.transcript", parse(&row[11])),
-            (
-                "run.session",
-                json!([
-                    row[12],
-                    row[13],
-                    row[14],
-                    row[15],
-                    row[16],
-                    row[17],
-                    row[18],
-                    row[19],
-                    row[20],
-                    row[21],
-                    channel(&row[22]),
-                    row[23],
-                    row[24]
-                ]),
-            ),
-            ("run.completion", json!([row[25], row[26]])),
-            ("run.resolved_prompt", row[27].clone()),
-        ];
-        for (class, value) in fields {
-            put(class, &id, value);
-        }
-    }
     for row in rows(
-        "SELECT id, run_id, stage, source, message, delivered_at, origin_peer_id,
+        "SELECT id, task_id, run_id, stage, source, message, delivered_at, origin_peer_id,
                 origin_task_id, origin_input_id, origin_run_id, channel_identity
          FROM task_input",
     ) {
-        let id = row[0].to_string();
-        put("input.run_id", &id, row[1].clone());
-        put("input.stage", &id, row[2].clone());
-        put("input.source", &id, row[3].clone());
-        put("input.message", &id, row[4].clone());
-        put("input.delivered_at", &id, row[5].clone());
-        put("input.origin", &id, json!([row[6], row[7], row[8], row[9]]));
-        put("input.channel", &id, channel(&row[10]));
+        state.insert(format!("task_input|{}", id(&row[0])), json!(row));
     }
     for row in rows(
         "SELECT entry_id, kind, file_name, operation_id, source_kind, source_id, payload
          FROM task_ledger_entry WHERE published_at IS NOT NULL",
     ) {
-        let entry_id = row[0].as_str().unwrap().to_string();
-        put("ledger.entry", &entry_id, json!(row[1..].to_vec()));
-        if row[1] == "transition" {
-            let file = crate::task_store::parse_ledger_file(
-                row[2].as_str().unwrap(),
-                row[6].as_str().unwrap().as_bytes(),
-            )
-            .unwrap();
-            put("transition", &entry_id, file.body().clone());
-        }
-    }
-    for row in rows("SELECT task_id, kind, payload FROM task_ledger_continuation") {
-        put(
-            "ledger.continuation",
-            row[0].as_str().unwrap(),
-            json!([row[1], row[2]]),
-        );
+        state.insert(format!("task_ledger_entry|{}", id(&row[0])), json!(row));
     }
     state
 }
 
-fn differing_classes(
-    source: &BTreeMap<String, Value>,
-    rebuilt: &BTreeMap<String, Value>,
-) -> BTreeMap<String, Vec<String>> {
-    let mut classes: BTreeMap<String, Vec<String>> = BTreeMap::new();
+fn differences(source: &BTreeMap<String, Value>, rebuilt: &BTreeMap<String, Value>) -> Vec<String> {
     let keys: BTreeSet<&String> = source.keys().chain(rebuilt.keys()).collect();
-    for key in keys {
-        if source.get(key) != rebuilt.get(key) {
-            let (class, instance) = key.split_once('|').unwrap();
-            // A run missing on one side is one fact (`run.exists`), not one
-            // per column.
-            let run_exists = format!("run.exists|{instance}");
-            if class.starts_with("run.")
-                && class != "run.exists"
-                && source.get(&run_exists) != rebuilt.get(&run_exists)
-            {
-                continue;
-            }
-            classes.entry(class.to_string()).or_default().push(format!(
-                "{instance}: {} -> {}",
+    keys.into_iter()
+        .filter(|key| source.get(*key) != rebuilt.get(*key))
+        .map(|key| {
+            format!(
+                "{key}:\n  source:  {}\n  rebuilt: {}",
                 source.get(key).unwrap_or(&Value::Null),
                 rebuilt.get(key).unwrap_or(&Value::Null)
-            ));
-        }
-    }
-    classes
+            )
+        })
+        .collect()
 }
 
 fn assert_same_rows(left: &[String], right: &[String]) {
@@ -683,6 +835,23 @@ fn assert_same_rows(left: &[String], right: &[String]) {
     );
 }
 
+fn files_under(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut files = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                files.push((path.clone(), std::fs::read(&path).unwrap()));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
 #[tokio::test]
 async fn a_migrated_fixture_round_trips_through_its_task_directories() {
     let _sidecar_guard = crate::test_sidecar_guard().await;
@@ -690,11 +859,53 @@ async fn a_migrated_fixture_round_trips_through_its_task_directories() {
     let source = fixture.db();
     let root = crate::task_store::root_for_db(&fixture.db_path);
 
+    // Every carried table is exercised by the fixture.
+    let source_state = durable_state(&source);
+    for table in crate::db::task_state::CARRIED_TABLES {
+        assert!(
+            source_state
+                .keys()
+                .any(|key| key.starts_with(&format!("{}|", table.table))),
+            "the fixture holds no {} row",
+            table.table
+        );
+    }
+    // The engine recorded the lost session's ending, and no secret reached
+    // disk.
+    let endings: i64 = source
+        .connection_for_e2e_tests()
+        .query_row(
+            "SELECT COUNT(*) FROM task_ledger_entry
+             WHERE task_id = 'active' AND source_kind = 'stage_run_ending'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(endings, 1);
+    // A revision request records its summary and findings apart.
+    let revision_dir = crate::task_store::task_dir(&root, "repo-1", "revision");
+    let revision_result = crate::task_store::read_ledger(&revision_dir)
+        .unwrap()
+        .into_iter()
+        .find(|file| file.body()["request"]["kind"] == "revision_request")
+        .expect("the revision request's result entry");
+    assert_eq!(revision_result.body()["request"]["summary"], "Two defects");
+    assert_eq!(
+        revision_result.body()["request"]["findings"],
+        "Fix the parser and the retry"
+    );
+    let on_disk = files_under(&root);
+    assert!(on_disk
+        .iter()
+        .all(|(_, bytes)| !String::from_utf8_lossy(bytes).contains(CLAIM_TOKEN)));
+
     let first = PathBuf::from(Db::test_db_path("disk-rebuild-first"));
     let second = PathBuf::from(Db::test_db_path("disk-rebuild-second"));
     let report = rebuild::rebuild_into_new_database(&root, &first).unwrap();
     assert!(report.unreadable.is_empty(), "{:?}", report.unreadable);
-    assert_eq!(report.tasks, 8);
+    assert_eq!(report.tasks, 14);
+    assert_eq!(report.removed.len(), 1, "{:?}", report.removed);
+    assert!(report.removed[0].ends_with("doomed"));
     for note in &report.diagnostics {
         eprintln!("rebuild diagnostic: {note}");
     }
@@ -709,38 +920,86 @@ async fn a_migrated_fixture_round_trips_through_its_task_directories() {
             .unwrap()
             .disk_rebuild_dump_for_tests(),
     );
-    let (directories, _) = rebuild::scan_store(&root).unwrap();
+    let scan = rebuild::scan_store_records(&root).unwrap();
     rebuilt
-        .apply_disk_projection(&rebuild::project(&directories))
+        .apply_disk_projection(&rebuild::project_store(&scan))
         .unwrap();
     assert_same_rows(&dump, &rebuilt.disk_rebuild_dump_for_tests());
 
-    // Everything the fixture exercises either rebuilds exactly or is a
-    // declared gap, and every declared (compared) gap is exercised here.
-    let differences = differing_classes(&semantic_state(&source), &semantic_state(&rebuilt));
-    for (class, instances) in &differences {
-        eprintln!("not rebuilt: {class}\n  {}", instances.join("\n  "));
-    }
-    let expected: BTreeSet<&str> = rebuild::NOT_REBUILT
-        .iter()
-        .filter(|fact| fact.compared)
-        .map(|fact| fact.fact)
-        .collect();
-    let actual: BTreeSet<&str> = differences.keys().map(String::as_str).collect();
-    assert_eq!(actual, expected, "{differences:#?}");
+    // Every durable row rebuilds exactly.
+    let differing = differences(&source_state, &durable_state(&rebuilt));
+    assert!(differing.is_empty(), "{}", differing.join("\n"));
+    assert!(rebuild::NOT_REBUILT.iter().all(|gap| matches!(
+        gap.gap,
+        rebuild::Gap::Statistics | rebuild::Gap::Transient | rebuild::Gap::Unrecoverable
+    )));
+
+    // Pending effects are reconstructed, and nothing is re-done: the
+    // rebuilt database owes nothing to publish, a flush writes nothing, the
+    // owed transition is still held by its join, and the commit step and
+    // its delivery wait for restart reconciliation exactly as before.
+    let rebuilt_path = first.to_str().unwrap();
+    assert!(rebuilt.ledger_tasks_with_pending_work().unwrap().is_empty());
+    assert!(rebuilt.repos_with_pending_disk_record().unwrap().is_empty());
+    assert!(rebuilt.pending_disk_removals().unwrap().is_empty());
+    assert!(rebuilt.tasks_needing_ledger_backfill().unwrap().is_empty());
+    assert!(crate::task_store::flush_all(&rebuilt, rebuilt_path).is_empty());
+    assert!(!crate::task_store::root_for_db(rebuilt_path).exists());
+    assert!(rebuilt
+        .claim_ledger_continuation("joiner")
+        .unwrap()
+        .is_none());
+    assert!(rebuilt.has_ledger_continuation("joiner").unwrap());
+    assert_eq!(rebuilt.disk_rebuild_dump_for_tests(), dump);
+    assert_eq!(files_under(&root), on_disk);
 
     // The facts the scenarios exist for, stated directly.
-    let state = semantic_state(&rebuilt);
-    let at = |key: &str| state.get(key).cloned().unwrap_or(Value::Null);
-    assert_eq!(at("task.stage|gate"), "in progress");
-    assert_eq!(at("run.status|gate-run"), "succeeded");
-    assert_eq!(at("task.stage|revision"), "in progress");
-    assert_eq!(at("task.stage|post"), "review");
-    assert_eq!(at("task.stage|exits"), "review");
-    assert_eq!(at("budget|exits/in progress"), 1);
-    assert_eq!(at("run.exit|exits-review-1"), "revise");
-    assert_eq!(at("blocker|blocked->active"), true);
-    assert_eq!(at("run.artifacts|artifact-run"), json!(["diff", "pr"]));
-    assert_eq!(at("run.summary|history-run"), "Old work");
-    assert_eq!(at("run.exists|active-run"), Value::Null);
+    let state = durable_state(&rebuilt);
+    let task = |id: &str, column: &str| {
+        state
+            .iter()
+            .find(|(key, value)| key.starts_with("pipeline_item|") && value["id"] == id)
+            .map(|(_, value)| value[column].clone())
+            .unwrap_or(Value::Null)
+    };
+    let run = |id: &str, column: &str| {
+        state
+            .iter()
+            .find(|(key, value)| key.starts_with("stage_run|") && value["id"] == id)
+            .map(|(_, value)| value[column].clone())
+            .unwrap_or(Value::Null)
+    };
+    assert_eq!(task("gate", "stage"), "in progress");
+    assert_eq!(task("gate", "attention_requested"), 1);
+    assert_eq!(task("active", "agent_provider"), "codex");
+    assert_eq!(task("active", "initial_pipeline"), "first-flow");
+    assert_eq!(run("gate-run", "status"), "succeeded");
+    assert_eq!(task("revision", "stage"), "in progress");
+    assert_eq!(task("revision", "revision_rounds"), 1);
+    assert_eq!(task("post", "stage"), "review");
+    assert_eq!(task("exits", "stage"), "review");
+    assert_eq!(run("active-run", "status"), "running");
+    assert_eq!(run("active-run", "session_branch"), "task-active-1");
+    assert_eq!(task("doomed", "id"), Value::Null);
+    let stored = |key: &str| state.get(key).cloned().unwrap_or(Value::Null);
+    assert_eq!(stored("task_blocker|blocked->active"), true);
+    assert!(state
+        .iter()
+        .any(|(key, value)| key.starts_with("task_stage_budget|")
+            && value["task_id"] == "exits"
+            && value["stage"] == "in progress"
+            && value["spent"] == 1));
+    assert!(state
+        .iter()
+        .any(|(key, value)| key.starts_with("transition_commit|")
+            && value["run_id"] == "commit-run"
+            && value["state"] == "requested"));
+    assert!(state
+        .iter()
+        .any(|(key, value)| key.starts_with("task_transfer|")
+            && value["id"] == "xfer-in"
+            && value["status"] == "claimed"));
+    assert!(state
+        .get("repo|repo-1")
+        .is_some_and(|row| row[1] == fixture.repo_root.to_string_lossy().as_ref()));
 }

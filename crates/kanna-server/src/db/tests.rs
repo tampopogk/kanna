@@ -229,7 +229,7 @@ fn open_creates_and_migrates_fresh_profile_database() {
             |row| row.get(0),
         )
         .expect("latest migration");
-    assert_eq!(latest_migration, "102_transferred_task_state");
+    assert_eq!(latest_migration, "103_disk_state_records");
     assert_eq!(
         index_columns(&db.conn, "idx_pipeline_item_parent_created_id"),
         vec!["parent_task_id", "created_at", "id"],
@@ -5623,6 +5623,9 @@ fn attention_flag_migration_backfills_standing_badges_and_drops_the_reason() {
         )
         .unwrap();
     }
+    // The disk-state triggers name these columns and tables; a rewind
+    // made by hand runs without them, as a migration does.
+    crate::db::task_state::drop_disk_state_triggers(&db.conn).unwrap();
     // Rewind to the schema 085 left behind, reasons and all.
     db.conn
         .execute_batch(
@@ -5666,6 +5669,7 @@ fn main_and_archive_migrations_upgrade_either_branch_without_losing_data() {
         let path = temp_db_path();
         let db = Db::open_migrated(path.to_str().unwrap()).unwrap();
         seed(&db);
+        crate::db::task_state::drop_disk_state_triggers(&db.conn).unwrap();
         let snapshot = archive();
         if from_archive {
             db.ingest_agent_terminal_archive("task-a", "run-task-a-1", &snapshot)
@@ -5957,7 +5961,10 @@ fn stage_run_teardown_kind_migration_keeps_rows_that_reference_it() {
         .expect("seed a task with rows referencing its runs");
 
     // Restore the pre-087 table: the CHECK a database created from the base
-    // schema carried before this migration existed.
+    // schema carried before this migration existed. The disk-state
+    // triggers name stage_run; a rewind made by hand runs without them, as
+    // a migration does.
+    crate::db::task_state::drop_disk_state_triggers(&db.conn).unwrap();
     db.conn
         .execute_batch(
             r#"
@@ -6331,6 +6338,9 @@ fn mutation_provenance_migration_leaves_history_unknown_without_backfilling() {
         "2026-09-22 00:00:00",
     )
     .unwrap();
+    // The disk-state triggers name these columns and tables; a rewind
+    // made by hand runs without them, as a migration does.
+    crate::db::task_state::drop_disk_state_triggers(&db.conn).unwrap();
     // Rewind to the pre-095 shape with history written by an older build.
     db.conn
         .execute_batch(
