@@ -626,6 +626,8 @@ const TOOL_CALL_ONLY_TOOLS: &[&str] = &[
     "kanna_record_artifact_decision",
     "kanna_push_artifact",
     "kanna_fetch_artifact",
+    "kanna_create_subtasks",
+    "kanna_get_task_joins",
 ];
 
 fn command_for_path<'a>(command: &'a Command, path: &[&str]) -> Option<&'a Command> {

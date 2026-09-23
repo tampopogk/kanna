@@ -1616,6 +1616,12 @@ async fn execute_resolved_request(
         let status = get_routed_json(base_url, "/v1/status", machine_id).await?;
         kanna_tool_catalog::confirm_stage_dependencies_supported(&status)?;
     }
+    // Likewise a server without subtask joins has no join routes, which must
+    // not read as a parent with nothing to wait on.
+    if kanna_tool_catalog::requires_subtask_joins(&request) {
+        let status = get_routed_json(base_url, "/v1/status", machine_id).await?;
+        kanna_tool_catalog::confirm_subtask_joins_supported(&status)?;
+    }
     match (request.method, request.kind) {
         (_, ResponseKind::Guide) => request
             .local_response
@@ -1959,6 +1965,7 @@ mod tests {
                 "kanna_list_recent_tasks",
                 "kanna_get_task",
                 "kanna_list_task_children",
+                "kanna_get_task_joins",
                 "kanna_wait_task",
                 "kanna_wait_events",
                 "kanna_notify_mobile",
@@ -1976,6 +1983,7 @@ mod tests {
                 "kanna_show_agent",
                 "kanna_eject_agent",
                 "kanna_create_task",
+                "kanna_create_subtasks",
                 "kanna_signal_agent",
                 "kanna_signal_merge_handoff",
                 "kanna_queue_reviewed_pr",

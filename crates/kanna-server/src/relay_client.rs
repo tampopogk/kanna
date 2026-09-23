@@ -1358,6 +1358,7 @@ mod tests {
                     "kspStreamVersion": 2,
                 "taskInputAttachmentVersion": 1,
                 "stageDependenciesVersion": 1,
+                "subtaskJoinsVersion": 1,
                     "lanHost": "127.0.0.1",
                     "lanPort": 48120,
                     "pairingCode": null,

@@ -327,6 +327,7 @@ mod repo_definitions;
 mod revision_status;
 mod roleless_stage;
 mod stage_dependencies;
+mod subtask_joins;
 mod task_events;
 mod transfer_history_checkpoint;
 mod transfer_preparation_gate;

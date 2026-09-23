@@ -281,6 +281,14 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(super::task_serviced::record_task_serviced),
         )
         .route("/v1/tasks/{task_id}/children", get(get_task_children))
+        .route(
+            "/v1/tasks/{task_id}/subtasks",
+            post(super::subtask_joins::create_subtasks),
+        )
+        .route(
+            "/v1/tasks/{task_id}/joins",
+            get(super::subtask_joins::get_task_joins),
+        )
         .route("/v1/tasks/{task_id}/inputs", get(get_task_inputs))
         .route(
             "/v1/tasks/{task_id}/transfer-history",

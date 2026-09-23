@@ -91,6 +91,15 @@ fn decide(db: &Db, config: &crate::config::Config, task_id: &str) -> Result<Read
     {
         return Ok(Readiness::Waiting);
     }
+    // A join the task created after its completion parked (T5) holds the
+    // completion until every child has resolved; its completion re-decides.
+    if !db
+        .unresolved_join_children(task_id)
+        .map_err(db_error)?
+        .is_empty()
+    {
+        return Ok(Readiness::Waiting);
+    }
     let text = |key: &str| {
         wait.payload
             .get(key)

@@ -239,6 +239,30 @@ pub(super) async fn set_task_parent(
         }
     };
 
+    // A child its parent's subtask join (T5) is still waiting on keeps that
+    // parent: detaching it would lift the parent's close guard while the
+    // join still waits for it.
+    if let Some(member) = db
+        .task_join_member(&task_id)
+        .map_err(|e| db_write_error("db error", e))?
+        .filter(|member| member.resolved_at.is_none())
+    {
+        let join_parent = db
+            .task_join(&member.join_id)
+            .map_err(|e| db_write_error("db error", e))?
+            .map(|join| join.parent_task_id);
+        if parent_task_id != join_parent {
+            return Err((
+                axum::http::StatusCode::CONFLICT,
+                format!(
+                    "task {task_id} is in subtask join {} of {}, which is waiting on its result; \
+                     its parent cannot change until it records a result or is closed",
+                    member.join_id,
+                    join_parent.as_deref().unwrap_or("its parent")
+                ),
+            ));
+        }
+    }
     db.update_pipeline_item_parent(&task_id, parent_task_id.as_deref())
         .map_err(|e| db_write_error("db error", e))?;
     state.publish_state_changed(StateChangeScope::Tasks);
@@ -747,18 +771,7 @@ pub(super) async fn close_task(
                     )
                 })?;
 
-            let open_children = db.count_open_children(&pipeline_item_id).map_err(|e| {
-                (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("db error: {}", e),
-                )
-            })?;
-            if open_children > 0 {
-                return Err((
-                    axum::http::StatusCode::CONFLICT,
-                    "task has open subtasks; close or detach subtasks first".to_string(),
-                ));
-            }
+            refuse_close_with_open_children(&db, &pipeline_item_id)?;
             let blocker_close_instructions = collect_blocker_resolution_instructions(
                 &db,
                 &pipeline_item_id,
@@ -879,6 +892,7 @@ pub(super) async fn close_task(
     );
     state.preview_sessions.revoke_task(&pipeline_item_id).await;
     start_dependents_unblocked_by_close_with_daemon(&state, &mut daemon, &pipeline_item_id).await;
+    super::subtask_joins::spawn_join_notices(&state);
     if let Err(error) =
         super::signal_agent::release_closed_singleton_reservation(&state, &pipeline_item_id).await
     {
@@ -890,6 +904,40 @@ pub(super) async fn close_task(
     state.publish_state_changed(StateChangeScope::Blockers);
 
     Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+/// Close is refused while the task has open children (spec §3), naming
+/// them, whether or not they belong to a subtask join — and while a join
+/// member it is waiting on has no task yet (recorded, not yet created).
+fn refuse_close_with_open_children(
+    db: &Db,
+    task_id: &str,
+) -> Result<(), (axum::http::StatusCode, String)> {
+    let mut open_children = db
+        .list_pipeline_item_children(task_id)
+        .map_err(|e| db_write_error("db error", e))?
+        .into_iter()
+        .filter(|child| child.closed_at.is_none())
+        .map(|child| child.id)
+        .collect::<Vec<_>>();
+    for member in db
+        .unresolved_join_children(task_id)
+        .map_err(|e| db_write_error("db error", e))?
+    {
+        if !open_children.contains(&member) {
+            open_children.push(member);
+        }
+    }
+    if open_children.is_empty() {
+        return Ok(());
+    }
+    Err((
+        axum::http::StatusCode::CONFLICT,
+        format!(
+            "task has open subtasks; close or detach subtasks first: {}",
+            open_children.join(", ")
+        ),
+    ))
 }
 
 pub(super) async fn abort_task_creation(
@@ -988,6 +1036,17 @@ async fn close_task_after_final_stage(
     // master never heard about. An error here deliberately abandons the close
     // — the task parks at its final stage instead.
     super::signal_agent::ensure_merge_handoff_before_close(state, &task_id).await?;
+    // Nor may it close over open subtasks (spec §3): it parks at its final
+    // stage instead, exactly as an explicit close is refused.
+    {
+        let db = Db::open(&state.config.db_path).map_err(|e| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("db error: {}", e),
+            )
+        })?;
+        refuse_close_with_open_children(&db, &task_id)?;
+    }
     let has_workspace_teardown = workspace_teardown.is_some();
     let blocker_close_instructions = {
         let db = Db::open(&state.config.db_path).map_err(|e| {
@@ -1056,6 +1115,7 @@ async fn close_task_after_final_stage(
             .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
     }
     start_dependents_unblocked_by_close_with_daemon(state, daemon, &task_id).await;
+    super::subtask_joins::spawn_join_notices(state);
     if let Err(error) =
         super::signal_agent::release_closed_singleton_reservation(state, &task_id).await
     {
@@ -2716,6 +2776,24 @@ pub(super) async fn complete_stage(
                 }
                 return Ok((task_id, None, false, true, false, None));
             }
+            // A parent whose subtask join (T5) has children still without a
+            // result may not progress on a successful result: those results
+            // are what it has to combine first. A non-success result moves
+            // nothing and is recorded as usual. The session stays running.
+            if payload_verdict.completes_stage() {
+                let waiting = db
+                    .unresolved_join_children(&task_id)
+                    .map_err(|e| db_write_error("db error", e))?;
+                if !waiting.is_empty() {
+                    return Err((
+                        axum::http::StatusCode::CONFLICT,
+                        format!(
+                            "{}; nothing was recorded. Record the result again once they have",
+                            crate::task_creator::subtask_join_pending_error(&task_id, &waiting)
+                        ),
+                    ));
+                }
+            }
             // The plan a task's later stages were published under is not a
             // draft: once stamped, a differing retry of that same run would
             // leave the recorded plan and the executing stages describing
@@ -3148,6 +3226,9 @@ pub(super) async fn complete_stage(
         mark_completion_context_succeeded(&state.config.daemon_dir, &task_id, run_id, attempt_key);
     }
 
+    // A join member's result was delivered to its parent in the recording
+    // transaction; tell the parent's session.
+    super::subtask_joins::spawn_join_notices(&state);
     let mut workflow_extended = workflow_extended.then_some(true);
     if already_closed || replayed {
         // A replay of the exact completion that published the stages writes
@@ -3612,24 +3693,30 @@ pub(crate) async fn resume_ledger_continuations(state: Arc<AppState>) {
         }
     };
     for task_id in task_ids {
-        let task_mutation = state.begin_requested_task_mutation(&task_id).await;
-        match settle_ledger_continuation(&state, &task_id, true).await {
-            Ok(Some(owed)) => {
-                if let Err((_, error)) = dispatch_owed_transition(
-                    Arc::clone(&state),
-                    task_id.clone(),
-                    owed,
-                    task_mutation,
-                )
-                .await
-                {
-                    log::error!("owed stage transition for {task_id} failed: {error}");
-                }
+        resume_ledger_continuation(&state, &task_id).await;
+    }
+}
+
+/// One task's share of [`resume_ledger_continuations`]: publish, claim and
+/// dispatch its owed transition under its mutation lease, if it is due.
+pub(crate) async fn resume_ledger_continuation(state: &Arc<AppState>, task_id: &str) {
+    let task_mutation = state.begin_requested_task_mutation(task_id).await;
+    match settle_ledger_continuation(state, task_id, true).await {
+        Ok(Some(owed)) => {
+            if let Err((_, error)) = dispatch_owed_transition(
+                Arc::clone(state),
+                task_id.to_string(),
+                owed,
+                task_mutation,
+            )
+            .await
+            {
+                log::error!("owed stage transition for {task_id} failed: {error}");
             }
-            Ok(None) => {}
-            Err((_, error)) => {
-                log::warn!("ledger continuation for {task_id} still pending: {error}")
-            }
+        }
+        Ok(None) => {}
+        Err((_, error)) => {
+            log::warn!("ledger continuation for {task_id} still pending: {error}")
         }
     }
 }

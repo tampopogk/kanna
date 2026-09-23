@@ -435,6 +435,18 @@ impl Db {
                 )));
             }
             db.mark_task_snapshot_dirty(entry.task_id)?;
+            // A join member's first result resolves it and is delivered to
+            // its parent in this same transaction (T5).
+            if entry.kind == LedgerEntryKind::Result && !entry.historical {
+                if let Some(result) = envelope.get(entry.kind.as_str()) {
+                    db.resolve_join_member_on_result(
+                        entry.task_id,
+                        &entry_id,
+                        result,
+                        entry.message.unwrap_or(""),
+                    )?;
+                }
+            }
             crate::task_store::wake_publisher();
             Ok(LedgerEntryRef {
                 sequence,
@@ -801,6 +813,9 @@ impl Db {
                 // each consumed and what superseded it. `dependencies`
                 // above keeps listing the legacy task-level blockers.
                 "stage_dependencies": self.stage_edge_links(task_id)?,
+                // T5 subtask joins this task created, with each member's
+                // outcome and the input that delivered it.
+                "subtask_joins": self.subtask_join_links(task_id)?,
                 "pr": item.pr_url.as_ref().map(|url| json!({
                     "url": url,
                     "number": item.pr_number,
@@ -872,7 +887,8 @@ impl Db {
     }
 
     /// Take the task's continuation, but only once every entry it waited for
-    /// is published. Taking it deletes it, so exactly one caller dispatches.
+    /// is published and no subtask join holds the task. Taking it deletes
+    /// it, so exactly one caller dispatches.
     pub(crate) fn claim_ledger_continuation(
         &self,
         task_id: &str,
@@ -885,6 +901,12 @@ impl Db {
                 |row| row.get(0),
             )?;
             if pending > 0 {
+                return Ok(None);
+            }
+            // The transition it owes is progression, which a subtask join
+            // the task created meanwhile (T5) holds: the continuation stays
+            // until every child has resolved, then is claimed as usual.
+            if !db.unresolved_join_children(task_id)?.is_empty() {
                 return Ok(None);
             }
             let continuation = db

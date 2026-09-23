@@ -22,10 +22,12 @@
 //! (temp file + rename) whenever what it shows changes: `schema_version`,
 //! `task_id`, `repo_id`, `title`, `origin_prompt`, `workflow {name,
 //! definition}` (the exact pinned definition), `links {parent, dependencies,
-//! stage_dependencies, pr {url, number, head_sha}}` (`dependencies` lists
-//! legacy task-level blockers; `stage_dependencies` the T4 stage edges into
-//! the task, in edge order, with the result each consumed and any newer
-//! upstream result that superseded it), `stage`, `branch`, `base_ref`,
+//! stage_dependencies, subtask_joins, pr {url, number, head_sha}}`
+//! (`dependencies` lists legacy task-level blockers; `stage_dependencies`
+//! the T4 stage edges into the task, in edge order, with the result each
+//! consumed and any newer upstream result that superseded it;
+//! `subtask_joins` the T5 joins the task created and each member's
+//! outcome), `stage`, `branch`, `base_ref`,
 //! `owning_machine` (null until recorded per task), `created_at`,
 //! `updated_at`, `closed_at`, `snapshot_revision` and
 //! `ledger.published_through` (the highest published sequence).

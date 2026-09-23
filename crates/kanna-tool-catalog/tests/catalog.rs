@@ -37,6 +37,7 @@ fn bundled_catalog_parses_and_declares_all_tools() {
             "kanna_list_recent_tasks",
             "kanna_get_task",
             "kanna_list_task_children",
+            "kanna_get_task_joins",
             "kanna_wait_task",
             "kanna_wait_events",
             "kanna_notify_mobile",
@@ -54,6 +55,7 @@ fn bundled_catalog_parses_and_declares_all_tools() {
             "kanna_show_agent",
             "kanna_eject_agent",
             "kanna_create_task",
+            "kanna_create_subtasks",
             "kanna_signal_agent",
             "kanna_signal_merge_handoff",
             "kanna_queue_reviewed_pr",
@@ -3487,4 +3489,81 @@ fn dependencies_require_a_server_that_advertises_stage_dependencies() {
         &["kanna_create_task".to_string()],
     );
     assert!(old_info["serverStatus"]["capabilityVersions"]["stageDependencies"].is_null());
+}
+
+/// Mixed versions: a subtask join is only created or read on a server whose
+/// `GET /v1/status` confirms subtask joins. An older server has no join
+/// routes, and a client must not read that as a parent with nothing to wait
+/// on, so the adapters refuse before sending either request.
+#[test]
+fn subtask_joins_require_a_server_that_advertises_them() {
+    let catalog = bundled_catalog();
+    let create = resolve_request(
+        &catalog,
+        "kanna_create_subtasks",
+        &json!({ "task_id": "task-p", "children": [{ "prompt": "Review security" }] }),
+    )
+    .unwrap();
+    assert_eq!(create.method, Method::Post);
+    assert_eq!(create.path, "/v1/tasks/task-p/subtasks");
+    assert_eq!(create.body["children"][0]["prompt"], "Review security");
+    assert!(kanna_tool_catalog::requires_subtask_joins(&create));
+    let read = resolve_request(
+        &catalog,
+        "kanna_get_task_joins",
+        &json!({ "task_id": "task-p" }),
+    )
+    .unwrap();
+    assert_eq!(read.path, "/v1/tasks/task-p/joins");
+    assert!(kanna_tool_catalog::requires_subtask_joins(&read));
+    for (tool, args) in [
+        ("kanna_list_task_children", json!({ "task_id": "task-p" })),
+        (
+            "kanna_create_task",
+            json!({ "repo_id": "r", "prompt": "Plain" }),
+        ),
+    ] {
+        let request = resolve_request(&catalog, tool, &args).unwrap();
+        assert!(
+            !kanna_tool_catalog::requires_subtask_joins(&request),
+            "{tool}"
+        );
+    }
+
+    let pre_t5_status = json!({
+        "state": "running",
+        "desktopId": "old",
+        "desktopName": "Old Mac",
+        "version": "0.0.1",
+        "environment": "production",
+        "lanHost": "127.0.0.1",
+        "lanPort": 48120,
+        "kspStreamVersion": 2,
+        "stageDependenciesVersion": 1
+    });
+    let refused = kanna_tool_catalog::confirm_subtask_joins_supported(&pre_t5_status).unwrap_err();
+    assert!(
+        refused.starts_with("subtask_joins_unsupported"),
+        "{refused}"
+    );
+    assert!(refused.contains("Nothing was created"), "{refused}");
+    let mut current_status = pre_t5_status.clone();
+    current_status["subtaskJoinsVersion"] = json!(kanna_tool_catalog::SUBTASK_JOINS_VERSION);
+    kanna_tool_catalog::confirm_subtask_joins_supported(&current_status).unwrap();
+
+    let info = runtime_info_snapshot(
+        "http://127.0.0.1:49199",
+        RuntimeAdapterIdentity {
+            name: "kanna-mcp",
+            version: "0.1.0",
+            mcp_protocol_version: None,
+            task_id: None,
+        },
+        Ok(current_status),
+        &["kanna_create_subtasks".to_string()],
+    );
+    assert_eq!(
+        info["serverStatus"]["capabilityVersions"]["subtaskJoins"],
+        1
+    );
 }
