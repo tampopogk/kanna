@@ -309,10 +309,12 @@ async fn shaped_review_revise_loops_once_and_a_clean_pass_advances_to_pr() {
 }
 
 /// `planned`: the review stage's `replan` exit returns to plan under its own
-/// budget, and a plan result carrying a `workflow_definition` +
-/// `expected_definition` (identical to the pinned one, per the plan stage's
-/// own workflow-local instruction) is accepted as the T1 remaining-plan
-/// replacement, after which the task continues to implement.
+/// budget, and a plan result carrying a `workflow_definition` whose stages
+/// after plan differ from the pinned `expected_definition` (per the plan
+/// stage's own workflow-local instruction, publishing the remaining stages
+/// its revised plan actually chose) is accepted as the T1 remaining-plan
+/// replacement — the task's pinned definition becomes the submitted one —
+/// after which the task continues to implement under the new definition.
 #[tokio::test]
 async fn planned_review_replan_returns_to_plan_and_republishes_the_remaining_plan() {
     let _sidecar_guard = crate::test_sidecar_guard().await;
@@ -368,8 +370,21 @@ async fn planned_review_replan_returns_to_plan_and_republishes_the_remaining_pla
     let plan_run = fixture.running_run("plan", "main");
 
     // The plan session's own workflow-local instruction: on a replan visit,
-    // record the revised plan and republish the identical remaining stages
-    // through the T1 remaining-plan replacement contract.
+    // record the revised plan and publish the remaining stages it actually
+    // chose — here, a changed "in progress" prompt — through the T1
+    // remaining-plan replacement contract. `workflow_definition` need not
+    // match `expected_definition` (the pinned document read); only the
+    // current stage's role must survive.
+    const REVISED_IMPLEMENT_PROMPT: &str =
+        "$TASK_PROMPT\n\nSplit the migration into two steps, per the revised plan.";
+    let mut revised = pinned.clone();
+    let stages = revised["stages"].as_array_mut().unwrap();
+    let implement_stage = stages
+        .iter_mut()
+        .find(|stage| stage["name"] == "in progress")
+        .unwrap();
+    implement_stage["prompt"] = serde_json::json!(REVISED_IMPLEMENT_PROMPT);
+
     let (status, body) = fixture
         .post(
             "complete-stage",
@@ -378,7 +393,7 @@ async fn planned_review_replan_returns_to_plan_and_republishes_the_remaining_pla
                 "status": "success",
                 "summary": "Revised plan: split the migration into two steps",
                 "expectedDefinition": pinned,
-                "workflowDefinition": pinned,
+                "workflowDefinition": revised,
             }),
         )
         .await;
@@ -387,16 +402,19 @@ async fn planned_review_replan_returns_to_plan_and_republishes_the_remaining_pla
     fixture.settle().await;
     // plan's own transition is manual: a person confirms it before implement
     // starts, even after a replan.
-    assert_eq!(
-        fixture
-            .db()
-            .get_pipeline_item(fixture.task_id)
-            .unwrap()
-            .unwrap()
-            .stage
-            .as_deref(),
-        Some("plan")
-    );
+    let item = fixture
+        .db()
+        .get_pipeline_item(fixture.task_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(item.stage.as_deref(), Some("plan"));
+    // The task's pinned workflow is now the submitted one.
+    let now_pinned: serde_json::Value = serde_json::from_str(&item.pipeline_def.unwrap()).unwrap();
+    // The server's own serialization drops `$schema` (not part of the
+    // resolved WorkflowDefinition); everything the caller submitted survives.
+    let mut expected = revised.clone();
+    expected.as_object_mut().unwrap().remove("$schema");
+    assert_eq!(now_pinned, expected);
 
     let (status, body) = fixture
         .post("advance-stage", serde_json::json!({ "source": "operator" }))
@@ -404,9 +422,19 @@ async fn planned_review_replan_returns_to_plan_and_republishes_the_remaining_pla
     assert_eq!(status, StatusCode::OK, "{body}");
     fixture.wait_for_stage("in progress").await;
     fixture.settle().await;
-    assert_eq!(
-        fixture.running_run("in progress", "main").agent.as_deref(),
-        Some("implement")
+    let implement_run = fixture.running_run("in progress", "main");
+    assert_eq!(implement_run.agent.as_deref(), Some("implement"));
+    // The stage that runs next follows the new definition, not the pinned
+    // one the plan session read.
+    let resolved_prompt = fixture
+        .db()
+        .stage_run_prompt(fixture.task_id, &implement_run.id)
+        .unwrap()
+        .expect("the spawned run's resolved prompt is recorded")
+        .resolved_prompt;
+    assert!(
+        resolved_prompt.contains("Split the migration into two steps"),
+        "{resolved_prompt}"
     );
 }
 
