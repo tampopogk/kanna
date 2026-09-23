@@ -227,6 +227,22 @@ impl Db {
         }
     }
 
+    /// A live row a repair keeps as it is: a workflow claim still active
+    /// by T9's rule, or a transfer that still owns its source by it.
+    fn held_by_live_transfer(
+        &self,
+        table: &str,
+        live: &Map<String, Value>,
+    ) -> Result<bool, rusqlite::Error> {
+        match table {
+            "task_transfer_workflow_claim" => self.transfer_claim_is_active(live),
+            "task_transfer" => self.transfer_still_owns_its_source(
+                live.get("id").and_then(Value::as_str).unwrap_or(""),
+            ),
+            _ => Ok(false),
+        }
+    }
+
     /// Now, as the ledger writes times.
     pub(crate) fn current_utc_timestamp(&self) -> Result<String, rusqlite::Error> {
         self.conn
@@ -559,13 +575,9 @@ impl Db {
                             // A counter never goes down: before a task's
                             // first reservation disk holds no row for it.
                             || HIGH_WATER_COLUMNS.iter().any(|(name, _)| *name == table.table)
-                            || (table.table == "task_transfer_workflow_claim"
-                                && db.transfer_claim_is_active(&live)?)
-                            // The transfer holding it stays with it.
-                            || (table.table == "task_transfer"
-                                && db.transfer_still_owns_its_source(
-                                    live.get("id").and_then(Value::as_str).unwrap_or(""),
-                                )?);
+                            // An active transfer claim, and the transfer
+                            // holding it, stay.
+                            || db.held_by_live_transfer(table.table, &live)?;
                         if kept {
                             continue;
                         }
@@ -589,9 +601,16 @@ impl Db {
                     .map(|(_, column)| *column);
                 for task in targets {
                     let live = live_rows(table, task)?;
+                    let holds_claim = db.task_workflow_is_claimed_by_transfer(task)?.is_some();
                     for carried in wanted(table.table, task) {
                         let mut row = carried.row.clone();
                         match matching(&row, &live, &key) {
+                            // A claim, or a transfer, that still owns the
+                            // task by T9's rule is live state the disk's
+                            // older record must not rewrite: an older claim
+                            // naming a settled transfer would stop excluding
+                            // one that can still shut the source down.
+                            Some(existing) if db.held_by_live_transfer(table.table, existing)? => {}
                             Some(existing) => {
                                 if let Some(column) = high_water {
                                     let live_mark = existing.get(column).and_then(Value::as_i64);
@@ -604,6 +623,7 @@ impl Db {
                                 let rowid = rowid_of(existing).unwrap_or_default();
                                 let mut changed = row.clone();
                                 changed.retain(|column, value| existing.get(column) != Some(value));
+                                let changed = disk_wins_update(table.table, changed, holds_claim);
                                 if !changed.is_empty() {
                                     update_row(db, table.table, rowid, &changed)?;
                                     changes.rows_written += 1;
@@ -881,6 +901,58 @@ impl Db {
         }
         Ok(moved)
     }
+}
+
+/// Carried columns that say which transfer owns a task: everything T9's
+/// `claim_task_workflow_for_transfer_finalization` reads from carried rows
+/// (the claim, the transfer's association and status) and the ownership
+/// records beside them (the ledger-export fence, an import's ownership
+/// generation). They are live state: while the database holds an
+/// effective claim on the task, a repair from disk never writes them (the
+/// claim token and its lease never reach disk at all). A test keeps this
+/// list complete over [`CARRIED_TABLES`].
+pub(crate) const TRANSFER_OWNERSHIP_COLUMNS: &[(&str, &[&str])] = &[
+    (
+        "task_transfer_workflow_claim",
+        &["transfer_id", "claimed_at"],
+    ),
+    (
+        "task_transfer",
+        &[
+            "direction",
+            "status",
+            "source_task_id",
+            "local_task_id",
+            "completed_at",
+        ],
+    ),
+    (
+        "transfer_ledger_export",
+        &["transfer_id", "exported_through", "exported_at"],
+    ),
+    (
+        "transferred_task_state",
+        &["transfer_id", "ownership_generation"],
+    ),
+];
+
+/// What a repair from disk writes over a matching live row: `changed`
+/// without the ownership columns while the database holds an effective
+/// claim on the task.
+pub(crate) fn disk_wins_update(
+    table: &str,
+    mut changed: Map<String, Value>,
+    database_holds_claim: bool,
+) -> Map<String, Value> {
+    if database_holds_claim {
+        if let Some((_, columns)) = TRANSFER_OWNERSHIP_COLUMNS
+            .iter()
+            .find(|(name, _)| *name == table)
+        {
+            changed.retain(|column, _| !columns.contains(&column.as_str()));
+        }
+    }
+    changed
 }
 
 /// Carried columns that hold a `task_input` id of the row's task, found by

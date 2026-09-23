@@ -337,7 +337,11 @@ stamp is owed again at the next `disk`-mode startup.
   `task.json` as the disk's whatever the revisions say. A repair aborts if
   the task's rows changed after they were compared, never lowers a counter,
   keeps a transfer (and its workflow claim) that still owns the task by
-  T9's rule, and never rewrites another task's input: an input whose id a
+  T9's rule, never writing a disk value over it; while the database holds
+  an effective claim on the task, no ownership column
+  (`TRANSFER_OWNERSHIP_COLUMNS`: the claim, the transfer's association and
+  status, the ledger-export fence, an import's ownership generation) is
+  taken from disk, and never rewrites another task's input: an input whose id a
   restored older database handed out again moves to a new id, and the join
   member naming it follows.
 

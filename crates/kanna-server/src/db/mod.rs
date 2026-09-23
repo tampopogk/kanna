@@ -120,7 +120,9 @@ pub(crate) use disk_authority::ReconcileChanges;
 #[cfg(test)]
 pub(crate) use disk_authority::CHANGED_SINCE_COMPARED;
 #[cfg(test)]
-pub(crate) use disk_authority::INPUT_ID_REFERENCES;
+pub(crate) use disk_authority::{
+    disk_wins_update, INPUT_ID_REFERENCES, TRANSFER_OWNERSHIP_COLUMNS,
+};
 pub(crate) use event_subscriptions::EventSubscription;
 
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 10_000;

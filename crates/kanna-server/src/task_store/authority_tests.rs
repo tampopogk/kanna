@@ -856,3 +856,149 @@ fn a_claim_whose_transfer_has_finished_is_the_disks_to_decide() {
         .unwrap();
     assert_eq!(claims, 0);
 }
+
+// ---------------------------------------------------------------------------
+// Review round 3
+// ---------------------------------------------------------------------------
+
+/// The disk's claim names an older transfer that has settled; the live
+/// claim names another that still owns the source (display status failed,
+/// finalization running). The repair keeps the live claim and its transfer
+/// as they are, and takes the rest of the disk's rows.
+#[test]
+fn a_live_claim_is_not_rewritten_to_the_disks_settled_one() {
+    let (db, db_path) = installation("claim-swap", "repo-claim-swap", &["t1"]);
+    assert!(flush_all(&db, &db_path).is_empty());
+    assert_eq!(
+        start(&db, &db_path, Some(Mode::Disk)).unwrap().mode,
+        Mode::Disk
+    );
+    db.connection_for_e2e_tests()
+        .execute_batch(
+            "INSERT INTO task_transfer (id, direction, status, source_task_id, local_task_id)
+             VALUES ('xfer-old', 'outgoing', 'completed', 't1', 't1');
+             INSERT INTO task_transfer_workflow_claim (pipeline_item_id, transfer_id)
+             VALUES ('t1', 'xfer-old');",
+        )
+        .unwrap();
+    assert!(flush_all(&db, &db_path).is_empty());
+    let copy = backup(&db, &db_path);
+    db.connection_for_e2e_tests()
+        .execute(
+            "UPDATE pipeline_item SET display_name = 'on disk' WHERE id = 't1'",
+            [],
+        )
+        .unwrap();
+    assert!(flush_all(&db, &db_path).is_empty());
+    drop(db);
+    let db = restore(&db_path, &copy);
+    db.connection_for_e2e_tests()
+        .execute_batch(
+            "INSERT INTO task_transfer (id, direction, status, source_task_id, local_task_id)
+             VALUES ('xfer-live', 'outgoing', 'failed', 't1', 't1');
+             INSERT INTO transfer_work (id, kind, transfer_id, payload_json, status)
+             VALUES ('work-live', 'finalize', 'xfer-live', '{}', 'running');
+             UPDATE task_transfer_workflow_claim SET transfer_id = 'xfer-live'
+             WHERE pipeline_item_id = 't1';",
+        )
+        .unwrap();
+    assert_eq!(
+        db.task_workflow_is_claimed_by_transfer("t1")
+            .unwrap()
+            .as_deref(),
+        Some("xfer-live")
+    );
+    let transfer_row = |db: &Db, id: &str| -> Option<(String, String)> {
+        db.connection_for_e2e_tests()
+            .query_row(
+                "SELECT status, direction FROM task_transfer WHERE id = ?",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .unwrap()
+    };
+    let live_transfer = transfer_row(&db, "xfer-live");
+    db.flag_disk_divergence("t1", "the disk is ahead").unwrap();
+
+    let only = BTreeSet::from(["t1".to_string()]);
+    let report = reconcile_from_disk(&db, &db_path, Some(&only)).unwrap();
+    assert_eq!(report.reconciled.len(), 1, "{report:#?}");
+    assert_eq!(display_name(&db).as_deref(), Some("on disk"));
+    let claim: String = db
+        .connection_for_e2e_tests()
+        .query_row(
+            "SELECT transfer_id FROM task_transfer_workflow_claim WHERE pipeline_item_id = 't1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(claim, "xfer-live");
+    assert_eq!(transfer_row(&db, "xfer-live"), live_transfer);
+    assert_eq!(
+        db.task_workflow_is_claimed_by_transfer("t1")
+            .unwrap()
+            .as_deref(),
+        Some("xfer-live")
+    );
+    // The transfer that owns it can still finalize.
+    assert_eq!(
+        db.claim_task_workflow_for_transfer_finalization("xfer-live", "t1")
+            .unwrap(),
+        Ok(())
+    );
+}
+
+/// Every carried column that names a claim, an owner, a lease or its expiry
+/// is an ownership column, and none of them is ever in what a repair
+/// writes over a live row while the database holds a claim.
+#[test]
+fn ownership_columns_are_never_in_the_disk_wins_update_set() {
+    use crate::db::TRANSFER_OWNERSHIP_COLUMNS;
+    let listed = |table: &str, column: &str| {
+        TRANSFER_OWNERSHIP_COLUMNS
+            .iter()
+            .any(|(name, columns)| *name == table && columns.contains(&column))
+    };
+    // Columns the words match that are not a transfer's ownership, each
+    // classified on purpose: a new match must be listed on one side.
+    const NOT_TRANSFER_OWNERSHIP: &[(&str, &str, &str)] = &[(
+        "human_review_decision",
+        "owner_desktop_id",
+        "the desktop that delivers a review decision's merge; T9 never reads it",
+    )];
+    for table in crate::db::task_state::CARRIED_TABLES {
+        for column in table.columns {
+            let ownership = ["claim", "owner", "lease", "expir"]
+                .iter()
+                .any(|word| column.contains(word))
+                || table.table == "task_transfer_workflow_claim" && *column != "pipeline_item_id";
+            let exempt = NOT_TRANSFER_OWNERSHIP
+                .iter()
+                .any(|(name, exempt, _)| *name == table.table && exempt == column);
+            if ownership && !exempt {
+                assert!(
+                    listed(table.table, column),
+                    "{}.{column} is ownership state and is not in TRANSFER_OWNERSHIP_COLUMNS",
+                    table.table
+                );
+            }
+        }
+        let every: Map<String, Value> = table
+            .columns
+            .iter()
+            .map(|column| (column.to_string(), json!("from disk")))
+            .collect();
+        let written = crate::db::disk_wins_update(table.table, every.clone(), true);
+        assert!(
+            written.keys().all(|column| !listed(table.table, column)),
+            "{} would take ownership columns from disk",
+            table.table
+        );
+        // Without a live claim the disk's word stands, ownership included.
+        assert_eq!(
+            crate::db::disk_wins_update(table.table, every.clone(), false),
+            every
+        );
+    }
+}
