@@ -75,6 +75,7 @@ use super::rebuild::{
 use super::{flush_all, replace_atomically, root_for_db};
 use crate::db::task_state::CARRIED_TABLES;
 use crate::db::Db;
+use crate::db::ReconcileChanges;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -203,6 +204,15 @@ pub(crate) fn diverged_tasks(root: &Path) -> Vec<String> {
         .filter(|(flagged, _)| flagged == root)
         .map(|(_, task)| task.clone())
         .collect()
+}
+
+/// Flagged, and not yet repaired: nothing of the task is published over
+/// the disk, and its differing `task.json` is taken as the disk's.
+pub(crate) fn is_diverged(root: &Path, task_id: &str) -> bool {
+    DIVERGED
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .contains(&(root.to_path_buf(), task_id.to_string()))
 }
 
 fn clear_divergence(root: &Path, task_id: &str) {
@@ -403,6 +413,35 @@ pub(crate) fn stop_after(root: &Path, checkpoint: &str) {
         .insert(root.to_path_buf(), checkpoint.to_string());
 }
 
+#[cfg(test)]
+type Interleaved = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+static INTERLEAVED: LazyLock<Mutex<HashMap<PathBuf, Interleaved>>> =
+    LazyLock::new(Default::default);
+
+/// Run `write` once, in the next reconciliation under `root`, after its
+/// comparison and before its transaction: a writer outside the caller's
+/// lease committing in between.
+#[cfg(test)]
+pub(crate) fn interleave_before_reconcile(root: &Path, write: impl FnOnce() + Send + 'static) {
+    INTERLEAVED
+        .lock()
+        .unwrap()
+        .insert(root.to_path_buf(), Box::new(write));
+}
+
+#[cfg(test)]
+fn before_reconcile_transaction(root: &Path) {
+    let write = INTERLEAVED.lock().unwrap().remove(root);
+    if let Some(write) = write {
+        write();
+    }
+}
+
+#[cfg(not(test))]
+fn before_reconcile_transaction(_root: &Path) {}
+
 /// What a stopped [`start`] returns.
 #[cfg(test)]
 pub const INTERRUPTED: &str = "interrupted after checkpoint";
@@ -451,6 +490,10 @@ struct Compared {
     /// Committed and unpublished, already on disk with the same bytes.
     pending_on_disk: Vec<i64>,
     reservations: Vec<i64>,
+    /// The publisher flagged the task: its `task.json` was found ahead of
+    /// the rows, and a live write may since have raised the database's
+    /// revision to or past it, so revisions no longer tell which is newer.
+    diverged: bool,
 }
 
 impl Compared {
@@ -631,7 +674,11 @@ fn verdict(compared: &Compared) -> Verdict {
     // this one does not descend from; the same revision with other rows
     // was changed on disk. Anything else is the database being ahead.
     if compared.has_state && !compared.state_equal {
-        if compared.disk_revision > revision {
+        if compared.diverged {
+            ahead.push(
+                "the publisher found this task.json ahead of the rows, and it still differs".into(),
+            );
+        } else if compared.disk_revision > revision {
             ahead.push(format!(
                 "task.json revision {} is newer than the database's {revision}",
                 compared.disk_revision
@@ -780,6 +827,7 @@ pub fn reconcile_from_disk(
     let sql_tasks = db.sql_tasks_for_authority().map_err(db_error)?;
     let mut targets = BTreeSet::new();
     let mut disk_revisions = BTreeMap::new();
+    let mut compared_at = BTreeMap::new();
     let mut reasons: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for directory in scan
         .tasks
@@ -787,7 +835,9 @@ pub fn reconcile_from_disk(
         .filter(|dir| wanted(&dir.snapshot.task_id) && !removing_task(&dir.snapshot.task_id))
     {
         let task_id = directory.snapshot.task_id.clone();
-        let compared = compare_task(db, directory).map_err(db_error)?;
+        let mut compared = compare_task(db, directory).map_err(db_error)?;
+        compared.diverged = is_diverged(&root, &task_id);
+        compared_at.insert(task_id.clone(), compared.sql.map(|(revision, _)| revision));
         match verdict(&compared) {
             Verdict::InSync => {}
             Verdict::CountersBehind(disk_revision) => {
@@ -878,9 +928,28 @@ pub fn reconcile_from_disk(
         };
         let projection = project(&targets);
         report.diagnostics.extend(projection.diagnostics.clone());
-        match db.reconcile_tasks_from_projection(&targets, &projection, &disk_revisions) {
+        before_reconcile_transaction(&root);
+        let note_changes = |report: &mut ReconcileReport, changes: ReconcileChanges| {
+            report.discarded_entries.extend(changes.discarded_entries);
+            for (task, table, rowid) in changes.relocated_rows {
+                report.diagnostics.push(format!(
+                    "{task}: its {table} row {rowid} is recovered under a new rowid: another task's row holds {rowid}"
+                ));
+            }
+            for (task, from, to) in changes.renumbered_inputs {
+                report.diagnostics.push(format!(
+                    "{task}: input {from} is recovered as input {to}: another task's input holds {from}"
+                ));
+            }
+        };
+        match db.reconcile_tasks_from_projection(
+            &targets,
+            &projection,
+            &disk_revisions,
+            &compared_at,
+        ) {
             Ok(changes) => {
-                report.discarded_entries.extend(changes.discarded_entries);
+                note_changes(&mut report, changes);
                 for task in &targets {
                     report
                         .reconciled
@@ -899,9 +968,10 @@ pub fn reconcile_from_disk(
                         &alone,
                         &project(&alone),
                         &disk_revisions,
+                        &compared_at,
                     ) {
                         Ok(changes) => {
-                            report.discarded_entries.extend(changes.discarded_entries);
+                            note_changes(&mut report, changes);
                             report
                                 .reconciled
                                 .push((task.clone(), reasons.remove(task).unwrap_or_default()));
@@ -1286,10 +1356,13 @@ pub fn start(db: &Db, db_path: &str, request: Option<Mode>) -> Result<StartOutco
     };
     set_mode(&root, db_path, switch.record.mode);
     if let Some(request) = request {
-        if switch.record.requested != Some(request)
-            && (switch.record.mode != request || switch.record.switch.is_some())
-        {
-            switch.record.requested = Some(request);
+        // The explicit request replaces whatever was pending: one that asks
+        // for the mode already in force (and no switch under way) asks for
+        // nothing, and withdraws a pending request the other way.
+        let wanted =
+            (switch.record.mode != request || switch.record.switch.is_some()).then_some(request);
+        if switch.record.requested != wanted {
+            switch.record.requested = wanted;
             save_record(&root, &switch.record)?;
         }
     }

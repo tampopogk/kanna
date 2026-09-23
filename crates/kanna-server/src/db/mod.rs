@@ -116,6 +116,9 @@ pub use transfers::{
 };
 pub use transition_commits::TransitionCommit;
 
+pub(crate) use disk_authority::ReconcileChanges;
+#[cfg(test)]
+pub(crate) use disk_authority::CHANGED_SINCE_COMPARED;
 pub(crate) use event_subscriptions::EventSubscription;
 
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 10_000;

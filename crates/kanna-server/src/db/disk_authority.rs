@@ -50,7 +50,20 @@ pub(crate) struct ReconcileChanges {
     /// not hold (or holds with other bytes): `(task, sequence)`. Disk is the
     /// record; they are dropped.
     pub discarded_entries: Vec<(String, i64)>,
+    /// Inputs recovered under a new row id because another task's input
+    /// holds the one their ledger entry names (a restored older database
+    /// handed the id out again): `(task, ledger's id, new id)`.
+    pub renumbered_inputs: Vec<(String, i64, i64)>,
+    /// Carried rows written under a new rowid because another task's row
+    /// holds theirs: `(task, table, disk's rowid)`.
+    pub relocated_rows: Vec<(String, String, i64)>,
 }
+
+/// A reconciliation refused because a target's rows changed after they were
+/// compared with its directory: a writer outside the caller's lease
+/// committed in between, and the projection no longer describes what it
+/// would overwrite.
+pub(crate) const CHANGED_SINCE_COMPARED: &str = "changed since it was compared with disk";
 
 /// Tables whose counter never goes down: a sequence or branch number the
 /// database handed out stays spent even when disk never recorded it.
@@ -88,6 +101,20 @@ fn matching<'a>(
     })
 }
 
+/// The column that is the table's rowid (a lone `INTEGER PRIMARY KEY`).
+fn rowid_alias(db: &Db, table: &str) -> Result<Option<String>, rusqlite::Error> {
+    let mut statement = db
+        .conn
+        .prepare("SELECT name, type FROM pragma_table_info(?) WHERE pk > 0")?;
+    let key: Vec<(String, String)> = statement
+        .query_map([table], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    Ok(match key.as_slice() {
+        [(name, kind)] if kind.eq_ignore_ascii_case("INTEGER") => Some(name.clone()),
+        _ => None,
+    })
+}
+
 fn update_row(
     db: &Db,
     table: &str,
@@ -117,6 +144,25 @@ fn update_row(
 }
 
 impl Db {
+    /// A transfer's claim on a task's workflow is active until its transfer
+    /// ends: removing it would let competing workflow work in.
+    fn transfer_claim_is_active(
+        &self,
+        claim: &Map<String, Value>,
+    ) -> Result<bool, rusqlite::Error> {
+        let transfer = claim
+            .get("transfer_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let ended: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM task_transfer
+                           WHERE id = ? AND status IN ('completed', 'rejected', 'failed'))",
+            [transfer],
+            |row| row.get(0),
+        )?;
+        Ok(!ended)
+    }
+
     /// Now, as the ledger writes times.
     pub(crate) fn current_utc_timestamp(&self) -> Result<String, rusqlite::Error> {
         self.conn
@@ -336,8 +382,31 @@ impl Db {
         targets: &BTreeSet<String>,
         projection: &Projection,
         disk_revisions: &BTreeMap<String, i64>,
+        compared_at: &BTreeMap<String, Option<i64>>,
     ) -> Result<ReconcileChanges, rusqlite::Error> {
         self.with_immediate_transaction(|db| {
+            // Every change to a carried row bumps the task's snapshot
+            // revision in the changing statement, so an unchanged revision
+            // means unchanged rows. `None`: the task did not exist.
+            for task in targets {
+                let now: Option<i64> = db
+                    .conn
+                    .query_row(
+                        "SELECT snapshot.revision FROM task_ledger_snapshot snapshot
+                         JOIN pipeline_item item ON item.id = snapshot.task_id
+                         WHERE snapshot.task_id = ?",
+                        [task],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                let exists = db.get_pipeline_item(task)?.is_some();
+                let expected = compared_at.get(task).copied().flatten();
+                if now != expected || (expected.is_none() && exists) {
+                    return Err(rusqlite::Error::InvalidParameterName(format!(
+                        "task {task} {CHANGED_SINCE_COMPARED} (revision {expected:?}, now {now:?})"
+                    )));
+                }
+            }
             let mut changes = ReconcileChanges::default();
             let wanted = |table: &str, task: &str| -> Vec<&CarriedRow> {
                 projection
@@ -419,7 +488,12 @@ impl Db {
                         let kept = wanted
                             .iter()
                             .any(|row| matching(row, std::slice::from_ref(&live), &key).is_some())
-                            || derived(table.table, task, &live);
+                            || derived(table.table, task, &live)
+                            // A counter never goes down: before a task's
+                            // first reservation disk holds no row for it.
+                            || HIGH_WATER_COLUMNS.iter().any(|(name, _)| *name == table.table)
+                            || (table.table == "task_transfer_workflow_claim"
+                                && db.transfer_claim_is_active(&live)?);
                         if kept {
                             continue;
                         }
@@ -464,6 +538,32 @@ impl Db {
                                 }
                             }
                             None => {
+                                // A restored older database may have handed
+                                // this rowid to another task's row: that row
+                                // stays, and this one takes a new rowid.
+                                let taken = match rowid_of(&row) {
+                                    Some(rowid) => db
+                                        .conn
+                                        .query_row(
+                                            &format!(
+                                                "SELECT EXISTS(SELECT 1 FROM \"{}\" WHERE rowid = ?)",
+                                                table.table
+                                            ),
+                                            [rowid],
+                                            |row| row.get::<_, bool>(0),
+                                        )?
+                                        .then_some(rowid),
+                                    None => None,
+                                };
+                                if let Some(rowid) = taken {
+                                    row.remove("rowid");
+                                    if let Some(alias) = rowid_alias(db, table.table)? {
+                                        row.remove(&alias);
+                                    }
+                                    changes
+                                        .relocated_rows
+                                        .push((task.clone(), table.table.to_string(), rowid));
+                                }
                                 insert_row(db, table.table, &row)?;
                                 changes.rows_written += 1;
                             }
@@ -549,12 +649,75 @@ impl Db {
                         changes.rows_written += 1;
                     }
                 }
-                let inputs: BTreeMap<i64, &crate::task_store::rebuild::InputRow> = projection
+                // Inputs keep the id their ledger entry names, unless another
+                // task's input holds it (a restored older database handed it
+                // out again): that row is never touched, and this task's input
+                // is recovered under a new id (or the one it was given at an
+                // earlier reconciliation).
+                let inputs: Vec<&crate::task_store::rebuild::InputRow> = projection
                     .inputs
                     .iter()
                     .filter(|input| &input.task_id == task)
-                    .map(|input| (input.id, input))
                     .collect();
+                let mut kept_inputs = BTreeSet::new();
+                let mut placed = Vec::new();
+                for input in &inputs {
+                    let holder: Option<String> = db
+                        .conn
+                        .query_row(
+                            "SELECT task_id FROM task_input WHERE id = ?",
+                            [input.id],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
+                    match holder {
+                        Some(holder) if &holder != task => {
+                            let recovered: Option<i64> = db
+                                .conn
+                                .query_row(
+                                    "SELECT id FROM task_input
+                                     WHERE task_id = ? AND source = ? AND message = ?
+                                       AND delivered_at = ? AND stage IS ?
+                                     ORDER BY id LIMIT 1",
+                                    params![
+                                        task,
+                                        input.source,
+                                        input.message,
+                                        input.delivered_at,
+                                        input.stage
+                                    ],
+                                    |row| row.get(0),
+                                )
+                                .optional()?;
+                            let id = match recovered {
+                                Some(id) => id,
+                                None => {
+                                    let mut renumbered = (*input).clone();
+                                    // Past every id ever handed out, as
+                                    // AUTOINCREMENT would allocate.
+                                    renumbered.id = db.conn.query_row(
+                                        "SELECT MAX(
+                                             COALESCE((SELECT MAX(id) FROM task_input), 0),
+                                             COALESCE((SELECT seq FROM sqlite_sequence
+                                                       WHERE name = 'task_input'), 0)
+                                         ) + 1",
+                                        [],
+                                        |row| row.get(0),
+                                    )?;
+                                    upsert_input(db, &renumbered)?;
+                                    changes.rows_written += 1;
+                                    renumbered.id
+                                }
+                            };
+                            changes.renumbered_inputs.push((task.clone(), input.id, id));
+                            kept_inputs.insert(id);
+                        }
+                        _ => {
+                            kept_inputs.insert(input.id);
+                            placed.push(*input);
+                        }
+                    }
+                }
                 let live_inputs: Vec<i64> = {
                     let mut statement =
                         db.conn.prepare("SELECT id FROM task_input WHERE task_id = ?")?;
@@ -562,12 +725,12 @@ impl Db {
                     rows.collect::<Result<_, _>>()?
                 };
                 for id in live_inputs {
-                    if !inputs.contains_key(&id) {
+                    if !kept_inputs.contains(&id) {
                         db.conn.execute("DELETE FROM task_input WHERE id = ?", [id])?;
                         changes.rows_removed += 1;
                     }
                 }
-                for input in inputs.values() {
+                for input in placed {
                     upsert_input(db, input)?;
                 }
 

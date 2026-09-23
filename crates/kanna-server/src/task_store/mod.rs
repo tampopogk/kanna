@@ -372,6 +372,18 @@ pub fn flush_task_at(db: &Db, root: &Path, task_id: &str) -> Result<FlushOutcome
         .map_err(|error| format!("db error: {error}"))?
         .ok_or_else(|| format!("task not found: {task_id}"))?;
     let dir = task_dir(root, &item.repo_id, &item.id);
+    // Disk authority (T13c): a task found with its disk ahead publishes
+    // nothing until it is reconciled from that disk. A live write since the
+    // finding may have raised the database's revision past the disk's, so
+    // no revision check can tell a later flush it is safe to write over it.
+    if authority::mode_for_root(root) == authority::Mode::Disk
+        && authority::is_diverged(root, task_id)
+    {
+        let error =
+            "the disk is ahead of the database; awaiting reconciliation from disk".to_string();
+        let _ = db.record_task_snapshot_error(task_id, &error);
+        return Err(error);
+    }
     let ledger = dir.join("ledger");
     let mut outcome = FlushOutcome::default();
     let pending = db
