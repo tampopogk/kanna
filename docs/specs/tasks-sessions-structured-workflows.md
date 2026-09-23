@@ -114,7 +114,7 @@ The engine guarantees structure. Everything in the right column is configurable 
 - **Intake templates**, by pattern of work (descriptions are context sentences; stage roles in order; `M` a manual transition out of the preceding stage, `A` automatic):
   - **mechanical**: implement → pr(M). The test suite is the reviewer.
   - **shaped**: implement → review(A) → pr(M); implement/review loop under budget.
-  - **planned**: plan → implement(M) → review(A) → pr(M); review may loop to plan or implement.
+  - **planned**: plan → implement(M) → review(A) → pr(M); review failure loops to implement; a review that finds the approach wrong records `needs-input` and a person or manager sends the task back to plan.
   - **designed**: mockup → stakeholder(M) → plan(M) → implement(A) → review(A) → pr(M) → pr-review(M). Mockup and stakeholder iterate; humans read at the mockup, the stakeholder outcome, and the PR brief. This is the front-loaded flow.
   - **research**: research — parks at its manual gate with a brief; the plan stage is appended when the owner chooses.
   - **specialized-reviewers** stays a public template: shaped, with a review stage whose session dispatches specialty review subtasks. Verified 2026-09-22: the dispatcher creates child tasks (222 on the owner's machine under 15 parents), and the same dispatching review stage has also run inside single-reviewer and no-review tasks, so the template and "a review stage that dispatches" are the same thing; the name is what makes it selectable. **Owner.**
@@ -171,7 +171,7 @@ Two accounts on two of the owner's machines (one signed in as each identity), no
 
 ## 15. Retired by this specification
 
-The input ledger as it exists, recording tool-delivered input only (**Owner**; replaced by the task ledger of §7); reusing an earlier branch on a loop (**Owner:** an incrementing counter instead, in the same workspace); the origin prompt as the task's authority (**Owner**); posts as a stage-like concept (the commit step is a property of a transition, §5); a stamped plan context and hard-coded stage recipes (replaced by `$RESULT[stage]` and plan replacement); separate resume, rerun and revision mechanisms (all are a new session of a stage, with resume opportunistic); the revision-request call and the agent naming its own task's next stage (the template's `on_failure` does it); prompt variables that carry results; the engine-level distinction between a blocker and a stage dependency.
+The input ledger as it exists, recording tool-delivered input only (**Owner**; replaced by the task ledger of §7); reusing an earlier branch on a loop (**Owner:** an incrementing counter instead, in the same workspace); the origin prompt as the task's authority (**Owner**); posts as a stage-like concept (the commit step is a property of a transition, §5); a stamped plan context and hard-coded stage recipes (the plan is a result in the ledger, and the remaining plan is replaced under one rule); separate resume, rerun and revision mechanisms (all are a new session of a stage, with resume opportunistic); the revision-request call and the agent naming its own task's next stage (the template's `on_failure` does it); prompt variables that carry results; the engine-level distinction between a blocker and a stage dependency.
 
 ## 16. Independent components for the planner
 
