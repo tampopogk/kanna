@@ -2383,6 +2383,56 @@ async fn task_agent_session_route_persists_provider_session_id() {
     );
 }
 
+/// T11b: the desktop's daemon-session resolver prefers this over `branch`,
+/// which changes at every stage transition and can go stale mid-run.
+#[tokio::test]
+async fn snapshot_reports_the_latest_run_workspace_id() {
+    let app = super::test_router_with_seed("desktop-1", "Studio Mac", |db| {
+        db.insert_test_repo("repo-1", "Repo One").unwrap();
+        db.insert_test_pipeline_item(
+            "task-1",
+            "repo-1",
+            "prompt",
+            Some("Task One"),
+            "in progress",
+            "2026-04-17 08:00:00",
+        )
+        .unwrap();
+        db.insert_test_stage_run_window(
+            "run-1",
+            "task-1",
+            "in progress",
+            "2026-04-17 08:00:00",
+            None,
+        )
+        .unwrap();
+        db.set_stage_run_session(
+            "run-1",
+            &crate::db::StageRunSession {
+                workspace_id: Some("ws-task-1-in-progress-1".into()),
+                branch: Some("task-1".into()),
+                name: Some("in progress: prompt".into()),
+                transcript: None,
+                workspace_report: None,
+            },
+        )
+        .unwrap();
+    });
+
+    let snapshot_response = app
+        .oneshot(Request::get("/v1/snapshot").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(snapshot_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let snapshot: serde_json::Value = from_slice(&body).unwrap();
+    assert_eq!(
+        snapshot["entries"][0]["items"][0]["workspace_id"],
+        serde_json::json!("ws-task-1-in-progress-1")
+    );
+}
+
 /// `activity` blends two orthogonal facts, so task detail reports each one on
 /// its own. The combination that motivated the split — an agent busy inside a
 /// long tool or MCP call whose latest output nobody has read — is

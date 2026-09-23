@@ -75,6 +75,13 @@ export interface PipelineItem {
   pin_order: number | null;
   base_ref: string | null;
   agent_session_id: string | null;
+  /**
+   * The `stage_workspace` identity T2 records for the task's current stage
+   * run (spec §16.8, T11b). Absent before any run has recorded one, or on a
+   * peer that predates it — `taskSessionIdentity.ts` falls back to `branch`
+   * for those.
+   */
+  workspace_id?: string | null;
   teardown_started_at: string | null;
   parent_task_id: string | null;
   notify_task_id: string | null;

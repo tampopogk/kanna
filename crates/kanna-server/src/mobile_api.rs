@@ -330,6 +330,97 @@ pub struct TaskDetail {
     /// that is not coming or treat a live session as parked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_capacity_notice: Option<TaskProviderCapacityNotice>,
+    /// Every prior stage-run session for this task, oldest first (spec
+    /// §16.8, T11b) — the session identity T2 recorded at each run's start.
+    /// Runs that predate session recording, or that recorded no identity at
+    /// all (a teardown run), are omitted rather than padded with nulls.
+    #[serde(default)]
+    pub session_history: Vec<TaskSessionHistoryEntry>,
+    /// Stage-dependency edges into this task's current stage (spec §9, T4),
+    /// dependent side, in edge order — which upstream task/stage each edge
+    /// gates, and what it consumed or had superseded. The legacy
+    /// `blockedByTaskIds` above keeps reporting task-level blockers; this is
+    /// the finer-grained stage-edge picture and is empty for a task that
+    /// only has legacy blockers.
+    #[serde(default)]
+    pub stage_dependencies: Vec<TaskStageDependency>,
+    /// This task's recorded automatic-advance dependency wait (T4), when the
+    /// engine is holding a completed run at a stage boundary until edges
+    /// into the next stage are satisfied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependency_wait: Option<TaskDependencyWait>,
+    /// True when the task's current stage has no agent role and its latest
+    /// run is parked waiting for a person to decide (spec's roleless Gate
+    /// stage, T3): no session records this stage's result, only a human or
+    /// manager advance-stage call does. Absent when the current stage has a
+    /// role, or when there is no latest run yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_parked: Option<bool>,
+}
+
+/// One historical stage-run session (spec §16.8, T11b), sourced from T2's
+/// per-run session identity rather than the run's own agent/verdict fields.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskSessionHistoryEntry {
+    pub run_id: String,
+    pub stage: String,
+    pub status: String,
+    pub started_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+    pub session: crate::db::StageRunSession,
+}
+
+/// One stage-dependency edge into this task, dependent side (spec §9, T4).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskStageDependency {
+    pub upstream_task_id: String,
+    pub upstream_stage: String,
+    pub dependent_stage: String,
+    pub position: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumed_result_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumed_sha: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumed_at: Option<String>,
+    /// Set when a newer upstream result superseded what this edge had
+    /// already consumed (`task.dependency_superseded`) — the consumed
+    /// fields above still show what was actually used to start or gate this
+    /// stage; these show that a later result was ready and was not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_result_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_sha: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_at: Option<String>,
+}
+
+impl From<crate::db::StageEdge> for TaskStageDependency {
+    fn from(edge: crate::db::StageEdge) -> Self {
+        Self {
+            upstream_task_id: edge.upstream_task_id,
+            upstream_stage: edge.upstream_stage,
+            dependent_stage: edge.dependent_stage,
+            position: edge.position,
+            consumed_result_id: edge.consumed_result_id,
+            consumed_sha: edge.consumed_sha,
+            consumed_at: edge.consumed_at,
+            superseded_result_id: edge.superseded_result_id,
+            superseded_sha: edge.superseded_sha,
+            superseded_at: edge.superseded_at,
+        }
+    }
+}
+
+/// This task's recorded automatic-advance dependency wait (spec §9, T4).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskDependencyWait {
+    pub from_stage: String,
+    pub to_stage: String,
 }
 
 /// A provider's own refusal of a turn, as task detail reports it.
@@ -1365,6 +1456,50 @@ impl MobileApi {
                 .map_err(|e| format!("db error: {e}"))?
                 .map(TransitionCommitStep::from);
         }
+        detail.session_history = self
+            ._db
+            .list_stage_runs_for_task(&task_id)
+            .map_err(|e| format!("db error: {e}"))?
+            .into_iter()
+            .map(|run| -> Result<Option<TaskSessionHistoryEntry>, String> {
+                let session = self
+                    ._db
+                    .stage_run_session(&run.id)
+                    .map_err(|e| format!("db error: {e}"))?;
+                Ok(session.map(|session| TaskSessionHistoryEntry {
+                    run_id: run.id,
+                    stage: run.stage,
+                    status: run.status,
+                    started_at: run.started_at,
+                    finished_at: run.finished_at,
+                    session,
+                }))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+        detail.stage_dependencies = self
+            ._db
+            .list_stage_edges_into(&task_id)
+            .map_err(|e| format!("db error: {e}"))?
+            .into_iter()
+            .map(TaskStageDependency::from)
+            .collect();
+        detail.dependency_wait = self
+            ._db
+            .dependency_wait(&task_id)
+            .map_err(|e| format!("db error: {e}"))?
+            .map(|wait| TaskDependencyWait {
+                from_stage: wait.from_stage,
+                to_stage: wait.to_stage,
+            });
+        let roleless_current_stage =
+            crate::task_creator::current_stage_is_roleless(&self._db, &task_id).unwrap_or(false);
+        detail.gate_parked = detail
+            .latest_run
+            .as_ref()
+            .map(|run| roleless_current_stage && run.status == "running" && run.agent.is_none());
         Ok(Some(detail))
     }
 
@@ -1846,6 +1981,14 @@ fn map_task_detail(
         ports: (!ports.is_empty()).then_some(ports),
         provider_rejection,
         provider_capacity_notice,
+        // Filled in by `get_task` after this builder returns, the same way
+        // `latest_run.session`/`latest_run.commit_step` are: they need the
+        // task id this function only has through `item`, already consumed
+        // above.
+        session_history: Vec::new(),
+        stage_dependencies: Vec::new(),
+        dependency_wait: None,
+        gate_parked: None,
     }
 }
 

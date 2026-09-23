@@ -326,6 +326,70 @@ export interface DesktopTaskLatestRun {
   resumedFromRunId: string | null;
   resumeFallbackReason: string | null;
   finishedAt: string | null;
+  /** The session identity T2 recorded when this run started. Absent on a
+   * server predating it, or a run that recorded no identity. */
+  session?: DesktopStageRunSession | null;
+  /** The transition-commit step bound to this run's exit (spec, T3), when
+   * one is pending, running, or has finished. Absent on a server predating
+   * it, or when this run's exit carries no bound commit step. */
+  commitStep?: DesktopTransitionCommitStep | null;
+}
+
+/** Where a session's provider transcript lives (spec §6, T2). */
+export interface DesktopTranscriptRef {
+  provider: string;
+  sessionId: string;
+  path?: string | null;
+}
+
+/** The identity a stage session records when it starts (spec §6, T2). */
+export interface DesktopStageRunSession {
+  workspaceId?: string | null;
+  branch?: string | null;
+  name?: string | null;
+  transcript?: DesktopTranscriptRef | null;
+  workspaceReport?: string | null;
+}
+
+/** A commit step bound to a named-exit transition (spec, T3). */
+export interface DesktopTransitionCommitStep {
+  stage: string;
+  exit?: string | null;
+  exitSource?: string | null;
+  /** `requested` | `succeeded` | `failed`. */
+  state: string;
+}
+
+/** One historical stage-run session for this task, oldest first (T11b). */
+export interface DesktopTaskSessionHistoryEntry {
+  runId: string;
+  stage: string;
+  status: string;
+  startedAt: string;
+  finishedAt?: string | null;
+  session: DesktopStageRunSession;
+}
+
+/** One stage-dependency edge into this task, dependent side (spec §9, T4). */
+export interface DesktopTaskStageDependency {
+  upstreamTaskId: string;
+  upstreamStage: string;
+  dependentStage: string;
+  position: number;
+  consumedResultId?: string | null;
+  consumedSha?: string | null;
+  consumedAt?: string | null;
+  /** Set when a newer upstream result superseded what this edge had already
+   * consumed (`task.dependency_superseded`). */
+  supersededResultId?: string | null;
+  supersededSha?: string | null;
+  supersededAt?: string | null;
+}
+
+/** This task's recorded automatic-advance dependency wait (spec §9, T4). */
+export interface DesktopTaskDependencyWait {
+  fromStage: string;
+  toStage: string;
 }
 
 /**
@@ -404,6 +468,22 @@ export interface DesktopTaskDetail {
   reviewContext?: DesktopTaskReviewContext | null;
   /** The most recent human merge authorization recorded on this task. */
   humanReviewDecision?: DesktopHumanReviewDecision | null;
+  /** Every prior stage-run session for this task, oldest first (T11b).
+   * Absent on a server predating it. */
+  sessionHistory?: DesktopTaskSessionHistoryEntry[];
+  /** Stage-dependency edges into this task's current stage (spec §9, T4),
+   * dependent side, in edge order. Absent on a server predating it; empty
+   * for a task that only has legacy `blockedByTaskIds`. */
+  stageDependencies?: DesktopTaskStageDependency[];
+  /** This task's recorded automatic-advance dependency wait (T4), when the
+   * engine is holding a completed run at a stage boundary until edges into
+   * the next stage are satisfied. */
+  dependencyWait?: DesktopTaskDependencyWait | null;
+  /** True when the task's current stage has no agent role and its latest
+   * run is parked waiting for a person to decide (spec's roleless Gate
+   * stage, T3). Absent when the current stage has a role, when there is no
+   * latest run yet, or on a server predating this field. */
+  gateParked?: boolean | null;
 }
 
 export async function fetchDesktopTaskDetail(taskId: string, options?: { localOnly?: boolean }): Promise<DesktopTaskDetail> {

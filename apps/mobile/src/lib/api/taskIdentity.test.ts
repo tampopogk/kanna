@@ -4,8 +4,10 @@ import {
   buildCloudTaskId,
   displayTaskId,
   isTaskBlocked,
+  isTaskBlockedWithoutSession,
   resolveBlockerTasks,
   sameTaskDesktop,
+  taskHasLiveSession,
   taskLocalId
 } from "./taskIdentity";
 
@@ -46,6 +48,49 @@ describe("isTaskBlocked", () => {
     expect(isTaskBlocked(task({ id: "a" }))).toBe(false);
     expect(isTaskBlocked(task({ id: "a", blockedByTaskIds: [] }))).toBe(false);
     expect(isTaskBlocked(task({ id: "a", blockedByTaskIds: ["b"] }))).toBe(true);
+  });
+});
+
+describe("taskHasLiveSession", () => {
+  it("is false before any session has reported anything", () => {
+    expect(taskHasLiveSession(task({ id: "a" }))).toBe(false);
+    expect(taskHasLiveSession(task({ id: "a", runtimeState: null }))).toBe(false);
+  });
+
+  it("is true once a session has reported a runtime state (T11b)", () => {
+    expect(taskHasLiveSession(task({ id: "a", runtimeState: "busy" }))).toBe(true);
+    expect(taskHasLiveSession(task({ id: "a", runtimeState: "idle" }))).toBe(true);
+  });
+});
+
+describe("isTaskBlockedWithoutSession (T11b)", () => {
+  it("is false when there is no blocker at all", () => {
+    expect(isTaskBlockedWithoutSession(task({ id: "a" }))).toBe(false);
+  });
+
+  it("is true for a task blocked before its first session — the case with nothing to attach", () => {
+    expect(
+      isTaskBlockedWithoutSession(task({ id: "a", blockedByTaskIds: ["b"] }))
+    ).toBe(true);
+  });
+
+  it("is false for a task blocked at a later stage (T4) whose current stage already has a live session", () => {
+    const laterStageWait = task({
+      id: "a",
+      blockedByTaskIds: ["b"],
+      runtimeState: "waiting"
+    });
+    expect(isTaskBlocked(laterStageWait)).toBe(true);
+    expect(isTaskBlockedWithoutSession(laterStageWait)).toBe(false);
+  });
+
+  it("is false for a subtask waiting on a T5 join whose own session is running", () => {
+    const joinWait = task({
+      id: "parent",
+      blockedByTaskIds: ["child-1", "child-2"],
+      runtimeState: "busy"
+    });
+    expect(isTaskBlockedWithoutSession(joinWait)).toBe(false);
   });
 });
 

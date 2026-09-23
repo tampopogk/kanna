@@ -49,6 +49,15 @@ export const MOBILE_E2E_IDS = {
   taskLatestResultArtifact(name: string): string {
     return `mobile.task-latest-result-artifact.${name}`;
   },
+  taskLatestResultCommitStep: "mobile.task-latest-result-commit-step",
+  taskSessionName: "mobile.task-session-name",
+  taskSessionHistoryToggle: "mobile.task-session-history.toggle",
+  taskSessionHistoryEntry(runId: string): string {
+    return `mobile.task-session-history.${runId}`;
+  },
+  taskGateParked: "mobile.task-gate-parked",
+  taskDependencyWait: "mobile.task-dependency-wait",
+  taskDependencySuperseded: "mobile.task-dependency-superseded",
   taskTitleDismissLayer: "mobile.task-title-dismiss-layer",
   taskSnapshotMarker: "mobile.task-snapshot-marker",
   taskBackButton: "mobile.task-back-button",

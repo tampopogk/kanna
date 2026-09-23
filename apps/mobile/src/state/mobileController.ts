@@ -58,7 +58,7 @@ import type {
   PersistedSessionContext,
   TrustedDesktopRecord
 } from "./sessionPersistence";
-import { isTaskBlocked } from "../lib/api/taskIdentity";
+import { isTaskBlockedWithoutSession } from "../lib/api/taskIdentity";
 import { taskMatchesSearchQuery } from "../lib/api/taskSearch";
 import { resolveAgentProviderForDesktop } from "../lib/api/agentProviders";
 import { buildMachineInventory } from "./machineInventory";
@@ -775,7 +775,11 @@ export function createMobileController(
         store.setSelectedTaskReviewState(reviewState);
         const latestRun: SessionState["selectedTaskLatestRun"] = {
           taskId,
-          latestRun: detail.latestRun ?? null
+          latestRun: detail.latestRun ?? null,
+          sessionHistory: detail.sessionHistory,
+          stageDependencies: detail.stageDependencies,
+          dependencyWait: detail.dependencyWait ?? null,
+          gateParked: detail.gateParked ?? null
         };
         store.setSelectedTaskLatestRun(latestRun);
         observedTaskWorkflow = {
@@ -1947,10 +1951,13 @@ export function createMobileController(
     }
     loadSelectedTaskPrompt(taskId);
     loadSelectedTaskAttachmentSupport(taskId);
-    if (isTaskBlocked(task)) {
-      // A blocked task has no agent session to attach; the task screen
-      // renders the blocked placeholder instead. Collection refreshes
-      // re-enter here, so attachment starts as soon as the task unblocks.
+    if (isTaskBlockedWithoutSession(task)) {
+      // Blocked with nothing running yet has no agent session to attach;
+      // the task screen renders the blocked placeholder instead. Collection
+      // refreshes re-enter here, so attachment starts as soon as the task
+      // unblocks. A task blocked by a T4 later-stage edge or a T5 join wait
+      // while its current stage already has a live session is not this —
+      // `runtimeState` says so, and that session stays attached below.
       if (activeTaskTerminal || activeTaskAgent || activeTaskCompanion) {
         stopTaskSession();
         store.clearTaskTerminal();
