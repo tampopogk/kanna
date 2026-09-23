@@ -6,7 +6,7 @@ Status: owner-directed target design, 2026-09-22, produced by research task `482
 
 1. Structured workflows: a task moves through stages; each transition is manual or automatic; humans read at few, deliberate points (design accepted, stakeholders satisfied, PR brief) and agents do the work between.
 2. One agent per stage in V1. Parallel work is subtasks, each a task with its own session. **Owner.** (Deferred, not precluded: several agents in one stage's workspace, one writing and others reviewing the same worktree.)
-3. Artifacts pass from stage to stage and can be shared with other users, including users on other machines and accounts.
+3. Artifacts pass from stage to stage and can be sent to other users, including users on other accounts. Sending an artifact is the only thing that crosses an account boundary; machines are never paired across accounts. **Owner.**
 4. Dependencies between tasks, including a task depending on another task at a specific stage.
 5. Front-loaded design: iterate with an agent on a mockup, get stakeholders to agree, then let agents implement and test so the PR comes out right.
 6. Simple, formulaic agent definitions; sensible defaults; policy overridable per repo and per user.
@@ -43,13 +43,13 @@ The engine guarantees structure. Everything in the right column is configurable 
 | A task has stages; every session ends by recording one result; every transition is recorded with its operator | Which stages a workflow has; which transitions are manual |
 | One workspace per stage; one agent session in it at a time; each session on its own branch | Provider, model, effort; setup and teardown commands |
 | Branch counter `task-<id>-<n>` is monotonic per task and never reused | Whether finished worktrees are kept, and for how long |
-| The ledger is stored on disk under `~/.kanna/repos/<repo-id>/tasks/<task-id>/` and indexed locally | Whether ledger text is additionally committed on the task branch |
+| The ledger is stored on disk under `~/.kanna/repos/<repo-id>/tasks/<task-id>/` and indexed locally | None. The ledger is internal message passing between stages; the real outputs are commits, PRs and artifacts. **Owner.** |
 | Artifacts are identified by hash; a result's hashes must resolve while the task is open | Where artifact bytes live (separate artifact git repo by default), retention (keep, 30 days, discard on close) |
-| Dependencies are edges from a task-at-stage to a stage; readiness is computed by the engine | What happens when an upstream result is superseded: notify (default), hold, or re-attempt |
+| Dependencies are edges from a task-at-stage to a stage; readiness is computed by the engine; a superseded upstream result is recorded and notified | What to do about it: the task manager's job, not the engine's. **Owner.** |
 | A gate records who operated it (declared role plus verified channel) | Who may operate which gate |
-| Parallel work is subtasks; the parent's session is not ready to continue until its subtasks' results exist | How many subtasks, which specialties |
+| Parallel work is subtasks, each in its own workspace with its own setup; the parent's session is not ready to continue until its subtasks' results exist | How many subtasks, which specialties. Setup cost is the repo's to make cheap, not the engine's to share. **Owner.** |
 | Agent definitions resolve as bundled base, repo layer, person layer | The content of each layer |
-| One owning machine per task; actions from elsewhere are messages to it | Transfer trigger and destination |
+| One owning machine per task; actions from the same account's other machines are messages to it; nothing crosses accounts except artifacts | Transfer trigger and destination; artifact remote |
 
 ## 4. Task
 
@@ -68,7 +68,7 @@ The engine guarantees structure. Everything in the right column is configurable 
 - Any status other than `success` (`unverified`, `partial`, `needs-input`, `declined`, `failure`) leaves the task in the stage with the message visible and never fires an automatic transition.
 - Loops: a transition back to an earlier stage (a person going back, or an agent requesting revision with findings) starts a new session of that stage; the findings are a result in the ledger that the new session reads. Agent-initiated loops count against the stage budget; a person may loop beyond it and the count resets. **Owner:** the two loop shapes are iterate within a stage, and go back to an earlier stage and come forward again (mockup → stakeholder review → mockup → stakeholder review); the autonomous implement/review loop is typically three to five rounds.
 - Stage ordering is linear per task. Something needed *before* the current stage is a new task from this task's branch with this task's ledger as input, never a stage inserted earlier. **Owner (2026-09-19).** Stages may be appended by replacing the remaining plan (§10).
-- Commit-before-transition: a stage whose work must be committed before it can leave (implement) has its agent commit as part of finishing its work, per the agent definition; the engine records the committed sha on the result. There is no separate post mechanism.
+- **Commit step of a transition.** **Owner.** ⌘S on an implementation stage means "commit, then advance." A stage may declare `exit: commit`. When its transition is requested (manual advance or auto), the engine sends the live session one instruction, commit your work and record your result, in the same session and workspace so nothing is lost; the transition fires on that result. If the session is dead, a short commit session runs in the same workspace instead. This is the only mechanism by which uncommitted work reaches the boundary; it is part of the transition, not a stage.
 
 ## 6. Session
 
@@ -85,7 +85,7 @@ The engine guarantees structure. Everything in the right column is configurable 
 - **Owner:** agents record their result at the end of their work through the existing result call; that record is the ledger entry, and the previous input ledger is retired.
 - Result fields written by the agent: `status` (one of six), `message` (first line is the one-line summary surfaces show; the rest is what the agent reports: what was done, what changed direction and why, what the next stage must know), `artifacts` (name → hash, optional). Fields attached by the engine: branch and committed sha, session reference, timestamp.
 - The engine refuses a result with an empty message. It does not mandate sections; agent definitions say what a good message for that role contains.
-- Ledger storage: `~/.kanna/repos/<repo-id>/tasks/<task-id>/` holding `task.json` (prompt, template, links) and an ordered `ledger/` of entries: `NNNN-result.md`, `NNNN-transition.json` (from, to, operator, declared role, verified channel), `NNNN-plan.json` (replacement, source), `NNNN-input.md` (tool-delivered input with provenance; terminal typing is in the transcript, not here). Policy may additionally commit the ledger on the task branch.
+- Ledger storage: `~/.kanna/repos/<repo-id>/tasks/<task-id>/` holding `task.json` (prompt, template, links) and an ordered `ledger/` of entries: `NNNN-result.md`, `NNNN-transition.json` (from, to, operator, declared role, verified channel), `NNNN-plan.json` (replacement, source), `NNNN-input.md` (tool-delivered input with provenance; terminal typing is in the transcript, not here). **Owner:** the ledger is internal message passing between stages and lives only here; nobody outside the machine reads it. The real outputs are commits, PRs and artifacts.
 - Binding: `$RESULT` is the previous stage's latest success result; `$RESULT[stage]` the latest success result of a named stage on this task (this replaces any stamped plan context); `$LEDGER` is the ledger path, for sessions that need history beyond the last result.
 
 ## 8. Artifacts
@@ -93,14 +93,14 @@ The engine guarantees structure. Everything in the right column is configurable 
 - Identity is the content hash. A new version is a new hash with a `previous` link. A decision or comment names the hash it was about.
 - Types: commit (sha, a branch tip), document (markdown, html), mockup (html by default; **Owner:** text on a PNG is an anti-pattern, put the text in HTML), media (png, video), report (test results), pr (url + head sha), decision (who, what, about which hash), comment (anchored by position and excerpt).
 - Storage default: one **artifact repository**, a git repo outside the working repo, per working repo (`~/.kanna/repos/<repo-id>/artifacts.git` or a policy-named remote). Each artifact revision is a commit. Binaries never enter the working repo. **Owner.** Text artifacts may additionally be committed in the working repo by policy.
-- Sharing: sending an artifact to a person is fetching the artifact repo over the existing peer channel and opening it for them at the hash. Their comments and decisions come back as artifacts in the same repo, next to what they are about.
+- Sharing: **machines are never paired across accounts** (**Owner**). An artifact reaches another person through an **artifact remote** both can reach: a git remote for the artifact repository. Sending is pushing the revision to the remote and telling the person the hash; receiving is fetching and opening it at the hash. Their comments and decisions are pushed back to the same remote, next to what they are about. Hosting the remote is ordinary git hosting: a bare repository on any machine the team can reach over ssh, or a private repository on a git host the team already uses. An organization may later run a Kanna daemon on a server as its artifact host with per-account push permission; that is a product after V1, not a requirement of it. Same-account machines may continue to exchange artifacts over the existing peer channel.
 - Retention: keep, 30 days after the task closes, or discard on close; policy. A result whose artifact hash no longer resolves reads as "produced, no longer retained."
 
 ## 9. Dependencies, subtasks, readiness
 
 - Edge: `(task A, stage X) → (task B, stage Y)`. B's stage Y is not ready until A has left stage X with a success result (for A's final stage, until A is closed). B's session forks from the sha in that result when the edge is the stage's base (stacked branches); several incoming commits are merged by B's session, not the engine.
 - Subtasks: a session may create child tasks from its current sha (each a task with its own session, worktree, branch); the parent task is blocked until every child has recorded a result, then the parent's session continues with the children's results as inputs and combines them (merge, choose, aggregate verdicts). Best-of-N is N children from the same sha and a parent that picks. The engine computes readiness; the combination is the parent session's job. **Owner:** task and session stay one-to-one; parallelism is subtasks.
-- Staleness: when an upstream stage records a newer success result after a downstream stage consumed the old one, the engine marks the edge stale and notifies; holding or re-running is policy (default: notify only).
+- Superseded inputs: when an upstream stage records a newer success result after a downstream stage consumed the old one, the engine records it on the edge and emits an event. What to do about it is the task manager's job. **Owner.** The engine takes no action of its own.
 - Cycles are refused at edge creation.
 
 ## 10. Workflows and plan replacement
@@ -113,13 +113,13 @@ The engine guarantees structure. Everything in the right column is configurable 
   - **planned**: plan → implement(M) → review(A) → pr(M); review may loop to plan or implement.
   - **designed**: mockup → stakeholder(M) → plan(M) → implement(A) → review(A) → pr(M) → pr-review(M). Mockup and stakeholder iterate; humans read at the mockup, the stakeholder outcome, and the PR brief. This is the front-loaded flow.
   - **research**: research — parks at its manual gate with a brief; the plan stage is appended when the owner chooses.
-  - A review panel is a review stage whose session dispatches subtasks; not a separate public workflow.
+  - **specialized-reviewers** stays a public workflow: shaped, with a review stage whose session dispatches specialty review subtasks. Verified 2026-09-22: the dispatcher creates child tasks (222 on the owner's machine under 15 parents), and the same dispatching review stage has also run inside single-reviewer and no-review tasks, so the workflow and "a review stage that dispatches" are the same thing; the name is what makes it selectable. **Owner.**
 
 ## 11. State ownership and machines
 
 - **Database**: local to the machine; an index of that machine's tasks (id, current stage, readiness, live session registry, pending transitions) plus statistics (time per stage, idle time, transitions, provider usage). Everything except live session state and statistics is rebuildable by scanning the task directories. **Owner:** the database must not mean anything at the organizational level.
 - **Disk**: repo `.kanna/` for definitions and config (parts tracked, parts untracked as the repo chooses); `~/.kanna/repos/<repo-id>/tasks/<task-id>/` for the ledger; the artifact repo for artifacts.
-- **One owning machine per task.** Actions from another machine or account (operate a gate, send input, add an edge, share an artifact) are messages delivered to the owner and recorded there with the sender's verified channel identity. No cross-machine action while the owner is unreachable.
+- **One owning machine per task.** Actions from the same account's other machines (operate a gate, send input, add an edge) are messages delivered to the owner and recorded there with the sender's verified channel identity. No cross-machine action while the owner is unreachable. **Nothing crosses an account boundary except artifacts** (§8): another account never operates a gate, sends input, or reads a ledger; their decision arrives as an artifact and the owner, or the owner's task manager, acts on it.
 - **Transfer** moves a task: its directory, branches, and transcripts best-effort; the destination becomes owner; the source record closes.
 - **Provenance**: every transition, result, input and plan replacement records a declared role (operator, manager, agent, auto) and a verified channel (local process, paired device, peer desktop, relay-attested account). The two are never merged; absent verification is recorded as unknown, never as the owner.
 
@@ -156,11 +156,11 @@ providers: <ordered candidates>
 
 ## 14. Multi-user, iteration one
 
-Two accounts on two of the owner's machines (one signed in as each identity) forming one organization. What must work: pairing across accounts; the artifact repo fetched over the peer channel; a mockup opened on the second machine at its hash; a comment and a decision recorded back; a gate on the owning machine operated by the second identity through a message and recorded with that identity. Out of scope: shared task state, offline cross-machine actions, org-level storage.
+Two accounts on two of the owner's machines (one signed in as each identity), no pairing between them. What must work: both machines configured with the same artifact remote (a bare git repository the owner hosts, or a private repository on a git host); a mockup produced in a stage on machine A, pushed to the remote, opened on machine B at its hash; a comment and a decision recorded on B and pushed back; machine A fetching them, showing them against the mockup, and the owner operating the gate on A. Out of scope: cross-account pairing or task control, cross-account notifications through the relay (the sender tells the recipient the hash), shared task state, org-level storage.
 
 ## 15. Retired by this specification
 
-The input ledger as it exists, recording tool-delivered input only (**Owner**; replaced by the task ledger of §7); reusing an earlier branch on a loop (**Owner:** an incrementing counter instead, in the same workspace); the origin prompt as the task's authority (**Owner**); posts as a distinct concept (committing is part of the agent's work); a stamped plan context and hard-coded stage recipes (replaced by `$RESULT[stage]` and plan replacement); separate resume, rerun and revision mechanisms (all are a new session of a stage, with resume opportunistic); the engine-level distinction between a blocker and a stage dependency.
+The input ledger as it exists, recording tool-delivered input only (**Owner**; replaced by the task ledger of §7); reusing an earlier branch on a loop (**Owner:** an incrementing counter instead, in the same workspace); the origin prompt as the task's authority (**Owner**); posts as a stage-like concept (the commit step is a property of a transition, §5); a stamped plan context and hard-coded stage recipes (replaced by `$RESULT[stage]` and plan replacement); separate resume, rerun and revision mechanisms (all are a new session of a stage, with resume opportunistic); the engine-level distinction between a blocker and a stage dependency.
 
 ## 16. Independent components for the planner
 
@@ -174,12 +174,14 @@ Listed so the planning stage can see what can proceed in parallel; no order or e
 6. Database reduction to index plus statistics; rebuild-from-disk; provenance pair on every mutation.
 7. Agent definition formula applied to every bundled definition; environment preamble absorbing the mechanics.
 8. UI: session names in a sessions view, gate screen showing the latest result and artifacts, dependency and staleness display, artifact viewer with comments.
-9. Multi-user iteration one (§14).
+9. Artifact remote configuration and the two-account iteration (§14).
 10. Migration of open tasks and the decision of what existing code each component reuses.
 
-## 17. Open questions (do not block planning)
+## 17. Questions resolved by the owner, 2026-09-22
 
-- Default for a stale dependency beyond notify.
-- Whether setup output can be shared across worktrees so subtask fan-out is not N full setups.
-- Whether the ledger is committed on the task branch by default in this repo.
-- Whether `specialized-reviewers` remains a public workflow or becomes a review stage whose session dispatches subtasks.
+- Superseded upstream results: the engine records and notifies; the task manager handles it. No hold or re-run machinery.
+- Subtask setup: no sharing of setup output across workspaces; each subtask has its own workspace; repos are expected to make their setup cheap.
+- Ledger: lives under `~/.kanna` only; it is internal message passing between stages and its exact form does not matter. The real outputs are commits, PRs and artifacts.
+- `specialized-reviewers`: stays public; a review stage that dispatches subtasks is the same thing.
+- Cross-account: no pairing; artifacts only, through a shared artifact remote.
+- Commit before a boundary: the transition's commit step instructs the live session in place (§5).
