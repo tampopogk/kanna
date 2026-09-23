@@ -436,6 +436,14 @@ pub struct TaskLatestRun {
     /// picked this stage's model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_override: Option<crate::db::StageProviderOverride>,
+    /// The verified channel this run's entry arrived on, beside `trigger`
+    /// (its declared role). Unknown for legacy runs and older peers.
+    #[serde(default)]
+    pub entry_channel_identity: crate::mutation_provenance::ChannelIdentity,
+    /// Who declared this run's result and the channel it arrived on; absent
+    /// while the run has recorded no result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_provenance: Option<crate::mutation_provenance::MutationProvenance>,
     #[serde(default)]
     pub agent: Option<String>,
     #[serde(default)]
@@ -1777,6 +1785,8 @@ fn map_task_latest_run(run: crate::db::StageRun) -> TaskLatestRun {
         kind: run.kind,
         trigger: run.trigger,
         provider_override: run.provider_override,
+        entry_channel_identity: run.entry_channel_identity,
+        result_provenance: run.result_provenance,
         agent: run.agent,
         agent_provider: run.agent_provider,
         model: run.model,
@@ -2125,6 +2135,8 @@ mod tests {
             completion_transition: None,
             trigger: "operator".into(),
             provider_override: None,
+            entry_channel_identity: Default::default(),
+            result_provenance: None,
             started_at: "2026-09-12 00:00:00".into(),
             finished_at: None,
         };

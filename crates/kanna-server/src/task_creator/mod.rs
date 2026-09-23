@@ -1111,6 +1111,7 @@ pub(crate) fn prepare_rerun_stage_for_api(
         model: stage_run_model,
         effort,
         provider_override,
+        entry_channel: crate::mutation_provenance::ChannelIdentity::Unknown,
         completion_transition: current_stage.policy.transition,
         provider_session_id,
         cwd: worktree_path,
@@ -1266,6 +1267,7 @@ pub(crate) fn prepare_create_task_repair_for_api(
             // Rebuilding a task's *first* spawn from its creation request:
             // no stage advance, and so no advance-carried override.
             provider_override: None,
+            entry_channel: crate::mutation_provenance::ChannelIdentity::Unknown,
             completion_transition: resolved.stage_transition,
             provider_session_id,
             cwd: worktree_path,
@@ -1395,6 +1397,7 @@ pub(crate) fn prepare_create_task_repair_for_api(
         model,
         effort,
         provider_override: None,
+        entry_channel: crate::mutation_provenance::ChannelIdentity::Unknown,
         completion_transition: resolved.stage_transition,
         provider_session_id,
         cwd: worktree_path,
@@ -1741,6 +1744,7 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
         effort: stage_run_effort,
         completion_transition,
         trigger,
+        entry_channel: crate::mutation_provenance::ChannelIdentity::Unknown,
         provider_override,
         feedback,
         provider_session_id,

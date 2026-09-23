@@ -24,6 +24,7 @@
 
 use super::stage_runs::AGENT_RUN_KINDS;
 use super::{Db, TaskEventKind};
+use crate::mutation_provenance::ChannelIdentity;
 use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 use serde_json::json;
@@ -99,6 +100,10 @@ pub struct TaskInputRecord {
     /// reviewer reads it to tell which stage was being instructed.
     pub stage: Option<String>,
     pub source: String,
+    /// The channel this server verified the delivery arrived on, beside the
+    /// caller-declared `source`. Rows from before it was recorded, and inputs
+    /// imported from another machine, read as unknown.
+    pub channel_identity: ChannelIdentity,
     pub message: String,
     pub delivered_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -160,6 +165,7 @@ impl Db {
         &self,
         task_id: &str,
         source: &str,
+        channel: &ChannelIdentity,
         session_pid: u32,
         status: &str,
         writes: &[RawInputWriteRecord],
@@ -204,6 +210,8 @@ impl Db {
             TaskEventKind::RawInputDelivered,
             json!({
                 "source": source,
+                "declaredRole": source,
+                "channelIdentity": channel.to_json(),
                 "runId": run_id,
                 "stage": stage,
                 "sessionPid": session_pid,
@@ -218,6 +226,7 @@ impl Db {
         &self,
         task_id: &str,
         source: &str,
+        channel: &ChannelIdentity,
         message: &str,
     ) -> Result<Option<TaskInputRecord>, rusqlite::Error> {
         let stage: Option<Option<String>> = self
@@ -245,9 +254,9 @@ impl Db {
             )
             .optional()?;
         self.conn.execute(
-            "INSERT INTO task_input (task_id, run_id, stage, source, message)
-             VALUES (?, ?, ?, ?, ?)",
-            params![task_id, run_id, stage, source, message],
+            "INSERT INTO task_input (task_id, run_id, stage, source, channel_identity, message)
+             VALUES (?, ?, ?, ?, ?, ?)",
+            params![task_id, run_id, stage, source, channel.to_column(), message],
         )?;
         let id = self.conn.last_insert_rowid();
         let delivered_at: String = self.conn.query_row(
@@ -262,6 +271,8 @@ impl Db {
             json!({
                 "inputId": id,
                 "source": source,
+                "declaredRole": source,
+                "channelIdentity": channel.to_json(),
                 "runId": run_id,
                 "stage": stage,
                 "preview": preview,
@@ -274,6 +285,7 @@ impl Db {
             run_id,
             stage,
             source: source.to_string(),
+            channel_identity: channel.clone(),
             message: message.to_string(),
             delivered_at,
             origin: None,
@@ -295,10 +307,11 @@ impl Db {
         &self,
         task_id: &str,
         source: TaskInputSource,
+        channel: &ChannelIdentity,
         message: &str,
     ) -> Result<Option<TaskInputRecord>, rusqlite::Error> {
         self.with_immediate_transaction(|db| {
-            db.insert_delivered_task_input(task_id, source.as_str(), message)
+            db.insert_delivered_task_input(task_id, source.as_str(), channel, message)
         })
     }
 
@@ -311,7 +324,8 @@ impl Db {
     ) -> Result<Vec<TaskInputRecord>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
             "SELECT id, task_id, run_id, stage, source, message, delivered_at,
-                    origin_peer_id, origin_task_id, origin_input_id, origin_run_id
+                    origin_peer_id, origin_task_id, origin_input_id, origin_run_id,
+                    channel_identity
              FROM task_input
              WHERE task_id = ?
              ORDER BY id DESC
@@ -328,6 +342,9 @@ impl Db {
                 run_id: row.get(2)?,
                 stage: row.get(3)?,
                 source: row.get(4)?,
+                channel_identity: ChannelIdentity::from_column(
+                    row.get::<_, Option<String>>(11)?.as_deref(),
+                ),
                 message: row.get(5)?,
                 delivered_at: row.get(6)?,
                 origin: match (origin_peer_id, origin_task_id, origin_input_id) {

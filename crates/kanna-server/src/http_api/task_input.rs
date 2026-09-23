@@ -1,6 +1,8 @@
 use super::lan_trust::PrivilegedTaskAccess;
+use super::mutation_provenance::RequestChannel;
 use super::state::AppState;
 use crate::db::{Db, TaskInputSource};
+use crate::mutation_provenance::ChannelIdentity;
 use crate::task_input_attachments::{
     compose_input_with_attachment, discard_stored_attachment, store_task_input_attachment,
     TaskInputAttachment,
@@ -268,6 +270,7 @@ pub(super) async fn send_task_input(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(task_id): axum::extract::Path<String>,
     axum::extract::Query(local_only): axum::extract::Query<super::task_federation::LocalOnlyQuery>,
+    RequestChannel(channel): RequestChannel,
     Json(payload): Json<TaskInputRequest>,
 ) -> Result<Response, TaskInputHttpError> {
     // The test-only delivery stub bypasses real task/DB resolution entirely
@@ -277,7 +280,7 @@ pub(super) async fn send_task_input(
     #[cfg(test)]
     if state.task_input_sender.is_some() {
         let strict_recording = payload.strict_recording;
-        return send_task_input_impl(state, task_id, payload, strict_recording).await;
+        return send_task_input_impl(state, task_id, payload, channel, strict_recording).await;
     }
     // Delivery is auto-resolved only at this HTTP boundary - never inside
     // `deliver_task_input` itself, which server-originated callers (engine
@@ -302,7 +305,7 @@ pub(super) async fn send_task_input(
         Err(error) => return Err(map_task_input_error(error)),
     }
     let strict_recording = payload.strict_recording;
-    send_task_input_impl(state, task_id, payload, strict_recording).await
+    send_task_input_impl(state, task_id, payload, channel, strict_recording).await
 }
 
 /// Deliver server-originated speech through the same live-session discovery,
@@ -344,6 +347,8 @@ async fn deliver_server_task_input_with_recording(
             source: None,
             attachment: None,
         },
+        // Server-originated speech: the engine, never an earlier caller.
+        ChannelIdentity::Server,
         strict_recording,
     )
     .await
@@ -363,6 +368,7 @@ async fn send_task_input_impl(
     state: Arc<AppState>,
     task_id: String,
     payload: TaskInputRequest,
+    channel: ChannelIdentity,
     strict_recording: bool,
 ) -> Result<Response, TaskInputHttpError> {
     #[cfg(test)]
@@ -390,7 +396,16 @@ async fn send_task_input_impl(
         })?,
         None => TaskInputSource::Unspecified,
     };
-    deliver_task_input(state, task_id, payload, source, None, strict_recording).await
+    deliver_task_input(
+        state,
+        task_id,
+        payload,
+        source,
+        channel,
+        None,
+        strict_recording,
+    )
+    .await
 }
 
 /// A wake that did not reach its session, carrying enough for the subscription
@@ -416,6 +431,7 @@ pub(super) async fn send_engine_wake(
         subscription.task_id.clone(),
         payload,
         TaskInputSource::Engine,
+        ChannelIdentity::Server,
         Some(subscription.run_id.clone()),
         false,
     )
@@ -432,6 +448,7 @@ async fn deliver_task_input(
     task_id: String,
     payload: TaskInputRequest,
     source: TaskInputSource,
+    channel: ChannelIdentity,
     expected_run: Option<String>,
     strict_recording: bool,
 ) -> Result<Response, TaskInputHttpError> {
@@ -677,7 +694,7 @@ async fn deliver_task_input(
     let record_message = task_input_message(&delivered_input).to_string();
     let recorded = tokio::task::spawn_blocking(move || {
         let db = Db::open(&db_path)?;
-        db.record_task_input(&record_task_id, source, &record_message)
+        db.record_task_input(&record_task_id, source, &channel, &record_message)
     })
     .await;
     match recorded {

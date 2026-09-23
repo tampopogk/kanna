@@ -131,6 +131,11 @@ pub(super) struct RelayAttestedSource {
 /// store or verification path.
 pub(super) struct LanMachineInvokeAuthenticated {
     pub(super) source_desktop_id: String,
+    /// The account `verify_inbound` checked the secret under, captured at
+    /// verification. The current account is runtime-mutable (sign-out,
+    /// account switch), so a later read could name an account this
+    /// credential was never verified against.
+    pub(super) verified_account_uid: Option<String>,
 }
 
 impl FromRequestParts<Arc<AppState>> for LanMachineInvokeAuthenticated {
@@ -173,6 +178,7 @@ impl FromRequestParts<Arc<AppState>> for LanMachineInvokeAuthenticated {
         }
         Ok(Self {
             source_desktop_id: device_id,
+            verified_account_uid: current_account_uid,
         })
     }
 }

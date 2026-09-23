@@ -206,6 +206,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "092_stage_run_prompt",
     "093_drop_standing_constraint",
     "094_task_attention_flag",
+    "095_mutation_provenance",
 ];
 
 #[derive(Debug, Serialize)]
@@ -612,6 +613,13 @@ pub struct StageRun {
     /// the ordinary precedence chain — which is also what a legacy row and an
     /// unreadable value report, because neither can be reconstructed.
     pub provider_override: Option<StageProviderOverride>,
+    /// The verified channel this run's entry arrived on; `trigger` is the
+    /// entry's declared role. Legacy rows read as unknown.
+    pub entry_channel_identity: crate::mutation_provenance::ChannelIdentity,
+    /// Who declared this run's result and the channel it arrived on. Present
+    /// exactly when the run recorded a result; recorded separately from the
+    /// entry so submitting a verdict never rewrites how the run began.
+    pub result_provenance: Option<crate::mutation_provenance::MutationProvenance>,
     pub started_at: String,
     pub finished_at: Option<String>,
 }
@@ -2627,6 +2635,20 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
               WHERE NULLIF(trim(attention_reason), '') IS NOT NULL",
         )?;
         conn.execute_batch("ALTER TABLE pipeline_item DROP COLUMN attention_reason")
+    })?;
+
+    // Mutation provenance: the server-verified channel a mutation arrived on,
+    // recorded beside the caller-declared role each row already carries
+    // (`stage_run.trigger`, `task_input.source`). A run's entry and its
+    // result are separate mutations and keep separate columns, so recording
+    // a verdict never overwrites how the run was started. Historical rows
+    // stay NULL and read as an unknown channel; nothing is backfilled from
+    // the declared labels. See `crate::mutation_provenance`.
+    run_migration(conn, "095_mutation_provenance", |conn| {
+        add_column(conn, "stage_run", "entry_channel_identity", "TEXT")?;
+        add_column(conn, "stage_run", "result_declared_role", "TEXT")?;
+        add_column(conn, "stage_run", "result_channel_identity", "TEXT")?;
+        add_column(conn, "task_input", "channel_identity", "TEXT")
     })?;
 
     Ok(())

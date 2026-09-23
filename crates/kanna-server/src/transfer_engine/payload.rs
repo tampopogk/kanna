@@ -1698,6 +1698,7 @@ mod tests {
                 run_id: Some("run-one".into()),
                 stage: Some("in progress".into()),
                 source: "operator".into(),
+                channel_identity: Default::default(),
                 message: "first".into(),
                 delivered_at: "2026-09-09 01:00:00".into(),
                 origin: None,
@@ -1708,6 +1709,7 @@ mod tests {
                 run_id: None,
                 stage: Some("review".into()),
                 source: "manager".into(),
+                channel_identity: Default::default(),
                 message: "second".into(),
                 delivered_at: "2026-09-09 02:00:00".into(),
                 origin: Some(crate::db::TaskInputOrigin {

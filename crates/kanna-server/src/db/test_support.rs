@@ -249,7 +249,10 @@ impl Db {
                 provider_override TEXT,
                 completion_bound INTEGER NOT NULL DEFAULT 0,
                 started_at TEXT NOT NULL DEFAULT (datetime('now')),
-                finished_at TEXT
+                finished_at TEXT,
+                entry_channel_identity TEXT,
+                result_declared_role TEXT,
+                result_channel_identity TEXT
             );
             CREATE INDEX idx_stage_run_task_started ON stage_run(task_id, started_at);
 
@@ -439,7 +442,8 @@ impl Db {
                 origin_peer_id TEXT,
                 origin_task_id TEXT,
                 origin_input_id INTEGER,
-                origin_run_id TEXT
+                origin_run_id TEXT,
+                channel_identity TEXT
             );
             CREATE INDEX idx_task_input_task_id ON task_input(task_id, id);
             CREATE UNIQUE INDEX idx_task_input_transfer_origin
