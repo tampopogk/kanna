@@ -3,7 +3,8 @@ import type { ArtifactFileContent } from "../lib/api/types";
 import {
   ARTIFACT_DOCUMENT_POLICY,
   buildArtifactDocument,
-  buildArtifactSite,
+  ArtifactBuildCancelled,
+  artifactHostOpenPath,
   decodeBase64,
   decodeUtf8,
   encodeBase64,
@@ -101,7 +102,6 @@ describe("buildArtifactDocument", () => {
     // In-tree page links are handed to the host; the rest are left for the WebView to refuse.
     // An in-tree link becomes a request to the host, never a navigation.
     expect(html).toContain(`<a id="about" href="#kanna-artifact=pages/about.html">`);
-    expect(document.links).toEqual(["pages/about.html"]);
     expect(html).toContain(`<a id="external" href="https://example.com/">`);
     expect(html).toContain(`<a id="fragment" href="#top">`);
     expect(html).toContain(`<img id="remote" src="https://example.com/tracker.png">`);
@@ -144,19 +144,33 @@ describe("buildArtifactDocument", () => {
     expect(html).toContain("const targetLine = 3;");
   });
 
-  it("renders every in-tree page the entry reaches by links, reading each file once", async () => {
-    const { readFile, reads } = tree({
-      "index.html": `<a href="a.html">a</a><a href="gone.html">gone</a><a href="https://example.com/">out</a>`,
-      "a.html": `<link rel="stylesheet" href="s.css"><a href="sub/b.html">b</a><a href="index.html">home</a>`,
-      "sub/b.html": `<link rel="stylesheet" href="../s.css"><a href="../a.html">back</a>`,
-      "s.css": "h1{}"
+  it("reads no further file once the viewer has moved on", async () => {
+    const { readFile, reads } = tree(MOCKUP);
+    let cancelled = false;
+    const reading = buildArtifactDocument({
+      path: "index.html",
+      readFile: async (path) => {
+        const file = await readFile(path);
+        cancelled = true;
+        return file;
+      },
+      isCancelled: () => cancelled
     });
-    const site = await buildArtifactSite({ path: "index.html", readFile });
-    expect([...site.pages.keys()]).toEqual(["index.html", "a.html", "sub/b.html"]);
-    expect(site.entry).toBe("index.html");
-    expect(site.missing).toEqual(["gone.html"]);
-    expect(reads.filter((path) => path === "s.css")).toHaveLength(1);
-    expect(site.pages.get("sub/b.html")).toContain(`href="#kanna-artifact=a.html"`);
+    await expect(reading).rejects.toBeInstanceOf(ArtifactBuildCancelled);
+    expect(reads).toEqual(["index.html"]);
+    await expect(
+      buildArtifactDocument({ path: "index.html", readFile, isCancelled: () => true })
+    ).rejects.toBeInstanceOf(ArtifactBuildCancelled);
+    expect(reads).toEqual(["index.html"]);
+  });
+
+  it("names only a file of the tree in a host-open request", () => {
+    const files = new Set(["index.html", "pages/a b.html"]);
+    expect(artifactHostOpenPath("kanna-host:open?path=pages%2Fa%20b.html", files)).toBe("pages/a b.html");
+    expect(artifactHostOpenPath("kanna-host:open?path=..%2Findex.html", files)).toBeNull();
+    expect(artifactHostOpenPath("kanna-host:open?path=%E0%A4%A", files)).toBeNull();
+    expect(artifactHostOpenPath("kanna-host:open?path=", files)).toBeNull();
+    expect(artifactHostOpenPath("https://example.com/?path=index.html", files)).toBeNull();
   });
 
   it("resolves references the way a browser does under the tree root, and never outside it", () => {

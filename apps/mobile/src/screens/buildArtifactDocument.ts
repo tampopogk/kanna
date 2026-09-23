@@ -13,7 +13,7 @@ import { escapeTaskFileHtml } from "./taskFileSyntaxHighlight";
  * — stylesheets, scripts, images, fonts, media, and the `url()`s inside
  * stylesheets — is read and inlined as a `data:` URL. A link to another file of
  * the same tree becomes a fragment link that asks the host document to show
- * that file (see `isolateArtifactSite`); the page never navigates for it.
+ * that file (see `isolateArtifactDocument`); the page never navigates for it.
  *
  * The page gets a Content-Security-Policy with no network at all
  * (`connect-src 'none'` and only `data:` subresources), no frames, no forms
@@ -47,9 +47,6 @@ export const ARTIFACT_DOCUMENT_POLICY = [
 /** Bounds on what one rendered page may pull in; beyond them a reference is left unresolved. */
 export const MAX_INLINED_FILES = 200;
 export const MAX_INLINED_BYTES = 8 * 1024 * 1024;
-/** Bounds on how many linked files, and how much rendered HTML, one open carries. */
-export const MAX_LINKED_PAGES = 24;
-export const MAX_SITE_BYTES = 24 * 1024 * 1024;
 const MAX_STYLESHEET_DEPTH = 4;
 
 export type ReadArtifactDocumentFile = (path: string) => Promise<ArtifactFileContent>;
@@ -59,6 +56,16 @@ export interface ArtifactDocumentOptions {
   readFile: ReadArtifactDocumentFile;
   /** Raw source views of text files scroll here, e.g. from a comment's "line 4". */
   initialLine?: number;
+  /** True once the viewer no longer wants this page; no further file is read. */
+  isCancelled?: () => boolean;
+}
+
+/** Thrown when a build is abandoned before its entry file is read. */
+export class ArtifactBuildCancelled extends Error {
+  constructor() {
+    super("artifact page build cancelled");
+    this.name = "ArtifactBuildCancelled";
+  }
 }
 
 export interface ArtifactDocument {
@@ -67,8 +74,6 @@ export interface ArtifactDocument {
   missing: string[];
   /** References left unresolved because a bound was reached or the file was refused. */
   skipped: string[];
-  /** In-tree files this page links to, resolved against its own path. */
-  links: string[];
 }
 
 const BASE64_ALPHABET =
@@ -233,15 +238,18 @@ function dataUrl(mediaType: string, base64: string): string {
 class ArtifactPageBuilder {
   readonly missing = new Set<string>();
   readonly skipped = new Set<string>();
-  readonly links = new Set<string>();
   private readonly reads = new Map<string, Promise<ArtifactFileContent | null>>();
   private inlinedBytes = 0;
 
-  constructor(private readonly readFile: ReadArtifactDocumentFile) {}
+  constructor(
+    private readonly readFile: ReadArtifactDocumentFile,
+    private readonly isCancelled: () => boolean = () => false
+  ) {}
 
   read(path: string): Promise<ArtifactFileContent | null> {
     let pending = this.reads.get(path);
     if (!pending) {
+      if (this.isCancelled()) return Promise.resolve(null);
       if (this.reads.size >= MAX_INLINED_FILES) {
         this.skipped.add(path);
         return Promise.resolve(null);
@@ -316,7 +324,6 @@ class ArtifactPageBuilder {
         rewritten = candidates.join(", ");
       } else if (attribute === "href" && (lowerTag === "a" || lowerTag === "area")) {
         const path = resolveArtifactReference(from, value);
-        if (path) this.links.add(path);
         rewritten = path ? `${ARTIFACT_LINK_PREFIX}${encodeArtifactPath(path)}` : null;
       } else if (attribute === "src" || attribute === "href" || attribute === "poster" || attribute === "data") {
         const inlined = await this.inline(from, value, 0);
@@ -383,9 +390,11 @@ ${body}`;
 export async function buildArtifactDocument({
   path,
   readFile,
-  initialLine
+  initialLine,
+  isCancelled = () => false
 }: ArtifactDocumentOptions): Promise<ArtifactDocument> {
-  const builder = new ArtifactPageBuilder(readFile);
+  if (isCancelled()) throw new ArtifactBuildCancelled();
+  const builder = new ArtifactPageBuilder(readFile, isCancelled);
   const entry = await readFile(path);
   const mediaType = entry.mediaType.toLowerCase();
   let html: string;
@@ -407,12 +416,8 @@ export async function buildArtifactDocument({
   } else {
     html = shell(entry.path, `<p>${escapeTaskFileHtml(entry.path)} (${escapeTaskFileHtml(entry.mediaType)}) cannot be previewed here.</p>`);
   }
-  return {
-    html,
-    missing: [...builder.missing],
-    skipped: [...builder.skipped],
-    links: [...builder.links]
-  };
+  if (isCancelled()) throw new ArtifactBuildCancelled();
+  return { html, missing: [...builder.missing], skipped: [...builder.skipped] };
 }
 
 /**
@@ -422,75 +427,6 @@ export async function buildArtifactDocument({
  */
 const ARTIFACT_PAGE_LINK_SCRIPT = `<script>(function(){var P=${JSON.stringify(ARTIFACT_LINK_PREFIX)};document.addEventListener("click",function(e){var n=e.target;while(n&&n.nodeName!=="A"&&n.nodeName!=="AREA")n=n.parentNode;if(!n||!n.getAttribute)return;var h=n.getAttribute("href")||"";if(h.indexOf(P)!==0)return;e.preventDefault();var p;try{p=decodeURIComponent(h.slice(P.length))}catch(x){return}parent.postMessage({kind:${JSON.stringify(ARTIFACT_NAVIGATE_MESSAGE)},path:p},"*")},true)})();</script>`;
 
-export interface ArtifactSite {
-  /** The file opened first. */
-  entry: string;
-  /** Every rendered file the entry can reach by in-tree links, by path. */
-  pages: Map<string, string>;
-  missing: string[];
-  skipped: string[];
-}
-
-/**
- * Render the file at `path` and every file of the same tree it links to,
- * transitively, within MAX_LINKED_PAGES and MAX_SITE_BYTES. The host document
- * can show exactly these files and nothing else.
- */
-export async function buildArtifactSite({
-  path,
-  readFile,
-  initialLine
-}: ArtifactDocumentOptions): Promise<ArtifactSite> {
-  const reads = new Map<string, Promise<ArtifactFileContent>>();
-  const cachedRead: ReadArtifactDocumentFile = (file) => {
-    let pending = reads.get(file);
-    if (!pending) {
-      pending = readFile(file);
-      reads.set(file, pending);
-    }
-    return pending;
-  };
-  const pages = new Map<string, string>();
-  const missing = new Set<string>();
-  const skipped = new Set<string>();
-  const queue = [path];
-  const seen = new Set(queue);
-  let bytes = 0;
-  while (queue.length > 0) {
-    const next = queue.shift()!;
-    let document: ArtifactDocument;
-    try {
-      document = await buildArtifactDocument({
-        path: next,
-        readFile: cachedRead,
-        initialLine: next === path ? initialLine : undefined
-      });
-    } catch (error) {
-      if (next === path) throw error;
-      missing.add(next);
-      continue;
-    }
-    if (next !== path && bytes + document.html.length > MAX_SITE_BYTES) {
-      skipped.add(next);
-      continue;
-    }
-    bytes += document.html.length;
-    pages.set(next, document.html);
-    document.missing.forEach((file) => missing.add(file));
-    document.skipped.forEach((file) => skipped.add(file));
-    for (const link of document.links) {
-      if (seen.has(link)) continue;
-      seen.add(link);
-      if (seen.size > MAX_LINKED_PAGES) {
-        skipped.add(link);
-        continue;
-      }
-      queue.push(link);
-    }
-  }
-  return { entry: path, pages, missing: [...missing], skipped: [...skipped] };
-}
-
 function encodeArtifactPath(path: string): string {
   return path.split("/").map(encodeURIComponent).join("/");
 }
@@ -499,37 +435,68 @@ function encodeArtifactPath(path: string): string {
 export const ARTIFACT_FRAME_SANDBOX = "allow-scripts";
 
 /**
- * The trusted host document's own script. It holds the rendered files of the
- * tree and, when its frame asks, shows one of them by replacing the frame's
- * document. It accepts a request only from its own frame, only of the one
- * kind, and only for a path that is a key of the map; anything else is
- * ignored. It never navigates, and it has no bridge to reach: the WebView
- * gets no `onMessage`.
+ * The top-level navigation the host document makes to ask the viewer for
+ * another file of the tree. Only the host can make it: the sandboxed frame can
+ * neither navigate the top-level document nor its own frame.
  */
-const ARTIFACT_HOST_SCRIPT = `(function(){var pages=new Map(JSON.parse(document.getElementById("kanna-artifact-pages").textContent));var frame=document.getElementById("kanna-artifact-frame");function show(path){frame.setAttribute("data-path",path);frame.srcdoc=pages.get(path)}window.addEventListener("message",function(e){if(e.source!==frame.contentWindow)return;var d=e.data;if(!d||typeof d!=="object"||d.kind!==${JSON.stringify(ARTIFACT_NAVIGATE_MESSAGE)}||typeof d.path!=="string"||!pages.has(d.path))return;show(d.path)});show(frame.getAttribute("data-entry"))})();`;
+export const ARTIFACT_HOST_OPEN_PREFIX = "kanna-host:open?path=";
 
 /**
- * Put an artifact's rendered files inside a trusted host document, the page in
- * a frame sandboxed with `allow-scripts` alone.
+ * The trusted host document's own script. It shows the page it was given in
+ * its frame. When the frame asks for another file, it accepts the request only
+ * from its own frame, only of the one kind, and only for a path that is a file
+ * of this tree other than the one shown; then it asks the viewer for that file
+ * by a top-level navigation to ARTIFACT_HOST_OPEN_PREFIX + the path, which the
+ * viewer refuses and answers by rendering the file. Anything else is ignored.
+ * The host has no bridge to reach: the WebView gets no `onMessage`.
+ */
+const ARTIFACT_HOST_SCRIPT = `(function(){var data=JSON.parse(document.getElementById("kanna-artifact-host").textContent);var files=new Set(data.files);var frame=document.getElementById("kanna-artifact-frame");frame.setAttribute("data-path",data.current);frame.srcdoc=data.page;window.addEventListener("message",function(e){if(e.source!==frame.contentWindow)return;var d=e.data;if(!d||typeof d!=="object"||d.kind!==${JSON.stringify(ARTIFACT_NAVIGATE_MESSAGE)}||typeof d.path!=="string"||d.path===data.current||!files.has(d.path))return;frame.setAttribute("data-requested",d.path);location.href=${JSON.stringify(ARTIFACT_HOST_OPEN_PREFIX)}+encodeURIComponent(d.path)})})();`;
+
+export interface ArtifactHostOptions {
+  /** The rendered page to show. */
+  page: string;
+  /** Its path in the tree. */
+  current: string;
+  /** Every file path of the tree, from the artifact's own descriptor. */
+  files: readonly string[];
+}
+
+/**
+ * Put one rendered artifact page inside a trusted host document, the page in a
+ * frame sandboxed with `allow-scripts` alone.
  *
  * The WebView's navigation callback cannot be the barrier against top-level
  * navigation: on Android, react-native-webview allows a navigation the JS
  * thread has not answered within 250 ms. Inside this frame the engine itself
  * refuses the page's attempts to navigate the top-level document, open a
  * window or submit a form. The host policy is the page's policy, so the frame
- * cannot navigate itself either (`frame-src 'none'`). In-tree links work by
- * asking the host, which swaps the frame's document from its own map.
+ * cannot navigate itself either (`frame-src 'none'`). An in-tree link is a
+ * request to the host, which forwards only a file of this tree to the viewer.
  */
-export function isolateArtifactSite(site: ArtifactSite): string {
+export function isolateArtifactDocument({ page, current, files }: ArtifactHostOptions): string {
   // JSON inside a script element: `<` escaped so no `</script>` can end it.
-  const pages = JSON.stringify([...site.pages.entries()]).replace(/</g, "\\u003c");
-  const entry = escapeTaskFileHtml(site.entry);
+  const data = JSON.stringify({ page, current, files }).replace(/</g, "\\u003c");
   return `<!doctype html>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="${ARTIFACT_DOCUMENT_POLICY}">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>html,body{margin:0;height:100%;background:#fff}iframe{display:block;border:0;width:100%;height:100%}</style>
-<iframe id="kanna-artifact-frame" sandbox="${ARTIFACT_FRAME_SANDBOX}" referrerpolicy="no-referrer" data-entry="${entry}"></iframe>
-<script type="application/json" id="kanna-artifact-pages">${pages}</script>
+<iframe id="kanna-artifact-frame" sandbox="${ARTIFACT_FRAME_SANDBOX}" referrerpolicy="no-referrer"></iframe>
+<script type="application/json" id="kanna-artifact-host">${data}</script>
 <script>${ARTIFACT_HOST_SCRIPT}</script>`;
+}
+
+/**
+ * The file a host-open navigation names, if it is exactly one of `files`;
+ * null for any other URL.
+ */
+export function artifactHostOpenPath(url: string, files: ReadonlySet<string>): string | null {
+  if (!url.startsWith(ARTIFACT_HOST_OPEN_PREFIX)) return null;
+  let path: string;
+  try {
+    path = decodeURIComponent(url.slice(ARTIFACT_HOST_OPEN_PREFIX.length));
+  } catch {
+    return null;
+  }
+  return files.has(path) ? path : null;
 }

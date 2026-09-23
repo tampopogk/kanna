@@ -21,9 +21,11 @@ import type {
   ArtifactFileContent
 } from "../lib/api/types";
 import {
-  buildArtifactSite,
-  isolateArtifactSite,
-  type ArtifactSite
+  ArtifactBuildCancelled,
+  artifactHostOpenPath,
+  buildArtifactDocument,
+  isolateArtifactDocument,
+  type ArtifactDocument
 } from "./buildArtifactDocument";
 
 /**
@@ -40,11 +42,13 @@ import {
  * navigation. That callback is not the barrier on its own: on Android the
  * library allows a navigation the JS thread has not answered within 250 ms. So
  * the page runs in a frame sandboxed with `allow-scripts` alone inside a
- * trusted host document (`isolateArtifactSite`): the engine refuses the page's
- * top-level navigation and new windows, the policy refuses any navigation of
- * the frame, and an in-tree link is a request to the host document, which
- * shows that file of the same tree from its own map. No in-tree navigation
- * passes through the native callback. The whitelist is `*` on purpose —
+ * trusted host document (`isolateArtifactDocument`): the engine refuses the
+ * page's top-level navigation and new windows, and the policy refuses any
+ * navigation of the frame. An in-tree link is a request to the host document,
+ * which checks it against this tree's files and only then asks the viewer, by
+ * a top-level `kanna-host:open` navigation the frame itself cannot make. The
+ * viewer checks the path again, refuses the navigation and renders that one
+ * file; only the page on screen is ever read. The whitelist is `*` on purpose —
  * react-native-webview hands any URL
  * that fails the whitelist to `Linking.openURL`, which would let a page open
  * Safari or another app.
@@ -69,7 +73,7 @@ type DetailState =
 type DocumentState =
   | { status: "idle" }
   | { status: "loading"; key: string }
-  | { status: "ready"; key: string; document: ArtifactSite }
+  | { status: "ready"; key: string; path: string; document: ArtifactDocument }
   | { status: "error"; key: string; message: string };
 
 interface FileTarget {
@@ -98,9 +102,20 @@ function lineOf(position: string | undefined): number | undefined {
   return Number.isInteger(line) && line > 0 ? line : undefined;
 }
 
-/** The host document itself and the frame document it sets; nothing else loads. */
-export function shouldStartArtifactLoad(request: Pick<WebViewNavigation, "url">): boolean {
-  return request.url === "about:blank" || request.url === "about:srcdoc";
+/**
+ * The host document itself and the frame document it sets load; a host-open
+ * request for a file of this tree is refused and handed to `open`; nothing
+ * else loads.
+ */
+export function shouldStartArtifactLoad(
+  request: Pick<WebViewNavigation, "url">,
+  files: ReadonlySet<string>,
+  open: (path: string) => void
+): boolean {
+  if (request.url === "about:blank" || request.url === "about:srcdoc") return true;
+  const path = artifactHostOpenPath(request.url, files);
+  if (path) open(path);
+  return false;
 }
 
 const UNAVAILABLE_TITLES: Record<Unavailable, string> = {
@@ -188,16 +203,21 @@ export function ArtifactViewer({
     let active = true;
     const artifactId = currentId;
     setDocumentState({ status: "loading", key: documentKey });
-    void buildArtifactSite({
-      path: filePath,
+    const path = filePath;
+    void buildArtifactDocument({
+      path,
       initialLine: target?.initialLine,
-      readFile: (path) => readFileRef.current(repoId, artifactId, path)
+      readFile: (file) => readFileRef.current(repoId, artifactId, file),
+      // A new target, a new version or closing the viewer stops further reads.
+      isCancelled: () => !active
     }).then(
       (document) => {
-        if (active) setDocumentState({ status: "ready", key: documentKey, document });
+        if (active) setDocumentState({ status: "ready", key: documentKey, path, document });
       },
       (error: unknown) => {
-        if (active) setDocumentState({ status: "error", key: documentKey, message: errorMessage(error) });
+        if (active && !(error instanceof ArtifactBuildCancelled)) {
+          setDocumentState({ status: "error", key: documentKey, message: errorMessage(error) });
+        }
       }
     );
     return () => {
@@ -236,9 +256,17 @@ export function ArtifactViewer({
 
   const visibleDocument =
     documentState.status !== "idle" && documentState.key === documentKey ? documentState : null;
+  const files = useMemo(() => new Set((detail?.files ?? []).map((file) => file.path)), [detail]);
   const hostDocument = useMemo(
-    () => (documentState.status === "ready" ? isolateArtifactSite(documentState.document) : ""),
-    [documentState]
+    () =>
+      documentState.status === "ready"
+        ? isolateArtifactDocument({
+            page: documentState.document.html,
+            current: documentState.path,
+            files: [...files]
+          })
+        : "",
+    [documentState, files]
   );
 
   return (
@@ -374,7 +402,7 @@ export function ArtifactViewer({
                 javaScriptEnabled
                 mixedContentMode="never"
                 onShouldStartLoadWithRequest={(request: WebViewNavigation) =>
-                  shouldStartArtifactLoad(request)
+                  shouldStartArtifactLoad(request, files, (path) => setTarget({ path }))
                 }
                 originWhitelist={["*"]}
                 setSupportMultipleWindows={false}
