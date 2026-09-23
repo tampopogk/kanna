@@ -3054,6 +3054,15 @@ pub(crate) fn create_dormant_task_with_stage_edges(
             .first()
             .ok_or_else(|| format!("workflow has no stages: {}", workflow_name))?
     };
+    // A dependent starts in its starting stage's agent session once its
+    // edges allow; a stage with no role (T3) is entered only by a
+    // transition into it, never by a start.
+    if !stage_edges.is_empty() && workflow.is_roleless_stage(stage) {
+        return Err(PrepareTaskError::InvalidRequest(format!(
+            "dependencies cannot start a task in stage '{}': it has no role",
+            stage.name
+        )));
+    }
     let stage_agent = request.agent.clone().or_else(|| stage.agent.clone());
     let agent = if let Some(agent_name) = stage_agent.as_deref() {
         Some(definitions.agent(agent_name)?)

@@ -1520,6 +1520,8 @@ pub(super) async fn execute_stage_transition(
             .await
             .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
             state.publish_state_changed(StateChangeScope::Tasks);
+            // Entering a gate leaves the previous stage, like a run swap.
+            super::stage_dependencies::spawn_dependents_readiness(state, task_id);
             Ok(Json(entered))
         }
         crate::task_creator::PreparedStageTransition::Close {

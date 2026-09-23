@@ -474,3 +474,104 @@ fn departure_between_prepare_and_entry_commit_keeps_the_session_input() {
     let _ = std::fs::remove_dir_all(&repo_root);
     let _ = std::fs::remove_file(config.db_path);
 }
+
+/// T3's stages with no role: an edge into a gate stage holds the entry to it
+/// like any stage, and a dependent can never start in one.
+#[test]
+fn stage_edges_gate_entry_into_a_roleless_stage_and_never_start_in_one() {
+    let repo_root = init_git_repo("stage-edge-roleless");
+    std::fs::create_dir_all(repo_root.join(".kanna/workflows")).unwrap();
+    let definition = serde_json::json!({
+        "name": "gate-flow",
+        "routing": "exits",
+        "stages": [
+            { "name": "in progress", "agent": "implement", "prompt": "$TASK_PROMPT",
+              "agent_provider": "claude", "policy": { "transition": "manual" } },
+            { "name": "stakeholder", "policy": { "transition": "manual" } },
+            { "name": "review", "agent": "review", "prompt": "Review the branch.",
+              "agent_provider": "claude", "policy": { "transition": "manual" } }
+        ]
+    });
+    std::fs::write(
+        repo_root.join(".kanna/workflows/gate-flow.json"),
+        definition.to_string(),
+    )
+    .unwrap();
+    publish_origin_main(&repo_root, "add gate workflow");
+    let config = test_config("stage-edge-roleless");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+    upstream_task(&db, "task-a", &["plan", "build"]);
+
+    // Starting a dependent in the gate stage is refused before it exists.
+    let mut request = dependent_request("Start at the gate");
+    request.workflow_name = Some("gate-flow".to_string());
+    request.stage = Some("stakeholder".to_string());
+    let refused = create_dormant_task_with_stage_edges(
+        &db,
+        request,
+        Some("dep0gate".to_string()),
+        &[edge("task-a", "plan")],
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&refused, PrepareTaskError::InvalidRequest(message) if message.contains("no role")),
+        "{refused:?}"
+    );
+    assert!(db.get_pipeline_item("dep0gate").unwrap().is_none());
+
+    // A task in `in progress` with an edge into the gate stage.
+    db.insert_test_pipeline_item(
+        "task-b",
+        "repo-1",
+        "Gated by a gate",
+        Some("Gated by a gate"),
+        "in progress",
+        "2026-09-23 00:00:00",
+    )
+    .unwrap();
+    run_git_fixture(&repo_root, &["branch", "task-b-branch", "main"]);
+    db.update_test_pipeline_item_stage_context(
+        "task-b",
+        "task-b-branch",
+        "gate-flow",
+        None,
+        "claude",
+    )
+    .unwrap();
+    db.update_test_pipeline_item_pipeline_def("task-b", &definition.to_string())
+        .unwrap();
+    insert_finished_stage_run(
+        &db,
+        "task-b",
+        "in progress",
+        "{\"status\":\"success\",\"summary\":\"done\"}",
+    );
+    db.insert_stage_edges(
+        "task-b",
+        &[NewStageEdge {
+            upstream_task_id: "task-a".to_string(),
+            upstream_stage: "plan".to_string(),
+            dependent_stage: Some("stakeholder".to_string()),
+        }],
+    )
+    .unwrap();
+    let blocked = match prepare_advance_stage_for_api(&db, &config, "task-b") {
+        Err(error) => error,
+        Ok(_) => panic!("entering a gated gate stage must be refused"),
+    };
+    assert!(blocked.starts_with("task is blocked:"), "{blocked}");
+
+    let upstream_sha = commit_on_branch(&repo_root, "task-a", "main", "plan.md");
+    depart(&db, "task-a", "plan", "build", &upstream_sha);
+    match prepare_advance_stage_for_api(&db, &config, "task-b").unwrap() {
+        PreparedStageTransition::Gate(_) => {}
+        _ => panic!("expected the gate stage to be entered"),
+    }
+    let edge = db.list_stage_edges_into("task-b").unwrap().remove(0);
+    assert_eq!(edge.reserved_sha.as_deref(), Some(upstream_sha.as_str()));
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+    let _ = std::fs::remove_file(config.db_path);
+}
