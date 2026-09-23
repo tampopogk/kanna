@@ -427,8 +427,9 @@ fn a_carried_binding_never_touches_a_local_run_with_the_same_id() {
 }
 
 /// Every guarded writer holds its transaction from the guard's read to its
-/// write, so a finalization claim attempted in between waits, and then is
-/// refused by what the writer left pending — never both.
+/// write: a finalization claim attempted in between cannot take the write
+/// lock, and attempted afterwards is refused by what the writer left pending
+/// — never both.
 #[test]
 fn a_claim_attempted_between_the_guard_and_the_write_cannot_land_beside_it() {
     type Write = fn(&Db, &str) -> Result<(), rusqlite::Error>;
@@ -451,18 +452,25 @@ fn a_claim_attempted_between_the_guard_and_the_write_cannot_land_beside_it() {
         let (claim_path, claim_task) = (path.clone(), task_id.clone());
         let (sender, receiver) = std::sync::mpsc::channel();
         super::after_transfer_guard::set(&task_id, move || {
-            let claimant = std::thread::spawn(move || {
-                Db::open(&claim_path)
-                    .unwrap()
-                    .claim_task_workflow_for_transfer_finalization("transfer-1", &claim_task)
-                    .unwrap()
-            });
-            // Long enough for an unguarded claim to commit in the gap.
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            sender.send(claimant).unwrap();
+            // In the gap: a claim that does not wait for a lock must fail to
+            // start, because the writer already holds it. (Unguarded, it
+            // would commit here and the write would land beside it.)
+            let claimant = Db::open(&claim_path).unwrap();
+            claimant.set_test_busy_timeout(std::time::Duration::ZERO);
+            let in_gap =
+                claimant.claim_task_workflow_for_transfer_finalization("transfer-1", &claim_task);
+            sender.send(in_gap.map(|claim| claim.is_ok())).unwrap();
         });
         write(&db, &task_id).unwrap_or_else(|error| panic!("{label}: {error}"));
-        let claimed = receiver.recv().unwrap().join().unwrap();
+        let in_gap = receiver.recv().unwrap();
+        assert!(
+            matches!(&in_gap, Err(error) if error.to_string().contains("locked")),
+            "{label}: a claim got in between the guard and the write: {in_gap:?}"
+        );
+        let claimed = Db::open(&path)
+            .unwrap()
+            .claim_task_workflow_for_transfer_finalization("transfer-1", &task_id)
+            .unwrap();
         let refusal = claimed.expect_err(label);
         assert!(
             refusal.contains("source task untouched"),
@@ -586,4 +594,39 @@ fn nothing_is_appended_to_a_ledger_after_its_final_export() {
     db.fail_outgoing_task_transfer("transfer-1", "destination refused")
         .unwrap();
     append(&db, "after-failure").unwrap();
+}
+
+/// Migration 102 applies after the parent's 101 on a fresh database, and
+/// creates everything a transfer writes, including the final-export fence.
+#[test]
+fn a_migrated_database_holds_the_transfer_tables_and_can_fence_a_ledger() {
+    let path = Db::test_db_path("t9-migrated");
+    let db = Db::open_migrated(&path).unwrap();
+    let position = |id: &str| {
+        db.query_test_i64(&format!(
+            "SELECT rowid FROM schema_migrations WHERE id = '{id}'"
+        ))
+    };
+    assert!(position("101_subtask_joins") < position("102_transferred_task_state"));
+    for table in ["transferred_task_state", "transfer_ledger_export"] {
+        assert_eq!(
+            db.query_test_i64(&format!(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '{table}'"
+            )),
+            1,
+            "{table}"
+        );
+    }
+    db.insert_test_repo("repo-1", "Repo One").unwrap();
+    task(&db, "task-a", "build");
+    outgoing_transfer(&db, "transfer-1", "task-a");
+    db.claim_task_workflow_for_transfer_finalization("transfer-1", "task-a")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        db.fence_ledger_for_transfer_export("task-a", "transfer-1")
+            .unwrap()
+            .unwrap(),
+        0
+    );
 }

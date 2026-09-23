@@ -99,6 +99,7 @@ transient and have no disk authority.
 | `task_input` | task directory | yes (input entries) | run reference when the run recorded no result |
 | `queued_task_input` | task directory | no | inputs accepted but not yet delivered to a session; a restart loses the queue if the database does |
 | `task_stage_budget` | task directory | yes (result `budget`, send-back transitions) | — |
+| `transition_commit` (T3) | task directory | part: the settling result entry and its `committed_sha` | the binding itself (run, stage, exit, state). Rows a transfer carried (T9) are keyed `carried:<task>:<origin run>`, never the origin run id, which stays with the machine that ran it |
 | `task_revision` | exception (statistics) | — | analytics log of revision requests |
 | `worktree` | task directory | no | path, branch, setup pending |
 | `stage_workspace` (T2) | task directory | part: id only (`session_ref.workspace_id`) | stage, path, branch |
@@ -146,6 +147,8 @@ transient and have no disk authority.
 | `task_transfer_workflow_claim` | task directory | no | a finalizing transfer's claim on the workflow |
 | `transfer_work`, `transfer_work_phase` | exception (transient queue) | — | in-flight transfer engine work |
 | `transferred_task_context`, `transferred_task_manifest`, `transferred_task_history` | task directory | part: imported inputs keep `source.origin` | imported workflow/results/history that predates the destination's ledger (T9) |
+| `transferred_task_state` (T9) | task directory | part: carried result/transition/plan entries are re-recorded with `source.origin.ledger_entry`, and the `transfer_import` transition records transfer id, source, ownership generation and fresh-start reason; the rebuild projects carried results under `carried:<task>:<origin run>` | carried links (stage workspaces, settled edges and joins), state digest, and whether the first session resumed; the source's verbatim files are kept under `transferred/<transfer-id>/` but not read by the rebuild |
+| `transfer_ledger_export` (T9) | exception (transient) | — | the fence a transfer's final export sets on the source task's ledger (transfer id, exported sequence); it refuses appends only while that transfer holds the task, and means nothing once the source closes or the transfer ends |
 
 ### Subscriptions, wakes and managers
 

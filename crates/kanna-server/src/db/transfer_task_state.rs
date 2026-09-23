@@ -359,7 +359,7 @@ impl Db {
         &self,
         task_id: &str,
     ) -> Result<(), rusqlite::Error> {
-        let fenced = match self
+        let fenced = self
             .conn
             .query_row(
                 "SELECT transfer_id, exported_through FROM transfer_ledger_export
@@ -367,17 +367,7 @@ impl Db {
                 [task_id],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
             )
-            .optional()
-        {
-            Ok(fenced) => fenced,
-            // Schema-only fixtures that predate the table fence nothing.
-            Err(rusqlite::Error::SqliteFailure(_, Some(message)))
-                if message.contains("no such table") =>
-            {
-                None
-            }
-            Err(error) => return Err(error),
-        };
+            .optional()?;
         let Some((transfer_id, through)) = fenced else {
             return Ok(());
         };
@@ -826,6 +816,16 @@ impl Db {
     /// join, a settled commit step).
     pub(crate) fn execute_test_sql(&self, sql: &str) -> Result<(), rusqlite::Error> {
         self.conn.execute_batch(sql)
+    }
+
+    pub(crate) fn query_test_i64(&self, sql: &str) -> i64 {
+        self.conn.query_row(sql, [], |row| row.get(0)).unwrap()
+    }
+
+    /// Make this connection fail at once on a held lock instead of waiting,
+    /// so a test can observe that another connection holds the write lock.
+    pub(crate) fn set_test_busy_timeout(&self, timeout: std::time::Duration) {
+        self.conn.busy_timeout(timeout).unwrap();
     }
 }
 
