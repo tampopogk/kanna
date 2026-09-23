@@ -542,6 +542,18 @@ describe("QA workflow assets", () => {
     expect(qaWorkflow).not.toContain("$SOURCE_WORKTREE");
   });
 
+  it("routes review's revision findings by exit on a named-exit workflow and by kanna_request_revision on a legacy one", () => {
+    // Revision round 1 fix: `kanna_request_revision` is refused with a 409 on
+    // a task that routes results by named exits (task_actions.rs), so review
+    // must check the stage's routing before choosing how to report findings.
+    const reviewAgent = readRepoPhrases(".kanna/agents/review/AGENT.md");
+
+    expect(reviewAgent).toContain('workflowDefinition` for this stage\'s `"routing": "exits"`');
+    expect(reviewAgent).toContain("record `success` with the exit that fits");
+    expect(reviewAgent).toContain("do not call `kanna_request_revision`, which the server refuses there with a 409");
+    expect(reviewAgent).toContain("On a legacy (non-exit) workflow, call `kanna_request_revision");
+  });
+
   it("ships the approve step as the pr stage's post instead of a legacy post_action", () => {
     const qaWorkflow = readRepoFile(".kanna/workflows/single-reviewer.json");
     // Legacy `post_action` still compiles at load time for pinned

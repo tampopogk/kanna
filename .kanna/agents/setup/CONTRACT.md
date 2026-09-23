@@ -7,7 +7,7 @@ Required behavior:
 - It must inspect the repository before asking questions, including git remote URL, available GitHub auth through `gh auth status`, existing CI configuration, and existing `.kanna/` files.
 - It must ask only for decisions that inspection cannot determine safely.
 - It must write `.kanna/config.json` selections, and repo-local `EXTEND.md` files only for behavior that does not match stock flavors.
-- It must install the machine-local config bootstrap: ignore `.kanna/config.local.json`, add a committed portable script that creates a schema-only skeleton in the primary checkout and copies it into each worktree, and invoke that script from `.kanna/config.json` setup without replacing existing setup commands. The copy direction is primary checkout to worktree only.
+- Machine-specific choices go in ignored `.kanna/config.local.json`. It must preserve an existing local config bootstrap if valid, and must not mandate installing a script or local skeleton.
 - It must not write copied stock `AGENT.md` files for roles such as `pr` or `merge`.
 - For the stock GitHub flow, it must select a built-in workflow (`no-review`, `single-reviewer`, or `specialized-reviewers`) plus `merge@github`, not author a workflow file of its own. A workflow file is written only for stages the built-ins do not offer.
 - The stock GitHub flow must not select `pr@draft-pr`. `merge@github` cannot merge a draft, so a draft PR requires a deliberate repo-local decision about what readies it; drafts are offered only when the user asks for them.
