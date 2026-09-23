@@ -38,9 +38,13 @@ fn builtin_single_reviewer_workflow_ships_approve_as_pr_stage_post() {
         .unwrap()
         .agent("review")
         .unwrap();
-    assert!(review_agent
-        .prompt
-        .ends_with(super::super::stages::REREVIEW_VERDICT_COMPLETION_INSTRUCTION));
+    // The review definition carries its own completion obligation in its
+    // "Stop when" section; the re-review reminder is appended by the engine
+    // on re-review runs (covered by the re-review spawn test below), not by
+    // static definition text.
+    assert!(review_agent.prompt.contains("## Stop when"));
+    assert!(review_agent.prompt.contains("record `success`"));
+    assert!(review_agent.prompt.contains("kanna_request_revision"));
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
