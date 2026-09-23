@@ -783,6 +783,18 @@ impl ArtifactStore {
             let since = last_binding_close.map_or(received, |closed| closed.max(received));
             due(received_policy, since)
         };
+        // The receipt of the content as retained now. A fetch that retains
+        // content again after it expired writes a fresh one, and that fetch
+        // restarts the clock of every received version of it too.
+        let content_receipt = match self.retained_commit(oid)? {
+            Some(commit) => self.receipt(
+                root.as_ref(),
+                RECEIVED_CONTENT_DIR,
+                oid,
+                &commit.to_string(),
+            )?,
+            None => return Ok(None),
+        };
         let versions = self.list_records::<ArtifactVersion>(VERSIONS_DIR, oid)?;
         let mut policies = Vec::new();
         if versions.is_empty() {
@@ -790,16 +802,7 @@ impl ArtifactStore {
             // this, and nothing says what its policy is, so it stays --
             // unless a remote supplied it, which gives it this repository's
             // policy and a receipt time.
-            let Some(commit) = self.retained_commit(oid)? else {
-                return Ok(None);
-            };
-            let Some(received) = self.receipt(
-                root.as_ref(),
-                RECEIVED_CONTENT_DIR,
-                oid,
-                &commit.to_string(),
-            )?
-            else {
+            let Some(received) = content_receipt else {
                 return Ok(None);
             };
             return Ok(match received_due(received) {
@@ -814,7 +817,17 @@ impl ArtifactStore {
                 oid,
                 &version.record_id,
             )? {
-                Some(received) => (received_policy, received_due(received)),
+                Some(received) => {
+                    // The later of this version's receipt and the current
+                    // content's. An untimed (legacy) version mark stays
+                    // untimed, which keeps the content.
+                    let received =
+                        received.map(|version_received| match content_receipt.flatten() {
+                            Some(content_received) => version_received.max(content_received),
+                            None => version_received,
+                        });
+                    (received_policy, received_due(received))
+                }
                 None => {
                     let TaskLifecycle::Closed { at } = lifecycle(&version.produced_by.task_id)
                     else {
@@ -1044,7 +1057,7 @@ impl ArtifactStore {
         sequence: Option<u64>,
         message: &str,
     ) -> Result<(), ArtifactError> {
-        if records.is_empty() {
+        if records.is_empty() && sequence.is_none() {
             return Ok(());
         }
         let parent = self.metadata_tip()?;
@@ -1308,6 +1321,18 @@ impl ArtifactStore {
             }
         }
         report.records_imported = accepted.len();
+        // Received sequence-form ids (`s<seq>-...`) are ordered by number
+        // among local ones, so the counter must move past every one this
+        // home now holds, or the next local record would sort before them.
+        // Advanced in the same metadata commit as the import.
+        let highest_received = records
+            .iter()
+            .filter(|record| !report.conflicting.contains(record))
+            .filter_map(|record| sequence_of(&record.record_id))
+            .max();
+        let sequence = highest_received
+            .map(|highest| Ok::<_, ArtifactError>(highest.max(self.last_sequence()?)))
+            .transpose()?;
         // Receipts: which versions and which content arrived from a remote,
         // and when. Retention reads them so that nothing another home
         // recorded keeps or releases content here.
@@ -1333,7 +1358,19 @@ impl ArtifactStore {
             )
             .collect::<Vec<_>>();
         accepted.extend(received_marks);
-        self.append_blobs(&accepted, None, "import records from artifact remote")?;
+        let advances =
+            sequence.is_some_and(|sequence| self.last_sequence().is_ok_and(|last| sequence > last));
+        if accepted.is_empty() && advances {
+            // Every record was already here (imported before the counter
+            // followed imports): only the counter moves.
+            self.append_blobs(
+                &[],
+                sequence,
+                "advance record sequence past received records",
+            )?;
+        } else {
+            self.append_blobs(&accepted, sequence, "import records from artifact remote")?;
+        }
         Ok(report)
     }
 
@@ -1463,6 +1500,14 @@ impl ArtifactStore {
 #[cfg(test)]
 pub(crate) fn record_order_for_tests(file_name: &str) -> (u8, u64, String) {
     record_order(file_name)
+}
+
+/// The sequence number of a sequence-form record id (`s<12 digits>-...`).
+fn sequence_of(record_id: &str) -> Option<u64> {
+    record_id
+        .strip_prefix('s')
+        .and_then(|rest| rest.split_once('-'))
+        .and_then(|(number, _)| number.parse::<u64>().ok())
 }
 
 /// Sort key of a record file name: sequenced records by their sequence,

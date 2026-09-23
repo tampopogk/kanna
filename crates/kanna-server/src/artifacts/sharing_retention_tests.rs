@@ -471,3 +471,138 @@ fn received_content_follows_local_rules_and_never_a_remote_producer() {
         .unwrap();
     assert_eq!(sweep.expired, vec![id]);
 }
+
+fn sequence_of(record_id: &str) -> u64 {
+    record_id
+        .strip_prefix('s')
+        .and_then(|rest| rest.split_once('-'))
+        .and_then(|(number, _)| number.parse().ok())
+        .unwrap_or_else(|| panic!("{record_id} is not a sequence-form record id"))
+}
+
+/// A home that imports a version whose id carries a high sequence number
+/// and then publishes the same artifact itself: its own publication is the
+/// latest version, and every id it mints next sorts after the imported one.
+#[test]
+fn a_local_publication_after_an_import_is_the_latest_version() {
+    let sharing = Sharing::new("sequence-after-import");
+    sharing.fixture.write("workspace/filler.md", b"filler");
+    sharing
+        .fixture
+        .write("workspace/site/index.html", b"<p>index</p>");
+    sharing
+        .fixture
+        .write("workspace/site/other.html", b"<p>other</p>");
+    let publish_site = |store: &ArtifactStore, task_id: &str, entrypoint: &str| {
+        store
+            .publish(PublishRequest {
+                task_id,
+                workspace_root: &sharing.fixture.root.join("workspace"),
+                source_path: "site",
+                kind: ArtifactContentKind::Mockup,
+                entrypoint: Some(entrypoint),
+                previous: None,
+                retention: ArtifactRetention::Keep,
+                limits: PublishLimits::default(),
+            })
+            .unwrap()
+    };
+
+    // A's sequence runs well ahead of a fresh home's.
+    let a = sharing.home("a");
+    let filler = sharing.publish(&a, "filler.md", "task-a", ArtifactRetention::Keep);
+    for _ in 0..20 {
+        comment(&a, &filler);
+    }
+    let theirs = publish_site(&a, "task-a", "index.html");
+    let imported_sequence = sequence_of(&theirs.version.record_id);
+    assert!(imported_sequence > 20, "{}", theirs.version.record_id);
+    push(&a, &sharing.remote, &theirs.artifact_id).unwrap();
+
+    let b = sharing.home("b");
+    fetch(&b, &sharing.remote, &theirs.artifact_id).unwrap();
+    let ours = publish_site(&b, "task-b", "other.html");
+    assert_eq!(ours.artifact_id, theirs.artifact_id);
+    assert!(
+        sequence_of(&ours.version.record_id) > imported_sequence,
+        "local {} minted at or before imported {}",
+        ours.version.record_id,
+        theirs.version.record_id
+    );
+
+    let id = theirs.artifact_id.clone();
+    assert_eq!(b.entrypoint(&id).unwrap().as_deref(), Some("other.html"));
+    let versions = b.detail(&id).unwrap().versions;
+    assert_eq!(versions.len(), 2);
+    assert_eq!(versions[0].record_id, theirs.version.record_id);
+    assert_eq!(versions[1].record_id, ours.version.record_id);
+    assert_eq!(versions[1].produced_by.task_id, "task-b");
+
+    // Records minted after that keep sorting after the import too.
+    b.record_comment(
+        &id,
+        CommentRequest {
+            author: "bob",
+            body: "after the import",
+            anchor: None,
+        },
+    )
+    .unwrap();
+    let comments = b.detail(&id).unwrap().comments;
+    assert!(sequence_of(&comments.last().unwrap().record_id) > imported_sequence);
+}
+
+/// Received content that expired and is fetched again gets a new clock: it
+/// is kept for the policy's full period from the refetch, not collected at
+/// once because its version records still carry the first receipt.
+#[test]
+fn refetched_content_restarts_its_retention_clock() {
+    let sharing = Sharing::new("refetch-restarts-clock");
+    sharing
+        .fixture
+        .write("workspace/theirs.md", b"their report");
+    let a = sharing.home("a");
+    let id = sharing.publish(&a, "theirs.md", "task-a", ArtifactRetention::Keep);
+    push(&a, &sharing.remote, &id).unwrap();
+    let nobody = lifecycles(&[]);
+    let policy = ArtifactRetention::ThirtyDays;
+
+    let b = receive(&sharing, "b", &id, at(T0));
+    let sweep = b
+        .sweep_retention(at(T0) + THIRTY_DAYS, policy, &nobody)
+        .unwrap();
+    assert_eq!(sweep.expired, vec![id.clone()]);
+    let detail = b.detail(&id).unwrap();
+    assert!(!detail.retained && detail.expired, "{detail:?}");
+    assert_eq!(detail.versions.len(), 1);
+
+    // Fetched again a day later.
+    let refetched = at(T0) + THIRTY_DAYS + Duration::from_secs(86_400);
+    set_test_clock(Some(refetched));
+    let fetched = fetch(&b, &sharing.remote, &id);
+    set_test_clock(None);
+    assert_eq!(fetched.unwrap().content_retained, vec![id.clone()]);
+    let sweep = b
+        .sweep_retention(refetched + Duration::from_secs(1), policy, &nobody)
+        .unwrap();
+    assert!(
+        sweep.expired.is_empty(),
+        "refetched content was collected at once"
+    );
+    let sweep = b
+        .sweep_retention(
+            refetched + THIRTY_DAYS - Duration::from_secs(1),
+            policy,
+            &nobody,
+        )
+        .unwrap();
+    assert!(sweep.expired.is_empty());
+    assert!(b.detail(&id).unwrap().retained);
+
+    let sweep = b
+        .sweep_retention(refetched + THIRTY_DAYS, policy, &nobody)
+        .unwrap();
+    assert_eq!(sweep.expired, vec![id.clone()]);
+    let detail = b.detail(&id).unwrap();
+    assert!(!detail.retained && detail.expired);
+}
