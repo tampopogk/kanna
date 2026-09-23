@@ -662,6 +662,94 @@
         ]
       },
       "rejects": "legacy"
+    },
+    {
+      "name": "a final stage that hands off to the merge master",
+      "valid": true,
+      "definition": {
+        "name": "shaped",
+        "routing": "exits",
+        "stages": [
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "policy": {
+              "transition": "manual"
+            }
+          },
+          {
+            "name": "pr",
+            "agent": "pr",
+            "policy": {
+              "transition": "manual",
+              "handoff": "merge"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a handoff policy on a legacy workflow",
+      "valid": false,
+      "rejects": "policy.handoff belongs to named-exit routing",
+      "definition": {
+        "name": "legacy",
+        "stages": [
+          {
+            "name": "pr",
+            "agent": "pr",
+            "policy": {
+              "transition": "manual",
+              "handoff": "merge"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a handoff policy before the final stage",
+      "valid": false,
+      "rejects": "declare it on the final stage",
+      "definition": {
+        "name": "designed",
+        "routing": "exits",
+        "stages": [
+          {
+            "name": "pr",
+            "agent": "pr",
+            "policy": {
+              "transition": "manual",
+              "handoff": "merge"
+            }
+          },
+          {
+            "name": "pr-review",
+            "agent": "pr-reviewer",
+            "policy": {
+              "transition": "manual"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a handoff to anyone but the merge master",
+      "valid": false,
+      "rejects": "deploy",
+      "definition": {
+        "name": "shaped",
+        "routing": "exits",
+        "stages": [
+          {
+            "name": "pr",
+            "agent": "pr",
+            "policy": {
+              "transition": "manual",
+              "handoff": "deploy"
+            }
+          }
+        ]
+      }
     }
   ]
 }

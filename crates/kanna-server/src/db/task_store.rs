@@ -938,7 +938,6 @@ impl Db {
         rows.collect()
     }
 
-    #[cfg(test)]
     pub(crate) fn has_ledger_continuation(&self, task_id: &str) -> Result<bool, rusqlite::Error> {
         self.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM task_ledger_continuation WHERE task_id = ?)",

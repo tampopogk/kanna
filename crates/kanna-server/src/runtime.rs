@@ -396,6 +396,11 @@ pub(crate) async fn run_server_services(
     tokio::spawn(http_api::subtask_joins::resume_subtask_joins(Arc::clone(
         &http_state,
     )));
+    // After recovery, so a merge master whose transition or lifecycle
+    // operation was still owed is seen as busy and left alone.
+    tokio::spawn(http_api::signal_agent::migrate_merge_singletons_on_startup(
+        Arc::clone(&http_state),
+    ));
     tokio::spawn(run_task_ledger_publisher(Arc::clone(&http_state)));
     tokio::spawn(run_artifact_retention_sweeper(Arc::clone(&http_state)));
     let protected_input_maintenance = maintain_protected_input_generations(

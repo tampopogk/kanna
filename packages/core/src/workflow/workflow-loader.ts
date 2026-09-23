@@ -94,6 +94,12 @@ function parseStagePolicy(raw: Record<string, unknown>, stageName: string): Pars
           (transition) =>
             `Stage "${stageName}" has invalid policy.loop_transition "${transition}"; must be "manual" or "auto"`
         );
+    const handoff = p["handoff"];
+    if (handoff !== undefined && handoff !== "merge") {
+      throw validationError(
+        `Stage "${stageName}" has invalid policy.handoff "${formatRawValue(handoff)}"; must be "merge"`
+      );
+    }
     return {
       policy: {
         transition: parseTransition(
@@ -105,6 +111,7 @@ function parseStagePolicy(raw: Record<string, unknown>, stageName: string): Pars
           ? {}
           : { revision_transition: revisionTransition }),
         ...(loopTransition === undefined ? {} : { loop_transition: loopTransition }),
+        ...(handoff === undefined ? {} : { handoff }),
       },
       legacyContinue: parseLegacyContinueMarker(p["execution"], stageName),
     };
@@ -211,7 +218,13 @@ function validateWorkflowRouting(def: WorkflowDefinition): string[] {
   const usesTransitionFields = def.stages.some(
     (stage) => stage.exit_commit === true || stage.setup !== undefined || stage.teardown !== undefined
   );
+  const usesHandoff = def.stages.some((stage) => stage.policy?.handoff !== undefined);
   if (def.routing !== "exits") {
+    if (usesHandoff) {
+      errors.push(
+        'policy.handoff belongs to named-exit routing; declare "routing": "exits" to use it (a legacy workflow hands off through its approve post)'
+      );
+    }
     if (usesExitFields) {
       errors.push(
         'exits, budget and loop_transition belong to named-exit routing; declare "routing": "exits" to use them'
@@ -243,6 +256,11 @@ function validateWorkflowRouting(def: WorkflowDefinition): string[] {
     if (stage.agent !== undefined && stage.agent.trim() === "") {
       errors.push(
         `Stage "${stage.name}": agent must name a role; omit it for a stage without a role`
+      );
+    }
+    if (stage.policy?.handoff !== undefined && index !== def.stages.length - 1) {
+      errors.push(
+        `Stage "${stage.name}": policy.handoff runs as the task leaves its final stage; declare it on the final stage`
       );
     }
     if (stage.exit_commit && stage.post !== undefined) {

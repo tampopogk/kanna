@@ -234,6 +234,12 @@
                   "manual",
                   "auto"
                 ]
+              },
+              "handoff": {
+                "description": "Routing \"exits\" only, on the final stage only: as the task leaves that stage and closes, Kanna hands the task's pull request to the repository's merge master, delivering the same request a legacy approve post sends. The close waits for the delivery; a task with no recorded PR, or a delivery the merge master cannot take, parks at the stage instead of closing. \"merge\" is the only receiver.",
+                "enum": [
+                  "merge"
+                ]
               }
             }
           },

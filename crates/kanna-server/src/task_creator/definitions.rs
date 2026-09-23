@@ -524,6 +524,20 @@ pub(super) struct WorkflowStagePolicy {
     /// `advance`. Never set together with `revision_transition`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) loop_transition: Option<WorkflowStageTransition>,
+    /// Routing `exits` only, final stage only: leaving the stage hands the
+    /// task's pull request to the repository's merge master (spec §10, "the
+    /// `pr` stage's `advance` hands to it"). It delivers the request a legacy
+    /// `approve` post sends, through the same pre-close backstop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) handoff: Option<WorkflowHandoff>,
+}
+
+/// Who a stage's transition hands the task's work to. The merge master is the
+/// only receiver this build has.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WorkflowHandoff {
+    Merge,
 }
 
 impl WorkflowStagePolicy {
@@ -610,6 +624,7 @@ pub(super) fn post_as_stage(owner: &WorkflowStage) -> Option<WorkflowStage> {
             transition: WorkflowStageTransition::Auto,
             revision_transition: None,
             loop_transition: None,
+            handoff: None,
         },
         post: None,
         exit_commit: false,
@@ -661,6 +676,7 @@ struct RawWorkflowStagePolicy {
     transition: WorkflowStageTransition,
     revision_transition: Option<WorkflowStageTransition>,
     loop_transition: Option<WorkflowStageTransition>,
+    handoff: Option<WorkflowHandoff>,
     execution: Option<RawWorkflowStageExecution>,
 }
 
@@ -2069,7 +2085,17 @@ const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
         "specialty-review",
         include_str!("../../../../.kanna/workflows/specialty-review.json"),
     ),
+    (
+        RELEASE_WORKFLOW_NAME,
+        include_str!("../../../../.kanna/workflows/release.json"),
+    ),
 ];
+
+/// The release workflow a repository's merge master runs (spec §10): the
+/// merge singleton is claimed onto it, so its first stage is the merge window
+/// and runs the `merge` agent. It is internal, and task creation by name
+/// refuses it: a second task running it would be a competing merge master.
+pub(crate) const RELEASE_WORKFLOW_NAME: &str = "release";
 
 /// The `visibility` a workflow definition file declares, probed tolerantly for
 /// listing: `workflow_names()` must not fail — or silently drop a name —
@@ -2379,15 +2405,17 @@ fn normalize_workflow_definition(raw: RawWorkflowDefinition) -> Result<WorkflowD
             teardown,
         } = stage;
 
-        let (transition, revision_transition, loop_transition, continues) = match policy {
+        let (transition, revision_transition, loop_transition, handoff, continues) = match policy {
             Some(policy) => (
                 policy.transition,
                 policy.revision_transition,
                 policy.loop_transition,
+                policy.handoff,
                 matches!(policy.execution, Some(RawWorkflowStageExecution::Continue)),
             ),
             None => (
                 transition.ok_or_else(|| format!("stage {name:?} is missing policy.transition"))?,
+                None,
                 None,
                 None,
                 matches!(mode, Some(RawWorkflowStageExecution::Continue)),
@@ -2444,6 +2472,7 @@ fn normalize_workflow_definition(raw: RawWorkflowDefinition) -> Result<WorkflowD
                 transition,
                 revision_transition,
                 loop_transition,
+                handoff,
             },
             post,
             exit_commit,
@@ -2494,7 +2523,18 @@ fn validate_workflow_routing(workflow: &WorkflowDefinition) -> Result<(), String
         .stages
         .iter()
         .any(|stage| stage.exit_commit || stage.setup.is_some() || stage.teardown.is_some());
+    let uses_handoff = workflow
+        .stages
+        .iter()
+        .any(|stage| stage.policy.handoff.is_some());
     if !workflow.routes_by_exits() {
+        if uses_handoff {
+            return Err(
+                "policy.handoff belongs to named-exit routing; declare \"routing\": \"exits\" \
+                 to use it (a legacy workflow hands off through its approve post)"
+                    .into(),
+            );
+        }
         if uses_exit_fields {
             return Err(
                 "exits, budget and loop_transition belong to named-exit routing; declare \
@@ -2550,6 +2590,15 @@ fn validate_workflow_routing(workflow: &WorkflowDefinition) -> Result<(), String
         {
             return Err(format!(
                 "stage '{}': agent must name a role; omit it for a stage without a role",
+                stage.name
+            ));
+        }
+        // The handoff runs where the legacy approve post's backstop runs: as
+        // the task closes after its final stage.
+        if stage.policy.handoff.is_some() && index + 1 != workflow.stages.len() {
+            return Err(format!(
+                "stage '{}': policy.handoff runs as the task leaves its final stage; declare it \
+                 on the final stage",
                 stage.name
             ));
         }
