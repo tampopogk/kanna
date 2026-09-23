@@ -42,6 +42,14 @@ pub(super) struct TaskInputRequest {
     /// small enough that multipart would buy nothing.
     #[serde(default)]
     attachment: Option<TaskInputAttachment>,
+    /// A singleton signal names the agent it is for, and the task's current
+    /// stage must run that agent: a merge master that has left its merge
+    /// window for a later release stage takes no handoff, rather than having
+    /// it typed into whatever session that stage runs. Omitted by every other
+    /// caller, and ignored by an owner that predates it, whose singletons
+    /// only ever run their one stage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expected_stage_agent: Option<String>,
 }
 
 /// Whether a failed delivery may be attempted again on its own.
@@ -308,28 +316,25 @@ pub(super) async fn send_task_input(
     send_task_input_impl(state, task_id, payload, channel, strict_recording).await
 }
 
-/// Deliver server-originated speech through the same live-session discovery,
-/// PID fence, logical-input boundary, and durable ledger as `/tasks/{id}/input`.
+/// Deliver a singleton signal: server-originated speech through the same
+/// live-session discovery, PID fence, logical-input boundary, and durable
+/// ledger as `/tasks/{id}/input`, refused unless the task's current stage runs
+/// `agent`.
 ///
 /// Singleton signals must not use a stage run's historical session id directly:
 /// a daemon handoff or stage replacement can leave that id naming a retired PTY.
-pub(crate) async fn deliver_server_task_input(
+/// Merge handoffs pass `strict_recording`: the durable ledger is then part of
+/// the success contract, because a source task cannot claim it signaled the
+/// merge master unless the merge master has the durable record.
+pub(crate) async fn deliver_singleton_task_input(
     state: Arc<AppState>,
     task_id: String,
     input: String,
+    agent: String,
+    strict_recording: bool,
 ) -> Result<(), (axum::http::StatusCode, String)> {
-    deliver_server_task_input_with_recording(state, task_id, input, false).await
-}
-
-/// Deliver server-originated input whose durable ledger is part of the
-/// success contract. Merge handoffs use this: a source task cannot claim it
-/// signaled the merge master unless the merge master has the durable record.
-pub(crate) async fn deliver_server_task_input_strict(
-    state: Arc<AppState>,
-    task_id: String,
-    input: String,
-) -> Result<(), (axum::http::StatusCode, String)> {
-    deliver_server_task_input_with_recording(state, task_id, input, true).await
+    deliver_server_task_input_with_recording(state, task_id, input, strict_recording, Some(agent))
+        .await
 }
 
 async fn deliver_server_task_input_with_recording(
@@ -337,6 +342,7 @@ async fn deliver_server_task_input_with_recording(
     task_id: String,
     input: String,
     strict_recording: bool,
+    expected_stage_agent: Option<String>,
 ) -> Result<(), (axum::http::StatusCode, String)> {
     match send_task_input_impl(
         state,
@@ -346,6 +352,7 @@ async fn deliver_server_task_input_with_recording(
             strict_recording: false,
             source: None,
             attachment: None,
+            expected_stage_agent,
         },
         // Server-originated speech: the engine, never an earlier caller.
         ChannelIdentity::Server,
@@ -411,6 +418,48 @@ async fn send_task_input_impl(
     .await
 }
 
+/// Refuse a singleton signal whose task's current stage runs another agent.
+/// Checked under the task-mutation lease the delivery holds, so a stage
+/// advance cannot move the task between this check and the write. A task
+/// with no recorded run yet (a singleton still being spawned) is left to the
+/// ordinary live-session checks, exactly as before.
+// The error is the one every delivery path answers with, so the caller can
+// return it unchanged.
+#[allow(clippy::result_large_err)]
+fn refuse_singleton_outside_its_stage(
+    state: &AppState,
+    task_id: &str,
+    agent: &str,
+) -> Result<(), TaskInputHttpError> {
+    let db_error = |error: rusqlite::Error| {
+        task_input_http_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "db_error",
+            error.to_string(),
+            None,
+        )
+    };
+    let db = Db::open(&state.config.db_path).map_err(db_error)?;
+    let Some(run) = db.latest_stage_run(task_id).map_err(db_error)? else {
+        return Ok(());
+    };
+    if run.agent.as_deref() == Some(agent) {
+        return Ok(());
+    }
+    Err(task_input_http_error(
+        axum::http::StatusCode::CONFLICT,
+        "singleton_outside_its_stage",
+        format!(
+            "task {task_id} is at stage '{}', which runs {} rather than the {agent} agent this \
+             signal is for; nothing was delivered. A merge master that has left its merge window \
+             takes no handoff until its release closes.",
+            run.stage,
+            run.agent.as_deref().unwrap_or("no agent"),
+        ),
+        None,
+    ))
+}
+
 /// A wake that did not reach its session, carrying enough for the subscription
 /// worker to decide between re-attempting and parking the page.
 pub(super) struct EngineWakeFailure {
@@ -428,6 +477,7 @@ pub(super) async fn send_engine_wake(
         strict_recording: false,
         source: None,
         attachment: None,
+        expected_stage_agent: None,
     };
     deliver_task_input(
         state,
@@ -480,6 +530,9 @@ async fn deliver_task_input(
             ),
         ));
     };
+    if let Some(agent) = payload.expected_stage_agent.as_deref() {
+        refuse_singleton_outside_its_stage(&state, &task_id, agent)?;
+    }
     if let Some(expected) = expected_run {
         let db = Db::open(&state.config.db_path).map_err(|error| {
             task_input_http_error(

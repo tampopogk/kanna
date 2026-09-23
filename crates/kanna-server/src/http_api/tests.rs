@@ -321,6 +321,7 @@ mod mutation_provenance;
 mod raw_input;
 mod recent_workflows;
 mod relay_dispatch;
+mod release_workflow;
 mod repo_commands;
 mod repo_definitions;
 mod revision_status;

@@ -14,6 +14,12 @@ export interface WorkflowStagePolicy {
    * `advance` exit. Defaults to `transition`.
    */
   loop_transition?: "manual" | "auto";
+  /**
+   * Routing "exits" only, final stage only: leaving the stage hands the
+   * task's pull request to the repository's merge master, delivering the same
+   * request a legacy approve post sends.
+   */
+  handoff?: "merge";
 }
 
 /**

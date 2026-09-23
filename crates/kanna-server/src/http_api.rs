@@ -37,7 +37,7 @@ mod resume_recovery;
 mod routes;
 pub(crate) mod secure_channel;
 pub(crate) mod settings;
-mod signal_agent;
+pub(crate) mod signal_agent;
 mod snapshot;
 mod stage_run_prompts;
 mod state;

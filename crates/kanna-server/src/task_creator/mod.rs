@@ -95,6 +95,9 @@ pub(crate) use lifecycle::{
 };
 pub(crate) use merge::prepare_merge_agent_for_api;
 pub use merge::run_merge_agent;
+pub(crate) use merge::{
+    migrate_merge_singleton_to_release_workflow, MergeSingletonMigration, MERGE_SINGLETON_WORKFLOW,
+};
 pub(crate) use prompt::RevisionRound;
 pub(crate) use stages::{
     current_stage_is_roleless, describe_current_stage_exits, exit_leading_to, resolve_result_exit,
@@ -105,8 +108,8 @@ pub(crate) use stages::{
     prepare_fresh_restart_after_rejected_resume, prepare_provider_fallback_for_api,
     prepare_resume_task_for_api, prepare_revision_task_for_api,
     prepare_stage_completion_for_api_with_trigger, resolve_revision_budget, resolve_revision_limit,
-    resolve_stage_transition, stage_declares_merge_approve_post, RevisionBudget,
-    StageAdvanceIntent,
+    resolve_stage_transition, stage_declares_merge_handoff, MergeHandoffDeclaration,
+    RevisionBudget, StageAdvanceIntent,
 };
 #[cfg(test)]
 pub(crate) use stages::{prepare_advance_stage_for_api, prepare_stage_completion_for_api};
@@ -2640,39 +2643,14 @@ pub(crate) fn prepare_singleton_agent_task_for_api(
         None
     };
     let workflow_name = format!("{SINGLETON_WORKFLOW_PREFIX}{agent_name}");
-    let workflow = definitions::WorkflowDefinition {
-        name: Some(workflow_name.clone()),
-        description: None,
-        stages: vec![WorkflowStage {
-            name: "in progress".to_string(),
-            description: None,
-            agent: Some(agent_name.to_string()),
-            prompt: Some("$TASK_PROMPT".to_string()),
-            agent_provider: None,
-            environment: None,
-            exits: None,
-            budget: None,
-            policy: WorkflowStagePolicy {
-                transition: WorkflowStageTransition::Manual,
-                revision_transition: None,
-                loop_transition: None,
-            },
-            post: None,
-            exit_commit: false,
-            setup: None,
-            teardown: None,
-        }],
-        environments: None,
-        revision_limit: None,
-        plan_context: None,
-        routing: Default::default(),
-        budget: None,
-        // Kanna binds this synthetic workflow itself; it is never a listed
-        // choice, and visibility is never consulted on resolution anyway.
-        visibility: definitions::DefinitionVisibility::Internal,
+    // The merge master is claimed onto the repository's release workflow and
+    // runs as its merge window (spec §10). Other singletons keep their
+    // one-stage workflow.
+    let workflow_def = if agent_name == merge::MERGE_AGENT {
+        merge::merge_singleton_workflow_definition(&repo)?
+    } else {
+        synthetic_singleton_workflow_definition(&workflow_name, agent_name)?
     };
-    let workflow_def =
-        serde_json::to_string(&workflow).map_err(|e| format!("serialize error: {}", e))?;
     let display_name = match agent_name {
         "merge" => Some("Merge Master".to_string()),
         "task-manager" => Some("Task Manager".to_string()),
@@ -2714,6 +2692,47 @@ pub(crate) fn prepare_singleton_agent_task_for_api(
             parent_task_id: None,
         },
     )
+}
+
+/// The one-stage workflow a singleton other than the merge master is claimed
+/// onto.
+fn synthetic_singleton_workflow_definition(
+    workflow_name: &str,
+    agent_name: &str,
+) -> Result<String, String> {
+    let workflow = definitions::WorkflowDefinition {
+        name: Some(workflow_name.to_string()),
+        description: None,
+        stages: vec![WorkflowStage {
+            name: "in progress".to_string(),
+            description: None,
+            agent: Some(agent_name.to_string()),
+            prompt: Some("$TASK_PROMPT".to_string()),
+            agent_provider: None,
+            environment: None,
+            exits: None,
+            budget: None,
+            policy: WorkflowStagePolicy {
+                transition: WorkflowStageTransition::Manual,
+                revision_transition: None,
+                loop_transition: None,
+                handoff: None,
+            },
+            post: None,
+            exit_commit: false,
+            setup: None,
+            teardown: None,
+        }],
+        environments: None,
+        revision_limit: None,
+        plan_context: None,
+        routing: Default::default(),
+        budget: None,
+        // Kanna binds this synthetic workflow itself; it is never a listed
+        // choice, and visibility is never consulted on resolution anyway.
+        visibility: definitions::DefinitionVisibility::Internal,
+    };
+    serde_json::to_string(&workflow).map_err(|e| format!("serialize error: {}", e))
 }
 
 pub(crate) fn generate_singleton_task_id() -> Result<String, String> {
@@ -2920,6 +2939,7 @@ completion with status success so Kanna can run the commit post and close this i
                 transition: WorkflowStageTransition::Auto,
                 revision_transition: None,
                 loop_transition: None,
+                handoff: None,
             },
             post: Some(definitions::WorkflowPost {
                 name: "commit".to_string(),
@@ -3967,6 +3987,18 @@ fn pin_task_workflow_definition(
     workflow_name: &str,
     stored: Option<&str>,
 ) -> Result<(definitions::WorkflowDefinition, String), String> {
+    // Only the merge singleton's claim pins the release workflow, as its
+    // definition. A task created or switched onto it by name would run a
+    // second merge master beside the claimed one.
+    if stored.is_none_or(|value| value.trim().is_empty())
+        && workflow_name == definitions::RELEASE_WORKFLOW_NAME
+    {
+        return Err(format!(
+            "{workflow_name} is the release workflow the repository's merge master runs; it is \
+             bound when the merge master is claimed through kanna_signal_merge_handoff or \
+             kanna_signal_agent (agent: merge) and cannot be selected by name"
+        ));
+    }
     let workflow = definitions.task_workflow(workflow_name, stored)?;
     let definition_json =
         serde_json::to_string(&workflow).map_err(|e| format!("serialize error: {e}"))?;

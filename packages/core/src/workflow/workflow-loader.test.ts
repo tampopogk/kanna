@@ -709,6 +709,27 @@ describe("named-exit routing (parity with the server loader)", () => {
     expect([...WORKFLOW_POST_KEYS].sort()).toEqual(keys(schema.properties.stages.items.properties.post));
   });
 
+  it("loads the release workflow the merge master runs, as the server does", () => {
+    // task_creator/tests/stage.rs asserts the same shape through the server
+    // loader.
+    const release = parseWorkflowJson(
+      readFileSync(new URL("../../../../.kanna/workflows/release.json", import.meta.url), "utf8"),
+    );
+    expect(release.name).toBe("release");
+    expect(release.routing).toBe("exits");
+    expect(
+      release.stages.map((stage) => [stage.name, stage.agent ?? null, stage.policy?.transition]),
+    ).toEqual([
+      ["in progress", "merge", "manual"],
+      ["qa gauntlet", null, "manual"],
+      ["ship staging", "ship", "manual"],
+      ["soak", null, "manual"],
+      ["ship production", "ship", "manual"],
+    ]);
+    expect(release.stages[0].prompt).toBe("$TASK_PROMPT");
+    expect(release.stages.some((stage) => stage.policy?.handoff !== undefined)).toBe(false);
+  });
+
   it("ships a schema example that loads", () => {
     const schema = JSON.parse(
       readFileSync(new URL("../../../../.kanna/workflows/schema.json", import.meta.url), "utf8"),
