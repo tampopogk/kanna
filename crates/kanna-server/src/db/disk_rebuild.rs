@@ -6,9 +6,43 @@
 //! relies on a `datetime('now')` default, so applying the same projection
 //! again leaves the database byte-for-byte as it was.
 
+use super::task_state::json_to_sql;
 use super::Db;
-use crate::task_store::rebuild::Projection;
+use crate::task_store::rebuild::{CarriedRow, Projection};
 use rusqlite::params;
+use serde_json::{Map, Value};
+
+/// Insert one row as carried, `rowid` included. A row already present under
+/// its rowid (a re-application) is left as it is.
+fn insert_row(db: &Db, table: &str, row: &Map<String, Value>) -> Result<(), rusqlite::Error> {
+    if let Some(rowid) = row.get("rowid").and_then(Value::as_i64) {
+        let present: bool = db.conn.query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM \"{table}\" WHERE rowid = ?)"),
+            [rowid],
+            |row| row.get(0),
+        )?;
+        if present {
+            return Ok(());
+        }
+    }
+    let mut columns = Vec::with_capacity(row.len());
+    let mut values = Vec::with_capacity(row.len());
+    for (column, value) in row {
+        columns.push(format!("\"{column}\""));
+        values.push(json_to_sql(value).map_err(|error| {
+            rusqlite::Error::InvalidParameterName(format!("{table}.{column}: {error}"))
+        })?);
+    }
+    let placeholders = vec!["?"; values.len()].join(", ");
+    db.conn.execute(
+        &format!(
+            "INSERT INTO \"{table}\" ({}) VALUES ({placeholders})",
+            columns.join(", ")
+        ),
+        rusqlite::params_from_iter(values),
+    )?;
+    Ok(())
+}
 
 impl Db {
     /// A database a rebuild may write into: no tasks, runs, inputs or
@@ -30,18 +64,59 @@ impl Db {
         projection: &Projection,
     ) -> Result<(), rusqlite::Error> {
         self.with_immediate_transaction(|db| {
-            // Placeholders that satisfy `pipeline_item.repo_id`'s foreign key:
-            // the registration itself is not on disk.
+            // Registrations from repo.json; a placeholder only satisfies
+            // `pipeline_item.repo_id`'s foreign key for a repository whose
+            // registration is not on disk.
             for repo_id in &projection.repos {
+                let record = projection
+                    .repo_records
+                    .iter()
+                    .find(|record| &record.repo_id == repo_id);
+                let present: bool = db.conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM repo WHERE id = ?)",
+                    [repo_id],
+                    |row| row.get(0),
+                )?;
+                match record {
+                    Some(_) if present => {}
+                    Some(record) => insert_row(db, "repo", &record.registration)?,
+                    None => {
+                        db.conn.execute(
+                            "INSERT OR IGNORE INTO repo (id, path, name, created_at, last_opened_at)
+                             VALUES (?1, '', ?1, '', '')",
+                            params![repo_id],
+                        )?;
+                    }
+                }
+                if let Some(record) = record {
+                    let hash = record
+                        .registration
+                        .get("remote_url_hash")
+                        .and_then(Value::as_str);
+                    if let (Some(hash), Some(order)) = (hash, record.sidebar_order) {
+                        db.conn.execute(
+                            "INSERT OR IGNORE INTO repo_sidebar_order (remote_url_hash, sort_order)
+                             VALUES (?, ?)",
+                            params![hash, order],
+                        )?;
+                    }
+                }
+                // Current as written: nothing is owed to publish.
+                let revision = record.map_or(1, |record| record.snapshot_revision.max(1));
                 db.conn.execute(
-                    "INSERT OR IGNORE INTO repo (id, path, name, created_at, last_opened_at)
-                     VALUES (?1, '', ?1, '', '')",
-                    params![repo_id],
+                    "INSERT INTO repo_disk_snapshot (repo_id, revision, published_revision)
+                     VALUES (?1, ?2, ?2)
+                     ON CONFLICT(repo_id) DO UPDATE SET
+                        revision = excluded.revision,
+                        published_revision = excluded.published_revision,
+                        publish_error = NULL",
+                    params![repo_id, revision],
                 )?;
             }
             // Required columns the snapshot leaves empty take the schema's
-            // own default, as an insert that omitted them would.
-            for task in &projection.tasks {
+            // own default, as an insert that omitted them would. A task whose
+            // row is carried in `state` is written with the carried rows.
+            for task in projection.tasks.iter().filter(|task| !task.from_state) {
                 db.conn.execute(
                     "INSERT INTO pipeline_item
                         (id, repo_id, prompt, display_name, pipeline, pipeline_def, stage,
@@ -76,6 +151,10 @@ impl Db {
                     ],
                 )?;
             }
+            // Carried rows, table by table in foreign-key order.
+            for CarriedRow { table, row, .. } in &projection.carried {
+                insert_row(db, table, row)?;
+            }
             for (blocked, blocker) in &projection.blockers {
                 db.conn.execute(
                     "INSERT OR IGNORE INTO task_blocker (blocked_item_id, blocker_item_id)
@@ -88,12 +167,14 @@ impl Db {
                     "INSERT INTO stage_run
                         (id, task_id, stage, kind, status, result, feedback, started_at,
                          finished_at, result_declared_role, result_channel_identity,
-                         workspace_id, session_branch, session_name, transcript_ref)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         workspace_id, session_branch, session_name, transcript_ref,
+                         no_work_termination)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                      ON CONFLICT(id) DO UPDATE SET
                         task_id = excluded.task_id, stage = excluded.stage,
                         kind = excluded.kind, status = excluded.status,
                         result = excluded.result, feedback = excluded.feedback,
+                        no_work_termination = excluded.no_work_termination,
                         started_at = excluded.started_at, finished_at = excluded.finished_at,
                         result_declared_role = excluded.result_declared_role,
                         result_channel_identity = excluded.result_channel_identity,
@@ -117,6 +198,7 @@ impl Db {
                         run.session_branch,
                         run.session_name,
                         run.transcript_ref,
+                        run.no_work_termination,
                     ],
                 )?;
             }

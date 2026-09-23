@@ -243,7 +243,7 @@ fn results_project_one_stage_run_each_and_a_correction_wins() {
         implement.feedback.as_deref(),
         Some("Implemented\n\nthe parser")
     );
-    let result: Value = serde_json::from_str(&implement.result).unwrap();
+    let result: Value = serde_json::from_str(implement.result.as_deref().unwrap()).unwrap();
     assert_eq!(
         result,
         json!({ "status": "success", "summary": "Implemented\n\nthe parser", "metadata": { "k": 1 } }),
@@ -252,11 +252,11 @@ fn results_project_one_stage_run_each_and_a_correction_wins() {
     assert_eq!(implement.started_at, "2026-09-23 10:01:00");
     assert_eq!(implement.finished_at, "2026-09-23 10:01:00");
     // Legacy free-form results stay free-form.
-    assert_eq!(runs[1].1.result, "free-form text");
+    assert_eq!(runs[1].1.result.as_deref(), Some("free-form text"));
     // The correction replaced the first verdict; the start stays the first mention.
     let review = runs[2].1;
     assert_eq!(review.status, "failed");
-    let result: Value = serde_json::from_str(&review.result).unwrap();
+    let result: Value = serde_json::from_str(review.result.as_deref().unwrap()).unwrap();
     assert_eq!(result["summary"], "corrected verdict");
     assert!(result.get("exit").is_none());
     assert_eq!(review.started_at, "2026-09-23 10:02:00");
@@ -281,7 +281,7 @@ fn an_explicit_exit_and_artifacts_are_part_of_the_projected_result() {
     );
     let projection = project(&[read(&files.dir)]);
     let run = &projection.stage_runs[0];
-    let result: Value = serde_json::from_str(&run.result).unwrap();
+    let result: Value = serde_json::from_str(run.result.as_deref().unwrap()).unwrap();
     assert_eq!(result["exit"], "revise");
     assert_eq!(result["artifacts"]["diff"]["sha"], "abc");
     assert_eq!(run.result_declared_role.as_deref(), Some("agent"));
@@ -552,4 +552,204 @@ fn a_session_identity_in_session_ref_projects_onto_its_run() {
         ),
         (&None, &None, &None)
     );
+}
+
+fn with_state(mut snapshot: Value, tables: Value) -> Value {
+    snapshot["state"] = json!({ "version": 1, "tables": tables });
+    snapshot
+}
+
+fn task_row(task_id: &str, branch: &str) -> Value {
+    json!({ "rowid": 1, "id": task_id, "repo_id": REPO, "stage": "review",
+            "pipeline": "flow", "branch": branch, "agent_provider": "claude",
+            "created_at": "2026-09-23 10:00:00", "updated_at": "2026-09-23 11:00:00" })
+}
+
+#[test]
+fn the_reader_refuses_state_it_does_not_understand() {
+    let root = store_root("state-versions");
+    let cases = [
+        (json!({ "version": 2, "tables": {} }), "version Some(2)"),
+        (
+            json!({ "version": 1, "tables": { "mystery": [] } }),
+            "unknown table mystery",
+        ),
+        (
+            json!({ "version": 1, "tables": { "pipeline_item": [{ "rowid": 1, "shiny": 1 }] } }),
+            "unknown column shiny",
+        ),
+        (
+            json!({ "version": 1, "tables": { "pipeline_item": [{ "id": "t-1" }] } }),
+            "has no rowid",
+        ),
+    ];
+    for (index, (state, expected)) in cases.into_iter().enumerate() {
+        let mut snapshot = task_json(&format!("t-{index}"), "review");
+        snapshot["state"] = state;
+        let files = TaskFiles::new(&root, snapshot);
+        let error = read_task_directory(&files.dir).unwrap_err();
+        assert!(error.contains(expected), "{error}");
+    }
+}
+
+#[test]
+fn state_rows_are_projected_instead_of_what_the_ledger_implies() {
+    let root = store_root("state-rows");
+    let snapshot = with_state(
+        task_json("t-1", "review"),
+        json!({
+            "pipeline_item": [task_row("t-1", "task-t-1")],
+            "stage_run": [{ "rowid": 7, "id": "run-live", "task_id": "t-1", "stage": "review",
+                            "kind": "main", "status": "running", "completion_bound": 0,
+                            "started_at": "2026-09-23 10:00:00" }],
+            "task_stage_budget": [{ "rowid": 1, "task_id": "t-1", "stage": "review",
+                                    "spent": 3, "updated_at": "2026-09-23 10:00:00" }],
+        }),
+    );
+    let mut files = TaskFiles::new(&root, snapshot);
+    files.result(
+        "run-old",
+        json!({ "status": "success", "stage": "in progress", "run_kind": "main",
+                "budget": { "stage": "review", "spent": 1, "exhausted": false } }),
+        "done",
+    );
+    let projection = project(&[read(&files.dir)]);
+    // Runs and budgets are the rows, not a replay of the ledger.
+    assert!(projection.stage_runs.is_empty());
+    assert!(projection.budgets.is_empty());
+    let tables: Vec<(&str, Option<i64>)> = projection
+        .carried
+        .iter()
+        .map(|row| (row.table, row.row.get("rowid").and_then(Value::as_i64)))
+        .collect();
+    assert_eq!(
+        tables,
+        vec![
+            ("pipeline_item", Some(1)),
+            ("stage_run", Some(7)),
+            ("task_stage_budget", Some(1)),
+        ]
+    );
+    assert!(projection.tasks[0].from_state);
+    assert_eq!(projection.ledger.len(), 1);
+
+    let target = PathBuf::from(Db::test_db_path("rebuild-state"));
+    let _ = std::fs::remove_file(&target);
+    rebuild_into_new_database(&root, &target).unwrap();
+    let db = Db::open(target.to_str().unwrap()).unwrap();
+    let run = db.stage_run("run-live").unwrap().unwrap();
+    assert_eq!(run.status, "running");
+    assert!(db.stage_run("run-old").unwrap().is_none());
+    assert_eq!(db.stage_budget_spent("t-1", "review").unwrap(), 3);
+    let rowid: i64 = db
+        .connection_for_e2e_tests()
+        .query_row(
+            "SELECT rowid FROM stage_run WHERE id = 'run-live'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(rowid, 7);
+}
+
+#[test]
+fn an_owed_transition_older_than_the_ledger_is_not_restored() {
+    let root = store_root("state-continuation");
+    let continuation = json!({
+        "task_ledger_continuation": [{ "rowid": 1, "task_id": "t-1", "operation_id": "op-1",
+                                       "kind": "stage_completion", "payload": "{}",
+                                       "created_at": "2026-09-23 10:00:00" }],
+        "pipeline_item": [task_row("t-1", "task-t-1")],
+    });
+    // Current: task.json was written through the ledger's last entry.
+    let mut snapshot = with_state(task_json("t-1", "review"), continuation.clone());
+    snapshot["ledger"]["published_through"] = json!(1);
+    let mut files = TaskFiles::new(&root, snapshot);
+    files.result(
+        "run-1",
+        json!({ "status": "success", "stage": "review" }),
+        "done",
+    );
+    let projection = project(&[read(&files.dir)]);
+    assert!(projection
+        .carried
+        .iter()
+        .any(|row| row.table == "task_ledger_continuation"));
+
+    // Stale: the ledger moved on after task.json was written.
+    files.transition(json!({ "from_stage": "review", "to_stage": "pr" }));
+    let projection = project(&[read(&files.dir)]);
+    assert!(!projection
+        .carried
+        .iter()
+        .any(|row| row.table == "task_ledger_continuation"));
+    assert!(projection
+        .diagnostics
+        .iter()
+        .any(|note| note.contains("owed transition is not restored")));
+}
+
+#[test]
+fn the_branch_counter_is_never_below_a_recorded_branch() {
+    let root = store_root("state-counter");
+    let snapshot = with_state(
+        task_json("t-1", "review"),
+        json!({
+            "pipeline_item": [task_row("t-1", "task-t-1-2")],
+            "task_branch_counter": [{ "rowid": 1, "task_id": "t-1", "last_allocated": 1,
+                                      "updated_at": "2026-09-23 10:00:00" }],
+        }),
+    );
+    let mut files = TaskFiles::new(&root, snapshot);
+    files.result(
+        "run-1",
+        json!({ "status": "success", "stage": "review", "branch": "task-t-1-4" }),
+        "done",
+    );
+    let projection = project(&[read(&files.dir)]);
+    let counter = projection
+        .carried
+        .iter()
+        .find(|row| row.table == "task_branch_counter")
+        .unwrap();
+    assert_eq!(counter.row["last_allocated"], 4);
+}
+
+#[test]
+fn tombstones_and_repository_records_are_read() {
+    let root = store_root("state-repos");
+    TaskFiles::new(&root, task_json("t-live", "review"));
+    let removed = TaskFiles::new(&root, task_json("t-gone", "review"));
+    std::fs::write(
+        removed.dir.join("task.json"),
+        json!({ "schema_version": 1, "task_id": "t-gone", "repo_id": REPO, "removed": true })
+            .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("repos").join(REPO).join("repo.json"),
+        json!({
+            "schema_version": 1, "repo_id": REPO, "snapshot_revision": 3, "sidebar_order": 4,
+            "registration": { "id": REPO, "path": "/work/repo", "name": "Repo",
+                              "default_branch": "main", "remote_url_hash": "h",
+                              "sort_order": 0, "created_at": "c", "last_opened_at": "o",
+                              "hidden": 0 },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let scan = scan_store_records(&root).unwrap();
+    assert_eq!(scan.tasks.len(), 1);
+    assert_eq!(scan.removed, vec![removed.dir.clone()]);
+    assert_eq!(scan.repos.len(), 1);
+
+    let target = PathBuf::from(Db::test_db_path("rebuild-repos"));
+    let _ = std::fs::remove_file(&target);
+    let report = rebuild_into_new_database(&root, &target).unwrap();
+    assert_eq!(report.tasks, 1);
+    let db = Db::open(target.to_str().unwrap()).unwrap();
+    let repo = db.get_repo(REPO).unwrap().unwrap();
+    assert_eq!(repo.path, "/work/repo");
+    assert!(db.get_pipeline_item("t-gone").unwrap().is_none());
+    assert!(db.repos_with_pending_disk_record().unwrap().is_empty());
 }

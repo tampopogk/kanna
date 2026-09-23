@@ -574,10 +574,34 @@ fn referenced_artifacts_cross_with_their_records_and_arrive_retained() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// What the ledger alone rebuilds: the directory read as a reader of a
+/// task.json without `state` (T13) reads it. With `state`, the rows are
+/// copied as the destination holds them ([`carried_rows_rebuild`]).
 fn projected(db: &Db, path: &str, task_id: &str) -> crate::task_store::rebuild::Projection {
     let dir = task_store::task_dir_for(db, path, task_id).unwrap();
-    let directory = crate::task_store::rebuild::read_task_directory(&dir).unwrap();
+    let mut directory = crate::task_store::rebuild::read_task_directory(&dir).unwrap();
+    carried_rows_rebuild(&directory, task_id);
+    directory.snapshot.state = None;
     crate::task_store::rebuild::project(&[directory])
+}
+
+/// With `state`, a transferred task rebuilds its carried budget as a row,
+/// and no local run for a result that ran on another machine.
+fn carried_rows_rebuild(directory: &crate::task_store::rebuild::TaskDirectory, task_id: &str) {
+    let projection = crate::task_store::rebuild::project(std::slice::from_ref(directory));
+    assert!(projection
+        .carried
+        .iter()
+        .any(|row| row.table == "task_stage_budget"
+            && row.row["task_id"] == task_id
+            && row.row["stage"] == "review"
+            && row.row["spent"] == 1));
+    assert!(
+        !projection.carried.iter().any(|row| row.table == "stage_run"
+            && row.row["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("carried:")))
+    );
 }
 
 /// Rebuilding a transferred task directory from disk projects every carried
