@@ -46,7 +46,10 @@
 //!
 //! **`ledger/NNNNNN-<kind>.<ext>`** — immutable. `NNNNNN` is the per-task
 //! sequence, zero-padded to six digits (order by the number, not the text,
-//! should a task ever pass 999999 entries). `result` and `input` entries are
+//! should a task ever pass 999999 entries). Sequences are a strict
+//! high-water mark (T13, `task_ledger_sequence`): a number is never handed
+//! out twice, so a released or abandoned reservation leaves a permanent gap,
+//! which readers treat as nothing. `result` and `input` entries are
 //! Markdown: a `---` line, the pretty-printed JSON envelope, a `---` line, an
 //! empty line, then the message verbatim to end of file. `transition` and
 //! `plan` entries are the JSON envelope alone. A published file is never

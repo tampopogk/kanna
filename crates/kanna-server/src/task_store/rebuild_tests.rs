@@ -630,6 +630,8 @@ fn state_rows_are_projected_instead_of_what_the_ledger_implies() {
             ("pipeline_item", Some(1)),
             ("stage_run", Some(7)),
             ("task_stage_budget", Some(1)),
+            // The sequence high-water mark, raised to the ledger's last.
+            ("task_ledger_sequence", None),
         ]
     );
     assert!(projection.tasks[0].from_state);
@@ -1154,4 +1156,154 @@ fn the_state_boundary_decides_which_entries_are_newer() {
         .carried
         .iter()
         .any(|row| row.table == "task_ledger_continuation"));
+}
+
+/// task.json's state is ahead of publication (a reservation held entry 3
+/// back), the store is rebuilt, the rebuilt database records new entries
+/// and publishes them, and it dies before task.json is rewritten; a second
+/// rebuild must apply every new entry exactly once. Before sequences were a
+/// high-water mark the rebuilt allocator reused 2 and 3, and the second
+/// rebuild took the new 3 as already reflected.
+#[test]
+fn entries_recorded_after_a_rebuild_are_never_taken_as_reflected() {
+    fn run(id: &str) -> crate::db::NewStageRun<'_> {
+        crate::db::NewStageRun {
+            id,
+            task_id: "t-1",
+            stage: "review",
+            kind: "main",
+            agent: Some("review"),
+            agent_provider: Some("claude"),
+            model: None,
+            effort: None,
+            status: "running",
+            result: None,
+            feedback: None,
+            session_id: Some("t-1"),
+            provider_session_id: None,
+            cwd: None,
+            resumed_from_run_id: None,
+        }
+    }
+    let path = Db::test_db_path("rebuild-reuse");
+    let _ = std::fs::remove_file(&path);
+    let db = Db::open_migrated(&path).unwrap();
+    let root = super::root_for_db(&path);
+    db.insert_test_repo_with_path(REPO, "/tmp/repo-one", "Repo One")
+        .unwrap();
+    db.insert_test_pipeline_item(
+        "t-1",
+        REPO,
+        "Prompt",
+        Some("t-1"),
+        "review",
+        "2026-09-23 00:00:00",
+    )
+    .unwrap();
+    db.mark_task_ledger_backfilled("t-1", 0).unwrap();
+    db.insert_stage_run(run("run-1")).unwrap();
+    db.record_task_input(
+        "t-1",
+        crate::db::TaskInputSource::Operator,
+        &crate::mutation_provenance::ChannelIdentity::Server,
+        "first",
+    )
+    .unwrap();
+    super::flush_task(&db, &path, "t-1").unwrap();
+    // Entry 3 commits behind reservation 2; task.json reflects it.
+    let reserved = db.reserve_ledger_sequence("t-1").unwrap();
+    db.record_task_input(
+        "t-1",
+        crate::db::TaskInputSource::Operator,
+        &crate::mutation_provenance::ChannelIdentity::Server,
+        "held back",
+    )
+    .unwrap();
+    super::flush_task(&db, &path, "t-1").unwrap();
+    let dir = super::task_dir(&root, REPO, "t-1");
+    let stale = std::fs::read(dir.join("task.json")).unwrap();
+    let written: Value = serde_json::from_slice(&stale).unwrap();
+    assert_eq!(written["state"]["reflects_through"], json!(reserved + 1));
+    assert_eq!(written["ledger"]["published_through"], json!(reserved - 1));
+    drop(db);
+
+    // First rebuild; the rebuilt database carries on, publishing into the
+    // same store.
+    let first = PathBuf::from(Db::test_db_path("rebuild-reuse-first"));
+    let _ = std::fs::remove_file(&first);
+    rebuild_into_new_database(&root, &first).unwrap();
+    let rebuilt = Db::open_migrated(first.to_str().unwrap()).unwrap();
+    rebuilt.release_stale_ledger_reservations().unwrap();
+    rebuilt
+        .finish_latest_running_stage_run("t-1", "failed", None, Some("lost"))
+        .unwrap()
+        .unwrap();
+    rebuilt
+        .finish_stage_run(
+            "run-1",
+            "succeeded",
+            Some(r#"{"status":"success","summary":"recovered","metadata":null}"#),
+            Some("recovered"),
+        )
+        .unwrap();
+    rebuilt
+        .enqueue_ledger_entry(crate::db::task_store::NewLedgerEntry {
+            task_id: "t-1",
+            kind: LedgerEntryKind::Result,
+            operation_id: Some("op-recovered"),
+            source_kind: "stage_run",
+            source_id: "run-1",
+            source_origin: None,
+            historical: false,
+            recorded_at: None,
+            run_id: Some("run-1"),
+            declared_role: Some("agent"),
+            channel_identity: &crate::mutation_provenance::ChannelIdentity::Server,
+            body: json!({ "status": "success", "stage": "review", "run_kind": "main" }),
+            message: Some("recovered"),
+            hold_events_after: None,
+            reserved_sequence: None,
+        })
+        .unwrap();
+    let new_sequences: Vec<i64> = rebuilt
+        .pending_ledger_entries("t-1")
+        .unwrap()
+        .iter()
+        .map(|entry| entry.sequence)
+        .collect();
+    assert!(
+        new_sequences
+            .iter()
+            .all(|sequence| *sequence > reserved + 1),
+        "{new_sequences:?} reuse a sequence task.json reflects"
+    );
+    // Published, then the process dies before task.json is rewritten.
+    super::inject_fault(&root, super::FlushFault::BeforeSnapshot);
+    assert!(super::flush_task_at(&rebuilt, &root, "t-1").is_err());
+    assert_eq!(std::fs::read(dir.join("task.json")).unwrap(), stale);
+
+    // Second rebuild from the same store.
+    let second = PathBuf::from(Db::test_db_path("rebuild-reuse-second"));
+    let _ = std::fs::remove_file(&second);
+    let report = rebuild_into_new_database(&root, &second).unwrap();
+    assert!(report.unreadable.is_empty(), "{:?}", report.unreadable);
+    let again = Db::open(second.to_str().unwrap()).unwrap();
+    let recovered = again.stage_run("run-1").unwrap().unwrap();
+    assert_eq!(recovered.status, "succeeded", "{:?}", report.diagnostics);
+    let result: Value = serde_json::from_str(recovered.result.as_deref().unwrap()).unwrap();
+    assert_eq!(result["summary"], "recovered");
+    // Each new entry is in the rebuilt ledger once, above the old boundary.
+    let rows: Vec<i64> = again
+        .connection_for_e2e_tests()
+        .prepare("SELECT sequence FROM task_ledger_entry WHERE task_id = 't-1' ORDER BY sequence")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let mut expected = vec![1];
+    expected.extend(new_sequences.iter().copied());
+    assert_eq!(rows, expected);
+    // The next allocation there is above everything ever handed out.
+    assert!(again.last_ledger_sequence("t-1").unwrap() >= *new_sequences.last().unwrap());
 }

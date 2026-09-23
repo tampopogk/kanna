@@ -43,6 +43,16 @@ below it that were only reserved then, whose effects are not in the rows
 yet. `ledger.published_through` stays the publication watermark only; the
 rows can be ahead of it.
 
+The boundary is sound because a ledger sequence is never handed out twice:
+`task_ledger_sequence.high_water` records every sequence ever allocated to
+the task, in the allocating transaction, and allocation is always above it
+(as T2's branch counter is). A released or abandoned reservation is a
+permanent gap; readers and the publisher already treat a gap as nothing.
+The mark is carried in `state`, and a rebuild raises it to the highest
+sequence the directory records, reflects or lists as reserved, so entries
+a rebuilt database records are never mistaken for ones an older
+`task.json` already reflects.
+
 `repo.json` is `{ schema_version, repo_id, registration: {<repo columns>},
 sidebar_order, snapshot_revision }`.
 
@@ -216,6 +226,7 @@ not rebuilt, with the reason above.
 |---|---|---|
 | `create_task_intent` | state | |
 | `lifecycle_operation_intent` | state | restored as is; restart reconciliation resumes it |
+| `task_ledger_sequence` | state | the per-task sequence high-water mark; raised on rebuild to every recorded or reflected sequence |
 | `task_ledger_continuation` | state | dropped only when a ledger entry newer than `task.json` paid or replaced it |
 | `task_stage_edge`, `task_dependency_wait` (T4) | state (the dependent task's) | an edge whose upstream task is not rebuilt is reported and dropped |
 | `task_join`, `task_join_member` (T5) | state (the parent's) | |

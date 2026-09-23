@@ -85,6 +85,11 @@ fn insert_row(db: &Db, table: &str, row: &Map<String, Value>) -> Result<(), rusq
             )
             .optional()?;
         if let Some(elsewhere) = elsewhere {
+            // A row the projection added (no carried rowid) is applied
+            // once; its key already present is a re-application.
+            if rowid.is_none() {
+                return Ok(());
+            }
             return Err(collision(format!(
                 "its key is already held by rowid {elsewhere}"
             )));

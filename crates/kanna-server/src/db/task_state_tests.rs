@@ -439,3 +439,30 @@ fn an_interrupted_backfill_resumes_to_the_same_records() {
         .collect();
     assert_eq!(again, expected);
 }
+
+/// Ledger sequences are a strict high-water mark: a released reservation,
+/// or one a restart abandons, leaves a gap that is never handed out again.
+#[test]
+fn a_ledger_sequence_is_never_handed_out_twice() {
+    let (db, path) = migrated("task-state-sequence");
+    task(&db, "t-1");
+    let first = db.reserve_ledger_sequence("t-1").unwrap();
+    db.release_ledger_reservation("t-1", first).unwrap();
+    let second = db.reserve_ledger_sequence("t-1").unwrap();
+    assert!(second > first);
+    // A restart abandons the open reservation and reopens the database.
+    assert_eq!(db.release_stale_ledger_reservations().unwrap(), 1);
+    drop(db);
+    let db = Db::open_migrated(&path).unwrap();
+    let third = db.reserve_ledger_sequence("t-1").unwrap();
+    assert!(third > second, "{third} after {second}");
+    // The transfer engine predicts the same next number.
+    db.release_ledger_reservation("t-1", third).unwrap();
+    assert_eq!(db.last_ledger_sequence("t-1").unwrap(), third);
+    // And task.json carries the mark.
+    let facts = db.task_snapshot_facts("t-1").unwrap().unwrap();
+    assert_eq!(
+        facts["state"]["tables"]["task_ledger_sequence"][0]["high_water"],
+        third
+    );
+}

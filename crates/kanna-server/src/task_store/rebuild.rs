@@ -1065,6 +1065,13 @@ fn project_task(directory: &TaskDirectory, projection: &mut Projection) {
         None => {
             projection.stage_runs.extend(runs.into_values());
             projection.budgets.extend(budgets.into_values());
+            let mut carried = Vec::new();
+            let highest = directory
+                .entries
+                .last()
+                .map_or(0, |entry| entry.file.sequence);
+            raise_sequence_high_water(task_id, highest, &mut carried);
+            projection.carried.extend(carried);
         }
     }
     projection.markers.push(TaskLedgerMarker {
@@ -1081,6 +1088,36 @@ fn branch_suffix(task_id: &str, branch: &str) -> Option<i64> {
         .strip_prefix(&format!("task-{task_id}-"))
         .filter(|suffix| !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit()))
         .and_then(|suffix| suffix.parse().ok())
+}
+
+/// Raise the task's ledger sequence high-water mark to `highest`, adding
+/// the row when `task.json` carried none.
+fn raise_sequence_high_water(task_id: &str, highest: i64, carried: &mut Vec<CarriedRow>) {
+    let existing = carried
+        .iter_mut()
+        .find(|row| row.table == "task_ledger_sequence");
+    match existing {
+        Some(row) => {
+            let high_water = row
+                .row
+                .get("high_water")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            row.row
+                .insert("high_water".into(), json!(high_water.max(highest)));
+        }
+        None if highest > 0 => {
+            let mut row = Map::new();
+            row.insert("task_id".into(), json!(task_id));
+            row.insert("high_water".into(), json!(highest));
+            carried.push(CarriedRow {
+                table: "task_ledger_sequence",
+                task_id: task_id.to_string(),
+                row,
+            });
+        }
+        None => {}
+    }
 }
 
 /// A result entry that is a verdict recorded live on this machine: not an
@@ -1341,6 +1378,16 @@ fn project_state(
     }
     retain_unpaid_continuations(task_id, &newer, &mut carried, projection);
     apply_newer_entries(task_id, &newer, &mut carried, projection);
+    // Sequences are never handed out twice: the rebuilt allocator starts
+    // above every sequence the directory records, reflects or reserved.
+    let highest = snapshot
+        .state_unreflected
+        .iter()
+        .copied()
+        .chain([ledger_reaches, boundary])
+        .max()
+        .unwrap_or(0);
+    raise_sequence_high_water(task_id, highest, &mut carried);
     projection.carried.extend(carried);
     if let Some(task) = projection
         .tasks

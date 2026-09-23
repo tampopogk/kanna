@@ -409,6 +409,14 @@ pub const CARRIED_TABLES: &[CarriedTable] = &[
         left_out: &[],
     },
     CarriedTable {
+        table: "task_ledger_sequence",
+        rows_of_task: OWNED_BY_TASK_ID,
+        owner: "{r}.task_id",
+        columns: &["task_id", "high_water"],
+        quiet: &[],
+        left_out: &[],
+    },
+    CarriedTable {
         table: "task_ledger_continuation",
         rows_of_task: OWNED_BY_TASK_ID,
         owner: "{r}.task_id",
@@ -673,6 +681,12 @@ pub(super) const SCHEMA: &str = r#"
         published_revision INTEGER NOT NULL DEFAULT 0,
         publish_error TEXT
     );
+    CREATE TABLE IF NOT EXISTS task_ledger_sequence (
+        -- Every ledger sequence ever allocated to the task: allocation is
+        -- always above it, so a sequence is never handed out twice.
+        task_id TEXT PRIMARY KEY REFERENCES pipeline_item(id) ON DELETE CASCADE,
+        high_water INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS disk_record_removal (
         kind TEXT NOT NULL CHECK (kind IN ('task', 'repo')),
         id TEXT NOT NULL,
@@ -910,6 +924,13 @@ pub(super) fn sync_disk_state_triggers(conn: &Connection) -> Result<(), rusqlite
 /// again, so an interrupted backfill resumes by publishing what is owed.
 pub(super) fn migrate_disk_state_records(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute_batch(SCHEMA)?;
+    // The sequence high-water mark starts at every sequence allocated so
+    // far (reservations included).
+    conn.execute(
+        "INSERT OR IGNORE INTO task_ledger_sequence (task_id, high_water)
+         SELECT task_id, MAX(sequence) FROM task_ledger_entry WHERE true GROUP BY task_id",
+        [],
+    )?;
     // Every task gets a snapshot row the triggers can bump; a closed task's
     // is current as it stands.
     conn.execute(

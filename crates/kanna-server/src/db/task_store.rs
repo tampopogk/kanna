@@ -305,12 +305,45 @@ impl Db {
             .execute("DELETE FROM task_ledger_entry WHERE kind IS NULL", [])
     }
 
+    /// Allocate the task's next sequence, inside the caller's transaction.
+    ///
+    /// Sequences are a strict high-water mark (T13), as T2's branch numbers
+    /// are: `task_ledger_sequence.high_water` is every number ever handed
+    /// out, persisted in the allocating transaction, so a released or
+    /// abandoned reservation leaves a permanent gap and is never handed out
+    /// again — across restarts, and across a rebuild from disk, which raises
+    /// the mark to every sequence the task directory records or reflects.
+    /// Readers treat a gap as nothing.
     fn next_ledger_sequence(&self, task_id: &str) -> Result<i64, rusqlite::Error> {
-        self.conn.query_row(
-            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM task_ledger_entry WHERE task_id = ?",
+        let next: i64 = self.conn.query_row(
+            "SELECT MAX(
+                 COALESCE((SELECT MAX(sequence) FROM task_ledger_entry WHERE task_id = ?1), 0),
+                 COALESCE((SELECT high_water FROM task_ledger_sequence WHERE task_id = ?1), 0)
+             ) + 1",
             [task_id],
             |row| row.get(0),
         )
+        .or_else(|error| {
+            // Schema-only fixtures that predate the mark.
+            if is_missing_ledger_table(&error) {
+                self.conn.query_row(
+                    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM task_ledger_entry WHERE task_id = ?",
+                    [task_id],
+                    |row| row.get(0),
+                )
+            } else {
+                Err(error)
+            }
+        })?;
+        match self.conn.execute(
+            "INSERT INTO task_ledger_sequence (task_id, high_water) VALUES (?1, ?2)
+             ON CONFLICT(task_id) DO UPDATE SET high_water = MAX(high_water, excluded.high_water)",
+            params![task_id, next],
+        ) {
+            Ok(_) => Ok(next),
+            Err(error) if is_missing_ledger_table(&error) => Ok(next),
+            Err(error) => Err(error),
+        }
     }
 
     /// Enqueue one immutable entry inside the caller's transaction (or a new

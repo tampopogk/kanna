@@ -333,12 +333,17 @@ fn a_reservation_holds_later_entries_back_until_it_is_filled_or_released() {
     );
 
     // A released reservation is a gap, and the startup sweep drops orphans.
+    // The gap is permanent: sequences are a high-water mark (T13), so the
+    // next entry is never given the orphan's number.
     let orphan = fixture.db.reserve_ledger_sequence("task-1").unwrap();
     assert_eq!(fixture.db.release_stale_ledger_reservations().unwrap(), 1);
     assert_eq!(orphan, 3);
     fixture.enqueue_result("run-after-gap", "after");
     flush_task(&fixture.db, &fixture.db_path, "task-1").unwrap();
-    assert_eq!(fixture.ledger_names().last().unwrap(), "000003-result.md");
+    assert_eq!(
+        fixture.ledger_names(),
+        vec!["000001-result.md", "000002-result.md", "000004-result.md"]
+    );
 }
 
 #[test]
