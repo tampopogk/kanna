@@ -4621,6 +4621,9 @@ fn build_target_stage_prompt_sections_a_carried_task_without_rescanning_it() {
             loop_transition: None,
         },
         post: None,
+        exit_commit: false,
+        setup: None,
+        teardown: None,
     };
 
     let prompt = super::super::prompt::build_target_stage_prompt(

@@ -22,6 +22,9 @@ mod blockers;
 pub(crate) mod claude_channel;
 pub(crate) mod copilot_wake;
 mod create_intents;
+// Used only by the offline rebuild (`crate::task_store::rebuild`).
+#[cfg_attr(not(test), allow(dead_code))]
+mod disk_rebuild;
 mod event_subscriptions;
 mod lifecycle_operations;
 mod operator_events;
@@ -56,6 +59,7 @@ mod tests;
 mod token_usage;
 mod transfer_work;
 mod transfers;
+mod transition_commits;
 mod worktrees;
 
 pub use analytics::{AnalyticsRange, RepoAnalytics};
@@ -107,6 +111,7 @@ pub use transfers::{
     is_active_outgoing_transfer_conflict, NewTaskTransfer, NewTaskTransferProvenance,
     PendingIncomingTransfer, TaskTransfer, TransferredHistoryRecord,
 };
+pub use transition_commits::TransitionCommit;
 
 pub(crate) use event_subscriptions::EventSubscription;
 
@@ -216,6 +221,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "096_task_ledger_bridge",
     "097_stage_exit_budget",
     "098_stage_workspaces",
+    "099_transition_commit",
     "100_task_stage_edges",
 ];
 
@@ -2689,6 +2695,13 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
         add_column(conn, "stage_run", "session_name", "TEXT")?;
         add_column(conn, "stage_run", "transcript_ref", "TEXT")?;
         add_column(conn, "stage_run", "workspace_report", "TEXT")
+    })?;
+
+    // Spec §5 (T3): the commit step of a transition. One row binds a commit
+    // run to the single transition it was requested for, so its result
+    // settles it once and fires exactly that transition.
+    run_migration(conn, "099_transition_commit", |conn| {
+        conn.execute_batch(transition_commits::TRANSITION_COMMIT_SCHEMA)
     })?;
 
     // Spec §9/§16.4 (T4): stage dependency edges and the completions parked

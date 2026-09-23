@@ -166,11 +166,33 @@ pub(crate) enum PreparedSessionSpawn {
 pub(crate) enum PreparedStageTransition {
     Run(Box<PreparedStageRunSpawn>),
     Post(Box<PreparedPostDispatch>),
+    /// Entering a stage with no role (spec §5): its workspace is forked and
+    /// its setup runs, and the task parks there without an agent.
+    Gate(Box<PreparedGateEntry>),
     Close {
         task_id: String,
         /// Teardown for the final workspace the close leaves behind.
         workspace_teardown: Option<Box<PreparedWorkspaceTeardown>>,
     },
+}
+
+/// Entry into a stage with no role, ready to execute: the fork it parks in,
+/// the setup it runs there, and the teardown of the workspace it leaves.
+pub(crate) struct PreparedGateEntry {
+    pub(super) task_id: String,
+    /// The outgoing agent session, stopped before the gate is entered.
+    pub(super) session_id: String,
+    pub(super) next_stage: String,
+    pub(super) workspace: PreparedRunWorkspace,
+    pub(super) cwd: String,
+    pub(super) env: HashMap<String, String>,
+    /// Repository setup for the fresh fork, then the stage's own setup.
+    pub(super) setup: Vec<String>,
+    pub(super) session_identity: crate::db::StageRunSession,
+    pub(super) workspace_teardown: Option<PreparedWorkspaceTeardown>,
+    pub(super) trigger: crate::db::StageTrigger,
+    pub(super) entry_channel: crate::mutation_provenance::ChannelIdentity,
+    pub(super) entry_exit: Option<crate::db::TransitionExit>,
 }
 
 /// A stage's post, ready to be injected into the task's live agent session.
@@ -185,6 +207,19 @@ pub(crate) struct PreparedPostDispatch {
     /// Run-history label: the post's name.
     pub(super) run_stage: String,
     pub(super) fallback: PreparedStageRunSpawn,
+    /// Set when this post is a stage's commit step (`exit_commit`) rather
+    /// than a declared post.
+    pub(super) commit: Option<TransitionCommitRequest>,
+}
+
+/// The commit step of one requested transition (spec §5): the stage the
+/// transition leaves and the exit it takes. Recorded against the commit run,
+/// so that run's result fires exactly this transition, once.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct TransitionCommitRequest {
+    pub(crate) stage: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) exit: Option<crate::db::TransitionExit>,
 }
 
 pub(crate) struct PreparedStageRerun {
@@ -244,16 +279,30 @@ impl PreparedStageTransition {
         match self {
             Self::Run(prepared) => prepared.set_entry_channel(channel),
             Self::Post(prepared) => prepared.fallback.set_entry_channel(channel),
+            Self::Gate(prepared) => prepared.entry_channel = channel,
             Self::Close { .. } => {}
         }
     }
 
-    /// Record the exit this transition takes. Only a run that enters a stage
-    /// records one: a dispatched post stays in its stage (the transition its
+    /// Record the exit this transition takes. A run that enters a stage
+    /// records it; a commit step keeps it for the transition its result
+    /// fires; a declared post stays in its stage (the transition its
     /// completion later makes records its own), and a close enters none.
     pub(crate) fn set_entry_exit(&mut self, exit: Option<crate::db::TransitionExit>) {
-        if let Self::Run(prepared) = self {
-            prepared.set_entry_exit(exit);
+        match self {
+            Self::Run(prepared) => prepared.set_entry_exit(exit),
+            Self::Gate(prepared) => prepared.entry_exit = exit,
+            // A commit step carries the exit of the transition it belongs
+            // to, which its result fires; a declared post records none.
+            Self::Post(prepared) => {
+                if let Some(commit) = prepared.commit.as_mut() {
+                    commit.exit = exit.clone();
+                }
+                if let Some(commit) = prepared.fallback.transition_commit.as_mut() {
+                    commit.exit = exit;
+                }
+            }
+            Self::Close { .. } => {}
         }
     }
 }
@@ -432,6 +481,10 @@ pub(crate) struct PreparedStageRunSpawn {
     /// recorded on the ledger's transition entry. Preparation leaves it unset;
     /// the caller that routed the result sets it.
     pub(super) entry_exit: Option<crate::db::TransitionExit>,
+    /// Set when this run is a stage's commit step started as a fresh commit
+    /// session (the live session was dead): recorded with the run, so its
+    /// result fires exactly the transition it was requested for.
+    pub(super) transition_commit: Option<TransitionCommitRequest>,
     /// The provider override the advance that started this run carried, with
     /// the source that declared it. Recorded on the run so the durable record
     /// says who picked this stage's model.

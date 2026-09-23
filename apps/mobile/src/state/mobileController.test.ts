@@ -3029,6 +3029,165 @@ describe("createMobileController", () => {
     });
   });
 
+  /**
+   * T11a: `selectedTaskLatestRun` mirrors `selectedTaskReviewState`'s
+   * detail-only, per-task lifecycle so `TaskScreen` can show the task's most
+   * recent recorded result.
+   */
+  describe("latest run state (T11a)", () => {
+    const runTask: TaskSummary = {
+      id: "task-run",
+      repoId: "repo-1",
+      title: "Ship the thing",
+      prompt: "Ship the thing",
+      stage: "review"
+    };
+    const otherTask: TaskSummary = {
+      id: "task-other-run",
+      repoId: "repo-1",
+      title: "Something else",
+      prompt: "Do the other thing",
+      stage: "in progress"
+    };
+    const latestRun = {
+      id: "run-1",
+      stage: "review",
+      kind: "main",
+      status: "failed",
+      verdict: "declined",
+      summary: "Already fixed upstream.",
+      resumedFromRunId: null,
+      resumeFallbackReason: null,
+      finishedAt: "2026-09-12T00:05:00Z"
+    };
+
+    function createLatestRunClient(): ClientMock {
+      const client = createClientMock();
+      client.listRecentTasks.mockResolvedValue([runTask, otherTask]);
+      client.listRepoTasks.mockResolvedValue([runTask, otherTask]);
+      return client;
+    }
+
+    it("projects the latest recorded result from task detail", async () => {
+      const store = createSessionStore();
+      const client = createLatestRunClient();
+      client.getTask = vi.fn(async () => ({ ...runTask, latestRun }));
+      const controller = createMobileController(client, store);
+      await controller.bootstrap();
+      controller.openTask(runTask.id);
+      await flushMicrotasks();
+      expect(store.getState().selectedTaskLatestRun).toMatchObject({
+        taskId: runTask.id,
+        latestRun: { verdict: "declined", summary: "Already fixed upstream." }
+      });
+    });
+
+    it("clears on selection change and restores from cache on re-entry", async () => {
+      const store = createSessionStore();
+      const client = createLatestRunClient();
+      client.getTask = vi.fn(async (taskId: string) => {
+        if (taskId !== runTask.id) {
+          throw new Error("owner offline");
+        }
+        return { ...runTask, latestRun };
+      });
+      const controller = createMobileController(client, store);
+
+      await controller.bootstrap();
+      controller.openTask(runTask.id);
+      await flushMicrotasks();
+      expect(store.getState().selectedTaskLatestRun?.latestRun).toMatchObject({
+        verdict: "declined"
+      });
+      const detailReads = client.getTask.mock.calls.length;
+
+      controller.openTask(otherTask.id);
+      await flushMicrotasks();
+      // A latest result belongs to one task and must not follow the
+      // selection to another.
+      expect(store.getState().selectedTaskLatestRun).toBeNull();
+
+      controller.openTask(runTask.id);
+      await flushMicrotasks();
+      expect(store.getState().selectedTaskLatestRun?.latestRun).toMatchObject({
+        verdict: "declined"
+      });
+      // Restored from the cache, not by asking the owner again.
+      expect(client.getTask.mock.calls.filter(
+        ([taskId]) => taskId === runTask.id
+      )).toHaveLength(detailReads);
+    });
+
+    it("re-reads and republishes the latest result when a collection refresh reports a new stage/activityRevision, without closing the task", async () => {
+      const store = createSessionStore();
+      const client = createClientMock();
+      const auth = createAuthSessionMock();
+      const taskV1: TaskSummary = { ...runTask, activityRevision: 1 };
+      const taskV2: TaskSummary = { ...runTask, stage: "in progress", activityRevision: 2 };
+      const runA = {
+        id: "run-a",
+        stage: "review",
+        kind: "main",
+        status: "running",
+        verdict: null,
+        summary: null,
+        resumedFromRunId: null,
+        resumeFallbackReason: null,
+        finishedAt: null
+      };
+      const runB = { ...latestRun, id: "run-b" };
+
+      vi.mocked(auth.getState).mockReturnValue({
+        status: "signedIn",
+        user: { uid: "user-1", email: "u@example.com", displayName: null }
+      });
+      client.getStatus.mockResolvedValue({
+        state: "running",
+        desktopId: "cloud",
+        desktopName: "Kanna Cloud",
+        lanHost: "cloud",
+        lanPort: 0,
+        pairingCode: null
+      });
+      client.listRepos.mockResolvedValue([{ id: taskV1.repoId, name: "Repo One" }]);
+      client.getTask = vi.fn()
+        .mockResolvedValueOnce({ ...taskV1, latestRun: runA })
+        .mockResolvedValueOnce({ ...taskV2, latestRun: runB });
+
+      let liveUpdate: ((tasks: TaskSummary[]) => void) | null = null;
+      const controller = createMobileController(client, store, auth, {
+        subscribeCloudTasks: vi.fn((_uid, onUpdate) => {
+          liveUpdate = onUpdate;
+          return vi.fn();
+        })
+      });
+
+      store.setSelectedTask(taskV1.id);
+      await controller.bootstrap();
+
+      // First collection publication: the task is running, with no result yet.
+      liveUpdate?.([taskV1]);
+      await flushMicrotasks();
+      expect(store.getState().selectedTaskId).toBe(taskV1.id);
+      expect(client.getTask).toHaveBeenCalledTimes(1);
+      expect(store.getState().selectedTaskLatestRun).toMatchObject({
+        taskId: taskV1.id,
+        latestRun: { id: "run-a", verdict: null }
+      });
+
+      // A later publication reports the same task with a new stage and
+      // activityRevision — it recorded a result while still selected.
+      liveUpdate?.([taskV2]);
+      await flushMicrotasks();
+      expect(store.getState().selectedTaskId).toBe(taskV1.id);
+      expect(client.getTask).toHaveBeenCalledTimes(2);
+      expect(store.getState().selectedTaskLatestRun).toMatchObject({
+        taskId: taskV1.id,
+        latestRun: { id: "run-b", verdict: "declined", summary: "Already fixed upstream." }
+      });
+    });
+  });
+
   it("keeps the bounded prompt fallback when owner task detail fails", async () => {
     const promptSnippet = "p".repeat(500);
     const cloudTask: TaskSummary = {

@@ -558,6 +558,7 @@ async fn stage_fork_runs_repo_setup_before_resolving_pty_provider() {
     let mut run = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Run(run) => run,
         PreparedStageTransition::Post(_) => panic!("expected stage fork, got post dispatch"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => panic!("expected stage fork, got close"),
     };
     let expected = std::path::Path::new(&run.cwd).join(".kanna/setup-bin/codex");
@@ -886,5 +887,199 @@ async fn timed_out_stage_fork_setup_kills_group_records_failure_and_removes_fork
     assert!(!String::from_utf8_lossy(&worktrees.stdout).contains(&fork_branch));
 
     let _ = std::fs::remove_file(grandchild_pid_file);
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// A daemon that answers whatever a gate entry asks — stopping sessions,
+/// listing none — and records every command until the client hangs up.
+async fn spawn_gate_daemon(
+    daemon_dir: String,
+) -> tokio::task::JoinHandle<Vec<kanna_daemon::protocol::Command>> {
+    use tokio::io::AsyncBufReadExt;
+    let socket_path = test_daemon_socket_path(&daemon_dir);
+    let _ = std::fs::remove_file(&socket_path);
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let (read_half, mut write_half) = stream.into_split();
+        let mut reader = BufReader::new(read_half);
+        let mut commands = Vec::new();
+        let mut line = String::new();
+        while reader.read_line(&mut line).await.unwrap() > 0 {
+            let command: kanna_daemon::protocol::Command =
+                serde_json::from_str(line.trim()).unwrap();
+            line.clear();
+            if answer_terminal_carryover_probe(&command, &mut write_half).await {
+                continue;
+            }
+            let response = match &command {
+                kanna_daemon::protocol::Command::List => {
+                    kanna_daemon::protocol::Event::SessionList {
+                        sessions: Vec::new(),
+                    }
+                }
+                kanna_daemon::protocol::Command::Spawn { session_id, .. }
+                | kanna_daemon::protocol::Command::SpawnAgent { session_id, .. } => {
+                    kanna_daemon::protocol::Event::SessionCreated {
+                        session_id: session_id.clone(),
+                    }
+                }
+                _ => kanna_daemon::protocol::Event::Ok,
+            };
+            commands.push(command);
+            write_half
+                .write_all(format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes())
+                .await
+                .unwrap();
+        }
+        commands
+    })
+}
+
+fn write_gate_repo(label: &str, gate_setup: &str) -> std::path::PathBuf {
+    let repo_root = init_git_repo(label);
+    std::fs::create_dir_all(repo_root.join(".kanna/workflows")).unwrap();
+    std::fs::write(
+        repo_root.join(".kanna/config.json"),
+        serde_json::json!({ "setup": ["touch .repo-setup-ran"] }).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        repo_root.join(".kanna/workflows/default.json"),
+        serde_json::json!({
+            "name": "default",
+            "routing": "exits",
+            "stages": [
+                { "name": "in progress", "agent": "implement", "prompt": "$TASK_PROMPT",
+                  "policy": { "transition": "manual" } },
+                { "name": "gate", "setup": [gate_setup],
+                  "policy": { "transition": "manual" } },
+                { "name": "review", "agent": "review", "prompt": "Review",
+                  "policy": { "transition": "manual" } }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    publish_origin_main(&repo_root, "publish gate workflow");
+    repo_root
+}
+
+/// Entering a stage with no role runs the repository's worktree setup and
+/// the stage's own setup on the server-side runner, records the stream
+/// against the gate's run, and starts no agent.
+#[tokio::test]
+async fn gate_entry_runs_setup_on_the_server_runner_and_spawns_no_agent() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let repo_root = write_gate_repo(
+        "gate-entry-setup",
+        "printf GATE_SETUP_SENTINEL && touch .gate-ready",
+    );
+    let config = test_config("gate-entry-setup");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    seed_source_task(&config, &db, &repo_root, "pty");
+
+    let gate = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
+        PreparedStageTransition::Gate(gate) => gate,
+        _ => panic!("advancing into a stage with no role enters a gate"),
+    };
+    let gate_workspace = std::path::PathBuf::from(&gate.cwd);
+    assert!(
+        !gate_workspace.join(".gate-ready").exists(),
+        "preparation runs no setup"
+    );
+    let daemon_server = spawn_gate_daemon(config.daemon_dir.clone()).await;
+    let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    crate::task_creator::enter_prepared_gate_for_api(
+        &config.db_path,
+        &mut daemon,
+        &crate::session_replacements::SessionReplacements::default(),
+        *gate,
+    )
+    .await
+    .unwrap();
+    drop(daemon);
+    let commands = daemon_server.await.unwrap();
+    assert!(
+        !commands.iter().any(|command| matches!(
+            command,
+            kanna_daemon::protocol::Command::Spawn { .. }
+                | kanna_daemon::protocol::Command::SpawnAgent { .. }
+        )),
+        "{commands:?}"
+    );
+    assert!(gate_workspace.join(".repo-setup-ran").exists());
+    assert!(gate_workspace.join(".gate-ready").exists());
+
+    let item = db.get_pipeline_item("task-1").unwrap().unwrap();
+    assert_eq!(item.stage.as_deref(), Some("gate"));
+    let run = db.latest_stage_run("task-1").unwrap().unwrap();
+    assert_eq!(run.stage, "gate");
+    assert_eq!(run.agent, None);
+    assert_eq!(run.status, "running");
+    let record = db
+        .workspace_setup_runs("task-1")
+        .unwrap()
+        .into_iter()
+        .find(|record| record.run_id == run.id)
+        .expect("the gate's run has its Setup record");
+    assert_eq!(record.status, "succeeded");
+    assert!(
+        record.output.contains("GATE_SETUP_SENTINEL"),
+        "{}",
+        record.output
+    );
+    assert!(db.list_lifecycle_operation_intents().unwrap().is_empty());
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// A gate whose setup exits non-zero did not open: the task stays where it
+/// was with the failure and its Setup stream on a failed run, and the unused
+/// fork is removed. The outcome is known, so nothing parks as ambiguous.
+#[tokio::test]
+async fn failed_gate_setup_keeps_the_task_in_place_and_removes_the_fork() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let repo_root = write_gate_repo("gate-setup-failed", "printf GATE_REFUSED && exit 3");
+    let config = test_config("gate-setup-failed");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    seed_source_task(&config, &db, &repo_root, "pty");
+
+    let gate = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
+        PreparedStageTransition::Gate(gate) => gate,
+        _ => panic!("advancing into a stage with no role enters a gate"),
+    };
+    let gate_workspace = std::path::PathBuf::from(&gate.cwd);
+    let daemon_server = spawn_gate_daemon(config.daemon_dir.clone()).await;
+    let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    let error = crate::task_creator::enter_prepared_gate_for_api(
+        &config.db_path,
+        &mut daemon,
+        &crate::session_replacements::SessionReplacements::default(),
+        *gate,
+    )
+    .await
+    .unwrap_err();
+    drop(daemon);
+    daemon_server.await.unwrap();
+    assert!(error.contains("setup of stage 'gate' failed"), "{error}");
+
+    let item = db.get_pipeline_item("task-1").unwrap().unwrap();
+    assert_eq!(item.stage.as_deref(), Some("in progress"));
+    assert_eq!(item.branch.as_deref(), Some("task-source"));
+    assert!(!gate_workspace.exists(), "the unused fork is removed");
+    assert!(db.list_lifecycle_operation_intents().unwrap().is_empty());
+    let run = db.latest_stage_run("task-1").unwrap().unwrap();
+    assert_eq!(run.stage, "gate");
+    assert_eq!(run.status, "failed");
+    let record = db
+        .workspace_setup_runs("task-1")
+        .unwrap()
+        .into_iter()
+        .find(|record| record.run_id == run.id)
+        .expect("the failed gate keeps its Setup stream");
+    assert_eq!(record.status, "failed");
+    assert!(record.output.contains("GATE_REFUSED"), "{}", record.output);
+
     let _ = std::fs::remove_dir_all(&repo_root);
 }

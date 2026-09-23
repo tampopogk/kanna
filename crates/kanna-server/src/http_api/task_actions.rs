@@ -79,6 +79,16 @@ pub(super) struct AdvanceStageRequest {
     /// that recommends a builder tier is usually not the one advancing the
     /// stage.
     next_stage_provider_source: Option<String>,
+    /// Leaving a stage with no role (spec §5): the gate's result message,
+    /// recorded as that stage's result with the operator's provenance. Its
+    /// first line is the summary surfaces show. Defaults to a line naming the
+    /// stage and who operated it. Refused for a stage with an agent, whose
+    /// result is its session's.
+    summary: Option<String>,
+    /// Leaving a stage with no role: the artifacts and decisions that arrived
+    /// while it was parked, by name, in the shape a completed stage's
+    /// `artifacts` takes.
+    artifacts: Option<serde_json::Value>,
 }
 
 pub(super) async fn resolve_task_id_for_mutation(
@@ -1140,13 +1150,16 @@ pub(super) async fn advance_stage(
         return Ok(Json(response).into_response());
     };
 
-    let (expected_transition_revision, expected_definition) = match payload {
-        Some(payload) => (
-            payload.expected_transition_revision,
-            payload.expected_definition,
-        ),
-        None => (None, None),
-    };
+    let (expected_transition_revision, expected_definition, gate_summary, gate_artifacts) =
+        match payload {
+            Some(payload) => (
+                payload.expected_transition_revision,
+                payload.expected_definition,
+                payload.summary,
+                payload.artifacts,
+            ),
+            None => (None, None, None, None),
+        };
     if let Some(expected_definition) = expected_definition {
         let state = Arc::clone(&state);
         let task_id = task_id.clone();
@@ -1218,6 +1231,7 @@ pub(super) async fn advance_stage(
     let transition = {
         let state = Arc::clone(&state);
         let task_id = task_id.clone();
+        let channel = channel.clone();
         super::blocking::run_handler_blocking("stage advance prepare", move || {
             let db = Db::open(&state.config.db_path).map_err(|e| {
                 (
@@ -1225,6 +1239,18 @@ pub(super) async fn advance_stage(
                     format!("db error: {}", e),
                 )
             })?;
+            // Leaving a stage with no role records its result first, so the
+            // transition prepared below forks from what that result recorded
+            // and names it as the result that caused the next session.
+            record_gate_departure(
+                &state,
+                &db,
+                &task_id,
+                trigger,
+                &channel,
+                gate_summary.as_deref(),
+                gate_artifacts.as_ref(),
+            )?;
             let latest = db.latest_stage_run(&task_id).map_err(|e| {
                 (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -1307,6 +1333,139 @@ pub(super) async fn advance_stage(
     Ok(Json(response).into_response())
 }
 
+/// Record the result of a stage with no role as a person or manager leaves
+/// it (spec §5): the message and artifacts they give, attributed to the
+/// declared source and the channel the request was verified on (T8), as the
+/// stage run's result and its ledger entry. The operator's transition then
+/// fires on it. A stage with an agent refuses gate fields; a gate whose run
+/// already recorded its result (an earlier advance whose transition did not
+/// land) keeps that result.
+fn record_gate_departure(
+    state: &AppState,
+    db: &Db,
+    task_id: &str,
+    trigger: StageTrigger,
+    channel: &ChannelIdentity,
+    summary: Option<&str>,
+    artifacts: Option<&serde_json::Value>,
+) -> Result<(), (axum::http::StatusCode, String)> {
+    // An unresolvable workflow is refused by the preparation that follows.
+    let roleless = crate::task_creator::current_stage_is_roleless(db, task_id).unwrap_or(false);
+    if !roleless {
+        if summary.is_some() || artifacts.is_some() {
+            return Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                "summary and artifacts describe leaving a stage with no role; this stage's \
+                 result is its agent's, recorded through complete-stage"
+                    .to_string(),
+            ));
+        }
+        return Ok(());
+    }
+    let item = db
+        .get_pipeline_item(task_id)
+        .map_err(|e| db_write_error("db error", e))?
+        .ok_or_else(|| {
+            (
+                axum::http::StatusCode::NOT_FOUND,
+                format!("task not found: {task_id}"),
+            )
+        })?;
+    // A task that cannot move records nothing: the advance is refused below
+    // with the ordinary closed or blocked error, and the gate stays open.
+    if item.closed_at.is_some()
+        || db
+            .count_open_task_blockers(task_id)
+            .map_err(|e| db_write_error("db error", e))?
+            > 0
+    {
+        return Ok(());
+    }
+    let stage = item.stage.unwrap_or_default();
+    let Some(gate_run) = db
+        .latest_stage_run(task_id)
+        .map_err(|e| db_write_error("db error", e))?
+        .filter(|run| run.kind == "main" && run.stage == stage && run.status == "running")
+    else {
+        // Recorded by an earlier advance whose transition did not land: that
+        // result stands, and a different one is refused rather than dropped.
+        if summary.is_some() || artifacts.is_some() {
+            return Err((
+                axum::http::StatusCode::CONFLICT,
+                format!(
+                    "stage '{stage}' already recorded its result; advance again without \
+                     summary or artifacts to finish leaving it"
+                ),
+            ));
+        }
+        return Ok(());
+    };
+    let declared_role = trigger.as_str();
+    let message = summary
+        .map(str::trim)
+        .filter(|summary| !summary.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("Left stage '{stage}' ({declared_role} advance)"));
+    let recorded_artifacts = artifacts
+        .map(|raw| super::artifacts::bind_result_artifacts(state, db, task_id, &gate_run.id, raw))
+        .transpose()?;
+    let mut stage_result_value = serde_json::json!({
+        "status": "success",
+        "summary": message,
+        "metadata": null,
+    });
+    if let Some(artifacts) = artifacts {
+        stage_result_value["artifacts"] = artifacts.clone();
+    }
+    let stage_result = stage_result_value.to_string();
+    let observed = crate::task_store::observe_workspace(gate_run.cwd.as_deref())
+        .map_err(|error| (axum::http::StatusCode::CONFLICT, error))?;
+    let provenance = MutationProvenance::new(declared_role, channel.clone());
+    let routing = serde_json::json!({
+        "exit": crate::task_creator::ADVANCE_EXIT,
+        "exit_source": crate::db::TransitionExit::OPERATOR,
+        "exit_destination": null,
+        "exit_outcome": "advance",
+    });
+    db.with_immediate_transaction(|db| -> rusqlite::Result<()> {
+        let event_floor = db.ledger_event_floor()?;
+        db.finish_stage_run_with_provenance(
+            &gate_run.id,
+            "succeeded",
+            Some(&stage_result),
+            Some(&message),
+            &provenance,
+        )?;
+        enqueue_completion_result(
+            db,
+            task_id,
+            &gate_run,
+            &observed,
+            "success",
+            &message,
+            None,
+            &stage_result,
+            None,
+            recorded_artifacts.as_ref(),
+            event_floor,
+            &provenance,
+            Some(&routing),
+        )?;
+        Ok(())
+    })
+    .map_err(|e| db_write_error("db error", e))?;
+    crate::task_store::flush_task(db, &state.config.db_path, task_id).map_err(|error| {
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "the gate's result was recorded, but its ledger entry is not yet published, so \
+                 the task did not move: {error}. Advance again once it is published."
+            ),
+        )
+    })?;
+    Ok(())
+}
+
 /// Execute a prepared transition: swap to the next stage's run, dispatch a
 /// post into the running session, or close past the final stage. Shared by
 /// `advance_stage` and `complete_stage`.
@@ -1349,6 +1508,19 @@ pub(super) async fn execute_stage_transition(
             .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
             state.publish_state_changed(StateChangeScope::Tasks);
             Ok(Json(dispatched))
+        }
+        crate::task_creator::PreparedStageTransition::Gate(prepared) => {
+            state.preview_sessions.revoke_task(task_id).await;
+            let entered = crate::task_creator::enter_prepared_gate_for_api(
+                &state.config.db_path,
+                daemon,
+                &state.session_replacements,
+                *prepared,
+            )
+            .await
+            .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
+            state.publish_state_changed(StateChangeScope::Tasks);
+            Ok(Json(entered))
         }
         crate::task_creator::PreparedStageTransition::Close {
             task_id,
@@ -2589,13 +2761,86 @@ pub(super) async fn complete_stage(
                     expected,
                 )?),
             };
+            // A stage's commit step (spec §5) settles once, and its result
+            // fires the transition it was requested for: it cannot choose
+            // another exit, publish a plan, or be recorded again after it
+            // settled — a later advance requests a new commit step instead.
+            // A stage with no role has no session to report on it: its
+            // result is recorded when a person or manager advances it.
+            if current_run.kind == "main"
+                && current_run.agent.is_none()
+                // An unresolvable workflow is refused below by the paths
+                // that need it; only a known gate is refused here.
+                && crate::task_creator::current_stage_is_roleless(&db, &task_id)
+                    .unwrap_or(false)
+            {
+                return Err((
+                    axum::http::StatusCode::CONFLICT,
+                    format!(
+                        "stage '{}' has no role, so no session records its result; it is \
+                         recorded when a person or manager advances the task (advance-stage \
+                         with summary and artifacts)",
+                        current_run.stage
+                    ),
+                ));
+            }
+            let commit_step = db
+                .transition_commit(&current_run.id)
+                .map_err(|e| db_write_error("db error", e))?;
+            if let Some(commit) = commit_step.as_ref() {
+                if commit.state != crate::db::TransitionCommit::REQUESTED {
+                    return Err((
+                        axum::http::StatusCode::CONFLICT,
+                        format!(
+                            "run {} is the commit step of the transition out of '{}', which \
+                             already settled ({}); nothing was recorded. Advance the task again \
+                             to request a new commit step.",
+                            commit.run_id, commit.stage, commit.state
+                        ),
+                    ));
+                }
+                let requested = commit
+                    .exit
+                    .as_ref()
+                    .and_then(|exit| exit.exit.as_deref())
+                    .unwrap_or(crate::task_creator::ADVANCE_EXIT);
+                if let Some(exit) = payload_exit
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|exit| !exit.is_empty() && *exit != requested)
+                {
+                    return Err((
+                        axum::http::StatusCode::BAD_REQUEST,
+                        format!(
+                            "this is the commit step of the transition out of '{}', which takes \
+                             exit '{requested}'; its result fires that transition and cannot \
+                             name exit '{exit}'. Record the result without an exit.",
+                            commit.stage
+                        ),
+                    ));
+                }
+                if workflow_extension.is_some() {
+                    return Err((
+                        axum::http::StatusCode::BAD_REQUEST,
+                        format!(
+                            "this is the commit step of the transition out of '{}'; it cannot \
+                             publish a workflow",
+                            commit.stage
+                        ),
+                    ));
+                }
+            }
             // Where the result sends the task, refused before anything is
             // recorded so a session that named an exit its stage does not
             // declare can correct it. A published plan is what the task
             // routes by from this result on.
             // A legacy task naming no exit never loads its workflow here, so
             // the legacy adapter keeps every behavior it had.
-            let route = if routes_by_exits || payload_exit.is_some() {
+            let route = if let Some(commit) = commit_step.as_ref().filter(|_| routes_by_exits) {
+                Some(crate::task_creator::ResolvedResultExit::for_commit_step(
+                    commit.exit.as_ref(),
+                ))
+            } else if routes_by_exits || payload_exit.is_some() {
                 crate::task_creator::resolve_result_exit(
                     &db,
                     &task_id,
@@ -2726,6 +2971,24 @@ pub(super) async fn complete_stage(
                     routed.as_ref().map(RoutedResult::ledger_json).as_ref(),
                 )
                 .map_err(|e| db_write_error("db error", e))?;
+                if commit_step.is_some()
+                    && !db
+                        .settle_transition_commit_in_transaction(
+                            &current_run.id,
+                            payload_verdict.completes_stage(),
+                            &result_entry.entry_id,
+                            observed.committed_sha.as_deref(),
+                        )
+                        .map_err(|e| db_write_error("db error", e))?
+                {
+                    return Err((
+                        axum::http::StatusCode::CONFLICT,
+                        format!(
+                            "the commit step run {} settled concurrently; nothing was recorded",
+                            current_run.id
+                        ),
+                    ));
+                }
                 // A corrected verdict replaces whatever the earlier one asked
                 // the engine to do next.
                 let routed_outcome = routed.as_ref().map(|routed| routed.outcome);
@@ -2806,9 +3069,15 @@ pub(super) async fn complete_stage(
                             "generation": db
                                 .task_run_generation(&task_id)
                                 .map_err(|e| db_write_error("db error", e))?,
-                            "exit": routed
-                                .as_ref()
-                                .map(|routed| routed.transition_exit().to_json()),
+                            // A commit step fires the transition it was
+                            // requested for, with that transition's exit.
+                            "exit": match commit_step.as_ref() {
+                                Some(commit) => commit.exit.as_ref().map(|exit| exit.to_json()),
+                                None => routed
+                                    .as_ref()
+                                    .map(|routed| routed.transition_exit().to_json()),
+                            },
+                            "commitStep": commit_step.as_ref().map(|commit| &commit.run_id),
                         }),
                     )
                     .map_err(|e| db_write_error("db error", e))?;

@@ -16,7 +16,7 @@ use super::resume::{prepare_resume_session, prepare_resume_workspace, same_cwd};
 use super::session::{self, RevisitPlan};
 use super::types::{
     PreparedPostDispatch, PreparedRunWorkspace, PreparedStageRunSpawn, PreparedStageTransition,
-    RevisitResume, RunWorkspaceSpec,
+    RevisitResume, RunWorkspaceSpec, TransitionCommitRequest,
 };
 use super::worktree::allocate_task_branch;
 use super::AgentInstructions;
@@ -196,7 +196,7 @@ pub(crate) fn prepare_advance_stage_for_api_with_intent(
         }
         StagePosition::Stage(index) => {
             let stage = &loaded.workflow.stages[index];
-            if let Some(post) = &stage.post {
+            if let Some(post) = stage.transition_post() {
                 let latest = db
                     .latest_stage_run(source_task_id)
                     .map_err(|e| format!("db error: {}", e))?;
@@ -238,7 +238,11 @@ pub(crate) fn prepare_advance_stage_for_api_with_intent(
                             provider_override.provider,
                         ));
                     }
-                    return prepare_post_dispatch(db, config, &context, index, trigger);
+                    // A commit step fires the transition this advance asked
+                    // for, so it carries that transition's exit.
+                    return prepare_post_dispatch(db, config, &context, index, trigger).map(
+                        |transition| with_operator_advance_exit(&loaded.workflow, transition),
+                    );
                 }
             }
             prepare_swap_to_index(db, config, &context, index + 1, trigger, provider_override)
@@ -356,7 +360,7 @@ pub(crate) fn prepare_stage_completion_for_api_with_trigger(
             if transition != WorkflowStageTransition::Auto {
                 return Ok(None);
             }
-            if stage.post.is_some() {
+            if stage.transition_post().is_some() {
                 return prepare_post_dispatch(db, config, &context, index, StageTrigger::Auto)
                     .map(Some);
             }
@@ -544,6 +548,44 @@ fn prepare_swap_to_index_ungated(
         .stage
         .as_deref()
         .ok_or_else(|| format!("task has no stage: {}", context.source_task_id))?;
+    if context.workflow.is_roleless_stage(next_stage) {
+        if let Some(provider_override) = provider_override {
+            return Err(format!(
+                "cannot apply a provider override for the next stage of {}: stage '{}' has no \
+                 role and runs no agent. Requested provider: {}.",
+                context.source_task_id, next_stage.name, provider_override.provider,
+            ));
+        }
+        let branch = context
+            .source_task
+            .branch
+            .as_deref()
+            .ok_or_else(|| format!("task has no branch: {}", context.source_task_id))?;
+        let current_worktree =
+            session::current_workspace_path(db, &context.repo.path, context.source_task_id, branch);
+        let workspace = fork_spec(
+            db,
+            config,
+            context,
+            Some(&current_worktree),
+            &next_stage.name,
+            None,
+        )?;
+        return super::prepare_gate_entry(
+            db,
+            config,
+            context.repo,
+            context.definitions,
+            context.source_task_id,
+            context.workflow,
+            next_stage,
+            workspace,
+            branch,
+            from_stage,
+            trigger,
+        )
+        .map(|gate| PreparedStageTransition::Gate(Box::new(gate)));
+    }
     let prompt_suffix = if next_stage.agent.as_deref() == Some("review")
         && db
             .latest_stage_run_for_stage(context.source_task_id, &next_stage.name, "main")
@@ -594,7 +636,7 @@ fn prepare_post_dispatch(
     let completion_instruction = format!(
         "When this work is complete, record stage completion: call MCP `kanna_complete_stage {{\"task_id\": \"{task_id}\", \"status\": \"success\", \"summary\": \"...\"}}`; only if MCP tools are unavailable, fall back to `kanna-cli stage-complete --task-id \"{task_id}\" --status success --summary \"...\"`. Kanna will then advance this task's workflow."
     );
-    let (fallback, message) = prepare_stage_run_for_target_returning_prompt(
+    let (mut fallback, message) = prepare_stage_run_for_target_returning_prompt(
         db,
         config,
         context,
@@ -612,6 +654,15 @@ fn prepare_post_dispatch(
         None,
     )?;
 
+    // `exit_commit` makes this the transition's commit step: the request is
+    // bound to whichever run delivers it (the live session's, or the fresh
+    // commit session's), and the exit is filled in by the caller that routed
+    // the transition.
+    let commit = owner.exit_commit.then(|| TransitionCommitRequest {
+        stage: owner.name.clone(),
+        exit: None,
+    });
+    fallback.transition_commit = commit.clone();
     Ok(PreparedStageTransition::Post(Box::new(
         PreparedPostDispatch {
             task_id: context.source_task_id.to_string(),
@@ -619,6 +670,7 @@ fn prepare_post_dispatch(
             message,
             run_stage,
             fallback,
+            commit,
         },
     )))
 }
@@ -1065,6 +1117,9 @@ pub(crate) fn prepare_revision_task_for_api(
     {
         StagePosition::Stage(index) => {
             let stage = loaded.workflow.stages[index].clone();
+            if loaded.workflow.is_roleless_stage(&stage) {
+                return Err(roleless_restart_refusal(&stage.name));
+            }
             let item_stage = stage.name.clone();
             (stage, item_stage, "main")
         }
@@ -1507,6 +1562,9 @@ fn prepare_stage_restart(
                 owner,
             ),
         };
+    if loaded.workflow.is_roleless_stage(&target_stage) {
+        return Err(roleless_restart_refusal(&target_stage.name));
+    }
     if run.kind != run_kind || run_owner != current_owner {
         return Err(format!(
             "latest interrupted run is not the task's current stage: {}",
@@ -1827,6 +1885,27 @@ fn prepare_stage_restart(
     // it and cannot carry this; without a separate pointer the chain back to a
     // recorded verdict breaks at the first fallback.
     prepared.replaces_run_id = Some(run.id.clone());
+    // A restarted commit step is the same operation: the replacement run
+    // takes over the one requested transition (the row is re-keyed to it when
+    // it is recorded), so its result settles that transition exactly once. A
+    // step that already settled authorizes nothing more.
+    if let Some(commit) = db
+        .transition_commit(&run.id)
+        .map_err(|error| format!("db error: {error}"))?
+    {
+        if commit.state != crate::db::TransitionCommit::REQUESTED {
+            return Err(format!(
+                "run {} is the commit step of the transition out of '{}', which already \
+                 settled ({}); it is not restarted. Advance the task to request a new commit \
+                 step.",
+                commit.run_id, commit.stage, commit.state
+            ));
+        }
+        prepared.transition_commit = Some(TransitionCommitRequest {
+            stage: commit.stage,
+            exit: commit.exit,
+        });
+    }
     Ok(prepared)
 }
 
@@ -2087,7 +2166,7 @@ pub(crate) fn resolve_stage_transition(
 // Shared with notification enrichment: an auto main completion dispatches a
 // post or enters a successor, but never closes a final stage without a post.
 fn main_completion_has_continuation(workflow: &WorkflowDefinition, index: usize) -> bool {
-    workflow.stages[index].post.is_some() || workflow.stages.get(index + 1).is_some()
+    workflow.stages[index].transition_post().is_some() || workflow.stages.get(index + 1).is_some()
 }
 
 pub(crate) fn main_completion_continuation(
@@ -2115,6 +2194,32 @@ pub(crate) fn main_completion_continuation(
     })
 }
 
+/// A stage with no role has no session to resume, rerun or send work back
+/// to; it is left by advancing it.
+pub(crate) fn roleless_restart_refusal(stage: &str) -> String {
+    format!(
+        "stage '{stage}' has no role, so there is no agent session to resume, rerun or send \
+         work to; a person or manager leaves it by advancing the task"
+    )
+}
+
+/// True when the task's current stage is a stage with no role (spec §5).
+pub(crate) fn current_stage_is_roleless(db: &Db, task_id: &str) -> Result<bool, String> {
+    let workflow = task_workflow_for_routing(db, task_id)?;
+    let Some(stage) = db
+        .get_pipeline_item(task_id)
+        .map_err(|error| format!("db error: {error}"))?
+        .and_then(|item| item.stage)
+    else {
+        return Ok(false);
+    };
+    Ok(workflow
+        .stages
+        .iter()
+        .find(|candidate| candidate.name == stage)
+        .is_some_and(|candidate| workflow.is_roleless_stage(candidate)))
+}
+
 /// Where a result goes under named-exit routing (spec §5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedResultExit {
@@ -2130,6 +2235,25 @@ pub(crate) struct ResolvedResultExit {
 }
 
 impl ResolvedResultExit {
+    /// The exit a commit step's result takes: the one its transition was
+    /// requested with (`advance`, chosen by the session, by default or by a
+    /// person), never one the commit result names.
+    pub(crate) fn for_commit_step(requested: Option<&TransitionExit>) -> Self {
+        let source = match requested.map(|exit| exit.source.as_str()) {
+            Some(TransitionExit::OPERATOR) => TransitionExit::OPERATOR,
+            Some(TransitionExit::EXPLICIT) => TransitionExit::EXPLICIT,
+            _ => TransitionExit::DEFAULT,
+        };
+        Self {
+            exit: requested
+                .and_then(|exit| exit.exit.clone())
+                .unwrap_or_else(|| ADVANCE_EXIT.to_string()),
+            source,
+            destination: None,
+            budget_limit: None,
+        }
+    }
+
     /// The transition record for this exit, with the budget it spent.
     pub(crate) fn transition_exit(
         &self,

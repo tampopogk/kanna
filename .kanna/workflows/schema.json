@@ -177,7 +177,8 @@
             "type": "string"
           },
           "agent": {
-            "type": "string"
+            "type": "string",
+            "description": "The role (agent definition) whose session runs this stage. Under routing \"exits\" a stage may omit it: a stage with no role runs its setup when entered, parks without an agent until a person or manager advances it (the advance may carry the gate's summary and artifacts, recorded as the stage's result with the operator's provenance), and runs its teardown when left. Such a stage must be manual, cannot be the first stage, declares no exits, exit_commit, post, prompt or agent_provider, and no loop may lead into it. A legacy stage without agent runs the default agent."
           },
           "prompt": {
             "type": "string"
@@ -262,6 +263,26 @@
                 "$ref": "#/$defs/agentProviderSelection"
               }
             }
+          },
+          "exit_commit": {
+            "description": "Routing \"exits\" only: the stage's forward transition starts with a commit step (spec \u00a75). When the transition is requested (a manual advance, or an auto one after a success result), the stage's live session is told to commit its work and record its result; if the session is dead, a short commit session runs in the same workspace. The transition fires on that result, and the next stage forks from the commit it recorded. A failed commit result parks the task with no transition; advancing again requests a new commit step. A commit result cannot name another exit. Cannot be combined with post.",
+            "type": "boolean"
+          },
+          "setup": {
+            "description": "Routing \"exits\" only: commands run in the stage's workspace when the stage is entered, after its environment's setup. For a stage with no role they are the stage's work (mail the reviewers, open the window); if the server stops while they run, restart parks the task at the stage with their outcome reported unknown and never runs them again.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "teardown": {
+            "description": "Routing \"exits\" only: commands run in the stage's workspace when the task leaves it, after its environment's teardown.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         }
       }
@@ -335,11 +356,7 @@
             "transition": "auto",
             "loop_transition": "auto"
           },
-          "post": {
-            "name": "commit",
-            "agent": "commit",
-            "prompt": "Commit the relevant work for this task before review."
-          }
+          "exit_commit": true
         },
         {
           "name": "review",

@@ -70,6 +70,16 @@ export interface WorkflowStage {
   budget?: number;
   policy: WorkflowStagePolicy;
   post?: WorkflowPost;
+  /**
+   * Routing "exits" only: the stage's forward transition starts with a commit
+   * step — the live session commits and records its result (or a short commit
+   * session runs in the same workspace), and the transition fires on it.
+   */
+  exit_commit?: boolean;
+  /** Routing "exits" only: commands run in the workspace on entering the stage. */
+  setup?: string[];
+  /** Routing "exits" only: commands run in the workspace on leaving the stage. */
+  teardown?: string[];
 }
 
 export interface WorkflowDefinition {

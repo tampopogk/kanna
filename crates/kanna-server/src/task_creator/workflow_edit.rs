@@ -271,6 +271,21 @@ pub(crate) fn validate_task_workflow_replacement_with_plan_context(
             ));
         }
     }
+    // A task parked at a stage with no role has no session, and one at a
+    // stage with an agent has no gate run: the current stage keeps which of
+    // the two it is.
+    let roleless = |definition: &WorkflowDefinition| {
+        definition
+            .stages
+            .iter()
+            .find(|stage| stage.name == current_stage)
+            .is_some_and(|stage| definition.is_roleless_stage(stage))
+    };
+    if roleless(&prior) != roleless(&workflow) {
+        return Err(format!(
+            "cannot change whether current stage '{current_stage}' has a role"
+        ));
+    }
     let protected: std::collections::BTreeSet<&str> = std::iter::once(current_stage)
         .chain(runs.iter().map(|run| run.stage.as_str()))
         .collect();

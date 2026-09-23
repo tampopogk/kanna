@@ -42,6 +42,13 @@ export const MOBILE_E2E_IDS = {
   taskTitleButton: "mobile.task-title-button",
   taskExpandedPrompt: "mobile.task-expanded-prompt",
   taskExpandedTaskId: "mobile.task-expanded-task-id",
+  taskLatestResult: "mobile.task-latest-result",
+  taskLatestResultVerdict: "mobile.task-latest-result-verdict",
+  taskLatestResultMessage: "mobile.task-latest-result-message",
+  taskLatestResultExit: "mobile.task-latest-result-exit",
+  taskLatestResultArtifact(name: string): string {
+    return `mobile.task-latest-result-artifact.${name}`;
+  },
   taskTitleDismissLayer: "mobile.task-title-dismiss-layer",
   taskSnapshotMarker: "mobile.task-snapshot-marker",
   taskBackButton: "mobile.task-back-button",

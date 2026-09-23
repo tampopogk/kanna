@@ -208,6 +208,7 @@ fn prepare_review_fork(db: &Db, config: &Config) -> Box<PreparedStageRunSpawn> {
         PreparedStageTransition::Post(_) => {
             panic!("expected a forked stage run, got post dispatch")
         }
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => {
             panic!("expected a forked stage run, got task close")
         }

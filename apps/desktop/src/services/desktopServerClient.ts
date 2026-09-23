@@ -1,6 +1,6 @@
 import type { AgentSelectionEntry } from "@kanna/agent-protocol";
 import { isAgentProvider, type AgentProvider } from "@kanna/agent-protocol";
-import type { RepoConfig } from "@kanna/core";
+import type { ArtifactReference, RepoConfig } from "@kanna/core";
 import type { AgentDefinition, WorkflowDefinition } from "../../../../packages/core/src/workflow/workflow-types";
 import type { BlockerTaskStates, PipelineItem, Repo, TaskBlocker } from "../types/kanna";
 import type { SessionRecoveryState } from "../composables/sessionRecoveryState";
@@ -315,6 +315,14 @@ export interface DesktopTaskLatestRun {
    */
   verdict?: string | null;
   summary: string | null;
+  /**
+   * The named exit (spec §5) this result took, when the pinned workflow
+   * routes by exits and the agent named one. Absent on a legacy-routed task,
+   * on a result that took none, or when the run recorded no result.
+   */
+  exit?: string | null;
+  /** Named artifact references (spec §7, §8) this result carries, keyed by the name the agent gave them. */
+  artifacts?: Record<string, ArtifactReference> | null;
   resumedFromRunId: string | null;
   resumeFallbackReason: string | null;
   finishedAt: string | null;
