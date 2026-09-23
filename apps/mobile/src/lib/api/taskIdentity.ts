@@ -34,6 +34,27 @@ export function isTaskBlocked(task: TaskSummary): boolean {
   return (task.blockedByTaskIds?.length ?? 0) > 0;
 }
 
+/**
+ * True once a session has reported anything about this task's agent.
+ * `runtimeState` starts absent and is only ever set once a run has started
+ * (spec §16.8, T11b) — the server-provided signal to use here, not
+ * `blockedByTaskIds` alone. A task blocked by a T4 stage-dependency edge
+ * into a *later* stage, or a T5 subtask-join wait, can already be running
+ * its current stage; only a task blocked before its first session has none.
+ */
+export function taskHasLiveSession(task: TaskSummary): boolean {
+  return task.runtimeState != null;
+}
+
+/**
+ * Blocked with nothing running yet — the case that actually has no agent
+ * session to attach. `isTaskBlocked` alone conflates this with a task
+ * blocked at a later stage whose current stage is already live.
+ */
+export function isTaskBlockedWithoutSession(task: TaskSummary): boolean {
+  return isTaskBlocked(task) && !taskHasLiveSession(task);
+}
+
 export function resolveBlockerTasks(
   task: TaskSummary,
   tasks: readonly TaskSummary[]

@@ -519,7 +519,13 @@
     "branchLabel": "브랜치:",
     "prPrefix": "PR #",
     "stageAdvancePending": "단계 변경 처리 중",
-    "exitLabel": "종료:"
+    "exitLabel": "종료:",
+    "sessionLabel": "세션:",
+    "sessionHistoryLabel": "기록",
+    "commitStepLabel": "커밋:",
+    "gateParked": "사람의 결정을 기다리는 중",
+    "dependencyWait": "{fromStage} → {toStage} 의존성 대기 중",
+    "dependencySuperseded": "{upstreamTaskId}({upstreamStage})의 새 결과는 사용되지 않았습니다"
   },
   "app": {
     "selectRepoFirst": "먼저 저장소를 선택하세요",

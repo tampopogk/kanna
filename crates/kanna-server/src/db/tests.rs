@@ -3595,6 +3595,51 @@ fn ui_snapshot_treats_null_pinned_as_unpinned() {
 }
 
 #[test]
+fn ui_snapshot_reports_the_latest_run_workspace_id() {
+    // T11b: the desktop's daemon-session resolver prefers this over `branch`,
+    // which changes at every stage transition.
+    let path = Db::test_db_path("snapshot-workspace-id");
+    let db = Db::open_for_tests(&path).expect("open test db");
+    db.insert_test_repo("repo-1", "Repo One").expect("repo");
+    db.insert_test_pipeline_item(
+        "task-1",
+        "repo-1",
+        "publish this task",
+        Some("Publish Task"),
+        "in progress",
+        "2026-07-14T00:00:00Z",
+    )
+    .expect("task");
+    db.insert_test_stage_run_window(
+        "run-1",
+        "task-1",
+        "in progress",
+        "2026-07-14T00:00:00Z",
+        Some("2026-07-14T00:01:00Z"),
+    )
+    .expect("run");
+    db.set_stage_run_session(
+        "run-1",
+        &super::StageRunSession {
+            workspace_id: Some("ws-task-1-build-1".into()),
+            branch: Some("task-1".into()),
+            name: Some("in progress: publish this task".into()),
+            transcript: None,
+            workspace_report: None,
+        },
+    )
+    .expect("set session");
+
+    let snapshot = db.ui_snapshot().expect("snapshot with workspace id");
+    assert_eq!(
+        snapshot.entries[0].items[0].workspace_id.as_deref(),
+        Some("ws-task-1-build-1")
+    );
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn find_open_agent_task_ignores_closed_singleton() {
     let path = Db::test_db_path("closed-singleton-agent");
     let db = Db::open_for_tests(&path).expect("open test db");

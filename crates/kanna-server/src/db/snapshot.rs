@@ -125,6 +125,14 @@ impl Db {
                     pipeline_item.teardown_started_at, pipeline_item.parent_task_id,
                     pipeline_item.notify_task_id, pipeline_item.notified_at,
                     pipeline_item.created_at, pipeline_item.updated_at,
+                    (
+                      SELECT stage_run.workspace_id
+                      FROM stage_run
+                      WHERE stage_run.task_id = pipeline_item.id
+                        AND stage_run.kind IN {AGENT_RUN_KINDS}
+                      ORDER BY stage_run.rowid DESC
+                      LIMIT 1
+                    ) AS workspace_id,
                     EXISTS (
                       SELECT 1 FROM stage_run
                       WHERE stage_run.task_id = pipeline_item.id
@@ -249,22 +257,23 @@ impl Db {
                 notified_at: row.get(29)?,
                 created_at: row.get(30)?,
                 updated_at: row.get(31)?,
-                has_running_post: row.get(32)?,
-                activity_revision: row.get(33)?,
-                blocker_revision: row.get(34)?,
-                transition_revision: row.get(35)?,
-                cloud_task_id: row.get(36)?,
-                transfer_id: row.get(37)?,
-                transfer_direction: row.get(38)?,
-                transfer_status: row.get(39)?,
-                transfer_source_peer_id: row.get(40)?,
-                transfer_target_peer_id: row.get(41)?,
-                transfer_source_desktop_id: row.get(42)?,
-                transfer_target_desktop_id: row.get(43)?,
-                transfer_error: row.get(44)?,
-                runtime_state: row.get(45)?,
-                read_state: row.get(46)?,
-                attention_requested: row.get(47)?,
+                workspace_id: row.get(32)?,
+                has_running_post: row.get(33)?,
+                activity_revision: row.get(34)?,
+                blocker_revision: row.get(35)?,
+                transition_revision: row.get(36)?,
+                cloud_task_id: row.get(37)?,
+                transfer_id: row.get(38)?,
+                transfer_direction: row.get(39)?,
+                transfer_status: row.get(40)?,
+                transfer_source_peer_id: row.get(41)?,
+                transfer_target_peer_id: row.get(42)?,
+                transfer_source_desktop_id: row.get(43)?,
+                transfer_target_desktop_id: row.get(44)?,
+                transfer_error: row.get(45)?,
+                runtime_state: row.get(46)?,
+                read_state: row.get(47)?,
+                attention_requested: row.get(48)?,
             })
         })?;
         rows.collect()

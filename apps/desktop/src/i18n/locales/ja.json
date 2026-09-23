@@ -518,7 +518,13 @@
     "branchLabel": "ブランチ:",
     "prPrefix": "PR #",
     "stageAdvancePending": "ステージ変更を処理中",
-    "exitLabel": "終了:"
+    "exitLabel": "終了:",
+    "sessionLabel": "セッション:",
+    "sessionHistoryLabel": "履歴",
+    "commitStepLabel": "コミット:",
+    "gateParked": "担当者の判断を待っています",
+    "dependencyWait": "{fromStage} → {toStage} の依存関係を待機中",
+    "dependencySuperseded": "{upstreamTaskId}（{upstreamStage}）の新しい結果は使用されませんでした"
   },
   "app": {
     "selectRepoFirst": "リポジトリを先に選択してください",

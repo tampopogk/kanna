@@ -4,7 +4,8 @@
 //! final-stage upstream releases its dependents.
 
 use super::actions::{
-    commit_branch_change, dependent_scenario_config, expect_one_spawn, spawn_dependent_start_daemon,
+    commit_branch_change, dependent_scenario_config, expect_one_spawn, get_task_detail,
+    spawn_dependent_start_daemon,
 };
 use super::*;
 
@@ -184,6 +185,21 @@ async fn dependent_waits_then_starts_once_from_the_recorded_sha_across_restarts(
         .remove(0);
     assert_eq!(edge.consumed_result_id.as_deref(), Some(result.as_str()));
     assert_eq!(edge.consumed_sha.as_deref(), Some(recorded.as_str()));
+
+    // T11b: the same edge, projected through the HTTP task-detail API so a
+    // client can render what a stage waited on and consumed.
+    let app = super::router(Arc::new(AppState::new(scenario.config.clone())));
+    let detail = get_task_detail(&app, &dependent.task_id).await;
+    assert_eq!(detail.stage_dependencies.len(), 1);
+    let dependency = &detail.stage_dependencies[0];
+    assert_eq!(dependency.upstream_task_id, "task-a");
+    assert_eq!(dependency.upstream_stage, "plan");
+    assert_eq!(
+        dependency.consumed_result_id.as_deref(),
+        Some(result.as_str())
+    );
+    assert_eq!(dependency.consumed_sha.as_deref(), Some(recorded.as_str()));
+    assert_eq!(dependency.superseded_sha, None);
 }
 
 #[tokio::test]

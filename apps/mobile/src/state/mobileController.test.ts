@@ -2832,6 +2832,36 @@ describe("createMobileController", () => {
     expect(store.getState().taskTerminalTaskId).toBe("task-blocked");
   });
 
+  it("keeps a session attached for a task blocked at a later stage whose current stage already has one (T11b)", async () => {
+    // A T4 later-stage dependency wait, or a T5 subtask-join wait, can leave
+    // `blockedByTaskIds` non-empty while the task's current-stage session is
+    // already running. `runtimeState` — the server-provided session signal —
+    // says so, and `startTaskView` must not detach that live session.
+    const laterStageWaitTask: TaskSummary = {
+      id: "task-later-stage-wait",
+      repoId: "repo-1",
+      title: "Waiting on a later stage",
+      stage: "in progress",
+      agentType: "pty",
+      runtimeState: "busy",
+      blockedByTaskIds: ["task-blocker"]
+    };
+    const store = createSessionStore();
+    const client = createClientMock();
+    client.listRecentTasks.mockResolvedValue([laterStageWaitTask]);
+    client.listRepoTasks.mockResolvedValue([laterStageWaitTask]);
+    const controller = createMobileController(client, store);
+
+    await controller.bootstrap();
+    controller.openTask(laterStageWaitTask.id);
+
+    expect(client.observeTaskTerminal).toHaveBeenCalledWith(
+      "task-later-stage-wait",
+      expect.any(Function)
+    );
+    expect(store.getState().taskTerminalTaskId).toBe("task-later-stage-wait");
+  });
+
   it("does not start a task stream when openTask cannot resolve the task", () => {
     const store = createSessionStore();
     const client = createClientMock();

@@ -692,6 +692,7 @@ mod tests {
                     notified_at: None,
                     created_at: Some("2026-07-14 00:00:00".into()),
                     updated_at: Some("2026-07-14 01:02:03".into()),
+                    workspace_id: None,
                     has_running_post: 0,
                 }],
             }],
