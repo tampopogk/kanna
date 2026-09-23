@@ -21,14 +21,18 @@ impl Db {
         phase: &str,
         payload_json: &str,
     ) -> Result<(), rusqlite::Error> {
-        self.refuse_while_transferring(task_id)?;
-        self.conn.execute(
-            "INSERT INTO lifecycle_operation_intent
-             (id, task_id, kind, phase, payload_json)
-             VALUES (?, ?, ?, ?, ?)",
-            (id, task_id, kind, phase, payload_json),
-        )?;
-        Ok(())
+        // One transaction with the guard, so a finalization claim cannot
+        // commit between the check and the write (T9).
+        self.in_immediate_transaction_if_needed(|db| {
+            db.refuse_while_transferring(task_id)?;
+            db.conn.execute(
+                "INSERT INTO lifecycle_operation_intent
+                 (id, task_id, kind, phase, payload_json)
+                 VALUES (?, ?, ?, ?, ?)",
+                (id, task_id, kind, phase, payload_json),
+            )?;
+            Ok(())
+        })
     }
 
     pub fn update_lifecycle_operation_phase(

@@ -600,6 +600,7 @@ async fn stage_and_commit(
                 &preflight.source_peer_id,
                 &repository.head_oid,
                 "task-state",
+                false,
             )
             .await?,
         )
@@ -810,6 +811,9 @@ async fn stage_task_state(
     source_peer_id: &str,
     head_oid: &str,
     artifact_suffix: &str,
+    // The final export fences the ledger first, so nothing recorded after
+    // this read can be missing from what the destination acknowledges.
+    fence_ledger: bool,
 ) -> Result<TransferTaskStatePayload, String> {
     let artifact_store = crate::http_api::artifacts::repository_path_for_transfer(state, repo);
     let staging = staging_dir();
@@ -843,6 +847,10 @@ async fn stage_task_state(
                 .get_pipeline_item(&task_id)
                 .map_err(|error| format!("db error: {error}"))?
                 .ok_or_else(|| format!("task not found: {task_id}"))?;
+            if fence_ledger {
+                db.fence_ledger_for_transfer_export(&task_id, &transfer_id)
+                    .map_err(|error| format!("db error: {error}"))??;
+            }
             let mut document = task_state::collect(&db, &db_path, &task, &source_peer_id)?;
             drop(db);
             let history = task_state::stage_history_bundle(
@@ -1611,6 +1619,7 @@ async fn run_finalization(
                     .unwrap_or(&existing.task.source_peer_id),
                 &repository.head_oid,
                 "task-state-final",
+                true,
             )
             .await?,
         ),

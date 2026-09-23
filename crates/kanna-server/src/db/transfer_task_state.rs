@@ -45,6 +45,12 @@ pub(super) const SCHEMA: &str = r#"
         fresh_start_reason TEXT,
         imported_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
+    CREATE TABLE IF NOT EXISTS transfer_ledger_export (
+        task_id TEXT PRIMARY KEY REFERENCES pipeline_item(id) ON DELETE CASCADE,
+        transfer_id TEXT NOT NULL,
+        exported_through INTEGER NOT NULL,
+        exported_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
 "#;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,6 +196,21 @@ pub struct NewTransferredTaskState<'a> {
     pub fresh_start_reason: Option<&'a str>,
 }
 
+/// The key a carried run is recorded under at a destination: namespaced to
+/// the task that holds it, so it can never be (or collide with) a local run.
+pub fn carried_run_id(task_id: &str, origin_run_id: &str) -> String {
+    format!("carried:{task_id}:{origin_run_id}")
+}
+
+/// The run id a carried key was recorded from; any other id is returned as is.
+pub fn origin_run_id<'a>(task_id: &str, run_id: &'a str) -> &'a str {
+    run_id
+        .strip_prefix("carried:")
+        .and_then(|rest| rest.strip_prefix(task_id))
+        .and_then(|rest| rest.strip_prefix(':'))
+        .unwrap_or(run_id)
+}
+
 /// Prefix of the error a refused write carries while a transfer holds the
 /// task; matched by callers that turn it into a conflict for their client.
 pub const TRANSFER_IN_PROGRESS: &str = "task_transfer_in_progress";
@@ -285,13 +306,93 @@ impl Db {
     /// exclusive: either the write lands first and the claim refuses the
     /// transfer, or the claim lands first and the write is refused here.
     pub(crate) fn refuse_while_transferring(&self, task_id: &str) -> Result<(), rusqlite::Error> {
-        match self.task_workflow_is_claimed_by_transfer(task_id)? {
+        let claimed = self.task_workflow_is_claimed_by_transfer(task_id)?;
+        #[cfg(test)]
+        after_transfer_guard::run(task_id);
+        match claimed {
             None => Ok(()),
             Some(transfer_id) => Err(rusqlite::Error::InvalidParameterName(format!(
                 "{TRANSFER_IN_PROGRESS}: task {task_id} is being transferred to another machine \
                  (transfer {transfer_id}); it cannot change stage here"
             ))),
         }
+    }
+
+    /// Fence the task's ledger for the final export of `transfer_id`: from
+    /// here on no entry can be appended to it while that transfer holds the
+    /// task ([`Db::refuse_ledger_after_transfer_export`]), so the exported
+    /// task-state.json is the whole ledger the source ever had. Only the
+    /// transfer holding the task's workflow claim may fence it. Returns the
+    /// fenced sequence.
+    pub fn fence_ledger_for_transfer_export(
+        &self,
+        task_id: &str,
+        transfer_id: &str,
+    ) -> Result<Result<i64, String>, rusqlite::Error> {
+        self.with_immediate_transaction(|db| {
+            if db.task_workflow_is_claimed_by_transfer(task_id)?.as_deref() != Some(transfer_id) {
+                return Ok(Err(format!(
+                    "transfer {transfer_id} does not hold task {task_id}'s workflow, so it cannot \
+                     export its final ledger"
+                )));
+            }
+            let through = db.last_ledger_sequence(task_id)?;
+            db.conn.execute(
+                "INSERT INTO transfer_ledger_export (task_id, transfer_id, exported_through)
+                 VALUES (?, ?, ?)
+                 ON CONFLICT(task_id) DO UPDATE SET
+                    transfer_id = excluded.transfer_id,
+                    exported_through = excluded.exported_through,
+                    exported_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+                rusqlite::params![task_id, transfer_id, through],
+            )?;
+            Ok(Ok(through))
+        })
+    }
+
+    /// Refuse a ledger append to a task whose final ledger a transfer that
+    /// still holds it has exported: the entry would not reach the
+    /// destination, and the source closes once the destination acknowledges
+    /// what it received. A fence left by a transfer that no longer holds the
+    /// task refuses nothing.
+    pub(crate) fn refuse_ledger_after_transfer_export(
+        &self,
+        task_id: &str,
+    ) -> Result<(), rusqlite::Error> {
+        let fenced = match self
+            .conn
+            .query_row(
+                "SELECT transfer_id, exported_through FROM transfer_ledger_export
+                 WHERE task_id = ?",
+                [task_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+        {
+            Ok(fenced) => fenced,
+            // Schema-only fixtures that predate the table fence nothing.
+            Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+                if message.contains("no such table") =>
+            {
+                None
+            }
+            Err(error) => return Err(error),
+        };
+        let Some((transfer_id, through)) = fenced else {
+            return Ok(());
+        };
+        if self
+            .task_workflow_is_claimed_by_transfer(task_id)?
+            .as_deref()
+            != Some(&transfer_id)
+        {
+            return Ok(());
+        }
+        Err(rusqlite::Error::InvalidParameterName(format!(
+            "{TRANSFER_IN_PROGRESS}: task {task_id} is being transferred to another machine \
+             (transfer {transfer_id}), whose ledger was exported through entry {through}; \
+             nothing more can be recorded here"
+        )))
     }
 
     /// Everything row-shaped the transfer of `task_id` carries, read in one
@@ -350,8 +451,10 @@ impl Db {
                  FROM transition_commit WHERE task_id = ? ORDER BY created_at, run_id",
             )?
             .query_map([task_id], |row| {
+                let run_id: String = row.get(0)?;
                 Ok(CarriedTransitionCommit {
-                    run_id: row.get(0)?,
+                    // The id the run had where it ran, not this machine's key.
+                    run_id: origin_run_id(task_id, &run_id).to_string(),
                     stage: row.get(1)?,
                     exit: row.get(2)?,
                     state: row.get(3)?,
@@ -540,13 +643,45 @@ impl Db {
                     .result_id
                     .as_ref()
                     .map(|id| result_ids.get(id).cloned().unwrap_or_else(|| id.clone()));
+                // Keyed to this task, never under the bare origin run id: that
+                // id is the table's global key, and a task returning to a
+                // machine that still holds its closed original (A -> B -> A),
+                // or an unrelated local run with the same id, already owns it.
+                let run_id = carried_run_id(state.task_id, &commit.run_id);
+                let existing = db
+                    .conn
+                    .query_row(
+                        "SELECT task_id, state, result_id FROM transition_commit
+                         WHERE run_id = ?",
+                        [&run_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, Option<String>>(2)?,
+                            ))
+                        },
+                    )
+                    .optional()?;
+                if let Some((owner, recorded_state, recorded_result)) = existing {
+                    if owner == state.task_id
+                        && recorded_state == commit.state
+                        && recorded_result == result_id
+                    {
+                        continue;
+                    }
+                    return Err(rusqlite::Error::InvalidParameterName(format!(
+                        "transferred commit step {run_id} collides with a binding task {owner} \
+                         already holds; nothing was imported"
+                    )));
+                }
                 db.conn.execute(
-                    "INSERT OR IGNORE INTO transition_commit
+                    "INSERT INTO transition_commit
                      (run_id, task_id, stage, exit, state, result_id, committed_sha,
                       created_at, settled_at)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     rusqlite::params![
-                        commit.run_id,
+                        run_id,
                         state.task_id,
                         commit.stage,
                         commit.exit,
@@ -650,6 +785,37 @@ impl Db {
                 },
             )
             .optional()
+    }
+}
+
+/// A test hook run between the transfer guard's read and the caller's write,
+/// to prove no claim can commit in that gap.
+#[cfg(test)]
+pub(crate) mod after_transfer_guard {
+    use std::sync::Mutex;
+
+    type Hook = Box<dyn FnOnce() + Send>;
+    static HOOKS: Mutex<Vec<(String, Hook)>> = Mutex::new(Vec::new());
+
+    /// Run `hook` once, the next time the guard is read for `task_id`.
+    pub(crate) fn set(task_id: &str, hook: impl FnOnce() + Send + 'static) {
+        HOOKS
+            .lock()
+            .unwrap()
+            .push((task_id.to_string(), Box::new(hook)));
+    }
+
+    pub(super) fn run(task_id: &str) {
+        let hook = {
+            let mut hooks = HOOKS.lock().unwrap();
+            hooks
+                .iter()
+                .position(|(id, _)| id == task_id)
+                .map(|index| hooks.remove(index).1)
+        };
+        if let Some(hook) = hook {
+            hook();
+        }
     }
 }
 

@@ -90,7 +90,8 @@ fn source_task(db: &Db, path: &str) -> (String, String) {
         "task-src",
         LedgerEntryKind::Result,
         "run-review",
-        json!({"status": "needs_revision", "stage": "review"}),
+        json!({"status": "needs_revision", "stage": "review",
+               "budget": {"stage": "review", "spent": 1, "limit": 3}}),
         Some("the header overlaps the logo"),
         Some(json!({"mockup": {"type": "stored", "repoId": "repo-src",
                                "artifactId": ARTIFACT, "kind": "document"}})),
@@ -571,4 +572,85 @@ fn referenced_artifacts_cross_with_their_records_and_arrive_retained() {
     )
     .is_err());
     let _ = std::fs::remove_dir_all(&root);
+}
+
+fn projected(db: &Db, path: &str, task_id: &str) -> crate::task_store::rebuild::Projection {
+    let dir = task_store::task_dir_for(db, path, task_id).unwrap();
+    let directory = crate::task_store::rebuild::read_task_directory(&dir).unwrap();
+    crate::task_store::rebuild::project(&[directory])
+}
+
+/// Rebuilding a transferred task directory from disk projects every carried
+/// result and the budget it recorded — after one hop and after a second.
+#[test]
+fn a_transferred_directory_rebuilds_its_carried_results_and_budgets() {
+    let (source, source_path) = database("t9-rebuild-source", "repo-src");
+    let (build, review) = source_task(&source, &source_path);
+    let (document, metadata, _) = carried(&source, &source_path);
+    let (middle, middle_path) = database("t9-rebuild-middle", "repo-dst");
+    task(&middle, "repo-dst", "task-mid", "review");
+    import_into(
+        &middle,
+        &middle_path,
+        "task-mid",
+        "transfer-1",
+        document,
+        metadata.sha256,
+        SessionStart::Resumed,
+    );
+
+    let check = |projection: &crate::task_store::rebuild::Projection, task_id: &str| {
+        let run = |origin: &str| {
+            projection
+                .stage_runs
+                .iter()
+                .find(|run| {
+                    run.id == crate::db::transfer_task_state::carried_run_id(task_id, origin)
+                })
+                .unwrap_or_else(|| panic!("no run for {origin}: {:?}", projection.diagnostics))
+        };
+        assert_eq!(run(&build).stage, "build");
+        assert_eq!(run(&build).status, "succeeded");
+        assert_eq!(run(&review).stage, "review");
+        assert_eq!(run(&review).status, "failed");
+        assert_eq!(
+            run(&review).feedback.as_deref(),
+            Some("the header overlaps the logo")
+        );
+        assert!(
+            projection
+                .budgets
+                .iter()
+                .any(|budget| budget.task_id == task_id
+                    && budget.stage == "review"
+                    && budget.spent == 1),
+            "{:?}",
+            projection.budgets
+        );
+        assert!(
+            !projection
+                .diagnostics
+                .iter()
+                .any(|note| note.contains("names no run")),
+            "{:?}",
+            projection.diagnostics
+        );
+    };
+    check(&projected(&middle, &middle_path, "task-mid"), "task-mid");
+
+    let item = middle.get_pipeline_item("task-mid").unwrap().unwrap();
+    let second = collect(&middle, &middle_path, &item, "peer-mid").unwrap();
+    let bytes = encode(&second).unwrap();
+    let (last, last_path) = database("t9-rebuild-last", "repo-dst");
+    task(&last, "repo-dst", "task-last", "review");
+    import_into(
+        &last,
+        &last_path,
+        "task-last",
+        "transfer-2",
+        second,
+        crate::transfer_engine::payload::sha256_hex(&bytes),
+        SessionStart::Resumed,
+    );
+    check(&projected(&last, &last_path, "task-last"), "task-last");
 }

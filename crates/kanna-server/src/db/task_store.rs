@@ -328,6 +328,9 @@ impl Db {
                 }
                 return Ok(existing);
             }
+            // T9: nothing may be appended once a transfer holding the task
+            // has exported its final ledger.
+            db.refuse_ledger_after_transfer_export(entry.task_id)?;
             let sequence = match entry.reserved_sequence {
                 Some(sequence) => sequence,
                 None => db.next_ledger_sequence(entry.task_id)?,
@@ -848,18 +851,22 @@ impl Db {
         kind: &str,
         payload: &Value,
     ) -> Result<(), rusqlite::Error> {
-        self.refuse_while_transferring(task_id)?;
-        self.conn.execute(
-            "INSERT INTO task_ledger_continuation (task_id, operation_id, kind, payload)
-             VALUES (?, ?, ?, ?)
-             ON CONFLICT(task_id) DO UPDATE SET
-                operation_id = excluded.operation_id,
-                kind = excluded.kind,
-                payload = excluded.payload,
-                created_at = datetime('now')",
-            params![task_id, operation_id, kind, payload.to_string()],
-        )?;
-        Ok(())
+        // One transaction with the guard, so a finalization claim cannot
+        // commit between the check and the write (T9).
+        self.in_immediate_transaction_if_needed(|db| {
+            db.refuse_while_transferring(task_id)?;
+            db.conn.execute(
+                "INSERT INTO task_ledger_continuation (task_id, operation_id, kind, payload)
+                 VALUES (?, ?, ?, ?)
+                 ON CONFLICT(task_id) DO UPDATE SET
+                    operation_id = excluded.operation_id,
+                    kind = excluded.kind,
+                    payload = excluded.payload,
+                    created_at = datetime('now')",
+                params![task_id, operation_id, kind, payload.to_string()],
+            )?;
+            Ok(())
+        })
     }
 
     /// The task's run generation: the highest agent stage-run rowid, or 0

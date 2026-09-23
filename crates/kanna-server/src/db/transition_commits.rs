@@ -65,22 +65,26 @@ impl Db {
         stage: &str,
         exit: Option<&TransitionExit>,
     ) -> Result<(), rusqlite::Error> {
-        self.refuse_while_transferring(task_id)?;
         let exit = exit.map(|exit| exit.to_json().to_string());
-        // A new commit step supersedes any earlier one still requested (its
-        // run was replaced by a rerun and can never be current again), so a
-        // task never holds more than one requested commit step.
-        self.conn.execute(
-            "UPDATE transition_commit SET state = 'failed', settled_at = datetime('now')
-             WHERE task_id = ? AND state = 'requested' AND run_id <> ?",
-            rusqlite::params![task_id, run_id],
-        )?;
-        self.conn.execute(
-            "INSERT OR IGNORE INTO transition_commit (run_id, task_id, stage, exit)
-             VALUES (?, ?, ?, ?)",
-            rusqlite::params![run_id, task_id, stage, exit],
-        )?;
-        Ok(())
+        // One transaction with the guard, so a finalization claim cannot
+        // commit between the check and the write (T9).
+        self.in_immediate_transaction_if_needed(|db| {
+            db.refuse_while_transferring(task_id)?;
+            // A new commit step supersedes any earlier one still requested (its
+            // run was replaced by a rerun and can never be current again), so a
+            // task never holds more than one requested commit step.
+            db.conn.execute(
+                "UPDATE transition_commit SET state = 'failed', settled_at = datetime('now')
+                 WHERE task_id = ? AND state = 'requested' AND run_id <> ?",
+                rusqlite::params![task_id, run_id],
+            )?;
+            db.conn.execute(
+                "INSERT OR IGNORE INTO transition_commit (run_id, task_id, stage, exit)
+                 VALUES (?, ?, ?, ?)",
+                rusqlite::params![run_id, task_id, stage, exit],
+            )?;
+            Ok(())
+        })
     }
 
     /// Move a requested commit step from the run a restart replaced to its
@@ -126,6 +130,18 @@ impl Db {
                 },
             )
             .optional()
+    }
+
+    /// The commit step `run_id` runs for `task_id`. A row another task holds
+    /// under the same id (a carried binding, T9) is not this run's.
+    pub(crate) fn task_transition_commit(
+        &self,
+        task_id: &str,
+        run_id: &str,
+    ) -> Result<Option<TransitionCommit>, rusqlite::Error> {
+        Ok(self
+            .transition_commit(run_id)?
+            .filter(|commit| commit.task_id == task_id))
     }
 
     /// Settle a requested commit step with its run's result, inside the

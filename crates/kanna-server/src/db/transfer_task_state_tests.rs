@@ -1,4 +1,4 @@
-use super::TRANSFER_IN_PROGRESS;
+use super::{carried_run_id, CarriedTaskRows, CarriedTransitionCommit, TRANSFER_IN_PROGRESS};
 use crate::db::Db;
 use serde_json::json;
 
@@ -293,4 +293,297 @@ fn carried_rows_round_trip_under_a_new_task_id() {
     assert!(destination
         .import_carried_task_rows(&other, &rows, &ids)
         .is_err());
+}
+
+fn settled_commit(run_id: &str) -> CarriedTransitionCommit {
+    CarriedTransitionCommit {
+        run_id: run_id.into(),
+        stage: "build".into(),
+        exit: None,
+        state: "succeeded".into(),
+        result_id: None,
+        committed_sha: Some("abc123".into()),
+        created_at: "2026-09-23 02:00:00".into(),
+        settled_at: Some("2026-09-23 02:00:00".into()),
+    }
+}
+
+fn import(
+    db: &Db,
+    task_id: &str,
+    transfer_id: &str,
+    rows: &CarriedTaskRows,
+) -> Result<(), rusqlite::Error> {
+    let links = rows.links.clone();
+    db.import_carried_task_rows(
+        &super::NewTransferredTaskState {
+            task_id,
+            transfer_id,
+            source_peer_id: "peer",
+            source_task_id: "source",
+            ownership_generation: rows.ownership_generation + 1,
+            state_sha256: transfer_id,
+            links: &links,
+            session_start: "resumed",
+            fresh_start_reason: None,
+        },
+        rows,
+        &Default::default(),
+    )
+}
+
+#[test]
+fn a_task_returning_to_its_first_machine_keeps_its_commit_step_bindings() {
+    // Machine A: the original task still holds its binding under run r1.
+    let (a, _) = test_db("t9-return-a");
+    task(&a, "task-a1", "review");
+    a.execute_test_sql(
+        "INSERT INTO transition_commit (run_id, task_id, stage, state, committed_sha)
+         VALUES ('r1', 'task-a1', 'build', 'succeeded', 'abc123');",
+    )
+    .unwrap();
+    let from_a = a.export_carried_task_rows("task-a1", "peer-a").unwrap();
+    assert_eq!(from_a.transition_commits[0].run_id, "r1");
+
+    // Machine B holds it under a key of its own and exports the origin id.
+    let (b, _) = test_db("t9-return-b");
+    task(&b, "task-b", "review");
+    import(&b, "task-b", "transfer-1", &from_a).unwrap();
+    assert!(b
+        .task_transition_commit("task-b", &carried_run_id("task-b", "r1"))
+        .unwrap()
+        .is_some());
+    let from_b = b.export_carried_task_rows("task-b", "peer-b").unwrap();
+    assert_eq!(from_b.transition_commits[0].run_id, "r1");
+
+    // Back on A as a new task: the closed original's row does not swallow it.
+    a.set_test_pipeline_item_closed_at("task-a1", "2026-09-24 00:00:00")
+        .unwrap();
+    task(&a, "task-a2", "review");
+    import(&a, "task-a2", "transfer-2", &from_b).unwrap();
+    let returned = a.export_carried_task_rows("task-a2", "peer-a").unwrap();
+    assert_eq!(returned.transition_commits.len(), 1);
+    assert_eq!(returned.transition_commits[0].run_id, "r1");
+    assert_eq!(
+        returned.transition_commits[0].committed_sha.as_deref(),
+        Some("abc123")
+    );
+    let bound = a
+        .task_transition_commit("task-a2", &carried_run_id("task-a2", "r1"))
+        .unwrap()
+        .expect("binding held by the returned task");
+    assert_eq!(bound.state, "succeeded");
+    assert_eq!(
+        a.task_transition_commit("task-a1", "r1")
+            .unwrap()
+            .unwrap()
+            .task_id,
+        "task-a1"
+    );
+}
+
+#[test]
+fn a_carried_binding_never_touches_a_local_run_with_the_same_id() {
+    let (db, _) = test_db("t9-binding-collision");
+    task(&db, "task-local", "build");
+    task(&db, "task-d", "review");
+    // A local run r1 whose commit step is still requested.
+    db.execute_test_sql(
+        "INSERT INTO transition_commit (run_id, task_id, stage) VALUES ('r1', 'task-local', 'build');",
+    )
+    .unwrap();
+    let rows = CarriedTaskRows {
+        transition_commits: vec![settled_commit("r1")],
+        ..Default::default()
+    };
+    import(&db, "task-d", "transfer-1", &rows).unwrap();
+    let local = db
+        .task_transition_commit("task-local", "r1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(local.state, "requested", "the local run is unaffected");
+    assert!(db.task_transition_commit("task-d", "r1").unwrap().is_none());
+    // A lookup for one task never answers with another task's binding.
+    assert!(db
+        .task_transition_commit("task-local", &carried_run_id("task-d", "r1"))
+        .unwrap()
+        .is_none());
+
+    // A key another task already holds is refused, never ignored.
+    task(&db, "task-e", "review");
+    db.execute_test_sql(&format!(
+        "INSERT INTO transition_commit (run_id, task_id, stage, state)
+         VALUES ('{}', 'task-local', 'build', 'failed');",
+        carried_run_id("task-e", "r2")
+    ))
+    .unwrap();
+    let colliding = CarriedTaskRows {
+        transition_commits: vec![settled_commit("r2")],
+        ..Default::default()
+    };
+    let refused = import(&db, "task-e", "transfer-2", &colliding).unwrap_err();
+    assert!(refused.to_string().contains("collides"), "{refused}");
+    assert!(db.transferred_task_state("task-e").unwrap().is_none());
+}
+
+/// Every guarded writer holds its transaction from the guard's read to its
+/// write, so a finalization claim attempted in between waits, and then is
+/// refused by what the writer left pending — never both.
+#[test]
+fn a_claim_attempted_between_the_guard_and_the_write_cannot_land_beside_it() {
+    type Write = fn(&Db, &str) -> Result<(), rusqlite::Error>;
+    let writers: [(&str, Write); 3] = [
+        ("continuation", |db, task| {
+            db.put_ledger_continuation(task, "op-1", "stage_completion", &json!({}))
+        }),
+        ("lifecycle", |db, task| {
+            db.insert_lifecycle_operation_intent("run-1", task, "stage_spawn", "prepared", "{}")
+        }),
+        ("commit-step", |db, task| {
+            db.insert_transition_commit("run-2", task, "build", None)
+        }),
+    ];
+    for (label, write) in writers {
+        let (db, path) = test_db(&format!("t9-guard-gap-{label}"));
+        let task_id = format!("task-gap-{label}");
+        task(&db, &task_id, "build");
+        outgoing_transfer(&db, "transfer-1", &task_id);
+        let (claim_path, claim_task) = (path.clone(), task_id.clone());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        super::after_transfer_guard::set(&task_id, move || {
+            let claimant = std::thread::spawn(move || {
+                Db::open(&claim_path)
+                    .unwrap()
+                    .claim_task_workflow_for_transfer_finalization("transfer-1", &claim_task)
+                    .unwrap()
+            });
+            // Long enough for an unguarded claim to commit in the gap.
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            sender.send(claimant).unwrap();
+        });
+        write(&db, &task_id).unwrap_or_else(|error| panic!("{label}: {error}"));
+        let claimed = receiver.recv().unwrap().join().unwrap();
+        let refusal = claimed.expect_err(label);
+        assert!(
+            refusal.contains("source task untouched"),
+            "{label}: {refusal}"
+        );
+        assert_eq!(
+            db.task_workflow_is_claimed_by_transfer(&task_id).unwrap(),
+            None
+        );
+    }
+}
+
+#[test]
+fn a_claimed_task_gains_no_join_and_no_edge_at_either_end() {
+    let (db, _) = test_db("t9-claim-fences-links");
+    task(&db, "task-a", "build");
+    task(&db, "task-b", "build");
+    db.pin_test_stages("task-a", &["build"]);
+    db.pin_test_stages("task-b", &["build"]);
+    outgoing_transfer(&db, "transfer-1", "task-a");
+    db.claim_task_workflow_for_transfer_finalization("transfer-1", "task-a")
+        .unwrap()
+        .unwrap();
+
+    let join = db
+        .create_task_join(&crate::db::NewTaskJoin {
+            id: "join-1".into(),
+            parent_task_id: "task-a".into(),
+            parent_stage: Some("build".into()),
+            parent_run_id: None,
+            base_sha: "abc".into(),
+            base_branch: None,
+            members: vec![crate::db::NewJoinMember {
+                child_task_id: "child-1".into(),
+                spec: "{}".into(),
+            }],
+        })
+        .unwrap_err();
+    assert!(join.to_string().contains(TRANSFER_IN_PROGRESS), "{join}");
+    let edge = |dependent: &str, upstream: &str| {
+        db.insert_stage_edges(
+            dependent,
+            &[crate::db::NewStageEdge {
+                upstream_task_id: upstream.into(),
+                upstream_stage: "build".into(),
+                dependent_stage: None,
+            }],
+        )
+        .unwrap_err()
+        .to_string()
+    };
+    let onto_upstream = edge("task-b", "task-a");
+    assert!(
+        onto_upstream.contains(TRANSFER_IN_PROGRESS),
+        "{onto_upstream}"
+    );
+    let from_dependent = edge("task-a", "task-b");
+    assert!(
+        from_dependent.contains(TRANSFER_IN_PROGRESS),
+        "{from_dependent}"
+    );
+    assert_eq!(blocker(&db, "task-a"), None, "nothing was recorded");
+}
+
+#[test]
+fn nothing_is_appended_to_a_ledger_after_its_final_export() {
+    let (db, _) = test_db("t9-ledger-export-fence");
+    task(&db, "task-a", "build");
+    let append = |db: &Db, source: &str| {
+        db.enqueue_ledger_entry(crate::db::task_store::NewLedgerEntry {
+            task_id: "task-a",
+            kind: crate::db::task_store::LedgerEntryKind::Result,
+            operation_id: None,
+            source_kind: "test",
+            source_id: source,
+            source_origin: None,
+            historical: false,
+            recorded_at: None,
+            run_id: None,
+            declared_role: None,
+            channel_identity: &crate::mutation_provenance::ChannelIdentity::Unknown,
+            body: json!({"status": "blocked", "stage": "build"}),
+            message: Some("late"),
+            hold_events_after: None,
+            reserved_sequence: None,
+        })
+    };
+    append(&db, "before").unwrap();
+    outgoing_transfer(&db, "transfer-1", "task-a");
+    // Only the transfer holding the task may fence its ledger.
+    assert!(db
+        .fence_ledger_for_transfer_export("task-a", "transfer-1")
+        .unwrap()
+        .is_err());
+    db.claim_task_workflow_for_transfer_finalization("transfer-1", "task-a")
+        .unwrap()
+        .unwrap();
+    // Entries recorded while the agent wraps up, before the final export,
+    // are still accepted and exported.
+    append(&db, "wrap-up").unwrap();
+    assert_eq!(
+        db.fence_ledger_for_transfer_export("task-a", "transfer-1")
+            .unwrap()
+            .unwrap(),
+        2
+    );
+    let refused = append(&db, "after-export").unwrap_err();
+    assert!(
+        refused.to_string().contains(TRANSFER_IN_PROGRESS),
+        "{refused}"
+    );
+    assert_eq!(
+        db.last_ledger_sequence("task-a").unwrap(),
+        2,
+        "nothing was lost or added"
+    );
+    // A replay of an entry already recorded is still answered.
+    append(&db, "wrap-up").unwrap();
+
+    // A transfer that ended releases the ledger.
+    db.fail_outgoing_task_transfer("transfer-1", "destination refused")
+        .unwrap();
+    append(&db, "after-failure").unwrap();
 }
