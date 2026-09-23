@@ -687,3 +687,34 @@ async fn a_parked_completion_waits_for_a_join_created_after_it() {
         .unwrap();
     assert_eq!(db.parents_released_by_joins().unwrap(), vec![PARENT]);
 }
+
+/// The close guard is the same for a release-workflow task (T14) as for any
+/// other: a release parent waiting on a join member is not closed.
+#[tokio::test]
+async fn a_release_task_waiting_on_a_join_is_not_closed() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let fixture = join_fixture("release-close");
+    let release: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../../.kanna/workflows/release.json")).unwrap();
+    let first_stage = release["stages"][0]["name"].as_str().unwrap().to_string();
+    let db = fixture.db();
+    db.update_test_pipeline_item_pipeline_def(PARENT, &release.to_string())
+        .unwrap();
+    db.update_pipeline_item_stage(PARENT, &first_stage).unwrap();
+    record_uncreated_member(&fixture, "c0ffee05");
+
+    let (status, body) = fixture
+        .post(
+            &format!("/v1/tasks/{PARENT}/actions/close"),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.contains("c0ffee05"), "{body}");
+    assert!(db
+        .get_pipeline_item(PARENT)
+        .unwrap()
+        .unwrap()
+        .closed_at
+        .is_none());
+}
