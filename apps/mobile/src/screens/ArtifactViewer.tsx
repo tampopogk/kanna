@@ -21,10 +21,9 @@ import type {
   ArtifactFileContent
 } from "../lib/api/types";
 import {
-  artifactNavigationPath,
-  buildArtifactDocument,
-  isolateArtifactDocument,
-  type ArtifactDocument
+  buildArtifactSite,
+  isolateArtifactSite,
+  type ArtifactSite
 } from "./buildArtifactDocument";
 
 /**
@@ -37,14 +36,16 @@ import {
  *
  * Shared HTML is untrusted, and its scripts run. The WebView therefore gets no
  * native bridge (no `onMessage`, no injected script), no storage, no cookies,
- * no file access and no new windows, and it refuses every navigation: an
- * in-tree link arrives as `kanna-artifact:<path>` and the host opens that file
- * itself. That callback is not the barrier on its own: on Android the library
- * allows a navigation the JS thread has not answered within 250 ms, so the page
- * runs inside a sandboxed frame of a script-free host document
- * (`isolateArtifactDocument`), where the engine refuses top-level navigation
- * and new windows and the host policy refuses any frame navigation but an
- * in-tree link. The whitelist is `*` on purpose — react-native-webview hands any URL
+ * no file access and no new windows, and its callback refuses every
+ * navigation. That callback is not the barrier on its own: on Android the
+ * library allows a navigation the JS thread has not answered within 250 ms. So
+ * the page runs in a frame sandboxed with `allow-scripts` alone inside a
+ * trusted host document (`isolateArtifactSite`): the engine refuses the page's
+ * top-level navigation and new windows, the policy refuses any navigation of
+ * the frame, and an in-tree link is a request to the host document, which
+ * shows that file of the same tree from its own map. No in-tree navigation
+ * passes through the native callback. The whitelist is `*` on purpose —
+ * react-native-webview hands any URL
  * that fails the whitelist to `Linking.openURL`, which would let a page open
  * Safari or another app.
  */
@@ -68,7 +69,7 @@ type DetailState =
 type DocumentState =
   | { status: "idle" }
   | { status: "loading"; key: string }
-  | { status: "ready"; key: string; document: ArtifactDocument }
+  | { status: "ready"; key: string; document: ArtifactSite }
   | { status: "error"; key: string; message: string };
 
 interface FileTarget {
@@ -97,15 +98,9 @@ function lineOf(position: string | undefined): number | undefined {
   return Number.isInteger(line) && line > 0 ? line : undefined;
 }
 
-export function shouldStartArtifactLoad(
-  request: Pick<WebViewNavigation, "url">,
-  open: (path: string) => void
-): boolean {
-  // The host document itself, and the sandboxed frame it hosts the page in.
-  if (request.url === "about:blank" || request.url === "about:srcdoc") return true;
-  const path = artifactNavigationPath(request.url);
-  if (path) open(path);
-  return false;
+/** The host document itself and the frame document it sets; nothing else loads. */
+export function shouldStartArtifactLoad(request: Pick<WebViewNavigation, "url">): boolean {
+  return request.url === "about:blank" || request.url === "about:srcdoc";
 }
 
 const UNAVAILABLE_TITLES: Record<Unavailable, string> = {
@@ -193,7 +188,7 @@ export function ArtifactViewer({
     let active = true;
     const artifactId = currentId;
     setDocumentState({ status: "loading", key: documentKey });
-    void buildArtifactDocument({
+    void buildArtifactSite({
       path: filePath,
       initialLine: target?.initialLine,
       readFile: (path) => readFileRef.current(repoId, artifactId, path)
@@ -241,6 +236,10 @@ export function ArtifactViewer({
 
   const visibleDocument =
     documentState.status !== "idle" && documentState.key === documentKey ? documentState : null;
+  const hostDocument = useMemo(
+    () => (documentState.status === "ready" ? isolateArtifactSite(documentState.document) : ""),
+    [documentState]
+  );
 
   return (
     <Modal animationType="slide" onRequestClose={onClose} presentationStyle="fullScreen" visible>
@@ -375,12 +374,12 @@ export function ArtifactViewer({
                 javaScriptEnabled
                 mixedContentMode="never"
                 onShouldStartLoadWithRequest={(request: WebViewNavigation) =>
-                  shouldStartArtifactLoad(request, (path) => setTarget({ path }))
+                  shouldStartArtifactLoad(request)
                 }
                 originWhitelist={["*"]}
                 setSupportMultipleWindows={false}
                 sharedCookiesEnabled={false}
-                source={{ html: isolateArtifactDocument(visibleDocument.document.html) }}
+                source={{ html: hostDocument }}
                 style={styles.webView}
                 testID="artifact-viewer-webview"
                 thirdPartyCookiesEnabled={false}

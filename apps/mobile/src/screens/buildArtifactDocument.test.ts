@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { ArtifactFileContent } from "../lib/api/types";
 import {
   ARTIFACT_DOCUMENT_POLICY,
-  artifactNavigationPath,
   buildArtifactDocument,
+  buildArtifactSite,
   decodeBase64,
   decodeUtf8,
   encodeBase64,
@@ -99,7 +99,9 @@ describe("buildArtifactDocument", () => {
     expect(html).toContain(`style="background-image:url(&quot;data:image/png;base64,`);
 
     // In-tree page links are handed to the host; the rest are left for the WebView to refuse.
-    expect(html).toContain(`<a id="about" href="kanna-artifact:pages/about.html#team">`);
+    // An in-tree link becomes a request to the host, never a navigation.
+    expect(html).toContain(`<a id="about" href="#kanna-artifact=pages/about.html">`);
+    expect(document.links).toEqual(["pages/about.html"]);
     expect(html).toContain(`<a id="external" href="https://example.com/">`);
     expect(html).toContain(`<a id="fragment" href="#top">`);
     expect(html).toContain(`<img id="remote" src="https://example.com/tracker.png">`);
@@ -142,6 +144,21 @@ describe("buildArtifactDocument", () => {
     expect(html).toContain("const targetLine = 3;");
   });
 
+  it("renders every in-tree page the entry reaches by links, reading each file once", async () => {
+    const { readFile, reads } = tree({
+      "index.html": `<a href="a.html">a</a><a href="gone.html">gone</a><a href="https://example.com/">out</a>`,
+      "a.html": `<link rel="stylesheet" href="s.css"><a href="sub/b.html">b</a><a href="index.html">home</a>`,
+      "sub/b.html": `<link rel="stylesheet" href="../s.css"><a href="../a.html">back</a>`,
+      "s.css": "h1{}"
+    });
+    const site = await buildArtifactSite({ path: "index.html", readFile });
+    expect([...site.pages.keys()]).toEqual(["index.html", "a.html", "sub/b.html"]);
+    expect(site.entry).toBe("index.html");
+    expect(site.missing).toEqual(["gone.html"]);
+    expect(reads.filter((path) => path === "s.css")).toHaveLength(1);
+    expect(site.pages.get("sub/b.html")).toContain(`href="#kanna-artifact=a.html"`);
+  });
+
   it("resolves references the way a browser does under the tree root, and never outside it", () => {
     expect(resolveArtifactReference("pages/about.html", "../css/site.css")).toBe("css/site.css");
     expect(resolveArtifactReference("index.html", "./img/a%20b.png?v=2#x")).toBe("img/a b.png");
@@ -151,9 +168,6 @@ describe("buildArtifactDocument", () => {
     expect(resolveArtifactReference("index.html", "//cdn.example/x.js")).toBeNull();
     expect(resolveArtifactReference("index.html", "javascript:alert(1)")).toBeNull();
     expect(resolveArtifactReference("index.html", "#only")).toBeNull();
-    expect(artifactNavigationPath("kanna-artifact:pages/about.html#team")).toBe("pages/about.html");
-    expect(artifactNavigationPath("kanna-artifact:../outside.html")).toBeNull();
-    expect(artifactNavigationPath("https://example.com/")).toBeNull();
   });
 
   it("round-trips base64 and UTF-8 without platform codecs", () => {

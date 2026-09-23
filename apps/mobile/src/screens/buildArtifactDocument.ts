@@ -11,9 +11,9 @@ import { escapeTaskFileHtml } from "./taskFileSyntaxHighlight";
  * reach that listener, so it reads files by exact tree id and puts the page
  * together itself: every relative reference the page makes into its own tree
  * — stylesheets, scripts, images, fonts, media, and the `url()`s inside
- * stylesheets — is read and inlined as a `data:` URL. Links to another page of
- * the same tree become `kanna-artifact:<path>` so the host, not the page,
- * decides what opens next; the WebView refuses every other navigation.
+ * stylesheets — is read and inlined as a `data:` URL. A link to another file of
+ * the same tree becomes a fragment link that asks the host document to show
+ * that file (see `isolateArtifactSite`); the page never navigates for it.
  *
  * The page gets a Content-Security-Policy with no network at all
  * (`connect-src 'none'` and only `data:` subresources), no frames, no forms
@@ -21,7 +21,11 @@ import { escapeTaskFileHtml } from "./taskFileSyntaxHighlight";
  * the artifact declares can loosen it.
  */
 
-export const ARTIFACT_NAVIGATION_SCHEME = "kanna-artifact:";
+/** Fragment prefix of a rewritten in-tree link; the rest is the encoded path. */
+export const ARTIFACT_LINK_PREFIX = "#kanna-artifact=";
+
+/** The one message a page may send its host: show another file of this tree. */
+export const ARTIFACT_NAVIGATE_MESSAGE = "kanna-artifact-navigate";
 
 export const ARTIFACT_DOCUMENT_POLICY = [
   "default-src 'none'",
@@ -43,6 +47,9 @@ export const ARTIFACT_DOCUMENT_POLICY = [
 /** Bounds on what one rendered page may pull in; beyond them a reference is left unresolved. */
 export const MAX_INLINED_FILES = 200;
 export const MAX_INLINED_BYTES = 8 * 1024 * 1024;
+/** Bounds on how many linked files, and how much rendered HTML, one open carries. */
+export const MAX_LINKED_PAGES = 24;
+export const MAX_SITE_BYTES = 24 * 1024 * 1024;
 const MAX_STYLESHEET_DEPTH = 4;
 
 export type ReadArtifactDocumentFile = (path: string) => Promise<ArtifactFileContent>;
@@ -60,6 +67,8 @@ export interface ArtifactDocument {
   missing: string[];
   /** References left unresolved because a bound was reached or the file was refused. */
   skipped: string[];
+  /** In-tree files this page links to, resolved against its own path. */
+  links: string[];
 }
 
 const BASE64_ALPHABET =
@@ -224,6 +233,7 @@ function dataUrl(mediaType: string, base64: string): string {
 class ArtifactPageBuilder {
   readonly missing = new Set<string>();
   readonly skipped = new Set<string>();
+  readonly links = new Set<string>();
   private readonly reads = new Map<string, Promise<ArtifactFileContent | null>>();
   private inlinedBytes = 0;
 
@@ -306,7 +316,8 @@ class ArtifactPageBuilder {
         rewritten = candidates.join(", ");
       } else if (attribute === "href" && (lowerTag === "a" || lowerTag === "area")) {
         const path = resolveArtifactReference(from, value);
-        rewritten = path ? `${ARTIFACT_NAVIGATION_SCHEME}${encodeArtifactPath(path)}${fragmentOf(value)}` : null;
+        if (path) this.links.add(path);
+        rewritten = path ? `${ARTIFACT_LINK_PREFIX}${encodeArtifactPath(path)}` : null;
       } else if (attribute === "src" || attribute === "href" || attribute === "poster" || attribute === "data") {
         const inlined = await this.inline(from, value, 0);
         rewritten = inlined === value ? null : inlined;
@@ -332,7 +343,7 @@ class ArtifactPageBuilder {
     });
     const policy = `<meta http-equiv="Content-Security-Policy" content="${ARTIFACT_DOCUMENT_POLICY}">`;
     const withoutDoctype = body.replace(/^\s*<!doctype[^>]*>/i, "");
-    return `<!doctype html>\n${policy}\n<meta name="viewport" content="width=device-width, initial-scale=1">\n${withoutDoctype}`;
+    return `<!doctype html>\n${policy}\n<meta name="viewport" content="width=device-width, initial-scale=1">\n${ARTIFACT_PAGE_LINK_SCRIPT}\n${withoutDoctype}`;
   }
 }
 
@@ -396,54 +407,129 @@ export async function buildArtifactDocument({
   } else {
     html = shell(entry.path, `<p>${escapeTaskFileHtml(entry.path)} (${escapeTaskFileHtml(entry.mediaType)}) cannot be previewed here.</p>`);
   }
-  return { html, missing: [...builder.missing], skipped: [...builder.skipped] };
+  return {
+    html,
+    missing: [...builder.missing],
+    skipped: [...builder.skipped],
+    links: [...builder.links]
+  };
 }
 
-/** The in-tree path a `kanna-artifact:` navigation names, or null for anything else. */
-export function artifactNavigationPath(url: string): string | null {
-  if (!url.startsWith(ARTIFACT_NAVIGATION_SCHEME)) return null;
-  const reference = url.slice(ARTIFACT_NAVIGATION_SCHEME.length).split("#", 1)[0];
-  return resolveArtifactReference("", reference);
+/**
+ * Registered first in every HTML page, in the page's own sandboxed context: a
+ * click on a rewritten in-tree link asks the parent to show that path. This is
+ * a request, not a navigation; the host decides.
+ */
+const ARTIFACT_PAGE_LINK_SCRIPT = `<script>(function(){var P=${JSON.stringify(ARTIFACT_LINK_PREFIX)};document.addEventListener("click",function(e){var n=e.target;while(n&&n.nodeName!=="A"&&n.nodeName!=="AREA")n=n.parentNode;if(!n||!n.getAttribute)return;var h=n.getAttribute("href")||"";if(h.indexOf(P)!==0)return;e.preventDefault();var p;try{p=decodeURIComponent(h.slice(P.length))}catch(x){return}parent.postMessage({kind:${JSON.stringify(ARTIFACT_NAVIGATE_MESSAGE)},path:p},"*")},true)})();</script>`;
+
+export interface ArtifactSite {
+  /** The file opened first. */
+  entry: string;
+  /** Every rendered file the entry can reach by in-tree links, by path. */
+  pages: Map<string, string>;
+  missing: string[];
+  skipped: string[];
+}
+
+/**
+ * Render the file at `path` and every file of the same tree it links to,
+ * transitively, within MAX_LINKED_PAGES and MAX_SITE_BYTES. The host document
+ * can show exactly these files and nothing else.
+ */
+export async function buildArtifactSite({
+  path,
+  readFile,
+  initialLine
+}: ArtifactDocumentOptions): Promise<ArtifactSite> {
+  const reads = new Map<string, Promise<ArtifactFileContent>>();
+  const cachedRead: ReadArtifactDocumentFile = (file) => {
+    let pending = reads.get(file);
+    if (!pending) {
+      pending = readFile(file);
+      reads.set(file, pending);
+    }
+    return pending;
+  };
+  const pages = new Map<string, string>();
+  const missing = new Set<string>();
+  const skipped = new Set<string>();
+  const queue = [path];
+  const seen = new Set(queue);
+  let bytes = 0;
+  while (queue.length > 0) {
+    const next = queue.shift()!;
+    let document: ArtifactDocument;
+    try {
+      document = await buildArtifactDocument({
+        path: next,
+        readFile: cachedRead,
+        initialLine: next === path ? initialLine : undefined
+      });
+    } catch (error) {
+      if (next === path) throw error;
+      missing.add(next);
+      continue;
+    }
+    if (next !== path && bytes + document.html.length > MAX_SITE_BYTES) {
+      skipped.add(next);
+      continue;
+    }
+    bytes += document.html.length;
+    pages.set(next, document.html);
+    document.missing.forEach((file) => missing.add(file));
+    document.skipped.forEach((file) => skipped.add(file));
+    for (const link of document.links) {
+      if (seen.has(link)) continue;
+      seen.add(link);
+      if (seen.size > MAX_LINKED_PAGES) {
+        skipped.add(link);
+        continue;
+      }
+      queue.push(link);
+    }
+  }
+  return { entry: path, pages, missing: [...missing], skipped: [...skipped] };
 }
 
 function encodeArtifactPath(path: string): string {
   return path.split("/").map(encodeURIComponent).join("/");
 }
 
-/**
- * The policy of the host document that frames an artifact page. A `srcdoc`
- * frame inherits it, so it is the page's policy except that the host may
- * navigate its one child frame to an in-tree `kanna-artifact:` link.
- */
-export const ARTIFACT_HOST_POLICY = ARTIFACT_DOCUMENT_POLICY
-  .replace("frame-src 'none'", `frame-src ${ARTIFACT_NAVIGATION_SCHEME}`)
-  .replace("child-src 'none'", `child-src ${ARTIFACT_NAVIGATION_SCHEME}`);
-
 /** Sandbox flags for the frame that runs an artifact page: scripts, nothing else. */
 export const ARTIFACT_FRAME_SANDBOX = "allow-scripts";
 
 /**
- * Put an artifact page inside a script-free host document, in a frame
- * sandboxed with `allow-scripts` alone.
- *
- * The WebView's navigation callback cannot be the only thing standing between
- * a page and a top-level navigation: on Android, react-native-webview allows a
- * navigation whenever the JS thread has not answered within 250 ms. Inside
- * this frame the engine itself refuses the page's attempts to navigate the
- * top-level document, open a window or submit a form, without asking the JS
- * thread. The frame can only navigate itself, and the host policy lets that
- * happen only for `kanna-artifact:` links, which carry no network request.
+ * The trusted host document's own script. It holds the rendered files of the
+ * tree and, when its frame asks, shows one of them by replacing the frame's
+ * document. It accepts a request only from its own frame, only of the one
+ * kind, and only for a path that is a key of the map; anything else is
+ * ignored. It never navigates, and it has no bridge to reach: the WebView
+ * gets no `onMessage`.
  */
-export function isolateArtifactDocument(page: string): string {
-  const srcdoc = page
-    .replace(/&/g, "&amp;")
-    .replace(/"/g, "&quot;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+const ARTIFACT_HOST_SCRIPT = `(function(){var pages=new Map(JSON.parse(document.getElementById("kanna-artifact-pages").textContent));var frame=document.getElementById("kanna-artifact-frame");function show(path){frame.setAttribute("data-path",path);frame.srcdoc=pages.get(path)}window.addEventListener("message",function(e){if(e.source!==frame.contentWindow)return;var d=e.data;if(!d||typeof d!=="object"||d.kind!==${JSON.stringify(ARTIFACT_NAVIGATE_MESSAGE)}||typeof d.path!=="string"||!pages.has(d.path))return;show(d.path)});show(frame.getAttribute("data-entry"))})();`;
+
+/**
+ * Put an artifact's rendered files inside a trusted host document, the page in
+ * a frame sandboxed with `allow-scripts` alone.
+ *
+ * The WebView's navigation callback cannot be the barrier against top-level
+ * navigation: on Android, react-native-webview allows a navigation the JS
+ * thread has not answered within 250 ms. Inside this frame the engine itself
+ * refuses the page's attempts to navigate the top-level document, open a
+ * window or submit a form. The host policy is the page's policy, so the frame
+ * cannot navigate itself either (`frame-src 'none'`). In-tree links work by
+ * asking the host, which swaps the frame's document from its own map.
+ */
+export function isolateArtifactSite(site: ArtifactSite): string {
+  // JSON inside a script element: `<` escaped so no `</script>` can end it.
+  const pages = JSON.stringify([...site.pages.entries()]).replace(/</g, "\\u003c");
+  const entry = escapeTaskFileHtml(site.entry);
   return `<!doctype html>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="${ARTIFACT_HOST_POLICY}">
+<meta http-equiv="Content-Security-Policy" content="${ARTIFACT_DOCUMENT_POLICY}">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>html,body{margin:0;height:100%;background:#fff}iframe{display:block;border:0;width:100%;height:100%}</style>
-<iframe sandbox="${ARTIFACT_FRAME_SANDBOX}" referrerpolicy="no-referrer" srcdoc="${srcdoc}"></iframe>`;
+<iframe id="kanna-artifact-frame" sandbox="${ARTIFACT_FRAME_SANDBOX}" referrerpolicy="no-referrer" data-entry="${entry}"></iframe>
+<script type="application/json" id="kanna-artifact-pages">${pages}</script>
+<script>${ARTIFACT_HOST_SCRIPT}</script>`;
 }

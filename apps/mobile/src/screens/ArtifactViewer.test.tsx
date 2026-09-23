@@ -151,16 +151,47 @@ function webView(): ReactTestInstance {
   return view;
 }
 
-/** The artifact page the host document frames, decoded from its `srcdoc`. */
+interface HostRun {
+  frame: { contentWindow: object; srcdoc: string; attributes: Record<string, string> };
+  /** Deliver a message to the host, as if sent by `source` (the frame by default). */
+  post(data: unknown, source?: object): void;
+}
+
+/**
+ * Run the host document's own script against a stand-in window and document:
+ * the pages it carries, the frame it fills, and the message listener it
+ * installs. Only the script the WebView would execute is used.
+ */
+function runHost(host = webView().props.source.html as string): HostRun {
+  const pagesText = host.match(/<script type="application\/json" id="kanna-artifact-pages">([\s\S]*?)<\/script>/)?.[1];
+  const scripts = [...host.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+  const entry = host.match(/<iframe [^>]*data-entry="([^"]*)"/)?.[1];
+  expect(pagesText).toBeDefined();
+  expect(scripts).toHaveLength(1);
+  expect(entry).toBeDefined();
+  const frame = {
+    contentWindow: {},
+    srcdoc: "",
+    attributes: { "data-entry": entry! } as Record<string, string>,
+    getAttribute(name: string) { return this.attributes[name] ?? null; },
+    setAttribute(name: string, value: string) { this.attributes[name] = value; }
+  };
+  const listeners: Array<(event: { data: unknown; source: object }) => void> = [];
+  const hostWindow = { addEventListener: (_type: string, listener: (typeof listeners)[number]) => listeners.push(listener) };
+  const hostDocument = {
+    getElementById: (id: string) =>
+      id === "kanna-artifact-pages" ? { textContent: pagesText } : id === "kanna-artifact-frame" ? frame : null
+  };
+  new Function("window", "document", scripts[0])(hostWindow, hostDocument);
+  return {
+    frame,
+    post: (data, source = frame.contentWindow) => listeners.forEach((listener) => listener({ data, source }))
+  };
+}
+
+/** The page the host shows first. */
 function framedPage(): string {
-  const host = webView().props.source.html as string;
-  const srcdoc = host.match(/<iframe [^>]*srcdoc="([^"]*)"><\/iframe>/)?.[1];
-  expect(srcdoc).toBeDefined();
-  return srcdoc!
-    .replace(/&quot;/g, '"')
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&");
+  return runHost().frame.srcdoc;
 }
 
 function inlinedStylesheet(html: string): string {
@@ -180,9 +211,11 @@ describe("ArtifactViewer (mobile)", () => {
   it("opens an artifact by repository and tree id and renders its relative assets", async () => {
     const api = await open(V2);
     expect(api.getArtifact).toHaveBeenCalledWith("repo-1", V2);
+    // The entry, its stylesheet, and the one page it links to; each file once.
     expect(api.readArtifactFile.mock.calls.map((call) => call.slice(1))).toEqual([
       [V2, "index.html"],
-      [V2, "css/site.css"]
+      [V2, "css/site.css"],
+      [V2, "pages/about.html"]
     ]);
     const html = framedPage();
     expect(html).toContain("Version two");
@@ -190,16 +223,48 @@ describe("ArtifactViewer (mobile)", () => {
     expect(text(byTestId("artifact-viewer-current-id")[0])).toContain(V2.slice(0, 12));
   });
 
-  it("opens an in-tree link inside the viewer, with that page's own relative assets", async () => {
+  it("opens an in-tree link in the host document, with that page's own relative assets", async () => {
     const api = await open(V2);
-    await act(async () => {
-      expect(webView().props.onShouldStartLoadWithRequest({ url: "kanna-artifact:pages/about.html" })).toBe(false);
-    });
-    await flush();
-    const html = framedPage();
-    expect(html).toContain("About v2");
-    expect(inlinedStylesheet(html)).toContain("height: 120px");
+    // The linked page was rendered with the entry, so the host has it.
     expect(api.readArtifactFile).toHaveBeenCalledWith("repo-1", V2, "pages/about.html");
+    const host = runHost();
+    const index = host.frame.srcdoc;
+    expect(index).toContain(`href="#kanna-artifact=pages/about.html"`);
+    // The page's own click handler asks its parent for the path.
+    expect(index).toContain(`parent.postMessage({kind:"kanna-artifact-navigate",path:p},"*")`);
+    host.post({ kind: "kanna-artifact-navigate", path: "pages/about.html" });
+    expect(host.frame.attributes["data-path"]).toBe("pages/about.html");
+    expect(host.frame.srcdoc).toContain("About v2");
+    expect(inlinedStylesheet(host.frame.srcdoc)).toContain("height: 120px");
+    // No navigation went through the native callback for it.
+    expect(linking.openURL).not.toHaveBeenCalled();
+  });
+
+  it("refuses every request on the host channel but an in-tree path from its own frame", async () => {
+    await open(V2);
+    const host = runHost();
+    const index = host.frame.srcdoc;
+    for (const forged of [
+      { kind: "kanna-artifact-navigate", path: "../outside.html" },
+      { kind: "kanna-artifact-navigate", path: "https://evil.example/" },
+      { kind: "kanna-artifact-navigate", path: "javascript:alert(1)" },
+      { kind: "kanna-artifact-navigate", path: "/pages/about.html" },
+      { kind: "kanna-artifact-navigate", path: "__proto__" },
+      { kind: "kanna-artifact-navigate", path: "constructor" },
+      { kind: "kanna-artifact-navigate", path: "css/site.css" },
+      { kind: "kanna-artifact-navigate", path: ["pages/about.html"] },
+      { kind: "kanna-artifact-navigate" },
+      { kind: "ReactNativeWebView", path: "pages/about.html" },
+      "kanna-artifact-navigate:pages/about.html",
+      null
+    ]) {
+      host.post(forged);
+      expect(host.frame.srcdoc, JSON.stringify(forged)).toBe(index);
+    }
+    // A valid request from anything but its own frame is ignored too.
+    host.post({ kind: "kanna-artifact-navigate", path: "pages/about.html" }, {});
+    expect(host.frame.srcdoc).toBe(index);
+    expect(host.frame.attributes["data-path"]).toBe("index.html");
   });
 
   it("follows the previous link to the older tree id and comes back", async () => {
@@ -278,7 +343,7 @@ describe("ArtifactViewer (mobile)", () => {
     for (const url of [
       "https://evil.example/", "http://192.168.1.2:48120/v1/tasks", "tel:5551234", "sms:5551234",
       "mailto:a@b.c", "kanna://e2e-trust", "file:///etc/passwd", "data:text/html,<script>1</script>",
-      "javascript:alert(1)", "kanna-artifact:../../escape.html"
+      "javascript:alert(1)", "kanna-artifact:pages/about.html", "about:srcdoc#x", "about:blank?x"
     ]) {
       expect(props.onShouldStartLoadWithRequest({ url }), url).toBe(false);
     }
@@ -291,30 +356,28 @@ describe("ArtifactViewer (mobile)", () => {
     expect(html).toContain("connect-src 'none'");
   });
 
-  it("does not rely on the JS navigation callback: the page runs in a sandboxed frame of a script-free host", async () => {
+  it("does not rely on the JS navigation callback: the page runs in a sandboxed frame of a trusted host", async () => {
     // On Android, react-native-webview allows a navigation the JS thread has
     // not answered within 250 ms. The engine must refuse top-level navigation
     // itself, which a frame sandboxed without allow-top-navigation does.
     await open(V2);
     const host = webView().props.source.html as string;
-    const withoutFrame = host.replace(/<iframe [^>]*><\/iframe>/, "");
-    // Exactly one frame, and the host has no script, link, form or refresh of
-    // its own that could navigate the top-level document.
+    // Exactly one frame, and the host has no link, form, refresh or base that
+    // could navigate the top-level document; its one script only fills the frame.
     expect(host.match(/<iframe /g)).toHaveLength(1);
-    expect(withoutFrame).not.toMatch(/<script|<a |<form|http-equiv="refresh"|<base/i);
-    const frame = host.match(/<iframe ([^>]*?) srcdoc=/)?.[1] ?? "";
+    const outsidePages = host.replace(/<script type="application\/json"[\s\S]*?<\/script>/, "");
+    expect(outsidePages).not.toMatch(/<a |<form|http-equiv="refresh"|<base|location|window\.open|srcdoc="/i);
+    const frame = host.match(/<iframe ([^>]*)><\/iframe>/)?.[1] ?? "";
     expect(frame).toContain('sandbox="allow-scripts"');
     for (const flag of ["allow-top-navigation", "allow-popups", "allow-same-origin", "allow-forms", "allow-modals"]) {
       expect(frame).not.toContain(flag);
     }
-    // The host policy is the page's policy, except that its one frame may
-    // navigate only to an in-tree link, which has no network request.
+    // The host policy is exactly the page's: the frame cannot navigate itself.
     const hostPolicy = host.match(/<meta http-equiv="Content-Security-Policy" content="([^"]+)">/)?.[1] ?? "";
-    expect(hostPolicy).toContain("frame-src kanna-artifact:;");
-    expect(hostPolicy).toContain("child-src kanna-artifact:;");
-    expect(hostPolicy.replace(/frame-src [^;]+|child-src [^;]+/g, ""))
-      .toBe(ARTIFACT_DOCUMENT_POLICY.replace(/frame-src [^;]+|child-src [^;]+/g, ""));
-    expect(hostPolicy).not.toMatch(/https?:|\*/);
+    expect(hostPolicy).toBe(ARTIFACT_DOCUMENT_POLICY);
+    expect(hostPolicy).toContain("frame-src 'none'");
+    // Page markup cannot end the pages block early.
+    expect(host.match(/<script type="application\/json"[^>]*>([\s\S]*?)<\/script>/)?.[1]).not.toContain("<");
     // The page inside the frame is intact, quotes and ampersands included.
     expect(framedPage()).toContain('<h1>Version two</h1>');
   });
@@ -346,13 +409,10 @@ describe("ArtifactViewer (mobile)", () => {
     expect(framedPage()).toContain("Version two");
   });
 
-  it("maps only in-tree navigations to the host and refuses the rest", () => {
-    const opened: string[] = [];
-    expect(shouldStartArtifactLoad({ url: "kanna-artifact:pages/a%20b.html#x" }, (path) => opened.push(path))).toBe(false);
-    expect(shouldStartArtifactLoad({ url: "https://example.com/pages/a.html" }, (path) => opened.push(path))).toBe(false);
-    expect(opened).toEqual(["pages/a b.html"]);
-    // The host's own document and the sandboxed frame it loads are the only
-    // loads the callback lets through.
-    expect(shouldStartArtifactLoad({ url: "about:srcdoc" }, (path) => opened.push(path))).toBe(true);
+  it("lets only the host document and its frame document load", () => {
+    expect(shouldStartArtifactLoad({ url: "about:blank" })).toBe(true);
+    expect(shouldStartArtifactLoad({ url: "about:srcdoc" })).toBe(true);
+    expect(shouldStartArtifactLoad({ url: "https://example.com/pages/a.html" })).toBe(false);
+    expect(shouldStartArtifactLoad({ url: "#kanna-artifact=pages/a.html" })).toBe(false);
   });
 });
