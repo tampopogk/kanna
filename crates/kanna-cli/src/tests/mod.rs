@@ -393,6 +393,7 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
                     ("parent_task_id", "parent_task"),
                     ("allowed_tools", "allowed_tool"),
                     ("blocker_task_ids", "blocker_task_id"),
+                    ("dependencies", "dependency"),
                 ],
             },
         ),

@@ -2042,6 +2042,7 @@ fn every_declared_parameter_round_trips_a_cli_spelling() {
                     .and_then(|values| values.first().cloned())
                     .unwrap_or_else(|| "57808275".to_string()),
                 ParamType::Object => "{}".to_string(),
+                ParamType::ObjectArray => "[{}]".to_string(),
             };
             let value = param
                 .parse_cli_value(&raw)
@@ -2052,6 +2053,7 @@ fn every_declared_parameter_round_trips_a_cli_spelling() {
                 ParamType::Boolean => value.is_boolean(),
                 ParamType::StringArray => value.is_array(),
                 ParamType::Object => value.is_object(),
+                ParamType::ObjectArray => value.is_array(),
             };
             assert!(
                 expected_type_ok,
@@ -2079,6 +2081,7 @@ fn every_declared_parameter_round_trips_a_cli_spelling() {
                         .and_then(|values| values.first().cloned())
                         .unwrap_or_else(|| "57808275".to_string()),
                     ParamType::Object => "{}".to_string(),
+                    ParamType::ObjectArray => "[{}]".to_string(),
                 };
                 (
                     param.name.clone(),

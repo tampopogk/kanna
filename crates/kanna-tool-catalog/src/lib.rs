@@ -423,6 +423,9 @@ pub enum ParamType {
     Boolean,
     StringArray,
     Object,
+    /// A JSON array whose every element is an object (e.g. the stage
+    /// dependency edges `kanna_create_task` takes).
+    ObjectArray,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -972,6 +975,11 @@ impl ParamDef {
                 }
                 Ok(parsed)
             }
+            ParamType::ObjectArray => {
+                let parsed = serde_json::from_str::<Value>(raw)
+                    .map_err(|e| format!("{} must be a JSON array of objects: {e}", self.name))?;
+                object_array_value(parsed, &self.name)
+            }
         }
     }
 }
@@ -1010,6 +1018,9 @@ fn input_schema(tool: &ToolDef) -> Value {
                 serde_json::json!({ "type": "array", "items": { "type": "string" } })
             }
             ParamType::Object => serde_json::json!({ "type": "object" }),
+            ParamType::ObjectArray => {
+                serde_json::json!({ "type": "array", "items": { "type": "object" } })
+            }
         };
 
         if let Some(description) = &param.description {
@@ -1450,6 +1461,7 @@ fn value_for_param(
                 .collect(),
         ),
         ParamType::Object => value,
+        ParamType::ObjectArray => object_array_value(value, &param.name)?,
     };
     Ok(Some(value))
 }
@@ -1504,6 +1516,13 @@ fn integer_value(
         number = number.min(max);
     }
     Ok(number)
+}
+
+fn object_array_value(value: Value, name: &str) -> Result<Value, String> {
+    match &value {
+        Value::Array(entries) if entries.iter().all(Value::is_object) => Ok(value),
+        _ => Err(format!("{name} must be an array of objects")),
+    }
 }
 
 fn string_array_value(value: &Value, name: &str) -> Result<Vec<String>, String> {

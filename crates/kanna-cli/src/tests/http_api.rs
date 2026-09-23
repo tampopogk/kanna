@@ -1108,6 +1108,7 @@ async fn create_task_via_api_omits_agent_type_when_flags_are_absent() {
         allowed_tool: Vec::new(),
         blocker_task_id: Vec::new(),
         parent_task: None,
+        dependency: Vec::new(),
     });
 
     let created = create_task_via_api(&format!("http://{addr}"), &request)

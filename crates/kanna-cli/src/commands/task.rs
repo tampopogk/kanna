@@ -266,7 +266,27 @@ pub(crate) fn build_create_task_request(options: TaskCreateOptions) -> CreateTas
         allowed_tools: (!options.allowed_tool.is_empty()).then_some(options.allowed_tool),
         blocker_task_ids: (!options.blocker_task_id.is_empty()).then_some(options.blocker_task_id),
         parent_task_id: options.parent_task,
+        dependencies: (!options.dependency.is_empty()).then_some(options.dependency),
     }
+}
+
+/// `--dependency <task>:<stage>[:<dependent stage>]`. Stage names may hold
+/// spaces; the first two colons separate the parts.
+pub(crate) fn parse_stage_dependency(raw: &str) -> Result<crate::models::StageDependency, String> {
+    let mut parts = raw.splitn(3, ':').map(str::trim);
+    let task_id = parts.next().unwrap_or_default();
+    let stage = parts.next().unwrap_or_default();
+    let dependent_stage = parts.next().filter(|stage| !stage.is_empty());
+    if task_id.is_empty() || stage.is_empty() {
+        return Err(format!(
+            "expected <task>:<stage>[:<dependent stage>], got {raw:?}"
+        ));
+    }
+    Ok(crate::models::StageDependency {
+        task_id: task_id.to_string(),
+        stage: stage.to_string(),
+        dependent_stage: dependent_stage.map(str::to_string),
+    })
 }
 
 pub(crate) fn build_request_revision_request(
@@ -799,6 +819,7 @@ pub(crate) async fn run(command: TaskCommands) {
             allowed_tool,
             blocker_task_id,
             parent_task,
+            dependency,
         } => {
             let base_url = resolve_server_base_url_from_env(server_url.as_deref());
             let review_context_value = parse_metadata_json(&review_context).unwrap_or_else(|e| {
@@ -821,6 +842,7 @@ pub(crate) async fn run(command: TaskCommands) {
                 allowed_tool,
                 blocker_task_id,
                 parent_task,
+                dependency,
             });
             let created = create_task_via_api(&base_url, &request)
                 .await

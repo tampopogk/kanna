@@ -389,6 +389,21 @@ pub(crate) struct CreateTaskRequest {
     pub(crate) blocker_task_ids: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) parent_task_id: Option<String>,
+    /// Stage dependency edges, in order (spec §9).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) dependencies: Option<Vec<StageDependency>>,
+}
+
+/// One stage dependency edge of a task being created: its `dependent_stage`
+/// (default: the stage it starts in) waits until `task_id` leaves `stage`
+/// with a success result.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StageDependency {
+    pub(crate) task_id: String,
+    pub(crate) stage: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) dependent_stage: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -633,6 +648,7 @@ pub(crate) struct TaskCreateOptions {
     pub(crate) allowed_tool: Vec<String>,
     pub(crate) blocker_task_id: Vec<String>,
     pub(crate) parent_task: Option<String>,
+    pub(crate) dependency: Vec<StageDependency>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
