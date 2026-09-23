@@ -43,6 +43,8 @@ pub use terminal_archives::AgentTerminalAttempt;
 pub(crate) mod workspace_setup;
 pub use stage_run_prompt::StageRunPrompt;
 pub use workspace_setup::{WorkspaceSetupOutcome, WorkspaceSetupRun};
+#[allow(unused_imports)]
+pub use worktrees::StageWorkspaceRecord;
 mod task_events;
 mod task_inputs;
 pub(crate) mod task_store;
@@ -82,7 +84,8 @@ pub use revisions::RecordedRevisionOrigin;
 pub use serviced::TaskServicedWatermark;
 #[allow(unused_imports)]
 pub use stage_runs::{
-    FinishedStageRun, ProviderOverrideSource, StageProviderOverride, StageTrigger,
+    FinishedStageRun, ProviderOverrideSource, StageProviderOverride, StageRunSession, StageTrigger,
+    TranscriptRef,
 };
 #[allow(unused_imports)]
 pub use task_events::{
@@ -209,6 +212,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "094_task_attention_flag",
     "095_mutation_provenance",
     "096_task_ledger_bridge",
+    "097_stage_workspaces",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2659,6 +2663,22 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     // from the runtime's startup reconciliation, not from a migration.
     run_migration(conn, "096_task_ledger_bridge", |conn| {
         conn.execute_batch(task_store::SCHEMA)
+    })?;
+
+    // Spec §16.2 (T2): stage workspaces and session identity. The branch
+    // counter is the task's persisted high-water mark, so a deleted branch
+    // never makes its number reusable; it is seeded lazily above every
+    // recorded and ref suffix the first time a task allocates. Workspace rows
+    // name each stage's retained directory, and the stage_run columns record
+    // which workspace, branch, name and transcript a session started with.
+    // Historical runs stay NULL: nothing is reconstructed for them.
+    run_migration(conn, "097_stage_workspaces", |conn| {
+        conn.execute_batch(worktrees::STAGE_WORKSPACE_SCHEMA)?;
+        add_column(conn, "stage_run", "workspace_id", "TEXT")?;
+        add_column(conn, "stage_run", "session_branch", "TEXT")?;
+        add_column(conn, "stage_run", "session_name", "TEXT")?;
+        add_column(conn, "stage_run", "transcript_ref", "TEXT")?;
+        add_column(conn, "stage_run", "workspace_report", "TEXT")
     })?;
 
     Ok(())

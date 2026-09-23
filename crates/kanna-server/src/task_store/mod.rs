@@ -46,7 +46,7 @@
 //! | `source {kind, id, origin}` | the original record this entry mirrors (`stage_run`/run id, `task_input`/row id, `task_event`/seq, ...); `origin` is provenance an import carried from another machine |
 //! | `recorded_at` | ISO-8601 UTC |
 //! | `historical` | `true` for backfilled history |
-//! | `run_id`, `session_ref` | the stage run, and the session reference; until T2 the reference is `{kind: "stage_run", id: <run id>}` |
+//! | `run_id`, `session_ref` | the stage run, and the session reference `{kind: "stage_run", id: <run id>}`; a run that recorded a session identity (T2) adds `workspace_id`, `branch`, `name` and `transcript {provider, session_id, path}` beside those keys |
 //! | `declared_role` | a role the caller declared (`operator`, `manager`), else null. Reserved for the gate operator's declared role |
 //! | `channel_identity` | reserved for T8's verified channel; always null (unknown) here, never inferred from a source label or transport |
 //! | `artifacts` | reserved for T6's named artifact references (name → reference); `{}` here |

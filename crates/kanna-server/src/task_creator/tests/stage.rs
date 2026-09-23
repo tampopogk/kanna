@@ -597,6 +597,7 @@ async fn acknowledged_stage_survives_db_failure_restart_and_can_complete() {
         resumed_from_run_id: None,
         replaces_run_id: None,
         resume_fallback_reason: None,
+        session_identity: Default::default(),
         cwd: "/tmp".to_string(),
         env: std::collections::HashMap::new(),
         terminal_prelude: None,
@@ -1707,10 +1708,11 @@ async fn prepare_advance_stage_forks_workspace_and_reinforces_rereview_verdict()
     assert_eq!(runs[2].status, "running");
     assert_eq!(runs[2].session_id.as_deref(), Some("task-1"));
 
-    // The counter skips workspaces that still exist: with `-2` live, the
-    // next fork for this task is `-3`.
+    // The fork spent counter number 2; the next fork for this task is `-3`.
+    assert_eq!(db.task_branch_counter("task-1").unwrap(), Some(2));
     assert_eq!(
-        super::super::worktree::next_fork_branch(&repo_root.to_string_lossy(), "task-1").unwrap(),
+        super::super::worktree::allocate_task_branch(&db, &repo_root.to_string_lossy(), "task-1")
+            .unwrap(),
         "task-task-1-3"
     );
 
@@ -3741,6 +3743,7 @@ fn current_stage_spawn_fixture(
         resumed_from_run_id: None,
         replaces_run_id: None,
         resume_fallback_reason: None,
+        session_identity: Default::default(),
         cwd: "/tmp".to_string(),
         env: HashMap::new(),
         terminal_prelude: None,
@@ -4641,13 +4644,9 @@ fn commit_prepared_run(
     run: &super::super::types::PreparedStageRunSpawn,
     run_id: &str,
 ) -> (String, String) {
-    let (branch, worktree_path) = match &run.workspace {
-        super::super::types::PreparedRunWorkspace::Forked(workspace)
-        | super::super::types::PreparedRunWorkspace::Resumed(workspace)
-        | super::super::types::PreparedRunWorkspace::Recreated(workspace) => {
-            (workspace.branch.clone(), workspace.worktree_path.clone())
-        }
-        super::super::types::PreparedRunWorkspace::Current => (
+    let (branch, worktree_path) = match run.workspace.moved_to() {
+        Some(workspace) => (workspace.branch.clone(), workspace.worktree_path.clone()),
+        None => (
             db.get_pipeline_item(&run.task_id)
                 .unwrap()
                 .unwrap()
@@ -5005,4 +5004,112 @@ fn a_task_pinned_to_the_retired_consultation_definition_still_reads_and_advances
     );
 
     let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// Two prompt-only stages, so an advance from `in progress` forks `review`.
+fn write_two_stage_workflow(repo_root: &std::path::Path) {
+    std::fs::create_dir_all(repo_root.join(".kanna/workflows")).unwrap();
+    std::fs::write(
+        repo_root.join(".kanna/workflows/default.json"),
+        serde_json::json!({
+            "name": "default",
+            "stages": [
+                { "name": "in progress", "agent_provider": "claude", "prompt": "$TASK_PROMPT",
+                  "policy": { "transition": "manual" } },
+                { "name": "review", "agent_provider": "claude", "prompt": "Review $BRANCH",
+                  "policy": { "transition": "manual" } }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    publish_origin_main(repo_root, "publish two-stage workflow");
+}
+
+fn prepare_fork(db: &Db, config: &Config) -> Box<super::super::types::PreparedStageRunSpawn> {
+    match prepare_advance_stage_for_api(db, config, "task-1").unwrap() {
+        PreparedStageTransition::Run(run) => run,
+        _ => panic!("expected a forked stage run"),
+    }
+}
+
+/// Spec §6: every session gets `task-<id>-<n>` from the task's counter, and
+/// an earlier number is never reused. Deleting a branch and its directory
+/// used to make its number the first free suffix again.
+#[test]
+fn a_deleted_branch_number_is_never_allocated_again() {
+    let repo_root = init_git_repo("stage-counter-deleted-ref");
+    write_two_stage_workflow(&repo_root);
+    let config = test_config("stage-counter-deleted-ref");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    seed_stage_advance_task(&db, &repo_root, "claude");
+    // A task that forked before the counter existed: its highest suffix on
+    // record is 5, so the counter is seeded above it.
+    run_git_fixture(&repo_root, &["branch", "task-task-1-5"]);
+
+    let first = prepare_fork(&db, &config);
+    let first_fork = first.forked_workspace().expect("fork");
+    assert_eq!(first_fork.branch, "task-task-1-6");
+    crate::task_creator::worktree::remove_prepared_worktree(
+        &first_fork.worktree_path,
+        &first_fork.branch,
+    )
+    .unwrap();
+    run_git_fixture(&repo_root, &["branch", "-D", "task-task-1-5"]);
+    assert!(!crate::task_creator::local_branch_exists(
+        &repo_root.to_string_lossy(),
+        "task-task-1-6"
+    ));
+
+    // Neither ref nor directory exists any more; the numbers stay spent.
+    let second = prepare_fork(&db, &config);
+    let second_fork = second.forked_workspace().expect("fork");
+    assert_eq!(second_fork.branch, "task-task-1-7");
+    assert_eq!(db.task_branch_counter("task-1").unwrap(), Some(7));
+    crate::task_creator::worktree::remove_prepared_worktree(
+        &second_fork.worktree_path,
+        &second_fork.branch,
+    )
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// The number is reserved before any git work, so an attempt whose worktree
+/// could not be created still spends it.
+#[test]
+fn a_failed_fork_attempt_consumes_its_branch_number() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo_root = init_git_repo("stage-counter-failed-attempt");
+    write_two_stage_workflow(&repo_root);
+    let config = test_config("stage-counter-failed-attempt");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    seed_stage_advance_task(&db, &repo_root, "claude");
+    let worktrees = repo_root.join(".kanna-worktrees");
+    std::fs::set_permissions(&worktrees, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let failed = prepare_advance_stage_for_api(&db, &config, "task-1");
+    std::fs::set_permissions(&worktrees, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(failed.is_err(), "the worktree could not be created");
+    assert_eq!(db.task_branch_counter("task-1").unwrap(), Some(2));
+    assert!(!worktrees.join("task-task-1-2").exists());
+
+    let retried = prepare_fork(&db, &config);
+    let fork = retried.forked_workspace().expect("fork");
+    assert_eq!(fork.branch, "task-task-1-3");
+    crate::task_creator::worktree::remove_prepared_worktree(&fork.worktree_path, &fork.branch)
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn task_branch_numbers_parse_only_the_tasks_own_workspace_names() {
+    use crate::task_creator::worktree::task_branch_number;
+    assert_eq!(task_branch_number("ab12", "task-ab12"), Some(1));
+    assert_eq!(task_branch_number("ab12", "task-ab12-9"), Some(9));
+    assert_eq!(task_branch_number("ab12", "task-ab12-10"), Some(10));
+    assert_eq!(task_branch_number("ab12", "task-ab123-4"), None);
+    assert_eq!(task_branch_number("ab12", "task-ab12-"), None);
+    assert_eq!(task_branch_number("ab12", "task-ab12-x"), None);
+    assert_eq!(task_branch_number("ab12", "feature/ab12"), None);
 }

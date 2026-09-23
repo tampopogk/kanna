@@ -257,7 +257,8 @@ async fn each_review_fork_carries_every_previous_revision_round_commit() {
         .unwrap();
     assert_eq!(task_branch(&db), first_review_branch);
 
-    // --- Round 1: review fails, the revision resumes the implement session.
+    // --- Round 1: review fails, the revision re-enters the implement
+    // workspace on a new branch and resumes its session there.
     fail_latest_run(&db, "Round 1: add the missing coverage.");
     let revision = prepare_resumed_revision(
         &db,
@@ -265,18 +266,17 @@ async fn each_review_fork_carries_every_previous_revision_round_commit() {
         &claude_config_dir,
         "Round 1: add the missing coverage.",
     );
-    assert_eq!(
-        revision
-            .resumed_workspace()
-            .expect("the revision resumes the implement workspace")
-            .branch,
-        format!("task-{TASK_ID}"),
-    );
+    let revisited = revision
+        .revisited_workspace()
+        .expect("the revision re-enters the implement workspace");
+    assert_eq!(revisited.branch, format!("task-{TASK_ID}-3"));
+    assert_eq!(revisited.worktree_path, creation_worktree.to_string_lossy());
+    assert!(revision.resumed_from_run_id.is_some());
     spawn_prepared_stage_run_for_api(&config.db_path, &mut daemon, &replacements, revision)
         .await
         .unwrap();
-    // The resume rewinds the task's branch to the implement workspace...
-    assert_eq!(task_branch(&db), format!("task-{TASK_ID}"));
+    // The task moves back to the implement workspace...
+    assert_eq!(task_branch(&db), format!("task-{TASK_ID}-3"));
 
     // ...while the round's commit lands in the reviewer's workspace, which is
     // where the observed agent worked.
@@ -318,11 +318,11 @@ async fn each_review_fork_carries_every_previous_revision_round_commit() {
         &claude_config_dir,
         "Round 2: the coverage still misses a case.",
     );
-    // The implement workspace no longer holds the tip, so the resume
-    // precondition fails and the revision forks fresh — from the tip.
+    // The implement workspace is clean and behind the tip, so the revision
+    // re-enters it on a new branch at the tip.
     let revision_workspace = revision
-        .forked_workspace()
-        .expect("a diverged implement workspace forks fresh");
+        .revisited_workspace()
+        .expect("a clean implement workspace behind the tip is re-entered");
     let revision_worktree = std::path::PathBuf::from(&revision_workspace.worktree_path);
     assert!(
         branch_contains(&repo_root, &revision_workspace.branch, &round_one),
@@ -394,11 +394,15 @@ async fn resumed_revision_committing_in_another_workspace_reconciles_the_task_br
         &claude_config_dir,
         "Add the missing coverage.",
     );
-    assert!(revision.resumed_workspace().is_some());
+    let revision_branch = revision
+        .revisited_workspace()
+        .expect("the revision re-enters the implement workspace")
+        .branch
+        .clone();
     spawn_prepared_stage_run_for_api(&config.db_path, &mut daemon, &replacements, revision)
         .await
         .unwrap();
-    assert_eq!(task_branch(&db), creation_branch);
+    assert_eq!(task_branch(&db), revision_branch);
 
     // The commit lands in the review workspace, not the one the task names.
     let landed = commit_in(
@@ -575,5 +579,121 @@ fn a_renamed_branch_in_the_same_workspace_is_not_a_reconcile() {
     );
     assert_eq!(task_branch(&db), creation_branch);
 
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// The triggering result as T0 records it: the commit the engine observed in
+/// the recording run's workspace.
+fn recorded_trigger(stage: &str, committed_sha: &str) -> crate::task_store::TriggeringResult {
+    crate::task_store::TriggeringResult {
+        entry_id: format!("{TASK_ID}-000007"),
+        file: "ledger/000007-result.md".to_string(),
+        status: "success".to_string(),
+        stage: Some(stage.to_string()),
+        run_id: Some("run-commit-1".to_string()),
+        branch: Some(format!("task-{TASK_ID}")),
+        committed_sha: Some(committed_sha.to_string()),
+        message: "Committed.".to_string(),
+    }
+}
+
+/// Target behaviour (spec §6): a new stage forks the commit the triggering
+/// result recorded. A sibling workspace holding a newer commit is neither
+/// chosen as the base nor allowed to move the task — newest-branch discovery
+/// only decides when no input was recorded.
+#[test]
+fn a_recorded_input_is_the_fork_base_over_a_newer_sibling_tip() {
+    let config = test_config("work-tip-recorded-input");
+    let (repo_root, db) = init_fixture("work-tip-recorded-input", &config);
+    let creation_branch = format!("task-{TASK_ID}");
+    let creation_worktree = repo_root.join(".kanna-worktrees").join(&creation_branch);
+    let input = run_git_fixture(&creation_worktree, &["rev-parse", "HEAD"]);
+
+    // A sibling workspace the task once ran in, strictly ahead of the input:
+    // without a recorded input, reconcile would move the task onto it.
+    let sibling_branch = "task-sibling";
+    let sibling_worktree = repo_root.join(".kanna-worktrees").join(sibling_branch);
+    run_git_fixture(
+        &repo_root,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            sibling_branch,
+            sibling_worktree.to_string_lossy().as_ref(),
+            &creation_branch,
+        ],
+    );
+    record_finished_run(
+        &db,
+        "run-sibling",
+        "in progress",
+        "main",
+        "implement",
+        &sibling_worktree,
+    );
+    let sibling_commit = commit_in(&sibling_worktree, "sibling.txt", "sibling work");
+
+    let review =
+        crate::task_store::with_pending_trigger(recorded_trigger("commit", &input), || {
+            prepare_review_fork(&db, &config)
+        });
+    let fork = review.forked_workspace().expect("review forks");
+    assert_eq!(
+        run_git_fixture(
+            std::path::Path::new(&fork.worktree_path),
+            &["rev-parse", "HEAD"]
+        ),
+        input
+    );
+    assert!(!branch_contains(&repo_root, &fork.branch, &sibling_commit));
+    assert_eq!(
+        task_branch(&db),
+        creation_branch,
+        "discovery did not move the task"
+    );
+    // The creation workspace is at the input, so the fork left nothing behind.
+    assert!(review.session_identity().workspace_report.is_none());
+
+    let _ =
+        crate::task_creator::worktree::remove_prepared_worktree(&fork.worktree_path, &fork.branch);
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// Commits made in the task's workspace after its result was recorded are
+/// not the input: the fork starts at the recorded commit, and the later
+/// commits stay on their branch and are reported on the new session.
+#[test]
+fn commits_after_the_recorded_input_stay_behind_and_are_reported() {
+    let config = test_config("work-tip-input-ahead");
+    let (repo_root, db) = init_fixture("work-tip-input-ahead", &config);
+    let creation_branch = format!("task-{TASK_ID}");
+    let creation_worktree = repo_root.join(".kanna-worktrees").join(&creation_branch);
+    let input = run_git_fixture(&creation_worktree, &["rev-parse", "HEAD"]);
+    let later = commit_in(&creation_worktree, "later.txt", "after the result");
+
+    let review =
+        crate::task_store::with_pending_trigger(recorded_trigger("commit", &input), || {
+            prepare_review_fork(&db, &config)
+        });
+    let fork = review.forked_workspace().expect("review forks");
+    assert_eq!(
+        run_git_fixture(
+            std::path::Path::new(&fork.worktree_path),
+            &["rev-parse", "HEAD"]
+        ),
+        input
+    );
+    assert!(branch_contains(&repo_root, &creation_branch, &later));
+    let report = review
+        .session_identity()
+        .workspace_report
+        .clone()
+        .expect("the commits left behind are reported");
+    assert!(report.contains(&later[..12]), "{report}");
+    assert!(report.contains(&creation_branch), "{report}");
+
+    let _ =
+        crate::task_creator::worktree::remove_prepared_worktree(&fork.worktree_path, &fork.branch);
     let _ = std::fs::remove_dir_all(&repo_root);
 }

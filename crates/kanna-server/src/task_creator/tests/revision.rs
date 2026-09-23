@@ -400,7 +400,10 @@ fn prepare_revision_task_rejects_closed_source_task_even_when_stage_is_active() 
 /// holding a finished stage run, and a review worktree (`task-review`) at the
 /// same committed tip — the state a task is in when the review agent
 /// requests a revision.
-fn init_resume_revision_fixture(label: &str, config: &Config) -> (std::path::PathBuf, Db) {
+pub(super) fn init_resume_revision_fixture(
+    label: &str,
+    config: &Config,
+) -> (std::path::PathBuf, Db) {
     let repo_root = init_git_repo(label);
     std::fs::create_dir_all(repo_root.join(".kanna/workflows")).unwrap();
     std::fs::create_dir_all(repo_root.join(".kanna/agents/implement")).unwrap();
@@ -537,13 +540,15 @@ async fn request_revision_resumes_previous_stage_run_session_in_its_worktree() {
         prepared.unwrap()
     };
 
-    // The revision adopts the implement run's workspace instead of forking.
-    let resumed = prepared
-        .resumed_workspace()
-        .expect("revision resumes the previous workspace");
-    assert_eq!(resumed.branch, "task-impl");
-    assert_eq!(resumed.worktree_path, impl_worktree.to_string_lossy());
+    // The loop back re-enters the implement stage's directory on a newly
+    // allocated branch; the implement run's own branch is never reused.
+    let revisited = prepared
+        .revisited_workspace()
+        .expect("revision re-enters the stage's retained directory");
+    assert_eq!(revisited.branch, "task-review-task-2");
+    assert_eq!(revisited.worktree_path, impl_worktree.to_string_lossy());
     assert!(prepared.forked_workspace().is_none());
+    assert!(prepared.resumed_workspace().is_none());
     assert_eq!(prepared.cwd, impl_worktree.to_string_lossy());
     assert_eq!(prepared.agent_provider, "claude");
     assert_eq!(prepared.model.as_deref(), Some("recorded-run-model"));
@@ -593,11 +598,20 @@ async fn request_revision_resumes_previous_stage_run_session_in_its_worktree() {
         other => panic!("expected PTY spawn command, got {:?}", other),
     }
 
-    // The task's branch moves back to the adopted workspace, and the run
-    // records how it resumed.
+    // The task moves onto the new branch in the unchanged directory, and the
+    // run records how it resumed.
     let updated = db.get_task_stage_source("review-task").unwrap().unwrap();
     assert_eq!(updated.stage.as_deref(), Some("in progress"));
-    assert_eq!(updated.branch.as_deref(), Some("task-impl"));
+    assert_eq!(updated.branch.as_deref(), Some("task-review-task-2"));
+    assert_eq!(
+        run_git_fixture(&impl_worktree, &["branch", "--show-current"]),
+        "task-review-task-2"
+    );
+    // The implement run's branch is retained, not renamed or deleted.
+    run_git_fixture(
+        &repo_root,
+        &["rev-parse", "--verify", "refs/heads/task-impl"],
+    );
     let runs = db.list_stage_runs_for_task("review-task").unwrap();
     let revision_run = runs.last().expect("revision run recorded");
     assert_eq!(revision_run.stage, "in progress");
@@ -634,24 +648,17 @@ async fn request_revision_resumes_previous_stage_run_session_in_its_worktree() {
 }
 
 #[tokio::test]
-async fn request_revision_falls_back_to_fork_when_worktree_tip_diverged() {
-    let config = test_config("revision-resume-diverged");
-    let (repo_root, db) = init_resume_revision_fixture("revision-resume-diverged", &config);
-    // The review worktree commits ahead of the implement worktree: the
-    // recorded workspace no longer holds the task's committed tip.
+async fn request_revision_moves_a_clean_retained_workspace_forward_to_the_input() {
+    let config = test_config("revision-revisit-behind");
+    let (repo_root, db) = init_resume_revision_fixture("revision-revisit-behind", &config);
+    // The reviewer committed a fix in its own workspace: the input is ahead
+    // of the implement directory, which is clean.
     let review_worktree = repo_root.join(".kanna-worktrees/task-review");
     std::fs::write(review_worktree.join("review-fix.txt"), "fixed in review").unwrap();
-    for args in [
-        vec!["add", "review-fix.txt"],
-        vec!["commit", "-m", "review fix"],
-    ] {
-        assert!(Command::new("git")
-            .args(&args)
-            .current_dir(&review_worktree)
-            .status()
-            .unwrap()
-            .success());
-    }
+    run_git_fixture(&review_worktree, &["add", "review-fix.txt"]);
+    run_git_fixture(&review_worktree, &["commit", "-m", "review fix"]);
+    let review_head = run_git_fixture(&review_worktree, &["rev-parse", "HEAD"]);
+    let impl_worktree = repo_root.join(".kanna-worktrees/task-impl");
 
     let prepared = prepare_revision_task_for_api(
         &db,
@@ -663,34 +670,188 @@ async fn request_revision_falls_back_to_fork_when_worktree_tip_diverged() {
     )
     .unwrap();
 
-    assert!(prepared.resumed_workspace().is_none());
-    let fork = prepared
-        .forked_workspace()
-        .expect("diverged tip falls back to a fresh fork");
-    assert_ne!(fork.branch, "task-impl");
-    // The fresh agent still sees the original task prompt via the composed
-    // revision context.
-    match &prepared.session {
-        PreparedSessionSpawn::Pty { args, .. } => {
-            let command_line = args.last().expect("shell command");
-            assert!(command_line.contains("--session-id"));
-            assert!(!command_line.contains("--resume"));
-            assert!(command_line.contains("Original task:\nOriginal implementation prompt"));
-            assert!(command_line.contains("Reviewer feedback:\nAddress the review fixes."));
-        }
-        PreparedSessionSpawn::Agent { .. } => panic!("expected PTY session, got agent session"),
-    }
-    let _ =
-        crate::task_creator::worktree::remove_prepared_worktree(&fork.worktree_path, &fork.branch);
-
+    let revisited = prepared
+        .revisited_workspace()
+        .expect("a clean directory behind the input is re-entered");
+    assert_eq!(revisited.worktree_path, impl_worktree.to_string_lossy());
+    assert_eq!(
+        run_git_fixture(&impl_worktree, &["rev-parse", "HEAD"]),
+        review_head,
+        "the new branch starts at the input, carrying the reviewer's commit"
+    );
+    assert!(impl_worktree.join("review-fix.txt").is_file());
+    assert_eq!(
+        run_git_fixture(&repo_root, &["rev-parse", "task-impl"]),
+        run_git_fixture(&repo_root, &["rev-parse", "main"]),
+        "the implement run's own branch is not moved"
+    );
+    assert!(prepared.session_identity().workspace_report.is_none());
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
 #[tokio::test]
-async fn request_revision_falls_back_to_fork_without_cli_transcript() {
+async fn request_revision_preserves_a_diverged_retained_workspace_and_forks_from_the_input() {
+    let config = test_config("revision-revisit-diverged");
+    let (repo_root, db) = init_resume_revision_fixture("revision-revisit-diverged", &config);
+    // Each side holds a commit the other lacks.
+    let review_worktree = repo_root.join(".kanna-worktrees/task-review");
+    std::fs::write(review_worktree.join("review-fix.txt"), "fixed in review").unwrap();
+    run_git_fixture(&review_worktree, &["add", "review-fix.txt"]);
+    run_git_fixture(&review_worktree, &["commit", "-m", "review fix"]);
+    let review_head = run_git_fixture(&review_worktree, &["rev-parse", "HEAD"]);
+    let impl_worktree = repo_root.join(".kanna-worktrees/task-impl");
+    std::fs::write(impl_worktree.join("late-impl.txt"), "late implement commit").unwrap();
+    run_git_fixture(&impl_worktree, &["add", "late-impl.txt"]);
+    run_git_fixture(&impl_worktree, &["commit", "-m", "late implement commit"]);
+    let impl_head = run_git_fixture(&impl_worktree, &["rev-parse", "HEAD"]);
+
+    let prepared = prepare_revision_task_for_api(
+        &db,
+        &config,
+        "review-task",
+        "in progress",
+        "Address the review fixes.",
+        None,
+    )
+    .unwrap();
+
+    // Nothing is reset or merged: the retained directory keeps its branch
+    // and commit, and the stage forks a fresh directory from the input.
+    assert!(prepared.revisited_workspace().is_none());
+    let fork = prepared
+        .forked_workspace()
+        .expect("a diverged directory is preserved and the stage forks fresh");
+    assert_eq!(fork.branch, "task-review-task-2");
+    assert_eq!(
+        run_git_fixture(
+            std::path::Path::new(&fork.worktree_path),
+            &["rev-parse", "HEAD"]
+        ),
+        review_head
+    );
+    assert_eq!(
+        run_git_fixture(&impl_worktree, &["rev-parse", "HEAD"]),
+        impl_head
+    );
+    assert_eq!(
+        run_git_fixture(&impl_worktree, &["branch", "--show-current"]),
+        "task-impl"
+    );
+    let report = prepared
+        .session_identity()
+        .workspace_report
+        .clone()
+        .expect("the preserved divergence is reported");
+    assert!(report.contains("task-impl"), "{report}");
+    assert!(report.contains("preserved untouched"), "{report}");
+    assert_eq!(
+        prepared.resume_fallback_reason.as_deref(),
+        Some(report.as_str())
+    );
+    let _ =
+        crate::task_creator::worktree::remove_prepared_worktree(&fork.worktree_path, &fork.branch);
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[tokio::test]
+async fn request_revision_keeps_uncommitted_changes_in_a_retained_workspace_at_the_input() {
+    let config = test_config("revision-revisit-dirty-equal");
+    let (repo_root, db) = init_resume_revision_fixture("revision-revisit-dirty-equal", &config);
+    let impl_worktree = repo_root.join(".kanna-worktrees/task-impl");
+    std::fs::write(impl_worktree.join("scratch.txt"), "uncommitted scratch").unwrap();
+    std::fs::write(impl_worktree.join("README.md"), "edited, not committed").unwrap();
+
+    let prepared = prepare_revision_task_for_api(
+        &db,
+        &config,
+        "review-task",
+        "in progress",
+        "Keep going.",
+        None,
+    )
+    .unwrap();
+
+    let revisited = prepared
+        .revisited_workspace()
+        .expect("a directory at the input is re-entered even with local changes");
+    assert_eq!(revisited.worktree_path, impl_worktree.to_string_lossy());
+    assert_eq!(
+        std::fs::read_to_string(impl_worktree.join("scratch.txt")).unwrap(),
+        "uncommitted scratch"
+    );
+    assert_eq!(
+        std::fs::read_to_string(impl_worktree.join("README.md")).unwrap(),
+        "edited, not committed"
+    );
+    assert_eq!(
+        run_git_fixture(&impl_worktree, &["branch", "--show-current"]),
+        revisited.branch
+    );
+    let report = prepared
+        .session_identity()
+        .workspace_report
+        .clone()
+        .expect("kept local changes are reported");
+    assert!(report.contains("uncommitted changes"), "{report}");
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[tokio::test]
+async fn request_revision_preserves_a_dirty_retained_workspace_behind_the_input() {
+    let config = test_config("revision-revisit-dirty-behind");
+    let (repo_root, db) = init_resume_revision_fixture("revision-revisit-dirty-behind", &config);
+    let review_worktree = repo_root.join(".kanna-worktrees/task-review");
+    std::fs::write(review_worktree.join("review-fix.txt"), "fixed in review").unwrap();
+    run_git_fixture(&review_worktree, &["add", "review-fix.txt"]);
+    run_git_fixture(&review_worktree, &["commit", "-m", "review fix"]);
+    let impl_worktree = repo_root.join(".kanna-worktrees/task-impl");
+    let impl_head = run_git_fixture(&impl_worktree, &["rev-parse", "HEAD"]);
+    std::fs::write(impl_worktree.join("scratch.txt"), "uncommitted scratch").unwrap();
+
+    let prepared = prepare_revision_task_for_api(
+        &db,
+        &config,
+        "review-task",
+        "in progress",
+        "Address the review fixes.",
+        None,
+    )
+    .unwrap();
+
+    // Moving the directory to the input would carry its local changes onto
+    // other commits, which is an implicit merge: the directory is left
+    // exactly as it was, and the stage forks fresh.
+    let fork = prepared
+        .forked_workspace()
+        .expect("a dirty directory off the input is preserved");
+    assert_eq!(
+        run_git_fixture(&impl_worktree, &["rev-parse", "HEAD"]),
+        impl_head
+    );
+    assert_eq!(
+        run_git_fixture(&impl_worktree, &["branch", "--show-current"]),
+        "task-impl"
+    );
+    assert_eq!(
+        std::fs::read_to_string(impl_worktree.join("scratch.txt")).unwrap(),
+        "uncommitted scratch"
+    );
+    let report = prepared
+        .session_identity()
+        .workspace_report
+        .clone()
+        .expect("the preserved local changes are reported");
+    assert!(report.contains("uncommitted changes"), "{report}");
+    let _ =
+        crate::task_creator::worktree::remove_prepared_worktree(&fork.worktree_path, &fork.branch);
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[tokio::test]
+async fn request_revision_without_a_transcript_starts_fresh_in_the_retained_directory() {
     let _env_guard = super::CLAUDE_CONFIG_DIR_LOCK.lock().unwrap();
-    let config = test_config("revision-resume-no-transcript");
-    let (repo_root, db) = init_resume_revision_fixture("revision-resume-no-transcript", &config);
+    let config = test_config("revision-revisit-no-transcript");
+    let (repo_root, db) = init_resume_revision_fixture("revision-revisit-no-transcript", &config);
     // Session store exists but holds no transcript for the recorded session.
     let claude_config_dir = repo_root.join("claude-config");
     std::fs::create_dir_all(claude_config_dir.join("projects")).unwrap();
@@ -707,13 +868,35 @@ async fn request_revision_falls_back_to_fork_without_cli_transcript() {
     std::env::remove_var("CLAUDE_CONFIG_DIR");
     let prepared = prepared.unwrap();
 
-    assert!(prepared.resumed_workspace().is_none());
-    let fork = prepared
-        .forked_workspace()
-        .expect("missing transcript falls back to a fresh fork");
-    let _ =
-        crate::task_creator::worktree::remove_prepared_worktree(&fork.worktree_path, &fork.branch);
-
+    // Same directory, new branch, new conversation.
+    let impl_worktree = repo_root.join(".kanna-worktrees/task-impl");
+    let revisited = prepared
+        .revisited_workspace()
+        .expect("a missing transcript still re-enters the stage's directory");
+    assert_eq!(revisited.worktree_path, impl_worktree.to_string_lossy());
+    assert_eq!(prepared.cwd(), impl_worktree.to_string_lossy());
+    assert!(prepared.resumed_from_run_id.is_none());
+    assert!(prepared
+        .resume_fallback_reason
+        .as_deref()
+        .is_some_and(|reason| reason.contains("transcript")));
+    // The fresh session is started from the ledger, not a transcript.
+    let ledger_path = prepared
+        .env
+        .get(crate::task_store::LEDGER_PATH_ENV)
+        .expect("fresh session receives the task ledger path");
+    assert!(ledger_path.ends_with("tasks/review-task"), "{ledger_path}");
+    match &prepared.session {
+        PreparedSessionSpawn::Pty { args, .. } => {
+            let command_line = args.last().expect("shell command");
+            assert!(command_line.contains("--session-id"));
+            assert!(!command_line.contains("--resume"));
+            assert!(command_line.contains("Original task:\nOriginal implementation prompt"));
+            assert!(command_line.contains("Reviewer feedback:\nAdd e2e coverage."));
+            assert!(command_line.contains(crate::task_store::LEDGER_PATH_ENV));
+        }
+        PreparedSessionSpawn::Agent { .. } => panic!("expected PTY session, got agent session"),
+    }
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 

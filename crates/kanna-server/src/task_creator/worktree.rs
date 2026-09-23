@@ -1,3 +1,4 @@
+use crate::db::Db;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -107,28 +108,230 @@ pub(crate) fn local_branch_exists(repo_path: &str, branch: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Branch/worktree name for a stage fork: the task's durable id plus a
-/// workspace counter (`task-<id>-2`, `task-<id>-3`, ...). The creation
-/// workspace `task-<id>` is workspace 1, so forks count from 2. Each
-/// workspace is an ephemeral manifestation of the task; the visible id ties
-/// it back to the durable row. Suffixes whose branch or worktree directory
-/// still exists are skipped (revisions can revisit a stage).
-pub(super) fn next_fork_branch(repo_path: &str, task_id: &str) -> Result<String, String> {
-    for n in 2u32..10_000 {
-        let candidate = format!("task-{}-{}", task_id, n);
-        let branch_exists = local_branch_exists(repo_path, &candidate);
-        let worktree_exists = Path::new(repo_path)
-            .join(".kanna-worktrees")
-            .join(&candidate)
-            .exists();
-        if !branch_exists && !worktree_exists {
-            return Ok(candidate);
+/// The workspace number a task branch or worktree directory name carries:
+/// `task-<id>` is the creation workspace (1), `task-<id>-<n>` is `n`.
+/// Anything else (a renamed PR branch, another task's name) carries none.
+pub(crate) fn task_branch_number(task_id: &str, name: &str) -> Option<i64> {
+    let prefix = format!("task-{task_id}");
+    let rest = name.strip_prefix(&prefix)?;
+    if rest.is_empty() {
+        return Some(1);
+    }
+    let digits = rest.strip_prefix('-')?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// The highest workspace number anything already names for this task: local
+/// refs, directories under `.kanna-worktrees`, and every branch or workspace
+/// the task's own records mention. At least 1, the creation workspace.
+fn used_task_branch_floor(db: &Db, repo_path: &str, task_id: &str) -> Result<i64, String> {
+    let mut floor = 1;
+    let mut consider = |name: &str| {
+        if let Some(number) = task_branch_number(task_id, name) {
+            floor = floor.max(number);
+        }
+    };
+    let output = Command::new("git")
+        .args([
+            "for-each-ref",
+            "--format=%(refname:short)",
+            &format!("refs/heads/task-{task_id}"),
+            &format!("refs/heads/task-{task_id}-*"),
+        ])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|error| format!("failed to run git for-each-ref: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "failed to list task branches: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    for name in String::from_utf8_lossy(&output.stdout).lines() {
+        consider(name.trim());
+    }
+    if let Ok(entries) = std::fs::read_dir(Path::new(repo_path).join(".kanna-worktrees")) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                consider(name);
+            }
         }
     }
-    Err(format!(
-        "no free fork workspace suffix for task {}",
-        task_id
-    ))
+    for name in db
+        .task_recorded_branch_names(task_id)
+        .map_err(|error| format!("db error: {error}"))?
+    {
+        consider(&name);
+    }
+    Ok(floor)
+}
+
+/// Reserve the task's next workspace branch, `task-<id>-<n>` (spec §6).
+///
+/// `n` comes from the task's persisted high-water counter and is durable
+/// before this returns, so it is spent before any git work: a failed
+/// worktree add, a rolled-back spawn, or a branch deleted later never makes
+/// the number available again. The counter is seeded above every suffix a
+/// ref, a directory, or the task's records already use, so tasks that forked
+/// before the counter existed continue above their highest workspace.
+pub(super) fn allocate_task_branch(
+    db: &Db,
+    repo_path: &str,
+    task_id: &str,
+) -> Result<String, String> {
+    let floor = used_task_branch_floor(db, repo_path, task_id)?;
+    let number = db
+        .reserve_task_branch_number(task_id, floor)
+        .map_err(|error| format!("db error: {error}"))?;
+    Ok(format!("task-{task_id}-{number}"))
+}
+
+/// A retained workspace's git state, read without changing it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WorkspaceGitState {
+    pub(super) head: String,
+    /// The branch checked out, or `None` for a detached HEAD.
+    pub(super) branch: Option<String>,
+    /// Uncommitted changes, including untracked files.
+    pub(super) dirty: bool,
+}
+
+pub(super) fn workspace_git_state(worktree_path: &str) -> Result<WorkspaceGitState, String> {
+    let git = |args: &[&str]| -> Result<std::process::Output, String> {
+        Command::new("git")
+            .args(args)
+            .current_dir(worktree_path)
+            .output()
+            .map_err(|error| format!("failed to run git {}: {error}", args.join(" ")))
+    };
+    let head = git(&["rev-parse", "--verify", "-q", "HEAD^{commit}"])?;
+    if !head.status.success() {
+        return Err(format!("{worktree_path} has no committed HEAD"));
+    }
+    let branch = git(&["symbolic-ref", "--short", "-q", "HEAD"])?;
+    let status = git(&["status", "--porcelain", "--untracked-files=normal"])?;
+    if !status.status.success() {
+        return Err(format!(
+            "git status failed in {worktree_path}: {}",
+            String::from_utf8_lossy(&status.stderr).trim()
+        ));
+    }
+    let branch = String::from_utf8_lossy(&branch.stdout).trim().to_string();
+    Ok(WorkspaceGitState {
+        head: String::from_utf8_lossy(&head.stdout).trim().to_string(),
+        branch: (!branch.is_empty()).then_some(branch),
+        dirty: !status.stdout.is_empty(),
+    })
+}
+
+/// The full commit id `revision` names in `repo_path`, if it names a commit.
+pub(super) fn resolve_commit(repo_path: &str, revision: &str) -> Option<String> {
+    let output = Command::new("git")
+        .args([
+            "rev-parse",
+            "--verify",
+            "-q",
+            "--end-of-options",
+            &format!("{revision}^{{commit}}"),
+        ])
+        .current_dir(repo_path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!commit.is_empty()).then_some(commit)
+}
+
+/// Whether `ancestor` is reachable from `descendant` (true when equal).
+pub(super) fn is_ancestor(repo_path: &str, ancestor: &str, descendant: &str) -> bool {
+    if ancestor == descendant {
+        return true;
+    }
+    Command::new("git")
+        .args([
+            "merge-base",
+            "--is-ancestor",
+            "--end-of-options",
+            ancestor,
+            descendant,
+        ])
+        .current_dir(repo_path)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Check out a newly allocated branch at `start_point` in an existing
+/// workspace. The caller has established that this moves nothing it must
+/// not: the workspace is either already at `start_point` (uncommitted
+/// changes stay where they are) or clean and behind it.
+pub(super) fn check_out_new_branch(
+    worktree_path: &str,
+    branch: &str,
+    start_point: &str,
+) -> Result<(), String> {
+    let output = Command::new("git")
+        .args(["switch", "--no-track", "-c", branch, start_point])
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|error| format!("failed to run git switch: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "failed to check out {branch} in {worktree_path}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+/// Undo [`check_out_new_branch`] after a failed spawn: return the workspace
+/// to what it had checked out and delete the unused branch. The directory
+/// itself is retained; its number stays spent.
+pub(super) fn restore_revisited_workspace(
+    worktree_path: &str,
+    new_branch: &str,
+    previous_branch: Option<&str>,
+    previous_head: &str,
+) -> Result<(), String> {
+    let mut args = vec!["switch"];
+    match previous_branch {
+        Some(branch) => args.push(branch),
+        None => {
+            args.push("--detach");
+            args.push(previous_head);
+        }
+    }
+    let output = Command::new("git")
+        .args(&args)
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|error| format!("failed to run git switch: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "failed to restore {worktree_path}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let output = Command::new("git")
+        .args(["branch", "-D", new_branch])
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|error| format!("failed to run git branch delete: {error}"))?;
+    if !output.status.success() {
+        let message = String::from_utf8_lossy(&output.stderr);
+        if !message.contains("not found") {
+            return Err(format!(
+                "failed to delete unused branch {new_branch}: {}",
+                message.trim()
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn generate_task_id() -> Result<String, String> {

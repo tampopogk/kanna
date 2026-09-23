@@ -662,6 +662,16 @@ fn record_stage_transition_run(
         if let Some(reason) = prepared.resume_fallback_reason.as_deref() {
             db.set_stage_run_resume_fallback_reason(run_id, reason)?;
         }
+        super::session::record_session_start(
+            db,
+            run_id,
+            &prepared.task_id,
+            &prepared.next_stage,
+            &prepared.cwd,
+            &prepared.agent_provider,
+            prepared.provider_session_id.as_deref(),
+            &prepared.session_identity,
+        )?;
         // The intent deliberately stays `spawn_ready` here. The run row and
         // its completion artifact must exist before Spawn can make the child
         // observable, but recording them submits nothing: the phase advances
@@ -745,11 +755,30 @@ fn record_stage_transition_failure(
     }
 }
 
-fn rollback_prepared_stage_fork(prepared: &PreparedStageRunSpawn, error: String) -> String {
-    if let PreparedRunWorkspace::Forked(fork) = &prepared.workspace {
-        if let Err(rollback_err) = remove_prepared_worktree(&fork.worktree_path, &fork.branch) {
-            return format!("{error}; fork rollback failed: {rollback_err}");
+/// Undo what preparing a run did to disk, when the run never started. A
+/// fresh fork is removed; a revisited stage directory is returned to the
+/// branch it had and keeps everything else. Every other workspace predates
+/// the preparation and is left alone. Spent branch numbers stay spent.
+pub(super) fn roll_back_prepared_workspace(workspace: &PreparedRunWorkspace) -> Result<(), String> {
+    match workspace {
+        PreparedRunWorkspace::Forked(fork) => {
+            remove_prepared_worktree(&fork.worktree_path, &fork.branch)
         }
+        PreparedRunWorkspace::Revisited(revisited) => super::worktree::restore_revisited_workspace(
+            &revisited.workspace.worktree_path,
+            &revisited.workspace.branch,
+            revisited.previous_branch.as_deref(),
+            &revisited.previous_head,
+        ),
+        PreparedRunWorkspace::Current
+        | PreparedRunWorkspace::Resumed(_)
+        | PreparedRunWorkspace::Recreated(_) => Ok(()),
+    }
+}
+
+fn rollback_prepared_stage_fork(prepared: &PreparedStageRunSpawn, error: String) -> String {
+    if let Err(rollback_err) = roll_back_prepared_workspace(&prepared.workspace) {
+        return format!("{error}; fork rollback failed: {rollback_err}");
     }
     error
 }
@@ -1069,19 +1098,17 @@ fn persist_stage_operation_intent(
     run_id: &str,
     phase: &str,
 ) -> Result<(), String> {
-    let (branch, worktree_path, rollback_on_failure) = match &prepared.workspace {
-        PreparedRunWorkspace::Forked(workspace) => (
+    // Only a fresh fork is deleted by restart recovery. A revisited stage
+    // directory is retained whatever happens: the new branch it checked out
+    // costs nothing to leave, and the directory may hold the stage's work.
+    let (branch, worktree_path) = match prepared.workspace.moved_to() {
+        Some(workspace) => (
             Some(workspace.branch.clone()),
             Some(workspace.worktree_path.clone()),
-            true,
         ),
-        PreparedRunWorkspace::Resumed(workspace) | PreparedRunWorkspace::Recreated(workspace) => (
-            Some(workspace.branch.clone()),
-            Some(workspace.worktree_path.clone()),
-            false,
-        ),
-        PreparedRunWorkspace::Current => (None, None, false),
+        None => (None, None),
     };
+    let rollback_on_failure = matches!(prepared.workspace, PreparedRunWorkspace::Forked(_));
     let payload = StageOperationPayload {
         version: 2,
         task_id: prepared.task_id.clone(),
@@ -1761,10 +1788,8 @@ fn reconcile_stage_operation_db(
         if !open {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
-        match &prepared.workspace {
-            PreparedRunWorkspace::Forked(workspace)
-            | PreparedRunWorkspace::Resumed(workspace)
-            | PreparedRunWorkspace::Recreated(workspace) => {
+        match prepared.workspace.moved_to() {
+            Some(workspace) => {
                 db.update_pipeline_item_stage_and_branch_with_trigger(
                     &prepared.task_id,
                     &prepared.next_stage,
@@ -1779,7 +1804,7 @@ fn reconcile_stage_operation_db(
                     &workspace.branch,
                 )?;
             }
-            PreparedRunWorkspace::Current => {
+            None => {
                 db.update_pipeline_item_stage_with_trigger(
                     &prepared.task_id,
                     &prepared.next_stage,
@@ -1969,6 +1994,7 @@ pub(crate) async fn rerun_prepared_stage_for_api(
     // before Spawn can make the child observable.
     record_rerun_stage_run(
         db_path,
+        &prepared.session_identity,
         &task_id,
         &stage,
         run_kind,
@@ -2246,6 +2272,26 @@ fn record_spawned_stage_run(
             Some(prepared.completion_transition.as_str()),
             true,
         )?;
+        // The creation workspace is the first stage's workspace; its session
+        // is recorded through the same start path every later session uses.
+        let session = super::session::session_identity(
+            db,
+            &prepared.created_task.task_id,
+            &prepared.created_task.stage,
+            &prepared.cwd,
+            &prepared.branch,
+            None,
+        );
+        super::session::record_session_start(
+            db,
+            run_id,
+            &prepared.created_task.task_id,
+            &prepared.created_task.stage,
+            &prepared.cwd,
+            &prepared.agent_provider,
+            prepared.provider_session_id.as_deref(),
+            &session,
+        )?;
         db.record_stage_run_prompt(run_id, &prepared.resolved_prompt)?;
         db.delete_create_task_intent(&prepared.created_task.task_id)
     })
@@ -2320,6 +2366,7 @@ fn record_prepared_task_spawn_failure(
 #[allow(clippy::too_many_arguments)]
 fn record_rerun_stage_run(
     db_path: &str,
+    session: &crate::db::StageRunSession,
     task_id: &str,
     stage: &str,
     run_kind: &'static str,
@@ -2366,6 +2413,20 @@ fn record_rerun_stage_run(
             // lineage-free so no-redo semantics are never inherited.
             None,
             Some(entry_channel),
+        )?;
+        let session_stage = db
+            .get_pipeline_item(task_id)?
+            .and_then(|item| item.stage)
+            .unwrap_or_else(|| stage.to_string());
+        super::session::record_session_start(
+            db,
+            run_id,
+            task_id,
+            &session_stage,
+            cwd,
+            agent_provider,
+            provider_session_id,
+            session,
         )?;
         db.delete_create_task_intent(task_id)
     })

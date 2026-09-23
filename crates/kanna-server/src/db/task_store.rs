@@ -185,6 +185,40 @@ pub const STAGE_COMPLETION_CONTINUATION: &str = "stage_completion";
 /// spent and the reviewer's run already finished).
 pub const REVISION_CONTINUATION: &str = "revision";
 
+/// The envelope's session reference. T0 defined `{kind: "stage_run", id}`;
+/// T2 adds the session's identity beside those keys when the run recorded
+/// one — `workspace_id`, `branch`, `name` and `transcript {provider,
+/// session_id, path}` — and never changes the two it inherited. Runs from
+/// before session identity keep exactly T0's shape.
+fn session_ref(db: &Db, run_id: &str) -> Result<Value, rusqlite::Error> {
+    let mut reference = json!({ "kind": "stage_run", "id": run_id });
+    if let Some(session) = db.stage_run_session(run_id)? {
+        let object = reference
+            .as_object_mut()
+            .expect("session reference is an object");
+        if let Some(workspace_id) = session.workspace_id {
+            object.insert("workspace_id".into(), Value::String(workspace_id));
+        }
+        if let Some(branch) = session.branch {
+            object.insert("branch".into(), Value::String(branch));
+        }
+        if let Some(name) = session.name {
+            object.insert("name".into(), Value::String(name));
+        }
+        if let Some(transcript) = session.transcript {
+            object.insert(
+                "transcript".into(),
+                json!({
+                    "provider": transcript.provider,
+                    "session_id": transcript.session_id,
+                    "path": transcript.path,
+                }),
+            );
+        }
+    }
+    Ok(reference)
+}
+
 pub fn ledger_entry_id(task_id: &str, sequence: i64) -> String {
     format!("{task_id}-{sequence:06}")
 }
@@ -265,11 +299,9 @@ impl Db {
         entry: NewLedgerEntry<'_>,
     ) -> Result<LedgerEntryRef, rusqlite::Error> {
         self.in_immediate_transaction_if_needed(|db| {
-            if let Some(existing) = db.ledger_entry_for_source(
-                entry.task_id,
-                entry.source_kind,
-                entry.source_id,
-            )? {
+            if let Some(existing) =
+                db.ledger_entry_for_source(entry.task_id, entry.source_kind, entry.source_id)?
+            {
                 if let Some(sequence) = entry.reserved_sequence {
                     db.release_ledger_reservation(entry.task_id, sequence)?;
                 }
@@ -317,7 +349,10 @@ impl Db {
                 "recorded_at": recorded_at,
                 "historical": entry.historical,
                 "run_id": entry.run_id,
-                "session_ref": entry.run_id.map(|run_id| json!({ "kind": "stage_run", "id": run_id })),
+                "session_ref": match entry.run_id {
+                    Some(run_id) => session_ref(db, run_id)?,
+                    None => Value::Null,
+                },
                 "declared_role": entry.declared_role,
                 "channel_identity": Value::Null,
                 "artifacts": {},

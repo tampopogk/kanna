@@ -65,6 +65,7 @@ function createHarness(options: {
   workspaceTask?: WorkspaceTask | null;
   workspaceTaskBlocked?: boolean;
   activeTabKind?: "agent" | "diff";
+  worktreePaths?: Record<string, string>;
 } = {}) {
   const openWindow = vi.fn(async () => {});
   const advanceStage = vi.fn(async () => {});
@@ -79,6 +80,9 @@ function createHarness(options: {
     selectedItemId: options.selectedSlotId ?? "create:stable",
     selectedTaskId: options.selectedTaskId ?? null,
     currentItem: options.currentItem ?? null,
+    selectedRepo: { id: "repo-1", path: "/repo" },
+    ideCommand: "code",
+    worktreePaths: options.worktreePaths ?? {},
     advanceStage,
   };
   const mainTabs = useMainTabs({ scopeKey: computed(() => "item:task-durable") });
@@ -230,6 +234,25 @@ describe("useAppKeyboardActions durable selection", () => {
 
     expect(toast.warning).toHaveBeenCalledWith("toasts.remoteTaskPathUnavailable");
     expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("opens the IDE in the task's recorded workspace after a loop back changed its branch", async () => {
+    const current = { ...item("task-durable"), branch: "task-durable-4" };
+    const { keyboardActions } = createHarness({
+      selectedTaskId: "task-durable",
+      currentItem: current,
+      worktreePaths: { "task-durable": "/repo/.kanna-worktrees/task-durable-2" },
+    });
+    invokeMock.mockResolvedValueOnce(undefined);
+
+    await keyboardActions.openInIDE();
+
+    expect(invokeMock).toHaveBeenCalledWith("run_script", {
+      script: 'code "/repo/.kanna-worktrees/task-durable-2"',
+      cwd: "/repo/.kanna-worktrees/task-durable-2",
+      env: {},
+    });
+    invokeMock.mockClear();
   });
 
   it("opens file picker shortcuts for a task owned by another machine", () => {

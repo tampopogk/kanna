@@ -10,6 +10,7 @@ mod merge;
 mod prompt;
 mod provider;
 mod resume;
+mod session;
 pub(crate) use resume::{
     claude_project_slug, claude_projects_dir, home_child, resolve_codex_session_id_in, same_cwd,
 };
@@ -63,7 +64,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use types::{
     CreatedTask, DeferredStageSetup, ForkedWorkspace, PreparedRunWorkspace, PreparedSessionSpawn,
-    RunWorkspaceSpec, TaskCreationRequest,
+    RevisitedWorkspace, RunWorkspaceSpec, TaskCreationRequest,
 };
 pub(crate) use types::{
     PrepareTaskError, PreparedStageRerun, PreparedStageRunSpawn, PreparedStageTransition,
@@ -865,7 +866,7 @@ pub(crate) fn prepare_rerun_stage_for_api(
             vars: repo_config.vars.as_ref(),
         },
     );
-    let worktree_path = format!("{}/.kanna-worktrees/{}", repo.path, branch);
+    let worktree_path = session::current_workspace_path(db, &repo.path, task_id, branch);
     let provider_workspace_root = if std::path::Path::new(&worktree_path).is_dir() {
         worktree_path.as_str()
     } else {
@@ -1101,9 +1102,12 @@ pub(crate) fn prepare_rerun_stage_for_api(
         .resolve_task_terminal_session_id(task_id)
         .map_err(|e| format!("db error: {}", e))?
         .unwrap_or_else(|| task_id.to_string());
+    let session_identity =
+        session::current_session_identity(db, task_id, &stage_name, &worktree_path, branch);
     Ok(PreparedStageRerun {
         task_id: task_id.to_string(),
         session_id,
+        session_identity: Box::new(session_identity),
         stage: current_stage.name.clone(),
         run_kind,
         stage_agent: current_stage.agent.clone(),
@@ -1255,9 +1259,17 @@ pub(crate) fn prepare_create_task_repair_for_api(
             .resolve_task_terminal_session_id(task_id)
             .map_err(|error| format!("db error: {error}"))?
             .unwrap_or_else(|| task_id.to_string());
+        let session_identity = session::current_session_identity(
+            db,
+            task_id,
+            &resolved.stage_name,
+            &worktree_path,
+            branch,
+        );
         return Ok(Some(PreparedStageRerun {
             task_id: task_id.to_string(),
             session_id,
+            session_identity: Box::new(session_identity),
             stage: resolved.stage_name,
             run_kind: "main",
             stage_agent: resolved.stage_agent,
@@ -1386,10 +1398,18 @@ pub(crate) fn prepare_create_task_repair_for_api(
         .resolve_task_terminal_session_id(task_id)
         .map_err(|error| format!("db error: {error}"))?
         .unwrap_or_else(|| task_id.to_string());
+    let session_identity = session::current_session_identity(
+        db,
+        task_id,
+        &resolved.stage_name,
+        &worktree_path,
+        branch,
+    );
 
     Ok(Some(PreparedStageRerun {
         task_id: task_id.to_string(),
         session_id,
+        session_identity: Box::new(session_identity),
         stage: resolved.stage_name,
         run_kind: "main",
         stage_agent: resolved.stage_agent,
@@ -1482,17 +1502,27 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
     let repository_setup_pending = match &workspace_spec {
         RunWorkspaceSpec::Resume(resume) => resume.repository_setup_pending,
         RunWorkspaceSpec::Recreate { .. } | RunWorkspaceSpec::FinishRecreate { .. } => true,
-        RunWorkspaceSpec::Current | RunWorkspaceSpec::Fork { .. } => false,
+        RunWorkspaceSpec::Current
+        | RunWorkspaceSpec::Fork { .. }
+        | RunWorkspaceSpec::Revisit(_) => false,
     };
+    // The task's current workspace is wherever its record says: after a loop
+    // back, the branch checked out there no longer names the directory.
+    let current_worktree = session::current_workspace_path(db, &repo.path, task_id, branch);
+    let mut workspace_report = None;
     let (workspace, resume_session_id, resumed_from_run_id) = match workspace_spec {
         RunWorkspaceSpec::Fork {
             branch: fork_branch,
+            start_point,
+            report,
         } => {
-            // Fork from the branch actually checked out in the current
-            // worktree (agents may have renamed it — the PR agent does).
-            let start_point =
-                worktree::resolve_current_source_worktree_branch(&repo.path, Some(branch))
-                    .unwrap_or_else(|| branch.to_string());
+            workspace_report = report;
+            // The recorded input commit when there is one. Otherwise fork
+            // from the branch actually checked out in the current worktree
+            // (agents may have renamed it — the PR agent does).
+            let start_point = start_point.unwrap_or_else(|| {
+                resume::current_branch(&current_worktree).unwrap_or_else(|| branch.to_string())
+            });
             let worktree_path = format!("{}/.kanna-worktrees/{}", repo.path, fork_branch);
             create_worktree(&repo.path, &fork_branch, &worktree_path, Some(&start_point))?;
             (
@@ -1502,6 +1532,33 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
                 }),
                 None,
                 None,
+            )
+        }
+        RunWorkspaceSpec::Revisit(revisit) => {
+            workspace_report = revisit.report;
+            worktree::check_out_new_branch(
+                &revisit.worktree_path,
+                &revisit.branch,
+                &revisit.start_point,
+            )?;
+            let (resume_session_id, resumed_from_run_id) = match revisit.resume {
+                Some(resume) => (
+                    Some(resume.provider_session_id),
+                    Some(resume.resumed_from_run_id),
+                ),
+                None => (None, None),
+            };
+            (
+                PreparedRunWorkspace::Revisited(RevisitedWorkspace {
+                    workspace: ForkedWorkspace {
+                        branch: revisit.branch,
+                        worktree_path: revisit.worktree_path,
+                    },
+                    previous_branch: revisit.previous_branch,
+                    previous_head: revisit.previous_head,
+                }),
+                resume_session_id,
+                resumed_from_run_id,
             )
         }
         RunWorkspaceSpec::Resume(resume) => (
@@ -1514,8 +1571,8 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
         ),
         RunWorkspaceSpec::Recreate {
             branch: restored_branch,
+            worktree_path,
         } => {
-            let worktree_path = format!("{}/.kanna-worktrees/{}", repo.path, restored_branch);
             create_worktree(
                 &repo.path,
                 &restored_branch,
@@ -1560,12 +1617,21 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
         ),
         RunWorkspaceSpec::Current => (PreparedRunWorkspace::Current, None, None),
     };
-    let worktree_path = match &workspace {
-        PreparedRunWorkspace::Forked(workspace)
-        | PreparedRunWorkspace::Resumed(workspace)
-        | PreparedRunWorkspace::Recreated(workspace) => workspace.worktree_path.clone(),
-        PreparedRunWorkspace::Current => format!("{}/.kanna-worktrees/{}", repo.path, branch),
+    let (worktree_path, session_branch) = match workspace.moved_to() {
+        Some(moved) => (moved.worktree_path.clone(), moved.branch.clone()),
+        None => (
+            current_worktree.clone(),
+            resume::current_branch(&current_worktree).unwrap_or_else(|| branch.to_string()),
+        ),
     };
+    let session_identity = session::session_identity(
+        db,
+        task_id,
+        item_stage,
+        &worktree_path,
+        &session_branch,
+        workspace_report,
+    );
 
     let prepared_session = (|| {
         let repo_config = definitions.config();
@@ -1716,14 +1782,10 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
     ) = match prepared_session {
         Ok(prepared) => prepared,
         Err(error) => {
-            if let PreparedRunWorkspace::Forked(fork) = &workspace {
-                if let Err(rollback_error) =
-                    remove_prepared_worktree(&fork.worktree_path, &fork.branch)
-                {
-                    return Err(format!(
-                        "{error}; fork preparation rollback failed: {rollback_error}"
-                    ));
-                }
+            if let Err(rollback_error) = lifecycle::roll_back_prepared_workspace(&workspace) {
+                return Err(format!(
+                    "{error}; fork preparation rollback failed: {rollback_error}"
+                ));
             }
             return Err(error);
         }
@@ -1751,6 +1813,7 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
         resumed_from_run_id,
         replaces_run_id: None,
         resume_fallback_reason: None,
+        session_identity,
         cwd: worktree_path,
         env: spawn_env,
         terminal_prelude: None,

@@ -25,7 +25,8 @@ use std::path::Path;
 use std::process::Command;
 
 use super::resume::current_branch;
-use super::worktree::{local_branch_exists, resolve_current_source_worktree_branch};
+use super::session::current_workspace_path;
+use super::worktree::{is_ancestor, local_branch_exists};
 
 /// One branch the task's work might be sitting on, and where it is checked out.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,17 +80,15 @@ pub(crate) fn task_workspaces(
     };
 
     if let Some(stored_branch) = current_branch_name {
-        let worktree_path = Path::new(repo_path)
-            .join(".kanna-worktrees")
-            .join(stored_branch);
-        let resolved = resolve_current_source_worktree_branch(repo_path, Some(stored_branch))
+        // The task's workspace is where its record says; the branch checked
+        // out there may not name the directory.
+        let worktree_path = current_workspace_path(db, repo_path, task_id, stored_branch);
+        let is_dir = Path::new(&worktree_path).is_dir();
+        let resolved = is_dir
+            .then(|| current_branch(&worktree_path))
+            .flatten()
             .unwrap_or_else(|| stored_branch.to_string());
-        push(
-            resolved,
-            worktree_path
-                .is_dir()
-                .then(|| worktree_path.to_string_lossy().to_string()),
-        );
+        push(resolved, is_dir.then_some(worktree_path));
     }
 
     let cwds = db
@@ -236,9 +235,9 @@ pub(crate) fn reconcile_task_work_branch(
     let current_worktree = source_task
         .branch
         .as_deref()
-        .map(|branch| Path::new(repo_path).join(".kanna-worktrees").join(branch));
+        .map(|branch| current_workspace_path(db, repo_path, task_id, branch));
     if let (Some(current), Some(tip_worktree)) = (&current_worktree, &tip.worktree_path) {
-        if super::resume::same_cwd(&current.to_string_lossy(), tip_worktree) {
+        if super::resume::same_cwd(current, tip_worktree) {
             return Ok(());
         }
     }
@@ -288,23 +287,4 @@ fn rev_parse_branch(repo_path: &str, branch: &str) -> Option<String> {
     }
     let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!commit.is_empty()).then_some(commit)
-}
-
-/// Whether `ancestor` is reachable from `descendant` (true when equal).
-fn is_ancestor(repo_path: &str, ancestor: &str, descendant: &str) -> bool {
-    if ancestor == descendant {
-        return true;
-    }
-    Command::new("git")
-        .args([
-            "merge-base",
-            "--is-ancestor",
-            "--end-of-options",
-            ancestor,
-            descendant,
-        ])
-        .current_dir(repo_path)
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
 }
