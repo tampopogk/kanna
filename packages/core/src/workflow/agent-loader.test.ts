@@ -5,6 +5,7 @@ import {
   checkDefinitionFormula,
   parseAgentDefinition,
   parseAgentExtension,
+  resolveAgentWithExtension,
   validateAgentDefinition,
 } from "./agent-loader";
 import type { AgentDefinition, AgentExtension } from "./workflow-types";
@@ -548,5 +549,55 @@ describe("definition formula (spec §12, T10)", () => {
       if (!/^\s*role:|^\s*providers:/m.test(content.split(/\n---/)[0] ?? "")) continue;
       expect(checkDefinitionFormula(content), name).toEqual([]);
     }
+  });
+
+  describe("resolveAgentWithExtension (T10 follow-up: check after EXTEND merge)", () => {
+    const base = `---\nname: test\nrole: A role\nproviders: claude\n---\n${FORMULA_TEXT}\n${pad(8)}`;
+
+    it("passes through a formula base with a short, compliant extension", () => {
+      const merged = resolveAgentWithExtension(base, "One more sentence.");
+      expect(merged.prompt).toContain("One more sentence.");
+    });
+
+    it("rejects an extension that pushes a compliant base past 40 lines", () => {
+      expect(() => resolveAgentWithExtension(base, pad(30))).toThrow(/15-40 lines/);
+    });
+
+    it("rejects an extension that reintroduces a legacy result variable", () => {
+      expect(() => resolveAgentWithExtension(base, "Uses $PREV_MAIN_RESULT.")).toThrow(/PREV_MAIN_RESULT/);
+    });
+
+    it("does not enforce the formula when neither base nor extension opts in", () => {
+      const legacyBase = "---\nname: test\ndescription: Legacy\nagent_provider: claude\n---\nOne short line.";
+      expect(() => resolveAgentWithExtension(legacyBase, pad(50))).not.toThrow();
+    });
+
+    it("enforces the formula when only the extension opts in", () => {
+      const legacyBase = "---\nname: test\ndescription: Legacy\nagent_provider: claude\n---\nOne short line.";
+      expect(() => resolveAgentWithExtension(legacyBase, "---\nrole: Adds formula opt-in\n---\nToo short.")).toThrow(
+        /15-40 lines/
+      );
+    });
+
+    // Review follow-up: shared, byte-for-byte, with the Rust test
+    // `agent_definition_formula_counts_the_resolved_document_like_a_source_file`
+    // in core.rs. render_agent_md/renderAgentMd re-serialized the resolved
+    // AgentDefinition instead of counting the resolved document the way the
+    // base check counts a source file — Rust's serde_yaml wrote
+    // `agent_provider` one entry per line (turning this fixture's one-line,
+    // 5-provider frontmatter into six lines), while core's old
+    // JSON.stringify-based renderer inflated it differently. Both sides must
+    // now accept and reject this fixture identically.
+    it("counts the resolved document the way the base check counts a source file", () => {
+      const fiveProviderBase =
+        "---\nname: reviewer\nrole: A one-sentence role\nproviders: claude, codex, copilot, opencode, antigravity\n---\n\n" +
+        "## Produces\nsomething\n## Reads\nsomething\n## Must not\nsomething\n## Stop when\nsomething\n" +
+        "extra\n".repeat(25).trimEnd();
+      expect(fiveProviderBase.split("\n").length).toBe(39);
+
+      expect(() => resolveAgentWithExtension(fiveProviderBase, "")).not.toThrow();
+
+      expect(() => resolveAgentWithExtension(fiveProviderBase, "One more line.")).toThrow(/got 41/);
+    });
   });
 });

@@ -950,9 +950,12 @@ describe("QA workflow assets", () => {
     // The server-owned handoff envelope is built from headRefName/baseRefName,
     // which task metadata never carries — it only has prUrl. Taking the
     // metadata path and skipping `gh pr view` leaves both refs unresolved.
-    expect(approveAgent).toContain("gh pr view <prUrl-or-$BRANCH> --json url,isDraft,baseRefName,headRefName,title");
-    expect(approveAgent).toContain("Run it even when task context already gave you `prUrl`");
-    expect(approveAgent).toContain("If no PR resolves");
+    expect(approveAgent).toContain("gh pr view <prUrl> --json url,isDraft,baseRefName,headRefName,title");
+    expect(approveAgent).toContain("Run it even though task context already gave you `prUrl`");
+    // T10 follow-up: no $BRANCH fallback — the pr stage always records
+    // prUrl, so a missing one is a failure, not a branch guess.
+    expect(approveAgent).not.toContain("$BRANCH");
+    expect(approveAgent).toContain("do not guess a branch");
     expect(approveContract).toContain("including when task metadata already carried `prUrl`");
     expect(approveContract).toMatch(/headRefName.*baseRefName/);
   });

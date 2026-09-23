@@ -193,6 +193,77 @@ export function parseAgentExtension(content: string): AgentExtension {
   return ext;
 }
 
+// Whether an AGENT.md/EXTEND.md's frontmatter declares `role` or `providers`
+// (the definition-formula opt-in), checked ahead of a full parse so a caller
+// merging a base with an extension can tell whether *either* side opted in.
+function contentUsesFormula(content: string): boolean {
+  const { frontmatter } = parseFrontmatter(content);
+  const fm: Record<string, unknown> = frontmatter ?? {};
+  return fm.role !== undefined || fm.providers !== undefined;
+}
+
+// The raw frontmatter text of an AGENT.md/EXTEND.md file, verbatim — the same
+// capture group `parseFrontmatter` (custom-tasks.ts) parses into an object,
+// returned here unparsed, alongside the body and whether it opened with the
+// conventional blank separator line. Mirrors the server's `split_frontmatter`.
+function splitFrontmatterRaw(content: string): { frontmatter: string | null; body: string } {
+  const match = content.match(/^---[ \t]*\r?\n([\s\S]*?\r?\n)?---[ \t]*\r?\n?([\s\S]*)$/);
+  if (!match) return { frontmatter: null, body: content };
+  return { frontmatter: match[1] ?? "", body: match[2] ?? "" };
+}
+
+// The document `checkDefinitionFormula` counts and section-scans after
+// EXTEND.md is merged in: the base file's own frontmatter, verbatim (never
+// re-serialized — see `resolveAgentWithExtension` for why), the `---` frame
+// around it exactly as the base file had it (including whether its body
+// opened with the conventional blank separator line), and the merged prompt
+// body. With no frontmatter this is just the prompt, matching how a
+// frontmatter-less base would have counted on its own. Mirrors the server's
+// `resolved_formula_text`.
+function resolvedFormulaText(baseFrontmatter: string | null, baseHasLeadingBlank: boolean, prompt: string): string {
+  if (baseFrontmatter === null) {
+    return `${prompt.trim()}\n`;
+  }
+  const separator = baseHasLeadingBlank ? "\n" : "";
+  return `---\n${baseFrontmatter.replace(/\n+$/, "")}\n---\n${separator}${prompt.trim()}\n`;
+}
+
+/**
+ * Parses a base AGENT.md and an EXTEND.md together, and — when either side
+ * opts into the definition formula (spec §12) — re-checks the formula
+ * against the *resolved*, merged document. `parseAgentDefinition` alone only
+ * ever validated the base file: an extension could push a compliant base
+ * past the 40-line cap, or smuggle in a legacy result variable, with nothing
+ * checking the document a session actually receives. Mirrors the server's
+ * `agent_optional` in `definitions.rs`.
+ *
+ * The recheck counts the base file's own frontmatter lines, verbatim, plus
+ * the merged prompt body — never a re-serialization of the resolved
+ * `AgentDefinition`. Re-serializing (e.g. one YAML line per `agent_provider`
+ * entry) can turn a one-line `providers: claude, codex, copilot, opencode,
+ * antigravity` frontmatter into six lines, inflating a formula-compliant
+ * base past the cap the base check above never saw it fail — the base-only
+ * check counted the file as authored, so this recheck must count the
+ * resolved document the same way.
+ */
+export function resolveAgentWithExtension(baseContent: string, extensionContent: string): AgentDefinition {
+  const base = parseAgentDefinition(baseContent);
+  const extension = parseAgentExtension(extensionContent);
+  const merged = applyAgentExtension(base, extension);
+
+  if (contentUsesFormula(baseContent) || contentUsesFormula(extensionContent)) {
+    const { frontmatter, body } = splitFrontmatterRaw(baseContent);
+    const hasLeadingBlank = body.startsWith("\n") || body.startsWith("\r\n");
+    const resolved = resolvedFormulaText(frontmatter, hasLeadingBlank, merged.prompt);
+    const formulaErrors = checkDefinitionFormula(resolved);
+    if (formulaErrors.length > 0) {
+      throw new Error(`Invalid resolved agent (AGENT.md merged with EXTEND.md): ${formulaErrors.join("; ")}`);
+    }
+  }
+
+  return merged;
+}
+
 export function applyAgentExtension(base: AgentDefinition, extension: AgentExtension): AgentDefinition {
   if (base.agent_provider && extension.agent_provider) {
     const previous = parseAgentSelection(base.agent_provider, false);
