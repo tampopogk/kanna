@@ -2630,6 +2630,36 @@ async fn settle_ledger_continuation(
     .await
 }
 
+/// Publish the task's ledger and claim the continuation `operation_id` that
+/// the caller itself recorded and still holds the task mutation lease for.
+/// `Ok(false)` when publication is still waiting on an earlier entry.
+async fn claim_own_continuation(
+    state: &Arc<AppState>,
+    task_id: &str,
+    operation_id: &str,
+) -> Result<bool, String> {
+    let state = Arc::clone(state);
+    let task_id = task_id.to_string();
+    let operation_id = operation_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        let db = Db::open(&state.config.db_path).map_err(|error| format!("db error: {error}"))?;
+        crate::task_store::flush_task(&db, &state.config.db_path, &task_id)?;
+        match db
+            .claim_ledger_continuation(&task_id)
+            .map_err(|error| format!("db error: {error}"))?
+        {
+            Some(claimed) if claimed.operation_id == operation_id => Ok(true),
+            Some(claimed) => Err(format!(
+                "task {task_id} owed continuation {} instead of {operation_id}; not dispatched",
+                claimed.operation_id
+            )),
+            None => Ok(false),
+        }
+    })
+    .await
+    .map_err(|error| format!("continuation worker failed: {error}"))?
+}
+
 /// Is the task still where the continuation's operation left it?
 fn continuation_still_owed(
     db: &Db,
@@ -2650,12 +2680,14 @@ fn continuation_still_owed(
     if item.stage.as_deref() != Some(stage) {
         return Ok(false);
     }
-    match payload.get("runId").and_then(serde_json::Value::as_str) {
-        Some(run_id) => Ok(db
-            .latest_stage_run(&continuation.task_id)?
-            .is_some_and(|latest| latest.id == run_id)),
-        None => Ok(true),
-    }
+    // Without a recorded run the continuation cannot be tied to the session
+    // it concluded, so it is never treated as matching whatever run is live.
+    let Some(run_id) = payload.get("runId").and_then(serde_json::Value::as_str) else {
+        return Ok(false);
+    };
+    Ok(db
+        .latest_stage_run(&continuation.task_id)?
+        .is_some_and(|latest| latest.id == run_id))
 }
 
 fn owed_transition(
@@ -3135,69 +3167,76 @@ pub(super) async fn request_revision(
                 budget.limit,
                 false,
             );
-            let finalized = db.with_immediate_transaction(|db| -> rusqlite::Result<i64> {
-                let event_floor = db.ledger_event_floor()?;
-                let rounds = if origin.is_agent() {
-                    db.claim_agent_revision_round_in_transaction(&source_task_id, budget.limit)?
-                        .ok_or(rusqlite::Error::QueryReturnedNoRows)?
-                } else {
-                    db.reset_task_revision_rounds(&source_task_id)?;
-                    0
-                };
-                if let Some(run_id) = payload.run_id.as_deref() {
-                    db.finish_stage_run(
-                        run_id,
-                        "failed",
-                        Some(&stage_result),
-                        Some(&payload.summary),
+            let finalized =
+                db.with_immediate_transaction(|db| -> rusqlite::Result<(i64, String)> {
+                    let event_floor = db.ledger_event_floor()?;
+                    let rounds = if origin.is_agent() {
+                        db.claim_agent_revision_round_in_transaction(&source_task_id, budget.limit)?
+                            .ok_or(rusqlite::Error::QueryReturnedNoRows)?
+                    } else {
+                        db.reset_task_revision_rounds(&source_task_id)?;
+                        0
+                    };
+                    if let Some(run_id) = payload.run_id.as_deref() {
+                        db.finish_stage_run(
+                            run_id,
+                            "failed",
+                            Some(&stage_result),
+                            Some(&payload.summary),
+                        )?;
+                    }
+                    db.append_task_event(
+                        &source_task_id,
+                        crate::db::TaskEventKind::RevisionRequested,
+                        revision_event_payload,
                     )?;
-                }
-                db.append_task_event(
-                    &source_task_id,
-                    crate::db::TaskEventKind::RevisionRequested,
-                    revision_event_payload,
-                )?;
-                // The budget counter above is not a history — a human request
-                // resets it — and the event is pruned after 14 days. Analytics
-                // reads this row instead, written in the same transaction so
-                // the record and the revision cannot disagree.
-                db.record_revision_request_in_transaction(
-                    &source_task_id,
-                    recorded_revision_origin(origin),
-                    Some(payload.target_stage.as_str()),
-                    true,
-                )?;
-                if let Some(review) = review_result.as_ref() {
-                    review.enqueue(db, &source_task_id, &payload, origin, event_floor)?;
-                }
-                // The reviser's spawn is owed from this commit on, whatever
-                // happens to the detached worker: the round is spent and the
-                // reviewer's run is finished. The continuation is what lets
-                // the publisher start the reviser if publication has to wait,
-                // fenced to the stage and reviewer run this request saw. It
-                // supersedes any transition an earlier completion still owed.
-                let source_stage = db
-                    .get_pipeline_item(&source_task_id)?
-                    .and_then(|item| item.stage);
-                db.put_ledger_continuation(
-                    &source_task_id,
-                    &format!("revision:{source_task_id}:{event_floor}"),
-                    crate::db::task_store::REVISION_CONTINUATION,
-                    &serde_json::json!({
-                        "stage": source_stage,
-                        "runId": payload.run_id,
-                        "targetStage": payload.target_stage,
-                        "prompt": revision_prompt,
-                        "round": round.map(|round| serde_json::json!({
-                            "number": round.number,
-                            "limit": round.limit,
-                        })),
-                    }),
-                )?;
-                Ok(rounds)
-            });
-            let rounds = match finalized {
-                Ok(rounds) => rounds,
+                    // The budget counter above is not a history — a human request
+                    // resets it — and the event is pruned after 14 days. Analytics
+                    // reads this row instead, written in the same transaction so
+                    // the record and the revision cannot disagree.
+                    db.record_revision_request_in_transaction(
+                        &source_task_id,
+                        recorded_revision_origin(origin),
+                        Some(payload.target_stage.as_str()),
+                        true,
+                    )?;
+                    if let Some(review) = review_result.as_ref() {
+                        review.enqueue(db, &source_task_id, &payload, origin, event_floor)?;
+                    }
+                    // The reviser's spawn is owed from this commit on, whatever
+                    // happens to the detached worker: the round is spent and the
+                    // reviewer's run is finished. The continuation is what lets
+                    // the publisher start the reviser if publication has to wait,
+                    // fenced to the stage and reviewer run this request saw. It
+                    // supersedes any transition an earlier completion still owed.
+                    let source_stage = db
+                        .get_pipeline_item(&source_task_id)?
+                        .and_then(|item| item.stage);
+                    // The run this revision concludes is the task's latest agent
+                    // run, whether or not this request was the one allowed to
+                    // finish it (a human may revise a run that already ended).
+                    let concluded_run_id = db.latest_stage_run(&source_task_id)?.map(|run| run.id);
+                    let continuation_operation_id =
+                        format!("revision:{source_task_id}:{event_floor}");
+                    db.put_ledger_continuation(
+                        &source_task_id,
+                        &continuation_operation_id,
+                        crate::db::task_store::REVISION_CONTINUATION,
+                        &serde_json::json!({
+                            "stage": source_stage,
+                            "runId": concluded_run_id,
+                            "targetStage": payload.target_stage,
+                            "prompt": revision_prompt,
+                            "round": round.map(|round| serde_json::json!({
+                                "number": round.number,
+                                "limit": round.limit,
+                            })),
+                        }),
+                    )?;
+                    Ok((rounds, continuation_operation_id))
+                });
+            let (rounds, continuation_operation_id) = match finalized {
+                Ok(finalized) => finalized,
                 Err(error) => {
                     release_revision_result(&db, &source_task_id, review_result.as_ref());
                     let error = crate::task_creator::rollback_prepared_stage_run_for_api(
@@ -3215,6 +3254,7 @@ pub(super) async fn request_revision(
                 source_task_id,
                 prepared: Box::new(prepared),
                 budget,
+                continuation_operation_id,
             })
         })
         .await?
@@ -3264,6 +3304,7 @@ pub(super) async fn request_revision(
             source_task_id,
             prepared,
             budget,
+            continuation_operation_id,
         } => {
             // The reviser starts only once the reviewer's result is on disk,
             // and only by whoever claims the revision's continuation. Holding
@@ -3271,14 +3312,19 @@ pub(super) async fn request_revision(
             // to wait, the prepared workspace is rolled back and the publisher
             // starts the reviser from the continuation later — the round was
             // spent once and is not spent again.
-            let owned = match settle_ledger_continuation(&state, &source_task_id, true).await {
-                Ok(Some(OwedTransition::Revision { .. })) => true,
-                Ok(_) => false,
-                Err((_, error)) => {
-                    log::warn!("revision of {source_task_id} waits for its ledger: {error}");
-                    false
-                }
-            };
+            // Its own continuation, just committed under the lease this
+            // request still holds, is claimed by operation id; the stage/run
+            // fence is for claims made later, after the task may have moved.
+            let owned =
+                match claim_own_continuation(&state, &source_task_id, &continuation_operation_id)
+                    .await
+                {
+                    Ok(owned) => owned,
+                    Err(error) => {
+                        log::warn!("revision of {source_task_id} waits for its ledger: {error}");
+                        false
+                    }
+                };
             if owned {
                 // Ownership moves into the worker: the task stays claimed until
                 // the revision has actually landed, not just until this response.
@@ -3344,6 +3390,7 @@ enum RevisionOutcome {
         source_task_id: String,
         prepared: Box<crate::task_creator::PreparedStageRunSpawn>,
         budget: crate::task_creator::RevisionBudget,
+        continuation_operation_id: String,
     },
 }
 

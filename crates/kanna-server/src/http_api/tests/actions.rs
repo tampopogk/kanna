@@ -8927,3 +8927,173 @@ async fn a_revision_waiting_on_its_ledger_starts_the_reviser_once_from_the_conti
     let _ = std::fs::remove_dir_all(&daemon_dir);
     let _ = std::fs::remove_dir_all(&repo_root);
 }
+
+/// A human may revise a review run that has already finished. The owed
+/// reviser is still fenced to that concluded run: if an operator resumes the
+/// stage with a new run before the ledger recovers, the old revision must not
+/// start and replace the session the operator just recovered.
+#[tokio::test]
+async fn a_human_revision_of_a_finished_run_is_not_dispatched_over_a_resumed_run() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let repo_root = crate::test_paths::unique_test_path("kanna-ledger-revision-human");
+    init_test_git_repo(&repo_root);
+    std::fs::write(
+        repo_root.join(".kanna/workflows/reviewable.json"),
+        serde_json::json!({
+            "name": "reviewable",
+            "revision_limit": 5,
+            "stages": [
+                { "name": "in progress", "prompt": "$TASK_PROMPT", "policy": { "transition": "manual" } },
+                { "name": "review", "policy": { "transition": "auto" } }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    for args in [
+        vec!["add", ".kanna/workflows/reviewable.json"],
+        vec!["commit", "-qm", "add reviewable workflow"],
+    ] {
+        assert!(Command::new("git")
+            .args(&args)
+            .current_dir(&repo_root)
+            .status()
+            .unwrap()
+            .success());
+    }
+    publish_test_origin_main(&repo_root);
+    let source_worktree = commit_branch_change(
+        &repo_root,
+        "task-revision-human",
+        "work.txt",
+        "reviewed work",
+    );
+    let daemon_dir = crate::test_paths::unique_test_path("kanna-ledger-revision-human-d");
+    std::fs::create_dir_all(&daemon_dir).unwrap();
+    let commands = spawn_recording_daemon(&daemon_dir);
+    let config = ledger_fixture_config("revision-human", &daemon_dir);
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+    db.insert_test_pipeline_item(
+        "revision-human",
+        "repo-1",
+        "Implement reviewed work",
+        Some("Reviewed work"),
+        "review",
+        "2026-09-22 10:00:00",
+    )
+    .unwrap();
+    db.update_test_pipeline_item_stage_context(
+        "revision-human",
+        "task-revision-human",
+        "reviewable",
+        None,
+        "claude",
+    )
+    .unwrap();
+    db.upsert_worktree(
+        "wt-revision-human",
+        "revision-human",
+        &source_worktree.to_string_lossy(),
+        "task-revision-human",
+    )
+    .unwrap();
+    let run = |id: &'static str| crate::db::NewStageRun {
+        id,
+        task_id: "revision-human",
+        stage: "review",
+        kind: "main",
+        agent: Some("review"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: Some("revision-human"),
+        provider_session_id: None,
+        cwd: None,
+        resumed_from_run_id: None,
+    };
+    db.insert_stage_run(crate::db::NewStageRun {
+        cwd: Some(&source_worktree.to_string_lossy()),
+        ..run("review-run")
+    })
+    .unwrap();
+    drop(db);
+
+    let state = Arc::new(super::AppState::new(config.clone()));
+    let app = super::router(Arc::clone(&state));
+    let root = crate::task_store::root_for_db(&config.db_path);
+
+    // The reviewer finishes its run; its result's publication fails.
+    crate::task_store::inject_fault(&root, crate::task_store::FlushFault::BeforePublish(1));
+    let (status, body) = post_json(
+        &app,
+        "/v1/tasks/revision-human/actions/complete-stage",
+        serde_json::json!({
+            "runId": "review-run",
+            "status": "partial",
+            "summary": "Review found a defect it could not finish checking",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    let db = Db::open(&config.db_path).unwrap();
+    assert_ne!(
+        db.stage_run("review-run").unwrap().unwrap().status,
+        "running"
+    );
+
+    // A human revises the finished run while publication is still failing.
+    crate::task_store::inject_fault(&root, crate::task_store::FlushFault::BeforePublish(1));
+    let (status, body) = post_json(
+        &app,
+        "/v1/tasks/revision-human/actions/request-revision",
+        serde_json::json!({
+            "runId": "review-run",
+            "origin": "human",
+            "targetStage": "in progress",
+            "summary": "Please fix the defect",
+            "prompt": "Fix the defect the review found",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("Do not request it again"), "{body}");
+    crate::http_api::wait_for_task_mutation_to_finish(&state, "revision-human").await;
+    assert!(db.has_ledger_continuation("revision-human").unwrap());
+    let rounds_after_request = db.task_revision_rounds("revision-human").unwrap();
+
+    // The operator resumes the review stage with a new run before the
+    // ledger recovers.
+    db.insert_stage_run(run("resumed-run")).unwrap();
+
+    crate::http_api::task_actions::resume_ledger_continuations(Arc::clone(&state)).await;
+    crate::http_api::wait_for_task_mutation_to_finish(&state, "revision-human").await;
+
+    assert!(!db.has_ledger_continuation("revision-human").unwrap());
+    assert_eq!(spawn_count(&commands), 0, "the old revision must not start");
+    assert_eq!(
+        db.task_revision_rounds("revision-human").unwrap(),
+        rounds_after_request
+    );
+    let item = db.get_pipeline_item("revision-human").unwrap().unwrap();
+    assert_eq!(item.stage.as_deref(), Some("review"));
+    let runs = db.list_stage_runs_for_task("revision-human").unwrap();
+    assert!(runs.iter().all(|run| run.stage == "review"));
+    assert_eq!(
+        db.latest_stage_run("revision-human").unwrap().unwrap().id,
+        "resumed-run"
+    );
+    // The reviewer's accepted result was still published.
+    let results = ledger_files(&config.db_path, "revision-human")
+        .into_iter()
+        .filter(|file| file.kind == crate::db::task_store::LedgerEntryKind::Result)
+        .collect::<Vec<_>>();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].envelope["run_id"], "review-run");
+    let _ = std::fs::remove_dir_all(&daemon_dir);
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
