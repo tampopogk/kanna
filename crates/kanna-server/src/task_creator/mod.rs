@@ -3149,18 +3149,17 @@ pub(crate) fn prepare_start_dormant_task_for_api(
     // any such edge the engine merges nothing, whatever legacy blocker
     // branches the caller passed.
     let starting_stage = item.stage.clone().unwrap_or_default();
+    // Selected and reserved in one immediate transaction, durable before any
+    // workspace exists: the start records exactly these inputs, a retried or
+    // recovered start reuses them, and an upstream departure afterwards is
+    // recorded as superseding them.
     let stage_inputs = match db
-        .stage_edge_inputs(task_id, &starting_stage, true)
+        .select_and_reserve_stage_edge_inputs(task_id, &starting_stage, true)
         .map_err(|e| format!("db error: {}", e))?
     {
         Some(inputs) => inputs,
         None => return Ok(None),
     };
-    // Durable before any workspace exists: the start records exactly these
-    // inputs, a retried or recovered start reuses them, and an upstream
-    // departure in the meantime is recorded as superseding them.
-    db.reserve_stage_edge_inputs(&stage_inputs)
-        .map_err(|e| format!("db error: {}", e))?;
     let blocker_branches = if stage_inputs.is_empty() {
         blocker_branches
     } else {

@@ -263,6 +263,7 @@ async fn e2e_mobile_controls_gate_direct_lan_but_preserve_tunneled_transport() {
             "serverVersion": "test-version",
             "kspStreamVersion": 2,
             "taskInputAttachmentVersion": 1,
+            "stageDependenciesVersion": 1,
             "lanHost": "0.0.0.0",
             "lanPort": 48120,
             "pairingCode": null,

@@ -413,14 +413,13 @@ fn prepare_swap_to_index(
             &pending,
         ));
     }
-    let inputs = db
-        .stage_edge_inputs(context.source_task_id, &next_stage.name, false)
-        .map_err(|e| format!("db error: {}", e))?
-        .unwrap_or_default();
     // The session is told these inputs; the entry that commits this
     // transition records exactly them, not a result that lands meanwhile.
-    db.reserve_stage_edge_inputs(&inputs)
-        .map_err(|e| format!("db error: {}", e))?;
+    // Selected and reserved in one immediate transaction.
+    let inputs = db
+        .select_and_reserve_stage_edge_inputs(context.source_task_id, &next_stage.name, false)
+        .map_err(|e| format!("db error: {}", e))?
+        .unwrap_or_default();
     crate::task_store::with_dependency_inputs(
         inputs
             .iter()

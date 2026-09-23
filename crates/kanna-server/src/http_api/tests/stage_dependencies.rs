@@ -537,3 +537,46 @@ async fn a_dependency_on_a_stage_left_before_the_ledger_is_refused() {
         .unwrap();
     assert_eq!(tasks, 2, "no dependent was created");
 }
+
+/// The server advertises the stage-dependency contract clients check before
+/// sending `dependencies`, and refuses a create that combines them with
+/// fields the unstarted-task path cannot honour.
+#[tokio::test]
+async fn status_advertises_stage_dependencies_and_unhonourable_combinations_are_refused() {
+    let scenario = Scenario::new("stage-edge-capability");
+    let app = super::router(Arc::new(AppState::new(scenario.config.clone())));
+    let status = get_json(&app, "/v1/status").await;
+    assert_eq!(
+        status["stageDependenciesVersion"],
+        kanna_tool_catalog::STAGE_DEPENDENCIES_VERSION
+    );
+    kanna_tool_catalog::confirm_stage_dependencies_supported(&status).unwrap();
+
+    for (field, value) in [
+        ("diffBaseRef", serde_json::json!("origin/main")),
+        ("resumeSessionId", serde_json::json!("session-1")),
+        (
+            "taskTemplate",
+            serde_json::json!({"id": "template-1", "teardown": []}),
+        ),
+        ("blockerTaskIds", serde_json::json!(["task-a"])),
+    ] {
+        let mut body = serde_json::json!({
+            "repoId": "repo-1",
+            "prompt": "Refused",
+            "workflowName": TEST_PROVIDER_NEUTRAL_WORKFLOW,
+            "agentProvider": "claude",
+            "dependencies": [{ "taskId": "task-a", "stage": "plan" }]
+        });
+        body[field] = value;
+        let (status, text) = create(&app, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{field}: {text}");
+        assert!(text.contains(field), "{field}: {text}");
+    }
+    let tasks: i64 = scenario
+        .db()
+        .connection_for_e2e_tests()
+        .query_row("SELECT COUNT(*) FROM pipeline_item", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(tasks, 1, "only the upstream exists");
+}

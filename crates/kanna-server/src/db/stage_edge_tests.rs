@@ -539,3 +539,49 @@ fn edges_on_stages_left_before_the_ledger_are_refused_without_a_sha() {
     db.insert_stage_edges("task-b", &[edge("task-early", "build", None)])
         .unwrap();
 }
+
+/// Two racers: a start selecting and reserving its inputs, and the upstream
+/// leaving its stage again on another connection at the moment between the
+/// select and the reserve. The departure must wait for the reservation and
+/// then supersede it; its supersession is never lost.
+#[test]
+fn a_departure_racing_select_and_reserve_supersedes_the_reserved_input() {
+    let path = Db::test_db_path("stage-edge-select-reserve-race");
+    let db = Db::open_for_tests(&path).unwrap();
+    db.insert_test_repo("repo-1", "Repo One").unwrap();
+    task(&db, "task-a", &["plan", "build"]);
+    task(&db, "task-b", &["work"]);
+    db.insert_stage_edges("task-b", &[edge("task-a", "plan", None)])
+        .unwrap();
+    let first = depart(&db, "task-a", "plan", "build", "success", "7000001");
+    depart(&db, "task-a", "build", "plan", "success", "7000002");
+
+    let racer_path = path.clone();
+    let mut racer = None;
+    let inputs = db
+        .select_and_reserve_stage_edge_inputs_with_hook("task-b", "work", true, || {
+            racer = Some(std::thread::spawn(move || {
+                let other = Db::open(&racer_path).unwrap();
+                depart(&other, "task-a", "plan", "build", "success", "7000003")
+            }));
+            // Give the racer time to reach the write lock this transaction
+            // holds; it can only proceed once the reservation commits.
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        })
+        .unwrap()
+        .unwrap();
+    let newer = racer.unwrap().join().unwrap();
+    let given_to_session = inputs[0].input.clone();
+    assert_eq!(given_to_session.result_id.as_deref(), Some(first.as_str()));
+    assert_eq!(given_to_session.committed_sha.as_deref(), Some("7000001"));
+
+    db.record_dependency_start("task-b", "work", "task-b", &inputs)
+        .unwrap();
+    let edge = db.list_stage_edges_into("task-b").unwrap().remove(0);
+    assert_eq!(edge.consumed_sha, given_to_session.committed_sha);
+    assert_eq!(edge.superseded_result_id.as_deref(), Some(newer.as_str()));
+    let superseded = events(&db, "task-b", "task.dependency_superseded");
+    assert_eq!(superseded.len(), 1, "{superseded:?}");
+    assert_eq!(superseded[0]["supersedingResultId"], newer);
+    assert_eq!(superseded[0]["supersedingSha"], "7000003");
+}

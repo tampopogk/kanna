@@ -1357,6 +1357,7 @@ mod tests {
                     "serverVersion": "test-version",
                     "kspStreamVersion": 2,
                 "taskInputAttachmentVersion": 1,
+                "stageDependenciesVersion": 1,
                     "lanHost": "127.0.0.1",
                     "lanPort": 48120,
                     "pairingCode": null,

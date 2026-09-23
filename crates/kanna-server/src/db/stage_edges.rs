@@ -508,6 +508,38 @@ impl Db {
         Ok(Some(inputs))
     }
 
+    /// Select the inputs of `stage` and reserve them in one immediate
+    /// transaction. An upstream departure is itself an immediate
+    /// transaction, so it lands either before the selection (and is what is
+    /// selected) or after the reservation (and supersedes it) — never in
+    /// between, where its supersession would be lost. `None` when an edge
+    /// into `stage` is not satisfied; nothing is reserved then.
+    pub(crate) fn select_and_reserve_stage_edge_inputs(
+        &self,
+        task_id: &str,
+        stage: &str,
+        starting: bool,
+    ) -> Result<Option<Vec<ConsumedDependency>>, rusqlite::Error> {
+        self.select_and_reserve_stage_edge_inputs_with_hook(task_id, stage, starting, || {})
+    }
+
+    fn select_and_reserve_stage_edge_inputs_with_hook(
+        &self,
+        task_id: &str,
+        stage: &str,
+        starting: bool,
+        after_select: impl FnOnce(),
+    ) -> Result<Option<Vec<ConsumedDependency>>, rusqlite::Error> {
+        self.in_immediate_transaction_if_needed(|db| {
+            let Some(inputs) = db.stage_edge_inputs(task_id, stage, starting)? else {
+                return Ok(None);
+            };
+            after_select();
+            db.reserve_stage_edge_inputs(&inputs)?;
+            Ok(Some(inputs))
+        })
+    }
+
     /// Durably reserve the inputs a start or transition is being prepared
     /// with, before any workspace or session work. Consumption later records
     /// these exact results, and an upstream departure in between is recorded

@@ -1097,6 +1097,20 @@ async fn create_task_with_requested_id_and_inputs(
                 "dependencies cannot be combined with a transfer import".to_string(),
             ));
         }
+        // A dependent starts later, from its edges, on the unstarted-task
+        // path, which does not carry these; refuse rather than drop them.
+        for (present, field) in [
+            (payload.diff_base_ref.is_some(), "diffBaseRef"),
+            (payload.resume_session_id.is_some(), "resumeSessionId"),
+            (payload.task_template.is_some(), "taskTemplate"),
+        ] {
+            if present {
+                return Err((
+                    axum::http::StatusCode::BAD_REQUEST,
+                    format!("dependencies cannot be combined with {field}"),
+                ));
+            }
+        }
     }
     if payload.notify_task_id.is_some() {
         return Err((
