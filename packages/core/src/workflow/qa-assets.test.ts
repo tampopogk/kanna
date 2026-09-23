@@ -354,12 +354,19 @@ describe("QA workflow assets", () => {
     expect(task).toContain("agent: task-manager");
   });
 
-  it("keeps genuine QA fan-out children parented to their dispatcher", () => {
+  it("dispatches the specialty panel as one T5 join instead of manual child polling", () => {
     const dispatcher = parseAgentDefinition(readRepoFile(".kanna/agents/qa-dispatcher/AGENT.md"));
 
-    expect(dispatcher.prompt).toContain('"parent_task_id": "$KANNA_TASK_ID"');
+    // kanna_create_subtasks parents and forks every child from the dispatcher's
+    // own task/commit automatically, so the definition needs no explicit
+    // parent_task_id/base_ref bookkeeping the way the old kanna_create_task
+    // fan-out did.
+    expect(dispatcher.prompt).toContain("kanna_create_subtasks");
+    expect(dispatcher.prompt).toContain("specialty-review");
+    expect(dispatcher.prompt).not.toContain("kanna_create_task");
+    expect(dispatcher.prompt).not.toContain("kanna_wait_task");
+    expect(dispatcher.prompt).not.toContain('"parent_task_id"');
     expect(dispatcher.prompt).not.toContain('"notify_task_id"');
-    expect(dispatcher.prompt).toContain("Create all children before waiting");
   });
 
   it("keeps product research public, standalone, and distinct from planning", () => {
@@ -579,8 +586,16 @@ describe("QA workflow assets", () => {
 
     for (const name of reviewers) {
       const agent = readRepoPhrases(`.kanna/agents/${name}/AGENT.md`);
-      expect(agent, name).toContain("## Scope Discipline");
-      expect(agent, name).toContain("caused by this diff");
+      // "review" still carries the literal header; the definition-formula
+      // agents (qa-dispatcher, review-*) fold the same discipline into their
+      // required "Must not" section instead — the four formula headers are
+      // the structure, so an extra fifth header would only cost line budget.
+      // qa-dispatcher never applies "caused by this diff" itself — it
+      // aggregates specialty verdicts that already carried that bar — but
+      // still owes the same non-blocking-followups and five-finding cap.
+      if (name !== "qa-dispatcher") {
+        expect(agent, name).toContain("caused by this diff");
+      }
       expect(agent, name).toContain("Follow-ups (non-blocking):");
       expect(agent, name).toContain("at most five blocking findings");
       // The bar is "did this diff break something", not "could this be
@@ -590,194 +605,102 @@ describe("QA workflow assets", () => {
     }
   });
 
-  it("tells the deciding review agents that revision rounds are budgeted", () => {
-    // Only the agents that can request a revision need to understand the
-    // budget; specialty reviewers only record verdicts.
-    for (const name of ["review", "qa-dispatcher"]) {
-      const agent = readRepoPhrases(`.kanna/agents/${name}/AGENT.md`);
-      expect(agent, name).toContain("revisionRounds");
-      expect(agent, name).toContain("revisionLimit");
-      expect(agent, name).toContain("parks the task for its human");
-      expect(agent, name).toContain("Ask the human to explicitly authorize another revision in the agent terminal");
-      expect(agent, name).toContain('origin: "human"');
-      expect(agent, name).toContain("does not authenticate a human identity");
-      expect(agent, name).toContain("Never infer authorization");
-      expect(agent, name).toContain("retry without a new explicit human instruction");
+  it("tells the deciding review agent (legacy routing) that revision rounds are budgeted", () => {
+    const agent = readRepoPhrases(".kanna/agents/review/AGENT.md");
+    expect(agent).toContain("revisionRounds");
+    expect(agent).toContain("revisionLimit");
+    expect(agent).toContain("parks the task for its human");
+    expect(agent).toContain("Ask the human to explicitly authorize another revision in the agent terminal");
+    expect(agent).toContain('origin: "human"');
+    expect(agent).toContain("does not authenticate a human identity");
+    expect(agent).toContain("Never infer authorization");
+    expect(agent).toContain("retry without a new explicit human instruction");
 
-      // The blocking bar must not move with the budget. Relaxing it on the
-      // last round would approve a branch that still has blocking findings —
-      // the designed ending for those is the park, where a human decides.
-      expect(agent, name).toContain("The bar does not move with the budget");
-      expect(agent, name).toContain("a finding that clears it on the last round");
-      expect(agent, name).toContain("Do not approve a branch to avoid parking it");
-      expect(agent, name).not.toMatch(/raise the bar as the budget shrinks/i);
-      expect(agent, name).not.toMatch(/only for defects a user would hit/i);
-      expect(agent, name).not.toMatch(/last (available )?round,? (fail|block) only/i);
-      // A revision request must be a closed list, not an open invitation.
-      expect(agent, name).toContain("closed list");
-      expect(agent, name).toContain('No "also consider"');
-    }
+    // The blocking bar must not move with the budget. Relaxing it on the
+    // last round would approve a branch that still has blocking findings —
+    // the designed ending for those is the park, where a human decides.
+    expect(agent).toContain("The bar does not move with the budget");
+    expect(agent).toContain("a finding that clears it on the last round");
+    expect(agent).toContain("Do not approve a branch to avoid parking it");
+    expect(agent).not.toMatch(/raise the bar as the budget shrinks/i);
+    expect(agent).not.toMatch(/only for defects a user would hit/i);
+    expect(agent).not.toMatch(/last (available )?round,? (fail|block) only/i);
+    // A revision request must be a closed list, not an open invitation.
+    expect(agent).toContain("closed list");
+    expect(agent).toContain('No "also consider"');
   });
 
-  it("gates specialty dispatch on the surfaces the round actually changes", () => {
+  it("tells qa-dispatcher (named-exit and legacy routing) that revisions are budgeted and human-gated", () => {
+    // qa-dispatcher (T10 definition formula) may run under either routing:
+    // kanna_complete_stage's exit budget on a named-exit workflow, or the
+    // legacy kanna_request_revision/revisionLimit path for a task still
+    // pinned to a legacy-routed specialized-reviewers snapshot.
+    const dispatcher = readRepoPhrases(".kanna/agents/qa-dispatcher/AGENT.md");
+    expect(dispatcher).toContain("kanna_request_revision");
+    expect(dispatcher).toContain("exit: \"revise\"");
+    expect(dispatcher).toContain("revisionLimit");
+    expect(dispatcher).toContain("budget");
+    expect(dispatcher).toContain("parks the task for its human");
+    expect(dispatcher).toMatch(/explicit human instruction/);
+    expect(dispatcher).toContain('origin: "human"');
+    expect(dispatcher).toContain("does not itself authenticate");
+    expect(dispatcher).not.toMatch(/raise the bar as the budget shrinks/i);
+    expect(dispatcher).not.toMatch(/only for defects a user would hit/i);
+    // A revision request must be a closed list, not an open invitation.
+    expect(dispatcher).toContain("closed list");
+    expect(dispatcher).toContain('no "also consider"');
+  });
+
+  it("gates specialty dispatch on the surfaces the diff actually changes", () => {
     const dispatcher = readRepoPhrases(".kanna/agents/qa-dispatcher/AGENT.md");
 
     // Dispatch answers concrete risk questions, not every matching file path.
-    expect(dispatcher).toContain("Dispatch a specialty only for a concrete material risk");
-    expect(dispatcher).toContain("Combine overlapping questions under one owner");
-    expect(dispatcher).toContain("Skip the specialties this round's change does not touch");
-    expect(dispatcher).toContain("### 5. Filter the findings");
-    expect(dispatcher).toContain("Do not create follow-up tasks");
+    expect(dispatcher).toContain("Dispatch a specialty without a concrete material risk");
+    expect(dispatcher).toContain("combine overlapping questions under one owner");
+    expect(dispatcher).toContain("Follow-ups (non-blocking):");
+    expect(dispatcher).toContain("never a follow-up task");
   });
 
-  it("names every dispatched child by its specialty and round", () => {
+  it("names every dispatched child distinctly by specialty", () => {
     const dispatcher = readRepoPhrases(".kanna/agents/qa-dispatcher/AGENT.md");
 
-    // `display_name` is optional in the tool schema and falls back to the
-    // prompt, and every child's prompt opens with the same dispatch line — so
-    // a fan-out that omits it renders as a column of identical sidebar rows.
-    expect(dispatcher).toContain('"display_name": "<Specialty> review: <subject> (round <n>)"');
-    expect(dispatcher).toContain("Every dispatched child carries an explicit `display_name`");
-    // A label per built-in specialty, so the rule is applicable and not just
-    // aspirational; a repo-added reviewer derives its own.
-    for (const label of [
-      "| `review-ui` | `UI` |",
-      "| `review-security` | `Security` |",
-      "| `review-perf` | `Performance` |",
-      "| `review-concurrency` | `Concurrency` |",
-      "| `review-migration` | `Migration` |",
-      "| `review-compat` | `Compatibility` |",
-    ]) {
-      expect(dispatcher, label).toContain(label);
-    }
-    expect(dispatcher).toContain("A repo-added `review-*` agent takes its label from its own `description`");
-    // The round marker is what separates one round's children from the next's.
-    expect(dispatcher).toContain("It is what tells this round's children from the previous round's");
-    // The prompt snippet surfaces on its own (sidebar, mobile), so the first
-    // line must be disambiguated too — not the old shared boilerplate.
-    expect(dispatcher).toContain(
-      '"prompt": "<Specialty> review (round <n>) dispatched from task $KANNA_TASK_ID.'
-    );
-    expect(dispatcher).not.toContain('"prompt": "Specialty review dispatched from task');
+    // kanna_create_subtasks children are titled by an explicit display name
+    // (falling back to the shared prompt otherwise), so the definition still
+    // has to say the name must disambiguate specialties from each other —
+    // the mechanics of the call itself are the tool's own schema, not policy.
+    expect(dispatcher).toContain("display name");
+    expect(dispatcher).toContain("two children never render identically");
   });
 
-  it("reviews each round incrementally against the previous round's workspace branch", () => {
+  it("dispatches against the current full diff rather than manual per-round git archaeology", () => {
+    // T5 joins are engine-delivered per call: each review-stage loop is a
+    // fresh session that re-dispatches against the branch as it stands, so
+    // the old workspace-branch/git-range-diff round bookkeeping — worked
+    // around the lack of an engine join primitive — is retired along with
+    // the manual create/wait/close pattern it supported (spec §12: engine
+    // mechanics do not belong in a definition).
     const dispatcher = readRepoPhrases(".kanna/agents/qa-dispatcher/AGENT.md");
     const workflow = readRepoFile(".kanna/workflows/specialized-reviewers.json");
 
-    // Workspace branches are the round markers: a review workspace never
-    // commits, so `task-{id}-{n}` still points at what that round reviewed.
-    expect(dispatcher).toContain('git for-each-ref');
-    expect(dispatcher).toContain("refs/heads/task-$KANNA_TASK_ID*");
-    expect(dispatcher).toContain("git merge-base --is-ancestor");
-    expect(dispatcher).toContain("previous review point");
-    // Ancestry does not survive a rebase, so the rebased path must exist or
-    // the mechanism silently no-ops on any repo that rebases mid-task.
-    expect(dispatcher).toContain("git range-diff");
-    expect(dispatcher).toContain("already reviewed");
-    // Narrowing the range must fail safe, not silently under-review.
-    expect(dispatcher).toContain("**Full branch** — if neither path is clear-cut");
-    expect(dispatcher).toContain("If this round's change is empty, dispatch nothing");
-    expect(dispatcher).toContain("$PREV_RESULT");
-    expect(dispatcher).toContain("$PREV_MAIN_RESULT");
-    // Children judge the round but read the whole branch for context.
-    expect(dispatcher).toContain("Changes to review:");
-    expect(dispatcher).toContain("Full branch context:");
+    expect(dispatcher).not.toContain("git for-each-ref");
+    expect(dispatcher).not.toContain("git range-diff");
+    expect(dispatcher).not.toContain("$PREV_RESULT");
+    expect(dispatcher).not.toContain("$PREV_MAIN_RESULT");
+    expect(dispatcher).toContain("declined");
 
-    // The workflow has to feed the dispatcher the previous stage result for
-    // the declined-findings check to be possible at all.
-    expect(workflow).toContain("Previous implementation result: $PREV_MAIN_RESULT");
-    // `$PREV_RESULT` remains the separate post-result binding used by approve.
-    expect(workflow).toContain("Previous result: $PREV_RESULT");
+    const parsed = parseWorkflowJson(workflow);
+    expect(parsed.routing).toBe("exits");
+    const review = parsed.stages.find((stage) => stage.name === "review");
+    expect(review?.exits).toEqual({ revise: "in progress" });
+    const implement = parsed.stages.find((stage) => stage.name === "in progress");
+    expect(implement?.exit_commit).toBe(true);
+    expect(implement?.policy).toMatchObject({ loop_transition: "auto" });
   });
 
-  it("carries the latest durable verdict for each untouched specialty across review rounds", () => {
+  it("closes each specialty child once its T5 join verdict is read", () => {
     const dispatcher = readRepoPhrases(".kanna/agents/qa-dispatcher/AGENT.md");
-    const listChildrenMcp = 'kanna_list_task_children {"task_id": "$KANNA_TASK_ID"}';
-    const listChildrenCli = 'kanna-cli task children --task-id "$KANNA_TASK_ID"';
-
-    // The task's direct children are the durable verdict history. Query it
-    // MCP-first; the typed CLI surface is only the no-MCP fallback.
-    expect(dispatcher).toContain(listChildrenMcp);
-    expect(dispatcher).toContain(listChildrenCli);
-    expect(dispatcher.indexOf(listChildrenMcp)).toBeLessThan(
-      dispatcher.indexOf(listChildrenCli)
-    );
-    expect(dispatcher).toContain("Only when the MCP tool is unavailable");
-    expect(dispatcher).toContain("including closed children, oldest first");
-
-    // Workflow identity separates the panel from unrelated direct children;
-    // then reduction is by specialty agent and terminal run status.
-    expect(dispatcher).toContain('`workflowName == "specialty-review"`');
-    expect(dispatcher).toContain(
-      "Only those children participate in the specialty ledger"
-    );
-    expect(dispatcher).toContain(
-      "Ignore every child from another workflow, even if it has no run or its `agent` starts with `review-`"
-    );
-    expect(dispatcher).toContain("latest terminal verdict per specialty");
-    expect(dispatcher).toContain(
-      "any syntactically valid stored `review-*` agent is a historical specialty key, even if that reviewer is no longer discoverable"
-    );
-    expect(dispatcher).toContain(
-      "Current discovery controls only which agents may be newly dispatched"
-    );
-    expect(dispatcher).toContain("`succeeded` = PASS and `failed` = FAIL");
-    expect(dispatcher).toContain(
-      "a missing `agent` or an agent that does not match `review-*` is malformed attribution"
-    );
-    expect(dispatcher).toContain(
-      "Any child record without `workflowName` is version-incomplete history and prevents aggregate success"
-    );
-    expect(dispatcher).toContain(
-      "retry the supported children query at most once if it can return the current shape"
-    );
-    expect(dispatcher).toContain(
-      "broken dispatch with the child id and an explicit incompatible-server or upgrade-required reason"
-    );
-    expect(dispatcher).toContain("Do not start a repeated retry loop");
-    expect(dispatcher).toContain("unresolved dispatch evidence, never PASS");
-
-    // Unresolved records have finite outcomes. Known historical specialties
-    // may be joined or re-dispatched once; unattributed closed records cannot
-    // be guessed and must end in a single broken-dispatch result.
-    expect(dispatcher).toContain(
-      "join it if it is running or re-dispatch that specialty at most once when appropriate"
-    );
-    expect(dispatcher).toContain(
-      "A later terminal child for that same historical specialty supersedes the unresolved evidence"
-    );
-    expect(dispatcher).toContain(
-      "A closed `specialty-review` child with malformed attribution cannot be safely re-dispatched"
-    );
-    expect(dispatcher).toContain(
-      "Use broken dispatch once, cite its child id, and do not retry or re-dispatch it"
-    );
-
-    // A skipped specialty keeps its actual recorded outcome. Only a later
-    // terminal record for that same agent can replace it, so an old failure
-    // cannot evaporate merely because this round did not touch its surface.
-    expect(dispatcher).toContain(
-      "A carried FAIL stays unresolved until a later child for the same specialty records PASS"
-    );
-    expect(dispatcher).toContain(
-      "Never treat an untouched surface as evidence that its carried FAIL was fixed"
-    );
-    expect(dispatcher).toContain("never reviewed and untouched this round, record no verdict");
-    expect(dispatcher).toContain("New child verdicts join the chronological history");
-
-    // Carried failures still pass through the same scope bar. Historical
-    // provenance uses only fields the endpoint exposes; it never invents the
-    // exact round in which an earlier child ran.
-    expect(dispatcher).toContain("A carried FAIL is not automatically in scope");
-    expect(dispatcher).toContain(
-      "new or carried, with the child id and available `createdAt`/`latestRun.finishedAt` timestamp"
-    );
-    expect(dispatcher).toContain("surviving unresolved carried FAIL");
-    expect(dispatcher).not.toContain("child id and round");
-    expect(dispatcher).not.toContain("child/round provenance");
-    expect(dispatcher).not.toContain("child <id>, round <m>");
-    expect(dispatcher).not.toContain("child <id>, round <k>");
+    expect(dispatcher).toContain("close each child");
+    expect(dispatcher).toContain("kanna_get_task");
   });
 
   it("tells specialty reviewers to judge the review range their prompt names", () => {
@@ -809,21 +732,24 @@ describe("QA workflow assets", () => {
     expect(commit).not.toContain("task-specs/");
     expect(commit).toContain("Inspect the worktree with `git status`");
 
-    for (const name of ["review", "qa-dispatcher"]) {
-      const agent = readRepoPhrases(`.kanna/agents/${name}/AGENT.md`);
-
-      expect(agent, name).toContain("original task prompt");
-      expect(agent, name).toContain("kanna_task_inputs");
-      expect(agent, name).toContain("durable");
-      expect(agent, name).not.toContain("docs/task-specs/");
-      expect(agent, name).not.toContain("missing spec");
-      expect(agent, name).not.toContain("stale spec");
-    }
+    const review = readRepoPhrases(".kanna/agents/review/AGENT.md");
+    expect(review).toContain("original task prompt");
+    expect(review).toContain("kanna_task_inputs");
+    expect(review).toContain("durable");
+    expect(review).not.toContain("docs/task-specs/");
+    expect(review).not.toContain("missing spec");
+    expect(review).not.toContain("stale spec");
 
     const dispatcher = readRepoPhrases(".kanna/agents/qa-dispatcher/AGENT.md");
-    expect(dispatcher).toContain("Reviewed task id");
-    expect(dispatcher).toContain("do not use your child task id for that lookup");
-    expect(dispatcher).toContain("delivered owner, manager, and reviewer directives");
+    expect(dispatcher).toContain("original task prompt");
+    expect(dispatcher).toContain("kanna_task_inputs");
+    expect(dispatcher).toContain("durable");
+    expect(dispatcher).not.toContain("docs/task-specs/");
+    expect(dispatcher).not.toContain("missing spec");
+    expect(dispatcher).not.toContain("stale spec");
+    // The reviewed task's own directive history, looked up by its own id —
+    // never the dispatch child's id, which has no such history of its own.
+    expect(dispatcher).toContain("on that task, never on this dispatch child");
     expect(dispatcher).not.toContain("Task spec:");
   });
 
@@ -918,17 +844,23 @@ describe("QA workflow assets", () => {
   });
 
   it("keeps both deciding reviewers inside the original task scope", () => {
-    for (const name of ["review", "qa-dispatcher"]) {
-      const agent = readRepoPhrases(`.kanna/agents/${name}/AGENT.md`);
+    const review = readRepoPhrases(".kanna/agents/review/AGENT.md");
+    expect(review).toContain("Not for work the original task does not ask for");
+    expect(review).not.toContain("Not for work the spec does not ask for");
 
-      expect(agent, name).toContain("Not for work the original task does not ask for");
-      expect(agent, name).not.toContain("Not for work the spec does not ask for");
-    }
+    const dispatcher = readRepoPhrases(".kanna/agents/qa-dispatcher/AGENT.md");
+    expect(dispatcher).toContain("work the task did not ask for");
+    expect(dispatcher).not.toContain("the spec does not ask for");
   });
 
-  it("bounds revision rounds on the dispatched QA workflow and publishes the field", () => {
+  it("bounds revision rounds on the dispatched QA workflow via named-exit stage budget", () => {
+    // specialized-reviewers.json (T10c) moved to routing "exits": the
+    // per-task revision_limit is retired in favor of the "in progress"
+    // stage's own budget, which defaults to DEFAULT_STAGE_BUDGET (5) when
+    // undeclared — the same cap the old revision_limit: 5 expressed.
     const parsed = parseWorkflowJson(readRepoFile(".kanna/workflows/specialized-reviewers.json"));
-    expect(parsed.revision_limit).toBe(5);
+    expect(parsed.routing).toBe("exits");
+    expect(parsed.revision_limit).toBeUndefined();
 
     const schema = JSON.parse(readRepoFile(".kanna/workflows/schema.json"));
     expect(schema.properties.revision_limit).toMatchObject({ type: "integer", minimum: 0 });
