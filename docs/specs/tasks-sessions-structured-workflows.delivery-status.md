@@ -22,7 +22,7 @@ final review gates as manager; children return reviewed local commits only.
 | T6b artifact result refs + retention | `d6fb5ce0` | T6 checkpoint 2 + T6 follow-ups | parent `cc8125f85` (+ merged `918d8c8fa`) | reviewed (round 2), integrated, closed | `8ba365b24`, `cc04f99ba`, `fd6f7e2e9` | T6b merge commit |
 | T8c ledger channel identity | `7049470b` | T8 ledger fill (single reviewer, sonnet) | parent `cc8125f85` | reviewed, integrated, closed | `364fe7578` | merge after `918d8c8fa` |
 | T12b artifact remote controls + §14 | `f73ff638` | remote controls, mobile recording, T12 follow-ups, §14 walkthrough doc + device checklist (human checks outstanding) | parent `8885864f6` (T7 373127ab4, T12 f38895884) | in progress | — | — |
-| Fix: stage-complete --artifacts | `72b57433` | correction for T6b's missing typed CLI option (single reviewer, sonnet) | parent `c2620957b` | in progress | — | — |
+| Fix: stage-complete --artifacts | `72b57433` | correction for T6b's missing typed CLI option (single reviewer, sonnet) | parent `c2620957b` | reviewed, integrated, closed | `87f633358` | `4c92ead01` |
 | T3 commit transitions / roleless gates | — | — | needs T1, T2 review | not created | — | — |
 | T4 stage dependency edges | — | — | needs T1, T2 review | not created | — | — |
 | T5 subtask joins | — | — | needs T4 review | not created | — | — |
@@ -87,3 +87,4 @@ final review gates as manager; children return reviewed local commits only.
 - 2026-09-23: T12b review round 2 at `50af229ae`: round-1 fixes confirmed; new fails — push not bound between GET and POST, redact() leaks '@/@' password; Cancel during re-resolve doesn't stop push; mobile fetch A→B→A stale overwrite. Revision 2/5 used. Parent guidance: server-side remote fingerprint CAS on push, URL-parser-based redact with hostile-shape table, single abort token across push steps, per-view request tokens.
 - 2026-09-23: CLI correction built (`--artifacts` on stage-complete + surface mapping + HTTP test; kanna-cli 121 pass, 1 needs a built server binary); advanced (commit post, then single review).
 - 2026-09-23: T2 review round 3 at `cad5c1990`: remaining blocker — revisit does not stop the retained directory's own teardown session before switching. Revision 3/5.
+- 2026-09-23: CLI correction passed review at `87f633358`, merged as `4c92ead01`; full kanna-cli suite green on parent (122 + all sub-binaries). Closed.
