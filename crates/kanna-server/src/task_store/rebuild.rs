@@ -655,6 +655,15 @@ fn project_task(directory: &TaskDirectory, projection: &mut Projection) {
         let message = file.message.as_deref().unwrap_or("");
         match file.kind {
             LedgerEntryKind::Result => {
+                // A result a transfer carried (T9) ran on another machine and
+                // records no local run; it projects under the carried key its
+                // origin run is held by here, the same key its commit step uses.
+                let run_id = run_id.or_else(|| carried_result_run_id(task_id, envelope));
+                if let Some(run_id) = &run_id {
+                    first_mention
+                        .entry(run_id.clone())
+                        .or_insert_with(|| iso_to_sqlite_time(&at));
+                }
                 let Some(run_id) = run_id else {
                     projection.diagnostics.push(format!(
                         "{task_id}: result {} names no run; no stage run projected",
@@ -923,4 +932,21 @@ pub fn rebuild_into_new_database(root: &Path, target: &Path) -> Result<RebuildRe
         unreadable,
         diagnostics: projection.diagnostics,
     })
+}
+
+/// The run a carried result (T9) projects under: its origin run's carried
+/// key, or the origin entry's when the origin recorded no run.
+fn carried_result_run_id(task_id: &str, envelope: &Value) -> Option<String> {
+    let source = envelope.get("source")?;
+    if source.get("kind").and_then(Value::as_str) != Some("transferred_ledger_entry") {
+        return None;
+    }
+    let origin = source.get("origin")?;
+    let origin_run = origin
+        .get("run_id")
+        .and_then(Value::as_str)
+        .or_else(|| origin.get("ledger_entry").and_then(Value::as_str))?;
+    Some(crate::db::transfer_task_state::carried_run_id(
+        task_id, origin_run,
+    ))
 }

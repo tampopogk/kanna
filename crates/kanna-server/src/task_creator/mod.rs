@@ -108,14 +108,20 @@ pub(crate) use stages::{
     prepare_fresh_restart_after_rejected_resume, prepare_provider_fallback_for_api,
     prepare_resume_task_for_api, prepare_revision_task_for_api,
     prepare_stage_completion_for_api_with_trigger, resolve_revision_budget, resolve_revision_limit,
-    resolve_stage_transition, stage_declares_merge_handoff, MergeHandoffDeclaration,
-    RevisionBudget, StageAdvanceIntent,
+    resolve_stage_transition, stage_declares_merge_handoff, subtask_join_pending_error,
+    MergeHandoffDeclaration, RevisionBudget, StageAdvanceIntent,
 };
 #[cfg(test)]
 pub(crate) use stages::{prepare_advance_stage_for_api, prepare_stage_completion_for_api};
 pub(crate) use worktree::{local_branch_exists, resolve_current_source_worktree_branch};
 
 pub(crate) const FALLBACK_WORKFLOW_NAME: &str = "no-review";
+
+/// A fresh task id, as task creation generates one — for callers that must
+/// record the id before the task exists (a subtask join's members).
+pub(crate) fn generate_new_task_id() -> Result<String, String> {
+    generate_task_id()
+}
 
 #[derive(Clone, Debug)]
 pub(crate) enum DefinitionLookupError {
@@ -4248,7 +4254,18 @@ restart or repeat work solely because task ownership moved."
                 // active-stage context, including the pinned plan and source
                 // predecessor/revision snapshots.
                 agent_instructions = fresh_session.agent_instructions;
-                fresh_session.prompt
+                // Appended, never prepended: relocated agent instructions are
+                // matched at the head of the prompt.
+                match import.fresh_start_reason.as_deref() {
+                    Some(reason) => format!(
+                        "{}\n\nKanna transferred this task to this machine and started this \
+session fresh because {reason}. The task's recorded results, inputs and stage transitions, \
+including those from before the transfer, are in its ledger (`$KANNA_TASK_LEDGER_PATH`); read \
+what you need there before continuing, and do not repeat work the ledger shows was done.",
+                        fresh_session.prompt
+                    ),
+                    None => fresh_session.prompt,
+                }
             }
         } else {
             original_prompt.clone()

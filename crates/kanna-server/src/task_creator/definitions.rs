@@ -713,8 +713,16 @@ enum RawWorkflowStageExecution {
 struct AgentFrontmatter {
     name: Option<String>,
     description: Option<String>,
+    /// Alias for `description`: "one sentence" naming the role. `description`
+    /// wins when both are present. Kanna never checks a definition's length
+    /// or shape (spec §12); this is a harmless parsing alias only.
+    role: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_yaml_value")]
     agent_provider: Option<YamlValue>,
+    /// Alias for `agent_provider` ("ordered candidates"). `agent_provider`
+    /// wins when both are present.
+    #[serde(default, deserialize_with = "deserialize_optional_yaml_value")]
+    providers: Option<YamlValue>,
     model: Option<String>,
     effort: Option<String>,
     permission_mode: Option<String>,
@@ -1880,6 +1888,10 @@ const BUILTIN_AGENT_RESOURCES: &[(&str, &str)] = &[
         include_str!("../../../../.kanna/agents/plan/AGENT.md"),
     ),
     (
+        ".kanna/agents/mockup/AGENT.md",
+        include_str!("../../../../.kanna/agents/mockup/AGENT.md"),
+    ),
+    (
         ".kanna/agents/merge/AGENT.md",
         include_str!("../../../../.kanna/agents/merge/AGENT.md"),
     ),
@@ -2058,6 +2070,22 @@ const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
         include_str!("../../../../.kanna/workflows/no-review.json"),
     ),
     (
+        "mechanical",
+        include_str!("../../../../.kanna/workflows/mechanical.json"),
+    ),
+    (
+        "shaped",
+        include_str!("../../../../.kanna/workflows/shaped.json"),
+    ),
+    (
+        "planned",
+        include_str!("../../../../.kanna/workflows/planned.json"),
+    ),
+    (
+        "designed",
+        include_str!("../../../../.kanna/workflows/designed.json"),
+    ),
+    (
         "plan-build-review",
         include_str!("../../../../.kanna/workflows/plan-build-review.json"),
     ),
@@ -2227,12 +2255,11 @@ fn parse_agent_definition(content: &str) -> Result<AgentDefinition, String> {
         }
         None => AgentFrontmatter::default(),
     };
-
     let definition = AgentDefinition {
         name: fm.name.unwrap_or_default(),
-        description: fm.description.unwrap_or_default(),
+        description: fm.description.or(fm.role).unwrap_or_default(),
         prompt: body.trim().to_string(),
-        agent_providers: parse_agent_providers(fm.agent_provider)?,
+        agent_providers: parse_agent_providers(fm.agent_provider.or(fm.providers))?,
         model: fm.model,
         effort: fm.effort,
         permission_mode: validate_permission_mode(fm.permission_mode)?,
@@ -2254,12 +2281,13 @@ fn parse_agent_extension(content: &str) -> Result<AgentExtension, String> {
 
     let agent_providers = fm
         .agent_provider
+        .or(fm.providers)
         .map(|value| parse_agent_providers(Some(value)))
         .transpose()?;
 
     Ok(AgentExtension {
         prompt: body.trim().to_string(),
-        description: fm.description,
+        description: fm.description.or(fm.role),
         agent_providers,
         model: fm.model,
         effort: fm.effort,

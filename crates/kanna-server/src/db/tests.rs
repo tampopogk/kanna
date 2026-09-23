@@ -229,7 +229,7 @@ fn open_creates_and_migrates_fresh_profile_database() {
             |row| row.get(0),
         )
         .expect("latest migration");
-    assert_eq!(latest_migration, "100_task_stage_edges");
+    assert_eq!(latest_migration, "102_transferred_task_state");
     assert_eq!(
         index_columns(&db.conn, "idx_pipeline_item_parent_created_id"),
         vec!["parent_task_id", "created_at", "id"],
@@ -1947,6 +1947,9 @@ fn server_connection_opens_with_desktop_like_wal_client_active() {
                 "#,
         )
         .expect("seed desktop-like db");
+    desktop_conn
+        .execute_batch(super::subtask_joins::SCHEMA)
+        .expect("seed subtask join tables");
 
     let db = Db::open(path.to_str().expect("utf8 path")).expect("open server db");
     db.close_pipeline_item("task-1").expect("server write");
@@ -2047,6 +2050,8 @@ fn close_pipeline_item_sets_closed_at_without_changing_stage() {
             "#,
     )
     .expect("seed db");
+    conn.execute_batch(super::subtask_joins::SCHEMA)
+        .expect("seed subtask join tables");
     drop(conn);
 
     let db = Db::open(path.to_str().expect("utf8 path")).expect("open db");
@@ -3800,6 +3805,7 @@ fn task_event_type_names_are_stable() {
             "task.blocked",
             "task.unblocked",
             "task.dependency_superseded",
+            "task.subtask_result",
             "task.provider_quota_rejected",
             "task.provider_quota_parked",
             "task.provider_capacity_refused",

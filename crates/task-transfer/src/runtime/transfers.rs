@@ -78,7 +78,7 @@ impl TransferRuntime {
             &target_peer.public_key,
             resolved_transport,
         )?;
-        self.negotiate_transfer_protocol(&target_peer).await?;
+        let peer_capabilities = self.negotiate_transfer_protocol(&target_peer).await?;
         let request_id = self.next_request_id("preflight");
         let sealed_payload = self
             .seal_authenticated_peer_request(
@@ -141,6 +141,7 @@ impl TransferRuntime {
                     transfer_id,
                     source_peer_id,
                     target_has_repo,
+                    peer_capabilities,
                 })
             }
             PeerResponse::StartPairing { .. } => Err(RuntimeError::Protocol(

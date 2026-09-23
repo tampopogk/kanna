@@ -730,6 +730,46 @@ describe("named-exit routing (parity with the server loader)", () => {
     expect(release.stages.some((stage) => stage.policy?.handoff !== undefined)).toBe(false);
   });
 
+  it("loads the T10d intake lineup (shaped, planned, designed) as the server does", () => {
+    // Loader parity with task_creator/tests/stage.rs's
+    // builtin_{shaped,planned,designed}_workflow_* assertions.
+    const shaped = parseWorkflowJson(
+      readFileSync(new URL("../../../../.kanna/workflows/shaped.json", import.meta.url), "utf8"),
+    );
+    expect(shaped.routing).toBe("exits");
+    expect(shaped.stages.map((stage) => stage.name)).toEqual(["in progress", "review", "pr"]);
+    expect(shaped.stages.find((stage) => stage.name === "review")?.exits).toEqual({
+      revise: "in progress",
+    });
+    expect(shaped.stages.find((stage) => stage.name === "pr")?.policy.handoff).toBe("merge");
+
+    const planned = parseWorkflowJson(
+      readFileSync(new URL("../../../../.kanna/workflows/planned.json", import.meta.url), "utf8"),
+    );
+    expect(planned.stages.map((stage) => stage.name)).toEqual(["plan", "in progress", "review", "pr"]);
+    expect(planned.stages.find((stage) => stage.name === "review")?.exits).toEqual({
+      revise: "in progress",
+      replan: "plan",
+    });
+
+    const designed = parseWorkflowJson(
+      readFileSync(new URL("../../../../.kanna/workflows/designed.json", import.meta.url), "utf8"),
+    );
+    expect(designed.stages.map((stage) => stage.name)).toEqual([
+      "mockup",
+      "stakeholder",
+      "plan",
+      "in progress",
+      "review",
+      "pr",
+      "pr-review",
+    ]);
+    const stakeholder = designed.stages.find((stage) => stage.name === "stakeholder");
+    expect(stakeholder?.agent).toBeUndefined();
+    expect(stakeholder?.exits).toBeUndefined();
+    expect(designed.stages.find((stage) => stage.name === "pr-review")?.policy.handoff).toBe("merge");
+  });
+
   it("ships a schema example that loads", () => {
     const schema = JSON.parse(
       readFileSync(new URL("../../../../.kanna/workflows/schema.json", import.meta.url), "utf8"),

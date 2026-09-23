@@ -63,9 +63,15 @@ export function parseAgentDefinition(content: string): AgentDefinition {
   const fm: Record<string, unknown> = frontmatter ?? {};
   const prompt = body.trim();
 
+  // `role`/`providers` are harmless parsing aliases (spec §12) for
+  // `description`/`agent_provider`. Kanna never checks a definition's length
+  // or shape, so declaring either opts a definition into nothing.
+  const description = fm.description ?? fm.role;
+  const providerValue = fm.agent_provider ?? fm.providers;
+
   const def: AgentDefinition = {
     name: typeof fm.name === "string" ? fm.name : "",
-    description: typeof fm.description === "string" ? fm.description : "",
+    description: typeof description === "string" ? description : "",
     prompt,
   };
 
@@ -85,9 +91,9 @@ export function parseAgentDefinition(content: string): AgentDefinition {
     def.allowed_tools = fm.allowed_tools as string[];
   }
 
-  // agent_provider: YAML array, single string, or comma-separated string.
-  if (fm.agent_provider !== undefined) {
-    const agentProviders = parseAgentProviders(fm.agent_provider);
+  // agent_provider/providers: YAML array, single string, or comma-separated string.
+  if (providerValue !== undefined) {
+    const agentProviders = parseAgentProviders(providerValue);
     def.agent_provider = agentProviders;
   }
 
@@ -109,8 +115,9 @@ export function parseAgentExtension(content: string): AgentExtension {
   const fm: Record<string, unknown> = frontmatter ?? {};
   const ext: AgentExtension = { prompt: body.trim() };
 
-  if (typeof fm.description === "string") {
-    ext.description = fm.description;
+  const description = fm.description ?? fm.role;
+  if (typeof description === "string") {
+    ext.description = description;
   }
 
   if (typeof fm.model === "string") {
@@ -129,13 +136,25 @@ export function parseAgentExtension(content: string): AgentExtension {
     ext.allowed_tools = fm.allowed_tools as string[];
   }
 
-  if (fm.agent_provider !== undefined) {
-    const agentProviders = parseAgentProviders(fm.agent_provider);
+  const providerValue = fm.agent_provider ?? fm.providers;
+  if (providerValue !== undefined) {
+    const agentProviders = parseAgentProviders(providerValue);
     ext.agent_provider = agentProviders;
   }
 
   if (ext.agent_provider) validateSelectionSiblings(parseAgentSelection(ext.agent_provider, false), ext.model, ext.effort);
   return ext;
+}
+
+/**
+ * Parses a base AGENT.md and an EXTEND.md together and returns the resolved,
+ * merged definition. Mirrors the server's `agent_optional` in
+ * `definitions.rs`.
+ */
+export function resolveAgentWithExtension(baseContent: string, extensionContent: string): AgentDefinition {
+  const base = parseAgentDefinition(baseContent);
+  const extension = parseAgentExtension(extensionContent);
+  return applyAgentExtension(base, extension);
 }
 
 export function applyAgentExtension(base: AgentDefinition, extension: AgentExtension): AgentDefinition {

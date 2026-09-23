@@ -22,10 +22,12 @@
 //! (temp file + rename) whenever what it shows changes: `schema_version`,
 //! `task_id`, `repo_id`, `title`, `origin_prompt`, `workflow {name,
 //! definition}` (the exact pinned definition), `links {parent, dependencies,
-//! stage_dependencies, pr {url, number, head_sha}}` (`dependencies` lists
-//! legacy task-level blockers; `stage_dependencies` the T4 stage edges into
-//! the task, in edge order, with the result each consumed and any newer
-//! upstream result that superseded it), `stage`, `branch`, `base_ref`,
+//! stage_dependencies, subtask_joins, pr {url, number, head_sha}}`
+//! (`dependencies` lists legacy task-level blockers; `stage_dependencies`
+//! the T4 stage edges into the task, in edge order, with the result each
+//! consumed and any newer upstream result that superseded it;
+//! `subtask_joins` the T5 joins the task created and each member's
+//! outcome), `stage`, `branch`, `base_ref`,
 //! `owning_machine` (null until recorded per task), `created_at`,
 //! `updated_at`, `closed_at`, `snapshot_revision` and
 //! `ledger.published_through` (the highest published sequence).
@@ -657,7 +659,7 @@ pub struct TriggeringResult {
 }
 
 impl TriggeringResult {
-    fn from_file(file: &LedgerFile) -> Option<Self> {
+    pub fn from_file(file: &LedgerFile) -> Option<Self> {
         if file.kind != LedgerEntryKind::Result {
             return None;
         }
@@ -758,6 +760,13 @@ pub fn resolve_trigger(task_dir: &Path, stage: &str) -> Option<TriggeringResult>
             return None;
         }
     };
+    resolve_trigger_in(&files, stage)
+}
+
+/// [`resolve_trigger`] over entries already read, in sequence order. A
+/// transfer (T9) resolves the source session's trigger from the files it
+/// carries, before any of them is on this machine's disk.
+pub fn resolve_trigger_in(files: &[LedgerFile], stage: &str) -> Option<TriggeringResult> {
     let last_transition = files
         .iter()
         .rev()

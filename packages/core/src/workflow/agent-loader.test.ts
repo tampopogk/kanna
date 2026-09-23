@@ -4,6 +4,7 @@ import {
   applyAgentExtension,
   parseAgentDefinition,
   parseAgentExtension,
+  resolveAgentWithExtension,
   validateAgentDefinition,
 } from "./agent-loader";
 import type { AgentDefinition, AgentExtension } from "./workflow-types";
@@ -254,9 +255,13 @@ describe("validateAgentDefinition", () => {
     );
     const result = parseAgentDefinition(content);
 
-    expect(result.prompt).toContain("Do not push a branch or create a pull request");
-    expect(result.prompt).toContain("kanna_complete_stage");
-    expect(result.prompt).toContain("kanna-cli stage-complete");
+    expect(result.prompt).toContain("Push a branch or open a PR");
+    // Definition-formula agent (T10, spec §12): the mechanical
+    // kanna_complete_stage/kanna-cli call syntax is engine mechanics the
+    // runtime preamble already injects (kanna-task-environment.md's
+    // {{COMPLETION}} section), so it must not be duplicated here.
+    expect(result.prompt).not.toContain("kanna_complete_stage");
+    expect(result.prompt).not.toContain("kanna-cli stage-complete");
   });
 
   it("returns error for invalid permission_mode value", () => {
@@ -480,4 +485,75 @@ it("keeps structured frontmatter literals and rejects conflicting EXTEND tuning"
 it("refuses EXTEND attaching a different structured harness to inherited sibling tuning", () => {
   const base = parseAgentDefinition("---\nname: test\ndescription: Test\nagent_provider: codex\nmodel: gpt-6-astra\n---\nWork");
   expect(() => applyAgentExtension(base, { prompt: "", agent_provider: { harness: "opencode" } })).toThrow(/conflicting selection/);
+});
+
+describe("role/providers aliases (spec §12); Kanna never checks a definition's length or shape", () => {
+  const pad = (lines: number) => "extra\n".repeat(lines);
+
+  it("resolves role/providers as description/agent_provider aliases", () => {
+    const def = parseAgentDefinition(
+      "---\nname: test\nrole: A one-sentence role\nproviders: claude, codex\n---\nShort prompt."
+    );
+    expect(def.description).toBe("A one-sentence role");
+    expect(def.agent_provider).toEqual(["claude", "codex"]);
+  });
+
+  it("prefers legacy description/agent_provider when both are present", () => {
+    const def = parseAgentDefinition(
+      "---\nname: test\ndescription: Legacy\nrole: Formula\nagent_provider: claude\nproviders: codex\n---\nShort prompt."
+    );
+    expect(def.description).toBe("Legacy");
+    expect(def.agent_provider).toEqual(["claude"]);
+  });
+
+  it("does not enforce any length or shape on a definition declaring role/providers", () => {
+    expect(() =>
+      parseAgentDefinition("---\nname: test\nrole: A role\n---\n## Produces\nx\n## Reads\ny\n## Must not\nz\n## Stop when\nw")
+    ).not.toThrow();
+  });
+
+  it("resolves a definition missing every section header", () => {
+    expect(() =>
+      parseAgentDefinition(`---\nname: test\nrole: A role\n---\n## Produces\nx\n\n## Reads\ny\n${pad(20)}`)
+    ).not.toThrow();
+  });
+
+  it("resolves a definition referencing the legacy result variables", () => {
+    expect(() =>
+      parseAgentDefinition("---\nname: test\nrole: A role\n---\nUses $PREV_MAIN_RESULT and $PLAN_RESULT.")
+    ).not.toThrow();
+  });
+
+  describe("resolveAgentWithExtension", () => {
+    it("merges a base with a short extension", () => {
+      const base = "---\nname: test\nrole: A role\nproviders: claude\n---\nBase prompt.";
+      const merged = resolveAgentWithExtension(base, "One more sentence.");
+      expect(merged.prompt).toContain("One more sentence.");
+    });
+
+    it("merges a long base with a long extension, whatever their combined length", () => {
+      const base = `---\nname: test\nrole: A role\nproviders: claude\n---\n${pad(20)}`;
+      const merged = resolveAgentWithExtension(base, pad(30));
+      expect(merged.prompt.split("\n").filter((line) => line === "extra")).toHaveLength(50);
+    });
+
+    it("merges an extension that references a legacy result variable", () => {
+      const base = "---\nname: test\nrole: A role\nproviders: claude\n---\nBase prompt.";
+      const merged = resolveAgentWithExtension(base, "Uses $PREV_MAIN_RESULT.");
+      expect(merged.prompt).toContain("$PREV_MAIN_RESULT");
+    });
+
+    it("merges the repo's original review/EXTEND.md over the current bundled review agent", () => {
+      const agentContent = readFileSync(
+        new URL("../../../../.kanna/agents/review/AGENT.md", import.meta.url),
+        "utf8"
+      );
+      const extendContent = readFileSync(
+        new URL("../../../../.kanna/agents/review/EXTEND.md", import.meta.url),
+        "utf8"
+      );
+      const merged = resolveAgentWithExtension(agentContent, extendContent);
+      expect(merged.prompt).toContain("Do not create a PR yourself.");
+    });
+  });
 });

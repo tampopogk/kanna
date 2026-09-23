@@ -1033,14 +1033,6 @@ impl Db {
         )
     }
 
-    pub fn count_open_children(&self, parent_id: &str) -> Result<i64, rusqlite::Error> {
-        self.conn.query_row(
-            "SELECT COUNT(*) FROM pipeline_item WHERE parent_task_id = ? AND closed_at IS NULL",
-            [parent_id],
-            |row| row.get(0),
-        )
-    }
-
     /// Direct children of `parent_id`, oldest first — the downward read of the
     /// parentage `pipeline_item.parent_task_id` records upward.
     ///
@@ -1387,6 +1379,10 @@ impl Db {
             // A completion parked on dependency edges is owed only to the
             // open task: a reopen must not replay it (T4).
             db.clear_dependency_wait(&pipeline_item_id)?;
+            // A join member closing without a result resolves as closed and
+            // its parent is told (T5); one that recorded a result already
+            // resolved.
+            db.resolve_join_member_on_close(&pipeline_item_id)?;
             db.append_task_event(
                 &pipeline_item_id,
                 TaskEventKind::TaskClosed,

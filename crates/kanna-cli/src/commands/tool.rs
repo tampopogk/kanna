@@ -74,6 +74,12 @@ pub(crate) async fn execute_catalog_request(
         let status = get_routed_json(base_url, "/v1/status", machine_id).await?;
         kanna_tool_catalog::confirm_stage_dependencies_supported(&status)?;
     }
+    // Likewise a server without subtask joins has no join routes, which must
+    // not read as a parent with nothing to wait on.
+    if kanna_tool_catalog::requires_subtask_joins(&request) {
+        let status = get_routed_json(base_url, "/v1/status", machine_id).await?;
+        kanna_tool_catalog::confirm_subtask_joins_supported(&status)?;
+    }
     match (request.method, request.kind) {
         (_, ResponseKind::Guide) => request
             .local_response

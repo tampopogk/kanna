@@ -391,6 +391,11 @@ pub(crate) async fn run_server_services(
     tokio::spawn(
         http_api::stage_dependencies::resume_stage_dependency_readiness(Arc::clone(&http_state)),
     );
+    // Join members a restart interrupted before creating, and subtask
+    // results whose notice the parent's session never got.
+    tokio::spawn(http_api::subtask_joins::resume_subtask_joins(Arc::clone(
+        &http_state,
+    )));
     // After recovery, so a merge master whose transition or lifecycle
     // operation was still owed is seen as busy and left alone.
     tokio::spawn(http_api::signal_agent::migrate_merge_singletons_on_startup(

@@ -41,8 +41,22 @@ function builtInAgentNames(): string[] {
     .sort();
 }
 
+/**
+ * A definition declaring `role`/`providers` in its frontmatter (spec §12)
+ * must not duplicate the runtime preamble's completion mechanics
+ * (kanna-task-environment.md's {{COMPLETION}} section already delivers
+ * them) — the leanness goal for what Kanna ships, checked below; never a
+ * length or shape enforced by the loader.
+ */
+function usesDefinitionFormula(agentBody: string): boolean {
+  const frontmatter = agentBody.split(/\n---\s*\n/)[0] ?? "";
+  return /^role:|^providers:/m.test(frontmatter);
+}
+
 describe("built-in agent completion protocol", () => {
-  const agentNames = builtInAgentNames();
+  const agentNames = builtInAgentNames().filter(
+    (name) => !usesDefinitionFormula(readRepoFile(`.kanna/agents/${name}/AGENT.md`))
+  );
 
   it.each(agentNames)("%s records stage completion MCP-first with a CLI fallback", (name) => {
     const agent = readRepoFile(`.kanna/agents/${name}/AGENT.md`);
@@ -73,6 +87,42 @@ describe("built-in agent completion protocol", () => {
     ).toBe(true);
     // The task id must stay quoted in CLI examples.
     expect(agent).not.toContain("--task-id $KANNA_TASK_ID");
+  });
+
+  // `pr` is the one formula-format agent with a genuine, role-specific
+  // exception: the runtime preamble's manual-transition completion guidance
+  // only fires when the stage prompt asks (prompt-builder.ts's
+  // COMPLETION_GUIDANCE.manual), and every workflow that binds `pr` invokes
+  // it with a prompt that never asks. Its own result-publication obligation
+  // (CONTRACT.md) has to be carried in the definition itself.
+  const formulaAgentNames = builtInAgentNames().filter(
+    (name) => usesDefinitionFormula(readRepoFile(`.kanna/agents/${name}/AGENT.md`)) && name !== "pr"
+  );
+
+  it.each(formulaAgentNames)(
+    "%s (definition formula) leaves completion mechanics to the runtime preamble",
+    (name) => {
+      const agent = readRepoFile(`.kanna/agents/${name}/AGENT.md`);
+
+      expect(agent).not.toContain("kanna_complete_stage");
+      expect(agent).not.toContain("kanna-cli stage-complete");
+      // Instead it names its own non-success conditions under "Stop when",
+      // one of the formula's four required sections.
+      expect(agent).toContain("## Stop when");
+    }
+  );
+
+  it("keeps pr's own result-publication obligation in its Produces section (CONTRACT.md)", () => {
+    const agent = readRepoFile(".kanna/agents/pr/AGENT.md");
+    const produces = agent.split("## Reads")[0] ?? "";
+
+    expect(produces).toContain("## Produces");
+    expect(produces).toContain("kanna_complete_stage");
+    expect(produces).toContain("status `success`");
+    expect(produces).toContain("metadata.pr_url");
+    expect(readRepoPhrases(".kanna/agents/pr/CONTRACT.md")).toContain(
+      "include `metadata.pr_url`",
+    );
   });
 });
 
@@ -901,9 +951,12 @@ describe("QA workflow assets", () => {
     // The server-owned handoff envelope is built from headRefName/baseRefName,
     // which task metadata never carries — it only has prUrl. Taking the
     // metadata path and skipping `gh pr view` leaves both refs unresolved.
-    expect(approveAgent).toContain("gh pr view <prUrl-or-$BRANCH> --json url,isDraft,baseRefName,headRefName,title");
-    expect(approveAgent).toContain("Run it even when task context already gave you `prUrl`");
-    expect(approveAgent).toContain("If no PR resolves");
+    expect(approveAgent).toContain("gh pr view <prUrl> --json url,isDraft,baseRefName,headRefName,title");
+    expect(approveAgent).toContain("Run it even though task context already gave you `prUrl`");
+    // T10 follow-up: no $BRANCH fallback — the pr stage always records
+    // prUrl, so a missing one is a failure, not a branch guess.
+    expect(approveAgent).not.toContain("$BRANCH");
+    expect(approveAgent).toContain("do not guess a branch");
     expect(approveContract).toContain("including when task metadata already carried `prUrl`");
     expect(approveContract).toMatch(/headRefName.*baseRefName/);
   });
@@ -958,17 +1011,18 @@ describe("QA workflow assets", () => {
   // Every flavor that opens a PR carries its own copy of the steps, so the
   // guards below have to hold for all of them: fixing one path while a
   // sibling keeps opening dead-end and duplicate PRs fixes nothing.
-  const PR_CREATING_AGENTS = [
-    ".kanna/agents/pr/AGENT.md",
-    ".kanna/agents/pr/flavors/draft-pr/AGENT.md",
-  ];
+  // `pr/AGENT.md` itself was converted to the T10 definition formula (spec
+  // §12): its detailed git recipe moved out in favor of outcome-level
+  // "Must not"/"Stop when" prohibitions, so it is checked separately below
+  // rather than against the flavors' still-prescriptive recipe text.
+  const PR_RECIPE_AGENTS = [".kanna/agents/pr/flavors/draft-pr/AGENT.md"];
 
-  it("makes every PR-creating agent prove its base ref still leads to the default branch", () => {
+  it("makes every recipe-form PR-creating agent prove its base ref still leads to the default branch", () => {
     // A PR that merges cleanly into an abandoned integration branch is
     // indistinguishable from a healthy one: review, checks, and the mergeable
     // state all pass while the work lands nowhere. $BASE_REF is where the task
     // started, not evidence that the branch is still going anywhere.
-    for (const path of PR_CREATING_AGENTS) {
+    for (const path of PR_RECIPE_AGENTS) {
       const agent = readRepoPhrases(path);
 
       expect(agent, path).toContain("gh pr list --state open --head <base> --json number,url,baseRefName");
@@ -992,11 +1046,11 @@ describe("QA workflow assets", () => {
     );
   });
 
-  it("makes every PR-creating agent find an existing PR the rename step hid", () => {
+  it("makes every recipe-form PR-creating agent find an existing PR the rename step hid", () => {
     // The rename step moves the branch, so a prior PR for this task can sit on
     // a branch name this worktree no longer has — a `gh pr create` that only
     // looked at the current branch opened a duplicate for the same commit.
-    for (const path of PR_CREATING_AGENTS) {
+    for (const path of PR_RECIPE_AGENTS) {
       const agent = readRepoPhrases(path);
 
       expect(agent, path).toContain("Check whether an open PR already covers this work");
@@ -1014,6 +1068,24 @@ describe("QA workflow assets", () => {
     expect(readRepoPhrases(".kanna/agents/pr/CONTRACT.md")).toContain(
       "must not open a second pull request",
     );
+  });
+
+  it("keeps the formula-form pr agent's base-ref and duplicate-PR guards as outcome invariants", () => {
+    // pr/AGENT.md (T10): the same two guards as above, worded as
+    // prohibitions/stop-conditions rather than a step recipe, since the
+    // definition formula's four sections have no room for the git-command
+    // detail the flavor above still carries.
+    const agent = readRepoPhrases(".kanna/agents/pr/AGENT.md");
+
+    expect(agent).toContain("$BASE_REF");
+    expect(agent).toContain("Retarget a base that is still a live branch");
+    expect(agent).toContain("own open-PR chain still reaches the default branch");
+    expect(agent).toContain("dead end");
+    expect(agent).toContain("cannot safely retarget");
+    expect(agent).toContain("Open a second PR for commits an open PR already carries");
+    expect(agent).toContain("update that PR instead");
+    expect(agent).toContain("Kanna-Task: $KANNA_TASK_ID");
+    expect(agent).toContain("Force-push over commits it does not already have");
   });
 
   it("keeps pr@draft-pr drafting while it validates the base and reuses PRs", () => {

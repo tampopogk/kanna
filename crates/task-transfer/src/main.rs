@@ -1283,6 +1283,7 @@ async fn handle_request(
                 transfer_id: result.transfer_id,
                 source_peer_id: result.source_peer_id,
                 target_has_repo: result.target_has_repo,
+                peer_capabilities: result.peer_capabilities,
             },
             Err(error) => control_error(request_id, error),
         },

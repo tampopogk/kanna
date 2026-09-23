@@ -175,6 +175,17 @@ pub(crate) fn prepare_advance_stage_for_api_with_intent(
     if open_blockers > 0 {
         return Err(format!("task is blocked: {}", source_task_id));
     }
+    // A parent waiting on its subtask join (T5) does not progress until
+    // every child in it has resolved.
+    let waiting_children = db
+        .unresolved_join_children(source_task_id)
+        .map_err(|e| format!("db error: {}", e))?;
+    if !waiting_children.is_empty() {
+        return Err(subtask_join_pending_error(
+            source_task_id,
+            &waiting_children,
+        ));
+    }
     let loaded = load_stage_transition_source(db, config, identity, source_task_id)?;
     let context = StageTransitionContext {
         source_task: &loaded.source_task,
@@ -308,6 +319,18 @@ pub(crate) fn prepare_stage_completion_for_api_with_trigger(
     if identity.source_task.closed_at.is_some() {
         return Ok(None);
     }
+    // A completion replayed later (a parked dependency wait, an owed ledger
+    // continuation) is progression too: a join the task created meanwhile
+    // (T5) holds it until every child has resolved.
+    let waiting_children = db
+        .unresolved_join_children(source_task_id)
+        .map_err(|e| format!("db error: {}", e))?;
+    if !waiting_children.is_empty() {
+        return Err(subtask_join_pending_error(
+            source_task_id,
+            &waiting_children,
+        ));
+    }
     let loaded = load_stage_transition_source(db, config, identity, source_task_id)?;
     let context = StageTransitionContext {
         source_task: &loaded.source_task,
@@ -439,6 +462,19 @@ fn prepare_swap_to_index(
                 provider_override,
             )
         },
+    )
+}
+
+/// Refusal of a parent's progression while children of its subtask joins
+/// have not resolved (T5). Starts with `task is blocked:` so every route
+/// answers it as a conflict.
+pub(crate) fn subtask_join_pending_error(task_id: &str, children: &[String]) -> String {
+    format!(
+        "task is blocked: {task_id} is waiting on its subtask join; these children have not \
+         recorded a result yet: {}. Their results are delivered to this task's inputs as they \
+         arrive. A child whose session died stays unresolved until it is resumed, rerun or \
+         closed (kanna_get_task_joins shows which)",
+        children.join(", ")
     )
 }
 
@@ -1890,7 +1926,7 @@ fn prepare_stage_restart(
     // it is recorded), so its result settles that transition exactly once. A
     // step that already settled authorizes nothing more.
     if let Some(commit) = db
-        .transition_commit(&run.id)
+        .task_transition_commit(&run.task_id, &run.id)
         .map_err(|error| format!("db error: {error}"))?
     {
         if commit.state != crate::db::TransitionCommit::REQUESTED {
