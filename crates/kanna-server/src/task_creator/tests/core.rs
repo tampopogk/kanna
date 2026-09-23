@@ -4619,6 +4619,7 @@ fn build_target_stage_prompt_sections_a_carried_task_without_rescanning_it() {
             transition: WorkflowStageTransition::Manual,
             revision_transition: None,
             loop_transition: None,
+            handoff: None,
         },
         post: None,
         exit_commit: false,

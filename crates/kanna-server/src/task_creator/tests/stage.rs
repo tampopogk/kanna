@@ -297,6 +297,131 @@ fn prepare_merge_agent_creates_in_progress_task() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
+/// The merge master is claimed onto the repository's release workflow, under
+/// the unchanged `singleton-merge` marker (spec §10, T14).
+#[test]
+fn prepare_merge_agent_pins_the_release_workflow_under_the_singleton_marker() {
+    let repo_root = init_git_repo("merge-singleton-release-workflow");
+    let config = test_config("merge-singleton-release-workflow");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+    db.insert_test_pipeline_item(
+        "task-1",
+        "repo-1",
+        "Create a PR",
+        Some("Create a PR"),
+        "pr",
+        "2026-06-07 00:00:00",
+    )
+    .unwrap();
+    db.update_test_pipeline_item_stage_context("task-1", "task-task-1", "default", None, "claude")
+        .unwrap();
+
+    let prepared = prepare_merge_agent_for_api(&db, &config, "task-1").unwrap();
+    let item = db
+        .get_pipeline_item(&prepared.created_task.task_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(item.pipeline.as_deref(), Some("singleton-merge"));
+    let pinned: serde_json::Value =
+        serde_json::from_str(item.pipeline_def.as_deref().unwrap()).unwrap();
+    assert_eq!(pinned["name"], "release");
+    assert_eq!(pinned["routing"], "exits");
+    assert_eq!(pinned["stages"][0]["name"], "in progress");
+    assert_eq!(pinned["stages"][0]["agent"], "merge");
+    assert_eq!(pinned["stages"][0]["prompt"], "$TASK_PROMPT");
+    assert_eq!(pinned["stages"].as_array().unwrap().len(), 5);
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+fn test_repo_at(repo_root: &std::path::Path, label: &str) -> crate::db::Repo {
+    let config = test_config(label);
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+    db.get_repo("repo-1").unwrap().unwrap()
+}
+
+/// Only the merge singleton's claim pins the release workflow; naming it
+/// would start a second merge master.
+#[test]
+fn the_release_workflow_cannot_be_selected_by_name() {
+    let repo_root = init_git_repo("release-workflow-by-name");
+    let repo = test_repo_at(&repo_root, "release-workflow-by-name");
+    let error = super::super::resolve_task_workflow_snapshot(&repo, "release")
+        .err()
+        .expect("refused");
+    assert!(error.contains("merge master"), "{error}");
+    assert!(error.contains("cannot be selected by name"), "{error}");
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// A repository whose release workflow does not open with the merge agent
+/// gets no merge master rather than one the singleton lookup cannot find.
+#[test]
+fn a_release_workflow_that_does_not_open_with_the_merge_window_is_refused() {
+    let repo_root = init_git_repo("release-workflow-wrong-first-stage");
+    std::fs::create_dir_all(repo_root.join(".kanna/workflows")).unwrap();
+    std::fs::write(
+        repo_root.join(".kanna/workflows/release.json"),
+        serde_json::json!({
+            "name": "release",
+            "routing": "exits",
+            "stages": [
+                { "name": "ship", "agent": "ship", "prompt": "Report.",
+                  "policy": { "transition": "manual" } }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    publish_origin_main(&repo_root, "a release workflow without a merge window");
+    let repo = test_repo_at(&repo_root, "release-workflow-wrong-first-stage");
+    let error = super::super::merge::merge_singleton_workflow_definition(&repo).unwrap_err();
+    assert!(error.contains("must open with the merge window"), "{error}");
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// Loader parity: the TypeScript loader asserts the same shape for the same
+/// file (workflow-loader.test.ts).
+#[test]
+fn the_release_workflow_loads_with_the_shape_the_typescript_loader_sees() {
+    let release = super::super::definitions::parse_workflow_definition(include_str!(
+        "../../../../../.kanna/workflows/release.json"
+    ))
+    .unwrap();
+    assert_eq!(release.name.as_deref(), Some("release"));
+    assert!(release.routes_by_exits());
+    let shape: Vec<(&str, Option<&str>, &str)> = release
+        .stages
+        .iter()
+        .map(|stage| {
+            (
+                stage.name.as_str(),
+                stage.agent.as_deref(),
+                stage.policy.transition.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            ("in progress", Some("merge"), "manual"),
+            ("qa gauntlet", None, "manual"),
+            ("ship staging", Some("ship"), "manual"),
+            ("soak", None, "manual"),
+            ("ship production", Some("ship"), "manual"),
+        ]
+    );
+    assert_eq!(release.stages[0].prompt.as_deref(), Some("$TASK_PROMPT"));
+    assert!(release
+        .stages
+        .iter()
+        .all(|stage| stage.policy.handoff.is_none()));
+}
+
 /// The production spawn wiring, not a hand-stitched composition.
 ///
 /// The merge master is the harder of the two singletons: its `task_prompt` is

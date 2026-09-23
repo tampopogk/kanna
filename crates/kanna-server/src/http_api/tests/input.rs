@@ -3347,6 +3347,22 @@ mod merge_handoff_on_close {
         /// source task parked at `pr` with a running approve post — the state
         /// a `complete-stage` verdict from that post arrives into.
         fn new(label: &str, pipeline_def: &str, pr_url: Option<&str>) -> Self {
+            Self::with_source_run(
+                label,
+                pipeline_def,
+                pr_url,
+                ("run-approve", "approve", "post"),
+            )
+        }
+
+        /// As `new`, with the source task's running run given as
+        /// `(id, stage, kind)`.
+        fn with_source_run(
+            label: &str,
+            pipeline_def: &str,
+            pr_url: Option<&str>,
+            (source_run_id, source_run_stage, source_run_kind): (&str, &str, &str),
+        ) -> Self {
             let unique = format!("merge-close-{label}-{}", unique_test_suffix());
             let repo_root = std::env::temp_dir().join(format!("{unique}-repo"));
             init_test_git_repo(&repo_root);
@@ -3385,10 +3401,10 @@ mod merge_handoff_on_close {
                     .unwrap();
             }
             db.insert_stage_run(crate::db::NewStageRun {
-                id: "run-approve",
+                id: source_run_id,
                 task_id: "task-source",
-                stage: "approve",
-                kind: "post",
+                stage: source_run_stage,
+                kind: source_run_kind,
                 agent: Some("pr"),
                 agent_provider: Some("claude"),
                 model: None,
@@ -3631,6 +3647,64 @@ mod merge_handoff_on_close {
         let db = harness.db();
         wait_for_closed(&db, "task-source").await;
         assert!(db.task_merge_signaled_at("task-source").unwrap().is_some());
+        assert_eq!(merge_event_sources(&db, "task-source"), vec!["engine"]);
+        drop(db);
+        harness.cleanup();
+    }
+
+    /// A named-exit workflow hands off through its final stage's transition
+    /// policy instead of an approve post (spec §10: the `pr` stage's advance
+    /// hands to the merge master). The operator's advance out of `pr` closes
+    /// the task, and the close delivers the same request the post would have.
+    #[tokio::test]
+    async fn a_final_stage_handoff_policy_signals_the_merge_master_on_advance() {
+        let workflow = serde_json::json!({
+            "name": "shaped",
+            "routing": "exits",
+            "stages": [{
+                "name": "pr",
+                "agent": "pr",
+                "prompt": "Create a PR for $BRANCH",
+                "policy": { "transition": "manual", "handoff": "merge" }
+            }]
+        })
+        .to_string();
+        let harness = Harness::with_source_run(
+            "handoff-policy",
+            &workflow,
+            Some("https://github.com/acme/repo/pull/91"),
+            ("run-pr", "pr", "main"),
+        );
+        let app = super::router(Arc::new(super::AppState::new(harness.config.clone())));
+        let (status, text) = super::actions::post_json(
+            &app,
+            "/v1/tasks/task-source/actions/complete-stage",
+            serde_json::json!({
+                "runId": "run-pr", "status": "success",
+                "summary": "Created PR https://github.com/acme/repo/pull/91",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert!(
+            harness.merge_messages().is_empty(),
+            "a manual stage's result hands nothing off; leaving it does"
+        );
+        let (status, text) = super::actions::post_json(
+            &app,
+            "/v1/tasks/task-source/actions/advance-stage",
+            serde_json::json!({ "source": "operator" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+
+        let messages = harness.wait_for_merge_messages(1).await;
+        assert_eq!(
+            messages,
+            vec!["MERGE task-source -> main [TASK task-source] [PR https://github.com/acme/repo/pull/91]: Ship the thing"]
+        );
+        let db = harness.db();
+        wait_for_closed(&db, "task-source").await;
         assert_eq!(merge_event_sources(&db, "task-source"), vec!["engine"]);
         drop(db);
         harness.cleanup();

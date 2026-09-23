@@ -754,9 +754,17 @@ pub(super) async fn ensure_merge_handoff_before_close(
         // handoff: the approve post reported success without ever producing
         // the PR it exists to approve. Refuse the close so the task parks for
         // its human instead of disappearing as a completed workflow.
+        let promise = match pending.declaration {
+            crate::task_creator::MergeHandoffDeclaration::ApprovePost => {
+                "whose post signals the merge master"
+            }
+            crate::task_creator::MergeHandoffDeclaration::TransitionPolicy => {
+                "whose transition policy hands off to the merge master"
+            }
+        };
         let reason = format!(
-            "task {task_id} finished stage '{}' whose post signals the merge master, but no PR \
-             URL was ever recorded — nothing was handed off",
+            "task {task_id} finished stage '{}' {promise}, but no PR URL was ever recorded — \
+             nothing was handed off",
             pending.stage
         );
         log::error!("{reason}");
@@ -829,6 +837,7 @@ pub(super) async fn ensure_merge_handoff_before_close(
 /// already delivered one.
 struct PendingMergeHandoff {
     stage: String,
+    declaration: crate::task_creator::MergeHandoffDeclaration,
     branch: String,
     target: String,
     pr_url: Option<String>,
@@ -870,7 +879,7 @@ async fn resolve_pending_merge_handoff(
             .pipeline
             .clone()
             .unwrap_or_else(|| crate::task_creator::FALLBACK_WORKFLOW_NAME.to_string());
-        let declares_post = crate::task_creator::stage_declares_merge_approve_post(
+        let declaration = crate::task_creator::stage_declares_merge_handoff(
             &repo,
             &workflow_name,
             task.pipeline_def.as_deref(),
@@ -882,9 +891,9 @@ async fn resolve_pending_merge_handoff(
                 format!("failed to resolve workflow for {task_id}: {error}"),
             )
         })?;
-        if !declares_post {
+        let Some(declaration) = declaration else {
             return Ok(None);
-        }
+        };
         // The pr agent renames the branch it pushes, so the stored workspace
         // name is usually not the PR's head. Resolve the worktree's live
         // branch the same way blocker-resolution instructions do; the merge
@@ -918,6 +927,7 @@ async fn resolve_pending_merge_handoff(
             .unwrap_or_else(|| format!("task {task_id}"));
         Ok(Some(PendingMergeHandoff {
             stage,
+            declaration,
             branch,
             target,
             pr_url: task.pr_url.clone().filter(|url| !url.trim().is_empty()),
@@ -925,6 +935,79 @@ async fn resolve_pending_merge_handoff(
         }))
     })
     .await
+}
+
+/// Move every open merge master still pinned to the synthetic one-stage
+/// workflow onto the repository's release workflow (spec §10, T14), once, at
+/// startup. Each runs under its task-mutation lease, so no stage change,
+/// input or workflow edit for that task interleaves with it; the migration
+/// itself is fenced, idempotent, and leaves a merge master that is not at a
+/// quiescent boundary exactly as it was. The claim, the conversation and the
+/// stage are never touched, so no second merge master can result.
+pub(crate) async fn migrate_merge_singletons_on_startup(state: Arc<AppState>) {
+    let listed = {
+        let state = Arc::clone(&state);
+        super::blocking::run_handler_blocking("merge master migration scan", move || {
+            Db::open(&state.config.db_path)
+                .and_then(|db| {
+                    db.open_task_ids_with_pipeline(crate::task_creator::MERGE_SINGLETON_WORKFLOW)
+                })
+                .map_err(|error| db_write_error("db error", error))
+        })
+        .await
+    };
+    let task_ids = match listed {
+        Ok(task_ids) => task_ids,
+        Err((_, error)) => {
+            log::error!("merge master migration could not list merge masters: {error}");
+            return;
+        }
+    };
+    for task_id in task_ids {
+        match migrate_merge_singleton(&state, &task_id).await {
+            Ok(crate::task_creator::MergeSingletonMigration::Migrated) => {
+                log::info!("merge master {task_id} now runs the release workflow's merge window");
+                state.publish_state_changed(StateChangeScope::Tasks);
+            }
+            Ok(crate::task_creator::MergeSingletonMigration::NotApplicable) => {}
+            Ok(crate::task_creator::MergeSingletonMigration::Deferred(reason)) => {
+                log::info!("merge master {task_id} keeps its one-stage workflow for now: {reason}")
+            }
+            Err(error) => {
+                log::warn!("merge master {task_id} was not migrated: {error}")
+            }
+        }
+    }
+}
+
+pub(super) async fn migrate_merge_singleton(
+    state: &Arc<AppState>,
+    task_id: &str,
+) -> Result<crate::task_creator::MergeSingletonMigration, String> {
+    // Transitions, revisions, workflow edits and singleton input delivery all
+    // take this lease, so none of them interleaves with the check and the
+    // replacement. A turn in the merge master's session is not excluded: the
+    // replacement keeps the merge window's execution binding, supersedes no
+    // run and sends the daemon nothing, so the session cannot tell.
+    let _task_mutation = state.begin_requested_task_mutation(task_id).await;
+    let state = Arc::clone(state);
+    let task_id = task_id.to_string();
+    super::blocking::run_handler_blocking("merge master migration", move || {
+        let db = Db::open(&state.config.db_path).map_err(|error| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                error.to_string(),
+            )
+        })?;
+        crate::task_creator::migrate_merge_singleton_to_release_workflow(
+            &db,
+            &state.config.db_path,
+            &task_id,
+        )
+        .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error))
+    })
+    .await
+    .map_err(|(_, error)| error)
 }
 
 /// A task may close before its first cloud publication, while its claim is
@@ -1019,7 +1102,11 @@ pub(super) async fn signal_agent_request(
                 machine_id.clone(),
                 "POST".to_string(),
                 path,
-                serde_json::json!({ "input": message, "strictRecording": strict_recording }),
+                serde_json::json!({
+                    "input": message,
+                    "strictRecording": strict_recording,
+                    "expectedStageAgent": agent,
+                }),
             )
             .await
             .map_err(|error| remote_singleton_unreachable(&machine_id, &task_id, error))?
@@ -1045,7 +1132,8 @@ pub(super) async fn signal_agent_request(
             });
         }
         Some(SingletonOwner::Local(running)) => {
-            return signal_local_singleton(&state, &message, running, strict_recording).await;
+            return signal_local_singleton(&state, &message, &agent, running, strict_recording)
+                .await;
         }
         None => {}
     }
@@ -1168,7 +1256,11 @@ pub(super) async fn signal_agent_request(
                     claim.machine_id.clone(),
                     "POST".to_string(),
                     path,
-                    serde_json::json!({ "input": message, "strictRecording": strict_recording }),
+                    serde_json::json!({
+                        "input": message,
+                        "strictRecording": strict_recording,
+                        "expectedStageAgent": agent,
+                    }),
                 )
                 .await
                 .map_err(|error| {
@@ -1570,27 +1662,23 @@ fn remote_singleton_unreachable(
 async fn signal_local_singleton(
     state: &Arc<AppState>,
     message: &str,
+    agent: &str,
     running: crate::db::OpenAgentTask,
     strict_recording: bool,
 ) -> Result<SignalAgentResponse, (axum::http::StatusCode, String)> {
     // Do not reuse `running.session_id`: following a handoff that can name a
     // retired PTY. The ordinary input path discovers the daemon's live task
-    // session and fences its logical write to the observed PID.
-    if strict_recording {
-        super::task_input::deliver_server_task_input_strict(
-            Arc::clone(state),
-            running.task_id.clone(),
-            message.to_string(),
-        )
-        .await?;
-    } else {
-        super::task_input::deliver_server_task_input(
-            Arc::clone(state),
-            running.task_id.clone(),
-            message.to_string(),
-        )
-        .await?;
-    }
+    // session and fences its logical write to the observed PID. It also
+    // refuses a singleton whose current stage does not run `agent` — a merge
+    // master that has left its merge window for a later release stage.
+    super::task_input::deliver_singleton_task_input(
+        Arc::clone(state),
+        running.task_id.clone(),
+        message.to_string(),
+        agent.to_string(),
+        strict_recording,
+    )
+    .await?;
     Ok(SignalAgentResponse {
         task_id: running.task_id,
         created: false,

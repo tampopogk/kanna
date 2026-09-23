@@ -2114,15 +2114,25 @@ pub(crate) fn resolve_revision_budget(
 /// without delivering one.
 const MERGE_APPROVE_POST: &str = "approve";
 
-/// True when the task's pinned stage declares the merge-signaling `approve`
-/// post. Pre-change snapshots and custom workflows without that post promise
-/// no merge side effect, so nothing may be enforced on their behalf.
-pub(crate) fn stage_declares_merge_approve_post(
+/// How a task's pinned stage promises the merge master a handoff.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MergeHandoffDeclaration {
+    /// The legacy `approve` post, which signals the merge master itself.
+    ApprovePost,
+    /// A named-exit final stage's `policy.handoff`: leaving it hands off.
+    TransitionPolicy,
+}
+
+/// How the task's pinned stage promises the merge master a handoff: the
+/// merge-signaling `approve` post, or a `policy.handoff` transition policy.
+/// Pre-change snapshots and custom workflows without either promise no merge
+/// side effect, so nothing may be enforced on their behalf.
+pub(crate) fn stage_declares_merge_handoff(
     repo: &Repo,
     workflow_name: &str,
     workflow_def: Option<&str>,
     stage_name: &str,
-) -> Result<bool, String> {
+) -> Result<Option<MergeHandoffDeclaration>, String> {
     let workflow = match workflow_def.filter(|value| !value.trim().is_empty()) {
         Some(stored) => parse_stored_workflow_definition(stored)?,
         None => RepoDefinitions::resolve(repo)?.workflow(workflow_name)?,
@@ -2130,11 +2140,17 @@ pub(crate) fn stage_declares_merge_approve_post(
     let owner = match resolve_stage_position(&workflow, stage_name) {
         Some(StagePosition::Stage(index)) => index,
         Some(StagePosition::Post { owner }) => owner,
-        None => return Ok(false),
+        None => return Ok(None),
     };
-    Ok(workflow.stages[owner].post.as_ref().is_some_and(|post| {
+    let stage = &workflow.stages[owner];
+    if stage.post.as_ref().is_some_and(|post| {
         post.name == MERGE_APPROVE_POST || post.agent.as_deref() == Some(MERGE_APPROVE_POST)
-    }))
+    }) {
+        return Ok(Some(MergeHandoffDeclaration::ApprovePost));
+    }
+    Ok((workflow.routes_by_exits()
+        && stage.policy.handoff == Some(super::definitions::WorkflowHandoff::Merge))
+    .then_some(MergeHandoffDeclaration::TransitionPolicy))
 }
 
 pub(crate) fn resolve_stage_transition(

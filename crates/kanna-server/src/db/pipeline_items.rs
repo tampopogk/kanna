@@ -797,6 +797,20 @@ impl Db {
             .optional()
     }
 
+    /// Open tasks pinned under `pipeline`, oldest first.
+    pub fn open_task_ids_with_pipeline(
+        &self,
+        pipeline: &str,
+    ) -> Result<Vec<String>, rusqlite::Error> {
+        let mut statement = self.conn.prepare(
+            "SELECT id FROM pipeline_item
+             WHERE pipeline = ? AND closed_at IS NULL
+             ORDER BY rowid ASC",
+        )?;
+        let ids = statement.query_map([pipeline], |row| row.get(0))?.collect();
+        ids
+    }
+
     /// Every open singleton candidate for one machine-independent repository.
     ///
     /// Repository ids are installation-local, so cross-desktop singleton
