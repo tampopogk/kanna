@@ -885,18 +885,65 @@ fn persist_created_task_review_context(
         .map_err(|error| (axum::http::StatusCode::BAD_REQUEST, error.to_string()))
 }
 
+/// A stage dependency edge (spec §9) named at task creation: the new task's
+/// `dependentStage` (default: the stage it starts in) waits until task
+/// `taskId` leaves `stage` with a success result — for its final stage, until
+/// it closes.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct StageDependencyRequest {
+    task_id: String,
+    stage: String,
+    #[serde(default)]
+    dependent_stage: Option<String>,
+}
+
+/// The create body: the stored create request plus its stage dependency
+/// edges, which are installed with the task row rather than kept in the
+/// stored intent.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub(super) struct CreateTaskBody {
+    #[serde(flatten)]
+    request: crate::mobile_api::CreateTaskRequest,
+    #[serde(default)]
+    dependencies: Vec<StageDependencyRequest>,
+}
+
+impl CreateTaskBody {
+    fn into_parts(
+        self,
+    ) -> (
+        crate::mobile_api::CreateTaskRequest,
+        Vec<crate::db::NewStageEdge>,
+    ) {
+        let edges = self
+            .dependencies
+            .into_iter()
+            .map(|dependency| crate::db::NewStageEdge {
+                upstream_task_id: dependency.task_id,
+                upstream_stage: dependency.stage,
+                dependent_stage: dependency.dependent_stage,
+            })
+            .collect();
+        (self.request, edges)
+    }
+}
+
 pub(super) async fn create_task(
     State(state): State<Arc<AppState>>,
-    Json(payload): Json<crate::mobile_api::CreateTaskRequest>,
+    Json(body): Json<CreateTaskBody>,
 ) -> Result<Json<crate::mobile_api::CreateTaskResponse>, (axum::http::StatusCode, String)> {
-    create_task_with_requested_id(state, payload, None).await
+    let (payload, stage_edges) = body.into_parts();
+    create_task_with_requested_id_and_inputs(state, payload, None, Vec::new(), None, stage_edges)
+        .await
 }
 
 pub(super) async fn put_task(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(task_id): axum::extract::Path<String>,
-    Json(payload): Json<crate::mobile_api::CreateTaskRequest>,
+    Json(body): Json<CreateTaskBody>,
 ) -> Result<Json<crate::mobile_api::CreateTaskResponse>, (axum::http::StatusCode, String)> {
+    let (payload, stage_edges) = body.into_parts();
     validate_requested_task_id(&task_id)?;
     let _flight = state
         .begin_requested_task_creation(&task_id)
@@ -906,7 +953,15 @@ pub(super) async fn put_task(
                 format!("task creation already in progress: {task_id}"),
             )
         })?;
-    create_task_with_requested_id(state, payload, Some(task_id)).await
+    create_task_with_requested_id_and_inputs(
+        state,
+        payload,
+        Some(task_id),
+        Vec::new(),
+        None,
+        stage_edges,
+    )
+    .await
 }
 
 /// Transfer-only creation entry point. Historical inputs are persisted after
@@ -934,6 +989,7 @@ pub(crate) async fn create_transferred_task_in_process(
         Some(requested_task_id),
         inputs,
         Some(transfer_payload),
+        Vec::new(),
     )
     .await
     .map(|Json(response)| response)
@@ -944,8 +1000,15 @@ pub(super) async fn create_task_with_requested_id(
     payload: crate::mobile_api::CreateTaskRequest,
     requested_task_id: Option<String>,
 ) -> Result<Json<crate::mobile_api::CreateTaskResponse>, (axum::http::StatusCode, String)> {
-    create_task_with_requested_id_and_inputs(state, payload, requested_task_id, Vec::new(), None)
-        .await
+    create_task_with_requested_id_and_inputs(
+        state,
+        payload,
+        requested_task_id,
+        Vec::new(),
+        None,
+        Vec::new(),
+    )
+    .await
 }
 
 fn persist_transferred_task_context(
@@ -1009,9 +1072,31 @@ async fn create_task_with_requested_id_and_inputs(
     requested_task_id: Option<String>,
     imported_inputs: Vec<crate::db::ImportedTaskInput>,
     transfer_payload: Option<crate::transfer_engine::payload::OutgoingTransferPayload>,
+    stage_edges: Vec<crate::db::NewStageEdge>,
 ) -> Result<Json<crate::mobile_api::CreateTaskResponse>, (axum::http::StatusCode, String)> {
     if let Some(task_id) = requested_task_id.as_deref() {
         validate_requested_task_id(task_id)?;
+    }
+    if !stage_edges.is_empty() {
+        // Stage edges are the target dependency model; the legacy task-level
+        // blocker list and a transfer import each start the task their own
+        // way, so neither combines with them.
+        if payload
+            .blocker_task_ids
+            .as_ref()
+            .is_some_and(|ids| !ids.is_empty())
+        {
+            return Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                "dependencies cannot be combined with blockerTaskIds".to_string(),
+            ));
+        }
+        if payload.transfer_import.is_some() {
+            return Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                "dependencies cannot be combined with a transfer import".to_string(),
+            ));
+        }
     }
     if payload.notify_task_id.is_some() {
         return Err((
@@ -1064,6 +1149,7 @@ async fn create_task_with_requested_id_and_inputs(
     enum PreparedCreateOutcome {
         Done(crate::mobile_api::CreateTaskResponse),
         DormantCreated(crate::mobile_api::CreateTaskResponse),
+        DependentCreated(crate::mobile_api::CreateTaskResponse),
         RepairFresh {
             existing: crate::mobile_api::CreateTaskResponse,
             prepared: crate::task_creator::PreparedStageRerun,
@@ -1237,6 +1323,59 @@ async fn create_task_with_requested_id_and_inputs(
                     payload.prompt.clone(),
                 )
             });
+            if !stage_edges.is_empty() {
+                // A task with stage edges is always created unstarted, its
+                // edges installed in the same transaction, and started below
+                // once (possibly at once) its first-stage edges allow.
+                let db = Db::open(&state.config.db_path).map_err(|e| {
+                    (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("db error: {}", e),
+                    )
+                })?;
+                for edge in &stage_edges {
+                    db.resolve_pipeline_item_id(&edge.upstream_task_id)
+                        .map_err(|e| db_write_error("db error", e))?
+                        .ok_or_else(|| {
+                            (
+                                axum::http::StatusCode::NOT_FOUND,
+                                format!("task not found: {}", edge.upstream_task_id),
+                            )
+                        })?;
+                }
+                let created = match crate::task_creator::create_dormant_task_with_stage_edges(
+                    &db,
+                    payload,
+                    requested_task_id.clone(),
+                    &stage_edges,
+                ) {
+                    Ok(created) => created,
+                    Err(error) => {
+                        let requested_task =
+                            requested_task.as_ref().map(|(task_id, repo_id, prompt)| {
+                                (task_id.as_str(), repo_id.as_str(), prompt.as_str())
+                            });
+                        let existing =
+                            resolve_create_task_prepare_error(&db, error, requested_task)?;
+                        return Ok(PreparedCreateOutcome::Done(existing));
+                    }
+                };
+                if let Err(err) = persist_created_task_review_context(
+                    &db,
+                    &created.task_id,
+                    review_context.as_ref(),
+                ) {
+                    let rollback_result = db.delete_task_creation_artifacts(&created.task_id);
+                    return Err(match rollback_result {
+                        Ok(()) => err,
+                        Err(rollback_err) => (
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("{}; rollback failed: {}", err.1, rollback_err),
+                        ),
+                    });
+                }
+                return Ok(PreparedCreateOutcome::DependentCreated(created));
+            }
             let blocker_task_ids = payload.blocker_task_ids.clone().unwrap_or_default();
             let resolved_blocker_ids = if blocker_task_ids.is_empty() {
                 Vec::new()
@@ -1531,6 +1670,7 @@ async fn create_task_with_requested_id_and_inputs(
         let task_id = match &outcome {
             PreparedCreateOutcome::Done(existing)
             | PreparedCreateOutcome::DormantCreated(existing)
+            | PreparedCreateOutcome::DependentCreated(existing)
             | PreparedCreateOutcome::RepairFresh { existing, .. }
             | PreparedCreateOutcome::RepairResume { existing, .. } => existing.task_id.as_str(),
             PreparedCreateOutcome::Spawn { prepared, .. } => {
@@ -1588,6 +1728,31 @@ async fn create_task_with_requested_id_and_inputs(
         PreparedCreateOutcome::DormantCreated(created) => {
             state.publish_state_changed(StateChangeScope::Tasks);
             state.publish_state_changed(StateChangeScope::Blockers);
+            return Ok(Json(created));
+        }
+        PreparedCreateOutcome::DependentCreated(mut created) => {
+            state.publish_state_changed(StateChangeScope::Tasks);
+            state.publish_state_changed(StateChangeScope::Blockers);
+            // Creating a task enters its first stage at once unless an edge
+            // into it is unsatisfied (spec §5). A start that fails here
+            // leaves the task unstarted for the next departure or the
+            // startup sweep; the task itself was created.
+            match super::stage_dependencies::ensure_dependencies_ready(&state, &created.task_id)
+                .await
+            {
+                Ok(true) => {
+                    let db = Db::open(&state.config.db_path)
+                        .map_err(|e| db_write_error("db error", e))?;
+                    created.worktree_path = db
+                        .get_task_worktree_path(&created.task_id)
+                        .map_err(|e| db_write_error("db error", e))?;
+                }
+                Ok(false) => {}
+                Err(error) => log::error!(
+                    "task {} was created but could not start from its dependencies yet: {error}",
+                    created.task_id
+                ),
+            }
             return Ok(Json(created));
         }
         PreparedCreateOutcome::RepairFresh { existing, prepared } => {

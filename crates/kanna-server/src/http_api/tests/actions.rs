@@ -2546,7 +2546,7 @@ async fn close_last_blocker_starts_dormant_dependent_from_blocker_branch() {
 }
 
 /// Config for a blocked-dependent scenario that shares one temp root.
-fn dependent_scenario_config(label: &str, unique: &str, daemon_dir: &Path) -> Config {
+pub(super) fn dependent_scenario_config(label: &str, unique: &str, daemon_dir: &Path) -> Config {
     Config {
         relay_url: "wss://relay.example".to_string(),
         device_token: "device-token".to_string(),
@@ -2573,7 +2573,7 @@ fn dependent_scenario_config(label: &str, unique: &str, daemon_dir: &Path) -> Co
 /// Fake daemon for the dependent-start scenarios: acknowledges kills and
 /// answers the dependent's spawn. It reports each spawned session id on the
 /// returned channel.
-fn spawn_dependent_start_daemon(
+pub(super) fn spawn_dependent_start_daemon(
     listener: tokio::net::UnixListener,
     expected_task_id: String,
 ) -> (
@@ -2633,7 +2633,7 @@ fn spawn_dependent_start_daemon(
 }
 
 /// The one session id the fake daemon was asked to spawn.
-async fn expect_one_spawn(
+pub(super) async fn expect_one_spawn(
     spawned: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
     context: &str,
 ) -> String {

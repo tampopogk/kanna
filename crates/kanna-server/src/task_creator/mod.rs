@@ -2895,6 +2895,18 @@ pub(crate) fn create_dormant_task_for_api_with_error(
     request: crate::mobile_api::CreateTaskRequest,
     requested_task_id: Option<String>,
 ) -> Result<crate::mobile_api::CreateTaskResponse, PrepareTaskError> {
+    create_dormant_task_with_stage_edges(db, request, requested_task_id, &[])
+}
+
+/// Create a task that has not started yet, installing its stage dependency
+/// edges (T4) in the same transaction as its row, so no workspace can start
+/// before every edge into its first stage exists.
+pub(crate) fn create_dormant_task_with_stage_edges(
+    db: &Db,
+    request: crate::mobile_api::CreateTaskRequest,
+    requested_task_id: Option<String>,
+    stage_edges: &[crate::db::NewStageEdge],
+) -> Result<crate::mobile_api::CreateTaskResponse, PrepareTaskError> {
     let create_intent_json =
         serde_json::to_string(&request).map_err(|e| format!("serialize error: {e}"))?;
     let repo = db
@@ -3050,6 +3062,15 @@ pub(crate) fn create_dormant_task_for_api_with_error(
         .map_err(|error| classify_pipeline_item_insert_error(error, has_requested_task_id))?;
         db.insert_create_task_intent(&task_id, &create_intent_json)
             .map_err(|error| PrepareTaskError::Other(format!("db error: {error}")))?;
+        if !stage_edges.is_empty() {
+            db.insert_stage_edges(&task_id, stage_edges)
+                .map_err(|error| match error {
+                    crate::db::StageEdgeError::Database(error) => {
+                        PrepareTaskError::Other(format!("db error: {error}"))
+                    }
+                    other => PrepareTaskError::InvalidRequest(other.to_string()),
+                })?;
+        }
         Ok::<(), PrepareTaskError>(())
     })?;
 
@@ -3094,6 +3115,28 @@ pub(crate) fn prepare_start_dormant_task_for_api(
     if item.closed_at.is_some() {
         return Ok(None);
     }
+    // Stage dependency edges (T4) into the stage this task starts in: every
+    // one must be satisfied, the first gives the fork point (the commit its
+    // upstream result recorded) and the rest are listed to the session. With
+    // any such edge the engine merges nothing, whatever legacy blocker
+    // branches the caller passed.
+    let starting_stage = item.stage.clone().unwrap_or_default();
+    let stage_inputs = match db
+        .stage_edge_inputs(task_id, &starting_stage, true)
+        .map_err(|e| format!("db error: {}", e))?
+    {
+        Some(inputs) => inputs,
+        None => return Ok(None),
+    };
+    let blocker_branches = if stage_inputs.is_empty() {
+        blocker_branches
+    } else {
+        Vec::new()
+    };
+    let has_stage_edges = !db
+        .list_stage_edges_into(task_id)
+        .map_err(|e| format!("db error: {}", e))?
+        .is_empty();
     let create_request = db
         .get_create_task_intent(task_id)
         .map_err(|error| format!("db error: {error}"))?
@@ -3168,9 +3211,34 @@ pub(crate) fn prepare_start_dormant_task_for_api(
         .unwrap_or_else(|| format!("task-{}", task_id));
     let previous_base_ref = item.base_ref.clone();
     let worktree_path = format!("{}/.kanna-worktrees/{}", repo.path, branch);
-    let base_ref = blocker_branches
-        .first()
-        .cloned()
+    let edge_base = match stage_inputs.first() {
+        Some(base) => match base.input.committed_sha.as_deref() {
+            // Never the upstream's current branch tip: the commit its result
+            // recorded, which must exist in this repository.
+            Some(recorded) => Some(worktree::resolve_commit(&repo.path, recorded).ok_or_else(
+                || {
+                    format!(
+                        "dependency result {} of task {} recorded commit {recorded}, which this \
+                         repository does not have",
+                        base.input.result_id.as_deref().unwrap_or("unknown"),
+                        base.edge.upstream_task_id,
+                    )
+                },
+            )?),
+            None => None,
+        },
+        None => None,
+    };
+    // A task created with stage edges but none into its first stage starts
+    // like any new task: from the base ref it asked for, if any. Legacy
+    // dormant tasks keep ignoring it, as they always have.
+    let requested_base = create_request
+        .as_ref()
+        .filter(|_| has_stage_edges)
+        .and_then(|request| request.base_ref.clone());
+    let base_ref = edge_base
+        .or(requested_base)
+        .or_else(|| blocker_branches.first().cloned())
         .or_else(|| item.base_ref.clone());
     let base_ref = match base_ref {
         Some(base_ref) => Some(base_ref),
@@ -3348,37 +3416,52 @@ pub(crate) fn prepare_start_dormant_task_for_api(
     let stage_run_effort = effort.clone();
     let mut setup_record = None;
     let resolved_prompt = final_prompt.clone();
-    let (session, provider_session_id) = match build_prepared_session(
-        provider,
-        agent_type,
-        task_id,
-        &stage_name,
-        &workflow_name,
-        Some(stage.policy.transition.as_str()),
-        "unspecified",
-        final_prompt,
-        agent_instructions.map(AgentInstructions::at_prompt_head),
-        model,
-        effort,
-        autocompact,
-        permission_mode,
-        allowed_tools,
-        disallowed_tools,
-        max_turns,
-        max_budget_usd,
-        mcp_config_path,
-        &spawn_env,
-        &worktree_path,
-        &setup,
-        false,
-        &mut setup_record,
-        None,
-        None,
-        repo_config.local_override.as_ref(),
-    ) {
+    let session_dependencies = stage_inputs
+        .iter()
+        .map(crate::db::ConsumedDependency::to_session_input)
+        .collect();
+    let prepared_session = crate::task_store::with_dependency_inputs(session_dependencies, || {
+        build_prepared_session(
+            provider,
+            agent_type,
+            task_id,
+            &stage_name,
+            &workflow_name,
+            Some(stage.policy.transition.as_str()),
+            "unspecified",
+            final_prompt,
+            agent_instructions.map(AgentInstructions::at_prompt_head),
+            model,
+            effort,
+            autocompact,
+            permission_mode,
+            allowed_tools,
+            disallowed_tools,
+            max_turns,
+            max_budget_usd,
+            mcp_config_path,
+            &spawn_env,
+            &worktree_path,
+            &setup,
+            false,
+            &mut setup_record,
+            None,
+            None,
+            repo_config.local_override.as_ref(),
+        )
+    });
+    let (session, provider_session_id) = match prepared_session {
         Ok(prepared) => prepared,
         Err(error) => return Err(rollback_start(error.into())),
     };
+    if !stage_inputs.is_empty() {
+        if let Err(error) = db
+            .record_dependency_start(task_id, &stage_name, &branch, &stage_inputs)
+            .map_err(|e| format!("db error: {}", e))
+        {
+            return Err(rollback_start(error.into()));
+        }
+    }
     let prompt = item.prompt.clone().unwrap_or_default();
     let title = item
         .display_name

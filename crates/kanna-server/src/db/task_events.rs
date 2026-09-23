@@ -144,6 +144,14 @@ pub enum TaskEventKind {
     /// The task's last unresolved blocker went away. Same derived predicate as
     /// [`Self::TaskBlocked`]; `payload.blockerTaskIds` is empty.
     TaskUnblocked,
+    /// An upstream stage this task already consumed a result from (spec §9)
+    /// recorded a newer success when leaving that stage again. Recorded on
+    /// the edge and announced here; the engine takes no other action — it
+    /// does not hold, rerun or rebase this task. `payload` names the
+    /// `upstreamTaskId`, `upstreamStage`, `dependentStage`, the consumed
+    /// `consumedResultId`/`consumedSha` and the newer
+    /// `supersedingResultId`/`supersedingSha`.
+    DependencySuperseded,
     /// A provider refused this task's turn because the allowance for the
     /// scope it named is spent. A *positive* match on the provider's own
     /// rejection output, never inferred from a session going quiet, and the
@@ -238,6 +246,7 @@ impl TaskEventKind {
             Self::TransferFinalizing => "task.transfer_finalizing",
             Self::TaskBlocked => "task.blocked",
             Self::TaskUnblocked => "task.unblocked",
+            Self::DependencySuperseded => "task.dependency_superseded",
             Self::ProviderQuotaRejected => "task.provider_quota_rejected",
             Self::ProviderQuotaParked => "task.provider_quota_parked",
             Self::ProviderCapacityRefused => "task.provider_capacity_refused",
@@ -272,6 +281,7 @@ impl TaskEventKind {
         Self::TransferFinalizing,
         Self::TaskBlocked,
         Self::TaskUnblocked,
+        Self::DependencySuperseded,
         Self::ProviderQuotaRejected,
         Self::ProviderQuotaParked,
         Self::ProviderCapacityRefused,

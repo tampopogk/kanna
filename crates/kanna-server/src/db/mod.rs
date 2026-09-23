@@ -36,6 +36,7 @@ mod revisions;
 mod serviced;
 mod settings;
 mod snapshot;
+pub(crate) mod stage_edges;
 pub(crate) mod stage_run_prompt;
 pub(crate) mod stage_runs;
 pub(crate) mod terminal_archives;
@@ -82,6 +83,7 @@ pub use review_context::{
 #[allow(unused_imports)]
 pub use revisions::{RecordedRevisionOrigin, StageBudgetSpend, TransitionExit};
 pub use serviced::TaskServicedWatermark;
+pub use stage_edges::{ConsumedDependency, NewStageEdge, StageEdge, StageEdgeError};
 #[allow(unused_imports)]
 pub use stage_runs::{
     FinishedStageRun, ProviderOverrideSource, StageProviderOverride, StageRunSession, StageTrigger,
@@ -214,6 +216,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "096_task_ledger_bridge",
     "097_stage_exit_budget",
     "098_stage_workspaces",
+    "099_task_stage_edges",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2686,6 +2689,13 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
         add_column(conn, "stage_run", "session_name", "TEXT")?;
         add_column(conn, "stage_run", "transcript_ref", "TEXT")?;
         add_column(conn, "stage_run", "workspace_report", "TEXT")
+    })?;
+
+    // Spec §9/§16.4 (T4): stage dependency edges and the completions parked
+    // on them. Legacy `task_blocker` rows are untouched and keep their own
+    // readiness; edges are only ever created by new requests.
+    run_migration(conn, "099_task_stage_edges", |conn| {
+        conn.execute_batch(stage_edges::SCHEMA)
     })?;
 
     Ok(())

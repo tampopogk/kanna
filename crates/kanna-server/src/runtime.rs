@@ -387,6 +387,10 @@ pub(crate) async fn run_server_services(
         );
     }
     http_api::task_actions::resume_ledger_continuations(Arc::clone(&http_state)).await;
+    // Dependents whose upstream moved before a restart but never heard it.
+    tokio::spawn(
+        http_api::stage_dependencies::resume_stage_dependency_readiness(Arc::clone(&http_state)),
+    );
     tokio::spawn(run_task_ledger_publisher(Arc::clone(&http_state)));
     tokio::spawn(run_artifact_retention_sweeper(Arc::clone(&http_state)));
     let protected_input_maintenance = maintain_protected_input_generations(

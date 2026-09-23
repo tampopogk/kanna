@@ -787,12 +787,14 @@ fn entries_round_trip_and_marker_text_stays_literal() {
             committed_sha: Some("abc123".into()),
             message: message.into(),
         }),
+        dependencies: Vec::new(),
     });
     assert!(section.contains(message));
     assert!(section.contains("commit `abc123`"));
     let none = render_ledger_section(&SessionLedger {
         task_dir: "/ledger/task-1".into(),
         trigger: None,
+        dependencies: Vec::new(),
     });
     assert!(none.ends_with("No recorded result caused this session."));
 }

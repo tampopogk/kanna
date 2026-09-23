@@ -183,7 +183,7 @@ impl Db {
             .optional()
     }
 
-    fn pipeline_item_stage(&self, id: &str) -> Result<Option<String>, rusqlite::Error> {
+    pub(super) fn pipeline_item_stage(&self, id: &str) -> Result<Option<String>, rusqlite::Error> {
         self.conn
             .query_row(
                 "SELECT stage FROM pipeline_item WHERE id = ?",
@@ -1732,6 +1732,22 @@ impl Db {
         // the newest result recorded since the previous transition, resolved
         // in this transaction; none is borrowed from an earlier stage.
         let triggering_result_id = self.ledger_transition_trigger(id)?;
+        // Stage dependency edges (T4), in the transition's own transaction:
+        // leaving a stage may supersede what a dependent consumed, and
+        // entering one consumes the results its edges were satisfied by. Any
+        // real transition settles a completion parked on its edges.
+        if let Some(from_stage) = from_stage {
+            self.record_stage_edge_departure(
+                id,
+                from_stage,
+                to_stage,
+                triggering_result_id.as_deref(),
+            )?;
+        }
+        let consumed = self.consume_stage_edges_on_entry(id, to_stage)?;
+        if self.clear_dependency_wait(id)? {
+            self.sync_blocked_event(id)?;
+        }
         let source_id = format!("{id}:stage:{event_floor}");
         let mut body = json!({
             "from_stage": from_stage,
@@ -1745,6 +1761,12 @@ impl Db {
             "exit": exit.and_then(|exit| exit.exit.as_deref()),
             "exit_source": exit.map(|exit| exit.source.as_str()),
         });
+        if !consumed.is_empty() {
+            body["dependencies"] = consumed
+                .iter()
+                .map(super::ConsumedDependency::to_ledger_json)
+                .collect();
+        }
         if let Some(budget) = exit.and_then(|exit| exit.budget.as_ref()) {
             body["budget"] = json!({
                 "stage": budget.stage,

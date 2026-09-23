@@ -22,7 +22,10 @@
 //! (temp file + rename) whenever what it shows changes: `schema_version`,
 //! `task_id`, `repo_id`, `title`, `origin_prompt`, `workflow {name,
 //! definition}` (the exact pinned definition), `links {parent, dependencies,
-//! pr {url, number, head_sha}}`, `stage`, `branch`, `base_ref`,
+//! stage_dependencies, pr {url, number, head_sha}}` (`dependencies` lists
+//! legacy task-level blockers; `stage_dependencies` the T4 stage edges into
+//! the task, in edge order, with the result each consumed and any newer
+//! upstream result that superseded it), `stage`, `branch`, `base_ref`,
 //! `owning_machine` (null until recorded per task), `created_at`,
 //! `updated_at`, `closed_at`, `snapshot_revision` and
 //! `ledger.published_through` (the highest published sequence).
@@ -68,7 +71,15 @@
 //! - `transition`: `from_stage`, `to_stage`, `branch`, `trigger`,
 //!   `operation`, `triggering_result_id` (the newest result recorded since
 //!   the previous transition, or null), and `exit` / `exit_source`, reserved
-//!   for T1 and null until the engine routes by exit.
+//!   for T1 and null until the engine routes by exit. T4 adds
+//!   `dependencies` (present only when non-empty): the stage-edge inputs the
+//!   entered stage consumed, in edge order, each `{upstream_task_id,
+//!   upstream_stage, dependent_stage, position, role, result_id,
+//!   committed_sha}` with `role` `base` (fork point), `merge` (handed to the
+//!   session, never merged by the engine) or `gate`. A dependent entering
+//!   the stage it starts in once its base edges are satisfied records a
+//!   transition with `operation: "dependency_start"` and a null
+//!   `from_stage`.
 //! - `plan`: `operation` (`select` | `replace`), `source`, `stage`,
 //!   `from_workflow`, `to_workflow`, `before`, `after` (pinned definitions),
 //!   `superseded_run_ids`, `changed_execution_stages`, and `result_id` of the
@@ -660,16 +671,48 @@ impl TriggeringResult {
     }
 }
 
-/// What the engine delivers to a new session: where the ledger is, and the
-/// result that caused this session.
+/// An upstream result a stage's dependency edge was satisfied by (T4), as
+/// its session is told about it. `role` is `base` (the workspace forked from
+/// `committed_sha`), `merge` (not merged by the engine; the session merges it
+/// if it needs it) or `gate` (it only held the stage until it existed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DependencyInput {
+    pub upstream_task_id: String,
+    pub upstream_stage: String,
+    pub role: String,
+    pub result_id: Option<String>,
+    pub committed_sha: Option<String>,
+}
+
+/// What the engine delivers to a new session: where the ledger is, the
+/// result that caused this session, and the dependency inputs of its stage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionLedger {
     pub task_dir: String,
     pub trigger: Option<TriggeringResult>,
+    pub dependencies: Vec<DependencyInput>,
 }
 
 thread_local! {
     static PENDING_TRIGGER: RefCell<Option<TriggeringResult>> = const { RefCell::new(None) };
+    static PENDING_DEPENDENCIES: RefCell<Vec<DependencyInput>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Run `prepare` with the dependency inputs of the stage whose session it
+/// prepares, read by the caller from the task's edges in the same
+/// preparation that chose the workspace's fork point.
+pub fn with_dependency_inputs<T>(inputs: Vec<DependencyInput>, prepare: impl FnOnce() -> T) -> T {
+    struct Reset(Vec<DependencyInput>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            let previous = std::mem::take(&mut self.0);
+            PENDING_DEPENDENCIES.with(|slot| *slot.borrow_mut() = previous);
+        }
+    }
+    let previous =
+        PENDING_DEPENDENCIES.with(|slot| std::mem::replace(&mut *slot.borrow_mut(), inputs));
+    let _reset = Reset(previous);
+    prepare()
 }
 
 /// Run `prepare` with an explicitly identified triggering result that is
@@ -742,6 +785,7 @@ pub fn session_ledger(spawn_env: &HashMap<String, String>, stage: &str) -> Optio
     Some(SessionLedger {
         trigger: resolve_trigger(Path::new(task_dir), stage),
         task_dir: task_dir.clone(),
+        dependencies: PENDING_DEPENDENCIES.with(|slot| slot.borrow().clone()),
     })
 }
 
@@ -771,6 +815,31 @@ pub fn render_ledger_section(ledger: &SessionLedger) -> String {
                 or_unknown(&trigger.branch),
                 or_unknown(&trigger.committed_sha),
                 trigger.message,
+            ));
+        }
+    }
+    if !ledger.dependencies.is_empty() {
+        section.push_str("\n\nDependency inputs of this stage, in edge order:");
+        for dependency in &ledger.dependencies {
+            let or_unknown =
+                |value: &Option<String>| value.clone().unwrap_or_else(|| "unknown".into());
+            let consequence = match (dependency.role.as_str(), &dependency.committed_sha) {
+                ("base", Some(_)) => "This workspace was forked from that commit.",
+                ("base", None) => {
+                    "That result recorded no commit, so this workspace forked from the repository's default start point."
+                }
+                ("merge", _) => {
+                    "Kanna did not merge it. Merge that commit into your branch yourself if this stage needs it."
+                }
+                _ => "It only held this stage until it existed; your workspace was not rebased onto it.",
+            };
+            section.push_str(&format!(
+                "\n- `{}`: task `{}` left stage `{}` with result `{}` at commit `{}`. {consequence}",
+                dependency.role,
+                dependency.upstream_task_id,
+                dependency.upstream_stage,
+                or_unknown(&dependency.result_id),
+                or_unknown(&dependency.committed_sha),
             ));
         }
     }

@@ -39,6 +39,7 @@ pub(crate) mod secure_channel;
 pub(crate) mod settings;
 mod signal_agent;
 mod snapshot;
+pub(crate) mod stage_dependencies;
 mod stage_run_prompts;
 mod state;
 mod status;
