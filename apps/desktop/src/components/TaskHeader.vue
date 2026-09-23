@@ -54,6 +54,16 @@ const latestResultArtifacts = computed(() => {
   return Object.entries(artifacts).map(([name, reference]) => ({ name, reference }));
 });
 
+// A run still in flight has a non-null `latestRun` with no verdict, summary,
+// exit or artifacts recorded yet (mobile_api.rs's `map_task_latest_run`
+// yields all `None` until a result lands). Showing the container then would
+// be an empty bordered row.
+const hasLatestResult = computed(() => {
+  const run = props.latestRun;
+  if (!run) return false;
+  return Boolean(run.verdict || run.summary || run.exit || latestResultArtifacts.value.length > 0);
+});
+
 function openArtifactReference(reference: ArtifactReference) {
   if (reference.type !== "stored") return;
   emit("open-artifact", reference);
@@ -155,7 +165,7 @@ function openLocalhostPort(port: number) {
         {{ $t('taskHeader.prPrefix') }}{{ item.pr_number }}
       </a>
     </div>
-    <div v-if="latestRun" class="latest-result" data-testid="latest-result">
+    <div v-if="hasLatestResult && latestRun" class="latest-result" data-testid="latest-result">
       <span v-if="latestRun.verdict" class="verdict-badge" :data-verdict="latestRun.verdict">{{ latestRun.verdict }}</span>
       <span v-if="latestRun.summary" class="latest-result-message">{{ latestRun.summary }}</span>
       <span v-if="latestRun.exit" class="meta-item exit">

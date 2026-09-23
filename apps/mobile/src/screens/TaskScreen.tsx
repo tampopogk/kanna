@@ -293,6 +293,17 @@ export function TaskScreen({
   // The list colours rows by stage; the detail header wears the same colour so
   // opening a task does not drop the signal that led the eye to it.
   const stageTheme = resolveTaskStageTheme(task.stage);
+  // A run still in flight has a non-null `latestRun` with no verdict,
+  // summary, exit or artifacts recorded yet (mobile_api.rs's
+  // `map_task_latest_run` yields all `None` until a result lands). Showing
+  // the container then would be an empty bordered row under the task id.
+  const hasLatestResult = Boolean(
+    latestRun &&
+      (latestRun.verdict ||
+        latestRun.summary ||
+        latestRun.exit ||
+        (latestRun.artifacts && Object.keys(latestRun.artifacts).length > 0))
+  );
   const [draftInput, setDraftInput] = useState("");
   // A transient transport reconnect does not invalidate the authoritative
   // snapshot already on screen. Keep the same xterm document mounted so the
@@ -1260,7 +1271,7 @@ export function TaskScreen({
                   {expandedTaskId}
                 </Text>
               </View>
-              {latestRun ? (
+              {hasLatestResult && latestRun ? (
                 <View style={styles.latestResult} testID={MOBILE_E2E_IDS.taskLatestResult}>
                   {latestRun.verdict ? (
                     <Text

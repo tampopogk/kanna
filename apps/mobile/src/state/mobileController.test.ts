@@ -3117,6 +3117,75 @@ describe("createMobileController", () => {
         ([taskId]) => taskId === runTask.id
       )).toHaveLength(detailReads);
     });
+
+    it("re-reads and republishes the latest result when a collection refresh reports a new stage/activityRevision, without closing the task", async () => {
+      const store = createSessionStore();
+      const client = createClientMock();
+      const auth = createAuthSessionMock();
+      const taskV1: TaskSummary = { ...runTask, activityRevision: 1 };
+      const taskV2: TaskSummary = { ...runTask, stage: "in progress", activityRevision: 2 };
+      const runA = {
+        id: "run-a",
+        stage: "review",
+        kind: "main",
+        status: "running",
+        verdict: null,
+        summary: null,
+        resumedFromRunId: null,
+        resumeFallbackReason: null,
+        finishedAt: null
+      };
+      const runB = { ...latestRun, id: "run-b" };
+
+      vi.mocked(auth.getState).mockReturnValue({
+        status: "signedIn",
+        user: { uid: "user-1", email: "u@example.com", displayName: null }
+      });
+      client.getStatus.mockResolvedValue({
+        state: "running",
+        desktopId: "cloud",
+        desktopName: "Kanna Cloud",
+        lanHost: "cloud",
+        lanPort: 0,
+        pairingCode: null
+      });
+      client.listRepos.mockResolvedValue([{ id: taskV1.repoId, name: "Repo One" }]);
+      client.getTask = vi.fn()
+        .mockResolvedValueOnce({ ...taskV1, latestRun: runA })
+        .mockResolvedValueOnce({ ...taskV2, latestRun: runB });
+
+      let liveUpdate: ((tasks: TaskSummary[]) => void) | null = null;
+      const controller = createMobileController(client, store, auth, {
+        subscribeCloudTasks: vi.fn((_uid, onUpdate) => {
+          liveUpdate = onUpdate;
+          return vi.fn();
+        })
+      });
+
+      store.setSelectedTask(taskV1.id);
+      await controller.bootstrap();
+
+      // First collection publication: the task is running, with no result yet.
+      liveUpdate?.([taskV1]);
+      await flushMicrotasks();
+      expect(store.getState().selectedTaskId).toBe(taskV1.id);
+      expect(client.getTask).toHaveBeenCalledTimes(1);
+      expect(store.getState().selectedTaskLatestRun).toMatchObject({
+        taskId: taskV1.id,
+        latestRun: { id: "run-a", verdict: null }
+      });
+
+      // A later publication reports the same task with a new stage and
+      // activityRevision — it recorded a result while still selected.
+      liveUpdate?.([taskV2]);
+      await flushMicrotasks();
+      expect(store.getState().selectedTaskId).toBe(taskV1.id);
+      expect(client.getTask).toHaveBeenCalledTimes(2);
+      expect(store.getState().selectedTaskLatestRun).toMatchObject({
+        taskId: taskV1.id,
+        latestRun: { id: "run-b", verdict: "declined", summary: "Already fixed upstream." }
+      });
+    });
   });
 
   it("keeps the bounded prompt fallback when owner task detail fails", async () => {

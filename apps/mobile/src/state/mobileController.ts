@@ -433,6 +433,16 @@ export function createMobileController(
         /** The latest-result read this detail carried, kept beside the
          * prompt for the same cache-hit reason as `reviewState`. */
         latestRun: SessionState["selectedTaskLatestRun"];
+        /**
+         * The task's `stage` and `activityRevision` as of this read, the same
+         * markers the desktop client's own detail watch keys off. A
+         * collection refresh that reports either one changed means the task
+         * recorded a new result since this cache entry was written, so a
+         * cache hit alone would replay a stale `latestRun` until the task was
+         * closed and reopened.
+         */
+        stage: string | null;
+        activityRevision: number;
       }
     | null = null;
   /**
@@ -711,8 +721,20 @@ export function createMobileController(
     }
     const routeIdentity = taskPromptRouteIdentity(task);
     const detailIdentity = JSON.stringify([taskId, routeIdentity]);
+    // A collection refresh re-enters here on every poll, and `stage` /
+    // `activityRevision` are the same markers the desktop client's own
+    // detail watch keys off (MainPanel.vue). Either one changing since the
+    // cached read means the task has recorded something new — most
+    // importantly a fresh `latestRun` — so the cache is stale even though
+    // the task and route identity have not changed.
+    const cacheStaleForNewActivity =
+      loadedTaskPrompt?.taskId === taskId &&
+      loadedTaskPrompt.routeIdentity === routeIdentity &&
+      (loadedTaskPrompt.stage !== task.stage ||
+        loadedTaskPrompt.activityRevision !== (task.activityRevision ?? 0));
     if (
       !force &&
+      !cacheStaleForNewActivity &&
       loadedTaskPrompt?.taskId === taskId &&
       loadedTaskPrompt.routeIdentity === routeIdentity
     ) {
@@ -722,7 +744,7 @@ export function createMobileController(
       store.setSelectedTaskLatestRun(loadedTaskPrompt.latestRun);
       return;
     }
-    if (!force && activeTaskDetailIdentity === detailIdentity) {
+    if (!force && !cacheStaleForNewActivity && activeTaskDetailIdentity === detailIdentity) {
       return;
     }
 
@@ -762,13 +784,20 @@ export function createMobileController(
           definition: detail.workflowDefinition ?? null
         };
         if (typeof detail.prompt === "string") {
+          // Re-read at write time rather than closing over the `task` found
+          // when this read started: a collection refresh landing while the
+          // request was in flight must not have its newer markers
+          // overwritten by the stale ones the read was asked with.
+          const currentTask = findTask(taskId) ?? task;
           loadedTaskPrompt = {
             taskId,
             routeIdentity,
             prompt: detail.prompt,
             ports: detail.ports,
             reviewState,
-            latestRun
+            latestRun,
+            stage: currentTask.stage,
+            activityRevision: currentTask.activityRevision ?? 0
           };
           store.setTaskPrompt(taskId, detail.prompt);
         }

@@ -2473,6 +2473,11 @@ describe("TaskScreen", () => {
       const tree = expandedTreeWithLatestRun(null);
       expect(findByTestId(tree, MOBILE_E2E_IDS.taskLatestResult)).toBeNull();
     });
+
+    it("renders nothing for a run still in flight (no verdict, message, exit or artifacts)", () => {
+      const tree = expandedTreeWithLatestRun({ verdict: null, summary: null });
+      expect(findByTestId(tree, MOBILE_E2E_IDS.taskLatestResult)).toBeNull();
+    });
   });
 
   it("keeps the collapsed header's task ID complete when the title truncates", () => {

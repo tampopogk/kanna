@@ -322,4 +322,17 @@ describe("TaskHeader latest result (T11a)", () => {
 
     expect(wrapper.find('[data-testid="latest-result"]').exists()).toBe(false);
   });
+
+  it("renders nothing for a run still in flight (no verdict, message, exit or artifacts)", async () => {
+    const { default: TaskHeader } = await import("../TaskHeader.vue");
+    const wrapper = mount(TaskHeader, {
+      props: {
+        item: makeItem(),
+        latestRun: { verdict: null, summary: null },
+      },
+      global: { mocks: { $t: (key: string, fallback?: string) => fallback ?? key } },
+    });
+
+    expect(wrapper.find('[data-testid="latest-result"]').exists()).toBe(false);
+  });
 });
