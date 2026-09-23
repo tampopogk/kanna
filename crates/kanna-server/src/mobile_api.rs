@@ -798,6 +798,12 @@ pub struct CompleteStageRequest {
     /// the task's artifact repository or the result is refused unrecorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifacts: Option<serde_json::Value>,
+    /// Named-exit routing (spec §5): one of the current stage's declared
+    /// exits, or `advance`. Omitted takes the default — `advance` on
+    /// success, park otherwise. Refused on a legacy-routed task. A session
+    /// names an exit, never a stage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -931,6 +937,29 @@ pub struct TaskActionResponse {
     /// arguments can never read as a successful extension.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_extended: Option<bool>,
+    /// Set by `complete-stage` on a named-exit task: which exit the result
+    /// took and what happened to the task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<ResultRoutingStatus>,
+}
+
+/// Where a named-exit result sent the task (spec §5).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResultRoutingStatus {
+    /// The exit the result named, or `advance` when it named none.
+    pub exit: String,
+    /// `explicit` when the result named the exit, `default` when it did not.
+    pub exit_source: String,
+    /// The stage a loop exit leads to; absent for `advance`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<String>,
+    /// `advance` (the stage's transition policy decides whether the task
+    /// moves now or parks at a manual gate), `loop` (the task goes back to
+    /// `destination`), or `parked` (a non-success status, or an exhausted
+    /// destination budget: the result is recorded and the task waits).
+    pub outcome: String,
+    pub message: String,
 }
 
 /// The revision-round budget as it stands after a revision request.

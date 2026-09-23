@@ -1211,3 +1211,45 @@ fn revision_without_any_recorded_verdict_is_refused_rather_than_started_empty() 
         "unexpected error: {err}"
     );
 }
+
+/// Named-exit loops spend the destination stage's own budget: exhausting one
+/// destination leaves the others untouched, and a person's send-back resets
+/// only the stage it names.
+#[test]
+fn destination_budgets_are_spent_and_reset_per_stage() {
+    let db = Db::open_for_tests(&Db::test_db_path("destination-budgets")).unwrap();
+    db.insert_test_repo("repo-1", "Repo One").unwrap();
+    db.insert_test_pipeline_item(
+        "task-1",
+        "repo-1",
+        "T",
+        Some("T"),
+        "review",
+        "2026-09-23 00:00:00",
+    )
+    .unwrap();
+    let claim = |stage: &str, limit: i64| {
+        db.with_immediate_transaction(|db| {
+            db.claim_stage_budget_in_transaction("task-1", stage, limit)
+        })
+        .unwrap()
+    };
+    let first = claim("in progress", 2);
+    assert_eq!((first.spent, first.exhausted), (1, false));
+    let second = claim("in progress", 2);
+    assert_eq!((second.spent, second.exhausted), (2, false));
+    let refused = claim("in progress", 2);
+    assert_eq!((refused.spent, refused.exhausted), (2, true));
+    assert_eq!(db.stage_budget_spent("task-1", "in progress").unwrap(), 2);
+    // Another destination has its own count.
+    assert!(!claim("plan", 2).exhausted);
+    // A budget of zero parks every loop.
+    assert!(claim("pr", 0).exhausted);
+    assert_eq!(db.stage_budget_spent("task-1", "pr").unwrap(), 0);
+
+    db.reset_stage_budget("task-1", "in progress").unwrap();
+    assert_eq!(db.stage_budget_spent("task-1", "in progress").unwrap(), 0);
+    assert_eq!(db.stage_budget_spent("task-1", "plan").unwrap(), 1);
+    // The legacy task-wide counter is untouched by destination budgets.
+    assert_eq!(db.task_revision_rounds("task-1").unwrap(), 0);
+}

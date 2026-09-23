@@ -556,6 +556,8 @@ impl Db {
         super::serviced::create_schema(&self.conn)?;
         super::claude_channel::create_schema(&self.conn)?;
         self.conn.execute_batch(super::task_store::SCHEMA)?;
+        self.conn
+            .execute_batch(super::revisions::STAGE_BUDGET_SCHEMA)?;
         create_blocker_revision_triggers(&self.conn)?;
         let mut stmt = self
             .conn

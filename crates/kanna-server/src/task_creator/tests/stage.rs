@@ -591,6 +591,7 @@ async fn acknowledged_stage_survives_db_failure_restart_and_can_complete() {
         completion_transition: WorkflowStageTransition::Manual,
         trigger: crate::db::StageTrigger::Unspecified,
         entry_channel: Default::default(),
+        entry_exit: None,
         provider_override: None,
         feedback: None,
         provider_session_id: None,
@@ -3735,6 +3736,7 @@ fn current_stage_spawn_fixture(
         completion_transition: WorkflowStageTransition::Manual,
         trigger: crate::db::StageTrigger::Operator,
         entry_channel: Default::default(),
+        entry_exit: None,
         provider_override: None,
         feedback: None,
         provider_session_id: None,
@@ -5004,5 +5006,238 @@ fn a_task_pinned_to_the_retired_consultation_definition_still_reads_and_advances
         "advancing past the pinned final stage must still close the task"
     );
 
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+fn routing_repo(label: &str) -> (std::path::PathBuf, crate::db::Repo) {
+    let repo_root = init_git_repo_without_provider_fixtures(label);
+    let repo = crate::db::Repo {
+        id: format!("repo-{label}"),
+        path: repo_root.to_string_lossy().into_owned(),
+        name: "Routing".to_string(),
+        default_branch: Some("main".to_string()),
+        default_branch_source: None,
+        remote_url_hash: None,
+        hidden: None,
+        sort_order: None,
+        created_at: None,
+        last_opened_at: None,
+    };
+    (repo_root, repo)
+}
+
+/// The TypeScript loader runs the same fixtures (workflow-loader.test.ts), so
+/// both loaders accept and refuse the same named-exit definitions.
+#[test]
+fn named_exit_routing_fixtures_match_the_typescript_loader() {
+    let fixtures: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../packages/core/src/workflow/routing-fixtures.json"
+    ))
+    .unwrap();
+    for case in fixtures["cases"].as_array().unwrap() {
+        let name = case["name"].as_str().unwrap();
+        let parsed =
+            super::super::definitions::parse_workflow_definition(&case["definition"].to_string());
+        if case["valid"].as_bool().unwrap() {
+            assert!(parsed.is_ok(), "{name}: {:?}", parsed.err());
+        } else {
+            let error = parsed.err().unwrap_or_else(|| panic!("{name}: accepted"));
+            let expected = case["rejects"].as_str().unwrap();
+            assert!(error.contains(expected), "{name}: {error}");
+        }
+    }
+}
+
+#[test]
+fn a_legacy_definition_round_trips_without_any_routing_field() {
+    let legacy = include_str!("../../../../../.kanna/workflows/specialized-reviewers.json");
+    let parsed = super::super::definitions::parse_workflow_definition(legacy).unwrap();
+    assert!(!parsed.routes_by_exits());
+    let stored = serde_json::to_string(&parsed).unwrap();
+    for key in ["routing", "\"budget\"", "exits", "loop_transition"] {
+        assert!(!stored.contains(key), "{key} leaked into {stored}");
+    }
+    let reparsed = super::super::definitions::parse_stored_workflow_definition(&stored).unwrap();
+    assert_eq!(serde_json::to_string(&reparsed).unwrap(), stored);
+    let implement = &reparsed.stages[0];
+    assert_eq!(
+        implement.policy.revision_transition(),
+        WorkflowStageTransition::Auto
+    );
+}
+
+#[test]
+fn named_exits_resolve_by_name_and_budgets_fall_back_to_the_workflow_then_five() {
+    let workflow = super::super::definitions::parse_workflow_definition(
+        &serde_json::json!({
+            "name": "x", "routing": "exits", "budget": 3,
+            "stages": [
+                { "name": "plan", "agent": "plan", "budget": 1, "policy": { "transition": "manual" } },
+                { "name": "in progress", "agent": "implement",
+                  "policy": { "transition": "manual", "loop_transition": "auto" } },
+                { "name": "review", "agent": "review", "policy": { "transition": "auto" },
+                  "exits": { "revise": "in progress", "replan": "plan" } }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert!(workflow.routes_by_exits());
+    assert_eq!(workflow.stage_budget("plan"), 1);
+    assert_eq!(workflow.stage_budget("in progress"), 3);
+    assert_eq!(workflow.resolve_exit("review", "advance").unwrap(), None);
+    assert_eq!(
+        workflow
+            .resolve_exit("review", "replan")
+            .unwrap()
+            .as_deref(),
+        Some("plan")
+    );
+    let refused = workflow.resolve_exit("in progress", "revise").unwrap_err();
+    assert!(refused.contains("its exits are 'advance'"), "{refused}");
+    // The re-entered stage leaves by loop_transition, independently of its
+    // first-entry transition.
+    assert_eq!(
+        workflow.stages[1].policy.revision_transition(),
+        WorkflowStageTransition::Auto
+    );
+    assert_eq!(
+        workflow.stages[1].policy.transition,
+        WorkflowStageTransition::Manual
+    );
+
+    let unbudgeted = super::super::definitions::parse_workflow_definition(
+        &serde_json::json!({
+            "name": "y", "routing": "exits",
+            "stages": [{ "name": "in progress", "agent": "implement",
+                         "policy": { "transition": "manual" } }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        unbudgeted.stage_budget("in progress"),
+        super::super::definitions::DEFAULT_STAGE_BUDGET
+    );
+}
+
+#[test]
+fn a_remaining_plan_replacement_keeps_the_current_role_and_the_routing_under_a_live_run() {
+    let (repo_root, repo) = routing_repo("remaining-plan-rules");
+    let db = Db::open_for_tests(&Db::test_db_path("remaining-plan-rules")).unwrap();
+    db.insert_test_repo_with_path(&repo.id, &repo.path, "Routing")
+        .unwrap();
+    db.insert_test_pipeline_item(
+        "task-1",
+        &repo.id,
+        "T",
+        Some("T"),
+        "review",
+        "2026-09-23 00:00:00",
+    )
+    .unwrap();
+    db.insert_stage_run(NewStageRun {
+        id: "run-review",
+        task_id: "task-1",
+        stage: "review",
+        kind: "main",
+        agent: Some("review"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: Some("task-1"),
+        provider_session_id: None,
+        cwd: None,
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+    let runs = db.list_stage_runs_for_task("task-1").unwrap();
+    let pinned = serde_json::json!({
+        "name": "x", "routing": "exits",
+        "stages": [
+            { "name": "in progress", "agent": "implement", "policy": { "transition": "manual" } },
+            { "name": "review", "agent": "review", "policy": { "transition": "auto" },
+              "exits": { "revise": "in progress" } },
+            { "name": "pr", "agent": "pr", "policy": { "transition": "manual" } }
+        ]
+    });
+
+    // The remaining stages are replaced wholesale.
+    let mut appended = pinned.clone();
+    appended["stages"][2] = serde_json::json!(
+        { "name": "document", "agent": "implement", "policy": { "transition": "auto" } });
+    super::super::validate_remaining_plan_replacement(
+        &repo,
+        &appended,
+        &pinned.to_string(),
+        "review",
+        &runs,
+    )
+    .unwrap();
+
+    // The current stage keeps its role.
+    let mut recast = pinned.clone();
+    recast["stages"][1]["agent"] = serde_json::json!("implement");
+    let error = super::super::validate_remaining_plan_replacement(
+        &repo,
+        &recast,
+        &pinned.to_string(),
+        "review",
+        &runs,
+    )
+    .err()
+    .expect("refused");
+    assert!(error.contains("must keep its role"), "{error}");
+
+    // An exit must lead to a stage that exists at or before it.
+    let mut dangling = pinned.clone();
+    dangling["stages"][1]["exits"] = serde_json::json!({ "revise": "gone" });
+    let error = super::super::validate_remaining_plan_replacement(
+        &repo,
+        &dangling,
+        &pinned.to_string(),
+        "review",
+        &runs,
+    )
+    .err()
+    .expect("refused");
+    assert!(
+        error.contains("not this stage or an earlier stage"),
+        "{error}"
+    );
+
+    // A legacy task cannot be turned into a named-exit one under the review
+    // session that was instructed to name a stage.
+    let legacy = serde_json::json!({
+        "name": "x",
+        "stages": [
+            { "name": "in progress", "agent": "implement", "policy": { "transition": "manual" } },
+            { "name": "review", "agent": "review", "policy": { "transition": "auto" } },
+            { "name": "pr", "agent": "pr", "policy": { "transition": "manual" } }
+        ]
+    });
+    let error = super::super::validate_task_workflow_replacement(
+        &repo,
+        &pinned,
+        &legacy.to_string(),
+        "review",
+        &runs,
+    )
+    .err()
+    .expect("refused");
+    assert!(error.contains("while a stage run is running"), "{error}");
+    let error = super::super::validate_remaining_plan_replacement(
+        &repo,
+        &pinned,
+        &legacy.to_string(),
+        "review",
+        &runs,
+    )
+    .err()
+    .expect("refused");
+    assert!(error.contains("route by named exits"), "{error}");
     let _ = std::fs::remove_dir_all(&repo_root);
 }

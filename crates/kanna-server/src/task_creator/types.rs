@@ -244,6 +244,15 @@ impl PreparedStageTransition {
             Self::Close { .. } => {}
         }
     }
+
+    /// Record the exit this transition takes. Only a run that enters a stage
+    /// records one: a dispatched post stays in its stage (the transition its
+    /// completion later makes records its own), and a close enters none.
+    pub(crate) fn set_entry_exit(&mut self, exit: Option<crate::db::TransitionExit>) {
+        if let Self::Run(prepared) = self {
+            prepared.set_entry_exit(exit);
+        }
+    }
 }
 
 /// A stage-run workspace forked from the task's committed tip: swaps get a
@@ -348,6 +357,10 @@ pub(crate) struct PreparedStageRunSpawn {
     /// and leaves it unknown; the caller that received the request (or the
     /// engine, for its own transitions) sets it before execution.
     pub(super) entry_channel: crate::mutation_provenance::ChannelIdentity,
+    /// The exit the transition into this run took (named-exit routing only),
+    /// recorded on the ledger's transition entry. Preparation leaves it unset;
+    /// the caller that routed the result sets it.
+    pub(super) entry_exit: Option<crate::db::TransitionExit>,
     /// The provider override the advance that started this run carried, with
     /// the source that declared it. Recorded on the run so the durable record
     /// says who picked this stage's model.
@@ -437,6 +450,10 @@ impl PreparedStageRunSpawn {
         channel: crate::mutation_provenance::ChannelIdentity,
     ) {
         self.entry_channel = channel;
+    }
+
+    pub(crate) fn set_entry_exit(&mut self, exit: Option<crate::db::TransitionExit>) {
+        self.entry_exit = exit;
     }
 
     #[cfg(test)]

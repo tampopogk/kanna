@@ -1652,12 +1652,26 @@ impl Db {
     /// Move the task's stage. `trigger` is the transition's declared role and
     /// `channel` the verified channel it arrived on; both land on the
     /// `stage.changed` event.
+    #[cfg(test)]
     pub fn update_pipeline_item_stage_with_trigger(
         &self,
         id: &str,
         stage: &str,
         trigger: super::StageTrigger,
         channel: &ChannelIdentity,
+    ) -> Result<(), rusqlite::Error> {
+        self.update_pipeline_item_stage_with_exit(id, stage, trigger, channel, None)
+    }
+
+    /// [`Self::update_pipeline_item_stage_with_trigger`], also recording the
+    /// exit the transition took on its ledger entry.
+    pub fn update_pipeline_item_stage_with_exit(
+        &self,
+        id: &str,
+        stage: &str,
+        trigger: super::StageTrigger,
+        channel: &ChannelIdentity,
+        exit: Option<&super::TransitionExit>,
     ) -> Result<(), rusqlite::Error> {
         self.in_immediate_transaction_if_needed(|db| {
             let from_stage = db.pipeline_item_stage(id)?;
@@ -1675,6 +1689,7 @@ impl Db {
                 None,
                 trigger,
                 channel,
+                exit,
             )?;
             // Reaching (or leaving) `pr` with a PR recorded flips whether this
             // task still blocks its dependents.
@@ -1685,6 +1700,7 @@ impl Db {
     /// One `stage.changed` event per real transition. A rewrite to the stage a
     /// task is already on (a repair path, a replayed request) is not a
     /// transition and must not wake every watcher.
+    #[allow(clippy::too_many_arguments)]
     fn append_stage_changed_event(
         &self,
         id: &str,
@@ -1693,28 +1709,49 @@ impl Db {
         branch: Option<&str>,
         trigger: super::StageTrigger,
         channel: &ChannelIdentity,
+        exit: Option<&super::TransitionExit>,
     ) -> Result<(), rusqlite::Error> {
         if from_stage == Some(to_stage) {
             return Ok(());
         }
         let event_floor = self.ledger_event_floor()?;
-        self.append_task_event(
-            id,
-            TaskEventKind::StageChanged,
-            json!({
-                "fromStage": from_stage,
-                "toStage": to_stage,
-                "branch": branch,
-                "trigger": trigger.as_str(),
-                "declaredRole": trigger.as_str(),
-                "channelIdentity": channel.to_json(),
-            }),
-        )?;
+        let mut event = json!({
+            "fromStage": from_stage,
+            "toStage": to_stage,
+            "branch": branch,
+            "trigger": trigger.as_str(),
+            "declaredRole": trigger.as_str(),
+            "channelIdentity": channel.to_json(),
+        });
+        if let Some(exit) = exit {
+            event["exit"] = json!(exit.exit);
+            event["exitSource"] = json!(exit.source);
+        }
+        self.append_task_event(id, TaskEventKind::StageChanged, event)?;
         // The same real transition, mirrored into the ledger. Its trigger is
         // the newest result recorded since the previous transition, resolved
         // in this transaction; none is borrowed from an earlier stage.
         let triggering_result_id = self.ledger_transition_trigger(id)?;
         let source_id = format!("{id}:stage:{event_floor}");
+        let mut body = json!({
+            "from_stage": from_stage,
+            "to_stage": to_stage,
+            "branch": branch,
+            "trigger": trigger.as_str(),
+            "operation": "stage_change",
+            "triggering_result_id": triggering_result_id,
+            // Named-exit routing (T1) records which exit was taken and who
+            // chose it; legacy-routed transitions name none.
+            "exit": exit.and_then(|exit| exit.exit.as_deref()),
+            "exit_source": exit.map(|exit| exit.source.as_str()),
+        });
+        if let Some(budget) = exit.and_then(|exit| exit.budget.as_ref()) {
+            body["budget"] = json!({
+                "stage": budget.stage,
+                "spent": budget.spent,
+                "limit": budget.limit,
+            });
+        }
         self.enqueue_ledger_entry(super::task_store::NewLedgerEntry {
             task_id: id,
             kind: super::task_store::LedgerEntryKind::Transition,
@@ -1727,17 +1764,7 @@ impl Db {
             run_id: None,
             declared_role: super::task_store::declared_transition_role(trigger.as_str()).as_deref(),
             channel_identity: channel,
-            body: json!({
-                "from_stage": from_stage,
-                "to_stage": to_stage,
-                "branch": branch,
-                "trigger": trigger.as_str(),
-                "operation": "stage_change",
-                "triggering_result_id": triggering_result_id,
-                // Exit routing is T1's; today's engine names no exit.
-                "exit": serde_json::Value::Null,
-                "exit_source": serde_json::Value::Null,
-            }),
+            body,
             message: None,
             hold_events_after: None,
             reserved_sequence: None,
@@ -1880,14 +1907,16 @@ impl Db {
     }
 
     /// Stage transition into a freshly forked workspace: the task's current
-    /// branch moves with the stage.
-    pub fn update_pipeline_item_stage_and_branch_with_trigger(
+    /// branch moves with the stage. `exit` is the exit the transition took,
+    /// recorded on its ledger entry (named-exit routing only).
+    pub fn update_pipeline_item_stage_and_branch_with_exit(
         &self,
         id: &str,
         stage: &str,
         branch: &str,
         trigger: super::StageTrigger,
         channel: &ChannelIdentity,
+        exit: Option<&super::TransitionExit>,
     ) -> Result<(), rusqlite::Error> {
         self.in_immediate_transaction_if_needed(|db| {
             let from_stage = db.pipeline_item_stage(id)?;
@@ -1905,6 +1934,7 @@ impl Db {
                 Some(branch),
                 trigger,
                 channel,
+                exit,
             )?;
             db.sync_blocked_events_for_dependents(id)
         })

@@ -16,6 +16,7 @@ async fn request_revision_route_uses_revision_requester() {
                 follow_task: None,
                 revision_budget: None,
                 workflow_extended: None,
+                routing: None,
             })
         }),
     );

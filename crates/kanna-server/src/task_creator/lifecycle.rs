@@ -624,6 +624,7 @@ pub(crate) async fn spawn_prepared_stage_run_for_api(
         follow_task: None,
         revision_budget: None,
         workflow_extended: None,
+        routing: None,
     })
 }
 
@@ -1056,6 +1057,11 @@ struct StageOperationPayload {
     /// Intents persisted before it existed read as unknown.
     #[serde(default)]
     entry_channel: ChannelIdentity,
+    /// The exit this transition took, replayed onto its ledger entry if
+    /// restart reconciliation lands it. Absent for legacy routing and for
+    /// intents persisted before named exits existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    entry_exit: Option<crate::db::TransitionExit>,
     /// Only a newly forked workspace is safe to delete when a spawn is known
     /// to have stopped before submission. Older payloads omitted this field;
     /// defaulting to false preserves resumed workspaces during upgrade.
@@ -1096,6 +1102,7 @@ fn persist_stage_operation_intent(
         completion_transition: prepared.completion_transition.as_str().to_string(),
         trigger: prepared.trigger.as_str().to_string(),
         entry_channel: prepared.entry_channel.clone(),
+        entry_exit: prepared.entry_exit.clone(),
         rollback_on_failure,
     };
     let payload_json = serde_json::to_string(&payload)
@@ -1647,12 +1654,13 @@ fn reconcile_stage_operation_payload(
         });
         match (payload.branch.as_deref(), payload.worktree_path.as_deref()) {
             (Some(branch), Some(worktree_path)) => {
-                db.update_pipeline_item_stage_and_branch_with_trigger(
+                db.update_pipeline_item_stage_and_branch_with_exit(
                     &payload.task_id,
                     &payload.next_stage,
                     branch,
                     trigger,
                     &payload.entry_channel,
+                    payload.entry_exit.as_ref(),
                 )?;
                 db.upsert_worktree(
                     &format!("wt-{}", payload.task_id),
@@ -1662,11 +1670,12 @@ fn reconcile_stage_operation_payload(
                 )?;
             }
             (None, None) => {
-                db.update_pipeline_item_stage_with_trigger(
+                db.update_pipeline_item_stage_with_exit(
                     &payload.task_id,
                     &payload.next_stage,
                     trigger,
                     &payload.entry_channel,
+                    payload.entry_exit.as_ref(),
                 )?;
             }
             _ => {
@@ -1765,12 +1774,13 @@ fn reconcile_stage_operation_db(
             PreparedRunWorkspace::Forked(workspace)
             | PreparedRunWorkspace::Resumed(workspace)
             | PreparedRunWorkspace::Recreated(workspace) => {
-                db.update_pipeline_item_stage_and_branch_with_trigger(
+                db.update_pipeline_item_stage_and_branch_with_exit(
                     &prepared.task_id,
                     &prepared.next_stage,
                     &workspace.branch,
                     prepared.trigger,
                     &prepared.entry_channel,
+                    prepared.entry_exit.as_ref(),
                 )?;
                 db.upsert_worktree(
                     &format!("wt-{}", prepared.task_id),
@@ -1780,11 +1790,12 @@ fn reconcile_stage_operation_db(
                 )?;
             }
             PreparedRunWorkspace::Current => {
-                db.update_pipeline_item_stage_with_trigger(
+                db.update_pipeline_item_stage_with_exit(
                     &prepared.task_id,
                     &prepared.next_stage,
                     prepared.trigger,
                     &prepared.entry_channel,
+                    prepared.entry_exit.as_ref(),
                 )?;
             }
         }
@@ -1894,6 +1905,7 @@ pub(crate) async fn dispatch_prepared_post_for_api(
         follow_task: None,
         revision_budget: None,
         workflow_extended: None,
+        routing: None,
     })
 }
 
@@ -2018,6 +2030,7 @@ pub(crate) async fn rerun_prepared_stage_for_api(
                 follow_task: None,
                 revision_budget: None,
                 workflow_extended: None,
+                routing: None,
             })
         }
         DaemonEvent::Error { message, .. } => {
@@ -3741,6 +3754,7 @@ mod lifecycle_operation_tests {
             completion_transition: "manual".to_string(),
             trigger: "operator".to_string(),
             entry_channel: Default::default(),
+            entry_exit: None,
             rollback_on_failure,
         }
     }
@@ -3962,6 +3976,7 @@ mod lifecycle_operation_tests {
             completion_transition: "manual".to_string(),
             trigger: "operator".to_string(),
             entry_channel: Default::default(),
+            entry_exit: None,
             rollback_on_failure: false,
         };
         db.insert_lifecycle_operation_intent(

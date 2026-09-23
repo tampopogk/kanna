@@ -67,6 +67,11 @@ pub(crate) enum Commands {
         #[arg(long)]
         expected_definition: Option<String>,
 
+        /// Named-exit workflows only: one of this stage's exits (`advance`,
+        /// or a declared loop exit such as `revise`). Omit for the default.
+        #[arg(long)]
+        exit: Option<String>,
+
         /// Override the local Kanna server base URL
         #[arg(long)]
         server_url: Option<String>,
@@ -1358,6 +1363,7 @@ async fn main() {
             metadata,
             workflow_definition,
             expected_definition,
+            exit,
             server_url,
         } => {
             commands::stage_complete::run(
@@ -1367,6 +1373,7 @@ async fn main() {
                 metadata,
                 workflow_definition,
                 expected_definition,
+                exit,
                 server_url.as_deref(),
             )
             .await;

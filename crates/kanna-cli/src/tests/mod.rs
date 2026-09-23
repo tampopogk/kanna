@@ -579,6 +579,7 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
                     ("metadata", "metadata"),
                     ("workflow_definition", "workflow_definition"),
                     ("expected_definition", "expected_definition"),
+                    ("exit", "exit"),
                 ],
             },
         ),

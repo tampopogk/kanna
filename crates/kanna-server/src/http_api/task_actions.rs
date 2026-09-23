@@ -146,6 +146,7 @@ pub(super) async fn run_merge_agent(
         follow_task: None,
         revision_budget: None,
         workflow_extended: None,
+        routing: None,
     }))
 }
 
@@ -236,6 +237,7 @@ pub(super) async fn set_task_parent(
         follow_task: None,
         revision_budget: None,
         workflow_extended: None,
+        routing: None,
     }))
 }
 
@@ -537,6 +539,7 @@ pub(super) async fn pin_task(
         follow_task: None,
         revision_budget: None,
         workflow_extended: None,
+        routing: None,
     }))
 }
 
@@ -559,6 +562,7 @@ pub(super) async fn unpin_task(
         follow_task: None,
         revision_budget: None,
         workflow_extended: None,
+        routing: None,
     }))
 }
 
@@ -955,6 +959,7 @@ pub(super) async fn reopen_task(
         follow_task: None,
         revision_budget: None,
         workflow_extended: None,
+        routing: None,
     }))
 }
 
@@ -1053,6 +1058,7 @@ async fn close_task_after_final_stage(
         follow_task: Some(false),
         revision_budget: None,
         workflow_extended: None,
+        routing: None,
     }))
 }
 
@@ -1128,6 +1134,7 @@ pub(super) async fn advance_stage(
         follow_task: None,
         revision_budget: None,
         workflow_extended: None,
+        routing: None,
     };
     let Some(stage_advance) = state.begin_requested_stage_advance(&task_id).await else {
         return Ok(Json(response).into_response());
@@ -1578,6 +1585,7 @@ pub(super) async fn resume_task(
                     follow_task: None,
                     revision_budget: None,
                     workflow_extended: None,
+                    routing: None,
                 })
                 .into_response());
             }
@@ -1656,6 +1664,7 @@ pub(super) async fn resume_task(
         follow_task: None,
         revision_budget: None,
         workflow_extended: None,
+        routing: None,
     })
     .into_response())
 }
@@ -1774,6 +1783,7 @@ pub(super) async fn rerun_stage(
         follow_task: None,
         revision_budget: None,
         workflow_extended: None,
+        routing: None,
     })
     .into_response())
 }
@@ -2024,6 +2034,203 @@ fn prepare_plan_workflow_extension(
     })
 }
 
+/// Validate the remaining plan a named-exit result publishes (spec §10).
+///
+/// Fenced on the definition the caller read, and refused before the result
+/// is recorded. Unlike legacy publication there is no reserved stage name,
+/// recipe, final-stage rule or stamped plan: any current main run may replace
+/// what has not happened yet, and the result that did so is in the ledger.
+fn prepare_remaining_plan_replacement(
+    db: &Db,
+    task_id: &str,
+    current_run: &crate::db::StageRun,
+    definition: &serde_json::Value,
+    expected: &serde_json::Value,
+) -> Result<PreparedPlanWorkflowExtension, (axum::http::StatusCode, String)> {
+    use axum::http::StatusCode;
+    let item = db
+        .get_pipeline_item(task_id)
+        .map_err(|error| db_write_error("db error", error))?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("task not found: {task_id}")))?;
+    let stage = item
+        .stage
+        .clone()
+        .ok_or_else(|| (StatusCode::CONFLICT, "task has no current stage".into()))?;
+    if current_run.kind != "main" || current_run.stage != stage {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "only the task's current main stage run may replace its remaining plan; this \
+                 run is the {} run of stage '{}'",
+                current_run.kind, current_run.stage
+            ),
+        ));
+    }
+    let previous = item
+        .pipeline_def
+        .clone()
+        .ok_or_else(|| (StatusCode::CONFLICT, "task has no pinned workflow".into()))?;
+    let before: serde_json::Value = serde_json::from_str(&previous).map_err(|error| {
+        (
+            StatusCode::CONFLICT,
+            format!("invalid pinned workflow: {error}"),
+        )
+    })?;
+    if &before != expected {
+        return Err((
+            StatusCode::CONFLICT,
+            "pinned workflow changed; read it again before replacing the remaining plan; \
+             nothing was recorded"
+                .into(),
+        ));
+    }
+    let repo = db
+        .get_repo(&item.repo_id)
+        .map_err(|error| db_write_error("db error", error))?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "task repository not found".into()))?;
+    let runs = db
+        .list_stage_runs_for_task(task_id)
+        .map_err(|error| db_write_error("db error", error))?;
+    let validated = crate::task_creator::validate_remaining_plan_replacement(
+        &repo, definition, &previous, &stage, &runs,
+    )
+    .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    Ok(PreparedPlanWorkflowExtension {
+        stage,
+        workflow_name: item
+            .pipeline
+            .clone()
+            .unwrap_or_else(|| "no-review".to_string()),
+        previous_definition: previous,
+        revision_rounds: item.revision_rounds,
+        validated,
+    })
+}
+
+/// What happened to a named-exit result's task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RoutedOutcome {
+    /// `advance`: the stage's transition policy decides (auto moves now; a
+    /// manual gate parks until a person advances).
+    Advance,
+    /// A loop exit that spent its destination's budget: the task goes back.
+    Loop,
+    /// A loop exit whose destination budget is spent: recorded, parked.
+    Exhausted,
+    /// A non-success status: recorded, parked, whatever exit was named.
+    Parked,
+}
+
+impl RoutedOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Advance => "advance",
+            Self::Loop => "loop",
+            Self::Exhausted | Self::Parked => "parked",
+        }
+    }
+}
+
+/// One accepted named-exit result: the exit, the budget it spent, and where
+/// that left the task.
+struct RoutedResult {
+    exit: crate::task_creator::ResolvedResultExit,
+    budget: Option<crate::db::StageBudgetSpend>,
+    outcome: RoutedOutcome,
+}
+
+impl RoutedResult {
+    fn new(
+        exit: crate::task_creator::ResolvedResultExit,
+        budget: Option<crate::db::StageBudgetSpend>,
+        success: bool,
+    ) -> Self {
+        let outcome = if !success {
+            RoutedOutcome::Parked
+        } else if exit.destination.is_none() {
+            RoutedOutcome::Advance
+        } else if budget.as_ref().is_some_and(|budget| budget.exhausted) {
+            RoutedOutcome::Exhausted
+        } else {
+            RoutedOutcome::Loop
+        };
+        Self {
+            exit,
+            budget,
+            outcome,
+        }
+    }
+
+    /// The exit as the transition it causes records it.
+    fn transition_exit(&self) -> crate::db::TransitionExit {
+        self.exit.transition_exit(self.budget.clone())
+    }
+
+    /// Fields added to the ledger result: the exit, whether the session
+    /// named it, where it led, and the budget it spent.
+    fn ledger_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "exit": self.exit.exit,
+            "exit_source": self.exit.source,
+            "exit_destination": self.exit.destination,
+            "exit_outcome": self.outcome.as_str(),
+            "budget": self.budget.as_ref().map(|budget| serde_json::json!({
+                "stage": budget.stage,
+                "spent": budget.spent,
+                "limit": budget.limit,
+                "exhausted": budget.exhausted,
+            })),
+        })
+    }
+
+    fn budget_status(&self) -> Option<crate::mobile_api::RevisionBudgetStatus> {
+        let budget = self.budget.as_ref()?;
+        Some(crate::mobile_api::RevisionBudgetStatus {
+            rounds: budget.spent,
+            limit: budget.limit,
+            exhausted: budget.exhausted,
+            message: self.message("success"),
+        })
+    }
+
+    fn status(&self, status: &str) -> crate::mobile_api::ResultRoutingStatus {
+        crate::mobile_api::ResultRoutingStatus {
+            exit: self.exit.exit.clone(),
+            exit_source: self.exit.source.to_string(),
+            destination: self.exit.destination.clone(),
+            outcome: self.outcome.as_str().to_string(),
+            message: self.message(status),
+        }
+    }
+
+    fn message(&self, status: &str) -> String {
+        let destination = self.exit.destination.as_deref().unwrap_or("");
+        match (self.outcome, self.budget.as_ref()) {
+            (RoutedOutcome::Advance, _) => format!(
+                "Result recorded with exit '{}'. The stage's transition policy decides whether \
+                 the task moves on now or waits at its gate for a person; naming an exit never \
+                 operates a gate.",
+                self.exit.exit
+            ),
+            (RoutedOutcome::Loop, Some(budget)) => format!(
+                "Result recorded; exit '{}' sends the task back to '{destination}' with your \
+                 message (loop {} of {} into that stage).",
+                self.exit.exit, budget.spent, budget.limit
+            ),
+            (RoutedOutcome::Exhausted, Some(budget)) => format!(
+                "Result recorded, but '{destination}' has used its budget of {} loop(s), so the \
+                 task did not go back: it is parked at this stage for a person, who may send it \
+                 back anyway, which resets that stage's count. Do not record again unless asked.",
+                budget.limit
+            ),
+            _ => format!(
+                "Result recorded with status '{status}'. The task is parked at this stage with \
+                 your message; a status other than success never takes an exit."
+            ),
+        }
+    }
+}
+
 fn plan_stage_transition(definition: &serde_json::Value, stage: &str) -> Option<String> {
     definition["stages"]
         .as_array()?
@@ -2109,6 +2316,19 @@ pub(super) async fn complete_stage(
         None => None,
     };
     let should_auto_advance = verdict.completes_stage();
+    // Named-exit routing (spec §5) is decided by the task's pinned workflow.
+    // Read under the task mutation lease, which workflow replacement also
+    // takes, so it cannot change before this completion is recorded.
+    let routes_by_exits = {
+        let state = Arc::clone(&state);
+        let task_id = task_id.clone();
+        super::blocking::run_handler_blocking("stage completion routing", move || {
+            let db = Db::open(&state.config.db_path).map_err(|e| db_write_error("db error", e))?;
+            // An unreadable task is refused below with the ordinary errors.
+            Ok(crate::task_creator::task_routes_by_exits(&db, &task_id).unwrap_or(false))
+        })
+        .await?
+    };
     let mut stage_result_value = serde_json::json!({
         // The canonical spelling from the shared table, so the durable record
         // never carries a word the vocabulary does not contain.
@@ -2122,6 +2342,18 @@ pub(super) async fn complete_stage(
     if let Some(artifacts) = payload.artifacts.as_ref() {
         stage_result_value["artifacts"] = artifacts.clone();
     }
+    // The exit and any published plan are part of what this result says, so
+    // they are part of its identity: the same words naming another exit, or
+    // publishing another plan, are a different result, not a retry.
+    if let Some(exit) = payload.exit.as_deref() {
+        stage_result_value["exit"] = serde_json::json!(exit);
+    }
+    if routes_by_exits {
+        if let Some((definition, expected)) = workflow_extension.as_ref() {
+            stage_result_value["workflowDigest"] =
+                serde_json::json!(plan_publication_digest("", expected, definition));
+        }
+    }
     let stage_result = serde_json::to_string(&stage_result_value).map_err(|e| {
         (
             axum::http::StatusCode::BAD_REQUEST,
@@ -2132,8 +2364,11 @@ pub(super) async fn complete_stage(
     // The identity of a combined completion is its result *and* the stages it
     // asked to publish. Computed once, before anything is compared, so every
     // replay decision below asks the same question.
+    // Legacy publication identifies a replay through the stamped plan_context;
+    // a named-exit result carries its publication digest in the result itself.
     let requested_digest = workflow_extension
         .as_ref()
+        .filter(|_| !routes_by_exits)
         .map(|(definition, expected)| plan_publication_digest(&stage_result, expected, definition));
     let completion_attempt_key = payload.completion_attempt_key.clone();
     let completion_attempt_key_for_record = completion_attempt_key.clone();
@@ -2144,7 +2379,8 @@ pub(super) async fn complete_stage(
     // evidence of which process actually made the call. A replayed retry
     // returns before anything is written, so the first recording stands.
     let result_provenance = MutationProvenance::new(AGENT_DECLARED_ROLE, channel);
-    let (task_id, _finished_run, already_closed, replayed, workflow_extended) = {
+    let payload_exit = payload.exit.clone();
+    let (task_id, _finished_run, already_closed, replayed, workflow_extended, routed) = {
         let state = Arc::clone(&state);
         let payload_verdict = verdict;
         let payload_summary = payload.summary;
@@ -2221,7 +2457,7 @@ pub(super) async fn complete_stage(
                              workflow again before retrying"
                         )));
                     }
-                    return Ok((task_id, None, false, true, false));
+                    return Ok((task_id, None, false, true, false, None));
                 }
             }
             if db
@@ -2229,7 +2465,7 @@ pub(super) async fn complete_stage(
                 .map_err(|e| db_write_error("db error", e))?
                 .is_some_and(|item| item.closed_at.is_some())
             {
-                return Ok((task_id, None, true, false, false));
+                return Ok((task_id, None, true, false, false, None));
             }
             // The lifecycle column stays two-valued: the six-word verdict is
             // recorded in the run's result, and widening this enum would change
@@ -2271,7 +2507,7 @@ pub(super) async fn complete_stage(
                         db.record_contextless_completion_attempt(key, &payload_run_id, &stage_result)
                             .map_err(|e| db_write_error("db error", e))?;
                     }
-                    return Ok((task_id, None, false, true, false));
+                    return Ok((task_id, None, false, true, false, None));
                 }
                 return Err((
                     axum::http::StatusCode::CONFLICT,
@@ -2284,12 +2520,25 @@ pub(super) async fn complete_stage(
             if current_run.status == run_status
                 && current_run.result.as_deref() == Some(stage_result.as_str())
                 && same_operation(&db, &task_id, &payload_run_id, requested_digest.as_deref())
+                // The same words recorded again after the session did more
+                // work (input reached it, or its commit moved) are a new
+                // result, not a retry of the one already recorded.
+                && !db
+                    .ledger_work_after_latest_result(
+                        &task_id,
+                        &payload_run_id,
+                        crate::task_store::observe_workspace(current_run.cwd.as_deref())
+                            .ok()
+                            .and_then(|observed| observed.committed_sha)
+                            .as_deref(),
+                    )
+                    .map_err(|e| db_write_error("db error", e))?
             {
                 if let Some(key) = contextless_key {
                     db.record_contextless_completion_attempt(key, &payload_run_id, &stage_result)
                         .map_err(|e| db_write_error("db error", e))?;
                 }
-                return Ok((task_id, None, false, true, false));
+                return Ok((task_id, None, false, true, false, None));
             }
             // The plan a task's later stages were published under is not a
             // draft: once stamped, a differing retry of that same run would
@@ -2320,6 +2569,15 @@ pub(super) async fn complete_stage(
             }
             let extension = match workflow_extension.as_ref() {
                 None => None,
+                Some((definition, expected)) if routes_by_exits => {
+                    Some(prepare_remaining_plan_replacement(
+                        &db,
+                        &task_id,
+                        &current_run,
+                        definition,
+                        expected,
+                    )?)
+                }
                 Some((definition, expected)) => Some(prepare_plan_workflow_extension(
                     &db,
                     &task_id,
@@ -2328,6 +2586,27 @@ pub(super) async fn complete_stage(
                     definition,
                     expected,
                 )?),
+            };
+            // Where the result sends the task, refused before anything is
+            // recorded so a session that named an exit its stage does not
+            // declare can correct it. A published plan is what the task
+            // routes by from this result on.
+            // A legacy task naming no exit never loads its workflow here, so
+            // the legacy adapter keeps every behavior it had.
+            let route = if routes_by_exits || payload_exit.is_some() {
+                crate::task_creator::resolve_result_exit(
+                    &db,
+                    &task_id,
+                    &current_run,
+                    payload_exit.as_deref(),
+                    workflow_extension
+                        .as_ref()
+                        .filter(|_| routes_by_exits)
+                        .map(|(definition, _)| definition),
+                )
+                .map_err(|error| (axum::http::StatusCode::BAD_REQUEST, error))?
+            } else {
+                None
             };
             let finished_run = Some(crate::db::FinishedStageRun {
                 kind: current_run.kind.clone(),
@@ -2359,7 +2638,10 @@ pub(super) async fn complete_stage(
             // recorded verdict for the planner to discover later. The ledger
             // entry and the continuation that will dispatch the transition
             // commit in it too.
-            let record = |db: &Db| -> Result<(), (axum::http::StatusCode, String)> {
+            let record = |db: &Db| -> Result<
+                Option<RoutedResult>,
+                (axum::http::StatusCode, String),
+            > {
                 let event_floor = db
                     .ledger_event_floor()
                     .map_err(|e| db_write_error("db error", e))?;
@@ -2398,6 +2680,34 @@ pub(super) async fn complete_stage(
                     )
                 }
                 .map_err(|e| db_write_error("db error", e))?;
+                // A loop exit spends one unit of its destination's budget, in
+                // this transaction, so two results cannot both take the last
+                // unit; an exhausted budget records the result and parks.
+                let routed = match route.as_ref() {
+                    None => None,
+                    Some(route) => {
+                        let budget = match (&route.destination, route.budget_limit) {
+                            (Some(destination), Some(limit))
+                                if payload_verdict.completes_stage() =>
+                            {
+                                Some(
+                                    db.claim_stage_budget_in_transaction(
+                                        &task_id,
+                                        destination,
+                                        limit,
+                                    )
+                                    .map_err(|e| db_write_error("db error", e))?,
+                                )
+                            }
+                            _ => None,
+                        };
+                        Some(RoutedResult::new(
+                            route.clone(),
+                            budget,
+                            payload_verdict.completes_stage(),
+                        ))
+                    }
+                };
                 let result_entry = enqueue_completion_result(
                     db,
                     &task_id,
@@ -2411,11 +2721,66 @@ pub(super) async fn complete_stage(
                     recorded_artifacts.as_ref(),
                     event_floor,
                     &result_provenance,
+                    routed.as_ref().map(RoutedResult::ledger_json).as_ref(),
                 )
                 .map_err(|e| db_write_error("db error", e))?;
                 // A corrected verdict replaces whatever the earlier one asked
                 // the engine to do next.
-                if payload_verdict.completes_stage() {
+                let routed_outcome = routed.as_ref().map(|routed| routed.outcome);
+                if routed_outcome == Some(RoutedOutcome::Loop) {
+                    let routed = routed.as_ref().expect("loop outcome is routed");
+                    let destination = routed
+                        .exit
+                        .destination
+                        .clone()
+                        .expect("a loop exit has a destination");
+                    let budget = routed.budget.clone().expect("a loop spends its budget");
+                    let task_stage = db
+                        .get_pipeline_item(&task_id)
+                        .map_err(|e| db_write_error("db error", e))?
+                        .and_then(|item| item.stage);
+                    // Same continuation, fence and dispatch as a revision: the
+                    // destination's session starts only after this result is
+                    // on disk, and never over a task that moved since.
+                    db.put_ledger_continuation(
+                        &task_id,
+                        &result_entry.operation_id,
+                        crate::db::task_store::REVISION_CONTINUATION,
+                        &serde_json::json!({
+                            "stage": task_stage,
+                            "generation": db
+                                .task_run_generation(&task_id)
+                                .map_err(|e| db_write_error("db error", e))?,
+                            "runId": current_run.id,
+                            "targetStage": destination,
+                            "prompt": payload_summary,
+                            "round": {"number": budget.spent, "limit": budget.limit},
+                            "exit": routed.transition_exit().to_json(),
+                        }),
+                    )
+                    .map_err(|e| db_write_error("db error", e))?;
+                    db.record_revision_request_in_transaction(
+                        &task_id,
+                        crate::db::RecordedRevisionOrigin::Agent,
+                        Some(&destination),
+                        true,
+                    )
+                    .map_err(|e| db_write_error("db error", e))?;
+                } else if routed_outcome == Some(RoutedOutcome::Exhausted) {
+                    let routed = routed.as_ref().expect("exhausted outcome is routed");
+                    // Recorded, not taken: the task waits here for a person.
+                    db.clear_ledger_continuation(&task_id)
+                        .map_err(|e| db_write_error("db error", e))?;
+                    db.update_pipeline_item_activity(&task_id, "unread")
+                        .map_err(|e| db_write_error("db error", e))?;
+                    db.record_revision_request_in_transaction(
+                        &task_id,
+                        crate::db::RecordedRevisionOrigin::Agent,
+                        routed.exit.destination.as_deref(),
+                        false,
+                    )
+                    .map_err(|e| db_write_error("db error", e))?;
+                } else if payload_verdict.completes_stage() {
                     // The task's stage, not the run's: a post run is named
                     // after its post, while the task stays at the owning stage.
                     let task_stage = db
@@ -2439,12 +2804,16 @@ pub(super) async fn complete_stage(
                             "generation": db
                                 .task_run_generation(&task_id)
                                 .map_err(|e| db_write_error("db error", e))?,
+                            "exit": routed
+                                .as_ref()
+                                .map(|routed| routed.transition_exit().to_json()),
                         }),
                     )
+                    .map_err(|e| db_write_error("db error", e))?;
                 } else {
                     db.clear_ledger_continuation(&task_id)
+                        .map_err(|e| db_write_error("db error", e))?;
                 }
-                .map_err(|e| db_write_error("db error", e))?;
                 if let Some(extension) = extension.as_ref() {
                     db.replace_task_workflow(
                         &task_id,
@@ -2466,9 +2835,10 @@ pub(super) async fn complete_stage(
                     )
                     .map_err(|e| db_write_error("db error", e))?;
                 }
-                Ok(())
+                Ok(routed)
             };
-            db.with_immediate_transaction(|db| record(db).map_err(PlanExtensionTxError))
+            let routed = db
+                .with_immediate_transaction(|db| record(db).map_err(PlanExtensionTxError))
                 .map_err(|error| error.0)?;
             if payload_verdict.completes_stage() {
                 if let Some(pr_url) =
@@ -2493,7 +2863,7 @@ pub(super) async fn complete_stage(
                         )
                     })?;
             }
-            Ok((task_id, finished_run, false, false, extension.is_some()))
+            Ok((task_id, finished_run, false, false, extension.is_some(), routed))
         })
         .await?
     };
@@ -2512,7 +2882,11 @@ pub(super) async fn complete_stage(
         // caller reads a missing flag as "the stages were NOT published",
         // which is the honest answer only for a server that ignored the
         // arguments.
-        if workflow_extension.is_some() && replayed {
+        if workflow_extension.is_some() && replayed && routes_by_exits {
+            // The replayed result carries the digest of the plan it
+            // published, and it was published in the same transaction.
+            workflow_extended = Some(true);
+        } else if workflow_extension.is_some() && replayed {
             let state = Arc::clone(&state);
             let task_id = task_id.clone();
             workflow_extended = super::blocking::run_handler_blocking(
@@ -2542,6 +2916,7 @@ pub(super) async fn complete_stage(
             follow_task: None,
             revision_budget: None,
             workflow_extended,
+            routing: None,
         }));
     }
 
@@ -2552,8 +2927,11 @@ pub(super) async fn complete_stage(
     let response = crate::mobile_api::TaskActionResponse {
         task_id: task_id.clone(),
         follow_task: None,
-        revision_budget: None,
+        revision_budget: routed.as_ref().and_then(RoutedResult::budget_status),
         workflow_extended,
+        routing: routed
+            .as_ref()
+            .map(|routed| routed.status(verdict.as_str())),
     };
     let Some(owed) = owed.filter(|_| should_auto_advance) else {
         state.publish_state_changed(StateChangeScope::Tasks);
@@ -2582,6 +2960,7 @@ fn enqueue_completion_result(
     artifacts: Option<&serde_json::Value>,
     event_floor: i64,
     provenance: &MutationProvenance,
+    routing: Option<&serde_json::Value>,
 ) -> rusqlite::Result<crate::db::task_store::LedgerEntryRef> {
     use sha2::{Digest, Sha256};
     let prior = db.ledger_result_count_for_run(task_id, &run.id)?;
@@ -2608,16 +2987,29 @@ fn enqueue_completion_result(
             run_id: Some(&run.id),
             declared_role: Some(&provenance.declared_role),
             channel_identity: &provenance.channel_identity,
-            body: crate::task_store::result_body(
-                status,
-                run,
-                observed,
-                metadata,
-                serde_json::json!({
-                    "kind": "complete_stage",
-                    "publishesWorkflow": requested_digest.is_some(),
-                }),
-            ),
+            body: {
+                let mut body = crate::task_store::result_body(
+                    status,
+                    run,
+                    observed,
+                    metadata,
+                    serde_json::json!({
+                        "kind": "complete_stage",
+                        "publishesWorkflow": requested_digest.is_some()
+                            || serde_json::from_str::<serde_json::Value>(stage_result)
+                                .is_ok_and(|result| result.get("workflowDigest").is_some()),
+                    }),
+                );
+                // Named-exit routing: the exit, whether the session named it,
+                // and the destination budget it spent (T1, additive to T0's
+                // result object).
+                if let (Some(object), Some(serde_json::Value::Object(routing))) =
+                    (body.as_object_mut(), routing)
+                {
+                    object.extend(routing.clone());
+                }
+                body
+            },
             message: Some(message),
             hold_events_after: Some(event_floor),
             reserved_sequence: None,
@@ -2629,11 +3021,17 @@ fn enqueue_completion_result(
 /// A transition an accepted operation still owes, taken from its durable
 /// ledger continuation once that operation's entries are published.
 enum OwedTransition {
-    Completion(crate::db::FinishedStageRun),
+    Completion {
+        finished_run: crate::db::FinishedStageRun,
+        /// The exit the result took (named-exit routing only).
+        exit: Option<crate::db::TransitionExit>,
+    },
     Revision {
         target_stage: String,
         prompt: String,
         round: Option<crate::task_creator::RevisionRound>,
+        /// The exit (or operator send-back) that caused it, named-exit only.
+        exit: Option<crate::db::TransitionExit>,
     },
 }
 
@@ -2759,15 +3157,21 @@ fn owed_transition(
             .and_then(serde_json::Value::as_str)
             .map(str::to_string)
     };
+    let exit = payload
+        .get("exit")
+        .filter(|exit| !exit.is_null())
+        .and_then(|exit| serde_json::from_value::<crate::db::TransitionExit>(exit.clone()).ok());
     match continuation.kind.as_str() {
-        crate::db::task_store::STAGE_COMPLETION_CONTINUATION => {
-            Some(OwedTransition::Completion(crate::db::FinishedStageRun {
+        crate::db::task_store::STAGE_COMPLETION_CONTINUATION => Some(OwedTransition::Completion {
+            finished_run: crate::db::FinishedStageRun {
                 kind: text("kind")?,
                 completion_transition: text("completionTransition"),
                 trigger: text("trigger").unwrap_or_else(|| "unspecified".to_string()),
-            }))
-        }
+            },
+            exit,
+        }),
         crate::db::task_store::REVISION_CONTINUATION => Some(OwedTransition::Revision {
+            exit,
             target_stage: text("targetStage")?,
             prompt: text("prompt")?,
             round: payload.get("round").and_then(|round| {
@@ -2795,13 +3199,14 @@ async fn dispatch_owed_transition(
     task_mutation: super::state::RequestedTaskMutation,
 ) -> Result<(), (axum::http::StatusCode, String)> {
     match owed {
-        OwedTransition::Completion(finished_run) => {
-            dispatch_completion_transition(state, task_id, finished_run, task_mutation).await
+        OwedTransition::Completion { finished_run, exit } => {
+            dispatch_completion_transition(state, task_id, finished_run, exit, task_mutation).await
         }
         OwedTransition::Revision {
             target_stage,
             prompt,
             round,
+            exit,
         } => {
             // The round was spent and the reviewer's run finished when the
             // revision was accepted; only the reviser's spawn is still owed.
@@ -2830,6 +3235,7 @@ async fn dispatch_owed_transition(
             // continuation, not by the caller whose request accepted it.
             let mut prepared = prepared;
             prepared.set_entry_channel(ChannelIdentity::Server);
+            prepared.set_entry_exit(exit);
             execute_stage_transition_detached_holding(
                 Arc::clone(&state),
                 task_id,
@@ -2850,6 +3256,7 @@ async fn dispatch_completion_transition(
     state: Arc<AppState>,
     task_id: String,
     finished_run: crate::db::FinishedStageRun,
+    exit: Option<crate::db::TransitionExit>,
     task_mutation: super::state::RequestedTaskMutation,
 ) -> Result<(), (axum::http::StatusCode, String)> {
     let transition = {
@@ -2892,6 +3299,7 @@ async fn dispatch_completion_transition(
     // policy, not the caller: it records the server's channel, while the
     // result above keeps the caller's.
     transition.set_entry_channel(ChannelIdentity::Server);
+    transition.set_entry_exit(exit);
     execute_stage_transition_detached_holding(
         Arc::clone(&state),
         task_id,
@@ -3161,6 +3569,26 @@ pub(super) async fn request_revision(
                     format!("db error: {}", e),
                 )
             })?;
+            // An unreadable workflow is legacy here, so the legacy revision
+            // path reports its own errors exactly as before.
+            let routes_by_exits =
+                crate::task_creator::task_routes_by_exits(&db, &source_task_id).unwrap_or(false);
+            // A named-exit task routes a session's findings by the exit it
+            // names in its result, never by a stage it names here. Refused
+            // before anything is recorded or spent, naming what to do.
+            if routes_by_exits && origin.is_agent() {
+                let exits = crate::task_creator::describe_current_stage_exits(&db, &source_task_id)
+                    .unwrap_or_else(|_| "'advance'".to_string());
+                return Err((
+                    axum::http::StatusCode::CONFLICT,
+                    format!(
+                        "task {source_task_id} routes results by named exits: record your \
+                         result with kanna_complete_stage, status success, your findings as the \
+                         message, and the exit that fits them. This stage's exits: {exits}. No \
+                         revision was started and nothing was recorded."
+                    ),
+                ));
+            }
             let mut payload = payload;
             payload.run_id = validate_revision_run_binding(
                 &db,
@@ -3168,9 +3596,49 @@ pub(super) async fn request_revision(
                 payload.run_id.as_deref(),
                 origin,
             )?;
-            let budget = match crate::task_creator::resolve_revision_budget(&db, &source_task_id) {
-                Ok(budget) => budget,
-                Err(error) => return Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, error)),
+            let budget = if routes_by_exits {
+                // A person sending the task back resets the destination's
+                // budget, and only that stage's.
+                crate::task_creator::RevisionBudget {
+                    rounds: 0,
+                    limit: crate::task_creator::resolve_stage_budget_limit(
+                        &db,
+                        &source_task_id,
+                        &payload.target_stage,
+                    )
+                    .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error))?,
+                }
+            } else {
+                match crate::task_creator::resolve_revision_budget(&db, &source_task_id) {
+                    Ok(budget) => budget,
+                    Err(error) => {
+                        return Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, error))
+                    }
+                }
+            };
+            // Which exit a person's send-back corresponds to, recorded as
+            // theirs: no session chose it.
+            let operator_exit = if routes_by_exits {
+                let from_stage = db
+                    .get_pipeline_item(&source_task_id)
+                    .map_err(|error| db_write_error("db error", error))?
+                    .and_then(|item| item.stage);
+                Some(crate::db::TransitionExit {
+                    exit: match from_stage {
+                        Some(from_stage) => crate::task_creator::exit_leading_to(
+                            &db,
+                            &source_task_id,
+                            &from_stage,
+                            &payload.target_stage,
+                        )
+                        .unwrap_or(None),
+                        None => None,
+                    },
+                    source: crate::db::TransitionExit::OPERATOR.to_string(),
+                    budget: None,
+                })
+            } else {
+                None
             };
 
             if origin.is_agent() && budget.limit > 0 && budget.rounds >= budget.limit {
@@ -3225,6 +3693,7 @@ pub(super) async fn request_revision(
                 }
             };
             prepared.set_entry_channel(provenance.channel_identity.clone());
+            prepared.set_entry_exit(operator_exit.clone());
             let stage_result = revision_stage_result(&payload.summary, &payload.metadata)?;
             // The event reports the budget this revision leaves behind: an
             // agent round consumes one, a human request resets the counter,
@@ -3245,7 +3714,10 @@ pub(super) async fn request_revision(
             let finalized =
                 db.with_immediate_transaction(|db| -> rusqlite::Result<(i64, String)> {
                     let event_floor = db.ledger_event_floor()?;
-                    let rounds = if origin.is_agent() {
+                    let rounds = if routes_by_exits {
+                        db.reset_stage_budget(&source_task_id, &payload.target_stage)?;
+                        0
+                    } else if origin.is_agent() {
                         db.claim_agent_revision_round_in_transaction(&source_task_id, budget.limit)?
                             .ok_or(rusqlite::Error::QueryReturnedNoRows)?
                     } else {
@@ -3319,6 +3791,9 @@ pub(super) async fn request_revision(
                                 "number": round.number,
                                 "limit": round.limit,
                             })),
+                            "exit": operator_exit
+                                .as_ref()
+                                .map(crate::db::TransitionExit::to_json),
                         }),
                     )?;
                     Ok((rounds, continuation_operation_id))
@@ -3343,6 +3818,7 @@ pub(super) async fn request_revision(
                 prepared: Box::new(prepared),
                 budget,
                 continuation_operation_id,
+                routes_by_exits,
             })
         })
         .await?
@@ -3386,6 +3862,7 @@ pub(super) async fn request_revision(
                     ),
                 }),
                 workflow_extended: None,
+                routing: None,
             }))
         }
         RevisionOutcome::Started {
@@ -3393,6 +3870,7 @@ pub(super) async fn request_revision(
             prepared,
             budget,
             continuation_operation_id,
+            routes_by_exits,
         } => {
             // The reviser starts only once the reviewer's result is on disk,
             // and only by whoever claims the revision's continuation. Holding
@@ -3443,6 +3921,12 @@ pub(super) async fn request_revision(
                     rounds = budget.rounds,
                     limit = budget.limit,
                 )
+            } else if routes_by_exits {
+                format!(
+                    "Revision started; the agents' loop budget into this stage was reset to 0 of \
+                     {limit}.",
+                    limit = budget.limit,
+                )
             } else if budget.limit > 0 {
                 format!(
                     "Revision started; the automatic revision budget was reset to 0 of {limit} \
@@ -3462,6 +3946,7 @@ pub(super) async fn request_revision(
                     message,
                 }),
                 workflow_extended: None,
+                routing: None,
             }))
         }
     }
@@ -3479,6 +3964,8 @@ enum RevisionOutcome {
         prepared: Box<crate::task_creator::PreparedStageRunSpawn>,
         budget: crate::task_creator::RevisionBudget,
         continuation_operation_id: String,
+        /// A person's send-back on a named-exit task (destination budget).
+        routes_by_exits: bool,
     },
 }
 

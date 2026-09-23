@@ -552,6 +552,7 @@ pub(super) async fn update_task(
         follow_task: None,
         revision_budget: None,
         workflow_extended: None,
+        routing: None,
     }))
 }
 

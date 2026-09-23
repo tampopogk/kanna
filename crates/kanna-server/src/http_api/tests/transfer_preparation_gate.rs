@@ -838,6 +838,7 @@ async fn ordinary_put_resume_and_rerun_refuse_unprepared_bound_task() {
                 follow_task: None,
                 revision_budget: None,
                 workflow_extended: None,
+                routing: None,
             })
         }),
     )));

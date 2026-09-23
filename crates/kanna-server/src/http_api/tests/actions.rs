@@ -2855,7 +2855,12 @@ async fn unblock_starts_a_dependent_whose_blocker_never_created_its_branch() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
-fn commit_branch_change(repo_root: &Path, branch: &str, file: &str, content: &str) -> PathBuf {
+pub(super) fn commit_branch_change(
+    repo_root: &Path,
+    branch: &str,
+    file: &str,
+    content: &str,
+) -> PathBuf {
     let worktree_path = repo_root.join(".kanna-worktrees").join(branch);
     std::fs::create_dir_all(repo_root.join(".kanna-worktrees")).unwrap();
     assert!(Command::new("git")
@@ -4000,6 +4005,7 @@ async fn advance_stage_route_uses_stage_advancer() {
                 follow_task: None,
                 revision_budget: None,
                 workflow_extended: None,
+                routing: None,
             })
         }),
     );
@@ -4110,6 +4116,7 @@ async fn stale_advance_transition_revision_is_rejected_after_owner_transition() 
                     follow_task: None,
                     revision_budget: None,
                     workflow_extended: None,
+                    routing: None,
                 })
             }
         }),
@@ -4160,6 +4167,7 @@ async fn two_immediate_advance_requests_share_one_owner_transition() {
                     follow_task: None,
                     revision_budget: None,
                     workflow_extended: None,
+                    routing: None,
                 })
             }
         }),
@@ -4232,6 +4240,7 @@ async fn complete_stage_waits_for_competing_advance_stage_mutation() {
                     follow_task: None,
                     revision_budget: None,
                     workflow_extended: None,
+                    routing: None,
                 })
             }
         }),
@@ -4242,6 +4251,7 @@ async fn complete_stage_waits_for_competing_advance_stage_mutation() {
             follow_task: None,
             revision_budget: None,
             workflow_extended: None,
+            routing: None,
         })
     }));
     let app = super::router(Arc::new(state));
@@ -4323,6 +4333,7 @@ async fn blocker_replacement_waits_for_competing_advance_stage_mutation() {
                     follow_task: None,
                     revision_budget: None,
                     workflow_extended: None,
+                    routing: None,
                 })
             }
         }),
@@ -4478,6 +4489,7 @@ async fn rerun_stage_route_uses_stage_rerunner() {
                 follow_task: None,
                 revision_budget: None,
                 workflow_extended: None,
+                routing: None,
             })
         }),
     );
@@ -5525,6 +5537,7 @@ async fn complete_stage_route_uses_stage_completer() {
                 follow_task: None,
                 revision_budget: None,
                 workflow_extended: None,
+                routing: None,
             })
         }),
     );
@@ -8511,7 +8524,7 @@ async fn a_legacy_result_variable_workflow_still_runs_beside_the_ledger() {
 /// A scripted daemon that accepts any number of connections for the life of
 /// a test and records every command: sessions do not exist until spawned,
 /// kills find nothing, spawns succeed.
-fn spawn_recording_daemon(
+pub(super) fn spawn_recording_daemon(
     daemon_dir: &Path,
 ) -> Arc<std::sync::Mutex<Vec<kanna_daemon::protocol::Command>>> {
     use kanna_daemon::protocol::{Command as DaemonCommand, Event as DaemonEvent};
@@ -8564,7 +8577,9 @@ fn spawn_recording_daemon(
     commands
 }
 
-fn spawn_count(commands: &std::sync::Mutex<Vec<kanna_daemon::protocol::Command>>) -> usize {
+pub(super) fn spawn_count(
+    commands: &std::sync::Mutex<Vec<kanna_daemon::protocol::Command>>,
+) -> usize {
     commands
         .lock()
         .unwrap()
@@ -8579,7 +8594,7 @@ fn spawn_count(commands: &std::sync::Mutex<Vec<kanna_daemon::protocol::Command>>
         .count()
 }
 
-fn ledger_fixture_config(label: &str, daemon_dir: &Path) -> Config {
+pub(super) fn ledger_fixture_config(label: &str, daemon_dir: &Path) -> Config {
     let (kanna_cli_path, _) = ensure_test_kanna_cli_sidecar();
     Config {
         relay_url: "wss://relay.example".to_string(),
@@ -8604,7 +8619,7 @@ fn ledger_fixture_config(label: &str, daemon_dir: &Path) -> Config {
     }
 }
 
-async fn post_json(
+pub(super) async fn post_json(
     app: &axum::Router,
     path: &str,
     body: serde_json::Value,

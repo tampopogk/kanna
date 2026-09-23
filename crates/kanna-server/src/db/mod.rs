@@ -78,7 +78,7 @@ pub use review_context::{
     TaskReviewContext,
 };
 #[allow(unused_imports)]
-pub use revisions::RecordedRevisionOrigin;
+pub use revisions::{RecordedRevisionOrigin, StageBudgetSpend, TransitionExit};
 pub use serviced::TaskServicedWatermark;
 #[allow(unused_imports)]
 pub use stage_runs::{
@@ -209,6 +209,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "094_task_attention_flag",
     "095_mutation_provenance",
     "096_task_ledger_bridge",
+    "097_stage_exit_budget",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2659,6 +2660,12 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     // from the runtime's startup reconciliation, not from a migration.
     run_migration(conn, "096_task_ledger_bridge", |conn| {
         conn.execute_batch(task_store::SCHEMA)
+    })?;
+
+    // Spec §5 (T1): named-exit routing budgets each loop destination stage
+    // separately. Legacy tasks keep `pipeline_item.revision_rounds`.
+    run_migration(conn, "097_stage_exit_budget", |conn| {
+        conn.execute_batch(revisions::STAGE_BUDGET_SCHEMA)
     })?;
 
     Ok(())

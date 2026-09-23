@@ -2,8 +2,9 @@ use crate::config::Config;
 use crate::db::{Db, StageProviderOverride, StageTrigger, TaskStageSource};
 
 use super::definitions::{
-    parse_stored_workflow_definition, post_as_stage, resolve_stage_position, RepoDefinitions,
-    StagePosition, WorkflowDefinition, WorkflowStage, WorkflowStageTransition,
+    describe_stage_exits, parse_stored_workflow_definition, parse_workflow_definition,
+    post_as_stage, resolve_stage_position, RepoDefinitions, StagePosition, WorkflowDefinition,
+    WorkflowStage, WorkflowStageTransition, ADVANCE_EXIT,
 };
 use super::prepare_stage_run_spawn;
 use super::prompt::{
@@ -22,6 +23,7 @@ use super::AgentInstructions;
 use super::SpawnAgentOverrides;
 use super::FALLBACK_WORKFLOW_NAME;
 use crate::db::Repo;
+use crate::db::TransitionExit;
 
 pub(super) const REREVIEW_VERDICT_COMPLETION_INSTRUCTION: &str = "Your run is not complete until you have called `kanna_complete_stage` or `kanna_request_revision`; a summary without one of these is an unfinished review.";
 
@@ -180,6 +182,7 @@ pub(crate) fn prepare_advance_stage_for_api_with_intent(
         // the post is the current context, so advancing swaps past its owner.
         StagePosition::Post { owner } => {
             prepare_swap_to_index(db, config, &context, owner + 1, trigger, provider_override)
+                .map(|transition| with_operator_advance_exit(&loaded.workflow, transition))
         }
         StagePosition::Stage(index) => {
             let stage = &loaded.workflow.stages[index];
@@ -229,8 +232,25 @@ pub(crate) fn prepare_advance_stage_for_api_with_intent(
                 }
             }
             prepare_swap_to_index(db, config, &context, index + 1, trigger, provider_override)
+                .map(|transition| with_operator_advance_exit(&loaded.workflow, transition))
         }
     }
+}
+
+/// An explicit advance of a named-exit task is a person or manager operating
+/// the stage's gate: the transition takes `advance`, and no session chose it.
+fn with_operator_advance_exit(
+    workflow: &WorkflowDefinition,
+    mut transition: PreparedStageTransition,
+) -> PreparedStageTransition {
+    if workflow.routes_by_exits() {
+        transition.set_entry_exit(Some(TransitionExit {
+            exit: Some(ADVANCE_EXIT.to_string()),
+            source: TransitionExit::OPERATOR.to_string(),
+            budget: None,
+        }));
+    }
+    transition
 }
 
 /// Routes a stage-run completion verdict (`complete-stage` with
@@ -1809,4 +1829,162 @@ pub(crate) fn main_completion_continuation(
         Some(StagePosition::Post { .. }) => Some(true),
         None => None,
     })
+}
+
+/// Where a result goes under named-exit routing (spec §5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedResultExit {
+    /// The exit taken or requested: `advance` or a declared loop exit.
+    pub(crate) exit: String,
+    /// [`TransitionExit::EXPLICIT`] when the result named it,
+    /// [`TransitionExit::DEFAULT`] when it named none.
+    pub(crate) source: &'static str,
+    /// The loop exit's destination stage; `None` for `advance`.
+    pub(crate) destination: Option<String>,
+    /// The destination's budget; `None` for `advance`.
+    pub(crate) budget_limit: Option<i64>,
+}
+
+impl ResolvedResultExit {
+    /// The transition record for this exit, with the budget it spent.
+    pub(crate) fn transition_exit(
+        &self,
+        budget: Option<crate::db::StageBudgetSpend>,
+    ) -> TransitionExit {
+        TransitionExit {
+            exit: Some(self.exit.clone()),
+            source: self.source.to_string(),
+            budget,
+        }
+    }
+}
+
+/// The workflow a task routes by: its pinned snapshot, else the named one.
+fn task_workflow_for_routing(db: &Db, task_id: &str) -> Result<WorkflowDefinition, String> {
+    let identity = load_stage_identity(db, task_id)?;
+    let source = &identity.source_task;
+    match source
+        .pipeline_def
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        Some(stored) => parse_stored_workflow_definition(stored),
+        None => RepoDefinitions::resolve(&identity.repo)?
+            .workflow(source.pipeline.as_deref().unwrap_or(FALLBACK_WORKFLOW_NAME)),
+    }
+}
+
+/// True when the task's workflow routes results by named exits.
+pub(crate) fn task_routes_by_exits(db: &Db, task_id: &str) -> Result<bool, String> {
+    Ok(task_workflow_for_routing(db, task_id)?.routes_by_exits())
+}
+
+/// Resolve the exit a result on `run` names (or the default it takes).
+///
+/// `Ok(None)` for a legacy-routed task that named no exit: the legacy
+/// adapter routes it exactly as before. A legacy task naming an exit is
+/// refused, since its workflow declares none. `publishing` is the definition
+/// the same call publishes, which the result then routes by. Only a main run
+/// of the task's current stage may name a loop exit; a post always advances.
+pub(crate) fn resolve_result_exit(
+    db: &Db,
+    task_id: &str,
+    run: &crate::db::StageRun,
+    requested: Option<&str>,
+    publishing: Option<&serde_json::Value>,
+) -> Result<Option<ResolvedResultExit>, String> {
+    let workflow = match publishing {
+        Some(definition) => parse_workflow_definition(&definition.to_string())?,
+        None => task_workflow_for_routing(db, task_id)?,
+    };
+    let requested = requested.map(str::trim).filter(|exit| !exit.is_empty());
+    if !workflow.routes_by_exits() {
+        return match requested {
+            None => Ok(None),
+            Some(exit) => Err(format!(
+                "this task's workflow does not route by named exits, so a result cannot name \
+                 exit '{exit}'; record the result without an exit (a review asks for changes \
+                 through kanna_request_revision naming the stage)"
+            )),
+        };
+    }
+    let Some(exit) = requested else {
+        return Ok(Some(ResolvedResultExit {
+            exit: ADVANCE_EXIT.to_string(),
+            source: TransitionExit::DEFAULT,
+            destination: None,
+            budget_limit: None,
+        }));
+    };
+    let stage = db
+        .get_pipeline_item(task_id)
+        .map_err(|error| format!("db error: {error}"))?
+        .and_then(|item| item.stage)
+        .ok_or_else(|| format!("task has no stage: {task_id}"))?;
+    if exit != ADVANCE_EXIT && (run.kind != "main" || run.stage != stage) {
+        return Err(format!(
+            "only the main run of stage '{stage}' may name a loop exit; this is the {} run of \
+             '{}', which can only advance",
+            run.kind, run.stage
+        ));
+    }
+    let destination = workflow.resolve_exit(&stage, exit)?;
+    let budget_limit = destination
+        .as_deref()
+        .map(|destination| workflow.stage_budget(destination));
+    Ok(Some(ResolvedResultExit {
+        exit: exit.to_string(),
+        source: TransitionExit::EXPLICIT,
+        destination,
+        budget_limit,
+    }))
+}
+
+/// For a person sending a named-exit task from `from_stage` back to
+/// `destination`: the exit of `from_stage` that leads there, if one does.
+pub(crate) fn exit_leading_to(
+    db: &Db,
+    task_id: &str,
+    from_stage: &str,
+    destination: &str,
+) -> Result<Option<String>, String> {
+    let workflow = task_workflow_for_routing(db, task_id)?;
+    Ok(workflow
+        .stages
+        .iter()
+        .find(|stage| stage.name == from_stage)
+        .and_then(|stage| {
+            stage
+                .exits
+                .iter()
+                .flatten()
+                .find(|(_, target)| target.as_str() == destination)
+                .map(|(name, _)| name.clone())
+        }))
+}
+
+/// The exits a named-exit task's current stage offers, for a refusal that
+/// tells an agent what it may name instead.
+pub(crate) fn describe_current_stage_exits(db: &Db, task_id: &str) -> Result<String, String> {
+    let workflow = task_workflow_for_routing(db, task_id)?;
+    let stage = db
+        .get_pipeline_item(task_id)
+        .map_err(|error| format!("db error: {error}"))?
+        .and_then(|item| item.stage)
+        .ok_or_else(|| format!("task has no stage: {task_id}"))?;
+    Ok(workflow
+        .stages
+        .iter()
+        .find(|candidate| candidate.name == stage)
+        .map(describe_stage_exits)
+        .unwrap_or_else(|| format!("'{ADVANCE_EXIT}'")))
+}
+
+/// The budget of `stage` in a named-exit task's workflow.
+pub(crate) fn resolve_stage_budget_limit(
+    db: &Db,
+    task_id: &str,
+    stage: &str,
+) -> Result<i64, String> {
+    Ok(task_workflow_for_routing(db, task_id)?.stage_budget(stage))
 }
