@@ -249,6 +249,9 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn the_handler_accepts_a_relay_attested_bootstrap_and_the_target_then_verifies_it() {
         let target_state = test_state_with_seed("desktop-target", "Target Mac", |_db| {});
+        // The relay connection that forwarded the invoke authenticated as
+        // this desktop's own account.
+        target_state.set_authenticated_account_uid(Some("uid-1".to_string()));
 
         let response = crate::http_api::dispatch_authenticated_relay_http_invoke(
             Arc::clone(&target_state),
@@ -447,6 +450,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn bootstrap_is_refused_with_an_account_but_no_source_desktop_id() {
         let target_state = test_state_with_seed("desktop-target", "Target Mac", |_db| {});
+        target_state.set_authenticated_account_uid(Some("uid-1".to_string()));
 
         let response = crate::http_api::dispatch_authenticated_relay_http_invoke(
             Arc::clone(&target_state),

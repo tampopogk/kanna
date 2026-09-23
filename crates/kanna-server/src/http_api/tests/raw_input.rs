@@ -268,8 +268,10 @@ async fn a_relay_raw_input_announces_the_declared_source_beside_the_attested_acc
 
     let config = raw_input_test_config(&unique, &daemon.daemon_dir);
     seed_live_task(&config, "task-relay-keys");
+    let state = Arc::new(super::AppState::new(config.clone()));
+    state.set_authenticated_account_uid(Some("uid-owner".to_string()));
     let response = crate::http_api::dispatch_authenticated_relay_http_invoke(
-        Arc::new(super::AppState::new(config.clone())),
+        state,
         "uid-owner".to_string(),
         None,
         "POST",

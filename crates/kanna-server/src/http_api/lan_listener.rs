@@ -252,6 +252,119 @@ mod tests {
         }
     }
 
+    /// The whole gateway, extractor through body: the bearer secret is
+    /// verified from the headers under the account current then, and the
+    /// body is read afterwards. The body stream below signals when it is
+    /// first polled - which is only after `LanMachineInvokeAuthenticated`
+    /// has run - and holds the body back until the account has been changed,
+    /// so each case lands the change exactly in that window.
+    ///
+    /// Headers never name an account: forged account/channel headers change
+    /// nothing, and a device id or secret that is not the verified pair is
+    /// refused before any body is read.
+    #[tokio::test]
+    async fn an_account_switch_between_verification_and_dispatch_refuses_the_invoke() {
+        use futures_util::StreamExt as _;
+        use tower::ServiceExt as _;
+
+        let config = test_config("lan-switch-target");
+        let state = Arc::new(AppState::new(config.clone()));
+        state.set_authenticated_account_uid(Some("uid-a".to_string()));
+        let now_ms = crate::machine_trust::unix_time_ms().unwrap();
+        let mut store = crate::machine_trust::MachineTrustStore::default();
+        store.accept_inbound(
+            "desk-src",
+            &crate::pairing::hash_device_secret("s3cret"),
+            "uid-a",
+            &config.environment,
+            &config.desktop_id,
+            now_ms,
+        );
+        store
+            .save(&config.machine_trust_store_path().unwrap())
+            .unwrap();
+
+        let invoke = serde_json::json!({ "method": "GET", "path": "/v1/tasks/recent" });
+        // (device id, secret, account switched to while the body is held,
+        //  expected gateway status, expected inner status, refusal code)
+        let cases = [
+            ("desk-src", "s3cret", Some("uid-a"), 200, Some(200), None),
+            (
+                "desk-src",
+                "s3cret",
+                Some("uid-b"),
+                200,
+                Some(403),
+                Some("lan_machine_account_changed"),
+            ),
+            (
+                "desk-src",
+                "s3cret",
+                None,
+                200,
+                Some(403),
+                Some("account_signed_out"),
+            ),
+            // The secret belongs to desk-src; claiming another id proves nothing.
+            ("desk-forged", "s3cret", Some("uid-a"), 401, None, None),
+            ("desk-src", "not-the-secret", Some("uid-a"), 401, None, None),
+        ];
+        for (index, (device_id, secret, switch_to, gateway, inner, code)) in
+            cases.into_iter().enumerate()
+        {
+            state.set_authenticated_account_uid(Some("uid-a".to_string()));
+            let (polled_tx, polled_rx) = tokio::sync::oneshot::channel::<()>();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+            let bytes = serde_json::to_vec(&invoke).unwrap();
+            let body = futures_util::stream::once(async move {
+                let _ = polled_tx.send(());
+                let _ = release_rx.await;
+                Ok::<_, std::io::Error>(bytes)
+            })
+            .boxed();
+            let request = axum::http::Request::post("/invoke")
+                .header("content-type", "application/json")
+                .header(super::super::lan_trust::DEVICE_ID_HEADER, device_id)
+                .header(super::super::lan_trust::DEVICE_SECRET_HEADER, secret)
+                // Forged: nothing reads an account or a channel from a header.
+                .header("x-kanna-account-uid", "uid-a")
+                .header(
+                    "x-kanna-channel-identity",
+                    r#"{"kind":"relayAccount","accountUid":"uid-a"}"#,
+                )
+                .body(axum::body::Body::from_stream(body))
+                .unwrap();
+            let pending = tokio::spawn(router(Arc::clone(&state)).oneshot(request));
+            if gateway == 200 {
+                tokio::time::timeout(std::time::Duration::from_secs(5), polled_rx)
+                    .await
+                    .expect("the body is read after the extractor admits the caller")
+                    .unwrap();
+                state.set_authenticated_account_uid(switch_to.map(str::to_string));
+            }
+            let _ = release_tx.send(());
+            let response = pending.await.unwrap().unwrap();
+            assert_eq!(response.status().as_u16(), gateway, "case {index}");
+            if let Some(inner) = inner {
+                let body: serde_json::Value = serde_json::from_slice(
+                    &axum::body::to_bytes(response.into_body(), usize::MAX)
+                        .await
+                        .unwrap(),
+                )
+                .unwrap();
+                assert_eq!(body["status"], inner, "case {index}: {body}");
+                if let Some(code) = code {
+                    assert!(
+                        body["error"]
+                            .as_str()
+                            .is_some_and(|error| error.starts_with(code)),
+                        "case {index}: {body}"
+                    );
+                }
+            }
+        }
+    }
+
     /// Qualifies the listener's own reachability on this host's real
     /// routable interface address, bound via `lan_host: "0.0.0.0"" -
     /// independent of discovery, using a plain TCP connect (no TLS/pinned

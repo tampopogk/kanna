@@ -58,6 +58,35 @@ fn pinned_definition(state: &Arc<AppState>) -> Value {
     serde_json::from_str(task.pipeline_def.as_deref().unwrap()).unwrap()
 }
 
+/// The account every same-account caller in these tests acts under.
+const OWNER: &str = "uid-owner";
+
+/// Signs `state` in to [`OWNER`] and pins `desk-sibling` as a sibling that
+/// the relay confirmed in that account - the standing a sealed peer session
+/// must have before it may mutate anything (`crate::account_boundary`).
+fn sign_in_with_sibling(state: &Arc<AppState>) {
+    state.set_authenticated_account_uid(Some(OWNER.into()));
+    let path = state.config.peer_trust_store_path().unwrap();
+    let mut store = crate::peer_trust::PeerTrustStore::load(&path).unwrap();
+    store
+        .upsert(crate::peer_trust::PeerDesktop {
+            desktop_id: "desk-sibling".into(),
+            display_name: "Sibling".into(),
+            channel_public_key: "desk-sibling-key".into(),
+            transfer_peer_id: None,
+            transfer_public_key: None,
+            environment: state.config.environment.clone(),
+            account_uid: Some(OWNER.into()),
+            provenance: crate::peer_trust::PeerProvenance::Account,
+            account_verified_at_unix_ms: Some(1),
+            identity_mismatch_at_unix_ms: None,
+            paired_at_unix_ms: 1,
+            last_seen_unix_ms: None,
+        })
+        .unwrap();
+    store.save(&path).unwrap();
+}
+
 fn sealed_pairing(
     origin: crate::http_api::secure_channel::StreamOrigin,
 ) -> crate::http_api::secure_channel::SealedPairingContext {
@@ -77,6 +106,7 @@ async fn each_transport_records_its_verified_channel_beside_a_declared_operator(
     use crate::http_api::secure_channel::StreamOrigin;
 
     let (_temp, state, _before) = replacement_fixture("provenance-transports");
+    sign_in_with_sibling(&state);
     let device_secret = "provenance-device-secret";
     let mut pairings = crate::pairing::PairingStore::default();
     pairings.add_trusted_device(
@@ -187,7 +217,7 @@ async fn each_transport_records_its_verified_channel_beside_a_declared_operator(
                         evidence: PeerDesktopEvidence::SecureChannel {
                             transport: SecureChannelTransport::Lan,
                         },
-                        account_uid: None,
+                        account_uid: Some(OWNER.into()),
                     },
                 )
             }
@@ -233,7 +263,7 @@ async fn each_transport_records_its_verified_channel_beside_a_declared_operator(
                 let response = crate::http_api::routes::dispatch_authenticated_lan_http_invoke(
                     Arc::clone(&state),
                     "desk-lan".into(),
-                    Some("uid-verified".into()),
+                    Some(OWNER.into()),
                     "POST",
                     path,
                     body,
@@ -244,7 +274,7 @@ async fn each_transport_records_its_verified_channel_beside_a_declared_operator(
                     ChannelIdentity::PeerDesktop {
                         desktop_id: "desk-lan".into(),
                         evidence: PeerDesktopEvidence::LanMachineTrust,
-                        account_uid: Some("uid-verified".into()),
+                        account_uid: Some(OWNER.into()),
                     },
                 )
             }
@@ -291,6 +321,7 @@ async fn a_result_records_its_channel_apart_from_the_entry_and_keeps_it_on_retry
     use crate::http_api::secure_channel::StreamOrigin;
 
     let (_temp, state, _before) = plan_publication_fixture("provenance-result");
+    sign_in_with_sibling(&state);
     let body = serde_json::json!({
         "runId": "run-plan",
         "status": "success",
@@ -315,7 +346,7 @@ async fn a_result_records_its_channel_apart_from_the_entry_and_keeps_it_on_retry
         evidence: PeerDesktopEvidence::SecureChannel {
             transport: SecureChannelTransport::Relay,
         },
-        account_uid: None,
+        account_uid: Some(OWNER.into()),
     };
 
     let db = Db::open(&state.config.db_path).unwrap();
@@ -382,6 +413,7 @@ async fn a_result_records_its_channel_apart_from_the_entry_and_keeps_it_on_retry
 #[tokio::test]
 async fn a_plan_extension_records_the_same_provenance_as_its_result() {
     let (_temp, state, before) = plan_publication_fixture("provenance-plan-extension");
+    sign_in_with_sibling(&state);
     let after = single_reviewer_suffix(&before);
     let response = crate::http_api::dispatch_authenticated_relay_http_invoke(
         Arc::clone(&state),
@@ -518,6 +550,7 @@ async fn delivered_input_records_the_declared_source_and_the_verified_channel() 
             .unwrap();
         },
     );
+    sign_in_with_sibling(&state);
 
     let response = crate::http_api::dispatch_sealed_peer_http_invoke(
         Arc::clone(&state),
@@ -535,7 +568,7 @@ async fn delivered_input_records_the_declared_source_and_the_verified_channel() 
         evidence: PeerDesktopEvidence::SecureChannel {
             transport: SecureChannelTransport::Lan,
         },
-        account_uid: None,
+        account_uid: Some(OWNER.into()),
     };
 
     let db = Db::open(&state.config.db_path).unwrap();
@@ -576,40 +609,42 @@ async fn delivered_input_records_the_declared_source_and_the_verified_channel() 
 }
 
 /// The LAN machine-invoke secret is verified under the account current at
-/// header extraction, and the body is read before dispatch. An account switch
-/// in that window must not relabel the credential: the recorded channel names
-/// the account the extractor verified, never the one current at dispatch.
+/// header extraction, and the body is read before dispatch. That verified
+/// account is the actor and the recorded channel's account. An account
+/// switch in that window voids the credential: the call is refused and
+/// records nothing, rather than acting under - or being relabelled as - an
+/// account it was never verified against.
 #[tokio::test]
-async fn a_lan_machine_invoke_records_the_account_it_was_verified_under() {
+async fn a_lan_machine_invoke_acts_only_as_the_account_it_was_verified_under() {
     let (_temp, state, before) = replacement_fixture("provenance-lan-account-switch");
     state.set_authenticated_account_uid(Some("uid-a".into()));
-    let mut after = before.clone();
-    after["stages"][1]["description"] = serde_json::json!("edited across an account switch");
-    let request = serde_json::json!({
-        "method": "POST",
-        "path": "/v1/tasks/task-1/actions/replace-workflow",
-        "body": {
-            "workflowDefinition": after,
-            "expectedDefinition": before,
-            "source": "operator",
-        },
-    });
-    // Verified under A; the desktop switches to B before the dispatch.
-    state.set_authenticated_account_uid(Some("uid-b".into()));
+    let request = |description: &str, expected: &Value| {
+        let mut after = expected.clone();
+        after["stages"][1]["description"] = serde_json::json!(description);
+        serde_json::json!({
+            "method": "POST",
+            "path": "/v1/tasks/task-1/actions/replace-workflow",
+            "body": {
+                "workflowDefinition": after,
+                "expectedDefinition": expected,
+                "source": "operator",
+            },
+        })
+    };
+
+    // Verified under A and still A at dispatch: acts as A, records A.
     let response = crate::http_api::lan_listener::handle_invoke_for_test(
         "desk-lan",
         Some("uid-a"),
         axum::extract::State(Arc::clone(&state)),
-        request,
+        request("edited as A", &before),
     )
     .await
     .expect("the LAN invoke gateway admits the verified caller");
     assert_eq!(response["status"], 200, "{response}");
-
     let events = task_events(&state, "task-1", "task.workflow_changed");
     assert_eq!(events.len(), 1, "{events:#?}");
     assert_eq!(events[0]["declaredRole"], "operator");
-    assert_eq!(events[0]["channelIdentity"]["accountUid"], "uid-a");
     assert_eq!(
         channel(&events[0]["channelIdentity"]),
         ChannelIdentity::PeerDesktop {
@@ -617,5 +652,33 @@ async fn a_lan_machine_invoke_records_the_account_it_was_verified_under() {
             evidence: PeerDesktopEvidence::LanMachineTrust,
             account_uid: Some("uid-a".into()),
         }
+    );
+
+    // Verified under A; the desktop switches to B, then signs out, before
+    // the dispatch. Each is refused by name and nothing is written.
+    let current = pinned_definition(&state);
+    for (switched_to, code) in [
+        (Some("uid-b"), "lan_machine_account_changed"),
+        (None, "account_signed_out"),
+    ] {
+        state.set_authenticated_account_uid(switched_to.map(str::to_string));
+        let response = crate::http_api::lan_listener::handle_invoke_for_test(
+            "desk-lan",
+            Some("uid-a"),
+            axum::extract::State(Arc::clone(&state)),
+            request("edited across a switch", &current),
+        )
+        .await
+        .expect("the gateway answers with the dispatch's refusal");
+        assert_eq!(response["status"], 403, "{response}");
+        assert!(
+            response["error"].as_str().unwrap().starts_with(code),
+            "{response}"
+        );
+    }
+    assert_eq!(pinned_definition(&state), current);
+    assert_eq!(
+        task_events(&state, "task-1", "task.workflow_changed").len(),
+        1
     );
 }

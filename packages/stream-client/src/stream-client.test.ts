@@ -660,6 +660,36 @@ describe("StreamClient", () => {
   });
 
   /**
+   * A pin that does not place both machines in one account is a standing
+   * refusal: only re-pairing changes it, so the client surfaces the message
+   * once and never dials again.
+   */
+  it("stops on an account-boundary refusal and surfaces its message once", () => {
+    const refusals: string[] = [];
+    const client = new StreamClient({
+      url: "ws://test/v1/peers/desktop-b/ksp",
+      webSocketFactory: factory,
+      reconnectDelaysMs: [10],
+      onConnectionRefused: (code, message) => refusals.push(`${code}:${message}`),
+    });
+    const socket = sockets[0];
+    socket.open();
+    socket.receive({
+      type: "error",
+      code: "peer_account_boundary",
+      message: "peer_account_evidence_missing: sign both in to the same account",
+    } as ServerFrame);
+    socket.drop(1000);
+    vi.advanceTimersByTime(60_000);
+
+    expect(refusals).toEqual([
+      "peer_account_boundary:peer_account_evidence_missing: sign both in to the same account",
+    ]);
+    expect(sockets).toHaveLength(1);
+    client.close();
+  });
+
+  /**
    * A route that is down right now is exactly what the backoff loop is for:
    * `peer_unreachable` must not stop the client.
    */

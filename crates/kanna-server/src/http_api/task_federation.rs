@@ -62,10 +62,20 @@ pub(super) enum TaskRoute {
 /// `delivery_uncertain`, status 0) is terminal, not "keep looking": the
 /// caller must never receive a plain 404 for a task that may already have
 /// received this exact mutation on another machine, and it is never
-/// retried automatically on this server's behalf. A final "not found"
-/// additionally names any paired machine this server could not reach to
-/// confirm, so "no such task" and "a known machine was unreachable" never
-/// read as the same answer.
+/// retried automatically on this server's behalf. A miss while any known
+/// machine could not be asked is not "not found" at all: the owner may be
+/// that machine, and no cross-machine action happens while the owner is
+/// unreachable, so the answer is an explicit `503 task_owner_unreachable`
+/// naming every machine this server could not reach or dispatch to. Only a
+/// miss with every known machine asked is a plain 404. Either way nothing is
+/// done locally with the caller's id.
+///
+/// Only same-account machines are candidates: relay presence lists this
+/// account's desktops, LAN candidates need a same-account grant or pin, and
+/// `invoke_desktop` refuses a pin that does not place the sibling in this
+/// account (`crate::account_boundary`). A sibling that refuses this desktop
+/// on the account boundary has not answered for the task, so it is a
+/// dispatch failure here, never the task's authoritative answer.
 pub(super) async fn resolve_task_route(
     state: &Arc<AppState>,
     task_id: &str,
@@ -91,8 +101,11 @@ pub(super) async fn resolve_task_route(
                     unreachable,
                     dispatch_failures,
                 } if !unreachable.is_empty() || !dispatch_failures.is_empty() => Err((
-                    StatusCode::NOT_FOUND,
-                    not_found_message(task_id, &unreachable, &dispatch_failures),
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!(
+                        "task_owner_unreachable: {}",
+                        not_found_message(task_id, &unreachable, &dispatch_failures)
+                    ),
                 )),
                 FederationOutcome::NotFound { .. } => Err(error),
             }
@@ -151,6 +164,10 @@ async fn federate(
                 continue;
             }
         };
+        if let Some(refusal) = account_boundary_refusal(&routed.response) {
+            dispatch_failures.push((machine_id, refusal));
+            continue;
+        }
         checked.insert(machine_id.clone());
         if routed.response.status == StatusCode::NOT_FOUND.as_u16() {
             continue;
@@ -166,6 +183,20 @@ async fn federate(
         unreachable: paired_but_unchecked(state, &checked),
         dispatch_failures,
     }
+}
+
+/// The sibling's refusal text when it refused this desktop on the account
+/// boundary before routing the request (`crate::account_boundary`).
+fn account_boundary_refusal(response: &super::state::HttpInvokeResponse) -> Option<String> {
+    let status = response.status;
+    if status != StatusCode::FORBIDDEN.as_u16() && status != StatusCode::UNAUTHORIZED.as_u16() {
+        return None;
+    }
+    let text = match &response.body {
+        Some(serde_json::Value::String(text)) => text.as_str(),
+        _ => response.error.as_deref()?,
+    };
+    crate::account_boundary::is_refusal_text(text).then(|| text.to_string())
 }
 
 /// Builds the final not-found message, keeping two distinct kinds of "this
@@ -224,7 +255,7 @@ fn forwarded_response(status: StatusCode, body: Option<serde_json::Value>) -> Re
     }
 }
 
-/// Paired machines (any environment) that this federation attempt could not
+/// Same-account paired machines (any environment) that this federation attempt could not
 /// even include in its search - discovered neither on relay presence nor
 /// via a cached LAN candidate. Distinct from a candidate that *was* dialed
 /// and came back 404: this is "never got the chance to ask."
@@ -232,9 +263,16 @@ fn paired_but_unchecked(state: &Arc<AppState>, checked: &HashSet<String>) -> Vec
     let Ok(store) = state.peer_trust_store() else {
         return Vec::new();
     };
+    // A pin that does not place the sibling in this account can never be
+    // asked (`invoke_desktop` refuses it), so it can never own a task this
+    // desktop may act on; it is not an unreachable owner.
+    let current_account_uid = state.authenticated_account_uid();
     let mut unreachable: Vec<String> = store
         .peers
         .into_iter()
+        .filter(|peer| {
+            crate::account_boundary::peer_standing(peer, current_account_uid.as_deref()).is_ok()
+        })
         .map(|peer| peer.desktop_id)
         .filter(|id| !checked.contains(id))
         .collect();
