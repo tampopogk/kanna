@@ -196,6 +196,9 @@ impl Db {
     /// any child is created, and mark the parent blocked on them.
     pub(crate) fn create_task_join(&self, join: &NewTaskJoin) -> Result<TaskJoin, rusqlite::Error> {
         self.in_immediate_transaction_if_needed(|db| {
+            // A parent a transfer holds cannot gain subtasks it would strand
+            // on this machine (T9).
+            db.refuse_while_transferring(&join.parent_task_id)?;
             db.conn.execute(
                 "INSERT INTO task_join
                  (id, parent_task_id, parent_stage, parent_run_id, base_sha, base_branch)

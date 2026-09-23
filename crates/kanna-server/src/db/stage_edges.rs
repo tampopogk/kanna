@@ -274,6 +274,9 @@ impl Db {
             let dependent = db
                 .get_pipeline_item(dependent_task_id)?
                 .ok_or_else(|| StageEdgeError::TaskNotFound(dependent_task_id.to_string()))?;
+            // Neither end of a new edge may be a task a transfer holds: the
+            // edge could not follow it to the destination (T9).
+            db.refuse_while_transferring(&dependent.id)?;
             let dependent_stages = pinned_stage_names(dependent.pipeline_def.as_deref());
             let starting_stage = dependent.stage.clone().unwrap_or_default();
             for edge in edges {
@@ -283,6 +286,7 @@ impl Db {
                 if upstream_id == dependent.id {
                     return Err(StageEdgeError::SelfDependency);
                 }
+                db.refuse_while_transferring(&upstream_id)?;
                 let upstream = db
                     .get_pipeline_item(&upstream_id)?
                     .ok_or_else(|| StageEdgeError::UpstreamNotFound(upstream_id.clone()))?;
@@ -733,6 +737,7 @@ impl Db {
         payload: &Value,
     ) -> Result<(), rusqlite::Error> {
         self.in_immediate_transaction_if_needed(|db| {
+            db.refuse_while_transferring(task_id)?;
             let generation = db.task_run_generation(task_id)?;
             db.conn.execute(
                 "INSERT INTO task_dependency_wait (task_id, from_stage, to_stage, generation, payload)

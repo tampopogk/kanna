@@ -466,6 +466,26 @@ fn repository_location(
     Ok((repo, path, policy))
 }
 
+/// Where `repo`'s artifact repository lives, resolved exactly as the
+/// artifact routes resolve it, and the home a remote is parsed against. For
+/// the transfer engine (T9), which moves a task's referenced artifacts with
+/// the repository's own push and fetch.
+pub(crate) fn repository_path_for_transfer(
+    state: &AppState,
+    repo: &Repo,
+) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+    let policy = crate::task_creator::load_repo_artifact_policy(&state.repo_definitions, repo)
+        .map_err(|error| format!("repository configuration could not be resolved: {error}"))?;
+    let path = resolve_repository_path(
+        &state.artifact_storage,
+        &repo.id,
+        std::path::Path::new(&repo.path),
+        policy.repository_path.as_deref(),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok((path, state.artifact_storage.home().to_path_buf()))
+}
+
 fn configured_remote(
     state: &AppState,
     repo: &Repo,

@@ -14,6 +14,7 @@ use super::payload::{
     self, OutgoingTransferPayload, RepoAcquisitionMode, TransferHistoryRecordPayload,
 };
 use super::session;
+use super::task_state::{self, ImportedTaskState, SessionStart, TaskStateDocument};
 use crate::db::TransferWorkItem;
 use crate::http_api::AppState;
 use serde_json::Value;
@@ -431,14 +432,21 @@ async fn run_import(
         // A payload that promises a resumable session and ships no way to
         // resume it must not be imported: minting a fresh session here is what
         // silently left the conversation behind on the source machine.
-        session::assert_importable(
+        //
+        // With carried task state the ledger is what the destination session
+        // continues from, and a transcript is opportunistic (spec §1): the
+        // gap becomes the recorded reason the session starts fresh.
+        let transcript_gap = match session::assert_importable(
             transfer_id,
             payload.task.agent_type.as_deref(),
             Some(payload.task.agent_provider.as_str()),
             payload.task.resume_session_id.as_deref(),
             &payload.artifacts,
-        )
-        .map_err(|missing| ImportFailure::Terminal(missing.0))?;
+        ) {
+            Ok(()) => None,
+            Err(missing) if payload.task_state.is_some() => Some(missing.0),
+            Err(missing) => return Err(ImportFailure::Terminal(missing.0)),
+        };
 
         // The destination task id — and therefore its worktree — is
         // deterministic before creation, which is what lets the transcript be
@@ -470,6 +478,8 @@ async fn run_import(
             ));
         }
         let imported_inputs = fetch_task_input_ledger(state, transfer_id, &payload).await?;
+        let carried_state =
+            import_task_state_objects(state, transfer_id, &payload, &repo_id, &repo_path).await?;
         let destination_worktree =
             session::destination_worktree_path(&repo_path, &destination_task_id);
         db.upsert_transferred_task_manifest(
@@ -482,24 +492,43 @@ async fn run_import(
         .map_err(|error| {
             ImportFailure::Terminal(format!("transfer manifest admission failed: {error}"))
         })?;
-        let resume_session_id =
-            materialize_resume_state(state, work, transfer_id, &payload, &destination_worktree)
-                .await?;
+        let (resume_session_id, session_start) = resolve_destination_session(
+            state,
+            work,
+            transfer_id,
+            &payload,
+            &destination_worktree,
+            carried_state.is_some(),
+            transcript_gap,
+        )
+        .await?;
+        let mut request = build_create_request(
+            state,
+            transfer_id,
+            &repo_id,
+            &payload,
+            imported_refs.clone(),
+            resume_session_id.clone(),
+        )
+        .await;
+        if let Some(import) = request.transfer_import.as_mut() {
+            import.fresh_start_reason = session_start.fresh_start_reason().map(str::to_string);
+        }
+        let imported_task_state = carried_state.map(|(document, sha256)| ImportedTaskState {
+            transfer_id: transfer_id.to_string(),
+            sha256,
+            document,
+            destination_repo_id: repo_id.clone(),
+            session_start,
+        });
 
         let created = crate::http_api::create_transferred_task_in_process(
             Arc::clone(state),
-            build_create_request(
-                state,
-                transfer_id,
-                &repo_id,
-                &payload,
-                imported_refs.clone(),
-                resume_session_id.clone(),
-            )
-            .await,
+            request,
             destination_task_id.clone(),
             imported_inputs,
             payload.clone(),
+            imported_task_state,
         )
         .await
         .map_err(|(status, message)| {
@@ -586,6 +615,9 @@ async fn run_import(
             destination_task_id.clone(),
             Vec::new(),
             payload.clone(),
+            // Proved before this repair can run: the manifest is `prepared`
+            // only once `verify_persisted_task_bundle` read the state back.
+            None,
         )
         .await
         .map_err(|(status, message)| {
@@ -615,7 +647,8 @@ async fn run_import(
         .transferred_task_manifest_content_commitment(transfer_id)
         .map_err(|error| format!("db error: {error}"))?;
     if persisted_commitment.is_none() {
-        verify_persisted_task_bundle(state, &payload, &local_task_id, transfer_id, None).await?;
+        verify_persisted_task_bundle(state, &payload, &local_task_id, transfer_id, None, None)
+            .await?;
     }
     let destination_repo_id;
     if let Some((repo_id, _, _, bound_task, state_name)) = db
@@ -784,6 +817,7 @@ pub(crate) async fn verify_persisted_task_bundle(
     local_task_id: &str,
     transfer_id: &str,
     imported_inputs: Option<&[crate::db::ImportedTaskInput]>,
+    imported_task_state: Option<&ImportedTaskState>,
 ) -> Result<(), ImportFailure> {
     let db = state.transfer_work().open_db()?;
     let item = db
@@ -993,6 +1027,34 @@ pub(crate) async fn verify_persisted_task_bundle(
         )));
     }
 
+    // The carried task state (T9): recorded, on disk, and every object it
+    // names present here — checked before the acknowledgment that lets the
+    // source close, so the source never gives up a task whose ledger or
+    // artifacts did not arrive.
+    drop(verify_db);
+    let read_back_task_state = match payload.task_state.as_ref() {
+        None => None,
+        Some(metadata) => {
+            let fetched;
+            let carried = match imported_task_state {
+                Some(carried) => carried,
+                None => {
+                    fetched = ImportedTaskState {
+                        transfer_id: transfer_id.to_string(),
+                        sha256: metadata.sha256.clone(),
+                        document: fetch_task_state_document(state, transfer_id, payload).await?,
+                        destination_repo_id: item.repo_id.clone(),
+                        session_start: SessionStart::Resumed,
+                    };
+                    &fetched
+                }
+            };
+            verify_carried_task_state(state, &repo, local_task_id, transfer_id, carried).await?;
+            Some(carried.sha256.clone())
+        }
+    };
+    let verify_db = state.transfer_work().open_db()?;
+
     // The proof `outgoing_committed` requires before it will ever close the
     // source task, computed ONLY from what was just read back above — never
     // from `payload`'s own copy of these values — so a destination that
@@ -1029,6 +1091,7 @@ pub(crate) async fn verify_persisted_task_bundle(
                 .input_ledger
                 .as_ref()
                 .map(|ledger| ledger.sha256.as_str()),
+            task_state_sha256: read_back_task_state.as_deref(),
             history: &read_back_history,
             launch_harness,
             launch_model,
@@ -1390,6 +1453,245 @@ async fn fetch_task_input_ledger(
     .map_err(ImportFailure::Terminal)
 }
 
+/// Fetch the carried task state document and verify it against the payload.
+async fn fetch_task_state_document(
+    state: &Arc<AppState>,
+    transfer_id: &str,
+    payload: &OutgoingTransferPayload,
+) -> Result<TaskStateDocument, ImportFailure> {
+    let metadata = payload
+        .task_state
+        .as_ref()
+        .ok_or_else(|| ImportFailure::Terminal("payload carries no task state".into()))?;
+    let fetched = control::fetch_artifact(state, transfer_id, &metadata.artifact_id).await?;
+    let bytes = super::run_blocking("transfer task state read", move || {
+        std::fs::read(&fetched)
+            .map_err(|error| format!("failed to read transferred task state: {error}"))
+    })
+    .await?;
+    task_state::decode(
+        &bytes,
+        metadata,
+        &payload.task.source_peer_id,
+        &payload.task.source_task_id,
+    )
+    .map_err(ImportFailure::Terminal)
+}
+
+/// Fetch a staged bundle the task state names and check its digest.
+async fn fetch_task_state_bundle(
+    state: &Arc<AppState>,
+    transfer_id: &str,
+    file: &payload::TransferStagedFile,
+) -> Result<PathBuf, ImportFailure> {
+    let fetched = control::fetch_artifact(state, transfer_id, &file.artifact_id).await?;
+    let (path, file) = (fetched.clone(), file.clone());
+    super::run_blocking("transfer task state bundle check", move || {
+        let bytes = std::fs::read(&path)
+            .map_err(|error| format!("failed to read {}: {error}", file.filename))?;
+        task_state::verify_staged_file(&bytes, &file)
+    })
+    .await
+    .map_err(ImportFailure::Terminal)?;
+    Ok(fetched)
+}
+
+/// Fetch and verify the carried task state, and bring the objects it names —
+/// history commits, artifact objects — into this machine's repository and
+/// artifact store before the task exists. `None` for a payload without it.
+async fn import_task_state_objects(
+    state: &Arc<AppState>,
+    transfer_id: &str,
+    payload: &OutgoingTransferPayload,
+    repo_id: &str,
+    repo_path: &Path,
+) -> Result<Option<(TaskStateDocument, String)>, ImportFailure> {
+    let Some(metadata) = payload.task_state.as_ref() else {
+        return Ok(None);
+    };
+    let document = fetch_task_state_document(state, transfer_id, payload).await?;
+    let history_bundle = match metadata.history_bundle.as_ref() {
+        Some(file) => Some(fetch_task_state_bundle(state, transfer_id, file).await?),
+        None => None,
+    };
+    {
+        let (repo_path, transfer_id, document) = (
+            repo_path.to_path_buf(),
+            transfer_id.to_string(),
+            document.clone(),
+        );
+        super::run_blocking("transfer history import", move || {
+            task_state::import_history_refs(
+                &repo_path,
+                &transfer_id,
+                &document,
+                history_bundle.as_deref(),
+            )
+        })
+        .await
+        .map_err(ImportFailure::Terminal)?;
+    }
+    if !document.artifacts.is_empty() {
+        let file = metadata.artifact_bundle.as_ref().ok_or_else(|| {
+            ImportFailure::Terminal(
+                "the carried results reference artifacts the transfer did not ship".into(),
+            )
+        })?;
+        let bundle = fetch_task_state_bundle(state, transfer_id, file).await?;
+        let repo = state
+            .transfer_work()
+            .open_db()?
+            .get_repo(repo_id)
+            .map_err(|error| format!("db error: {error}"))?
+            .ok_or_else(|| format!("repo not found: {repo_id}"))?;
+        let (store_path, home) =
+            crate::http_api::artifacts::repository_path_for_transfer(state, &repo)?;
+        let scratch = super::push::staging_dir()
+            .join(format!("kanna-transfer-{transfer_id}-artifacts-import.git"));
+        let (repo_id, artifacts) = (repo_id.to_string(), document.artifacts.clone());
+        super::run_blocking("transfer artifact import", move || {
+            task_state::import_artifact_bundle(
+                &store_path,
+                &home,
+                &repo_id,
+                &artifacts,
+                &bundle,
+                &scratch,
+            )
+        })
+        .await?;
+    }
+    Ok(Some((document, metadata.sha256.clone())))
+}
+
+/// Read back everything the carried state promised: the recorded state row
+/// and mirrored ledger on disk, the history refs, and the artifacts.
+async fn verify_carried_task_state(
+    state: &Arc<AppState>,
+    repo: &crate::db::Repo,
+    local_task_id: &str,
+    transfer_id: &str,
+    carried: &ImportedTaskState,
+) -> Result<(), ImportFailure> {
+    let (store_path, _) = crate::http_api::artifacts::repository_path_for_transfer(state, repo)?;
+    let (db_path, repo_path, repo_id, task_id, transfer_id, carried) = (
+        state.config().db_path.clone(),
+        PathBuf::from(&repo.path),
+        repo.id.clone(),
+        local_task_id.to_string(),
+        transfer_id.to_string(),
+        carried.clone(),
+    );
+    super::run_blocking("transferred task state verification", move || {
+        let db = crate::db::Db::open(&db_path).map_err(|error| format!("db error: {error}"))?;
+        task_state::verify(&db, &db_path, &task_id, &carried)?;
+        for reference in &carried.document.history_refs {
+            let name = format!(
+                "refs/kanna/transfers/{transfer_id}/history/{}",
+                reference.name
+            );
+            if super::git::commit_oid(&repo_path, &name)? != reference.oid {
+                return Err(format!(
+                    "carried history ref {} does not resolve here",
+                    reference.name
+                ));
+            }
+        }
+        task_state::verify_artifacts(&store_path, &repo_id, &carried.document.artifacts)
+    })
+    .await
+    .map_err(ImportFailure::Retry)
+}
+
+/// Observation holding why the destination session starts fresh, recorded
+/// once so every attempt states the same reason.
+const FRESH_START_REASON_PHASE: &str = "fresh-start-reason";
+
+/// Decide how the destination session starts. Without carried task state
+/// this is exactly the materialization it always was. With it, a transcript
+/// that cannot be restored — missing, refused, or unavailable on the last
+/// attempt — is not a reason to refuse the task: the session starts fresh
+/// from the ledger, and the reason is recorded.
+async fn resolve_destination_session(
+    state: &Arc<AppState>,
+    work: &TransferWorkItem,
+    transfer_id: &str,
+    payload: &OutgoingTransferPayload,
+    destination_worktree: &Path,
+    carries_state: bool,
+    transcript_gap: Option<String>,
+) -> Result<(Option<String>, SessionStart), ImportFailure> {
+    let materialized =
+        materialize_resume_state(state, work, transfer_id, payload, destination_worktree).await;
+    let db = state.transfer_work().open_db()?;
+    let record = |reason: &str| -> Result<(), ImportFailure> {
+        db.record_transfer_work_observation(&work.id, FRESH_START_REASON_PHASE, Some(reason))
+            .map_err(|error| format!("db error: {error}"))?;
+        Ok(())
+    };
+    let resumed = match materialized {
+        Ok(resumed) => resumed,
+        Err(failure) if !carries_state => return Err(failure),
+        Err(ImportFailure::Retry(reason))
+            if work.attempts < crate::db::MAX_TRANSFER_WORK_ATTEMPTS =>
+        {
+            return Err(ImportFailure::Retry(reason));
+        }
+        Err(ImportFailure::Retry(reason)) | Err(ImportFailure::Terminal(reason)) => {
+            record(&format!(
+                "the transferred transcript could not be restored here: {reason}"
+            ))?;
+            db.record_transfer_work_observation(
+                &work.id,
+                MATERIALIZE_PHASE,
+                Some(RESUME_ABANDONED),
+            )
+            .map_err(|error| format!("db error: {error}"))?;
+            None
+        }
+    };
+    if let Some(session_id) = resumed {
+        return Ok((Some(session_id), SessionStart::Resumed));
+    }
+    let recorded = db
+        .read_transfer_work_observation(&work.id, FRESH_START_REASON_PHASE)
+        .map_err(|error| format!("db error: {error}"))?
+        .flatten();
+    let reason = match recorded {
+        Some(reason) => reason,
+        None => {
+            let reason = default_fresh_start_reason(payload, transcript_gap.as_deref());
+            record(&reason)?;
+            reason
+        }
+    };
+    Ok((None, SessionStart::Fresh(reason)))
+}
+
+fn default_fresh_start_reason(payload: &OutgoingTransferPayload, gap: Option<&str>) -> String {
+    let provider = payload.task.agent_provider.as_str();
+    let mut reason = match (gap, payload.task.resume_session_id.as_deref()) {
+        (Some(gap), _) => format!("the source did not ship the transcript it recorded ({gap})"),
+        (None, None) => "the source recorded no provider session to resume".to_string(),
+        (None, Some(session_id))
+            if !payload
+                .artifacts
+                .iter()
+                .any(|artifact| artifact.provider == provider) =>
+        {
+            format!("the source shipped no transcript for its {provider} session {session_id}")
+        }
+        (None, Some(session_id)) => format!(
+            "the transferred {provider} session {session_id} could not be restored here: its \
+             provider state already exists on this machine"
+        ),
+    };
+    if let Some(degraded) = payload.finalization.degraded_reason.as_deref() {
+        reason.push_str(&format!("; the source's handoff was degraded: {degraded}"));
+    }
+    reason
+}
+
 /// Matches the payload's repository against one this machine already has —
 /// first by remote URL, then by the source's own path in case both machines
 /// check the repo out to the same place.
@@ -1726,6 +2028,7 @@ fn build_create_request_from_payload(
                     },
                 )
                 .collect(),
+            fresh_start_reason: None,
         }),
         resume_session_id,
         recovery_snapshot: payload.recovery.clone(),
@@ -3086,10 +3389,16 @@ mod tests {
             "review",
         ))
         .expect("payload");
-        let failure =
-            verify_persisted_task_bundle(&state, &parsed, local_task_id, transfer_id, Some(&[]))
-                .await
-                .expect_err("a stage mismatch must refuse the import");
+        let failure = verify_persisted_task_bundle(
+            &state,
+            &parsed,
+            local_task_id,
+            transfer_id,
+            Some(&[]),
+            None,
+        )
+        .await
+        .expect_err("a stage mismatch must refuse the import");
         let ImportFailure::Terminal(reason) = failure else {
             panic!("expected a terminal verification failure: {failure:?}");
         };
@@ -3757,6 +4066,107 @@ mod tests {
         let _ = std::fs::remove_dir_all(source_repo);
         let _ = std::fs::remove_dir_all(source_remote);
     }
+    /// An old receiver — one whose server does not confirm the carried task
+    /// state version — is refused at preflight, before anything the source
+    /// owns moves, and its reservation is released. A current receiver's
+    /// confirmation crosses both real sidecars.
+    #[tokio::test]
+    async fn a_receiver_that_cannot_carry_task_state_is_refused_before_ownership_moves() {
+        let sidecar_binary = fixture_binary_or_skip!(KANNA_TASK_TRANSFER);
+        let _sidecar_guard = crate::test_sidecar_guard().await;
+        let _env_guard = Item4EnvVarGuard::capture();
+        let old_port = ITEM4_PROTOCOL_PORT.load(std::sync::atomic::Ordering::SeqCst);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let new_port = listener.local_addr().unwrap().port();
+        let app = axum::Router::new().route(
+            "/v1/transfers/protocol",
+            axum::routing::post(|| async {
+                axum::Json(serde_json::json!({
+                    "transfer_protocol": kanna_runtime_defaults::TRANSFER_PROTOCOL_CONTRACT,
+                    "task_state_version": payload::TASK_STATE_VERSION,
+                }))
+            }),
+        );
+        let new_server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let root = crate::test_paths::unique_test_dir("task-state-capability-sidecars");
+        let registry = root.join("registry");
+        let source_config = item4_test_config("task-state-capability-source");
+        let source_work =
+            crate::transfer_engine::queue::TransferWorkQueue::new(source_config.db_path.clone());
+        let source = spawn_test_sidecar(
+            &sidecar_binary,
+            &root.join("source"),
+            &registry,
+            "peer-capability-source",
+            &source_config,
+            source_work,
+        )
+        .await;
+        let old_config = item4_test_config("task-state-capability-old");
+        let old = spawn_test_sidecar(
+            &sidecar_binary,
+            &root.join("old"),
+            &registry,
+            "peer-capability-old",
+            &old_config,
+            crate::transfer_engine::queue::TransferWorkQueue::new(old_config.db_path.clone()),
+        )
+        .await;
+        ITEM4_PROTOCOL_PORT.store(new_port, std::sync::atomic::Ordering::SeqCst);
+        let new_config = item4_test_config("task-state-capability-new");
+        let current = spawn_test_sidecar(
+            &sidecar_binary,
+            &root.join("new"),
+            &registry,
+            "peer-capability-new",
+            &new_config,
+            crate::transfer_engine::queue::TransferWorkQueue::new(new_config.db_path.clone()),
+        )
+        .await;
+        ITEM4_PROTOCOL_PORT.store(old_port, std::sync::atomic::Ordering::SeqCst);
+        pair_real_sidecars(&source, &old, "peer-capability-old").await;
+        pair_real_sidecars(&source, &current, "peer-capability-new").await;
+        let state = Arc::new(AppState::with_transfer_sidecar_for_test(
+            source_config,
+            source,
+        ));
+
+        let refused =
+            control::preflight(&state, "task-carried", "peer-capability-old", None, false)
+                .await
+                .unwrap();
+        assert_eq!(refused.task_state_version, None);
+        let reason = super::super::push::require_task_state_support(true, &refused).unwrap_err();
+        assert!(reason.contains("does not confirm"), "{reason}");
+        assert!(reason.contains("Nothing was moved"), "{reason}");
+        control::abandon(&state, &refused.transfer_id)
+            .await
+            .unwrap();
+        // A task with nothing to carry may still go to an older receiver.
+        super::super::push::require_task_state_support(false, &refused).unwrap();
+
+        let accepted =
+            control::preflight(&state, "task-carried", "peer-capability-new", None, false)
+                .await
+                .unwrap();
+        assert_eq!(
+            accepted.task_state_version,
+            Some(payload::TASK_STATE_VERSION)
+        );
+        super::super::push::require_task_state_support(true, &accepted).unwrap();
+        control::abandon(&state, &accepted.transfer_id)
+            .await
+            .unwrap();
+        new_server.abort();
+        drop(state);
+        drop(old);
+        drop(current);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[tokio::test]
     async fn transfer_protocol_rejection_crosses_real_sidecars_and_source_server() {
         let sidecar_binary = fixture_binary_or_skip!(KANNA_TASK_TRANSFER);

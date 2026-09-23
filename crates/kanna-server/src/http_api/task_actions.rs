@@ -2865,7 +2865,7 @@ pub(super) async fn complete_stage(
                 ));
             }
             let commit_step = db
-                .transition_commit(&current_run.id)
+                .task_transition_commit(&task_id, &current_run.id)
                 .map_err(|e| db_write_error("db error", e))?;
             if let Some(commit) = commit_step.as_ref() {
                 if commit.state != crate::db::TransitionCommit::REQUESTED {
