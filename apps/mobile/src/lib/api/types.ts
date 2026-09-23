@@ -1,5 +1,6 @@
 import type { AgentSelectionEntry } from "@kanna/agent-protocol";
 import type { AgentProvider } from "@kanna/agent-protocol";
+import type { ArtifactReference } from "../../../../../packages/core/src/artifacts/types";
 
 export type DesktopMode = "lan" | "remote";
 
@@ -440,6 +441,14 @@ export interface TaskLatestRun {
    */
   verdict?: string | null;
   summary?: string | null;
+  /**
+   * The named exit (spec §5) this result took, when the pinned workflow
+   * routes by exits and the agent named one. Absent on a legacy-routed task,
+   * on a result that took none, or when the run recorded no result.
+   */
+  exit?: string | null;
+  /** Named artifact references (spec §7, §8) this result carries, keyed by the name the agent gave them. */
+  artifacts?: Record<string, ArtifactReference> | null;
   resumedFromRunId?: string | null;
   resumeFallbackReason?: string | null;
   finishedAt?: string | null;
@@ -545,6 +554,7 @@ export type {
   ArtifactFetchOutcome,
   ArtifactFileEntry,
   ArtifactPushOutcome,
+  ArtifactReference,
   ArtifactRefusedRef,
   ArtifactRemoteInfo,
   ArtifactVersion

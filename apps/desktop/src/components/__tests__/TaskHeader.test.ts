@@ -234,3 +234,105 @@ describe("TaskHeader", () => {
     expect(event.defaultPrevented).toBe(false);
   });
 });
+
+describe("TaskHeader latest result (T11a)", () => {
+  const SIX_VERDICTS = ["success", "unverified", "partial", "needs-input", "declined", "failure"];
+
+  it.each(SIX_VERDICTS)("renders the %s verdict verbatim", async (verdict) => {
+    const { default: TaskHeader } = await import("../TaskHeader.vue");
+    const wrapper = mount(TaskHeader, {
+      props: {
+        item: makeItem(),
+        latestRun: { verdict, summary: null },
+      },
+      global: { mocks: { $t: (key: string, fallback?: string) => fallback ?? key } },
+    });
+
+    expect(wrapper.get(".verdict-badge").text()).toBe(verdict);
+  });
+
+  it("shows the result message", async () => {
+    const { default: TaskHeader } = await import("../TaskHeader.vue");
+    const wrapper = mount(TaskHeader, {
+      props: {
+        item: makeItem(),
+        latestRun: { verdict: "success", summary: "Tests pass; verified in browser." },
+      },
+      global: { mocks: { $t: (key: string, fallback?: string) => fallback ?? key } },
+    });
+
+    expect(wrapper.get(".latest-result-message").text()).toBe("Tests pass; verified in browser.");
+  });
+
+  it("shows the exit taken when present", async () => {
+    const { default: TaskHeader } = await import("../TaskHeader.vue");
+    const wrapper = mount(TaskHeader, {
+      props: {
+        item: makeItem(),
+        latestRun: { verdict: "success", summary: "Done.", exit: "needs-followup" },
+      },
+      global: { mocks: { $t: (key: string, fallback?: string) => fallback ?? key } },
+    });
+
+    expect(wrapper.get(".meta-item.exit").text()).toContain("needs-followup");
+  });
+
+  it("shows no exit element when absent", async () => {
+    const { default: TaskHeader } = await import("../TaskHeader.vue");
+    const wrapper = mount(TaskHeader, {
+      props: {
+        item: makeItem(),
+        latestRun: { verdict: "success", summary: "Done." },
+      },
+      global: { mocks: { $t: (key: string, fallback?: string) => fallback ?? key } },
+    });
+
+    expect(wrapper.find(".meta-item.exit").exists()).toBe(false);
+  });
+
+  it("opens a named stored artifact reference in the artifact viewer on click", async () => {
+    const { default: TaskHeader } = await import("../TaskHeader.vue");
+    const wrapper = mount(TaskHeader, {
+      props: {
+        item: makeItem(),
+        latestRun: {
+          verdict: "success",
+          summary: "Done.",
+          artifacts: {
+            "review-notes": { type: "stored", repoId: "repo-1", artifactId: "abc123", kind: "report" },
+          },
+        },
+      },
+      global: { mocks: { $t: (key: string, fallback?: string) => fallback ?? key } },
+    });
+
+    await wrapper.get(".artifact-chip").trigger("click");
+
+    expect(wrapper.emitted("open-artifact")).toEqual([
+      [{ type: "stored", repoId: "repo-1", artifactId: "abc123", kind: "report" }],
+    ]);
+  });
+
+  it("renders exactly as today when the server omits latestRun entirely", async () => {
+    const { default: TaskHeader } = await import("../TaskHeader.vue");
+    const wrapper = mount(TaskHeader, {
+      props: { item: makeItem() },
+      global: { mocks: { $t: (key: string, fallback?: string) => fallback ?? key } },
+    });
+
+    expect(wrapper.find('[data-testid="latest-result"]').exists()).toBe(false);
+  });
+
+  it("renders nothing for a run still in flight (no verdict, message, exit or artifacts)", async () => {
+    const { default: TaskHeader } = await import("../TaskHeader.vue");
+    const wrapper = mount(TaskHeader, {
+      props: {
+        item: makeItem(),
+        latestRun: { verdict: null, summary: null },
+      },
+      global: { mocks: { $t: (key: string, fallback?: string) => fallback ?? key } },
+    });
+
+    expect(wrapper.find('[data-testid="latest-result"]').exists()).toBe(false);
+  });
+});

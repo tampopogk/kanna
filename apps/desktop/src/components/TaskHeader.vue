@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import type { ArtifactReference } from "@kanna/core";
 import { isTauri } from "../tauri-mock";
 
 const { t } = useI18n();
@@ -22,14 +23,51 @@ interface TaskHeaderPresentation {
   pr_url: string | null;
 }
 
+/**
+ * The task's latest recorded result (spec §16.8). A trimmed view of
+ * `DesktopTaskLatestRun` — only the fields this header shows — so this
+ * component stays decoupled from the full wire shape.
+ */
+export interface TaskHeaderLatestRun {
+  verdict?: string | null;
+  summary: string | null;
+  exit?: string | null;
+  artifacts?: Record<string, ArtifactReference> | null;
+}
+
 const props = defineProps<{
   item: TaskHeaderPresentation;
   taskId?: string;
   ownerLabel?: string;
   previewSupported?: boolean;
+  latestRun?: TaskHeaderLatestRun | null;
 }>();
 
-const emit = defineEmits<{ (e: "preview", portName: string): void }>();
+const emit = defineEmits<{
+  (e: "preview", portName: string): void;
+  (e: "open-artifact", reference: Extract<ArtifactReference, { type: "stored" }>): void;
+}>();
+
+const latestResultArtifacts = computed(() => {
+  const artifacts = props.latestRun?.artifacts;
+  if (!artifacts) return [];
+  return Object.entries(artifacts).map(([name, reference]) => ({ name, reference }));
+});
+
+// A run still in flight has a non-null `latestRun` with no verdict, summary,
+// exit or artifacts recorded yet (mobile_api.rs's `map_task_latest_run`
+// yields all `None` until a result lands). Showing the container then would
+// be an empty bordered row.
+const hasLatestResult = computed(() => {
+  const run = props.latestRun;
+  if (!run) return false;
+  return Boolean(run.verdict || run.summary || run.exit || latestResultArtifacts.value.length > 0);
+});
+
+function openArtifactReference(reference: ArtifactReference) {
+  if (reference.type !== "stored") return;
+  emit("open-artifact", reference);
+}
 
 const stageBadgeLabel = computed(() => {
   const from = props.item.stage_advance_from;
@@ -127,6 +165,24 @@ function openLocalhostPort(port: number) {
         {{ $t('taskHeader.prPrefix') }}{{ item.pr_number }}
       </a>
     </div>
+    <div v-if="hasLatestResult && latestRun" class="latest-result" data-testid="latest-result">
+      <span v-if="latestRun.verdict" class="verdict-badge" :data-verdict="latestRun.verdict">{{ latestRun.verdict }}</span>
+      <span v-if="latestRun.summary" class="latest-result-message">{{ latestRun.summary }}</span>
+      <span v-if="latestRun.exit" class="meta-item exit">
+        <span class="meta-label">{{ $t('taskHeader.exitLabel') }}</span> {{ latestRun.exit }}
+      </span>
+      <button
+        v-for="artifact in latestResultArtifacts"
+        :key="artifact.name"
+        class="meta-item artifact-chip"
+        type="button"
+        :disabled="artifact.reference.type !== 'stored'"
+        @mousedown.stop
+        @click="openArtifactReference(artifact.reference)"
+      >
+        {{ artifact.name }}
+      </button>
+    </div>
   </div>
 </template>
 
@@ -221,5 +277,66 @@ function openLocalhostPort(port: number) {
 
 .link:hover {
   text-decoration: underline;
+}
+
+.latest-result {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.verdict-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  line-height: 1.4;
+  flex-shrink: 0;
+  color: var(--kn-text-muted);
+  background: var(--kn-bg-panel-raised);
+}
+
+.verdict-badge[data-verdict="success"] {
+  color: var(--kn-success);
+  background: color-mix(in srgb, var(--kn-success) 15%, transparent);
+}
+
+.verdict-badge[data-verdict="failure"] {
+  color: var(--kn-danger);
+  background: color-mix(in srgb, var(--kn-danger) 15%, transparent);
+}
+
+.verdict-badge[data-verdict="needs-input"],
+.verdict-badge[data-verdict="declined"] {
+  color: var(--kn-warning);
+  background: color-mix(in srgb, var(--kn-warning) 15%, transparent);
+}
+
+.latest-result-message {
+  color: var(--kn-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-chip {
+  border: 0;
+  font-size: 11px;
+  background: var(--kn-bg-panel-raised);
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--kn-accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.artifact-chip:disabled {
+  cursor: default;
+  color: var(--kn-text-muted);
 }
 </style>

@@ -10,6 +10,7 @@ import {
   type Ref,
 } from "vue";
 import { AGENT_PROVIDERS, getAgentProviderSpec } from "@kanna/agent-protocol";
+import type { ArtifactReference } from "@kanna/core";
 import type { AgentProvider, BlockerDisplayItem } from "../types/kanna";
 import type { TaskUiSlot } from "../types/taskUi";
 import {
@@ -304,6 +305,11 @@ const paneActions = computed(() => narrowLayout.value ? [] : [
 ]);
 function openNewView(id: string) {
   if (id === "diff" || id === "shell" || id === "tree" || id === "graph") props.views?.tabs.openTab({ kind: id });
+}
+
+/** Opens a named artifact reference from the task's latest result (spec §16.8) in the existing artifact viewer. */
+function openLatestResultArtifact(reference: Extract<ArtifactReference, { type: "stored" }>) {
+  props.views?.tabs.openTab({ kind: "artifact", artifactRepoId: reference.repoId, artifactId: reference.artifactId });
 }
 /**
  * The panel's own empty state — "no task selected", or the agent-install help
@@ -987,7 +993,7 @@ function dismissCommandHint() {
         <span class="mobile-back-arrow">&larr;</span>
         <span>Tasks</span>
       </div>
-      <TaskHeader v-if="headerItem" :item="headerItem" :owner-label="ownerLabel" :task-id="item?.id" :preview-supported="taskDetailIsLocal && !isMobile && !views?.modals.activeTaskViewIsRemote?.value && !!views" @preview="(portName) => views?.tabs.openTab({ kind: 'preview', portName })" />
+      <TaskHeader v-if="headerItem" :item="headerItem" :owner-label="ownerLabel" :task-id="item?.id" :preview-supported="taskDetailIsLocal && !isMobile && !views?.modals.activeTaskViewIsRemote?.value && !!views" :latest-run="taskDetail?.latestRun ?? null" @preview="(portName) => views?.tabs.openTab({ kind: 'preview', portName })" @open-artifact="openLatestResultArtifact" />
       <section v-if="revisionBudgetExhausted" class="revision-exhausted" data-testid="revision-exhausted-status">
         <div>
           <p class="revision-exhausted-title">{{ $t('mainPanel.revisionExhaustedTitle') }}</p>
