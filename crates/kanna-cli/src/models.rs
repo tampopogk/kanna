@@ -425,6 +425,10 @@ pub(crate) struct CompleteStageRequest {
     /// Named-exit routing: the stage exit this result takes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) exit: Option<String>,
+    /// Named artifacts this result produced or is about, recorded on the
+    /// result's ledger entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) artifacts: Option<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
