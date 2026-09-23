@@ -3238,6 +3238,44 @@ fn agent_definition_formula_accepts_a_short_compliant_extension() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
+/// Review follow-up: the post-merge formula recheck must count the resolved
+/// document the same way the base-only check counts a source file — not a
+/// re-serialization of it. `render_agent_md` writes `agent_provider` one
+/// entry per line, so a one-line `providers: claude, codex, copilot,
+/// opencode, antigravity` frontmatter (as `implement`/`pr` actually declare
+/// it) re-rendered as six lines, inflating a compliant, near-40-line base
+/// past the cap the base check never saw it fail. This fixture is exactly
+/// that shape (5 providers, 39 source lines with the standard blank-line
+/// frontmatter separator) and is shared, byte-for-byte, with the core test
+/// `resolveAgentWithExtension counts the resolved document the way the base
+/// check counts a source file` in `agent-loader.test.ts` — both must accept
+/// it unmodified and reject it with the identical reported line count once a
+/// two-line (blank + content) extension pushes it to 41.
+#[test]
+fn agent_definition_formula_counts_the_resolved_document_like_a_source_file() {
+    let agent_md = "---\nname: reviewer\nrole: A one-sentence role\nproviders: claude, codex, copilot, opencode, antigravity\n---\n\n## Produces\nsomething\n## Reads\nsomething\n## Must not\nsomething\n## Stop when\nsomething\nextra\nextra\nextra\nextra\nextra\nextra\nextra\nextra\nextra\nextra\nextra\nextra\nextra\nextra\nextra\nextra\nextra\nextra\nextra\nextra\nextra\nextra\nextra\nextra\nextra";
+    assert_eq!(
+        agent_md.lines().count(),
+        39,
+        "fixture drifted from 39 source lines"
+    );
+
+    let repo_root = write_agent_repo("formula-resolved-like-source-no-ext", agent_md, None);
+    resolve_test_agent_definition(&repo_root, "reviewer")
+        .expect("a compliant 39-line, 5-provider base with no EXTEND.md must still resolve");
+    let _ = std::fs::remove_dir_all(&repo_root);
+
+    let repo_root = write_agent_repo(
+        "formula-resolved-like-source-ext",
+        agent_md,
+        Some("One more line."),
+    );
+    let error = resolve_test_agent_definition(&repo_root, "reviewer")
+        .expect_err("39 lines + a 2-line merged extension (blank + content) must be rejected at 41, not misreported");
+    assert!(error.contains("got 41"), "{error}");
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
 const MALFORMED_AGENT_PROVIDER_CASES: &[(&str, &str, &str)] = &[
     (
         "mixed-array",
