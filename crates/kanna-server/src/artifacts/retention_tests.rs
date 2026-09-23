@@ -212,7 +212,11 @@ fn retention_keeps_or_collects_by_policy_and_injected_clock() {
         ("task-d", TaskLifecycle::Open),
     ]);
     let sweep = store
-        .sweep_retention(at(CLOSED_AT) + THIRTY_DAYS * 10, &open)
+        .sweep_retention(
+            at(CLOSED_AT) + THIRTY_DAYS * 10,
+            ArtifactRetention::Keep,
+            &open,
+        )
         .unwrap();
     assert!(sweep.expired.is_empty());
 
@@ -225,6 +229,7 @@ fn retention_keeps_or_collects_by_policy_and_injected_clock() {
     let sweep = store
         .sweep_retention(
             at(CLOSED_AT) + DISCARD_ON_CLOSE_GRACE - Duration::from_secs(1),
+            ArtifactRetention::Keep,
             &all_closed,
         )
         .unwrap();
@@ -232,7 +237,11 @@ fn retention_keeps_or_collects_by_policy_and_injected_clock() {
 
     // Past the grace: discard-on-close goes, 30-days waits.
     let sweep = store
-        .sweep_retention(at(CLOSED_AT) + DISCARD_ON_CLOSE_GRACE, &all_closed)
+        .sweep_retention(
+            at(CLOSED_AT) + DISCARD_ON_CLOSE_GRACE,
+            ArtifactRetention::Keep,
+            &all_closed,
+        )
         .unwrap();
     assert_eq!(sweep.expired, vec![discard.clone()]);
     assert_eq!(sweep.prune_error, None);
@@ -242,18 +251,27 @@ fn retention_keeps_or_collects_by_policy_and_injected_clock() {
     let sweep = store
         .sweep_retention(
             at(CLOSED_AT) + THIRTY_DAYS - Duration::from_secs(86_400),
+            ArtifactRetention::Keep,
             &all_closed,
         )
         .unwrap();
     assert!(sweep.expired.is_empty());
     let sweep = store
-        .sweep_retention(at(CLOSED_AT) + THIRTY_DAYS, &all_closed)
+        .sweep_retention(
+            at(CLOSED_AT) + THIRTY_DAYS,
+            ArtifactRetention::Keep,
+            &all_closed,
+        )
         .unwrap();
     assert_eq!(sweep.expired, vec![month.clone()]);
 
     // Keep never goes.
     let sweep = store
-        .sweep_retention(at(CLOSED_AT) + THIRTY_DAYS * 100, &all_closed)
+        .sweep_retention(
+            at(CLOSED_AT) + THIRTY_DAYS * 100,
+            ArtifactRetention::Keep,
+            &all_closed,
+        )
         .unwrap();
     assert!(sweep.expired.is_empty());
     assert!(retained(&keep));
@@ -278,7 +296,11 @@ fn a_task_that_is_unknown_here_keeps_its_content() {
         ArtifactRetention::DiscardOnClose,
     );
     let sweep = store
-        .sweep_retention(at(CLOSED_AT) + THIRTY_DAYS * 10, &lifecycles(&[]))
+        .sweep_retention(
+            at(CLOSED_AT) + THIRTY_DAYS * 10,
+            ArtifactRetention::Keep,
+            &lifecycles(&[]),
+        )
         .unwrap();
     assert!(sweep.expired.is_empty());
     assert!(store.detail(&id).unwrap().retained);
@@ -314,6 +336,7 @@ fn shared_content_stays_while_another_open_task_references_it() {
     let sweep = store
         .sweep_retention(
             late,
+            ArtifactRetention::Keep,
             &lifecycles(&[("task-a", closed()), ("task-b", TaskLifecycle::Open)]),
         )
         .unwrap();
@@ -334,6 +357,7 @@ fn shared_content_stays_while_another_open_task_references_it() {
     let sweep = store
         .sweep_retention(
             late,
+            ArtifactRetention::Keep,
             &lifecycles(&[
                 ("task-a", closed()),
                 ("task-b", closed()),
@@ -350,6 +374,7 @@ fn shared_content_stays_while_another_open_task_references_it() {
     let sweep = store
         .sweep_retention(
             late,
+            ArtifactRetention::Keep,
             &lifecycles(&[
                 ("task-a", closed()),
                 ("task-b", closed()),
@@ -394,6 +419,7 @@ fn an_expired_artifact_keeps_its_records_and_reads_as_expired() {
     let sweep = store
         .sweep_retention(
             at(CLOSED_AT) + DISCARD_ON_CLOSE_GRACE,
+            ArtifactRetention::Keep,
             &lifecycles(&[("task-1", closed())]),
         )
         .unwrap();
@@ -438,6 +464,7 @@ fn an_expired_artifact_keeps_its_records_and_reads_as_expired() {
     let sweep = reopened
         .sweep_retention(
             at(CLOSED_AT) + THIRTY_DAYS,
+            ArtifactRetention::Keep,
             &lifecycles(&[("task-1", closed())]),
         )
         .unwrap();

@@ -6,16 +6,22 @@
 //! provider transcripts moved with a task; nothing here touches the working
 //! repository's index, objects or history.
 //!
-//! Artifacts are published, read, opened and annotated here; a result names
-//! them through its `artifacts` map (bound in the store and recorded in its
-//! ledger entry), and a periodic sweep enforces each version's retention
-//! policy without ever removing a record.
+//! Artifacts are published, read, opened and annotated here, and shared with
+//! another Kanna home through an ordinary Git remote (`remote`). A result
+//! names them through its `artifacts` map (bound in the store and recorded in
+//! its ledger entry), and a periodic sweep enforces retention without ever
+//! removing a record.
 
+pub(crate) mod remote;
 pub(crate) mod store;
 pub(crate) mod types;
 
 #[cfg(test)]
+mod remote_tests;
+#[cfg(test)]
 mod retention_tests;
+#[cfg(test)]
+mod sharing_retention_tests;
 #[cfg(test)]
 mod tests;
 
@@ -67,6 +73,26 @@ pub(crate) enum ArtifactError {
     /// The configured repository location is unusable.
     Location(String),
     Storage(String),
+    /// The repository configures no `artifacts.remote`.
+    RemoteNotConfigured {
+        repo_id: String,
+    },
+    /// The configured `artifacts.remote` is not an acceptable Git remote.
+    InvalidRemote(String),
+    /// The remote holds neither content nor records for this id.
+    NotOnRemote {
+        remote: String,
+        artifact_id: String,
+    },
+    /// Git could not reach or talk to the remote. The message never carries
+    /// URL credentials.
+    RemoteFailed(String),
+    /// The remote already holds different objects under names Kanna treats
+    /// as immutable.
+    RemoteConflict {
+        remote: String,
+        refs: Vec<String>,
+    },
 }
 
 impl ArtifactError {
@@ -87,6 +113,11 @@ impl ArtifactError {
             Self::TooLarge(_) => "artifact_too_large",
             Self::Location(_) => "artifact_repository_location_invalid",
             Self::Storage(_) => "artifact_storage_error",
+            Self::RemoteNotConfigured { .. } => "artifact_remote_not_configured",
+            Self::InvalidRemote(_) => "artifact_remote_invalid",
+            Self::NotOnRemote { .. } => "artifact_not_on_remote",
+            Self::RemoteFailed(_) => "artifact_remote_failed",
+            Self::RemoteConflict { .. } => "artifact_remote_conflict",
         }
     }
 }
@@ -100,7 +131,25 @@ impl fmt::Display for ArtifactError {
             | Self::WorkspaceUnavailable(message)
             | Self::TooLarge(message)
             | Self::Location(message)
-            | Self::Storage(message) => formatter.write_str(message),
+            | Self::Storage(message)
+            | Self::InvalidRemote(message)
+            | Self::RemoteFailed(message) => formatter.write_str(message),
+            Self::RemoteNotConfigured { repo_id } => write!(
+                formatter,
+                "repository {repo_id} has no artifact remote; set artifacts.remote in .kanna/config.json or .kanna/config.local.json"
+            ),
+            Self::NotOnRemote {
+                remote,
+                artifact_id,
+            } => write!(
+                formatter,
+                "artifact {artifact_id} is missing on artifact remote {remote}: it holds no content or records for that id"
+            ),
+            Self::RemoteConflict { remote, refs } => write!(
+                formatter,
+                "artifact remote {remote} already holds different objects under {}; nothing there was overwritten",
+                refs.join(", ")
+            ),
             Self::InvalidId(value) => write!(
                 formatter,
                 "{value:?} is not a full artifact id (40 lowercase hex characters)"
@@ -165,6 +214,10 @@ impl ArtifactStorageContext {
     #[cfg(test)]
     pub(crate) fn with_home(home: impl Into<PathBuf>) -> Self {
         Self { home: home.into() }
+    }
+
+    pub(crate) fn home(&self) -> &Path {
+        &self.home
     }
 
     fn default_repository_path(&self, repo_id: &str) -> PathBuf {

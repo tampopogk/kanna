@@ -92,8 +92,9 @@ const OVERRIDABLE_KEYS: &[OverridableKey] = &[
         merge: LocalMerge::Replace,
         validate: validate_string_array,
     },
-    // Where this machine keeps artifact storage is plumbing. Merged field by
-    // field, so a local `repositoryPath` keeps the committed `retention`.
+    // Where this machine keeps artifact storage, and which artifact remote it
+    // shares through, is plumbing. Merged field by field, so a local
+    // `repositoryPath` keeps the committed `retention`.
     OverridableKey {
         name: "artifacts",
         merge: LocalMerge::Entries,
@@ -267,13 +268,18 @@ fn validate_ports(value: &Value) -> Result<(), String> {
 
 fn validate_artifacts(value: &Value) -> Result<(), String> {
     let entries = value.as_object().ok_or_else(|| {
-        "must be an object with optional `repositoryPath` and `retention`".to_string()
+        "must be an object with optional `repositoryPath`, `retention` and `remote`".to_string()
     })?;
     for (name, entry) in entries {
         match name.as_str() {
             "repositoryPath" => {
                 if entry.as_str().is_none_or(|path| path.trim().is_empty()) {
                     return Err("`repositoryPath` must be a non-empty path".to_string());
+                }
+            }
+            "remote" => {
+                if entry.as_str().is_none_or(|remote| remote.trim().is_empty()) {
+                    return Err("`remote` must be a non-empty Git URL or path".to_string());
                 }
             }
             "retention" => {
@@ -288,8 +294,8 @@ fn validate_artifacts(value: &Value) -> Result<(), String> {
             }
             other => {
                 return Err(format!(
-                    "has unknown field `{other}` (expected `repositoryPath` or `retention`)"
-                ))
+                "has unknown field `{other}` (expected `repositoryPath`, `retention` or `remote`)"
+            ))
             }
         }
     }
@@ -565,7 +571,8 @@ mod tests {
         let mut config = committed();
         config.insert(
             "artifacts".to_string(),
-            json!({"repositoryPath": "~/committed.git", "retention": "30-days"}),
+            json!({"repositoryPath": "~/committed.git", "retention": "30-days",
+                   "remote": "ssh://team.example/artifacts.git"}),
         );
 
         let applied = apply_local_config_override(temp.path(), &mut config)
@@ -575,9 +582,21 @@ mod tests {
         assert_eq!(applied.keys(), ["artifacts"]);
         assert_eq!(
             config["artifacts"],
-            json!({"repositoryPath": "/Volumes/fast/artifacts.git", "retention": "30-days"}),
-            "a local location must keep the committed retention policy"
+            json!({"repositoryPath": "/Volumes/fast/artifacts.git", "retention": "30-days",
+                   "remote": "ssh://team.example/artifacts.git"}),
+            "a local location must keep the committed retention policy and remote"
         );
+
+        write_local(
+            temp.path(),
+            &json!({"artifacts": {"remote": "/Volumes/shared/artifacts.git"}}).to_string(),
+        );
+        apply_local_config_override(temp.path(), &mut config).unwrap();
+        assert_eq!(
+            config["artifacts"]["remote"], "/Volumes/shared/artifacts.git",
+            "a local remote replaces only the remote"
+        );
+        assert_eq!(config["artifacts"]["retention"], "30-days");
 
         for (local, expected) in [
             (
@@ -589,8 +608,12 @@ mod tests {
                 "`repositoryPath` must be a non-empty path",
             ),
             (
-                json!({"artifacts": {"remote": "origin"}}),
-                "unknown field `remote`",
+                json!({"artifacts": {"origin": "ssh://host/a.git"}}),
+                "unknown field `origin`",
+            ),
+            (
+                json!({"artifacts": {"remote": ""}}),
+                "`remote` must be a non-empty Git URL or path",
             ),
             (json!({"artifacts": "~/a.git"}), "must be an object"),
         ] {

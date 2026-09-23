@@ -388,7 +388,7 @@ environment, and nothing about an outage needs them changed.
 | `agentProviders`, `ports` | entry by entry: a local entry replaces the committed entry of the same name; unnamed committed entries survive. One level deep — a named entry is replaced whole, not field by field. |
 | `workflow` | replaces. |
 | `setup`, `teardown`, `test` | replace. Arrays never concatenate: a local `setup` is the whole setup list. |
-| `artifacts` | field by field: a local `repositoryPath` or `retention` replaces only that field. |
+| `artifacts` | field by field: a local `repositoryPath`, `retention` or `remote` replaces only that field. |
 
 **Downgrade.** A Kanna server that predates artifact support rejects an
 `artifacts` block in `config.local.json` — its local allowlist does not know

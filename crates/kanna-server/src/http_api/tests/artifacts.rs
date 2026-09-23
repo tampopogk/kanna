@@ -679,6 +679,174 @@ async fn a_configured_location_inside_the_working_repository_is_refused() {
     assert!(!env2.home.join(".kanna").exists());
 }
 
+/// Two servers with separate homes and databases share one artifact through
+/// a bare remote named only in each repository's local config.
+#[tokio::test]
+async fn two_homes_share_an_artifact_and_its_discussion_through_the_configured_remote() {
+    let shared = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.tmp/artifact-http-tests")
+        .join(format!("share-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&shared);
+    std::fs::create_dir_all(&shared).unwrap();
+    let shared = std::fs::canonicalize(shared).unwrap();
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(shared.clone());
+    run_git(&shared, &["init", "--bare", "--quiet", "remote.git"]);
+    let remote = shared.join("remote.git");
+    let config = json!({ "artifacts": { "remote": remote.to_str().unwrap() } });
+    let a = setup("share-a", Some(config.clone()));
+    let b = setup("share-b", Some(config));
+
+    let (status, v1) = publish(&a.app, json!({ "path": "mock", "kind": "mockup" })).await;
+    assert_eq!(status, StatusCode::CREATED, "{v1}");
+    let v1 = v1["artifactId"].as_str().unwrap().to_string();
+    write_mockup(&a.workspace, "mock", "body{color:#456}");
+    let (_, v2) = publish(
+        &a.app,
+        json!({ "path": "mock", "kind": "mockup", "previous": v1 }),
+    )
+    .await;
+    let v2 = v2["artifactId"].as_str().unwrap().to_string();
+
+    let (status, pushed) = call(
+        &a.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{v2}/push"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{pushed}");
+    assert_eq!(pushed["artifactIds"], json!([v2, v1]));
+    assert_eq!(pushed["remote"], remote.to_str().unwrap());
+
+    let (status, fetched) = call(
+        &b.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{v2}/fetch"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{fetched}");
+    assert_eq!(fetched["detail"]["artifactId"], v2);
+    assert_eq!(fetched["detail"]["versions"][0]["previous"], v1);
+
+    // B decides about the older revision and pushes; A fetches it back.
+    let (status, _) = call(
+        &b.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{v1}/decisions"),
+        Some(json!({ "who": "stakeholder", "what": "approved" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = call(
+        &b.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{v2}/push"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, fetched) = call(
+        &a.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{v2}/fetch"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{fetched}");
+    assert_eq!(fetched["recordsImported"], 1);
+    let (_, older) = call(
+        &a.app,
+        "GET",
+        &format!("/v1/repos/repo-a/artifacts/{v1}"),
+        None,
+    )
+    .await;
+    assert_eq!(older["decisions"][0]["what"], "approved");
+    assert_eq!(older["decisions"][0]["aboutArtifactId"], v1);
+    // A received "approved" is data: the task it might concern did not move.
+    let db = Db::open(&a.state.config().db_path).unwrap();
+    let item = db.get_pipeline_item("task-a").unwrap().unwrap();
+    assert_eq!(item.stage.as_deref(), Some("in progress"));
+    assert!(item.closed_at.is_none());
+
+    let unknown = "0123456789abcdef0123456789abcdef01234567";
+    let (status, body) = call(
+        &b.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{unknown}/fetch"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["error"], "artifact_not_on_remote");
+    assert_eq!(body["artifactId"], unknown);
+}
+
+#[tokio::test]
+async fn sharing_needs_a_usable_configured_remote() {
+    let env = setup("no-remote", None);
+    let (_, published) = publish(&env.app, json!({ "path": "mock", "kind": "mockup" })).await;
+    let id = published["artifactId"].as_str().unwrap().to_string();
+    for action in ["push", "fetch"] {
+        let (status, body) = call(
+            &env.app,
+            "POST",
+            &format!("/v1/repos/repo-a/artifacts/{id}/{action}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["error"], "artifact_remote_not_configured");
+    }
+
+    let helper = setup(
+        "helper-remote",
+        Some(json!({ "artifacts": { "remote": "ext::sh -c 'touch pwned'" } })),
+    );
+    let (_, published) = publish(&helper.app, json!({ "path": "mock", "kind": "mockup" })).await;
+    let id = published["artifactId"].as_str().unwrap().to_string();
+    let (status, body) = call(
+        &helper.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{id}/push"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "artifact_remote_invalid");
+
+    // The remote is configuration, never a request parameter.
+    let (status, _) = call(
+        &env.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{id}/push"),
+        Some(json!({ "remote": "/tmp/elsewhere.git" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    for action in ["push", "fetch"] {
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/v1/repos/repo-a/artifacts/{id}/{action}"))
+            .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                [192, 168, 1, 50],
+                50000,
+            ))))
+            .body(Body::empty())
+            .unwrap();
+        let response = env.app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{action}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // T6b: result references, retention, preview lifecycle and isolation
 // ---------------------------------------------------------------------------

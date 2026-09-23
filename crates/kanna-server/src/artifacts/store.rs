@@ -29,6 +29,11 @@
 //! and the repository is initialized with `core.fsyncObjectFiles`, so a crash
 //! can leave retained content without a descriptor but never a descriptor
 //! for content that was not retained.
+//!
+//! Sharing through an artifact remote (`super::remote`) never pushes either of
+//! these local refs. It reads content commits and record blobs from here and
+//! writes them under their own immutable names on the remote; what it fetches
+//! back is validated and imported through [`ArtifactStore::import`].
 
 use super::types::{
     ArtifactAnchor, ArtifactBinding, ArtifactComment, ArtifactContentKind, ArtifactDecision,
@@ -48,10 +53,20 @@ use std::time::{Duration, SystemTime};
 
 const METADATA_REF: &str = "refs/kanna/artifacts/metadata";
 const CONTENT_REF_PREFIX: &str = "refs/kanna/artifacts/trees/";
+/// Where `remote` lands a fetch before validating it.
+pub(super) const INCOMING_REF_PREFIX: &str = "refs/kanna/artifacts/incoming/";
 const LOCK_FILE_NAME: &str = "kanna-artifacts.lock";
-const VERSIONS_DIR: &str = "versions";
-const COMMENTS_DIR: &str = "comments";
-const DECISIONS_DIR: &str = "decisions";
+pub(super) const VERSIONS_DIR: &str = "versions";
+pub(super) const COMMENTS_DIR: &str = "comments";
+pub(super) const DECISIONS_DIR: &str = "decisions";
+pub(super) const RECORD_DIRS: [&str; 3] = [VERSIONS_DIR, COMMENTS_DIR, DECISIONS_DIR];
+/// Local-only provenance: an entry here marks a version record that arrived
+/// from an artifact remote rather than from a publication on this home. It
+/// is written at import and never at publish, and it is never shared.
+const RECEIVED_VERSIONS_DIR: &str = "received-versions";
+/// Local-only provenance for content a remote supplied: one receipt per
+/// retaining commit imported. Never shared, like `received-versions/`.
+const RECEIVED_CONTENT_DIR: &str = "received-content";
 const BINDINGS_DIR: &str = "bindings";
 const EXPIRATIONS_DIR: &str = "expirations";
 const SEQUENCE_FILE: &str = "sequence";
@@ -62,8 +77,8 @@ pub(crate) const THIRTY_DAYS: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// go. Not zero: a close can be undone, and reopening within this window
 /// finds the content still there.
 pub(crate) const DISCARD_ON_CLOSE_GRACE: Duration = Duration::from_secs(60 * 60);
-const FILE_MODE_BLOB: i32 = 0o100_644;
-const FILE_MODE_TREE: i32 = 0o040_000;
+pub(super) const FILE_MODE_BLOB: i32 = 0o100_644;
+pub(super) const FILE_MODE_TREE: i32 = 0o040_000;
 
 pub(crate) const MAX_DECLARED_NAME_BYTES: usize = 200;
 pub(crate) const MAX_TEXT_BYTES: usize = 64 * 1024;
@@ -155,6 +170,27 @@ pub(crate) struct ArtifactStore {
     repository: Repository,
     path: PathBuf,
     repo_id: String,
+}
+
+/// One stored record, as the exact blob Kanna wrote or received. Sharing
+/// moves this blob unchanged, so a record has one identity on every home.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct StoredRecord {
+    /// One of [`RECORD_DIRS`].
+    pub(super) directory: &'static str,
+    pub(super) artifact: Oid,
+    pub(super) record_id: String,
+    pub(super) blob: Oid,
+}
+
+/// What [`ArtifactStore::import`] did with received content and records.
+#[derive(Debug, Default)]
+pub(super) struct ImportReport {
+    pub(super) content_retained: Vec<Oid>,
+    pub(super) records_imported: usize,
+    /// A local record with this id already holds different bytes; the local
+    /// one is kept.
+    pub(super) conflicting: Vec<StoredRecord>,
 }
 
 /// Injected failures for proving publication ordering.
@@ -619,9 +655,25 @@ impl ArtifactStore {
     pub(crate) fn sweep_retention(
         &self,
         now: SystemTime,
+        received_policy: ArtifactRetention,
         lifecycle: &dyn Fn(&str) -> TaskLifecycle,
     ) -> Result<RetentionSweep, ArtifactError> {
         let _lock = RepositoryLock::acquire(&self.path)?;
+        // A fetch holds this lock until its private namespace is gone, so
+        // any `incoming/` ref seen here is what an interrupted fetch left;
+        // it must not keep unvalidated objects alive past this prune.
+        let stale = self
+            .repository
+            .references_glob(&format!("{INCOMING_REF_PREFIX}*"))
+            .map_err(storage)?
+            .flatten()
+            .filter_map(|reference| reference.name().map(str::to_string))
+            .collect::<Vec<_>>();
+        for name in &stale {
+            if let Ok(mut reference) = self.repository.find_reference(name) {
+                reference.delete().map_err(storage)?;
+            }
+        }
         let mut candidates = Vec::new();
         for reference in self
             .repository
@@ -639,7 +691,7 @@ impl ArtifactStore {
         }
         let mut sweep = RetentionSweep::default();
         for oid in candidates {
-            let Some(policies) = self.collectable(oid, now, lifecycle)? else {
+            let Some(policies) = self.collectable(oid, now, received_policy, lifecycle)? else {
                 continue;
             };
             let ref_name = content_ref_name(oid);
@@ -685,45 +737,98 @@ impl ArtifactStore {
             reference.delete().map_err(storage)?;
             sweep.expired.push(oid.to_string());
         }
-        if !sweep.expired.is_empty() {
+        if !sweep.expired.is_empty() || !stale.is_empty() {
             sweep.prune_error = self.prune_unreachable().err();
         }
         Ok(sweep)
     }
 
     /// The policies that allow collecting `oid` now, or `None` to keep it.
+    ///
+    /// A binding by a task that is open or unknown here keeps the tree. A
+    /// version this home published follows its own recorded policy, counted
+    /// from its producing task's close. A version (or content with no version
+    /// at all) received from a remote never consults the task that produced
+    /// it elsewhere: it follows this repository's `received_policy`, counted
+    /// from when it was received or from when the last local task that named
+    /// it closed, whichever is later.
     fn collectable(
         &self,
         oid: Oid,
         now: SystemTime,
+        received_policy: ArtifactRetention,
         lifecycle: &dyn Fn(&str) -> TaskLifecycle,
     ) -> Result<Option<Vec<ArtifactRetention>>, ArtifactError> {
-        let versions = self.list_records::<ArtifactVersion>(VERSIONS_DIR, oid)?;
-        // Content with no descriptor is what an interrupted publication
-        // leaves; nothing says what its policy is, so it stays.
-        if versions.is_empty() {
-            return Ok(None);
-        }
-        let mut policies = Vec::new();
-        for version in &versions {
-            let wait = match version.retention {
-                ArtifactRetention::Keep => return Ok(None),
-                ArtifactRetention::ThirtyDays => THIRTY_DAYS,
-                ArtifactRetention::DiscardOnClose => DISCARD_ON_CLOSE_GRACE,
-            };
-            let TaskLifecycle::Closed { at } = lifecycle(&version.produced_by.task_id) else {
-                return Ok(None);
-            };
-            if now < at + wait {
-                return Ok(None);
-            }
-            if !policies.contains(&version.retention) {
-                policies.push(version.retention);
-            }
-        }
+        let mut last_binding_close: Option<SystemTime> = None;
         for binding in self.list_records::<ArtifactBinding>(BINDINGS_DIR, oid)? {
-            if !matches!(lifecycle(&binding.task_id), TaskLifecycle::Closed { .. }) {
+            let TaskLifecycle::Closed { at } = lifecycle(&binding.task_id) else {
                 return Ok(None);
+            };
+            last_binding_close = Some(last_binding_close.map_or(at, |seen| seen.max(at)));
+        }
+        let root = self
+            .metadata_tip()?
+            .map(|commit| commit.tree())
+            .transpose()
+            .map_err(storage)?;
+        let due = |policy: ArtifactRetention, since: SystemTime| match policy {
+            ArtifactRetention::Keep => None,
+            ArtifactRetention::ThirtyDays => Some(since + THIRTY_DAYS),
+            ArtifactRetention::DiscardOnClose => Some(since + DISCARD_ON_CLOSE_GRACE),
+        };
+        let received_due = |received: Option<SystemTime>| {
+            // A mark from before receipts carried a time: nothing says when
+            // the clock started, so the content stays.
+            let received = received?;
+            let since = last_binding_close.map_or(received, |closed| closed.max(received));
+            due(received_policy, since)
+        };
+        let versions = self.list_records::<ArtifactVersion>(VERSIONS_DIR, oid)?;
+        let mut policies = Vec::new();
+        if versions.is_empty() {
+            // Content with no descriptor: an interrupted publication leaves
+            // this, and nothing says what its policy is, so it stays --
+            // unless a remote supplied it, which gives it this repository's
+            // policy and a receipt time.
+            let Some(commit) = self.retained_commit(oid)? else {
+                return Ok(None);
+            };
+            let Some(received) = self.receipt(
+                root.as_ref(),
+                RECEIVED_CONTENT_DIR,
+                oid,
+                &commit.to_string(),
+            )?
+            else {
+                return Ok(None);
+            };
+            return Ok(match received_due(received) {
+                Some(due) if now >= due => Some(vec![received_policy]),
+                _ => None,
+            });
+        }
+        for version in &versions {
+            let (policy, due) = match self.receipt(
+                root.as_ref(),
+                RECEIVED_VERSIONS_DIR,
+                oid,
+                &version.record_id,
+            )? {
+                Some(received) => (received_policy, received_due(received)),
+                None => {
+                    let TaskLifecycle::Closed { at } = lifecycle(&version.produced_by.task_id)
+                    else {
+                        return Ok(None);
+                    };
+                    (version.retention, due(version.retention, at))
+                }
+            };
+            match due {
+                Some(due) if now >= due => {}
+                _ => return Ok(None),
+            }
+            if !policies.contains(&policy) {
+                policies.push(policy);
             }
         }
         Ok(Some(policies))
@@ -902,12 +1007,10 @@ impl ArtifactStore {
         }
     }
 
-    /// Append one record. The caller holds the repository lock; the ref is
-    /// still moved with a compare-and-swap so a writer that bypassed the lock
-    /// fails loudly instead of discarding another writer's record.
+    /// Append one record. The caller holds the repository lock.
     fn append_record(
         &self,
-        directory: &str,
+        directory: &'static str,
         artifact: Oid,
         record_id: &str,
         sequence: u64,
@@ -917,28 +1020,60 @@ impl ArtifactStore {
         let bytes = serde_json::to_vec_pretty(record)
             .map_err(|error| ArtifactError::Storage(format!("cannot encode record: {error}")))?;
         let blob = self.repository.blob(&bytes).map_err(storage)?;
+        self.append_blobs(
+            &[StoredRecord {
+                directory,
+                artifact,
+                record_id: record_id.to_string(),
+                blob,
+            }],
+            Some(sequence),
+            message,
+        )
+    }
+
+    /// Add record blobs to the metadata history in one commit, advancing the
+    /// record sequence to `sequence` when given (a local record; received
+    /// records keep the ids their home gave them). The caller holds the
+    /// repository lock; the ref is still moved with a compare-and-swap so a
+    /// writer that bypassed the lock fails loudly instead of discarding
+    /// another writer's record.
+    fn append_blobs(
+        &self,
+        records: &[StoredRecord],
+        sequence: Option<u64>,
+        message: &str,
+    ) -> Result<(), ArtifactError> {
+        if records.is_empty() {
+            return Ok(());
+        }
         let parent = self.metadata_tip()?;
-        let base = parent
+        let mut tree = parent
             .as_ref()
             .map(|commit| commit.tree())
             .transpose()
             .map_err(storage)?;
-        let artifact_hex = artifact.to_string();
-        let file_name = format!("{record_id}.json");
-        let components = [directory, &artifact_hex[..2], &artifact_hex, &file_name];
-        let with_record = upsert_path(&self.repository, base.as_ref(), &components, blob)?;
-        let with_record = self.repository.find_tree(with_record).map_err(storage)?;
-        let counter = self
-            .repository
-            .blob(sequence.to_string().as_bytes())
-            .map_err(storage)?;
-        let tree_id = upsert_path(
-            &self.repository,
-            Some(&with_record),
-            &[SEQUENCE_FILE],
-            counter,
-        )?;
-        let tree = self.repository.find_tree(tree_id).map_err(storage)?;
+        for record in records {
+            let artifact_hex = record.artifact.to_string();
+            let file_name = format!("{}.json", record.record_id);
+            let components = [
+                record.directory,
+                &artifact_hex[..2],
+                &artifact_hex,
+                &file_name,
+            ];
+            let tree_id = upsert_path(&self.repository, tree.as_ref(), &components, record.blob)?;
+            tree = Some(self.repository.find_tree(tree_id).map_err(storage)?);
+        }
+        if let Some(sequence) = sequence {
+            let counter = self
+                .repository
+                .blob(sequence.to_string().as_bytes())
+                .map_err(storage)?;
+            let tree_id = upsert_path(&self.repository, tree.as_ref(), &[SEQUENCE_FILE], counter)?;
+            tree = Some(self.repository.find_tree(tree_id).map_err(storage)?);
+        }
+        let tree = tree.ok_or_else(|| ArtifactError::Storage("empty metadata tree".to_string()))?;
         let signature = kanna_signature()?;
         let parents = parent.iter().collect::<Vec<_>>();
         let commit = self
@@ -962,6 +1097,282 @@ impl ArtifactStore {
         })
     }
 
+    /// The blob stored for one record, if any.
+    fn stored_record_blob(
+        &self,
+        root: Option<&Tree<'_>>,
+        directory: &str,
+        artifact: Oid,
+        record_id: &str,
+    ) -> Result<Option<Oid>, ArtifactError> {
+        let Some(root) = root else {
+            return Ok(None);
+        };
+        let artifact_hex = artifact.to_string();
+        let path = format!(
+            "{directory}/{}/{artifact_hex}/{record_id}.json",
+            &artifact_hex[..2]
+        );
+        match root.get_path(Path::new(&path)) {
+            Ok(entry) => Ok(Some(entry.id())),
+            Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(None),
+            Err(error) => Err(storage(error)),
+        }
+    }
+
+    pub(super) fn repository(&self) -> &Repository {
+        &self.repository
+    }
+
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(super) fn repo_id(&self) -> &str {
+        &self.repo_id
+    }
+
+    pub(super) fn lock(&self) -> Result<RepositoryLock, ArtifactError> {
+        RepositoryLock::acquire(&self.path)
+    }
+
+    /// Whether any version record names this tree.
+    pub(super) fn is_published(&self, artifact: Oid) -> Result<bool, ArtifactError> {
+        Ok(!self
+            .list_records::<ArtifactVersion>(VERSIONS_DIR, artifact)?
+            .is_empty())
+    }
+
+    /// The `previous` ids this tree's version records name.
+    pub(super) fn previous_links(&self, artifact: Oid) -> Result<Vec<Oid>, ArtifactError> {
+        Ok(self
+            .previous_links_with_provenance(artifact)?
+            .into_iter()
+            .map(|(previous, _)| previous)
+            .collect())
+    }
+
+    /// The `previous` ids this tree's version records name, each with
+    /// whether a version record this home wrote itself names it (`true`) or
+    /// only records received from an artifact remote do (`false`).
+    ///
+    /// Records and received marks are read from one metadata snapshot. An
+    /// import writes a received record and its mark in one commit, so a
+    /// single snapshot holds both or neither; reading them from two tips
+    /// could see the record without its mark and call it this home's own.
+    pub(super) fn previous_links_with_provenance(
+        &self,
+        artifact: Oid,
+    ) -> Result<Vec<(Oid, bool)>, ArtifactError> {
+        let tip = self.metadata_tip()?.map(|commit| commit.id());
+        self.previous_links_at(tip, artifact)
+    }
+
+    /// [`Self::previous_links_with_provenance`] as of one metadata commit
+    /// (`None`: no metadata yet).
+    pub(super) fn previous_links_at(
+        &self,
+        metadata: Option<Oid>,
+        artifact: Oid,
+    ) -> Result<Vec<(Oid, bool)>, ArtifactError> {
+        let Some(metadata) = metadata else {
+            return Ok(Vec::new());
+        };
+        let root = self
+            .repository
+            .find_commit(metadata)
+            .and_then(|commit| commit.tree())
+            .map_err(storage)?;
+        let mut links: Vec<(Oid, bool)> = Vec::new();
+        for version in self.list_records_in::<ArtifactVersion>(&root, VERSIONS_DIR, artifact)? {
+            let Some(previous) = version.previous.as_deref() else {
+                continue;
+            };
+            let previous = parse_object_id(previous)?;
+            let own = self
+                .stored_record_blob(
+                    Some(&root),
+                    RECEIVED_VERSIONS_DIR,
+                    artifact,
+                    &version.record_id,
+                )?
+                .is_none();
+            match links.iter_mut().find(|(seen, _)| *seen == previous) {
+                Some((_, seen_own)) => *seen_own |= own,
+                None => links.push((previous, own)),
+            }
+        }
+        Ok(links)
+    }
+
+    /// The commit that retains this tree locally, if it is retained.
+    pub(super) fn retained_commit(&self, artifact: Oid) -> Result<Option<Oid>, ArtifactError> {
+        if self.retained_tree(artifact)?.is_none() {
+            return Ok(None);
+        }
+        let reference = self
+            .repository
+            .find_reference(&content_ref_name(artifact))
+            .map_err(storage)?;
+        reference
+            .peel_to_commit()
+            .map(|commit| Some(commit.id()))
+            .map_err(storage)
+    }
+
+    /// Every record stored about one tree, as exact blobs.
+    pub(super) fn stored_records(&self, artifact: Oid) -> Result<Vec<StoredRecord>, ArtifactError> {
+        let Some(tip) = self.metadata_tip()? else {
+            return Ok(Vec::new());
+        };
+        let root = tip.tree().map_err(storage)?;
+        let artifact_hex = artifact.to_string();
+        let mut records = Vec::new();
+        for directory in RECORD_DIRS {
+            let path = format!("{directory}/{}/{artifact_hex}", &artifact_hex[..2]);
+            let entry = match root.get_path(Path::new(&path)) {
+                Ok(entry) => entry,
+                Err(error) if error.code() == git2::ErrorCode::NotFound => continue,
+                Err(error) => return Err(storage(error)),
+            };
+            let records_tree = self.repository.find_tree(entry.id()).map_err(storage)?;
+            for entry in records_tree.iter() {
+                let Some(record_id) = entry.name().and_then(|name| name.strip_suffix(".json"))
+                else {
+                    continue;
+                };
+                records.push(StoredRecord {
+                    directory,
+                    artifact,
+                    record_id: record_id.to_string(),
+                    blob: entry.id(),
+                });
+            }
+        }
+        Ok(records)
+    }
+
+    /// Import content and records a remote supplied, already validated by
+    /// the caller, who holds the repository lock. Content first, then
+    /// records, as in [`Self::publish`]: a record about a tree is imported
+    /// only when that tree is retained here or already has a local version,
+    /// so a remote cannot create a descriptor for content this home lacks.
+    /// Nothing local is ever replaced: an existing content ref keeps its own
+    /// commit, and a record id that already holds different bytes is kept
+    /// and reported.
+    pub(super) fn import(
+        &self,
+        content: &[(Oid, Oid)],
+        records: &[StoredRecord],
+    ) -> Result<ImportReport, ArtifactError> {
+        let mut report = ImportReport::default();
+        for &(tree, commit) in content {
+            let ref_name = content_ref_name(tree);
+            match self.repository.find_reference(&ref_name) {
+                Ok(_) => {}
+                Err(error) if error.code() == git2::ErrorCode::NotFound => {
+                    self.repository
+                        .reference(&ref_name, commit, false, "kanna: retain received artifact")
+                        .map_err(storage)?;
+                    report.content_retained.push(tree);
+                }
+                Err(error) => return Err(storage(error)),
+            }
+        }
+        let root = self
+            .metadata_tip()?
+            .map(|commit| commit.tree())
+            .transpose()
+            .map_err(storage)?;
+        let mut accepted: Vec<StoredRecord> = Vec::new();
+        for record in records {
+            let anchored = self.retained_tree(record.artifact)?.is_some()
+                || self.is_published(record.artifact)?;
+            if !anchored {
+                continue;
+            }
+            match self.stored_record_blob(
+                root.as_ref(),
+                record.directory,
+                record.artifact,
+                &record.record_id,
+            )? {
+                Some(existing) if existing == record.blob => {}
+                Some(_) => report.conflicting.push(record.clone()),
+                None if accepted.iter().any(|seen| {
+                    seen.directory == record.directory
+                        && seen.artifact == record.artifact
+                        && seen.record_id == record.record_id
+                }) => {}
+                None => accepted.push(record.clone()),
+            }
+        }
+        report.records_imported = accepted.len();
+        // Receipts: which versions and which content arrived from a remote,
+        // and when. Retention reads them so that nothing another home
+        // recorded keeps or releases content here.
+        let receipt = self.receipt_blob(now())?;
+        let received_marks = accepted
+            .iter()
+            .filter(|record| record.directory == VERSIONS_DIR)
+            .map(|record| StoredRecord {
+                directory: RECEIVED_VERSIONS_DIR,
+                blob: receipt,
+                ..record.clone()
+            })
+            .chain(
+                content
+                    .iter()
+                    .filter(|(tree, _)| report.content_retained.contains(tree))
+                    .map(|&(tree, commit)| StoredRecord {
+                        directory: RECEIVED_CONTENT_DIR,
+                        artifact: tree,
+                        record_id: commit.to_string(),
+                        blob: receipt,
+                    }),
+            )
+            .collect::<Vec<_>>();
+        accepted.extend(received_marks);
+        self.append_blobs(&accepted, None, "import records from artifact remote")?;
+        Ok(report)
+    }
+
+    fn receipt_blob(&self, time: SystemTime) -> Result<Oid, ArtifactError> {
+        let millis = time
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or_default();
+        let bytes = serde_json::to_vec_pretty(&serde_json::json!({
+            "schemaVersion": ARTIFACT_RECORD_SCHEMA_VERSION,
+            "receivedAt": rfc3339_utc(time),
+            "receivedAtMillis": millis,
+        }))
+        .map_err(|error| ArtifactError::Storage(format!("cannot encode receipt: {error}")))?;
+        self.repository.blob(&bytes).map_err(storage)
+    }
+
+    /// Whether a record (or content commit) arrived from a remote: `None`
+    /// for this home's own, `Some(when)` for received, with `when` unknown
+    /// for a mark written before receipts carried a time.
+    fn receipt(
+        &self,
+        root: Option<&Tree<'_>>,
+        directory: &str,
+        artifact: Oid,
+        record_id: &str,
+    ) -> Result<Option<Option<SystemTime>>, ArtifactError> {
+        let Some(blob) = self.stored_record_blob(root, directory, artifact, record_id)? else {
+            return Ok(None);
+        };
+        let blob = self.repository.find_blob(blob).map_err(storage)?;
+        let millis = serde_json::from_slice::<serde_json::Value>(blob.content())
+            .ok()
+            .and_then(|value| value.get("receivedAtMillis").and_then(|v| v.as_u64()));
+        Ok(Some(millis.map(|millis| {
+            SystemTime::UNIX_EPOCH + Duration::from_millis(millis)
+        })))
+    }
+
     fn list_records<T: DeserializeOwned + RecordSchema>(
         &self,
         directory: &str,
@@ -971,6 +1382,16 @@ impl ArtifactStore {
             return Ok(Vec::new());
         };
         let root = tip.tree().map_err(storage)?;
+        self.list_records_in(&root, directory, artifact)
+    }
+
+    /// [`Self::list_records`] from one given metadata tree.
+    fn list_records_in<T: DeserializeOwned + RecordSchema>(
+        &self,
+        root: &Tree<'_>,
+        directory: &str,
+        artifact: Oid,
+    ) -> Result<Vec<T>, ArtifactError> {
         let artifact_hex = artifact.to_string();
         let path = format!("{directory}/{}/{artifact_hex}", &artifact_hex[..2]);
         let entry = match root.get_path(Path::new(&path)) {
@@ -1100,11 +1521,11 @@ fn content_ref_name(tree: Oid) -> String {
     format!("{CONTENT_REF_PREFIX}{tree}")
 }
 
-fn kanna_signature() -> Result<Signature<'static>, ArtifactError> {
+pub(super) fn kanna_signature() -> Result<Signature<'static>, ArtifactError> {
     Signature::now("Kanna", "kanna@localhost").map_err(storage)
 }
 
-fn storage(error: git2::Error) -> ArtifactError {
+pub(super) fn storage(error: git2::Error) -> ArtifactError {
     ArtifactError::Storage(format!("artifact repository error: {}", error.message()))
 }
 
@@ -1121,7 +1542,11 @@ pub(crate) fn parse_object_id(value: &str) -> Result<Oid, ArtifactError> {
     Oid::from_str(value).map_err(|_| ArtifactError::InvalidId(value.to_string()))
 }
 
-fn declared_text(name: &str, value: &str, limit: usize) -> Result<String, ArtifactError> {
+pub(super) fn declared_text(
+    name: &str,
+    value: &str,
+    limit: usize,
+) -> Result<String, ArtifactError> {
     let value = value.trim();
     if value.is_empty() {
         return Err(ArtifactError::InvalidRequest(format!(
@@ -1510,7 +1935,7 @@ fn display_path(path: &Path) -> String {
 
 /// Exclusive advisory lock over one artifact repository, shared by every
 /// Kanna process on the machine. Released when dropped.
-struct RepositoryLock {
+pub(super) struct RepositoryLock {
     _file: std::fs::File,
 }
 
