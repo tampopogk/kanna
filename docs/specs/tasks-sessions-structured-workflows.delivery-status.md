@@ -10,7 +10,7 @@ final review gates as manager; children return reviewed local commits only.
 
 | Task | Child id | Scope / current checkpoint | Base / prerequisites consumed | State | Reviewed commit(s) | Integrated as |
 |---|---|---|---|---|---|---|
-| T0 ledger bridge | `1dc3da40` | full card | `task-482a02db-3` @ `9a4198da8` | plan | — | — |
+| T0 ledger bridge | `1dc3da40` | full card | `task-482a02db-3` @ `9a4198da8` | in progress (plan accepted by parent) | — | — |
 | T6 local artifacts | `ed3533d4` | first increment (publish/open by tree id); result binding after T0.review | `task-482a02db-3` @ `9a4198da8` | in progress (plan accepted by parent) | — | — |
 | T8 provenance | `d06e30e1` | first increment (channel identity capture); account boundary later | `task-482a02db-3` @ `9a4198da8` | in progress (plan accepted by parent) | — | — |
 | T1 workflow contract | — | — | needs T0.review | not created | — | — |
@@ -31,3 +31,4 @@ final review gates as manager; children return reviewed local commits only.
 - 2026-09-23: first wave created from parent tip `9a4198da8`.
 - 2026-09-23: T8 plan accepted (channel-identity type in `mutation_provenance.rs`; additive SQL provenance on runs/inputs/events); workflow edited to qa-dispatcher final manual review; advanced to build.
 - 2026-09-23: T6 plan accepted (bare artifacts.git outside worktree, parentless retained content refs, metadata-only ref, loopback read-only preview listener, six catalog tools); same workflow edit; advanced to build.
+- 2026-09-23: T0 plan accepted (store at ~/.kanna/repos/<repo-id>/tasks/<task-id>/, task.json snapshot + immutable ledger/<seq>-*.{md,json}, SQL outbox in originating txn, publication barrier before announce/dispatch, KANNA_TASK_LEDGER_PATH + triggering result in preamble, reserved declared_role/channel_identity/artifacts); same workflow edit; advanced to build.
