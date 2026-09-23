@@ -1,7 +1,7 @@
 use super::{pipeline_items::update_open_pipeline_item_activity, Db, WorktreeRecord};
 use rusqlite::OptionalExtension;
 
-/// Schema of migration `097_stage_workspaces` (spec §6, component T2).
+/// Schema of migration `098_stage_workspaces` (spec §6, component T2).
 ///
 /// `task_branch_counter.last_allocated` is the highest `task-<id>-<n>` number
 /// ever handed out for the task. It only grows: a number is spent when it is

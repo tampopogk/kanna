@@ -212,7 +212,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "094_task_attention_flag",
     "095_mutation_provenance",
     "096_task_ledger_bridge",
-    "097_stage_workspaces",
+    "098_stage_workspaces",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2672,7 +2672,7 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     // name each stage's retained directory, and the stage_run columns record
     // which workspace, branch, name and transcript a session started with.
     // Historical runs stay NULL: nothing is reconstructed for them.
-    run_migration(conn, "097_stage_workspaces", |conn| {
+    run_migration(conn, "098_stage_workspaces", |conn| {
         conn.execute_batch(worktrees::STAGE_WORKSPACE_SCHEMA)?;
         add_column(conn, "stage_run", "workspace_id", "TEXT")?;
         add_column(conn, "stage_run", "session_branch", "TEXT")?;
