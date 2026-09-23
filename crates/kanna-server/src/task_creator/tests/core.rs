@@ -3173,11 +3173,11 @@ fn agent_definition_of_any_length_or_shape_resolves() {
 
 /// Bundled definition-formula agents (`implement`, `pr` from T10; `mockup`
 /// from T10d; `plan`, `architect`, `researcher`, `review`, `commit`, `setup`,
-/// `workflow-factory`, `agent-factory` from T10e) resolve through the same
-/// path production task creation uses, and remain lean by not repeating what
-/// the runtime preamble injects — that leanness is a goal for what Kanna
-/// ships, never something the loader enforces (spec §12; T10g removed the
-/// enforcement this test used to also prove).
+/// `workflow-factory`, `agent-factory` from T10e; `task-manager` from T10f)
+/// resolve through the same path production task creation uses, and remain
+/// lean by not repeating what the runtime preamble injects — that leanness is
+/// a goal for what Kanna ships, never something the loader enforces (spec
+/// §12; T10g removed the enforcement this test used to also prove).
 #[test]
 fn bundled_definition_formula_agents_resolve_from_compiled_resources() {
     let repo_root = init_git_repo_without_provider_fixtures("formula-builtins");
@@ -3195,6 +3195,7 @@ fn bundled_definition_formula_agents_resolve_from_compiled_resources() {
         "setup",
         "workflow-factory",
         "agent-factory",
+        "task-manager",
     ] {
         let definition = resolve_test_agent_definition(&repo_root, name).unwrap();
         assert!(!definition.description.trim().is_empty(), "{name}");
