@@ -20,7 +20,7 @@
       "name": "plan",
       "description": "Planning agent turns the approved mockup into an implementation plan",
       "agent": "plan",
-      "prompt": "$TASK_PROMPT",
+      "prompt": "$TASK_PROMPT\n\nIf the ledger context this session started from shows you were re-entered here through the review stage's \"replan\" exit, this is a revised-plan visit: record the revised plan as your result, and on that same kanna_complete_stage call also pass `expected_definition` (the workflowDefinition read from kanna_get_task) and `workflow_definition` (the identical document — the existing \"in progress\", \"review\", \"pr\" and \"pr-review\" stages kept byte for byte; a replan revises the plan, not the shape) so this task's remaining plan is formally replaced through the T1 remaining-plan replacement contract, and confirm `workflowExtended: true` in the response. On the workflow's first entry (not a replan), record the plan as usual with no `workflow_definition`.",
       "policy": { "transition": "auto" }
     },
     {
@@ -35,7 +35,7 @@
       "name": "review",
       "description": "Review agent checks quality and coverage, choosing the revision target by the nature of the findings, before the human reads the verdict",
       "agent": "review",
-      "prompt": "Review branch $BRANCH against base $BASE_REF. This workflow has separate mockup and plan stages before implementation, so choose the exit by the nature of the blocking findings: implementation defects take \"revise\", back to \"in progress\" as usual; findings that show the plan itself is structurally wrong take \"replan\", back to \"plan\".",
+      "prompt": "Review branch $BRANCH against base $BASE_REF. This workflow routes results by named exits, not kanna_request_revision (which this task refuses for agent-origin calls). Record your verdict with kanna_complete_stage: status \"success\", your findings as the message, and an exit chosen by the nature of the blocking findings: \"revise\" for implementation defects, back to \"in progress\" as usual; \"replan\" when the plan itself is structurally wrong, back to \"plan\". A pass is status \"success\" with no exit, which advances to pr once a person confirms it. Never call kanna_request_revision on this task.",
       "policy": { "transition": "manual" },
       "exits": { "revise": "in progress", "replan": "plan" }
     },

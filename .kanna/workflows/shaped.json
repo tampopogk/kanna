@@ -16,7 +16,7 @@
       "name": "review",
       "description": "Review agent checks quality and test coverage before the human reads the verdict",
       "agent": "review",
-      "prompt": "Review branch $BRANCH against base $BASE_REF.",
+      "prompt": "Review branch $BRANCH against base $BASE_REF. This workflow routes results by named exits, not kanna_request_revision (which this task refuses for agent-origin calls). Record your verdict with kanna_complete_stage: status \"success\", your findings as the message, and exit \"revise\" for blocking findings, which sends the branch back to \"in progress\" under its own budget. A pass is status \"success\" with no exit, which advances to pr once a person confirms it. Never call kanna_request_revision on this task.",
       "policy": { "transition": "manual" },
       "exits": { "revise": "in progress" }
     },
