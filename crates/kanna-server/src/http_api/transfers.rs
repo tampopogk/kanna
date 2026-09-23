@@ -1506,7 +1506,10 @@ pub(super) async fn transfer_protocol(
         }
         _ => return Err(bad("unknown transfer protocol operation".into())),
     }
-    Ok(Json(
-        serde_json::json!({ "transfer_protocol": kanna_runtime_defaults::TRANSFER_PROTOCOL_CONTRACT }),
-    ))
+    Ok(Json(serde_json::json!({
+        "transfer_protocol": kanna_runtime_defaults::TRANSFER_PROTOCOL_CONTRACT,
+        // What a source reads to decide whether a task with carried state
+        // (T9) may be sent here at all; an older server omits it.
+        "task_state_version": crate::transfer_engine::payload::TASK_STATE_VERSION,
+    })))
 }

@@ -63,10 +63,9 @@ export function parseAgentDefinition(content: string): AgentDefinition {
   const fm: Record<string, unknown> = frontmatter ?? {};
   const prompt = body.trim();
 
-  // `role`/`providers` are the definition-formula aliases (spec §12) for
-  // `description`/`agent_provider`; declaring either opts the definition into
-  // the formula's line-count and four-section shape (checkDefinitionFormula).
-  const usesFormula = fm.role !== undefined || fm.providers !== undefined;
+  // `role`/`providers` are harmless parsing aliases (spec §12) for
+  // `description`/`agent_provider`. Kanna never checks a definition's length
+  // or shape, so declaring either opts a definition into nothing.
   const description = fm.description ?? fm.role;
   const providerValue = fm.agent_provider ?? fm.providers;
 
@@ -103,53 +102,7 @@ export function parseAgentDefinition(content: string): AgentDefinition {
     throw new Error(`Invalid AGENT.md: ${errors.join("; ")}`);
   }
 
-  if (usesFormula) {
-    const formulaErrors = checkDefinitionFormula(content);
-    if (formulaErrors.length > 0) {
-      throw new Error(`Invalid AGENT.md: ${formulaErrors.join("; ")}`);
-    }
-  }
-
   return def;
-}
-
-/**
- * Spec §12's definition formula: a definition that opts in (by declaring
- * `role` or `providers` in its frontmatter) must resolve to 15-40 lines
- * total and carry these four section headers, in order, in its body. Mirrors
- * `check_definition_formula` in the server's `definitions.rs`.
- */
-const DEFINITION_FORMULA_SECTIONS = ["## Produces", "## Reads", "## Must not", "## Stop when"] as const;
-const DEFINITION_FORMULA_RESULT_VARS = ["$PREV_RESULT", "$PREV_MAIN_RESULT", "$PLAN_RESULT"] as const;
-
-export function checkDefinitionFormula(content: string): string[] {
-  const errors: string[] = [];
-  const lineCount = content.replace(/\n+$/, "").split("\n").length;
-  if (lineCount < 15 || lineCount > 40) {
-    errors.push(`definition-formula definitions must be 15-40 lines, got ${lineCount}`);
-  }
-
-  let searchFrom = 0;
-  for (const section of DEFINITION_FORMULA_SECTIONS) {
-    const offset = content.indexOf(section, searchFrom);
-    if (offset === -1) {
-      errors.push(
-        `definition-formula definitions require the section "${section}", in order after ${JSON.stringify(DEFINITION_FORMULA_SECTIONS)}`
-      );
-      break;
-    }
-    searchFrom = offset + section.length;
-  }
-
-  for (const variable of DEFINITION_FORMULA_RESULT_VARS) {
-    if (content.includes(variable)) {
-      errors.push(
-        `definition-formula definitions must not reference the legacy result variable ${variable}; the engine delivers results through the ledger`
-      );
-    }
-  }
-
-  return errors;
 }
 
 // An extension (`.kanna/agents/{name}/EXTEND.md`) customizes the resolved
@@ -193,75 +146,15 @@ export function parseAgentExtension(content: string): AgentExtension {
   return ext;
 }
 
-// Whether an AGENT.md/EXTEND.md's frontmatter declares `role` or `providers`
-// (the definition-formula opt-in), checked ahead of a full parse so a caller
-// merging a base with an extension can tell whether *either* side opted in.
-function contentUsesFormula(content: string): boolean {
-  const { frontmatter } = parseFrontmatter(content);
-  const fm: Record<string, unknown> = frontmatter ?? {};
-  return fm.role !== undefined || fm.providers !== undefined;
-}
-
-// The raw frontmatter text of an AGENT.md/EXTEND.md file, verbatim — the same
-// capture group `parseFrontmatter` (custom-tasks.ts) parses into an object,
-// returned here unparsed, alongside the body and whether it opened with the
-// conventional blank separator line. Mirrors the server's `split_frontmatter`.
-function splitFrontmatterRaw(content: string): { frontmatter: string | null; body: string } {
-  const match = content.match(/^---[ \t]*\r?\n([\s\S]*?\r?\n)?---[ \t]*\r?\n?([\s\S]*)$/);
-  if (!match) return { frontmatter: null, body: content };
-  return { frontmatter: match[1] ?? "", body: match[2] ?? "" };
-}
-
-// The document `checkDefinitionFormula` counts and section-scans after
-// EXTEND.md is merged in: the base file's own frontmatter, verbatim (never
-// re-serialized — see `resolveAgentWithExtension` for why), the `---` frame
-// around it exactly as the base file had it (including whether its body
-// opened with the conventional blank separator line), and the merged prompt
-// body. With no frontmatter this is just the prompt, matching how a
-// frontmatter-less base would have counted on its own. Mirrors the server's
-// `resolved_formula_text`.
-function resolvedFormulaText(baseFrontmatter: string | null, baseHasLeadingBlank: boolean, prompt: string): string {
-  if (baseFrontmatter === null) {
-    return `${prompt.trim()}\n`;
-  }
-  const separator = baseHasLeadingBlank ? "\n" : "";
-  return `---\n${baseFrontmatter.replace(/\n+$/, "")}\n---\n${separator}${prompt.trim()}\n`;
-}
-
 /**
- * Parses a base AGENT.md and an EXTEND.md together, and — when either side
- * opts into the definition formula (spec §12) — re-checks the formula
- * against the *resolved*, merged document. `parseAgentDefinition` alone only
- * ever validated the base file: an extension could push a compliant base
- * past the 40-line cap, or smuggle in a legacy result variable, with nothing
- * checking the document a session actually receives. Mirrors the server's
- * `agent_optional` in `definitions.rs`.
- *
- * The recheck counts the base file's own frontmatter lines, verbatim, plus
- * the merged prompt body — never a re-serialization of the resolved
- * `AgentDefinition`. Re-serializing (e.g. one YAML line per `agent_provider`
- * entry) can turn a one-line `providers: claude, codex, copilot, opencode,
- * antigravity` frontmatter into six lines, inflating a formula-compliant
- * base past the cap the base check above never saw it fail — the base-only
- * check counted the file as authored, so this recheck must count the
- * resolved document the same way.
+ * Parses a base AGENT.md and an EXTEND.md together and returns the resolved,
+ * merged definition. Mirrors the server's `agent_optional` in
+ * `definitions.rs`.
  */
 export function resolveAgentWithExtension(baseContent: string, extensionContent: string): AgentDefinition {
   const base = parseAgentDefinition(baseContent);
   const extension = parseAgentExtension(extensionContent);
-  const merged = applyAgentExtension(base, extension);
-
-  if (contentUsesFormula(baseContent) || contentUsesFormula(extensionContent)) {
-    const { frontmatter, body } = splitFrontmatterRaw(baseContent);
-    const hasLeadingBlank = body.startsWith("\n") || body.startsWith("\r\n");
-    const resolved = resolvedFormulaText(frontmatter, hasLeadingBlank, merged.prompt);
-    const formulaErrors = checkDefinitionFormula(resolved);
-    if (formulaErrors.length > 0) {
-      throw new Error(`Invalid resolved agent (AGENT.md merged with EXTEND.md): ${formulaErrors.join("; ")}`);
-    }
-  }
-
-  return merged;
+  return applyAgentExtension(base, extension);
 }
 
 export function applyAgentExtension(base: AgentDefinition, extension: AgentExtension): AgentDefinition {

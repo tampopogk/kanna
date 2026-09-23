@@ -42,10 +42,11 @@ function builtInAgentNames(): string[] {
 }
 
 /**
- * A definition-formula agent (T10, spec §12) declares `role`/`providers` in
- * its frontmatter and must not duplicate the runtime preamble's completion
- * mechanics (kanna-task-environment.md's {{COMPLETION}} section already
- * delivers them) — see the "definition-formula" describe block below.
+ * A definition declaring `role`/`providers` in its frontmatter (spec §12)
+ * must not duplicate the runtime preamble's completion mechanics
+ * (kanna-task-environment.md's {{COMPLETION}} section already delivers
+ * them) — the leanness goal for what Kanna ships, checked below; never a
+ * length or shape enforced by the loader.
  */
 function usesDefinitionFormula(agentBody: string): boolean {
   const frontmatter = agentBody.split(/\n---\s*\n/)[0] ?? "";

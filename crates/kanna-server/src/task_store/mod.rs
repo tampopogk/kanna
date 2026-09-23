@@ -659,7 +659,7 @@ pub struct TriggeringResult {
 }
 
 impl TriggeringResult {
-    fn from_file(file: &LedgerFile) -> Option<Self> {
+    pub fn from_file(file: &LedgerFile) -> Option<Self> {
         if file.kind != LedgerEntryKind::Result {
             return None;
         }
@@ -760,6 +760,13 @@ pub fn resolve_trigger(task_dir: &Path, stage: &str) -> Option<TriggeringResult>
             return None;
         }
     };
+    resolve_trigger_in(&files, stage)
+}
+
+/// [`resolve_trigger`] over entries already read, in sequence order. A
+/// transfer (T9) resolves the source session's trigger from the files it
+/// carries, before any of them is on this machine's disk.
+pub fn resolve_trigger_in(files: &[LedgerFile], stage: &str) -> Option<TriggeringResult> {
     let last_transition = files
         .iter()
         .rev()

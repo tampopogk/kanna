@@ -415,6 +415,7 @@ fn control_and_peer_message_roundtrips_with_request_ids() {
         transfer_id: "transfer-2".into(),
         source_peer_id: "peer-source".into(),
         target_has_repo: true,
+        peer_capabilities: json!({ "task_state_version": 1 }),
     };
 
     let control_json = serde_json::to_string(&control_response).unwrap();
@@ -873,6 +874,8 @@ fn wire_messages_use_expected_json_shapes() {
         transfer_id: "transfer-2".into(),
         source_peer_id: "peer-source".into(),
         target_has_repo: false,
+        // Nothing relayed keeps the pre-T9 wire shape.
+        peer_capabilities: serde_json::Value::Null,
     };
     assert_eq!(
         serde_json::to_value(&response).unwrap(),

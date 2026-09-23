@@ -1926,7 +1926,7 @@ fn prepare_stage_restart(
     // it is recorded), so its result settles that transition exactly once. A
     // step that already settled authorizes nothing more.
     if let Some(commit) = db
-        .transition_commit(&run.id)
+        .task_transition_commit(&run.task_id, &run.id)
         .map_err(|error| format!("db error: {error}"))?
     {
         if commit.state != crate::db::TransitionCommit::REQUESTED {
