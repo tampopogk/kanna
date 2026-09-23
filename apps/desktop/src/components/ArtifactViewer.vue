@@ -68,14 +68,11 @@ let generation = 0;
 /** The one file read in flight, withdrawn when the reader moves on. */
 let fileRead: AbortController | null = null;
 
-/** Fields a retention-aware server (T6b) adds; absent means retained and unbound. */
-type RetentionDetail = ArtifactDetail & { expired?: boolean; bindings?: { taskId: string; name: string }[] };
-
 const latestVersion = computed<ArtifactVersion | null>(() => detail.value?.versions.at(-1) ?? null);
 const previousId = computed(() => latestVersion.value?.previous ?? null);
-/** A descriptor without the flags predates retention and is treated as retained. */
-const retained = computed(() => detail.value?.retained !== false && (detail.value as RetentionDetail | null)?.expired !== true);
-const bindings = computed(() => (detail.value as RetentionDetail | null)?.bindings ?? []);
+/** A server that predates retention (T6b) sends neither flag: treated as retained and unbound. */
+const retained = computed(() => detail.value?.retained !== false && detail.value?.expired !== true);
+const bindings = computed(() => detail.value?.bindings ?? []);
 /** Only records about this exact tree id; another version's notes are not this one's. */
 const comments = computed<ArtifactComment[]>(() =>
   (detail.value?.comments ?? []).filter(comment => comment.aboutArtifactId === currentId.value));

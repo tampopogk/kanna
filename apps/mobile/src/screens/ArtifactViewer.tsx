@@ -100,6 +100,11 @@ export function resetConfirmedArtifactRemotesForTests(): void {
   confirmedRemotes.clear();
 }
 
+function sameRemote(a: ArtifactRemoteInfo, b: ArtifactRemoteInfo): boolean {
+  return a.remote === b.remote && a.source === b.source && a.configFile === b.configFile &&
+    a.configured === b.configured && !a.error === !b.error;
+}
+
 function remoteKey(repoId: string, info: ArtifactRemoteInfo): string {
   return JSON.stringify([repoId, info.remote ?? "", info.source ?? ""]);
 }
@@ -129,6 +134,12 @@ interface FileTarget {
 }
 
 const WebView = NativeWebView as unknown as React.ComponentType<WebViewProps>;
+/**
+ * How long a new page waits for an abandoned page's reads before reading
+ * anyway. A sealed LAN or relay request that never answers must not hold every
+ * later page; after this the reads overlap rather than wait forever.
+ */
+export const ABANDONED_READ_WAIT_MS = 3000;
 const ARTIFACT_ID = /^[0-9a-f]{40}$/;
 
 function errorMessage(error: unknown): string {
@@ -203,10 +214,13 @@ export function ArtifactViewer({
   readFileRef.current = readArtifactFile;
   const actionsRef = useRef(actions);
   actionsRef.current = actions;
+  /** The tree id on screen now, for answers that arrive after the reader moved on. */
+  const currentIdRef = useRef("");
   const canShare = Boolean(actions);
 
   const [input, setInput] = useState(initialArtifactId ?? "");
   const [currentId, setCurrentId] = useState(initialArtifactId ?? "");
+  currentIdRef.current = currentId;
   const [newer, setNewer] = useState<string[]>([]);
   const [target, setTarget] = useState<FileTarget | null>(null);
   const [detailState, setDetailState] = useState<DetailState>({ status: "idle" });
@@ -250,7 +264,7 @@ export function ArtifactViewer({
   const previousId = latest?.previous ?? null;
   /** A descriptor without the flags predates retention (T6b) and is treated as retained. */
   const retained =
-    detail?.retained !== false && (detail as (ArtifactDetail & { expired?: boolean }) | null)?.expired !== true;
+    detail?.retained !== false && detail?.expired !== true;
   const filePath = target?.path ?? latest?.entrypoint ?? null;
   const documentKey = detail && retained && filePath
     ? `${repoId}\u0000${currentId}\u0000${filePath}\u0000${target?.initialLine ?? ""}`
@@ -313,7 +327,15 @@ export function ArtifactViewer({
     setHostOpenFailed(false);
     const path = filePath;
     const inflight = inflightReads.current;
-    const abandoned = Promise.allSettled([...inflight]);
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const abandoned = inflight.size
+      ? Promise.race([
+          Promise.allSettled([...inflight]),
+          new Promise<void>((resolve) => {
+            deadline = setTimeout(resolve, ABANDONED_READ_WAIT_MS);
+          })
+        ])
+      : Promise.resolve();
     void buildArtifactDocument({
       path,
       initialLine: target?.initialLine,
@@ -340,6 +362,7 @@ export function ArtifactViewer({
     );
     return () => {
       active = false;
+      if (deadline !== undefined) clearTimeout(deadline);
     };
     // `documentKey` names the repository, the tree, the file and the line.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -371,16 +394,37 @@ export function ArtifactViewer({
       ? `Chosen by the desktop’s machine-local config (${remoteInfo.configFile ?? ".kanna/config.local.json"}).`
       : "";
 
-  const runPush = async () => {
-    const info = remoteInfo;
+  /** The remote shown changed since the reader last saw it; they must look again. */
+  const [remoteChanged, setRemoteChanged] = useState(false);
+
+  /**
+   * Resolve the remote again right before a push. The desktop resolves the
+   * repository's configuration at push time, and a pull or an edit can change
+   * it after this panel loaded; a push only goes ahead when the remote now in
+   * force is the one the reader saw (and confirmed). Otherwise the panel shows
+   * the new one and asks again.
+   */
+  const guardedPush = async (shown: ArtifactRemoteInfo, accepted: boolean) => {
     const artifactId = currentId;
-    if (!actions || !info?.remote || !artifactId) return;
-    setConfirmingPush(false);
+    if (!actions || !shown.remote || !artifactId || remoteBusy) return;
     setRemoteBusy("push");
     setRemoteOutcome(null);
     try {
+      const fresh = await actions.getArtifactRemote(repoId);
+      if (!sameRemote(fresh, shown)) {
+        setRemoteInfo(fresh);
+        setRemoteChanged(true);
+        setConfirmingPush(Boolean(fresh.configured && fresh.remote && fresh.source && !fresh.error));
+        return;
+      }
+      setRemoteChanged(false);
+      if (!accepted) {
+        setConfirmingPush(true);
+        return;
+      }
+      setConfirmingPush(false);
       const outcome = await actions.pushArtifact(repoId, artifactId);
-      confirmedRemotes.add(remoteKey(repoId, info));
+      confirmedRemotes.add(remoteKey(repoId, shown));
       setRemoteOutcome({ kind: "push", outcome });
     } catch (error) {
       setRemoteOutcome({ kind: "error", action: "push", message: errorMessage(error) });
@@ -391,13 +435,17 @@ export function ArtifactViewer({
 
   const requestPush = () => {
     if (!remoteInfo?.remote || !currentId || remoteBusy) return;
-    if (confirmedRemotes.has(remoteKey(repoId, remoteInfo))) void runPush();
-    else setConfirmingPush(true);
+    void guardedPush(remoteInfo, confirmedRemotes.has(remoteKey(repoId, remoteInfo)));
+  };
+
+  const acceptPush = () => {
+    if (remoteInfo) void guardedPush(remoteInfo, true);
   };
 
   /** Fetch the hash in the id field (or the one on screen) and show it. */
   const runFetch = async () => {
     const typed = input.trim().toLowerCase();
+    const startedOn = currentId;
     const artifactId = ARTIFACT_ID.test(typed) ? typed : currentId;
     if (!actions || !ARTIFACT_ID.test(artifactId) || remoteBusy) return;
     setConfirmingPush(false);
@@ -405,8 +453,11 @@ export function ArtifactViewer({
     setRemoteOutcome(null);
     try {
       const outcome = await actions.fetchArtifact(repoId, artifactId);
+      // The reader moved to another version while this was on the wire: the
+      // answer is about a screen that is gone, so it changes nothing.
+      if (currentIdRef.current !== startedOn) return;
       setRemoteOutcome({ kind: "fetch", outcome });
-      if (artifactId === currentId) {
+      if (artifactId === startedOn) {
         setDetailState({ status: "content", artifactId, detail: outcome.detail });
       } else {
         setNewer([]);
@@ -414,7 +465,9 @@ export function ArtifactViewer({
         setInput(artifactId);
       }
     } catch (error) {
-      setRemoteOutcome({ kind: "error", action: "fetch", message: errorMessage(error) });
+      if (currentIdRef.current === startedOn) {
+        setRemoteOutcome({ kind: "error", action: "fetch", message: errorMessage(error) });
+      }
     } finally {
       setRemoteBusy(null);
     }
@@ -621,8 +674,15 @@ export function ArtifactViewer({
                   style={[styles.button, styles.stateButton]}
                   testID="artifact-viewer-fetch-missing"
                 >
-                  <Text style={styles.buttonText}>Fetch it from the artifact remote</Text>
+                  <Text style={styles.buttonText}>
+                    {remoteBusy === "fetch" ? "Fetching…" : "Fetch it from the artifact remote"}
+                  </Text>
                 </Pressable>
+              ) : null}
+              {remoteOutcome?.kind === "error" ? (
+                <Text selectable style={styles.errorText} testID="artifact-viewer-remote-error">
+                  {remoteOutcome.action === "push" ? "Push failed." : "Fetch failed."} {remoteOutcome.message}
+                </Text>
               ) : null}
             </View>
           ) : !retained ? (
@@ -731,6 +791,11 @@ export function ArtifactViewer({
                     {remoteInfo.error ? <Text style={styles.recordError}>{remoteInfo.error.message}</Text> : null}
                   </>
                 )}
+                {remoteChanged ? (
+                  <Text style={styles.recordError} testID="artifact-viewer-remote-changed">
+                    The artifact remote changed since this panel loaded. Nothing was pushed; check where it goes now.
+                  </Text>
+                ) : null}
                 {confirmingPush && remoteInfo?.remote ? (
                   <View style={styles.confirm} testID="artifact-viewer-push-confirm">
                     <Text style={styles.recordBody}>
@@ -738,7 +803,7 @@ export function ArtifactViewer({
                     </Text>
                     <Text style={styles.recordAuthor}>{remoteSource}</Text>
                     <View style={styles.formRow}>
-                      <Pressable accessibilityRole="button" onPress={() => void runPush()} style={styles.button} testID="artifact-viewer-push-accept">
+                      <Pressable accessibilityRole="button" disabled={remoteBusy !== null} onPress={acceptPush} style={styles.button} testID="artifact-viewer-push-accept">
                         <Text style={styles.buttonText}>Push</Text>
                       </Pressable>
                       <Pressable accessibilityRole="button" onPress={() => setConfirmingPush(false)} style={styles.button}>

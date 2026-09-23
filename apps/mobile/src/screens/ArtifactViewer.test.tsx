@@ -23,6 +23,7 @@ vi.mock("react-native", () => ({
 vi.mock("react-native-webview", () => ({ WebView: "WebView" }));
 
 import {
+  ABANDONED_READ_WAIT_MS,
   ArtifactViewer,
   resetConfirmedArtifactRemotesForTests,
   shouldStartArtifactLoad,
@@ -622,6 +623,7 @@ describe("ArtifactViewer (mobile) recording and sharing", () => {
   afterEach(() => {
     resetConfirmedArtifactRemotesForTests();
     delete DETAILS[FETCHED];
+    delete DETAILS[MISSING];
   });
 
   it("records a comment anchored to the exact version and the file on screen", async () => {
@@ -760,6 +762,80 @@ describe("ArtifactViewer (mobile) recording and sharing", () => {
     expect(readArtifactFile).not.toHaveBeenCalledWith("repo-1", V2, "../secret");
   });
 
+  it("does not push when the remote changed after the confirmation was shown, and asks again", async () => {
+    let current = { repoId: "repo-1", configured: true, remote: REMOTE, source: "committed" as const, configFile: ".kanna/config.json" };
+    const actions = sharingActions({ getArtifactRemote: vi.fn(async () => current) });
+    await openSharing(V2, actions);
+    await press("artifact-viewer-push");
+    expect(text(byTestId("artifact-viewer-push-confirm")[0])).toContain(REMOTE);
+    // A pull changes the committed config while the confirmation is open.
+    const moved = "ssh://elsewhere.example/artifacts.git";
+    current = { ...current, remote: moved };
+    await press("artifact-viewer-push-accept");
+    expect(actions.pushArtifact).not.toHaveBeenCalled();
+    expect(byTestId("artifact-viewer-remote-changed")).toHaveLength(1);
+    expect(text(byTestId("artifact-viewer-remote-url")[0])).toBe(moved);
+    expect(text(byTestId("artifact-viewer-push-confirm")[0])).toContain(moved);
+    // Accepting the remote now shown pushes.
+    await press("artifact-viewer-push-accept");
+    expect(actions.pushArtifact).toHaveBeenCalledTimes(1);
+    expect(byTestId("artifact-viewer-remote-changed")).toHaveLength(0);
+  });
+
+  it("does not skip the confirmation on a remembered remote once the config chose another", async () => {
+    let current = { repoId: "repo-1", configured: true, remote: REMOTE, source: "committed" as "committed" | "machine-local", configFile: ".kanna/config.json" };
+    const actions = sharingActions({ getArtifactRemote: vi.fn(async () => current) });
+    await openSharing(V2, actions);
+    await press("artifact-viewer-push");
+    await press("artifact-viewer-push-accept");
+    expect(actions.pushArtifact).toHaveBeenCalledTimes(1);
+    // The desktop's local config now names another remote.
+    current = { ...current, remote: "/Volumes/shared/other.git", source: "machine-local", configFile: ".kanna/config.local.json" };
+    await press("artifact-viewer-push");
+    expect(actions.pushArtifact).toHaveBeenCalledTimes(1);
+    expect(byTestId("artifact-viewer-remote-changed")).toHaveLength(1);
+    expect(text(byTestId("artifact-viewer-push-confirm")[0])).toContain("/Volumes/shared/other.git");
+    expect(text(byTestId("artifact-viewer-remote-source")[0])).toContain("machine-local");
+  });
+
+  it("shows a failed fetch in the not-found state", async () => {
+    await openSharing(MISSING, sharingActions({
+      fetchArtifact: vi.fn(async () => {
+        throw new Error(`artifact ${MISSING} is missing on artifact remote ${REMOTE}: it holds no content or records for that id`);
+      })
+    }));
+    await press("artifact-viewer-fetch-missing");
+    expect(byTestId("artifact-viewer-unavailable")).toHaveLength(1);
+    const error = text(byTestId("artifact-viewer-remote-error")[0]);
+    expect(error).toContain("Fetch failed.");
+    expect(error).toContain("is missing on artifact remote");
+  });
+
+  it("drops a fetch answer that arrives after the reader moved to another version", async () => {
+    let finish = () => undefined as void;
+    const actions = sharingActions();
+    const fetchNow = actions.fetchArtifact;
+    actions.fetchArtifact = vi.fn((repoId: string, artifactId: string) =>
+      new Promise<Awaited<ReturnType<typeof fetchNow>>>((resolve) => {
+        finish = () => void fetchNow(repoId, artifactId).then(resolve);
+      }));
+    await openSharing(V2, actions);
+    // Fetch the version on screen, then move to the previous one while it is out.
+    await press("artifact-viewer-fetch");
+    expect(actions.fetchArtifact).toHaveBeenCalledWith("repo-1", V2);
+    await press("artifact-viewer-previous");
+    expect(text(byTestId("artifact-viewer-current-id")[0])).toContain(V1.slice(0, 12));
+    expect(framedPage()).toContain("Version one");
+    finish();
+    await flush();
+    // V1 stays on screen, readable, not stuck reading.
+    expect(text(byTestId("artifact-viewer-current-id")[0])).toContain(V1.slice(0, 12));
+    expect(text(renderer!.root)).not.toContain("Reading artifact");
+    expect(framedPage()).toContain("Version one");
+    expect(byTestId("artifact-viewer-comment").map(text).join()).toContain("first pass");
+    expect(byTestId("artifact-viewer-remote-outcome")).toHaveLength(0);
+  });
+
   it("says where to configure a remote when none is set, and cannot push or fetch", async () => {
     await openSharing(V2, sharingActions({
       getArtifactRemote: vi.fn(async (repoId: string) => ({ repoId, configured: false }))
@@ -798,5 +874,45 @@ describe("ArtifactViewer (mobile) abandoned reads", () => {
     expect(readArtifactFile.mock.calls.filter((call) => call[1] === V1).map((call) => call[2])).toEqual(["index.html", "css/site.css"]);
     expect(readArtifactFile.mock.calls.filter((call) => call[1] === V2).map((call) => call[2])).toEqual(["index.html"]);
     expect(framedPage()).toContain("Version one");
+  });
+});
+
+describe("ArtifactViewer (mobile) a read that never answers", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("does not hold later pages behind it forever", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const api = client();
+    let hung = false;
+    const readArtifactFile = vi.fn((repoId: string, artifactId: string, path: string) => {
+      // V2's first entry read is sent and never answered (a sealed request
+      // with no response while the socket stays open).
+      if (!hung && artifactId === V2 && path === "index.html") {
+        hung = true;
+        return new Promise<ArtifactFileContent>(() => undefined);
+      }
+      return api.readArtifactFile(repoId, artifactId, path);
+    });
+    await act(async () => {
+      renderer = create(
+        <ArtifactViewer repoId="repo-1" initialArtifactId={V2} getArtifact={api.getArtifact} readArtifactFile={readArtifactFile} onClose={() => undefined} />
+      );
+    });
+    await flush();
+    // Two target changes while that read hangs: to V1, and back to V2.
+    await press("artifact-viewer-previous");
+    await press("artifact-viewer-newer");
+    expect(readArtifactFile.mock.calls.filter((call) => call[1] === V2 && call[2] === "index.html")).toHaveLength(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ABANDONED_READ_WAIT_MS);
+    });
+    await flush();
+    // The last target reads anyway and is built; the abandoned V1 page read nothing.
+    expect(readArtifactFile.mock.calls.filter((call) => call[1] === V2 && call[2] === "index.html")).toHaveLength(2);
+    expect(readArtifactFile.mock.calls.filter((call) => call[1] === V1)).toEqual([]);
+    expect(text(byTestId("artifact-viewer-current-id")[0])).toContain(V2.slice(0, 12));
+    expect(framedPage()).toContain("Version two");
   });
 });
