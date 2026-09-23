@@ -1,0 +1,23 @@
+{
+  "$schema": "./schema.json",
+  "name": "mechanical",
+  "description": "Use when you already know the change and the place it goes, and could describe the diff before opening the editor — the cost of being wrong about it is small. Implement, commit as the transition, then PR; the test suite is the reviewer. Not for work whose shape still needs deciding (planned) or that deserves a second reader before it ships (shaped).",
+  "routing": "exits",
+  "stages": [
+    {
+      "name": "in progress",
+      "description": "Agent implements the task; the transition commits its work",
+      "agent": "implement",
+      "prompt": "$TASK_PROMPT",
+      "policy": { "transition": "manual" },
+      "exit_commit": true
+    },
+    {
+      "name": "pr",
+      "description": "Agent creates a GitHub PR and hands off to the merge master",
+      "agent": "pr",
+      "prompt": "Create a PR for the work on branch $BRANCH.",
+      "policy": { "transition": "manual", "handoff": "merge" }
+    }
+  ]
+}

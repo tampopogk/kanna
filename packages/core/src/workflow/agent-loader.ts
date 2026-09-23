@@ -63,9 +63,16 @@ export function parseAgentDefinition(content: string): AgentDefinition {
   const fm: Record<string, unknown> = frontmatter ?? {};
   const prompt = body.trim();
 
+  // `role`/`providers` are the definition-formula aliases (spec §12) for
+  // `description`/`agent_provider`; declaring either opts the definition into
+  // the formula's line-count and four-section shape (checkDefinitionFormula).
+  const usesFormula = fm.role !== undefined || fm.providers !== undefined;
+  const description = fm.description ?? fm.role;
+  const providerValue = fm.agent_provider ?? fm.providers;
+
   const def: AgentDefinition = {
     name: typeof fm.name === "string" ? fm.name : "",
-    description: typeof fm.description === "string" ? fm.description : "",
+    description: typeof description === "string" ? description : "",
     prompt,
   };
 
@@ -85,9 +92,9 @@ export function parseAgentDefinition(content: string): AgentDefinition {
     def.allowed_tools = fm.allowed_tools as string[];
   }
 
-  // agent_provider: YAML array, single string, or comma-separated string.
-  if (fm.agent_provider !== undefined) {
-    const agentProviders = parseAgentProviders(fm.agent_provider);
+  // agent_provider/providers: YAML array, single string, or comma-separated string.
+  if (providerValue !== undefined) {
+    const agentProviders = parseAgentProviders(providerValue);
     def.agent_provider = agentProviders;
   }
 
@@ -96,7 +103,53 @@ export function parseAgentDefinition(content: string): AgentDefinition {
     throw new Error(`Invalid AGENT.md: ${errors.join("; ")}`);
   }
 
+  if (usesFormula) {
+    const formulaErrors = checkDefinitionFormula(content);
+    if (formulaErrors.length > 0) {
+      throw new Error(`Invalid AGENT.md: ${formulaErrors.join("; ")}`);
+    }
+  }
+
   return def;
+}
+
+/**
+ * Spec §12's definition formula: a definition that opts in (by declaring
+ * `role` or `providers` in its frontmatter) must resolve to 15-40 lines
+ * total and carry these four section headers, in order, in its body. Mirrors
+ * `check_definition_formula` in the server's `definitions.rs`.
+ */
+const DEFINITION_FORMULA_SECTIONS = ["## Produces", "## Reads", "## Must not", "## Stop when"] as const;
+const DEFINITION_FORMULA_RESULT_VARS = ["$PREV_RESULT", "$PREV_MAIN_RESULT", "$PLAN_RESULT"] as const;
+
+export function checkDefinitionFormula(content: string): string[] {
+  const errors: string[] = [];
+  const lineCount = content.replace(/\n+$/, "").split("\n").length;
+  if (lineCount < 15 || lineCount > 40) {
+    errors.push(`definition-formula definitions must be 15-40 lines, got ${lineCount}`);
+  }
+
+  let searchFrom = 0;
+  for (const section of DEFINITION_FORMULA_SECTIONS) {
+    const offset = content.indexOf(section, searchFrom);
+    if (offset === -1) {
+      errors.push(
+        `definition-formula definitions require the section "${section}", in order after ${JSON.stringify(DEFINITION_FORMULA_SECTIONS)}`
+      );
+      break;
+    }
+    searchFrom = offset + section.length;
+  }
+
+  for (const variable of DEFINITION_FORMULA_RESULT_VARS) {
+    if (content.includes(variable)) {
+      errors.push(
+        `definition-formula definitions must not reference the legacy result variable ${variable}; the engine delivers results through the ledger`
+      );
+    }
+  }
+
+  return errors;
 }
 
 // An extension (`.kanna/agents/{name}/EXTEND.md`) customizes the resolved
@@ -109,8 +162,9 @@ export function parseAgentExtension(content: string): AgentExtension {
   const fm: Record<string, unknown> = frontmatter ?? {};
   const ext: AgentExtension = { prompt: body.trim() };
 
-  if (typeof fm.description === "string") {
-    ext.description = fm.description;
+  const description = fm.description ?? fm.role;
+  if (typeof description === "string") {
+    ext.description = description;
   }
 
   if (typeof fm.model === "string") {
@@ -129,8 +183,9 @@ export function parseAgentExtension(content: string): AgentExtension {
     ext.allowed_tools = fm.allowed_tools as string[];
   }
 
-  if (fm.agent_provider !== undefined) {
-    const agentProviders = parseAgentProviders(fm.agent_provider);
+  const providerValue = fm.agent_provider ?? fm.providers;
+  if (providerValue !== undefined) {
+    const agentProviders = parseAgentProviders(providerValue);
     ext.agent_provider = agentProviders;
   }
 

@@ -713,8 +713,17 @@ enum RawWorkflowStageExecution {
 struct AgentFrontmatter {
     name: Option<String>,
     description: Option<String>,
+    /// Definition-formula alias for `description` (spec §12): "one sentence"
+    /// naming the role. `description` wins when both are present; a
+    /// definition that declares `role` opts into the formula's line-count and
+    /// four-section shape, checked by `check_definition_formula`.
+    role: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_yaml_value")]
     agent_provider: Option<YamlValue>,
+    /// Definition-formula alias for `agent_provider` ("ordered candidates").
+    /// `agent_provider` wins when both are present.
+    #[serde(default, deserialize_with = "deserialize_optional_yaml_value")]
+    providers: Option<YamlValue>,
     model: Option<String>,
     effort: Option<String>,
     permission_mode: Option<String>,
@@ -2058,6 +2067,10 @@ const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
         include_str!("../../../../.kanna/workflows/no-review.json"),
     ),
     (
+        "mechanical",
+        include_str!("../../../../.kanna/workflows/mechanical.json"),
+    ),
+    (
         "plan-build-review",
         include_str!("../../../../.kanna/workflows/plan-build-review.json"),
     ),
@@ -2227,12 +2240,13 @@ fn parse_agent_definition(content: &str) -> Result<AgentDefinition, String> {
         }
         None => AgentFrontmatter::default(),
     };
+    let uses_formula = fm.role.is_some() || fm.providers.is_some();
 
     let definition = AgentDefinition {
         name: fm.name.unwrap_or_default(),
-        description: fm.description.unwrap_or_default(),
+        description: fm.description.or(fm.role).unwrap_or_default(),
         prompt: body.trim().to_string(),
-        agent_providers: parse_agent_providers(fm.agent_provider)?,
+        agent_providers: parse_agent_providers(fm.agent_provider.or(fm.providers))?,
         model: fm.model,
         effort: fm.effort,
         permission_mode: validate_permission_mode(fm.permission_mode)?,
@@ -2240,7 +2254,49 @@ fn parse_agent_definition(content: &str) -> Result<AgentDefinition, String> {
         visibility: validate_visibility(fm.visibility)?.unwrap_or_default(),
     };
     validate_agent_definition(&definition).map_err(|error| format!("invalid AGENT.md: {error}"))?;
+    if uses_formula {
+        check_definition_formula(content).map_err(|error| format!("invalid AGENT.md: {error}"))?;
+    }
     Ok(definition)
+}
+
+/// Spec §12's definition formula: a definition that opts in (by declaring
+/// `role` or `providers` in its frontmatter, see `AgentFrontmatter`) must
+/// resolve to 15-40 lines total and carry the four required section headers,
+/// in order, in its body. `check_definition_formula_resolved` in the core
+/// package's `agent-loader.ts` mirrors this on the resolved-definition text.
+const DEFINITION_FORMULA_SECTIONS: [&str; 4] =
+    ["## Produces", "## Reads", "## Must not", "## Stop when"];
+const DEFINITION_FORMULA_RESULT_VARS: [&str; 3] =
+    ["$PREV_RESULT", "$PREV_MAIN_RESULT", "$PLAN_RESULT"];
+
+fn check_definition_formula(content: &str) -> Result<(), String> {
+    let line_count = content.trim_end_matches('\n').lines().count();
+    if !(15..=40).contains(&line_count) {
+        return Err(format!(
+            "definition-formula definitions must be 15-40 lines, got {line_count}"
+        ));
+    }
+    let mut search_from = 0usize;
+    for section in DEFINITION_FORMULA_SECTIONS {
+        match content[search_from..].find(section) {
+            Some(offset) => search_from += offset + section.len(),
+            None => {
+                return Err(format!(
+                    "definition-formula definitions require the section \"{section}\", in order after {:?}",
+                    &DEFINITION_FORMULA_SECTIONS
+                ));
+            }
+        }
+    }
+    for var in DEFINITION_FORMULA_RESULT_VARS {
+        if content.contains(var) {
+            return Err(format!(
+                "definition-formula definitions must not reference the legacy result variable {var}; the engine delivers results through the ledger"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn parse_agent_extension(content: &str) -> Result<AgentExtension, String> {
@@ -2254,12 +2310,13 @@ fn parse_agent_extension(content: &str) -> Result<AgentExtension, String> {
 
     let agent_providers = fm
         .agent_provider
+        .or(fm.providers)
         .map(|value| parse_agent_providers(Some(value)))
         .transpose()?;
 
     Ok(AgentExtension {
         prompt: body.trim().to_string(),
-        description: fm.description,
+        description: fm.description.or(fm.role),
         agent_providers,
         model: fm.model,
         effort: fm.effort,
