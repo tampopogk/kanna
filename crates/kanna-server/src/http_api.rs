@@ -1,6 +1,6 @@
 mod analytics;
 mod artifact_preview;
-mod artifacts;
+pub(crate) mod artifacts;
 mod backup;
 mod blocking;
 mod capacity_notice;

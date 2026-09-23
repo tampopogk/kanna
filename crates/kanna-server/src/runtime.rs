@@ -317,6 +317,47 @@ async fn run_task_ledger_publisher(state: Arc<http_api::AppState>) {
     }
 }
 
+/// Enforce artifact retention (spec §8) in every repository's artifact
+/// store. Collection is never urgent — a `discard-on-close` version already
+/// waits out a grace period after its task closes — so a coarse interval is
+/// enough, and each sweep runs on the blocking pool.
+async fn run_artifact_retention_sweeper(state: Arc<http_api::AppState>) {
+    const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+    loop {
+        tokio::time::sleep(SWEEP_INTERVAL).await;
+        let state = Arc::clone(&state);
+        let swept = tokio::task::spawn_blocking(move || {
+            http_api::artifacts::sweep_artifact_retention(&state, std::time::SystemTime::now())
+        })
+        .await;
+        match swept {
+            Ok(outcomes) => {
+                for (repo_id, outcome) in outcomes {
+                    match outcome {
+                        Ok(sweep) => {
+                            if !sweep.expired.is_empty() {
+                                log::info!(
+                                    "artifact retention collected {} tree(s) in repository {repo_id}",
+                                    sweep.expired.len()
+                                );
+                            }
+                            if let Some(error) = sweep.prune_error {
+                                log::warn!("artifact retention could not prune repository {repo_id}: {error}");
+                            }
+                        }
+                        Err(error) => {
+                            log::warn!(
+                                "artifact retention sweep of repository {repo_id} failed: {error}"
+                            )
+                        }
+                    }
+                }
+            }
+            Err(error) => log::error!("artifact retention sweeper worker failed: {error}"),
+        }
+    }
+}
+
 pub(crate) async fn run_server_services(
     config: Config,
     db: db::Db,
@@ -347,6 +388,7 @@ pub(crate) async fn run_server_services(
     }
     http_api::task_actions::resume_ledger_continuations(Arc::clone(&http_state)).await;
     tokio::spawn(run_task_ledger_publisher(Arc::clone(&http_state)));
+    tokio::spawn(run_artifact_retention_sweeper(Arc::clone(&http_state)));
     let protected_input_maintenance = maintain_protected_input_generations(
         config.clone(),
         Arc::clone(&http_state),

@@ -792,6 +792,12 @@ pub struct CompleteStageRequest {
     /// Required with `workflow_definition`; a stale one is a 409.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_definition: Option<serde_json::Value>,
+    /// Named artifact references the result carries (spec §7, §8): name →
+    /// a stored artifact's tree id in the task's repository, or a tagged
+    /// reference (`stored`, `commit`, `pr`). Stored content must resolve in
+    /// the task's artifact repository or the result is refused unrecorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifacts: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

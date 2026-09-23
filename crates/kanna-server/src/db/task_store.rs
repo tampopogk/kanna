@@ -274,6 +274,17 @@ impl Db {
         &self,
         entry: NewLedgerEntry<'_>,
     ) -> Result<LedgerEntryRef, rusqlite::Error> {
+        self.enqueue_ledger_entry_with_artifacts(entry, None)
+    }
+
+    /// [`Db::enqueue_ledger_entry`] filling the envelope's `artifacts` with
+    /// T6's named references (name → tagged reference) a result carried.
+    /// `None` records `{}`.
+    pub(crate) fn enqueue_ledger_entry_with_artifacts(
+        &self,
+        entry: NewLedgerEntry<'_>,
+        artifacts: Option<&Value>,
+    ) -> Result<LedgerEntryRef, rusqlite::Error> {
         self.in_immediate_transaction_if_needed(|db| {
             if let Some(existing) = db.ledger_entry_for_source(
                 entry.task_id,
@@ -330,7 +341,7 @@ impl Db {
                 "session_ref": entry.run_id.map(|run_id| json!({ "kind": "stage_run", "id": run_id })),
                 "declared_role": entry.declared_role,
                 "channel_identity": entry.channel_identity.to_json(),
-                "artifacts": {},
+                "artifacts": artifacts.cloned().unwrap_or_else(|| json!({})),
                 entry.kind.as_str(): body,
             });
             let payload = render_ledger_entry(
