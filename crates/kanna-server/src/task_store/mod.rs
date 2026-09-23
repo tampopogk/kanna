@@ -47,8 +47,8 @@
 //! | `recorded_at` | ISO-8601 UTC |
 //! | `historical` | `true` for backfilled history |
 //! | `run_id`, `session_ref` | the stage run, and the session reference; until T2 the reference is `{kind: "stage_run", id: <run id>}` |
-//! | `declared_role` | a role the caller declared (`operator`, `manager`), else null. Reserved for the gate operator's declared role |
-//! | `channel_identity` | reserved for T8's verified channel; always null (unknown) here, never inferred from a source label or transport |
+//! | `declared_role` | a role the caller declared (`operator`, `manager`, `agent`), else null |
+//! | `channel_identity` | T8's verified channel ([`crate::mutation_provenance::ChannelIdentity`]) the mutation arrived on; historical/backfilled entries always carry the explicit tagged `unknown`, never a value inferred from a source label or transport |
 //! | `artifacts` | reserved for T6's named artifact references (name → reference); `{}` here |
 //!
 //! and one kind-specific object named after the kind:

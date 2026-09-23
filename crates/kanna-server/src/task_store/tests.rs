@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::db::task_store::{LedgerEntryKind, NewLedgerEntry};
+use crate::mutation_provenance::ChannelIdentity;
 use serde_json::json;
 
 struct Fixture {
@@ -60,6 +61,16 @@ impl Fixture {
         source_id: &str,
         message: &str,
     ) -> crate::db::task_store::LedgerEntryRef {
+        self.enqueue_result_with_provenance(source_id, message, None, &ChannelIdentity::Unknown)
+    }
+
+    fn enqueue_result_with_provenance(
+        &self,
+        source_id: &str,
+        message: &str,
+        declared_role: Option<&str>,
+        channel: &ChannelIdentity,
+    ) -> crate::db::task_store::LedgerEntryRef {
         self.db
             .with_immediate_transaction(|db| {
                 let floor = db.ledger_event_floor()?;
@@ -78,7 +89,8 @@ impl Fixture {
                     historical: false,
                     recorded_at: None,
                     run_id: Some(source_id),
-                    declared_role: None,
+                    declared_role,
+                    channel_identity: channel,
                     body: json!({ "status": "success", "stage": "in progress" }),
                     message: Some(message),
                     hold_events_after: Some(floor),
@@ -121,6 +133,7 @@ fn publishes_in_sequence_and_a_retry_writes_nothing_new() {
             recorded_at: None,
             run_id: Some("run-1"),
             declared_role: None,
+            channel_identity: &ChannelIdentity::Unknown,
             body: json!({ "status": "failure" }),
             message: Some("different text"),
             hold_events_after: None,
@@ -138,7 +151,13 @@ fn publishes_in_sequence_and_a_retry_writes_nothing_new() {
     assert_eq!(files[0].body()["result_id"], "task-1-000001");
     assert_eq!(files[0].envelope["session_ref"]["kind"], "stage_run");
     assert_eq!(files[0].envelope["session_ref"]["id"], "run-1");
-    assert!(files[0].envelope["channel_identity"].is_null());
+    // Unknown is still recorded as its own explicit kind, never a bare null:
+    // a row written after this record existed is distinguishable from one
+    // that predates it.
+    assert_eq!(
+        files[0].envelope["channel_identity"],
+        json!({ "kind": "unknown" })
+    );
     assert_eq!(files[0].envelope["artifacts"], json!({}));
 }
 
@@ -231,6 +250,7 @@ fn a_combined_operation_is_not_continued_until_every_entry_is_published() {
                 recorded_at: None,
                 run_id: None,
                 declared_role: None,
+                channel_identity: &ChannelIdentity::Unknown,
                 body: json!({ "result_id": result.entry_id }),
                 message: None,
                 hold_events_after: None,
@@ -299,6 +319,7 @@ fn a_reservation_holds_later_entries_back_until_it_is_filled_or_released() {
             recorded_at: None,
             run_id: Some("run-review"),
             declared_role: None,
+            channel_identity: &ChannelIdentity::Unknown,
             body: json!({ "status": "failure" }),
             message: Some("findings"),
             hold_events_after: None,
@@ -484,8 +505,15 @@ fn backfill_imports_available_history_once_and_honestly() {
         .find(|file| file.kind == LedgerEntryKind::Transition)
         .unwrap();
     assert!(transition.body()["triggering_result_id"].is_null());
+    // A backfilled row's declared role is still whatever the caller once
+    // claimed, but its channel is never reconstructed from that claim: it is
+    // the explicit tagged `unknown`, kept as a fact distinct from the
+    // (unverifiable, possibly spoofed) declared role beside it.
     assert_eq!(transition.envelope["declared_role"], "operator");
-    assert!(transition.envelope["channel_identity"].is_null());
+    assert_eq!(
+        transition.envelope["channel_identity"],
+        json!({ "kind": "unknown" })
+    );
     let input = files
         .iter()
         .find(|file| file.kind == LedgerEntryKind::Input)
@@ -511,14 +539,20 @@ fn live_stage_changes_record_their_trigger_and_never_borrow_one() {
             &crate::mutation_provenance::ChannelIdentity::Unknown,
         )
         .unwrap();
-    // Manual advance with no result since the previous transition.
+    // Manual advance with no result since the previous transition, over a
+    // real loopback socket that did not present the local control
+    // credential — a caller can declare itself `operator`, but only the
+    // server verifies the channel, and the two are recorded side by side.
+    let loopback = crate::mutation_provenance::ChannelIdentity::LocalProcess {
+        evidence: crate::mutation_provenance::LocalProcessEvidence::Loopback,
+    };
     fixture
         .db
         .update_pipeline_item_stage_with_trigger(
             "task-1",
             "pr",
             crate::db::StageTrigger::Operator,
-            &crate::mutation_provenance::ChannelIdentity::Unknown,
+            &loopback,
         )
         .unwrap();
     // A rewrite to the same stage is not a transition.
@@ -546,7 +580,141 @@ fn live_stage_changes_record_their_trigger_and_never_borrow_one() {
     );
     assert!(transitions[1].body()["triggering_result_id"].is_null());
     assert_eq!(transitions[1].envelope["declared_role"], "operator");
+    assert_eq!(
+        transitions[1].envelope["channel_identity"],
+        loopback.to_json()
+    );
     assert!(transitions[1].body()["exit"].is_null());
+}
+
+/// Each live entry kind (result, input, transition, plan) freezes T8's real
+/// declared role and verified channel into its envelope, and the two never
+/// merge: a caller-declared `operator` sits beside a channel this server
+/// itself verified, whatever that channel turns out to be.
+#[test]
+fn each_live_entry_kind_carries_its_declared_role_and_verified_channel() {
+    use crate::mutation_provenance::{
+        PairedDeviceEvidence, PeerDesktopEvidence, SecureChannelTransport,
+    };
+
+    let fixture = Fixture::new("provenance-per-kind");
+
+    // Result: a relay/sealed channel, with the `complete-stage` convention
+    // role (`agent`) — never a caller-controlled label.
+    let relay = crate::mutation_provenance::ChannelIdentity::PeerDesktop {
+        desktop_id: "desk-sibling".into(),
+        evidence: PeerDesktopEvidence::SecureChannel {
+            transport: SecureChannelTransport::Relay,
+        },
+        account_uid: None,
+    };
+    fixture.enqueue_result_with_provenance("run-1", "done", Some("agent"), &relay);
+
+    // Input: a caller-declared `operator`, verified over a paired phone.
+    let paired_phone = crate::mutation_provenance::ChannelIdentity::PairedDevice {
+        device_id: "phone-1".into(),
+        evidence: PairedDeviceEvidence::LanDeviceSecret,
+    };
+    fixture
+        .db
+        .record_task_input(
+            "task-1",
+            crate::db::TaskInputSource::Operator,
+            &paired_phone,
+            "owner says: ship it",
+        )
+        .unwrap()
+        .expect("task exists");
+
+    // Transition: the engine's own policy advance declares no caller role at
+    // all, and its channel is `Server` — never assigned to a real request.
+    fixture
+        .db
+        .update_pipeline_item_stage_with_trigger(
+            "task-1",
+            "review",
+            crate::db::StageTrigger::Auto,
+            &crate::mutation_provenance::ChannelIdentity::Server,
+        )
+        .unwrap();
+
+    // Plan: a named switch first (declares no role), then an inline
+    // replacement declaring `operator` over the same paired-phone channel.
+    fixture
+        .db
+        .replace_task_workflow(
+            "task-1",
+            "review",
+            "w1",
+            r#"{"stages":[]}"#,
+            0,
+            0,
+            None,
+            &paired_phone,
+        )
+        .unwrap();
+    fixture
+        .db
+        .replace_task_workflow(
+            "task-1",
+            "review",
+            "w2",
+            r#"{"stages":[{"name":"x"}]}"#,
+            0,
+            0,
+            Some(crate::db::WorkflowReplacement {
+                expected_definition: r#"{"stages":[]}"#,
+                source: "operator",
+                superseded_run_ids: &[],
+                changed_execution_stages: &[],
+                ledger_result_id: None,
+            }),
+            &paired_phone,
+        )
+        .unwrap();
+
+    flush_task(&fixture.db, &fixture.db_path, "task-1").unwrap();
+    let files = read_ledger(&fixture.task_dir()).unwrap();
+
+    let result = files
+        .iter()
+        .find(|file| file.kind == LedgerEntryKind::Result)
+        .unwrap();
+    assert_eq!(result.envelope["declared_role"], "agent");
+    assert_eq!(result.envelope["channel_identity"], relay.to_json());
+
+    let input = files
+        .iter()
+        .find(|file| file.kind == LedgerEntryKind::Input)
+        .unwrap();
+    assert_eq!(input.envelope["declared_role"], "operator");
+    assert_eq!(input.envelope["channel_identity"], paired_phone.to_json());
+
+    let transition = files
+        .iter()
+        .find(|file| file.kind == LedgerEntryKind::Transition)
+        .unwrap();
+    assert!(transition.envelope["declared_role"].is_null());
+    assert_eq!(
+        transition.envelope["channel_identity"],
+        crate::mutation_provenance::ChannelIdentity::Server.to_json()
+    );
+
+    let plans = files
+        .iter()
+        .filter(|file| file.kind == LedgerEntryKind::Plan)
+        .collect::<Vec<_>>();
+    assert_eq!(plans.len(), 2);
+    assert!(plans[0].envelope["declared_role"].is_null());
+    assert_eq!(
+        plans[0].envelope["channel_identity"],
+        paired_phone.to_json()
+    );
+    assert_eq!(plans[1].envelope["declared_role"], "operator");
+    assert_eq!(
+        plans[1].envelope["channel_identity"],
+        paired_phone.to_json()
+    );
 }
 
 #[test]
