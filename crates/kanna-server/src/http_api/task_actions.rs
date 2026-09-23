@@ -318,6 +318,9 @@ pub(super) async fn set_task_workflow(
                     snapshot.revision_limit,
                 )
                 .map_err(|error| db_write_error("db error", error))?;
+            if changed {
+                crate::task_store::flush_task_best_effort(&db, &state.config.db_path, &task_id);
+            }
             Ok((
                 crate::mobile_api::SetTaskWorkflowResponse {
                     task_id,
@@ -441,9 +444,13 @@ pub(super) async fn replace_task_workflow(
                         source: payload.source.as_deref().unwrap_or("unspecified"),
                         superseded_run_ids: &superseded,
                         changed_execution_stages: &validated.changed_execution_stages,
+                        ledger_result_id: None,
                     }),
                 )
                 .map_err(|error| db_write_error("db error", error))?;
+            if changed {
+                crate::task_store::flush_task_best_effort(&db, &state.config.db_path, &task_id);
+            }
             let definition_value = serde_json::from_str::<serde_json::Value>(
                 &snapshot.definition_json,
             )
@@ -1282,6 +1289,10 @@ async fn execute_stage_transition(
     task_id: &str,
     transition: crate::task_creator::PreparedStageTransition,
 ) -> Result<Json<crate::mobile_api::TaskActionResponse>, (axum::http::StatusCode, String)> {
+    // Publication barrier: no session is started, and no post or close is
+    // dispatched, while an accepted ledger entry of this task (the result
+    // that caused the transition, typically) is not yet readable on disk.
+    publish_task_ledger_before_dispatch(state, task_id)?;
     match transition {
         crate::task_creator::PreparedStageTransition::Run(prepared) => {
             state.preview_sessions.revoke_task(task_id).await;
@@ -1323,6 +1334,21 @@ async fn execute_stage_transition(
             .await
         }
     }
+}
+
+fn publish_task_ledger_before_dispatch(
+    state: &AppState,
+    task_id: &str,
+) -> Result<(), (axum::http::StatusCode, String)> {
+    let db = Db::open(&state.config.db_path).map_err(|e| db_write_error("db error", e))?;
+    crate::task_store::flush_task(&db, &state.config.db_path, task_id)
+        .map(|_| ())
+        .map_err(|error| {
+            (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                format!("stage transition held until the task ledger is published: {error}"),
+            )
+        })
 }
 
 /// Run a prepared transition on a detached task, NOT on the HTTP request's
@@ -1999,6 +2025,18 @@ pub(super) async fn complete_stage(
     // caller can correct itself.
     let verdict = kanna_runtime_defaults::stage_verdict::StageVerdict::parse(&payload.status)
         .map_err(|error| (axum::http::StatusCode::BAD_REQUEST, error))?;
+    // The result's message is what the next session receives and what the
+    // ledger keeps (spec §7). An empty one is refused before anything is
+    // recorded, so the caller can say what happened and record again.
+    if payload.summary.trim().is_empty() {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "the result message (`summary`) is empty; nothing was recorded. Its first line is \
+             the one-line summary surfaces show; the rest is what was done and what the next \
+             stage must know. Record the result again with a message."
+                .to_string(),
+        ));
+    }
     // A plan publishes the stages it chose in the same call that records the
     // plan itself. The two arguments are one operation: a plan visible without
     // its stages, or stages published under a plan that failed, are both
@@ -2062,7 +2100,7 @@ pub(super) async fn complete_stage(
     let completion_attempt_key = payload.completion_attempt_key.clone();
     let completion_attempt_key_for_record = completion_attempt_key.clone();
     let completion_run_id = payload.run_id.clone();
-    let (task_id, finished_run, already_closed, replayed, workflow_extended) = {
+    let (task_id, _finished_run, already_closed, replayed, workflow_extended) = {
         let state = Arc::clone(&state);
         let payload_verdict = verdict;
         let payload_summary = payload.summary;
@@ -2251,10 +2289,21 @@ pub(super) async fn complete_stage(
                 completion_transition: current_run.completion_transition.clone(),
                 trigger: current_run.trigger.clone(),
             });
+            // The engine attaches the branch and commit it observes in the
+            // run's own workspace now, at acceptance (read-only; unknown is
+            // recorded as unknown). A later HEAD is not evidence of this
+            // result, so this is the only time it is read.
+            let observed = crate::task_store::observe_workspace(current_run.cwd.as_deref())
+                .map_err(|error| (axum::http::StatusCode::CONFLICT, error))?;
             // One transaction, so a plan is never durably successful without
             // the stages it published, and a rejected extension leaves no
-            // recorded verdict for the planner to discover later.
+            // recorded verdict for the planner to discover later. The ledger
+            // entry and the continuation that will dispatch the transition
+            // commit in it too.
             let record = |db: &Db| -> Result<(), (axum::http::StatusCode, String)> {
+                let event_floor = db
+                    .ledger_event_floor()
+                    .map_err(|e| db_write_error("db error", e))?;
                 // Asked inside the write transaction, not before it. A transfer
                 // finalizing this task claims its workflow in a transaction of
                 // its own, and SQLite's single writer is what makes the two
@@ -2288,6 +2337,37 @@ pub(super) async fn complete_stage(
                     )
                 }
                 .map_err(|e| db_write_error("db error", e))?;
+                let result_entry = enqueue_completion_result(
+                    db,
+                    &task_id,
+                    &current_run,
+                    &observed,
+                    payload_verdict.as_str(),
+                    &payload_summary,
+                    payload_metadata.as_ref(),
+                    &stage_result,
+                    requested_digest.as_deref(),
+                    event_floor,
+                )
+                .map_err(|e| db_write_error("db error", e))?;
+                // A corrected verdict replaces whatever the earlier one asked
+                // the engine to do next.
+                if payload_verdict.completes_stage() {
+                    db.put_ledger_continuation(
+                        &task_id,
+                        &result_entry.operation_id,
+                        crate::db::task_store::STAGE_COMPLETION_CONTINUATION,
+                        &serde_json::json!({
+                            "kind": current_run.kind,
+                            "completionTransition": current_run.completion_transition,
+                            "trigger": current_run.trigger,
+                            "resultId": result_entry.entry_id,
+                        }),
+                    )
+                } else {
+                    db.clear_ledger_continuation(&task_id)
+                }
+                .map_err(|e| db_write_error("db error", e))?;
                 if let Some(extension) = extension.as_ref() {
                     db.replace_task_workflow(
                         &task_id,
@@ -2303,18 +2383,15 @@ pub(super) async fn complete_stage(
                             changed_execution_stages: &extension
                                 .validated
                                 .changed_execution_stages,
+                            ledger_result_id: Some(&result_entry.entry_id),
                         }),
                     )
                     .map_err(|e| db_write_error("db error", e))?;
                 }
                 Ok(())
             };
-            if extension.is_some() {
-                db.with_immediate_transaction(|db| record(db).map_err(PlanExtensionTxError))
-                    .map_err(|error| error.0)?;
-            } else {
-                record(&db)?;
-            }
+            db.with_immediate_transaction(|db| record(db).map_err(PlanExtensionTxError))
+                .map_err(|error| error.0)?;
             if payload_verdict.completes_stage() {
                 if let Some(pr_url) =
                     pr_url_from_verdict(payload_metadata.as_ref(), &payload_summary)
@@ -2374,6 +2451,21 @@ pub(super) async fn complete_stage(
             )
             .await?;
         }
+        // A retry is how a caller finishes a completion whose ledger entry
+        // could not be published the first time: it publishes what is still
+        // pending and dispatches the transition the original still owes,
+        // exactly once. It never answers success ahead of the file.
+        if let Some(finished_run) =
+            settle_completion_publication(&state, &task_id, replayed).await?
+        {
+            dispatch_completion_transition(
+                Arc::clone(&state),
+                task_id.clone(),
+                finished_run,
+                task_mutation,
+            )
+            .await?;
+        }
         return Ok(Json(crate::mobile_api::TaskActionResponse {
             task_id,
             follow_task: None,
@@ -2382,16 +2474,151 @@ pub(super) async fn complete_stage(
         }));
     }
 
-    if !should_auto_advance {
+    // Durable completion is announced, and its transition dispatched, only
+    // once the result's ledger entry is on disk. A failure here leaves the
+    // accepted result and its continuation pending; nothing is re-recorded.
+    let owed = settle_completion_publication(&state, &task_id, true).await?;
+    let response = crate::mobile_api::TaskActionResponse {
+        task_id: task_id.clone(),
+        follow_task: None,
+        revision_budget: None,
+        workflow_extended,
+    };
+    let Some(finished_run) = owed.filter(|_| should_auto_advance) else {
         state.publish_state_changed(StateChangeScope::Tasks);
-        return Ok(Json(crate::mobile_api::TaskActionResponse {
-            task_id,
-            follow_task: None,
-            revision_budget: None,
-            workflow_extended,
-        }));
-    }
+        return Ok(Json(response));
+    };
+    dispatch_completion_transition(Arc::clone(&state), task_id, finished_run, task_mutation)
+        .await?;
+    Ok(Json(response))
+}
 
+/// Enqueue the ledger entry for a result `complete_stage` accepted.
+///
+/// A run's first result is sourced by the run id itself; a corrected verdict
+/// on the same run (which completion has always accepted) is a new fact with
+/// its own source identity, never a rewrite of the first.
+#[allow(clippy::too_many_arguments)]
+fn enqueue_completion_result(
+    db: &Db,
+    task_id: &str,
+    run: &crate::db::StageRun,
+    observed: &crate::task_store::WorkspaceObservation,
+    status: &str,
+    message: &str,
+    metadata: Option<&serde_json::Value>,
+    stage_result: &str,
+    requested_digest: Option<&str>,
+    event_floor: i64,
+) -> rusqlite::Result<crate::db::task_store::LedgerEntryRef> {
+    use sha2::{Digest, Sha256};
+    let prior = db.ledger_result_count_for_run(task_id, &run.id)?;
+    let source_id = if prior == 0 {
+        run.id.clone()
+    } else {
+        format!("{}#{}", run.id, prior + 1)
+    };
+    let mut hasher = Sha256::new();
+    hasher.update(stage_result.as_bytes());
+    hasher.update(requested_digest.unwrap_or("").as_bytes());
+    let digest = format!("{:x}", hasher.finalize());
+    let operation_id = format!("complete-stage:{source_id}:{}", &digest[..16]);
+    db.enqueue_ledger_entry(crate::db::task_store::NewLedgerEntry {
+        task_id,
+        kind: crate::db::task_store::LedgerEntryKind::Result,
+        operation_id: Some(&operation_id),
+        source_kind: "stage_run",
+        source_id: &source_id,
+        source_origin: None,
+        historical: false,
+        recorded_at: None,
+        run_id: Some(&run.id),
+        declared_role: None,
+        body: crate::task_store::result_body(
+            status,
+            run,
+            observed,
+            metadata,
+            serde_json::json!({
+                "kind": "complete_stage",
+                "publishesWorkflow": requested_digest.is_some(),
+            }),
+        ),
+        message: Some(message),
+        hold_events_after: Some(event_floor),
+        reserved_sequence: None,
+    })
+}
+
+/// Publish the task's pending ledger entries and, when `claim` is set, take
+/// the stage transition a recorded completion still owes.
+async fn settle_completion_publication(
+    state: &Arc<AppState>,
+    task_id: &str,
+    claim: bool,
+) -> Result<Option<crate::db::FinishedStageRun>, (axum::http::StatusCode, String)> {
+    let state = Arc::clone(state);
+    let task_id = task_id.to_string();
+    super::blocking::run_handler_blocking("stage completion publication", move || {
+        let db = Db::open(&state.config.db_path).map_err(|e| db_write_error("db error", e))?;
+        crate::task_store::flush_task(&db, &state.config.db_path, &task_id).map_err(|error| {
+            (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                format!(
+                    "the result was recorded, but its ledger entry is not yet published, so \
+                     nothing downstream has been told and no transition was dispatched: {error}. \
+                     Retry the same completion; it is recognized as a retry, records nothing \
+                     new, and finishes the publication. Kanna also retries on its own."
+                ),
+            )
+        })?;
+        if !claim {
+            return Ok(None);
+        }
+        let Some(continuation) = db
+            .claim_ledger_continuation(&task_id)
+            .map_err(|e| db_write_error("db error", e))?
+        else {
+            return Ok(None);
+        };
+        Ok(completion_continuation_run(&continuation))
+    })
+    .await
+}
+
+fn completion_continuation_run(
+    continuation: &crate::db::task_store::LedgerContinuation,
+) -> Option<crate::db::FinishedStageRun> {
+    if continuation.kind != crate::db::task_store::STAGE_COMPLETION_CONTINUATION {
+        log::error!(
+            "dropping unknown ledger continuation {} for task {}",
+            continuation.kind,
+            continuation.task_id
+        );
+        return None;
+    }
+    let payload = &continuation.payload;
+    Some(crate::db::FinishedStageRun {
+        kind: payload.get("kind")?.as_str()?.to_string(),
+        completion_transition: payload
+            .get("completionTransition")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        trigger: payload
+            .get("trigger")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unspecified")
+            .to_string(),
+    })
+}
+
+/// Prepare and dispatch the transition a published completion asked for.
+async fn dispatch_completion_transition(
+    state: Arc<AppState>,
+    task_id: String,
+    finished_run: crate::db::FinishedStageRun,
+    task_mutation: super::state::RequestedTaskMutation,
+) -> Result<(), (axum::http::StatusCode, String)> {
     let transition = {
         let state = Arc::clone(&state);
         let task_id = task_id.clone();
@@ -2406,11 +2633,9 @@ pub(super) async fn complete_stage(
                 &db,
                 &state.config,
                 &task_id,
-                finished_run.as_ref().map(|run| run.kind.as_str()),
-                finished_run
-                    .as_ref()
-                    .and_then(|run| run.completion_transition.as_deref()),
-                finished_run.as_ref().map(|run| run.trigger.as_str()),
+                Some(finished_run.kind.as_str()),
+                finished_run.completion_transition.as_deref(),
+                Some(finished_run.trigger.as_str()),
             )
             .map_err(|e| {
                 record_stage_transition_failure(&state, &task_id, &e);
@@ -2427,19 +2652,7 @@ pub(super) async fn complete_stage(
         // review/merge loop to close the task. Best-effort — a failure here
         // must not fail the recorded completion.
         unblock_dependents_of_pr_resolved_blocker(&state, &task_id).await;
-        return Ok(Json(crate::mobile_api::TaskActionResponse {
-            task_id,
-            follow_task: None,
-            revision_budget: None,
-            workflow_extended,
-        }));
-    };
-
-    let response = crate::mobile_api::TaskActionResponse {
-        task_id: task_id.clone(),
-        follow_task: None,
-        revision_budget: None,
-        workflow_extended,
+        return Ok(());
     };
     execute_stage_transition_detached_holding(
         Arc::clone(&state),
@@ -2451,7 +2664,53 @@ pub(super) async fn complete_stage(
         },
     );
     state.publish_state_changed(StateChangeScope::Tasks);
-    Ok(Json(response))
+    Ok(())
+}
+
+/// Finish completions whose ledger publication failed earlier: publish what
+/// is pending and dispatch the owed transition, each under the task's
+/// mutation lease so it cannot race the request that recorded it. Run at
+/// startup before anything else can dispatch, and by the publisher service.
+pub(crate) async fn resume_ledger_continuations(state: Arc<AppState>) {
+    let task_ids = {
+        let state = Arc::clone(&state);
+        tokio::task::spawn_blocking(move || {
+            Db::open(&state.config.db_path).and_then(|db| db.ledger_continuation_task_ids())
+        })
+        .await
+    };
+    let task_ids = match task_ids {
+        Ok(Ok(task_ids)) => task_ids,
+        Ok(Err(error)) => {
+            log::error!("failed to list ledger continuations: {error}");
+            return;
+        }
+        Err(error) => {
+            log::error!("ledger continuation worker failed: {error}");
+            return;
+        }
+    };
+    for task_id in task_ids {
+        let task_mutation = state.begin_requested_task_mutation(&task_id).await;
+        match settle_completion_publication(&state, &task_id, true).await {
+            Ok(Some(finished_run)) => {
+                if let Err((_, error)) = dispatch_completion_transition(
+                    Arc::clone(&state),
+                    task_id.clone(),
+                    finished_run,
+                    task_mutation,
+                )
+                .await
+                {
+                    log::error!("owed stage transition for {task_id} failed: {error}");
+                }
+            }
+            Ok(None) => {}
+            Err((_, error)) => {
+                log::warn!("ledger continuation for {task_id} still pending: {error}")
+            }
+        }
+    }
 }
 
 fn mark_completion_context_succeeded(
@@ -2692,15 +2951,36 @@ pub(super) async fn request_revision(
             } else {
                 &payload.prompt
             };
-            let prepared = crate::task_creator::prepare_revision_task_for_api(
-                &db,
-                &state.config,
-                &source_task_id,
-                &payload.target_stage,
-                revision_prompt,
-                round,
-            )
-            .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error))?;
+            // The reviewer's verdict is the result that causes the revision,
+            // so the reviser's session is prepared naming it. Its ledger
+            // sequence is reserved now and filled by the transaction below;
+            // the session starts only after that entry is published.
+            let review_result =
+                reserve_revision_result(&db, &source_task_id, &payload, revision_prompt)?;
+            let prepare = || {
+                crate::task_creator::prepare_revision_task_for_api(
+                    &db,
+                    &state.config,
+                    &source_task_id,
+                    &payload.target_stage,
+                    revision_prompt,
+                    round,
+                )
+            };
+            let prepared = match review_result.as_ref() {
+                Some(review) => crate::task_store::with_pending_trigger(
+                    review.trigger(&source_task_id),
+                    prepare,
+                ),
+                None => prepare(),
+            };
+            let prepared = match prepared {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    release_revision_result(&db, &source_task_id, review_result.as_ref());
+                    return Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, error));
+                }
+            };
             let stage_result = revision_stage_result(&payload.summary, &payload.metadata)?;
             // The event reports the budget this revision leaves behind: an
             // agent round consumes one, a human request resets the counter,
@@ -2718,6 +2998,7 @@ pub(super) async fn request_revision(
                 false,
             );
             let finalized = db.with_immediate_transaction(|db| -> rusqlite::Result<i64> {
+                let event_floor = db.ledger_event_floor()?;
                 let rounds = if origin.is_agent() {
                     db.claim_agent_revision_round_in_transaction(&source_task_id, budget.limit)?
                         .ok_or(rusqlite::Error::QueryReturnedNoRows)?
@@ -2748,11 +3029,15 @@ pub(super) async fn request_revision(
                     Some(payload.target_stage.as_str()),
                     true,
                 )?;
+                if let Some(review) = review_result.as_ref() {
+                    review.enqueue(db, &source_task_id, &payload, origin, event_floor)?;
+                }
                 Ok(rounds)
             });
             let rounds = match finalized {
                 Ok(rounds) => rounds,
                 Err(error) => {
+                    release_revision_result(&db, &source_task_id, review_result.as_ref());
                     let error = crate::task_creator::rollback_prepared_stage_run_for_api(
                         &prepared,
                         format!("db error: {error}"),
@@ -2778,6 +3063,20 @@ pub(super) async fn request_revision(
             source_task_id,
             budget,
         } => {
+            {
+                let state = Arc::clone(&state);
+                let task_id = source_task_id.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    if let Ok(db) = Db::open(&state.config.db_path) {
+                        crate::task_store::flush_task_best_effort(
+                            &db,
+                            &state.config.db_path,
+                            &task_id,
+                        );
+                    }
+                })
+                .await;
+            }
             state.publish_state_changed(StateChangeScope::Tasks);
             Ok(Json(crate::mobile_api::TaskActionResponse {
                 task_id: source_task_id,
@@ -2887,6 +3186,53 @@ fn park_exhausted_revision(
         summary = payload.summary,
     );
     let parked_result = revision_stage_result(&parked_summary, &payload.metadata)?;
+    let review_run = match payload.run_id.as_deref() {
+        Some(run_id) => db
+            .stage_run(run_id)
+            .map_err(|error| db_write_error("db error", error))?,
+        None => None,
+    };
+    let observed = match review_run.as_ref() {
+        Some(run) => crate::task_store::observe_workspace(run.cwd.as_deref())
+            .map_err(|error| (axum::http::StatusCode::CONFLICT, error))?,
+        None => crate::task_store::WorkspaceObservation::none(),
+    };
+    db.with_immediate_transaction(|db| {
+        park_exhausted_revision_in_transaction(
+            db,
+            &source_task_id,
+            payload,
+            &parked_result,
+            &parked_summary,
+            &budget,
+            review_run.as_ref(),
+            &observed,
+        )
+        .map_err(PlanExtensionTxError)
+    })
+    .map_err(|error| error.0)?;
+    Ok(RevisionOutcome::Parked {
+        source_task_id,
+        budget,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn park_exhausted_revision_in_transaction(
+    db: &Db,
+    source_task_id: &str,
+    payload: &crate::mobile_api::RequestRevisionRequest,
+    parked_result: &str,
+    parked_summary: &str,
+    budget: &crate::task_creator::RevisionBudget,
+    review_run: Option<&crate::db::StageRun>,
+    observed: &crate::task_store::WorkspaceObservation,
+) -> Result<(), (axum::http::StatusCode, String)> {
+    let source_task_id = source_task_id.to_string();
+    let parked_result = parked_result.to_string();
+    let event_floor = db
+        .ledger_event_floor()
+        .map_err(|error| db_write_error("db error", error))?;
     // The requested changes stay on the run as feedback so nothing the
     // reviewer found is lost when the loop stops.
     if let Some(run_id) = payload.run_id.as_deref() {
@@ -2905,7 +3251,7 @@ fn park_exhausted_revision(
                 format!("db error: {}", e),
             )
         })?;
-    append_revision_requested_event(db, &source_task_id, payload, &budget, true)?;
+    append_revision_requested_event(db, &source_task_id, payload, budget, true)?;
     // Recorded as a review verdict that started nothing (`applied = false`):
     // a parked request is churn the reviewer asked for but the task never
     // spent, and averaging it in with real rounds would overstate revisions.
@@ -2916,10 +3262,162 @@ fn park_exhausted_revision(
         false,
     )
     .map_err(|error| db_write_error("db error", error))?;
-    Ok(RevisionOutcome::Parked {
-        source_task_id,
-        budget,
-    })
+    // The parked verdict is the result a person reads at this gate.
+    if let Some(run) = review_run {
+        let message = revision_ledger_message(parked_summary, &payload.prompt);
+        let review = RevisionResult {
+            run: run.clone(),
+            observed: observed.clone(),
+            message,
+            reserved_sequence: None,
+        };
+        review
+            .enqueue(
+                db,
+                &source_task_id,
+                payload,
+                payload.origin.unwrap_or_default(),
+                event_floor,
+            )
+            .map_err(|error| db_write_error("db error", error))?;
+    }
+    Ok(())
+}
+
+/// A reviewer's verdict as the ledger result that causes (or parks) a
+/// revision.
+struct RevisionResult {
+    run: crate::db::StageRun,
+    observed: crate::task_store::WorkspaceObservation,
+    message: String,
+    reserved_sequence: Option<i64>,
+}
+
+impl RevisionResult {
+    /// The triggering result the reviser's preamble names, before its entry
+    /// is written.
+    fn trigger(&self, task_id: &str) -> crate::task_store::TriggeringResult {
+        let sequence = self.reserved_sequence.unwrap_or_default();
+        crate::task_store::TriggeringResult {
+            entry_id: crate::db::task_store::ledger_entry_id(task_id, sequence),
+            file: format!(
+                "ledger/{}",
+                crate::db::task_store::ledger_file_name(
+                    sequence,
+                    crate::db::task_store::LedgerEntryKind::Result
+                )
+            ),
+            status: "failure".to_string(),
+            stage: Some(self.run.stage.clone()),
+            run_id: Some(self.run.id.clone()),
+            branch: self.observed.branch.clone(),
+            committed_sha: self.observed.committed_sha.clone(),
+            message: self.message.clone(),
+        }
+    }
+
+    fn enqueue(
+        &self,
+        db: &Db,
+        task_id: &str,
+        payload: &crate::mobile_api::RequestRevisionRequest,
+        origin: crate::mobile_api::RevisionOrigin,
+        event_floor: i64,
+    ) -> rusqlite::Result<crate::db::task_store::LedgerEntryRef> {
+        let prior = db.ledger_result_count_for_run(task_id, &self.run.id)?;
+        let source_id = if prior == 0 {
+            self.run.id.clone()
+        } else {
+            format!("{}#{}", self.run.id, prior + 1)
+        };
+        let operation_id = format!("revision:{source_id}");
+        db.enqueue_ledger_entry(crate::db::task_store::NewLedgerEntry {
+            task_id,
+            kind: crate::db::task_store::LedgerEntryKind::Result,
+            operation_id: Some(&operation_id),
+            source_kind: "stage_run",
+            source_id: &source_id,
+            source_origin: None,
+            historical: false,
+            recorded_at: None,
+            run_id: Some(&self.run.id),
+            declared_role: None,
+            // The verdict a revision request records on the run it closes;
+            // routing by exit instead of status is T1's.
+            body: crate::task_store::result_body(
+                "failure",
+                &self.run,
+                &self.observed,
+                payload.metadata.as_ref(),
+                serde_json::json!({
+                    "kind": "revision_request",
+                    "targetStage": payload.target_stage,
+                    "origin": if origin.is_agent() { "agent" } else { "human" },
+                }),
+            ),
+            message: Some(&self.message),
+            hold_events_after: Some(event_floor),
+            reserved_sequence: self.reserved_sequence,
+        })
+    }
+}
+
+/// The headline, then the findings the reviser must act on.
+fn revision_ledger_message(summary: &str, findings: &str) -> String {
+    let summary = summary.trim_end();
+    let findings = findings.trim_end();
+    if summary.trim().is_empty() {
+        findings.to_string()
+    } else if findings.trim().is_empty() || findings == summary {
+        summary.to_string()
+    } else {
+        format!("{summary}\n\n{findings}")
+    }
+}
+
+/// Resolve the reviewer's run and reserve its result's ledger sequence.
+///
+/// `None` when the request binds no run (a person asking for a revision is
+/// not a session recording a result) or carries no text at all: an empty
+/// message is never written to the ledger.
+fn reserve_revision_result(
+    db: &Db,
+    task_id: &str,
+    payload: &crate::mobile_api::RequestRevisionRequest,
+    findings: &str,
+) -> Result<Option<RevisionResult>, (axum::http::StatusCode, String)> {
+    let Some(run_id) = payload.run_id.as_deref() else {
+        return Ok(None);
+    };
+    let Some(run) = db
+        .stage_run(run_id)
+        .map_err(|error| db_write_error("db error", error))?
+    else {
+        return Ok(None);
+    };
+    let message = revision_ledger_message(&payload.summary, findings);
+    if message.trim().is_empty() {
+        return Ok(None);
+    }
+    let observed = crate::task_store::observe_workspace(run.cwd.as_deref())
+        .map_err(|error| (axum::http::StatusCode::CONFLICT, error))?;
+    let sequence = db
+        .reserve_ledger_sequence(task_id)
+        .map_err(|error| db_write_error("db error", error))?;
+    Ok(Some(RevisionResult {
+        run,
+        observed,
+        message,
+        reserved_sequence: Some(sequence),
+    }))
+}
+
+fn release_revision_result(db: &Db, task_id: &str, review: Option<&RevisionResult>) {
+    if let Some(sequence) = review.and_then(|review| review.reserved_sequence) {
+        if let Err(error) = db.release_ledger_reservation(task_id, sequence) {
+            log::error!("failed to release ledger reservation {sequence} of {task_id}: {error}");
+        }
+    }
 }
 
 /// A revision request is a state change a watcher cares about whether or not it

@@ -1784,7 +1784,11 @@ fn reconcile_stage_operation_db(
         } else {
             format!("db error: {error}")
         }
-    })
+    })?;
+    // The stage move's transition entry goes to disk now; a failure is
+    // retried by the publisher service.
+    crate::task_store::flush_task_best_effort(&db, db_path, &prepared.task_id);
+    Ok(())
 }
 
 /// Dispatch a stage's post into the task's live agent session; when the

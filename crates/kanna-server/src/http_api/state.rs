@@ -590,6 +590,9 @@ impl AppState {
     }
 
     pub fn new(config: Config) -> Self {
+        // Code that only holds this database's path must publish its task
+        // ledger to the same root as the server.
+        crate::task_store::configure(&config);
         if let Err(err) = pairing::PairingStore::load(Path::new(&config.pairing_store_path)) {
             log::warn!(
                 "failed to load pairing store {}: {}",

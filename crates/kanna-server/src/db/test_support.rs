@@ -551,6 +551,7 @@ impl Db {
         super::copilot_wake::create_schema(&self.conn)?;
         super::serviced::create_schema(&self.conn)?;
         super::claude_channel::create_schema(&self.conn)?;
+        self.conn.execute_batch(super::task_store::SCHEMA)?;
         create_blocker_revision_triggers(&self.conn)?;
         let mut stmt = self
             .conn

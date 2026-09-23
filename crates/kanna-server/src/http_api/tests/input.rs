@@ -2572,6 +2572,22 @@ async fn send_task_input_delivers_to_a_live_session_after_a_finished_run() {
     let detail: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(detail["deliveredInputCount"], 1);
 
+    // The same delivery is an immutable input entry in the task ledger,
+    // published before the call answered, with its declared provenance.
+    let files = super::actions::ledger_files(&config.db_path, "task-live");
+    let inputs = files
+        .iter()
+        .filter(|file| file.kind == crate::db::task_store::LedgerEntryKind::Input)
+        .collect::<Vec<_>>();
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs[0].message.as_deref(), Some("One more change"));
+    assert_eq!(inputs[0].body()["source"], "operator");
+    assert_eq!(inputs[0].envelope["declared_role"], "operator");
+    assert!(inputs[0].envelope["channel_identity"].is_null());
+    assert_eq!(inputs[0].envelope["source"]["kind"], "task_input");
+    // Recorded after the run had finished: attributed to no run.
+    assert!(inputs[0].envelope["run_id"].is_null());
+
     let _ = std::fs::remove_file(socket_path);
     let _ = std::fs::remove_dir_all(daemon_dir);
     let _ = std::fs::remove_file(config.db_path);
@@ -4284,4 +4300,162 @@ mod human_review_merge_authorization {
         assert!(body.contains("stopped part-way"), "{body}");
         let _ = std::fs::remove_file(config.db_path);
     }
+}
+
+#[tokio::test]
+async fn a_blank_task_input_is_refused_before_anything_is_typed() {
+    let app = super::test_router_with_seed("ledger-blank-input", "Studio Mac", |db| {
+        db.insert_test_repo("repo-1", "Repo One").unwrap();
+        db.insert_test_pipeline_item(
+            "task-1",
+            "repo-1",
+            "Task",
+            None,
+            "in progress",
+            "2026-09-22 00:00:00",
+        )
+        .unwrap();
+    });
+    for blank in ["", " \r\n"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/tasks/task-1/input")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "input": blank }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["reason"], "empty_input");
+    }
+}
+
+/// The daemon acknowledged the text; only its ledger file failed. The input is
+/// recorded, reported as pending publication, published later from the stored
+/// row, and never typed into the session a second time.
+#[tokio::test]
+async fn an_input_whose_publication_fails_after_delivery_is_not_sent_again() {
+    use kanna_daemon::protocol::{
+        Command as DaemonCommand, Event as DaemonEvent, SessionInfo, SessionState, SessionStatus,
+    };
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::net::UnixListener;
+
+    let unique = format!("task-input-ledger-pending-{}", unique_test_suffix());
+    let daemon_dir = std::env::temp_dir().join(format!("{unique}-daemon"));
+    std::fs::create_dir_all(&daemon_dir).unwrap();
+    let socket_path = daemon_socket_path_for_dir(&daemon_dir.to_string_lossy());
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let daemon_server = tokio::spawn(async move {
+        let mut commands = Vec::new();
+        while let Ok(Ok((stream, _))) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept()).await
+        {
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            while let Some(command) =
+                read_test_daemon_command_optional(&mut reader, &mut write_half).await
+            {
+                let response = match &command {
+                    DaemonCommand::List => DaemonEvent::SessionList {
+                        sessions: vec![SessionInfo {
+                            session_id: "task-live".to_string(),
+                            pid: 42,
+                            cwd: "/tmp".to_string(),
+                            state: SessionState::Active,
+                            idle_seconds: 0,
+                            status: SessionStatus::Idle,
+                            status_observed: true,
+                            kind: Default::default(),
+                            composer_text: None,
+                            composer_attestation: Default::default(),
+                            attempt_id: None,
+                        }],
+                    },
+                    DaemonCommand::SubmitInputIfSession { .. } => DaemonEvent::Ok,
+                    other => panic!("unexpected daemon command: {other:?}"),
+                };
+                commands.push(command);
+                write_half
+                    .write_all(
+                        format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+        commands
+    });
+
+    let config = merge_test_config(&unique, &daemon_dir);
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo("repo-1", "Repo One").unwrap();
+    db.insert_test_pipeline_item(
+        "task-live",
+        "repo-1",
+        "Live task",
+        Some("Live task"),
+        "in progress",
+        "2026-08-12 04:00:00",
+    )
+    .unwrap();
+    drop(db);
+    let root = crate::task_store::root_for_db(&config.db_path);
+    crate::task_store::inject_fault(&root, crate::task_store::FlushFault::BeforePublish(1));
+
+    let app = super::router(Arc::new(super::AppState::new(config.clone())));
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/v1/tasks/task-live/input")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "input": "Merge when green",
+                        "source": "manager",
+                        "strictRecording": true,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["reason"], "task_input_publication_pending");
+
+    let db = Db::open(&config.db_path).unwrap();
+    // The durable record exists; only its ledger file is pending.
+    assert_eq!(db.list_all_task_inputs("task-live").unwrap().len(), 1);
+    assert!(super::actions::ledger_files(&config.db_path, "task-live").is_empty());
+    // Publication is retried from the stored row, not by typing again.
+    crate::task_store::flush_task(&db, &config.db_path, "task-live").unwrap();
+    let files = super::actions::ledger_files(&config.db_path, "task-live");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].message.as_deref(), Some("Merge when green"));
+    assert_eq!(files[0].envelope["declared_role"], "manager");
+    assert_eq!(
+        db.count_task_events_of_type_for_tests("task-live", "task.input_delivered")
+            .unwrap(),
+        1
+    );
+    drop(app);
+    let commands = daemon_server.await.unwrap();
+    let submissions = commands
+        .iter()
+        .filter(|command| matches!(command, DaemonCommand::SubmitInputIfSession { .. }))
+        .count();
+    assert_eq!(submissions, 1);
 }

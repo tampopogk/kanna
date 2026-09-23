@@ -275,6 +275,48 @@ async fn run_lan_machine_invoke_listener(state: Arc<http_api::AppState>) {
     std::future::pending::<()>().await;
 }
 
+/// Publishes enqueued task-ledger entries as they are accepted and retries
+/// the ones a failed flush left pending, then finishes any completion whose
+/// transition was waiting on them. The outbox is what makes publication
+/// durable; this service is what makes it prompt.
+async fn run_task_ledger_publisher(state: Arc<http_api::AppState>) {
+    const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+    static RESUMING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    loop {
+        let _ = tokio::time::timeout(RETRY_INTERVAL, crate::task_store::publisher_woken()).await;
+        let db_path = state.config().db_path.clone();
+        let flushed = tokio::task::spawn_blocking(move || {
+            let db = db::Db::open(&db_path)?;
+            let failures = crate::task_store::flush_all(&db, &db_path);
+            Ok::<_, rusqlite::Error>((failures, db.ledger_continuation_task_ids()?))
+        })
+        .await;
+        match flushed {
+            Ok(Ok((failures, continuations))) => {
+                for (task_id, error) in failures {
+                    log::warn!("task ledger for {task_id} is pending publication: {error}");
+                }
+                // Resuming waits on each task's mutation lease, which a live
+                // transition may hold for minutes; it must not stall
+                // publication for every other task, nor pile up behind itself.
+                if !continuations.is_empty()
+                    && !RESUMING.swap(true, std::sync::atomic::Ordering::AcqRel)
+                {
+                    let state = Arc::clone(&state);
+                    tokio::spawn(async move {
+                        http_api::task_actions::resume_ledger_continuations(state).await;
+                        RESUMING.store(false, std::sync::atomic::Ordering::Release);
+                    });
+                }
+            }
+            Ok(Err(error)) => {
+                log::error!("task ledger publisher cannot open the database: {error}")
+            }
+            Err(error) => log::error!("task ledger publisher worker failed: {error}"),
+        }
+    }
+}
+
 pub(crate) async fn run_server_services(
     config: Config,
     db: db::Db,
@@ -286,12 +328,25 @@ pub(crate) async fn run_server_services(
     let daemon_pid = protected_input_daemon.connected_pid();
     let geometry_supported = establish_terminal_geometry_capability(&config).await;
     http_state.set_terminal_geometry_capability(daemon_pid, geometry_supported);
+    // Task ledger recovery comes before anything can schedule or dispatch:
+    // import history for open tasks that predate the ledger and publish what
+    // a previous generation accepted but did not get onto disk.
+    crate::task_store::recover_on_startup(&db, &config.db_path);
     crate::task_creator::reconcile_lifecycle_operations_on_startup(
         &mut protected_input_daemon,
         &config.db_path,
         &db,
     )
     .await;
+    // Reconciliation records the stage moves it lands, so drain those too,
+    // then dispatch the transitions accepted completions still owe.
+    for (task_id, error) in crate::task_store::flush_all(&db, &config.db_path) {
+        log::error!(
+            "task ledger for {task_id} could not be published after reconciliation: {error}"
+        );
+    }
+    http_api::task_actions::resume_ledger_continuations(Arc::clone(&http_state)).await;
+    tokio::spawn(run_task_ledger_publisher(Arc::clone(&http_state)));
     let protected_input_maintenance = maintain_protected_input_generations(
         config.clone(),
         Arc::clone(&http_state),

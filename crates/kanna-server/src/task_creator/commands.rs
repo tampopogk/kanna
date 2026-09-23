@@ -552,6 +552,7 @@ const KANNA_TASK_ENVIRONMENT_TEMPLATE: &str =
 const COMPLETION_AUTO: &str = "This stage's transition is `auto`: when this stage's goal is achieved, record completion so Kanna can advance the workflow: call MCP `kanna_complete_stage {\"task_id\": \"$KANNA_TASK_ID\", \"status\": \"success\", \"summary\": \"...\"}` (`task_id` is the value of the `KANNA_TASK_ID` env var); only if MCP tools are unavailable, fall back to `kanna-cli stage-complete --task-id \"$KANNA_TASK_ID\" --status success --summary \"...\"`. If you cannot record `success`, record the status that fits rather than stopping silently or defaulting to `failure`: `unverified` (did the work, could not prove it — say what is unproven), `partial` (did some of the scope — say what remains), `needs-input` (the task as specified does not say enough to proceed — state the question), `declined` (deliberately did not do it because the premise was wrong, it was already done, or it should not be done — say which) or `failure` (tried, could not). Only `success` advances the workflow, and none of the others is a worse answer than another.";
 const COMPLETION_MANUAL: &str = "This stage's transition is `manual`: recording a successful result does not advance the workflow — the user reviews your work and advances the stage themselves. When this stage's goal is achieved, finish with a clear summary of what you did; record completion only if this stage's prompt asks for it. If you cannot record `success`, record the status that fits rather than stopping silently or defaulting to `failure`: `unverified` (did the work, could not prove it — say what is unproven), `partial` (did some of the scope — say what remains), `needs-input` (the task as specified does not say enough to proceed — state the question), `declined` (deliberately did not do it because the premise was wrong, it was already done, or it should not be done — say which) or `failure` (tried, could not). Only `success` advances the workflow, and none of the others is a worse answer than another. Record one with MCP `kanna_complete_stage {\"task_id\": \"$KANNA_TASK_ID\", \"status\": \"...\", \"summary\": \"...\"}` (`task_id` is the value of the `KANNA_TASK_ID` env var); only if MCP tools are unavailable, fall back to `kanna-cli stage-complete --task-id \"$KANNA_TASK_ID\" --status ... --summary \"...\"`.";
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_kanna_preamble(
     provider: &AgentProvider,
     task_id: &str,
@@ -560,6 +561,7 @@ pub(super) fn build_kanna_preamble(
     transition: Option<&str>,
     stage_trigger: &str,
     mcp_config_path: Option<&str>,
+    ledger: Option<&crate::task_store::SessionLedger>,
 ) -> String {
     let transition = transition.unwrap_or("manual");
     // Mirrors buildKannaTaskContextLine in prompt-builder.ts — keep in sync.
@@ -576,9 +578,18 @@ pub(super) fn build_kanna_preamble(
         .replace("{{TASK_CONTEXT}}", &task_context)
         .replace("{{STAGE_TRIGGER}}", stage_trigger)
         .replace("{{COMPLETION}}", completion);
-    match mcp_config_path {
+    let rendered = match mcp_config_path {
         Some(_) => rendered.replace("{{MCP_STATUS}}", &kanna_mcp_launch_line(*provider)),
         None => rendered.replace("- {{MCP_STATUS}}\n", ""),
+    };
+    // Substituted last: the triggering result's message is literal text, and
+    // a marker inside it must not be expanded by a later replacement.
+    match ledger {
+        Some(ledger) => rendered.replace(
+            "{{LEDGER}}",
+            &crate::task_store::render_ledger_section(ledger),
+        ),
+        None => rendered.replace("{{LEDGER}}\n\n", ""),
     }
 }
 

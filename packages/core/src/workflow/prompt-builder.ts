@@ -20,6 +20,23 @@ export interface KannaRuntimeContext {
   provider?: string;
   /** True when this session was launched with the Kanna MCP server registered. */
   mcpConfigured?: boolean;
+  /** The task directory (`KANNA_TASK_LEDGER_PATH`); omitted for contexts with no task ledger. */
+  ledgerPath?: string;
+  /** The ledger result that caused this session, when one did. */
+  triggeringResult?: KannaTriggeringResult;
+}
+
+/** A result ledger entry as the preamble delivers it (see crates/kanna-server/src/task_store). */
+export interface KannaTriggeringResult {
+  entryId: string;
+  /** Relative to the task directory, e.g. `ledger/000003-result.md`. */
+  file: string;
+  status: string;
+  stage?: string;
+  runId?: string;
+  branch?: string;
+  committedSha?: string;
+  message: string;
 }
 
 // Canonical Kanna runtime guidance injected into every agent session.
@@ -31,6 +48,8 @@ export const KANNA_TASK_ENVIRONMENT_TEMPLATE = `## Kanna Task Environment
 {{TASK_CONTEXT}}
 
 This stage was entered by: {{STAGE_TRIGGER}}
+
+{{LEDGER}}
 
 Kanna is a desktop app that orchestrates coding agent tasks. Each task moves through the stages of a workflow (for example: in progress -> review -> pr). The task itself is durable — its id, run history, and blockers survive every stage, and \`KANNA_TASK_ID\` always holds that id — but each stage transition forks a fresh workspace: a new branch and worktree named \`task-<taskid>-<n>\` cut from the previous stage's committed tip. A workspace is an ephemeral manifestation of the task: the name carries the durable task id plus a per-workspace counter (the creation workspace is plain \`task-<taskid>\`). Only committed work crosses a stage boundary; uncommitted changes stay behind in the old worktree. You are the agent for the current stage. Do not move the task between stages yourself unless a prompt explicitly asks you to.
 
@@ -119,15 +138,30 @@ export function buildKannaMcpStatusLine(context?: KannaRuntimeContext): string |
   return MCP_LAUNCH_LINES[context.provider];
 }
 
+// Mirrors render_ledger_section in crates/kanna-server/src/task_store/mod.rs —
+// keep the texts in sync.
+export function buildKannaLedgerSection(context?: KannaRuntimeContext): string | null {
+  if (!context?.ledgerPath) return null;
+  let section = `Task ledger: \`${context.ledgerPath}\` (also in \`KANNA_TASK_LEDGER_PATH\`). It holds this task's \`task.json\` and, under \`ledger/\`, its recorded results, tool-delivered inputs, stage transitions and workflow replacements as ordered files. Read an earlier entry there when you need it.`;
+  const trigger = context.triggeringResult;
+  if (!trigger) return `${section}\n\nNo recorded result caused this session.`;
+  section += `\n\nResult that caused this session: ledger entry \`${trigger.entryId}\` (\`${trigger.file}\`), status \`${trigger.status}\`, recorded by stage \`${trigger.stage ?? "unknown"}\` (run \`${trigger.runId ?? "unknown"}\`, branch \`${trigger.branch ?? "unknown"}\`, commit \`${trigger.committedSha ?? "unknown"}\`). Its message follows verbatim.`;
+  return `${section}\n\n-----BEGIN RESULT MESSAGE-----\n${trigger.message}\n-----END RESULT MESSAGE-----`;
+}
+
 export function buildKannaRuntimeSystemPrompt(context?: KannaRuntimeContext): string {
   const mcpStatus = buildKannaMcpStatusLine(context);
+  const ledger = buildKannaLedgerSection(context);
+  // The ledger section goes in last, through a replacer function, so a result
+  // message containing a template marker or a `$&`-style pattern stays literal.
   return KANNA_TASK_ENVIRONMENT_TEMPLATE.replace(
     "{{TASK_CONTEXT}}",
     buildKannaTaskContextLine(context)
   )
     .replace("{{STAGE_TRIGGER}}", context?.stageTrigger ?? "unspecified")
     .replace(mcpStatus ? "{{MCP_STATUS}}" : "- {{MCP_STATUS}}\n", mcpStatus ?? "")
-    .replace("{{COMPLETION}}", buildKannaCompletionLine(context));
+    .replace("{{COMPLETION}}", buildKannaCompletionLine(context))
+    .replace(ledger === null ? "{{LEDGER}}\n\n" : "{{LEDGER}}", () => ledger ?? "");
 }
 
 function hasOuterPromptSection(prompt: string): boolean {

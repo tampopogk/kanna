@@ -81,6 +81,9 @@ impl Db {
     /// exists to replace. Closed tasks are skipped — nothing depends on the
     /// blocked state of work that is over.
     pub(crate) fn sync_blocked_event(&self, task_id: &str) -> Result<(), rusqlite::Error> {
+        // Every rewrite of a task's own blocker set passes through here, and
+        // its dependency links are part of `task.json`.
+        self.mark_task_snapshot_dirty(task_id)?;
         let baseline: Option<i64> = self
             .conn
             .query_row(

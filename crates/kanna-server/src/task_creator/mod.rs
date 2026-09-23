@@ -2169,6 +2169,7 @@ fn build_prepared_session(
                 commands::ProviderSessionBinding::Assign(session_id)
                 | commands::ProviderSessionBinding::Resume(session_id) => session_id.clone(),
             });
+            let ledger = crate::task_store::session_ledger(spawn_env, stage_name);
             let preamble = build_kanna_preamble(
                 &provider,
                 task_id,
@@ -2177,6 +2178,7 @@ fn build_prepared_session(
                 stage_transition,
                 stage_trigger,
                 mcp_config_path.as_deref(),
+                ledger.as_ref(),
             );
             let (prompt, appended_system_prompt) = relocate_agent_instructions(
                 provider,
@@ -2258,6 +2260,7 @@ fn build_prepared_session(
                     worktree_path,
                 )?
             };
+            let ledger = crate::task_store::session_ledger(spawn_env, stage_name);
             let system_prompt = build_kanna_preamble(
                 &provider,
                 task_id,
@@ -2266,6 +2269,7 @@ fn build_prepared_session(
                 stage_transition,
                 stage_trigger,
                 mcp_config_path.as_deref(),
+                ledger.as_ref(),
             );
             (
                 PreparedSessionSpawn::Agent {

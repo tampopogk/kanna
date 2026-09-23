@@ -45,6 +45,7 @@ pub use stage_run_prompt::StageRunPrompt;
 pub use workspace_setup::{WorkspaceSetupOutcome, WorkspaceSetupRun};
 mod task_events;
 mod task_inputs;
+pub(crate) mod task_store;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
@@ -206,6 +207,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "092_stage_run_prompt",
     "093_drop_standing_constraint",
     "094_task_attention_flag",
+    "095_task_ledger_bridge",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2627,6 +2629,14 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
               WHERE NULLIF(trim(attention_reason), '') IS NOT NULL",
         )?;
         conn.execute_batch("ALTER TABLE pipeline_item DROP COLUMN attention_reason")
+    })?;
+
+    // Spec §16.1 (T0): the outbox that mirrors results, tool inputs,
+    // transitions and workflow replacements into the on-disk task ledger.
+    // Schema only: importing existing history touches the filesystem and runs
+    // from the runtime's startup reconciliation, not from a migration.
+    run_migration(conn, "095_task_ledger_bridge", |conn| {
+        conn.execute_batch(task_store::SCHEMA)
     })?;
 
     Ok(())

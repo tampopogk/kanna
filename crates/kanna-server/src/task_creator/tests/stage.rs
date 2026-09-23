@@ -4418,6 +4418,7 @@ fn edited_workflow_spawn_case(seed_run: bool) {
             source: "operator",
             superseded_run_ids: &validated.superseded_run_ids,
             changed_execution_stages: &validated.changed_execution_stages,
+            ledger_result_id: None,
         }),
     )
     .unwrap();
