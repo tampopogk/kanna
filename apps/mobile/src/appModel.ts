@@ -1328,6 +1328,11 @@ function createDisconnectedClient(): KannaClient {
     readTaskDiff: unavailable,
     getArtifact: unavailable,
     readArtifactFile: unavailable,
+    getArtifactRemote: unavailable,
+    recordArtifactComment: unavailable,
+    recordArtifactDecision: unavailable,
+    pushArtifact: unavailable,
+    fetchArtifact: unavailable,
     observeTaskTerminal(taskId, listener) {
       listener({
         type: "error",
@@ -1637,6 +1642,16 @@ function createTrustedLanFallbackClient({
       (await resolveClient(desktopId)).getArtifact(repoId, artifactId),
     readArtifactFile: async (repoId, artifactId, path) =>
       (await resolveClient(desktopId)).readArtifactFile(repoId, artifactId, path),
+    getArtifactRemote: async (repoId) =>
+      (await resolveClient(desktopId)).getArtifactRemote(repoId),
+    recordArtifactComment: async (repoId, artifactId, input) =>
+      (await resolveClient(desktopId)).recordArtifactComment(repoId, artifactId, input),
+    recordArtifactDecision: async (repoId, artifactId, input) =>
+      (await resolveClient(desktopId)).recordArtifactDecision(repoId, artifactId, input),
+    pushArtifact: async (repoId, artifactId) =>
+      (await resolveClient(desktopId)).pushArtifact(repoId, artifactId),
+    fetchArtifact: async (repoId, artifactId) =>
+      (await resolveClient(desktopId)).fetchArtifact(repoId, artifactId),
     observeTaskTerminal: (taskId, listener) =>
       currentClient(desktopId).observeTaskTerminal(taskId, listener),
     observeTaskAgent: (taskId, listener) =>
@@ -1875,6 +1890,13 @@ function createDelegatingClient(getClient: () => KannaClient): KannaClient {
     getArtifact: (repoId, artifactId) => getClient().getArtifact(repoId, artifactId),
     readArtifactFile: (repoId, artifactId, path) =>
       getClient().readArtifactFile(repoId, artifactId, path),
+    getArtifactRemote: (repoId) => getClient().getArtifactRemote(repoId),
+    recordArtifactComment: (repoId, artifactId, input) =>
+      getClient().recordArtifactComment(repoId, artifactId, input),
+    recordArtifactDecision: (repoId, artifactId, input) =>
+      getClient().recordArtifactDecision(repoId, artifactId, input),
+    pushArtifact: (repoId, artifactId) => getClient().pushArtifact(repoId, artifactId),
+    fetchArtifact: (repoId, artifactId) => getClient().fetchArtifact(repoId, artifactId),
     observeTaskTerminal: (taskId, listener) =>
       getClient().observeTaskTerminal(taskId, listener),
     observeTaskAgent: (taskId, listener) =>

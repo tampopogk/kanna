@@ -13,8 +13,15 @@ import type {
 } from "@kanna/stream-client";
 import type {
   AbortTaskCreationRequest,
+  ArtifactComment,
+  ArtifactCommentInput,
+  ArtifactDecision,
+  ArtifactDecisionInput,
   ArtifactDetail,
+  ArtifactFetchOutcome,
   ArtifactFileContent,
+  ArtifactPushOutcome,
+  ArtifactRemoteInfo,
   CreateTaskRequest,
   CreateTaskResponse,
   MobileBuildReport,
@@ -264,6 +271,15 @@ export interface KannaTransport {
   getArtifact(repoId: string, artifactId: string): Promise<ArtifactDetail>;
   /** One file of a retained artifact tree, as the phone renders it itself. */
   readArtifactFile(repoId: string, artifactId: string, path: string): Promise<ArtifactFileContent>;
+  /** Where this repository's artifacts are pushed, and which config file chose it. */
+  getArtifactRemote(repoId: string): Promise<ArtifactRemoteInfo>;
+  /** A record about one exact tree id; it operates no gate. */
+  recordArtifactComment(repoId: string, artifactId: string, input: ArtifactCommentInput): Promise<ArtifactComment>;
+  recordArtifactDecision(repoId: string, artifactId: string, input: ArtifactDecisionInput): Promise<ArtifactDecision>;
+  /** Push one artifact, its earlier versions and their records to the configured remote. */
+  pushArtifact(repoId: string, artifactId: string): Promise<ArtifactPushOutcome>;
+  /** Fetch one artifact by hash from the configured remote. */
+  fetchArtifact(repoId: string, artifactId: string): Promise<ArtifactFetchOutcome>;
   observeTaskTerminal(
     taskId: string,
     listener: (event: TaskTerminalStreamEvent) => void
@@ -352,6 +368,15 @@ export interface KannaClient {
   getArtifact(repoId: string, artifactId: string): Promise<ArtifactDetail>;
   /** One file of a retained artifact tree, as the phone renders it itself. */
   readArtifactFile(repoId: string, artifactId: string, path: string): Promise<ArtifactFileContent>;
+  /** Where this repository's artifacts are pushed, and which config file chose it. */
+  getArtifactRemote(repoId: string): Promise<ArtifactRemoteInfo>;
+  /** A record about one exact tree id; it operates no gate. */
+  recordArtifactComment(repoId: string, artifactId: string, input: ArtifactCommentInput): Promise<ArtifactComment>;
+  recordArtifactDecision(repoId: string, artifactId: string, input: ArtifactDecisionInput): Promise<ArtifactDecision>;
+  /** Push one artifact, its earlier versions and their records to the configured remote. */
+  pushArtifact(repoId: string, artifactId: string): Promise<ArtifactPushOutcome>;
+  /** Fetch one artifact by hash from the configured remote. */
+  fetchArtifact(repoId: string, artifactId: string): Promise<ArtifactFetchOutcome>;
   observeTaskTerminal(
     taskId: string,
     listener: (event: TaskTerminalStreamEvent) => void
@@ -505,6 +530,13 @@ export function createKannaClient(transport: KannaTransport): KannaClient {
     getArtifact: (repoId, artifactId) => transport.getArtifact(repoId, artifactId),
     readArtifactFile: (repoId, artifactId, path) =>
       transport.readArtifactFile(repoId, artifactId, path),
+    getArtifactRemote: (repoId) => transport.getArtifactRemote(repoId),
+    recordArtifactComment: (repoId, artifactId, input) =>
+      transport.recordArtifactComment(repoId, artifactId, input),
+    recordArtifactDecision: (repoId, artifactId, input) =>
+      transport.recordArtifactDecision(repoId, artifactId, input),
+    pushArtifact: (repoId, artifactId) => transport.pushArtifact(repoId, artifactId),
+    fetchArtifact: (repoId, artifactId) => transport.fetchArtifact(repoId, artifactId),
     observeTaskTerminal: (taskId, listener) =>
       transport.observeTaskTerminal(taskId, listener),
     observeTaskAgent: (taskId, listener) =>

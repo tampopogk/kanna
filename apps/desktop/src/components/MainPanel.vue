@@ -1244,8 +1244,9 @@ function dismissCommandHint() {
           v-else-if="tab.kind === 'artifact' && tab.artifactRepoId"
           v-show="viewVisible(tab.id)"
           :repo-id="tab.artifactRepoId"
-          :artifact-id="tab.artifactId"
+          :artifact-id="tab.artifactShownId ?? tab.artifactId"
           :visible="viewVisible(tab.id)"
+          @navigate="(artifactId: string) => views?.tabs.updateArtifactShown(tab.id, artifactId)"
         />
       </div>
       <TaskPreviewCache

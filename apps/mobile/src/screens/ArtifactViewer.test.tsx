@@ -22,7 +22,12 @@ vi.mock("react-native", () => ({
 
 vi.mock("react-native-webview", () => ({ WebView: "WebView" }));
 
-import { ArtifactViewer, shouldStartArtifactLoad } from "./ArtifactViewer";
+import {
+  ArtifactViewer,
+  resetConfirmedArtifactRemotesForTests,
+  shouldStartArtifactLoad,
+  type ArtifactViewerActions
+} from "./ArtifactViewer";
 import {
   ARTIFACT_DOCUMENT_POLICY,
   decodeBase64,
@@ -555,5 +560,243 @@ describe("ArtifactViewer (mobile) reads", () => {
     tree.release("p3.html");
     await flush();
     expect(tree.reads).toEqual(["index.html", "p3.html"]);
+  });
+});
+
+const REMOTE = "ssh://git.example.com/team/artifacts.git";
+const FETCHED = "5".repeat(40);
+
+function sharingActions(overrides: Partial<ArtifactViewerActions> = {}) {
+  const actions = {
+    getArtifactRemote: vi.fn(async (repoId: string) => ({
+      repoId, configured: true, remote: REMOTE, source: "committed" as const, configFile: ".kanna/config.json"
+    })),
+    recordArtifactComment: vi.fn(async (repoId: string, artifactId: string, input: { author: string; body: string; anchor?: object }) => ({
+      schemaVersion: 1, recordId: "c-new", repoId, aboutArtifactId: artifactId, createdAt: "2026-09-23T13:00:00Z", ...input
+    })),
+    recordArtifactDecision: vi.fn(async (repoId: string, artifactId: string, input: { who: string; what: string }) => ({
+      schemaVersion: 1, recordId: "d-new", repoId, aboutArtifactId: artifactId, createdAt: "2026-09-23T13:00:00Z", ...input
+    })),
+    pushArtifact: vi.fn(async (_repoId: string, artifactId: string) => ({
+      remote: REMOTE, artifactId, artifactIds: [artifactId, V1], createdRefs: ["refs/kanna/artifacts/shared/content/x/y"], upToDateRefs: 2
+    })),
+    fetchArtifact: vi.fn(async (_repoId: string, artifactId: string) => {
+      DETAILS[artifactId] ??= detail(artifactId);
+      return {
+        remote: REMOTE, artifactId, fetched: [artifactId], contentRetained: [artifactId], recordsImported: 2,
+        refused: [{ ref: `refs/kanna/artifacts/shared/records/${artifactId}/comments/bad`, reason: "record is not canonical" }],
+        missing: [MISSING], detail: DETAILS[artifactId]
+      };
+    }),
+    ...overrides
+  };
+  return actions;
+}
+
+async function openSharing(artifactId: string, actions = sharingActions()) {
+  const api = client();
+  await act(async () => {
+    renderer = create(
+      <ArtifactViewer
+        repoId="repo-1"
+        initialArtifactId={artifactId}
+        getArtifact={api.getArtifact}
+        readArtifactFile={api.readArtifactFile}
+        actions={actions}
+        onClose={() => undefined}
+      />
+    );
+  });
+  await flush();
+  return { api, actions };
+}
+
+async function type(testID: string, value: string) {
+  const [input] = byTestId(testID);
+  await act(async () => {
+    input.props.onChangeText(value);
+  });
+}
+
+describe("ArtifactViewer (mobile) recording and sharing", () => {
+  afterEach(() => {
+    resetConfirmedArtifactRemotesForTests();
+    delete DETAILS[FETCHED];
+  });
+
+  it("records a comment anchored to the exact version and the file on screen", async () => {
+    const { actions } = await openSharing(V2);
+    await type("artifact-viewer-comment-author", "stakeholder");
+    await type("artifact-viewer-comment-body", "Contrast is too low");
+    await type("artifact-viewer-anchor-position-input", "line 2");
+    await type("artifact-viewer-anchor-excerpt-input", "height: 120px");
+    await press("artifact-viewer-comment-submit");
+    expect(actions.recordArtifactComment).toHaveBeenCalledWith("repo-1", V2, {
+      author: "stakeholder",
+      body: "Contrast is too low",
+      anchor: { path: "index.html", position: "line 2", excerpt: "height: 120px" }
+    });
+    expect(byTestId("artifact-viewer-comment").map(text).join("\n")).toContain("Contrast is too low");
+
+    // Another asset of the same tree, chosen explicitly.
+    await type("artifact-viewer-comment-body", "Stylesheet note");
+    await press("artifact-viewer-anchor-choice-css/site.css");
+    await press("artifact-viewer-comment-submit");
+    expect(actions.recordArtifactComment).toHaveBeenLastCalledWith("repo-1", V2, {
+      author: "stakeholder", body: "Stylesheet note", anchor: { path: "css/site.css" }
+    });
+  });
+
+  it("records a decision as data about the tree id and says it operates no gate", async () => {
+    const { actions } = await openSharing(V2);
+    expect(text(byTestId("artifact-viewer-decision-note")[0])).toMatch(/does not move any task or operate any gate/);
+    await type("artifact-viewer-decision-who", "stakeholder");
+    await type("artifact-viewer-decision-what", "approved");
+    await press("artifact-viewer-decision-submit");
+    expect(actions.recordArtifactDecision).toHaveBeenCalledWith("repo-1", V2, { who: "stakeholder", what: "approved" });
+    const decisions = byTestId("artifact-viewer-decision").map(text);
+    expect(decisions.at(-1)).toContain("approved");
+    // Only artifact operations exist on this surface; nothing reaches a task.
+    expect(actions.pushArtifact).not.toHaveBeenCalled();
+    // A recording on one version stays off another.
+    await press("artifact-viewer-previous");
+    expect(byTestId("artifact-viewer-decision").map(text).join()).not.toContain("stakeholder");
+    // Back on it, a server read that now returns the record shows it once.
+    DETAILS[V2].decisions.push(await actions.recordArtifactDecision.mock.results[0].value);
+    try {
+      await press("artifact-viewer-newer");
+      expect(byTestId("artifact-viewer-decision").map(text).filter((entry) => entry.includes("stakeholder"))).toHaveLength(1);
+    } finally {
+      DETAILS[V2].decisions.pop();
+    }
+  });
+
+  it("names the remote and its config source, and confirms the first push to it", async () => {
+    const { actions } = await openSharing(V2);
+    expect(text(byTestId("artifact-viewer-remote-url")[0])).toBe(REMOTE);
+    expect(text(byTestId("artifact-viewer-remote-source")[0])).toContain("committed repo config (.kanna/config.json)");
+    await press("artifact-viewer-push");
+    expect(actions.pushArtifact).not.toHaveBeenCalled();
+    expect(text(byTestId("artifact-viewer-push-confirm")[0])).toContain(REMOTE);
+    await press("artifact-viewer-push-accept");
+    expect(actions.pushArtifact).toHaveBeenCalledWith("repo-1", V2);
+    expect(text(byTestId("artifact-viewer-remote-outcome")[0])).toContain("1 refs created, 2 already up to date");
+    // Once pushed there, the next push goes without asking.
+    await press("artifact-viewer-push");
+    expect(byTestId("artifact-viewer-push-confirm")).toHaveLength(0);
+    expect(actions.pushArtifact).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows a refused push with the server's reasons", async () => {
+    const { actions } = await openSharing(V2, sharingActions({
+      pushArtifact: vi.fn(async () => {
+        throw new Error(`artifact remote ${REMOTE} already holds different objects under refs/kanna/artifacts/shared/records/x/comments/y (already exists); nothing there was overwritten`);
+      })
+    }));
+    await press("artifact-viewer-push");
+    await press("artifact-viewer-push-accept");
+    expect(actions.pushArtifact).toHaveBeenCalled();
+    expect(text(byTestId("artifact-viewer-remote-error")[0])).toContain("already exists");
+  });
+
+  it("fetches a hash, opens it and lists refused refs and missing versions", async () => {
+    const { actions, api } = await openSharing(V2);
+    await type("artifact-viewer-id-input", FETCHED);
+    await press("artifact-viewer-fetch");
+    expect(actions.fetchArtifact).toHaveBeenCalledWith("repo-1", FETCHED);
+    expect(api.getArtifact).toHaveBeenCalledWith("repo-1", FETCHED);
+    expect(text(byTestId("artifact-viewer-current-id")[0])).toContain(FETCHED.slice(0, 12));
+    const outcome = text(byTestId("artifact-viewer-remote-outcome")[0]);
+    expect(outcome).toContain("2 records imported");
+    expect(outcome).toContain("no task moved");
+    expect(text(byTestId("artifact-viewer-fetch-refused")[0])).toContain("record is not canonical");
+    expect(text(byTestId("artifact-viewer-fetch-missing-versions")[0])).toContain(MISSING);
+  });
+
+  it("offers a fetch for a hash this desktop does not hold", async () => {
+    const { actions } = await openSharing(MISSING);
+    await press("artifact-viewer-fetch-missing");
+    expect(actions.fetchArtifact).toHaveBeenCalledWith("repo-1", MISSING);
+  });
+
+  it("answers a late host-open load error with its own loading state, never the library's error page", async () => {
+    const api = client();
+    let releaseAbout = () => undefined as void;
+    const readArtifactFile = vi.fn((repoId: string, artifactId: string, path: string) =>
+      path === "pages/about.html"
+        ? new Promise<ArtifactFileContent>((resolve) => {
+            releaseAbout = () => void api.readArtifactFile(repoId, artifactId, path).then(resolve);
+          })
+        : api.readArtifactFile(repoId, artifactId, path));
+    await act(async () => {
+      renderer = create(
+        <ArtifactViewer repoId="repo-1" initialArtifactId={V2} getArtifact={api.getArtifact} readArtifactFile={readArtifactFile} onClose={() => undefined} />
+      );
+    });
+    await flush();
+    const { onError, renderError } = webView().props;
+    // Nothing drawn for a load error names the failure.
+    const generic = create(renderError("undefined", -10, "net::ERR_UNKNOWN_URL_SCHEME"));
+    expect(JSON.stringify(generic.toJSON())).not.toContain("ERR_UNKNOWN_URL_SCHEME");
+    // Android let the host-open through after 250 ms and failed it. The commit
+    // that learns of it swaps the failed WebView for the viewer's own loading
+    // state for the requested file.
+    await act(async () => {
+      onError({ nativeEvent: { url: "kanna-host:open?path=pages%2Fabout.html", code: -10, description: "net::ERR_UNKNOWN_URL_SCHEME" } });
+    });
+    expect(renderer!.root.findAll((node) => node.type === "WebView")).toHaveLength(0);
+    expect(text(renderer!.root)).toContain("Loading pages/about.html");
+    expect(readArtifactFile).toHaveBeenCalledWith("repo-1", V2, "pages/about.html");
+    // The late callback for the same navigation changes nothing further.
+    releaseAbout();
+    await flush();
+    expect(framedPage()).toContain("About v2");
+    expect(readArtifactFile.mock.calls.filter((call) => call[2] === "pages/about.html")).toHaveLength(1);
+    // Any other load error is not a request.
+    await act(async () => {
+      webView().props.onError({ nativeEvent: { url: "kanna-host:open?path=..%2Fsecret", code: -10, description: "x" } });
+    });
+    await flush();
+    expect(readArtifactFile).not.toHaveBeenCalledWith("repo-1", V2, "../secret");
+  });
+
+  it("says where to configure a remote when none is set, and cannot push or fetch", async () => {
+    await openSharing(V2, sharingActions({
+      getArtifactRemote: vi.fn(async (repoId: string) => ({ repoId, configured: false }))
+    }));
+    expect(text(byTestId("artifact-viewer-remote-unconfigured")[0])).toContain("artifacts.remote");
+    expect(byTestId("artifact-viewer-push")[0].props.disabled).toBe(true);
+    expect(byTestId("artifact-viewer-fetch")[0].props.disabled).toBe(true);
+  });
+});
+
+describe("ArtifactViewer (mobile) abandoned reads", () => {
+  it("starts a new page's reads only after the abandoned page's reads have settled", async () => {
+    const api = client();
+    const held: Array<{ path: string; release: () => void }> = [];
+    const readArtifactFile = vi.fn((repoId: string, artifactId: string, path: string) => {
+      if (artifactId === V2 && path === "index.html") {
+        return new Promise<ArtifactFileContent>((resolve) => {
+          held.push({ path, release: () => void api.readArtifactFile(repoId, artifactId, path).then(resolve) });
+        });
+      }
+      return api.readArtifactFile(repoId, artifactId, path);
+    });
+    await act(async () => {
+      renderer = create(
+        <ArtifactViewer repoId="repo-1" initialArtifactId={V2} getArtifact={api.getArtifact} readArtifactFile={readArtifactFile} onClose={() => undefined} />
+      );
+    });
+    await flush();
+    expect(held.map((read) => read.path)).toEqual(["index.html"]);
+    // The reader moves on while V2's entry is still on the wire.
+    await press("artifact-viewer-previous");
+    expect(readArtifactFile.mock.calls.filter((call) => call[1] === V1)).toEqual([]);
+    held[0].release();
+    await flush();
+    // V1's reads start only now, and V2's page, cancelled, reads nothing more.
+    expect(readArtifactFile.mock.calls.filter((call) => call[1] === V1).map((call) => call[2])).toEqual(["index.html", "css/site.css"]);
+    expect(readArtifactFile.mock.calls.filter((call) => call[1] === V2).map((call) => call[2])).toEqual(["index.html"]);
+    expect(framedPage()).toContain("Version one");
   });
 });

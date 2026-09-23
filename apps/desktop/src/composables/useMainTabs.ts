@@ -70,6 +70,12 @@ export interface MainTabDescriptor {
   artifactRepoId?: string;
   artifactId?: string;
   /**
+   * `artifact` tabs: the tree id on screen when it is not the one the tab
+   * opened at (the reader followed `previous`, or opened another id). The tab
+   * keeps its identity; a restart reopens this version.
+   */
+  artifactShownId?: string;
+  /**
    * `file` and `tree` tabs an agent opened through `kanna_open_view`: read
    * this task's content through the server's contained resolution rather than
    * from the worktree path directly.
@@ -179,6 +185,7 @@ function persistedDescriptor(tab: MainTabDescriptor): MainTabDescriptor {
   if (tab.shellScope !== undefined) descriptor.shellScope = tab.shellScope;
   if (tab.artifactRepoId !== undefined) descriptor.artifactRepoId = tab.artifactRepoId;
   if (tab.artifactId !== undefined) descriptor.artifactId = tab.artifactId;
+  if (typeof tab.artifactShownId === "string" && tab.artifactShownId) descriptor.artifactShownId = tab.artifactShownId;
   return descriptor;
 }
 
@@ -539,6 +546,14 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     if (tab) tab.reading = reading;
   }
 
+  /** Record the version an artifact tab is showing, so persistence restores it. */
+  function updateArtifactShown(id: string, artifactId: string): void {
+    const tab = tabs.value.find(tab => tab.id === id);
+    if (!tab || tab.kind !== "artifact") return;
+    if (artifactId === tab.artifactId) delete tab.artifactShownId;
+    else tab.artifactShownId = artifactId;
+  }
+
   function isOpen(id: string): boolean {
     return tabs.value.some((tab) => tab.id === id);
   }
@@ -726,6 +741,7 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     split,
     setSplit,
     updateReading,
+    updateArtifactShown,
     tabs,
     activeTabId,
     activeTab,

@@ -145,7 +145,6 @@ impl ArtifactRemote {
     }
 
     /// The remote as it may be shown: URL credentials removed.
-    #[cfg(test)]
     pub(crate) fn display(&self) -> &str {
         &self.display
     }
@@ -159,10 +158,21 @@ fn redact(url: &str) -> String {
     };
     let authority_end = rest.find('/').unwrap_or(rest.len());
     let (authority, path) = rest.split_at(authority_end);
-    match authority.rsplit_once('@') {
-        Some((_, host)) => format!("{scheme}://***@{host}{path}"),
-        None => url.to_string(),
+    if let Some((_, host)) = authority.rsplit_once('@') {
+        return format!("{scheme}://***@{host}{path}");
     }
+    // A password may itself contain '/', which ends the apparent authority
+    // early: `user:pa/ss@host` splits as `user:pa` + `/ss@host`. A colon
+    // followed by something other than a port number, with an '@' later on,
+    // is that case; everything through the first '@' is credentials.
+    let after_colon = authority.split_once(':').map(|(_, after)| after);
+    let is_port = |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
+    if after_colon.is_some_and(|after| !is_port(after)) {
+        if let Some((_, host)) = path.split_once('@') {
+            return format!("{scheme}://***@{host}");
+        }
+    }
+    url.to_string()
 }
 
 // ---------------------------------------------------------------------------

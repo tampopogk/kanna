@@ -693,6 +693,44 @@ fn remote_configuration_refuses_helpers_options_and_relative_paths() {
     );
 }
 
+/// A password may contain '/', which ends the apparent URL authority before
+/// the '@'. The display must still drop it, while a port, an scp-style user
+/// name and an '@' that is only part of a path stay as written.
+#[test]
+fn a_password_containing_a_slash_is_redacted_from_the_display() {
+    let root = Path::new("/srv/home");
+    let store = Path::new("/srv/home/.kanna/repos/r/artifacts.git");
+    for (configured, display) in [
+        (
+            "https://user:pa/ss@host/repo.git",
+            "https://***@host/repo.git",
+        ),
+        (
+            "https://user:p/a/s/s@example.com/team/a.git",
+            "https://***@example.com/team/a.git",
+        ),
+        ("ssh://git:x/y@host:2222/a.git", "ssh://***@host:2222/a.git"),
+        // A password that begins with '/' leaves nothing after the colon.
+        ("https://user:/secret@host/a.git", "https://***@host/a.git"),
+        // A port is not a password: the '@' belongs to the path.
+        ("https://host:8080/p@x", "https://host:8080/p@x"),
+        ("https://host/team/p@x.git", "https://host/team/p@x.git"),
+        ("user@host:path/a.git", "user@host:path/a.git"),
+        (
+            "git@github.com:team/artifacts.git",
+            "git@github.com:team/artifacts.git",
+        ),
+    ] {
+        let remote = ArtifactRemote::parse(configured, root, store).unwrap();
+        assert_eq!(remote.display(), display, "{configured}");
+    }
+    // A refusal names the remote through the same redaction.
+    let error = ArtifactRemote::parse("ftp://user:pa/ss@host/repo.git", root, store).unwrap_err();
+    let message = error.to_string();
+    assert!(!message.contains("pa/ss"), "{message}");
+    assert!(message.contains("ftp://***@host/repo.git"), "{message}");
+}
+
 /// A peer with write access plants a well-formed version record for a
 /// shared tree whose `previous` names a tree the receiver published but never
 /// shared. The receiver's ordinary reply push must not follow that link.

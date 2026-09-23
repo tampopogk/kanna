@@ -447,6 +447,22 @@ describe("optional task reference", () => {
     expect(restored.activeTab.value).toEqual({ kind: "preview", portName: "DEV_PORT", id: "preview:DEV_PORT" });
     expect(restored.activeTabContext.value).not.toBe("main");
   });
+  it("restores an artifact tab at the version the reader navigated to, under the same tab id", () => {
+    const opened = "a".repeat(40);
+    const older = "b".repeat(40);
+    const tabs = useMainTabs({ scopeKey: computed(() => "repo:r1") });
+    const id = tabs.openTab({ kind: "artifact", artifactRepoId: "r1", artifactId: opened })!;
+    tabs.updateArtifactShown(id, older);
+    const restored = useMainTabs({ scopeKey: computed(() => "repo:r1") });
+    restored.restoreScopes(parsePersistedMainTabs(JSON.stringify(tabs.snapshotScopes())));
+    expect(restored.activeTab.value).toEqual({ kind: "artifact", artifactRepoId: "r1", artifactId: opened, artifactShownId: older, id });
+    // Back at the id it opened with, nothing extra is stored.
+    restored.updateArtifactShown(id, opened);
+    expect(restored.snapshotScopes().scopes["repo:r1"].tabs).toEqual([{ kind: "artifact", artifactRepoId: "r1", artifactId: opened }]);
+    // Opening the original id again re-aims the tab at it.
+    tabs.openTab({ kind: "artifact", artifactRepoId: "r1", artifactId: opened });
+    expect(tabs.activeTab.value?.artifactShownId).toBeUndefined();
+  });
 });
 
 it('closes just one nested pane and preserves its tabs and remaining split', () => {

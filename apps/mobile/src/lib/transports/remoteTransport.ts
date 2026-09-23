@@ -37,6 +37,13 @@ import type {
   WritePathHealth,
   ArtifactDetail,
   ArtifactFileContent,
+  ArtifactComment,
+  ArtifactCommentInput,
+  ArtifactDecision,
+  ArtifactDecisionInput,
+  ArtifactFetchOutcome,
+  ArtifactPushOutcome,
+  ArtifactRemoteInfo,
 } from "../api/types";
 import {
   buildCloudTaskId,
@@ -484,6 +491,22 @@ export function createRemoteTransport({
       body
     });
     return response as T;
+  };
+
+  // Artifact writes are addressed by repository and exact tree id and go to
+  // the desktop that holds the repository; none names a task.
+  const artifactPost = async <T>(
+    repoId: string,
+    artifactId: string,
+    suffix: string,
+    body: unknown | null
+  ): Promise<T> => {
+    const repoRoute = await resolveCloudRepoRoute(repoId);
+    const path = (localRepoId: string) =>
+      `/v1/repos/${encodeURIComponent(localRepoId)}/artifacts/${encodeURIComponent(artifactId)}${suffix}`;
+    return repoRoute
+      ? requestDesktop<T>(repoRoute.desktopId, "POST", path(repoRoute.localRepoId), body)
+      : request<T>("POST", path(repoId), body);
   };
 
   const requestTask = async <T>(
@@ -992,6 +1015,21 @@ export function createRemoteTransport({
         null
       );
     },
+    getArtifactRemote: async (repoId: string) => {
+      const repoRoute = await resolveCloudRepoRoute(repoId);
+      const path = (localRepoId: string) => `/v1/repos/${encodeURIComponent(localRepoId)}/artifact-remote`;
+      return repoRoute
+        ? requestDesktop<ArtifactRemoteInfo>(repoRoute.desktopId, "GET", path(repoRoute.localRepoId), null)
+        : request<ArtifactRemoteInfo>("GET", path(repoId), null);
+    },
+    recordArtifactComment: (repoId: string, artifactId: string, input: ArtifactCommentInput) =>
+      artifactPost<ArtifactComment>(repoId, artifactId, "/comments", input),
+    recordArtifactDecision: (repoId: string, artifactId: string, input: ArtifactDecisionInput) =>
+      artifactPost<ArtifactDecision>(repoId, artifactId, "/decisions", input),
+    pushArtifact: (repoId: string, artifactId: string) =>
+      artifactPost<ArtifactPushOutcome>(repoId, artifactId, "/push", null),
+    fetchArtifact: (repoId: string, artifactId: string) =>
+      artifactPost<ArtifactFetchOutcome>(repoId, artifactId, "/fetch", null),
     readTaskDiff: (taskId: string, diffRequest?: TaskDiffRequest) =>
       requestTask<TaskDiffContent>(
         taskId,

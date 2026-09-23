@@ -608,7 +608,7 @@ export function useAppTaskNavigation({
     if (openArtifact && artifactRepoId) {
       cmds.push({
         id: "open-artifact",
-        label: "Open Artifact by Tree Id…",
+        label: t('commandPalette.openArtifact'),
         execute: () => openArtifact(artifactRepoId),
       });
     }

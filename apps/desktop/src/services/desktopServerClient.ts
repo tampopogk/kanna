@@ -217,7 +217,7 @@ function isTerminalRequestError(error: unknown): boolean {
 
 async function requestJson<T>(
   path: string,
-  options: { method?: string; body?: unknown; retryMs?: number } = {},
+  options: { method?: string; body?: unknown; retryMs?: number; signal?: AbortSignal } = {},
 ): Promise<T> {
   const deadline = Date.now() + (options.retryMs ?? 0);
   let lastError: unknown = null;
@@ -235,6 +235,7 @@ async function requestJson<T>(
           ...(requestBody === undefined ? {} : { "content-type": "application/json" }),
         },
         body: requestBody,
+        signal: options.signal,
       });
       if (response.ok) {
         if (response.status === 204) return undefined as T;
@@ -269,7 +270,7 @@ async function requestJson<T>(
  */
 export function requestDesktopServerJson<T>(
   path: string,
-  options: { method?: string; body?: unknown } = {},
+  options: { method?: string; body?: unknown; signal?: AbortSignal } = {},
 ): Promise<T> {
   return requestJson<T>(path, options);
 }

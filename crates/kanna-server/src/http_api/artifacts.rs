@@ -290,6 +290,86 @@ pub(super) async fn fetch_artifact(
     .await
 }
 
+/// Which shared artifact remote a repository is configured with, and where
+/// that configuration came from, so a client can show what push and fetch
+/// will use before either runs. Read-only: nothing is created or contacted.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ArtifactRemoteStatus {
+    repo_id: String,
+    configured: bool,
+    /// The remote as it may be shown, URL credentials removed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote: Option<String>,
+    /// `committed` or `machine-local`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<&'static str>,
+    /// The repository-relative file that configured it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_file: Option<&'static str>,
+    /// Why a configured remote is unusable; push and fetch refuse it with
+    /// the same code.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<ArtifactRemoteStatusError>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct ArtifactRemoteStatusError {
+    code: &'static str,
+    message: String,
+}
+
+pub(super) async fn get_artifact_remote(
+    _access: PrivilegedTaskAccess,
+    State(state): State<Arc<AppState>>,
+    Path(repo_id): Path<String>,
+) -> Response {
+    blocking("artifact remote status", move || {
+        let (repo, path, policy) = repository_location(&state, &repo_id)?;
+        let Some(configured) = policy.remote.as_deref() else {
+            return Ok(Json(ArtifactRemoteStatus {
+                repo_id: repo.id,
+                configured: false,
+                remote: None,
+                source: None,
+                config_file: None,
+                error: None,
+            })
+            .into_response());
+        };
+        let (source, config_file) = match policy.remote_source {
+            Some(crate::task_creator::ArtifactRemoteSource::MachineLocal) => {
+                ("machine-local", ".kanna/config.local.json")
+            }
+            Some(crate::task_creator::ArtifactRemoteSource::Committed) | None => {
+                ("committed", ".kanna/config.json")
+            }
+        };
+        let (remote, error) =
+            match ArtifactRemote::parse(configured, state.artifact_storage.home(), &path) {
+                Ok(remote) => (Some(remote.display().to_string()), None),
+                // The message names the remote only through `redact`.
+                Err(error) => (
+                    None,
+                    Some(ArtifactRemoteStatusError {
+                        code: error.code(),
+                        message: error.to_string(),
+                    }),
+                ),
+            };
+        Ok(Json(ArtifactRemoteStatus {
+            repo_id: repo.id,
+            configured: true,
+            remote,
+            source: Some(source),
+            config_file: Some(config_file),
+            error,
+        })
+        .into_response())
+    })
+    .await
+}
+
 fn repository_location(
     state: &AppState,
     repo_id: &str,

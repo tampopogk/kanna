@@ -158,3 +158,21 @@ export interface ArtifactFileContent {
   size: number;
   dataBase64: string;
 }
+
+/**
+ * The artifact remote a repository's configuration resolves to on this
+ * machine, from `GET /v1/repos/{repoId}/artifact-remote`. A client shows it
+ * before a push, because the committed repo config can choose it: whoever
+ * wrote `.kanna/config.json` decides where a push goes unless this machine's
+ * `.kanna/config.local.json` says otherwise. `remote` never carries URL
+ * credentials.
+ */
+export interface ArtifactRemoteInfo {
+  repoId: string;
+  configured: boolean;
+  remote?: string;
+  source?: "committed" | "machine-local";
+  configFile?: string;
+  /** The configured value is present but unusable. */
+  error?: { code: string; message: string };
+}

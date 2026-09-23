@@ -14,6 +14,9 @@ struct ArtifactEnv {
     repo: PathBuf,
     workspace: PathBuf,
     home: PathBuf,
+    /// Task ids this home's advance-stage route handed to its stage
+    /// advancer, when the home was set up with `stage_gate`.
+    advanced: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl Drop for ArtifactEnv {
@@ -56,6 +59,48 @@ fn write_mockup(workspace: &Path, directory: &str, css: &str) {
 }
 
 fn setup(label: &str, local_config: Option<Value>) -> ArtifactEnv {
+    setup_home(
+        label,
+        HomeOptions {
+            local_config,
+            ..HomeOptions::default()
+        },
+    )
+}
+
+/// How one test home is set up beyond the defaults `setup` uses.
+struct HomeOptions {
+    /// Written to the working tree's `.kanna/config.local.json`.
+    local_config: Option<Value>,
+    /// Committed as `.kanna/config.json` and published as `origin/main`, the
+    /// snapshot repo definitions resolve from.
+    committed_config: Option<Value>,
+    /// Seed `task-a` and `task-closed`. A home that only receives shared
+    /// artifacts has no tasks of its own.
+    seed_tasks: bool,
+    /// Answer advance-stage through the state's test stage advancer, which
+    /// records the call and moves the task to `review` in this home's DB.
+    stage_gate: bool,
+}
+
+impl Default for HomeOptions {
+    fn default() -> Self {
+        Self {
+            local_config: None,
+            committed_config: None,
+            seed_tasks: true,
+            stage_gate: false,
+        }
+    }
+}
+
+fn setup_home(label: &str, options: HomeOptions) -> ArtifactEnv {
+    let HomeOptions {
+        local_config,
+        committed_config,
+        seed_tasks,
+        stage_gate,
+    } = options;
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../.tmp/artifact-http-tests")
         .join(format!("{label}-{}", std::process::id()));
@@ -66,6 +111,12 @@ fn setup(label: &str, local_config: Option<Value>) -> ArtifactEnv {
     std::fs::create_dir_all(&repo).unwrap();
     run_git(&repo, &["init", "--quiet", "--initial-branch", "main"]);
     write(&repo.join("README.md"), b"fixture\n");
+    if let Some(committed) = &committed_config {
+        write(
+            &repo.join(".kanna/config.json"),
+            committed.to_string().as_bytes(),
+        );
+    }
     run_git(&repo, &["add", "."]);
     run_git(
         &repo,
@@ -80,6 +131,9 @@ fn setup(label: &str, local_config: Option<Value>) -> ArtifactEnv {
             "base",
         ],
     );
+    if committed_config.is_some() {
+        run_git(&repo, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    }
     if let Some(local) = local_config {
         write(
             &repo.join(".kanna/config.local.json"),
@@ -100,6 +154,9 @@ fn setup(label: &str, local_config: Option<Value>) -> ArtifactEnv {
             default_branch: Some("main"),
         })
         .unwrap();
+        if !seed_tasks {
+            return;
+        }
         for id in ["task-a", "task-closed"] {
             db.insert_pipeline_item(NewPipelineItem {
                 id,
@@ -131,6 +188,30 @@ fn setup(label: &str, local_config: Option<Value>) -> ArtifactEnv {
         }
         db.close_pipeline_item("task-closed").unwrap();
     });
+    let advanced = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let state = if stage_gate {
+        // The real transition forks a worktree and spawns the next stage's
+        // agent through the daemon; this seam replaces only that last step,
+        // after the route's own access, task resolution and transfer checks.
+        let mut state = Arc::try_unwrap(state).unwrap_or_else(|_| unreachable!("fresh test state"));
+        let db_path = state.config().db_path.clone();
+        let calls = Arc::clone(&advanced);
+        state.stage_advancer = Some(Arc::new(move |task_id: String| {
+            calls.lock().unwrap().push(task_id.clone());
+            Db::open(&db_path)
+                .and_then(|db| db.update_pipeline_item_stage(&task_id, "review"))
+                .map_err(|error| error.to_string())?;
+            Ok(crate::mobile_api::TaskActionResponse {
+                task_id,
+                follow_task: None,
+                revision_budget: None,
+                workflow_extended: None,
+            })
+        }));
+        Arc::new(state)
+    } else {
+        state
+    };
     ArtifactEnv {
         root,
         app: router(Arc::clone(&state)),
@@ -138,6 +219,7 @@ fn setup(label: &str, local_config: Option<Value>) -> ArtifactEnv {
         repo,
         workspace,
         home,
+        advanced,
     }
 }
 
@@ -956,4 +1038,357 @@ async fn sharing_needs_a_usable_configured_remote() {
         let response = env.app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{action}");
     }
+}
+
+#[tokio::test]
+async fn the_artifact_remote_route_reports_what_push_and_fetch_will_use() {
+    let unconfigured = setup("remote-status-none", None);
+    let (status, body) = call(
+        &unconfigured.app,
+        "GET",
+        "/v1/repos/repo-a/artifact-remote",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({ "repoId": "repo-a", "configured": false }));
+
+    let (status, body) = call(
+        &unconfigured.app,
+        "GET",
+        "/v1/repos/missing/artifact-remote",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["error"], "repo_not_found");
+
+    let credentialed = setup(
+        "remote-status-secret",
+        Some(json!({ "artifacts": { "remote": "https://user:pa/ss@host.example/team/a.git" } })),
+    );
+    let (status, body) = call(
+        &credentialed.app,
+        "GET",
+        "/v1/repos/repo-a/artifact-remote",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body,
+        json!({
+            "repoId": "repo-a",
+            "configured": true,
+            "remote": "https://***@host.example/team/a.git",
+            "source": "machine-local",
+            "configFile": ".kanna/config.local.json",
+        })
+    );
+    assert!(!body.to_string().contains("pa/ss"));
+
+    let helper = setup(
+        "remote-status-invalid",
+        Some(json!({ "artifacts": { "remote": "ext::sh -c 'touch pwned'" } })),
+    );
+    let (status, body) = call(&helper.app, "GET", "/v1/repos/repo-a/artifact-remote", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["configured"], true);
+    assert_eq!(body["source"], "machine-local");
+    assert_eq!(body["configFile"], ".kanna/config.local.json");
+    assert_eq!(body["error"]["code"], "artifact_remote_invalid");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("remote helpers"),
+        "{body}"
+    );
+    assert!(body.get("remote").is_none(), "{body}");
+    assert!(!helper.repo.join("pwned").exists());
+
+    // A committed remote with a machine-local location: the remote is still
+    // the committed one.
+    let mixed = setup_home(
+        "remote-status-mixed",
+        HomeOptions {
+            committed_config: Some(
+                json!({ "artifacts": { "remote": "ssh://git@team.example/a.git" } }),
+            ),
+            local_config: Some(json!({ "artifacts": { "retention": "30-days" } })),
+            ..HomeOptions::default()
+        },
+    );
+    let (status, body) = call(&mixed.app, "GET", "/v1/repos/repo-a/artifact-remote", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["remote"], "ssh://***@team.example/a.git");
+    assert_eq!(body["source"], "committed");
+    assert_eq!(body["configFile"], ".kanna/config.json");
+
+    // An unresolvable configuration is the same refusal every artifact
+    // route gives.
+    let broken = setup(
+        "remote-status-unresolved",
+        Some(json!({ "artifacts": { "origin": "ssh://host/a.git" } })),
+    );
+    let (status, body) = call(&broken.app, "GET", "/v1/repos/repo-a/artifact-remote", None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "artifact_config_unresolved");
+}
+
+/// Spec §14 across two accounts: two homes that were never paired (separate
+/// servers and databases, no peer or machine trust between them) review one
+/// artifact through a single configured remote. The reviewing home can read,
+/// comment and decide; only the owning home's stage gate moves its task.
+#[tokio::test]
+async fn section_14_two_accounts_share_review_through_one_remote_without_pairing() {
+    let shared = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.tmp/artifact-http-tests")
+        .join(format!("s14-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&shared);
+    std::fs::create_dir_all(&shared).unwrap();
+    let shared = std::fs::canonicalize(shared).unwrap();
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(shared.clone());
+    run_git(&shared, &["init", "--bare", "--quiet", "remote.git"]);
+    let remote = shared.join("remote.git");
+    let remote_path = remote.to_str().unwrap().to_string();
+    let config = json!({ "artifacts": { "remote": remote_path } });
+    let a = setup_home(
+        "s14-a",
+        HomeOptions {
+            local_config: Some(config.clone()),
+            stage_gate: true,
+            ..HomeOptions::default()
+        },
+    );
+    let b = setup_home(
+        "s14-b",
+        HomeOptions {
+            local_config: Some(config.clone()),
+            seed_tasks: false,
+            ..HomeOptions::default()
+        },
+    );
+    let committed = setup_home(
+        "s14-committed",
+        HomeOptions {
+            committed_config: Some(config),
+            seed_tasks: false,
+            ..HomeOptions::default()
+        },
+    );
+
+    // Both homes name the same remote, configured on each machine, before
+    // anything is pushed; a committed configuration says so.
+    for env in [&a, &b] {
+        let (status, body) = call(&env.app, "GET", "/v1/repos/repo-a/artifact-remote", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body,
+            json!({
+                "repoId": "repo-a",
+                "configured": true,
+                "remote": remote_path,
+                "source": "machine-local",
+                "configFile": ".kanna/config.local.json",
+            })
+        );
+    }
+    let (status, body) = call(
+        &committed.app,
+        "GET",
+        "/v1/repos/repo-a/artifact-remote",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["remote"], remote_path.as_str());
+    assert_eq!(body["source"], "committed");
+    assert_eq!(body["configFile"], ".kanna/config.json");
+    assert_eq!(
+        run_git_output(&remote, &["for-each-ref", "--format=%(refname)"]),
+        "",
+        "nothing was pushed yet"
+    );
+
+    // A publishes a multi-file mockup from task-a's workspace and shares it.
+    let (status, published) = publish(&a.app, json!({ "path": "mock", "kind": "mockup" })).await;
+    assert_eq!(status, StatusCode::CREATED, "{published}");
+    let hash = published["artifactId"].as_str().unwrap().to_string();
+    let (status, pushed) = call(
+        &a.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{hash}/push"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{pushed}");
+    assert!(
+        !pushed["createdRefs"].as_array().unwrap().is_empty(),
+        "{pushed}"
+    );
+    let (status, again) = call(
+        &a.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{hash}/push"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(again["createdRefs"], json!([]), "{again}");
+    assert!(again["upToDateRefs"].as_u64().unwrap() > 0, "{again}");
+
+    // B has never published; the hash is all it is given.
+    assert!(!b.home.join(".kanna/repos/repo-a/artifacts.git").exists());
+    let (status, fetched) = call(
+        &b.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{hash}/fetch"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{fetched}");
+    assert_eq!(fetched["detail"]["artifactId"], hash);
+    let (status, detail) = call(
+        &b.app,
+        "GET",
+        &format!("/v1/repos/repo-a/artifacts/{hash}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    let files: Vec<&str> = detail["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["path"].as_str().unwrap())
+        .collect();
+    assert!(
+        files.contains(&"index.html") && files.contains(&"css/site.css"),
+        "{detail}"
+    );
+    let (status, page) = call(
+        &b.app,
+        "GET",
+        &format!("/v1/repos/repo-a/artifacts/{hash}/files?path=index.html"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(page["mediaType"], "text/html; charset=utf-8");
+    let bytes = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        page["dataBase64"].as_str().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(bytes, INDEX_HTML);
+
+    // B reviews that exact version and shares its review.
+    let anchor =
+        json!({ "path": "css/site.css", "position": "line 1", "excerpt": "body{color:#123}" });
+    let (status, comment) = call(
+        &b.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{hash}/comments"),
+        Some(json!({ "author": "client", "body": "the accent is too dark", "anchor": anchor })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{comment}");
+    let (status, decision) = call(
+        &b.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{hash}/decisions"),
+        Some(json!({ "who": "client", "what": "approved" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{decision}");
+    let (status, pushed) = call(
+        &b.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{hash}/push"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{pushed}");
+
+    // A receives both records, anchored to the version they were made on.
+    let (status, fetched) = call(
+        &a.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{hash}/fetch"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{fetched}");
+    assert_eq!(fetched["recordsImported"], 2, "{fetched}");
+    let (status, detail) = call(
+        &a.app,
+        "GET",
+        &format!("/v1/repos/repo-a/artifacts/{hash}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    let comments = detail["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 1, "{detail}");
+    assert_eq!(comments[0]["author"], "client");
+    assert_eq!(comments[0]["aboutArtifactId"], hash);
+    assert_eq!(comments[0]["anchor"], anchor);
+    let decisions = detail["decisions"].as_array().unwrap();
+    assert_eq!(decisions.len(), 1, "{detail}");
+    assert_eq!(decisions[0]["who"], "client");
+    assert_eq!(decisions[0]["what"], "approved");
+    assert_eq!(decisions[0]["aboutArtifactId"], hash);
+
+    // The received "approved" is data: task-a did not move, and nothing
+    // reached A's stage gate.
+    let a_db = Db::open(&a.state.config().db_path).unwrap();
+    let item = a_db.get_pipeline_item("task-a").unwrap().unwrap();
+    assert_eq!(item.stage.as_deref(), Some("in progress"));
+    assert!(item.closed_at.is_none());
+    assert!(a.advanced.lock().unwrap().is_empty());
+
+    // B cannot address A's task: it is not in B's database, and B's gate
+    // for it answers not found.
+    let b_db = Db::open(&b.state.config().db_path).unwrap();
+    assert!(b_db.get_pipeline_item("task-a").unwrap().is_none());
+    let (status, body) = call(
+        &b.app,
+        "POST",
+        "/v1/tasks/task-a/actions/advance-stage",
+        Some(json!({ "source": "operator" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert!(a.advanced.lock().unwrap().is_empty());
+
+    // A's owner operates A's gate, and that is what moves task-a.
+    let (status, body) = call(
+        &a.app,
+        "POST",
+        "/v1/tasks/task-a/actions/advance-stage",
+        Some(json!({ "source": "operator" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(*a.advanced.lock().unwrap(), ["task-a"]);
+    let item = a_db.get_pipeline_item("task-a").unwrap().unwrap();
+    assert_eq!(item.stage.as_deref(), Some("review"));
+}
+
+fn run_git_output(directory: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(directory)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git {args:?}");
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
 }

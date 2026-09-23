@@ -542,6 +542,23 @@ export type {
   ArtifactDecision,
   ArtifactDetail,
   ArtifactFileContent,
+  ArtifactFetchOutcome,
   ArtifactFileEntry,
+  ArtifactPushOutcome,
+  ArtifactRefusedRef,
+  ArtifactRemoteInfo,
   ArtifactVersion
 } from "../../../../../packages/core/src/artifacts/types";
+
+/** A comment about one exact tree id, optionally anchored to a file of it. */
+export interface ArtifactCommentInput {
+  author: string;
+  body: string;
+  anchor?: { path?: string; position?: string; excerpt?: string };
+}
+
+/** A decision about one exact tree id. It is a record; it moves no task. */
+export interface ArtifactDecisionInput {
+  who: string;
+  what: string;
+}

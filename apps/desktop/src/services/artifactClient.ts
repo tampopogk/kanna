@@ -3,6 +3,9 @@ import type {
   ArtifactFileContent,
   ArtifactDecision,
   ArtifactDetail,
+  ArtifactFetchOutcome,
+  ArtifactPushOutcome,
+  ArtifactRemoteInfo,
   OpenedArtifactPreview,
 } from "@kanna/core";
 import { DesktopServerRequestError, requestDesktopServerJson } from "./desktopServerClient";
@@ -63,9 +66,15 @@ export async function fetchArtifact(repoId: string, artifactId: string): Promise
   return requestDesktopServerJson<ArtifactDetail>(artifactPath(repoId, artifactId)).catch(classify);
 }
 
-export async function readArtifactFile(repoId: string, artifactId: string, path: string): Promise<ArtifactFileContent> {
+export async function readArtifactFile(
+  repoId: string,
+  artifactId: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<ArtifactFileContent> {
   return requestDesktopServerJson<ArtifactFileContent>(
     artifactPath(repoId, artifactId, `/files?path=${encodeURIComponent(path)}`),
+    { signal },
   ).catch(classify);
 }
 
@@ -106,4 +115,53 @@ export async function recordArtifactDecision(
     method: "POST",
     body: input,
   });
+}
+
+/**
+ * A push or fetch the server refused. `refs` names the remote refs that
+ * already hold different objects (a conflict); `remote` is redacted.
+ */
+export class ArtifactRemoteError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly remote: string | null,
+    readonly refs: string[],
+  ) {
+    super(message);
+    this.name = "ArtifactRemoteError";
+  }
+}
+
+function classifyRemote(error: unknown): never {
+  if (error instanceof DesktopServerRequestError) {
+    const body = error.parsedBody();
+    const code = typeof body?.error === "string" ? body.error : "";
+    if (code.startsWith("artifact_remote") || code === "artifact_not_on_remote") {
+      throw new ArtifactRemoteError(
+        code,
+        typeof body?.message === "string" ? body.message : error.message,
+        typeof body?.remote === "string" ? body.remote : null,
+        Array.isArray(body?.refs) ? body.refs.filter((ref: unknown): ref is string => typeof ref === "string") : [],
+      );
+    }
+  }
+  return classify(error);
+}
+
+/** Where a push of this repository's artifacts would go, and which config file chose it. */
+export async function fetchArtifactRemoteInfo(repoId: string): Promise<ArtifactRemoteInfo> {
+  return requestDesktopServerJson<ArtifactRemoteInfo>(`/v1/repos/${encodeURIComponent(repoId)}/artifact-remote`);
+}
+
+/** Push one artifact, its earlier versions and all their records to the configured remote. */
+export async function pushArtifact(repoId: string, artifactId: string): Promise<ArtifactPushOutcome> {
+  return requestDesktopServerJson<ArtifactPushOutcome>(artifactPath(repoId, artifactId, "/push"), { method: "POST" })
+    .catch(classifyRemote);
+}
+
+/** Fetch one artifact by hash from the configured remote. Received decisions change no task. */
+export async function fetchArtifactFromRemote(repoId: string, artifactId: string): Promise<ArtifactFetchOutcome> {
+  return requestDesktopServerJson<ArtifactFetchOutcome>(artifactPath(repoId, artifactId, "/fetch"), { method: "POST" })
+    .catch(classifyRemote);
 }

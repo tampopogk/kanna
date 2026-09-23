@@ -1,4 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -35,6 +37,8 @@ const PROBES = [
   "localStorage",
   "window.open",
   "fetch control API",
+  "fetch sentinel",
+  "csp connect-src",
   "navigate top window",
 ];
 
@@ -53,7 +57,25 @@ const INSTALL_PROBE_LISTENER = `
     }
   });`;
 
-function probeHtml(controlBaseUrl: string, heading: string): string {
+/**
+ * A loopback listener owned by this test and by nothing else. A fetch that
+ * fails in the page could still have been sent (a CORS failure is reported
+ * after the request left); the listener's request count is what shows the
+ * page never reached the network at all.
+ */
+async function startSentinel(): Promise<{ server: Server; url: string; hits: string[] }> {
+  const hits: string[] = [];
+  const server = createServer((request, response) => {
+    hits.push(`${request.method} ${request.url}`);
+    response.setHeader("access-control-allow-origin", "*");
+    response.end("sentinel");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  return { server, url: `http://127.0.0.1:${port}/probe`, hits };
+}
+
+function probeHtml(controlBaseUrl: string, heading: string, sentinelUrl: string): string {
   return `<!doctype html>
 <html><head>
 <meta charset="utf-8">
@@ -93,6 +115,18 @@ attempt("React Native bridge", () => typeof window.ReactNativeWebView, (value) =
 attempt("cookies", () => document.cookie, () => false);
 attempt("localStorage", () => window.localStorage.length, () => false);
 attempt("window.open", () => window.open("https://example.com/", "_blank"), (value) => value === null);
+// The policy's own refusal, as the engine reports it inside the page.
+let cspReported = false;
+document.addEventListener("securitypolicyviolation", (event) => {
+  if (cspReported || !String(event.effectiveDirective).startsWith("connect-src")) return;
+  cspReported = true;
+  report("csp connect-src", "blocked (" + event.effectiveDirective + " " + event.blockedURI + ")");
+});
+setTimeout(() => { if (!cspReported) report("csp connect-src", "NO VIOLATION REPORTED"); }, 2000);
+fetch(${JSON.stringify(sentinelUrl)}).then(
+  (response) => report("fetch sentinel", "ALLOWED (" + response.status + ")"),
+  (error) => report("fetch sentinel", "blocked (" + error.name + ")")
+);
 fetch(${JSON.stringify(`${controlBaseUrl}/v1/status`)}).then(
   (response) => report("fetch control API", "ALLOWED (" + response.status + ")"),
   (error) => report("fetch control API", "blocked (" + error.name + ")")
@@ -104,12 +138,12 @@ setTimeout(() => {
 </body></html>`;
 }
 
-async function writeMockup(directory: string, controlBaseUrl: string, heading: string, accent: string) {
+async function writeMockup(directory: string, controlBaseUrl: string, heading: string, accent: string, sentinelUrl: string) {
   await mkdir(join(directory, "css"), { recursive: true });
   await mkdir(join(directory, "js"), { recursive: true });
   await mkdir(join(directory, "img"), { recursive: true });
   await mkdir(join(directory, "pages"), { recursive: true });
-  await writeFile(join(directory, "index.html"), probeHtml(controlBaseUrl, heading));
+  await writeFile(join(directory, "index.html"), probeHtml(controlBaseUrl, heading, sentinelUrl));
   await writeFile(join(directory, "css/site.css"),
     `body { font: 14px -apple-system, sans-serif; margin: 16px; color: #1b2230; }
 header { display: flex; gap: 12px; align-items: center; border-bottom: 4px solid ${accent}; }
@@ -129,8 +163,10 @@ describe("artifact viewer", () => {
   const taskId = "artifact-viewer-producer";
   let repoPath = "";
   let repoId = "";
+  let sentinel: Awaited<ReturnType<typeof startSentinel>>;
 
   beforeAll(async () => {
+    sentinel = await startSentinel();
     await client.createSession();
     await resetDatabase(client);
     repoPath = await createSeedFixtureRepo("task-switch-minimal");
@@ -152,6 +188,7 @@ describe("artifact viewer", () => {
   afterAll(async () => {
     await cleanupFixtureRepos(repoPath ? [repoPath] : []);
     await client.deleteSession();
+    await new Promise<void>((resolve) => sentinel?.server.close(() => resolve()) ?? resolve());
   });
 
   it("frames a published mockup with its assets, shows exact-version anchors, and contains the page", async () => {
@@ -168,9 +205,9 @@ describe("artifact viewer", () => {
     };
 
     const mockup = join(repoPath, "artifact-probe");
-    await writeMockup(mockup, server.baseUrl, "Checkout mockup v1", "#6b7280");
+    await writeMockup(mockup, server.baseUrl, "Checkout mockup v1", "#6b7280", sentinel.url);
     const v1 = await api("POST", `/v1/tasks/${taskId}/artifacts`, { path: "artifact-probe", kind: "mockup" });
-    await writeMockup(mockup, server.baseUrl, "Checkout mockup v2", "#2563eb");
+    await writeMockup(mockup, server.baseUrl, "Checkout mockup v2", "#2563eb", sentinel.url);
     const v2 = await api("POST", `/v1/tasks/${taskId}/artifacts`, {
       path: "artifact-probe", kind: "mockup", previous: v1.artifactId,
     });
@@ -212,6 +249,10 @@ describe("artifact viewer", () => {
       // Posted by the sandboxed page itself, which has no origin of its own.
       expect(report.origin, report.name).toBe("null");
     }
+    // The refusal happened before the network: the page's own policy fired,
+    // and the listener nothing else knows about never saw a request.
+    expect(reports.find((report) => report.name === "csp connect-src")?.outcome).toMatch(/^blocked \(connect-src/);
+    expect(sentinel.hits).toEqual([]);
     await sleep(500);
     await mkdir(SCREENSHOT_DIR, { recursive: true });
     await client.screenshot(join(SCREENSHOT_DIR, "desktop-artifact-viewer.png"));
