@@ -59,12 +59,14 @@ fn exits_workflow() -> Value {
     })
 }
 
-struct Fixture {
-    app: axum::Router,
-    state: Arc<AppState>,
-    db_path: String,
-    repo_root: PathBuf,
-    daemon_dir: PathBuf,
+pub(super) struct Fixture {
+    pub(super) app: axum::Router,
+    pub(super) state: Arc<AppState>,
+    pub(super) db_path: String,
+    pub(super) repo_root: PathBuf,
+    pub(super) daemon_dir: PathBuf,
+    /// Every command the fixture's daemon received (T13c counts them).
+    pub(super) daemon_commands: Arc<std::sync::Mutex<Vec<kanna_daemon::protocol::Command>>>,
 }
 
 impl Drop for Fixture {
@@ -75,11 +77,11 @@ impl Drop for Fixture {
 }
 
 impl Fixture {
-    fn db(&self) -> Db {
+    pub(super) fn db(&self) -> Db {
         Db::open(&self.db_path).unwrap()
     }
 
-    async fn post(&self, task_id: &str, action: &str, body: Value) -> Value {
+    pub(super) async fn post(&self, task_id: &str, action: &str, body: Value) -> Value {
         let (status, text) = post_json(
             &self.app,
             &format!("/v1/tasks/{task_id}/actions/{action}"),
@@ -167,12 +169,12 @@ fn git_head(dir: &Path) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_string()
 }
 
-async fn build_fixture() -> Fixture {
+pub(super) async fn build_fixture() -> Fixture {
     let repo_root = crate::test_paths::unique_test_path("kanna-disk-rebuild");
     init_test_git_repo(&repo_root);
     let daemon_dir = crate::test_paths::unique_test_path("kanna-disk-rebuild-d");
     std::fs::create_dir_all(&daemon_dir).unwrap();
-    spawn_recording_daemon(&daemon_dir);
+    let daemon_commands = spawn_recording_daemon(&daemon_dir);
     let config = ledger_fixture_config("disk-rebuild", &daemon_dir);
     // The production migrations, not the test schema: the rebuild must
     // match what a real installation holds, foreign keys included.
@@ -298,6 +300,7 @@ async fn build_fixture() -> Fixture {
         db_path: config.db_path.clone(),
         repo_root,
         daemon_dir,
+        daemon_commands,
     };
 
     // Parked manual gate.
@@ -729,13 +732,13 @@ async fn build_fixture() -> Fixture {
 
 /// The claim token of the pending incoming transfer: a capability that must
 /// never reach disk.
-const CLAIM_TOKEN: &str = "claim-capability-7f3a";
+pub(super) const CLAIM_TOKEN: &str = "claim-capability-7f3a";
 
 /// Every durable row of a database, keyed `<table>|<identity>`, with the
 /// columns a rebuild restores. Statistics and transient live-session state
 /// (`rebuild::NOT_REBUILT`) are left out, and so is `pipeline_item.updated_at`,
 /// which unrelated live writes move without owing a new task.json.
-fn durable_state(db: &Db) -> BTreeMap<String, Value> {
+pub(super) fn durable_state(db: &Db) -> BTreeMap<String, Value> {
     let conn = db.connection_for_e2e_tests();
     let rows = |sql: &str| -> Vec<Vec<Value>> {
         let mut statement = conn.prepare(sql).unwrap();
@@ -812,7 +815,10 @@ fn durable_state(db: &Db) -> BTreeMap<String, Value> {
     state
 }
 
-fn differences(source: &BTreeMap<String, Value>, rebuilt: &BTreeMap<String, Value>) -> Vec<String> {
+pub(super) fn differences(
+    source: &BTreeMap<String, Value>,
+    rebuilt: &BTreeMap<String, Value>,
+) -> Vec<String> {
     let keys: BTreeSet<&String> = source.keys().chain(rebuilt.keys()).collect();
     keys.into_iter()
         .filter(|key| source.get(*key) != rebuilt.get(*key))
@@ -835,7 +841,7 @@ fn assert_same_rows(left: &[String], right: &[String]) {
     );
 }
 
-fn files_under(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+pub(super) fn files_under(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     let mut files = Vec::new();
     let mut pending = vec![dir.to_path_buf()];
     while let Some(dir) = pending.pop() {

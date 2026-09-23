@@ -8,13 +8,15 @@
 
 use super::task_state::json_to_sql;
 use super::Db;
-use crate::task_store::rebuild::{CarriedRow, Projection};
+use crate::task_store::rebuild::{
+    BudgetRow, CarriedRow, InputRow, LedgerRow, Projection, StageRunRow,
+};
 use rusqlite::{params, OptionalExtension};
 use serde_json::{Map, Value};
 
 /// The primary-key columns of `table`, in key order; empty for a table
 /// without a declared primary key.
-fn primary_key(db: &Db, table: &str) -> Result<Vec<String>, rusqlite::Error> {
+pub(super) fn primary_key(db: &Db, table: &str) -> Result<Vec<String>, rusqlite::Error> {
     let mut statement = db
         .conn
         .prepare("SELECT name FROM pragma_table_info(?) WHERE pk > 0 ORDER BY pk")?;
@@ -26,7 +28,11 @@ fn primary_key(db: &Db, table: &str) -> Result<Vec<String>, rusqlite::Error> {
 /// same row (same primary key) under its rowid and leaves it as it is; any
 /// other row under that rowid, or the same key under another rowid, is a
 /// collision and refuses the rebuild rather than dropping the carried row.
-fn insert_row(db: &Db, table: &str, row: &Map<String, Value>) -> Result<(), rusqlite::Error> {
+pub(super) fn insert_row(
+    db: &Db,
+    table: &str,
+    row: &Map<String, Value>,
+) -> Result<(), rusqlite::Error> {
     let collision = |detail: String| {
         rusqlite::Error::InvalidParameterName(format!("{table}: carried row collides: {detail}"))
     };
@@ -110,6 +116,130 @@ fn insert_row(db: &Db, table: &str, row: &Map<String, Value>) -> Result<(), rusq
             columns.join(", ")
         ),
         rusqlite::params_from_iter(values),
+    )?;
+    Ok(())
+}
+
+pub(super) fn upsert_stage_run(db: &Db, run: &StageRunRow) -> Result<(), rusqlite::Error> {
+    db.conn.execute(
+        "INSERT INTO stage_run
+            (id, task_id, stage, kind, status, result, feedback, started_at,
+             finished_at, result_declared_role, result_channel_identity,
+             workspace_id, session_branch, session_name, transcript_ref,
+             no_work_termination)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+            task_id = excluded.task_id, stage = excluded.stage,
+            kind = excluded.kind, status = excluded.status,
+            result = excluded.result, feedback = excluded.feedback,
+            no_work_termination = excluded.no_work_termination,
+            started_at = excluded.started_at, finished_at = excluded.finished_at,
+            result_declared_role = excluded.result_declared_role,
+            result_channel_identity = excluded.result_channel_identity,
+            workspace_id = excluded.workspace_id,
+            session_branch = excluded.session_branch,
+            session_name = excluded.session_name,
+            transcript_ref = excluded.transcript_ref",
+        params![
+            run.id,
+            run.task_id,
+            run.stage,
+            run.kind,
+            run.status,
+            run.result,
+            run.feedback,
+            run.started_at,
+            run.finished_at,
+            run.result_declared_role,
+            run.result_channel_identity,
+            run.workspace_id,
+            run.session_branch,
+            run.session_name,
+            run.transcript_ref,
+            run.no_work_termination,
+        ],
+    )?;
+    Ok(())
+}
+
+pub(super) fn upsert_input(db: &Db, input: &InputRow) -> Result<(), rusqlite::Error> {
+    db.conn.execute(
+        "INSERT INTO task_input
+            (id, task_id, run_id, stage, source, message, delivered_at,
+             origin_peer_id, origin_task_id, origin_input_id, origin_run_id,
+             channel_identity)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+            task_id = excluded.task_id, run_id = excluded.run_id,
+            stage = excluded.stage, source = excluded.source,
+            message = excluded.message, delivered_at = excluded.delivered_at,
+            origin_peer_id = excluded.origin_peer_id,
+            origin_task_id = excluded.origin_task_id,
+            origin_input_id = excluded.origin_input_id,
+            origin_run_id = excluded.origin_run_id,
+            channel_identity = excluded.channel_identity",
+        params![
+            input.id,
+            input.task_id,
+            input.run_id,
+            input.stage,
+            input.source,
+            input.message,
+            input.delivered_at,
+            input.origin_peer_id,
+            input.origin_task_id,
+            input.origin_input_id,
+            input.origin_run_id,
+            input.channel_identity,
+        ],
+    )?;
+    Ok(())
+}
+
+pub(super) fn upsert_budget(db: &Db, budget: &BudgetRow) -> Result<(), rusqlite::Error> {
+    db.conn.execute(
+        "INSERT INTO task_stage_budget (task_id, stage, spent, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(task_id, stage) DO UPDATE SET
+            spent = excluded.spent, updated_at = excluded.updated_at",
+        params![
+            budget.task_id,
+            budget.stage,
+            budget.spent,
+            budget.updated_at
+        ],
+    )?;
+    Ok(())
+}
+
+pub(super) fn upsert_published_ledger_row(
+    db: &Db,
+    entry: &LedgerRow,
+) -> Result<(), rusqlite::Error> {
+    db.conn.execute(
+        "INSERT INTO task_ledger_entry
+            (task_id, sequence, entry_id, kind, operation_id, source_kind,
+             source_id, file_name, payload, created_at, published_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(task_id, sequence) DO UPDATE SET
+            entry_id = excluded.entry_id, kind = excluded.kind,
+            operation_id = excluded.operation_id,
+            source_kind = excluded.source_kind, source_id = excluded.source_id,
+            file_name = excluded.file_name, payload = excluded.payload,
+            created_at = excluded.created_at, published_at = excluded.published_at",
+        params![
+            entry.task_id,
+            entry.sequence,
+            entry.entry_id,
+            entry.kind,
+            entry.operation_id,
+            entry.source_kind,
+            entry.source_id,
+            entry.file_name,
+            entry.payload,
+            entry.recorded_at,
+            entry.recorded_at,
+        ],
     )?;
     Ok(())
 }
@@ -243,118 +373,17 @@ impl Db {
                 )?;
             }
             for run in &projection.stage_runs {
-                db.conn.execute(
-                    "INSERT INTO stage_run
-                        (id, task_id, stage, kind, status, result, feedback, started_at,
-                         finished_at, result_declared_role, result_channel_identity,
-                         workspace_id, session_branch, session_name, transcript_ref,
-                         no_work_termination)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                     ON CONFLICT(id) DO UPDATE SET
-                        task_id = excluded.task_id, stage = excluded.stage,
-                        kind = excluded.kind, status = excluded.status,
-                        result = excluded.result, feedback = excluded.feedback,
-                        no_work_termination = excluded.no_work_termination,
-                        started_at = excluded.started_at, finished_at = excluded.finished_at,
-                        result_declared_role = excluded.result_declared_role,
-                        result_channel_identity = excluded.result_channel_identity,
-                        workspace_id = excluded.workspace_id,
-                        session_branch = excluded.session_branch,
-                        session_name = excluded.session_name,
-                        transcript_ref = excluded.transcript_ref",
-                    params![
-                        run.id,
-                        run.task_id,
-                        run.stage,
-                        run.kind,
-                        run.status,
-                        run.result,
-                        run.feedback,
-                        run.started_at,
-                        run.finished_at,
-                        run.result_declared_role,
-                        run.result_channel_identity,
-                        run.workspace_id,
-                        run.session_branch,
-                        run.session_name,
-                        run.transcript_ref,
-                        run.no_work_termination,
-                    ],
-                )?;
+                upsert_stage_run(db, run)?;
             }
             for input in &projection.inputs {
-                db.conn.execute(
-                    "INSERT INTO task_input
-                        (id, task_id, run_id, stage, source, message, delivered_at,
-                         origin_peer_id, origin_task_id, origin_input_id, origin_run_id,
-                         channel_identity)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                     ON CONFLICT(id) DO UPDATE SET
-                        task_id = excluded.task_id, run_id = excluded.run_id,
-                        stage = excluded.stage, source = excluded.source,
-                        message = excluded.message, delivered_at = excluded.delivered_at,
-                        origin_peer_id = excluded.origin_peer_id,
-                        origin_task_id = excluded.origin_task_id,
-                        origin_input_id = excluded.origin_input_id,
-                        origin_run_id = excluded.origin_run_id,
-                        channel_identity = excluded.channel_identity",
-                    params![
-                        input.id,
-                        input.task_id,
-                        input.run_id,
-                        input.stage,
-                        input.source,
-                        input.message,
-                        input.delivered_at,
-                        input.origin_peer_id,
-                        input.origin_task_id,
-                        input.origin_input_id,
-                        input.origin_run_id,
-                        input.channel_identity,
-                    ],
-                )?;
+                upsert_input(db, input)?;
             }
             for budget in &projection.budgets {
-                db.conn.execute(
-                    "INSERT INTO task_stage_budget (task_id, stage, spent, updated_at)
-                     VALUES (?, ?, ?, ?)
-                     ON CONFLICT(task_id, stage) DO UPDATE SET
-                        spent = excluded.spent, updated_at = excluded.updated_at",
-                    params![
-                        budget.task_id,
-                        budget.stage,
-                        budget.spent,
-                        budget.updated_at
-                    ],
-                )?;
+                upsert_budget(db, budget)?;
             }
             // The outbox, already published: the files are what it describes.
             for entry in &projection.ledger {
-                db.conn.execute(
-                    "INSERT INTO task_ledger_entry
-                        (task_id, sequence, entry_id, kind, operation_id, source_kind,
-                         source_id, file_name, payload, created_at, published_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                     ON CONFLICT(task_id, sequence) DO UPDATE SET
-                        entry_id = excluded.entry_id, kind = excluded.kind,
-                        operation_id = excluded.operation_id,
-                        source_kind = excluded.source_kind, source_id = excluded.source_id,
-                        file_name = excluded.file_name, payload = excluded.payload,
-                        created_at = excluded.created_at, published_at = excluded.published_at",
-                    params![
-                        entry.task_id,
-                        entry.sequence,
-                        entry.entry_id,
-                        entry.kind,
-                        entry.operation_id,
-                        entry.source_kind,
-                        entry.source_id,
-                        entry.file_name,
-                        entry.payload,
-                        entry.recorded_at,
-                        entry.recorded_at,
-                    ],
-                )?;
+                upsert_published_ledger_row(db, entry)?;
             }
             for marker in &projection.markers {
                 db.conn.execute(

@@ -43,6 +43,7 @@ pub(crate) mod stage_dependencies;
 mod stage_run_prompts;
 mod state;
 mod status;
+pub(crate) mod storage_authority;
 mod subscription_timing;
 pub(crate) mod subtask_joins;
 pub(crate) mod task_actions;

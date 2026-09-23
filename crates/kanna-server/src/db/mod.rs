@@ -22,8 +22,7 @@ mod blockers;
 pub(crate) mod claude_channel;
 pub(crate) mod copilot_wake;
 mod create_intents;
-// Used only by the offline rebuild (`crate::task_store::rebuild`).
-#[cfg_attr(not(test), allow(dead_code))]
+mod disk_authority;
 mod disk_rebuild;
 mod event_subscriptions;
 mod lifecycle_operations;
@@ -117,6 +116,13 @@ pub use transfers::{
 };
 pub use transition_commits::TransitionCommit;
 
+pub(crate) use disk_authority::ReconcileChanges;
+#[cfg(test)]
+pub(crate) use disk_authority::CHANGED_SINCE_COMPARED;
+#[cfg(test)]
+pub(crate) use disk_authority::{
+    disk_wins_update, INPUT_ID_REFERENCES, TRANSFER_OWNERSHIP_COLUMNS,
+};
 pub(crate) use event_subscriptions::EventSubscription;
 
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 10_000;
@@ -230,6 +236,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "101_subtask_joins",
     "102_transferred_task_state",
     "103_disk_state_records",
+    "104_disk_divergence",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2745,6 +2752,10 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     // owes one to every open task and repository.
     run_migration(conn, "103_disk_state_records", |conn| {
         task_state::migrate_disk_state_records(conn)
+    })?;
+    // T13c: the durable fence on a task whose disk is ahead of this database.
+    run_migration(conn, "104_disk_divergence", |conn| {
+        conn.execute_batch(disk_authority::DIVERGENCE_SCHEMA)
     })?;
     task_state::sync_disk_state_triggers(conn)?;
 

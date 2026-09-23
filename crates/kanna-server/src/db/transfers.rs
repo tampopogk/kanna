@@ -666,6 +666,27 @@ impl Db {
         })
     }
 
+    /// Does this transfer still effectively own its source task, by the rule
+    /// claiming uses (`transfer_still_owns_source`)? `false` for no such
+    /// transfer. Disk authority's repair (T13c) keeps such a transfer's row.
+    pub(crate) fn transfer_still_owns_its_source(
+        &self,
+        transfer_id: &str,
+    ) -> Result<bool, rusqlite::Error> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT {} FROM task_transfer AS owner WHERE owner.id = ?",
+                    transfer_still_owns_source("owner")
+                ),
+                [transfer_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .optional()?
+            .unwrap_or(false))
+    }
+
     /// Is a transfer holding this task's workflow right now?
     ///
     /// Read by the combined plan completion inside its own write transaction.

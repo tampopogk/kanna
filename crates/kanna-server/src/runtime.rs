@@ -282,19 +282,33 @@ async fn run_lan_machine_invoke_listener(state: Arc<http_api::AppState>) {
 async fn run_task_ledger_publisher(state: Arc<http_api::AppState>) {
     const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
     static RESUMING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static RECONCILING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     loop {
         let _ = tokio::time::timeout(RETRY_INTERVAL, crate::task_store::publisher_woken()).await;
         let db_path = state.config().db_path.clone();
         let flushed = tokio::task::spawn_blocking(move || {
             let db = db::Db::open(&db_path)?;
             let failures = crate::task_store::flush_all(&db, &db_path);
-            Ok::<_, rusqlite::Error>((failures, db.ledger_continuation_task_ids()?))
+            let diverged = crate::task_store::authority::diverged_tasks(&db);
+            Ok::<_, rusqlite::Error>((failures, db.ledger_continuation_task_ids()?, diverged))
         })
         .await;
         match flushed {
-            Ok(Ok((failures, continuations))) => {
+            Ok(Ok((failures, continuations, diverged))) => {
                 for (task_id, error) in failures {
                     log::warn!("task ledger for {task_id} is pending publication: {error}");
+                }
+                // Disk authority (T13c): a task whose disk the flush found
+                // ahead is reconciled under its mutation lease, which a live
+                // transition may hold; like resuming, never inline.
+                if !diverged.is_empty()
+                    && !RECONCILING.swap(true, std::sync::atomic::Ordering::AcqRel)
+                {
+                    let state = Arc::clone(&state);
+                    tokio::spawn(async move {
+                        http_api::storage_authority::reconcile_diverged_tasks(state).await;
+                        RECONCILING.store(false, std::sync::atomic::Ordering::Release);
+                    });
                 }
                 // Resuming waits on each task's mutation lease, which a live
                 // transition may hold for minutes; it must not stall

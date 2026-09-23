@@ -642,6 +642,7 @@ pub const NOT_CARRIED_TABLES: &[(&str, NotCarried, &str)] = &[
     ("task_ledger_backfill", NotCarried::OtherRecord, "this database's backfill bookkeeping; a rebuild marks every history imported"),
     ("repo_disk_snapshot", NotCarried::OtherRecord, "this database's publication bookkeeping for repo.json"),
     ("disk_record_removal", NotCarried::OtherRecord, "this database's publication outbox for tombstones"),
+    ("disk_divergence", NotCarried::OtherRecord, "this database's fence on a task whose disk is ahead of it (disk authority); a database rebuilt from disk is not behind it"),
     ("activity_log", NotCarried::Statistics, "activity time accounting"),
     ("task_activity_interval", NotCarried::Statistics, "activity time accounting"),
     ("operator_event", NotCarried::Statistics, "operator interaction log"),
@@ -1018,7 +1019,11 @@ pub fn json_to_sql(value: &Value) -> Result<rusqlite::types::Value, String> {
 }
 
 impl Db {
-    fn carried_rows(&self, table: &CarriedTable, key: &str) -> Result<Vec<Value>, rusqlite::Error> {
+    pub(super) fn carried_rows(
+        &self,
+        table: &CarriedTable,
+        key: &str,
+    ) -> Result<Vec<Value>, rusqlite::Error> {
         let columns = table
             .columns
             .iter()

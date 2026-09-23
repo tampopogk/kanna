@@ -180,6 +180,17 @@ async fn main() {
         }
     };
 
+    if args.get(1).map(String::as_str) == Some("storage-authority") {
+        match task_store::authority::run_cli(&config, &args[2..]) {
+            Ok(status) => println!("{status}"),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     // Log to a rotated, timestamped file in the instance's daemon data dir
     // (like the daemon does). The desktop app spawns this sidecar with null
     // stdio, so stderr-only logging would discard everything — the file is
@@ -223,7 +234,11 @@ async fn main() {
         }
     });
 
-    let db = match db::Db::open_migrated(&config.db_path) {
+    // Under the installation's storage authority (T13c): in disk mode a
+    // missing database is rebuilt from the task directories, a requested
+    // switch is performed, and the database is reconciled from disk, all
+    // before anything else can read or write it.
+    let db = match task_store::authority::open_database(&config) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("Failed to open database at {}: {}", config.db_path, e);
