@@ -311,6 +311,7 @@ mod artifacts;
 mod brief_task;
 mod core_routes;
 mod create_task;
+mod disk_rebuild;
 mod e2e_sql_routes;
 mod exit_routing;
 mod input;
