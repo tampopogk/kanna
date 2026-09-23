@@ -733,6 +733,7 @@ impl Db {
         payload: &Value,
     ) -> Result<(), rusqlite::Error> {
         self.in_immediate_transaction_if_needed(|db| {
+            db.refuse_while_transferring(task_id)?;
             let generation = db.task_run_generation(task_id)?;
             db.conn.execute(
                 "INSERT INTO task_dependency_wait (task_id, from_stage, to_stage, generation, payload)

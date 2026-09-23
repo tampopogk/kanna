@@ -848,6 +848,7 @@ impl Db {
         kind: &str,
         payload: &Value,
     ) -> Result<(), rusqlite::Error> {
+        self.refuse_while_transferring(task_id)?;
         self.conn.execute(
             "INSERT INTO task_ledger_continuation (task_id, operation_id, kind, payload)
              VALUES (?, ?, ?, ?)

@@ -65,6 +65,7 @@ impl Db {
         stage: &str,
         exit: Option<&TransitionExit>,
     ) -> Result<(), rusqlite::Error> {
+        self.refuse_while_transferring(task_id)?;
         let exit = exit.map(|exit| exit.to_json().to_string());
         // A new commit step supersedes any earlier one still requested (its
         // run was replaced by a rerun and can never be current again), so a

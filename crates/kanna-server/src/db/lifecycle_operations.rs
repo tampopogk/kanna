@@ -21,6 +21,7 @@ impl Db {
         phase: &str,
         payload_json: &str,
     ) -> Result<(), rusqlite::Error> {
+        self.refuse_while_transferring(task_id)?;
         self.conn.execute(
             "INSERT INTO lifecycle_operation_intent
              (id, task_id, kind, phase, payload_json)

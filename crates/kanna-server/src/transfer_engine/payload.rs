@@ -350,6 +350,42 @@ pub struct TransferInputLedgerPayload {
     pub count: u64,
 }
 
+/// The task's carried state (spec §11, T9): its task directory, the rows
+/// T1–T5 keep beside the task row, and the objects those name — see
+/// [`super::task_state`]. Present only when the destination confirmed
+/// [`TASK_STATE_VERSION`] during preflight; a destination that did not is
+/// refused before anything is reserved, so this is never silently dropped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferTaskStatePayload {
+    pub version: u64,
+    pub artifact_id: String,
+    pub filename: String,
+    pub sha256: String,
+    /// Commits the ledger and the stage workspaces name that the repository
+    /// bundle does not already carry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_bundle: Option<TransferStagedFile>,
+    /// The artifact-repository objects the carried results reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_bundle: Option<TransferStagedFile>,
+}
+
+/// One more staged sidecar file, bound to the payload by its digest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferStagedFile {
+    pub artifact_id: String,
+    pub filename: String,
+    pub sha256: String,
+}
+
+/// The carried-task-state contract this build writes and reads. Advertised
+/// as `task_state_version` in the transfer protocol capabilities (and as
+/// `taskStateTransferVersion` on `GET /v1/status`).
+pub const TASK_STATE_VERSION: u64 = 1;
+pub const TASK_STATE_FILENAME: &str = "task-state.json";
+pub const TASK_HISTORY_BUNDLE_FILENAME: &str = "task-history.bundle";
+pub const TASK_ARTIFACT_BUNDLE_FILENAME: &str = "task-artifacts.bundle";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct TransferInputLedger {
     version: u8,
@@ -379,6 +415,8 @@ pub struct OutgoingTransferPayload {
     pub repo: TransferRepoPayload,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_ledger: Option<TransferInputLedgerPayload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_state: Option<TransferTaskStatePayload>,
     pub recovery: Option<crate::mobile_api::CreateTaskRecoverySnapshot>,
     #[serde(default)]
     pub artifacts: Vec<TransferArtifactPayload>,
@@ -478,6 +516,10 @@ pub struct TransferContentCommitmentInput<'a> {
     pub stage: &'a str,
     pub workflow_definition: Option<&'a str>,
     pub input_ledger_sha256: Option<&'a str>,
+    /// The carried task state's digest. Omitted, not null, when there is
+    /// none, so a transfer without it commits to exactly what it did before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_state_sha256: Option<&'a str>,
     pub history: &'a [TransferHistoryRecordPayload],
     pub launch_harness: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1126,6 +1168,79 @@ fn parse_finalization(value: Option<&Value>) -> Result<TransferFinalizationState
     })
 }
 
+fn parse_staged_file(
+    value: Option<&Value>,
+    label: &str,
+    expected_filename: &str,
+) -> Result<Option<TransferStagedFile>, String> {
+    let Some(value) = value.filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let record = object(value, label)?;
+    let filename = validate_component(
+        &required_string(record, &["filename"], &format!("{label} missing filename"))?,
+        &format!("{label} filename"),
+    )?;
+    if filename != expected_filename {
+        return Err(format!("{label} filename does not match its contract"));
+    }
+    Ok(Some(TransferStagedFile {
+        artifact_id: validate_component(
+            &required_string(
+                record,
+                &["artifact_id", "artifactId"],
+                &format!("{label} missing artifact id"),
+            )?,
+            &format!("{label} artifact id"),
+        )?,
+        filename,
+        sha256: validate_hex(
+            &required_string(record, &["sha256"], &format!("{label} missing sha256"))?,
+            &[64],
+            &format!("{label} sha256"),
+        )?,
+    }))
+}
+
+/// Parses `task_state`. A version this build does not know is refused
+/// outright: the payload promises state this receiver cannot read, and
+/// importing the task without it would silently drop it.
+fn parse_task_state(value: Option<&Value>) -> Result<Option<TransferTaskStatePayload>, String> {
+    let Some(value) = value.filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let record = object(value, "task state")?;
+    let version = record
+        .get("version")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "task state version must be an unsigned integer".to_string())?;
+    if version != TASK_STATE_VERSION {
+        return Err(format!(
+            "unsupported carried task state version {version}; this machine reads version \
+             {TASK_STATE_VERSION}. Update Kanna on this machine and retry the transfer"
+        ));
+    }
+    let Some(file) = parse_staged_file(Some(value), "task state", TASK_STATE_FILENAME)? else {
+        return Err("task state is missing its file".into());
+    };
+    Ok(Some(TransferTaskStatePayload {
+        version,
+        artifact_id: file.artifact_id,
+        filename: file.filename,
+        sha256: file.sha256,
+        history_bundle: parse_staged_file(
+            record.get("history_bundle"),
+            "task history bundle",
+            TASK_HISTORY_BUNDLE_FILENAME,
+        )?,
+        artifact_bundle: parse_staged_file(
+            record.get("artifact_bundle"),
+            "task artifact bundle",
+            TASK_ARTIFACT_BUNDLE_FILENAME,
+        )?,
+    }))
+}
+
 fn parse_recovery(
     value: Option<&Value>,
 ) -> Result<Option<crate::mobile_api::CreateTaskRecoverySnapshot>, String> {
@@ -1294,6 +1409,11 @@ pub fn parse_outgoing_transfer_payload(value: &Value) -> Result<OutgoingTransfer
         return Err("task-bundle payload is missing its immutable base ref".into());
     }
 
+    let task_state = parse_task_state(record.get("task_state"))?;
+    if task_state.is_some() && mode != RepoAcquisitionMode::TaskBundle {
+        return Err("carried task state requires a task-bundle payload".into());
+    }
+
     let artifacts = parse_artifacts(
         record.get("artifacts"),
         &agent_provider,
@@ -1425,6 +1545,7 @@ pub fn parse_outgoing_transfer_payload(value: &Value) -> Result<OutgoingTransfer
             bundle,
         },
         input_ledger,
+        task_state,
         recovery: parse_recovery(record.get("recovery"))?,
         artifacts,
         finalization: parse_finalization(record.get("finalization"))?,
@@ -2091,5 +2212,102 @@ mod tests {
             json!([history_entry(0, "task-original", "run-one", "revision")]);
         let error = parse_outgoing_transfer_payload(&payload).expect_err("unsupported kind");
         assert!(error.contains("unsupported kind"), "{error}");
+    }
+
+    fn complete_task_bundle() -> Value {
+        let mut value = payload_with(json!([]));
+        value["repo"] = json!({
+            "mode": "task-bundle",
+            "bundle": {
+                "artifact_id": "transfer-repo-bundle",
+                "filename": "transfer.bundle",
+                "ref_name": "refs/heads/task-source",
+                "base_ref_name": "refs/heads/main",
+            },
+        });
+        value["input_ledger"] = json!({
+            "artifact_id": "transfer-inputs",
+            "filename": TASK_INPUT_LEDGER_FILENAME,
+            "sha256": "a".repeat(64),
+            "count": 0,
+        });
+        value["task"]["base_oid"] = json!("a".repeat(40));
+        value["task"]["head_oid"] = json!("b".repeat(40));
+        value
+    }
+
+    #[test]
+    fn carried_task_state_round_trips_and_an_unknown_version_is_refused() {
+        let mut value = complete_task_bundle();
+        assert_eq!(
+            parse_outgoing_transfer_payload(&value).unwrap().task_state,
+            None
+        );
+        value["task_state"] = json!({
+            "version": TASK_STATE_VERSION,
+            "artifact_id": "transfer-task-state",
+            "filename": TASK_STATE_FILENAME,
+            "sha256": "c".repeat(64),
+            "history_bundle": {
+                "artifact_id": "transfer-task-state-history",
+                "filename": TASK_HISTORY_BUNDLE_FILENAME,
+                "sha256": "d".repeat(64),
+            },
+        });
+        let parsed = parse_outgoing_transfer_payload(&value).unwrap();
+        let state = parsed.task_state.clone().expect("carried state");
+        assert_eq!(state.sha256, "c".repeat(64));
+        assert!(state.history_bundle.is_some() && state.artifact_bundle.is_none());
+        let reparsed =
+            parse_outgoing_transfer_payload(&encode_outgoing_transfer_payload(&parsed).unwrap())
+                .unwrap();
+        assert_eq!(reparsed.task_state, parsed.task_state);
+
+        let mut newer = value.clone();
+        newer["task_state"]["version"] = json!(TASK_STATE_VERSION + 1);
+        let error = parse_outgoing_transfer_payload(&newer).unwrap_err();
+        assert!(
+            error.contains("unsupported carried task state version"),
+            "{error}"
+        );
+
+        let mut renamed = value.clone();
+        renamed["task_state"]["filename"] = json!("../task-state.json");
+        assert!(parse_outgoing_transfer_payload(&renamed).is_err());
+
+        let mut legacy = value;
+        legacy["repo"] = json!({ "mode": "reuse-local", "path": "/repo" });
+        legacy["input_ledger"] = Value::Null;
+        assert!(parse_outgoing_transfer_payload(&legacy)
+            .unwrap_err()
+            .contains("requires a task-bundle"));
+    }
+
+    #[test]
+    fn the_content_commitment_binds_carried_state_only_when_present() {
+        let input = |task_state_sha256| TransferContentCommitmentInput {
+            transfer_id: "transfer-1",
+            cloud_task_id: "cloud-1",
+            head_oid: "h",
+            base_oid: "b",
+            stage: "review",
+            workflow_definition: None,
+            input_ledger_sha256: None,
+            task_state_sha256,
+            history: &[],
+            launch_harness: "claude",
+            launch_model: None,
+            launch_effort: None,
+        };
+        let without = transfer_content_commitment(&input(None)).unwrap();
+        let with = transfer_content_commitment(&input(Some("c"))).unwrap();
+        let other = transfer_content_commitment(&input(Some("d"))).unwrap();
+        assert_ne!(without, with);
+        assert_ne!(with, other);
+        // Absent state serializes to nothing, so a transfer without it
+        // commits to exactly the bytes it did before T9.
+        assert!(!serde_json::to_string(&input(None))
+            .unwrap()
+            .contains("task_state"));
     }
 }

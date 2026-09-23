@@ -16,9 +16,10 @@ use super::finalize;
 use super::payload::{
     self, OutgoingTransferPayload, RepoAcquisitionMode, TransferBundlePayload,
     TransferFinalizationState, TransferHistoryRecordPayload, TransferInputLedgerPayload,
-    TransferRepoPayload, TransferTaskPayload,
+    TransferRepoPayload, TransferStagedFile, TransferTaskPayload, TransferTaskStatePayload,
 };
 use super::session;
+use super::task_state;
 use crate::db::{Db, TransferWorkItem};
 use crate::http_api::AppState;
 use serde_json::Value;
@@ -172,7 +173,7 @@ fn home_dir() -> Result<std::path::PathBuf, String> {
 
 /// Where engine-owned staging files (bundles, session archives) are written
 /// before the sidecar takes ownership of them.
-fn staging_dir() -> std::path::PathBuf {
+pub(super) fn staging_dir() -> std::path::PathBuf {
     std::env::temp_dir()
 }
 
@@ -340,6 +341,17 @@ async fn run_push(
     if let Err(reason) = refuse_unprovable_plan_preservation(&source.item) {
         return Err(Err(TerminalPush(reason)));
     }
+    // Advisory, like the plan check above: finalization's claim asks the
+    // same question in the transaction that takes the workflow, which is
+    // the answer that holds.
+    if let Some(reason) = db
+        .transfer_state_blocker(&source_task_id)
+        .map_err(|error| retriable(format!("db error: {error}")))?
+    {
+        return Err(Err(TerminalPush(reason)));
+    }
+    let carry_task_state =
+        task_state::task_requires_carry(&db, &source_task_id).map_err(retriable)?;
 
     if let Err(error) = crate::http_api::ensure_engine_cloud_transfer_credential(
         state,
@@ -442,6 +454,14 @@ async fn run_push(
         }
     })?;
 
+    // A destination that did not confirm it reads carried task state would
+    // accept the payload and drop the state. Refuse here, while the only
+    // thing on the peer is an uncommitted reservation, which is released.
+    if let Err(reason) = require_task_state_support(carry_task_state, &preflight) {
+        release_reservation(state, &preflight.transfer_id).await;
+        return Err(Err(TerminalPush(reason)));
+    }
+
     // Everything below owns durable sidecar state. A failure past this point
     // releases it rather than leaving a reservation and staged files behind.
     //
@@ -462,6 +482,7 @@ async fn run_push(
         &peer_id,
         source_desktop_id.as_deref(),
         target_desktop_id.as_deref(),
+        carry_task_state,
     )
     .await;
     match result {
@@ -543,6 +564,7 @@ async fn stage_and_commit(
     peer_id: &str,
     source_desktop_id: Option<&str>,
     target_desktop_id: Option<&str>,
+    carry_task_state: bool,
 ) -> Result<control::CommitOutcome, String> {
     let transfer_id = preflight.transfer_id.as_str();
     let repo_path_for_remote = repo_path.to_path_buf();
@@ -568,6 +590,22 @@ async fn stage_and_commit(
         "inputs",
     )
     .await?;
+    let task_state = if carry_task_state {
+        Some(
+            stage_task_state(
+                state,
+                source,
+                repo,
+                transfer_id,
+                &preflight.source_peer_id,
+                &repository.head_oid,
+                "task-state",
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
 
     let staged = stage_session_artifacts(state, source, transfer_id).await?;
     let payload = build_payload(
@@ -581,6 +619,7 @@ async fn stage_and_commit(
         remote_url.as_deref(),
         Some(repository),
         Some(input_ledger),
+        task_state,
         staged,
         TransferFinalizationState::clean(),
         // The push's payload is a placeholder the finalization rewrites; the
@@ -741,6 +780,150 @@ async fn stage_task_input_ledger(
     })
 }
 
+/// A task with carried state may only go to a destination that confirmed it
+/// reads this version of it.
+pub(super) fn require_task_state_support(
+    carry_task_state: bool,
+    preflight: &control::PreflightResult,
+) -> Result<(), String> {
+    if !carry_task_state || preflight.task_state_version == Some(payload::TASK_STATE_VERSION) {
+        return Ok(());
+    }
+    Err(format!(
+        "the destination does not confirm it can carry this task's ledger and workflow state \
+         (task state version {} required, destination offers {}); update Kanna on the \
+         destination and retry. Nothing was moved",
+        payload::TASK_STATE_VERSION,
+        preflight
+            .task_state_version
+            .map_or_else(|| "none".to_string(), |version| version.to_string()),
+    ))
+}
+
+/// Stage the task's carried state ([`task_state`]): the document itself,
+/// and bundles for the history commits and artifact objects it names.
+async fn stage_task_state(
+    state: &Arc<AppState>,
+    source: &SourceTask,
+    repo: &crate::db::Repo,
+    transfer_id: &str,
+    source_peer_id: &str,
+    head_oid: &str,
+    artifact_suffix: &str,
+) -> Result<TransferTaskStatePayload, String> {
+    let artifact_store = crate::http_api::artifacts::repository_path_for_transfer(state, repo);
+    let staging = staging_dir();
+    let paths = (
+        staging.join(format!(
+            "kanna-transfer-{transfer_id}-{artifact_suffix}.json"
+        )),
+        staging.join(format!(
+            "kanna-transfer-{transfer_id}-{artifact_suffix}-history.bundle"
+        )),
+        staging.join(format!(
+            "kanna-transfer-{transfer_id}-{artifact_suffix}-artifacts.bundle"
+        )),
+        staging.join(format!(
+            "kanna-transfer-{transfer_id}-{artifact_suffix}-artifacts.git"
+        )),
+    );
+    let staged = {
+        let db_path = state.config().db_path.clone();
+        let task_id = source.item.id.clone();
+        let repo_path = std::path::PathBuf::from(&repo.path);
+        let (source_peer_id, head_oid, transfer_id) = (
+            source_peer_id.to_string(),
+            head_oid.to_string(),
+            transfer_id.to_string(),
+        );
+        let paths = paths.clone();
+        super::run_blocking("transfer task state staging", move || {
+            let db = Db::open(&db_path).map_err(|error| format!("db error: {error}"))?;
+            let task = db
+                .get_pipeline_item(&task_id)
+                .map_err(|error| format!("db error: {error}"))?
+                .ok_or_else(|| format!("task not found: {task_id}"))?;
+            let mut document = task_state::collect(&db, &db_path, &task, &source_peer_id)?;
+            drop(db);
+            let history = task_state::stage_history_bundle(
+                &repo_path,
+                &mut document,
+                &head_oid,
+                &transfer_id,
+                &paths.1,
+            )?
+            .then(|| file_digest(&paths.1))
+            .transpose()?;
+            let artifacts = if document.artifacts.is_empty() {
+                None
+            } else {
+                let (store_path, home) = artifact_store?;
+                task_state::stage_artifact_bundle(
+                    &store_path,
+                    &home,
+                    &task.repo_id,
+                    &document.artifacts,
+                    &paths.3,
+                    &paths.2,
+                )?;
+                Some(file_digest(&paths.2)?)
+            };
+            let encoded = task_state::encode(&document)?;
+            std::fs::write(&paths.0, &encoded)
+                .map_err(|error| format!("failed to stage task state: {error}"))?;
+            Ok((payload::sha256_hex(&encoded), history, artifacts))
+        })
+        .await?
+    };
+    let (sha256, history, artifacts) = staged;
+    let artifact_id = session::artifact_id(transfer_id, artifact_suffix);
+    control::stage_artifact(state, transfer_id, &artifact_id, &paths.0, true).await?;
+    let staged_file = |suffix: &str, filename: &str, path: &Path, sha256: String| {
+        let artifact_id = session::artifact_id(transfer_id, &format!("{artifact_suffix}-{suffix}"));
+        (
+            TransferStagedFile {
+                artifact_id,
+                filename: filename.to_string(),
+                sha256,
+            },
+            path.to_path_buf(),
+        )
+    };
+    let history_bundle = history.map(|sha| {
+        staged_file(
+            "history",
+            payload::TASK_HISTORY_BUNDLE_FILENAME,
+            &paths.1,
+            sha,
+        )
+    });
+    let artifact_bundle = artifacts.map(|sha| {
+        staged_file(
+            "artifacts",
+            payload::TASK_ARTIFACT_BUNDLE_FILENAME,
+            &paths.2,
+            sha,
+        )
+    });
+    for (file, path) in history_bundle.iter().chain(artifact_bundle.iter()) {
+        control::stage_artifact(state, transfer_id, &file.artifact_id, path, true).await?;
+    }
+    Ok(TransferTaskStatePayload {
+        version: payload::TASK_STATE_VERSION,
+        artifact_id,
+        filename: payload::TASK_STATE_FILENAME.to_string(),
+        sha256,
+        history_bundle: history_bundle.map(|(file, _)| file),
+        artifact_bundle: artifact_bundle.map(|(file, _)| file),
+    })
+}
+
+fn file_digest(path: &Path) -> Result<String, String> {
+    std::fs::read(path)
+        .map(|bytes| payload::sha256_hex(&bytes))
+        .map_err(|error| format!("read {}: {error}", path.display()))
+}
+
 /// What a push will ship, plus the session it promises.
 ///
 /// The session id is returned rather than read off the task row because
@@ -804,6 +987,7 @@ async fn build_payload(
     remote_url: Option<&str>,
     repository: Option<StagedRepositoryBundle>,
     input_ledger: Option<TransferInputLedgerPayload>,
+    task_state: Option<TransferTaskStatePayload>,
     staged: StagedSessionArtifacts,
     finalization: TransferFinalizationState,
     recovery: Option<crate::mobile_api::CreateTaskRecoverySnapshot>,
@@ -895,6 +1079,7 @@ async fn build_payload(
                 stage: &stage,
                 workflow_definition: workflow_definition.as_deref(),
                 input_ledger_sha256: input_ledger.as_ref().map(|ledger| ledger.sha256.as_str()),
+                task_state_sha256: task_state.as_ref().map(|state| state.sha256.as_str()),
                 history: &history,
                 launch_harness: source.session.provider.as_deref().unwrap_or("claude"),
                 launch_model: source.session.model.as_deref(),
@@ -968,6 +1153,7 @@ async fn build_payload(
             bundle: repository.map(|repository| repository.bundle),
         },
         input_ledger,
+        task_state,
         // Finalization photographs the terminal before it types the quit
         // command; there is nothing left to photograph afterwards. Only a path
         // that never ran the sequence — a headless session, or a push that has
@@ -1269,7 +1455,7 @@ async fn run_finalization(
     // function then awaits past. A plan published while finalization was
     // shutting the agent down would otherwise be serialized into the payload
     // at `build_payload`, after the source had already quit.
-    db.claim_task_workflow_for_transfer(transfer_id, &source.item.id)
+    db.claim_task_workflow_for_transfer_finalization(transfer_id, &source.item.id)
         .map_err(|error| format!("db error: {error}"))??;
 
     // Re-read after claiming ownership: a workflow edit may have won before
@@ -1307,6 +1493,16 @@ async fn run_finalization(
         || accepted != current.selection_commitment()?
     {
         return Err("task workflow or launch selection changed after destination acceptance; retry the transfer with a fresh reservation. Source session was not stopped".into());
+    }
+
+    // State a push-time payload did not promise cannot be added now: the
+    // destination only confirmed what that payload's reservation showed it.
+    if existing.task_state.is_none() && task_state::task_requires_carry(&db, &source.item.id)? {
+        return Err(
+            "the task recorded state this transfer's destination was not asked to carry; retry \
+             the transfer. Source session was not stopped"
+                .into(),
+        );
     }
 
     // Everything below this line can touch the source. A test holds here to
@@ -1400,6 +1596,26 @@ async fn run_finalization(
         "inputs-final",
     )
     .await?;
+    // Rebuilt from the stopped source, like the two above: results the agent
+    // recorded while wrapping up cross with it.
+    let task_state = match &existing.task_state {
+        Some(_) => Some(
+            stage_task_state(
+                state,
+                &refreshed,
+                &repo,
+                transfer_id,
+                transfer
+                    .source_peer_id
+                    .as_deref()
+                    .unwrap_or(&existing.task.source_peer_id),
+                &repository.head_oid,
+                "task-state-final",
+            )
+            .await?,
+        ),
+        None => None,
+    };
     let finalization = match finalization_outcome.degraded_reason {
         Some(reason) => TransferFinalizationState::degraded(reason),
         None => TransferFinalizationState::clean(),
@@ -1414,6 +1630,7 @@ async fn run_finalization(
                 .source_peer_id
                 .clone()
                 .unwrap_or(existing.task.source_peer_id.clone()),
+            task_state_version: None,
         },
         transfer
             .target_peer_id
@@ -1430,6 +1647,7 @@ async fn run_finalization(
         remote_url.as_deref(),
         Some(repository),
         Some(input_ledger),
+        task_state,
         staged,
         finalization,
         finalization_outcome.recovery_snapshot,
@@ -2479,6 +2697,7 @@ mod tests {
             stage,
             workflow_definition,
             input_ledger_sha256,
+            task_state_sha256: None,
             history,
             launch_harness: "claude",
             launch_model: None,

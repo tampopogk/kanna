@@ -12,6 +12,10 @@ use std::sync::Arc;
 pub struct PreflightResult {
     pub transfer_id: String,
     pub source_peer_id: String,
+    /// The carried-task-state version the destination server confirmed
+    /// (`task_state_version` in its transfer-protocol capabilities); `None`
+    /// from a destination, or a local sidecar, too old to say.
+    pub task_state_version: Option<u64>,
 }
 
 async fn control(state: &Arc<AppState>, operation: &str, params: Value) -> Result<Value, String> {
@@ -78,6 +82,9 @@ pub async fn preflight(
     Ok(PreflightResult {
         transfer_id: required_string(&response, "transferId")?,
         source_peer_id: required_string(&response, "sourcePeerId")?,
+        task_state_version: response
+            .pointer("/peerCapabilities/task_state_version")
+            .and_then(Value::as_u64),
     })
 }
 
