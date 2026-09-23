@@ -27,6 +27,7 @@ pub(crate) fn build_complete_stage_request(
         workflow_definition,
         expected_definition,
         exit: None,
+        artifacts: None,
     }
 }
 
@@ -53,6 +54,7 @@ pub(crate) async fn run(
     workflow_definition: Option<String>,
     expected_definition: Option<String>,
     exit: Option<String>,
+    artifacts: Option<String>,
     server_url: Option<&str>,
 ) {
     // Validated here against the shared vocabulary table, before anything is
@@ -65,6 +67,12 @@ pub(crate) async fn run(
     let metadata_value = parse_metadata_json(&metadata).unwrap_or_else(|e| {
         eprintln!("Error: {e}");
         process::exit(1);
+    });
+    let artifacts_value = artifacts.map(|raw| {
+        serde_json::from_str::<Value>(&raw).unwrap_or_else(|error| {
+            eprintln!("Error: --artifacts must be a JSON object: {error}");
+            process::exit(1);
+        })
     });
 
     // Refused here rather than at the server, so a planner that sent only one
@@ -100,6 +108,7 @@ pub(crate) async fn run(
         expected_definition,
     );
     request.exit = exit;
+    request.artifacts = artifacts_value;
     bind_completion_request(&base_url, &task_id, &mut request)
         .await
         .unwrap_or_else(|error| {

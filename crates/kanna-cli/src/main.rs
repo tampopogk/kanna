@@ -72,6 +72,11 @@ pub(crate) enum Commands {
         #[arg(long)]
         exit: Option<String>,
 
+        /// Optional JSON object naming artifacts this result produced or is
+        /// about, recorded on the result's ledger entry.
+        #[arg(long)]
+        artifacts: Option<String>,
+
         /// Override the local Kanna server base URL
         #[arg(long)]
         server_url: Option<String>,
@@ -1364,6 +1369,7 @@ async fn main() {
             workflow_definition,
             expected_definition,
             exit,
+            artifacts,
             server_url,
         } => {
             commands::stage_complete::run(
@@ -1374,6 +1380,7 @@ async fn main() {
                 workflow_definition,
                 expected_definition,
                 exit,
+                artifacts,
                 server_url.as_deref(),
             )
             .await;
