@@ -46,7 +46,7 @@
 //! | `source {kind, id, origin}` | the original record this entry mirrors (`stage_run`/run id, `task_input`/row id, `task_event`/seq, ...); `origin` is provenance an import carried from another machine |
 //! | `recorded_at` | ISO-8601 UTC |
 //! | `historical` | `true` for backfilled history |
-//! | `run_id`, `session_ref` | the stage run, and the session reference; until T2 the reference is `{kind: "stage_run", id: <run id>}` |
+//! | `run_id`, `session_ref` | the stage run, and the session reference `{kind: "stage_run", id: <run id>}`; a run that recorded a session identity (T2) adds `workspace_id`, `branch`, `name` and `transcript {provider, session_id, path}` beside those keys |
 //! | `declared_role` | a role the caller declared (`operator`, `manager`, `agent`), else null |
 //! | `channel_identity` | T8's verified channel ([`crate::mutation_provenance::ChannelIdentity`]) the mutation arrived on; historical/backfilled entries always carry the explicit tagged `unknown`, never a value inferred from a source label or transport |
 //! | `artifacts` | T6's named artifact references a result carried: name → tagged reference (`{"type": "stored", "repoId", "artifactId", "kind"}`, `{"type": "commit", "repoId", "sha"}` or `{"type": "pr", "url", "headSha"}`). Stored references resolved in the artifact repository when the result was accepted. `{}` for every other entry |

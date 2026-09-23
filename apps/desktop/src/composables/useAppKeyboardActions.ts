@@ -240,8 +240,12 @@ export function useAppKeyboardActions(options: UseAppKeyboardActionsOptions) {
       }
       const item = store.currentItem;
       const repo = store.selectedRepo;
-      if (!item?.branch || !repo) return;
-      const worktreePath = `${repo.path}/.kanna-worktrees/${item.branch}`;
+      if (!item || !repo) return;
+      // The server's worktree record, not the branch: after a revision the
+      // branch checked out in a stage's directory no longer names it.
+      const worktreePath = store.worktreePaths?.[item.id]
+        ?? (item.branch ? `${repo.path}/.kanna-worktrees/${item.branch}` : undefined);
+      if (!worktreePath) return;
       await invoke("run_script", { script: `${store.ideCommand} "${worktreePath}"`, cwd: worktreePath, env: {} }).catch((e) => console.error("[openInIDE] failed:", e));
     },
     advanceStage: () => {

@@ -12,13 +12,13 @@ use super::prompt::{
     build_revision_task_prompt, build_target_stage_prompt_parts,
     build_target_stage_prompt_with_instructions, RevisionRound, StagePromptParts,
 };
-use super::resume::{prepare_resume_workspace, same_cwd};
+use super::resume::{prepare_resume_session, prepare_resume_workspace, same_cwd};
+use super::session::{self, RevisitPlan};
 use super::types::{
     PreparedPostDispatch, PreparedRunWorkspace, PreparedStageRunSpawn, PreparedStageTransition,
-    RunWorkspaceSpec,
+    RevisitResume, RunWorkspaceSpec,
 };
-use super::worktree::next_fork_branch;
-use super::worktree::resolve_current_source_worktree_branch;
+use super::worktree::allocate_task_branch;
 use super::AgentInstructions;
 use super::SpawnAgentOverrides;
 use super::FALLBACK_WORKFLOW_NAME;
@@ -65,15 +65,17 @@ fn load_stage_identity(db: &Db, source_task_id: &str) -> Result<LoadedStageIdent
 
 /// Load everything a stage preparation needs, with the task's workspace
 /// identity first reconciled onto the branch that actually holds its committed
-/// work.
+/// work — unless the triggering result recorded the input commit, which is
+/// then the base (see `session::stage_input`).
 ///
-/// Every fork below cuts from `source_task.branch`, so that field has to be
-/// the task's real committed tip before anything else reads it. A revision
-/// round whose commit landed on a workspace the field no longer named used to
-/// be dropped by the next fork, and the next reviewer re-raised the same
-/// finding — see `work_tip` and its regression tests.
+/// A fork without a recorded input cuts from `source_task.branch`, so that
+/// field has to be the task's real committed tip before anything else reads
+/// it. A revision round whose commit landed on a workspace the field no
+/// longer named used to be dropped by the next fork, and the next reviewer
+/// re-raised the same finding — see `work_tip` and its regression tests.
 fn load_stage_transition_source(
     db: &Db,
+    config: &Config,
     identity: LoadedStageIdentity,
     source_task_id: &str,
 ) -> Result<LoadedStageTransitionSource, String> {
@@ -81,7 +83,15 @@ fn load_stage_transition_source(
         mut source_task,
         repo,
     } = identity;
-    if source_task.closed_at.is_none() {
+    // When the triggering result recorded the commit the next session takes
+    // (spec §6), that commit is the base and newest-branch discovery must not
+    // move the task. Discovery remains the safety net only for a transition
+    // with no recorded input, which is every transition from before the
+    // ledger recorded one.
+    let recorded_input = source_task.stage.as_deref().is_some_and(|stage| {
+        session::stage_input(config, db, &repo.path, source_task_id, stage).is_some()
+    });
+    if source_task.closed_at.is_none() && !recorded_input {
         super::work_tip::reconcile_task_work_branch(
             db,
             &repo.path,
@@ -165,7 +175,7 @@ pub(crate) fn prepare_advance_stage_for_api_with_intent(
     if open_blockers > 0 {
         return Err(format!("task is blocked: {}", source_task_id));
     }
-    let loaded = load_stage_transition_source(db, identity, source_task_id)?;
+    let loaded = load_stage_transition_source(db, config, identity, source_task_id)?;
     let context = StageTransitionContext {
         source_task: &loaded.source_task,
         source_task_id,
@@ -290,7 +300,7 @@ pub(crate) fn prepare_stage_completion_for_api_with_trigger(
     if identity.source_task.closed_at.is_some() {
         return Ok(None);
     }
-    let loaded = load_stage_transition_source(db, identity, source_task_id)?;
+    let loaded = load_stage_transition_source(db, config, identity, source_task_id)?;
     let context = StageTransitionContext {
         source_task: &loaded.source_task,
         source_task_id,
@@ -465,6 +475,7 @@ fn prepare_post_dispatch(
         None,
         trigger,
         None,
+        None,
     )?;
 
     Ok(PreparedStageTransition::Post(Box::new(
@@ -513,6 +524,7 @@ fn prepare_stage_run_for_target(
         prompt_suffix,
         trigger,
         provider_override,
+        None,
     )
 }
 
@@ -531,6 +543,7 @@ fn prepare_stage_run_for_target_with_provider(
     prompt_suffix: Option<&str>,
     trigger: StageTrigger,
     provider_override: Option<StageProviderOverride>,
+    workspace: Option<RunWorkspaceSpec>,
 ) -> Result<PreparedStageRunSpawn, String> {
     prepare_stage_run_for_target_returning_prompt(
         db,
@@ -547,6 +560,7 @@ fn prepare_stage_run_for_target_with_provider(
         prompt_suffix,
         trigger,
         provider_override,
+        workspace,
     )
     .map(|(run, _)| run)
 }
@@ -567,30 +581,45 @@ fn prepare_stage_run_for_target_returning_prompt(
     prompt_suffix: Option<&str>,
     trigger: StageTrigger,
     provider_override: Option<StageProviderOverride>,
+    workspace: Option<RunWorkspaceSpec>,
 ) -> Result<(PreparedStageRunSpawn, String), String> {
     let source_task = context.source_task;
-    let source_branch =
-        resolve_current_source_worktree_branch(&context.repo.path, source_task.branch.as_deref());
+    let current_worktree = source_task.branch.as_deref().map(|branch| {
+        session::current_workspace_path(db, &context.repo.path, context.source_task_id, branch)
+    });
+    let source_branch = current_worktree
+        .as_deref()
+        .and_then(super::resume::current_branch)
+        .or_else(|| source_task.branch.clone());
     let prev_result = previous_stage_result(db, context.source_task_id, source_task)?;
     let prev_main_result = previous_main_stage_result(db, context.source_task_id)?;
     let plan_result = stamped_plan_result(db, context.source_task_id);
     let task_prompt = prompt_override
         .or(source_task.prompt.as_deref())
         .unwrap_or("");
-    // Stage transitions fork a fresh workspace from the task's committed
-    // tip, named `task-<taskid>-<n>` — the durable task id plus a workspace
-    // counter (N worktrees, N branches, one PR — the PR agent renames the
-    // final branch into something meaningful). Posts run inside the stage,
-    // so their fallback spawn keeps the stage's workspace.
-    let workspace_spec = if run_kind == "main" {
-        RunWorkspaceSpec::Fork {
-            branch: next_fork_branch(&context.repo.path, context.source_task_id)?,
-        }
-    } else {
-        RunWorkspaceSpec::Current
+    // Entering a stage forks a fresh workspace, named `task-<taskid>-<n>`
+    // — the durable task id plus the task's persisted branch counter (N
+    // worktrees, N branches, one PR — the PR agent renames the final branch
+    // into something meaningful). It starts at the commit the triggering
+    // result recorded; a task with no recorded input forks from its current
+    // workspace as before. Posts run inside the stage, so their fallback
+    // spawn keeps the stage's workspace. A loop back hands in its own
+    // revisit of the stage's retained directory.
+    let workspace_spec = match workspace {
+        Some(workspace) => workspace,
+        None if run_kind == "main" => fork_spec(
+            db,
+            config,
+            context,
+            current_worktree.as_deref(),
+            &target_stage.name,
+            None,
+        )?,
+        None => RunWorkspaceSpec::Current,
     };
     let prompt_branch = match &workspace_spec {
-        RunWorkspaceSpec::Fork { branch } => Some(branch.clone()),
+        RunWorkspaceSpec::Fork { branch, .. } => Some(branch.clone()),
+        RunWorkspaceSpec::Revisit(revisit) => Some(revisit.branch.clone()),
         _ => source_branch.clone(),
     };
     let StagePromptParts {
@@ -886,7 +915,7 @@ pub(crate) fn prepare_revision_task_for_api(
     // round on nothing and silently loses the verdict that triggered it.
     let revision_feedback = resolve_revision_feedback(db, source_task_id, revision_prompt)?;
     let revision_prompt = revision_feedback.as_str();
-    let loaded = load_stage_transition_source(db, identity, source_task_id)?;
+    let loaded = load_stage_transition_source(db, config, identity, source_task_id)?;
     let context = StageTransitionContext {
         source_task: &loaded.source_task,
         source_task_id,
@@ -916,17 +945,59 @@ pub(crate) fn prepare_revision_task_for_api(
         }
     };
 
-    // Prefer resuming the target stage's previous agent session: it already
-    // holds the exploration and decision context the feedback refers to.
-    // Every failed precondition falls back to today's fresh-fork behavior.
-    let resume_fallback_reason = if run_kind == "main" {
-        match prepare_revision_resume(db, config, &context, &target_stage, revision_prompt, round)?
-        {
-            ResumePreparation::Resumed(prepared) => return Ok(*prepared),
-            ResumePreparation::Fallback(reason) => Some(reason),
+    // A loop back re-enters the stage's retained directory on a newly
+    // allocated branch (spec §6). There it prefers resuming the stage's
+    // previous agent session, which already holds the exploration and
+    // decision context the feedback refers to; without a transcript the
+    // session starts fresh in the same directory from the ledger. A
+    // directory that cannot be reused without moving what it holds is
+    // preserved, reported, and the stage forks fresh instead.
+    let (workspace, resume_fallback_reason) = if run_kind == "main" {
+        let current_worktree = loaded.source_task.branch.as_deref().map(|branch| {
+            session::current_workspace_path(db, &loaded.repo.path, source_task_id, branch)
+        });
+        let plan = session::plan_stage_revisit(
+            config,
+            db,
+            &loaded.repo.path,
+            source_task_id,
+            &target_stage.name,
+            current_worktree.as_deref().unwrap_or(&loaded.repo.path),
+        )?;
+        match plan {
+            RevisitPlan::Reuse(revisit) => {
+                match prepare_revision_resume(
+                    db,
+                    config,
+                    &context,
+                    &target_stage,
+                    revision_prompt,
+                    round,
+                    revisit,
+                )? {
+                    ResumePreparation::Resumed(prepared) => return Ok(*prepared),
+                    ResumePreparation::Fallback(reason, revisit) => {
+                        (Some(RunWorkspaceSpec::Revisit(*revisit)), Some(reason))
+                    }
+                }
+            }
+            RevisitPlan::Fresh { reason, report } => (
+                Some(fork_spec(
+                    db,
+                    config,
+                    &context,
+                    current_worktree.as_deref(),
+                    &target_stage.name,
+                    report,
+                )?),
+                Some(reason),
+            ),
         }
     } else {
-        Some("post runs do not have an independently resumable provider session".to_string())
+        (
+            None,
+            Some("post runs do not have an independently resumable provider session".to_string()),
+        )
     };
 
     // Fresh fallback: compose the original task prompt with the reviewer's
@@ -998,9 +1069,44 @@ pub(crate) fn prepare_revision_task_for_api(
         } else {
             None
         },
+        workspace,
     )?;
     prepared.resume_fallback_reason = resume_fallback_reason;
     Ok(prepared)
+}
+
+/// A fresh workspace for entering `stage`: the task's next counter branch,
+/// started at the recorded input commit when there is one. `report` carries
+/// what the caller already preserved; otherwise it is what the fork leaves
+/// behind in the task's current workspace.
+fn fork_spec(
+    db: &Db,
+    config: &Config,
+    context: &StageTransitionContext<'_>,
+    current_worktree: Option<&str>,
+    stage: &str,
+    report: Option<String>,
+) -> Result<RunWorkspaceSpec, String> {
+    let input = session::stage_input(
+        config,
+        db,
+        &context.repo.path,
+        context.source_task_id,
+        stage,
+    );
+    let report = report.or_else(|| {
+        input
+            .as_ref()
+            .zip(current_worktree)
+            .and_then(|(input, current)| {
+                session::fork_input_report(&context.repo.path, current, input)
+            })
+    });
+    Ok(RunWorkspaceSpec::Fork {
+        branch: allocate_task_branch(db, &context.repo.path, context.source_task_id)?,
+        start_point: input.map(|input| input.commit),
+        report,
+    })
 }
 
 /// Why a stage is being restarted in place, and whether the previous run's
@@ -1196,7 +1302,7 @@ fn prepare_stage_restart(
     if identity.source_task.closed_at.is_some() {
         return Err(format!("task is closed: {task_id}"));
     }
-    let loaded = load_stage_transition_source(db, identity, task_id)?;
+    let loaded = load_stage_transition_source(db, config, identity, task_id)?;
     let source_task = &loaded.source_task;
     let run = db
         .latest_stage_run(task_id)
@@ -1277,7 +1383,7 @@ fn prepare_stage_restart(
         .branch
         .as_deref()
         .ok_or_else(|| format!("task has no branch: {task_id}"))?;
-    let current_worktree = format!("{}/.kanna-worktrees/{branch}", loaded.repo.path);
+    let current_worktree = session::current_workspace_path(db, &loaded.repo.path, task_id, branch);
     let setup_pending = db
         .task_worktree_setup_pending(task_id)
         .map_err(|error| format!("db error: {error}"))?;
@@ -1294,6 +1400,7 @@ fn prepare_stage_restart(
         } else {
             RunWorkspaceSpec::Recreate {
                 branch: branch.to_string(),
+                worktree_path: current_worktree.clone(),
             }
         }
     };
@@ -1591,12 +1698,15 @@ fn prepare_stage_restart(
 
 enum ResumePreparation {
     Resumed(Box<PreparedStageRunSpawn>),
-    Fallback(String),
+    /// The conversation cannot be resumed; the session starts fresh in the
+    /// same revisited directory, whose branch is already reserved.
+    Fallback(String, Box<super::types::RevisitWorkspaceSpec>),
 }
 
 /// Try to prepare a revision as a resumed run of the target stage's previous
-/// provider session. Every unavailable precondition becomes a durable
-/// fresh-spawn reason on the replacement run.
+/// provider session, in the stage's revisited directory on its new branch.
+/// Every unavailable precondition becomes a durable fresh-spawn reason on the
+/// replacement run, which still starts in that directory.
 fn prepare_revision_resume(
     db: &Db,
     config: &Config,
@@ -1604,11 +1714,18 @@ fn prepare_revision_resume(
     target_stage: &WorkflowStage,
     revision_prompt: &str,
     round: Option<RevisionRound>,
+    mut revisit: super::types::RevisitWorkspaceSpec,
 ) -> Result<ResumePreparation, String> {
     let task_id = context.source_task_id;
-    let fall_back = |reason: &str| {
-        log::info!("revision resume unavailable for task {task_id}: {reason}; forking fresh");
-        Ok(ResumePreparation::Fallback(reason.to_string()))
+    let fall_back = |reason: &str, revisit: super::types::RevisitWorkspaceSpec| {
+        log::info!(
+            "revision resume unavailable for task {task_id}: {reason}; starting fresh in {}",
+            revisit.worktree_path
+        );
+        Ok(ResumePreparation::Fallback(
+            reason.to_string(),
+            Box::new(revisit),
+        ))
     };
 
     let run = match db
@@ -1616,34 +1733,42 @@ fn prepare_revision_resume(
         .map_err(|e| format!("db error: {}", e))?
     {
         Some(run) => run,
-        None => return fall_back("no stage run recorded a provider session"),
+        None => return fall_back("no stage run recorded a provider session", revisit),
     };
     if db
         .stage_run_workflow_superseded(task_id, &run.id)
         .map_err(|error| format!("db error: {error}"))?
     {
-        return fall_back("pinned workflow execution binding changed");
+        return fall_back("pinned workflow execution binding changed", revisit);
+    }
+    // Provider transcripts are keyed by working directory, so only a
+    // conversation held in this very directory can continue here.
+    if !run
+        .cwd
+        .as_deref()
+        .is_some_and(|cwd| same_cwd(cwd, &revisit.worktree_path))
+    {
+        return fall_back(
+            "the stage's latest conversation ran in a different directory",
+            revisit,
+        );
     }
     let source_task = context.source_task;
-    let Some(current_branch_name) = source_task.branch.as_deref() else {
-        return fall_back("task has no branch");
-    };
-    let current_worktree = format!(
-        "{}/.kanna-worktrees/{}",
-        context.repo.path, current_branch_name
-    );
-    let (provider, resume_workspace) = match prepare_resume_workspace(
+    let (provider, provider_session_id) = match prepare_resume_session(
         run.agent_provider.as_deref(),
         source_task.agent_type.as_deref(),
-        run.cwd.as_deref(),
+        &revisit.worktree_path,
         run.provider_session_id.as_deref(),
-        &run.id,
-        &current_worktree,
     ) {
         Ok(resume) => resume,
-        Err(reason) => return fall_back(&reason),
+        Err(reason) => return fall_back(&reason, revisit),
     };
-    let provider_session_id = resume_workspace.provider_session_id.clone();
+    let current_branch_name = revisit.branch.clone();
+    let start_point = revisit.start_point.clone();
+    revisit.resume = Some(RevisitResume {
+        provider_session_id: provider_session_id.clone(),
+        resumed_from_run_id: run.id.clone(),
+    });
 
     let message = build_revision_resume_message(
         source_task.prompt.as_deref().unwrap_or(""),
@@ -1671,12 +1796,12 @@ fn prepare_revision_resume(
         &target_stage.name,
         "main",
         target_stage.policy.revision_transition(),
-        RunWorkspaceSpec::Resume(resume_workspace),
+        RunWorkspaceSpec::Revisit(revisit),
         message,
         // A revision resume message is a continuation turn, not a composed
         // stage prompt: the session already carries its agent instructions.
         None,
-        current_branch_name,
+        &current_branch_name,
         Some(revision_prompt.to_string()),
         source_task.agent_type.as_deref(),
         agent_overrides,
@@ -1685,17 +1810,42 @@ fn prepare_revision_resume(
         run.provider_override.clone(),
     )?;
     // A definition that changed provider or session type since the source run
-    // cannot continue that conversation.
+    // cannot continue that conversation. The branch checkout is undone so the
+    // fresh start below can make it again.
     if prepared.agent_provider != provider.as_str()
         || prepared.provider_session_id.as_deref() != Some(provider_session_id.as_str())
     {
-        return fall_back("stage no longer resolves to the recorded resumable provider session");
+        let PreparedRunWorkspace::Revisited(revisited) = &prepared.workspace else {
+            return Err("revision resume prepared a workspace it did not revisit".to_string());
+        };
+        if let Some(preserved) =
+            super::lifecycle::roll_back_prepared_workspace(&prepared.workspace)?
+        {
+            return Err(format!(
+                "stage no longer resolves to the recorded resumable provider session; {preserved}"
+            ));
+        }
+        let revisit = super::types::RevisitWorkspaceSpec {
+            worktree_path: revisited.workspace.worktree_path.clone(),
+            branch: revisited.workspace.branch.clone(),
+            start_point,
+            previous_branch: revisited.previous_branch.clone(),
+            previous_head: revisited.previous_head.clone(),
+            observed_dirty: revisited.observed_dirty,
+            report: prepared.session_identity.workspace_report.clone(),
+            resume: None,
+        };
+        return fall_back(
+            "stage no longer resolves to the recorded resumable provider session",
+            revisit,
+        );
     }
     log::info!(
-        "revision resumes task {task_id} stage '{}' from run {} in {}",
+        "revision resumes task {task_id} stage '{}' from run {} in {} on {}",
         target_stage.name,
         run.id,
-        prepared.cwd
+        prepared.cwd,
+        current_branch_name,
     );
     Ok(ResumePreparation::Resumed(Box::new(prepared)))
 }

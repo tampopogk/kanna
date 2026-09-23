@@ -17,6 +17,33 @@ pub(crate) const AGENT_RUN_KINDS: &str = "('main', 'post')";
 /// `stage_run.kind` for a workspace teardown session.
 pub(crate) const TEARDOWN_RUN_KIND: &str = "teardown";
 
+/// Where a session's provider transcript lives (spec §6): a reference, never
+/// an input. `path` is known only for providers whose transcript location is
+/// determined by the session id and working directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptRef {
+    pub provider: String,
+    pub session_id: String,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+/// The identity a stage session records when it starts (spec §6, T2).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StageRunSession {
+    /// The `stage_workspace` row, when the workspace is on record.
+    pub workspace_id: Option<String>,
+    /// The branch this session checked out in its workspace.
+    pub branch: Option<String>,
+    pub name: Option<String>,
+    pub transcript: Option<TranscriptRef>,
+    /// Workspace state the start found and preserved rather than resetting
+    /// or merging (uncommitted changes, commits the input lacks).
+    pub workspace_report: Option<String>,
+}
+
 /// Identity of a run closed by `finish_latest_running_stage_run`.
 pub struct FinishedStageRun {
     pub kind: String,
@@ -671,6 +698,126 @@ impl Db {
             )?;
         }
         Ok(())
+    }
+
+    /// Daemon session ids of every session this task's records place in a
+    /// workspace directory — agent, post and teardown runs recorded there,
+    /// runs whose session named the directory's workspace, and terminal
+    /// sessions opened in it — whatever branch the directory is on now.
+    pub fn task_session_ids_in_directory(
+        &self,
+        task_id: &str,
+        directory: &str,
+        workspace_id: &str,
+    ) -> Result<Vec<String>, rusqlite::Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT session_id FROM stage_run
+             WHERE task_id = ?1 AND session_id IS NOT NULL
+               AND (cwd = ?2 OR workspace_id = ?3)
+             UNION
+             SELECT daemon_session_id FROM terminal_session
+             WHERE pipeline_item_id = ?1 AND cwd = ?2 AND daemon_session_id IS NOT NULL",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![task_id, directory, workspace_id], |row| {
+            row.get::<_, String>(0)
+        })?;
+        rows.collect()
+    }
+
+    /// Teardown runs of a task still recorded as running in a workspace
+    /// directory, with their session ids.
+    pub fn running_teardown_runs_in_directory(
+        &self,
+        task_id: &str,
+        directory: &str,
+    ) -> Result<Vec<(String, Option<String>)>, rusqlite::Error> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT id, session_id FROM stage_run
+             WHERE task_id = ?1 AND kind = '{TEARDOWN_RUN_KIND}' AND cwd = ?2
+               AND status = 'running'"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params![task_id, directory], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?;
+        rows.collect()
+    }
+
+    /// Record the identity a session started with (spec §6): the stage
+    /// workspace it runs in, the branch it checked out there, its name, where
+    /// its provider transcript lives, and any workspace state the start
+    /// preserved rather than touched. Written once, beside the run row.
+    pub fn set_stage_run_session(
+        &self,
+        run_id: &str,
+        session: &StageRunSession,
+    ) -> Result<(), rusqlite::Error> {
+        let rows_affected = self.conn.execute(
+            "UPDATE stage_run
+             SET workspace_id = ?, session_branch = ?, session_name = ?,
+                 transcript_ref = ?, workspace_report = ?
+             WHERE id = ?",
+            rusqlite::params![
+                session.workspace_id,
+                session.branch,
+                session.name,
+                session
+                    .transcript
+                    .as_ref()
+                    .map(|transcript| serde_json::to_string(transcript).unwrap_or_default()),
+                session.workspace_report,
+                run_id,
+            ],
+        )?;
+        if rows_affected == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        Ok(())
+    }
+
+    /// The session identity recorded on a run, or `None` for a run that
+    /// predates it (or a teardown run, which is not a session).
+    pub fn stage_run_session(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<StageRunSession>, rusqlite::Error> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT workspace_id, session_branch, session_name, transcript_ref, workspace_report
+                 FROM stage_run WHERE id = ?",
+                [run_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                },
+            )
+            .optional();
+        let row = match row {
+            Ok(row) => row,
+            Err(err) if is_missing_stage_run_table(&err) => return Ok(None),
+            Err(err) => return Err(err),
+        };
+        Ok(row.and_then(
+            |(workspace_id, branch, name, transcript, workspace_report)| {
+                if workspace_id.is_none() && branch.is_none() && name.is_none() {
+                    return None;
+                }
+                Some(StageRunSession {
+                    workspace_id,
+                    branch,
+                    name,
+                    transcript: transcript
+                        .as_deref()
+                        .and_then(|value| serde_json::from_str(value).ok()),
+                    workspace_report,
+                })
+            },
+        ))
     }
 
     pub fn set_stage_run_resume_fallback_reason(

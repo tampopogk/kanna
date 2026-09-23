@@ -299,11 +299,13 @@ async fn killed_codex_transition_exit_lands_on_the_implementation_run_and_the_re
         revision.unwrap()
     };
 
-    let resumed = revision
-        .resumed_workspace()
-        .expect("the revision must resume the recorded codex conversation");
-    assert_eq!(resumed.branch, "task-codex-impl");
-    assert_eq!(resumed.worktree_path, impl_worktree.to_string_lossy());
+    // The loop back re-enters the implementation directory on a new branch
+    // and reopens the conversation held there.
+    let revisited = revision
+        .revisited_workspace()
+        .expect("the revision must re-enter the implementation directory");
+    assert_ne!(revisited.branch, "task-codex-impl");
+    assert_eq!(revisited.worktree_path, impl_worktree.to_string_lossy());
     assert!(revision.forked_workspace().is_none());
     assert_eq!(revision.agent_provider, "codex");
     assert_eq!(
@@ -328,13 +330,15 @@ async fn killed_codex_transition_exit_lands_on_the_implementation_run_and_the_re
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
-/// Without a recorded conversation the revision must still fork rather than
-/// claim a resume — the behavior every non-codex provider and every failed
-/// extraction keeps, and the baseline the fix must not paper over.
+/// Without a recorded conversation the revision must start a fresh session
+/// rather than claim a resume — the behavior every non-codex provider and
+/// every failed extraction keeps, and the baseline the fix must not paper
+/// over. The fresh session still runs in the stage's retained directory.
 #[tokio::test]
-async fn a_transition_that_discovers_no_session_still_forks_the_revision() {
+async fn a_transition_that_discovers_no_session_starts_the_revision_fresh() {
     let config = test_config("codex-transition-no-session");
     let (repo_root, db) = init_codex_transition_fixture("codex-transition-no-session", &config);
+    let impl_worktree = repo_root.join(".kanna-worktrees/task-codex-impl");
     let state = crate::http_api::AppState::new(config.clone());
     let replacements = state.session_replacements();
 
@@ -387,15 +391,14 @@ async fn a_transition_that_discovers_no_session_still_forks_the_revision() {
     )
     .unwrap();
     assert!(revision.resumed_workspace().is_none());
-    let fork = revision
-        .forked_workspace()
-        .expect("no recorded session must still fork a fresh workspace");
+    assert!(revision.resumed_from_run_id.is_none());
+    assert!(revision
+        .revisited_workspace()
+        .is_some_and(|revisited| revisited.worktree_path == impl_worktree.to_string_lossy()));
     assert_eq!(
         revision.resume_fallback_reason.as_deref(),
         Some("no stage run recorded a provider session")
     );
-    let _ =
-        crate::task_creator::worktree::remove_prepared_worktree(&fork.worktree_path, &fork.branch);
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
