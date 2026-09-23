@@ -70,6 +70,9 @@ pub(super) struct RepoArtifactsConfig {
     pub(super) repository_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) retention: Option<crate::artifacts::ArtifactRetention>,
+    /// The artifact remote: a Git URL or path both sharing homes can reach.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) remote: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1174,10 +1177,19 @@ fn repo_config_from_object(raw: &serde_json::Map<String, serde_json::Value>) -> 
                 .get("retention")
                 .and_then(serde_json::Value::as_str)
                 .and_then(crate::artifacts::ArtifactRetention::parse);
-            (repository_path.is_some() || retention.is_some()).then_some(RepoArtifactsConfig {
-                repository_path,
-                retention,
-            })
+            let remote = artifacts_raw
+                .get("remote")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|remote| !remote.is_empty())
+                .map(str::to_string);
+            (repository_path.is_some() || retention.is_some() || remote.is_some()).then_some(
+                RepoArtifactsConfig {
+                    repository_path,
+                    retention,
+                    remote,
+                },
+            )
         });
 
     RepoConfig {

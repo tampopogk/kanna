@@ -47,7 +47,7 @@ impl Drop for Fixture {
     }
 }
 
-fn publish(
+pub(super) fn publish(
     store: &ArtifactStore,
     workspace: &Path,
     source: &str,
@@ -84,7 +84,7 @@ fn publish_with(
     })
 }
 
-fn write_mockup(fixture: &Fixture, directory: &str, css: &str) {
+pub(super) fn write_mockup(fixture: &Fixture, directory: &str, css: &str) {
     fixture.write(
         &format!("workspace/{directory}/index.html"),
         b"<link rel=stylesheet href=css/site.css><img src=img/logo.png>",
@@ -99,7 +99,7 @@ fn write_mockup(fixture: &Fixture, directory: &str, css: &str) {
     );
 }
 
-fn git(directory: &Path, args: &[&str]) -> String {
+pub(super) fn git(directory: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .args(args)
         .current_dir(directory)

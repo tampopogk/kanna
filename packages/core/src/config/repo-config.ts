@@ -49,6 +49,8 @@ export interface RepoArtifactsConfig {
   /** Artifact store location; defaults to `~/.kanna/repos/<repo-id>/artifacts.git`. */
   repositoryPath?: string;
   retention?: ArtifactRetention;
+  /** Artifact remote: a Git URL or path another Kanna home can also reach. */
+  remote?: string;
 }
 
 export interface RepoConfig {
@@ -270,6 +272,9 @@ export function parseRepoConfig(json: string): RepoConfig {
       (ARTIFACT_RETENTION_POLICIES as readonly string[]).includes(artifactsRaw.retention)
     ) {
       artifacts.retention = artifactsRaw.retention as ArtifactRetention;
+    }
+    if (typeof artifactsRaw.remote === "string" && artifactsRaw.remote.trim().length > 0) {
+      artifacts.remote = artifactsRaw.remote.trim();
     }
     if (Object.keys(artifacts).length > 0) {
       config.artifacts = artifacts;

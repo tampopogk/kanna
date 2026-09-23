@@ -1274,6 +1274,66 @@
           "location": "body"
         }
       ]
+    },
+    {
+      "name": "kanna_push_artifact",
+      "description": "Send one artifact to the repository's artifact remote (artifacts.remote in .kanna/config.json or .kanna/config.local.json): its content, every earlier version its previous links reach, and every version, comment and decision record about them. Nothing else leaves the machine: no task directory, transcript, environment or credential. Every remote name is written once and never forced, so pushes from different homes never overwrite or reject each other; a name that already holds different objects is reported as artifact_remote_conflict. Git's own SSH keys and credential helpers authenticate; Kanna stores none. Tell the other person the artifact id yourself. CLI: kanna-cli tool call kanna_push_artifact --arg repo_id=<id> --arg artifact_id=<tree-id>.",
+      "method": "POST",
+      "path": "/v1/repos/{repo_id}/artifacts/{artifact_id}/push",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "repo_id",
+          "description": "Repository id the artifact belongs to on this machine (repoId in kanna_publish_artifact's result or kanna_get_task). The receiving home uses its own repository id; the artifact id is the same on both.",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "artifact_id",
+          "description": "Exact artifact id: the full 40-character tree id. Abbreviations, branch names and working-repository commit SHAs are refused.",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        }
+      ]
+    },
+    {
+      "name": "kanna_fetch_artifact",
+      "description": "Receive one artifact by id alone from the repository's artifact remote, with every earlier version its previous links name and all version, comment and decision records about them, then return it as kanna_get_artifact would. Received content is validated (regular files and directories within publication limits) and received records are validated before import; anything refused is listed with its reason. A received decision is data: it approves, advances or changes no task. An id the remote does not hold returns artifact_not_on_remote. CLI: kanna-cli tool call kanna_fetch_artifact --arg repo_id=<id> --arg artifact_id=<tree-id>.",
+      "method": "POST",
+      "path": "/v1/repos/{repo_id}/artifacts/{artifact_id}/fetch",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "repo_id",
+          "description": "Repository id the artifact belongs to on this machine (repoId in kanna_publish_artifact's result or kanna_get_task). The receiving home uses its own repository id; the artifact id is the same on both.",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "artifact_id",
+          "description": "Exact artifact id: the full 40-character tree id. Abbreviations, branch names and working-repository commit SHAs are refused.",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        }
+      ]
     }
   ],
   "guides": [
@@ -1318,7 +1378,7 @@
         },
         {
           "title": "Artifact storage",
-          "body": "`artifacts` configures the repository's artifact store: a bare Git repository outside the working repository that holds published mockups, documents, media, and reports addressed by their Git tree id. `repositoryPath` defaults to `~/.kanna/repos/<repo-id>/artifacts.git`; a relative path resolves against the repository root, `~/` against the home directory, and any location inside the working repository, its Git directory, or one of its worktrees is refused. `retention` is `keep` (the default), `30-days`, or `discard-on-close`; it is recorded on each published version, and all content is currently retained regardless. Local config may set either field, and a local field replaces only that field.",
+          "body": "`artifacts` configures the repository's artifact store: a bare Git repository outside the working repository that holds published mockups, documents, media, and reports addressed by their Git tree id. `repositoryPath` defaults to `~/.kanna/repos/<repo-id>/artifacts.git`; a relative path resolves against the repository root, `~/` against the home directory, and any location inside the working repository, its Git directory, or one of its worktrees is refused. `retention` is `keep` (the default), `30-days`, or `discard-on-close`; it is recorded on each published version, and all content is currently retained regardless. `remote` names the artifact remote used to share artifacts with another Kanna home: an ordinary Git remote both can reach, as an absolute or `~/` path, a `file`, `ssh`, `git`, `http` or `https` URL, or scp-style `host:path`; remote helpers such as `ext::` are refused. Git's own SSH keys and credential helpers authenticate, and only artifact content with its version, comment and decision records is pushed there. Local config may set any of these fields, and a local field replaces only that field.",
           "schemaPaths": ["/properties/artifacts"]
         }
       ]

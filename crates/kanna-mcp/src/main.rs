@@ -1998,6 +1998,8 @@ mod tests {
                 "kanna_close_artifact",
                 "kanna_record_artifact_comment",
                 "kanna_record_artifact_decision",
+                "kanna_push_artifact",
+                "kanna_fetch_artifact",
             ]
         );
     }

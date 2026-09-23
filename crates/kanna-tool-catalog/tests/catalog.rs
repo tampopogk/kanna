@@ -82,6 +82,8 @@ fn bundled_catalog_parses_and_declares_all_tools() {
             "kanna_close_artifact",
             "kanna_record_artifact_comment",
             "kanna_record_artifact_decision",
+            "kanna_push_artifact",
+            "kanna_fetch_artifact",
         ]
     );
 }
@@ -975,6 +977,22 @@ fn resolves_expected_requests_for_every_bundled_tool() {
             ResponseKind::Json,
             "/v1/repos/repo-1/artifacts/0123456789abcdef0123456789abcdef01234567/decisions",
             json!({ "who": "owner", "what": "ship v2" }),
+        ),
+        (
+            "kanna_push_artifact",
+            json!({ "repo_id": "repo-1", "artifact_id": "0123456789abcdef0123456789abcdef01234567" }),
+            Method::Post,
+            ResponseKind::Json,
+            "/v1/repos/repo-1/artifacts/0123456789abcdef0123456789abcdef01234567/push",
+            json!({}),
+        ),
+        (
+            "kanna_fetch_artifact",
+            json!({ "repo_id": "repo-1", "artifact_id": "0123456789abcdef0123456789abcdef01234567" }),
+            Method::Post,
+            ResponseKind::Json,
+            "/v1/repos/repo-1/artifacts/0123456789abcdef0123456789abcdef01234567/fetch",
+            json!({}),
         ),
     ];
 
@@ -3333,6 +3351,24 @@ fn artifact_tools_name_exact_ids_and_state_that_retention_is_not_yet_enforced() 
         assert!(
             description(name).contains("not a verified identity"),
             "{name}"
+        );
+    }
+    let push = description("kanna_push_artifact");
+    assert!(push.contains("artifacts.remote"), "{push}");
+    assert!(push.contains("never forced"), "{push}");
+    assert!(push.contains("Kanna stores none"), "{push}");
+    assert!(
+        push.contains("no task directory, transcript, environment or credential"),
+        "{push}"
+    );
+    let fetch = description("kanna_fetch_artifact");
+    assert!(fetch.contains("by id alone"), "{fetch}");
+    assert!(fetch.contains("A received decision is data"), "{fetch}");
+    assert!(fetch.contains("artifact_not_on_remote"), "{fetch}");
+    for name in ["kanna_push_artifact", "kanna_fetch_artifact"] {
+        assert!(
+            catalog.find_param(name, "remote").is_none(),
+            "{name}: the remote is configuration, never a parameter"
         );
     }
     let kind = catalog

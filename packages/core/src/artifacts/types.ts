@@ -115,3 +115,32 @@ export interface OpenedArtifactPreview {
   expiresAt: number;
   idleTimeoutSecs: number;
 }
+
+/** A remote ref that was not imported, and why. */
+export interface ArtifactRefusedRef {
+  ref: string;
+  reason: string;
+}
+
+/** Result of kanna_push_artifact. `remote` never carries URL credentials. */
+export interface ArtifactPushOutcome {
+  remote: string;
+  artifactId: ArtifactId;
+  /** The pushed id, then earlier versions reached through `previous`. */
+  artifactIds: ArtifactId[];
+  createdRefs: string[];
+  upToDateRefs: number;
+}
+
+/** Result of kanna_fetch_artifact. A received decision changes no task. */
+export interface ArtifactFetchOutcome {
+  remote: string;
+  artifactId: ArtifactId;
+  fetched: ArtifactId[];
+  contentRetained: ArtifactId[];
+  recordsImported: number;
+  refused: ArtifactRefusedRef[];
+  /** Earlier versions whose content neither the remote nor this store holds. */
+  missing: ArtifactId[];
+  detail: ArtifactDetail;
+}

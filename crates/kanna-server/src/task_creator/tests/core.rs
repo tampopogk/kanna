@@ -4124,9 +4124,7 @@ fn read_agent_definition_loads_builtin_task_manager_agent_with_codex_first() {
         Some("codex")
     );
     assert!(definition.prompt.contains("kanna_wait_events"));
-    assert!(definition
-        .prompt
-        .contains("scoped to the whole repository"));
+    assert!(definition.prompt.contains("scoped to the whole repository"));
     assert!(definition.prompt.contains("kanna_subscribe_events"));
     assert!(definition
         .prompt
@@ -4137,9 +4135,7 @@ fn read_agent_definition_loads_builtin_task_manager_agent_with_codex_first() {
     assert!(definition
         .prompt
         .contains("A wake means \"read the mailbox.\""));
-    assert!(definition
-        .prompt
-        .contains("debounced for 10 seconds"));
+    assert!(definition.prompt.contains("debounced for 10 seconds"));
     assert!(definition
         .prompt
         .contains("including blocked tasks with no session yet"));
@@ -4186,9 +4182,7 @@ fn read_agent_definition_loads_builtin_task_manager_agent_with_codex_first() {
     assert!(definition
         .prompt
         .contains("ask the agent for one concise re-report"));
-    assert!(definition
-        .prompt
-        .contains("a different tool from product"));
+    assert!(definition.prompt.contains("a different tool from product"));
     assert!(definition
         .prompt
         .contains("\"workflow_name\": \"architect-research\""));

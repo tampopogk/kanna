@@ -638,6 +638,7 @@ pub(crate) fn resolve_available_agent_providers(
 pub(crate) struct RepoArtifactPolicy {
     pub(crate) repository_path: Option<String>,
     pub(crate) retention: crate::artifacts::ArtifactRetention,
+    pub(crate) remote: Option<String>,
 }
 
 pub(crate) fn load_repo_artifact_policy(
@@ -650,6 +651,7 @@ pub(crate) fn load_repo_artifact_policy(
             Ok(RepoArtifactPolicy {
                 repository_path: artifacts.repository_path,
                 retention: artifacts.retention.unwrap_or_default(),
+                remote: artifacts.remote,
             })
         })
         .map_err(|error| error.to_string())
