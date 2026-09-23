@@ -352,6 +352,7 @@ pub(super) fn plan_stage_revisit(
         start_point: input,
         previous_branch,
         previous_head: head,
+        observed_dirty: dirty,
         report,
         resume: None,
     }))

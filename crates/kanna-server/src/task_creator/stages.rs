@@ -1798,13 +1798,20 @@ fn prepare_revision_resume(
         let PreparedRunWorkspace::Revisited(revisited) = &prepared.workspace else {
             return Err("revision resume prepared a workspace it did not revisit".to_string());
         };
-        super::lifecycle::roll_back_prepared_workspace(&prepared.workspace)?;
+        if let Some(preserved) =
+            super::lifecycle::roll_back_prepared_workspace(&prepared.workspace)?
+        {
+            return Err(format!(
+                "stage no longer resolves to the recorded resumable provider session; {preserved}"
+            ));
+        }
         let revisit = super::types::RevisitWorkspaceSpec {
             worktree_path: revisited.workspace.worktree_path.clone(),
             branch: revisited.workspace.branch.clone(),
             start_point,
             previous_branch: revisited.previous_branch.clone(),
             previous_head: revisited.previous_head.clone(),
+            observed_dirty: revisited.observed_dirty,
             report: prepared.session_identity.workspace_report.clone(),
             resume: None,
         };

@@ -289,15 +289,108 @@ pub(super) fn check_out_new_branch(
     Ok(())
 }
 
+/// Confirm a retained workspace is still in the state a revisit plan
+/// observed, immediately before its branch is switched. Anything that moved
+/// in between — a commit, a branch change, new local changes — means the
+/// plan's reasons no longer hold; the difference is returned so the caller
+/// can preserve the directory and report it.
+pub(super) fn revalidate_revisit(
+    worktree_path: &str,
+    previous_branch: Option<&str>,
+    previous_head: &str,
+    observed_dirty: bool,
+) -> Result<(), String> {
+    let state = workspace_git_state(worktree_path)?;
+    let mut changes = Vec::new();
+    if state.head != previous_head {
+        changes.push(format!(
+            "HEAD moved from {} to {}",
+            short(previous_head),
+            short(&state.head)
+        ));
+    }
+    if state.branch.as_deref() != previous_branch {
+        changes.push(format!(
+            "branch changed from {} to {}",
+            previous_branch.unwrap_or("detached HEAD"),
+            state.branch.as_deref().unwrap_or("detached HEAD")
+        ));
+    }
+    if state.dirty != observed_dirty {
+        changes.push(if state.dirty {
+            "it gained uncommitted changes".to_string()
+        } else {
+            "its uncommitted changes went away".to_string()
+        });
+    }
+    if changes.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "retained workspace {worktree_path} changed after it was planned for reuse ({})",
+            changes.join("; ")
+        ))
+    }
+}
+
+fn short(commit: &str) -> &str {
+    &commit[..commit.len().min(12)]
+}
+
+/// The revisit a failed spawn has to undo: the branch it checked out, where
+/// it started, and what the directory had before.
+pub(super) struct RevisitCheckout<'a> {
+    pub(super) worktree_path: &'a str,
+    pub(super) new_branch: &'a str,
+    pub(super) start_point: &'a str,
+    pub(super) previous_branch: Option<&'a str>,
+    pub(super) previous_head: &'a str,
+    pub(super) observed_dirty: bool,
+}
+
 /// Undo [`check_out_new_branch`] after a failed spawn: return the workspace
 /// to what it had checked out and delete the unused branch. The directory
 /// itself is retained; its number stays spent.
+///
+/// A shell, editor or outgoing agent may have used the directory between the
+/// checkout and the failure. The undo runs only while the directory is
+/// exactly as the checkout left it — the new branch checked out, still at
+/// its start point, with no local changes the plan did not already see.
+/// Otherwise nothing is touched and `Ok(Some(report))` says what was kept.
 pub(super) fn restore_revisited_workspace(
-    worktree_path: &str,
-    new_branch: &str,
-    previous_branch: Option<&str>,
-    previous_head: &str,
-) -> Result<(), String> {
+    checkout: &RevisitCheckout<'_>,
+) -> Result<Option<String>, String> {
+    let RevisitCheckout {
+        worktree_path,
+        new_branch,
+        start_point,
+        previous_branch,
+        previous_head,
+        observed_dirty,
+    } = *checkout;
+    let state = workspace_git_state(worktree_path)?;
+    let mut changes = Vec::new();
+    if state.branch.as_deref() != Some(new_branch) {
+        changes.push(format!(
+            "{} is checked out instead of {new_branch}",
+            state.branch.as_deref().unwrap_or("detached HEAD")
+        ));
+    } else if state.head != start_point {
+        changes.push(format!(
+            "{new_branch} moved from {} to {}",
+            short(start_point),
+            short(&state.head)
+        ));
+    }
+    if state.dirty && !observed_dirty {
+        changes.push("it has uncommitted changes made after the checkout".to_string());
+    }
+    if !changes.is_empty() {
+        return Ok(Some(format!(
+            "retained workspace {worktree_path} was used after {new_branch} was checked out              ({}); the branch and directory were preserved untouched",
+            changes.join("; ")
+        )));
+    }
     let mut args = vec!["switch"];
     match previous_branch {
         Some(branch) => args.push(branch),
@@ -317,6 +410,8 @@ pub(super) fn restore_revisited_workspace(
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
+    // Verified above to still sit at the start point this revisit chose,
+    // which another ref already holds, so deleting it drops no commit.
     let output = Command::new("git")
         .args(["branch", "-D", new_branch])
         .current_dir(worktree_path)
@@ -331,7 +426,7 @@ pub(super) fn restore_revisited_workspace(
             ));
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 pub(super) fn generate_task_id() -> Result<String, String> {

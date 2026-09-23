@@ -1538,6 +1538,20 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
         }
         RunWorkspaceSpec::Revisit(revisit) => {
             workspace_report = revisit.report;
+            // The plan read this directory before the branch number was
+            // reserved; a writer may have used it since. Switch only if it is
+            // still exactly what the plan saw, otherwise leave it alone and
+            // say why no session was started. The next attempt plans afresh.
+            if let Err(changed) = worktree::revalidate_revisit(
+                &revisit.worktree_path,
+                revisit.previous_branch.as_deref(),
+                &revisit.previous_head,
+                revisit.observed_dirty,
+            ) {
+                return Err(format!(
+                    "{changed}; it was preserved untouched and no session was started"
+                ));
+            }
             worktree::check_out_new_branch(
                 &revisit.worktree_path,
                 &revisit.branch,
@@ -1556,8 +1570,10 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
                         branch: revisit.branch,
                         worktree_path: revisit.worktree_path,
                     },
+                    start_point: revisit.start_point,
                     previous_branch: revisit.previous_branch,
                     previous_head: revisit.previous_head,
+                    observed_dirty: revisit.observed_dirty,
                 }),
                 resume_session_id,
                 resumed_from_run_id,
@@ -1784,12 +1800,13 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
     ) = match prepared_session {
         Ok(prepared) => prepared,
         Err(error) => {
-            if let Err(rollback_error) = lifecycle::roll_back_prepared_workspace(&workspace) {
-                return Err(format!(
-                    "{error}; fork preparation rollback failed: {rollback_error}"
-                ));
-            }
-            return Err(error);
+            return Err(match lifecycle::roll_back_prepared_workspace(&workspace) {
+                Ok(None) => error,
+                Ok(Some(preserved)) => format!("{error}; {preserved}"),
+                Err(rollback_error) => {
+                    format!("{error}; fork preparation rollback failed: {rollback_error}")
+                }
+            });
         }
     };
 

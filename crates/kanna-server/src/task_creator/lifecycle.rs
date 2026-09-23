@@ -759,28 +759,39 @@ fn record_stage_transition_failure(
 /// fresh fork is removed; a revisited stage directory is returned to the
 /// branch it had and keeps everything else. Every other workspace predates
 /// the preparation and is left alone. Spent branch numbers stay spent.
-pub(super) fn roll_back_prepared_workspace(workspace: &PreparedRunWorkspace) -> Result<(), String> {
+///
+/// `Ok(Some(report))` means a revisited directory was used after its
+/// checkout and was preserved rather than undone; the report says what was
+/// kept and belongs in the failure the caller records.
+pub(super) fn roll_back_prepared_workspace(
+    workspace: &PreparedRunWorkspace,
+) -> Result<Option<String>, String> {
     match workspace {
         PreparedRunWorkspace::Forked(fork) => {
-            remove_prepared_worktree(&fork.worktree_path, &fork.branch)
+            remove_prepared_worktree(&fork.worktree_path, &fork.branch).map(|()| None)
         }
-        PreparedRunWorkspace::Revisited(revisited) => super::worktree::restore_revisited_workspace(
-            &revisited.workspace.worktree_path,
-            &revisited.workspace.branch,
-            revisited.previous_branch.as_deref(),
-            &revisited.previous_head,
-        ),
+        PreparedRunWorkspace::Revisited(revisited) => {
+            super::worktree::restore_revisited_workspace(&super::worktree::RevisitCheckout {
+                worktree_path: &revisited.workspace.worktree_path,
+                new_branch: &revisited.workspace.branch,
+                start_point: &revisited.start_point,
+                previous_branch: revisited.previous_branch.as_deref(),
+                previous_head: &revisited.previous_head,
+                observed_dirty: revisited.observed_dirty,
+            })
+        }
         PreparedRunWorkspace::Current
         | PreparedRunWorkspace::Resumed(_)
-        | PreparedRunWorkspace::Recreated(_) => Ok(()),
+        | PreparedRunWorkspace::Recreated(_) => Ok(None),
     }
 }
 
 fn rollback_prepared_stage_fork(prepared: &PreparedStageRunSpawn, error: String) -> String {
-    if let Err(rollback_err) = roll_back_prepared_workspace(&prepared.workspace) {
-        return format!("{error}; fork rollback failed: {rollback_err}");
+    match roll_back_prepared_workspace(&prepared.workspace) {
+        Ok(None) => error,
+        Ok(Some(preserved)) => format!("{error}; {preserved}"),
+        Err(rollback_err) => format!("{error}; fork rollback failed: {rollback_err}"),
     }
-    error
 }
 
 pub(crate) fn rollback_prepared_stage_run_for_api(

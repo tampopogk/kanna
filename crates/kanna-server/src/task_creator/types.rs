@@ -303,6 +303,9 @@ pub(super) struct RevisitWorkspaceSpec {
     pub(super) start_point: String,
     pub(super) previous_branch: Option<String>,
     pub(super) previous_head: String,
+    /// Whether the plan saw uncommitted changes. With `previous_*` it is the
+    /// state the checkout re-validates and the rollback compares against.
+    pub(super) observed_dirty: bool,
     /// Retained state the revisit kept in place and reports.
     pub(super) report: Option<String>,
     /// The conversation to resume there, when its transcript is present.
@@ -355,8 +358,10 @@ pub(crate) enum PreparedRunWorkspace {
 
 pub(crate) struct RevisitedWorkspace {
     pub(super) workspace: ForkedWorkspace,
+    pub(super) start_point: String,
     pub(super) previous_branch: Option<String>,
     pub(super) previous_head: String,
+    pub(super) observed_dirty: bool,
 }
 
 impl PreparedRunWorkspace {
