@@ -229,6 +229,14 @@ fn opened(session: &PreviewSession) -> OpenedArtifactPreview {
     }
 }
 
+/// The Kanna desktop hosts this page in a sandboxed iframe: its webview origin
+/// is `tauri://localhost` on macOS and Linux, `http(s)://tauri.localhost` on
+/// Windows, and a loopback Vite origin under `kd dev up`. Nothing else may
+/// frame it. Framing grants the host nothing: the page runs with an opaque
+/// origin and the host cannot read into it.
+const FRAME_ANCESTORS: &str = "tauri://localhost http://tauri.localhost https://tauri.localhost \
+     http://localhost:* http://127.0.0.1:*";
+
 fn content_security_policy(port: u16) -> Result<HeaderValue, String> {
     let origins = format!("'self' http://127.0.0.1:{port} http://localhost:{port}");
     HeaderValue::from_str(&format!(
@@ -237,7 +245,7 @@ fn content_security_policy(port: u16) -> Result<HeaderValue, String> {
          img-src {origins} data: blob:; font-src {origins} data:; media-src {origins} data: blob:; \
          frame-src {origins}; child-src {origins}; connect-src 'none'; worker-src 'none'; \
          manifest-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; \
-         frame-ancestors 'none'"
+         frame-ancestors {FRAME_ANCESTORS}"
     ))
     .map_err(|error| format!("invalid artifact preview policy: {error}"))
 }
@@ -372,7 +380,7 @@ fn not_found(message: &'static str) -> Response {
     (StatusCode::NOT_FOUND, message).into_response()
 }
 
-fn media_type(path: &str) -> String {
+pub(super) fn media_type(path: &str) -> String {
     let lower = path.to_ascii_lowercase();
     let extension = lower.rsplit_once('.').map(|(_, extension)| extension);
     let base = match extension {

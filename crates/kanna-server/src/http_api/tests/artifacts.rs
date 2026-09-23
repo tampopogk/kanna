@@ -232,6 +232,14 @@ async fn a_multi_file_mockup_publishes_opens_by_tree_id_and_serves_every_relativ
         assert!(csp.contains(directive), "{csp}");
     }
     assert!(!csp.contains("allow-same-origin"));
+    // The desktop hosts the page in a sandboxed iframe; only its webview
+    // origins may frame it.
+    assert!(
+        csp.contains("frame-ancestors tauri://localhost http://tauri.localhost"),
+        "{csp}"
+    );
+    assert!(!csp.contains("frame-ancestors 'none'"), "{csp}");
+    assert!(!csp.contains("frame-ancestors *"), "{csp}");
     assert_eq!(index.headers()["referrer-policy"], "no-referrer");
     assert_eq!(index.headers()["x-content-type-options"], "nosniff");
     // CORP same-origin would block the opaque-origin page's own assets.
@@ -632,6 +640,109 @@ async fn missing_and_malformed_identities_are_reported_explicitly() {
         body["message"].as_str().unwrap().contains("mock/escape"),
         "{body}"
     );
+}
+
+#[tokio::test]
+async fn a_client_without_the_preview_listener_reads_each_file_by_exact_tree_id() {
+    use base64::Engine as _;
+    let env = setup("files", None);
+    let (_, v1) = publish(&env.app, json!({ "path": "mock", "kind": "mockup" })).await;
+    let v1_id = v1["artifactId"].as_str().unwrap().to_string();
+    write_mockup(&env.workspace, "mock", "body{color:#456}");
+    let (_, v2) = publish(
+        &env.app,
+        json!({ "path": "mock", "kind": "mockup", "previous": v1_id }),
+    )
+    .await;
+    let v2_id = v2["artifactId"].as_str().unwrap().to_string();
+
+    for (id, path, media_type, bytes) in [
+        (
+            &v1_id,
+            "index.html",
+            "text/html; charset=utf-8",
+            INDEX_HTML.to_vec(),
+        ),
+        (
+            &v1_id,
+            "css/site.css",
+            "text/css; charset=utf-8",
+            b"body{color:#123}".to_vec(),
+        ),
+        (
+            &v2_id,
+            "css/site.css",
+            "text/css; charset=utf-8",
+            b"body{color:#456}".to_vec(),
+        ),
+        (&v1_id, "img/logo.png", "image/png", LOGO_PNG.to_vec()),
+        (
+            &v1_id,
+            "pages/about.html",
+            "text/html; charset=utf-8",
+            ABOUT_HTML.to_vec(),
+        ),
+    ] {
+        let (status, file) = call(
+            &env.app,
+            "GET",
+            &format!(
+                "/v1/repos/repo-a/artifacts/{id}/files?path={}",
+                path.replace('/', "%2F")
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{id} {path}: {file}");
+        assert_eq!(file["artifactId"], id.as_str());
+        assert_eq!(file["repoId"], "repo-a");
+        assert_eq!(file["path"], path);
+        assert_eq!(file["mediaType"], media_type);
+        assert_eq!(file["size"], bytes.len());
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(file["dataBase64"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(decoded, bytes, "{id} {path}");
+    }
+
+    let unknown = "0123456789abcdef0123456789abcdef01234567";
+    for (path, status, code) in [
+        (
+            format!("/v1/repos/repo-a/artifacts/{v1_id}/files?path=nope.css"),
+            StatusCode::NOT_FOUND,
+            "artifact_file_not_found",
+        ),
+        (
+            format!("/v1/repos/repo-a/artifacts/{v1_id}/files?path=..%2Frepo"),
+            StatusCode::BAD_REQUEST,
+            "invalid_path",
+        ),
+        (
+            format!("/v1/repos/repo-a/artifacts/{unknown}/files?path=index.html"),
+            StatusCode::NOT_FOUND,
+            "artifact_not_found",
+        ),
+    ] {
+        let (actual, body) = call(&env.app, "GET", &path, None).await;
+        assert_eq!(actual, status, "{path}: {body}");
+        assert_eq!(body["error"], code, "{path}: {body}");
+    }
+
+    // One file above the relay-sized bound is refused, not truncated.
+    let large = vec![b'x'; crate::task_files::MAX_TASK_FILE_BYTES as usize + 1];
+    write(&env.workspace.join("big/huge.txt"), &large);
+    let (_, big) = publish(&env.app, json!({ "path": "big", "kind": "document" })).await;
+    let big_id = big["artifactId"].as_str().unwrap();
+    let (status, body) = call(
+        &env.app,
+        "GET",
+        &format!("/v1/repos/repo-a/artifacts/{big_id}/files?path=huge.txt"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+    assert_eq!(body["error"], "file_too_large");
+    assert!(body.get("dataBase64").is_none());
 }
 
 #[tokio::test]

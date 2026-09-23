@@ -263,6 +263,17 @@ async function requestJson<T>(
   }
 }
 
+/**
+ * The authenticated request path, for a dedicated client of one route family
+ * (the artifact client) that should not grow this module further.
+ */
+export function requestDesktopServerJson<T>(
+  path: string,
+  options: { method?: string; body?: unknown } = {},
+): Promise<T> {
+  return requestJson<T>(path, options);
+}
+
 async function requestOptionalJson<T>(
   path: string,
   options: { retryMs?: number } = {},

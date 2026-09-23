@@ -35,6 +35,8 @@ import type {
   TaskDetail,
   TaskSummary,
   WritePathHealth,
+  ArtifactDetail,
+  ArtifactFileContent,
 } from "../api/types";
 import {
   buildCloudTaskId,
@@ -962,6 +964,34 @@ export function createRemoteTransport({
           `/v1/tasks/${encodeURIComponent(localTaskId)}/files/resolve-mentions`,
         { mentions }
       ),
+    getArtifact: async (repoId: string, artifactId: string) => {
+      const repoRoute = await resolveCloudRepoRoute(repoId);
+      const path = (localRepoId: string) =>
+        `/v1/repos/${encodeURIComponent(localRepoId)}/artifacts/${encodeURIComponent(artifactId)}`;
+      if (!repoRoute) {
+        return request<ArtifactDetail>("GET", path(repoId), null);
+      }
+      return requestDesktop<ArtifactDetail>(
+        repoRoute.desktopId,
+        "GET",
+        path(repoRoute.localRepoId),
+        null
+      );
+    },
+    readArtifactFile: async (repoId: string, artifactId: string, filePath: string) => {
+      const repoRoute = await resolveCloudRepoRoute(repoId);
+      const path = (localRepoId: string) =>
+        `/v1/repos/${encodeURIComponent(localRepoId)}/artifacts/${encodeURIComponent(artifactId)}/files?path=${encodeURIComponent(filePath)}`;
+      if (!repoRoute) {
+        return request<ArtifactFileContent>("GET", path(repoId), null);
+      }
+      return requestDesktop<ArtifactFileContent>(
+        repoRoute.desktopId,
+        "GET",
+        path(repoRoute.localRepoId),
+        null
+      );
+    },
     readTaskDiff: (taskId: string, diffRequest?: TaskDiffRequest) =>
       requestTask<TaskDiffContent>(
         taskId,

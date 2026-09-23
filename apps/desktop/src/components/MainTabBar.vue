@@ -80,6 +80,10 @@ function present(tab: MainTab): MainTabPresentation {
       closable,
     };
   }
+  if (tab.kind === "artifact") {
+    const id = tab.artifactId ?? "";
+    return { id: tab.id, label: id ? `Artifact: ${id.slice(0, 8)}` : "Artifact", title: id ? `Artifact ${id}` : "Open an artifact by tree id", closable };
+  }
   if (tab.kind === "shell") {
     const label = t(tab.shellScope === "repo" ? "mainTabs.repoShell" : "mainTabs.shell");
     return { id: tab.id, label, title: label, closable };

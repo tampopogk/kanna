@@ -1883,6 +1883,20 @@ export function createCloudLanClient(
       }
       return route.client.resolveTaskFileMentions(route.taskId, mentions);
     },
+    getArtifact: async (repoId, artifactId) => {
+      const route = routeForRepo(repoId);
+      if (route.source === "unavailable") {
+        throw new Error(route.message);
+      }
+      return route.client.getArtifact(route.repoId, artifactId);
+    },
+    readArtifactFile: async (repoId, artifactId, path) => {
+      const route = routeForRepo(repoId);
+      if (route.source === "unavailable") {
+        throw new Error(route.message);
+      }
+      return route.client.readArtifactFile(route.repoId, artifactId, path);
+    },
     readTaskDiff: async (taskId, request): Promise<TaskDiffContent> => {
       const route = routeForTask(taskId);
       if (route.source === "unavailable") {

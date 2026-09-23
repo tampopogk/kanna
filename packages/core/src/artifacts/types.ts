@@ -144,3 +144,17 @@ export interface ArtifactFetchOutcome {
   missing: ArtifactId[];
   detail: ArtifactDetail;
 }
+
+/**
+ * One file of a retained tree, read through
+ * `GET /v1/repos/{repoId}/artifacts/{artifactId}/files?path=` by a client that
+ * renders the artifact itself instead of opening the loopback preview.
+ */
+export interface ArtifactFileContent {
+  repoId: string;
+  artifactId: ArtifactId;
+  path: string;
+  mediaType: string;
+  size: number;
+  dataBase64: string;
+}
