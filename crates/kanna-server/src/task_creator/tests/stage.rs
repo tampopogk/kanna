@@ -2156,7 +2156,8 @@ async fn stage_transition_tears_down_departed_stage_environment_before_repo_tear
     ));
     assert!(matches!(
         commands.get(2),
-        Some(kanna_daemon::protocol::Command::Kill { session_id }) if session_id == "td-task-source"
+        Some(kanna_daemon::protocol::Command::Kill { session_id })
+            if session_id.starts_with("td-task-source-run-task-1-")
     ));
     match commands.get(3) {
         Some(kanna_daemon::protocol::Command::Spawn {
@@ -2179,7 +2180,7 @@ async fn stage_transition_tears_down_departed_stage_environment_before_repo_tear
             env,
             ..
         }) => {
-            assert_eq!(session_id, "td-task-source");
+            assert!(session_id.starts_with("td-task-source-run-task-1-"));
             assert_eq!(cwd, &source_worktree.to_string_lossy());
             let command = args.join(" ");
             let env_index = command
@@ -2220,7 +2221,11 @@ async fn stage_transition_tears_down_departed_stage_environment_before_repo_tear
     // task just entered.
     assert_eq!(teardown_run.stage, "in progress");
     assert_eq!(teardown_run.status, "running");
-    assert_eq!(teardown_run.session_id.as_deref(), Some("td-task-source"));
+    // One name per teardown: the workspace directory and this run.
+    assert_eq!(
+        teardown_run.session_id,
+        Some(format!("td-task-source-{teardown_run_id}"))
+    );
     assert_eq!(
         teardown_run.cwd.as_deref(),
         Some(source_worktree.to_string_lossy().as_ref())

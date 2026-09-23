@@ -1650,6 +1650,12 @@ async fn assert_directory_sessions_stopped_before_checkout(
         run_git_fixture(&impl_worktree, &["rev-parse", "HEAD"]),
         input
     );
+    // The stopped teardown's run is settled, so its supervisor stands down
+    // instead of acting on the directory later.
+    assert_eq!(
+        db.stage_run("run-td-impl").unwrap().unwrap().status,
+        "cancelled"
+    );
     // The branch the directory was on keeps its commit.
     if before != "HEAD" {
         assert_eq!(run_git_fixture(&repo_root, &["rev-parse", &before]), input);

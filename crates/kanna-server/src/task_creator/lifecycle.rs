@@ -890,6 +890,22 @@ pub(super) async fn stop_sessions_in_directory(
             .await
             .map_err(|error| refuse(format!("cannot stop session {session}: {error}")))?;
     }
+    // The teardowns stopped here are over: settle their runs so their
+    // supervisors stand down rather than acting on the directory later.
+    let db = Db::open(db_path).map_err(|error| refuse(format!("db error: {error}")))?;
+    for (run_id, _) in db
+        .running_teardown_runs_in_directory(task_id, directory)
+        .map_err(|error| refuse(format!("db error: {error}")))?
+    {
+        db.finish_stage_run_without_work(
+            &run_id,
+            "cancelled",
+            Some("stopped because the task re-entered this workspace"),
+            None,
+            crate::db::no_work_termination::WORKSPACE_TEARDOWN,
+        )
+        .map_err(|error| refuse(format!("db error: {error}")))?;
+    }
     Ok(sessions.into_iter().collect())
 }
 
@@ -1003,6 +1019,7 @@ pub(crate) async fn spawn_prepared_workspace_teardown_best_effort(
             tokio::spawn(supervise_teardown_session(
                 daemon_dir,
                 session_id,
+                recorded.then_some(run_id),
                 db_path,
                 task_id,
                 std::time::Duration::from_secs(10 * 60),
@@ -1083,24 +1100,73 @@ pub(crate) fn finish_teardown_run(db_path: &str, run_id: &str, status: &str, res
     }
 }
 
+/// Whether a teardown's run has already been settled — by the exit
+/// handler, or by a revisit that stopped its session. A supervisor whose run
+/// is settled has nothing left to supervise.
+fn teardown_run_settled(db_path: &str, run_id: Option<&str>) -> bool {
+    let Some(run_id) = run_id else {
+        return false;
+    };
+    Db::open(db_path)
+        .and_then(|db| db.stage_run(run_id))
+        .ok()
+        .flatten()
+        .is_some_and(|run| run.status != "running")
+}
+
+/// The pid the daemon reports for `session_id`: `Ok(None)` when it holds no
+/// such session, `Err(())` when the daemon could not be asked.
+async fn daemon_session_pid(daemon_dir: &str, session_id: &str) -> Result<Option<u32>, ()> {
+    let mut daemon = DaemonClient::connect(daemon_dir).await.map_err(|_| ())?;
+    match daemon.send_command(&DaemonCommand::List).await {
+        Ok(DaemonEvent::SessionList { sessions }) => Ok(sessions
+            .iter()
+            .find(|session| session.session_id == session_id)
+            .map(|session| session.pid)),
+        Ok(other) => {
+            log::warn!(
+                "unexpected daemon response while checking task session {session_id}: {other:?}"
+            );
+            Err(())
+        }
+        Err(error) => {
+            log::warn!("failed to check task session {session_id}: {error}");
+            Err(())
+        }
+    }
+}
+
+/// Watch one teardown session and kill it at its hard deadline.
+///
+/// The supervisor only ever acts on the session it started: its unique
+/// session id, the run it is recorded as (`run_id`, when the run row was
+/// written) and the pid the daemon first reported for it. When that run has
+/// been settled, or the id now names a different process, it stops without
+/// killing anything or recording a failure.
 async fn supervise_teardown_session(
     daemon_dir: String,
     session_id: String,
+    run_id: Option<String>,
     db_path: String,
     task_id: String,
     soft_timeout: std::time::Duration,
     hard_timeout: std::time::Duration,
 ) {
     tokio::time::sleep(soft_timeout).await;
-    match daemon_session_presence(&daemon_dir, &session_id).await {
-        DaemonSessionPresence::Absent => return,
-        DaemonSessionPresence::Present => {
+    if teardown_run_settled(&db_path, run_id.as_deref()) {
+        return;
+    }
+    let mut observed_pid = None;
+    match daemon_session_pid(&daemon_dir, &session_id).await {
+        Ok(None) => return,
+        Ok(Some(pid)) => {
+            observed_pid = Some(pid);
             log::warn!(
                 "workspace teardown session {session_id} exceeded soft threshold of {}s",
                 soft_timeout.as_secs()
             );
         }
-        DaemonSessionPresence::Unknown => {
+        Err(()) => {
             log::warn!(
                 "could not determine whether workspace teardown session {session_id} exceeded its \
                  soft threshold; preserving hard-deadline supervision"
@@ -1111,9 +1177,20 @@ async fn supervise_teardown_session(
     let retry_interval = std::time::Duration::from_secs(1);
     let mut timeout_logged = false;
     loop {
-        if daemon_session_presence(&daemon_dir, &session_id).await == DaemonSessionPresence::Absent
-        {
+        if teardown_run_settled(&db_path, run_id.as_deref()) {
             return;
+        }
+        match daemon_session_pid(&daemon_dir, &session_id).await {
+            Ok(None) => return,
+            Ok(Some(pid)) if observed_pid.is_some_and(|observed| observed != pid) => {
+                log::warn!(
+                    "workspace teardown session {session_id} is now pid {pid}, not the process \
+                     this supervisor started; leaving it alone"
+                );
+                return;
+            }
+            Ok(Some(pid)) => observed_pid = Some(pid),
+            Err(()) => {}
         }
         if !timeout_logged {
             timeout_logged = true;
@@ -5121,6 +5198,7 @@ mod teardown_deadline_tests {
             supervise_teardown_session(
                 daemon_dir.to_string_lossy().to_string(),
                 "td-task-1".to_string(),
+                None,
                 db_path.clone(),
                 task_id.to_string(),
                 std::time::Duration::from_millis(20),
@@ -5135,6 +5213,226 @@ mod teardown_deadline_tests {
             .expect("deadline monitor should issue Kill")
             .unwrap();
         assert_teardown_event(&db_path, task_id, "td-task-1", "timed out after 0s");
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_dir_all(daemon_dir);
+    }
+
+    /// A daemon that reports `live` (session id, pid) on every List —
+    /// `later_pid` replaces the pid from the second List on — and records
+    /// every Kill it receives instead of acting on it.
+    fn spawn_teardown_daemon(
+        label: &str,
+        live: Vec<(&'static str, u32)>,
+        later_pid: Option<u32>,
+    ) -> (
+        std::path::PathBuf,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let daemon_dir = std::env::temp_dir().join(format!("kanna-{label}-{}", std::process::id()));
+        std::fs::create_dir_all(&daemon_dir).unwrap();
+        let socket_path = kanna_runtime_defaults::socket_path(&daemon_dir);
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let kills = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = std::sync::Arc::clone(&kills);
+        let server = tokio::spawn(async move {
+            let mut lists = 0;
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let (read, mut write) = stream.into_split();
+                let mut reader = BufReader::new(read);
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                    continue;
+                }
+                let response = match serde_json::from_str(line.trim()).unwrap() {
+                    DaemonCommand::List => {
+                        lists += 1;
+                        DaemonEvent::SessionList {
+                            sessions: live
+                                .iter()
+                                .map(|(session_id, pid)| SessionInfo {
+                                    session_id: session_id.to_string(),
+                                    pid: if lists > 1 {
+                                        later_pid.unwrap_or(*pid)
+                                    } else {
+                                        *pid
+                                    },
+                                    cwd: "/tmp".to_string(),
+                                    state: SessionState::Active,
+                                    idle_seconds: 0,
+                                    status: SessionStatus::Busy,
+                                    status_observed: true,
+                                    kind: SessionKind::Pty,
+                                    composer_text: None,
+                                    composer_attestation: Default::default(),
+                                    attempt_id: None,
+                                })
+                                .collect(),
+                        }
+                    }
+                    DaemonCommand::Kill { session_id } => {
+                        recorded.lock().unwrap().push(session_id);
+                        DaemonEvent::Ok
+                    }
+                    other => panic!("unexpected daemon command {other:?}"),
+                };
+                write
+                    .write_all(
+                        format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+        (daemon_dir, kills, server)
+    }
+
+    fn insert_teardown_run(db_path: &str, task_id: &str, run_id: &str, session_id: &str) {
+        let db = Db::open(db_path).unwrap();
+        db.insert_stage_run(NewStageRun {
+            id: run_id,
+            task_id,
+            stage: "in progress",
+            kind: crate::db::stage_runs::TEARDOWN_RUN_KIND,
+            agent: None,
+            agent_provider: None,
+            model: None,
+            effort: None,
+            status: "running",
+            result: None,
+            feedback: None,
+            session_id: Some(session_id),
+            provider_session_id: None,
+            cwd: Some("/work/task-dir"),
+            resumed_from_run_id: None,
+        })
+        .unwrap();
+    }
+
+    fn teardown_failures(db_path: &str, task_id: &str) -> usize {
+        Db::open(db_path)
+            .unwrap()
+            .list_task_events(
+                &TaskEventScope::Tasks(vec![task_id.to_string()]),
+                0,
+                i64::MAX,
+                50,
+            )
+            .unwrap()
+            .iter()
+            .filter(|event| event.event_type == "task.teardown_failed")
+            .count()
+    }
+
+    async fn supervise(
+        daemon_dir: &std::path::Path,
+        session_id: &str,
+        run_id: &str,
+        db_path: &str,
+        task_id: &str,
+    ) {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            supervise_teardown_session(
+                daemon_dir.to_string_lossy().to_string(),
+                session_id.to_string(),
+                Some(run_id.to_string()),
+                db_path.to_string(),
+                task_id.to_string(),
+                std::time::Duration::from_millis(20),
+                std::time::Duration::from_millis(50),
+            ),
+        )
+        .await
+        .expect("the supervisor stands down");
+    }
+
+    /// Teardown A in a directory goes stale; the task re-enters the directory
+    /// (stopping A) and departs again, starting teardown B there. When A's
+    /// supervisor wakes it must leave B alone: it acts only on the session it
+    /// started, and B has a name of its own.
+    #[tokio::test]
+    async fn a_stale_teardown_supervisor_leaves_the_next_teardown_in_its_directory_running() {
+        let task_id = "task-teardown-stale";
+        let db_path = teardown_event_db("teardown-stale-supervisor", task_id);
+        insert_teardown_run(&db_path, task_id, "run-a", "td-task-dir-run-a");
+        insert_teardown_run(&db_path, task_id, "run-b", "td-task-dir-run-b");
+        let (daemon_dir, kills, server) =
+            spawn_teardown_daemon("teardown-stale", vec![("td-task-dir-run-b", 77)], None);
+
+        supervise(&daemon_dir, "td-task-dir-run-a", "run-a", &db_path, task_id).await;
+
+        server.abort();
+        assert!(
+            kills.lock().unwrap().is_empty(),
+            "{:?}",
+            kills.lock().unwrap()
+        );
+        assert_eq!(teardown_failures(&db_path, task_id), 0);
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_dir_all(daemon_dir);
+    }
+
+    /// Two teardowns that share a session id — the pre-change naming — in the
+    /// same directory: the first run was settled (a revisit stopped it)
+    /// before its supervisor's deadline, so that supervisor must not kill
+    /// the second session or record a failure against the task.
+    #[tokio::test]
+    async fn a_settled_teardown_run_stands_its_supervisor_down() {
+        let task_id = "task-teardown-settled";
+        let db_path = teardown_event_db("teardown-settled-supervisor", task_id);
+        insert_teardown_run(&db_path, task_id, "run-a", "td-task-dir");
+        insert_teardown_run(&db_path, task_id, "run-b", "td-task-dir");
+        Db::open(&db_path)
+            .unwrap()
+            .finish_stage_run_without_work(
+                "run-a",
+                "cancelled",
+                Some("stopped because the task re-entered this workspace"),
+                None,
+                crate::db::no_work_termination::WORKSPACE_TEARDOWN,
+            )
+            .unwrap();
+        let (daemon_dir, kills, server) =
+            spawn_teardown_daemon("teardown-settled", vec![("td-task-dir", 77)], None);
+
+        supervise(&daemon_dir, "td-task-dir", "run-a", &db_path, task_id).await;
+
+        server.abort();
+        assert!(
+            kills.lock().unwrap().is_empty(),
+            "{:?}",
+            kills.lock().unwrap()
+        );
+        assert_eq!(teardown_failures(&db_path, task_id), 0);
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_dir_all(daemon_dir);
+    }
+
+    /// The id the supervisor watches now belongs to a different process than
+    /// the one it saw at its soft probe: it was not the one this supervisor
+    /// started, so it is left running and no failure is recorded.
+    #[tokio::test]
+    async fn a_teardown_supervisor_never_kills_a_different_process_under_its_id() {
+        let task_id = "task-teardown-pid";
+        let db_path = teardown_event_db("teardown-pid-supervisor", task_id);
+        insert_teardown_run(&db_path, task_id, "run-a", "td-task-dir-run-a");
+        let (daemon_dir, kills, server) =
+            spawn_teardown_daemon("teardown-pid", vec![("td-task-dir-run-a", 77)], Some(78));
+
+        supervise(&daemon_dir, "td-task-dir-run-a", "run-a", &db_path, task_id).await;
+
+        server.abort();
+        assert!(
+            kills.lock().unwrap().is_empty(),
+            "{:?}",
+            kills.lock().unwrap()
+        );
+        assert_eq!(teardown_failures(&db_path, task_id), 0);
         let _ = std::fs::remove_file(db_path);
         let _ = std::fs::remove_dir_all(daemon_dir);
     }
@@ -5202,6 +5500,7 @@ mod teardown_deadline_tests {
             supervise_teardown_session(
                 daemon_dir.to_string_lossy().to_string(),
                 "td-task-transient".to_string(),
+                None,
                 "/tmp/kanna-missing-teardown-transient-test.db".to_string(),
                 "task-transient".to_string(),
                 std::time::Duration::from_millis(20),

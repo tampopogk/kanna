@@ -724,6 +724,24 @@ impl Db {
         rows.collect()
     }
 
+    /// Teardown runs of a task still recorded as running in a workspace
+    /// directory, with their session ids.
+    pub fn running_teardown_runs_in_directory(
+        &self,
+        task_id: &str,
+        directory: &str,
+    ) -> Result<Vec<(String, Option<String>)>, rusqlite::Error> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT id, session_id FROM stage_run
+             WHERE task_id = ?1 AND kind = '{TEARDOWN_RUN_KIND}' AND cwd = ?2
+               AND status = 'running'"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params![task_id, directory], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?;
+        rows.collect()
+    }
+
     /// Record the identity a session started with (spec §6): the stage
     /// workspace it runs in, the branch it checked out there, its name, where
     /// its provider transcript lives, and any workspace state the start

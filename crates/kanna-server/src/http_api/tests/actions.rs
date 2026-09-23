@@ -331,6 +331,10 @@ async fn close_task_route_releases_claimed_ports() {
                 continue;
             }
             match command {
+                // A teardown is named after its workspace and its own run.
+                DaemonCommand::Kill { session_id } if expected_session_id == "td-task-source" => {
+                    assert!(session_id.starts_with("td-task-source-"), "{session_id}")
+                }
                 DaemonCommand::Kill { session_id } => assert_eq!(session_id, expected_session_id),
                 other => panic!("expected kill command, got {other:?}"),
             }
@@ -1486,6 +1490,10 @@ async fn close_task_route_tears_down_current_stage_environment_before_repo_teard
                 continue;
             }
             match command {
+                // A teardown is named after its workspace and its own run.
+                DaemonCommand::Kill { session_id } if expected_session_id == "td-task-source" => {
+                    assert!(session_id.starts_with("td-task-source-"), "{session_id}")
+                }
                 DaemonCommand::Kill { session_id } => assert_eq!(session_id, expected_session_id),
                 other => panic!("expected kill command, got {other:?}"),
             }
@@ -1514,7 +1522,7 @@ async fn close_task_route_tears_down_current_stage_environment_before_repo_teard
                 args,
                 ..
             } => {
-                assert_eq!(session_id, "td-task-source");
+                assert!(session_id.starts_with("td-task-source-"), "{session_id}");
                 assert_eq!(cwd, expected_worktree);
                 let command = args.join(" ");
                 let env_index = command
@@ -5379,6 +5387,10 @@ async fn advance_stage_route_closes_final_stage_and_tears_down_environment_befor
                 continue;
             }
             match command {
+                // A teardown is named after its workspace and its own run.
+                DaemonCommand::Kill { session_id } if expected_session_id == "td-task-source" => {
+                    assert!(session_id.starts_with("td-task-source-"), "{session_id}")
+                }
                 DaemonCommand::Kill { session_id } => assert_eq!(session_id, expected_session_id),
                 other => panic!("expected kill command, got {other:?}"),
             }
@@ -5407,7 +5419,7 @@ async fn advance_stage_route_closes_final_stage_and_tears_down_environment_befor
                 args,
                 ..
             } => {
-                assert_eq!(session_id, "td-task-source");
+                assert!(session_id.starts_with("td-task-source-"), "{session_id}");
                 assert_eq!(cwd, expected_worktree);
                 let command = args.join(" ");
                 let env_index = command
