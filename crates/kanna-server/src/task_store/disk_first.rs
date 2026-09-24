@@ -16,8 +16,10 @@
 //! 2. **Write `task.json`** — the commit point. It carries the rows as the
 //!    transaction leaves them (`state`, whose `reflects_through` counts this
 //!    transaction's entries) and, under `ledger.in_flight`, the exact bytes
-//!    of every entry not yet published as a file. One atomic rename makes the
-//!    whole mutation durable on disk, rows and entries together.
+//!    of every entry not yet published as a file, up to the first open
+//!    reservation (an entry behind another operation's reservation waits in
+//!    the outbox for it, as the publisher always has). One atomic rename
+//!    makes the whole mutation durable on disk, rows and entries together.
 //! 3. **Publish the entry files**, in sequence order up to an open
 //!    reservation, acknowledging each. A failure here does not undo the
 //!    mutation: the entry is durable in `task.json` and is published later.
@@ -236,6 +238,11 @@ pub(crate) fn publish_before_commit(db: &Db, touched: Touched) -> Result<Vec<Str
                     written.clone(),
                 )
             })?;
+            // Tests key a removal's crash as `<kind>:<id>`.
+            let key = format!("{kind}:{id}");
+            if crashes_here(&root, &key, CrashPoint::BeforeCommit) {
+                return Err(crash(&key, CrashPoint::BeforeCommit));
+            }
         }
     }
     Ok(written)
@@ -327,8 +334,12 @@ fn publish_task(
             ))
         })
         .collect();
-    let mut in_flight = Vec::with_capacity(filled.len());
-    for (sequence, file_name, payload) in &filled {
+    // In flight: exactly the entries publishable now. One committed behind
+    // another operation's open reservation stays in SQLite's outbox, as
+    // the normal publisher keeps it, until the reservation closes; it never
+    // reaches disk (file or task.json) ahead of the reserved sequence.
+    let mut in_flight = Vec::with_capacity(publishable.len());
+    for (sequence, file_name, payload) in &publishable {
         let text = std::str::from_utf8(payload).map_err(|error| {
             Refusal::new(
                 format!("ledger entry {sequence} of {task_id} is not UTF-8: {error}"),

@@ -796,3 +796,42 @@ async fn a_disk_first_commit_killed_at_every_write_step_rebuilds_identically() {
         );
     }
 }
+
+/// Review round 1 (T13d): a `disk` record written by a build before T13d
+/// whose version fence cannot be persisted (the authority directory is not
+/// writable) is not served at all, and the process never runs it SQL-first:
+/// the persisted mode is in force before the fallible step.
+#[tokio::test]
+async fn a_disk_record_whose_fence_cannot_be_written_is_never_served_sql_first() {
+    use std::os::unix::fs::PermissionsExt;
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let fixture = build_fixture().await;
+    let copy = Installation::copy_of(&fixture, "fence-unwritable");
+    assert_eq!(copy.start(Some(Mode::Disk)).unwrap().mode, Mode::Disk);
+    // As a T13c build left it: disk, version 1, no fence.
+    let path = authority::record_path(&copy.root, &authority::installation_id(&copy.db_path));
+    let mut record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    record["schema_version"] = json!(1);
+    let object = record.as_object_mut().unwrap();
+    object.remove("disk_first_since");
+    object.remove("note");
+    std::fs::write(&path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+    // A fresh process.
+    crate::task_store::forget_for_tests(&copy.db_path);
+    let authority_dir = path.parent().unwrap().to_path_buf();
+    std::fs::set_permissions(&authority_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let opened = authority::open_database(&copy.config());
+    std::fs::set_permissions(&authority_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let error = opened.expect_err("a disk record without its fence is not served");
+    assert!(error.contains("refusing to start"), "{error}");
+    assert_eq!(authority::mode_for_root(&copy.root), Mode::Disk);
+
+    // Writable again, it starts, fenced, disk-first.
+    let db = authority::open_database(&copy.config()).unwrap();
+    assert_eq!(authority::mode_for_root(&copy.root), Mode::Disk);
+    assert_eq!(
+        copy.record().schema_version,
+        authority::DISK_FIRST_RECORD_SCHEMA_VERSION
+    );
+    drop(db);
+}

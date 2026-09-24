@@ -104,7 +104,9 @@ fn fail_commit_here(_db_path: &str) -> bool {
     false
 }
 
-/// Does this database run disk-first right now?
+/// Does this database run disk-first right now? The mode is this process's
+/// view, which every connection resolves from the persisted record when it
+/// opens ([`crate::task_store::authority::resolve_persisted_mode`]).
 fn disk_first(path: &str) -> bool {
     crate::task_store::authority::mode_for_root(&crate::task_store::root_for_db(path))
         == crate::task_store::authority::Mode::Disk
@@ -160,6 +162,10 @@ impl Deref for DbConnection {
 
 impl DbConnection {
     pub(super) fn new(inner: Connection, path: &str) -> Self {
+        // Whichever process opens the database, a `disk` installation's
+        // writes go through the gate: its persisted mode is resolved before
+        // this connection can commit anything.
+        crate::task_store::authority::resolve_persisted_mode(path);
         let gate = Arc::new(Gate::default());
         let recorder = Arc::clone(&gate);
         inner.update_hook(Some(

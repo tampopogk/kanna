@@ -1375,3 +1375,175 @@ fn ledger_sequences_stay_unique_under_concurrent_writers_and_publishers() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Review round 1 (T13d)
+// ---------------------------------------------------------------------------
+
+/// A process that holds only the database path, opening it the way the
+/// `worktree-cleanup` subcommand does, takes the installation's persisted
+/// `disk` mode and root from its authority record: its writes go through
+/// the disk-first gate, and a commit around the gate is refused.
+#[test]
+fn a_process_that_only_holds_the_database_path_is_gated_on_a_disk_installation() {
+    let (db, db_path, task_json) = disk_installation("path-only");
+    drop(db);
+    crate::task_store::forget_for_tests(&db_path);
+    let root = root_for_db(&db_path);
+    assert_eq!(
+        mode_for_root(&root),
+        Mode::Sql,
+        "a fresh process knows nothing yet"
+    );
+
+    let db = Db::open(&db_path).unwrap();
+    assert_eq!(mode_for_root(&root), Mode::Disk);
+    db.connection_for_e2e_tests()
+        .execute(
+            "UPDATE pipeline_item SET display_name = 'from a subcommand' WHERE id = 't1'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(title_on_disk(&task_json), "from a subcommand");
+    assert!(db.ledger_tasks_with_pending_work().unwrap().is_empty());
+    let refused = crate::db::disk_first::refused_commits(&db_path);
+    let raw: &rusqlite::Connection = db.connection_for_e2e_tests();
+    assert!(raw
+        .execute_batch(
+            "BEGIN IMMEDIATE;
+             UPDATE pipeline_item SET display_name = 'around the gate' WHERE id = 't1';
+             COMMIT;"
+        )
+        .is_err());
+    let _ = raw.execute_batch("ROLLBACK");
+    assert_eq!(
+        crate::db::disk_first::refused_commits(&db_path),
+        refused + 1
+    );
+    assert_eq!(title_on_disk(&task_json), "from a subcommand");
+}
+
+/// A repository removal whose tombstone reached disk and whose SQLite
+/// commit did not (the process died between them): the restart applies
+/// the removal, with the repository's tasks, exactly as a rebuild from the
+/// same disk does.
+#[test]
+fn a_repository_removal_that_died_before_sqlite_committed_restarts_as_it_rebuilds() {
+    use crate::task_store::disk_first::{crash_at, CrashPoint};
+    let (db, db_path, task_json) = disk_installation("repo-removal");
+    let root = root_for_db(&db_path);
+    let repo = "repo-repo-removal";
+    crash_at(&root, &format!("repo:{repo}"), CrashPoint::BeforeCommit);
+    assert!(db.delete_repo(repo).is_err());
+    let repo_json = super::super::repo_dir(&root, repo).join("repo.json");
+    assert!(super::super::rebuild::is_tombstone(
+        &std::fs::read(&repo_json).unwrap()
+    ));
+    assert!(
+        db.get_repo(repo).unwrap().is_some(),
+        "SQLite never committed it"
+    );
+    assert!(db.get_pipeline_item("t1").unwrap().is_some());
+    drop(db);
+
+    // Restart.
+    let db = Db::open(&db_path).unwrap();
+    let report = start(&db, &db_path, None).unwrap().reconcile.unwrap();
+    assert_eq!(report.removed_repos, [repo], "{report:#?}");
+    assert!(report.failed.is_empty(), "{report:#?}");
+    assert!(db.get_repo(repo).unwrap().is_none());
+    assert!(db.get_pipeline_item("t1").unwrap().is_none());
+    assert!(super::super::rebuild::is_tombstone(
+        &std::fs::read(&task_json).unwrap()
+    ));
+
+    // A rebuild from the same disk agrees.
+    let rebuilt_path = format!("{db_path}.rebuilt");
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{rebuilt_path}{suffix}"));
+    }
+    let (scan, _) = scan_store_records(&root)
+        .unwrap()
+        .for_installation(&installation_id(&db_path));
+    rebuild_scan_into_new_database(scan, Path::new(&rebuilt_path)).unwrap();
+    let rebuilt = Db::open(&rebuilt_path).unwrap();
+    assert_eq!(rebuilt.sql_repo_ids().unwrap(), db.sql_repo_ids().unwrap());
+    let tasks = |db: &Db| -> Vec<String> {
+        db.sql_tasks_for_authority()
+            .unwrap()
+            .into_iter()
+            .map(|task| task.id)
+            .collect()
+    };
+    assert_eq!(tasks(&rebuilt), tasks(&db));
+    assert!(tasks(&db).is_empty());
+    // And the next start has nothing to do.
+    let again = start(&db, &db_path, None).unwrap().reconcile.unwrap();
+    assert!(
+        again.removed_repos.is_empty() && again.reconciled.is_empty(),
+        "{again:#?}"
+    );
+}
+
+/// An entry committed behind another operation's open reservation never
+/// reaches disk ahead of it: a disk-first commit does not carry it in
+/// flight, and reconciling another task never publishes it, even from a
+/// `task.json` that lists it in flight.
+#[test]
+fn reconciling_one_task_never_publishes_another_tasks_entries_past_its_reservation() {
+    let (db, db_path) = installation("reservation", "repo-reservation", &["a", "b"]);
+    assert!(flush_all(&db, &db_path).is_empty());
+    assert_eq!(
+        start(&db, &db_path, Some(Mode::Disk)).unwrap().mode,
+        Mode::Disk
+    );
+    let root = root_for_db(&db_path);
+    let b_dir = task_dir(&root, "repo-reservation", "b");
+    let reserved = db.reserve_ledger_sequence("b").unwrap();
+    operator_input(&db, "b", "behind the reservation");
+    let behind = reserved + 1;
+    let behind_file = b_dir
+        .join("ledger")
+        .join(crate::db::task_store::ledger_file_name(
+            behind,
+            crate::db::task_store::LedgerEntryKind::Input,
+        ));
+    assert!(!behind_file.exists());
+    let snapshot: Value =
+        serde_json::from_slice(&std::fs::read(b_dir.join("task.json")).unwrap()).unwrap();
+    assert!(
+        snapshot["ledger"]["in_flight"]
+            .as_array()
+            .is_none_or(|entries| entries.iter().all(|entry| entry["sequence"] != behind)),
+        "{}",
+        snapshot["ledger"]
+    );
+
+    // A task.json that does list it in flight (as this build wrote before
+    // the fix) is not materialized by another task's reconciliation.
+    let pending = db.pending_ledger_entries("b").unwrap();
+    let entry = pending
+        .iter()
+        .find(|entry| entry.sequence == behind)
+        .unwrap();
+    let mut listed = snapshot.clone();
+    listed["ledger"]["in_flight"] = json!([{
+        "sequence": behind,
+        "file_name": entry.file_name,
+        "payload": String::from_utf8(entry.payload.clone().unwrap()).unwrap(),
+    }]);
+    std::fs::write(
+        b_dir.join("task.json"),
+        serde_json::to_vec_pretty(&listed).unwrap(),
+    )
+    .unwrap();
+    let report =
+        reconcile_from_disk(&db, &db_path, Some(&BTreeSet::from(["a".to_string()]))).unwrap();
+    assert_eq!(report.materialized, 0, "{report:#?}");
+    assert!(!behind_file.exists());
+
+    // Once the reservation closes, the entry is published in order.
+    db.release_ledger_reservation("b", reserved).unwrap();
+    assert!(flush_all(&db, &db_path).is_empty());
+    assert!(behind_file.exists());
+}

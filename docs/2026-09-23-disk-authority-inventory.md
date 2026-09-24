@@ -427,8 +427,12 @@ each task it touched:
    as in T13c). Until then every write to the task is refused.
 2. **Write `task.json`**, the commit point. It holds the rows as the
    transaction leaves them and, under `ledger.in_flight`, the exact bytes of
-   every committed entry that is not yet a file. One rename makes the whole
-   mutation durable on disk.
+   every committed entry that is not yet a file, up to the first open
+   reservation. One rename makes the whole mutation durable on disk. An
+   entry committed behind another operation's open reservation waits in the
+   outbox until that reservation closes, as the publisher always kept it;
+   nothing reaches disk ahead of a reserved sequence, and a reconciliation
+   publishes in-flight files only for the tasks it reconciles.
 3. **Publish the entry files** in sequence order up to an open reservation.
    A failure here does not undo the mutation (it is in `task.json`); the
    publisher writes the file later.
@@ -436,13 +440,25 @@ each task it touched:
    the task is fenced and reconciled from disk, so the mutation stands even
    though its caller saw an error.
 
-Owed `repo.json` records and tombstones are written the same way. A crash
+Owed `repo.json` records and tombstones are written the same way. A
+repository's tombstone names the installation that removed it; a `disk`-mode
+start applies such a tombstone the database does not reflect (the removal's
+commit died after its tombstone) by removing the repository and its tasks,
+which is what a rebuild from the same disk holds. A tombstone without the
+stamp (written before T13d) is still only reported. A crash
 before step 2 leaves no trace of the mutation; a crash after it leaves it on
 disk, and the next start publishes the in-flight entry files and reconciles
 the database from the directory
 (`a_disk_first_commit_killed_at_every_write_step_rebuilds_identically`: the
 mutation is there whole or not at all, and the restarted database equals a
 rebuild from the directories alone).
+
+Every process that opens the database takes the installation's persisted
+mode before its first connection can commit: the server at startup, and a
+process that holds only the database path (the `worktree-cleanup`
+subcommand) by finding the installation's authority record under the
+override root, `~/.kanna`, or the database's own root. A `disk` installation
+is gated in every process; an unreadable record is taken as `disk`.
 
 Every write path reaches a commit through the gate: `with_immediate_transaction`
 and the connection's own transactions publish before `COMMIT`, an
@@ -469,7 +485,12 @@ SQLite's write lock.
   stays, and the next start tries again once the cause is fixed.
 - **By starting an older build: closed from this build's first `disk`-mode
   start.** Before any disk-first write, the authority record is rewritten as
-  schema version 2 with `disk_first_since` and a note. A T13c build accepts
+  schema version 2 with `disk_first_since` and a note. The persisted mode is
+  in force before that write is attempted, and if it cannot be written the
+  server refuses to start (`storage authority is disk but the disk-first
+  fence could not be written ...`) rather than serve the installation. A
+  switch or rollback whose checkpoint fails to save leaves the mode the
+  record holds in force. A T13c build accepts
   only version 1 and refuses to start on the installation (its error names
   the record and its version), so no older build runs SQL-first over
   records it may not hold (such as `ledger.in_flight` entries). A completed

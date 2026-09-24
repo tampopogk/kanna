@@ -205,6 +205,52 @@ pub fn root_for_db(db_path: &str) -> PathBuf {
         .unwrap_or_else(|| default_root_for_db(db_path))
 }
 
+/// The root a configuration registered for `db_path` in this process, if
+/// any.
+pub(crate) fn configured_root(db_path: &str) -> Option<PathBuf> {
+    ROOTS
+        .lock()
+        .ok()
+        .and_then(|roots| roots.get(db_path).cloned())
+}
+
+/// Where a process that holds only a database path (a `kanna-server`
+/// subcommand, T13d) may find the root its installation publishes under,
+/// in [`root_for_config`]'s order: the override, the production/staging
+/// root, then the database's own. The installation's authority record
+/// under one of them names the root.
+pub(crate) fn candidate_roots(db_path: &str) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if !cfg!(test) {
+        if let Some(root) = std::env::var_os(ROOT_OVERRIDE_ENV).filter(|root| !root.is_empty()) {
+            roots.push(PathBuf::from(root));
+        }
+        if let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) {
+            roots.push(PathBuf::from(home).join(".kanna"));
+        }
+    }
+    roots.push(default_root_for_db(db_path));
+    roots
+}
+
+/// Record that `db_path` publishes under `root` in this process.
+pub(crate) fn adopt_root(db_path: &str, root: &Path) {
+    if let Ok(mut roots) = ROOTS.lock() {
+        roots.insert(db_path.to_string(), root.to_path_buf());
+    }
+}
+
+/// Forget this process's root and mode for `db_path`, as a fresh process
+/// that holds only the path starts.
+#[cfg(test)]
+pub(crate) fn forget_for_tests(db_path: &str) {
+    let root = root_for_db(db_path);
+    if let Ok(mut roots) = ROOTS.lock() {
+        roots.remove(db_path);
+    }
+    authority::forget_root_for_tests(&root);
+}
+
 pub fn task_dir(root: &Path, repo_id: &str, task_id: &str) -> PathBuf {
     root.join("repos").join(repo_id).join("tasks").join(task_id)
 }
@@ -674,6 +720,13 @@ pub(crate) fn publish_removal_at(
         let mut tombstone = identity;
         tombstone["schema_version"] = serde_json::json!(SCHEMA_VERSION);
         tombstone[crate::db::task_state::REMOVED_KEY] = serde_json::json!(true);
+        // A repository's tombstone names the installation that removed it
+        // (T13d), so a disk-mode reconciliation applies only its own.
+        if kind != "task" {
+            if let Some(installation) = authority::installation_for_root(root) {
+                tombstone["installation"] = Value::String(installation);
+            }
+        }
         let mut bytes = serde_json::to_vec_pretty(&tombstone)
             .map_err(|error| format!("render tombstone: {error}"))?;
         bytes.push(b'\n');

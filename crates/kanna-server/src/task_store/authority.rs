@@ -162,6 +162,9 @@ pub fn installation_id(db_path: &str) -> String {
 struct Registered {
     installation: String,
     mode: Mode,
+    /// The mode was taken from the persisted record (or set by [`start`]),
+    /// not defaulted.
+    resolved: bool,
 }
 
 static REGISTRY: LazyLock<Mutex<HashMap<PathBuf, Registered>>> = LazyLock::new(Default::default);
@@ -177,6 +180,7 @@ pub fn register(root: &Path, db_path: &str) {
         .or_insert(Registered {
             installation,
             mode: Mode::Sql,
+            resolved: false,
         });
 }
 
@@ -185,7 +189,60 @@ fn set_mode(root: &Path, db_path: &str, mode: Mode) {
     let mut registry = REGISTRY.lock().unwrap_or_else(|poison| poison.into_inner());
     if let Some(registered) = registry.get_mut(root) {
         registered.mode = mode;
+        registered.resolved = true;
     }
+}
+
+/// Take `db_path`'s persisted authority mode into this process before its
+/// first connection writes (T13d), unless this process already resolved it.
+/// Every process that opens the database runs this, so a `disk`
+/// installation's writes are gated whichever process makes them (the
+/// server, or a subcommand such as `worktree-cleanup` that holds only the
+/// path). A process with no configured root finds it by the installation's
+/// record under [`super::candidate_roots`]. A record that exists and cannot
+/// be read may say `disk`, so it is taken as `disk`.
+pub(crate) fn resolve_persisted_mode(db_path: &str) {
+    let configured = super::configured_root(db_path);
+    let candidates = match &configured {
+        Some(root) => vec![root.clone()],
+        None => super::candidate_roots(db_path),
+    };
+    let installation = installation_id(db_path);
+    for root in candidates {
+        let resolved = REGISTRY
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(&root)
+            .is_some_and(|registered| {
+                registered.resolved && registered.installation == installation
+            });
+        if resolved {
+            return;
+        }
+        if !record_path(&root, &installation).exists() {
+            continue;
+        }
+        if configured.is_none() {
+            super::adopt_root(db_path, &root);
+        }
+        let mode = load_record(&root, db_path).map_or_else(
+            |error| {
+                log::error!("storage authority record unreadable ({error}); gating writes as disk");
+                Mode::Disk
+            },
+            |record| record.mode,
+        );
+        set_mode(&root, db_path, mode);
+        return;
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn forget_root_for_tests(root: &Path) {
+    REGISTRY
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .remove(root);
 }
 
 /// The installation that publishes under `root`, if one registered: the
@@ -763,6 +820,9 @@ pub struct ReconcileReport {
     pub republished: Vec<String>,
     /// Tasks the disk records as removed, removed from the database.
     pub removed: Vec<String>,
+    /// Repositories this installation's tombstones record as removed,
+    /// removed from the database with their tasks (T13d).
+    pub removed_repos: Vec<String>,
     /// Repository registrations taken from `repo.json`.
     pub repos: Vec<String>,
     /// Ledger entries the database committed that the disk contradicts or
@@ -790,6 +850,9 @@ impl ReconcileReport {
         }
         for task in &self.removed {
             log::warn!("task {task} is removed on disk; removed from the database");
+        }
+        for repo in &self.removed_repos {
+            log::warn!("repo {repo} is removed on disk; removed from the database with its tasks");
         }
         for (task, sequence) in &self.discarded_entries {
             log::warn!("task {task}: ledger entry {sequence} the disk does not hold was dropped");
@@ -829,7 +892,7 @@ pub fn reconcile_from_disk(
     let db_error = |error: rusqlite::Error| format!("db error: {error}");
     let (scan, foreign) = scan_store_records(&root)?.for_installation(&installation);
     let mut report = ReconcileReport {
-        materialized: materialize_scan(&scan),
+        materialized: materialize_scan(&scan, only),
         unreadable: scan.unreadable.clone(),
         foreign_repos: foreign,
         ..ReconcileReport::default()
@@ -861,8 +924,28 @@ pub fn reconcile_from_disk(
                 continue;
             }
             let on_disk = std::fs::read(super::repo_dir(&root, &repo).join("repo.json"));
-            if on_disk.is_ok_and(|bytes| super::rebuild::is_tombstone(&bytes)) {
-                // Unregistered on disk and registered here: never
+            if let Some(bytes) = on_disk
+                .ok()
+                .filter(|bytes| super::rebuild::is_tombstone(bytes))
+            {
+                // This installation removed it and its database never
+                // committed the removal (a disk-first commit that died
+                // before SQLite's, T13d): apply the removal, as a rebuild
+                // does, with the tasks it removed.
+                let stamped = serde_json::from_slice::<Value>(&bytes)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("installation")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    });
+                if stamped.as_deref() == Some(installation.as_str()) {
+                    db.delete_repo(&repo).map_err(db_error)?;
+                    report.removed_repos.push(repo);
+                    continue;
+                }
+                // An unstamped tombstone (written before T13d): never
                 // resurrected by a rewrite, never removed with its tasks by
                 // a reconciliation. An operator decides.
                 report.diagnostics.push(format!(
@@ -1213,11 +1296,13 @@ fn drain(db: &Db, db_path: &str) -> Result<Value, String> {
 }
 
 /// Publish every in-flight entry file the scanned `task.json` records hold
-/// and their ledgers lack (T13d). A task whose files cannot be written is
-/// logged; its entries are still read from `task.json`.
-fn materialize_scan(scan: &StoreScan) -> usize {
+/// and their ledgers lack (T13d), for the tasks being reconciled (`only`, or
+/// all). A task whose files cannot be written is logged; its entries are
+/// still read from `task.json`.
+fn materialize_scan(scan: &StoreScan, only: Option<&BTreeSet<String>>) -> usize {
     scan.tasks
         .iter()
+        .filter(|directory| only.is_none_or(|only| only.contains(&directory.snapshot.task_id)))
         .map(|directory| {
             super::disk_first::materialize_in_flight(directory).unwrap_or_else(|error| {
                 log::error!(
@@ -1457,13 +1542,17 @@ pub fn start(db: &Db, db_path: &str, request: Option<Mode>) -> Result<StartOutco
         record: load_record(&root, db_path)?,
         refused: Vec::new(),
     };
+    // The persisted mode governs from here, before any step that can fail:
+    // a `disk` record is never served SQL-first.
+    set_mode(&root, db_path, switch.record.mode);
     // An installation switched to disk by a build before T13d: its record
     // closes to older builds before this one writes anything disk-first.
+    // `open_database` refuses to serve it if that cannot be persisted.
     if switch.record.mode == Mode::Disk && switch.record.disk_first_since.is_none() {
         switch.record.disk_first_since = Some(switch.now()?);
-        save_record(&root, &switch.record)?;
+        save_record(&root, &switch.record)
+            .map_err(|error| format!("{FENCE_NOT_PERSISTED}: {error}"))?;
     }
-    set_mode(&root, db_path, switch.record.mode);
     if let Some(request) = request {
         // The explicit request replaces whatever was pending: one that asks
         // for the mode already in force (and no switch under way) asks for
@@ -1507,8 +1596,12 @@ pub fn start(db: &Db, db_path: &str, request: Option<Mode>) -> Result<StartOutco
         }
         (None, None) => Ok(()),
     };
-    set_mode(&root, db_path, switch.record.mode);
-    outcome.mode = switch.record.mode;
+    // What the record now says, not what the switch meant to write: a
+    // checkpoint that failed to save leaves the persisted mode in force. A
+    // record that cannot be read back is taken as `disk`.
+    let persisted = load_record(&root, db_path).map_or(Mode::Disk, |record| record.mode);
+    set_mode(&root, db_path, persisted);
+    outcome.mode = persisted;
     if !switch.refused.is_empty() {
         outcome.refused = std::mem::take(&mut switch.refused);
     }
@@ -1520,6 +1613,11 @@ pub fn start(db: &Db, db_path: &str, request: Option<Mode>) -> Result<StartOutco
     }
     Ok(outcome)
 }
+
+/// A `disk` record whose schema-version fence could not be written: older
+/// builds could still open the installation, so it is not served.
+const FENCE_NOT_PERSISTED: &str =
+    "the disk-first fence could not be written to the authority record";
 
 /// A switch requested through [`AUTHORITY_ENV`], if any.
 pub fn requested_from_env() -> Result<Option<Mode>, String> {
@@ -1536,7 +1634,7 @@ pub fn requested_from_env() -> Result<Option<Mode>, String> {
 pub fn rebuild_missing_database(db_path: &str) -> Result<RebuildReport, String> {
     let root = root_for_db(db_path);
     let (scan, foreign) = scan_store_records(&root)?.for_installation(&installation_id(db_path));
-    let materialized = materialize_scan(&scan);
+    let materialized = materialize_scan(&scan, None);
     if materialized > 0 {
         log::warn!("published {materialized} in-flight ledger entries before rebuilding");
     }
@@ -1604,8 +1702,16 @@ pub fn open_database(config: &crate::config::Config) -> Result<Db, String> {
                 )
             }
         ),
-        // The write path is the same in both modes, so the server runs on
-        // in whichever mode the record holds; the next startup retries.
+        // A `disk` record whose fence against older builds is not on disk
+        // is not served at all.
+        Err(error) if error.starts_with(FENCE_NOT_PERSISTED) => {
+            return Err(format!(
+                "storage authority is disk but {error}; refusing to start"
+            ))
+        }
+        // Otherwise the server runs in the mode the record holds, which
+        // `start` set before anything could fail (a `disk` record is always
+        // served disk-first); the next startup retries the rest.
         Err(error) => log::error!(
             "storage authority startup did not complete ({error}); running as {}",
             mode_for_root(&root).as_str()
