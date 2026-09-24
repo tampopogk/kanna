@@ -52,7 +52,11 @@ nothing.
   which each later main stage overwrites. It survives revisions, resume, and
   recovery because it lives in the pinned workflow, not in run history. An
   ordinary workflow edit carries the stamp forward and may not author or change
-  it.
+  it. The result variables (`$PLAN_RESULT`, `$PREV_RESULT`,
+  `$PREV_MAIN_RESULT`) are a deprecated compatibility feature: still
+  substituted in definitions that use them, noted by doctor and the loader,
+  and unnecessary, because every session's preamble names the result that
+  caused it and the task ledger.
 - *Callers fence on what they read.* `kanna_advance_stage` and the combined
   completion both take `expected_definition`; a tail that moved under the caller
   is a conflict, never a silently different workflow. The desktop projects a

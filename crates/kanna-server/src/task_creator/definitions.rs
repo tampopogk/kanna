@@ -431,6 +431,88 @@ pub(super) struct WorkflowStage {
     pub(super) teardown: Option<Vec<String>>,
 }
 
+/// Prompt variables that carry an earlier result (spec §17, 2026-09-23):
+/// still substituted in user-authored definitions, and deprecated. The
+/// engine delivers the triggering result and the ledger path to every
+/// session instead.
+pub(super) const DEPRECATED_RESULT_VARIABLES: &[&str] =
+    &["PREV_RESULT", "PREV_MAIN_RESULT", "PLAN_RESULT"];
+
+/// The deprecated result variables `text` names (`$NAME` or `${NAME}`), in
+/// the order of [`DEPRECATED_RESULT_VARIABLES`].
+pub(super) fn deprecated_result_variables(text: &str) -> Vec<&'static str> {
+    let mut named = BTreeSet::new();
+    let mut rest = text;
+    while let Some(dollar) = rest.find('$') {
+        rest = &rest[dollar + 1..];
+        let name = match rest.strip_prefix('{') {
+            Some(braced) => braced.split('}').next().unwrap_or(""),
+            None => {
+                let end = rest
+                    .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+                    .unwrap_or(rest.len());
+                &rest[..end]
+            }
+        };
+        named.insert(name.to_string());
+    }
+    DEPRECATED_RESULT_VARIABLES
+        .iter()
+        .copied()
+        .filter(|variable| named.contains(*variable))
+        .collect()
+}
+
+/// The deprecated result variables a workflow's stage and post prompts
+/// name: `(JSON location, variables)`.
+pub(super) fn workflow_result_variables(
+    workflow: &WorkflowDefinition,
+) -> Vec<(String, Vec<&'static str>)> {
+    let mut found = Vec::new();
+    for (index, stage) in workflow.stages.iter().enumerate() {
+        for (location, prompt) in [
+            (format!("/stages/{index}/prompt"), stage.prompt.as_deref()),
+            (
+                format!("/stages/{index}/post/prompt"),
+                stage.post.as_ref().and_then(|post| post.prompt.as_deref()),
+            ),
+        ] {
+            let variables = prompt.map(deprecated_result_variables).unwrap_or_default();
+            if !variables.is_empty() {
+                found.push((location, variables));
+            }
+        }
+    }
+    found
+}
+
+/// One notice per repository definition file and content, when it names a
+/// deprecated result variable. Never an error: the variables still work.
+fn notice_result_variables(path: &str, content: &str, variables: &[&'static str]) {
+    use std::hash::{Hash, Hasher};
+    static NOTICED: std::sync::LazyLock<std::sync::Mutex<BTreeSet<(String, u64)>>> =
+        std::sync::LazyLock::new(Default::default);
+    if variables.is_empty() {
+        return;
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    content.hash(&mut hasher);
+    let first = NOTICED
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .insert((path.to_string(), hasher.finish()));
+    if first {
+        log::info!(
+            "{path} uses deprecated result prompt variables {}: still substituted; sessions receive the triggering result and the task ledger (kanna_guide workflows)",
+            variables
+                .iter()
+                .map(|variable| format!("${variable}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+}
+
 /// Name, agent and prompt of the commit step a stage's `exit_commit` adds to
 /// its forward transition. The name is the run-history label of its run,
 /// unique per stage so recovery resolves the run back to its own stage. It runs through the post delivery machinery (live
@@ -873,8 +955,16 @@ impl RepoDefinitions {
         name: &str,
     ) -> Result<Option<WorkflowDefinition>, String> {
         let path = format!(".kanna/workflows/{name}.json");
+        let noticed = |path: &str, content: &str, workflow: &WorkflowDefinition| {
+            let variables: BTreeSet<&'static str> = workflow_result_variables(workflow)
+                .into_iter()
+                .flat_map(|(_, variables)| variables)
+                .collect();
+            notice_result_variables(path, content, &variables.into_iter().collect::<Vec<_>>());
+        };
         match read_snapshot_utf8(&self.snapshot, &path)? {
             Some(content) => parse_workflow_definition(&content)
+                .inspect(|workflow| noticed(&path, &content, workflow))
                 .map(Some)
                 .map_err(|error| definition_error(&self.snapshot, &path, error)),
             None => {
@@ -884,6 +974,7 @@ impl RepoDefinitions {
                 let legacy_path = format!(".kanna/pipelines/{name}.json");
                 match read_snapshot_utf8(&self.snapshot, &legacy_path)? {
                     Some(content) => parse_workflow_definition(&content)
+                        .inspect(|workflow| noticed(&legacy_path, &content, workflow))
                         .map(Some)
                         .map_err(|error| definition_error(&self.snapshot, &legacy_path, error)),
                     None => compiled_builtin_resource(&path)
@@ -928,6 +1019,11 @@ impl RepoDefinitions {
                 let content = self
                     .expand_partials(&content, &agent_path)
                     .map_err(|error| definition_error(&self.snapshot, &agent_path, error))?;
+                notice_result_variables(
+                    &agent_path,
+                    &content,
+                    &deprecated_result_variables(&content),
+                );
                 definition = Some(
                     parse_agent_definition(&content)
                         .map_err(|error| definition_error(&self.snapshot, &agent_path, error))?,
@@ -965,6 +1061,11 @@ impl RepoDefinitions {
                 let extension = self
                     .expand_partials(&extension, &extension_path)
                     .map_err(|error| definition_error(&self.snapshot, &extension_path, error))?;
+                notice_result_variables(
+                    &extension_path,
+                    &extension,
+                    &deprecated_result_variables(&extension),
+                );
                 apply_agent_extension(&mut definition, &extension)
                     .map_err(|error| definition_error(&self.snapshot, &extension_path, error))?;
                 break;
@@ -2547,10 +2648,21 @@ fn validate_workflow_routing(workflow: &WorkflowDefinition) -> Result<(), String
                 || stage.budget.is_some()
                 || stage.policy.loop_transition.is_some()
         });
+    // `exit_commit` is a property of a stage's transition in either routing
+    // (T13d): a legacy workflow's commit post migrates to it.
     let uses_transition_fields = workflow
         .stages
         .iter()
-        .any(|stage| stage.exit_commit || stage.setup.is_some() || stage.teardown.is_some());
+        .any(|stage| stage.setup.is_some() || stage.teardown.is_some());
+    for stage in &workflow.stages {
+        if stage.exit_commit && stage.post.is_some() {
+            return Err(format!(
+                "stage '{}': exit_commit is the commit step of this stage's transition and \
+                 cannot be combined with a post",
+                stage.name
+            ));
+        }
+    }
     let uses_handoff = workflow
         .stages
         .iter()
@@ -2572,9 +2684,9 @@ fn validate_workflow_routing(workflow: &WorkflowDefinition) -> Result<(), String
         }
         if uses_transition_fields {
             return Err(
-                "exit_commit and stage setup/teardown belong to named-exit routing; declare \
-                 \"routing\": \"exits\" to use them (a legacy workflow commits through a \
-                 post and runs scripts through its environments)"
+                "stage setup/teardown belong to named-exit routing; declare \
+                 \"routing\": \"exits\" to use them (a legacy workflow runs scripts through \
+                 its environments)"
                     .into(),
             );
         }
@@ -2627,13 +2739,6 @@ fn validate_workflow_routing(workflow: &WorkflowDefinition) -> Result<(), String
             return Err(format!(
                 "stage '{}': policy.handoff runs as the task leaves its final stage; declare it \
                  on the final stage",
-                stage.name
-            ));
-        }
-        if stage.exit_commit && stage.post.is_some() {
-            return Err(format!(
-                "stage '{}': exit_commit is the commit step of this stage's transition and \
-                 cannot be combined with a post",
                 stage.name
             ));
         }

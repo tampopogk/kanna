@@ -177,6 +177,14 @@ pub struct TaskSnapshot {
     /// existed; the rebuild then falls back to `published_through`.
     pub state_reflects_through: Option<i64>,
     pub state_unreflected: Vec<i64>,
+    /// `ledger.in_flight` (T13d): `(file name, exact bytes)` of the entries a
+    /// disk-first commit made durable in this `task.json`, which may not be
+    /// files yet.
+    pub in_flight: Vec<(String, Vec<u8>)>,
+    /// `ledger.readable_through` (T13d): the ordering watermark a disk-first
+    /// commit stored. Never trusted: a disk-mode start recomputes it from
+    /// the ledger.
+    pub readable_through: Option<i64>,
 }
 
 /// One published ledger file and its exact bytes.
@@ -184,6 +192,12 @@ pub struct TaskSnapshot {
 pub struct ReadEntry {
     pub file: LedgerFile,
     pub bytes: Vec<u8>,
+    /// The entry is a file in the ledger directory. `false` for an entry
+    /// only `task.json`'s `ledger.in_flight` holds (T13d): it is projected
+    /// unpublished, so the readable watermark stays below it and
+    /// `ledger.in_flight` keeps it until its file is written, synced and
+    /// read back.
+    pub durable: bool,
 }
 
 /// One task directory, read and validated.
@@ -246,7 +260,34 @@ pub fn parse_task_snapshot(bytes: &[u8]) -> Result<TaskSnapshot, String> {
         .and_then(Value::as_array)
         .map(|items| items.iter().filter_map(Value::as_i64).collect())
         .unwrap_or_default();
+    let in_flight = match value
+        .get("ledger")
+        .and_then(|ledger| ledger.get(super::disk_first::IN_FLIGHT_KEY))
+    {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                let file_name = text(item, "file_name");
+                let payload = text(item, "payload");
+                match (file_name, payload) {
+                    (Some(file_name), Some(payload)) => Ok((file_name, payload.into_bytes())),
+                    _ => Err(
+                        "task.json ledger.in_flight holds an entry without file_name and payload"
+                            .to_string(),
+                    ),
+                }
+            })
+            .collect::<Result<_, _>>()?,
+        Some(_) => return Err("task.json ledger.in_flight is not a list".into()),
+    };
+    let readable_through = value
+        .get("ledger")
+        .and_then(|ledger| ledger.get(super::disk_first::READABLE_THROUGH_KEY))
+        .and_then(Value::as_i64);
     Ok(TaskSnapshot {
+        readable_through,
+        in_flight,
         state,
         state_reflects_through,
         state_unreflected,
@@ -376,11 +417,38 @@ pub fn read_task_directory(dir: &Path) -> Result<TaskDirectory, String> {
                     .map_err(|error| format!("read {}: {error}", item.path().display()))?;
                 let file = parse_ledger_file(&name, &bytes)?;
                 validate_entry(&file, &snapshot.task_id)?;
-                entries.push(ReadEntry { file, bytes });
+                entries.push(ReadEntry {
+                    file,
+                    bytes,
+                    durable: true,
+                });
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(format!("read {}: {error}", ledger.display())),
+    }
+    // In-flight entries (T13d) are part of the ledger whether or not their
+    // file was published yet; a published file must hold the same bytes.
+    for (name, bytes) in &snapshot.in_flight {
+        let file = parse_ledger_file(name, bytes)?;
+        validate_entry(&file, &snapshot.task_id)?;
+        match entries
+            .iter()
+            .find(|entry: &&ReadEntry| entry.file.sequence == file.sequence)
+        {
+            Some(published) if published.bytes == *bytes => {}
+            Some(published) => {
+                return Err(format!(
+                    "task.json's in-flight entry {name} differs from the published {}",
+                    published.file.file_name
+                ))
+            }
+            None => entries.push(ReadEntry {
+                file,
+                bytes: bytes.clone(),
+                durable: false,
+            }),
+        }
     }
     entries.sort_by_key(|entry| entry.file.sequence);
     if let Some(pair) = entries
@@ -734,6 +802,9 @@ pub struct LedgerRow {
     pub file_name: String,
     pub payload: Vec<u8>,
     pub recorded_at: String,
+    /// Its file is on disk. An in-flight-only entry (T13d) is written
+    /// unpublished, owed to the publisher.
+    pub published: bool,
 }
 
 /// Ledger bookkeeping for one task: `task.json` is current and its history
@@ -969,7 +1040,12 @@ fn project_task(directory: &TaskDirectory, projection: &mut Projection) {
     let mut historical = 0i64;
     let mut last_transition_to: Option<Option<String>> = None;
     let mut last_plan_after: Option<Value> = None;
-    for ReadEntry { file, bytes } in &directory.entries {
+    for ReadEntry {
+        file,
+        bytes,
+        durable,
+    } in &directory.entries
+    {
         let envelope = &file.envelope;
         let at = recorded_at(file);
         let run_id = text(envelope, "run_id");
@@ -999,6 +1075,7 @@ fn project_task(directory: &TaskDirectory, projection: &mut Projection) {
             file_name: file.file_name.clone(),
             payload: bytes.clone(),
             recorded_at: at.clone(),
+            published: *durable,
         });
         let body = file.body();
         let message = file.message.as_deref().unwrap_or("");

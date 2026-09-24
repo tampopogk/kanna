@@ -67,11 +67,11 @@ fn an_unreadable_or_foreign_record_is_refused_never_guessed() {
     let path = record_path(&root, &installation_id(&db_path));
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let mut record = AuthorityRecord::new(&db_path);
-    record.schema_version = 2;
+    record.schema_version = 3;
     std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
     assert!(load_record(&root, &db_path)
         .unwrap_err()
-        .contains("schema_version 2"));
+        .contains("schema_version 3"));
     let mut record = AuthorityRecord::new(&db_path);
     record.installation = "someone-else".into();
     std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
@@ -104,7 +104,8 @@ fn installations_sharing_a_root_never_take_in_each_others_tasks() {
     let outcome = start(&production, &production_path, Some(Mode::Disk)).unwrap();
     assert_eq!(outcome.mode, Mode::Disk, "{:?}", outcome.refused);
     register(&shared, &staging_path);
-    assert!(flush_all(&staging, &staging_path).is_empty());
+    let failures = flush_all(&staging, &staging_path);
+    assert!(failures.is_empty(), "{failures:?}");
 
     let (scoped, foreign) = scan_store_records(&shared)
         .unwrap()
@@ -252,7 +253,7 @@ fn a_switch_that_cannot_be_verified_is_refused_and_retried() {
 #[test]
 fn the_switch_publishes_closed_tasks_that_were_never_on_disk() {
     let (db, db_path) = installation("closed", "repo-c", &["open-1", "closed-1"]);
-    db.connection_for_e2e_tests()
+    outside_writer(db.db_path())
         .execute_batch(
             "UPDATE pipeline_item SET closed_at = '2026-09-01 00:00:00' WHERE id = 'closed-1';
              UPDATE task_ledger_snapshot SET revision = 0, published_revision = 0
@@ -271,8 +272,8 @@ fn the_switch_publishes_closed_tasks_that_were_never_on_disk() {
         .exists());
 }
 
-/// A removal the database committed, whose tombstone the disk does not
-/// hold yet, stands: the stale `task.json` does not bring the task back.
+/// A removal in `disk` mode writes its tombstone before the database
+/// commits it (T13d), and a restart keeps it removed.
 #[test]
 fn a_committed_removal_is_not_undone_by_a_stale_task_json() {
     let (db, db_path) = installation("removal", "repo-x", &["keep", "gone"]);
@@ -283,9 +284,10 @@ fn a_committed_removal_is_not_undone_by_a_stale_task_json() {
     );
     db.delete_task_creation_artifacts("gone").unwrap();
     let task_json = task_dir(&root_for_db(&db_path), "repo-x", "gone").join("task.json");
-    assert!(!super::super::rebuild::is_tombstone(
+    assert!(super::super::rebuild::is_tombstone(
         &std::fs::read(&task_json).unwrap()
     ));
+    assert!(db.pending_disk_removals().unwrap().is_empty());
 
     let report = start(&db, &db_path, None).unwrap().reconcile.unwrap();
     assert!(
@@ -344,12 +346,23 @@ fn records_the_disk_lost_are_written_again() {
 // Review round 1
 // ---------------------------------------------------------------------------
 
+/// A writer outside this build's disk-first gate (an older build, or a
+/// person with `sqlite3`): it commits SQLite first whatever the mode, which
+/// is how these fixtures put the database behind or ahead of the disk.
+fn outside_writer(db_path: &str) -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open(db_path).unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    conn
+}
+
 /// A copy of the database as it stands, to restore later: the database
 /// goes back while the disk keeps what happened since.
 fn backup(db: &Db, db_path: &str) -> String {
     let copy = format!("{db_path}.backup");
     let _ = std::fs::remove_file(&copy);
-    db.connection_for_e2e_tests()
+    outside_writer(db.db_path())
         .execute("VACUUM main INTO ?1", [&copy])
         .unwrap();
     copy
@@ -375,6 +388,19 @@ fn operator_input(db: &Db, task: &str, text: &str) -> i64 {
     .id
 }
 
+fn operator_input_result(
+    db: &Db,
+    task: &str,
+    text: &str,
+) -> Result<Option<crate::db::TaskInputRecord>, rusqlite::Error> {
+    db.record_task_input(
+        task,
+        crate::db::TaskInputSource::Operator,
+        &ChannelIdentity::Unknown,
+        text,
+    )
+}
+
 fn revision(db: &Db, task: &str) -> i64 {
     db.task_snapshot_revisions(task).unwrap().unwrap().0
 }
@@ -389,7 +415,7 @@ fn flagged_installation(label: &str) -> (Db, String, PathBuf) {
         Mode::Disk
     );
     let copy = backup(&db, &db_path);
-    db.connection_for_e2e_tests()
+    outside_writer(db.db_path())
         .execute(
             "UPDATE pipeline_item SET display_name = 'on disk' WHERE id = 't1'",
             [],
@@ -402,10 +428,12 @@ fn flagged_installation(label: &str) -> (Db, String, PathBuf) {
     drop(db);
     let db = restore(&db_path, &copy);
     let root = root_for_db(&db_path);
-    db.mark_task_snapshot_dirty("t1").unwrap();
-    let error = flush_task(&db, &db_path, "t1").unwrap_err();
+    // Disk-first (T13d): the restored database's next write finds the
+    // disk ahead before anything is written, and is refused.
+    let error = db.mark_task_snapshot_dirty("t1").unwrap_err().to_string();
     assert!(error.contains("beyond the database's"), "{error}");
     assert!(is_diverged(&db, "t1"));
+    assert!(flush_task(&db, &db_path, "t1").is_err());
     let task_json = task_dir(&root, &format!("repo-{label}"), "t1").join("task.json");
     (db, db_path, task_json)
 }
@@ -424,14 +452,22 @@ fn a_flagged_task_publishes_nothing_until_it_is_repaired() {
     let disk_revision = serde_json::from_slice::<Value>(&on_disk).unwrap()["snapshot_revision"]
         .as_i64()
         .unwrap();
-    db.connection_for_e2e_tests()
+    outside_writer(db.db_path())
         .execute(
             "UPDATE pipeline_item SET display_name = 'live write' WHERE id = 't1'",
             [],
         )
         .unwrap();
+    // This build refuses every write to the fenced task (T13d); only a
+    // writer outside the gate can raise its revision past the disk's.
+    assert!(db.mark_task_snapshot_dirty("t1").is_err());
     while revision(&db, "t1") <= disk_revision + 1 {
-        db.mark_task_snapshot_dirty("t1").unwrap();
+        outside_writer(db.db_path())
+            .execute(
+                "UPDATE task_ledger_snapshot SET revision = revision + 1 WHERE task_id = 't1'",
+                [],
+            )
+            .unwrap();
     }
     assert!(flush_task(&db, &db_path, "t1").is_err());
     assert!(!flush_all(&db, &db_path).is_empty());
@@ -457,9 +493,7 @@ fn a_write_after_the_comparison_survives_the_repair() {
     let root = root_for_db(&db_path);
     let writer_path = db_path.clone();
     interleave_before_reconcile(&root, move || {
-        Db::open(&writer_path)
-            .unwrap()
-            .connection_for_e2e_tests()
+        outside_writer(&writer_path)
             .execute_batch(
                 "INSERT INTO task_transfer (id, direction, status, source_task_id, local_task_id)
                  VALUES ('xfer-live', 'outgoing', 'streaming', 't1', 't1');
@@ -480,7 +514,7 @@ fn a_write_after_the_comparison_survives_the_repair() {
     );
     assert!(is_diverged(&db, "t1"));
     let claims = |db: &Db| -> i64 {
-        db.connection_for_e2e_tests()
+        outside_writer(db.db_path())
             .query_row(
                 "SELECT COUNT(*) FROM task_transfer_workflow_claim
                  WHERE pipeline_item_id = 't1' AND transfer_id = 'xfer-live'",
@@ -530,8 +564,7 @@ fn a_reused_input_id_never_rewrites_another_tasks_input() {
         ["a"],
         "{report:#?}"
     );
-    let inputs: Vec<(i64, String, String)> = db
-        .connection_for_e2e_tests()
+    let inputs: Vec<(i64, String, String)> = outside_writer(db.db_path())
         .prepare("SELECT id, task_id, message FROM task_input ORDER BY id")
         .unwrap()
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
@@ -555,8 +588,7 @@ fn a_reused_input_id_never_rewrites_another_tasks_input() {
     // A later startup changes nothing.
     let again = start(&db, &db_path, None).unwrap().reconcile.unwrap();
     assert!(again.reconciled.is_empty(), "{again:#?}");
-    let after: i64 = db
-        .connection_for_e2e_tests()
+    let after: i64 = outside_writer(db.db_path())
         .query_row("SELECT COUNT(*) FROM task_input", [], |row| row.get(0))
         .unwrap();
     assert_eq!(after, 2);
@@ -577,13 +609,20 @@ fn a_counter_the_disk_does_not_hold_is_never_lowered() {
     assert!(flush_all(&db, &db_path).is_empty());
     drop(db);
     let db = restore(&db_path, &copy);
-    let number = db.reserve_task_branch_number("t1", 0).unwrap();
-    assert!(number >= 1);
+    // This build refuses the write (the disk is ahead, T13d); a counter the
+    // database holds and the disk does not comes from outside the gate.
+    assert!(db.reserve_task_branch_number("t1", 0).is_err());
+    let number = 7;
+    outside_writer(db.db_path())
+        .execute(
+            "INSERT INTO task_branch_counter (task_id, last_allocated) VALUES ('t1', ?1)",
+            [number],
+        )
+        .unwrap();
 
     let report = start(&db, &db_path, None).unwrap().reconcile.unwrap();
     assert_eq!(report.reconciled.len(), 1, "{report:#?}");
-    let counter: Option<i64> = db
-        .connection_for_e2e_tests()
+    let counter: Option<i64> = outside_writer(db.db_path())
         .query_row(
             "SELECT last_allocated FROM task_branch_counter WHERE task_id = 't1'",
             [],
@@ -623,7 +662,7 @@ fn an_explicit_request_for_the_current_mode_withdraws_a_pending_switch() {
 // ---------------------------------------------------------------------------
 
 fn inputs(db: &Db) -> Vec<(i64, String, String)> {
-    db.connection_for_e2e_tests()
+    outside_writer(db.db_path())
         .prepare("SELECT id, task_id, message FROM task_input ORDER BY id")
         .unwrap()
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
@@ -695,7 +734,7 @@ fn a_moved_input_never_lands_on_another_projected_input() {
 fn a_join_member_follows_its_moved_input() {
     let (db, db_path, a_ids, b_id) =
         restored_with_reused_input_id("join-input", &["the child's outcome"], |db, ids| {
-            db.connection_for_e2e_tests()
+            outside_writer(db.db_path())
                 .execute_batch(&format!(
                     "INSERT INTO task_join (id, parent_task_id, base_sha)
                      VALUES ('join-a', 'a', 'sha');
@@ -709,8 +748,7 @@ fn a_join_member_follows_its_moved_input() {
         });
     let report = start(&db, &db_path, None).unwrap().reconcile.unwrap();
     assert_eq!(report.reconciled.len(), 1, "{report:#?}");
-    let member: i64 = db
-        .connection_for_e2e_tests()
+    let member: i64 = outside_writer(db.db_path())
         .query_row(
             "SELECT input_id FROM task_join_member WHERE join_id = 'join-a'",
             [],
@@ -720,8 +758,7 @@ fn a_join_member_follows_its_moved_input() {
     assert_ne!(member, a_ids[0]);
     assert_ne!(member, b_id);
     // No member names an input of another task, or none at all.
-    let dangling: i64 = db
-        .connection_for_e2e_tests()
+    let dangling: i64 = outside_writer(db.db_path())
         .query_row(
             "SELECT COUNT(*) FROM task_join_member member
              JOIN task_join ON task_join.id = member.join_id
@@ -767,14 +804,19 @@ fn the_fence_survives_a_restart_after_the_database_caught_up() {
     let disk_revision = serde_json::from_slice::<Value>(&on_disk).unwrap()["snapshot_revision"]
         .as_i64()
         .unwrap();
-    db.connection_for_e2e_tests()
+    outside_writer(db.db_path())
         .execute(
             "UPDATE pipeline_item SET display_name = 'live write' WHERE id = 't1'",
             [],
         )
         .unwrap();
     while revision(&db, "t1") <= disk_revision + 1 {
-        db.mark_task_snapshot_dirty("t1").unwrap();
+        outside_writer(db.db_path())
+            .execute(
+                "UPDATE task_ledger_snapshot SET revision = revision + 1 WHERE task_id = 't1'",
+                [],
+            )
+            .unwrap();
     }
     drop(db);
 
@@ -798,7 +840,7 @@ fn the_fence_survives_a_restart_after_the_database_caught_up() {
 #[test]
 fn a_claim_held_by_a_failed_transfers_retry_survives_the_repair() {
     let (db, db_path, _) = flagged_installation("failed-transfer");
-    db.connection_for_e2e_tests()
+    outside_writer(db.db_path())
         .execute_batch(
             "INSERT INTO task_transfer (id, direction, status, source_task_id, local_task_id)
              VALUES ('xfer-retry', 'outgoing', 'failed', 't1', 't1');
@@ -832,7 +874,7 @@ fn a_claim_held_by_a_failed_transfers_retry_survives_the_repair() {
 #[test]
 fn a_claim_whose_transfer_has_finished_is_the_disks_to_decide() {
     let (db, db_path, _) = flagged_installation("finished-transfer");
-    db.connection_for_e2e_tests()
+    outside_writer(db.db_path())
         .execute_batch(
             "INSERT INTO task_transfer (id, direction, status, source_task_id, local_task_id)
              VALUES ('xfer-done', 'outgoing', 'failed', 't1', 't1');
@@ -846,8 +888,7 @@ fn a_claim_whose_transfer_has_finished_is_the_disks_to_decide() {
     let only = BTreeSet::from(["t1".to_string()]);
     let report = reconcile_from_disk(&db, &db_path, Some(&only)).unwrap();
     assert_eq!(report.reconciled.len(), 1, "{report:#?}");
-    let claims: i64 = db
-        .connection_for_e2e_tests()
+    let claims: i64 = outside_writer(db.db_path())
         .query_row(
             "SELECT COUNT(*) FROM task_transfer_workflow_claim WHERE pipeline_item_id = 't1'",
             [],
@@ -873,7 +914,7 @@ fn a_live_claim_is_not_rewritten_to_the_disks_settled_one() {
         start(&db, &db_path, Some(Mode::Disk)).unwrap().mode,
         Mode::Disk
     );
-    db.connection_for_e2e_tests()
+    outside_writer(db.db_path())
         .execute_batch(
             "INSERT INTO task_transfer (id, direction, status, source_task_id, local_task_id)
              VALUES ('xfer-old', 'outgoing', 'completed', 't1', 't1');
@@ -883,7 +924,7 @@ fn a_live_claim_is_not_rewritten_to_the_disks_settled_one() {
         .unwrap();
     assert!(flush_all(&db, &db_path).is_empty());
     let copy = backup(&db, &db_path);
-    db.connection_for_e2e_tests()
+    outside_writer(db.db_path())
         .execute(
             "UPDATE pipeline_item SET display_name = 'on disk' WHERE id = 't1'",
             [],
@@ -892,7 +933,7 @@ fn a_live_claim_is_not_rewritten_to_the_disks_settled_one() {
     assert!(flush_all(&db, &db_path).is_empty());
     drop(db);
     let db = restore(&db_path, &copy);
-    db.connection_for_e2e_tests()
+    outside_writer(db.db_path())
         .execute_batch(
             "INSERT INTO task_transfer (id, direction, status, source_task_id, local_task_id)
              VALUES ('xfer-live', 'outgoing', 'failed', 't1', 't1');
@@ -909,7 +950,7 @@ fn a_live_claim_is_not_rewritten_to_the_disks_settled_one() {
         Some("xfer-live")
     );
     let transfer_row = |db: &Db, id: &str| -> Option<(String, String)> {
-        db.connection_for_e2e_tests()
+        outside_writer(db.db_path())
             .query_row(
                 "SELECT status, direction FROM task_transfer WHERE id = ?",
                 [id],
@@ -925,8 +966,7 @@ fn a_live_claim_is_not_rewritten_to_the_disks_settled_one() {
     let report = reconcile_from_disk(&db, &db_path, Some(&only)).unwrap();
     assert_eq!(report.reconciled.len(), 1, "{report:#?}");
     assert_eq!(display_name(&db).as_deref(), Some("on disk"));
-    let claim: String = db
-        .connection_for_e2e_tests()
+    let claim: String = outside_writer(db.db_path())
         .query_row(
             "SELECT transfer_id FROM task_transfer_workflow_claim WHERE pipeline_item_id = 't1'",
             [],
@@ -1001,4 +1041,1037 @@ fn ownership_columns_are_never_in_the_disk_wins_update_set() {
             every
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Disk-first writes (T13d)
+// ---------------------------------------------------------------------------
+
+fn disk_installation(label: &str) -> (Db, String, PathBuf) {
+    let (db, db_path) = installation(label, &format!("repo-{label}"), &["t1"]);
+    assert!(flush_all(&db, &db_path).is_empty());
+    assert_eq!(
+        start(&db, &db_path, Some(Mode::Disk)).unwrap().mode,
+        Mode::Disk
+    );
+    let task_json =
+        task_dir(&root_for_db(&db_path), &format!("repo-{label}"), "t1").join("task.json");
+    (db, db_path, task_json)
+}
+
+fn title_on_disk(task_json: &Path) -> Value {
+    serde_json::from_slice::<Value>(&std::fs::read(task_json).unwrap()).unwrap()["title"].clone()
+}
+
+/// A row change with no ledger entry is on disk when its statement
+/// returns, with nothing left for the publisher; in `sql` mode the same
+/// write waits for the publisher as before.
+#[test]
+fn a_row_change_is_on_disk_before_it_commits() {
+    let (db, _db_path, task_json) = disk_installation("row-first");
+    db.connection_for_e2e_tests()
+        .execute(
+            "UPDATE pipeline_item SET display_name = 'written first' WHERE id = 't1'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(title_on_disk(&task_json), "written first");
+    assert!(db.ledger_tasks_with_pending_work().unwrap().is_empty());
+    operator_input(&db, "t1", "an input");
+    assert!(db.ledger_tasks_with_pending_work().unwrap().is_empty());
+    let ledger = crate::task_store::read_ledger(task_json.parent().unwrap()).unwrap();
+    assert_eq!(
+        ledger
+            .last()
+            .and_then(|file| file.message.clone())
+            .as_deref(),
+        Some("an input")
+    );
+
+    let (sql, sql_path) = installation("row-sql", "repo-row-sql", &["t1"]);
+    assert!(flush_all(&sql, &sql_path).is_empty());
+    let sql_json = task_dir(&root_for_db(&sql_path), "repo-row-sql", "t1").join("task.json");
+    sql.connection_for_e2e_tests()
+        .execute(
+            "UPDATE pipeline_item SET display_name = 'published later' WHERE id = 't1'",
+            [],
+        )
+        .unwrap();
+    assert_ne!(title_on_disk(&sql_json), "published later");
+    assert!(!sql.ledger_tasks_with_pending_work().unwrap().is_empty());
+}
+
+/// A commit that reaches the outbox outside the gate (a raw transaction)
+/// is refused in `disk` mode, so no path can write SQLite first; the same
+/// transaction commits in `sql` mode.
+#[test]
+fn a_commit_outside_the_gate_is_refused_in_disk_mode() {
+    let (db, db_path, task_json) = disk_installation("outside-gate");
+    let before = title_on_disk(&task_json);
+    let refused = crate::db::disk_first::refused_commits(&db_path);
+    let raw = |db: &Db| {
+        let conn: &rusqlite::Connection = db.connection_for_e2e_tests();
+        conn.execute_batch(
+            "BEGIN IMMEDIATE;
+             UPDATE pipeline_item SET display_name = 'behind the gate' WHERE id = 't1';
+             COMMIT;",
+        )
+    };
+    assert!(raw(&db).is_err());
+    let _ = db.connection_for_e2e_tests().execute_batch("ROLLBACK");
+    assert_eq!(
+        crate::db::disk_first::refused_commits(&db_path),
+        refused + 1
+    );
+    assert_ne!(display_name(&db).as_deref(), Some("behind the gate"));
+    assert_eq!(title_on_disk(&task_json), before);
+
+    let (sql, _) = installation("outside-gate-sql", "repo-og-sql", &["t1"]);
+    raw(&sql).unwrap();
+    assert_eq!(
+        sql.get_pipeline_item("t1")
+            .unwrap()
+            .unwrap()
+            .display_name
+            .as_deref(),
+        Some("behind the gate")
+    );
+}
+
+/// SQLite fails to commit after the disk did: the caller sees the error,
+/// the task is fenced (every later write refused, durably), and the repair
+/// takes the mutation from disk, where it was committed.
+#[test]
+fn a_commit_that_fails_after_the_disk_write_is_taken_from_disk() {
+    let (db, db_path, task_json) = disk_installation("failed-commit");
+    crate::db::disk_first::fail_next_commit(&db_path);
+    let error = db
+        .connection_for_e2e_tests()
+        .execute(
+            "UPDATE pipeline_item SET display_name = 'on disk only' WHERE id = 't1'",
+            [],
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("injected COMMIT failure"), "{error}");
+    assert_eq!(title_on_disk(&task_json), "on disk only");
+    assert_ne!(display_name(&db).as_deref(), Some("on disk only"));
+    assert!(is_diverged(&db, "t1"));
+    assert!(db.is_disk_divergent("t1").unwrap());
+    assert!(operator_input_result(&db, "t1", "refused").is_err());
+    assert_eq!(title_on_disk(&task_json), "on disk only");
+
+    let only = BTreeSet::from(["t1".to_string()]);
+    let report = reconcile_from_disk(&db, &db_path, Some(&only)).unwrap();
+    assert_eq!(report.reconciled.len(), 1, "{report:#?}");
+    assert!(!is_diverged(&db, "t1"));
+    assert_eq!(display_name(&db).as_deref(), Some("on disk only"));
+    operator_input(&db, "t1", "accepted again");
+    assert!(db.ledger_tasks_with_pending_work().unwrap().is_empty());
+}
+
+/// What a build before T13d does with the record: it understands only
+/// schema version 1, and refuses anything else.
+fn older_build_accepts(root: &Path, db_path: &str) -> bool {
+    let bytes = std::fs::read(record_path(root, &installation_id(db_path))).unwrap();
+    serde_json::from_slice::<Value>(&bytes).unwrap()["schema_version"] == 1
+}
+
+/// The rollback window (T13d). Older builds: closed from this build's
+/// first disk-first start (the record becomes schema version 2, which they
+/// refuse) until a completed rollback reopens it. This build: a rollback
+/// commits only when the database, reconciled from disk, verifies equal to
+/// it; otherwise it is refused with the differences, the installation
+/// stays `disk`, and the request is retried at the next start.
+#[test]
+fn the_rollback_window_refuses_what_it_cannot_verify_and_closes_to_older_builds() {
+    let (db, db_path) = installation("window", "repo-window", &["t1", "t2"]);
+    let root = root_for_db(&db_path);
+    assert!(flush_all(&db, &db_path).is_empty());
+
+    // An installation a T13c build switched to disk: its record is still
+    // version 1 and open to that build, until this build starts on it.
+    let mut record = AuthorityRecord::new(&db_path);
+    record.mode = Mode::Disk;
+    std::fs::create_dir_all(root.join("authority")).unwrap();
+    std::fs::write(
+        record_path(&root, &installation_id(&db_path)),
+        serde_json::to_vec_pretty(&record).unwrap(),
+    )
+    .unwrap();
+    assert!(older_build_accepts(&root, &db_path));
+    assert_eq!(start(&db, &db_path, None).unwrap().mode, Mode::Disk);
+    let record = load_record(&root, &db_path).unwrap();
+    assert_eq!(record.schema_version, DISK_FIRST_RECORD_SCHEMA_VERSION);
+    assert!(record.disk_first_since.is_some() && record.note.is_some());
+    assert!(!older_build_accepts(&root, &db_path));
+    operator_input(&db, "t1", "written disk-first");
+
+    // The disk holds what the database cannot be shown to hold: t2's
+    // task.json is ahead of the database and carries no rows to project.
+    // The rollback is refused and retried.
+    let t2_json = task_dir(&root, "repo-window", "t2").join("task.json");
+    let intact = std::fs::read(&t2_json).unwrap();
+    let mut ahead: Value = serde_json::from_slice(&intact).unwrap();
+    ahead.as_object_mut().unwrap().remove("state");
+    ahead["snapshot_revision"] = json!(ahead["snapshot_revision"].as_i64().unwrap() + 5);
+    std::fs::write(&t2_json, serde_json::to_vec_pretty(&ahead).unwrap()).unwrap();
+    let outcome = start(&db, &db_path, Some(Mode::Sql)).unwrap();
+    assert_eq!(outcome.mode, Mode::Disk);
+    assert!(
+        outcome.refused.iter().any(|problem| problem.contains("t2")),
+        "{:?}",
+        outcome.refused
+    );
+    let record = load_record(&root, &db_path).unwrap();
+    assert_eq!(
+        (record.mode, record.requested),
+        (Mode::Disk, Some(Mode::Sql))
+    );
+    assert!(record.switch.is_none());
+    let last = record.checkpoints.last().unwrap();
+    assert_eq!(last.checkpoint, "to_sql.refused");
+    assert!(
+        last.detail["problems"].to_string().contains("t2"),
+        "{last:?}"
+    );
+    assert!(!older_build_accepts(&root, &db_path));
+    assert_eq!(mode_for_root(&root), Mode::Disk);
+
+    // Fixed, the next start verifies and commits the rollback, and the
+    // record is open to older builds again.
+    std::fs::write(&t2_json, intact).unwrap();
+    let outcome = start(&db, &db_path, None).unwrap();
+    assert_eq!(outcome.mode, Mode::Sql, "{:?}", outcome.refused);
+    let record = load_record(&root, &db_path).unwrap();
+    assert_eq!(record.schema_version, RECORD_SCHEMA_VERSION);
+    assert!(record.disk_first_since.is_none() && record.requested.is_none());
+    let names: Vec<&str> = record
+        .checkpoints
+        .iter()
+        .rev()
+        .take(3)
+        .map(|checkpoint| checkpoint.checkpoint.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        ["to_sql.commit", "to_sql.reconciled", "to_sql.begin"]
+    );
+    assert!(older_build_accepts(&root, &db_path));
+    let inputs = inputs(&db);
+    assert!(inputs
+        .iter()
+        .any(|(_, task, text)| task == "t1" && text == "written disk-first"));
+}
+
+/// Writers on their own connections allocate ledger sequences (entries,
+/// and reservations released as gaps) while publishers flush on theirs, in
+/// both authority modes. No number is handed out twice, every entry
+/// reaches disk with its committed bytes, and nothing is left owed.
+#[test]
+fn ledger_sequences_stay_unique_under_concurrent_writers_and_publishers() {
+    for mode in [Mode::Sql, Mode::Disk] {
+        let label = format!("stress-{}", mode.as_str());
+        let repo = format!("repo-{label}");
+        let (db, db_path) = installation(&label, &repo, &["t1", "t2"]);
+        assert!(flush_all(&db, &db_path).is_empty());
+        assert_eq!(start(&db, &db_path, Some(mode)).unwrap().mode, mode);
+        drop(db);
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let publishers: Vec<_> = (0..2)
+            .map(|_| {
+                let (db_path, done) = (db_path.clone(), std::sync::Arc::clone(&done));
+                std::thread::spawn(move || {
+                    let db = Db::open(&db_path).unwrap();
+                    while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                        let _ = flush_all(&db, &db_path);
+                    }
+                })
+            })
+            .collect();
+        let writers: Vec<_> = (0..4)
+            .map(|writer| {
+                let db_path = db_path.clone();
+                std::thread::spawn(move || {
+                    let db = Db::open(&db_path).unwrap();
+                    let mut released = Vec::new();
+                    for op in 0..20 {
+                        let task = if (writer + op) % 2 == 0 { "t1" } else { "t2" };
+                        if op % 3 == 2 {
+                            let sequence = db.reserve_ledger_sequence(task).unwrap();
+                            db.release_ledger_reservation(task, sequence).unwrap();
+                            released.push((task.to_string(), sequence));
+                        } else {
+                            operator_input(&db, task, &format!("writer {writer} op {op}"));
+                        }
+                    }
+                    released
+                })
+            })
+            .collect();
+        let released: Vec<(String, i64)> = writers
+            .into_iter()
+            .flat_map(|writer| writer.join().unwrap())
+            .collect();
+        done.store(true, std::sync::atomic::Ordering::SeqCst);
+        for publisher in publishers {
+            publisher.join().unwrap();
+        }
+        let db = Db::open(&db_path).unwrap();
+        let failures = flush_all(&db, &db_path);
+        assert!(failures.is_empty(), "{mode:?}: {failures:?}");
+        assert!(db.ledger_tasks_with_pending_work().unwrap().is_empty());
+        let root = root_for_db(&db_path);
+        for task in ["t1", "t2"] {
+            let rows = db.ledger_rows_for_authority(task).unwrap();
+            let entries: Vec<i64> = rows.iter().map(|row| row.sequence).collect();
+            let gaps: Vec<i64> = released
+                .iter()
+                .filter(|(released_task, _)| released_task == task)
+                .map(|(_, sequence)| *sequence)
+                .collect();
+            let mut handed_out: Vec<i64> = entries.iter().chain(&gaps).copied().collect();
+            handed_out.sort();
+            let unique = handed_out.len();
+            handed_out.dedup();
+            assert_eq!(
+                handed_out.len(),
+                unique,
+                "{mode:?} {task}: a number was reused"
+            );
+            let high_water: i64 = outside_writer(&db_path)
+                .query_row(
+                    "SELECT high_water FROM task_ledger_sequence WHERE task_id = ?",
+                    [task],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(Some(&high_water), handed_out.last(), "{mode:?} {task}");
+            let files = crate::task_store::read_ledger(&task_dir(&root, &repo, task)).unwrap();
+            assert_eq!(
+                files.iter().map(|file| file.sequence).collect::<Vec<_>>(),
+                entries,
+                "{mode:?} {task}"
+            );
+            for row in &rows {
+                let on_disk = std::fs::read(task_dir(&root, &repo, task).join("ledger").join(
+                    crate::db::task_store::ledger_file_name(
+                        row.sequence,
+                        crate::db::task_store::LedgerEntryKind::Input,
+                    ),
+                ))
+                .unwrap();
+                assert_eq!(Some(on_disk), row.payload.clone(), "{mode:?} {task}");
+            }
+        }
+        if mode == Mode::Disk {
+            assert!(diverged_tasks(&db).is_empty());
+            assert_eq!(crate::db::disk_first::refused_commits(&db_path), 0);
+            let report = start(&db, &db_path, None).unwrap().reconcile.unwrap();
+            assert!(
+                report.reconciled.is_empty() && report.failed.is_empty(),
+                "{report:#?}"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Review round 1 (T13d)
+// ---------------------------------------------------------------------------
+
+/// A process that holds only the database path, opening it the way the
+/// `worktree-cleanup` subcommand does, takes the installation's persisted
+/// `disk` mode and root from its authority record: its writes go through
+/// the disk-first gate, and a commit around the gate is refused.
+#[test]
+fn a_process_that_only_holds_the_database_path_is_gated_on_a_disk_installation() {
+    let (db, db_path, task_json) = disk_installation("path-only");
+    drop(db);
+    crate::task_store::forget_for_tests(&db_path);
+    let root = root_for_db(&db_path);
+    assert_eq!(
+        mode_for_root(&root),
+        Mode::Sql,
+        "a fresh process knows nothing yet"
+    );
+
+    let db = Db::open(&db_path).unwrap();
+    assert_eq!(mode_for_root(&root), Mode::Disk);
+    db.connection_for_e2e_tests()
+        .execute(
+            "UPDATE pipeline_item SET display_name = 'from a subcommand' WHERE id = 't1'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(title_on_disk(&task_json), "from a subcommand");
+    assert!(db.ledger_tasks_with_pending_work().unwrap().is_empty());
+    let refused = crate::db::disk_first::refused_commits(&db_path);
+    let raw: &rusqlite::Connection = db.connection_for_e2e_tests();
+    assert!(raw
+        .execute_batch(
+            "BEGIN IMMEDIATE;
+             UPDATE pipeline_item SET display_name = 'around the gate' WHERE id = 't1';
+             COMMIT;"
+        )
+        .is_err());
+    let _ = raw.execute_batch("ROLLBACK");
+    assert_eq!(
+        crate::db::disk_first::refused_commits(&db_path),
+        refused + 1
+    );
+    assert_eq!(title_on_disk(&task_json), "from a subcommand");
+}
+
+/// A repository removal whose tombstone reached disk and whose SQLite
+/// commit did not (the process died between them): the restart applies
+/// the removal, with the repository's tasks, exactly as a rebuild from the
+/// same disk does.
+#[test]
+fn a_repository_removal_that_died_before_sqlite_committed_restarts_as_it_rebuilds() {
+    use crate::task_store::disk_first::{crash_at, CrashPoint};
+    let (db, db_path, task_json) = disk_installation("repo-removal");
+    let root = root_for_db(&db_path);
+    let repo = "repo-repo-removal";
+    crash_at(&root, &format!("repo:{repo}"), CrashPoint::BeforeCommit);
+    assert!(db.delete_repo(repo).is_err());
+    let repo_json = super::super::repo_dir(&root, repo).join("repo.json");
+    assert!(super::super::rebuild::is_tombstone(
+        &std::fs::read(&repo_json).unwrap()
+    ));
+    assert!(
+        db.get_repo(repo).unwrap().is_some(),
+        "SQLite never committed it"
+    );
+    assert!(db.get_pipeline_item("t1").unwrap().is_some());
+    drop(db);
+
+    // Restart.
+    let db = Db::open(&db_path).unwrap();
+    let report = start(&db, &db_path, None).unwrap().reconcile.unwrap();
+    assert_eq!(report.removed_repos, [repo], "{report:#?}");
+    assert!(report.failed.is_empty(), "{report:#?}");
+    assert!(db.get_repo(repo).unwrap().is_none());
+    assert!(db.get_pipeline_item("t1").unwrap().is_none());
+    assert!(super::super::rebuild::is_tombstone(
+        &std::fs::read(&task_json).unwrap()
+    ));
+
+    // A rebuild from the same disk agrees.
+    let rebuilt_path = format!("{db_path}.rebuilt");
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{rebuilt_path}{suffix}"));
+    }
+    let (scan, _) = scan_store_records(&root)
+        .unwrap()
+        .for_installation(&installation_id(&db_path));
+    rebuild_scan_into_new_database(scan, Path::new(&rebuilt_path)).unwrap();
+    let rebuilt = Db::open(&rebuilt_path).unwrap();
+    assert_eq!(rebuilt.sql_repo_ids().unwrap(), db.sql_repo_ids().unwrap());
+    let tasks = |db: &Db| -> Vec<String> {
+        db.sql_tasks_for_authority()
+            .unwrap()
+            .into_iter()
+            .map(|task| task.id)
+            .collect()
+    };
+    assert_eq!(tasks(&rebuilt), tasks(&db));
+    assert!(tasks(&db).is_empty());
+    // And the next start has nothing to do.
+    let again = start(&db, &db_path, None).unwrap().reconcile.unwrap();
+    assert!(
+        again.removed_repos.is_empty() && again.reconciled.is_empty(),
+        "{again:#?}"
+    );
+}
+
+/// An entry committed behind another operation's open reservation is on
+/// disk at once (durability is never held back), but no consumer reads it
+/// in order until the reservation closes: the task's readable watermark
+/// stops below the reservation, and reconciling another task neither moves
+/// that watermark nor publishes anything of the other task.
+#[test]
+fn reconciling_one_task_never_publishes_another_tasks_entries_past_its_reservation() {
+    let (db, db_path) = installation("reservation", "repo-reservation", &["a", "b"]);
+    assert!(flush_all(&db, &db_path).is_empty());
+    assert_eq!(
+        start(&db, &db_path, Some(Mode::Disk)).unwrap().mode,
+        Mode::Disk
+    );
+    let root = root_for_db(&db_path);
+    let b_dir = task_dir(&root, "repo-reservation", "b");
+    let reserved = db.reserve_ledger_sequence("b").unwrap();
+    operator_input(&db, "b", "behind the reservation");
+    let behind = reserved + 1;
+    let behind_file = b_dir
+        .join("ledger")
+        .join(crate::db::task_store::ledger_file_name(
+            behind,
+            crate::db::task_store::LedgerEntryKind::Input,
+        ));
+    assert!(behind_file.exists(), "durable before its commit returned");
+    assert_eq!(
+        crate::task_store::readable_through(&b_dir),
+        Some(reserved - 1)
+    );
+    let task_json_before = std::fs::read(b_dir.join("task.json")).unwrap();
+
+    let report =
+        reconcile_from_disk(&db, &db_path, Some(&BTreeSet::from(["a".to_string()]))).unwrap();
+    assert_eq!(report.materialized, 0, "{report:#?}");
+    assert_eq!(
+        std::fs::read(b_dir.join("task.json")).unwrap(),
+        task_json_before
+    );
+    assert_eq!(
+        crate::task_store::readable_through(&b_dir),
+        Some(reserved - 1)
+    );
+
+    // Once the reservation closes, the entry is readable in order.
+    db.release_ledger_reservation("b", reserved).unwrap();
+    assert_eq!(crate::task_store::readable_through(&b_dir), Some(behind));
+}
+
+fn input_messages(db: &Db, task: &str) -> Vec<String> {
+    inputs(db)
+        .into_iter()
+        .filter(|(_, owner, _)| owner == task)
+        .map(|(_, _, message)| message)
+        .collect()
+}
+
+/// Review round 2: operation A holds a reservation while commit B records
+/// an input behind it. B's entry is durable on disk (as a file, and in its
+/// `task.json` until then) before B's commit returns, so it survives a kill
+/// at every write step, a rebuild from disk alone, and a later commit of
+/// the task that dies before SQLite commits; it is readable in order only
+/// once A's reservation closes (filled, released, or abandoned at restart).
+#[test]
+fn a_commit_behind_an_open_reservation_is_durable_and_readable_once_it_closes() {
+    use crate::task_store::disk_first::{crash_at, CrashPoint};
+    // A crash point, given the sequence of the entry behind the reservation.
+    type At = fn(i64) -> CrashPoint;
+    let points: [(&str, Option<At>); 5] = [
+        ("none", None),
+        ("before-task-json", Some(|_| CrashPoint::BeforeTaskJson)),
+        ("after-task-json", Some(|_| CrashPoint::AfterTaskJson)),
+        ("after-entry", Some(CrashPoint::AfterEntry)),
+        ("before-commit", Some(|_| CrashPoint::BeforeCommit)),
+    ];
+    for (label, point) in points {
+        let repo = format!("repo-behind-{label}");
+        let (db, db_path) = installation(&format!("behind-{label}"), &repo, &["t1"]);
+        assert!(flush_all(&db, &db_path).is_empty());
+        assert_eq!(
+            start(&db, &db_path, Some(Mode::Disk)).unwrap().mode,
+            Mode::Disk
+        );
+        let root = root_for_db(&db_path);
+        let dir = task_dir(&root, &repo, "t1");
+        let reserved = db.reserve_ledger_sequence("t1").unwrap();
+        let behind = reserved + 1;
+        let behind_file = dir
+            .join("ledger")
+            .join(crate::db::task_store::ledger_file_name(
+                behind,
+                crate::db::task_store::LedgerEntryKind::Input,
+            ));
+        if let Some(point) = point {
+            crash_at(&root, "t1", point(behind));
+        }
+        let recorded = operator_input_result(&db, "t1", "behind the reservation");
+        assert_eq!(recorded.is_err(), point.is_some(), "{label}: {recorded:?}");
+        let applied = !matches!(
+            point.map(|point| point(behind)),
+            Some(CrashPoint::BeforeTaskJson)
+        );
+        if point.is_none() {
+            assert!(behind_file.exists(), "{label}");
+            assert_eq!(
+                crate::task_store::readable_through(&dir),
+                Some(reserved - 1)
+            );
+
+            // (b) A later commit of the task writes task.json and dies
+            // before SQLite commits; the restart below reconciles from that
+            // task.json, which still holds the entry.
+            crash_at(&root, "t1", CrashPoint::AfterTaskJson);
+            assert!(db
+                .connection_for_e2e_tests()
+                .execute(
+                    "UPDATE pipeline_item SET display_name = 'dies before commit' WHERE id = 't1'",
+                    [],
+                )
+                .is_err());
+        }
+        drop(db);
+
+        // Restart: reconciliation runs before the stale reservation is
+        // released.
+        let db = Db::open(&db_path).unwrap();
+        let report = start(&db, &db_path, None).unwrap().reconcile.unwrap();
+        assert!(report.failed.is_empty(), "{label}: {report:#?}");
+        let expected: Vec<String> = if applied {
+            vec!["behind the reservation".to_string()]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(input_messages(&db, "t1"), expected, "{label}");
+        assert_eq!(behind_file.exists(), applied, "{label}");
+
+        // (a) A rebuild from disk alone holds the same inputs.
+        let rebuilt_path = format!("{db_path}.rebuilt");
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{rebuilt_path}{suffix}"));
+        }
+        let (scan, _) = scan_store_records(&root)
+            .unwrap()
+            .for_installation(&installation_id(&db_path));
+        rebuild_scan_into_new_database(scan, Path::new(&rebuilt_path)).unwrap();
+        assert_eq!(
+            input_messages(&Db::open(&rebuilt_path).unwrap(), "t1"),
+            expected,
+            "{label}"
+        );
+
+        // The reservation died with its process: startup recovery releases
+        // it, and the watermark passes the gap.
+        db.release_stale_ledger_reservations().unwrap();
+        if applied {
+            assert_eq!(
+                crate::task_store::readable_through(&dir),
+                Some(behind),
+                "{label}"
+            );
+        }
+        assert!(
+            db.ledger_tasks_with_pending_work().unwrap().is_empty(),
+            "{label}"
+        );
+    }
+
+    // Filled instead of released: operation A records its entry at the
+    // reserved sequence, and the watermark moves past both.
+    let (db, db_path) = installation("behind-filled", "repo-behind-filled", &["t1"]);
+    assert!(flush_all(&db, &db_path).is_empty());
+    assert_eq!(
+        start(&db, &db_path, Some(Mode::Disk)).unwrap().mode,
+        Mode::Disk
+    );
+    let dir = task_dir(&root_for_db(&db_path), "repo-behind-filled", "t1");
+    let reserved = db.reserve_ledger_sequence("t1").unwrap();
+    operator_input(&db, "t1", "behind the reservation");
+    assert_eq!(
+        crate::task_store::readable_through(&dir),
+        Some(reserved - 1)
+    );
+    db.enqueue_ledger_entry(crate::db::task_store::NewLedgerEntry {
+        task_id: "t1",
+        kind: crate::db::task_store::LedgerEntryKind::Plan,
+        operation_id: None,
+        source_kind: "test_reserved",
+        source_id: "a",
+        source_origin: None,
+        historical: false,
+        recorded_at: None,
+        run_id: None,
+        declared_role: None,
+        channel_identity: &ChannelIdentity::Server,
+        body: json!({ "operation": "select" }),
+        message: None,
+        hold_events_after: None,
+        reserved_sequence: Some(reserved),
+    })
+    .unwrap();
+    assert_eq!(
+        crate::task_store::readable_through(&dir),
+        Some(reserved + 1)
+    );
+    assert!(db.ledger_tasks_with_pending_work().unwrap().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Review round 3 (T13d): the readable watermark covers synced files only
+// ---------------------------------------------------------------------------
+
+fn record_result(db: &Db, source: &str, message: &str, reserved: Option<i64>) -> String {
+    db.enqueue_ledger_entry(crate::db::task_store::NewLedgerEntry {
+        task_id: "t1",
+        kind: crate::db::task_store::LedgerEntryKind::Result,
+        operation_id: None,
+        source_kind: "test_result",
+        source_id: source,
+        source_origin: None,
+        historical: false,
+        recorded_at: None,
+        run_id: None,
+        declared_role: None,
+        channel_identity: &ChannelIdentity::Server,
+        body: json!({ "status": "success", "stage": "in progress" }),
+        message: Some(message),
+        hold_events_after: None,
+        reserved_sequence: reserved,
+    })
+    .unwrap()
+    .entry_id
+}
+
+fn record_transition(db: &Db, triggering_result_id: &str) {
+    db.enqueue_ledger_entry(crate::db::task_store::NewLedgerEntry {
+        task_id: "t1",
+        kind: crate::db::task_store::LedgerEntryKind::Transition,
+        operation_id: None,
+        source_kind: "test_transition",
+        source_id: "to-review",
+        source_origin: None,
+        historical: false,
+        recorded_at: None,
+        run_id: None,
+        declared_role: None,
+        channel_identity: &ChannelIdentity::Server,
+        body: json!({ "from_stage": "in progress", "to_stage": "review",
+                      "triggering_result_id": triggering_result_id }),
+        message: None,
+        hold_events_after: None,
+        reserved_sequence: None,
+    })
+    .unwrap();
+}
+
+fn trigger_message(dir: &Path) -> Option<String> {
+    crate::task_store::resolve_trigger(dir, "review").map(|trigger| trigger.message)
+}
+
+/// A disk installation where `t1` holds an earlier result, a reservation
+/// at N, and a committed transition at N+1 that names the result N will
+/// hold. Returns the directory and N.
+fn transition_ahead_of_its_result(label: &str) -> (Db, String, PathBuf, i64) {
+    let (db, db_path, task_json) = disk_installation(label);
+    let dir = task_json.parent().unwrap().to_path_buf();
+    record_result(&db, "earlier", "the earlier result", None);
+    let reserved = db.reserve_ledger_sequence("t1").unwrap();
+    record_transition(&db, &crate::db::task_store::ledger_entry_id("t1", reserved));
+    assert_eq!(
+        crate::task_store::readable_through(&dir),
+        Some(reserved - 1)
+    );
+    assert_eq!(trigger_message(&dir).as_deref(), Some("the earlier result"));
+    (db, db_path, dir, reserved)
+}
+
+/// Filling reservation N whose file cannot be written yet (the commit
+/// stands, the entry is durable in task.json): the watermark stays below N,
+/// so no reader sees the transition at N+1 without the result it names.
+/// Once N's file is written the watermark covers both.
+#[test]
+fn a_filled_reservation_whose_file_is_not_written_yet_is_never_read_past() {
+    use crate::task_store::disk_first::{crash_at, CrashPoint};
+    let (db, db_path, dir, reserved) = transition_ahead_of_its_result("unwritten-fill");
+    let file = dir
+        .join("ledger")
+        .join(crate::db::task_store::ledger_file_name(
+            reserved,
+            crate::db::task_store::LedgerEntryKind::Result,
+        ));
+    crash_at(
+        &root_for_db(&db_path),
+        "t1",
+        CrashPoint::PublishFails(reserved),
+    );
+    record_result(&db, "filled", "the filled result", Some(reserved));
+    assert!(!file.exists());
+    assert!(
+        crate::task_store::readable_through(&dir).unwrap() < reserved,
+        "{:?}",
+        crate::task_store::readable_through(&dir)
+    );
+    assert_eq!(trigger_message(&dir).as_deref(), Some("the earlier result"));
+
+    assert!(flush_task(&db, &db_path, "t1").is_ok());
+    assert!(file.is_file());
+    assert_eq!(
+        crate::task_store::readable_through(&dir),
+        Some(reserved + 1)
+    );
+    assert_eq!(trigger_message(&dir).as_deref(), Some("the filled result"));
+}
+
+/// A reader that read the watermark before a commit landed and lists the
+/// files after it acts on the view as of the watermark it read: it never
+/// sees the transition at N+1 without the result at N.
+#[test]
+fn resolve_trigger_concurrent_with_a_commit_never_sees_a_partial_view() {
+    let (_db, db_path, dir, reserved) = transition_ahead_of_its_result("interleaved-read");
+    let writer = db_path.clone();
+    crate::task_store::interleave_ledger_read(move || {
+        let db = Db::open(&writer).unwrap();
+        record_result(&db, "filled", "the filled result", Some(reserved));
+    });
+    assert_eq!(trigger_message(&dir).as_deref(), Some("the earlier result"));
+    assert!(dir
+        .join("ledger")
+        .join(crate::db::task_store::ledger_file_name(
+            reserved,
+            crate::db::task_store::LedgerEntryKind::Result,
+        ))
+        .exists());
+    assert_eq!(trigger_message(&dir).as_deref(), Some("the filled result"));
+}
+
+/// Killed after the entry's file is synced and before the watermark moves:
+/// the entry is durable, the stored watermark is behind it, and both the
+/// restart and a rebuild from disk alone recompute the watermark over it.
+#[test]
+fn a_kill_between_the_entry_file_and_the_watermark_is_recomputed_on_restart_and_rebuild() {
+    use crate::task_store::disk_first::{crash_at, CrashPoint};
+    let (db, db_path, task_json) = disk_installation("before-watermark");
+    let dir = task_json.parent().unwrap().to_path_buf();
+    let root = root_for_db(&db_path);
+    operator_input(&db, "t1", "readable");
+    let before = crate::task_store::readable_through(&dir).unwrap();
+    crash_at(&root, "t1", CrashPoint::BeforeWatermark);
+    assert!(operator_input_result(&db, "t1", "durable, not yet readable").is_err());
+    let entry = before + 1;
+    assert!(dir
+        .join("ledger")
+        .join(crate::db::task_store::ledger_file_name(
+            entry,
+            crate::db::task_store::LedgerEntryKind::Input,
+        ))
+        .is_file());
+    assert_eq!(crate::task_store::readable_through(&dir), Some(before));
+    drop(db);
+
+    // A rebuild from disk alone.
+    let rebuilt_path = format!("{db_path}.rebuilt");
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{rebuilt_path}{suffix}"));
+    }
+    let (scan, _) = scan_store_records(&root)
+        .unwrap()
+        .for_installation(&installation_id(&db_path));
+    rebuild_scan_into_new_database(scan, Path::new(&rebuilt_path)).unwrap();
+    assert_eq!(
+        Db::open(&rebuilt_path)
+            .unwrap()
+            .ledger_readable_through("t1")
+            .unwrap(),
+        entry
+    );
+
+    // The restart.
+    let db = Db::open(&db_path).unwrap();
+    let report = start(&db, &db_path, None).unwrap().reconcile.unwrap();
+    assert!(report.failed.is_empty(), "{report:#?}");
+    assert_eq!(crate::task_store::readable_through(&dir), Some(entry));
+    assert_eq!(
+        input_messages(&db, "t1"),
+        [
+            "readable".to_string(),
+            "durable, not yet readable".to_string()
+        ]
+    );
+}
+
+/// A stored watermark ahead of what the files support (an entry's file
+/// lost) is never trusted: the rebuild recomputes it from the files.
+#[test]
+fn a_stored_watermark_ahead_of_the_files_is_corrected_on_rebuild() {
+    let (db, db_path, task_json) = disk_installation("watermark-ahead");
+    let dir = task_json.parent().unwrap().to_path_buf();
+    record_result(&db, "only", "the only result", None);
+    let through = crate::task_store::readable_through(&dir).unwrap();
+    drop(db);
+    let mut snapshot: Value = serde_json::from_slice(&std::fs::read(&task_json).unwrap()).unwrap();
+    snapshot["ledger"]["readable_through"] = json!(through + 5);
+    std::fs::write(&task_json, serde_json::to_vec_pretty(&snapshot).unwrap()).unwrap();
+
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{db_path}{suffix}"));
+    }
+    rebuild_missing_database(&db_path).unwrap();
+    let db = Db::open(&db_path).unwrap();
+    let report = start(&db, &db_path, None).unwrap().reconcile.unwrap();
+    assert!(report.failed.is_empty(), "{report:#?}");
+    assert_eq!(crate::task_store::readable_through(&dir), Some(through));
+    assert_eq!(db.ledger_readable_through("t1").unwrap(), through);
+    assert_eq!(
+        crate::task_store::resolve_trigger(&dir, "in progress").map(|trigger| trigger.message),
+        Some("the only result".to_string())
+    );
+}
+
+/// Review round 3, finding 2: with A's reservation still open at N and B
+/// committed at N+1, SQLite is lost and rebuilt from disk. No reservation
+/// survives a rebuild, so the startup recomputes the watermark over B and
+/// resolve_trigger sees it.
+#[test]
+fn a_rebuild_while_a_reservation_is_open_recovers_the_watermark() {
+    let (db, db_path, task_json) = disk_installation("rebuild-open");
+    let dir = task_json.parent().unwrap().to_path_buf();
+    let reserved = db.reserve_ledger_sequence("t1").unwrap();
+    let b = record_result(&db, "b", "B, behind the reservation", None);
+    assert_eq!(
+        b,
+        crate::db::task_store::ledger_entry_id("t1", reserved + 1)
+    );
+    assert_eq!(
+        crate::task_store::readable_through(&dir),
+        Some(reserved - 1)
+    );
+    drop(db);
+
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{db_path}{suffix}"));
+    }
+    rebuild_missing_database(&db_path).unwrap();
+    let db = Db::open(&db_path).unwrap();
+    let report = start(&db, &db_path, None).unwrap().reconcile.unwrap();
+    assert!(report.failed.is_empty(), "{report:#?}");
+    assert!(crate::task_store::readable_through(&dir).unwrap() > reserved);
+    assert_eq!(
+        crate::task_store::resolve_trigger(&dir, "in progress").map(|trigger| trigger.entry_id),
+        Some(b)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Review round 4 (T13d): an in-flight entry whose file cannot be written
+// ---------------------------------------------------------------------------
+
+fn in_flight_sequences(task_json: &Path) -> Vec<i64> {
+    let snapshot: Value = serde_json::from_slice(&std::fs::read(task_json).unwrap()).unwrap();
+    snapshot["ledger"]["in_flight"]
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry["sequence"].as_i64())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A disk installation whose `t1` holds an input only in `task.json`'s
+/// in-flight list: its commit died after the commit point, before the
+/// file. Returns the entry's sequence and its file.
+fn entry_only_in_flight(label: &str) -> (String, PathBuf, i64, PathBuf) {
+    use crate::task_store::disk_first::{crash_at, CrashPoint};
+    let (db, db_path, task_json) = disk_installation(label);
+    operator_input(&db, "t1", "readable");
+    let through = crate::task_store::readable_through(task_json.parent().unwrap()).unwrap();
+    crash_at(&root_for_db(&db_path), "t1", CrashPoint::AfterTaskJson);
+    assert!(operator_input_result(&db, "t1", "only in flight").is_err());
+    drop(db);
+    let entry = through + 1;
+    let file =
+        task_json
+            .parent()
+            .unwrap()
+            .join("ledger")
+            .join(crate::db::task_store::ledger_file_name(
+                entry,
+                crate::db::task_store::LedgerEntryKind::Input,
+            ));
+    assert!(!file.exists());
+    assert_eq!(in_flight_sequences(&task_json), [entry]);
+    (db_path, task_json, entry, file)
+}
+
+/// While its file cannot be written, the entry stays unpublished (with the
+/// error recorded), `ledger.in_flight` keeps it, and the readable watermark
+/// stays below it.
+fn assert_held_in_flight(db: &Db, task_json: &Path, entry: i64, file: &Path) {
+    assert!(!file.exists());
+    assert_eq!(in_flight_sequences(task_json), [entry]);
+    assert!(crate::task_store::readable_through(task_json.parent().unwrap()).unwrap() < entry);
+    assert!(db.ledger_readable_through("t1").unwrap() < entry);
+    let row = db
+        .ledger_rows_for_authority("t1")
+        .unwrap()
+        .into_iter()
+        .find(|row| row.sequence == entry)
+        .expect("the entry is held in the database");
+    assert!(!row.published);
+    assert!(db.ledger_pending_error("t1").unwrap().is_some());
+    assert_eq!(
+        input_messages(db, "t1"),
+        ["readable".to_string(), "only in flight".to_string()]
+    );
+}
+
+/// Once the file is written, synced and read back, the watermark covers it
+/// and `ledger.in_flight` lets it go, in the same task.json write.
+fn assert_published(db: &Db, task_json: &Path, entry: i64, file: &Path) {
+    assert!(file.is_file());
+    assert!(in_flight_sequences(task_json).is_empty());
+    assert_eq!(
+        crate::task_store::readable_through(task_json.parent().unwrap()),
+        Some(entry)
+    );
+    assert!(db.ledger_tasks_with_pending_work().unwrap().is_empty());
+}
+
+#[test]
+fn an_in_flight_entry_whose_file_fails_at_startup_is_held_until_a_later_start_writes_it() {
+    let (db_path, task_json, entry, file) = entry_only_in_flight("materialize-startup");
+    let ledger = file.parent().unwrap().to_path_buf();
+    crate::task_store::disk_first::fail_writes(&ledger);
+    let db = Db::open(&db_path).unwrap();
+    let outcome = start(&db, &db_path, None);
+    crate::task_store::disk_first::restore_writes(&ledger);
+    let report = outcome.unwrap().reconcile.unwrap();
+    assert!(report.failed.is_empty(), "{report:#?}");
+    assert_held_in_flight(&db, &task_json, entry, &file);
+
+    // The next start writes it and advances the watermark.
+    drop(db);
+    let db = Db::open(&db_path).unwrap();
+    start(&db, &db_path, None).unwrap();
+    assert_published(&db, &task_json, entry, &file);
+}
+
+#[test]
+fn an_in_flight_entry_whose_file_fails_during_a_rebuild_is_held_until_a_later_start_writes_it() {
+    let (db_path, task_json, entry, file) = entry_only_in_flight("materialize-rebuild");
+    let ledger = file.parent().unwrap().to_path_buf();
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{db_path}{suffix}"));
+    }
+    crate::task_store::disk_first::fail_writes(&ledger);
+    rebuild_missing_database(&db_path).unwrap();
+    let db = Db::open(&db_path).unwrap();
+    let outcome = start(&db, &db_path, None);
+    crate::task_store::disk_first::restore_writes(&ledger);
+    let report = outcome.unwrap().reconcile.unwrap();
+    assert!(report.failed.is_empty(), "{report:#?}");
+    assert_held_in_flight(&db, &task_json, entry, &file);
+
+    // A second rebuild from the same disk still holds it.
+    drop(db);
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{db_path}{suffix}"));
+    }
+    crate::task_store::disk_first::fail_writes(&ledger);
+    rebuild_missing_database(&db_path).unwrap();
+    crate::task_store::disk_first::restore_writes(&ledger);
+    let db = Db::open(&db_path).unwrap();
+    start(&db, &db_path, None).unwrap();
+    assert_published(&db, &task_json, entry, &file);
+}
+
+/// The success path: the start after the crash writes the file, verifies
+/// it, and advances the watermark.
+#[test]
+fn an_in_flight_entry_is_published_by_the_next_start_when_its_file_can_be_written() {
+    let (db_path, task_json, entry, file) = entry_only_in_flight("materialize-success");
+    let db = Db::open(&db_path).unwrap();
+    let report = start(&db, &db_path, None).unwrap().reconcile.unwrap();
+    assert!(report.failed.is_empty(), "{report:#?}");
+    assert_published(&db, &task_json, entry, &file);
+    assert_eq!(
+        input_messages(&db, "t1"),
+        ["readable".to_string(), "only in flight".to_string()]
+    );
 }

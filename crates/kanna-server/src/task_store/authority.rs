@@ -13,12 +13,13 @@
 //!   A missing database is rebuilt from the disk before the server opens
 //!   it.
 //!
-//! The write path is the same in both modes and there is only ever one
-//! writer: a mutation commits its rows and its ledger entry in one SQLite
-//! transaction (the outbox, which is the disk records' write-ahead journal)
-//! and the publisher writes them out within seconds. The mode decides only
-//! which side a disagreement resolves to. Retiring the SQL-first write path
-//! is a later increment (T13d).
+//! There is only ever one writer. In `sql` mode a mutation commits its rows
+//! and its ledger entry in one SQLite transaction (the outbox) and the
+//! publisher writes them out within seconds. In `disk` mode (T13d) the same
+//! transaction writes its task directory records first, from its own
+//! uncommitted rows, and SQLite commits after them
+//! ([`super::disk_first`]): the disk is authoritative for writes as well as
+//! for disagreements.
 //!
 //! # Record
 //!
@@ -64,9 +65,23 @@
 //!    everything the disk does.
 //! 3. `to_sql.commit` — the mode is `sql`.
 //!
-//! Rollback from `disk` mode is supported for as long as every mutation
-//! still writes SQLite first, which is true of this build and every build
-//! until the SQL-first write path is retired.
+//! Because `disk` mode writes the disk first, a rollback is only as safe as
+//! what it checks (T13d): `to_sql.reconciled` is recorded only when the
+//! reconciled database verifies equal to the disk (the same check that gates
+//! `to_disk.verified`); otherwise `to_sql.refused` records the differences,
+//! the installation stays `disk` and the next start tries again.
+//!
+//! # The rollback window for older builds
+//!
+//! A `disk` record is written as [`DISK_FIRST_RECORD_SCHEMA_VERSION`] from
+//! this build's first `disk`-mode start, before any disk-first write, and
+//! names when (`disk_first_since`). A build before T13d accepts only
+//! [`RECORD_SCHEMA_VERSION`], so it refuses to start on the installation
+//! instead of running SQL-first over records it may not hold. Rolling back
+//! by starting an older build is therefore closed from that point; rolling
+//! back through this build stays open, and a completed rollback writes
+//! version 1 again, which reopens older builds. Builds older than T13c do
+//! not read the record at all and must never run a `disk` installation.
 
 use super::rebuild::{
     project_store_onto, rebuild_scan_into_new_database, scan_store_records, KnownRows,
@@ -82,11 +97,24 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
-/// Requests a switch at startup: `disk` or `sql`.
-pub const AUTHORITY_ENV: &str = "KANNA_STORAGE_AUTHORITY";
+/// Requests a switch at startup: `disk` or `sql`. The packaged desktop
+/// never passes an inherited value on to the server it launches (T13d).
+pub const AUTHORITY_ENV: &str = kanna_runtime_defaults::STORAGE_AUTHORITY_ENV;
 
-/// The authority record's own version. Anything else is refused.
+/// The authority record's own version while the installation is `sql`.
+/// Anything this build does not understand is refused.
 pub const RECORD_SCHEMA_VERSION: u64 = 1;
+
+/// The record's version while the installation is `disk` (T13d): its
+/// writes are disk-first, and a build older than T13d, which understands
+/// only [`RECORD_SCHEMA_VERSION`], refuses to open it instead of running
+/// SQL-first over records it cannot read.
+pub const DISK_FIRST_RECORD_SCHEMA_VERSION: u64 = 2;
+
+/// What a `disk` record tells whoever opens it.
+const DISK_FIRST_NOTE: &str = "This installation writes its task directories first (disk authority, T13d). \
+Builds older than T13d cannot run it. To leave disk authority, run `kanna-server storage-authority sql` \
+with a T13d or newer build and restart it; the rollback is verified before it commits.";
 
 /// Checkpoints kept in the record, newest last.
 const CHECKPOINT_HISTORY: usize = 64;
@@ -134,6 +162,9 @@ pub fn installation_id(db_path: &str) -> String {
 struct Registered {
     installation: String,
     mode: Mode,
+    /// The mode was taken from the persisted record (or set by [`start`]),
+    /// not defaulted.
+    resolved: bool,
 }
 
 static REGISTRY: LazyLock<Mutex<HashMap<PathBuf, Registered>>> = LazyLock::new(Default::default);
@@ -149,6 +180,7 @@ pub fn register(root: &Path, db_path: &str) {
         .or_insert(Registered {
             installation,
             mode: Mode::Sql,
+            resolved: false,
         });
 }
 
@@ -157,7 +189,60 @@ fn set_mode(root: &Path, db_path: &str, mode: Mode) {
     let mut registry = REGISTRY.lock().unwrap_or_else(|poison| poison.into_inner());
     if let Some(registered) = registry.get_mut(root) {
         registered.mode = mode;
+        registered.resolved = true;
     }
+}
+
+/// Take `db_path`'s persisted authority mode into this process before its
+/// first connection writes (T13d), unless this process already resolved it.
+/// Every process that opens the database runs this, so a `disk`
+/// installation's writes are gated whichever process makes them (the
+/// server, or a subcommand such as `worktree-cleanup` that holds only the
+/// path). A process with no configured root finds it by the installation's
+/// record under [`super::candidate_roots`]. A record that exists and cannot
+/// be read may say `disk`, so it is taken as `disk`.
+pub(crate) fn resolve_persisted_mode(db_path: &str) {
+    let configured = super::configured_root(db_path);
+    let candidates = match &configured {
+        Some(root) => vec![root.clone()],
+        None => super::candidate_roots(db_path),
+    };
+    let installation = installation_id(db_path);
+    for root in candidates {
+        let resolved = REGISTRY
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(&root)
+            .is_some_and(|registered| {
+                registered.resolved && registered.installation == installation
+            });
+        if resolved {
+            return;
+        }
+        if !record_path(&root, &installation).exists() {
+            continue;
+        }
+        if configured.is_none() {
+            super::adopt_root(db_path, &root);
+        }
+        let mode = load_record(&root, db_path).map_or_else(
+            |error| {
+                log::error!("storage authority record unreadable ({error}); gating writes as disk");
+                Mode::Disk
+            },
+            |record| record.mode,
+        );
+        set_mode(&root, db_path, mode);
+        return;
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn forget_root_for_tests(root: &Path) {
+    REGISTRY
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .remove(root);
 }
 
 /// The installation that publishes under `root`, if one registered: the
@@ -194,17 +279,25 @@ pub(crate) fn flag_divergence(db: &Db, task_id: &str, why: &str) {
 }
 
 pub(crate) fn diverged_tasks(db: &Db) -> Vec<String> {
-    db.disk_divergent_task_ids().unwrap_or_else(|error| {
+    let mut tasks = db.disk_divergent_task_ids().unwrap_or_else(|error| {
         log::error!("could not read the tasks whose disk is ahead: {error}");
         Vec::new()
-    })
+    });
+    // A failed disk-first commit this process could not record (T13d).
+    for task in super::disk_first::fenced_tasks(&root_for_db(db.db_path())) {
+        if !tasks.contains(&task) {
+            tasks.push(task);
+        }
+    }
+    tasks
 }
 
 /// Flagged, and not yet repaired: nothing of the task is published over
 /// the disk, and its differing `task.json` is taken as the disk's. A task
 /// whose flag cannot be read is treated as flagged.
 pub(crate) fn is_diverged(db: &Db, task_id: &str) -> bool {
-    db.is_disk_divergent(task_id).unwrap_or(true)
+    super::disk_first::is_fenced(&root_for_db(db.db_path()), task_id)
+        || db.is_disk_divergent(task_id).unwrap_or(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +317,12 @@ pub struct AuthorityRecord {
     pub switch: Option<SwitchProgress>,
     /// The most recent checkpoints, oldest first.
     pub checkpoints: Vec<Checkpoint>,
+    /// When this installation first ran disk-first (T13d); cleared by a
+    /// completed rollback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_first_since: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -260,6 +359,8 @@ impl AuthorityRecord {
             requested: None,
             switch: None,
             checkpoints: Vec::new(),
+            disk_first_since: None,
+            note: None,
         }
     }
 
@@ -296,9 +397,9 @@ pub fn load_record(root: &Path, db_path: &str) -> Result<AuthorityRecord, String
     };
     let record: AuthorityRecord =
         serde_json::from_slice(&bytes).map_err(|error| format!("{}: {error}", path.display()))?;
-    if record.schema_version != RECORD_SCHEMA_VERSION {
+    if ![RECORD_SCHEMA_VERSION, DISK_FIRST_RECORD_SCHEMA_VERSION].contains(&record.schema_version) {
         return Err(format!(
-            "{} has schema_version {}; this build understands {RECORD_SCHEMA_VERSION}",
+            "{} has schema_version {}; this build understands {RECORD_SCHEMA_VERSION} and {DISK_FIRST_RECORD_SCHEMA_VERSION}",
             path.display(),
             record.schema_version
         ));
@@ -313,8 +414,19 @@ pub fn load_record(root: &Path, db_path: &str) -> Result<AuthorityRecord, String
     Ok(record)
 }
 
+/// Write the record. Its version follows its mode: a `disk` record is
+/// [`DISK_FIRST_RECORD_SCHEMA_VERSION`], which older builds refuse.
 fn save_record(root: &Path, record: &AuthorityRecord) -> Result<(), String> {
-    let mut bytes = serde_json::to_vec_pretty(record)
+    let mut record = record.clone();
+    if record.mode == Mode::Disk {
+        record.schema_version = DISK_FIRST_RECORD_SCHEMA_VERSION;
+        record.note = Some(DISK_FIRST_NOTE.to_string());
+    } else {
+        record.schema_version = RECORD_SCHEMA_VERSION;
+        record.disk_first_since = None;
+        record.note = None;
+    }
+    let mut bytes = serde_json::to_vec_pretty(&record)
         .map_err(|error| format!("render authority record: {error}"))?;
     bytes.push(b'\n');
     let path = record_path(root, &record.installation);
@@ -359,6 +471,11 @@ pub fn run_cli(config: &crate::config::Config, args: &[String]) -> Result<String
                 switch.from.as_str(),
                 switch.target.as_str(),
                 switch.phase
+            ));
+        }
+        if let Some(since) = &record.disk_first_since {
+            lines.push(format!(
+                "disk-first writes since {since}: builds older than T13d refuse this installation"
             ));
         }
         if let Some(last) = record.checkpoints.last() {
@@ -703,6 +820,9 @@ pub struct ReconcileReport {
     pub republished: Vec<String>,
     /// Tasks the disk records as removed, removed from the database.
     pub removed: Vec<String>,
+    /// Repositories this installation's tombstones record as removed,
+    /// removed from the database with their tasks (T13d).
+    pub removed_repos: Vec<String>,
     /// Repository registrations taken from `repo.json`.
     pub repos: Vec<String>,
     /// Ledger entries the database committed that the disk contradicts or
@@ -714,6 +834,9 @@ pub struct ReconcileReport {
     pub unreadable: Vec<(PathBuf, String)>,
     /// Repositories under the root that belong to another installation.
     pub foreign_repos: Vec<String>,
+    /// Ledger files published from the in-flight entries of a `task.json`
+    /// a disk-first commit wrote before its files (T13d).
+    pub materialized: usize,
     pub diagnostics: Vec<String>,
 }
 
@@ -727,6 +850,9 @@ impl ReconcileReport {
         }
         for task in &self.removed {
             log::warn!("task {task} is removed on disk; removed from the database");
+        }
+        for repo in &self.removed_repos {
+            log::warn!("repo {repo} is removed on disk; removed from the database with its tasks");
         }
         for (task, sequence) in &self.discarded_entries {
             log::warn!("task {task}: ledger entry {sequence} the disk does not hold was dropped");
@@ -766,6 +892,7 @@ pub fn reconcile_from_disk(
     let db_error = |error: rusqlite::Error| format!("db error: {error}");
     let (scan, foreign) = scan_store_records(&root)?.for_installation(&installation);
     let mut report = ReconcileReport {
+        materialized: materialize_scan(&scan, only),
         unreadable: scan.unreadable.clone(),
         foreign_repos: foreign,
         ..ReconcileReport::default()
@@ -797,8 +924,28 @@ pub fn reconcile_from_disk(
                 continue;
             }
             let on_disk = std::fs::read(super::repo_dir(&root, &repo).join("repo.json"));
-            if on_disk.is_ok_and(|bytes| super::rebuild::is_tombstone(&bytes)) {
-                // Unregistered on disk and registered here: never
+            if let Some(bytes) = on_disk
+                .ok()
+                .filter(|bytes| super::rebuild::is_tombstone(bytes))
+            {
+                // This installation removed it and its database never
+                // committed the removal (a disk-first commit that died
+                // before SQLite's, T13d): apply the removal, as a rebuild
+                // does, with the tasks it removed.
+                let stamped = serde_json::from_slice::<Value>(&bytes)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("installation")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    });
+                if stamped.as_deref() == Some(installation.as_str()) {
+                    db.delete_repo(&repo).map_err(db_error)?;
+                    report.removed_repos.push(repo);
+                    continue;
+                }
+                // An unstamped tombstone (written before T13d): never
                 // resurrected by a rewrite, never removed with its tasks by
                 // a reconciliation. An operator decides.
                 report.diagnostics.push(format!(
@@ -932,12 +1079,9 @@ pub fn reconcile_from_disk(
                 ));
             }
         };
-        match db.reconcile_tasks_from_projection(
-            &targets,
-            &projection,
-            &disk_revisions,
-            &compared_at,
-        ) {
+        match super::disk_first::repairing(&targets, || {
+            db.reconcile_tasks_from_projection(&targets, &projection, &disk_revisions, &compared_at)
+        }) {
             Ok(changes) => {
                 note_changes(&mut report, changes);
                 for task in &targets {
@@ -954,12 +1098,14 @@ pub fn reconcile_from_disk(
                 ));
                 for task in &targets {
                     let alone = BTreeSet::from([task.clone()]);
-                    match db.reconcile_tasks_from_projection(
-                        &alone,
-                        &project(&alone),
-                        &disk_revisions,
-                        &compared_at,
-                    ) {
+                    match super::disk_first::repairing(&alone, || {
+                        db.reconcile_tasks_from_projection(
+                            &alone,
+                            &project(&alone),
+                            &disk_revisions,
+                            &compared_at,
+                        )
+                    }) {
                         Ok(changes) => {
                             note_changes(&mut report, changes);
                             report
@@ -975,8 +1121,29 @@ pub fn reconcile_from_disk(
     // A reconciled task's fence came down with its repair. A flagged task
     // found in sync needs nothing more; one that failed stays flagged, and
     // is retried at the publisher's next pass (or the next startup).
+    // A stored watermark the ledger does not support (T13d): after a
+    // rebuild (no reservation survives it, so the gaps it held are closed),
+    // or a kill between an entry's file and the watermark's advance. The
+    // task owes a task.json with the watermark its ledger gives.
+    for directory in scan.tasks.iter().filter(|dir| {
+        in_sync.contains(&dir.snapshot.task_id) && dir.snapshot.readable_through.is_some()
+    }) {
+        let task = &directory.snapshot.task_id;
+        let stored = directory.snapshot.readable_through;
+        let ledger = db.ledger_readable_through(task).map_err(db_error)?;
+        if stored != Some(ledger) {
+            report.diagnostics.push(format!(
+                "{task}: task.json's readable watermark {stored:?} is not the ledger's {ledger}; rewritten"
+            ));
+            db.mark_task_snapshot_dirty(task).map_err(db_error)?;
+        }
+    }
     for task in &in_sync {
         db.clear_disk_divergence(task).map_err(db_error)?;
+        super::disk_first::unfence(&root, task);
+    }
+    for (task, _) in &report.reconciled {
+        super::disk_first::unfence(&root, task);
     }
     for (task, error) in flush_all(db, db_path) {
         report.diagnostics.push(format!(
@@ -1145,13 +1312,34 @@ fn drain(db: &Db, db_path: &str) -> Result<Value, String> {
     Ok(json!({ "released_reservations": released, "first_records_owed": owed }))
 }
 
+/// Publish every in-flight entry file the scanned `task.json` records hold
+/// and their ledgers lack (T13d), for the tasks being reconciled (`only`, or
+/// all). A task whose files cannot be written is logged; its entries are
+/// still read from `task.json`.
+fn materialize_scan(scan: &StoreScan, only: Option<&BTreeSet<String>>) -> usize {
+    scan.tasks
+        .iter()
+        .filter(|directory| only.is_none_or(|only| only.contains(&directory.snapshot.task_id)))
+        .map(|directory| {
+            super::disk_first::materialize_in_flight(directory).unwrap_or_else(|error| {
+                log::error!(
+                    "{}: in-flight ledger entries could not be published: {error}",
+                    directory.path.display()
+                );
+                0
+            })
+        })
+        .sum()
+}
+
 /// What [`start`] left the installation in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartOutcome {
     pub mode: Mode,
     /// `disk` mode's reconciliation at this startup.
     pub reconcile: Option<ReconcileReport>,
-    /// Why a requested switch to `disk` was refused, if it was.
+    /// Why a requested switch (to `disk`, or a rollback to `sql`) was
+    /// refused, if it was.
     pub refused: Vec<String>,
 }
 
@@ -1160,6 +1348,8 @@ struct Switch<'a> {
     db_path: &'a str,
     root: PathBuf,
     record: AuthorityRecord,
+    /// Why a rollback was refused at this start.
+    refused: Vec<String>,
 }
 
 impl Switch<'_> {
@@ -1172,6 +1362,9 @@ impl Switch<'_> {
     /// Record a checkpoint durably, then (in tests) stop if asked to.
     fn checkpoint(&mut self, name: &str, detail: Value) -> Result<(), String> {
         let at = self.now()?;
+        if self.record.mode == Mode::Disk && self.record.disk_first_since.is_none() {
+            self.record.disk_first_since = Some(at.clone());
+        }
         self.record.checkpoint(at, name, detail);
         save_record(&self.root, &self.record)?;
         log::info!(
@@ -1282,6 +1475,21 @@ impl Switch<'_> {
         Ok(problems)
     }
 
+    /// The database cannot be shown to hold what the disk does: stay
+    /// `disk`. The request stays, so the next startup verifies again.
+    fn refuse_rollback(&mut self, problems: Vec<String>) -> Result<(), String> {
+        for problem in &problems {
+            log::error!("rollback to sql authority refused: {problem}");
+        }
+        self.record.switch = None;
+        self.refused = problems.clone();
+        self.checkpoint(
+            "to_sql.refused",
+            json!({ "problems": problems.iter().take(50).collect::<Vec<_>>(),
+                    "count": problems.len() }),
+        )
+    }
+
     fn roll_back_to_sql(&mut self) -> Result<Option<ReconcileReport>, String> {
         if self
             .record
@@ -1293,27 +1501,37 @@ impl Switch<'_> {
         }
         let mut report = None;
         if self.record.mode == Mode::Disk {
+            // Disk-first writes (T13d) mean SQLite is no longer written
+            // first, so a rollback is made safe by what it checks, not by
+            // the write order: the database, reconciled from disk, must
+            // hold exactly what the disk does, or the rollback is refused.
             let reconciled = reconcile_from_disk(self.db, self.db_path, None)?;
             reconciled.log();
-            if !reconciled.failed.is_empty() {
-                return Err(format!(
-                    "rollback to sql waits: {} tasks could not be reconciled from disk",
-                    reconciled.failed.len()
-                ));
-            }
+            let mut problems: Vec<String> = reconciled
+                .failed
+                .iter()
+                .map(|(task, error)| {
+                    format!("task {task} could not be reconciled from disk: {error}")
+                })
+                .collect();
             let pending = self
                 .db
                 .ledger_tasks_with_pending_work()
                 .map_err(|error| format!("db error: {error}"))?;
             if !pending.is_empty() {
-                return Err(format!(
-                    "rollback to sql waits: tasks {pending:?} are still owed publication"
-                ));
+                problems.push(format!("tasks {pending:?} are still owed publication"));
+            }
+            if problems.is_empty() {
+                problems = verify_disk_equals_database(self.db, self.db_path)?.problems();
+            }
+            if !problems.is_empty() {
+                return self.refuse_rollback(problems).map(|()| Some(reconciled));
             }
             self.checkpoint(
                 "to_sql.reconciled",
                 json!({ "reconciled": reconciled.reconciled.len(),
-                        "republished": reconciled.republished.len() }),
+                        "republished": reconciled.republished.len(),
+                        "verified": true }),
             )?;
             report = Some(reconciled);
         }
@@ -1339,8 +1557,19 @@ pub fn start(db: &Db, db_path: &str, request: Option<Mode>) -> Result<StartOutco
         db_path,
         root: root.clone(),
         record: load_record(&root, db_path)?,
+        refused: Vec::new(),
     };
+    // The persisted mode governs from here, before any step that can fail:
+    // a `disk` record is never served SQL-first.
     set_mode(&root, db_path, switch.record.mode);
+    // An installation switched to disk by a build before T13d: its record
+    // closes to older builds before this one writes anything disk-first.
+    // `open_database` refuses to serve it if that cannot be persisted.
+    if switch.record.mode == Mode::Disk && switch.record.disk_first_since.is_none() {
+        switch.record.disk_first_since = Some(switch.now()?);
+        save_record(&root, &switch.record)
+            .map_err(|error| format!("{FENCE_NOT_PERSISTED}: {error}"))?;
+    }
     if let Some(request) = request {
         // The explicit request replaces whatever was pending: one that asks
         // for the mode already in force (and no switch under way) asks for
@@ -1384,8 +1613,15 @@ pub fn start(db: &Db, db_path: &str, request: Option<Mode>) -> Result<StartOutco
         }
         (None, None) => Ok(()),
     };
-    set_mode(&root, db_path, switch.record.mode);
-    outcome.mode = switch.record.mode;
+    // What the record now says, not what the switch meant to write: a
+    // checkpoint that failed to save leaves the persisted mode in force. A
+    // record that cannot be read back is taken as `disk`.
+    let persisted = load_record(&root, db_path).map_or(Mode::Disk, |record| record.mode);
+    set_mode(&root, db_path, persisted);
+    outcome.mode = persisted;
+    if !switch.refused.is_empty() {
+        outcome.refused = std::mem::take(&mut switch.refused);
+    }
     result?;
     if outcome.mode == Mode::Disk {
         let report = reconcile_from_disk(db, db_path, None)?;
@@ -1394,6 +1630,11 @@ pub fn start(db: &Db, db_path: &str, request: Option<Mode>) -> Result<StartOutco
     }
     Ok(outcome)
 }
+
+/// A `disk` record whose schema-version fence could not be written: older
+/// builds could still open the installation, so it is not served.
+const FENCE_NOT_PERSISTED: &str =
+    "the disk-first fence could not be written to the authority record";
 
 /// A switch requested through [`AUTHORITY_ENV`], if any.
 pub fn requested_from_env() -> Result<Option<Mode>, String> {
@@ -1410,6 +1651,10 @@ pub fn requested_from_env() -> Result<Option<Mode>, String> {
 pub fn rebuild_missing_database(db_path: &str) -> Result<RebuildReport, String> {
     let root = root_for_db(db_path);
     let (scan, foreign) = scan_store_records(&root)?.for_installation(&installation_id(db_path));
+    let materialized = materialize_scan(&scan, None);
+    if materialized > 0 {
+        log::warn!("published {materialized} in-flight ledger entries before rebuilding");
+    }
     // A WAL or shared-memory file left beside a deleted database belongs to
     // it, not to the one about to be created.
     for suffix in ["-wal", "-shm"] {
@@ -1469,13 +1714,21 @@ pub fn open_database(config: &crate::config::Config) -> Result<Db, String> {
                 String::new()
             } else {
                 format!(
-                    " (switch to disk refused: {} problems)",
+                    " (requested switch refused: {} problems; see the log and `kanna-server storage-authority status`)",
                     outcome.refused.len()
                 )
             }
         ),
-        // The write path is the same in both modes, so the server runs on
-        // in whichever mode the record holds; the next startup retries.
+        // A `disk` record whose fence against older builds is not on disk
+        // is not served at all.
+        Err(error) if error.starts_with(FENCE_NOT_PERSISTED) => {
+            return Err(format!(
+                "storage authority is disk but {error}; refusing to start"
+            ))
+        }
+        // Otherwise the server runs in the mode the record holds, which
+        // `start` set before anything could fail (a `disk` record is always
+        // served disk-first); the next startup retries the rest.
         Err(error) => log::error!(
             "storage authority startup did not complete ({error}); running as {}",
             mode_for_root(&root).as_str()

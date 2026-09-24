@@ -721,8 +721,18 @@ impl Db {
                         && on_disk.is_some_and(|entry| live.payload.as_deref() == Some(&entry.payload[..]))
                     {
                         same.insert(live.sequence);
-                        if !live.published {
+                        let durable = on_disk.is_some_and(|entry| entry.published);
+                        if !live.published && durable {
                             db.acknowledge_ledger_entry(task, live.sequence)?;
+                        } else if live.published && !durable {
+                            // Its file is gone and only task.json holds it
+                            // (T13d): owed again, never read past.
+                            db.conn.execute(
+                                "UPDATE task_ledger_entry
+                                 SET published_at = NULL, publish_error = ?3
+                                 WHERE task_id = ?1 AND sequence = ?2",
+                                params![task, live.sequence, super::disk_rebuild::IN_FLIGHT_UNWRITTEN],
+                            )?;
                         }
                         continue;
                     }

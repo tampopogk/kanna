@@ -415,6 +415,11 @@ pub(crate) async fn run_server_services(
     tokio::spawn(http_api::signal_agent::migrate_merge_singletons_on_startup(
         Arc::clone(&http_state),
     ));
+    // Likewise after recovery: legacy commit posts become commit steps on
+    // tasks at a quiescent boundary (T13d).
+    tokio::spawn(
+        http_api::storage_authority::migrate_commit_posts_on_startup(Arc::clone(&http_state)),
+    );
     tokio::spawn(run_task_ledger_publisher(Arc::clone(&http_state)));
     tokio::spawn(run_artifact_retention_sweeper(Arc::clone(&http_state)));
     let protected_input_maintenance = maintain_protected_input_generations(

@@ -382,7 +382,7 @@ impl Db {
         channel: &ChannelIdentity,
         message: &str,
     ) -> Result<Option<TaskInputRecord>, rusqlite::Error> {
-        self.with_immediate_transaction(|db| {
+        self.in_immediate_transaction_if_needed(|db| {
             db.insert_delivered_task_input(task_id, source.as_str(), channel, message)
         })
     }

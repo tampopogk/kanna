@@ -370,7 +370,9 @@ impl MobileServerManager {
                 return Err(error);
             }
         };
-        let mut child = match Command::new(&server_bin)
+        let mut command = Command::new(&server_bin);
+        strip_inherited_server_env(command.as_std_mut());
+        let mut child = match command
             .envs(server_spawn_env(
                 &config_path,
                 &desktop_executable,
@@ -967,6 +969,19 @@ fn resolved_db_path(state: &MobileServerState) -> Result<PathBuf, String> {
     }
 
     Ok(app_data_dir.join("kanna-v2.db"))
+}
+
+/// Variables the desktop-owned server must never inherit from whatever
+/// launched the desktop. A stray `KANNA_STORAGE_AUTHORITY` in a login shell
+/// or launch agent would otherwise switch a production installation's
+/// storage authority at its next start; the `kanna-server
+/// storage-authority` subcommand (its persisted record) is the switch.
+const SERVER_STRIPPED_INHERITED_ENV: &[&str] = &[kanna_runtime_defaults::STORAGE_AUTHORITY_ENV];
+
+fn strip_inherited_server_env(command: &mut std::process::Command) {
+    for key in SERVER_STRIPPED_INHERITED_ENV {
+        command.env_remove(key);
+    }
 }
 
 /// Environment contract for the desktop-owned server process.
@@ -1624,6 +1639,35 @@ mod tests {
             assert_eq!(env["KANNA_DESKTOP_EXECUTABLE"], executable);
             assert_eq!(env["KANNA_TRANSFER_PEER_ID"], "peer");
         }
+    }
+
+    /// A storage-authority switch the desktop inherited never reaches the
+    /// server it launches; the rest of the environment does.
+    #[test]
+    fn server_launch_strips_an_inherited_storage_authority_switch() {
+        let mut command = std::process::Command::new("/usr/bin/env");
+        // What the desktop inherited from its own launcher.
+        command
+            .env(kanna_runtime_defaults::STORAGE_AUTHORITY_ENV, "disk")
+            .env("KANNA_T13D_KEPT", "kept");
+        super::strip_inherited_server_env(&mut command);
+        command.envs(super::server_spawn_env(
+            std::path::Path::new("/desktop/server.toml"),
+            std::path::Path::new("/Applications/Kanna.app/Contents/MacOS/Kanna"),
+            Vec::new(),
+        ));
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        let env = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            !env.lines()
+                .any(|line| line.starts_with(kanna_runtime_defaults::STORAGE_AUTHORITY_ENV)),
+            "{env}"
+        );
+        assert!(env.lines().any(|line| line == "KANNA_T13D_KEPT=kept"));
+        assert!(env
+            .lines()
+            .any(|line| line == "KANNA_SERVER_CONFIG=/desktop/server.toml"));
     }
 
     use super::cloud_env::relay_url;

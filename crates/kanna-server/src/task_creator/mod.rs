@@ -1,4 +1,5 @@
 mod commands;
+mod commit_posts;
 mod definition_cache;
 mod definition_source;
 mod definitions;
@@ -75,6 +76,7 @@ use worktree::{
     remove_prepared_worktree, MergeBranchesError,
 };
 
+pub(crate) use commit_posts::{migrate_commit_posts_to_exit_commit, CommitPostMigration};
 pub(crate) use definitions::ResolvedAgentDefinition;
 pub(crate) use definitions::ADVANCE_EXIT;
 pub(crate) use definitions::DEFAULT_REVISION_LIMIT;

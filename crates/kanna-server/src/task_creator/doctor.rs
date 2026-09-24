@@ -67,6 +67,24 @@ impl DoctorReport {
             guidance: guidance.into(),
         });
     }
+    /// One warning, never an error: result prompt variables still work and
+    /// are deprecated (spec §17).
+    fn result_variables(&mut self, file: &str, location: &str, variables: &[&str]) {
+        if variables.is_empty() {
+            return;
+        }
+        let named = variables
+            .iter()
+            .map(|variable| format!("${variable}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.warning(
+            file,
+            location,
+            format!("Uses deprecated result prompt variables {named}"),
+            "They are still substituted. Every session already receives the result that caused it and the task ledger path in its preamble; read those instead (kanna_guide workflows).",
+        );
+    }
     fn schema(&mut self, file: &str, value: &Value, schema: &jsonschema::Validator) {
         for error in schema.iter_errors(value) {
             self.error(file, &error.instance_path().to_string(), &error, "Use the supported fields and value types in the running version's schema (kanna_guide).");
@@ -225,6 +243,9 @@ pub(crate) fn check(root: &Path) -> DoctorReport {
                             let raw: Value = serde_json::from_str(&content).unwrap();
                             report.schema(&file, &raw, &WORKFLOW_CANDIDATE_SCHEMA);
                             check_workflow(&mut report, &definitions, &file, &workflow);
+                            for (location, variables) in workflow_result_variables(&workflow) {
+                                report.result_variables(&file, &location, &variables);
+                            }
                         }
                         Err(error) => report.error(&file, "", error, "Correct the workflow structure, transition, or provider selector using kanna_guide workflows."),
                     },
@@ -276,6 +297,7 @@ pub(crate) fn check(root: &Path) -> DoctorReport {
                         );
                     }
                     check_agent(&mut report, &definitions, &file, "frontmatter", &name);
+                    report.result_variables(&file, "body", &deprecated_result_variables(&content));
                 }
                 Err(error) => report.error(
                     &file,
@@ -460,6 +482,63 @@ mod tests {
         let report = check(root.path());
         assert!(report.errors.is_empty(), "{}", problems(&report));
         assert!(report.warnings.is_empty(), "{}", problems(&report));
+    }
+
+    /// Result prompt variables are deprecated, never refused (T13d): one
+    /// warning per place that names them, in workflows and agent files, and
+    /// the definition still resolves.
+    #[test]
+    fn doctor_warns_on_result_variables_and_never_errors() {
+        let root = fixture();
+        write(
+            root.path(),
+            ".kanna/config.json",
+            r#"{"workflow":"custom"}"#,
+        );
+        write(root.path(), ".kanna/workflows/custom.json", json!({"name":"custom","stages":[
+            {"name":"work","agent":"custom","prompt":"Do it. Before: ${PREV_RESULT}","policy":{"transition":"manual"},
+             "post":{"name":"commit","agent":"commit","prompt":"Commit $PREV_MAIN_RESULT and $PREV_RESULTS"}},
+            {"name":"ship","agent":"pr","prompt":"Ship $BRANCH","policy":{"transition":"manual"}}]}).to_string());
+        write(
+            root.path(),
+            ".kanna/agents/custom/AGENT.md",
+            "---\nname: custom\ndescription: Project agent\n---\nFollow $PLAN_RESULT.",
+        );
+        let report = check(root.path());
+        assert!(report.errors.is_empty(), "{}", problems(&report));
+        let warnings: BTreeSet<(String, String, String)> = report
+            .warnings
+            .iter()
+            .map(|finding| {
+                (
+                    finding.file.clone(),
+                    finding.location.clone(),
+                    finding.problem.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            warnings,
+            BTreeSet::from([
+                (
+                    ".kanna/workflows/custom.json".to_string(),
+                    "/stages/0/prompt".to_string(),
+                    "Uses deprecated result prompt variables $PREV_RESULT".to_string()
+                ),
+                (
+                    ".kanna/workflows/custom.json".to_string(),
+                    "/stages/0/post/prompt".to_string(),
+                    "Uses deprecated result prompt variables $PREV_MAIN_RESULT".to_string()
+                ),
+                (
+                    ".kanna/agents/custom/AGENT.md".to_string(),
+                    "body".to_string(),
+                    "Uses deprecated result prompt variables $PLAN_RESULT".to_string()
+                ),
+            ]),
+            "{}",
+            problems(&report)
+        );
     }
 
     #[test]

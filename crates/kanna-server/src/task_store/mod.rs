@@ -1,11 +1,13 @@
 //! Task directory and ledger (spec §7, §16.1 — component T0).
 //!
 //! Each task has a directory `<root>/repos/<repo-id>/tasks/<task-id>/` holding
-//! a replaceable `task.json` and an ordered, append-only `ledger/`. During
-//! this bridge SQLite stays authoritative: mutations enqueue immutable ledger
-//! payloads in their own SQL transaction (see [`crate::db::task_store`]) and
-//! this module publishes them to disk, in order, atomically, and acknowledges
-//! them. The ledger is internal message passing between stages; the real
+//! a replaceable `task.json` and an ordered, append-only `ledger/`. In the
+//! default `sql` authority mode SQLite stays authoritative: mutations enqueue
+//! immutable ledger payloads in their own SQL transaction (see
+//! [`crate::db::task_store`]) and this module publishes them to disk, in
+//! order, atomically, and acknowledges them. In `disk` mode ([`authority`])
+//! the same records are written by the mutation's own transaction before it
+//! commits ([`disk_first`]). The ledger is internal message passing between stages; the real
 //! outputs of a task are still commits, PRs and artifacts.
 //!
 //! # Disk contract (schema_version 1)
@@ -18,7 +20,8 @@
 //! `<db-path>.task-store` for development and test databases (so separate
 //! databases never share ledger identities), or `KANNA_TASK_STORE_ROOT`.
 //!
-//! **`task.json`** — a projection, never authority. Rewritten atomically
+//! **`task.json`** — in `sql` mode a projection of the rows; in `disk` mode
+//! the commit point of every mutation (T13d). Rewritten atomically
 //! (temp file + rename) whenever what it shows changes: `schema_version`,
 //! `task_id`, `repo_id`, `title`, `origin_prompt`, `workflow {name,
 //! definition}` (the exact pinned definition), `links {parent, dependencies,
@@ -30,7 +33,10 @@
 //! outcome), `stage`, `branch`, `base_ref`,
 //! `owning_machine` (null until recorded per task), `created_at`,
 //! `updated_at`, `closed_at`, `snapshot_revision`,
-//! `ledger.published_through` (the highest published sequence) and, since
+//! `ledger.published_through` (the highest published sequence), since T13d
+//! in `disk` mode `ledger.in_flight` (`[{sequence, file_name, payload}]`,
+//! the exact bytes of every entry committed and not yet a file when the
+//! record was written; readers treat them as ledger entries) and, since
 //! T13, `state {version, reflects_through, unreflected_reservations,
 //! tables}`: the task's rows of every table that holds durable task state,
 //! verbatim with their rowids ([`crate::db::task_state`]), and the ledger
@@ -130,6 +136,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use tokio::sync::Notify;
 
 pub mod authority;
+pub(crate) mod disk_first;
 // Disk authority (T13c) rebuilds a missing database and reconciles from
 // disk; the rest of the rebuild (the unscoped entry points, the list of what
 // a rebuild lacks) is read by tests and people.
@@ -196,6 +203,52 @@ pub fn root_for_db(db_path: &str) -> PathBuf {
         .ok()
         .and_then(|roots| roots.get(db_path).cloned())
         .unwrap_or_else(|| default_root_for_db(db_path))
+}
+
+/// The root a configuration registered for `db_path` in this process, if
+/// any.
+pub(crate) fn configured_root(db_path: &str) -> Option<PathBuf> {
+    ROOTS
+        .lock()
+        .ok()
+        .and_then(|roots| roots.get(db_path).cloned())
+}
+
+/// Where a process that holds only a database path (a `kanna-server`
+/// subcommand, T13d) may find the root its installation publishes under,
+/// in [`root_for_config`]'s order: the override, the production/staging
+/// root, then the database's own. The installation's authority record
+/// under one of them names the root.
+pub(crate) fn candidate_roots(db_path: &str) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if !cfg!(test) {
+        if let Some(root) = std::env::var_os(ROOT_OVERRIDE_ENV).filter(|root| !root.is_empty()) {
+            roots.push(PathBuf::from(root));
+        }
+        if let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) {
+            roots.push(PathBuf::from(home).join(".kanna"));
+        }
+    }
+    roots.push(default_root_for_db(db_path));
+    roots
+}
+
+/// Record that `db_path` publishes under `root` in this process.
+pub(crate) fn adopt_root(db_path: &str, root: &Path) {
+    if let Ok(mut roots) = ROOTS.lock() {
+        roots.insert(db_path.to_string(), root.to_path_buf());
+    }
+}
+
+/// Forget this process's root and mode for `db_path`, as a fresh process
+/// that holds only the path starts.
+#[cfg(test)]
+pub(crate) fn forget_for_tests(db_path: &str) {
+    let root = root_for_db(db_path);
+    if let Ok(mut roots) = ROOTS.lock() {
+        roots.remove(db_path);
+    }
+    authority::forget_root_for_tests(&root);
 }
 
 pub fn task_dir(root: &Path, repo_id: &str, task_id: &str) -> PathBuf {
@@ -384,6 +437,13 @@ pub fn flush_task_at(db: &Db, root: &Path, task_id: &str) -> Result<FlushOutcome
         let _ = db.record_task_snapshot_error(task_id, &error);
         return Err(error);
     }
+    // Disk-first (T13d): in `disk` mode the records are written only by a
+    // committing transaction, under SQLite's write lock, so this flush is an
+    // empty transaction that owes them.
+    if authority::mode_for_root(root) == authority::Mode::Disk {
+        drop(_guard);
+        return flush_task_disk_first(db, task_id);
+    }
     let ledger = dir.join("ledger");
     let mut outcome = FlushOutcome::default();
     let pending = db
@@ -473,6 +533,34 @@ pub fn flush_task_at(db: &Db, root: &Path, task_id: &str) -> Result<FlushOutcome
     Ok(outcome)
 }
 
+fn flush_task_disk_first(db: &Db, task_id: &str) -> Result<FlushOutcome, String> {
+    let owed = |db: &Db| -> Result<(usize, bool), String> {
+        let pending = db
+            .pending_ledger_entries(task_id)
+            .map_err(|error| format!("db error: {error}"))?;
+        let filled = pending
+            .iter()
+            .filter(|entry| entry.payload.is_some())
+            .count();
+        let waiting = pending
+            .iter()
+            .position(|entry| entry.payload.is_none())
+            .is_some_and(|reservation| reservation < pending.len() - 1);
+        Ok((filled, waiting))
+    };
+    let (before, _) = owed(db)?;
+    db.with_immediate_transaction(|db| {
+        db.owe_task_publication(task_id);
+        Ok::<_, rusqlite::Error>(())
+    })
+    .map_err(|error| error.to_string())?;
+    let (after, waiting_on_reservation) = owed(db)?;
+    Ok(FlushOutcome {
+        published: before.saturating_sub(after),
+        waiting_on_reservation,
+    })
+}
+
 /// Publish a task's pending entries after a mutation whose success does not
 /// depend on it. A failure stays pending (its announcements stay held) and
 /// the publisher service retries it.
@@ -506,6 +594,31 @@ pub fn flush_all(db: &Db, db_path: &str) -> Vec<(String, String)> {
 /// Publish every owed `repo.json` and tombstone under `root` (T13).
 pub fn flush_disk_records_at(db: &Db, root: &Path) -> Vec<(String, String)> {
     let mut failures = Vec::new();
+    if authority::mode_for_root(root) == authority::Mode::Disk {
+        let owed = db.repos_with_pending_disk_record().and_then(|repos| {
+            db.pending_disk_removals()
+                .map(|removals| (repos, !removals.is_empty()))
+        });
+        match owed {
+            Ok((repos, removals)) if !repos.is_empty() || removals => {
+                let written = db.with_immediate_transaction(|db| {
+                    for repo in &repos {
+                        db.owe_repo_publication(repo);
+                    }
+                    if removals {
+                        db.owe_removal_publication();
+                    }
+                    Ok::<_, rusqlite::Error>(())
+                });
+                if let Err(error) = written {
+                    failures.push(("disk records".to_string(), error.to_string()));
+                }
+            }
+            Ok(_) => {}
+            Err(error) => failures.push((String::new(), format!("db error: {error}"))),
+        }
+        return failures;
+    }
     match db.repos_with_pending_disk_record() {
         Ok(repos) => {
             for repo_id in repos {
@@ -574,7 +687,7 @@ pub fn flush_repo_at(db: &Db, root: &Path, repo_id: &str) -> Result<(), String> 
 /// Replace a removed task's `task.json` (or a removed repository's
 /// `repo.json`) with a tombstone, so a rebuild does not bring it back. The
 /// ledger stays. Nothing to do when the record was never published.
-fn publish_removal_at(
+pub(crate) fn publish_removal_at(
     db: &Db,
     root: &Path,
     kind: &str,
@@ -607,6 +720,13 @@ fn publish_removal_at(
         let mut tombstone = identity;
         tombstone["schema_version"] = serde_json::json!(SCHEMA_VERSION);
         tombstone[crate::db::task_state::REMOVED_KEY] = serde_json::json!(true);
+        // A repository's tombstone names the installation that removed it
+        // (T13d), so a disk-mode reconciliation applies only its own.
+        if kind != "task" {
+            if let Some(installation) = authority::installation_for_root(root) {
+                tombstone["installation"] = Value::String(installation);
+            }
+        }
         let mut bytes = serde_json::to_vec_pretty(&tombstone)
             .map_err(|error| format!("render tombstone: {error}"))?;
         bytes.push(b'\n');
@@ -797,7 +917,51 @@ pub fn parse_ledger_file(file_name: &str, bytes: &[u8]) -> Result<LedgerFile, St
     })
 }
 
-/// Every published entry of a task directory, in sequence order.
+/// `task.json`'s `ledger.readable_through`, when a disk-first commit wrote
+/// one.
+pub fn readable_through(task_dir: &Path) -> Option<i64> {
+    let bytes = std::fs::read(task_dir.join("task.json")).ok()?;
+    serde_json::from_slice::<Value>(&bytes)
+        .ok()?
+        .get("ledger")?
+        .get(disk_first::READABLE_THROUGH_KEY)?
+        .as_i64()
+}
+
+#[cfg(test)]
+thread_local! {
+    static BETWEEN_WATERMARK_AND_FILES: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+}
+
+/// Run `between` once, in this thread's next [`read_readable_ledger`], after
+/// it read the watermark and before it lists the files: a commit landing
+/// in between.
+#[cfg(test)]
+pub(crate) fn interleave_ledger_read(between: impl FnOnce() + 'static) {
+    BETWEEN_WATERMARK_AND_FILES.with(|slot| *slot.borrow_mut() = Some(Box::new(between)));
+}
+
+/// The entries a consumer reads in order. In `disk` mode (T13d) the
+/// watermark is read once, first, and only files at or below it are
+/// returned: every entry at or below it is a synced file or a gap, and files
+/// are immutable, so this is a consistent view however commits interleave.
+/// Without a watermark (`sql` mode) every published file.
+pub fn read_readable_ledger(task_dir: &Path) -> Result<Vec<LedgerFile>, String> {
+    let through = readable_through(task_dir);
+    #[cfg(test)]
+    if let Some(between) = BETWEEN_WATERMARK_AND_FILES.with(|slot| slot.borrow_mut().take()) {
+        between();
+    }
+    let mut files = read_ledger(task_dir)?;
+    if let Some(through) = through {
+        files.retain(|file| file.sequence <= through);
+    }
+    Ok(files)
+}
+
+/// Every published entry of a task directory, in sequence order: every
+/// durable file. In `disk` mode a file may sit past the readable watermark
+/// ([`readable_through`]); consumers that read in order stop there.
 pub fn read_ledger(task_dir: &Path) -> Result<Vec<LedgerFile>, String> {
     let ledger = task_dir.join("ledger");
     let entries = match std::fs::read_dir(&ledger) {
@@ -933,7 +1097,7 @@ pub fn resolve_trigger(task_dir: &Path, stage: &str) -> Option<TriggeringResult>
     if let Some(pending) = PENDING_TRIGGER.with(|slot| slot.borrow().clone()) {
         return Some(pending);
     }
-    let files = match read_ledger(task_dir) {
+    let files = match read_readable_ledger(task_dir) {
         Ok(files) => files,
         Err(error) => {
             log::warn!("cannot read task ledger {}: {error}", task_dir.display());
