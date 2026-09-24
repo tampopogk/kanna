@@ -1485,10 +1485,11 @@ fn a_repository_removal_that_died_before_sqlite_committed_restarts_as_it_rebuild
     );
 }
 
-/// An entry committed behind another operation's open reservation never
-/// reaches disk ahead of it: a disk-first commit does not carry it in
-/// flight, and reconciling another task never publishes it, even from a
-/// `task.json` that lists it in flight.
+/// An entry committed behind another operation's open reservation is on
+/// disk at once (durability is never held back), but no consumer reads it
+/// in order until the reservation closes: the task's readable watermark
+/// stops below the reservation, and reconciling another task neither moves
+/// that watermark nor publishes anything of the other task.
 #[test]
 fn reconciling_one_task_never_publishes_another_tasks_entries_past_its_reservation() {
     let (db, db_path) = installation("reservation", "repo-reservation", &["a", "b"]);
@@ -1508,42 +1509,184 @@ fn reconciling_one_task_never_publishes_another_tasks_entries_past_its_reservati
             behind,
             crate::db::task_store::LedgerEntryKind::Input,
         ));
-    assert!(!behind_file.exists());
-    let snapshot: Value =
-        serde_json::from_slice(&std::fs::read(b_dir.join("task.json")).unwrap()).unwrap();
-    assert!(
-        snapshot["ledger"]["in_flight"]
-            .as_array()
-            .is_none_or(|entries| entries.iter().all(|entry| entry["sequence"] != behind)),
-        "{}",
-        snapshot["ledger"]
+    assert!(behind_file.exists(), "durable before its commit returned");
+    assert_eq!(
+        crate::task_store::readable_through(&b_dir),
+        Some(reserved - 1)
     );
+    let task_json_before = std::fs::read(b_dir.join("task.json")).unwrap();
 
-    // A task.json that does list it in flight (as this build wrote before
-    // the fix) is not materialized by another task's reconciliation.
-    let pending = db.pending_ledger_entries("b").unwrap();
-    let entry = pending
-        .iter()
-        .find(|entry| entry.sequence == behind)
-        .unwrap();
-    let mut listed = snapshot.clone();
-    listed["ledger"]["in_flight"] = json!([{
-        "sequence": behind,
-        "file_name": entry.file_name,
-        "payload": String::from_utf8(entry.payload.clone().unwrap()).unwrap(),
-    }]);
-    std::fs::write(
-        b_dir.join("task.json"),
-        serde_json::to_vec_pretty(&listed).unwrap(),
-    )
-    .unwrap();
     let report =
         reconcile_from_disk(&db, &db_path, Some(&BTreeSet::from(["a".to_string()]))).unwrap();
     assert_eq!(report.materialized, 0, "{report:#?}");
-    assert!(!behind_file.exists());
+    assert_eq!(
+        std::fs::read(b_dir.join("task.json")).unwrap(),
+        task_json_before
+    );
+    assert_eq!(
+        crate::task_store::readable_through(&b_dir),
+        Some(reserved - 1)
+    );
 
-    // Once the reservation closes, the entry is published in order.
+    // Once the reservation closes, the entry is readable in order.
     db.release_ledger_reservation("b", reserved).unwrap();
+    assert_eq!(crate::task_store::readable_through(&b_dir), Some(behind));
+}
+
+fn input_messages(db: &Db, task: &str) -> Vec<String> {
+    inputs(db)
+        .into_iter()
+        .filter(|(_, owner, _)| owner == task)
+        .map(|(_, _, message)| message)
+        .collect()
+}
+
+/// Review round 2: operation A holds a reservation while commit B records
+/// an input behind it. B's entry is durable on disk (as a file, and in its
+/// `task.json` until then) before B's commit returns, so it survives a kill
+/// at every write step, a rebuild from disk alone, and a later commit of
+/// the task that dies before SQLite commits; it is readable in order only
+/// once A's reservation closes (filled, released, or abandoned at restart).
+#[test]
+fn a_commit_behind_an_open_reservation_is_durable_and_readable_once_it_closes() {
+    use crate::task_store::disk_first::{crash_at, CrashPoint};
+    // A crash point, given the sequence of the entry behind the reservation.
+    type At = fn(i64) -> CrashPoint;
+    let points: [(&str, Option<At>); 5] = [
+        ("none", None),
+        ("before-task-json", Some(|_| CrashPoint::BeforeTaskJson)),
+        ("after-task-json", Some(|_| CrashPoint::AfterTaskJson)),
+        ("after-entry", Some(CrashPoint::AfterEntry)),
+        ("before-commit", Some(|_| CrashPoint::BeforeCommit)),
+    ];
+    for (label, point) in points {
+        let repo = format!("repo-behind-{label}");
+        let (db, db_path) = installation(&format!("behind-{label}"), &repo, &["t1"]);
+        assert!(flush_all(&db, &db_path).is_empty());
+        assert_eq!(
+            start(&db, &db_path, Some(Mode::Disk)).unwrap().mode,
+            Mode::Disk
+        );
+        let root = root_for_db(&db_path);
+        let dir = task_dir(&root, &repo, "t1");
+        let reserved = db.reserve_ledger_sequence("t1").unwrap();
+        let behind = reserved + 1;
+        let behind_file = dir
+            .join("ledger")
+            .join(crate::db::task_store::ledger_file_name(
+                behind,
+                crate::db::task_store::LedgerEntryKind::Input,
+            ));
+        if let Some(point) = point {
+            crash_at(&root, "t1", point(behind));
+        }
+        let recorded = operator_input_result(&db, "t1", "behind the reservation");
+        assert_eq!(recorded.is_err(), point.is_some(), "{label}: {recorded:?}");
+        let applied = !matches!(
+            point.map(|point| point(behind)),
+            Some(CrashPoint::BeforeTaskJson)
+        );
+        if point.is_none() {
+            assert!(behind_file.exists(), "{label}");
+            assert_eq!(
+                crate::task_store::readable_through(&dir),
+                Some(reserved - 1)
+            );
+
+            // (b) A later commit of the task writes task.json and dies
+            // before SQLite commits; the restart below reconciles from that
+            // task.json, which still holds the entry.
+            crash_at(&root, "t1", CrashPoint::AfterTaskJson);
+            assert!(db
+                .connection_for_e2e_tests()
+                .execute(
+                    "UPDATE pipeline_item SET display_name = 'dies before commit' WHERE id = 't1'",
+                    [],
+                )
+                .is_err());
+        }
+        drop(db);
+
+        // Restart: reconciliation runs before the stale reservation is
+        // released.
+        let db = Db::open(&db_path).unwrap();
+        let report = start(&db, &db_path, None).unwrap().reconcile.unwrap();
+        assert!(report.failed.is_empty(), "{label}: {report:#?}");
+        let expected: Vec<String> = if applied {
+            vec!["behind the reservation".to_string()]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(input_messages(&db, "t1"), expected, "{label}");
+        assert_eq!(behind_file.exists(), applied, "{label}");
+
+        // (a) A rebuild from disk alone holds the same inputs.
+        let rebuilt_path = format!("{db_path}.rebuilt");
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{rebuilt_path}{suffix}"));
+        }
+        let (scan, _) = scan_store_records(&root)
+            .unwrap()
+            .for_installation(&installation_id(&db_path));
+        rebuild_scan_into_new_database(scan, Path::new(&rebuilt_path)).unwrap();
+        assert_eq!(
+            input_messages(&Db::open(&rebuilt_path).unwrap(), "t1"),
+            expected,
+            "{label}"
+        );
+
+        // The reservation died with its process: startup recovery releases
+        // it, and the watermark passes the gap.
+        db.release_stale_ledger_reservations().unwrap();
+        if applied {
+            assert_eq!(
+                crate::task_store::readable_through(&dir),
+                Some(behind),
+                "{label}"
+            );
+        }
+        assert!(
+            db.ledger_tasks_with_pending_work().unwrap().is_empty(),
+            "{label}"
+        );
+    }
+
+    // Filled instead of released: operation A records its entry at the
+    // reserved sequence, and the watermark moves past both.
+    let (db, db_path) = installation("behind-filled", "repo-behind-filled", &["t1"]);
     assert!(flush_all(&db, &db_path).is_empty());
-    assert!(behind_file.exists());
+    assert_eq!(
+        start(&db, &db_path, Some(Mode::Disk)).unwrap().mode,
+        Mode::Disk
+    );
+    let dir = task_dir(&root_for_db(&db_path), "repo-behind-filled", "t1");
+    let reserved = db.reserve_ledger_sequence("t1").unwrap();
+    operator_input(&db, "t1", "behind the reservation");
+    assert_eq!(
+        crate::task_store::readable_through(&dir),
+        Some(reserved - 1)
+    );
+    db.enqueue_ledger_entry(crate::db::task_store::NewLedgerEntry {
+        task_id: "t1",
+        kind: crate::db::task_store::LedgerEntryKind::Plan,
+        operation_id: None,
+        source_kind: "test_reserved",
+        source_id: "a",
+        source_origin: None,
+        historical: false,
+        recorded_at: None,
+        run_id: None,
+        declared_role: None,
+        channel_identity: &ChannelIdentity::Server,
+        body: json!({ "operation": "select" }),
+        message: None,
+        hold_events_after: None,
+        reserved_sequence: Some(reserved),
+    })
+    .unwrap();
+    assert_eq!(
+        crate::task_store::readable_through(&dir),
+        Some(reserved + 1)
+    );
+    assert!(db.ledger_tasks_with_pending_work().unwrap().is_empty());
 }

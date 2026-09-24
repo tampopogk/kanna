@@ -268,8 +268,10 @@ impl Db {
 
     /// Reserve the next sequence for an entry whose content is decided later
     /// in the same operation (a revision prepares the reviser's session before
-    /// it records the reviewer's result). Publication stops at a reservation,
-    /// so nothing enqueued after it can appear on disk first.
+    /// it records the reviewer's result). In `sql` mode publication stops at
+    /// a reservation, so nothing enqueued after it can appear on disk first;
+    /// in `disk` mode later entries are written at once and the readable
+    /// watermark stops below it ([`Db::ledger_readable_through`]).
     pub(crate) fn reserve_ledger_sequence(&self, task_id: &str) -> Result<i64, rusqlite::Error> {
         self.in_immediate_transaction_if_needed(|db| {
             let sequence = db.next_ledger_sequence(task_id)?;
@@ -289,11 +291,19 @@ impl Db {
         task_id: &str,
         sequence: i64,
     ) -> Result<(), rusqlite::Error> {
-        self.conn.execute(
-            "DELETE FROM task_ledger_entry
-             WHERE task_id = ? AND sequence = ? AND kind IS NULL",
-            params![task_id, sequence],
-        )?;
+        self.in_immediate_transaction_if_needed(|db| {
+            let released = db.conn.execute(
+                "DELETE FROM task_ledger_entry
+                 WHERE task_id = ? AND sequence = ? AND kind IS NULL",
+                params![task_id, sequence],
+            )?;
+            // Disk-first (T13d): the gap opens the task's readable
+            // watermark, which its task.json records.
+            if released > 0 && db.conn.is_disk_first() {
+                db.mark_task_snapshot_dirty(task_id)?;
+            }
+            Ok::<_, rusqlite::Error>(())
+        })?;
         crate::task_store::wake_publisher();
         Ok(())
     }
@@ -301,8 +311,42 @@ impl Db {
     /// Reservations cannot outlive the process that made them: its operation
     /// either filled the row or never will.
     pub(crate) fn release_stale_ledger_reservations(&self) -> Result<usize, rusqlite::Error> {
-        self.conn
-            .execute("DELETE FROM task_ledger_entry WHERE kind IS NULL", [])
+        self.in_immediate_transaction_if_needed(|db| {
+            let tasks: Vec<String> = if db.conn.is_disk_first() {
+                let mut statement = db
+                    .conn
+                    .prepare("SELECT DISTINCT task_id FROM task_ledger_entry WHERE kind IS NULL")?;
+                let rows = statement.query_map([], |row| row.get(0))?;
+                rows.collect::<Result<_, _>>()?
+            } else {
+                Vec::new()
+            };
+            let released = db
+                .conn
+                .execute("DELETE FROM task_ledger_entry WHERE kind IS NULL", [])?;
+            for task in &tasks {
+                db.mark_task_snapshot_dirty(task)?;
+            }
+            Ok(released)
+        })
+    }
+
+    /// The task's readable watermark in `disk` mode (T13d): every sequence
+    /// at or below it is an entry durable on disk or a gap. Disk-first
+    /// commits write their own entries whatever reservation is open, so a
+    /// file can exist past an open reservation; consumers that read in order
+    /// stop at the first open reservation, and a released reservation is a
+    /// gap they pass.
+    pub(crate) fn ledger_readable_through(&self, task_id: &str) -> Result<i64, rusqlite::Error> {
+        self.conn.query_row(
+            "SELECT COALESCE(
+                 (SELECT MIN(sequence) - 1 FROM task_ledger_entry
+                  WHERE task_id = ?1 AND kind IS NULL),
+                 (SELECT MAX(sequence) FROM task_ledger_entry WHERE task_id = ?1),
+                 0)",
+            [task_id],
+            |row| row.get(0),
+        )
     }
 
     /// Allocate the task's next sequence, inside the caller's transaction.

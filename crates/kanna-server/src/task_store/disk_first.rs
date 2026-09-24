@@ -16,12 +16,16 @@
 //! 2. **Write `task.json`** — the commit point. It carries the rows as the
 //!    transaction leaves them (`state`, whose `reflects_through` counts this
 //!    transaction's entries) and, under `ledger.in_flight`, the exact bytes
-//!    of every entry not yet published as a file, up to the first open
-//!    reservation (an entry behind another operation's reservation waits in
-//!    the outbox for it, as the publisher always has). One atomic rename
-//!    makes the whole mutation durable on disk, rows and entries together.
-//! 3. **Publish the entry files**, in sequence order up to an open
-//!    reservation, acknowledging each. A failure here does not undo the
+//!    of every entry not yet published as a file. One atomic rename makes
+//!    the whole mutation durable on disk, rows and entries together.
+//! 3. **Publish the entry files**, in sequence order, acknowledging each,
+//!    whatever reservation another operation holds below them: durability
+//!    is never held back. Ordering is the separate `ledger.readable_through`
+//!    watermark written in step 2: the highest sequence below the task's
+//!    first open reservation (released reservations are gaps). Consumers
+//!    that read in order ([`super::resolve_trigger`]) stop there; closing a
+//!    reservation (filling or releasing it) rewrites `task.json` and moves
+//!    the watermark on. A failure here does not undo the
 //!    mutation: the entry is durable in `task.json` and is published later.
 //! 4. SQLite commits. If that fails, the disk already holds the mutation:
 //!    the task is fenced and reconciled from its directory, so the mutation
@@ -322,22 +326,14 @@ fn publish_task(
         )));
     }
 
-    // Entries publishable now: in order, up to an open reservation.
-    let publishable: Vec<_> = pending
+    // Every committed entry is written now, in sequence order, whatever
+    // reservation another operation holds below it: an open reservation
+    // never holds back another commit's durability. What consumers may read
+    // in order is the separate watermark (`ledger.readable_through`).
+    let publishable: Vec<(i64, String, Vec<u8>)> = filled
         .iter()
-        .take_while(|entry| entry.payload.is_some())
-        .filter_map(|entry| {
-            Some((
-                entry.sequence,
-                entry.file_name.clone()?,
-                entry.payload.clone()?,
-            ))
-        })
+        .map(|(sequence, file_name, payload)| (*sequence, (*file_name).clone(), (*payload).clone()))
         .collect();
-    // In flight: exactly the entries publishable now. One committed behind
-    // another operation's open reservation stays in SQLite's outbox, as
-    // the normal publisher keeps it, until the reservation closes; it never
-    // reaches disk (file or task.json) ahead of the reserved sequence.
     let mut in_flight = Vec::with_capacity(publishable.len());
     for (sequence, file_name, payload) in &publishable {
         let text = std::str::from_utf8(payload).map_err(|error| {
@@ -348,18 +344,14 @@ fn publish_task(
         })?;
         in_flight.push(json!({ "sequence": sequence, "file_name": file_name, "payload": text }));
     }
+    let readable_through = db.ledger_readable_through(task_id).map_err(db_error)?;
     let mut facts = db
         .task_snapshot_facts(task_id)
         .map_err(db_error)?
         .unwrap_or(Value::Null);
     if let Some(ledger) = facts.get_mut("ledger").and_then(Value::as_object_mut) {
-        if let Some((last, _, _)) = publishable.last() {
-            let through = ledger
-                .get("published_through")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
-            ledger.insert("published_through".into(), json!(through.max(*last)));
-        }
+        ledger.insert("published_through".into(), json!(readable_through));
+        ledger.insert(READABLE_THROUGH_KEY.into(), json!(readable_through));
         if !in_flight.is_empty() {
             ledger.insert(IN_FLIGHT_KEY.into(), Value::Array(in_flight));
         }
@@ -407,6 +399,11 @@ fn publish_task(
     }
     Ok(Published::Written)
 }
+
+/// `task.json` `ledger.readable_through` (T13d, `disk` mode only): the
+/// contiguous watermark consumers read the ledger in order up to. Files past
+/// it are durable, and readable once the reservations below them close.
+pub const READABLE_THROUGH_KEY: &str = "readable_through";
 
 /// `task.json` `ledger.in_flight`: entries a disk-first commit made durable
 /// in `task.json` before (or without) publishing their files.

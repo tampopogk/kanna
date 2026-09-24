@@ -427,18 +427,28 @@ each task it touched:
    as in T13c). Until then every write to the task is refused.
 2. **Write `task.json`**, the commit point. It holds the rows as the
    transaction leaves them and, under `ledger.in_flight`, the exact bytes of
-   every committed entry that is not yet a file, up to the first open
-   reservation. One rename makes the whole mutation durable on disk. An
-   entry committed behind another operation's open reservation waits in the
-   outbox until that reservation closes, as the publisher always kept it;
-   nothing reaches disk ahead of a reserved sequence, and a reconciliation
-   publishes in-flight files only for the tasks it reconciles.
-3. **Publish the entry files** in sequence order up to an open reservation.
-   A failure here does not undo the mutation (it is in `task.json`); the
-   publisher writes the file later.
+   every committed entry that is not yet a file, and `ledger.readable_through`,
+   the task's ordering watermark (below). One rename makes the whole
+   mutation durable on disk.
+3. **Publish the entry files** in sequence order, whatever reservation
+   another operation holds below them: an open reservation never holds back
+   another commit's durability. A failure here does not undo the mutation
+   (it is in `task.json`); the publisher writes the file later.
 4. **SQLite commits.** If that fails, the disk already holds the mutation:
    the task is fenced and reconciled from disk, so the mutation stands even
    though its caller saw an error.
+
+**Durability and ordering are separate.** Files are durable as their
+commits make them. What consumers read in order is the watermark
+`ledger.readable_through` (`disk` mode only): the highest sequence below
+the task's first open reservation, passing released or abandoned
+reservations as gaps. Session delivery resolves a session's triggering
+result only from entries at or below it. Filling or releasing a reservation
+(including startup's release of reservations a dead process left) rewrites
+`task.json` and moves the watermark on. The rebuild and the reconciler read
+every durable file; a reconciliation publishes in-flight files only for the
+tasks it reconciles. (`sql` mode is unchanged: its publisher still writes
+files in order and stops at a reservation.)
 
 Owed `repo.json` records and tombstones are written the same way. A
 repository's tombstone names the installation that removed it; a `disk`-mode

@@ -917,7 +917,20 @@ pub fn parse_ledger_file(file_name: &str, bytes: &[u8]) -> Result<LedgerFile, St
     })
 }
 
-/// Every published entry of a task directory, in sequence order.
+/// `task.json`'s `ledger.readable_through`, when a disk-first commit wrote
+/// one.
+pub fn readable_through(task_dir: &Path) -> Option<i64> {
+    let bytes = std::fs::read(task_dir.join("task.json")).ok()?;
+    serde_json::from_slice::<Value>(&bytes)
+        .ok()?
+        .get("ledger")?
+        .get(disk_first::READABLE_THROUGH_KEY)?
+        .as_i64()
+}
+
+/// Every published entry of a task directory, in sequence order: every
+/// durable file. In `disk` mode a file may sit past the readable watermark
+/// ([`readable_through`]); consumers that read in order stop there.
 pub fn read_ledger(task_dir: &Path) -> Result<Vec<LedgerFile>, String> {
     let ledger = task_dir.join("ledger");
     let entries = match std::fs::read_dir(&ledger) {
@@ -1053,13 +1066,18 @@ pub fn resolve_trigger(task_dir: &Path, stage: &str) -> Option<TriggeringResult>
     if let Some(pending) = PENDING_TRIGGER.with(|slot| slot.borrow().clone()) {
         return Some(pending);
     }
-    let files = match read_ledger(task_dir) {
+    let mut files = match read_ledger(task_dir) {
         Ok(files) => files,
         Err(error) => {
             log::warn!("cannot read task ledger {}: {error}", task_dir.display());
             return None;
         }
     };
+    // Disk-first (T13d): a file past the readable watermark is durable but
+    // not yet in order (a reservation below it is open).
+    if let Some(through) = readable_through(task_dir) {
+        files.retain(|file| file.sequence <= through);
+    }
     resolve_trigger_in(&files, stage)
 }
 
