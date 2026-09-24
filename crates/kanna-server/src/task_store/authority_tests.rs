@@ -1935,3 +1935,143 @@ fn a_rebuild_while_a_reservation_is_open_recovers_the_watermark() {
         Some(b)
     );
 }
+
+// ---------------------------------------------------------------------------
+// Review round 4 (T13d): an in-flight entry whose file cannot be written
+// ---------------------------------------------------------------------------
+
+fn in_flight_sequences(task_json: &Path) -> Vec<i64> {
+    let snapshot: Value = serde_json::from_slice(&std::fs::read(task_json).unwrap()).unwrap();
+    snapshot["ledger"]["in_flight"]
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry["sequence"].as_i64())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A disk installation whose `t1` holds an input only in `task.json`'s
+/// in-flight list: its commit died after the commit point, before the
+/// file. Returns the entry's sequence and its file.
+fn entry_only_in_flight(label: &str) -> (String, PathBuf, i64, PathBuf) {
+    use crate::task_store::disk_first::{crash_at, CrashPoint};
+    let (db, db_path, task_json) = disk_installation(label);
+    operator_input(&db, "t1", "readable");
+    let through = crate::task_store::readable_through(task_json.parent().unwrap()).unwrap();
+    crash_at(&root_for_db(&db_path), "t1", CrashPoint::AfterTaskJson);
+    assert!(operator_input_result(&db, "t1", "only in flight").is_err());
+    drop(db);
+    let entry = through + 1;
+    let file =
+        task_json
+            .parent()
+            .unwrap()
+            .join("ledger")
+            .join(crate::db::task_store::ledger_file_name(
+                entry,
+                crate::db::task_store::LedgerEntryKind::Input,
+            ));
+    assert!(!file.exists());
+    assert_eq!(in_flight_sequences(&task_json), [entry]);
+    (db_path, task_json, entry, file)
+}
+
+/// While its file cannot be written, the entry stays unpublished (with the
+/// error recorded), `ledger.in_flight` keeps it, and the readable watermark
+/// stays below it.
+fn assert_held_in_flight(db: &Db, task_json: &Path, entry: i64, file: &Path) {
+    assert!(!file.exists());
+    assert_eq!(in_flight_sequences(task_json), [entry]);
+    assert!(crate::task_store::readable_through(task_json.parent().unwrap()).unwrap() < entry);
+    assert!(db.ledger_readable_through("t1").unwrap() < entry);
+    let row = db
+        .ledger_rows_for_authority("t1")
+        .unwrap()
+        .into_iter()
+        .find(|row| row.sequence == entry)
+        .expect("the entry is held in the database");
+    assert!(!row.published);
+    assert!(db.ledger_pending_error("t1").unwrap().is_some());
+    assert_eq!(
+        input_messages(db, "t1"),
+        ["readable".to_string(), "only in flight".to_string()]
+    );
+}
+
+/// Once the file is written, synced and read back, the watermark covers it
+/// and `ledger.in_flight` lets it go, in the same task.json write.
+fn assert_published(db: &Db, task_json: &Path, entry: i64, file: &Path) {
+    assert!(file.is_file());
+    assert!(in_flight_sequences(task_json).is_empty());
+    assert_eq!(
+        crate::task_store::readable_through(task_json.parent().unwrap()),
+        Some(entry)
+    );
+    assert!(db.ledger_tasks_with_pending_work().unwrap().is_empty());
+}
+
+#[test]
+fn an_in_flight_entry_whose_file_fails_at_startup_is_held_until_a_later_start_writes_it() {
+    let (db_path, task_json, entry, file) = entry_only_in_flight("materialize-startup");
+    let ledger = file.parent().unwrap().to_path_buf();
+    crate::task_store::disk_first::fail_writes(&ledger);
+    let db = Db::open(&db_path).unwrap();
+    let outcome = start(&db, &db_path, None);
+    crate::task_store::disk_first::restore_writes(&ledger);
+    let report = outcome.unwrap().reconcile.unwrap();
+    assert!(report.failed.is_empty(), "{report:#?}");
+    assert_held_in_flight(&db, &task_json, entry, &file);
+
+    // The next start writes it and advances the watermark.
+    drop(db);
+    let db = Db::open(&db_path).unwrap();
+    start(&db, &db_path, None).unwrap();
+    assert_published(&db, &task_json, entry, &file);
+}
+
+#[test]
+fn an_in_flight_entry_whose_file_fails_during_a_rebuild_is_held_until_a_later_start_writes_it() {
+    let (db_path, task_json, entry, file) = entry_only_in_flight("materialize-rebuild");
+    let ledger = file.parent().unwrap().to_path_buf();
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{db_path}{suffix}"));
+    }
+    crate::task_store::disk_first::fail_writes(&ledger);
+    rebuild_missing_database(&db_path).unwrap();
+    let db = Db::open(&db_path).unwrap();
+    let outcome = start(&db, &db_path, None);
+    crate::task_store::disk_first::restore_writes(&ledger);
+    let report = outcome.unwrap().reconcile.unwrap();
+    assert!(report.failed.is_empty(), "{report:#?}");
+    assert_held_in_flight(&db, &task_json, entry, &file);
+
+    // A second rebuild from the same disk still holds it.
+    drop(db);
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{db_path}{suffix}"));
+    }
+    crate::task_store::disk_first::fail_writes(&ledger);
+    rebuild_missing_database(&db_path).unwrap();
+    crate::task_store::disk_first::restore_writes(&ledger);
+    let db = Db::open(&db_path).unwrap();
+    start(&db, &db_path, None).unwrap();
+    assert_published(&db, &task_json, entry, &file);
+}
+
+/// The success path: the start after the crash writes the file, verifies
+/// it, and advances the watermark.
+#[test]
+fn an_in_flight_entry_is_published_by_the_next_start_when_its_file_can_be_written() {
+    let (db_path, task_json, entry, file) = entry_only_in_flight("materialize-success");
+    let db = Db::open(&db_path).unwrap();
+    let report = start(&db, &db_path, None).unwrap().reconcile.unwrap();
+    assert!(report.failed.is_empty(), "{report:#?}");
+    assert_published(&db, &task_json, entry, &file);
+    assert_eq!(
+        input_messages(&db, "t1"),
+        ["readable".to_string(), "only in flight".to_string()]
+    );
+}

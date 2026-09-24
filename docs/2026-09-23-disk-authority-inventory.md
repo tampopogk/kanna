@@ -454,6 +454,14 @@ reservation and below any entry whose file is not written yet.
 - Readers (session delivery's triggering result) read the watermark once,
   then only files at or below it: entry files are immutable, so that view
   is consistent however commits interleave.
+- An in-flight entry (one only `task.json` holds, after a kill between the
+  commit point and its file) counts only once its file is written, synced
+  with its directory and read back. Until then the startup, a rebuild and a
+  reconciliation project it unpublished with its error recorded, the
+  watermark stays below it, and `ledger.in_flight` keeps it: it leaves
+  `ledger.in_flight` only in the `task.json` write that advances the
+  watermark over its durable file. A failed write is retried by the
+  publisher and at every start.
 - A stored watermark is never trusted: every `disk`-mode start compares it
   with the one the ledger gives (after a rebuild no reservation survives,
   so the ledger's gaps are closed) and rewrites `task.json` when they

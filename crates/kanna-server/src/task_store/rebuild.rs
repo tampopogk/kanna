@@ -192,6 +192,12 @@ pub struct TaskSnapshot {
 pub struct ReadEntry {
     pub file: LedgerFile,
     pub bytes: Vec<u8>,
+    /// The entry is a file in the ledger directory. `false` for an entry
+    /// only `task.json`'s `ledger.in_flight` holds (T13d): it is projected
+    /// unpublished, so the readable watermark stays below it and
+    /// `ledger.in_flight` keeps it until its file is written, synced and
+    /// read back.
+    pub durable: bool,
 }
 
 /// One task directory, read and validated.
@@ -411,7 +417,11 @@ pub fn read_task_directory(dir: &Path) -> Result<TaskDirectory, String> {
                     .map_err(|error| format!("read {}: {error}", item.path().display()))?;
                 let file = parse_ledger_file(&name, &bytes)?;
                 validate_entry(&file, &snapshot.task_id)?;
-                entries.push(ReadEntry { file, bytes });
+                entries.push(ReadEntry {
+                    file,
+                    bytes,
+                    durable: true,
+                });
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -436,6 +446,7 @@ pub fn read_task_directory(dir: &Path) -> Result<TaskDirectory, String> {
             None => entries.push(ReadEntry {
                 file,
                 bytes: bytes.clone(),
+                durable: false,
             }),
         }
     }
@@ -791,6 +802,9 @@ pub struct LedgerRow {
     pub file_name: String,
     pub payload: Vec<u8>,
     pub recorded_at: String,
+    /// Its file is on disk. An in-flight-only entry (T13d) is written
+    /// unpublished, owed to the publisher.
+    pub published: bool,
 }
 
 /// Ledger bookkeeping for one task: `task.json` is current and its history
@@ -1026,7 +1040,12 @@ fn project_task(directory: &TaskDirectory, projection: &mut Projection) {
     let mut historical = 0i64;
     let mut last_transition_to: Option<Option<String>> = None;
     let mut last_plan_after: Option<Value> = None;
-    for ReadEntry { file, bytes } in &directory.entries {
+    for ReadEntry {
+        file,
+        bytes,
+        durable,
+    } in &directory.entries
+    {
         let envelope = &file.envelope;
         let at = recorded_at(file);
         let run_id = text(envelope, "run_id");
@@ -1056,6 +1075,7 @@ fn project_task(directory: &TaskDirectory, projection: &mut Projection) {
             file_name: file.file_name.clone(),
             payload: bytes.clone(),
             recorded_at: at.clone(),
+            published: *durable,
         });
         let body = file.body();
         let message = file.message.as_deref().unwrap_or("");

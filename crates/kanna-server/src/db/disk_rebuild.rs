@@ -212,6 +212,11 @@ pub(super) fn upsert_budget(db: &Db, budget: &BudgetRow) -> Result<(), rusqlite:
     Ok(())
 }
 
+/// The publish error an in-flight entry whose file is not on disk carries
+/// until the publisher writes it (T13d).
+pub(super) const IN_FLIGHT_UNWRITTEN: &str =
+    "in flight: only task.json holds this entry; its file is not written yet";
+
 pub(super) fn upsert_published_ledger_row(
     db: &Db,
     entry: &LedgerRow,
@@ -219,14 +224,15 @@ pub(super) fn upsert_published_ledger_row(
     db.conn.execute(
         "INSERT INTO task_ledger_entry
             (task_id, sequence, entry_id, kind, operation_id, source_kind,
-             source_id, file_name, payload, created_at, published_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             source_id, file_name, payload, created_at, published_at, publish_error)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(task_id, sequence) DO UPDATE SET
             entry_id = excluded.entry_id, kind = excluded.kind,
             operation_id = excluded.operation_id,
             source_kind = excluded.source_kind, source_id = excluded.source_id,
             file_name = excluded.file_name, payload = excluded.payload,
-            created_at = excluded.created_at, published_at = excluded.published_at",
+            created_at = excluded.created_at, published_at = excluded.published_at,
+            publish_error = excluded.publish_error",
         params![
             entry.task_id,
             entry.sequence,
@@ -238,7 +244,10 @@ pub(super) fn upsert_published_ledger_row(
             entry.file_name,
             entry.payload,
             entry.recorded_at,
-            entry.recorded_at,
+            // An entry only task.json holds in flight (T13d) is owed: its
+            // file is not on disk, so nothing may treat it as published.
+            entry.published.then_some(&entry.recorded_at),
+            (!entry.published).then_some(IN_FLIGHT_UNWRITTEN),
         ],
     )?;
     Ok(())

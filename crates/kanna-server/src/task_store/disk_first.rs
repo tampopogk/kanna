@@ -408,7 +408,7 @@ fn publish_task(
         let published = if crashes_here(root, task_id, CrashPoint::PublishFails(*sequence)) {
             Err("injected publication failure".to_string())
         } else {
-            publish_immutable(&ledger, file_name, payload)
+            publish_durably(&ledger, file_name, payload)
         };
         if let Err(error) = published {
             // Durable in task.json already; published by a later flush.
@@ -453,9 +453,61 @@ pub const READABLE_THROUGH_KEY: &str = "readable_through";
 /// in `task.json` before (or without) publishing their files.
 pub const IN_FLIGHT_KEY: &str = "in_flight";
 
+#[cfg(test)]
+static FAILING_WRITES: LazyLock<Mutex<BTreeSet<PathBuf>>> = LazyLock::new(Default::default);
+
+/// Fail every entry-file write into `ledger` until [`restore_writes`], as a
+/// full or read-only disk would.
+#[cfg(test)]
+pub(crate) fn fail_writes(ledger: &Path) {
+    FAILING_WRITES.lock().unwrap().insert(ledger.to_path_buf());
+}
+
+#[cfg(test)]
+pub(crate) fn restore_writes(ledger: &Path) {
+    FAILING_WRITES.lock().unwrap().remove(ledger);
+}
+
+#[cfg(test)]
+fn writes_fail(ledger: &Path) -> bool {
+    FAILING_WRITES.lock().unwrap().contains(ledger)
+}
+
+#[cfg(not(test))]
+fn writes_fail(_ledger: &Path) -> bool {
+    false
+}
+
+/// Write an entry file so that it counts: written and synced with its
+/// directory ([`publish_immutable`]), then read back and compared. Any
+/// failure leaves the entry unpublished, held by `task.json`'s
+/// `ledger.in_flight`, with the readable watermark below it (T13d).
+pub(crate) fn publish_durably(ledger: &Path, file_name: &str, bytes: &[u8]) -> Result<(), String> {
+    if writes_fail(ledger) {
+        return Err(format!(
+            "write {}: injected failure",
+            ledger.join(file_name).display()
+        ));
+    }
+    publish_immutable(ledger, file_name, bytes)?;
+    let path = ledger.join(file_name);
+    let read_back =
+        std::fs::read(&path).map_err(|error| format!("read back {}: {error}", path.display()))?;
+    if read_back != bytes {
+        return Err(format!(
+            "read back {}: other bytes than written",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Publish the files of in-flight entries a `task.json` carries and the
 /// ledger does not hold yet (a crash between a disk-first commit point and
-/// its files). Returns how many were written.
+/// its files). Returns how many were written. It never publishes an entry
+/// in the database: the scan read it as not durable, so it is projected
+/// unpublished and the publisher acknowledges it only after writing (or
+/// finding) its file, synced and read back.
 pub(crate) fn materialize_in_flight(
     directory: &super::rebuild::TaskDirectory,
 ) -> Result<usize, String> {
@@ -465,9 +517,8 @@ pub(crate) fn materialize_in_flight(
         if ledger.join(file_name).exists() {
             continue;
         }
-        if publish_immutable(&ledger, file_name, bytes)? == super::Published::Written {
-            written += 1;
-        }
+        publish_durably(&ledger, file_name, bytes)?;
+        written += 1;
     }
     Ok(written)
 }
