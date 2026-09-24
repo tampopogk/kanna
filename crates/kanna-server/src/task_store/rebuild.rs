@@ -181,6 +181,10 @@ pub struct TaskSnapshot {
     /// disk-first commit made durable in this `task.json`, which may not be
     /// files yet.
     pub in_flight: Vec<(String, Vec<u8>)>,
+    /// `ledger.readable_through` (T13d): the ordering watermark a disk-first
+    /// commit stored. Never trusted: a disk-mode start recomputes it from
+    /// the ledger.
+    pub readable_through: Option<i64>,
 }
 
 /// One published ledger file and its exact bytes.
@@ -271,7 +275,12 @@ pub fn parse_task_snapshot(bytes: &[u8]) -> Result<TaskSnapshot, String> {
             .collect::<Result<_, _>>()?,
         Some(_) => return Err("task.json ledger.in_flight is not a list".into()),
     };
+    let readable_through = value
+        .get("ledger")
+        .and_then(|ledger| ledger.get(super::disk_first::READABLE_THROUGH_KEY))
+        .and_then(Value::as_i64);
     Ok(TaskSnapshot {
+        readable_through,
         in_flight,
         state,
         state_reflects_through,

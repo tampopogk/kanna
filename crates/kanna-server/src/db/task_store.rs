@@ -332,16 +332,17 @@ impl Db {
     }
 
     /// The task's readable watermark in `disk` mode (T13d): every sequence
-    /// at or below it is an entry durable on disk or a gap. Disk-first
-    /// commits write their own entries whatever reservation is open, so a
-    /// file can exist past an open reservation; consumers that read in order
-    /// stop at the first open reservation, and a released reservation is a
-    /// gap they pass.
+    /// at or below it is an entry whose file is synced on disk (published),
+    /// or a gap (a released or abandoned reservation, which leaves no row).
+    /// It stops below the first open reservation and below the first entry
+    /// whose file is not written yet. Disk-first commits write their own
+    /// entries whatever reservation is open, so a file can exist past it;
+    /// consumers that read in order stop at it.
     pub(crate) fn ledger_readable_through(&self, task_id: &str) -> Result<i64, rusqlite::Error> {
         self.conn.query_row(
             "SELECT COALESCE(
                  (SELECT MIN(sequence) - 1 FROM task_ledger_entry
-                  WHERE task_id = ?1 AND kind IS NULL),
+                  WHERE task_id = ?1 AND (kind IS NULL OR published_at IS NULL)),
                  (SELECT MAX(sequence) FROM task_ledger_entry WHERE task_id = ?1),
                  0)",
             [task_id],

@@ -905,10 +905,26 @@ async fn a_disk_first_fixture_round_trips_through_its_task_directories() {
         .in_flight
         .iter()
         .all(|(name, _)| directory.path.join("ledger").join(name).exists())));
+    // Every task's stored watermark is the ledger's, and covers only files
+    // that are on disk (no gap without a file below it: nothing is
+    // reserved once the fixture settles).
+    for directory in &scan.tasks {
+        let task = &directory.snapshot.task_id;
+        let Some(through) = directory.snapshot.readable_through else {
+            continue;
+        };
+        assert_eq!(through, db.ledger_readable_through(task).unwrap(), "{task}");
+        let files: Vec<i64> = crate::task_store::read_ledger(&directory.path)
+            .unwrap()
+            .iter()
+            .map(|file| file.sequence)
+            .collect();
+        assert_eq!(files.last().copied().unwrap_or(0), through, "{task}");
+    }
     assert!(scan
         .tasks
         .iter()
-        .any(|directory| !directory.snapshot.in_flight.is_empty()));
+        .any(|directory| directory.snapshot.readable_through.is_some()));
     let outcome = crate::task_store::authority::start(&db, &fixture.db_path, None).unwrap();
     let report = outcome.reconcile.unwrap();
     assert!(

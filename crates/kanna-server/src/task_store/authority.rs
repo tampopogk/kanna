@@ -1121,6 +1121,23 @@ pub fn reconcile_from_disk(
     // A reconciled task's fence came down with its repair. A flagged task
     // found in sync needs nothing more; one that failed stays flagged, and
     // is retried at the publisher's next pass (or the next startup).
+    // A stored watermark the ledger does not support (T13d): after a
+    // rebuild (no reservation survives it, so the gaps it held are closed),
+    // or a kill between an entry's file and the watermark's advance. The
+    // task owes a task.json with the watermark its ledger gives.
+    for directory in scan.tasks.iter().filter(|dir| {
+        in_sync.contains(&dir.snapshot.task_id) && dir.snapshot.readable_through.is_some()
+    }) {
+        let task = &directory.snapshot.task_id;
+        let stored = directory.snapshot.readable_through;
+        let ledger = db.ledger_readable_through(task).map_err(db_error)?;
+        if stored != Some(ledger) {
+            report.diagnostics.push(format!(
+                "{task}: task.json's readable watermark {stored:?} is not the ledger's {ledger}; rewritten"
+            ));
+            db.mark_task_snapshot_dirty(task).map_err(db_error)?;
+        }
+    }
     for task in &in_sync {
         db.clear_disk_divergence(task).map_err(db_error)?;
         super::disk_first::unfence(&root, task);

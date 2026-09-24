@@ -440,12 +440,24 @@ each task it touched:
 
 **Durability and ordering are separate.** Files are durable as their
 commits make them. What consumers read in order is the watermark
-`ledger.readable_through` (`disk` mode only): the highest sequence below
-the task's first open reservation, passing released or abandoned
-reservations as gaps. Session delivery resolves a session's triggering
-result only from entries at or below it. Filling or releasing a reservation
-(including startup's release of reservations a dead process left) rewrites
-`task.json` and moves the watermark on. The rebuild and the reconciler read
+`ledger.readable_through` (`disk` mode only), under one invariant: every
+sequence at or below it is an entry whose file is already synced, or a gap
+(a released or abandoned reservation). It stops below the first open
+reservation and below any entry whose file is not written yet.
+
+- Writers: the commit point (step 2) records the watermark as it stood;
+  the entry files are written and synced (file and directory); only then is
+  `task.json` rewritten with the watermark over them, before SQLite commits.
+  A file that fails to write keeps the watermark below it until a later
+  flush writes it. Filling or releasing a reservation (including startup's
+  release of reservations a dead process left) moves it on the same way.
+- Readers (session delivery's triggering result) read the watermark once,
+  then only files at or below it: entry files are immutable, so that view
+  is consistent however commits interleave.
+- A stored watermark is never trusted: every `disk`-mode start compares it
+  with the one the ledger gives (after a rebuild no reservation survives,
+  so the ledger's gaps are closed) and rewrites `task.json` when they
+  differ, behind or ahead. The rebuild and the reconciler read
 every durable file; a reconciliation publishes in-flight files only for the
 tasks it reconciles. (`sql` mode is unchanged: its publisher still writes
 files in order and stops at a reservation.)

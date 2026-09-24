@@ -18,16 +18,18 @@
 //!    transaction's entries) and, under `ledger.in_flight`, the exact bytes
 //!    of every entry not yet published as a file. One atomic rename makes
 //!    the whole mutation durable on disk, rows and entries together.
-//! 3. **Publish the entry files**, in sequence order, acknowledging each,
-//!    whatever reservation another operation holds below them: durability
-//!    is never held back. Ordering is the separate `ledger.readable_through`
-//!    watermark written in step 2: the highest sequence below the task's
-//!    first open reservation (released reservations are gaps). Consumers
-//!    that read in order ([`super::resolve_trigger`]) stop there; closing a
-//!    reservation (filling or releasing it) rewrites `task.json` and moves
-//!    the watermark on. A failure here does not undo the
-//!    mutation: the entry is durable in `task.json` and is published later.
-//! 4. SQLite commits. If that fails, the disk already holds the mutation:
+//! 3. **Publish the entry files**, in sequence order, each written and
+//!    synced (file and directory) and acknowledged, whatever reservation
+//!    another operation holds below them: durability is never held back. A
+//!    failure here does not undo the mutation: the entry is durable in
+//!    `task.json` and is published later.
+//! 4. **Advance the watermark.** Ordering is the separate
+//!    `ledger.readable_through`: every sequence at or below it is a synced
+//!    entry file or a gap (a released reservation). Step 2 recorded it as
+//!    it stood; once the files are synced `task.json` is rewritten with it
+//!    over them. Consumers that read in order ([`super::resolve_trigger`])
+//!    read it once and then only the files at or below it.
+//! 5. SQLite commits. If that fails, the disk already holds the mutation:
 //!    the task is fenced and reconciled from its directory, so the mutation
 //!    stands even though its caller saw an error.
 //!
@@ -158,6 +160,10 @@ pub(crate) enum CrashPoint {
     AfterTaskJson,
     /// The entry with this sequence published; later ones not.
     AfterEntry(i64),
+    /// Every entry file synced; the watermark not yet advanced over them.
+    BeforeWatermark,
+    /// Not a crash: writing this entry's file fails, as an I/O error would.
+    PublishFails(i64),
     /// Every record written; SQLite not committed.
     BeforeCommit,
 }
@@ -329,40 +335,57 @@ fn publish_task(
     // Every committed entry is written now, in sequence order, whatever
     // reservation another operation holds below it: an open reservation
     // never holds back another commit's durability. What consumers may read
-    // in order is the separate watermark (`ledger.readable_through`).
+    // in order is the separate watermark (`ledger.readable_through`), which
+    // only ever covers files already synced: the commit point carries this
+    // commit's entries in flight under the watermark as it stood, and the
+    // watermark moves on only once their files are on disk.
     let publishable: Vec<(i64, String, Vec<u8>)> = filled
         .iter()
         .map(|(sequence, file_name, payload)| (*sequence, (*file_name).clone(), (*payload).clone()))
         .collect();
-    let mut in_flight = Vec::with_capacity(publishable.len());
-    for (sequence, file_name, payload) in &publishable {
-        let text = std::str::from_utf8(payload).map_err(|error| {
+    let render = |written: &[String]| -> Result<(Vec<u8>, i64), Refusal> {
+        let db_error =
+            |error: rusqlite::Error| Refusal::new(format!("db error: {error}"), written.to_vec());
+        let mut in_flight = Vec::new();
+        for entry in db.pending_ledger_entries(task_id).map_err(db_error)? {
+            let (Some(file_name), Some(payload)) = (entry.file_name, entry.payload) else {
+                continue;
+            };
+            let text = String::from_utf8(payload).map_err(|error| {
+                Refusal::new(
+                    format!(
+                        "ledger entry {} of {task_id} is not UTF-8: {error}",
+                        entry.sequence
+                    ),
+                    written.to_vec(),
+                )
+            })?;
+            in_flight.push(
+                json!({ "sequence": entry.sequence, "file_name": file_name, "payload": text }),
+            );
+        }
+        let readable_through = db.ledger_readable_through(task_id).map_err(db_error)?;
+        let mut facts = db
+            .task_snapshot_facts(task_id)
+            .map_err(db_error)?
+            .unwrap_or(Value::Null);
+        if let Some(ledger) = facts.get_mut("ledger").and_then(Value::as_object_mut) {
+            ledger.insert("published_through".into(), json!(readable_through));
+            ledger.insert(READABLE_THROUGH_KEY.into(), json!(readable_through));
+            if !in_flight.is_empty() {
+                ledger.insert(IN_FLIGHT_KEY.into(), Value::Array(in_flight));
+            }
+        }
+        let mut bytes = serde_json::to_vec_pretty(&facts).map_err(|error| {
             Refusal::new(
-                format!("ledger entry {sequence} of {task_id} is not UTF-8: {error}"),
+                format!("render task.json of {task_id}: {error}"),
                 written.to_vec(),
             )
         })?;
-        in_flight.push(json!({ "sequence": sequence, "file_name": file_name, "payload": text }));
-    }
-    let readable_through = db.ledger_readable_through(task_id).map_err(db_error)?;
-    let mut facts = db
-        .task_snapshot_facts(task_id)
-        .map_err(db_error)?
-        .unwrap_or(Value::Null);
-    if let Some(ledger) = facts.get_mut("ledger").and_then(Value::as_object_mut) {
-        ledger.insert("published_through".into(), json!(readable_through));
-        ledger.insert(READABLE_THROUGH_KEY.into(), json!(readable_through));
-        if !in_flight.is_empty() {
-            ledger.insert(IN_FLIGHT_KEY.into(), Value::Array(in_flight));
-        }
-    }
-    let mut bytes = serde_json::to_vec_pretty(&facts).map_err(|error| {
-        Refusal::new(
-            format!("render task.json of {task_id}: {error}"),
-            written.to_vec(),
-        )
-    })?;
-    bytes.push(b'\n');
+        bytes.push(b'\n');
+        Ok((bytes, readable_through))
+    };
+    let (bytes, readable_before) = render(written)?;
 
     if crashes_here(root, task_id, CrashPoint::BeforeTaskJson) {
         return Err(crash(task_id, CrashPoint::BeforeTaskJson));
@@ -381,8 +404,15 @@ fn publish_task(
     }
     let ledger = dir.join("ledger");
     for (sequence, file_name, payload) in &publishable {
-        if let Err(error) = publish_immutable(&ledger, file_name, payload) {
+        // Written and synced, file and directory, before it counts.
+        let published = if crashes_here(root, task_id, CrashPoint::PublishFails(*sequence)) {
+            Err("injected publication failure".to_string())
+        } else {
+            publish_immutable(&ledger, file_name, payload)
+        };
+        if let Err(error) = published {
             // Durable in task.json already; published by a later flush.
+            // The watermark stays below it until then.
             log::warn!("task {task_id}: ledger entry {sequence} stays in flight: {error}");
             db.record_ledger_publish_error(task_id, *sequence, &error)
                 .map_err(db_error_after)?;
@@ -393,6 +423,20 @@ fn publish_task(
         if crashes_here(root, task_id, CrashPoint::AfterEntry(*sequence)) {
             return Err(crash(task_id, CrashPoint::AfterEntry(*sequence)));
         }
+    }
+    // The files are synced: the watermark may now cover them.
+    if db
+        .ledger_readable_through(task_id)
+        .map_err(db_error_after)?
+        != readable_before
+    {
+        if crashes_here(root, task_id, CrashPoint::BeforeWatermark) {
+            return Err(crash(task_id, CrashPoint::BeforeWatermark));
+        }
+        let (bytes, _) = render(&now_written)?;
+        replace_atomically(&dir, "task.json", &bytes).map_err(|error| {
+            Refusal::new(format!("task {task_id}: {error}"), now_written.clone())
+        })?;
     }
     if crashes_here(root, task_id, CrashPoint::BeforeCommit) {
         return Err(crash(task_id, CrashPoint::BeforeCommit));

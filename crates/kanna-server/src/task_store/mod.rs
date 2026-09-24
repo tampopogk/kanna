@@ -928,6 +928,37 @@ pub fn readable_through(task_dir: &Path) -> Option<i64> {
         .as_i64()
 }
 
+#[cfg(test)]
+thread_local! {
+    static BETWEEN_WATERMARK_AND_FILES: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+}
+
+/// Run `between` once, in this thread's next [`read_readable_ledger`], after
+/// it read the watermark and before it lists the files: a commit landing
+/// in between.
+#[cfg(test)]
+pub(crate) fn interleave_ledger_read(between: impl FnOnce() + 'static) {
+    BETWEEN_WATERMARK_AND_FILES.with(|slot| *slot.borrow_mut() = Some(Box::new(between)));
+}
+
+/// The entries a consumer reads in order. In `disk` mode (T13d) the
+/// watermark is read once, first, and only files at or below it are
+/// returned: every entry at or below it is a synced file or a gap, and files
+/// are immutable, so this is a consistent view however commits interleave.
+/// Without a watermark (`sql` mode) every published file.
+pub fn read_readable_ledger(task_dir: &Path) -> Result<Vec<LedgerFile>, String> {
+    let through = readable_through(task_dir);
+    #[cfg(test)]
+    if let Some(between) = BETWEEN_WATERMARK_AND_FILES.with(|slot| slot.borrow_mut().take()) {
+        between();
+    }
+    let mut files = read_ledger(task_dir)?;
+    if let Some(through) = through {
+        files.retain(|file| file.sequence <= through);
+    }
+    Ok(files)
+}
+
 /// Every published entry of a task directory, in sequence order: every
 /// durable file. In `disk` mode a file may sit past the readable watermark
 /// ([`readable_through`]); consumers that read in order stop there.
@@ -1066,18 +1097,13 @@ pub fn resolve_trigger(task_dir: &Path, stage: &str) -> Option<TriggeringResult>
     if let Some(pending) = PENDING_TRIGGER.with(|slot| slot.borrow().clone()) {
         return Some(pending);
     }
-    let mut files = match read_ledger(task_dir) {
+    let files = match read_readable_ledger(task_dir) {
         Ok(files) => files,
         Err(error) => {
             log::warn!("cannot read task ledger {}: {error}", task_dir.display());
             return None;
         }
     };
-    // Disk-first (T13d): a file past the readable watermark is durable but
-    // not yet in order (a reservation below it is open).
-    if let Some(through) = readable_through(task_dir) {
-        files.retain(|file| file.sequence <= through);
-    }
     resolve_trigger_in(&files, stage)
 }
 

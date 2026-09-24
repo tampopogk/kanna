@@ -1690,3 +1690,248 @@ fn a_commit_behind_an_open_reservation_is_durable_and_readable_once_it_closes() 
     );
     assert!(db.ledger_tasks_with_pending_work().unwrap().is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Review round 3 (T13d): the readable watermark covers synced files only
+// ---------------------------------------------------------------------------
+
+fn record_result(db: &Db, source: &str, message: &str, reserved: Option<i64>) -> String {
+    db.enqueue_ledger_entry(crate::db::task_store::NewLedgerEntry {
+        task_id: "t1",
+        kind: crate::db::task_store::LedgerEntryKind::Result,
+        operation_id: None,
+        source_kind: "test_result",
+        source_id: source,
+        source_origin: None,
+        historical: false,
+        recorded_at: None,
+        run_id: None,
+        declared_role: None,
+        channel_identity: &ChannelIdentity::Server,
+        body: json!({ "status": "success", "stage": "in progress" }),
+        message: Some(message),
+        hold_events_after: None,
+        reserved_sequence: reserved,
+    })
+    .unwrap()
+    .entry_id
+}
+
+fn record_transition(db: &Db, triggering_result_id: &str) {
+    db.enqueue_ledger_entry(crate::db::task_store::NewLedgerEntry {
+        task_id: "t1",
+        kind: crate::db::task_store::LedgerEntryKind::Transition,
+        operation_id: None,
+        source_kind: "test_transition",
+        source_id: "to-review",
+        source_origin: None,
+        historical: false,
+        recorded_at: None,
+        run_id: None,
+        declared_role: None,
+        channel_identity: &ChannelIdentity::Server,
+        body: json!({ "from_stage": "in progress", "to_stage": "review",
+                      "triggering_result_id": triggering_result_id }),
+        message: None,
+        hold_events_after: None,
+        reserved_sequence: None,
+    })
+    .unwrap();
+}
+
+fn trigger_message(dir: &Path) -> Option<String> {
+    crate::task_store::resolve_trigger(dir, "review").map(|trigger| trigger.message)
+}
+
+/// A disk installation where `t1` holds an earlier result, a reservation
+/// at N, and a committed transition at N+1 that names the result N will
+/// hold. Returns the directory and N.
+fn transition_ahead_of_its_result(label: &str) -> (Db, String, PathBuf, i64) {
+    let (db, db_path, task_json) = disk_installation(label);
+    let dir = task_json.parent().unwrap().to_path_buf();
+    record_result(&db, "earlier", "the earlier result", None);
+    let reserved = db.reserve_ledger_sequence("t1").unwrap();
+    record_transition(&db, &crate::db::task_store::ledger_entry_id("t1", reserved));
+    assert_eq!(
+        crate::task_store::readable_through(&dir),
+        Some(reserved - 1)
+    );
+    assert_eq!(trigger_message(&dir).as_deref(), Some("the earlier result"));
+    (db, db_path, dir, reserved)
+}
+
+/// Filling reservation N whose file cannot be written yet (the commit
+/// stands, the entry is durable in task.json): the watermark stays below N,
+/// so no reader sees the transition at N+1 without the result it names.
+/// Once N's file is written the watermark covers both.
+#[test]
+fn a_filled_reservation_whose_file_is_not_written_yet_is_never_read_past() {
+    use crate::task_store::disk_first::{crash_at, CrashPoint};
+    let (db, db_path, dir, reserved) = transition_ahead_of_its_result("unwritten-fill");
+    let file = dir
+        .join("ledger")
+        .join(crate::db::task_store::ledger_file_name(
+            reserved,
+            crate::db::task_store::LedgerEntryKind::Result,
+        ));
+    crash_at(
+        &root_for_db(&db_path),
+        "t1",
+        CrashPoint::PublishFails(reserved),
+    );
+    record_result(&db, "filled", "the filled result", Some(reserved));
+    assert!(!file.exists());
+    assert!(
+        crate::task_store::readable_through(&dir).unwrap() < reserved,
+        "{:?}",
+        crate::task_store::readable_through(&dir)
+    );
+    assert_eq!(trigger_message(&dir).as_deref(), Some("the earlier result"));
+
+    assert!(flush_task(&db, &db_path, "t1").is_ok());
+    assert!(file.is_file());
+    assert_eq!(
+        crate::task_store::readable_through(&dir),
+        Some(reserved + 1)
+    );
+    assert_eq!(trigger_message(&dir).as_deref(), Some("the filled result"));
+}
+
+/// A reader that read the watermark before a commit landed and lists the
+/// files after it acts on the view as of the watermark it read: it never
+/// sees the transition at N+1 without the result at N.
+#[test]
+fn resolve_trigger_concurrent_with_a_commit_never_sees_a_partial_view() {
+    let (_db, db_path, dir, reserved) = transition_ahead_of_its_result("interleaved-read");
+    let writer = db_path.clone();
+    crate::task_store::interleave_ledger_read(move || {
+        let db = Db::open(&writer).unwrap();
+        record_result(&db, "filled", "the filled result", Some(reserved));
+    });
+    assert_eq!(trigger_message(&dir).as_deref(), Some("the earlier result"));
+    assert!(dir
+        .join("ledger")
+        .join(crate::db::task_store::ledger_file_name(
+            reserved,
+            crate::db::task_store::LedgerEntryKind::Result,
+        ))
+        .exists());
+    assert_eq!(trigger_message(&dir).as_deref(), Some("the filled result"));
+}
+
+/// Killed after the entry's file is synced and before the watermark moves:
+/// the entry is durable, the stored watermark is behind it, and both the
+/// restart and a rebuild from disk alone recompute the watermark over it.
+#[test]
+fn a_kill_between_the_entry_file_and_the_watermark_is_recomputed_on_restart_and_rebuild() {
+    use crate::task_store::disk_first::{crash_at, CrashPoint};
+    let (db, db_path, task_json) = disk_installation("before-watermark");
+    let dir = task_json.parent().unwrap().to_path_buf();
+    let root = root_for_db(&db_path);
+    operator_input(&db, "t1", "readable");
+    let before = crate::task_store::readable_through(&dir).unwrap();
+    crash_at(&root, "t1", CrashPoint::BeforeWatermark);
+    assert!(operator_input_result(&db, "t1", "durable, not yet readable").is_err());
+    let entry = before + 1;
+    assert!(dir
+        .join("ledger")
+        .join(crate::db::task_store::ledger_file_name(
+            entry,
+            crate::db::task_store::LedgerEntryKind::Input,
+        ))
+        .is_file());
+    assert_eq!(crate::task_store::readable_through(&dir), Some(before));
+    drop(db);
+
+    // A rebuild from disk alone.
+    let rebuilt_path = format!("{db_path}.rebuilt");
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{rebuilt_path}{suffix}"));
+    }
+    let (scan, _) = scan_store_records(&root)
+        .unwrap()
+        .for_installation(&installation_id(&db_path));
+    rebuild_scan_into_new_database(scan, Path::new(&rebuilt_path)).unwrap();
+    assert_eq!(
+        Db::open(&rebuilt_path)
+            .unwrap()
+            .ledger_readable_through("t1")
+            .unwrap(),
+        entry
+    );
+
+    // The restart.
+    let db = Db::open(&db_path).unwrap();
+    let report = start(&db, &db_path, None).unwrap().reconcile.unwrap();
+    assert!(report.failed.is_empty(), "{report:#?}");
+    assert_eq!(crate::task_store::readable_through(&dir), Some(entry));
+    assert_eq!(
+        input_messages(&db, "t1"),
+        [
+            "readable".to_string(),
+            "durable, not yet readable".to_string()
+        ]
+    );
+}
+
+/// A stored watermark ahead of what the files support (an entry's file
+/// lost) is never trusted: the rebuild recomputes it from the files.
+#[test]
+fn a_stored_watermark_ahead_of_the_files_is_corrected_on_rebuild() {
+    let (db, db_path, task_json) = disk_installation("watermark-ahead");
+    let dir = task_json.parent().unwrap().to_path_buf();
+    record_result(&db, "only", "the only result", None);
+    let through = crate::task_store::readable_through(&dir).unwrap();
+    drop(db);
+    let mut snapshot: Value = serde_json::from_slice(&std::fs::read(&task_json).unwrap()).unwrap();
+    snapshot["ledger"]["readable_through"] = json!(through + 5);
+    std::fs::write(&task_json, serde_json::to_vec_pretty(&snapshot).unwrap()).unwrap();
+
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{db_path}{suffix}"));
+    }
+    rebuild_missing_database(&db_path).unwrap();
+    let db = Db::open(&db_path).unwrap();
+    let report = start(&db, &db_path, None).unwrap().reconcile.unwrap();
+    assert!(report.failed.is_empty(), "{report:#?}");
+    assert_eq!(crate::task_store::readable_through(&dir), Some(through));
+    assert_eq!(db.ledger_readable_through("t1").unwrap(), through);
+    assert_eq!(
+        crate::task_store::resolve_trigger(&dir, "in progress").map(|trigger| trigger.message),
+        Some("the only result".to_string())
+    );
+}
+
+/// Review round 3, finding 2: with A's reservation still open at N and B
+/// committed at N+1, SQLite is lost and rebuilt from disk. No reservation
+/// survives a rebuild, so the startup recomputes the watermark over B and
+/// resolve_trigger sees it.
+#[test]
+fn a_rebuild_while_a_reservation_is_open_recovers_the_watermark() {
+    let (db, db_path, task_json) = disk_installation("rebuild-open");
+    let dir = task_json.parent().unwrap().to_path_buf();
+    let reserved = db.reserve_ledger_sequence("t1").unwrap();
+    let b = record_result(&db, "b", "B, behind the reservation", None);
+    assert_eq!(
+        b,
+        crate::db::task_store::ledger_entry_id("t1", reserved + 1)
+    );
+    assert_eq!(
+        crate::task_store::readable_through(&dir),
+        Some(reserved - 1)
+    );
+    drop(db);
+
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{db_path}{suffix}"));
+    }
+    rebuild_missing_database(&db_path).unwrap();
+    let db = Db::open(&db_path).unwrap();
+    let report = start(&db, &db_path, None).unwrap().reconcile.unwrap();
+    assert!(report.failed.is_empty(), "{report:#?}");
+    assert!(crate::task_store::readable_through(&dir).unwrap() > reserved);
+    assert_eq!(
+        crate::task_store::resolve_trigger(&dir, "in progress").map(|trigger| trigger.entry_id),
+        Some(b)
+    );
+}
