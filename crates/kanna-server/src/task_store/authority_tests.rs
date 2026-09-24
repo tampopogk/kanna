@@ -104,7 +104,8 @@ fn installations_sharing_a_root_never_take_in_each_others_tasks() {
     let outcome = start(&production, &production_path, Some(Mode::Disk)).unwrap();
     assert_eq!(outcome.mode, Mode::Disk, "{:?}", outcome.refused);
     register(&shared, &staging_path);
-    assert!(flush_all(&staging, &staging_path).is_empty());
+    let failures = flush_all(&staging, &staging_path);
+    assert!(failures.is_empty(), "{failures:?}");
 
     let (scoped, foreign) = scan_store_records(&shared)
         .unwrap()
@@ -252,7 +253,7 @@ fn a_switch_that_cannot_be_verified_is_refused_and_retried() {
 #[test]
 fn the_switch_publishes_closed_tasks_that_were_never_on_disk() {
     let (db, db_path) = installation("closed", "repo-c", &["open-1", "closed-1"]);
-    db.connection_for_e2e_tests()
+    outside_writer(db.db_path())
         .execute_batch(
             "UPDATE pipeline_item SET closed_at = '2026-09-01 00:00:00' WHERE id = 'closed-1';
              UPDATE task_ledger_snapshot SET revision = 0, published_revision = 0
@@ -271,8 +272,8 @@ fn the_switch_publishes_closed_tasks_that_were_never_on_disk() {
         .exists());
 }
 
-/// A removal the database committed, whose tombstone the disk does not
-/// hold yet, stands: the stale `task.json` does not bring the task back.
+/// A removal in `disk` mode writes its tombstone before the database
+/// commits it (T13d), and a restart keeps it removed.
 #[test]
 fn a_committed_removal_is_not_undone_by_a_stale_task_json() {
     let (db, db_path) = installation("removal", "repo-x", &["keep", "gone"]);
@@ -283,9 +284,10 @@ fn a_committed_removal_is_not_undone_by_a_stale_task_json() {
     );
     db.delete_task_creation_artifacts("gone").unwrap();
     let task_json = task_dir(&root_for_db(&db_path), "repo-x", "gone").join("task.json");
-    assert!(!super::super::rebuild::is_tombstone(
+    assert!(super::super::rebuild::is_tombstone(
         &std::fs::read(&task_json).unwrap()
     ));
+    assert!(db.pending_disk_removals().unwrap().is_empty());
 
     let report = start(&db, &db_path, None).unwrap().reconcile.unwrap();
     assert!(
@@ -344,12 +346,23 @@ fn records_the_disk_lost_are_written_again() {
 // Review round 1
 // ---------------------------------------------------------------------------
 
+/// A writer outside this build's disk-first gate (an older build, or a
+/// person with `sqlite3`): it commits SQLite first whatever the mode, which
+/// is how these fixtures put the database behind or ahead of the disk.
+fn outside_writer(db_path: &str) -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open(db_path).unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    conn
+}
+
 /// A copy of the database as it stands, to restore later: the database
 /// goes back while the disk keeps what happened since.
 fn backup(db: &Db, db_path: &str) -> String {
     let copy = format!("{db_path}.backup");
     let _ = std::fs::remove_file(&copy);
-    db.connection_for_e2e_tests()
+    outside_writer(db.db_path())
         .execute("VACUUM main INTO ?1", [&copy])
         .unwrap();
     copy
@@ -375,6 +388,19 @@ fn operator_input(db: &Db, task: &str, text: &str) -> i64 {
     .id
 }
 
+fn operator_input_result(
+    db: &Db,
+    task: &str,
+    text: &str,
+) -> Result<Option<crate::db::TaskInputRecord>, rusqlite::Error> {
+    db.record_task_input(
+        task,
+        crate::db::TaskInputSource::Operator,
+        &ChannelIdentity::Unknown,
+        text,
+    )
+}
+
 fn revision(db: &Db, task: &str) -> i64 {
     db.task_snapshot_revisions(task).unwrap().unwrap().0
 }
@@ -389,7 +415,7 @@ fn flagged_installation(label: &str) -> (Db, String, PathBuf) {
         Mode::Disk
     );
     let copy = backup(&db, &db_path);
-    db.connection_for_e2e_tests()
+    outside_writer(db.db_path())
         .execute(
             "UPDATE pipeline_item SET display_name = 'on disk' WHERE id = 't1'",
             [],
@@ -402,10 +428,12 @@ fn flagged_installation(label: &str) -> (Db, String, PathBuf) {
     drop(db);
     let db = restore(&db_path, &copy);
     let root = root_for_db(&db_path);
-    db.mark_task_snapshot_dirty("t1").unwrap();
-    let error = flush_task(&db, &db_path, "t1").unwrap_err();
+    // Disk-first (T13d): the restored database's next write finds the
+    // disk ahead before anything is written, and is refused.
+    let error = db.mark_task_snapshot_dirty("t1").unwrap_err().to_string();
     assert!(error.contains("beyond the database's"), "{error}");
     assert!(is_diverged(&db, "t1"));
+    assert!(flush_task(&db, &db_path, "t1").is_err());
     let task_json = task_dir(&root, &format!("repo-{label}"), "t1").join("task.json");
     (db, db_path, task_json)
 }
@@ -424,14 +452,22 @@ fn a_flagged_task_publishes_nothing_until_it_is_repaired() {
     let disk_revision = serde_json::from_slice::<Value>(&on_disk).unwrap()["snapshot_revision"]
         .as_i64()
         .unwrap();
-    db.connection_for_e2e_tests()
+    outside_writer(db.db_path())
         .execute(
             "UPDATE pipeline_item SET display_name = 'live write' WHERE id = 't1'",
             [],
         )
         .unwrap();
+    // This build refuses every write to the fenced task (T13d); only a
+    // writer outside the gate can raise its revision past the disk's.
+    assert!(db.mark_task_snapshot_dirty("t1").is_err());
     while revision(&db, "t1") <= disk_revision + 1 {
-        db.mark_task_snapshot_dirty("t1").unwrap();
+        outside_writer(db.db_path())
+            .execute(
+                "UPDATE task_ledger_snapshot SET revision = revision + 1 WHERE task_id = 't1'",
+                [],
+            )
+            .unwrap();
     }
     assert!(flush_task(&db, &db_path, "t1").is_err());
     assert!(!flush_all(&db, &db_path).is_empty());
@@ -457,9 +493,7 @@ fn a_write_after_the_comparison_survives_the_repair() {
     let root = root_for_db(&db_path);
     let writer_path = db_path.clone();
     interleave_before_reconcile(&root, move || {
-        Db::open(&writer_path)
-            .unwrap()
-            .connection_for_e2e_tests()
+        outside_writer(&writer_path)
             .execute_batch(
                 "INSERT INTO task_transfer (id, direction, status, source_task_id, local_task_id)
                  VALUES ('xfer-live', 'outgoing', 'streaming', 't1', 't1');
@@ -480,7 +514,7 @@ fn a_write_after_the_comparison_survives_the_repair() {
     );
     assert!(is_diverged(&db, "t1"));
     let claims = |db: &Db| -> i64 {
-        db.connection_for_e2e_tests()
+        outside_writer(db.db_path())
             .query_row(
                 "SELECT COUNT(*) FROM task_transfer_workflow_claim
                  WHERE pipeline_item_id = 't1' AND transfer_id = 'xfer-live'",
@@ -530,8 +564,7 @@ fn a_reused_input_id_never_rewrites_another_tasks_input() {
         ["a"],
         "{report:#?}"
     );
-    let inputs: Vec<(i64, String, String)> = db
-        .connection_for_e2e_tests()
+    let inputs: Vec<(i64, String, String)> = outside_writer(db.db_path())
         .prepare("SELECT id, task_id, message FROM task_input ORDER BY id")
         .unwrap()
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
@@ -555,8 +588,7 @@ fn a_reused_input_id_never_rewrites_another_tasks_input() {
     // A later startup changes nothing.
     let again = start(&db, &db_path, None).unwrap().reconcile.unwrap();
     assert!(again.reconciled.is_empty(), "{again:#?}");
-    let after: i64 = db
-        .connection_for_e2e_tests()
+    let after: i64 = outside_writer(db.db_path())
         .query_row("SELECT COUNT(*) FROM task_input", [], |row| row.get(0))
         .unwrap();
     assert_eq!(after, 2);
@@ -577,13 +609,20 @@ fn a_counter_the_disk_does_not_hold_is_never_lowered() {
     assert!(flush_all(&db, &db_path).is_empty());
     drop(db);
     let db = restore(&db_path, &copy);
-    let number = db.reserve_task_branch_number("t1", 0).unwrap();
-    assert!(number >= 1);
+    // This build refuses the write (the disk is ahead, T13d); a counter the
+    // database holds and the disk does not comes from outside the gate.
+    assert!(db.reserve_task_branch_number("t1", 0).is_err());
+    let number = 7;
+    outside_writer(db.db_path())
+        .execute(
+            "INSERT INTO task_branch_counter (task_id, last_allocated) VALUES ('t1', ?1)",
+            [number],
+        )
+        .unwrap();
 
     let report = start(&db, &db_path, None).unwrap().reconcile.unwrap();
     assert_eq!(report.reconciled.len(), 1, "{report:#?}");
-    let counter: Option<i64> = db
-        .connection_for_e2e_tests()
+    let counter: Option<i64> = outside_writer(db.db_path())
         .query_row(
             "SELECT last_allocated FROM task_branch_counter WHERE task_id = 't1'",
             [],
@@ -623,7 +662,7 @@ fn an_explicit_request_for_the_current_mode_withdraws_a_pending_switch() {
 // ---------------------------------------------------------------------------
 
 fn inputs(db: &Db) -> Vec<(i64, String, String)> {
-    db.connection_for_e2e_tests()
+    outside_writer(db.db_path())
         .prepare("SELECT id, task_id, message FROM task_input ORDER BY id")
         .unwrap()
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
@@ -695,7 +734,7 @@ fn a_moved_input_never_lands_on_another_projected_input() {
 fn a_join_member_follows_its_moved_input() {
     let (db, db_path, a_ids, b_id) =
         restored_with_reused_input_id("join-input", &["the child's outcome"], |db, ids| {
-            db.connection_for_e2e_tests()
+            outside_writer(db.db_path())
                 .execute_batch(&format!(
                     "INSERT INTO task_join (id, parent_task_id, base_sha)
                      VALUES ('join-a', 'a', 'sha');
@@ -709,8 +748,7 @@ fn a_join_member_follows_its_moved_input() {
         });
     let report = start(&db, &db_path, None).unwrap().reconcile.unwrap();
     assert_eq!(report.reconciled.len(), 1, "{report:#?}");
-    let member: i64 = db
-        .connection_for_e2e_tests()
+    let member: i64 = outside_writer(db.db_path())
         .query_row(
             "SELECT input_id FROM task_join_member WHERE join_id = 'join-a'",
             [],
@@ -720,8 +758,7 @@ fn a_join_member_follows_its_moved_input() {
     assert_ne!(member, a_ids[0]);
     assert_ne!(member, b_id);
     // No member names an input of another task, or none at all.
-    let dangling: i64 = db
-        .connection_for_e2e_tests()
+    let dangling: i64 = outside_writer(db.db_path())
         .query_row(
             "SELECT COUNT(*) FROM task_join_member member
              JOIN task_join ON task_join.id = member.join_id
@@ -767,14 +804,19 @@ fn the_fence_survives_a_restart_after_the_database_caught_up() {
     let disk_revision = serde_json::from_slice::<Value>(&on_disk).unwrap()["snapshot_revision"]
         .as_i64()
         .unwrap();
-    db.connection_for_e2e_tests()
+    outside_writer(db.db_path())
         .execute(
             "UPDATE pipeline_item SET display_name = 'live write' WHERE id = 't1'",
             [],
         )
         .unwrap();
     while revision(&db, "t1") <= disk_revision + 1 {
-        db.mark_task_snapshot_dirty("t1").unwrap();
+        outside_writer(db.db_path())
+            .execute(
+                "UPDATE task_ledger_snapshot SET revision = revision + 1 WHERE task_id = 't1'",
+                [],
+            )
+            .unwrap();
     }
     drop(db);
 
@@ -798,7 +840,7 @@ fn the_fence_survives_a_restart_after_the_database_caught_up() {
 #[test]
 fn a_claim_held_by_a_failed_transfers_retry_survives_the_repair() {
     let (db, db_path, _) = flagged_installation("failed-transfer");
-    db.connection_for_e2e_tests()
+    outside_writer(db.db_path())
         .execute_batch(
             "INSERT INTO task_transfer (id, direction, status, source_task_id, local_task_id)
              VALUES ('xfer-retry', 'outgoing', 'failed', 't1', 't1');
@@ -832,7 +874,7 @@ fn a_claim_held_by_a_failed_transfers_retry_survives_the_repair() {
 #[test]
 fn a_claim_whose_transfer_has_finished_is_the_disks_to_decide() {
     let (db, db_path, _) = flagged_installation("finished-transfer");
-    db.connection_for_e2e_tests()
+    outside_writer(db.db_path())
         .execute_batch(
             "INSERT INTO task_transfer (id, direction, status, source_task_id, local_task_id)
              VALUES ('xfer-done', 'outgoing', 'failed', 't1', 't1');
@@ -846,8 +888,7 @@ fn a_claim_whose_transfer_has_finished_is_the_disks_to_decide() {
     let only = BTreeSet::from(["t1".to_string()]);
     let report = reconcile_from_disk(&db, &db_path, Some(&only)).unwrap();
     assert_eq!(report.reconciled.len(), 1, "{report:#?}");
-    let claims: i64 = db
-        .connection_for_e2e_tests()
+    let claims: i64 = outside_writer(db.db_path())
         .query_row(
             "SELECT COUNT(*) FROM task_transfer_workflow_claim WHERE pipeline_item_id = 't1'",
             [],
@@ -873,7 +914,7 @@ fn a_live_claim_is_not_rewritten_to_the_disks_settled_one() {
         start(&db, &db_path, Some(Mode::Disk)).unwrap().mode,
         Mode::Disk
     );
-    db.connection_for_e2e_tests()
+    outside_writer(db.db_path())
         .execute_batch(
             "INSERT INTO task_transfer (id, direction, status, source_task_id, local_task_id)
              VALUES ('xfer-old', 'outgoing', 'completed', 't1', 't1');
@@ -883,7 +924,7 @@ fn a_live_claim_is_not_rewritten_to_the_disks_settled_one() {
         .unwrap();
     assert!(flush_all(&db, &db_path).is_empty());
     let copy = backup(&db, &db_path);
-    db.connection_for_e2e_tests()
+    outside_writer(db.db_path())
         .execute(
             "UPDATE pipeline_item SET display_name = 'on disk' WHERE id = 't1'",
             [],
@@ -892,7 +933,7 @@ fn a_live_claim_is_not_rewritten_to_the_disks_settled_one() {
     assert!(flush_all(&db, &db_path).is_empty());
     drop(db);
     let db = restore(&db_path, &copy);
-    db.connection_for_e2e_tests()
+    outside_writer(db.db_path())
         .execute_batch(
             "INSERT INTO task_transfer (id, direction, status, source_task_id, local_task_id)
              VALUES ('xfer-live', 'outgoing', 'failed', 't1', 't1');
@@ -909,7 +950,7 @@ fn a_live_claim_is_not_rewritten_to_the_disks_settled_one() {
         Some("xfer-live")
     );
     let transfer_row = |db: &Db, id: &str| -> Option<(String, String)> {
-        db.connection_for_e2e_tests()
+        outside_writer(db.db_path())
             .query_row(
                 "SELECT status, direction FROM task_transfer WHERE id = ?",
                 [id],
@@ -925,8 +966,7 @@ fn a_live_claim_is_not_rewritten_to_the_disks_settled_one() {
     let report = reconcile_from_disk(&db, &db_path, Some(&only)).unwrap();
     assert_eq!(report.reconciled.len(), 1, "{report:#?}");
     assert_eq!(display_name(&db).as_deref(), Some("on disk"));
-    let claim: String = db
-        .connection_for_e2e_tests()
+    let claim: String = outside_writer(db.db_path())
         .query_row(
             "SELECT transfer_id FROM task_transfer_workflow_claim WHERE pipeline_item_id = 't1'",
             [],
@@ -1001,4 +1041,131 @@ fn ownership_columns_are_never_in_the_disk_wins_update_set() {
             every
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Disk-first writes (T13d)
+// ---------------------------------------------------------------------------
+
+fn disk_installation(label: &str) -> (Db, String, PathBuf) {
+    let (db, db_path) = installation(label, &format!("repo-{label}"), &["t1"]);
+    assert!(flush_all(&db, &db_path).is_empty());
+    assert_eq!(
+        start(&db, &db_path, Some(Mode::Disk)).unwrap().mode,
+        Mode::Disk
+    );
+    let task_json =
+        task_dir(&root_for_db(&db_path), &format!("repo-{label}"), "t1").join("task.json");
+    (db, db_path, task_json)
+}
+
+fn title_on_disk(task_json: &Path) -> Value {
+    serde_json::from_slice::<Value>(&std::fs::read(task_json).unwrap()).unwrap()["title"].clone()
+}
+
+/// A row change with no ledger entry is on disk when its statement
+/// returns, with nothing left for the publisher; in `sql` mode the same
+/// write waits for the publisher as before.
+#[test]
+fn a_row_change_is_on_disk_before_it_commits() {
+    let (db, _db_path, task_json) = disk_installation("row-first");
+    db.connection_for_e2e_tests()
+        .execute(
+            "UPDATE pipeline_item SET display_name = 'written first' WHERE id = 't1'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(title_on_disk(&task_json), "written first");
+    assert!(db.ledger_tasks_with_pending_work().unwrap().is_empty());
+    operator_input(&db, "t1", "an input");
+    assert!(db.ledger_tasks_with_pending_work().unwrap().is_empty());
+    let ledger = crate::task_store::read_ledger(task_json.parent().unwrap()).unwrap();
+    assert_eq!(
+        ledger
+            .last()
+            .and_then(|file| file.message.clone())
+            .as_deref(),
+        Some("an input")
+    );
+
+    let (sql, sql_path) = installation("row-sql", "repo-row-sql", &["t1"]);
+    assert!(flush_all(&sql, &sql_path).is_empty());
+    let sql_json = task_dir(&root_for_db(&sql_path), "repo-row-sql", "t1").join("task.json");
+    sql.connection_for_e2e_tests()
+        .execute(
+            "UPDATE pipeline_item SET display_name = 'published later' WHERE id = 't1'",
+            [],
+        )
+        .unwrap();
+    assert_ne!(title_on_disk(&sql_json), "published later");
+    assert!(!sql.ledger_tasks_with_pending_work().unwrap().is_empty());
+}
+
+/// A commit that reaches the outbox outside the gate (a raw transaction)
+/// is refused in `disk` mode, so no path can write SQLite first; the same
+/// transaction commits in `sql` mode.
+#[test]
+fn a_commit_outside_the_gate_is_refused_in_disk_mode() {
+    let (db, db_path, task_json) = disk_installation("outside-gate");
+    let before = title_on_disk(&task_json);
+    let refused = crate::db::disk_first::refused_commits(&db_path);
+    let raw = |db: &Db| {
+        let conn: &rusqlite::Connection = db.connection_for_e2e_tests();
+        conn.execute_batch(
+            "BEGIN IMMEDIATE;
+             UPDATE pipeline_item SET display_name = 'behind the gate' WHERE id = 't1';
+             COMMIT;",
+        )
+    };
+    assert!(raw(&db).is_err());
+    let _ = db.connection_for_e2e_tests().execute_batch("ROLLBACK");
+    assert_eq!(
+        crate::db::disk_first::refused_commits(&db_path),
+        refused + 1
+    );
+    assert_ne!(display_name(&db).as_deref(), Some("behind the gate"));
+    assert_eq!(title_on_disk(&task_json), before);
+
+    let (sql, _) = installation("outside-gate-sql", "repo-og-sql", &["t1"]);
+    raw(&sql).unwrap();
+    assert_eq!(
+        sql.get_pipeline_item("t1")
+            .unwrap()
+            .unwrap()
+            .display_name
+            .as_deref(),
+        Some("behind the gate")
+    );
+}
+
+/// SQLite fails to commit after the disk did: the caller sees the error,
+/// the task is fenced (every later write refused, durably), and the repair
+/// takes the mutation from disk, where it was committed.
+#[test]
+fn a_commit_that_fails_after_the_disk_write_is_taken_from_disk() {
+    let (db, db_path, task_json) = disk_installation("failed-commit");
+    crate::db::disk_first::fail_next_commit(&db_path);
+    let error = db
+        .connection_for_e2e_tests()
+        .execute(
+            "UPDATE pipeline_item SET display_name = 'on disk only' WHERE id = 't1'",
+            [],
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("injected COMMIT failure"), "{error}");
+    assert_eq!(title_on_disk(&task_json), "on disk only");
+    assert_ne!(display_name(&db).as_deref(), Some("on disk only"));
+    assert!(is_diverged(&db, "t1"));
+    assert!(db.is_disk_divergent("t1").unwrap());
+    assert!(operator_input_result(&db, "t1", "refused").is_err());
+    assert_eq!(title_on_disk(&task_json), "on disk only");
+
+    let only = BTreeSet::from(["t1".to_string()]);
+    let report = reconcile_from_disk(&db, &db_path, Some(&only)).unwrap();
+    assert_eq!(report.reconciled.len(), 1, "{report:#?}");
+    assert!(!is_diverged(&db, "t1"));
+    assert_eq!(display_name(&db).as_deref(), Some("on disk only"));
+    operator_input(&db, "t1", "accepted again");
+    assert!(db.ledger_tasks_with_pending_work().unwrap().is_empty());
 }

@@ -194,17 +194,25 @@ pub(crate) fn flag_divergence(db: &Db, task_id: &str, why: &str) {
 }
 
 pub(crate) fn diverged_tasks(db: &Db) -> Vec<String> {
-    db.disk_divergent_task_ids().unwrap_or_else(|error| {
+    let mut tasks = db.disk_divergent_task_ids().unwrap_or_else(|error| {
         log::error!("could not read the tasks whose disk is ahead: {error}");
         Vec::new()
-    })
+    });
+    // A failed disk-first commit this process could not record (T13d).
+    for task in super::disk_first::fenced_tasks(&root_for_db(db.db_path())) {
+        if !tasks.contains(&task) {
+            tasks.push(task);
+        }
+    }
+    tasks
 }
 
 /// Flagged, and not yet repaired: nothing of the task is published over
 /// the disk, and its differing `task.json` is taken as the disk's. A task
 /// whose flag cannot be read is treated as flagged.
 pub(crate) fn is_diverged(db: &Db, task_id: &str) -> bool {
-    db.is_disk_divergent(task_id).unwrap_or(true)
+    super::disk_first::is_fenced(&root_for_db(db.db_path()), task_id)
+        || db.is_disk_divergent(task_id).unwrap_or(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -714,6 +722,9 @@ pub struct ReconcileReport {
     pub unreadable: Vec<(PathBuf, String)>,
     /// Repositories under the root that belong to another installation.
     pub foreign_repos: Vec<String>,
+    /// Ledger files published from the in-flight entries of a `task.json`
+    /// a disk-first commit wrote before its files (T13d).
+    pub materialized: usize,
     pub diagnostics: Vec<String>,
 }
 
@@ -766,6 +777,7 @@ pub fn reconcile_from_disk(
     let db_error = |error: rusqlite::Error| format!("db error: {error}");
     let (scan, foreign) = scan_store_records(&root)?.for_installation(&installation);
     let mut report = ReconcileReport {
+        materialized: materialize_scan(&scan),
         unreadable: scan.unreadable.clone(),
         foreign_repos: foreign,
         ..ReconcileReport::default()
@@ -932,12 +944,9 @@ pub fn reconcile_from_disk(
                 ));
             }
         };
-        match db.reconcile_tasks_from_projection(
-            &targets,
-            &projection,
-            &disk_revisions,
-            &compared_at,
-        ) {
+        match super::disk_first::repairing(&targets, || {
+            db.reconcile_tasks_from_projection(&targets, &projection, &disk_revisions, &compared_at)
+        }) {
             Ok(changes) => {
                 note_changes(&mut report, changes);
                 for task in &targets {
@@ -954,12 +963,14 @@ pub fn reconcile_from_disk(
                 ));
                 for task in &targets {
                     let alone = BTreeSet::from([task.clone()]);
-                    match db.reconcile_tasks_from_projection(
-                        &alone,
-                        &project(&alone),
-                        &disk_revisions,
-                        &compared_at,
-                    ) {
+                    match super::disk_first::repairing(&alone, || {
+                        db.reconcile_tasks_from_projection(
+                            &alone,
+                            &project(&alone),
+                            &disk_revisions,
+                            &compared_at,
+                        )
+                    }) {
                         Ok(changes) => {
                             note_changes(&mut report, changes);
                             report
@@ -977,6 +988,10 @@ pub fn reconcile_from_disk(
     // is retried at the publisher's next pass (or the next startup).
     for task in &in_sync {
         db.clear_disk_divergence(task).map_err(db_error)?;
+        super::disk_first::unfence(&root, task);
+    }
+    for (task, _) in &report.reconciled {
+        super::disk_first::unfence(&root, task);
     }
     for (task, error) in flush_all(db, db_path) {
         report.diagnostics.push(format!(
@@ -1143,6 +1158,24 @@ fn drain(db: &Db, db_path: &str) -> Result<Value, String> {
         ));
     }
     Ok(json!({ "released_reservations": released, "first_records_owed": owed }))
+}
+
+/// Publish every in-flight entry file the scanned `task.json` records hold
+/// and their ledgers lack (T13d). A task whose files cannot be written is
+/// logged; its entries are still read from `task.json`.
+fn materialize_scan(scan: &StoreScan) -> usize {
+    scan.tasks
+        .iter()
+        .map(|directory| {
+            super::disk_first::materialize_in_flight(directory).unwrap_or_else(|error| {
+                log::error!(
+                    "{}: in-flight ledger entries could not be published: {error}",
+                    directory.path.display()
+                );
+                0
+            })
+        })
+        .sum()
 }
 
 /// What [`start`] left the installation in.
@@ -1410,6 +1443,10 @@ pub fn requested_from_env() -> Result<Option<Mode>, String> {
 pub fn rebuild_missing_database(db_path: &str) -> Result<RebuildReport, String> {
     let root = root_for_db(db_path);
     let (scan, foreign) = scan_store_records(&root)?.for_installation(&installation_id(db_path));
+    let materialized = materialize_scan(&scan);
+    if materialized > 0 {
+        log::warn!("published {materialized} in-flight ledger entries before rebuilding");
+    }
     // A WAL or shared-memory file left beside a deleted database belongs to
     // it, not to the one about to be created.
     for suffix in ["-wal", "-shm"] {

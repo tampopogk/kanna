@@ -130,6 +130,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use tokio::sync::Notify;
 
 pub mod authority;
+pub(crate) mod disk_first;
 // Disk authority (T13c) rebuilds a missing database and reconciles from
 // disk; the rest of the rebuild (the unscoped entry points, the list of what
 // a rebuild lacks) is read by tests and people.
@@ -384,6 +385,13 @@ pub fn flush_task_at(db: &Db, root: &Path, task_id: &str) -> Result<FlushOutcome
         let _ = db.record_task_snapshot_error(task_id, &error);
         return Err(error);
     }
+    // Disk-first (T13d): in `disk` mode the records are written only by a
+    // committing transaction, under SQLite's write lock, so this flush is an
+    // empty transaction that owes them.
+    if authority::mode_for_root(root) == authority::Mode::Disk {
+        drop(_guard);
+        return flush_task_disk_first(db, task_id);
+    }
     let ledger = dir.join("ledger");
     let mut outcome = FlushOutcome::default();
     let pending = db
@@ -473,6 +481,34 @@ pub fn flush_task_at(db: &Db, root: &Path, task_id: &str) -> Result<FlushOutcome
     Ok(outcome)
 }
 
+fn flush_task_disk_first(db: &Db, task_id: &str) -> Result<FlushOutcome, String> {
+    let owed = |db: &Db| -> Result<(usize, bool), String> {
+        let pending = db
+            .pending_ledger_entries(task_id)
+            .map_err(|error| format!("db error: {error}"))?;
+        let filled = pending
+            .iter()
+            .filter(|entry| entry.payload.is_some())
+            .count();
+        let waiting = pending
+            .iter()
+            .position(|entry| entry.payload.is_none())
+            .is_some_and(|reservation| reservation < pending.len() - 1);
+        Ok((filled, waiting))
+    };
+    let (before, _) = owed(db)?;
+    db.with_immediate_transaction(|db| {
+        db.owe_task_publication(task_id);
+        Ok::<_, rusqlite::Error>(())
+    })
+    .map_err(|error| error.to_string())?;
+    let (after, waiting_on_reservation) = owed(db)?;
+    Ok(FlushOutcome {
+        published: before.saturating_sub(after),
+        waiting_on_reservation,
+    })
+}
+
 /// Publish a task's pending entries after a mutation whose success does not
 /// depend on it. A failure stays pending (its announcements stay held) and
 /// the publisher service retries it.
@@ -506,6 +542,31 @@ pub fn flush_all(db: &Db, db_path: &str) -> Vec<(String, String)> {
 /// Publish every owed `repo.json` and tombstone under `root` (T13).
 pub fn flush_disk_records_at(db: &Db, root: &Path) -> Vec<(String, String)> {
     let mut failures = Vec::new();
+    if authority::mode_for_root(root) == authority::Mode::Disk {
+        let owed = db.repos_with_pending_disk_record().and_then(|repos| {
+            db.pending_disk_removals()
+                .map(|removals| (repos, !removals.is_empty()))
+        });
+        match owed {
+            Ok((repos, removals)) if !repos.is_empty() || removals => {
+                let written = db.with_immediate_transaction(|db| {
+                    for repo in &repos {
+                        db.owe_repo_publication(repo);
+                    }
+                    if removals {
+                        db.owe_removal_publication();
+                    }
+                    Ok::<_, rusqlite::Error>(())
+                });
+                if let Err(error) = written {
+                    failures.push(("disk records".to_string(), error.to_string()));
+                }
+            }
+            Ok(_) => {}
+            Err(error) => failures.push((String::new(), format!("db error: {error}"))),
+        }
+        return failures;
+    }
     match db.repos_with_pending_disk_record() {
         Ok(repos) => {
             for repo_id in repos {
@@ -574,7 +635,7 @@ pub fn flush_repo_at(db: &Db, root: &Path, repo_id: &str) -> Result<(), String> 
 /// Replace a removed task's `task.json` (or a removed repository's
 /// `repo.json`) with a tombstone, so a rebuild does not bring it back. The
 /// ledger stays. Nothing to do when the record was never published.
-fn publish_removal_at(
+pub(crate) fn publish_removal_at(
     db: &Db,
     root: &Path,
     kind: &str,

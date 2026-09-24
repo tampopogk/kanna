@@ -177,6 +177,10 @@ pub struct TaskSnapshot {
     /// existed; the rebuild then falls back to `published_through`.
     pub state_reflects_through: Option<i64>,
     pub state_unreflected: Vec<i64>,
+    /// `ledger.in_flight` (T13d): `(file name, exact bytes)` of the entries a
+    /// disk-first commit made durable in this `task.json`, which may not be
+    /// files yet.
+    pub in_flight: Vec<(String, Vec<u8>)>,
 }
 
 /// One published ledger file and its exact bytes.
@@ -246,7 +250,29 @@ pub fn parse_task_snapshot(bytes: &[u8]) -> Result<TaskSnapshot, String> {
         .and_then(Value::as_array)
         .map(|items| items.iter().filter_map(Value::as_i64).collect())
         .unwrap_or_default();
+    let in_flight = match value
+        .get("ledger")
+        .and_then(|ledger| ledger.get(super::disk_first::IN_FLIGHT_KEY))
+    {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                let file_name = text(item, "file_name");
+                let payload = text(item, "payload");
+                match (file_name, payload) {
+                    (Some(file_name), Some(payload)) => Ok((file_name, payload.into_bytes())),
+                    _ => Err(
+                        "task.json ledger.in_flight holds an entry without file_name and payload"
+                            .to_string(),
+                    ),
+                }
+            })
+            .collect::<Result<_, _>>()?,
+        Some(_) => return Err("task.json ledger.in_flight is not a list".into()),
+    };
     Ok(TaskSnapshot {
+        in_flight,
         state,
         state_reflects_through,
         state_unreflected,
@@ -381,6 +407,28 @@ pub fn read_task_directory(dir: &Path) -> Result<TaskDirectory, String> {
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(format!("read {}: {error}", ledger.display())),
+    }
+    // In-flight entries (T13d) are part of the ledger whether or not their
+    // file was published yet; a published file must hold the same bytes.
+    for (name, bytes) in &snapshot.in_flight {
+        let file = parse_ledger_file(name, bytes)?;
+        validate_entry(&file, &snapshot.task_id)?;
+        match entries
+            .iter()
+            .find(|entry: &&ReadEntry| entry.file.sequence == file.sequence)
+        {
+            Some(published) if published.bytes == *bytes => {}
+            Some(published) => {
+                return Err(format!(
+                    "task.json's in-flight entry {name} differs from the published {}",
+                    published.file.file_name
+                ))
+            }
+            None => entries.push(ReadEntry {
+                file,
+                bytes: bytes.clone(),
+            }),
+        }
     }
     entries.sort_by_key(|entry| entry.file.sequence);
     if let Some(pair) = entries

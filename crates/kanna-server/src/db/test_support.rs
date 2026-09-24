@@ -49,7 +49,9 @@ impl Db {
         }
         let conn = Connection::open_with_flags(&path_buf, database_create_flags())?;
         configure_shared_database_connection(&conn)?;
-        let db = Self { conn };
+        let db = Self {
+            conn: super::disk_first::DbConnection::new(conn, path),
+        };
         db.init_test_schema()?;
         Ok(db)
     }

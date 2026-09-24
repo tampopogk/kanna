@@ -596,16 +596,21 @@ async fn the_publisher_finds_the_disk_ahead_and_the_disk_wins() {
     drop(db);
     let with_first = durable_state(&copy.db());
 
-    // A database restored while the server runs records another input at
-    // the same sequence; publishing it finds the disk's entry there.
+    // A database restored while the server runs tries to record another
+    // input at the same sequence: its disk-first commit finds the disk's
+    // entry there, writes nothing and commits nothing (T13d).
     copy.restore(&backup);
-    let (db, second) = input("second, only in the database");
-    let failures = crate::task_store::flush_all(&db, &copy.db_path);
-    assert!(
-        failures.iter().any(|(task, error)| task == "active"
-            && error.contains("already exists with different content")),
-        "{failures:?}"
-    );
+    let error = copy
+        .db()
+        .record_task_input(
+            "active",
+            crate::db::TaskInputSource::Operator,
+            &ChannelIdentity::Unknown,
+            "second, only in the database",
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("holds other bytes"), "{error}");
     assert_eq!(authority::diverged_tasks(&copy.db()), ["active"]);
 
     // The publisher's reconciliation, under the task's lease.
@@ -626,7 +631,6 @@ async fn the_publisher_finds_the_disk_ahead_and_the_disk_wins() {
     assert!(inputs.contains(&"first, and on disk".to_string()));
     assert!(!inputs.contains(&"second, only in the database".to_string()));
     assert_ne!(first.id, 0);
-    let _ = second;
 
     // task.json at a revision the database never reached is reconciled
     // from, not written over.
@@ -636,8 +640,7 @@ async fn the_publisher_finds_the_disk_ahead_and_the_disk_wins() {
     snapshot["snapshot_revision"] = json!(revision + 10);
     let ahead = serde_json::to_vec_pretty(&snapshot).unwrap();
     std::fs::write(&task_json, &ahead).unwrap();
-    db.mark_task_snapshot_dirty("gate").unwrap();
-    let error = crate::task_store::flush_task(&db, &copy.db_path, "gate").unwrap_err();
+    let error = db.mark_task_snapshot_dirty("gate").unwrap_err().to_string();
     assert!(error.contains("beyond the database's"), "{error}");
     assert_eq!(std::fs::read(&task_json).unwrap(), ahead);
     assert_eq!(authority::diverged_tasks(&copy.db()), ["gate"]);
@@ -646,6 +649,150 @@ async fn the_publisher_finds_the_disk_ahead_and_the_disk_wins() {
     assert!(authority::diverged_tasks(&copy.db()).is_empty());
     assert!(crate::task_store::flush_all(&db, &copy.db_path).is_empty());
     let rewritten: Value = serde_json::from_slice(&std::fs::read(&task_json).unwrap()).unwrap();
-    assert!(rewritten["snapshot_revision"].as_i64().unwrap() > revision + 10);
+    // The refused write owed nothing: the rows were the disk's already, so
+    // only the database's revision is raised to the disk's.
+    assert_eq!(
+        rewritten["snapshot_revision"].as_i64().unwrap(),
+        revision + 10
+    );
+    assert_eq!(
+        db.task_snapshot_revisions("gate").unwrap(),
+        Some((revision + 10, revision + 10))
+    );
     assert_same_state(&with_first, &db);
+}
+
+// ---------------------------------------------------------------------------
+// Disk-first writes (T13d)
+// ---------------------------------------------------------------------------
+
+/// One mutation with two ledger entries and a row change: two inputs and a
+/// rename of `active`, in one transaction.
+fn two_inputs_and_a_rename(db: &Db) -> Result<(), rusqlite::Error> {
+    db.with_immediate_transaction(|db| {
+        for text in ["first of two", "second of two"] {
+            db.record_task_input(
+                "active",
+                crate::db::TaskInputSource::Operator,
+                &ChannelIdentity::Unknown,
+                text,
+            )?;
+        }
+        db.connection_for_e2e_tests().execute(
+            "UPDATE pipeline_item SET display_name = 'renamed' WHERE id = 'active'",
+            [],
+        )?;
+        Ok(())
+    })
+}
+
+fn high_water(db: &Db, task: &str) -> i64 {
+    db.connection_for_e2e_tests()
+        .query_row(
+            "SELECT high_water FROM task_ledger_sequence WHERE task_id = ?",
+            [task],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+/// Kill a disk-first commit at every write step, restart, and rebuild: the
+/// mutation is on disk whole or not at all (its commit point is the one
+/// `task.json` rename), the restarted database is exactly the projection of
+/// the disk (a rebuild from the directories alone gives the same rows), and
+/// a second restart changes nothing.
+#[tokio::test]
+async fn a_disk_first_commit_killed_at_every_write_step_rebuilds_identically() {
+    use crate::task_store::disk_first::{crash_at, CrashPoint};
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let fixture = build_fixture().await;
+    let base = high_water(&fixture.db(), "active");
+    let (first, second) = (base + 1, base + 2);
+    let points = [
+        ("before-task-json", Some(CrashPoint::BeforeTaskJson)),
+        ("after-task-json", Some(CrashPoint::AfterTaskJson)),
+        ("after-first-file", Some(CrashPoint::AfterEntry(first))),
+        ("after-every-file", Some(CrashPoint::AfterEntry(second))),
+        ("before-commit", Some(CrashPoint::BeforeCommit)),
+        ("committed", None),
+    ];
+    for (label, point) in points {
+        let copy = Installation::copy_of(&fixture, &format!("kill-{label}"));
+        assert_eq!(copy.start(Some(Mode::Disk)).unwrap().mode, Mode::Disk);
+        let before = durable_state(&copy.db());
+        let entry = |sequence: i64| {
+            crate::task_store::task_dir(&copy.root, "repo-1", "active")
+                .join("ledger")
+                .join(format!("{sequence:06}-input.md"))
+        };
+        if let Some(point) = point {
+            crash_at(&copy.root, "active", point);
+        }
+        let outcome = two_inputs_and_a_rename(&copy.db());
+        assert_eq!(outcome.is_err(), point.is_some(), "{label}: {outcome:?}");
+        if point == Some(CrashPoint::AfterTaskJson) {
+            assert!(!entry(first).exists(), "{label}");
+        }
+
+        // Restart: a new process opens the database under its authority.
+        let outcome = copy.start(None).unwrap();
+        let report = outcome.reconcile.unwrap();
+        assert!(report.failed.is_empty(), "{label}: {report:#?}");
+        let db = copy.db();
+        let applied = point != Some(CrashPoint::BeforeTaskJson);
+        let name = db
+            .get_pipeline_item("active")
+            .unwrap()
+            .unwrap()
+            .display_name;
+        let inputs: Vec<String> = db
+            .connection_for_e2e_tests()
+            .prepare("SELECT message FROM task_input WHERE task_id = 'active' ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        if applied {
+            assert_eq!(name.as_deref(), Some("renamed"), "{label}");
+            assert!(
+                inputs.ends_with(&["first of two".to_string(), "second of two".to_string()]),
+                "{label}: {inputs:?}"
+            );
+            assert!(entry(first).exists() && entry(second).exists(), "{label}");
+            assert!(
+                db.ledger_tasks_with_pending_work().unwrap().is_empty(),
+                "{label}"
+            );
+        } else {
+            assert_same_state(&before, &db);
+            assert!(!entry(first).exists(), "{label}");
+        }
+
+        // The database is the disk's projection, exactly.
+        let rebuilt = PathBuf::from(Db::test_db_path(&format!("kill-{label}-rebuilt")));
+        remove_database_files(rebuilt.to_str().unwrap());
+        crate::task_store::rebuild::rebuild_into_new_database(&copy.root, &rebuilt).unwrap();
+        let differing = differences(
+            &durable_state(&db),
+            &durable_state(&Db::open(rebuilt.to_str().unwrap()).unwrap()),
+        );
+        assert!(differing.is_empty(), "{label}:\n{}", differing.join("\n"));
+        // And stable: the next start finds nothing to do, and the next
+        // write continues the sequence without reusing a number.
+        assert_nothing_reconciled(&copy.start(None).unwrap());
+        assert!(high_water(&db, "active") >= if applied { second } else { base });
+        db.record_task_input(
+            "active",
+            crate::db::TaskInputSource::Operator,
+            &ChannelIdentity::Unknown,
+            "after the restart",
+        )
+        .unwrap();
+        assert!(high_water(&db, "active") > base.max(if applied { second } else { base }));
+        assert!(
+            db.ledger_tasks_with_pending_work().unwrap().is_empty(),
+            "{label}"
+        );
+    }
 }

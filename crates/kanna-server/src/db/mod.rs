@@ -23,6 +23,7 @@ pub(crate) mod claude_channel;
 pub(crate) mod copilot_wake;
 mod create_intents;
 mod disk_authority;
+pub(crate) mod disk_first;
 mod disk_rebuild;
 mod event_subscriptions;
 mod lifecycle_operations;
@@ -686,8 +687,10 @@ pub struct OpenAgentTask {
 }
 
 #[derive(Debug)]
+#[repr(transparent)]
 pub struct Db {
-    conn: Connection,
+    // Disk-first commits (T13d) rely on this being the only field.
+    conn: disk_first::DbConnection,
 }
 
 fn database_open_flags() -> OpenFlags {
@@ -3232,7 +3235,7 @@ fn prune_task_events(conn: &Connection) -> Result<(), rusqlite::Error> {
 
 impl Db {
     #[cfg(debug_assertions)]
-    pub(crate) fn connection_for_e2e_tests(&self) -> &Connection {
+    pub(crate) fn connection_for_e2e_tests(&self) -> &disk_first::DbConnection {
         &self.conn
     }
 
@@ -3248,10 +3251,9 @@ impl Db {
             .map_err(E::from)?;
         match operation(self) {
             Ok(value) => {
-                if let Err(error) = self.conn.execute_batch("COMMIT") {
-                    let _ = self.conn.execute_batch("ROLLBACK");
-                    return Err(E::from(error));
-                }
+                // In disk authority mode the task directory is written
+                // first; `publish_and_commit` rolls back on any failure.
+                self.conn.publish_and_commit().map_err(E::from)?;
                 Ok(value)
             }
             Err(error) => {
@@ -3292,6 +3294,11 @@ impl Db {
         &self,
         operation: impl FnOnce(&Self) -> Result<T, rusqlite::Error>,
     ) -> Result<T, rusqlite::Error> {
+        // Inside a transaction (a disk-first commit reading what it
+        // publishes, T13d) the reads already share one snapshot.
+        if !self.conn.is_autocommit() {
+            return operation(self);
+        }
         self.conn.execute_batch("BEGIN")?;
         match operation(self) {
             Ok(value) => {
@@ -3315,7 +3322,9 @@ impl Db {
             .map_err(rusqlite::Error::InvalidParameterName)?;
         let conn = Connection::open_with_flags(path, database_open_flags())?;
         configure_shared_database_connection(&conn)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn: disk_first::DbConnection::new(conn, path),
+        })
     }
 
     pub fn open_migrated(path: &str) -> Result<Self, rusqlite::Error> {
@@ -3326,7 +3335,9 @@ impl Db {
         run_schema_migrations(&conn)?;
         prune_task_events(&conn)?;
         run_quick_check(&conn)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn: disk_first::DbConnection::new(conn, path),
+        })
     }
 
     pub fn backup_database(&self, db_path: &str) -> Result<PathBuf, rusqlite::Error> {

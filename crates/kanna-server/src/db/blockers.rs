@@ -5,7 +5,7 @@
 //! cycle check and one derived blocked state.
 
 use super::{pipeline_items::update_open_pipeline_item_activity, Db, TaskEventKind};
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use serde_json::json;
 use std::fmt;
 
@@ -176,7 +176,7 @@ impl Db {
         blocker_task_ids: &[String],
         after_delete: impl FnOnce(),
     ) -> Result<String, ReplaceTaskBlockersError> {
-        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let transaction = self.conn.transaction_with(TransactionBehavior::Immediate)?;
         let task_id = resolve_pipeline_item_id(&transaction, task_or_branch_id)?
             .ok_or_else(|| ReplaceTaskBlockersError::TaskNotFound(task_or_branch_id.to_string()))?;
 

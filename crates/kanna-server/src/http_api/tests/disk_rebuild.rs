@@ -170,6 +170,13 @@ fn git_head(dir: &Path) -> String {
 }
 
 pub(super) async fn build_fixture() -> Fixture {
+    build_fixture_with(crate::task_store::authority::Mode::Sql).await
+}
+
+/// [`build_fixture`] with the installation switched to `authority` before
+/// the endpoints drive it: in `disk` mode every mutation below commits
+/// disk-first (T13d).
+pub(super) async fn build_fixture_with(authority: crate::task_store::authority::Mode) -> Fixture {
     let repo_root = crate::test_paths::unique_test_path("kanna-disk-rebuild");
     init_test_git_repo(&repo_root);
     let daemon_dir = crate::test_paths::unique_test_path("kanna-disk-rebuild-d");
@@ -290,6 +297,12 @@ pub(super) async fn build_fixture() -> Fixture {
     .unwrap();
     db.insert_task_blocker("blocked", "active").unwrap();
     let artifact_sha = git_head(&artifact);
+    if authority == crate::task_store::authority::Mode::Disk {
+        crate::task_store::configure(&config);
+        let outcome =
+            crate::task_store::authority::start(&db, &config.db_path, Some(authority)).unwrap();
+        assert_eq!(outcome.mode, authority, "{:?}", outcome.refused);
+    }
     drop(db);
 
     let state = Arc::new(super::AppState::new(config.clone()));
@@ -667,8 +680,9 @@ pub(super) async fn build_fixture() -> Fixture {
         source_machine_task_label: Some("remote task".into()),
     })
     .unwrap();
-    conn.execute_batch(
-        "INSERT INTO transferred_task_context (task_id, transfer_id, workflow_definition)
+    db.with_immediate_transaction(|_| {
+        conn.execute_batch(
+            "INSERT INTO transferred_task_context (task_id, transfer_id, workflow_definition)
          VALUES ('incoming', 'xfer-in', '{}');
          INSERT INTO transferred_task_manifest
             (transfer_id, repo_id, local_task_id, head_oid, base_oid, state)
@@ -681,7 +695,8 @@ pub(super) async fn build_fixture() -> Fixture {
              ownership_generation, state_sha256, links, session_start, fresh_start_reason)
          VALUES ('incoming', 'xfer-in', 'peer-b', 'remote-1', 1, 'sha', '{}', 'fresh',
                  'no transcript');",
-    )
+        )
+    })
     .unwrap();
     // An outgoing transfer holding a task's workflow, its ledger fenced.
     insert_task(
@@ -861,7 +876,50 @@ pub(super) fn files_under(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
 #[tokio::test]
 async fn a_migrated_fixture_round_trips_through_its_task_directories() {
     let _sidecar_guard = crate::test_sidecar_guard().await;
-    let fixture = build_fixture().await;
+    assert_round_trips(build_fixture().await);
+}
+
+/// The same fixture driven with disk authority from the start (T13d): every
+/// endpoint's mutation commits disk-first, none is refused, the disk holds
+/// what the database does after each, and the directories rebuild it
+/// exactly.
+#[tokio::test]
+async fn a_disk_first_fixture_round_trips_through_its_task_directories() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let fixture = build_fixture_with(crate::task_store::authority::Mode::Disk).await;
+    let root = crate::task_store::root_for_db(&fixture.db_path);
+    let db = fixture.db();
+    assert!(crate::task_store::authority::diverged_tasks(&db).is_empty());
+    assert_eq!(crate::db::disk_first::refused_commits(&fixture.db_path), 0);
+    // Written first, nothing is left for the publisher: every entry a
+    // task.json carried in flight is a file.
+    assert!(db.ledger_tasks_with_pending_work().unwrap().is_empty());
+    let (scan, _) = rebuild::scan_store_records(&root)
+        .unwrap()
+        .for_installation(&crate::task_store::authority::installation_id(
+            &fixture.db_path,
+        ));
+    assert!(scan.unreadable.is_empty(), "{:?}", scan.unreadable);
+    assert!(scan.tasks.iter().all(|directory| directory
+        .snapshot
+        .in_flight
+        .iter()
+        .all(|(name, _)| directory.path.join("ledger").join(name).exists())));
+    assert!(scan
+        .tasks
+        .iter()
+        .any(|directory| !directory.snapshot.in_flight.is_empty()));
+    let outcome = crate::task_store::authority::start(&db, &fixture.db_path, None).unwrap();
+    let report = outcome.reconcile.unwrap();
+    assert!(
+        report.reconciled.is_empty() && report.failed.is_empty() && report.republished.is_empty(),
+        "{report:#?}"
+    );
+    drop(db);
+    assert_round_trips(fixture);
+}
+
+fn assert_round_trips(fixture: Fixture) {
     let source = fixture.db();
     let root = crate::task_store::root_for_db(&fixture.db_path);
 
