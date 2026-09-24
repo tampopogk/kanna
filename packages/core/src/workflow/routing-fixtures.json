@@ -570,8 +570,8 @@
       "rejects": "cannot be combined with a post"
     },
     {
-      "name": "exit_commit without routing exits",
-      "valid": false,
+      "name": "exit_commit on a legacy workflow (a migrated commit post)",
+      "valid": true,
       "definition": {
         "name": "legacy",
         "stages": [
@@ -584,8 +584,29 @@
             }
           }
         ]
+      }
+    },
+    {
+      "name": "exit_commit with a post on a legacy workflow",
+      "valid": false,
+      "definition": {
+        "name": "legacy",
+        "stages": [
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "exit_commit": true,
+            "post": {
+              "name": "commit",
+              "prompt": "Commit"
+            },
+            "policy": {
+              "transition": "manual"
+            }
+          }
+        ]
       },
-      "rejects": "belong to named-exit routing"
+      "rejects": "cannot be combined with a post"
     },
     {
       "name": "stage setup without routing exits",

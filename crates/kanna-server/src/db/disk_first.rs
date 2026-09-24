@@ -73,6 +73,7 @@ static REFUSED: std::sync::LazyLock<Mutex<std::collections::HashMap<String, usiz
 
 /// How many commits on `db_path` wrote the outbox outside the gate in
 /// `disk` mode and were refused.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn refused_commits(db_path: &str) -> usize {
     REFUSED
         .lock()

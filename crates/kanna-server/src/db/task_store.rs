@@ -1458,7 +1458,9 @@ pub(crate) fn declared_transition_role(trigger: &str) -> Option<String> {
 /// `complete-stage` convention label for a combined verdict-and-publish); a
 /// bare `unspecified` declares no role, same as elsewhere.
 pub(crate) fn declared_workflow_role(source: &str) -> Option<String> {
-    matches!(source, "operator" | "manager" | "agent").then(|| source.to_string())
+    // `engine`: a replacement the engine makes itself (T13d's commit-post
+    // migration); callers cannot declare it.
+    matches!(source, "operator" | "manager" | "agent" | "engine").then(|| source.to_string())
 }
 
 fn is_missing_ledger_table(error: &rusqlite::Error) -> bool {

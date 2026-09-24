@@ -798,6 +798,19 @@ impl Db {
     }
 
     /// Open tasks pinned under `pipeline`, oldest first.
+    /// Every open task with a pinned workflow definition, oldest first.
+    pub(crate) fn open_task_ids_with_pinned_workflow(
+        &self,
+    ) -> Result<Vec<String>, rusqlite::Error> {
+        let mut statement = self.conn.prepare(
+            "SELECT id FROM pipeline_item
+             WHERE pipeline_def IS NOT NULL AND closed_at IS NULL
+             ORDER BY rowid ASC",
+        )?;
+        let ids = statement.query_map([], |row| row.get(0))?.collect();
+        ids
+    }
+
     pub fn open_task_ids_with_pipeline(
         &self,
         pipeline: &str,

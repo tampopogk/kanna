@@ -13,12 +13,13 @@
 //!   A missing database is rebuilt from the disk before the server opens
 //!   it.
 //!
-//! The write path is the same in both modes and there is only ever one
-//! writer: a mutation commits its rows and its ledger entry in one SQLite
-//! transaction (the outbox, which is the disk records' write-ahead journal)
-//! and the publisher writes them out within seconds. The mode decides only
-//! which side a disagreement resolves to. Retiring the SQL-first write path
-//! is a later increment (T13d).
+//! There is only ever one writer. In `sql` mode a mutation commits its rows
+//! and its ledger entry in one SQLite transaction (the outbox) and the
+//! publisher writes them out within seconds. In `disk` mode (T13d) the same
+//! transaction writes its task directory records first, from its own
+//! uncommitted rows, and SQLite commits after them
+//! ([`super::disk_first`]): the disk is authoritative for writes as well as
+//! for disagreements.
 //!
 //! # Record
 //!
@@ -64,9 +65,23 @@
 //!    everything the disk does.
 //! 3. `to_sql.commit` — the mode is `sql`.
 //!
-//! Rollback from `disk` mode is supported for as long as every mutation
-//! still writes SQLite first, which is true of this build and every build
-//! until the SQL-first write path is retired.
+//! Because `disk` mode writes the disk first, a rollback is only as safe as
+//! what it checks (T13d): `to_sql.reconciled` is recorded only when the
+//! reconciled database verifies equal to the disk (the same check that gates
+//! `to_disk.verified`); otherwise `to_sql.refused` records the differences,
+//! the installation stays `disk` and the next start tries again.
+//!
+//! # The rollback window for older builds
+//!
+//! A `disk` record is written as [`DISK_FIRST_RECORD_SCHEMA_VERSION`] from
+//! this build's first `disk`-mode start, before any disk-first write, and
+//! names when (`disk_first_since`). A build before T13d accepts only
+//! [`RECORD_SCHEMA_VERSION`], so it refuses to start on the installation
+//! instead of running SQL-first over records it may not hold. Rolling back
+//! by starting an older build is therefore closed from that point; rolling
+//! back through this build stays open, and a completed rollback writes
+//! version 1 again, which reopens older builds. Builds older than T13c do
+//! not read the record at all and must never run a `disk` installation.
 
 use super::rebuild::{
     project_store_onto, rebuild_scan_into_new_database, scan_store_records, KnownRows,

@@ -872,3 +872,153 @@ async fn a_resumed_commit_step_that_succeeds_fires_one_transition_from_its_commi
     assert!(rows.iter().all(|row| row.state != "requested"), "{rows:?}");
     assert_eq!(rows[0].committed_sha.as_deref(), Some(committed.as_str()));
 }
+
+/// A legacy workflow committing through a `commit` post, with an `approve`
+/// post on its last stage.
+fn legacy_commit_post_workflow() -> serde_json::Value {
+    serde_json::json!({
+        "name": "commit-flow",
+        "stages": [
+            { "name": "in progress", "agent": "implement", "prompt": "$TASK_PROMPT",
+              "policy": { "transition": "manual", "revision_transition": "auto" },
+              "post": { "name": "commit", "agent": "commit",
+                        "prompt": "Commit. Previous implementation result: $PREV_MAIN_RESULT" } },
+            { "name": "review", "agent": "review", "prompt": "Review the branch.",
+              "policy": { "transition": "manual" },
+              "post": { "name": "approve", "agent": "approve",
+                        "prompt": "Approve. Previous result: $PREV_RESULT" } }
+        ]
+    })
+}
+
+fn migrate(fixture: &CommitFixture) -> crate::task_creator::CommitPostMigration {
+    crate::task_creator::migrate_commit_posts_to_exit_commit(&fixture.db(), &fixture.db_path, TASK)
+        .unwrap()
+}
+
+fn pinned(fixture: &CommitFixture) -> serde_json::Value {
+    let item = fixture.db().get_pipeline_item(TASK).unwrap().unwrap();
+    serde_json::from_str(item.pipeline_def.as_deref().unwrap()).unwrap()
+}
+
+/// T13d: an open legacy task's commit post becomes its stage's commit step
+/// at a quiescent boundary, as an engine-provenance workflow replacement
+/// that keeps its runs and ledger; its other posts stay; then its
+/// transition commits through the commit step.
+#[tokio::test]
+async fn a_legacy_commit_post_becomes_the_commit_step_at_a_quiescent_boundary() {
+    use crate::task_creator::CommitPostMigration;
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let fixture = commit_fixture("legacy-post", legacy_commit_post_workflow(), Session::Live);
+    let before = pinned(&fixture);
+    // Not quiescent: the implementer's run is live.
+    assert_eq!(
+        migrate(&fixture),
+        CommitPostMigration::Deferred("a stage run is running".into())
+    );
+    assert_eq!(pinned(&fixture), before);
+
+    record_implementation(&fixture).await;
+    let runs = |fixture: &CommitFixture| -> Vec<(String, String, String)> {
+        fixture
+            .db()
+            .list_stage_runs_for_task(TASK)
+            .unwrap()
+            .into_iter()
+            .map(|run| (run.id, run.stage, run.status))
+            .collect()
+    };
+    let runs_before = runs(&fixture);
+    let results_before = fixture.entries(LedgerEntryKind::Result);
+    assert_eq!(
+        migrate(&fixture),
+        CommitPostMigration::Migrated(vec!["in progress".into()])
+    );
+    // Only the pinned definition changed: the commit post is the stage's
+    // commit step, the approve post and the legacy routing stay.
+    let after = pinned(&fixture);
+    assert_eq!(after["stages"][0]["exit_commit"], true);
+    assert!(after["stages"][0]
+        .get("post")
+        .is_none_or(|post| post.is_null()));
+    assert_eq!(after["stages"][1]["post"]["name"], "approve");
+    assert!(after
+        .get("routing")
+        .is_none_or(|routing| routing == "legacy"));
+    assert_eq!(runs(&fixture), runs_before);
+    assert_eq!(fixture.entries(LedgerEntryKind::Result), results_before);
+    let item = fixture.db().get_pipeline_item(TASK).unwrap().unwrap();
+    assert_eq!(item.stage.as_deref(), Some("in progress"));
+    assert_eq!(item.pipeline.as_deref(), Some("commit-flow"));
+    // Recorded as the engine's workflow replacement, on the server's channel.
+    let plans = fixture.entries(LedgerEntryKind::Plan);
+    let replacement = plans.last().expect("the replacement's plan entry");
+    assert_eq!(replacement.body()["operation"], "replace");
+    assert_eq!(replacement.body()["source"], "engine");
+    assert_eq!(replacement.envelope["declared_role"], "engine");
+    assert_eq!(replacement.envelope["channel_identity"]["kind"], "server");
+    assert_eq!(
+        replacement.body()["superseded_run_ids"],
+        serde_json::json!([])
+    );
+    // Idempotent.
+    assert_eq!(migrate(&fixture), CommitPostMigration::NotApplicable);
+
+    // The transition out of the stage now runs its commit step.
+    let (status, text) = fixture.advance().await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let commit_run = fixture.commit_run();
+    assert_eq!(commit_run.stage, "in progress commit");
+    let db = fixture.db();
+    let commit = db.transition_commit(&commit_run.id).unwrap().unwrap();
+    assert_eq!(commit.state, "requested");
+    let committed = fixture.commit_in_workspace("migrated.txt");
+    let (status, body) = fixture
+        .complete(serde_json::json!({
+            "runId": commit_run.id,
+            "status": "success",
+            "summary": "Committed migrated.txt",
+        }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    wait_for_running_task_stage(&db, TASK, "review").await;
+    fixture.settle().await;
+    let settled = db.transition_commit(&commit_run.id).unwrap().unwrap();
+    assert_eq!(settled.state, "succeeded");
+    assert_eq!(settled.committed_sha.as_deref(), Some(committed.as_str()));
+}
+
+/// A commit post that already ran stays: a replacement never drops what a
+/// recorded run names, so the task keeps the legacy post adapter.
+#[tokio::test]
+async fn a_commit_post_with_recorded_runs_stays_on_the_legacy_adapter() {
+    use crate::task_creator::CommitPostMigration;
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let fixture = commit_fixture("legacy-kept", legacy_commit_post_workflow(), Session::Live);
+    record_implementation(&fixture).await;
+    let db = fixture.db();
+    db.insert_stage_run(crate::db::NewStageRun {
+        id: "old-commit-run",
+        task_id: TASK,
+        stage: "commit",
+        kind: "post",
+        agent: Some("commit"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "failed",
+        result: None,
+        feedback: None,
+        session_id: Some(TASK),
+        provider_session_id: None,
+        cwd: Some(&fixture.worktree.to_string_lossy()),
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+    let before = pinned(&fixture);
+    assert!(matches!(
+        migrate(&fixture),
+        CommitPostMigration::KeptLegacy(_)
+    ));
+    assert_eq!(pinned(&fixture), before);
+}

@@ -1,11 +1,13 @@
 //! Task directory and ledger (spec §7, §16.1 — component T0).
 //!
 //! Each task has a directory `<root>/repos/<repo-id>/tasks/<task-id>/` holding
-//! a replaceable `task.json` and an ordered, append-only `ledger/`. During
-//! this bridge SQLite stays authoritative: mutations enqueue immutable ledger
-//! payloads in their own SQL transaction (see [`crate::db::task_store`]) and
-//! this module publishes them to disk, in order, atomically, and acknowledges
-//! them. The ledger is internal message passing between stages; the real
+//! a replaceable `task.json` and an ordered, append-only `ledger/`. In the
+//! default `sql` authority mode SQLite stays authoritative: mutations enqueue
+//! immutable ledger payloads in their own SQL transaction (see
+//! [`crate::db::task_store`]) and this module publishes them to disk, in
+//! order, atomically, and acknowledges them. In `disk` mode ([`authority`])
+//! the same records are written by the mutation's own transaction before it
+//! commits ([`disk_first`]). The ledger is internal message passing between stages; the real
 //! outputs of a task are still commits, PRs and artifacts.
 //!
 //! # Disk contract (schema_version 1)
@@ -18,7 +20,8 @@
 //! `<db-path>.task-store` for development and test databases (so separate
 //! databases never share ledger identities), or `KANNA_TASK_STORE_ROOT`.
 //!
-//! **`task.json`** — a projection, never authority. Rewritten atomically
+//! **`task.json`** — in `sql` mode a projection of the rows; in `disk` mode
+//! the commit point of every mutation (T13d). Rewritten atomically
 //! (temp file + rename) whenever what it shows changes: `schema_version`,
 //! `task_id`, `repo_id`, `title`, `origin_prompt`, `workflow {name,
 //! definition}` (the exact pinned definition), `links {parent, dependencies,
@@ -30,7 +33,10 @@
 //! outcome), `stage`, `branch`, `base_ref`,
 //! `owning_machine` (null until recorded per task), `created_at`,
 //! `updated_at`, `closed_at`, `snapshot_revision`,
-//! `ledger.published_through` (the highest published sequence) and, since
+//! `ledger.published_through` (the highest published sequence), since T13d
+//! in `disk` mode `ledger.in_flight` (`[{sequence, file_name, payload}]`,
+//! the exact bytes of every entry committed and not yet a file when the
+//! record was written; readers treat them as ledger entries) and, since
 //! T13, `state {version, reflects_through, unreflected_reservations,
 //! tables}`: the task's rows of every table that holds durable task state,
 //! verbatim with their rowids ([`crate::db::task_state`]), and the ledger

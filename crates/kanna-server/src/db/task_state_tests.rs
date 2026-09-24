@@ -469,7 +469,9 @@ fn assert_high_water_covers_every_entry(db: &Db) {
     assert_eq!(uncovered, 0);
     let entries: i64 = db
         .conn
-        .query_row("SELECT COUNT(*) FROM task_ledger_entry", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM task_ledger_entry", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     assert!(entries > 0, "the fixture records ledger entries");
 }

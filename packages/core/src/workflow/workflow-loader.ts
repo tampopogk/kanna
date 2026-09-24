@@ -215,9 +215,18 @@ function validateWorkflowRouting(def: WorkflowDefinition): string[] {
         stage.budget !== undefined ||
         stage.policy?.loop_transition !== undefined
     );
+  // exit_commit is a property of a stage's transition in either routing: a
+  // legacy workflow's commit post migrates to it.
   const usesTransitionFields = def.stages.some(
-    (stage) => stage.exit_commit === true || stage.setup !== undefined || stage.teardown !== undefined
+    (stage) => stage.setup !== undefined || stage.teardown !== undefined
   );
+  for (const stage of def.stages) {
+    if (stage.exit_commit && stage.post !== undefined) {
+      errors.push(
+        `Stage "${stage.name}": exit_commit is the commit step of this stage's transition and cannot be combined with a post`
+      );
+    }
+  }
   const usesHandoff = def.stages.some((stage) => stage.policy?.handoff !== undefined);
   if (def.routing !== "exits") {
     if (usesHandoff) {
@@ -232,7 +241,7 @@ function validateWorkflowRouting(def: WorkflowDefinition): string[] {
     }
     if (usesTransitionFields) {
       errors.push(
-        'exit_commit and stage setup/teardown belong to named-exit routing; declare "routing": "exits" to use them (a legacy workflow commits through a post and runs scripts through its environments)'
+        'stage setup/teardown belong to named-exit routing; declare "routing": "exits" to use them (a legacy workflow runs scripts through its environments)'
       );
     }
     return errors;
@@ -261,11 +270,6 @@ function validateWorkflowRouting(def: WorkflowDefinition): string[] {
     if (stage.policy?.handoff !== undefined && index !== def.stages.length - 1) {
       errors.push(
         `Stage "${stage.name}": policy.handoff runs as the task leaves its final stage; declare it on the final stage`
-      );
-    }
-    if (stage.exit_commit && stage.post !== undefined) {
-      errors.push(
-        `Stage "${stage.name}": exit_commit is the commit step of this stage's transition and cannot be combined with a post`
       );
     }
     for (const field of ["setup", "teardown"] as const) {

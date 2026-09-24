@@ -13,9 +13,12 @@ the second (T13b) put every other durable fact of a task on disk, so the
 rebuild restores all of it. The third (T13c) makes the authority a
 persisted, per-installation mode: `sql` (the default, as before) or `disk`,
 switched at a checkpointed quiescent boundary and rolled back the same
-way ("Storage authority" below). No writer was retired: in both modes every
-mutation still commits its rows and its ledger entry in one SQLite
-transaction, and the mode decides which side wins a disagreement.
+way ("Storage authority" below). The fourth (T13d) retires the SQL-first
+write path in `disk` mode: each mutation writes its task directory records
+first and SQLite commits after them ("Disk-first writes"); it closes the
+rollback window to older builds, verifies every rollback, and migrates
+legacy commit posts ("Legacy retirement"). SQLite stays the default
+authority; `disk` stays an explicit opt-in.
 
 The code is the list: `crate::db::task_state::CARRIED_TABLES` (with each
 column carried or left out for a reason) and `NOT_CARRIED_TABLES`. A test
@@ -29,7 +32,7 @@ authority is.
 |---|---|---|
 | **task directory** | `~/.kanna/repos/<repo-id>/tasks/<task-id>/` | `task.json` (a replaceable snapshot, now with `state`: the task's rows of every carried table) and the immutable `ledger/` entries: `result` (including engine-observed endings), `input`, `transition`, `plan` |
 | **repo directory** | `~/.kanna/repos/<repo-id>/` | `repo.json` (registration, sidebar order, and since T13c the `installation` that wrote it), `artifacts.git` (T6) |
-| **authority record** | `~/.kanna/authority/<installation>.json` | the installation's storage authority mode, a requested switch, a switch in progress, and its recent checkpoints (T13c) |
+| **authority record** | `~/.kanna/authority/<installation>.json` | the installation's storage authority mode, a requested switch, a switch in progress, and its recent checkpoints (T13c); schema version 2 and `disk_first_since` while the installation is `disk` (T13d) |
 | **local config** | the repo's `.kanna/config.json` / `config.local.json`, the app's local config | repo policy, workflow and agent definitions |
 | **protected secret store** | the OS keychain / protected credential files | pairing secrets, device tokens, account credentials. No carried column holds a secret; an incoming transfer's claim token is left out |
 
@@ -194,7 +197,7 @@ is.
 | run terminal capture | cannot rebuild | `agent_terminal_attempt` is a capture of session output, not task state; the run keeps its transcript reference |
 | transfer claim token | cannot rebuild | a capability that never leaves the database, with a 30-second lease expiry that means nothing after a restart; restart recovery re-claims a claimed transfer under a new token |
 | machine pairing and preferences | cannot rebuild | `trusted_peer`, `settings` belong to the machine (its pairing store, its local config), not a task |
-| publication window | cannot rebuild | a change committed in SQL but not yet written when the database is lost (the publisher writes within seconds and at every startup) |
+| publication window | cannot rebuild | `sql` mode only: a change committed in SQL but not yet written when the database is lost (the publisher writes within seconds and at every startup). In `disk` mode there is none: the disk is written before SQLite commits |
 | history never captured | cannot rebuild | backfilled history's branch, commit, triggering result and channel; numbers a branch-counter reservation spent without leaving a branch, directory or record |
 
 ## Table inventory
@@ -379,16 +382,17 @@ request stays, and the next start tries again once the cause is gone.
 | `to_sql.commit` | the mode is `sql` | sql |
 
 From a switch that never committed, nothing changed who was authoritative,
-so the rollback only records itself. From `disk` mode, rollback is
-supported for as long as every mutation still writes SQLite first, which is
-true of this build and every build until that write path is retired (T13d
-must end this window explicitly). Run the rollback before starting a build
-older than T13c on a `disk` installation: an older build ignores the
-authority record and runs as `sql`, which is safe (it writes both sides the
-same way) but does not stamp `repo.json`.
+so the rollback only records itself. From `disk` mode, see "The rollback
+window" below: since T13d the rollback is verified, and it is the only way
+back to a build older than T13d.
 
-`KANNA_STORAGE_AUTHORITY` is applied at every start; while it is set, a
-subcommand request the other way is overridden at the next start.
+`KANNA_STORAGE_AUTHORITY` is applied at every start of a server that has
+it in its environment; while it is set, a subcommand request the other way
+is overridden at the next start. The packaged desktop never passes an
+inherited value on: it removes `KANNA_STORAGE_AUTHORITY` from the
+environment of the `kanna-server` it launches (T13d), so a stray variable
+in a login shell or launch agent cannot switch a production installation.
+For a desktop-launched server the subcommand is the switch.
 
 **Peers and clients.** Nothing on the wire changes. Transfer, federation,
 the mobile and desktop APIs, and a peer that knows nothing of disk mode
@@ -403,19 +407,116 @@ installation (as a rebuild does) and compares it with the rows. A switch
 publishes a `task.json` for every task never published, closed ones
 included, once.
 
+## Disk-first writes (T13d)
+
+`crates/kanna-server/src/task_store/disk_first.rs`, with the connection's
+commit gate in `crates/kanna-server/src/db/disk_first.rs`.
+
+In `disk` mode every transaction that owes a disk record (a trigger or an
+enqueue touched `task_ledger_snapshot`, `task_ledger_entry`,
+`repo_disk_snapshot` or `disk_record_removal`) writes it from its own
+uncommitted rows, holding SQLite's write lock, before SQLite commits. For
+each task it touched:
+
+1. **Refuse** when the disk holds what this database did not write: the task
+   is fenced (`disk_divergence`, or a failed commit in this process), a
+   ledger file at one of its unpublished sequences holds other bytes, or
+   `task.json` is at a revision the database never published. Nothing is
+   written, the transaction rolls back with `disk-first write refused: ...`,
+   and the task is reconciled from its directory (under its mutation lease,
+   as in T13c). Until then every write to the task is refused.
+2. **Write `task.json`**, the commit point. It holds the rows as the
+   transaction leaves them and, under `ledger.in_flight`, the exact bytes of
+   every committed entry that is not yet a file. One rename makes the whole
+   mutation durable on disk.
+3. **Publish the entry files** in sequence order up to an open reservation.
+   A failure here does not undo the mutation (it is in `task.json`); the
+   publisher writes the file later.
+4. **SQLite commits.** If that fails, the disk already holds the mutation:
+   the task is fenced and reconciled from disk, so the mutation stands even
+   though its caller saw an error.
+
+Owed `repo.json` records and tombstones are written the same way. A crash
+before step 2 leaves no trace of the mutation; a crash after it leaves it on
+disk, and the next start publishes the in-flight entry files and reconciles
+the database from the directory
+(`a_disk_first_commit_killed_at_every_write_step_rebuilds_identically`: the
+mutation is there whole or not at all, and the restarted database equals a
+rebuild from the directories alone).
+
+Every write path reaches a commit through the gate: `with_immediate_transaction`
+and the connection's own transactions publish before `COMMIT`, an
+autocommit statement runs inside such a transaction in `disk` mode, and any
+other commit that touches the outbox in `disk` mode (a raw `COMMIT`, a
+prepared statement in autocommit) is refused by SQLite's commit hook. In
+`sql` mode nothing about a commit changes. The fixture round trip runs every
+representative endpoint with disk authority from the start and asserts no
+commit was refused and nothing is left for the publisher.
+
+Cost: in `disk` mode each mutation that owes a record rewrites that task's
+`task.json` (all of its rows) and its new entry files, synced, while holding
+SQLite's write lock.
+
+## The rollback window
+
+- **Through this build: open, verified.** `kanna-server storage-authority
+  sql` and a restart reconciles the database from disk, drains it, and runs
+  the same exact comparison that gates `to_disk.verified`. Only if the
+  database holds exactly what the disk does is `to_sql.reconciled` recorded
+  and the mode set to `sql`. Otherwise the rollback is refused
+  (`to_sql.refused`, with the differences in the checkpoint, the log and
+  `storage-authority status`), the installation stays `disk`, the request
+  stays, and the next start tries again once the cause is fixed.
+- **By starting an older build: closed from this build's first `disk`-mode
+  start.** Before any disk-first write, the authority record is rewritten as
+  schema version 2 with `disk_first_since` and a note. A T13c build accepts
+  only version 1 and refuses to start on the installation (its error names
+  the record and its version), so no older build runs SQL-first over
+  records it may not hold (such as `ledger.in_flight` entries). A completed
+  rollback rewrites version 1, which reopens older builds. Builds older than
+  T13c do not read the record at all: never start one on a `disk`
+  installation.
+
+Operator sequence to leave disk authority, or to downgrade:
+
+```sh
+kanna-server storage-authority sql       # with a T13d or newer build
+# restart that build; check:
+kanna-server storage-authority status    # mode: sql, no "disk-first writes since"
+# only now start an older build, if that is the goal
+```
+
+## Legacy retirement (T13d)
+
+- **Commit posts become commit steps.** At startup, after recovery, each
+  open task whose pinned workflow commits through a post named `commit` is
+  migrated, under its mutation lease, to that stage's `exit_commit` (T3's
+  commit step, now valid under legacy routing too). It happens only at a
+  quiescent boundary (no running run, no owed transition, lifecycle
+  operation or commit step, not parked at a post, no transfer holding its
+  workflow), through the ordinary replacement validator (recorded runs keep
+  their stages, no run is superseded), fenced on the exact definition read,
+  and recorded as a workflow replacement with `source`/`declared_role`
+  `engine` on the server's channel. A task whose commit post already has
+  recorded runs keeps the post; any other task not quiescent is left as it
+  was until a later start.
+- **Kept as adapters:** every other post (`approve`, custom posts) and the
+  request-revision API for tasks not on named-exit routing.
+- **Result prompt variables** (`$PREV_RESULT`, `$PREV_MAIN_RESULT`,
+  `$PLAN_RESULT`) are deprecated, never removed: still substituted,
+  documented as deprecated in the workflows guide, and noted once per
+  repository file by the loader (a log line) and per use by `kanna_doctor`
+  (a warning, never an error). The legacy bundled workflows (`no-review`,
+  `single-reviewer`, `plan-build-review`) and the plan agent still use them.
+
 ## Still open
 
 - **No downgrade fence for any migration.** `schema_migrations` records
   what ran; nothing refuses to open a database that a newer build migrated.
-  The task directory has the same exposure: the rebuild's reader refuses an
-  unknown `schema_version` or `state` version, the server's own publisher
-  and delivery do not. Found in T1's review.
-- Retiring the SQL-first write path, result prompt variables, the
-  posts/revision API and input-only ledger reads (T13d). Until then disk
-  mode keeps SQLite written first by every mutation, which is what makes
-  rollback always possible.
-- A committed SQL change not yet published when the database is lost is
-  lost in `disk` mode too (the publication window above): the outbox is the
-  disk records' write-ahead journal and lives in the database.
+  The authority record now fences builds before T13d off a `disk`
+  installation, but not off a `sql` one.
+- Input-only ledger reads.
 - The switch is not performed while the server runs; it waits for the next
   start.
+- Making `disk` the default authority is a later rollout, after `disk` has
+  run on staging (owner, 2026-09-23).
