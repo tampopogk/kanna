@@ -43,7 +43,7 @@ final review gates as manager; children return reviewed local commits only.
 | T10i manager policy for superseded inputs | `0aeb30d9` | task-manager handles task.dependency_superseded (spec §17) (single reviewer, sonnet) | parent after T11b | reviewed, integrated, closed | `a6651d6ec` | T10i merge commit |
 | T13b close disk-rebuild gaps | `fa7ef515` | make every non-statistical durable fact rebuildable from disk; SQLite still authoritative (panel; opus) | parent `dd681af2f`, merged `89263d450` | reviewed (round 4), integrated, closed | `9c03cc022` … `1682bcd3c` | T13b merge commit |
 | T13c authority cutover | `37b1d5e8` | persisted authority mode sql→disk at quiescent boundaries, SQL reconciled from disk without replaying effects, checkpointed rollback; default stays sql unless explicitly switched (panel incl. release; opus) | parent `caba2cf82` | reviewed (round 4), integrated, closed | `89d9c3752` … `358b607a3` | T13c merge commit |
-| T13d retire legacy paths | — | result prompt variables, posts/revision API, input-only ledger, DB-primary writers — after T13c and pinned-task/peer compatibility | — | not created | — | — |
+| T13d finish cutover, retire legacy safely | `c06776a3` | disk-first writes in disk mode, close rollback window, strip env at packaged launch, commit-post migration, legacy adapters kept, result vars deprecated not removed (panel; opus) | parent after T13c | in progress | — | — |
 | T14 release workflow | `6b069969` | first increment + card (panel incl. release/security) | parent `c05999e0f` (T3 2f91f9ad2, T8/T8b) | reviewed (round 3), integrated, closed | `0145b8de3`, `16c0065db`, `4d2feac1e`, `c9a782a9b` | T14 merge commit |
 
 ## Log
@@ -193,3 +193,4 @@ final review gates as manager; children return reviewed local commits only.
 - Parent decision on T13c's declined item: the card's acceptance (a pending transfer claim is reconstructed after a delete-and-rebuild) stands over the parent's round-4 note to restore claims as "unclaimed" — the claim token and lease never reach disk, so a restored claim excludes others but grants no authority, and finalization re-acquires ownership.
 - Follow-ups for T13d: SQL-first write path remains in disk mode; end the rollback-from-disk window explicitly; strip an inherited KANNA_STORAGE_AUTHORITY at the packaged desktop launch boundary so a stray env var can't cut over production.
 - 2026-09-23: OWNER DECISIONS ("sgtm" to parent recommendations): result prompt variables stay as a documented deprecated compatibility feature (not removed); SQLite stays the default authority, disk opt-in, default flip is a later rollout. Spec §17 updated.
+- 2026-09-23: T13d `c06776a3` created.
