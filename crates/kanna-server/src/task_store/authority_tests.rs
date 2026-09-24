@@ -67,11 +67,11 @@ fn an_unreadable_or_foreign_record_is_refused_never_guessed() {
     let path = record_path(&root, &installation_id(&db_path));
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let mut record = AuthorityRecord::new(&db_path);
-    record.schema_version = 2;
+    record.schema_version = 3;
     std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
     assert!(load_record(&root, &db_path)
         .unwrap_err()
-        .contains("schema_version 2"));
+        .contains("schema_version 3"));
     let mut record = AuthorityRecord::new(&db_path);
     record.installation = "someone-else".into();
     std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
@@ -1168,4 +1168,210 @@ fn a_commit_that_fails_after_the_disk_write_is_taken_from_disk() {
     assert_eq!(display_name(&db).as_deref(), Some("on disk only"));
     operator_input(&db, "t1", "accepted again");
     assert!(db.ledger_tasks_with_pending_work().unwrap().is_empty());
+}
+
+/// What a build before T13d does with the record: it understands only
+/// schema version 1, and refuses anything else.
+fn older_build_accepts(root: &Path, db_path: &str) -> bool {
+    let bytes = std::fs::read(record_path(root, &installation_id(db_path))).unwrap();
+    serde_json::from_slice::<Value>(&bytes).unwrap()["schema_version"] == 1
+}
+
+/// The rollback window (T13d). Older builds: closed from this build's
+/// first disk-first start (the record becomes schema version 2, which they
+/// refuse) until a completed rollback reopens it. This build: a rollback
+/// commits only when the database, reconciled from disk, verifies equal to
+/// it; otherwise it is refused with the differences, the installation
+/// stays `disk`, and the request is retried at the next start.
+#[test]
+fn the_rollback_window_refuses_what_it_cannot_verify_and_closes_to_older_builds() {
+    let (db, db_path) = installation("window", "repo-window", &["t1", "t2"]);
+    let root = root_for_db(&db_path);
+    assert!(flush_all(&db, &db_path).is_empty());
+
+    // An installation a T13c build switched to disk: its record is still
+    // version 1 and open to that build, until this build starts on it.
+    let mut record = AuthorityRecord::new(&db_path);
+    record.mode = Mode::Disk;
+    std::fs::create_dir_all(root.join("authority")).unwrap();
+    std::fs::write(
+        record_path(&root, &installation_id(&db_path)),
+        serde_json::to_vec_pretty(&record).unwrap(),
+    )
+    .unwrap();
+    assert!(older_build_accepts(&root, &db_path));
+    assert_eq!(start(&db, &db_path, None).unwrap().mode, Mode::Disk);
+    let record = load_record(&root, &db_path).unwrap();
+    assert_eq!(record.schema_version, DISK_FIRST_RECORD_SCHEMA_VERSION);
+    assert!(record.disk_first_since.is_some() && record.note.is_some());
+    assert!(!older_build_accepts(&root, &db_path));
+    operator_input(&db, "t1", "written disk-first");
+
+    // The disk holds what the database cannot be shown to hold: t2's
+    // task.json is ahead of the database and carries no rows to project.
+    // The rollback is refused and retried.
+    let t2_json = task_dir(&root, "repo-window", "t2").join("task.json");
+    let intact = std::fs::read(&t2_json).unwrap();
+    let mut ahead: Value = serde_json::from_slice(&intact).unwrap();
+    ahead.as_object_mut().unwrap().remove("state");
+    ahead["snapshot_revision"] = json!(ahead["snapshot_revision"].as_i64().unwrap() + 5);
+    std::fs::write(&t2_json, serde_json::to_vec_pretty(&ahead).unwrap()).unwrap();
+    let outcome = start(&db, &db_path, Some(Mode::Sql)).unwrap();
+    assert_eq!(outcome.mode, Mode::Disk);
+    assert!(
+        outcome.refused.iter().any(|problem| problem.contains("t2")),
+        "{:?}",
+        outcome.refused
+    );
+    let record = load_record(&root, &db_path).unwrap();
+    assert_eq!(
+        (record.mode, record.requested),
+        (Mode::Disk, Some(Mode::Sql))
+    );
+    assert!(record.switch.is_none());
+    let last = record.checkpoints.last().unwrap();
+    assert_eq!(last.checkpoint, "to_sql.refused");
+    assert!(
+        last.detail["problems"].to_string().contains("t2"),
+        "{last:?}"
+    );
+    assert!(!older_build_accepts(&root, &db_path));
+    assert_eq!(mode_for_root(&root), Mode::Disk);
+
+    // Fixed, the next start verifies and commits the rollback, and the
+    // record is open to older builds again.
+    std::fs::write(&t2_json, intact).unwrap();
+    let outcome = start(&db, &db_path, None).unwrap();
+    assert_eq!(outcome.mode, Mode::Sql, "{:?}", outcome.refused);
+    let record = load_record(&root, &db_path).unwrap();
+    assert_eq!(record.schema_version, RECORD_SCHEMA_VERSION);
+    assert!(record.disk_first_since.is_none() && record.requested.is_none());
+    let names: Vec<&str> = record
+        .checkpoints
+        .iter()
+        .rev()
+        .take(3)
+        .map(|checkpoint| checkpoint.checkpoint.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        ["to_sql.commit", "to_sql.reconciled", "to_sql.begin"]
+    );
+    assert!(older_build_accepts(&root, &db_path));
+    let inputs = inputs(&db);
+    assert!(inputs
+        .iter()
+        .any(|(_, task, text)| task == "t1" && text == "written disk-first"));
+}
+
+/// Writers on their own connections allocate ledger sequences (entries,
+/// and reservations released as gaps) while publishers flush on theirs, in
+/// both authority modes. No number is handed out twice, every entry
+/// reaches disk with its committed bytes, and nothing is left owed.
+#[test]
+fn ledger_sequences_stay_unique_under_concurrent_writers_and_publishers() {
+    for mode in [Mode::Sql, Mode::Disk] {
+        let label = format!("stress-{}", mode.as_str());
+        let repo = format!("repo-{label}");
+        let (db, db_path) = installation(&label, &repo, &["t1", "t2"]);
+        assert!(flush_all(&db, &db_path).is_empty());
+        assert_eq!(start(&db, &db_path, Some(mode)).unwrap().mode, mode);
+        drop(db);
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let publishers: Vec<_> = (0..2)
+            .map(|_| {
+                let (db_path, done) = (db_path.clone(), std::sync::Arc::clone(&done));
+                std::thread::spawn(move || {
+                    let db = Db::open(&db_path).unwrap();
+                    while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                        let _ = flush_all(&db, &db_path);
+                    }
+                })
+            })
+            .collect();
+        let writers: Vec<_> = (0..4)
+            .map(|writer| {
+                let db_path = db_path.clone();
+                std::thread::spawn(move || {
+                    let db = Db::open(&db_path).unwrap();
+                    let mut released = Vec::new();
+                    for op in 0..20 {
+                        let task = if (writer + op) % 2 == 0 { "t1" } else { "t2" };
+                        if op % 3 == 2 {
+                            let sequence = db.reserve_ledger_sequence(task).unwrap();
+                            db.release_ledger_reservation(task, sequence).unwrap();
+                            released.push((task.to_string(), sequence));
+                        } else {
+                            operator_input(&db, task, &format!("writer {writer} op {op}"));
+                        }
+                    }
+                    released
+                })
+            })
+            .collect();
+        let released: Vec<(String, i64)> = writers
+            .into_iter()
+            .flat_map(|writer| writer.join().unwrap())
+            .collect();
+        done.store(true, std::sync::atomic::Ordering::SeqCst);
+        for publisher in publishers {
+            publisher.join().unwrap();
+        }
+        let db = Db::open(&db_path).unwrap();
+        let failures = flush_all(&db, &db_path);
+        assert!(failures.is_empty(), "{mode:?}: {failures:?}");
+        assert!(db.ledger_tasks_with_pending_work().unwrap().is_empty());
+        let root = root_for_db(&db_path);
+        for task in ["t1", "t2"] {
+            let rows = db.ledger_rows_for_authority(task).unwrap();
+            let entries: Vec<i64> = rows.iter().map(|row| row.sequence).collect();
+            let gaps: Vec<i64> = released
+                .iter()
+                .filter(|(released_task, _)| released_task == task)
+                .map(|(_, sequence)| *sequence)
+                .collect();
+            let mut handed_out: Vec<i64> = entries.iter().chain(&gaps).copied().collect();
+            handed_out.sort();
+            let unique = handed_out.len();
+            handed_out.dedup();
+            assert_eq!(
+                handed_out.len(),
+                unique,
+                "{mode:?} {task}: a number was reused"
+            );
+            let high_water: i64 = outside_writer(&db_path)
+                .query_row(
+                    "SELECT high_water FROM task_ledger_sequence WHERE task_id = ?",
+                    [task],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(Some(&high_water), handed_out.last(), "{mode:?} {task}");
+            let files = crate::task_store::read_ledger(&task_dir(&root, &repo, task)).unwrap();
+            assert_eq!(
+                files.iter().map(|file| file.sequence).collect::<Vec<_>>(),
+                entries,
+                "{mode:?} {task}"
+            );
+            for row in &rows {
+                let on_disk = std::fs::read(task_dir(&root, &repo, task).join("ledger").join(
+                    crate::db::task_store::ledger_file_name(
+                        row.sequence,
+                        crate::db::task_store::LedgerEntryKind::Input,
+                    ),
+                ))
+                .unwrap();
+                assert_eq!(Some(on_disk), row.payload.clone(), "{mode:?} {task}");
+            }
+        }
+        if mode == Mode::Disk {
+            assert!(diverged_tasks(&db).is_empty());
+            assert_eq!(crate::db::disk_first::refused_commits(&db_path), 0);
+            let report = start(&db, &db_path, None).unwrap().reconcile.unwrap();
+            assert!(
+                report.reconciled.is_empty() && report.failed.is_empty(),
+                "{report:#?}"
+            );
+        }
+    }
 }

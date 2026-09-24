@@ -82,11 +82,24 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
-/// Requests a switch at startup: `disk` or `sql`.
-pub const AUTHORITY_ENV: &str = "KANNA_STORAGE_AUTHORITY";
+/// Requests a switch at startup: `disk` or `sql`. The packaged desktop
+/// never passes an inherited value on to the server it launches (T13d).
+pub const AUTHORITY_ENV: &str = kanna_runtime_defaults::STORAGE_AUTHORITY_ENV;
 
-/// The authority record's own version. Anything else is refused.
+/// The authority record's own version while the installation is `sql`.
+/// Anything this build does not understand is refused.
 pub const RECORD_SCHEMA_VERSION: u64 = 1;
+
+/// The record's version while the installation is `disk` (T13d): its
+/// writes are disk-first, and a build older than T13d, which understands
+/// only [`RECORD_SCHEMA_VERSION`], refuses to open it instead of running
+/// SQL-first over records it cannot read.
+pub const DISK_FIRST_RECORD_SCHEMA_VERSION: u64 = 2;
+
+/// What a `disk` record tells whoever opens it.
+const DISK_FIRST_NOTE: &str = "This installation writes its task directories first (disk authority, T13d). \
+Builds older than T13d cannot run it. To leave disk authority, run `kanna-server storage-authority sql` \
+with a T13d or newer build and restart it; the rollback is verified before it commits.";
 
 /// Checkpoints kept in the record, newest last.
 const CHECKPOINT_HISTORY: usize = 64;
@@ -232,6 +245,12 @@ pub struct AuthorityRecord {
     pub switch: Option<SwitchProgress>,
     /// The most recent checkpoints, oldest first.
     pub checkpoints: Vec<Checkpoint>,
+    /// When this installation first ran disk-first (T13d); cleared by a
+    /// completed rollback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_first_since: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -268,6 +287,8 @@ impl AuthorityRecord {
             requested: None,
             switch: None,
             checkpoints: Vec::new(),
+            disk_first_since: None,
+            note: None,
         }
     }
 
@@ -304,9 +325,9 @@ pub fn load_record(root: &Path, db_path: &str) -> Result<AuthorityRecord, String
     };
     let record: AuthorityRecord =
         serde_json::from_slice(&bytes).map_err(|error| format!("{}: {error}", path.display()))?;
-    if record.schema_version != RECORD_SCHEMA_VERSION {
+    if ![RECORD_SCHEMA_VERSION, DISK_FIRST_RECORD_SCHEMA_VERSION].contains(&record.schema_version) {
         return Err(format!(
-            "{} has schema_version {}; this build understands {RECORD_SCHEMA_VERSION}",
+            "{} has schema_version {}; this build understands {RECORD_SCHEMA_VERSION} and {DISK_FIRST_RECORD_SCHEMA_VERSION}",
             path.display(),
             record.schema_version
         ));
@@ -321,8 +342,19 @@ pub fn load_record(root: &Path, db_path: &str) -> Result<AuthorityRecord, String
     Ok(record)
 }
 
+/// Write the record. Its version follows its mode: a `disk` record is
+/// [`DISK_FIRST_RECORD_SCHEMA_VERSION`], which older builds refuse.
 fn save_record(root: &Path, record: &AuthorityRecord) -> Result<(), String> {
-    let mut bytes = serde_json::to_vec_pretty(record)
+    let mut record = record.clone();
+    if record.mode == Mode::Disk {
+        record.schema_version = DISK_FIRST_RECORD_SCHEMA_VERSION;
+        record.note = Some(DISK_FIRST_NOTE.to_string());
+    } else {
+        record.schema_version = RECORD_SCHEMA_VERSION;
+        record.disk_first_since = None;
+        record.note = None;
+    }
+    let mut bytes = serde_json::to_vec_pretty(&record)
         .map_err(|error| format!("render authority record: {error}"))?;
     bytes.push(b'\n');
     let path = record_path(root, &record.installation);
@@ -367,6 +399,11 @@ pub fn run_cli(config: &crate::config::Config, args: &[String]) -> Result<String
                 switch.from.as_str(),
                 switch.target.as_str(),
                 switch.phase
+            ));
+        }
+        if let Some(since) = &record.disk_first_since {
+            lines.push(format!(
+                "disk-first writes since {since}: builds older than T13d refuse this installation"
             ));
         }
         if let Some(last) = record.checkpoints.last() {
@@ -1184,7 +1221,8 @@ pub struct StartOutcome {
     pub mode: Mode,
     /// `disk` mode's reconciliation at this startup.
     pub reconcile: Option<ReconcileReport>,
-    /// Why a requested switch to `disk` was refused, if it was.
+    /// Why a requested switch (to `disk`, or a rollback to `sql`) was
+    /// refused, if it was.
     pub refused: Vec<String>,
 }
 
@@ -1193,6 +1231,8 @@ struct Switch<'a> {
     db_path: &'a str,
     root: PathBuf,
     record: AuthorityRecord,
+    /// Why a rollback was refused at this start.
+    refused: Vec<String>,
 }
 
 impl Switch<'_> {
@@ -1205,6 +1245,9 @@ impl Switch<'_> {
     /// Record a checkpoint durably, then (in tests) stop if asked to.
     fn checkpoint(&mut self, name: &str, detail: Value) -> Result<(), String> {
         let at = self.now()?;
+        if self.record.mode == Mode::Disk && self.record.disk_first_since.is_none() {
+            self.record.disk_first_since = Some(at.clone());
+        }
         self.record.checkpoint(at, name, detail);
         save_record(&self.root, &self.record)?;
         log::info!(
@@ -1315,6 +1358,21 @@ impl Switch<'_> {
         Ok(problems)
     }
 
+    /// The database cannot be shown to hold what the disk does: stay
+    /// `disk`. The request stays, so the next startup verifies again.
+    fn refuse_rollback(&mut self, problems: Vec<String>) -> Result<(), String> {
+        for problem in &problems {
+            log::error!("rollback to sql authority refused: {problem}");
+        }
+        self.record.switch = None;
+        self.refused = problems.clone();
+        self.checkpoint(
+            "to_sql.refused",
+            json!({ "problems": problems.iter().take(50).collect::<Vec<_>>(),
+                    "count": problems.len() }),
+        )
+    }
+
     fn roll_back_to_sql(&mut self) -> Result<Option<ReconcileReport>, String> {
         if self
             .record
@@ -1326,27 +1384,37 @@ impl Switch<'_> {
         }
         let mut report = None;
         if self.record.mode == Mode::Disk {
+            // Disk-first writes (T13d) mean SQLite is no longer written
+            // first, so a rollback is made safe by what it checks, not by
+            // the write order: the database, reconciled from disk, must
+            // hold exactly what the disk does, or the rollback is refused.
             let reconciled = reconcile_from_disk(self.db, self.db_path, None)?;
             reconciled.log();
-            if !reconciled.failed.is_empty() {
-                return Err(format!(
-                    "rollback to sql waits: {} tasks could not be reconciled from disk",
-                    reconciled.failed.len()
-                ));
-            }
+            let mut problems: Vec<String> = reconciled
+                .failed
+                .iter()
+                .map(|(task, error)| {
+                    format!("task {task} could not be reconciled from disk: {error}")
+                })
+                .collect();
             let pending = self
                 .db
                 .ledger_tasks_with_pending_work()
                 .map_err(|error| format!("db error: {error}"))?;
             if !pending.is_empty() {
-                return Err(format!(
-                    "rollback to sql waits: tasks {pending:?} are still owed publication"
-                ));
+                problems.push(format!("tasks {pending:?} are still owed publication"));
+            }
+            if problems.is_empty() {
+                problems = verify_disk_equals_database(self.db, self.db_path)?.problems();
+            }
+            if !problems.is_empty() {
+                return self.refuse_rollback(problems).map(|()| Some(reconciled));
             }
             self.checkpoint(
                 "to_sql.reconciled",
                 json!({ "reconciled": reconciled.reconciled.len(),
-                        "republished": reconciled.republished.len() }),
+                        "republished": reconciled.republished.len(),
+                        "verified": true }),
             )?;
             report = Some(reconciled);
         }
@@ -1372,7 +1440,14 @@ pub fn start(db: &Db, db_path: &str, request: Option<Mode>) -> Result<StartOutco
         db_path,
         root: root.clone(),
         record: load_record(&root, db_path)?,
+        refused: Vec::new(),
     };
+    // An installation switched to disk by a build before T13d: its record
+    // closes to older builds before this one writes anything disk-first.
+    if switch.record.mode == Mode::Disk && switch.record.disk_first_since.is_none() {
+        switch.record.disk_first_since = Some(switch.now()?);
+        save_record(&root, &switch.record)?;
+    }
     set_mode(&root, db_path, switch.record.mode);
     if let Some(request) = request {
         // The explicit request replaces whatever was pending: one that asks
@@ -1419,6 +1494,9 @@ pub fn start(db: &Db, db_path: &str, request: Option<Mode>) -> Result<StartOutco
     };
     set_mode(&root, db_path, switch.record.mode);
     outcome.mode = switch.record.mode;
+    if !switch.refused.is_empty() {
+        outcome.refused = std::mem::take(&mut switch.refused);
+    }
     result?;
     if outcome.mode == Mode::Disk {
         let report = reconcile_from_disk(db, db_path, None)?;
@@ -1506,7 +1584,7 @@ pub fn open_database(config: &crate::config::Config) -> Result<Db, String> {
                 String::new()
             } else {
                 format!(
-                    " (switch to disk refused: {} problems)",
+                    " (requested switch refused: {} problems; see the log and `kanna-server storage-authority status`)",
                     outcome.refused.len()
                 )
             }

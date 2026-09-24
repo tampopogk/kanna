@@ -356,6 +356,13 @@ fn an_interrupted_backfill_resumes_to_the_same_records() {
             [],
         )
         .unwrap();
+    db.record_task_input(
+        "t-1",
+        crate::db::TaskInputSource::Operator,
+        &crate::mutation_provenance::ChannelIdentity::Unknown,
+        "an entry the mark must cover",
+    )
+    .unwrap();
     assert!(crate::task_store::flush_all(&db, &path).is_empty());
     let task_json = |id: &str| crate::task_store::task_dir(&root, "repo-1", id).join("task.json");
     let read = |id: &str| -> serde_json::Value {
@@ -391,6 +398,7 @@ fn an_interrupted_backfill_resumes_to_the_same_records() {
             .execute_batch(
                 "DROP TABLE repo_disk_snapshot;
                  DROP TABLE disk_record_removal;
+                 DROP TABLE task_ledger_sequence;
                  DELETE FROM schema_migrations WHERE id = '103_disk_state_records';
                  UPDATE task_ledger_snapshot SET published_revision = revision;",
             )
@@ -405,6 +413,7 @@ fn an_interrupted_backfill_resumes_to_the_same_records() {
     drop(db);
 
     let db = Db::open_migrated(&path).unwrap();
+    assert_high_water_covers_every_entry(&db);
     let mut owed = db.ledger_tasks_with_pending_work().unwrap();
     owed.sort();
     assert_eq!(owed, vec!["t-1", "t-2"], "only open tasks are backfilled");
@@ -432,12 +441,37 @@ fn an_interrupted_backfill_resumes_to_the_same_records() {
     downgrade(&db);
     drop(db);
     let db = Db::open_migrated(&path).unwrap();
+    assert_high_water_covers_every_entry(&db);
     assert!(crate::task_store::flush_all(&db, &path).is_empty());
     let again: Vec<serde_json::Value> = ["t-1", "t-2"]
         .iter()
         .map(|id| without_revision(read(id)))
         .collect();
     assert_eq!(again, expected);
+}
+
+/// Migration 103 recreates the sequence mark a previous build's database
+/// lacks from the entries it holds, so no recorded sequence is handed out
+/// again after the upgrade.
+fn assert_high_water_covers_every_entry(db: &Db) {
+    let uncovered: i64 = db
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM (
+                 SELECT entry.task_id, MAX(entry.sequence) AS last
+                 FROM task_ledger_entry entry GROUP BY entry.task_id)
+             LEFT JOIN task_ledger_sequence mark USING (task_id)
+             WHERE mark.high_water IS NULL OR mark.high_water < last",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(uncovered, 0);
+    let entries: i64 = db
+        .conn
+        .query_row("SELECT COUNT(*) FROM task_ledger_entry", [], |row| row.get(0))
+        .unwrap();
+    assert!(entries > 0, "the fixture records ledger entries");
 }
 
 /// Ledger sequences are a strict high-water mark: a released reservation,
