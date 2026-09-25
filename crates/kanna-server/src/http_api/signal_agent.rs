@@ -1800,72 +1800,32 @@ mod tests {
     /// handoff in the repository 503, on every task, for the 24h life of that
     /// grant. The scan itself is right to fail closed on a machine it cannot
     /// verify; what was wrong is that a machine which is no longer a live
-    /// participant kept being handed to it. The call that discovers the stale
-    /// grant still fails - that is when it is learned - but it says so, and
-    /// the next scan is clean.
-    #[tokio::test]
-    async fn a_stale_grant_peer_stops_blocking_the_singleton_scan_after_it_is_proven_stale() {
-        let state = test_state_with_seed("desktop-singleton-scan", "Scan", |_| {});
-        state.set_authenticated_account_uid(Some("uid-1".to_string()));
-        relay_present_but_not_serving(&state);
-        seed_unanswerable_lan_peer(&state, "desktop-departed-peer");
-
-        let (machine_ids, _) =
-            super::super::invoke_desktop::relay_and_lan_desktop_ids(&state).await;
-        assert_eq!(
-            machine_ids,
-            vec!["desktop-departed-peer".to_string()],
-            "the grant alone puts the departed peer into the scan"
-        );
-
-        let (status, reason) =
-            observe_remote_singletons(&state, "repo-1", "merge", "remote-hash-1", machine_ids)
-                .await
-                .expect_err(
-                    "the first scan still fails closed: this is when the staleness is learned",
-                );
-        assert_eq!(status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
-        assert!(
-            reason.contains("stale LAN trust"),
-            "the 503 must say the grant was dropped so a retry is worth making: {reason}"
-        );
-
-        let (machine_ids, _) =
-            super::super::invoke_desktop::relay_and_lan_desktop_ids(&state).await;
-        assert!(
-            machine_ids.is_empty(),
-            "a peer proven to answer neither route is no longer a participant: {machine_ids:?}"
-        );
-        observe_remote_singletons(&state, "repo-1", "merge", "remote-hash-1", machine_ids)
-            .await
-            .expect("with the departed peer gone the scan resolves a live namespace");
-    }
-
-    /// The same departed peer in the configuration the production failure was
-    /// actually measured in: the legacy desktop-to-desktop route refused, so
-    /// an unpinned sibling has no route at all and `invoke_desktop` refuses
-    /// before it ever dials. `revoke_stale_lan_grant` still drops the grant
-    /// there, but only after the call that discovered it has already failed -
-    /// so the first singleton launch after a machine goes away paid a 503 and
-    /// only the second worked.
+    /// participant kept being handed to it.
     ///
-    /// Naming the legacy switch in the eligibility predicate removes the
-    /// premise: with no route to it the machine is never a LAN participant,
-    /// so it never enters the scan and no attempt is spent learning that it
-    /// cannot be reached. One attempt, not two.
+    /// It is closed one step earlier than it used to be.
+    /// `revoke_stale_lan_grant` drops the grant only after the call that
+    /// discovered it has already failed, so the first singleton launch after
+    /// a machine went away paid a 503 and only the second worked. Enumerating
+    /// pins alone removes the premise: a grant is not a route, so the machine
+    /// is never a LAN participant, never enters the scan, and no attempt is
+    /// spent learning that it cannot be reached. One attempt, not two.
+    ///
+    /// That held only with the legacy switch refused until the switch was
+    /// removed; it now holds in the only configuration there is, which is why
+    /// the paid-a-503-first variant of this test is gone rather than sitting
+    /// beside it.
     #[tokio::test]
     async fn a_sibling_with_no_route_never_enters_the_singleton_scan_at_all() {
         let state = test_state_with_seed("desktop-singleton-scan-legacy-off", "Scan", |_| {});
         state.set_authenticated_account_uid(Some("uid-1".to_string()));
         relay_present_but_not_serving(&state);
-        super::super::peer_tests::set_peer_legacy_refused(&state);
         seed_unanswerable_lan_peer(&state, "desktop-departed-peer");
 
         let (machine_ids, _) =
             super::super::invoke_desktop::relay_and_lan_desktop_ids(&state).await;
         assert!(
             machine_ids.is_empty(),
-            "a grant is not a route with the legacy path refused: {machine_ids:?}"
+            "a grant is not a route, so it is not a participant: {machine_ids:?}"
         );
 
         observe_remote_singletons(&state, "repo-1", "merge", "remote-hash-1", machine_ids)

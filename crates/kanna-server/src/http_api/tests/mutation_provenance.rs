@@ -613,7 +613,10 @@ async fn delivered_input_records_the_declared_source_and_the_verified_channel() 
 /// account is the actor and the recorded channel's account. An account
 /// switch in that window voids the credential: the call is refused and
 /// records nothing, rather than acting under - or being relabelled as - an
-/// account it was never verified against.
+/// account it was never verified against. The gateway itself currently
+/// refuses every caller before dispatch
+/// (`secure_channel::LEGACY_PEER_ACCESS_ALLOWED`), so this drives the
+/// dispatch it would hand the verified caller to.
 #[tokio::test]
 async fn a_lan_machine_invoke_acts_only_as_the_account_it_was_verified_under() {
     let (_temp, state, before) = replacement_fixture("provenance-lan-account-switch");
@@ -633,15 +636,8 @@ async fn a_lan_machine_invoke_acts_only_as_the_account_it_was_verified_under() {
     };
 
     // Verified under A and still A at dispatch: acts as A, records A.
-    let response = crate::http_api::lan_listener::handle_invoke_for_test(
-        "desk-lan",
-        Some("uid-a"),
-        axum::extract::State(Arc::clone(&state)),
-        request("edited as A", &before),
-    )
-    .await
-    .expect("the LAN invoke gateway admits the verified caller");
-    assert_eq!(response["status"], 200, "{response}");
+    let response = lan_dispatch(&state, request("edited as A", &before)).await;
+    assert_eq!(response.status, 200, "{:?}", response.error);
     let events = task_events(&state, "task-1", "task.workflow_changed");
     assert_eq!(events.len(), 1, "{events:#?}");
     assert_eq!(events[0]["declaredRole"], "operator");
@@ -662,18 +658,16 @@ async fn a_lan_machine_invoke_acts_only_as_the_account_it_was_verified_under() {
         (None, "account_signed_out"),
     ] {
         state.set_authenticated_account_uid(switched_to.map(str::to_string));
-        let response = crate::http_api::lan_listener::handle_invoke_for_test(
-            "desk-lan",
-            Some("uid-a"),
-            axum::extract::State(Arc::clone(&state)),
-            request("edited across a switch", &current),
-        )
-        .await
-        .expect("the gateway answers with the dispatch's refusal");
-        assert_eq!(response["status"], 403, "{response}");
+        let response = lan_dispatch(&state, request("edited across a switch", &current)).await;
+        assert_eq!(response.status, 403, "{:?}", response.error);
         assert!(
-            response["error"].as_str().unwrap().starts_with(code),
-            "{response}"
+            response
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with(code),
+            "{:?}",
+            response.error
         );
     }
     assert_eq!(pinned_definition(&state), current);
@@ -681,4 +675,16 @@ async fn a_lan_machine_invoke_acts_only_as_the_account_it_was_verified_under() {
         task_events(&state, "task-1", "task.workflow_changed").len(),
         1
     );
+}
+
+async fn lan_dispatch(state: &Arc<AppState>, invoke: Value) -> crate::http_api::HttpInvokeResponse {
+    crate::http_api::routes::dispatch_authenticated_lan_http_invoke(
+        Arc::clone(state),
+        "desk-lan".into(),
+        Some("uid-a".into()),
+        invoke["method"].as_str().unwrap(),
+        invoke["path"].as_str().unwrap(),
+        invoke["body"].clone(),
+    )
+    .await
 }

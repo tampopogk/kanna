@@ -112,10 +112,10 @@ pub(super) async fn get_setting(
 /// handlers carried no authority extractor at all, so they sat on the
 /// `require_http_access` floor and any tunneled caller that cleared it - a
 /// relay-authenticated invoke, a paired phone's sealed session, a paired
-/// sibling's sealed peer session - could write `mobile_legacy_access`,
-/// `desktop_peer_legacy_access` or `terminalEditorCommand` on this machine.
-/// The first two are the switches that decide whether this desktop still
-/// accepts the pre-E2EE paths; the third is the command line
+/// sibling's sealed peer session - could write `mobile_legacy_access` or
+/// `terminalEditorCommand` on this machine. The first is the switch that
+/// decides whether this desktop still accepts the pre-E2EE mobile paths
+/// (the desktop-to-desktop one is gone); the second is the command line
 /// `terminal_editor::editor_choices` resolves to the executable the daemon
 /// spawns the next time the person here opens a file in a terminal editor.
 pub(super) async fn put_setting(
@@ -133,12 +133,6 @@ pub(super) async fn put_setting(
                 format!("db error: {e}"),
             )
         })?;
-    if key == super::secure_channel::DESKTOP_PEER_LEGACY_ACCESS_SETTING {
-        // The sidecar's discovery mode and bind address follow the switch
-        // at spawn; retire the running one so the next request respawns it
-        // under the new value.
-        state.transfer_sidecar().restart().await;
-    }
     state.publish_state_changed(StateChangeScope::Settings);
     Ok(Json(SettingResponse {
         key,

@@ -277,20 +277,29 @@ Still visible to the relay/cloud operator, unchanged by this work:
 - routing metadata, timing, volumes and account identity at the relay —
   never claimable.
 
-**Desktop legacy window.** The setting `desktop_peer_legacy_access`
-(Preferences → Machines → "Allow legacy (unencrypted) desktop-to-desktop
-routing", default *on*) keeps the pre-Slice-5 sibling paths alive: the
-relay-attested `invoke`, the bearer-secret LAN machine-invoke listener and
-its relay-attested CA bootstrap, the Firestore transfer key and the
-sidecar's mDNS transfer pairing, and the renderer's own relay tunnel for
-transfers. **While it is on, an unpaired same-account desktop — or a
-compromised relay stamping one's identity — still reaches this desktop with
-the old authority, so the deployment cannot be called protected.** Turning
-it off refuses each of those with `peer_legacy_access_refused`, spawns the
-transfer sidecar loopback-only with discovery disabled, and leaves sealed
-peer sessions as the only sibling route. It is a separate switch from
-`mobile_legacy_access` because phones and desktops upgrade on different
-schedules.
+**Desktop legacy window: the inbound half closed on 2026-09-20.** Until
+then the setting `desktop_peer_legacy_access` (Preferences → Machines →
+"Allow legacy (unencrypted) desktop-to-desktop routing", default *on*) kept
+every pre-Slice-5 sibling path alive, in both directions. **While it was on,
+an unpaired same-account desktop — or a compromised relay stamping one's
+identity — still reached this desktop with the old authority, so the
+deployment could not be called protected.** Every Mac that can pair now runs
+0.4.0 or later and pairs, so the setting and its switch are gone and the
+three paths by which this desktop *accepts* a sibling on the relay's word
+are refused unconditionally with `peer_legacy_access_refused`: the
+relay-attested `invoke`, the bearer-secret LAN machine-invoke listener, and
+the relay-attested CA bootstrap that mints the secret that listener trusts.
+`secure_channel::LEGACY_PEER_ACCESS_ALLOWED` is the constant that records
+the decision, and `invoke_desktop` no longer requests a bootstrap.
+
+What this desktop *initiates* is deliberately unchanged: `invoke_desktop`
+still falls back to an existing LAN grant and then the relay for an unpinned
+sibling, the sidecar still advertises and browses `_kanna-transfer`, and the
+renderer still registers Firestore-keyed cloud transfer proxies. Those are
+how a Mac that has not upgraded yet is still reached, and they retire by
+themselves: the moment that sibling reaches 0.4.0 its own end refuses them.
+`mobile_legacy_access` is a separate switch and still a setting, because
+phones and desktops upgrade on different schedules.
 
 **Legacy window.** The desktop setting `mobile_legacy_access` (Preferences →
 Mobile → "Allow legacy (unencrypted) mobile connections", default *on*)
@@ -503,8 +512,8 @@ old pin (`peer_identity_mismatch`) until the machines pair again.
 | Not paired, this desktop signed out or the sibling on another account | `peer_pairing_required` naming the reason; the ceremony refuses too (`peer_pairing_account_unconfirmed`) | nothing |
 | Paired, but the record does not prove one account (signed-out or pre-check ceremony pin), or this desktop is signed out or on another account now | `peer_account_boundary` naming the refusal and its repair; never a key-change notice | the clear-text refusal frame, naming neither machine |
 | Not paired, sibling announces no key (older Kanna) or the relay predates key presence | `peer_pairing_required` naming which | nothing |
-| Not paired and not enrollable, legacy on | the pre-Slice-5 relay-attested / LAN-bearer path (`relay`/`lan`), machine listed as `legacy` | plaintext, as before |
-| Not paired and not enrollable, legacy off | `peer_pairing_required`, machine listed as `pairingRequired` | nothing |
+| Not paired and not enrollable, sibling older than 0.4.0 | the pre-Slice-5 relay-attested / LAN-bearer path (`relay`/`lan`), machine listed as `legacy` | plaintext, as before |
+| Not paired and not enrollable, sibling on 0.4.0 or later | the same attempt, refused at the sibling's end with `peer_legacy_access_refused` (401) | plaintext request, refused answer |
 | Enrolled automatically, sibling's key later rotates | `peer_identity_mismatch`, sticky "Key changed" notice, **never** re-enrolled | one handshake frame |
 | Paired, sibling answers with no peer handshake (older Kanna, identity unavailable) | `peer_upgrade_required`; no plaintext attempt | one handshake frame |
 | Paired, key rotated or impostor at the address | `peer_identity_mismatch`; no plaintext attempt | one handshake frame |

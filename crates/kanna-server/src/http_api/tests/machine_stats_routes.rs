@@ -445,9 +445,39 @@ async fn compact_machine_stats_reaches_an_eligible_lan_peer_during_relay_outage(
     source_trust
         .save(&source.config().machine_trust_store_path().unwrap())
         .expect("save source trust");
+    // A pin as well as the grant: eligibility is the pin now, so this is what
+    // makes the peer a LAN participant at all. The sealed dial lands on the
+    // LAN gateway port rather than a peer-channel endpoint and fails there,
+    // which is fine - what this test measures is that the LAN half of the
+    // fan-out still runs during a relay outage and that the peer's own
+    // failure is attributed to that machine instead of being swallowed or
+    // folded into the relay error.
+    {
+        let path = source.config().peer_trust_store_path().unwrap();
+        let mut store = crate::peer_trust::PeerTrustStore::load(&path).unwrap();
+        store
+            .upsert(crate::peer_trust::PeerDesktop {
+                desktop_id: "stats-compact-lan-peer".into(),
+                display_name: "Compact LAN peer".into(),
+                channel_public_key: kanna_secure_channel::Keypair::generate()
+                    .unwrap()
+                    .encoded_public_key(),
+                transfer_peer_id: None,
+                transfer_public_key: None,
+                environment: source.config().environment.clone(),
+                account_uid: Some("stats-account".into()),
+                provenance: crate::peer_trust::PeerProvenance::Verified,
+                account_verified_at_unix_ms: Some(1),
+                identity_mismatch_at_unix_ms: None,
+                paired_at_unix_ms: 1,
+                last_seen_unix_ms: None,
+            })
+            .unwrap();
+        store.save(&path).unwrap();
+    }
     // No relay request owner is installed: list_active_relay_desktops fails
     // exactly as it does during an outage. The compact owner must retain that
-    // error while independently reaching the eligible peer over pinned TLS.
+    // error while independently reaching the eligible peer over LAN.
     let response = router(source)
         .oneshot(
             Request::get("/v1/machine-stats")
@@ -464,12 +494,15 @@ async fn compact_machine_stats_reaches_an_eligible_lan_peer_during_relay_outage(
     .unwrap();
 
     assert!(
-        body["machines"].as_array().unwrap().iter().any(|machine| {
-            machine["machineId"] == "stats-compact-lan-peer"
-                && machine["availableMemoryBytes"].is_u64()
-                && machine.get("cpu").is_none()
-        }),
-        "{body}"
+        body["machineErrors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| {
+                error["machineId"] == "stats-compact-lan-peer"
+                    && error["error"].as_str().is_some_and(|m| !m.is_empty())
+            }),
+        "the eligible LAN peer must have been dialled and reported its own failure: {body}"
     );
     assert!(
         body["machineErrors"]

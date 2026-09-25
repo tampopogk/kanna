@@ -60,9 +60,9 @@ pub(super) async fn bootstrap_lan_trust(
             "candidate secret must not be empty".to_string(),
         ));
     }
-    if !state.legacy_peer_access_allowed() {
-        // The relay is the trust root of this bootstrap; with legacy
-        // desktop-to-desktop access off, no CA is handed out on its word.
+    if !crate::http_api::secure_channel::LEGACY_PEER_ACCESS_ALLOWED {
+        // The relay is the trust root of this bootstrap, so no CA is ever
+        // handed out on its word.
         return Err((
             StatusCode::FORBIDDEN,
             "peer_legacy_access_refused: LAN trust is established by pairing the machines from Preferences → Machines".to_string(),
@@ -241,13 +241,15 @@ mod tests {
     use super::*;
     use crate::http_api::test_support::test_state_with_seed;
 
-    /// The handler side of the round trip, exercised exactly as a genuine
-    /// relay forward would reach it: through the same
-    /// `dispatch_authenticated_relay_http_invoke` a real relay-forwarded
-    /// "invoke" uses, complete with the real `RelayAttestedSource` extractor
-    /// gate and real `machine_trust`/`lan_tls_identity` persistence.
+    /// The handler side, exercised exactly as a genuine relay forward would
+    /// reach it: through the same `dispatch_authenticated_relay_http_invoke`
+    /// a real relay-forwarded "invoke" uses, complete with the real
+    /// `RelayAttestedSource` extractor gate. The relay is this bootstrap's
+    /// trust root, so since 2026-09-20 it is refused outright and no CA is
+    /// handed out and no inbound grant is minted - there is no setting left
+    /// that turns it back on.
     #[tokio::test(flavor = "current_thread")]
-    async fn the_handler_accepts_a_relay_attested_bootstrap_and_the_target_then_verifies_it() {
+    async fn a_relay_attested_bootstrap_is_refused_and_mints_nothing() {
         let target_state = test_state_with_seed("desktop-target", "Target Mac", |_db| {});
         // The relay connection that forwarded the invoke authenticated as
         // this desktop's own account.
@@ -263,56 +265,30 @@ mod tests {
         )
         .await;
 
-        assert_eq!(response.status, 200, "{response:?}");
-        let body = response.body.expect("bootstrap response body");
-        let ca_certificate_pem = body["caCertificatePem"]
-            .as_str()
-            .expect("caCertificatePem in response");
-        assert!(ca_certificate_pem.starts_with("-----BEGIN CERTIFICATE-----"));
+        assert_eq!(response.status, 403, "{response:?}");
+        assert!(
+            response
+                .error
+                .as_deref()
+                .is_some_and(|error| error.starts_with("peer_legacy_access_refused")),
+            "{response:?}"
+        );
 
-        // The target now verifies the source's secret, but only under the
-        // account it was actually bootstrapped under.
         let store_path = target_state.config().machine_trust_store_path().unwrap();
-        let store = crate::machine_trust::MachineTrustStore::load_fail_closed(&store_path).unwrap();
         let now_ms = crate::machine_trust::unix_time_ms().unwrap();
-        assert!(store.verify_inbound(
-            "desktop-source",
-            "the-candidate-secret",
-            Some("uid-1"),
-            "development",
-            "desktop-target",
-            now_ms
-        ));
-        assert!(!store.verify_inbound(
-            "desktop-source",
-            "wrong-secret",
-            Some("uid-1"),
-            "development",
-            "desktop-target",
-            now_ms
-        ));
-        assert!(
-            !store.verify_inbound(
-                "desktop-source",
-                "the-candidate-secret",
-                Some("uid-2"),
-                "development",
-                "desktop-target",
-                now_ms
-            ),
-            "a grant minted under one account must not verify under another"
-        );
-        assert!(
-            !store.verify_inbound(
-                "desktop-source",
-                "the-candidate-secret",
-                None,
-                "development",
-                "desktop-target",
-                now_ms
-            ),
-            "signed out (no current account) must never verify anything"
-        );
+        if let Ok(store) = crate::machine_trust::MachineTrustStore::load_fail_closed(&store_path) {
+            assert!(
+                !store.verify_inbound(
+                    "desktop-source",
+                    "the-candidate-secret",
+                    Some("uid-1"),
+                    "development",
+                    "desktop-target",
+                    now_ms
+                ),
+                "a refused bootstrap must not leave a usable inbound grant behind"
+            );
+        }
     }
 
     /// The source side's two halves, independent of any network call:

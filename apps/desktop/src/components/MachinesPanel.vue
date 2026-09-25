@@ -7,10 +7,10 @@ import type {
   DesktopPeerPairingOffer,
 } from "../services/desktopServerClient";
 
-const { t, locale } = useI18n();
+const { t } = useI18n();
 // Absent optional boolean props are cast to `false` by Vue, so the
-// "available"/"allowed" flags default to `true` explicitly: a caller that
-// does not know is not a caller reporting an outage.
+// "available" flags default to `true` explicitly: a caller that does not
+// know is not a caller reporting an outage.
 const props = withDefaults(defineProps<{
   desktopName: string;
   desktopId: string;
@@ -26,8 +26,6 @@ const props = withDefaults(defineProps<{
   pairPending?: boolean;
   pairError?: string | null;
   pairSuccess?: string | null;
-  legacyAccessAllowed?: boolean;
-  legacyAccessBusy?: boolean;
   removingDesktopId?: string | null;
 }>(), {
   peersLoading: false,
@@ -40,16 +38,12 @@ const props = withDefaults(defineProps<{
   pairPending: false,
   pairError: null,
   pairSuccess: null,
-  legacyAccessAllowed: true,
-  legacyAccessBusy: false,
   removingDesktopId: null,
 });
 const emit = defineEmits<{
   (e: "create-offer"): void;
   (e: "pair", pairingString: string): void;
   (e: "remove-peer", desktopId: string): void;
-  (e: "refresh"): void;
-  (e: "set-legacy-access", allowed: boolean): void;
 }>();
 
 const pairingInput = ref("");
@@ -57,26 +51,34 @@ const copied = ref(false);
 let copiedTimer: ReturnType<typeof setTimeout> | null = null;
 const offerExpired = ref(false);
 let expiryTimer: ReturnType<typeof setTimeout> | null = null;
+/** Ticks once a second while an offer is live, so the countdown is live. */
+const now = ref(Date.now());
+let countdownTimer: ReturnType<typeof setInterval> | null = null;
 const offerQrUrl = ref<string | null>(null);
 let qrGeneration = 0;
 
-const expiryLabel = computed(() => props.offer
-  ? t("machines.offerExpiresAt", {
-    time: new Date(props.offer.expiresAtUnixMs).toLocaleTimeString(locale.value, { hour: "numeric", minute: "2-digit", second: "2-digit" }),
-  })
-  : "");
+const countdownLabel = computed(() => {
+  const expiresAtUnixMs = props.offer?.expiresAtUnixMs;
+  if (!expiresAtUnixMs || offerExpired.value) return "";
+  const remainingSeconds = Math.max(0, Math.ceil((expiresAtUnixMs - now.value) / 1000));
+  const minutes = Math.floor(remainingSeconds / 60);
+  const seconds = String(remainingSeconds % 60).padStart(2, "0");
+  return t("machines.offerExpiresIn", { countdown: `${minutes}:${seconds}` });
+});
 
 watch(
   () => props.offer?.expiresAtUnixMs ?? null,
   (expiresAtUnixMs) => {
-    if (expiryTimer) clearTimeout(expiryTimer);
-    expiryTimer = null;
-    offerExpired.value = Boolean(expiresAtUnixMs && expiresAtUnixMs <= Date.now());
+    clearOfferTimers();
+    now.value = Date.now();
+    offerExpired.value = Boolean(expiresAtUnixMs && expiresAtUnixMs <= now.value);
     if (!expiresAtUnixMs || offerExpired.value) return;
+    // The timeout keeps expiry exact; the interval only drives the display.
     expiryTimer = setTimeout(() => {
       offerExpired.value = true;
-      expiryTimer = null;
-    }, Math.max(0, expiresAtUnixMs - Date.now()));
+      clearOfferTimers();
+    }, Math.max(0, expiresAtUnixMs - now.value));
+    countdownTimer = setInterval(() => { now.value = Date.now(); }, 1000);
   },
   { immediate: true },
 );
@@ -96,6 +98,13 @@ watch(
   },
   { immediate: true },
 );
+
+function clearOfferTimers() {
+  if (expiryTimer) clearTimeout(expiryTimer);
+  expiryTimer = null;
+  if (countdownTimer) clearInterval(countdownTimer);
+  countdownTimer = null;
+}
 
 async function copyOffer() {
   const pairingString = props.offer?.pairingString;
@@ -125,37 +134,97 @@ function reachability(peer: DesktopPeer): string {
 }
 
 onBeforeUnmount(() => {
-  if (expiryTimer) clearTimeout(expiryTimer);
+  clearOfferTimers();
   if (copiedTimer) clearTimeout(copiedTimer);
 });
 </script>
 
 <template>
   <section class="machines-panel" data-testid="machines-panel">
-    <h3>{{ t('machines.title') }}</h3>
-    <p class="intro">{{ t('machines.intro') }}</p>
     <p v-if="!peerChannelAvailable" class="error" role="alert" data-testid="machines-channel-unavailable">
       {{ t('machines.channelUnavailable') }}
     </p>
 
-    <section class="step">
-      <h4>{{ t('machines.offerTitle') }}</h4>
-      <p>{{ t('machines.offerHint') }}</p>
+    <section class="block" data-testid="machines-peers">
+      <h4>{{ t('machines.peersTitle') }}</h4>
+      <p v-if="peersError" class="error" role="alert">{{ peersError }}</p>
+      <p v-else-if="peersLoading && peers.length === 0" role="status">{{ t('machines.loading') }}</p>
+      <p v-else-if="peers.length === 0" data-testid="machines-no-peers">{{ t('machines.noPeers') }}</p>
+      <ul v-else class="peer-list">
+        <li
+          v-for="peer in peers"
+          :key="peer.desktopId"
+          :title="peer.desktopId"
+          :data-testid="`machines-peer-${peer.desktopId}`"
+        >
+          <span class="peer-name">{{ peer.displayName }}</span>
+          <span
+            class="badge"
+            :class="peer.provenance === 'account' ? 'badge-account' : 'badge-verified'"
+            :data-testid="`machines-peer-provenance-${peer.desktopId}`"
+          >{{ t(peer.provenance === 'account' ? 'machines.peerAccount' : 'machines.peerVerified') }}</span>
+          <button
+            type="button"
+            class="text-action"
+            :data-testid="`machines-remove-${peer.desktopId}`"
+            :disabled="removingDesktopId === peer.desktopId"
+            @click="emit('remove-peer', peer.desktopId)"
+          >{{ t('machines.unpair') }}</button>
+          <p class="peer-meta">
+            <span>{{ reachability(peer) }}</span>
+            <span v-if="!peer.transferIdentityPinned">{{ t('machines.transferPending') }}</span>
+          </p>
+          <p
+            v-if="peer.identityChanged"
+            class="peer-alert error"
+            role="alert"
+            :data-testid="`machines-peer-identity-changed-${peer.desktopId}`"
+          >{{ t('machines.peerIdentityChanged') }}</p>
+        </li>
+      </ul>
+    </section>
+
+    <section class="block">
+      <h4>{{ t('machines.pairTitle') }}</h4>
+      <!-- Show-mine first: it is the step that produces something, and its
+           output belongs directly under the button that made it. Paste-theirs
+           sits last, next to its own button. -->
       <button
+        v-if="!offer || offerExpired"
         type="button"
-        class="primary-action"
+        class="secondary-action"
         data-testid="machines-create-offer"
         :disabled="offerPending || !peerChannelAvailable"
         @click="emit('create-offer')"
       >{{ t(offerPending ? 'machines.creatingOffer' : offer ? 'machines.newOffer' : 'machines.createOffer') }}</button>
       <p v-if="offerError" class="error" role="alert">{{ offerError }}</p>
       <div v-if="offer && !offerExpired" class="offer" data-testid="machines-offer">
-        <code data-testid="machines-offer-string">{{ offer.pairingString }}</code>
-        <div class="offer-actions">
-          <button type="button" class="secondary-action" data-testid="machines-copy-offer" @click="copyOffer">
-            {{ t(copied ? 'machines.copied' : 'machines.copy') }}
-          </button>
-          <span v-if="expiryLabel" class="diagnostic">{{ expiryLabel }}</span>
+        <div class="offer-code">
+          <button
+            type="button"
+            class="offer-string"
+            data-testid="machines-offer-string"
+            :title="t('machines.copyHint')"
+            :aria-label="t('machines.copyHint')"
+            @click="copyOffer"
+          >{{ offer.pairingString }}</button>
+          <p class="muted offer-meta">
+            <span data-testid="machines-offer-meta">{{ copied ? t('machines.copied') : countdownLabel }}</span>
+            <button
+              type="button"
+              class="icon-action"
+              data-testid="machines-new-offer"
+              :disabled="offerPending"
+              :title="t('machines.newOffer')"
+              :aria-label="t('machines.newOffer')"
+              @click="emit('create-offer')"
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M14 8a6 6 0 1 1-1.8-4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                <path d="M13.8 1.2v3.2h-3.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+          </p>
         </div>
         <img
           v-if="offerQrUrl"
@@ -166,11 +235,7 @@ onBeforeUnmount(() => {
         />
       </div>
       <p v-else-if="offer && offerExpired" role="status" data-testid="machines-offer-expired">{{ t('machines.offerExpired') }}</p>
-    </section>
 
-    <section class="step">
-      <h4>{{ t('machines.pairTitle') }}</h4>
-      <p>{{ t('machines.pairHint') }}</p>
       <form class="pair-form" @submit.prevent="submitPairing">
         <input
           v-model="pairingInput"
@@ -192,71 +257,9 @@ onBeforeUnmount(() => {
       <p v-if="pairSuccess" role="status" data-testid="machines-pair-success">{{ pairSuccess }}</p>
     </section>
 
-    <section class="step peers" data-testid="machines-peers">
-      <h4>{{ t('machines.peersTitle') }}</h4>
-      <p v-if="peersError" class="error" role="alert">{{ peersError }}</p>
-      <p v-else-if="peersLoading && peers.length === 0" role="status">{{ t('machines.loading') }}</p>
-      <p v-else-if="peers.length === 0" data-testid="machines-no-peers">{{ t('machines.noPeers') }}</p>
-      <ul v-else class="peer-list">
-        <li
-          v-for="peer in peers"
-          :key="peer.desktopId"
-          :data-testid="`machines-peer-${peer.desktopId}`"
-        >
-          <div class="peer-main">
-            <span class="peer-name">{{ peer.displayName }}</span>
-            <span
-              class="badge"
-              :class="peer.provenance === 'account' ? 'badge-account' : 'badge-secure'"
-              :data-testid="`machines-peer-provenance-${peer.desktopId}`"
-            >{{ t(peer.provenance === 'account' ? 'machines.peerEncryptedAccount' : 'machines.peerEncryptedVerified') }}</span>
-          </div>
-          <p
-            v-if="peer.provenance === 'account'"
-            class="peer-hint"
-            :data-testid="`machines-peer-account-hint-${peer.desktopId}`"
-          >{{ t('machines.peerAccountHint') }}</p>
-          <p
-            v-if="peer.identityChanged"
-            class="peer-hint error"
-            role="alert"
-            :data-testid="`machines-peer-identity-changed-${peer.desktopId}`"
-          >{{ t('machines.peerIdentityChanged') }}</p>
-          <div class="peer-meta diagnostic">
-            <span>{{ peer.desktopId }}</span>
-            <span>{{ reachability(peer) }}</span>
-            <span v-if="!peer.transferIdentityPinned">{{ t('machines.transferPending') }}</span>
-          </div>
-          <button
-            type="button"
-            class="text-action"
-            :data-testid="`machines-remove-${peer.desktopId}`"
-            :disabled="removingDesktopId === peer.desktopId"
-            @click="emit('remove-peer', peer.desktopId)"
-          >{{ t('machines.unpair') }}</button>
-        </li>
-      </ul>
-      <button type="button" class="secondary-action" data-testid="machines-refresh" @click="emit('refresh')">
-        {{ t('machines.refresh') }}
-      </button>
-    </section>
-
-    <section class="step">
-      <label class="legacy-toggle">
-        <input
-          type="checkbox"
-          data-testid="machines-legacy-toggle"
-          :checked="legacyAccessAllowed"
-          :disabled="legacyAccessBusy"
-          @change="emit('set-legacy-access', ($event.target as HTMLInputElement).checked)"
-        />
-        <span>{{ t('machines.legacyToggle') }}</span>
-      </label>
-      <p class="diagnostic">{{ t('machines.legacyHint') }}</p>
-      <p v-if="!relayPeerTunnelsAvailable" class="diagnostic" data-testid="machines-relay-note">
-        {{ t('machines.relayUnavailable') }}
-      </p>
-    </section>
+    <p v-if="!relayPeerTunnelsAvailable" class="muted" data-testid="machines-relay-note">
+      {{ t('machines.relayUnavailable') }}
+    </p>
   </section>
 </template>
 
@@ -266,12 +269,8 @@ onBeforeUnmount(() => {
   font-size: 12px;
   line-height: 1.5;
 }
-h3 {
-  margin: 0 0 8px;
-  font-size: 16px;
-}
 h4 {
-  margin: 0 0 8px;
+  margin: 0;
   font-size: 13px;
 }
 p {
@@ -279,41 +278,72 @@ p {
   color: var(--kn-text-secondary);
   overflow-wrap: anywhere;
 }
-.step {
-  padding: 14px 0;
+.block {
+  margin-top: 16px;
+  padding-top: 14px;
   border-top: 1px solid var(--kn-border-default);
 }
-.step:first-of-type {
-  margin-top: 16px;
+.block:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
 }
-.offer code {
-  display: block;
-  padding: 6px 8px;
-  border: 1px solid var(--kn-border-strong);
-  border-radius: 5px;
-  color: var(--kn-text-primary);
-  background: var(--kn-bg-input);
-  font-size: 11px;
-  overflow-wrap: anywhere;
-  user-select: all;
+.peer-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
 }
-.offer-actions {
+.peer-list li {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  align-items: baseline;
+  gap: 2px 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--kn-border-default);
+}
+.peer-list li:first-child {
+  border-top: 0;
+}
+.peer-name {
+  font-weight: 600;
+}
+.peer-list li .text-action {
+  grid-column: 4;
+}
+.peer-meta, .peer-alert {
+  grid-column: 1 / -1;
   display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 8px 0;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  margin: 0;
+  font-size: 11px;
 }
-.qr-image {
-  display: block;
-  width: 220px;
-  max-width: 100%;
-  height: auto;
-  margin: 12px auto;
-  border-radius: 8px;
+.peer-meta span + span::before {
+  content: "·";
+  margin-right: 8px;
+}
+.badge {
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge-verified {
+  color: var(--kn-success);
+  background: var(--kn-success-bg);
+}
+/* Neutral on purpose: an automatically pinned sibling is real end-to-end
+   encryption, but it is not the claim a key carried between two screens
+   makes, so it does not get the affirmative colour. */
+.badge-account {
+  color: var(--kn-text-secondary);
+  background: var(--kn-bg-input);
+  box-shadow: inset 0 0 0 1px var(--kn-border-default);
 }
 .pair-form {
   display: flex;
   gap: 8px;
+  margin-top: 10px;
 }
 .pair-form input {
   flex: 1;
@@ -325,62 +355,56 @@ p {
   color: var(--kn-text-primary);
   font: inherit;
 }
-.peer-list {
-  list-style: none;
-  margin: 0 0 8px;
-  padding: 0;
+.offer-string {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--kn-border-strong);
+  border-radius: 5px;
+  color: var(--kn-text-primary);
+  background: var(--kn-bg-input);
+  font-family: monospace;
+  font-size: 11px;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
 }
-.peer-list li {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 2px 12px;
-  padding: 6px 0;
-  border-bottom: 1px solid var(--kn-border-default);
+.offer-string:hover {
+  border-color: var(--kn-accent);
 }
-.peer-main {
+.offer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+.offer-code {
+  flex: 1;
+  min-width: 0;
+}
+.offer-meta {
   display: flex;
   align-items: center;
   gap: 8px;
+  margin: 6px 0 0;
 }
-.peer-name {
-  font-weight: 600;
+.icon-action {
+  display: inline-flex;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--kn-text-muted);
+  cursor: pointer;
 }
-.peer-hint {
-  grid-column: 1;
-  margin: 2px 0 0;
+.icon-action:hover {
+  color: var(--kn-accent);
 }
-.peer-meta {
-  grid-column: 1;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  color: var(--kn-text-secondary);
-}
-.peer-list li .text-action {
-  grid-row: 1 / span 2;
-  grid-column: 2;
-  align-self: start;
-}
-.badge {
-  border-radius: 999px;
-  padding: 0 8px;
-  font-size: 11px;
-  font-weight: 600;
-}
-.badge-secure {
-  background: rgba(60, 170, 110, 0.18);
-  color: #6fd39c;
-}
-/* Distinct from verified on purpose: an account-trusted pin is real
-   end-to-end encryption, but it is not the claim a carried key makes. */
-.badge-account {
-  background: rgba(90, 140, 210, 0.18);
-  color: #8fb6ea;
-}
-.legacy-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.qr-image {
+  display: block;
+  flex: none;
+  width: 120px;
+  height: auto;
+  border-radius: 6px;
 }
 .primary-action, .secondary-action {
   padding: 8px 12px;
@@ -392,9 +416,9 @@ p {
   border: 1px solid var(--kn-accent);
   background: var(--kn-accent);
   color: var(--kn-text-inverse);
-  margin-top: 4px;
 }
 .secondary-action {
+  margin-top: 10px;
   border: 1px solid var(--kn-border-strong);
   background: var(--kn-bg-input);
   color: var(--kn-text-primary);
@@ -407,6 +431,7 @@ p {
   text-decoration: underline;
   cursor: pointer;
   font: inherit;
+  font-size: 12px;
 }
 button:disabled {
   opacity: .6;
@@ -419,8 +444,8 @@ button:focus-visible {
 .error {
   color: var(--kn-danger);
 }
-.diagnostic {
-  font-family: monospace;
+.muted {
+  color: var(--kn-text-secondary);
   font-size: 11px;
 }
 </style>

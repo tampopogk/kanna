@@ -5,8 +5,9 @@ import type { AgentProvider } from "@kanna/agent-protocol";
  *
  * These ids are passed verbatim to the provider CLI (`--model` for Claude's
  * stream-json `set_model`, `-m` for `codex exec`). They are the source of truth
- * for both the desktop dropdown and the real CLI contract tests, which confirm
- * each id is accepted by the actual CLI. Update them together.
+ * for both the desktop dropdown and the real CLI contract tests. New releases
+ * can be verified without inference using native CLI metadata; see
+ * docs/2026-09-22-harness-model-options.md for identifiers and effort support.
  */
 export interface AgentModelOption {
   /** Model id passed to the CLI. */
@@ -17,12 +18,16 @@ export interface AgentModelOption {
 
 export const AGENT_MODELS: Partial<Record<AgentProvider, AgentModelOption[]>> = {
   claude: [
+    { id: "claude-opus-5-5", label: "Opus 5.5" },
     { id: "claude-opus-4-8", label: "Opus 4.8" },
     { id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
     { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
   ],
-  // Confirmed against `codex exec -m <id>` (see tests/cli-contract).
+  // Native Codex IDs, not an OpenAI API model inventory.
   codex: [
+    { id: "gpt-6-astra", label: "GPT-6 Astra" },
+    { id: "gpt-6-sol", label: "GPT-6 Sol" },
+    { id: "gpt-6-luna", label: "GPT-6 Luna" },
     { id: "gpt-5.5", label: "GPT-5.5" },
     { id: "gpt-5.4", label: "GPT-5.4" },
     { id: "gpt-5.4-mini", label: "GPT-5.4 mini" },

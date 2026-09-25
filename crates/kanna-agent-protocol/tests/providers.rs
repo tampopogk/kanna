@@ -74,6 +74,56 @@ fn provider_effort_controls_and_native_values_are_explicit() {
 }
 
 #[test]
+fn released_models_preserve_native_effort_and_harness_boundaries() {
+    use kanna_agent_protocol::{AgentCandidate, AgentSelectionEntry};
+
+    // CLI metadata, 2026-09-22: Codex 0.155.1 and Claude Code 2.1.280.
+    // Codex Ultra is a CLI mode, not an OpenAI API reasoning effort.
+    for (harness, model, efforts) in [
+        (
+            AgentProvider::Claude,
+            "claude-opus-5-5",
+            &["low", "medium", "high", "xhigh", "max"][..],
+        ),
+        (
+            AgentProvider::Codex,
+            "gpt-6-astra",
+            &["low", "medium", "high", "xhigh", "max", "ultra"][..],
+        ),
+        (
+            AgentProvider::Codex,
+            "gpt-6-sol",
+            &["low", "medium", "high", "xhigh", "max", "ultra"][..],
+        ),
+        (
+            AgentProvider::Codex,
+            "gpt-6-luna",
+            &["low", "medium", "high", "xhigh", "max"][..],
+        ),
+    ] {
+        for effort in efforts {
+            let entry = AgentSelectionEntry::Candidate(AgentCandidate {
+                harness,
+                model: Some(model.into()),
+                effort: Some((*effort).into()),
+                autocompact: None,
+            });
+            let resolved = entry.resolve(true).unwrap();
+            assert_eq!(resolved.provider, harness);
+            assert_eq!(resolved.model.as_deref(), Some(model));
+            assert_eq!(resolved.effort.as_deref(), Some(*effort));
+        }
+    }
+    for harness in [
+        AgentProvider::Claude,
+        AgentProvider::Copilot,
+        AgentProvider::Antigravity,
+    ] {
+        assert!(kanna_agent_protocol::validate_provider_effort(harness, Some("ultra")).is_err());
+    }
+}
+
+#[test]
 fn provider_strings_round_trip() {
     for provider in AgentProvider::ALL {
         assert_eq!(

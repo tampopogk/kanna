@@ -213,13 +213,13 @@ async fn relay_http_invoke_dispatch_rejects_when_saturated() {
 
 /// A relay new enough to attest the sending desktop's identity
 /// (desktopRouting v2) passes it through `RelayHttpInvokeRequest` alongside
-/// the account it already authenticated. Nothing reads the value out of the
-/// resulting `AuthenticatedHttpInvoke` yet - that lands with the bootstrap
-/// handler that consumes it - but the dispatch pipeline threading it through
-/// must not itself misbehave, error, or drop the pre-existing
-/// authenticated_user_id behavior it's now carried alongside.
+/// the account it already authenticated. The relay *stamps* that identity,
+/// so a compromised one can forge it - which is why, since 2026-09-20, a
+/// sibling invoke carrying one is refused outright rather than dispatched
+/// (`secure_channel::LEGACY_PEER_ACCESS_ALLOWED`). The refusal must still
+/// travel back over the same response frame, with the reason and a 401.
 #[tokio::test(flavor = "current_thread")]
-async fn relay_http_invoke_dispatch_accepts_a_source_desktop_id_alongside_the_account() {
+async fn relay_http_invoke_dispatch_refuses_an_invoke_carrying_a_source_desktop_id() {
     let state = super::test_state_with_seed("desktop-relay-provenance", "Studio Mac", |_db| {});
     state.set_authenticated_account_uid(Some(RELAY_ACCOUNT.to_string()));
 
@@ -272,7 +272,13 @@ async fn relay_http_invoke_dispatch_accepts_a_source_desktop_id_alongside_the_ac
         .expect("response should arrive")
         .expect("relay frame channel closed");
     assert_eq!(response["id"], "provenance-invoke");
-    assert_eq!(response["status"], 200);
+    assert_eq!(response["status"], 401);
+    assert!(
+        response["error"]
+            .as_str()
+            .is_some_and(|error| error.starts_with("peer_legacy_access_refused")),
+        "{response}"
+    );
 
     sink.lock().await.close().await.expect("close ws");
     relay_server.abort();
@@ -450,13 +456,14 @@ async fn relay_invokes_are_refused_outside_the_signed_in_account() {
             403,
             Some("account_signed_out"),
         ),
-        // A relay-attested source desktop does not rescue a stale account.
+        // A relay-attested source desktop does not rescue a stale account:
+        // it is refused outright, before any account is consulted.
         (
             Some("account-uid-2"),
             Some(RELAY_ACCOUNT),
             Some("desktop-forged"),
-            403,
-            Some("relay_account_changed"),
+            401,
+            Some("peer_legacy_access_refused"),
         ),
     ];
     for (index, (current, connection, source, status, code)) in cases.into_iter().enumerate() {

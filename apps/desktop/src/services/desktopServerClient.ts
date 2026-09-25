@@ -871,13 +871,6 @@ export async function fetchMobileDevices(): Promise<DesktopMobileDevices> {
   return await requestJson<DesktopMobileDevices>("/v1/mobile/builds");
 }
 
-/** Settings-table key for legacy (relay-attested, bearer-secret, Firestore-
- * keyed) desktop-to-desktop routing. Mirrors
- * `http_api::secure_channel::DESKTOP_PEER_LEGACY_ACCESS_SETTING`. */
-export const DESKTOP_PEER_LEGACY_ACCESS_SETTING = "desktop_peer_legacy_access";
-export const DESKTOP_PEER_LEGACY_ACCESS_REFUSED = "refused";
-export const DESKTOP_PEER_LEGACY_ACCESS_ALLOWED = "allowed";
-
 /** How a peer's pin was born. `verified` is the pairing-string ceremony, a
  * key a person carried between two screens. `account` is automatic
  * same-account enrollment, where the relay introduced the two desktops at
@@ -904,7 +897,6 @@ export interface DesktopPeerList {
   desktopId: string;
   desktopName: string;
   peerChannelAvailable: boolean;
-  legacyAccessAllowed: boolean;
   relayPeerTunnelsAvailable: boolean;
   peers: DesktopPeer[];
 }
@@ -957,9 +949,10 @@ export interface DesktopMachine {
   id: string;
   name: string | null;
   isLocal: boolean;
-  /** `local`, `e2ee` (pinned sibling), `legacy` (unpinned, legacy routing
-   * still allowed) or `pairingRequired`. */
-  encryption: "local" | "e2ee" | "legacy" | "pairingRequired";
+  /** `local`, `e2ee` (pinned sibling) or `legacy` (unpinned, reached over
+   * the relay-attested or bearer-secret path - which the sibling itself
+   * refuses from 0.4.0 on). */
+  encryption: "local" | "e2ee" | "legacy";
   /** How an `e2ee` machine's pin was born; absent for every other value. */
   provenance?: DesktopPeerProvenance;
   /** A handshake against that machine's pin met a different key. */

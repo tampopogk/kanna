@@ -1828,10 +1828,12 @@ pub(crate) async fn dispatch_relay_http_invoke(
     }
     // A relay-attested sibling invoke is the legacy desktop-to-desktop
     // path: the relay reads its method, path and body and *stamps* the
-    // source identity, so a compromised relay can forge one. Once legacy
-    // desktop-to-desktop access is off, a sibling reaches this desktop only
-    // through a sealed session to its pinned peer key.
-    if source_desktop_id.is_some() && !http_state.legacy_peer_access_allowed() {
+    // source identity, so a compromised relay can forge one. It is always
+    // refused - a sibling reaches this desktop only through a sealed
+    // session to its pinned peer key. See
+    // `http_api::secure_channel::LEGACY_PEER_ACCESS_ALLOWED`; unconditional
+    // here rather than behind the constant because nothing follows it.
+    if source_desktop_id.is_some() {
         log::warn!("Refusing relay-attested sibling invoke #{id} {method} {path}: legacy desktop-to-desktop access is off");
         let response = RelayMessage::Response {
             id,

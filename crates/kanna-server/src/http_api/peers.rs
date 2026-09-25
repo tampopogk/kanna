@@ -93,7 +93,6 @@ pub(super) struct PeerListResponse {
     /// Whether this desktop's peer channel identity loaded; `false` means
     /// no sibling can be paired or reached until the file is repaired.
     peer_channel_available: bool,
-    legacy_access_allowed: bool,
     /// The relay session offers desktop peer tunnels (the cloud route).
     relay_peer_tunnels_available: bool,
     peers: Vec<PeerView>,
@@ -146,7 +145,6 @@ pub(super) async fn list_peers(
         desktop_id: state.config().desktop_id.clone(),
         desktop_name: state.config().desktop_name.clone(),
         peer_channel_available: state.peer_channel_identity().is_ok(),
-        legacy_access_allowed: state.legacy_peer_access_allowed(),
         relay_peer_tunnels_available: state.desktop_tunnel_available(),
         peers,
     }))

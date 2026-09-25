@@ -63,9 +63,9 @@ async fn handle_invoke(
     if let Err(error) = validate_lan_invoke_request(&request) {
         return Err((StatusCode::BAD_REQUEST, error));
     }
-    if !state.legacy_peer_access_allowed() {
+    if !crate::http_api::secure_channel::LEGACY_PEER_ACCESS_ALLOWED {
         // The bearer-secret listener is the legacy sibling path; sealed
-        // peer sessions are the only sibling route once it is off.
+        // peer sessions are the only sibling route.
         return Err((
             StatusCode::UNAUTHORIZED,
             "peer_legacy_access_refused: this desktop only accepts end-to-end encrypted sibling sessions; pair the machines from Preferences → Machines".to_string(),
@@ -259,9 +259,12 @@ mod tests {
     /// has run - and holds the body back until the account has been changed,
     /// so each case lands the change exactly in that window.
     ///
-    /// Headers never name an account: forged account/channel headers change
-    /// nothing, and a device id or secret that is not the verified pair is
-    /// refused before any body is read.
+    /// Whatever the account does in that window, an admitted caller is then
+    /// refused as legacy access (`secure_channel::LEGACY_PEER_ACCESS_ALLOWED`)
+    /// and nothing is dispatched; `mutation_provenance` covers the account
+    /// check the dispatch itself makes. Headers never name an account: forged
+    /// account/channel headers change nothing, and a device id or secret that
+    /// is not the verified pair is refused before any body is read.
     #[tokio::test]
     async fn an_account_switch_between_verification_and_dispatch_refuses_the_invoke() {
         use futures_util::StreamExt as _;
@@ -286,32 +289,16 @@ mod tests {
 
         let invoke = serde_json::json!({ "method": "GET", "path": "/v1/tasks/recent" });
         // (device id, secret, account switched to while the body is held,
-        //  expected gateway status, expected inner status, refusal code)
+        //  whether the bearer check admits the caller)
         let cases = [
-            ("desk-src", "s3cret", Some("uid-a"), 200, Some(200), None),
-            (
-                "desk-src",
-                "s3cret",
-                Some("uid-b"),
-                200,
-                Some(403),
-                Some("lan_machine_account_changed"),
-            ),
-            (
-                "desk-src",
-                "s3cret",
-                None,
-                200,
-                Some(403),
-                Some("account_signed_out"),
-            ),
+            ("desk-src", "s3cret", Some("uid-a"), true),
+            ("desk-src", "s3cret", Some("uid-b"), true),
+            ("desk-src", "s3cret", None, true),
             // The secret belongs to desk-src; claiming another id proves nothing.
-            ("desk-forged", "s3cret", Some("uid-a"), 401, None, None),
-            ("desk-src", "not-the-secret", Some("uid-a"), 401, None, None),
+            ("desk-forged", "s3cret", Some("uid-a"), false),
+            ("desk-src", "not-the-secret", Some("uid-a"), false),
         ];
-        for (index, (device_id, secret, switch_to, gateway, inner, code)) in
-            cases.into_iter().enumerate()
-        {
+        for (index, (device_id, secret, switch_to, admitted)) in cases.into_iter().enumerate() {
             state.set_authenticated_account_uid(Some("uid-a".to_string()));
             let (polled_tx, polled_rx) = tokio::sync::oneshot::channel::<()>();
             let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
@@ -335,7 +322,7 @@ mod tests {
                 .body(axum::body::Body::from_stream(body))
                 .unwrap();
             let pending = tokio::spawn(router(Arc::clone(&state)).oneshot(request));
-            if gateway == 200 {
+            if admitted {
                 tokio::time::timeout(std::time::Duration::from_secs(5), polled_rx)
                     .await
                     .expect("the body is read after the extractor admits the caller")
@@ -344,24 +331,19 @@ mod tests {
             }
             let _ = release_tx.send(());
             let response = pending.await.unwrap().unwrap();
-            assert_eq!(response.status().as_u16(), gateway, "case {index}");
-            if let Some(inner) = inner {
-                let body: serde_json::Value = serde_json::from_slice(
-                    &axum::body::to_bytes(response.into_body(), usize::MAX)
-                        .await
-                        .unwrap(),
-                )
-                .unwrap();
-                assert_eq!(body["status"], inner, "case {index}: {body}");
-                if let Some(code) = code {
-                    assert!(
-                        body["error"]
-                            .as_str()
-                            .is_some_and(|error| error.starts_with(code)),
-                        "case {index}: {body}"
-                    );
-                }
-            }
+            assert_eq!(response.status().as_u16(), 401, "case {index}");
+            let text = String::from_utf8(
+                axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap()
+                    .to_vec(),
+            )
+            .unwrap();
+            assert_eq!(
+                text.starts_with("peer_legacy_access_refused"),
+                admitted,
+                "case {index}: {text}"
+            );
         }
     }
 

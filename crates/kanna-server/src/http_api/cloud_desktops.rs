@@ -12,9 +12,10 @@ struct MachineDescriptor {
     name: Option<String>,
     is_local: bool,
     /// How this desktop reaches the machine: `local` (itself), `e2ee` (a
-    /// pinned sibling over its sealed peer session), `legacy` (an unpinned
-    /// sibling over the relay-attested or bearer-secret path, while that
-    /// is still allowed), or `pairingRequired` (unpinned, legacy off).
+    /// pinned sibling over its sealed peer session), or `legacy` (an
+    /// unpinned sibling over the relay-attested or bearer-secret path -
+    /// which the sibling itself refuses from 0.4.0 on, so in practice only
+    /// a desktop older than that).
     encryption: &'static str,
     /// For an `e2ee` machine, how its pin was born: `verified` (the pairing
     /// string a person carried) or `account` (automatic same-account
@@ -82,7 +83,6 @@ pub(super) async fn list_cloud_desktops(
     // session needs no legacy route at all. Gating it a second time would
     // hide those pinned peers in exactly the configuration - legacy refused -
     // where they are the only reachable LAN machines left.
-    let legacy_allowed = state.legacy_peer_access_allowed();
     ids.extend(super::invoke_desktop::eligible_lan_desktop_ids(&state));
     // A paired sibling with a LAN candidate is reachable without the relay.
     let paired: Vec<crate::peer_trust::PeerDesktop> = state
@@ -131,10 +131,8 @@ pub(super) async fn list_cloud_desktops(
                     "local"
                 } else if peer.is_some() {
                     "e2ee"
-                } else if legacy_allowed {
-                    "legacy"
                 } else {
-                    "pairingRequired"
+                    "legacy"
                 },
                 provenance: peer.map(|peer| peer.provenance.as_str()),
                 identity_changed: peer
@@ -364,7 +362,11 @@ mod tests {
             "CLI/MCP's exact route-provenance contract must report \"lan\" for a real LAN \
              dial's actual HTTP response: {response:?}"
         );
-        assert_eq!(response.status, 200, "{response:?}");
+        // The target runs this same build, so its own listener refuses the
+        // legacy bearer path (2026-09-20). The contract under test is the
+        // route provenance and the definiteness of the answer, both of
+        // which hold; only the status moved from 200 to 401.
+        assert_eq!(response.status, 401, "{response:?}");
     }
 
     #[test]
@@ -399,30 +401,31 @@ mod tests {
             "desktop-lan-peer".to_string(),
             "127.0.0.1:1".parse().unwrap(),
         );
-        let now_ms = crate::machine_trust::unix_time_ms().unwrap();
-        let store_path = state.config().machine_trust_store_path().unwrap();
+        // A pin, which is what "trusted" means for a LAN peer now: it is the
+        // only trust that is still a route, so it is the only one whose
+        // machine may be claimed reachable while relay is down.
         {
-            let mut store = crate::machine_trust::MachineTrustStore::default();
+            let path = state.config().peer_trust_store_path().unwrap();
+            let mut store = crate::peer_trust::PeerTrustStore::load(&path).unwrap();
             store
-                .pending_or_create(
-                    "desktop-lan-peer",
-                    "uid-1",
-                    "development",
-                    &state.config().desktop_id,
-                    || Ok("secret".to_string()),
-                    now_ms,
-                )
+                .upsert(crate::peer_trust::PeerDesktop {
+                    desktop_id: "desktop-lan-peer".into(),
+                    display_name: "LAN Peer".into(),
+                    channel_public_key: kanna_secure_channel::Keypair::generate()
+                        .unwrap()
+                        .encoded_public_key(),
+                    transfer_peer_id: None,
+                    transfer_public_key: None,
+                    environment: state.config().environment.clone(),
+                    account_uid: Some("uid-1".into()),
+                    provenance: crate::peer_trust::PeerProvenance::Verified,
+                    account_verified_at_unix_ms: Some(1),
+                    identity_mismatch_at_unix_ms: None,
+                    paired_at_unix_ms: 1,
+                    last_seen_unix_ms: None,
+                })
                 .unwrap();
-            store
-                .confirm_outbound(
-                    "desktop-lan-peer",
-                    "secret",
-                    &state.config().desktop_id,
-                    Some("fake-ca".to_string()),
-                    now_ms + 1000,
-                )
-                .unwrap();
-            store.save(&store_path).unwrap();
+            store.save(&path).unwrap();
         }
 
         let response = list_cloud_desktops(DesktopLocalAccess, State(Arc::clone(&state))).await;
