@@ -444,7 +444,7 @@ describe("QA workflow assets", () => {
     // Publishing is conditional on this plan stage actually being the tail of
     // the task: `plan-build-review` already has its stages and must publish
     // nothing.
-    expect(plan).toContain("When this `plan` stage is the **final** stage of the task's `workflowDefinition`");
+    expect(plan).toContain("publish only when this `plan` stage is the **final** stage of the definition");
     expect(plan).toContain("there is nothing to publish: record the plan and stop");
 
     // Proportionality is the point: the recipe is chosen from the work, and a
@@ -1173,6 +1173,53 @@ describe("QA workflow assets", () => {
     expect(agent).toContain("update that PR instead");
     expect(agent).toContain("Kanna-Task: $KANNA_TASK_ID");
     expect(agent).toContain("Force-push over commits it does not already have");
+  });
+
+  it("keeps pr's rebase, chain bound, lease push and PR retarget steps in the prompt", () => {
+    // Review item 4b: these were dropped by the T10 conversion with no home;
+    // they are operative steps, not engine mechanics.
+    const agent = readRepoPhrases(".kanna/agents/pr/AGENT.md");
+
+    expect(agent).toContain("Fetch first, then validate the base");
+    expect(agent).toContain("follow at most three links");
+    expect(agent).toContain("git rebase --onto origin/<default> origin/<base> HEAD");
+    expect(agent).toContain("git push --force-with-lease origin HEAD:refs/heads/<headRefName>");
+    expect(agent).toContain(
+      "if validating the base ref retargeted this work, move the PR too: `gh pr edit <number> --base <target>`",
+    );
+  });
+
+  it.each([
+    "review-compat",
+    "review-concurrency",
+    "review-migration",
+    "review-perf",
+    "review-release",
+    "review-security",
+    "review-ui",
+  ])("scopes %s to its own surface so the dispatcher owns the aggregate", (name) => {
+    // Review item 4a: without this a specialist fails for an out-of-scope
+    // finding and qa-dispatcher records it as that specialty's FAIL.
+    expect(readRepoPhrases(`.kanna/agents/${name}/AGENT.md`)).toContain(
+      "Other specialties are reviewed separately and the dispatcher owns the aggregate decision, so do not fail this review for findings outside your scope.",
+    );
+  });
+
+  it("gives plan's named-exit publication no legacy recipe, revision_limit or result variable", () => {
+    // Review item 4c: under routing "exits" revision_limit and plan_context
+    // are refused and any stage may publish the remaining stages (planned and
+    // designed rely on it); the legacy contract still applies to legacy tasks.
+    const agent = readRepoFile(".kanna/agents/plan/AGENT.md");
+    const exits = agent.split("*Named-exit workflows*")[1]?.split("*Legacy workflows*")[0] ?? "";
+    const legacy = agent.split("*Legacy workflows*")[1] ?? "";
+
+    expect(exits).toContain("whether or not this plan stage is the last in the definition");
+    expect(exits).toContain("no `revision_limit` to declare");
+    expect(exits).not.toMatch(/Declare a finite positive/);
+    expect(exits).not.toMatch(/\(\+`commit` post\)|\(\+`approve` post\)/);
+    expect(exits).not.toContain("$PLAN_RESULT");
+    expect(legacy).toContain("Declare a finite positive top-level `revision_limit`");
+    expect(legacy).toContain("`in progress` (+`commit` post) → `review` → `pr` (+`approve` post)");
   });
 
   it("keeps pr@draft-pr drafting while it validates the base and reuses PRs", () => {

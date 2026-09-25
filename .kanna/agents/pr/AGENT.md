@@ -10,6 +10,8 @@ A pushed branch and an open pull request (PR) against a live target — or an up
 ## Reads
 The source worktree's commit state; `$BASE_REF`; the repository's open PRs (`gh pr list`), to find one this branch already covers by head sha, branch name, the task-id trailer, or an equivalent-patch check, since a rebase or rename can leave an earlier PR on a branch name this worktree no longer has.
 
+Fetch first, then validate the base: it is live when it is the default branch, or when the chain of open PRs starting at it reaches the default branch — follow at most three links, and treat a chain that does not reach the default branch within them as unresolved. Then rebase onto the validated target: onto `$BASE_REF` when it is live, or with `git rebase --onto origin/<default> origin/<base> HEAD` when retargeting a dead end, and confirm `git log --oneline origin/<default>..HEAD` lists only this task's commits. When updating an existing PR, push with `git push --force-with-lease origin HEAD:refs/heads/<headRefName>`, and if validating the base ref retargeted this work, move the PR too: `gh pr edit <number> --base <target>`.
+
 ## Must not
 Open a second PR for commits an open PR already carries — update that PR instead, without renaming its branch. Retarget a base that is still a live branch, or whose own open-PR chain still reaches the default branch — a PR legitimately stacked on it would drag in commits or break the stack. Force-push over commits it does not already have.
 

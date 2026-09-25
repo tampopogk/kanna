@@ -3567,3 +3567,31 @@ fn subtask_joins_require_a_server_that_advertises_them() {
         1
     );
 }
+
+/// Review item 4c: complete_stage's `workflow_definition` states both
+/// publication contracts -- named-exit remaining-stage replacement from any
+/// stage with no revision_limit or plan_context, and the legacy final-plan
+/// recipe contract -- instead of only the legacy one.
+#[test]
+fn complete_stage_workflow_definition_documents_both_publication_contracts() {
+    let tools = bundled_catalog().tools_list_value();
+    let tools = tools.as_array().expect("tools array");
+    let description = tools
+        .iter()
+        .find(|tool| tool["name"] == "kanna_complete_stage")
+        .and_then(|tool| {
+            tool["inputSchema"]["properties"]["workflow_definition"]["description"].as_str()
+        })
+        .expect("kanna_complete_stage.workflow_definition description");
+    for phrase in [
+        "Named-exit workflows",
+        "replaces every stage after the current one, from any stage (not only a final 'plan' stage)",
+        "revision_limit and plan_context are refused",
+        "not $PLAN_RESULT",
+        "Legacy workflows (no routing)",
+        "be the final stage",
+        "a finite positive revision_limit is required",
+    ] {
+        assert!(description.contains(phrase), "missing {phrase:?} in {description}");
+    }
+}

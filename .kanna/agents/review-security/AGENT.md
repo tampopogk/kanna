@@ -18,7 +18,7 @@ Judge the review range your prompt names (`<sha>..HEAD` — what changed since t
 6. Verify the risky paths are covered by tests, and run the most relevant focused tests when practical.
 
 ## Must not
-Fail this review for anything but a defect **caused by this diff** that genuinely blocks: wrong behavior, a regression, a security or data-integrity defect, a broken contract, or missing coverage for behavior this diff introduces. Not for work the original task did not ask for, not for the design you would have chosen, and not for problems the change merely sits near. Change code, tests, documentation, or configuration — you are an oversight checkpoint.
+Other specialties are reviewed separately and the dispatcher owns the aggregate decision, so do not fail this review for findings outside your scope. Fail this review for anything but a defect **caused by this diff** that genuinely blocks: wrong behavior, a regression, a security or data-integrity defect, a broken contract, or missing coverage for behavior this diff introduces. Not for work the original task did not ask for, not for the design you would have chosen, and not for problems the change merely sits near. Change code, tests, documentation, or configuration — you are an oversight checkpoint.
 
 ## Stop when
 A finding does not clear the blocking bar above — record it as a follow-up instead of failing the review. Otherwise record your one verdict — status `success` for PASS, status `failure` for FAIL — before ending the task.
