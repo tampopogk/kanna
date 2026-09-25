@@ -1666,6 +1666,14 @@ impl MobileApi {
         else {
             return Ok(None);
         };
+        // A child is created in its parent's repository, so bare artifact ids
+        // in a child's latest result resolve against the parent's repo.
+        let repo_id = self
+            ._db
+            .get_pipeline_item(&task_id)
+            .map_err(|e| format!("db error: {}", e))?
+            .map(|item| item.repo_id)
+            .unwrap_or_default();
         let children = self
             ._db
             .list_pipeline_item_children(&task_id)
@@ -1685,7 +1693,7 @@ impl MobileApi {
                     legacy_pipeline_name: child.pipeline,
                     created_at: child.created_at,
                     closed_at: child.closed_at,
-                    latest_run: latest_run.map(map_task_latest_run),
+                    latest_run: latest_run.map(|run| map_task_latest_run(run, &repo_id)),
                 })
             })
             .collect::<Result<Vec<_>, String>>()
@@ -1862,6 +1870,9 @@ fn map_task_detail(
     repo: Option<&crate::db::Repo>,
     relations: TaskDetailRelations,
 ) -> TaskDetail {
+    // Captured before `item`'s fields move: bare artifact ids in the latest
+    // result resolve against the task's own repository.
+    let latest_run_repo_id = item.repo_id.clone();
     let TaskDetailRelations {
         worktree_path,
         latest_run,
@@ -1986,7 +1997,7 @@ fn map_task_detail(
         commits_behind: git_state.commits_behind,
         base_ref_unresolved: git_state.base_ref_unresolved.then_some(true),
         dirty: git_state.dirty,
-        latest_run: latest_run.map(map_task_latest_run),
+        latest_run: latest_run.map(|run| map_task_latest_run(run, &latest_run_repo_id)),
         revision_rounds: item.revision_rounds,
         revision_limit,
         delivered_input_count,
@@ -2018,7 +2029,41 @@ fn spawn_option_from_json(raw: Option<&str>, key: &str) -> Option<String> {
         .and_then(|options| options.get(key)?.as_str().map(str::to_string))
 }
 
-fn map_task_latest_run(run: crate::db::StageRun) -> TaskLatestRun {
+/// The artifact references a result names, as the gate views show them.
+///
+/// The stage run stores the caller's raw `artifacts` payload (it is part of
+/// the result's replay identity), so this normalizes it with the binder's own
+/// rule (`bind_result_artifacts`): a bare tree id is a stored artifact in the
+/// task's repository, and an object is a tagged reference. Each entry is read
+/// on its own, so one unreadable entry never hides the rest.
+fn project_result_artifacts(
+    raw: &serde_json::Value,
+    repo_id: &str,
+) -> Option<std::collections::BTreeMap<String, crate::artifacts::types::ArtifactReference>> {
+    use crate::artifacts::types::{ArtifactContentKind, ArtifactReference};
+    let entries = raw.as_object()?;
+    Some(
+        entries
+            .iter()
+            .filter_map(|(name, value)| {
+                let reference = match value {
+                    serde_json::Value::String(id) => ArtifactReference::Stored {
+                        repo_id: repo_id.to_string(),
+                        artifact_id: id.clone(),
+                        kind: ArtifactContentKind::Document,
+                    },
+                    serde_json::Value::Object(_) => {
+                        serde_json::from_value::<ArtifactReference>(value.clone()).ok()?
+                    }
+                    _ => return None,
+                };
+                Some((name.clone(), reference))
+            })
+            .collect(),
+    )
+}
+
+fn map_task_latest_run(run: crate::db::StageRun, repo_id: &str) -> TaskLatestRun {
     let recorded = run
         .result
         .as_deref()
@@ -2039,12 +2084,7 @@ fn map_task_latest_run(run: crate::db::StageRun) -> TaskLatestRun {
     let artifacts = recorded
         .as_ref()
         .and_then(|result| result.get("artifacts"))
-        .and_then(|artifacts| {
-            serde_json::from_value::<
-                std::collections::BTreeMap<String, crate::artifacts::types::ArtifactReference>,
-            >(artifacts.clone())
-            .ok()
-        });
+        .and_then(|artifacts| project_result_artifacts(artifacts, repo_id));
     let summary = recorded
         .and_then(|result| {
             result
@@ -2425,7 +2465,7 @@ mod tests {
             started_at: "2026-09-12 00:00:00".into(),
             finished_at: None,
         };
-        let result = serde_json::to_value(super::map_task_latest_run(run)).unwrap();
+        let result = serde_json::to_value(super::map_task_latest_run(run, "repo-1")).unwrap();
         assert_eq!(result["agentProvider"], "opencode");
         assert_eq!(result["model"], "local/Qwen-Coder");
     }
@@ -2478,7 +2518,7 @@ mod tests {
             })
             .to_string(),
         ));
-        let mapped = super::map_task_latest_run(run);
+        let mapped = super::map_task_latest_run(run, "repo-1");
         assert_eq!(mapped.verdict.as_deref(), Some("declined"));
         assert_eq!(mapped.summary.as_deref(), Some("Already fixed upstream."));
         assert_eq!(mapped.exit.as_deref(), Some("needs-followup"));
@@ -2497,12 +2537,45 @@ mod tests {
         }
     }
 
+    /// Review item 3: a bare tree id is the documented spelling the binder
+    /// accepts, so the gate views must show it as a stored reference in the
+    /// task's repository — and one unreadable entry must not hide the rest.
+    #[test]
+    fn latest_run_projects_a_bare_tree_id_as_a_stored_reference() {
+        let tree = "0123456789abcdef0123456789abcdef01234567";
+        let run = base_run(Some(
+            json!({
+                "status": "success",
+                "summary": "Mockup ready.",
+                "artifacts": {
+                    "mockup": tree,
+                    "spec": { "type": "commit", "repoId": "repo-1", "sha": tree },
+                    "broken": 7,
+                },
+            })
+            .to_string(),
+        ));
+        let mapped = super::map_task_latest_run(run, "repo-1");
+        let artifacts = serde_json::to_value(mapped.artifacts.expect("artifacts")).unwrap();
+        assert_eq!(
+            artifacts["mockup"],
+            json!({
+                "type": "stored",
+                "repoId": "repo-1",
+                "artifactId": tree,
+                "kind": "document",
+            })
+        );
+        assert_eq!(artifacts["spec"]["type"], "commit");
+        assert!(artifacts.get("broken").is_none(), "{artifacts}");
+    }
+
     #[test]
     fn latest_run_omits_exit_and_artifacts_when_the_result_names_none() {
         let run = base_run(Some(
             json!({ "status": "success", "summary": "Done." }).to_string(),
         ));
-        let mapped = super::map_task_latest_run(run);
+        let mapped = super::map_task_latest_run(run, "repo-1");
         assert_eq!(mapped.verdict.as_deref(), Some("success"));
         assert!(mapped.exit.is_none());
         assert!(mapped.artifacts.is_none());

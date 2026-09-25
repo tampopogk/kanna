@@ -4,8 +4,8 @@
 //! request-revision endpoints exit_routing.rs and roleless_stage.rs exercise.
 //! `research` is unchanged by this card and already covered elsewhere.
 use super::actions::{
-    commit_branch_change, ledger_files, ledger_fixture_config, post_json, spawn_recording_daemon,
-    wait_for_running_task_stage,
+    commit_branch_change, get_task_detail, ledger_files, ledger_fixture_config, post_json,
+    spawn_recording_daemon, wait_for_running_task_stage,
 };
 use super::*;
 use crate::db::task_store::LedgerEntryKind;
@@ -476,6 +476,21 @@ async fn designed_mockup_gate_revise_loop_and_operator_departure_to_plan() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     fixture.settle().await;
+    // The gate views read latestRun.artifacts: the bare tree id this flow
+    // uses (the documented spelling) is shown as a stored reference.
+    let detail = get_task_detail(&fixture.app, fixture.task_id).await;
+    let artifacts = serde_json::to_value(
+        detail
+            .latest_run
+            .expect("latest run")
+            .artifacts
+            .expect("latestRun.artifacts"),
+    )
+    .unwrap();
+    assert_eq!(artifacts["mockup"]["type"], "stored", "{artifacts}");
+    assert_eq!(artifacts["mockup"]["artifactId"], artifact_id);
+    assert!(artifacts["mockup"]["repoId"].is_string(), "{artifacts}");
+    assert!(artifacts["mockup"]["kind"].is_string(), "{artifacts}");
     // mockup's own transition is manual: an operator confirms it before the
     // gate is entered.
     let (status, body) = fixture
