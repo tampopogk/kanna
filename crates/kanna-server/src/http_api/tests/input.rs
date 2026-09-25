@@ -3710,6 +3710,107 @@ mod merge_handoff_on_close {
         harness.cleanup();
     }
 
+    /// The open-children guard runs before the merge handoff (review item 5).
+    /// A final-stage close with a merge handoff and an open plain (non-join)
+    /// child is refused with nothing delivered — the merge master must not
+    /// hear about a task that then fails to close, and task_merge_signaled_at
+    /// must stay unset so the real close can deliver. Once the child closes,
+    /// the close delivers exactly one handoff.
+    #[tokio::test]
+    async fn an_open_child_refuses_the_close_before_any_merge_handoff_is_delivered() {
+        let workflow = serde_json::json!({
+            "name": "shaped",
+            "routing": "exits",
+            "stages": [{
+                "name": "pr",
+                "agent": "pr",
+                "prompt": "Create a PR for $BRANCH",
+                "policy": { "transition": "manual", "handoff": "merge" }
+            }]
+        })
+        .to_string();
+        let harness = Harness::with_source_run(
+            "open-child-before-handoff",
+            &workflow,
+            Some("https://github.com/acme/repo/pull/91"),
+            ("run-pr", "pr", "main"),
+        );
+        {
+            let db = harness.db();
+            db.insert_test_pipeline_item(
+                "task-child",
+                "repo-1",
+                "Child prompt",
+                Some("Child"),
+                "in progress",
+                "2026-08-07T00:00:02Z",
+            )
+            .unwrap();
+            db.update_pipeline_item_parent("task-child", Some("task-source"))
+                .unwrap();
+        }
+        let app = super::router(Arc::new(super::AppState::new(harness.config.clone())));
+        let (status, text) = super::actions::post_json(
+            &app,
+            "/v1/tasks/task-source/actions/complete-stage",
+            serde_json::json!({
+                "runId": "run-pr", "status": "success",
+                "summary": "Created PR https://github.com/acme/repo/pull/91",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+
+        let (status, text) = super::actions::post_json(
+            &app,
+            "/v1/tasks/task-source/actions/advance-stage",
+            serde_json::json!({ "source": "operator" }),
+        )
+        .await;
+        // The advance is accepted and executed detached; the close guard's
+        // refusal is its durable outcome: the task parks unclosed.
+        assert_eq!(status, StatusCode::OK, "{text}");
+        // Give the detached close — and any wrongly-delivered handoff — time
+        // to land before asserting neither did.
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        assert!(
+            harness.merge_messages().is_empty(),
+            "a refused close must deliver no handoff: {:?}",
+            harness.merge_messages()
+        );
+        {
+            let db = harness.db();
+            assert!(db.task_merge_signaled_at("task-source").unwrap().is_none());
+            assert!(db
+                .get_pipeline_item("task-source")
+                .unwrap()
+                .unwrap()
+                .closed_at
+                .is_none());
+            db.close_pipeline_item("task-child").unwrap();
+        }
+
+        let (status, text) = super::actions::post_json(
+            &app,
+            "/v1/tasks/task-source/actions/advance-stage",
+            serde_json::json!({ "source": "operator" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let messages = harness.wait_for_merge_messages(1).await;
+        let db = harness.db();
+        wait_for_closed(&db, "task-source").await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(
+            harness.merge_messages().len(),
+            1,
+            "exactly one handoff once the child closed: {messages:?}"
+        );
+        assert!(db.task_merge_signaled_at("task-source").unwrap().is_some());
+        drop(db);
+        harness.cleanup();
+    }
+
     /// T10's bundled `mechanical` workflow (spec §10: `implement -> pr(M)`)
     /// shares the same final-stage `policy.handoff: merge` shape as the
     /// synthetic workflow above. `pr`'s definition-formula "Produces" section

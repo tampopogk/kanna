@@ -289,6 +289,28 @@ impl Db {
         rows.collect()
     }
 
+    /// Every child that keeps `task_id` from closing (spec §3): its open
+    /// direct children, then any unresolved join member not already listed
+    /// (a member recorded but not yet created counts too). Empty means the
+    /// close may proceed. Shared by every close path so none can skip it.
+    pub(crate) fn children_blocking_close(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<String>, rusqlite::Error> {
+        let mut open_children = self
+            .list_pipeline_item_children(task_id)?
+            .into_iter()
+            .filter(|child| child.closed_at.is_none())
+            .map(|child| child.id)
+            .collect::<Vec<_>>();
+        for member in self.unresolved_join_children(task_id)? {
+            if !open_children.contains(&member) {
+                open_children.push(member);
+            }
+        }
+        Ok(open_children)
+    }
+
     /// Members whose task was never created — a launch interrupted before
     /// it reached them — for the startup sweep to create from their spec.
     pub(crate) fn list_uncreated_join_members(

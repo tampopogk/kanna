@@ -121,6 +121,17 @@ pub async fn handle_invoke(
                 .resolve_pipeline_item_id(task_id)
                 .map_err(|e| format!("db error: {}", e))?
                 .ok_or_else(|| format!("task not found: {task_id}"))?;
+            // Same guard as every other close path (spec §3), checked before
+            // any session is killed so a refused close changes nothing.
+            let open_children = db
+                .children_blocking_close(&pipeline_item_id)
+                .map_err(|e| format!("db error: {}", e))?;
+            if !open_children.is_empty() {
+                return Err(format!(
+                    "task has open subtasks; close or detach subtasks first: {}",
+                    open_children.join(", ")
+                ));
+            }
             let workspace_teardown =
                 task_creator::prepare_workspace_teardown_for_close(db, config, &pipeline_item_id);
             let has_workspace_teardown = workspace_teardown.is_some();

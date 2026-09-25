@@ -913,21 +913,9 @@ fn refuse_close_with_open_children(
     db: &Db,
     task_id: &str,
 ) -> Result<(), (axum::http::StatusCode, String)> {
-    let mut open_children = db
-        .list_pipeline_item_children(task_id)
-        .map_err(|e| db_write_error("db error", e))?
-        .into_iter()
-        .filter(|child| child.closed_at.is_none())
-        .map(|child| child.id)
-        .collect::<Vec<_>>();
-    for member in db
-        .unresolved_join_children(task_id)
-        .map_err(|e| db_write_error("db error", e))?
-    {
-        if !open_children.contains(&member) {
-            open_children.push(member);
-        }
-    }
+    let open_children = db
+        .children_blocking_close(task_id)
+        .map_err(|e| db_write_error("db error", e))?;
     if open_children.is_empty() {
         return Ok(());
     }
@@ -1031,13 +1019,12 @@ async fn close_task_after_final_stage(
     task_id: String,
     workspace_teardown: Option<crate::task_creator::PreparedWorkspaceTeardown>,
 ) -> Result<Json<crate::mobile_api::TaskActionResponse>, (axum::http::StatusCode, String)> {
-    // Before anything is torn down: a workflow whose final stage declares the
-    // merge-signaling approve post must not close leaving an open PR the merge
-    // master never heard about. An error here deliberately abandons the close
-    // — the task parks at its final stage instead.
-    super::signal_agent::ensure_merge_handoff_before_close(state, &task_id).await?;
-    // Nor may it close over open subtasks (spec §3): it parks at its final
-    // stage instead, exactly as an explicit close is refused.
+    // First, before anything is delivered or torn down: a task may not close
+    // over open subtasks (spec §3); it parks at its final stage instead,
+    // exactly as an explicit close is refused. This must precede the merge
+    // handoff below — a handoff delivered for a close that is then refused
+    // would leave the merge master acting on a task that never closed, and
+    // task_merge_signaled_at would stop the real close from re-delivering.
     {
         let db = Db::open(&state.config.db_path).map_err(|e| {
             (
@@ -1047,6 +1034,11 @@ async fn close_task_after_final_stage(
         })?;
         refuse_close_with_open_children(&db, &task_id)?;
     }
+    // Then: a workflow whose final stage declares the merge-signaling approve
+    // post must not close leaving an open PR the merge master never heard
+    // about. An error here deliberately abandons the close — the task parks
+    // at its final stage instead.
+    super::signal_agent::ensure_merge_handoff_before_close(state, &task_id).await?;
     let has_workspace_teardown = workspace_teardown.is_some();
     let blocker_close_instructions = {
         let db = Db::open(&state.config.db_path).map_err(|e| {
