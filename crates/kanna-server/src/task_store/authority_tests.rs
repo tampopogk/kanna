@@ -2075,3 +2075,272 @@ fn an_in_flight_entry_is_published_by_the_next_start_when_its_file_can_be_writte
         ["readable".to_string(), "only in flight".to_string()]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Review revision 1, item 2: a multi-task commit reaches the disk all or none
+// ---------------------------------------------------------------------------
+
+/// How the second half of a two-task commit is kept from the disk.
+#[derive(Clone, Copy, Debug)]
+enum Obstacle {
+    /// The task is fenced, awaiting reconciliation.
+    Diverged,
+    /// Its `task.json` is at a revision the database never published.
+    DiskAhead,
+    /// Replacing its `task.json` fails, as a full disk would.
+    TaskJsonFails,
+}
+
+const OBSTACLES: [Obstacle; 3] = [
+    Obstacle::Diverged,
+    Obstacle::DiskAhead,
+    Obstacle::TaskJsonFails,
+];
+
+fn task_json_of(db_path: &str, repo: &str, task: &str) -> PathBuf {
+    task_dir(&root_for_db(db_path), repo, task).join("task.json")
+}
+
+fn obstruct(db: &Db, db_path: &str, repo: &str, task: &str, obstacle: Obstacle) {
+    use crate::task_store::disk_first::{crash_at, CrashPoint};
+    match obstacle {
+        Obstacle::Diverged => flag_divergence(db, task, "test: awaiting reconciliation"),
+        Obstacle::DiskAhead => {
+            let path = task_json_of(db_path, repo, task);
+            let mut snapshot: Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let ahead = snapshot["snapshot_revision"].as_i64().unwrap() + 5;
+            snapshot["snapshot_revision"] = json!(ahead);
+            std::fs::write(&path, serde_json::to_vec_pretty(&snapshot).unwrap()).unwrap();
+        }
+        Obstacle::TaskJsonFails => crash_at(&root_for_db(db_path), task, CrashPoint::TaskJsonFails),
+    }
+}
+
+/// Reconcile every task the refused commit fenced, as the next start does.
+fn reconcile_fenced(db: &Db, db_path: &str, tasks: &[&str]) {
+    let fenced: BTreeSet<String> = tasks
+        .iter()
+        .filter(|task| is_diverged(db, task))
+        .map(|task| task.to_string())
+        .collect();
+    if !fenced.is_empty() {
+        reconcile_from_disk(db, db_path, Some(&fenced)).unwrap();
+    }
+    for task in tasks {
+        assert!(!is_diverged(db, task), "{task} still fenced");
+    }
+}
+
+fn child_result(db: &Db) -> rusqlite::Result<String> {
+    db.enqueue_ledger_entry(crate::db::task_store::NewLedgerEntry {
+        task_id: "child",
+        kind: crate::db::task_store::LedgerEntryKind::Result,
+        operation_id: None,
+        source_kind: "stage_run",
+        source_id: "child:result",
+        source_origin: None,
+        historical: false,
+        recorded_at: None,
+        run_id: None,
+        declared_role: Some("agent"),
+        channel_identity: &ChannelIdentity::Server,
+        body: json!({ "status": "success", "stage": "in progress",
+                      "committed_sha": "c0ffee0" }),
+        message: Some("the child's result"),
+        hold_events_after: None,
+        reserved_sequence: None,
+    })
+    .map(|entry| entry.entry_id)
+}
+
+/// A parent waiting on one child's join, in `disk` mode.
+fn joined_installation(label: &str) -> (Db, String, String) {
+    let repo = format!("repo-{label}");
+    let (db, db_path) = installation(label, &repo, &["child", "parent"]);
+    db.create_task_join(&crate::db::NewTaskJoin {
+        id: "join-1".into(),
+        parent_task_id: "parent".into(),
+        parent_stage: Some("in progress".into()),
+        parent_run_id: None,
+        base_sha: "0".repeat(40),
+        base_branch: None,
+        members: vec![crate::db::NewJoinMember {
+            child_task_id: "child".into(),
+            spec: json!({ "prompt": "child" }).to_string(),
+        }],
+    })
+    .unwrap();
+    assert!(flush_all(&db, &db_path).is_empty());
+    assert_eq!(
+        start(&db, &db_path, Some(Mode::Disk)).unwrap().mode,
+        Mode::Disk
+    );
+    (db, db_path, repo)
+}
+
+fn child_results(db: &Db) -> usize {
+    let count: i64 = db
+        .connection_for_e2e_tests()
+        .query_row(
+            "SELECT COUNT(*) FROM task_ledger_entry WHERE task_id = 'child' AND kind = 'result'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    count as usize
+}
+
+/// Whether the parent's join member is resolved, with the input that tells
+/// the parent so present.
+fn join_delivered(db: &Db) -> bool {
+    let member = db.task_join_member("child").unwrap().unwrap();
+    let Some(input_id) = member.input_id else {
+        assert!(member.resolved_at.is_none());
+        return false;
+    };
+    assert!(member.resolved_at.is_some());
+    db.list_task_inputs("parent", 100)
+        .unwrap()
+        .iter()
+        .any(|input| input.id == input_id)
+}
+
+/// A child's result resolves its parent's join member in the same
+/// transaction. With either task's half kept from the disk, the commit is
+/// refused whole: neither `task.json` changes, and after reconciliation
+/// neither the result nor the resolution is there. The retry is then a first
+/// result again (not the source-identity early return), so the join
+/// resolves, on disk and in the database.
+#[test]
+fn a_child_result_and_its_parents_join_resolution_reach_the_disk_together() {
+    for obstacle in OBSTACLES {
+        for obstructed in ["parent", "child"] {
+            let label = format!("join-{obstacle:?}-{obstructed}").to_lowercase();
+            let (db, db_path, repo) = joined_installation(&label);
+            let child_json = task_json_of(&db_path, &repo, "child");
+            let parent_json = task_json_of(&db_path, &repo, "parent");
+            obstruct(&db, &db_path, &repo, obstructed, obstacle);
+            let child_before = std::fs::read(&child_json).unwrap();
+            let parent_before = std::fs::read(&parent_json).unwrap();
+
+            assert!(child_result(&db).is_err(), "{label}: committed");
+            assert_eq!(std::fs::read(&child_json).unwrap(), child_before, "{label}");
+            assert_eq!(
+                std::fs::read(&parent_json).unwrap(),
+                parent_before,
+                "{label}"
+            );
+
+            reconcile_fenced(&db, &db_path, &["child", "parent"]);
+            assert_eq!(
+                child_results(&db),
+                0,
+                "{label}: the result is durable alone"
+            );
+            assert!(!join_delivered(&db), "{label}");
+
+            child_result(&db).unwrap();
+            assert_eq!(child_results(&db), 1, "{label}");
+            assert!(join_delivered(&db), "{label}");
+            // What the disk holds agrees: rebuilt from it, both halves stand.
+            flag_divergence(&db, "child", "test: take both from disk");
+            flag_divergence(&db, "parent", "test: take both from disk");
+            reconcile_fenced(&db, &db_path, &["child", "parent"]);
+            assert_eq!(child_results(&db), 1, "{label}");
+            assert!(join_delivered(&db), "{label}");
+        }
+    }
+}
+
+/// An upstream that consumed-by-a-dependent result is superseded when the
+/// upstream leaves the stage again with a newer success: the departure and
+/// the dependent's supersession are one transaction across two tasks.
+fn superseding_installation(label: &str) -> (Db, String, String) {
+    let repo = format!("repo-{label}");
+    let (db, db_path) = installation(label, &repo, &["upstream", "dependent"]);
+    db.pin_test_stages("upstream", &["in progress", "build"]);
+    db.pin_test_stages("dependent", &["in progress"]);
+    db.insert_stage_edges(
+        "dependent",
+        &[crate::db::NewStageEdge {
+            upstream_task_id: "upstream".into(),
+            upstream_stage: "in progress".into(),
+            dependent_stage: None,
+        }],
+    )
+    .unwrap();
+    db.record_test_stage_result("upstream", "in progress", "success", Some("5000001"));
+    db.update_pipeline_item_stage("upstream", "build").unwrap();
+    let inputs = db
+        .stage_edge_inputs("dependent", "in progress", true)
+        .unwrap()
+        .unwrap();
+    db.record_dependency_start("dependent", "in progress", "dependent", &inputs)
+        .unwrap();
+    db.update_pipeline_item_stage("upstream", "in progress")
+        .unwrap();
+    db.record_test_stage_result("upstream", "in progress", "success", Some("5000002"));
+    assert!(flush_all(&db, &db_path).is_empty());
+    assert_eq!(
+        start(&db, &db_path, Some(Mode::Disk)).unwrap().mode,
+        Mode::Disk
+    );
+    (db, db_path, repo)
+}
+
+fn upstream_stage(db: &Db) -> Option<String> {
+    db.get_pipeline_item("upstream").unwrap().unwrap().stage
+}
+
+fn superseded_sha(db: &Db) -> Option<String> {
+    db.list_stage_edges_into("dependent")
+        .unwrap()
+        .remove(0)
+        .superseded_sha
+}
+
+#[test]
+fn a_departure_and_the_supersession_it_records_reach_the_disk_together() {
+    for obstacle in OBSTACLES {
+        for obstructed in ["dependent", "upstream"] {
+            let label = format!("supersede-{obstacle:?}-{obstructed}").to_lowercase();
+            let (db, db_path, repo) = superseding_installation(&label);
+            let upstream_json = task_json_of(&db_path, &repo, "upstream");
+            let dependent_json = task_json_of(&db_path, &repo, "dependent");
+            obstruct(&db, &db_path, &repo, obstructed, obstacle);
+            let upstream_before = std::fs::read(&upstream_json).unwrap();
+            let dependent_before = std::fs::read(&dependent_json).unwrap();
+
+            assert!(
+                db.update_pipeline_item_stage("upstream", "build").is_err(),
+                "{label}: committed"
+            );
+            assert_eq!(
+                std::fs::read(&upstream_json).unwrap(),
+                upstream_before,
+                "{label}"
+            );
+            assert_eq!(
+                std::fs::read(&dependent_json).unwrap(),
+                dependent_before,
+                "{label}"
+            );
+
+            reconcile_fenced(&db, &db_path, &["upstream", "dependent"]);
+            assert_eq!(
+                upstream_stage(&db).as_deref(),
+                Some("in progress"),
+                "{label}"
+            );
+            assert_eq!(superseded_sha(&db), None, "{label}");
+
+            db.update_pipeline_item_stage("upstream", "build").unwrap();
+            flag_divergence(&db, "upstream", "test: take both from disk");
+            flag_divergence(&db, "dependent", "test: take both from disk");
+            reconcile_fenced(&db, &db_path, &["upstream", "dependent"]);
+            assert_eq!(upstream_stage(&db).as_deref(), Some("build"), "{label}");
+            assert_eq!(superseded_sha(&db).as_deref(), Some("5000002"), "{label}");
+        }
+    }
+}

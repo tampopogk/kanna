@@ -4,20 +4,29 @@
 //! A transaction that owes disk records publishes them from its own
 //! uncommitted rows before SQLite commits it
 //! ([`crate::db::disk_first::DbConnection::publish_and_commit`]), holding
-//! SQLite's write lock, so there is never a second writer. For each task it
-//! touched, in order:
+//! SQLite's write lock, so there is never a second writer. The tasks it
+//! touched are one mutation, written all or none:
 //!
-//! 1. **Refuse** if the disk holds anything this database did not write: the
-//!    task is fenced (`disk_divergence`, or a failed commit in this
-//!    process), a ledger file at one of its unpublished sequences holds other
-//!    bytes, or `task.json` is at a revision the database never published.
-//!    Nothing is written, the transaction rolls back, and the task is
-//!    reconciled from its disk.
-//! 2. **Write `task.json`** — the commit point. It carries the rows as the
-//!    transaction leaves them (`state`, whose `reflects_through` counts this
-//!    transaction's entries) and, under `ledger.in_flight`, the exact bytes
-//!    of every entry not yet published as a file. One atomic rename makes
-//!    the whole mutation durable on disk, rows and entries together.
+//! 1. **Refuse** if the disk of any of them holds anything this database
+//!    did not write: the task is fenced (`disk_divergence`, or a failed
+//!    commit in this process), a ledger file at one of its unpublished
+//!    sequences holds other bytes, or `task.json` is at a revision the
+//!    database never published. Every task is vetted before any is
+//!    written, so a refusal writes nothing: the transaction rolls back, and
+//!    a task whose disk is ahead is reconciled from it.
+//! 2. **Write each `task.json`** — the commit point. It carries the rows as
+//!    the transaction leaves them (`state`, whose `reflects_through` counts
+//!    this transaction's entries) and, under `ledger.in_flight`, the exact
+//!    bytes of every entry not yet published as a file. One atomic rename
+//!    makes a task's part durable on disk, rows and entries together. If a
+//!    later task's `task.json` cannot be written, the earlier ones are put
+//!    back and every task is fenced and reconciled from its disk, so no task
+//!    keeps a half the others lost (a child's result without its parent's
+//!    join resolution). A process that dies between two tasks' renames is
+//!    not covered: it leaves the earlier tasks' parts on disk.
+//!
+//! Then, for each task in turn:
+//!
 //! 3. **Publish the entry files**, in sequence order, each written and
 //!    synced (file and directory) and acknowledged, whatever reservation
 //!    another operation holds below them: durability is never held back. A
@@ -164,6 +173,9 @@ pub(crate) enum CrashPoint {
     BeforeWatermark,
     /// Not a crash: writing this entry's file fails, as an I/O error would.
     PublishFails(i64),
+    /// Not a crash: replacing this task's `task.json` fails, as an I/O
+    /// error would.
+    TaskJsonFails,
     /// Every record written; SQLite not committed.
     BeforeCommit,
 }
@@ -211,22 +223,36 @@ fn crash(task_id: &str, point: CrashPoint) -> Refusal {
 
 /// Write every record the open transaction owes, before it commits. Returns
 /// the tasks whose `task.json` was written.
+///
+/// A transaction may touch several tasks (a child's result that resolves
+/// its parent's join member, a departure that supersedes a dependent's
+/// input). Their records are one mutation, so they reach the disk all or
+/// none: every task is vetted before any `task.json` is written, and a
+/// `task.json` that cannot be written puts back the ones written before it.
 pub(crate) fn publish_before_commit(db: &Db, touched: Touched) -> Result<Vec<String>, Refusal> {
     let root = root_for_db(db.db_path());
     let db_refusal = |written: &[String], error: rusqlite::Error| {
         Refusal::new(format!("db error: {error}"), written.to_vec())
     };
-    let mut written: Vec<String> = Vec::new();
     let mut tasks = touched.forced_tasks;
     tasks.extend(
         db.task_ids_for_outbox_rows(&touched.snapshots, &touched.entries)
-            .map_err(|error| db_refusal(&written, error))?,
+            .map_err(|error| db_refusal(&[], error))?,
     );
+    // 1. Refuse before anything is written, whichever task refuses.
+    let mut vetted = Vec::new();
     for task in &tasks {
-        match publish_task(db, &root, task, &written)? {
-            Published::Nothing => {}
-            Published::Written => written.push(task.clone()),
+        if let Some(task) = vet_task(db, &root, task)? {
+            vetted.push(task);
         }
+    }
+    // 2. The commit point of every task.
+    write_task_jsons(&root, &vetted)?;
+    let written: Vec<String> = vetted.iter().map(|task| task.task_id.clone()).collect();
+    // 3-4. Entry files and watermarks. The mutation is on disk: any refusal
+    // from here fences every task it wrote.
+    for task in &vetted {
+        publish_entries(db, &root, task, &written)?;
     }
     let mut repos = touched.forced_repos;
     repos.extend(
@@ -258,11 +284,6 @@ pub(crate) fn publish_before_commit(db: &Db, touched: Touched) -> Result<Vec<Str
     Ok(written)
 }
 
-enum Published {
-    Nothing,
-    Written,
-}
-
 /// The `snapshot_revision` of the `task.json` in `dir`, if there is one.
 fn revision_on_disk(dir: &Path) -> Option<i64> {
     let bytes = std::fs::read(dir.join("task.json")).ok()?;
@@ -272,17 +293,25 @@ fn revision_on_disk(dir: &Path) -> Option<i64> {
         .and_then(Value::as_i64)
 }
 
-fn publish_task(
-    db: &Db,
-    root: &Path,
-    task_id: &str,
-    written: &[String],
-) -> Result<Published, Refusal> {
-    let db_error =
-        |error: rusqlite::Error| Refusal::new(format!("db error: {error}"), written.to_vec());
+/// A task this commit writes, vetted and rendered before anything is.
+struct Vetted {
+    task_id: String,
+    dir: PathBuf,
+    revision: i64,
+    /// Entries to publish as files, in sequence order.
+    publishable: Vec<(i64, String, Vec<u8>)>,
+    /// The `task.json` this commit writes.
+    bytes: Vec<u8>,
+    readable_before: i64,
+}
+
+/// Step 1 for one task, writing nothing: `None` when it owes nothing, a
+/// refusal when the disk holds anything this database did not write.
+fn vet_task(db: &Db, root: &Path, task_id: &str) -> Result<Option<Vetted>, Refusal> {
+    let db_error = |error: rusqlite::Error| Refusal::new(format!("db error: {error}"), Vec::new());
     let Some(item) = db.get_pipeline_item(task_id).map_err(db_error)? else {
         // Removed in this transaction: its tombstone is the removal's.
-        return Ok(Published::Nothing);
+        return Ok(None);
     };
     let pending = db.pending_ledger_entries(task_id).map_err(db_error)?;
     let (revision, published) = db
@@ -300,20 +329,18 @@ fn publish_task(
         })
         .collect();
     if filled.is_empty() && revision <= published {
-        return Ok(Published::Nothing);
+        return Ok(None);
     }
     let ahead = |why: String| {
-        let mut fence = written.to_vec();
-        fence.push(task_id.to_string());
         Refusal::new(
             format!("task {task_id}: the disk is ahead of the database ({why})"),
-            fence,
+            vec![task_id.to_string()],
         )
     };
     if !is_repairing(task_id) && authority::is_diverged(db, task_id) {
         return Err(Refusal::new(
             format!("task {task_id}: the disk is ahead of the database; awaiting reconciliation from disk"),
-            written.to_vec(),
+            Vec::new(),
         ));
     }
     let dir = task_dir(root, &item.repo_id, task_id);
@@ -339,71 +366,118 @@ fn publish_task(
     // only ever covers files already synced: the commit point carries this
     // commit's entries in flight under the watermark as it stood, and the
     // watermark moves on only once their files are on disk.
-    let publishable: Vec<(i64, String, Vec<u8>)> = filled
+    let publishable = filled
         .iter()
         .map(|(sequence, file_name, payload)| (*sequence, (*file_name).clone(), (*payload).clone()))
         .collect();
-    let render = |written: &[String]| -> Result<(Vec<u8>, i64), Refusal> {
-        let db_error =
-            |error: rusqlite::Error| Refusal::new(format!("db error: {error}"), written.to_vec());
-        let mut in_flight = Vec::new();
-        for entry in db.pending_ledger_entries(task_id).map_err(db_error)? {
-            let (Some(file_name), Some(payload)) = (entry.file_name, entry.payload) else {
-                continue;
-            };
-            let text = String::from_utf8(payload).map_err(|error| {
-                Refusal::new(
-                    format!(
-                        "ledger entry {} of {task_id} is not UTF-8: {error}",
-                        entry.sequence
-                    ),
-                    written.to_vec(),
-                )
-            })?;
-            in_flight.push(
-                json!({ "sequence": entry.sequence, "file_name": file_name, "payload": text }),
-            );
-        }
-        let readable_through = db.ledger_readable_through(task_id).map_err(db_error)?;
-        let mut facts = db
-            .task_snapshot_facts(task_id)
-            .map_err(db_error)?
-            .unwrap_or(Value::Null);
-        if let Some(ledger) = facts.get_mut("ledger").and_then(Value::as_object_mut) {
-            ledger.insert("published_through".into(), json!(readable_through));
-            ledger.insert(READABLE_THROUGH_KEY.into(), json!(readable_through));
-            if !in_flight.is_empty() {
-                ledger.insert(IN_FLIGHT_KEY.into(), Value::Array(in_flight));
-            }
-        }
-        let mut bytes = serde_json::to_vec_pretty(&facts).map_err(|error| {
+    let (bytes, readable_before) = render_task_json(db, task_id, &[])?;
+    Ok(Some(Vetted {
+        task_id: task_id.to_string(),
+        dir,
+        revision,
+        publishable,
+        bytes,
+        readable_before,
+    }))
+}
+
+/// `task.json` as the open transaction leaves `task_id`, with its
+/// unpublished entries in flight; a refusal fences `fence`.
+fn render_task_json(db: &Db, task_id: &str, fence: &[String]) -> Result<(Vec<u8>, i64), Refusal> {
+    let db_error =
+        |error: rusqlite::Error| Refusal::new(format!("db error: {error}"), fence.to_vec());
+    let mut in_flight = Vec::new();
+    for entry in db.pending_ledger_entries(task_id).map_err(db_error)? {
+        let (Some(file_name), Some(payload)) = (entry.file_name, entry.payload) else {
+            continue;
+        };
+        let text = String::from_utf8(payload).map_err(|error| {
             Refusal::new(
-                format!("render task.json of {task_id}: {error}"),
-                written.to_vec(),
+                format!(
+                    "ledger entry {} of {task_id} is not UTF-8: {error}",
+                    entry.sequence
+                ),
+                fence.to_vec(),
             )
         })?;
-        bytes.push(b'\n');
-        Ok((bytes, readable_through))
-    };
-    let (bytes, readable_before) = render(written)?;
-
-    if crashes_here(root, task_id, CrashPoint::BeforeTaskJson) {
-        return Err(crash(task_id, CrashPoint::BeforeTaskJson));
+        in_flight
+            .push(json!({ "sequence": entry.sequence, "file_name": file_name, "payload": text }));
     }
-    replace_atomically(&dir, "task.json", &bytes)
-        .map_err(|error| Refusal::new(format!("task {task_id}: {error}"), written.to_vec()))?;
-    // From here the mutation is on disk: any refusal fences this task too.
-    let mut now_written = written.to_vec();
-    now_written.push(task_id.to_string());
-    let db_error_after =
-        |error: rusqlite::Error| Refusal::new(format!("db error: {error}"), now_written.clone());
-    db.acknowledge_task_snapshot(task_id, revision)
-        .map_err(db_error_after)?;
+    let readable_through = db.ledger_readable_through(task_id).map_err(db_error)?;
+    let mut facts = db
+        .task_snapshot_facts(task_id)
+        .map_err(db_error)?
+        .unwrap_or(Value::Null);
+    if let Some(ledger) = facts.get_mut("ledger").and_then(Value::as_object_mut) {
+        ledger.insert("published_through".into(), json!(readable_through));
+        ledger.insert(READABLE_THROUGH_KEY.into(), json!(readable_through));
+        if !in_flight.is_empty() {
+            ledger.insert(IN_FLIGHT_KEY.into(), Value::Array(in_flight));
+        }
+    }
+    let mut bytes = serde_json::to_vec_pretty(&facts).map_err(|error| {
+        Refusal::new(
+            format!("render task.json of {task_id}: {error}"),
+            fence.to_vec(),
+        )
+    })?;
+    bytes.push(b'\n');
+    Ok((bytes, readable_through))
+}
+
+/// Step 2: write every vetted task's `task.json`. If one cannot be written,
+/// the ones written before it get their earlier bytes back, so the disk
+/// holds all of the mutation or none of it, and every task is fenced to be
+/// reconciled from what its disk then holds.
+fn write_task_jsons(root: &Path, vetted: &[Vetted]) -> Result<(), Refusal> {
+    let mut previous: Vec<(&Vetted, Option<Vec<u8>>)> = Vec::new();
+    for task in vetted {
+        if crashes_here(root, &task.task_id, CrashPoint::BeforeTaskJson) {
+            return Err(crash(&task.task_id, CrashPoint::BeforeTaskJson));
+        }
+        let before = std::fs::read(task.dir.join("task.json")).ok();
+        let replaced = if crashes_here(root, &task.task_id, CrashPoint::TaskJsonFails) {
+            Err("injected task.json failure".to_string())
+        } else {
+            replace_atomically(&task.dir, "task.json", &task.bytes)
+        };
+        if let Err(error) = replaced {
+            let mut message = format!("task {}: {error}", task.task_id);
+            for (written, bytes) in previous.iter().rev() {
+                let restored = match bytes {
+                    Some(bytes) => replace_atomically(&written.dir, "task.json", bytes),
+                    None => std::fs::remove_file(written.dir.join("task.json"))
+                        .map_err(|error| error.to_string()),
+                };
+                if let Err(error) = restored {
+                    message.push_str(&format!(
+                        "; task {} keeps this commit's task.json ({error})",
+                        written.task_id
+                    ));
+                }
+            }
+            return Err(Refusal::new(
+                message,
+                vetted.iter().map(|task| task.task_id.clone()).collect(),
+            ));
+        }
+        previous.push((task, before));
+    }
+    Ok(())
+}
+
+/// Steps 3 and 4 for one task whose `task.json` is written.
+fn publish_entries(db: &Db, root: &Path, task: &Vetted, written: &[String]) -> Result<(), Refusal> {
+    let task_id = task.task_id.as_str();
+    let db_error =
+        |error: rusqlite::Error| Refusal::new(format!("db error: {error}"), written.to_vec());
+    db.acknowledge_task_snapshot(task_id, task.revision)
+        .map_err(db_error)?;
     if crashes_here(root, task_id, CrashPoint::AfterTaskJson) {
         return Err(crash(task_id, CrashPoint::AfterTaskJson));
     }
-    let ledger = dir.join("ledger");
-    for (sequence, file_name, payload) in &publishable {
+    let ledger = task.dir.join("ledger");
+    for (sequence, file_name, payload) in &task.publishable {
         // Written and synced, file and directory, before it counts.
         let published = if crashes_here(root, task_id, CrashPoint::PublishFails(*sequence)) {
             Err("injected publication failure".to_string())
@@ -415,33 +489,28 @@ fn publish_task(
             // The watermark stays below it until then.
             log::warn!("task {task_id}: ledger entry {sequence} stays in flight: {error}");
             db.record_ledger_publish_error(task_id, *sequence, &error)
-                .map_err(db_error_after)?;
+                .map_err(db_error)?;
             break;
         }
         db.acknowledge_ledger_entry(task_id, *sequence)
-            .map_err(db_error_after)?;
+            .map_err(db_error)?;
         if crashes_here(root, task_id, CrashPoint::AfterEntry(*sequence)) {
             return Err(crash(task_id, CrashPoint::AfterEntry(*sequence)));
         }
     }
     // The files are synced: the watermark may now cover them.
-    if db
-        .ledger_readable_through(task_id)
-        .map_err(db_error_after)?
-        != readable_before
-    {
+    if db.ledger_readable_through(task_id).map_err(db_error)? != task.readable_before {
         if crashes_here(root, task_id, CrashPoint::BeforeWatermark) {
             return Err(crash(task_id, CrashPoint::BeforeWatermark));
         }
-        let (bytes, _) = render(&now_written)?;
-        replace_atomically(&dir, "task.json", &bytes).map_err(|error| {
-            Refusal::new(format!("task {task_id}: {error}"), now_written.clone())
-        })?;
+        let (bytes, _) = render_task_json(db, task_id, written)?;
+        replace_atomically(&task.dir, "task.json", &bytes)
+            .map_err(|error| Refusal::new(format!("task {task_id}: {error}"), written.to_vec()))?;
     }
     if crashes_here(root, task_id, CrashPoint::BeforeCommit) {
         return Err(crash(task_id, CrashPoint::BeforeCommit));
     }
-    Ok(Published::Written)
+    Ok(())
 }
 
 /// `task.json` `ledger.readable_through` (T13d, `disk` mode only): the
