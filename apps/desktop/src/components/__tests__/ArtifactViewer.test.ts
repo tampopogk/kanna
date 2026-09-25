@@ -221,7 +221,7 @@ describe("ArtifactViewer", () => {
     // No task route and no dev-server port is involved in opening it.
     expect(calls().some(call => call.path.startsWith("/v1/tasks/"))).toBe(false);
     const frame = wrapper.get('[data-testid="artifact-frame"]');
-    expect(frame.attributes("src")).toBe(PREVIEWS[V2]);
+    expect(frame.attributes("src")).toBe(`${PREVIEWS[V2]}?kanna-shell`);
     expect(wrapper.get('[data-testid="artifact-current-id"]').text()).toBe(V2.slice(0, 12));
   });
 
@@ -246,7 +246,7 @@ describe("ArtifactViewer", () => {
     await wrapper.get('[data-testid="artifact-previous"]').trigger("click");
     await settle(wrapper);
     expect(wrapper.get('[data-testid="artifact-current-id"]').text()).toBe(V1.slice(0, 12));
-    expect(wrapper.get('[data-testid="artifact-frame"]').attributes("src")).toBe(PREVIEWS[V1]);
+    expect(wrapper.get('[data-testid="artifact-frame"]').attributes("src")).toBe(`${PREVIEWS[V1]}?kanna-shell`);
     await expectRequested(`POST /v1/repos/repo-1/artifacts/${V2}/preview/close`);
     expect(wrapper.get('[data-testid="artifact-previous"]').attributes("disabled")).toBeDefined();
     // The older version shows its own comments, not the newer one's.
@@ -316,8 +316,11 @@ describe("ArtifactViewer", () => {
     for (const attribute of Array.from(element.attributes)) {
       expect(attribute.value).not.toContain(CREDENTIAL);
     }
-    expect(frame.attributes("sandbox")).toBe("allow-scripts");
-    for (const forbidden of ["allow-same-origin", "allow-top-navigation", "allow-popups", "allow-forms", "allow-modals"]) {
+    // The frame holds the listener's script-free shell, on the listener's own
+    // origin (never this window's); the shell frames the content with
+    // `allow-scripts` alone, and the content's own CSP sandbox makes it opaque.
+    expect(frame.attributes("sandbox")).toBe("allow-scripts allow-same-origin");
+    for (const forbidden of ["allow-top-navigation", "allow-popups", "allow-forms", "allow-modals"]) {
       expect(frame.attributes("sandbox")).not.toContain(forbidden);
     }
     expect(frame.attributes("allow")).toBe("");
@@ -326,7 +329,24 @@ describe("ArtifactViewer", () => {
     const src = new URL(frame.attributes("src")!);
     expect(src.origin).not.toBe("http://127.0.0.1:48121");
     expect(src.origin).not.toBe(window.location.origin);
-    expect(src.search).toBe("");
+    // Nothing but the request for the listener's shell.
+    expect(src.search).toBe("?kanna-shell");
+  });
+
+  it("frames the listener's sandboxing shell, never the content, for every file of the tree", async () => {
+    const wrapper = await mountAt(V2);
+    // The shell frames the content and its frame-src keeps every navigation
+    // of that frame on the listener; this webview has no frame-src of its
+    // own, so a frame holding the content could navigate itself anywhere.
+    const src = new URL(wrapper.get('[data-testid="artifact-frame"]').attributes("src")!);
+    expect(src.origin).toBe("http://127.0.0.1:50102");
+    expect(src.pathname).toBe(`/a/${CAP2}/index.html`);
+    expect(src.search).toBe("?kanna-shell");
+    expect(src.hash).toBe("");
+    // An anchored page of the same tree is framed through the shell too.
+    expect(artifactFrameUrl(PREVIEWS[V2], "pages/about us.html"))
+      .toBe(`http://127.0.0.1:50102/a/${CAP2}/pages/about%20us.html?kanna-shell`);
+    expect(artifactFrameUrl(PREVIEWS[V2], null)).toBe(`${PREVIEWS[V2]}?kanna-shell`);
   });
 
   it("refuses to frame anything but the artifact listener, whatever the server answers", () => {

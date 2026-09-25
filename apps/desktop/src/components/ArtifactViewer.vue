@@ -32,11 +32,19 @@ import { isArtifactRemoteConfirmed, rememberArtifactRemoteConfirmed } from "../u
  * model does not: the address comes from the artifact store's own preview
  * listener, minted per open, never from a task or a dev-server port.
  *
- * Shared HTML is untrusted. The frame is sandboxed with `allow-scripts` alone:
- * no same-origin (the page gets an opaque origin and cannot read this window),
- * no top navigation, no popups, no forms. The listener adds its own CSP
- * sandbox and `connect-src 'none'`, and its URL carries only a capability for
- * this one tree — never this window's control credential.
+ * Shared HTML is untrusted, and this frame never holds it. A sandboxed page
+ * may still navigate itself, and this webview sets no `frame-src`, so the
+ * frame holds the listener's script-free shell (`?kanna-shell`) instead. The
+ * shell frames the content sandboxed with `allow-scripts` alone — an opaque
+ * origin that cannot read this window, no top navigation, no popups, no
+ * forms — and its `frame-src` keeps every navigation of the content on the
+ * listener: no remote page, no other loopback port, no capability carried
+ * away in a URL. The shell itself keeps the listener's origin
+ * (`allow-same-origin`), which the content's `frame-ancestors` names and
+ * which is not this window's, so it can reach nothing here; it runs no
+ * script (`script-src 'none'`). The listener adds its own CSP sandbox and
+ * `connect-src 'none'` to the content, and its URL carries only a
+ * capability for this one tree — never this window's control credential.
  *
  * Sharing goes through the repository's configured artifact remote (§8, §14):
  * push sends this version, its earlier versions and every record about them;
@@ -48,7 +56,13 @@ const props = defineProps<{ repoId: string; artifactId?: string; visible: boolea
 const emit = defineEmits<{ navigate: [artifactId: string] }>();
 const { t } = useI18n();
 
-const FRAME_SANDBOX = "allow-scripts";
+/**
+ * The shell's frame. `allow-scripts` is what the content's own frame may
+ * have (sandbox flags only narrow downwards); `allow-same-origin` keeps the
+ * shell on the listener's origin so the content's `frame-ancestors` admits
+ * it. Neither reaches this window: the listener is another origin.
+ */
+const FRAME_SANDBOX = "allow-scripts allow-same-origin";
 const ARTIFACT_ID = /^[0-9a-f]{40}$/;
 
 const input = ref(props.artifactId ?? "");

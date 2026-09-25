@@ -26,6 +26,11 @@
 //!   (no `allow-top-navigation`) or open popups, and the shell's `frame-src`
 //!   confines every navigation of the frame to this listener. Requests with
 //!   no `Sec-Fetch-Dest` (non-browser clients) get the content as before.
+//! - The desktop frames the preview itself, where an iframe load sends
+//!   `Sec-Fetch-Dest: iframe`, and its webview sets no `frame-src` of its
+//!   own. So it asks for the shell by name (`?kanna-shell`): the shell is
+//!   then the desktop's frame, framable only by the desktop's webview
+//!   origins, and the content inside it is confined as above.
 //!
 //! Sessions end on explicit close, after `IDLE_TTL` without a request, or at
 //! `HARD_TTL`, and with the server process. Ending stops accepting at once,
@@ -365,15 +370,26 @@ fn content_security_policy(port: u16) -> Result<HeaderValue, String> {
     .map_err(|error| format!("invalid artifact preview policy: {error}"))
 }
 
+/// The query that asks for the shell in a frame (the desktop's), whatever
+/// `Sec-Fetch-Dest` says.
+const SHELL_QUERY: &str = "kanna-shell";
+
 /// This listener's own origins: the only place the top-level shell lives.
 fn shell_origins(port: u16) -> String {
     format!("http://127.0.0.1:{port} http://localhost:{port}")
 }
 
-/// The top-level document a browser navigation receives instead of the
-/// content. Kanna-authored and script-free; it frames `path` (this request's
-/// own path, so the frame's request carries the capability) sandboxed.
-fn shell_response(session: &PreviewSession, path_and_query: &str, head: bool) -> Response {
+/// The document a browser navigation (or the desktop's frame) receives
+/// instead of the content. Kanna-authored and script-free; it frames
+/// `path_and_query` (this request's own, so the frame's request carries the
+/// capability) sandboxed. `framed`: the desktop's frame, which only the
+/// desktop's webview origins may embed; a top-level shell has no embedder.
+fn shell_response(
+    session: &PreviewSession,
+    path_and_query: &str,
+    framed: bool,
+    head: bool,
+) -> Response {
     let escaped = path_and_query
         .replace('&', "&amp;")
         .replace('"', "&quot;")
@@ -385,10 +401,11 @@ fn shell_response(session: &PreviewSession, path_and_query: &str, head: bool) ->
          <iframe sandbox=\"allow-scripts\" referrerpolicy=\"no-referrer\" src=\"{escaped}\"></iframe>"
     );
     let origins = shell_origins(session.port);
+    let ancestors = if framed { FRAME_ANCESTORS } else { "'none'" };
     let policy = format!(
         "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; \
          frame-src {origins}; child-src {origins}; form-action 'none'; base-uri 'none'; \
-         frame-ancestors 'none'"
+         frame-ancestors {ancestors}"
     );
     let mut response = if head {
         Response::new(Body::empty())
@@ -458,13 +475,24 @@ async fn serve_artifact_request(
         .headers()
         .get("sec-fetch-dest")
         .is_some_and(|dest| dest.as_bytes().eq_ignore_ascii_case(b"document"));
-    if top_level {
-        let path_and_query = request
-            .uri()
-            .path_and_query()
-            .map(|value| value.as_str())
-            .unwrap_or("/");
-        return shell_response(&session, path_and_query, request.method() == Method::HEAD);
+    let framed_shell = request.uri().query() == Some(SHELL_QUERY);
+    if top_level || framed_shell {
+        // The shell frames the content: never the shell again.
+        let framed_path = if framed_shell {
+            request.uri().path()
+        } else {
+            request
+                .uri()
+                .path_and_query()
+                .map(|value| value.as_str())
+                .unwrap_or("/")
+        };
+        return shell_response(
+            &session,
+            framed_path,
+            framed_shell && !top_level,
+            request.method() == Method::HEAD,
+        );
     }
     let base = format!("{CAPABILITY_PREFIX}{}/", session.capability);
     let Some(raw_path) = file_path.filter(|path| !path.is_empty()) else {

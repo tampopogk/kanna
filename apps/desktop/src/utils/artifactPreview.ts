@@ -75,13 +75,23 @@ function encodePath(path: string): string {
 }
 
 /**
+ * Asks the listener for its sandboxing shell rather than the content: the
+ * shell frames the content, and its `frame-src` keeps every navigation of
+ * that frame on the listener. This webview sets no `frame-src` of its own,
+ * and an iframe load never gets the shell by fetch metadata alone.
+ */
+export const ARTIFACT_SHELL_QUERY = "kanna-shell";
+
+/**
  * The frame address for one file of the open tree: the entrypoint by default,
  * or the file a comment is anchored to. Resolved under the capability segment,
- * exactly as the page's own relative references are.
+ * exactly as the page's own relative references are, and always the shell
+ * that frames that file.
  */
 export function artifactFrameUrl(previewUrl: string, path: string | null): string {
   const parsed = assertArtifactPreviewUrl(previewUrl);
-  if (!path) return parsed.toString();
   const capability = parsed.pathname.match(PREVIEW_PATH)?.[0] ?? "/";
-  return new URL(`${capability}${encodePath(path)}`, parsed.origin).toString();
+  const frame = path ? new URL(`${capability}${encodePath(path)}`, parsed.origin) : parsed;
+  frame.search = `?${ARTIFACT_SHELL_QUERY}`;
+  return frame.toString();
 }

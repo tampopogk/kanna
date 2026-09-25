@@ -1872,6 +1872,95 @@ async fn a_top_level_navigation_receives_the_sandboxing_shell_not_the_content() 
     env.state.artifact_previews.close("repo-a", &id).await;
 }
 
+/// The desktop frames the shell itself, by name: an iframe load sends
+/// `Sec-Fetch-Dest: iframe`, which would otherwise get the content with no
+/// `frame-src` around it (review revision 1, item 1). The named shell may be
+/// framed only by the desktop's webview origins, and frames the content
+/// without the query, so it never frames itself.
+#[tokio::test]
+async fn the_desktop_frame_asks_for_the_shell_by_name() {
+    let env = setup("preview-framed-shell", None);
+    let (_, published) = publish(&env.app, json!({ "path": "mock", "kind": "mockup" })).await;
+    let id = published["artifactId"].as_str().unwrap().to_string();
+    let (_, opened) = call(
+        &env.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{id}/preview"),
+        None,
+    )
+    .await;
+    let url = opened["url"].as_str().unwrap().to_string();
+    let port = reqwest::Url::parse(&url).unwrap().port().unwrap();
+    let path = reqwest::Url::parse(&url).unwrap().path().to_string();
+    let client = reqwest::Client::new();
+
+    for dest in [Some("iframe"), None] {
+        let mut request = client.get(format!("{url}?kanna-shell"));
+        if let Some(dest) = dest {
+            request = request.header("Sec-Fetch-Dest", dest);
+        }
+        let shell = request.send().await.unwrap();
+        assert_eq!(shell.status(), 200);
+        let policy = shell.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            policy.contains(&format!(
+                "frame-src http://127.0.0.1:{port} http://localhost:{port};"
+            )),
+            "{policy}"
+        );
+        assert!(policy.contains("script-src 'none'"), "{policy}");
+        assert!(
+            policy.ends_with(
+                "frame-ancestors tauri://localhost http://tauri.localhost \
+                 https://tauri.localhost http://localhost:* http://127.0.0.1:*"
+            ),
+            "{policy}"
+        );
+        let html = shell.text().await.unwrap();
+        assert!(
+            html.contains(&format!(
+                "<iframe sandbox=\"allow-scripts\" referrerpolicy=\"no-referrer\" src=\"{path}\">"
+            )),
+            "{html}"
+        );
+        assert!(
+            !html.contains("site.css"),
+            "the shell leaked content: {html}"
+        );
+    }
+
+    // Navigated to at the top level, the named shell has no embedder.
+    let top = client
+        .get(format!("{url}?kanna-shell"))
+        .header("Sec-Fetch-Dest", "document")
+        .send()
+        .await
+        .unwrap();
+    let policy = top.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(policy.ends_with("frame-ancestors 'none'"), "{policy}");
+    assert!(top
+        .text()
+        .await
+        .unwrap()
+        .contains(&format!("src=\"{path}\"")));
+
+    // Any other query is the content's, as before.
+    let content = client
+        .get(format!("{url}?kanna-shell=0"))
+        .header("Sec-Fetch-Dest", "iframe")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(content.bytes().await.unwrap().as_ref(), INDEX_HTML);
+    env.state.artifact_previews.close("repo-a", &id).await;
+}
+
 // ---------------------------------------------------------------------------
 // Browser-level isolation
 // ---------------------------------------------------------------------------

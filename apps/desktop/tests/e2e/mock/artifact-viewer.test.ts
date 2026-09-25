@@ -19,8 +19,10 @@ import { callVueMethod, execDb } from "../helpers/vue";
  * anchors and decision recorded on that exact version.
  *
  * The mockup is hostile on purpose. It tries to reach the control API, read
- * its host, find a native bridge, open a window and navigate the top-level
- * window, and prints what happened inside itself; the screenshot is the
+ * its host, find a native bridge, open a window, navigate the top-level
+ * window, and navigate its own frame off the preview listener (a script
+ * assignment carrying its capability URL, and a meta refresh to a loopback
+ * port), and prints what happened inside itself; the screenshot is the
  * visual record, and the assertions check the host survived all of it.
  */
 
@@ -40,18 +42,21 @@ const PROBES = [
   "fetch sentinel",
   "csp connect-src",
   "navigate top window",
+  "navigate self",
+  "meta refresh self",
 ];
 
 /**
  * A test-only listener for the probe's reports, installed through WebDriver:
  * nothing in the app listens for these messages. Only messages from the
- * artifact frame's own window count.
+ * content's own window count: the one frame inside the listener's shell,
+ * which is what the artifact frame holds.
  */
 const INSTALL_PROBE_LISTENER = `
   window.__artifactProbeReports = [];
   window.addEventListener("message", (event) => {
     const frame = document.querySelector('[data-testid="artifact-frame"]');
-    if (!frame || event.source !== frame.contentWindow) return;
+    if (!frame || !frame.contentWindow || event.source !== frame.contentWindow.frames[0]) return;
     if (event.data && event.data.kind === "artifact-probe") {
       window.__artifactProbeReports.push({ name: event.data.name, outcome: event.data.outcome, origin: event.origin });
     }
@@ -63,7 +68,7 @@ const INSTALL_PROBE_LISTENER = `
  * after the request left); the listener's request count is what shows the
  * page never reached the network at all.
  */
-async function startSentinel(): Promise<{ server: Server; url: string; hits: string[] }> {
+async function startSentinel(): Promise<{ server: Server; url: string; origin: string; hits: string[] }> {
   const hits: string[] = [];
   const server = createServer((request, response) => {
     hits.push(`${request.method} ${request.url}`);
@@ -72,10 +77,11 @@ async function startSentinel(): Promise<{ server: Server; url: string; hits: str
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
-  return { server, url: `http://127.0.0.1:${port}/probe`, hits };
+  return { server, url: `http://127.0.0.1:${port}/probe`, origin: `http://127.0.0.1:${port}`, hits };
 }
 
-function probeHtml(controlBaseUrl: string, heading: string, sentinelUrl: string): string {
+function probeHtml(controlBaseUrl: string, heading: string, sentinelOrigin: string): string {
+  const sentinelUrl = `${sentinelOrigin}/probe`;
   return `<!doctype html>
 <html><head>
 <meta charset="utf-8">
@@ -96,8 +102,9 @@ function report(name, outcome) {
   item.className = /^(blocked|absent|opaque)/.test(outcome) ? "ok" : "bad";
   probe.appendChild(item);
   // The host cannot read into this opaque-origin frame, so the outcome is
-  // also posted out for the test's own listener to check.
-  window.parent.postMessage({ kind: "artifact-probe", name, outcome }, "*");
+  // also posted out for the test's own listener to check. The host is the
+  // top: this page's parent is the listener's shell.
+  window.top.postMessage({ kind: "artifact-probe", name, outcome }, "*");
 }
 function attempt(name, action, blockedWhen) {
   try {
@@ -134,16 +141,34 @@ fetch(${JSON.stringify(`${controlBaseUrl}/v1/status`)}).then(
 setTimeout(() => {
   attempt("navigate top window", () => { window.top.location.href = "https://example.com/"; return "assigned"; }, () => false);
 }, 300);
+// Navigate this frame itself off the listener, after every probe above has
+// reported: a page that is gone reports nothing more, and the sentinel sees
+// the request. Still here afterwards, on the listener, is the refusal.
+const listener = location.host;
+function stayed(name) {
+  report(name, location.host === listener ? "blocked (stayed on " + location.host + ")" : "LEFT for " + location.href);
+}
+setTimeout(() => {
+  location.href = ${JSON.stringify(`${sentinelOrigin}/navigate?u=`)} + encodeURIComponent(location.href);
+  setTimeout(() => stayed("navigate self"), 1500);
+}, 2500);
+setTimeout(() => {
+  const refresh = document.createElement("meta");
+  refresh.httpEquiv = "refresh";
+  refresh.content = ${JSON.stringify(`0;url=${sentinelOrigin}/refresh`)};
+  document.head.appendChild(refresh);
+  setTimeout(() => stayed("meta refresh self"), 1500);
+}, 4500);
 </script>
 </body></html>`;
 }
 
-async function writeMockup(directory: string, controlBaseUrl: string, heading: string, accent: string, sentinelUrl: string) {
+async function writeMockup(directory: string, controlBaseUrl: string, heading: string, accent: string, sentinelOrigin: string) {
   await mkdir(join(directory, "css"), { recursive: true });
   await mkdir(join(directory, "js"), { recursive: true });
   await mkdir(join(directory, "img"), { recursive: true });
   await mkdir(join(directory, "pages"), { recursive: true });
-  await writeFile(join(directory, "index.html"), probeHtml(controlBaseUrl, heading, sentinelUrl));
+  await writeFile(join(directory, "index.html"), probeHtml(controlBaseUrl, heading, sentinelOrigin));
   await writeFile(join(directory, "css/site.css"),
     `body { font: 14px -apple-system, sans-serif; margin: 16px; color: #1b2230; }
 header { display: flex; gap: 12px; align-items: center; border-bottom: 4px solid ${accent}; }
@@ -205,9 +230,9 @@ describe("artifact viewer", () => {
     };
 
     const mockup = join(repoPath, "artifact-probe");
-    await writeMockup(mockup, server.baseUrl, "Checkout mockup v1", "#6b7280", sentinel.url);
+    await writeMockup(mockup, server.baseUrl, "Checkout mockup v1", "#6b7280", sentinel.origin);
     const v1 = await api("POST", `/v1/tasks/${taskId}/artifacts`, { path: "artifact-probe", kind: "mockup" });
-    await writeMockup(mockup, server.baseUrl, "Checkout mockup v2", "#2563eb", sentinel.url);
+    await writeMockup(mockup, server.baseUrl, "Checkout mockup v2", "#2563eb", sentinel.origin);
     const v2 = await api("POST", `/v1/tasks/${taskId}/artifacts`, {
       path: "artifact-probe", kind: "mockup", previous: v1.artifactId,
     });
@@ -228,15 +253,18 @@ describe("artifact viewer", () => {
     const frame = await client.executeSync<{ src: string; sandbox: string }>(
       `const frame = document.querySelector('[data-testid="artifact-frame"]');
        return { src: frame.getAttribute("src"), sandbox: frame.getAttribute("sandbox") };`);
-    expect(frame.sandbox).toBe("allow-scripts");
-    expect(frame.src).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/a\/[0-9a-f]{32}\/index\.html$/);
+    expect(frame.sandbox).toBe("allow-scripts allow-same-origin");
+    // The listener's shell, which frames the content and confines its
+    // navigations to the listener.
+    expect(frame.src).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/a\/[0-9a-f]{32}\/index\.html\?kanna-shell$/);
+    const previewHost = new URL(frame.src).host;
     expect(await client.executeSync<string[]>(
       `return Array.from(document.querySelectorAll('[data-testid="artifact-comment"]')).map((node) => node.textContent);`,
     )).toEqual([expect.stringContaining("Header accent is too loud")]);
 
     // Every probe ran, from inside the frame, and was refused.
     type ProbeReport = { name: string; outcome: string; origin: string };
-    const deadline = Date.now() + 10_000;
+    const deadline = Date.now() + 15_000;
     let reports: ProbeReport[] = [];
     while (Date.now() < deadline) {
       reports = await client.executeSync<ProbeReport[]>("return window.__artifactProbeReports ?? [];");
@@ -252,6 +280,11 @@ describe("artifact viewer", () => {
     // The refusal happened before the network: the page's own policy fired,
     // and the listener nothing else knows about never saw a request.
     expect(reports.find((report) => report.name === "csp connect-src")?.outcome).toMatch(/^blocked \(connect-src/);
+    // The frame never left the preview listener, by script or by refresh.
+    for (const name of ["navigate self", "meta refresh self"]) {
+      expect(reports.find((report) => report.name === name)?.outcome, name).toBe(`blocked (stayed on ${previewHost})`);
+    }
+    await sleep(1000);
     expect(sentinel.hits).toEqual([]);
     await sleep(500);
     await mkdir(SCREENSHOT_DIR, { recursive: true });
