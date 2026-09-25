@@ -1,0 +1,54 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Artifact viewer · phone · interactive</title>
+<style>
+  body { margin:0; font-family: Inter, system-ui, sans-serif; background:#f6f4fb; color:#1f1d24; display:flex; gap:40px; padding:40px; align-items:flex-start; flex-wrap:wrap; }
+  .phone { width:280px; height:560px; border-radius:36px; background:#1c1a22; padding:12px; box-shadow:0 12px 32px rgba(0,0,0,.2); flex-shrink:0; }
+  .screen { height:100%; border-radius:26px; background:#fff; overflow:hidden; display:flex; flex-direction:column; position:relative; }
+  .sb { height:28px; display:flex; justify-content:space-between; padding:7px 18px 0; font-size:11px; font-weight:700; }
+  .nav { padding:6px 16px 10px; font-weight:700; font-size:15px; border-bottom:1px solid #f0eef3; display:flex; justify-content:space-between; }
+  .nav .share { color:#7b4ff0; font-weight:600; cursor:pointer; }
+  .art { flex:1; margin:12px; border-radius:12px; background:#f6f4fb; position:relative; padding:14px; font-size:12px; }
+  .hero { height:84px; border-radius:10px; background:linear-gradient(135deg,#efe8ff,#e3f0ff); margin:10px 0; transition:height .2s; }
+  .blk { height:9px; border-radius:5px; background:#e4e0ec; margin:8px 0; } .blk.w { width:60%; }
+  .pin { position:absolute; background:#7b4ff0; color:#fff; font-size:10px; font-weight:700; border-radius:9px 9px 9px 2px; padding:1px 6px; cursor:pointer; box-shadow:0 0 0 3px rgba(123,79,240,.25); }
+  .pin.sel { background:#1f1d24; }
+  .sheet { border-radius:18px 18px 0 0; background:#fff; box-shadow:0 -6px 18px rgba(0,0,0,.08); padding:10px 16px 18px; font-size:12px; height:74px; transition:height .2s; cursor:pointer; overflow:hidden; }
+  .sheet.open { height:200px; }
+  .grab { width:36px; height:4px; border-radius:2px; background:#ddd; margin:0 auto 8px; }
+  .muted { color:#6b6577; margin-top:4px; line-height:1.45; }
+  .toast { position:absolute; left:50%; top:46px; transform:translateX(-50%); background:#1f1d24; color:#fff; font-size:11px; padding:5px 10px; border-radius:8px; opacity:0; transition:opacity .2s; }
+  .toast.show { opacity:1; }
+  .notes { max-width:320px; line-height:1.5; }
+  .tag { font-size:10.5px; letter-spacing:.08em; color:#8a8497; }
+  h1 { font-size:20px; margin:6px 0 10px; }
+</style></head><body>
+  <div class="phone"><div class="screen">
+    <div class="sb"><span>9:41</span><span>●●● ▮</span></div>
+    <div class="nav"><span>‹ Artifact</span><span class="share" id="share">Share</span></div>
+    <div class="toast" id="toast">Link copied</div>
+    <div class="art" id="artifact"><b>Onboarding flow</b><div class="hero"></div><div class="blk"></div><div class="blk w"></div><div class="blk"></div>
+      <span class="pin" data-pin="1" style="top:44px;right:16px">1</span><span class="pin" data-pin="2" style="top:122px;left:44px">2</span></div>
+    <div class="sheet" id="sheet"><div class="grab"></div><b id="sheet-title">2 comments</b><div class="muted" id="sheet-body">Tap a pin to open its thread.</div></div>
+  </div></div>
+  <div class="notes"><div class="tag">INTERACTIVE MOCKUP · tap a pin, tap the sheet</div><h1>Artifact viewer · phone</h1>
+    <p>Pins open their thread in the bottom sheet; tapping the sheet expands or collapses it. Share copies a link.</p>
+    <p class="muted">Fake data. Next stage: the real app on the simulator.</p></div>
+<script>
+  const threads = {
+    1: "Jeremy: hero feels too tall.<br>Claude: trimmed to 56px.",
+    2: "Jeremy: make this list denser.<br>Claude: done, 8px gaps.",
+  };
+  const sheet = document.getElementById("sheet");
+  document.querySelectorAll(".pin").forEach((pin) => pin.addEventListener("click", (e) => {
+    e.stopPropagation();
+    document.querySelectorAll(".pin").forEach((p) => p.classList.toggle("sel", p === pin));
+    sheet.classList.add("open");
+    document.getElementById("sheet-title").textContent = "Pin " + pin.dataset.pin;
+    document.getElementById("sheet-body").innerHTML = threads[pin.dataset.pin];
+    if (pin.dataset.pin === "1") document.querySelector(".hero").style.height = "56px";
+  }));
+  sheet.addEventListener("click", () => sheet.classList.toggle("open"));
+  document.getElementById("share").addEventListener("click", () => {
+    const t = document.getElementById("toast"); t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 1400);
+  });
+</script>
+</body></html>

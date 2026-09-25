@@ -1,0 +1,48 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Review · Merge structured workflows</title>
+<style>
+  body { margin:0; font-family: Inter, system-ui, sans-serif; font-size:13px; background:#f6f4fb; color:#1f1d24; padding:24px; }
+  .brief { max-width:900px; margin:0 auto 14px; display:flex; align-items:center; gap:10px; }
+  .brief b { font-size:16px; } .chip { font-size:11px; font-weight:700; border-radius:10px; padding:2px 9px; background:#fdf1d8; color:#8a6412; }
+  .diff { max-width:900px; margin:0 auto; }
+  .static-tag { font-size:10px; letter-spacing:.08em; color:#8a8497; }
+  .diff { background:#fff; border:1px solid #e4e1e8; border-radius:10px; overflow:hidden; font-size:12px; }
+  .diff-head { display:flex; justify-content:space-between; align-items:center; padding:10px 12px; border-bottom:1px solid #ece9f1; }
+  .flags { display:flex; gap:6px; }
+  .files { display:flex; flex-wrap:wrap; gap:6px; padding:8px 12px; border-bottom:1px solid #ece9f1; background:#faf9fc; }
+  .fl { font-family:ui-monospace,Menlo,monospace; font-size:11px; border-radius:6px; padding:2px 7px; background:#fff; border:1px solid #ece9f1; color:#6b6577; }
+  .fl.high { border-color:#f3b9ad; color:#a2321f; } .fl.mid { border-color:#f1d49c; color:#8a6412; }
+  .file { border-bottom:1px solid #ece9f1; }
+  .fname { font-family:ui-monospace,Menlo,monospace; font-size:11.5px; padding:8px 12px; background:#fcfbfd; display:flex; align-items:center; gap:8px; }
+  .dstat { margin-left:auto; color:#8a8497; }
+  .dot { width:8px; height:8px; border-radius:50%; } .dot.high { background:#e0533d; } .dot.mid { background:#e8a33d; }
+  .dl { display:flex; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; line-height:1.6; }
+  .dl .ln { width:44px; text-align:right; padding-right:8px; color:#b5afc0; flex-shrink:0; user-select:none; }
+  .dl .mk { width:14px; flex-shrink:0; color:#8a8497; } .dl code { white-space:pre; overflow:hidden; text-overflow:ellipsis; }
+  .dl.add { background:#eefaf1; } .dl.add .mk { color:#2f8a57; } .dl.del { background:#fdf0ee; } .dl.del .mk { color:#c2410c; }
+  .dl.hunk { background:#f3f1f8; color:#6b6577; }
+  .anno { margin:6px 12px 10px 58px; border-radius:9px; padding:9px 11px; font-family:Inter,system-ui,sans-serif; line-height:1.45; border:1px solid #ece9f1; border-left:4px solid #9aa3b5; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.05); }
+  .anno.high { border-left-color:#e0533d; } .anno.mid { border-left-color:#e8a33d; }
+  .anno-h { display:flex; align-items:center; gap:8px; margin-bottom:4px; } .anno-h b { color:#2f6fdd; font-size:12px; }
+  .anno code { font-size:11px; background:#f3f1f6; border-radius:4px; padding:0 3px; }
+  .anno-a { display:flex; gap:12px; margin-top:6px; }
+  .linkish { border:0; background:none; padding:0; color:#6d4be0; font-size:11.5px; font-weight:600; }
+  .sevb { font-size:10.5px; font-weight:700; border-radius:9px; padding:1px 8px; } .sevb.high { background:#fde4df; color:#a2321f; } .sevb.mid { background:#fdf1d8; color:#8a6412; }
+</style></head><body>
+  <div class="brief"><b>Structured workflows → main</b><span class="chip">Changes needed</span></div>
+  <div class="diff">
+      <div class="diff-head"><b>Structured workflows → main</b><span class="flags"><span class="sevb high">2 high</span><span class="sevb mid">1 medium</span></span></div>
+      <div class="files"><span class="fl high">http_api/invoke_desktop.rs</span><span class="fl high">task_creator/commit_posts.rs</span><span class="fl mid">task_creator/stages.rs</span><span class="fl">+284 more files</span></div>
+      <div class="file"><div class="fname"><span class="dot high"></span>crates/kanna-server/src/http_api/invoke_desktop.rs <span class="dstat">+34 −9</span></div><div class="dl hunk"><span class="ln"></span><span class="mk"></span><code>@@ -406,5 +409,8 @@ pub(crate) fn eligible_lan_desktop_ids</code></div><div class="dl ctx"><span class="ln">409</span><span class="mk"> </span><code>            pinned</code></div><div class="dl ctx"><span class="ln">410</span><span class="mk"> </span><code>                .peer_by_desktop_id(desktop_id, &amp;environment)</code></div><div class="dl del"><span class="ln"></span><span class="mk">-</span><code>                .is_some()</code></div><div class="dl add"><span class="ln">411</span><span class="mk">+</span><code>                .is_some_and(|peer| {</code></div><div class="dl add"><span class="ln">412</span><span class="mk">+</span><code>                    crate::account_boundary::peer_standing(peer, current_account_uid.as_deref())</code></div><div class="dl add"><span class="ln">413</span><span class="mk">+</span><code>                        .is_ok()</code></div><div class="dl add"><span class="ln">414</span><span class="mk">+</span><code>                })</code></div><div class="dl ctx"><span class="ln">415</span><span class="mk"> </span><code>                || legacy</code></div><div class="anno high"><div class="anno-h"><span class="sevb high">High risk</span><b>Claude</b></div><div><b>Conflicts with main.</b> Main removed legacy plaintext peer access in this same filter (#1620), so the <code>|| legacy</code> branch below no longer exists there. Keep the account-boundary check, drop the legacy branch, then re-run the peer, LAN and relay suites.</div><div class="anno-a"><button class="linkish">Reply</button><button class="linkish">Resolve</button></div></div></div>
+      <div class="file"><div class="fname"><span class="dot high"></span>crates/kanna-server/src/task_creator/commit_posts.rs <span class="dstat">new</span></div><div class="dl hunk"><span class="ln"></span><span class="mk"></span><code>@@ -0,0 +1,16 @@ (new file)</code></div><div class="dl add"><span class="ln">7</span><span class="mk">+</span><code>//! Legacy commit posts become commit steps (spec §5, §15, §16.11; T13d).</code></div><div class="dl add"><span class="ln">8</span><span class="mk">+</span><code>//!</code></div><div class="dl add"><span class="ln">9</span><span class="mk">+</span><code>//! A legacy workflow commits through a post named `commit` on the stage whose</code></div><div class="dl add"><span class="ln">10</span><span class="mk">+</span><code>//! work it commits. The spec retires posts as a stage-like concept: the</code></div><div class="dl add"><span class="ln">11</span><span class="mk">+</span><code>//! commit is a property of the stage's transition (`exit_commit`, T3), which</code></div><div class="dl add"><span class="ln">12</span><span class="mk">+</span><code>//! runs the same post delivery machinery and also records what it committed.</code></div><div class="anno high"><div class="anno-h"><span class="sevb high">High risk</span><b>Claude</b></div><div><b>Rollback hazard.</b> This rewrites open tasks' <code>commit</code> posts to <code>exit_commit</code> at startup. Main ignores <code>exit_commit</code>, so going back to main silently drops the commit step on every converted task. Decide: make main reject the field, or accept a lossy rollback.</div><div class="anno-a"><button class="linkish">Reply</button><button class="linkish">Resolve</button></div></div></div>
+      <div class="file"><div class="fname"><span class="dot mid"></span>crates/kanna-server/src/task_creator/stages.rs</div><div class="dl hunk"><span class="ln"></span><span class="mk"></span><code>@@ stages.rs · rereview verdict instruction</code></div><div class="dl ctx"><span class="ln">936</span><span class="mk"> </span><code>                 a failed review names its target stage</code></div><div class="dl add"><span class="ln">938</span><span class="mk">+</span><code>                 through kanna_request_revision naming the stage)</code></div><div class="anno mid"><div class="anno-h"><span class="sevb mid">Medium</span><b>Claude</b></div><div><b>Stale instruction.</b> Tasks on named-exit workflows refuse <code>kanna_request_revision</code>; this should tell the reviewer to name an exit instead.</div><div class="anno-a"><button class="linkish">Reply</button><button class="linkish">Resolve</button></div></div></div>
+      <p class="static-tag" style="padding:8px 12px">Excerpts from the real branch; the agent flags the lines that carry risk.</p>
+    </div>
+<script>
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest(".linkish"); if (!b) return;
+    const note = b.closest(".anno");
+    if (b.textContent === "Resolve") { note.style.opacity = .45; b.textContent = "Reopen"; }
+    else if (b.textContent === "Reopen") { note.style.opacity = 1; b.textContent = "Resolve"; }
+  });
+</script>
+</body></html>

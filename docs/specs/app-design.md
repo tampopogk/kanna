@@ -41,6 +41,8 @@ templates, each ending in a hand-off to the software factory:
   (static screens ⇄ clickable flow ⇄ device prototype) or stay on App Design.
   The prototype showed a mobile task on App Design with a device preview.
 
+![Kanna workflows by kind of work](app-design/workflows.svg)
+
 After "Approve for build" (§6) the task continues through the software factory
 (plan → build → review → PR), and its PR goes through PR review as usual.
 
@@ -214,12 +216,26 @@ Recorded so the real build does not repeat them:
 - Multi-user editing beyond one person and one agent, and cross-account sharing
   of live docs, are not in scope.
 
-## 11. Evidence
+## 11. The final artifacts
 
-- The prototype and its history: the disposable repository at
-  `.tmp/prototype` in task `2d6b4196`'s worktree (28 commits, 2026-09-25). Its
-  approval snapshot and decision will be recorded in the artifact store when the
-  owner approves it for build.
-- The mockups the owner marked up (18 pins on the interactive mockup), and the
-  owner's comments and `/agent` messages in the prototype's docs, are in the same
-  task's design session.
+The last revision of each design artifact is kept next to this spec, as text
+(HTML and SVG). Open them in a browser; they need nothing else.
+
+| File | What it is |
+|---|---|
+| [`workflows.svg`](app-design/workflows.svg) | The workflow map (§2) |
+| [`static-mockup.html`](app-design/static-mockup.html) | The first static mockup of the design surface |
+| [`interactive-mockup.html`](app-design/interactive-mockup.html) | The final interactive mockup: four tasks on their own workflows, stage artifacts, slash menu, comments, approval. Its Prototype stage embeds the live prototype, so that view is empty unless the prototype is running |
+| [`mobile-static.html`](app-design/mobile-static.html), [`mobile-interactive.html`](app-design/mobile-interactive.html) | The mobile task's static and interactive mockups |
+| [`mobile-app.html`](app-design/mobile-app.html) | The mobile prototype's app page, as shown live and on the simulator |
+| [`merge-diff.html`](app-design/merge-diff.html) | The PR review diff with the agent's risk flags |
+
+The working prototype itself is throwaway code and is not kept in the
+repository (§7). Its approved revision is the **Approve for build** snapshot in
+Kanna's artifact store: the built prototype, its committed source and the
+approval note, with the owner's decision recorded on that exact artifact id.
+Artifact id: *recorded when the owner approves it*.
+
+Evidence: the prototype's disposable repository (`.tmp/prototype` in task
+`2d6b4196`'s worktree, 2026-09-25), the 18 pins on the interactive mockup, and
+the owner's comments and `/agent` messages in the prototype's docs.

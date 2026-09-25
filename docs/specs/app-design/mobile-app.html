@@ -1,0 +1,76 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>Artifact viewer</title>
+<style>
+  body { margin:0; font-family: -apple-system, system-ui, sans-serif; background:#fff; color:#1f1d24; height:100vh; }
+  .phone { height:100%; }
+  .screen { height:100%; background:#fff; padding-top:env(safe-area-inset-top); overflow:hidden; display:flex; flex-direction:column; position:relative; }
+  .sb { height:28px; display:flex; justify-content:space-between; padding:7px 18px 0; font-size:11px; font-weight:700; }
+  .nav { padding:10px 18px 12px; font-weight:700; font-size:17px; border-bottom:1px solid #f0eef3; display:flex; justify-content:space-between; }
+  .nav .share { color:#7b4ff0; font-weight:600; cursor:pointer; }
+  .art { flex:1; margin:14px; border-radius:14px; background:#f6f4fb; position:relative; padding:16px; font-size:15px; }
+  .art-kicker { font-size:11.5px; letter-spacing:.04em; text-transform:uppercase; color:#8a8497; font-weight:600; }
+  .hero { height:150px; border-radius:14px; background:linear-gradient(135deg,#efe8ff,#e3f0ff); margin:10px 0 14px; transition:height .2s; overflow:hidden; }
+  .art-title { font-size:22px; line-height:1.2; margin:0 0 6px; }
+  .art-sub { margin:0 0 14px; color:#4a4555; line-height:1.4; }
+  .steps { margin:0 0 16px; padding-left:22px; line-height:1.45; color:#2a2733; } .steps li { margin:6px 0; } .steps b { color:#1f1d24; }
+  .cta { width:100%; border:0; border-radius:12px; padding:13px; font:600 16px -apple-system, system-ui, sans-serif; color:#fff; background:linear-gradient(135deg,#8b5cf6,#6d4be0); }
+  .dots { display:flex; justify-content:center; gap:6px; margin-top:12px; } .dots span { width:7px; height:7px; border-radius:50%; background:#d9d3e6; } .dots .on { background:#7b4ff0; width:18px; border-radius:4px; }
+  .blk { height:9px; border-radius:5px; background:#e4e0ec; margin:8px 0; } .blk.w { width:60%; }
+  .pin { position:absolute; background:#7b4ff0; color:#fff; font-size:13px; font-weight:700; border-radius:9px 9px 9px 2px; padding:1px 6px; cursor:pointer; box-shadow:0 0 0 3px rgba(123,79,240,.25); }
+  .pin.sel { background:#1f1d24; }
+  .sheet { border-radius:18px 18px 0 0; background:#fff; box-shadow:0 -6px 18px rgba(0,0,0,.08); padding:10px 18px calc(18px + env(safe-area-inset-bottom)); font-size:15px; height:110px; transition:height .2s; cursor:pointer; overflow:hidden; }
+  .sheet.open { height:280px; }
+  .grab { width:36px; height:4px; border-radius:2px; background:#ddd; margin:0 auto 8px; }
+  .muted { color:#6b6577; margin-top:4px; line-height:1.45; }
+  .toast { position:absolute; left:50%; top:46px; transform:translateX(-50%); background:#1f1d24; color:#fff; font-size:11px; padding:5px 10px; border-radius:8px; opacity:0; transition:opacity .2s; }
+  .toast.show { opacity:1; }
+  .notes { max-width:320px; line-height:1.5; }
+  .tag { font-size:10.5px; letter-spacing:.08em; color:#8a8497; }
+  h1 { font-size:20px; margin:6px 0 10px; }
+</style></head><body>
+  <div class="phone"><div class="screen">
+    
+    <div class="nav"><span>‹ Artifact</span><span class="share" id="share">Share</span></div>
+    <div class="toast" id="toast">Link copied</div>
+    <div class="art" id="artifact">
+      <div class="art-kicker">Artifact · Onboarding flow · screen 1 of 3</div>
+      <div class="hero" id="hero">
+        <svg viewBox="0 0 220 120" width="100%" height="100%" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+          <rect x="18" y="22" width="80" height="76" rx="12" fill="#fff" stroke="#cdbdf8"/>
+          <rect x="30" y="36" width="44" height="7" rx="3.5" fill="#b9a3f5"/><rect x="30" y="50" width="56" height="5" rx="2.5" fill="#e4e0ec"/>
+          <rect x="30" y="61" width="40" height="5" rx="2.5" fill="#e4e0ec"/><rect x="30" y="76" width="30" height="12" rx="6" fill="#7b4ff0"/>
+          <path d="M104 60h26" stroke="#7b4ff0" stroke-width="2.5" stroke-dasharray="4 4"/><path d="M127 55l6 5-6 5" fill="none" stroke="#7b4ff0" stroke-width="2.5"/>
+          <circle cx="170" cy="60" r="30" fill="#fff" stroke="#cdbdf8"/><text x="170" y="68" text-anchor="middle" font-size="24" fill="#7b4ff0">✦</text>
+        </svg>
+      </div>
+      <h2 class="art-title">Design it with your agent</h2>
+      <p class="art-sub">Sketch, click through and prototype a feature together before anyone builds it.</p>
+      <ol class="steps">
+        <li><b>Mock it up.</b> Claude drafts the screen; you pin what should change.</li>
+        <li><b>Click through it.</b> The mockup starts working with fake data.</li>
+        <li><b>Prototype it.</b> Real code, running here on your phone.</li>
+      </ol>
+      <button class="cta" id="cta">Start a design</button>
+      <div class="dots"><span class="on"></span><span></span><span></span></div>
+      <span class="pin" data-pin="1" style="top:52px;right:20px">1</span><span class="pin" data-pin="2" style="top:344px;right:20px">2</span></div>
+    <div class="sheet" id="sheet"><div class="grab"></div><b id="sheet-title">2 comments</b><div class="muted" id="sheet-body">Tap a pin to open its thread.</div></div>
+  </div></div>
+<script>
+  const threads = {
+    1: "Jeremy: hero feels too tall.<br>Claude: trimmed to 56px.",
+    2: "Jeremy: are three steps too many?<br>Claude: they map 1:1 to the App Design stages.",
+  };
+  const sheet = document.getElementById("sheet");
+  document.querySelectorAll(".pin").forEach((pin) => pin.addEventListener("click", (e) => {
+    e.stopPropagation();
+    document.querySelectorAll(".pin").forEach((p) => p.classList.toggle("sel", p === pin));
+    sheet.classList.add("open");
+    document.getElementById("sheet-title").textContent = "Pin " + pin.dataset.pin;
+    document.getElementById("sheet-body").innerHTML = threads[pin.dataset.pin];
+    if (pin.dataset.pin === "1") document.getElementById("hero").style.height = "96px";
+  }));
+  sheet.addEventListener("click", () => sheet.classList.toggle("open"));
+  document.getElementById("share").addEventListener("click", () => {
+    const t = document.getElementById("toast"); t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 1400);
+  });
+</script>
+</body></html>
