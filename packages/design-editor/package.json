@@ -8,7 +8,8 @@
     "test": "vitest run --maxWorkers=2",
     "typecheck": "tsc --noEmit",
     "fixtures": "tsx scripts/generate-fixtures.ts",
-    "build:phone": "tsx scripts/build-phone-assets.ts"
+    "build:phone": "tsx scripts/build-phone-assets.ts",
+    "test:browser": "tsx e2e/run-browser.ts"
   },
   "dependencies": {
     "@blocknote/core": "0.55.0",
@@ -30,6 +31,7 @@
     "@types/react-dom": "^19",
     "happy-dom": "^20.8.9",
     "jsdom": "^27.0.0",
+    "playwright": "1.61.0",
     "tsx": "^4.21.0",
     "typescript": "^5",
     "vite": "^6.4.2",
