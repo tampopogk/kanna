@@ -1,0 +1,49 @@
+/*
+ * The design editor inside Kanna. Comments must be hard to miss
+ * (docs/specs/app-design.md §4, Owner): commented text is tinted and
+ * underlined, not just highlighted.
+ */
+.kanna-design-editor {
+  --kanna-anchor-tint: rgba(123, 79, 240, 0.14);
+  --kanna-anchor-line: #7b4ff0;
+  height: 100%;
+}
+.kanna-design-editor[data-theme="dark"] {
+  --kanna-anchor-tint: rgba(181, 140, 240, 0.22);
+  --kanna-anchor-line: #b58cf0;
+}
+.kanna-design-editor .bn-thread-mark:not([data-orphan="true"]) {
+  background: var(--kanna-anchor-tint);
+  text-decoration: underline;
+  text-decoration-color: var(--kanna-anchor-line);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+.kanna-design-editor .bn-thread-mark:not([data-orphan="true"]).bn-thread-mark-selected {
+  background: color-mix(in srgb, var(--kanna-anchor-line) 30%, transparent);
+}
+.kanna-toolbar-comment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  background: var(--kanna-anchor-tint);
+  color: inherit;
+}
+.kanna-toolbar-comment:focus-visible {
+  outline: 2px solid var(--kanna-anchor-line);
+  outline-offset: 1px;
+}
+.kanna-toolbar-comment kbd {
+  font: inherit;
+  font-size: 11px;
+  opacity: 0.7;
+}
+.kanna-agent-icon {
+  color: var(--kanna-anchor-line);
+}

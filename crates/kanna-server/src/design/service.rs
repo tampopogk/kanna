@@ -254,6 +254,72 @@ impl ApprovalView {
     }
 }
 
+/// What a task list or header needs to know about a task's design, read
+/// without creating anything.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaskDesignSummary {
+    pub(crate) stage: String,
+    pub(crate) in_design_stage: bool,
+    pub(crate) status: String,
+    pub(crate) position: String,
+    pub(crate) positions: Vec<SummaryPosition>,
+    pub(crate) next_stage: Option<String>,
+    pub(crate) open_threads: i64,
+    pub(crate) waiting_feedback: i64,
+    pub(crate) uncertain_feedback: i64,
+    pub(crate) approval_phase: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SummaryPosition {
+    pub(crate) name: String,
+    pub(crate) label: String,
+}
+
+pub(crate) fn task_summary(db: &Db, task_id: &str) -> Result<Option<TaskDesignSummary>, String> {
+    let Some(stage) = crate::task_creator::task_design_stage(db, task_id)? else {
+        return Ok(None);
+    };
+    let session = db.design_session(task_id).map_err(|error| error.to_string())?;
+    let threads = db.design_threads(task_id).map_err(|error| error.to_string())?;
+    let deliveries = db.design_deliveries(task_id).map_err(|error| error.to_string())?;
+    let approval = db
+        .current_design_approval(task_id)
+        .map_err(|error| error.to_string())?;
+    Ok(Some(TaskDesignSummary {
+        in_design_stage: stage.is_current(),
+        status: session
+            .as_ref()
+            .map(|session| session.status.clone())
+            .unwrap_or_else(|| DesignSessionRow::DESIGNING.to_string()),
+        position: session
+            .as_ref()
+            .map(|session| session.position.clone())
+            .or_else(|| stage.design.positions.first().map(|position| position.name.clone()))
+            .unwrap_or_default(),
+        positions: stage
+            .design
+            .positions
+            .iter()
+            .map(|position| SummaryPosition {
+                name: position.name.clone(),
+                label: position.label.clone(),
+            })
+            .collect(),
+        next_stage: stage.next_stage.clone(),
+        stage: stage.stage,
+        open_threads: threads.iter().filter(|thread| thread.status == "open").count() as i64,
+        waiting_feedback: deliveries
+            .iter()
+            .filter(|row| matches!(row.state.as_str(), "queued" | "delivering"))
+            .count() as i64,
+        uncertain_feedback: deliveries.iter().filter(|row| row.state == "uncertain").count() as i64,
+        approval_phase: approval.map(|approval| approval.phase),
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------
