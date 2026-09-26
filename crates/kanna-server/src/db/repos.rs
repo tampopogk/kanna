@@ -237,7 +237,7 @@ impl Db {
 }
 
 fn upsert_repo_sidebar_order(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &rusqlite::Connection,
     remote_url_hash: &str,
     sort_order: i64,
 ) -> Result<(), rusqlite::Error> {

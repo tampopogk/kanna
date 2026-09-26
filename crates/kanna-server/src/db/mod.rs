@@ -22,6 +22,9 @@ mod blockers;
 pub(crate) mod claude_channel;
 pub(crate) mod copilot_wake;
 mod create_intents;
+mod disk_authority;
+pub(crate) mod disk_first;
+mod disk_rebuild;
 mod event_subscriptions;
 mod lifecycle_operations;
 mod operator_events;
@@ -36,15 +39,22 @@ mod revisions;
 mod serviced;
 mod settings;
 mod snapshot;
+pub(crate) mod stage_edges;
 pub(crate) mod stage_run_prompt;
 pub(crate) mod stage_runs;
+pub(crate) mod subtask_joins;
 pub(crate) mod terminal_archives;
+pub(crate) mod transfer_task_state;
 pub use terminal_archives::AgentTerminalAttempt;
 pub(crate) mod workspace_setup;
 pub use stage_run_prompt::StageRunPrompt;
 pub use workspace_setup::{WorkspaceSetupOutcome, WorkspaceSetupRun};
+#[allow(unused_imports)]
+pub use worktrees::StageWorkspaceRecord;
 mod task_events;
 mod task_inputs;
+pub(crate) mod task_state;
+pub(crate) mod task_store;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
@@ -52,6 +62,7 @@ mod tests;
 mod token_usage;
 mod transfer_work;
 mod transfers;
+mod transition_commits;
 mod worktrees;
 
 pub use analytics::{AnalyticsRange, RepoAnalytics};
@@ -77,12 +88,15 @@ pub use review_context::{
     TaskReviewContext,
 };
 #[allow(unused_imports)]
-pub use revisions::RecordedRevisionOrigin;
+pub use revisions::{RecordedRevisionOrigin, StageBudgetSpend, TransitionExit};
 pub use serviced::TaskServicedWatermark;
+pub use stage_edges::{ConsumedDependency, NewStageEdge, StageEdge, StageEdgeError};
 #[allow(unused_imports)]
 pub use stage_runs::{
-    FinishedStageRun, ProviderOverrideSource, StageProviderOverride, StageTrigger,
+    FinishedStageRun, ProviderOverrideSource, StageProviderOverride, StageRunSession, StageTrigger,
+    TranscriptRef,
 };
+pub use subtask_joins::{NewJoinMember, NewTaskJoin, TaskJoin, TaskJoinMember};
 #[allow(unused_imports)]
 pub use task_events::{
     appended as task_event_appended, TaskEvent, TaskEventFilters, TaskEventKind, TaskEventScope,
@@ -101,7 +115,15 @@ pub use transfers::{
     is_active_outgoing_transfer_conflict, NewTaskTransfer, NewTaskTransferProvenance,
     PendingIncomingTransfer, TaskTransfer, TransferredHistoryRecord,
 };
+pub use transition_commits::TransitionCommit;
 
+pub(crate) use disk_authority::ReconcileChanges;
+#[cfg(test)]
+pub(crate) use disk_authority::CHANGED_SINCE_COMPARED;
+#[cfg(test)]
+pub(crate) use disk_authority::{
+    disk_wins_update, INPUT_ID_REFERENCES, TRANSFER_OWNERSHIP_COLUMNS,
+};
 pub(crate) use event_subscriptions::EventSubscription;
 
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 10_000;
@@ -206,6 +228,16 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "092_stage_run_prompt",
     "093_drop_standing_constraint",
     "094_task_attention_flag",
+    "095_mutation_provenance",
+    "096_task_ledger_bridge",
+    "097_stage_exit_budget",
+    "098_stage_workspaces",
+    "099_transition_commit",
+    "100_task_stage_edges",
+    "101_subtask_joins",
+    "102_transferred_task_state",
+    "103_disk_state_records",
+    "104_disk_divergence",
 ];
 
 #[derive(Debug, Serialize)]
@@ -367,6 +399,11 @@ pub struct SnapshotPipelineItem {
     pub notified_at: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
+    /// The `stage_workspace` identity T2 records for the task's most recent
+    /// stage run (spec §16.8, T11b) — the desktop's daemon-session resolver
+    /// prefers this over `branch`, which changes at every stage transition.
+    /// `None` before any run has recorded one.
+    pub workspace_id: Option<String>,
     pub has_running_post: i64,
     /// The runtime dimension, carried so a freshly loaded window renders work
     /// in progress without waiting for the next live change.
@@ -612,6 +649,13 @@ pub struct StageRun {
     /// the ordinary precedence chain — which is also what a legacy row and an
     /// unreadable value report, because neither can be reconstructed.
     pub provider_override: Option<StageProviderOverride>,
+    /// The verified channel this run's entry arrived on; `trigger` is the
+    /// entry's declared role. Legacy rows read as unknown.
+    pub entry_channel_identity: crate::mutation_provenance::ChannelIdentity,
+    /// Who declared this run's result and the channel it arrived on. Present
+    /// exactly when the run recorded a result; recorded separately from the
+    /// entry so submitting a verdict never rewrites how the run began.
+    pub result_provenance: Option<crate::mutation_provenance::MutationProvenance>,
     pub started_at: String,
     pub finished_at: Option<String>,
 }
@@ -643,8 +687,10 @@ pub struct OpenAgentTask {
 }
 
 #[derive(Debug)]
+#[repr(transparent)]
 pub struct Db {
-    conn: Connection,
+    // Disk-first commits (T13d) rely on this being the only field.
+    conn: disk_first::DbConnection,
 }
 
 fn database_open_flags() -> OpenFlags {
@@ -1019,6 +1065,9 @@ fn run_migration(
         if has_migration(conn, id)? {
             return Ok(());
         }
+        // A migration may reshape any table; the disk-state triggers come
+        // back after the last one (`task_state::sync_disk_state_triggers`).
+        task_state::drop_disk_state_triggers(conn)?;
         migrate(conn)?;
         record_migration(conn, id)
     })();
@@ -2629,6 +2678,90 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
         conn.execute_batch("ALTER TABLE pipeline_item DROP COLUMN attention_reason")
     })?;
 
+    // Mutation provenance: the server-verified channel a mutation arrived on,
+    // recorded beside the caller-declared role each row already carries
+    // (`stage_run.trigger`, `task_input.source`). A run's entry and its
+    // result are separate mutations and keep separate columns, so recording
+    // a verdict never overwrites how the run was started. Historical rows
+    // stay NULL and read as an unknown channel; nothing is backfilled from
+    // the declared labels. See `crate::mutation_provenance`.
+    run_migration(conn, "095_mutation_provenance", |conn| {
+        add_column(conn, "stage_run", "entry_channel_identity", "TEXT")?;
+        add_column(conn, "stage_run", "result_declared_role", "TEXT")?;
+        add_column(conn, "stage_run", "result_channel_identity", "TEXT")?;
+        add_column(conn, "task_input", "channel_identity", "TEXT")
+    })?;
+
+    // Spec §16.1 (T0): the outbox that mirrors results, tool inputs,
+    // transitions and workflow replacements into the on-disk task ledger.
+    // Schema only: importing existing history touches the filesystem and runs
+    // from the runtime's startup reconciliation, not from a migration.
+    run_migration(conn, "096_task_ledger_bridge", |conn| {
+        conn.execute_batch(task_store::SCHEMA)
+    })?;
+
+    // Spec §5 (T1): named-exit routing budgets each loop destination stage
+    // separately. Legacy tasks keep `pipeline_item.revision_rounds`.
+    run_migration(conn, "097_stage_exit_budget", |conn| {
+        conn.execute_batch(revisions::STAGE_BUDGET_SCHEMA)
+    })?;
+
+    // Spec §16.2 (T2): stage workspaces and session identity. The branch
+    // counter is the task's persisted high-water mark, so a deleted branch
+    // never makes its number reusable; it is seeded lazily above every
+    // recorded and ref suffix the first time a task allocates. Workspace rows
+    // name each stage's retained directory, and the stage_run columns record
+    // which workspace, branch, name and transcript a session started with.
+    // Historical runs stay NULL: nothing is reconstructed for them.
+    run_migration(conn, "098_stage_workspaces", |conn| {
+        conn.execute_batch(worktrees::STAGE_WORKSPACE_SCHEMA)?;
+        add_column(conn, "stage_run", "workspace_id", "TEXT")?;
+        add_column(conn, "stage_run", "session_branch", "TEXT")?;
+        add_column(conn, "stage_run", "session_name", "TEXT")?;
+        add_column(conn, "stage_run", "transcript_ref", "TEXT")?;
+        add_column(conn, "stage_run", "workspace_report", "TEXT")
+    })?;
+
+    // Spec §5 (T3): the commit step of a transition. One row binds a commit
+    // run to the single transition it was requested for, so its result
+    // settles it once and fires exactly that transition.
+    run_migration(conn, "099_transition_commit", |conn| {
+        conn.execute_batch(transition_commits::TRANSITION_COMMIT_SCHEMA)
+    })?;
+
+    // Spec §9/§16.4 (T4): stage dependency edges and the completions parked
+    // on them. Legacy `task_blocker` rows are untouched and keep their own
+    // readiness; edges are only ever created by new requests.
+    run_migration(conn, "100_task_stage_edges", |conn| {
+        conn.execute_batch(stage_edges::SCHEMA)
+    })?;
+
+    // Spec §9/§16.4 (T5): subtask join cohorts. Only children created in a
+    // join are members; existing parent/child rows are untouched.
+    run_migration(conn, "101_subtask_joins", |conn| {
+        conn.execute_batch(subtask_joins::SCHEMA)
+    })?;
+
+    // Spec §11 (T9): what a destination recorded when it imported a task's
+    // carried state — ownership generation, links to tasks and directories
+    // on other machines, and how its first session started.
+    run_migration(conn, "102_transferred_task_state", |conn| {
+        conn.execute_batch(transfer_task_state::SCHEMA)
+    })?;
+
+    // Spec §11/§16.11 (T13): the durable task state task.json carries beside
+    // the ledger, repo.json, and removal tombstones. Triggers owe a new
+    // record in the statement that changes what it carries; the backfill
+    // owes one to every open task and repository.
+    run_migration(conn, "103_disk_state_records", |conn| {
+        task_state::migrate_disk_state_records(conn)
+    })?;
+    // T13c: the durable fence on a task whose disk is ahead of this database.
+    run_migration(conn, "104_disk_divergence", |conn| {
+        conn.execute_batch(disk_authority::DIVERGENCE_SCHEMA)
+    })?;
+    task_state::sync_disk_state_triggers(conn)?;
+
     Ok(())
 }
 
@@ -2706,6 +2839,7 @@ fn rebuild_stage_run_for_teardown_kind(
         if has_migration(conn, STAGE_RUN_TEARDOWN_KIND_MIGRATION)? {
             return Ok(());
         }
+        task_state::drop_disk_state_triggers(conn)?;
         conn.execute_batch(&format!(
             r#"
             DROP TABLE IF EXISTS {STAGE_RUN_KIND_REBUILD_TABLE};
@@ -3101,7 +3235,7 @@ fn prune_task_events(conn: &Connection) -> Result<(), rusqlite::Error> {
 
 impl Db {
     #[cfg(debug_assertions)]
-    pub(crate) fn connection_for_e2e_tests(&self) -> &Connection {
+    pub(crate) fn connection_for_e2e_tests(&self) -> &disk_first::DbConnection {
         &self.conn
     }
 
@@ -3117,10 +3251,9 @@ impl Db {
             .map_err(E::from)?;
         match operation(self) {
             Ok(value) => {
-                if let Err(error) = self.conn.execute_batch("COMMIT") {
-                    let _ = self.conn.execute_batch("ROLLBACK");
-                    return Err(E::from(error));
-                }
+                // In disk authority mode the task directory is written
+                // first; `publish_and_commit` rolls back on any failure.
+                self.conn.publish_and_commit().map_err(E::from)?;
                 Ok(value)
             }
             Err(error) => {
@@ -3161,6 +3294,11 @@ impl Db {
         &self,
         operation: impl FnOnce(&Self) -> Result<T, rusqlite::Error>,
     ) -> Result<T, rusqlite::Error> {
+        // Inside a transaction (a disk-first commit reading what it
+        // publishes, T13d) the reads already share one snapshot.
+        if !self.conn.is_autocommit() {
+            return operation(self);
+        }
         self.conn.execute_batch("BEGIN")?;
         match operation(self) {
             Ok(value) => {
@@ -3184,7 +3322,9 @@ impl Db {
             .map_err(rusqlite::Error::InvalidParameterName)?;
         let conn = Connection::open_with_flags(path, database_open_flags())?;
         configure_shared_database_connection(&conn)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn: disk_first::DbConnection::new(conn, path),
+        })
     }
 
     pub fn open_migrated(path: &str) -> Result<Self, rusqlite::Error> {
@@ -3195,7 +3335,9 @@ impl Db {
         run_schema_migrations(&conn)?;
         prune_task_events(&conn)?;
         run_quick_check(&conn)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn: disk_first::DbConnection::new(conn, path),
+        })
     }
 
     pub fn backup_database(&self, db_path: &str) -> Result<PathBuf, rusqlite::Error> {

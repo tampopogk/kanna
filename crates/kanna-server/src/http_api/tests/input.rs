@@ -2122,6 +2122,7 @@ async fn run_merge_agent_route_uses_merge_agent_runner() {
                 follow_task: None,
                 revision_budget: None,
                 workflow_extended: None,
+                routing: None,
             })
         }),
     );
@@ -2569,6 +2570,28 @@ async fn send_task_input_delivers_to_a_live_session_after_a_finished_run() {
     let detail: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(detail["deliveredInputCount"], 1);
 
+    // The same delivery is an immutable input entry in the task ledger,
+    // published before the call answered, with its declared provenance.
+    let files = super::actions::ledger_files(&config.db_path, "task-live");
+    let inputs = files
+        .iter()
+        .filter(|file| file.kind == crate::db::task_store::LedgerEntryKind::Input)
+        .collect::<Vec<_>>();
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs[0].message.as_deref(), Some("One more change"));
+    assert_eq!(inputs[0].body()["source"], "operator");
+    assert_eq!(inputs[0].envelope["declared_role"], "operator");
+    // The test harness makes this call with no socket peer, so the verified
+    // channel is the explicit tagged `unknown` — recorded beside, never
+    // merged with, the caller-declared `operator` role above.
+    assert_eq!(
+        inputs[0].envelope["channel_identity"],
+        serde_json::json!({ "kind": "unknown" })
+    );
+    assert_eq!(inputs[0].envelope["source"]["kind"], "task_input");
+    // Recorded after the run had finished: attributed to no run.
+    assert!(inputs[0].envelope["run_id"].is_null());
+
     let _ = std::fs::remove_file(socket_path);
     let _ = std::fs::remove_dir_all(daemon_dir);
     let _ = std::fs::remove_file(config.db_path);
@@ -2597,6 +2620,7 @@ async fn catalog_task_inputs_tool_reaches_the_recorded_instruction_history() {
         db.record_task_input(
             "task 1",
             crate::db::TaskInputSource::Operator,
+            &crate::mutation_provenance::ChannelIdentity::Unknown,
             "Keep the new flag — I changed my mind mid-task.",
         )
         .unwrap()
@@ -2651,9 +2675,12 @@ async fn catalog_task_inputs_tool_reaches_the_recorded_instruction_history() {
         .map(String::as_str)
         .collect::<Vec<_>>();
     keys.sort_unstable();
+    // `channelIdentity` is additive: kanna-cli's struct ignores unknown keys,
+    // so it keeps deserializing this record unchanged.
     assert_eq!(
         keys,
         [
+            "channelIdentity",
             "deliveredAt",
             "id",
             "message",
@@ -3317,6 +3344,22 @@ mod merge_handoff_on_close {
         /// source task parked at `pr` with a running approve post — the state
         /// a `complete-stage` verdict from that post arrives into.
         fn new(label: &str, pipeline_def: &str, pr_url: Option<&str>) -> Self {
+            Self::with_source_run(
+                label,
+                pipeline_def,
+                pr_url,
+                ("run-approve", "approve", "post"),
+            )
+        }
+
+        /// As `new`, with the source task's running run given as
+        /// `(id, stage, kind)`.
+        fn with_source_run(
+            label: &str,
+            pipeline_def: &str,
+            pr_url: Option<&str>,
+            (source_run_id, source_run_stage, source_run_kind): (&str, &str, &str),
+        ) -> Self {
             let unique = format!("merge-close-{label}-{}", unique_test_suffix());
             let repo_root = std::env::temp_dir().join(format!("{unique}-repo"));
             init_test_git_repo(&repo_root);
@@ -3355,10 +3398,10 @@ mod merge_handoff_on_close {
                     .unwrap();
             }
             db.insert_stage_run(crate::db::NewStageRun {
-                id: "run-approve",
+                id: source_run_id,
                 task_id: "task-source",
-                stage: "approve",
-                kind: "post",
+                stage: source_run_stage,
+                kind: source_run_kind,
                 agent: Some("pr"),
                 agent_provider: Some("claude"),
                 model: None,
@@ -3601,6 +3644,258 @@ mod merge_handoff_on_close {
         let db = harness.db();
         wait_for_closed(&db, "task-source").await;
         assert!(db.task_merge_signaled_at("task-source").unwrap().is_some());
+        assert_eq!(merge_event_sources(&db, "task-source"), vec!["engine"]);
+        drop(db);
+        harness.cleanup();
+    }
+
+    /// A named-exit workflow hands off through its final stage's transition
+    /// policy instead of an approve post (spec §10: the `pr` stage's advance
+    /// hands to the merge master). The operator's advance out of `pr` closes
+    /// the task, and the close delivers the same request the post would have.
+    #[tokio::test]
+    async fn a_final_stage_handoff_policy_signals_the_merge_master_on_advance() {
+        let workflow = serde_json::json!({
+            "name": "shaped",
+            "routing": "exits",
+            "stages": [{
+                "name": "pr",
+                "agent": "pr",
+                "prompt": "Create a PR for $BRANCH",
+                "policy": { "transition": "manual", "handoff": "merge" }
+            }]
+        })
+        .to_string();
+        let harness = Harness::with_source_run(
+            "handoff-policy",
+            &workflow,
+            Some("https://github.com/acme/repo/pull/91"),
+            ("run-pr", "pr", "main"),
+        );
+        let app = super::router(Arc::new(super::AppState::new(harness.config.clone())));
+        let (status, text) = super::actions::post_json(
+            &app,
+            "/v1/tasks/task-source/actions/complete-stage",
+            serde_json::json!({
+                "runId": "run-pr", "status": "success",
+                "summary": "Created PR https://github.com/acme/repo/pull/91",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert!(
+            harness.merge_messages().is_empty(),
+            "a manual stage's result hands nothing off; leaving it does"
+        );
+        let (status, text) = super::actions::post_json(
+            &app,
+            "/v1/tasks/task-source/actions/advance-stage",
+            serde_json::json!({ "source": "operator" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+
+        let messages = harness.wait_for_merge_messages(1).await;
+        assert_eq!(
+            messages,
+            vec!["MERGE task-source -> main [TASK task-source] [PR https://github.com/acme/repo/pull/91]: Ship the thing"]
+        );
+        let db = harness.db();
+        wait_for_closed(&db, "task-source").await;
+        assert_eq!(merge_event_sources(&db, "task-source"), vec!["engine"]);
+        drop(db);
+        harness.cleanup();
+    }
+
+    /// The open-children guard runs before the merge handoff (review item 5).
+    /// A final-stage close with a merge handoff and an open plain (non-join)
+    /// child is refused with nothing delivered — the merge master must not
+    /// hear about a task that then fails to close, and task_merge_signaled_at
+    /// must stay unset so the real close can deliver. Once the child closes,
+    /// the close delivers exactly one handoff.
+    #[tokio::test]
+    async fn an_open_child_refuses_the_close_before_any_merge_handoff_is_delivered() {
+        let workflow = serde_json::json!({
+            "name": "shaped",
+            "routing": "exits",
+            "stages": [{
+                "name": "pr",
+                "agent": "pr",
+                "prompt": "Create a PR for $BRANCH",
+                "policy": { "transition": "manual", "handoff": "merge" }
+            }]
+        })
+        .to_string();
+        let harness = Harness::with_source_run(
+            "open-child-before-handoff",
+            &workflow,
+            Some("https://github.com/acme/repo/pull/91"),
+            ("run-pr", "pr", "main"),
+        );
+        {
+            let db = harness.db();
+            db.insert_test_pipeline_item(
+                "task-child",
+                "repo-1",
+                "Child prompt",
+                Some("Child"),
+                "in progress",
+                "2026-08-07T00:00:02Z",
+            )
+            .unwrap();
+            db.update_pipeline_item_parent("task-child", Some("task-source"))
+                .unwrap();
+        }
+        let app = super::router(Arc::new(super::AppState::new(harness.config.clone())));
+        let (status, text) = super::actions::post_json(
+            &app,
+            "/v1/tasks/task-source/actions/complete-stage",
+            serde_json::json!({
+                "runId": "run-pr", "status": "success",
+                "summary": "Created PR https://github.com/acme/repo/pull/91",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+
+        let (status, text) = super::actions::post_json(
+            &app,
+            "/v1/tasks/task-source/actions/advance-stage",
+            serde_json::json!({ "source": "operator" }),
+        )
+        .await;
+        // The advance is accepted and executed detached; the close guard's
+        // refusal is its durable outcome: the task parks unclosed.
+        assert_eq!(status, StatusCode::OK, "{text}");
+        // Give the detached close — and any wrongly-delivered handoff — time
+        // to land before asserting neither did.
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        assert!(
+            harness.merge_messages().is_empty(),
+            "a refused close must deliver no handoff: {:?}",
+            harness.merge_messages()
+        );
+        {
+            let db = harness.db();
+            assert!(db.task_merge_signaled_at("task-source").unwrap().is_none());
+            assert!(db
+                .get_pipeline_item("task-source")
+                .unwrap()
+                .unwrap()
+                .closed_at
+                .is_none());
+            db.close_pipeline_item("task-child").unwrap();
+        }
+
+        let (status, text) = super::actions::post_json(
+            &app,
+            "/v1/tasks/task-source/actions/advance-stage",
+            serde_json::json!({ "source": "operator" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let messages = harness.wait_for_merge_messages(1).await;
+        let db = harness.db();
+        wait_for_closed(&db, "task-source").await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(
+            harness.merge_messages().len(),
+            1,
+            "exactly one handoff once the child closed: {messages:?}"
+        );
+        assert!(db.task_merge_signaled_at("task-source").unwrap().is_some());
+        drop(db);
+        harness.cleanup();
+    }
+
+    /// T10's bundled `mechanical` workflow (spec §10: `implement -> pr(M)`)
+    /// shares the same final-stage `policy.handoff: merge` shape as the
+    /// synthetic workflow above. `pr`'s definition-formula "Produces" section
+    /// (CONTRACT.md) obliges it to record `metadata.pr_url` on success since
+    /// the stage prompt never asks; this proves that obligation, once met,
+    /// persists `task.prUrl` and clears the handoff backstop that refuses to
+    /// close a promised-handoff task with no recorded PR
+    /// (`ensure_merge_handoff_before_close`,
+    /// "no PR URL was ever recorded") -- complementing
+    /// `mechanical_workflow_runs_its_commit_step_and_hands_off_to_merge_with_no_result_variables`
+    /// in task_creator::tests::stage, which stops after the "in progress"
+    /// stage's commit-step preparation and never reaches this close path.
+    #[tokio::test]
+    async fn a_pr_stage_success_verdict_with_a_pr_url_persists_it_and_clears_the_handoff_backstop()
+    {
+        let workflow = serde_json::json!({
+            "name": "mechanical",
+            "routing": "exits",
+            "stages": [
+                {
+                    "name": "in progress",
+                    "agent": "implement",
+                    "prompt": "$TASK_PROMPT",
+                    "policy": { "transition": "manual" },
+                    "exit_commit": true
+                },
+                {
+                    "name": "pr",
+                    "agent": "pr",
+                    "prompt": "Create a PR for the work on branch $BRANCH.",
+                    "policy": { "transition": "manual", "handoff": "merge" }
+                }
+            ]
+        })
+        .to_string();
+        let harness = Harness::with_source_run(
+            "mechanical-handoff",
+            &workflow,
+            None,
+            ("run-pr", "pr", "main"),
+        );
+        let pr_url = "https://github.com/acme/repo/pull/91";
+        let app = super::router(Arc::new(super::AppState::new(harness.config.clone())));
+        let (status, text) = super::actions::post_json(
+            &app,
+            "/v1/tasks/task-source/actions/complete-stage",
+            serde_json::json!({
+                "runId": "run-pr", "status": "success",
+                "summary": format!("Created PR {pr_url}"),
+                "metadata": { "pr_url": pr_url },
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+
+        let db = harness.db();
+        assert_eq!(
+            db.get_pipeline_item("task-source").unwrap().unwrap().pr_url,
+            Some(pr_url.to_string()),
+            "the recorded metadata.pr_url must persist as task.prUrl"
+        );
+        drop(db);
+        assert!(
+            harness.merge_messages().is_empty(),
+            "a manual stage's result hands nothing off; leaving it does"
+        );
+
+        let (status, text) = super::actions::post_json(
+            &app,
+            "/v1/tasks/task-source/actions/advance-stage",
+            serde_json::json!({ "source": "operator" }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the handoff backstop must not refuse to close: {text}"
+        );
+
+        let messages = harness.wait_for_merge_messages(1).await;
+        assert_eq!(
+            messages,
+            vec![format!(
+                "MERGE task-source -> main [TASK task-source] [PR {pr_url}]: Ship the thing"
+            )]
+        );
+        let db = harness.db();
+        wait_for_closed(&db, "task-source").await;
         assert_eq!(merge_event_sources(&db, "task-source"), vec!["engine"]);
         drop(db);
         harness.cleanup();
@@ -3911,6 +4206,76 @@ mod human_review_merge_authorization {
 
         // The HTTP retry is refused by the durable decision, before daemon
         // discovery or submission. Only the first request reached the PTY.
+        assert!(matches!(
+            daemon_server.await.unwrap().as_slice(),
+            [DaemonCommand::List, DaemonCommand::SubmitInputIfSession { session_id, expected_pid: 42, .. }]
+                if session_id == "task-merge"
+        ));
+        drop(app);
+        drop(db);
+        let _ = std::fs::remove_file(socket_path);
+        let _ = std::fs::remove_dir_all(daemon_dir);
+        let _ = std::fs::remove_file(config.db_path);
+    }
+
+    /// The row insert succeeded and only its task-ledger file failed after
+    /// the daemon acknowledged the MERGE text. That is still a delivery
+    /// whose outcome must not be repeated: the decision is uncertain and a
+    /// retried decision is refused before anything is typed again.
+    #[tokio::test]
+    async fn does_not_resend_acknowledged_input_when_its_ledger_publication_failed() {
+        let unique = format!("human-review-publication-failed-{}", unique_test_suffix());
+        let daemon_dir = std::env::temp_dir().join(format!("{unique}-daemon"));
+        std::fs::create_dir_all(&daemon_dir).unwrap();
+        let socket_path = daemon_socket_path_for_dir(&daemon_dir.to_string_lossy());
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let daemon_server = spawn_live_session_daemon(listener, "task-merge", 2);
+        let config = merge_test_config(&unique, &daemon_dir);
+        let db = Db::open_for_tests(&config.db_path).unwrap();
+        db.insert_test_repo("repo-1", "Repo One").unwrap();
+        seed_review_child(&db, "task-review");
+        seed_merge_singleton(&db);
+        // The merge master's first ledger entry is the delivered MERGE input.
+        crate::task_store::inject_fault(
+            &crate::task_store::root_for_db(&config.db_path),
+            crate::task_store::FlushFault::BeforePublish(1),
+        );
+
+        let app = super::super::router(Arc::new(super::super::AppState::new(config.clone())));
+        for expected_status in [StatusCode::SERVICE_UNAVAILABLE, StatusCode::CONFLICT] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/v1/tasks/task-review/actions/queue-reviewed-pr")
+                        .header("content-type", "application/json")
+                        .body(Body::from(queue_body(1, REVIEWED_HEAD)))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected_status);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body = String::from_utf8(body.to_vec()).unwrap();
+            if expected_status == StatusCode::SERVICE_UNAVAILABLE {
+                assert!(body.contains("task_input_publication_pending"), "{body}");
+            } else {
+                assert!(body.contains("do not send this again"), "{body}");
+            }
+            let decision = db
+                .latest_human_review_decision("task-review")
+                .unwrap()
+                .unwrap();
+            assert_eq!(decision.delivery_status, "uncertain");
+            assert_eq!(
+                db.count_test_human_review_decisions("task-review").unwrap(),
+                1
+            );
+            // The durable row exists; only its ledger file was pending.
+            assert_eq!(db.count_task_inputs("task-merge").unwrap(), 1);
+        }
+
         assert!(matches!(
             daemon_server.await.unwrap().as_slice(),
             [DaemonCommand::List, DaemonCommand::SubmitInputIfSession { session_id, expected_pid: 42, .. }]
@@ -4281,4 +4646,162 @@ mod human_review_merge_authorization {
         assert!(body.contains("stopped part-way"), "{body}");
         let _ = std::fs::remove_file(config.db_path);
     }
+}
+
+#[tokio::test]
+async fn a_blank_task_input_is_refused_before_anything_is_typed() {
+    let app = super::test_router_with_seed("ledger-blank-input", "Studio Mac", |db| {
+        db.insert_test_repo("repo-1", "Repo One").unwrap();
+        db.insert_test_pipeline_item(
+            "task-1",
+            "repo-1",
+            "Task",
+            None,
+            "in progress",
+            "2026-09-22 00:00:00",
+        )
+        .unwrap();
+    });
+    for blank in ["", " \r\n"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/tasks/task-1/input")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "input": blank }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["reason"], "empty_input");
+    }
+}
+
+/// The daemon acknowledged the text; only its ledger file failed. The input is
+/// recorded, reported as pending publication, published later from the stored
+/// row, and never typed into the session a second time.
+#[tokio::test]
+async fn an_input_whose_publication_fails_after_delivery_is_not_sent_again() {
+    use kanna_daemon::protocol::{
+        Command as DaemonCommand, Event as DaemonEvent, SessionInfo, SessionState, SessionStatus,
+    };
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::net::UnixListener;
+
+    let unique = format!("task-input-ledger-pending-{}", unique_test_suffix());
+    let daemon_dir = std::env::temp_dir().join(format!("{unique}-daemon"));
+    std::fs::create_dir_all(&daemon_dir).unwrap();
+    let socket_path = daemon_socket_path_for_dir(&daemon_dir.to_string_lossy());
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let daemon_server = tokio::spawn(async move {
+        let mut commands = Vec::new();
+        while let Ok(Ok((stream, _))) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept()).await
+        {
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            while let Some(command) =
+                read_test_daemon_command_optional(&mut reader, &mut write_half).await
+            {
+                let response = match &command {
+                    DaemonCommand::List => DaemonEvent::SessionList {
+                        sessions: vec![SessionInfo {
+                            session_id: "task-live".to_string(),
+                            pid: 42,
+                            cwd: "/tmp".to_string(),
+                            state: SessionState::Active,
+                            idle_seconds: 0,
+                            status: SessionStatus::Idle,
+                            status_observed: true,
+                            kind: Default::default(),
+                            composer_text: None,
+                            composer_attestation: Default::default(),
+                            attempt_id: None,
+                        }],
+                    },
+                    DaemonCommand::SubmitInputIfSession { .. } => DaemonEvent::Ok,
+                    other => panic!("unexpected daemon command: {other:?}"),
+                };
+                commands.push(command);
+                write_half
+                    .write_all(
+                        format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+        commands
+    });
+
+    let config = merge_test_config(&unique, &daemon_dir);
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo("repo-1", "Repo One").unwrap();
+    db.insert_test_pipeline_item(
+        "task-live",
+        "repo-1",
+        "Live task",
+        Some("Live task"),
+        "in progress",
+        "2026-08-12 04:00:00",
+    )
+    .unwrap();
+    drop(db);
+    let root = crate::task_store::root_for_db(&config.db_path);
+    crate::task_store::inject_fault(&root, crate::task_store::FlushFault::BeforePublish(1));
+
+    let app = super::router(Arc::new(super::AppState::new(config.clone())));
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/v1/tasks/task-live/input")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "input": "Merge when green",
+                        "source": "manager",
+                        "strictRecording": true,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["reason"], "task_input_publication_pending");
+
+    let db = Db::open(&config.db_path).unwrap();
+    // The durable record exists; only its ledger file is pending.
+    assert_eq!(db.list_all_task_inputs("task-live").unwrap().len(), 1);
+    assert!(super::actions::ledger_files(&config.db_path, "task-live").is_empty());
+    // Publication is retried from the stored row, not by typing again.
+    crate::task_store::flush_task(&db, &config.db_path, "task-live").unwrap();
+    let files = super::actions::ledger_files(&config.db_path, "task-live");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].message.as_deref(), Some("Merge when green"));
+    assert_eq!(files[0].envelope["declared_role"], "manager");
+    assert_eq!(
+        db.count_task_events_of_type_for_tests("task-live", "task.input_delivered")
+            .unwrap(),
+        1
+    );
+    drop(app);
+    let commands = daemon_server.await.unwrap();
+    let submissions = commands
+        .iter()
+        .filter(|command| matches!(command, DaemonCommand::SubmitInputIfSession { .. }))
+        .count();
+    assert_eq!(submissions, 1);
 }

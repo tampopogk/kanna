@@ -4,6 +4,7 @@ use super::{
     ReopenPipelineItemError, TaskEventKind, TaskListOrder, TaskListSort, TaskStageSource,
     TaskStateSummary,
 };
+use crate::mutation_provenance::ChannelIdentity;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
 
@@ -14,6 +15,9 @@ pub struct WorkflowReplacement<'a> {
     pub source: &'a str,
     pub superseded_run_ids: &'a [String],
     pub changed_execution_stages: &'a [String],
+    /// The ledger result this replacement was published with (a plan's own
+    /// completion). Its plan entry joins that result's operation.
+    pub ledger_result_id: Option<&'a str>,
 }
 
 const MANAGER_ACTIVITY_DEBOUNCE_SECONDS: u64 = 10;
@@ -179,7 +183,7 @@ impl Db {
             .optional()
     }
 
-    fn pipeline_item_stage(&self, id: &str) -> Result<Option<String>, rusqlite::Error> {
+    pub(super) fn pipeline_item_stage(&self, id: &str) -> Result<Option<String>, rusqlite::Error> {
         self.conn
             .query_row(
                 "SELECT stage FROM pipeline_item WHERE id = ?",
@@ -793,6 +797,33 @@ impl Db {
             .optional()
     }
 
+    /// Open tasks pinned under `pipeline`, oldest first.
+    /// Every open task with a pinned workflow definition, oldest first.
+    pub(crate) fn open_task_ids_with_pinned_workflow(
+        &self,
+    ) -> Result<Vec<String>, rusqlite::Error> {
+        let mut statement = self.conn.prepare(
+            "SELECT id FROM pipeline_item
+             WHERE pipeline_def IS NOT NULL AND closed_at IS NULL
+             ORDER BY rowid ASC",
+        )?;
+        let ids = statement.query_map([], |row| row.get(0))?.collect();
+        ids
+    }
+
+    pub fn open_task_ids_with_pipeline(
+        &self,
+        pipeline: &str,
+    ) -> Result<Vec<String>, rusqlite::Error> {
+        let mut statement = self.conn.prepare(
+            "SELECT id FROM pipeline_item
+             WHERE pipeline = ? AND closed_at IS NULL
+             ORDER BY rowid ASC",
+        )?;
+        let ids = statement.query_map([pipeline], |row| row.get(0))?.collect();
+        ids
+    }
+
     /// Every open singleton candidate for one machine-independent repository.
     ///
     /// Repository ids are installation-local, so cross-desktop singleton
@@ -934,6 +965,10 @@ impl Db {
                 "parentTaskId": item.parent_task_id,
             }),
         )?;
+        // A task born after the ledger bridge has no history to import, and
+        // its `task.json` (prompt, pinned workflow, links) exists from birth.
+        self.mark_task_ledger_backfilled(item.id, 0)?;
+        self.mark_task_snapshot_dirty(item.id)?;
         Ok(())
     }
 
@@ -1011,14 +1046,6 @@ impl Db {
         )
     }
 
-    pub fn count_open_children(&self, parent_id: &str) -> Result<i64, rusqlite::Error> {
-        self.conn.query_row(
-            "SELECT COUNT(*) FROM pipeline_item WHERE parent_task_id = ? AND closed_at IS NULL",
-            [parent_id],
-            |row| row.get(0),
-        )
-    }
-
     /// Direct children of `parent_id`, oldest first — the downward read of the
     /// parentage `pipeline_item.parent_task_id` records upward.
     ///
@@ -1059,7 +1086,7 @@ impl Db {
         if rows_affected == 0 {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
-        Ok(())
+        self.mark_task_snapshot_dirty(id)
     }
 
     pub fn update_pipeline_item_activity(
@@ -1362,11 +1389,19 @@ impl Db {
             }
             db.cancel_running_stage_runs(&pipeline_item_id)?;
             db.release_task_ports(&pipeline_item_id)?;
+            // A completion parked on dependency edges is owed only to the
+            // open task: a reopen must not replay it (T4).
+            db.clear_dependency_wait(&pipeline_item_id)?;
+            // A join member closing without a result resolves as closed and
+            // its parent is told (T5); one that recorded a result already
+            // resolved.
+            db.resolve_join_member_on_close(&pipeline_item_id)?;
             db.append_task_event(
                 &pipeline_item_id,
                 TaskEventKind::TaskClosed,
                 json!({ "stage": db.pipeline_item_stage(&pipeline_item_id)? }),
             )?;
+            db.mark_task_snapshot_dirty(&pipeline_item_id)?;
             // Closing resolves this task as a blocker, which is how most
             // dependents become unblocked.
             db.sync_blocked_events_for_dependents(&pipeline_item_id)?;
@@ -1405,6 +1440,7 @@ impl Db {
                 rusqlite::Error::QueryReturnedNoRows,
             ));
         }
+        self.mark_task_snapshot_dirty(&pipeline_item_id)?;
         // Reopening un-resolves this task as a blocker; dependents that were
         // released by the close go back to blocked.
         self.sync_blocked_events_for_dependents(&pipeline_item_id)?;
@@ -1423,12 +1459,12 @@ impl Db {
             "UPDATE pipeline_item
              SET display_name = ?, updated_at = datetime('now')
              WHERE id = ?",
-            (display_name, pipeline_item_id),
+            (display_name, &pipeline_item_id),
         )?;
         if rows_affected == 0 {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
-        Ok(())
+        self.mark_task_snapshot_dirty(&pipeline_item_id)
     }
 
     /// Replace the task's current workflow and pinned definition atomically
@@ -1437,6 +1473,7 @@ impl Db {
     /// task at another workflow does not alter the repo's sticky new-task
     /// default. (`pipeline`, `pipeline_def`, and `initial_pipeline` are the
     /// legacy storage column names for the task's workflow.)
+    #[allow(clippy::too_many_arguments)]
     pub fn update_pipeline_item_pipeline(
         &self,
         id: &str,
@@ -1445,6 +1482,7 @@ impl Db {
         workflow_def: &str,
         revision_rounds: i64,
         revision_limit: i64,
+        channel: &ChannelIdentity,
     ) -> Result<bool, rusqlite::Error> {
         self.replace_task_workflow(
             id,
@@ -1454,10 +1492,15 @@ impl Db {
             revision_rounds,
             revision_limit,
             None,
+            channel,
         )
     }
 
     /// Shared atomic pin boundary for named switches and inline replacements.
+    ///
+    /// `channel` is the verified channel the edit arrived on. A named switch
+    /// (`edit: None`) declares no role and records `unspecified`, as its event
+    /// always has; an inline replacement records its declared `source`.
     #[allow(clippy::too_many_arguments)]
     pub fn replace_task_workflow(
         &self,
@@ -1468,6 +1511,7 @@ impl Db {
         revision_rounds: i64,
         revision_limit: i64,
         edit: Option<WorkflowReplacement<'_>>,
+        channel: &ChannelIdentity,
     ) -> Result<bool, rusqlite::Error> {
         // Joins the caller's transaction when there is one: publishing a plan
         // writes the run verdict and this workflow in the same commit, so a
@@ -1516,6 +1560,7 @@ impl Db {
             if rows_affected == 0 {
                 return Err(rusqlite::Error::QueryReturnedNoRows);
             }
+            let event_floor = db.ledger_event_floor()?;
             db.append_task_event(
                 id,
                 TaskEventKind::WorkflowChanged,
@@ -1528,6 +1573,8 @@ impl Db {
                     "revisionRounds": revision_rounds,
                     "revisionLimit": revision_limit,
                     "source": edit.map(|edit| edit.source).unwrap_or("unspecified"),
+                    "declaredRole": edit.map(|edit| edit.source).unwrap_or("unspecified"),
+                    "channelIdentity": channel.to_json(),
                     "operation": if edit.is_some() { "replace" } else { "select" },
                     "beforeDefinition": current.1.as_ref().and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok()),
                     "afterDefinition": serde_json::from_str::<serde_json::Value>(workflow_def).ok(),
@@ -1535,20 +1582,122 @@ impl Db {
                     "changedExecutionStages": edit.map(|edit| edit.changed_execution_stages).unwrap_or(&[]),
                 }),
             )?;
+            db.enqueue_workflow_replacement_entry(
+                id,
+                expected_stage,
+                current.0.as_deref(),
+                workflow_name,
+                current.1.as_deref(),
+                workflow_def,
+                edit,
+                channel,
+                event_floor,
+            )?;
             Ok(true)
         })
     }
 
-    #[cfg(test)]
-    pub fn update_pipeline_item_stage(&self, id: &str, stage: &str) -> Result<(), rusqlite::Error> {
-        self.update_pipeline_item_stage_with_trigger(id, stage, super::StageTrigger::Unspecified)
+    /// Mirror a workflow selection or replacement as a `plan` ledger entry.
+    /// `event_floor` (the event sequence before this write) only makes the
+    /// source identity unique; the `task.workflow_changed` event keeps being
+    /// appended with the write, as before the ledger existed.
+    #[allow(clippy::too_many_arguments)]
+    fn enqueue_workflow_replacement_entry(
+        &self,
+        id: &str,
+        stage: &str,
+        from_workflow: Option<&str>,
+        to_workflow: &str,
+        before: Option<&str>,
+        after: &str,
+        edit: Option<WorkflowReplacement<'_>>,
+        channel: &ChannelIdentity,
+        event_floor: i64,
+    ) -> Result<(), rusqlite::Error> {
+        let result_id = edit.and_then(|edit| edit.ledger_result_id);
+        let operation_id = match result_id {
+            Some(result_id) => self
+                .conn
+                .query_row(
+                    "SELECT operation_id FROM task_ledger_entry WHERE entry_id = ?",
+                    [result_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten(),
+            None => None,
+        };
+        let parse = |definition: &str| {
+            serde_json::from_str::<serde_json::Value>(definition).unwrap_or(serde_json::Value::Null)
+        };
+        let source_id = format!("{id}:workflow:{event_floor}");
+        self.enqueue_ledger_entry(super::task_store::NewLedgerEntry {
+            task_id: id,
+            kind: super::task_store::LedgerEntryKind::Plan,
+            operation_id: operation_id.as_deref(),
+            source_kind: "workflow_replacement",
+            source_id: &source_id,
+            source_origin: None,
+            historical: false,
+            recorded_at: None,
+            run_id: None,
+            declared_role: super::task_store::declared_workflow_role(
+                edit.map(|edit| edit.source).unwrap_or("unspecified"),
+            )
+            .as_deref(),
+            channel_identity: channel,
+            body: json!({
+                "operation": if edit.is_some() { "replace" } else { "select" },
+                "source": edit.map(|edit| edit.source).unwrap_or("unspecified"),
+                "stage": stage,
+                "from_workflow": from_workflow,
+                "to_workflow": to_workflow,
+                "before": before.map(parse),
+                "after": parse(after),
+                "superseded_run_ids": edit.map(|edit| edit.superseded_run_ids).unwrap_or(&[]),
+                "changed_execution_stages": edit.map(|edit| edit.changed_execution_stages).unwrap_or(&[]),
+                "result_id": result_id,
+            }),
+            message: None,
+            hold_events_after: None,
+            reserved_sequence: None,
+        })?;
+        Ok(())
     }
 
+    #[cfg(test)]
+    pub fn update_pipeline_item_stage(&self, id: &str, stage: &str) -> Result<(), rusqlite::Error> {
+        self.update_pipeline_item_stage_with_trigger(
+            id,
+            stage,
+            super::StageTrigger::Unspecified,
+            &ChannelIdentity::Unknown,
+        )
+    }
+
+    /// Move the task's stage. `trigger` is the transition's declared role and
+    /// `channel` the verified channel it arrived on; both land on the
+    /// `stage.changed` event.
+    #[cfg(test)]
     pub fn update_pipeline_item_stage_with_trigger(
         &self,
         id: &str,
         stage: &str,
         trigger: super::StageTrigger,
+        channel: &ChannelIdentity,
+    ) -> Result<(), rusqlite::Error> {
+        self.update_pipeline_item_stage_with_exit(id, stage, trigger, channel, None)
+    }
+
+    /// [`Self::update_pipeline_item_stage_with_trigger`], also recording the
+    /// exit the transition took on its ledger entry.
+    pub fn update_pipeline_item_stage_with_exit(
+        &self,
+        id: &str,
+        stage: &str,
+        trigger: super::StageTrigger,
+        channel: &ChannelIdentity,
+        exit: Option<&super::TransitionExit>,
     ) -> Result<(), rusqlite::Error> {
         self.in_immediate_transaction_if_needed(|db| {
             let from_stage = db.pipeline_item_stage(id)?;
@@ -1559,7 +1708,15 @@ impl Db {
             if rows_affected == 0 {
                 return Err(rusqlite::Error::QueryReturnedNoRows);
             }
-            db.append_stage_changed_event(id, from_stage.as_deref(), stage, None, trigger)?;
+            db.append_stage_changed_event(
+                id,
+                from_stage.as_deref(),
+                stage,
+                None,
+                trigger,
+                channel,
+                exit,
+            )?;
             // Reaching (or leaving) `pr` with a PR recorded flips whether this
             // task still blocks its dependents.
             db.sync_blocked_events_for_dependents(id)
@@ -1569,6 +1726,7 @@ impl Db {
     /// One `stage.changed` event per real transition. A rewrite to the stage a
     /// task is already on (a repair path, a replayed request) is not a
     /// transition and must not wake every watcher.
+    #[allow(clippy::too_many_arguments)]
     fn append_stage_changed_event(
         &self,
         id: &str,
@@ -1576,20 +1734,90 @@ impl Db {
         to_stage: &str,
         branch: Option<&str>,
         trigger: super::StageTrigger,
+        channel: &ChannelIdentity,
+        exit: Option<&super::TransitionExit>,
     ) -> Result<(), rusqlite::Error> {
         if from_stage == Some(to_stage) {
             return Ok(());
         }
-        self.append_task_event(
-            id,
-            TaskEventKind::StageChanged,
-            json!({
-                "fromStage": from_stage,
-                "toStage": to_stage,
-                "branch": branch,
-                "trigger": trigger.as_str(),
-            }),
-        )
+        let event_floor = self.ledger_event_floor()?;
+        let mut event = json!({
+            "fromStage": from_stage,
+            "toStage": to_stage,
+            "branch": branch,
+            "trigger": trigger.as_str(),
+            "declaredRole": trigger.as_str(),
+            "channelIdentity": channel.to_json(),
+        });
+        if let Some(exit) = exit {
+            event["exit"] = json!(exit.exit);
+            event["exitSource"] = json!(exit.source);
+        }
+        self.append_task_event(id, TaskEventKind::StageChanged, event)?;
+        // The same real transition, mirrored into the ledger. Its trigger is
+        // the newest result recorded since the previous transition, resolved
+        // in this transaction; none is borrowed from an earlier stage.
+        let triggering_result_id = self.ledger_transition_trigger(id)?;
+        // Stage dependency edges (T4), in the transition's own transaction:
+        // leaving a stage may supersede what a dependent consumed, and
+        // entering one consumes the results its edges were satisfied by. Any
+        // real transition settles a completion parked on its edges.
+        if let Some(from_stage) = from_stage {
+            self.record_stage_edge_departure(
+                id,
+                from_stage,
+                to_stage,
+                triggering_result_id.as_deref(),
+            )?;
+        }
+        let consumed = self.consume_stage_edges_on_entry(id, to_stage)?;
+        if self.clear_dependency_wait(id)? {
+            self.sync_blocked_event(id)?;
+        }
+        let source_id = format!("{id}:stage:{event_floor}");
+        let mut body = json!({
+            "from_stage": from_stage,
+            "to_stage": to_stage,
+            "branch": branch,
+            "trigger": trigger.as_str(),
+            "operation": "stage_change",
+            "triggering_result_id": triggering_result_id,
+            // Named-exit routing (T1) records which exit was taken and who
+            // chose it; legacy-routed transitions name none.
+            "exit": exit.and_then(|exit| exit.exit.as_deref()),
+            "exit_source": exit.map(|exit| exit.source.as_str()),
+        });
+        if !consumed.is_empty() {
+            body["dependencies"] = consumed
+                .iter()
+                .map(super::ConsumedDependency::to_ledger_json)
+                .collect();
+        }
+        if let Some(budget) = exit.and_then(|exit| exit.budget.as_ref()) {
+            body["budget"] = json!({
+                "stage": budget.stage,
+                "spent": budget.spent,
+                "limit": budget.limit,
+            });
+        }
+        self.enqueue_ledger_entry(super::task_store::NewLedgerEntry {
+            task_id: id,
+            kind: super::task_store::LedgerEntryKind::Transition,
+            operation_id: None,
+            source_kind: "stage_change",
+            source_id: &source_id,
+            source_origin: None,
+            historical: false,
+            recorded_at: None,
+            run_id: None,
+            declared_role: super::task_store::declared_transition_role(trigger.as_str()).as_deref(),
+            channel_identity: channel,
+            body,
+            message: None,
+            hold_events_after: None,
+            reserved_sequence: None,
+        })?;
+        Ok(())
     }
 
     /// Record the task's pull request once an agent reports it (the pr
@@ -1633,6 +1861,9 @@ impl Db {
                         &db.conn, &repo_id, pr_number, pr_url,
                     )?;
                 }
+            }
+            if rows_affected > 0 {
+                db.mark_task_snapshot_dirty(id)?;
             }
             // A task parked at `pr` with a PR recorded counts as resolved, so
             // this write can release its dependents.
@@ -1724,13 +1955,16 @@ impl Db {
     }
 
     /// Stage transition into a freshly forked workspace: the task's current
-    /// branch moves with the stage.
-    pub fn update_pipeline_item_stage_and_branch_with_trigger(
+    /// branch moves with the stage. `exit` is the exit the transition took,
+    /// recorded on its ledger entry (named-exit routing only).
+    pub fn update_pipeline_item_stage_and_branch_with_exit(
         &self,
         id: &str,
         stage: &str,
         branch: &str,
         trigger: super::StageTrigger,
+        channel: &ChannelIdentity,
+        exit: Option<&super::TransitionExit>,
     ) -> Result<(), rusqlite::Error> {
         self.in_immediate_transaction_if_needed(|db| {
             let from_stage = db.pipeline_item_stage(id)?;
@@ -1741,7 +1975,15 @@ impl Db {
             if rows_affected == 0 {
                 return Err(rusqlite::Error::QueryReturnedNoRows);
             }
-            db.append_stage_changed_event(id, from_stage.as_deref(), stage, Some(branch), trigger)?;
+            db.append_stage_changed_event(
+                id,
+                from_stage.as_deref(),
+                stage,
+                Some(branch),
+                trigger,
+                channel,
+                exit,
+            )?;
             db.sync_blocked_events_for_dependents(id)
         })
     }

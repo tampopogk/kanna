@@ -49,7 +49,9 @@ impl Db {
         }
         let conn = Connection::open_with_flags(&path_buf, database_create_flags())?;
         configure_shared_database_connection(&conn)?;
-        let db = Self { conn };
+        let db = Self {
+            conn: super::disk_first::DbConnection::new(conn, path),
+        };
         db.init_test_schema()?;
         Ok(db)
     }
@@ -249,7 +251,15 @@ impl Db {
                 provider_override TEXT,
                 completion_bound INTEGER NOT NULL DEFAULT 0,
                 started_at TEXT NOT NULL DEFAULT (datetime('now')),
-                finished_at TEXT
+                finished_at TEXT,
+                entry_channel_identity TEXT,
+                result_declared_role TEXT,
+                result_channel_identity TEXT,
+                workspace_id TEXT,
+                session_branch TEXT,
+                session_name TEXT,
+                transcript_ref TEXT,
+                workspace_report TEXT
             );
             CREATE INDEX idx_stage_run_task_started ON stage_run(task_id, started_at);
 
@@ -439,7 +449,8 @@ impl Db {
                 origin_peer_id TEXT,
                 origin_task_id TEXT,
                 origin_input_id INTEGER,
-                origin_run_id TEXT
+                origin_run_id TEXT,
+                channel_identity TEXT
             );
             CREATE INDEX idx_task_input_task_id ON task_input(task_id, id);
             CREATE UNIQUE INDEX idx_task_input_transfer_origin
@@ -551,12 +562,25 @@ impl Db {
         super::copilot_wake::create_schema(&self.conn)?;
         super::serviced::create_schema(&self.conn)?;
         super::claude_channel::create_schema(&self.conn)?;
+        self.conn.execute_batch(super::task_store::SCHEMA)?;
+        self.conn
+            .execute_batch(super::revisions::STAGE_BUDGET_SCHEMA)?;
+        self.conn
+            .execute_batch(super::worktrees::STAGE_WORKSPACE_SCHEMA)?;
+        self.conn
+            .execute_batch(super::transition_commits::TRANSITION_COMMIT_SCHEMA)?;
+        self.conn.execute_batch(super::stage_edges::SCHEMA)?;
+        self.conn.execute_batch(super::subtask_joins::SCHEMA)?;
+        self.conn
+            .execute_batch(super::transfer_task_state::SCHEMA)?;
         create_blocker_revision_triggers(&self.conn)?;
         let mut stmt = self
             .conn
             .prepare("INSERT INTO schema_migrations (id) VALUES (?1)")?;
         super::create_contextless_completion_attempt_schema(&self.conn)?;
         super::create_human_review_schema(&self.conn)?;
+        self.conn.execute_batch(super::task_state::SCHEMA)?;
+        super::task_state::install_disk_state_triggers(&self.conn)?;
         for id in CURRENT_SCHEMA_MIGRATIONS {
             stmt.execute([id])?;
         }

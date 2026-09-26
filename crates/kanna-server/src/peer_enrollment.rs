@@ -383,6 +383,9 @@ async fn enroll_once(
         // account, so `retain_account` must drop it when that account goes.
         account_uid: Some(account_uid.to_string()),
         provenance: PeerProvenance::Account,
+        // The relay listed this id with exactly `announced` under
+        // `account_uid`: that listing is the evidence.
+        account_verified_at_unix_ms: Some(now_ms),
         identity_mismatch_at_unix_ms: None,
         paired_at_unix_ms: now_ms,
         last_seen_unix_ms: Some(now_ms),

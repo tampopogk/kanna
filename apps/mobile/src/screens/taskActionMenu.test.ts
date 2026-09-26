@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const nativeMocks = vi.hoisted(() => ({
   actionSheet: vi.fn(),
   alert: vi.fn(),
+  showAlert: vi.fn(),
   platform: { OS: "ios" }
 }));
 
@@ -13,8 +14,35 @@ vi.mock("react-native", () => ({
   Alert: {
     alert: nativeMocks.alert
   },
-  Platform: nativeMocks.platform
+  Platform: nativeMocks.platform,
+  TurboModuleRegistry: {
+    get: (name: string) =>
+      name === "DialogManagerAndroid"
+        ? {
+            // Values from React Native's DialogModule.kt.
+            getConstants: () => ({
+              buttonClicked: "buttonClicked",
+              dismissed: "dismissed",
+              buttonPositive: -1,
+              buttonNegative: -2,
+              buttonNeutral: -3
+            }),
+            showAlert: nativeMocks.showAlert
+          }
+        : null
+  }
 }));
+
+type AndroidOnAction = (action: string, buttonKey?: number) => void;
+
+function androidDialog() {
+  const [config, onError, onAction] = nativeMocks.showAlert.mock.calls[0]! as [
+    { title?: string; message?: string; items?: string[]; buttonNegative?: string; cancelable?: boolean },
+    (error: string) => void,
+    AndroidOnAction
+  ];
+  return { config, onError, onAction };
+}
 
 import { showTaskActionMenu } from "./taskActionMenu";
 
@@ -22,6 +50,7 @@ describe("showTaskActionMenu", () => {
   beforeEach(() => {
     nativeMocks.actionSheet.mockReset();
     nativeMocks.alert.mockReset();
+    nativeMocks.showAlert.mockReset();
     nativeMocks.platform.OS = "ios";
   });
 
@@ -64,6 +93,27 @@ describe("showTaskActionMenu", () => {
       },
       expect.any(Function)
     );
+  });
+
+  it("offers opening an artifact by tree id when the client can read artifacts", () => {
+    const onSelect = vi.fn();
+    showTaskActionMenu(
+      { mentionedFilesLabel: "Mentioned Files (0)", artifactsAvailable: true },
+      onSelect
+    );
+
+    const [sheet, choose] = nativeMocks.actionSheet.mock.calls[0];
+    expect(sheet.options).toEqual([
+      "Browse Files",
+      "Mentioned Files (0)",
+      "View Diff",
+      "Open Artifact…",
+      "Advance Stage",
+      "Close Task",
+      "Cancel"
+    ]);
+    choose(3);
+    expect(onSelect).toHaveBeenCalledWith("open-artifact");
   });
 
   it("offers dev-server preview only when a declared port is available", () => {
@@ -130,44 +180,93 @@ describe("showTaskActionMenu", () => {
     expect(onDismiss).toHaveBeenCalledOnce();
   });
 
-  it("shows equivalent task actions off iOS", () => {
+  it("lists every task action on Android, not just the three an Alert can hold", () => {
     nativeMocks.platform.OS = "android";
     const onSelect = vi.fn();
 
-    showTaskActionMenu({ mentionedFilesLabel: "Mentioned Files (2)" }, onSelect);
-
-    expect(nativeMocks.alert).toHaveBeenCalledWith(
-      "Task Actions",
-      undefined,
-      [
-        expect.objectContaining({ text: "Browse Files" }),
-        expect.objectContaining({ text: "Mentioned Files (2)" }),
-        expect.objectContaining({ text: "View Diff" }),
-        expect.objectContaining({ text: "Advance Stage" }),
-        expect.objectContaining({ text: "Close Task", style: "destructive" }),
-        expect.objectContaining({ text: "Cancel", style: "cancel" })
-      ],
-      expect.objectContaining({ cancelable: true })
+    showTaskActionMenu(
+      {
+        mentionedFilesLabel: "Mentioned Files (2)",
+        previewAvailable: true,
+        artifactsAvailable: true
+      },
+      onSelect
     );
 
-    const actions = nativeMocks.alert.mock.calls[0]![2]!;
-    actions[0]!.onPress?.();
-    actions[1]!.onPress?.();
-    actions[2]!.onPress?.();
-    actions[3]!.onPress?.();
-    actions[4]!.onPress?.();
+    // Alert.alert keeps only three buttons on Android and silently drops the
+    // rest, which left "Open Artifact…" and later actions unreachable.
+    expect(nativeMocks.alert).not.toHaveBeenCalled();
+    const { config, onAction } = androidDialog();
+    expect(config).toEqual({
+      title: "Task Actions",
+      items: [
+        "Preview Dev Server",
+        "Browse Files",
+        "Mentioned Files (2)",
+        "View Diff",
+        "Open Artifact…",
+        "Advance Stage",
+        "Close Task"
+      ],
+      buttonNegative: "Cancel",
+      cancelable: true
+    });
+    // AlertDialog shows the message instead of the items when both are set.
+    expect(config).not.toHaveProperty("message");
+
+    config.items!.forEach((_, index) => onAction("buttonClicked", index));
     expect(onSelect.mock.calls).toEqual([
+      ["preview"],
       ["browse-files"],
       ["mentioned-files"],
       ["view-diff"],
+      ["open-artifact"],
       ["advance-stage"],
       ["close-task"]
     ]);
   });
 
-  it("routes Android cancellation through the dismiss callback", () => {
+  it("offers only close for an unresolved task creation on Android", () => {
+    nativeMocks.platform.OS = "android";
+    const onSelect = vi.fn();
+
+    showTaskActionMenu(
+      { mentionedFilesLabel: "Mentioned Files (0)", taskCreation: true },
+      onSelect
+    );
+
+    const { config, onAction } = androidDialog();
+    expect(config.items).toEqual(["Close Task"]);
+    onAction("buttonClicked", 0);
+    expect(onSelect).toHaveBeenCalledWith("close-task");
+  });
+
+  it.each([
+    ["Cancel", "buttonClicked", -2],
+    ["back or outside tap", "dismissed", undefined]
+  ] as const)(
+    "routes Android %s through the dismiss callback",
+    (_, action, buttonKey) => {
+      nativeMocks.platform.OS = "android";
+      const onSelect = vi.fn();
+      const onDismiss = vi.fn();
+
+      showTaskActionMenu(
+        { mentionedFilesLabel: "Mentioned Files (0)" },
+        onSelect,
+        onDismiss
+      );
+
+      androidDialog().onAction(action, buttonKey);
+      expect(onSelect).not.toHaveBeenCalled();
+      expect(onDismiss).toHaveBeenCalledOnce();
+    }
+  );
+
+  it("dismisses when Android cannot show the dialog", () => {
     nativeMocks.platform.OS = "android";
     const onDismiss = vi.fn();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     showTaskActionMenu(
       { mentionedFilesLabel: "Mentioned Files (0)" },
@@ -175,8 +274,8 @@ describe("showTaskActionMenu", () => {
       onDismiss
     );
 
-    const actions = nativeMocks.alert.mock.calls[0]![2]!;
-    actions[5]!.onPress?.();
+    androidDialog().onError("Tried to show an alert while not attached to an Activity");
     expect(onDismiss).toHaveBeenCalledOnce();
+    warn.mockRestore();
   });
 });

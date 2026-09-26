@@ -56,6 +56,73 @@ fn builds_a_plan_completion_that_publishes_its_remaining_stages() {
     );
 }
 
+/// `artifacts` is set on the request after `build_complete_stage_request`,
+/// like `exit`; it stays absent when not asked for.
+#[test]
+fn builds_complete_stage_payload_with_artifacts() {
+    let mut request = build_complete_stage_request(
+        Some("run-1".to_string()),
+        None,
+        "success".to_string(),
+        "shipped the mockup".to_string(),
+        None,
+        None,
+        None,
+    );
+    request.artifacts = Some(json!({ "mockup": "abc123" }));
+
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        json!({
+            "runId": "run-1",
+            "status": "success",
+            "summary": "shipped the mockup",
+            "artifacts": { "mockup": "abc123" },
+        })
+    );
+}
+
+#[tokio::test]
+async fn stage_complete_posts_artifacts_to_the_request_body() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buffer = [0_u8; 4096];
+        let bytes_read = stream.read(&mut buffer).unwrap();
+        let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+        assert!(request.starts_with("POST /v1/tasks/task-1/actions/complete-stage HTTP/1.1"));
+        assert!(request.contains(r#""artifacts":{"mockup":"abc123"}"#));
+
+        let body = r#"{"taskId":"task-1"}"#;
+        stream
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+    });
+
+    let mut request = build_complete_stage_request(
+        None,
+        None,
+        "success".to_string(),
+        "shipped the mockup".to_string(),
+        None,
+        None,
+        None,
+    );
+    request.artifacts = Some(json!({ "mockup": "abc123" }));
+
+    let response = complete_stage_via_api(&format!("http://{address}"), "task-1", &request).await;
+
+    server.join().unwrap();
+    assert_eq!(response.unwrap().task_id, "task-1");
+}
+
 #[test]
 fn builds_merge_handoff_without_approval_state() {
     let request = build_merge_handoff_request(
@@ -309,6 +376,7 @@ fn builds_camel_case_task_request_payload() {
         allowed_tool: vec!["Bash".to_string(), "Edit".to_string()],
         blocker_task_id: vec!["blocker-1".to_string(), "blocker-2".to_string()],
         parent_task: None,
+        dependency: Vec::new(),
     });
 
     assert_eq!(
@@ -360,6 +428,7 @@ fn builds_task_request_without_exposing_agent_type() {
         allowed_tool: Vec::new(),
         blocker_task_id: Vec::new(),
         parent_task: None,
+        dependency: Vec::new(),
     });
 
     assert_eq!(

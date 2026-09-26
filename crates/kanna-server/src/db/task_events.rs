@@ -144,6 +144,22 @@ pub enum TaskEventKind {
     /// The task's last unresolved blocker went away. Same derived predicate as
     /// [`Self::TaskBlocked`]; `payload.blockerTaskIds` is empty.
     TaskUnblocked,
+    /// An upstream stage this task already consumed a result from (spec §9)
+    /// recorded a newer success when leaving that stage again. Recorded on
+    /// the edge and announced here; the engine takes no other action — it
+    /// does not hold, rerun or rebase this task. `payload` names the
+    /// `upstreamTaskId`, `upstreamStage`, `dependentStage`, the consumed
+    /// `consumedResultId`/`consumedSha` and the newer
+    /// `supersedingResultId`/`supersedingSha`.
+    DependencySuperseded,
+    /// A child created in one of this task's subtask joins resolved (spec
+    /// §9, T5): it recorded its first result, closed without one, or could
+    /// not be created. Its outcome was delivered once into this task's
+    /// input ledger in the same transaction. `payload` names the `joinId`,
+    /// `childTaskId`, `outcome` (`result`, `closed`, `not_created`), the
+    /// child's `resultId`/`status`/`stage`/`committedSha`, the delivered
+    /// `inputId`, and `resolved`/`total`/`joinComplete`.
+    SubtaskResultDelivered,
     /// A provider refused this task's turn because the allowance for the
     /// scope it named is spent. A *positive* match on the provider's own
     /// rejection output, never inferred from a session going quiet, and the
@@ -238,6 +254,8 @@ impl TaskEventKind {
             Self::TransferFinalizing => "task.transfer_finalizing",
             Self::TaskBlocked => "task.blocked",
             Self::TaskUnblocked => "task.unblocked",
+            Self::DependencySuperseded => "task.dependency_superseded",
+            Self::SubtaskResultDelivered => "task.subtask_result",
             Self::ProviderQuotaRejected => "task.provider_quota_rejected",
             Self::ProviderQuotaParked => "task.provider_quota_parked",
             Self::ProviderCapacityRefused => "task.provider_capacity_refused",
@@ -272,6 +290,8 @@ impl TaskEventKind {
         Self::TransferFinalizing,
         Self::TaskBlocked,
         Self::TaskUnblocked,
+        Self::DependencySuperseded,
+        Self::SubtaskResultDelivered,
         Self::ProviderQuotaRejected,
         Self::ProviderQuotaParked,
         Self::ProviderCapacityRefused,
@@ -648,6 +668,24 @@ impl Db {
         self.conn.execute(
             "INSERT INTO task_event (task_id, type, payload) VALUES (?, ?, ?)",
             rusqlite::params![task_id, kind.as_str(), payload],
+        )?;
+        APPENDED.notify_waiters();
+        Ok(())
+    }
+
+    /// Re-append an event a ledger entry held until its file was published.
+    /// The type and payload are the ones the original mutation wrote; only
+    /// the sequence and timestamp are new, which is what keeps the cursor's
+    /// no-skip guarantee.
+    pub(crate) fn append_raw_task_event(
+        &self,
+        task_id: &str,
+        event_type: &str,
+        payload: Option<&str>,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "INSERT INTO task_event (task_id, type, payload) VALUES (?, ?, ?)",
+            rusqlite::params![task_id, event_type, payload],
         )?;
         APPENDED.notify_waiters();
         Ok(())

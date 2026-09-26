@@ -115,6 +115,9 @@ pub struct AppState {
     transfer_work: Arc<crate::transfer_engine::queue::TransferWorkQueue>,
     cloud_transfer_proxies: crate::cloud_transfer_proxy::CloudTransferProxyState,
     pub(super) preview_sessions: super::preview::PreviewSessions,
+    pub(super) artifact_previews: super::artifact_preview::ArtifactPreviewSessions,
+    /// Where default artifact repositories live; tests point it at a fixture.
+    pub(super) artifact_storage: crate::artifacts::ArtifactStorageContext,
     pub(crate) companion_resources: crate::ksp::CompanionResources,
     pub(crate) terminal_taps: crate::ksp::TerminalTapRegistry,
     pub(crate) agent_histories: crate::ksp::AgentHistoryRegistry,
@@ -590,6 +593,9 @@ impl AppState {
     }
 
     pub fn new(config: Config) -> Self {
+        // Code that only holds this database's path must publish its task
+        // ledger to the same root as the server.
+        crate::task_store::configure(&config);
         if let Err(err) = pairing::PairingStore::load(Path::new(&config.pairing_store_path)) {
             log::warn!(
                 "failed to load pairing store {}: {}",
@@ -660,6 +666,8 @@ impl AppState {
             transfer_work,
             cloud_transfer_proxies: Arc::new(Mutex::new(HashMap::new())),
             preview_sessions: super::preview::PreviewSessions::default(),
+            artifact_previews: super::artifact_preview::ArtifactPreviewSessions::default(),
+            artifact_storage: crate::artifacts::ArtifactStorageContext::from_environment(),
             pairing_session: Arc::new(Mutex::new(None)),
             pairing_persistence_mutation: Arc::new(Mutex::new(())),
             #[cfg(debug_assertions)]

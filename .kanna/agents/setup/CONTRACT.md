@@ -1,19 +1,16 @@
 # setup Contract
 
+Maintainer documentation. This file is never resolved into the agent's prompt — the agent follows `AGENT.md` plus any repository `EXTEND.md` — so every rule below must also be stated there; this file must not be the only home of one.
+
 The `setup` role configures a repository by composing built-in Kanna roles and tested flavor variants.
 
 Required behavior:
 
-- It must inspect the repository before asking questions, including git remote URL, available GitHub auth through `gh auth status`, existing CI configuration, and existing `.kanna/` files.
-- It must ask only for decisions that inspection cannot determine safely.
-- It must write `.kanna/config.json` selections, and repo-local `EXTEND.md` files only for behavior that does not match stock flavors.
-- It must install the machine-local config bootstrap: ignore `.kanna/config.local.json`, add a committed portable script that creates a schema-only skeleton in the primary checkout and copies it into each worktree, and invoke that script from `.kanna/config.json` setup without replacing existing setup commands. The copy direction is primary checkout to worktree only.
-- It must not write copied stock `AGENT.md` files for roles such as `pr` or `merge`.
-- For the stock GitHub flow, it must select a built-in workflow (`no-review`, `single-reviewer`, or `specialized-reviewers`) plus `merge@github`, not author a workflow file of its own. A workflow file is written only for stages the built-ins do not offer.
-- The stock GitHub flow must not select `pr@draft-pr`. `merge@github` cannot merge a draft, so a draft PR requires a deliberate repo-local decision about what readies it; drafts are offered only when the user asks for them.
-- Its answers must compose. Every built-in workflow ends with a `pr` stage plus an `approve` post, and `approve` resolves the PR with `gh pr view` and fails when none exists, so direct built-in selection is valid only for the ordinary-PR flow:
-  - `pr@push-only` creates no PR, so it must never be paired with a built-in workflow. It implies manual merge plus a repo-local workflow matching the chosen review depth with the `approve` post omitted.
-  - Manual merge likewise requires omitting the `approve` post, because nothing consumes the merge signal.
-  - `pr@draft-pr` with a merge agent must also write a repo-local `.kanna/agents/approve/EXTEND.md` that readies the draft before signaling.
-- It must validate changed JSON files and the local-config sync script, and verify the local config stays ignored, before reporting success.
+- It must inspect the repository before asking questions, including git remote URL, available GitHub auth through `gh auth status`, existing CI configuration, and existing `.kanna/` files, and ask only for decisions that inspection cannot determine safely.
+- It must write `.kanna/config.json` selections, and repo-local `EXTEND.md` files only for behavior that does not match stock flavors. It must not write copied stock `AGENT.md` files for roles such as `pr` or `merge`.
+- For the stock GitHub flow, it must select a built-in workflow (`no-review`, `single-reviewer`, or `specialized-reviewers`) plus `merge@github`, not author a workflow file of its own, and must not select `pr@draft-pr`.
+- Its answers must compose: `pr@push-only` must never be paired with a built-in workflow; manual merge omits the `approve` post; `pr@draft-pr` with a merge agent writes a repo-local `.kanna/agents/approve/EXTEND.md` that readies the draft before signaling.
+- Machine-specific choices go in ignored `.kanna/config.local.json`; it preserves an existing local config bootstrap if valid and does not mandate installing one.
+- It runs `kanna_doctor` against the candidate worktree after edits and validates changed JSON files, without treating doctor as proof that commands work.
+- It explains activation (shared definitions resolve from origin's recorded default-branch snapshot) rather than publishing or inventing a remote.
 - It must finish with `kanna_complete_stage` status `success`, or `failure` when setup is blocked.

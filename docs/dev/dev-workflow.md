@@ -371,7 +371,7 @@ over the resolved `config.json`, with local winning:
 (Strict JSON — no comments, and never committed.)
 
 **What it may set.** Only `agentProviders`, `workflow`, `ports`, `setup`,
-`teardown`, and `test` — this machine's plumbing. `vars` and `flavors` are
+`teardown`, `test`, and `artifacts` — this machine's plumbing. `vars` and `flavors` are
 excluded because they feed stage prompts and agent selection: a task created
 under a local value for either has a prompt no other machine can reproduce, and
 nothing durable records why. That also breaks task transfer, where the
@@ -388,6 +388,13 @@ environment, and nothing about an outage needs them changed.
 | `agentProviders`, `ports` | entry by entry: a local entry replaces the committed entry of the same name; unnamed committed entries survive. One level deep — a named entry is replaced whole, not field by field. |
 | `workflow` | replaces. |
 | `setup`, `teardown`, `test` | replace. Arrays never concatenate: a local `setup` is the whole setup list. |
+| `artifacts` | field by field: a local `repositoryPath`, `retention` or `remote` replaces only that field. |
+
+**Downgrade.** A Kanna server that predates artifact support rejects an
+`artifacts` block in `config.local.json` — its local allowlist does not know
+the key, so definition resolution fails and names the file — while it ignores
+the same block in the committed `config.json`. Remove the local block before
+running an older build against the checkout.
 
 There is no delete: to drop a committed `agentProviders` entry, replace it with
 the value you want instead.

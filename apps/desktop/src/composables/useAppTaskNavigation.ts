@@ -99,6 +99,7 @@ interface UseAppTaskNavigationOptions {
   openPeerPicker: (taskId: string) => void;
   openPairPeerPicker: () => void;
   pullSelectedWorkspaceTask?: (task: WorkspaceTask) => void | Promise<void>;
+  openArtifact?: (repoId: string) => void;
 }
 
 function isActivityShortcutCandidate(item: { stage?: string; teardown_started_at?: string | null }): boolean {
@@ -129,6 +130,7 @@ export function useAppTaskNavigation({
   openPeerPicker,
   openPairPeerPicker,
   pullSelectedWorkspaceTask,
+  openArtifact,
 }: UseAppTaskNavigationOptions) {
   const effectiveTaskBlockers = taskBlockers
     ?? computed(() => store.taskBlockers ?? []);
@@ -599,6 +601,15 @@ export function useAppTaskNavigation({
         id: "pull-to-machine",
         label: t('taskTransfer.pullToThisMachine'),
         execute: () => void pullSelectedWorkspaceTask(selectedWorkspaceTask),
+      });
+    }
+    // Artifacts live in this machine's store for a repository it holds.
+    const artifactRepoId = selectedCloudRepoId.value ? null : store.currentItem?.repo_id ?? store.selectedRepoId;
+    if (openArtifact && artifactRepoId) {
+      cmds.push({
+        id: "open-artifact",
+        label: t('commandPalette.openArtifact'),
+        execute: () => openArtifact(artifactRepoId),
       });
     }
     cmds.push({

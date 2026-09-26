@@ -399,6 +399,10 @@ struct SafeServerStatus {
     #[serde(default)]
     ksp_stream_version: Option<u8>,
     #[serde(default)]
+    stage_dependencies_version: Option<u8>,
+    #[serde(default)]
+    subtask_joins_version: Option<u8>,
+    #[serde(default)]
     agent_api_tools: Option<Vec<String>>,
     #[serde(default)]
     write_path_health: Option<SafeWritePathHealth>,
@@ -423,6 +427,9 @@ pub enum ParamType {
     Boolean,
     StringArray,
     Object,
+    /// A JSON array whose every element is an object (e.g. the stage
+    /// dependency edges `kanna_create_task` takes).
+    ObjectArray,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -756,6 +763,8 @@ pub fn runtime_info_snapshot(
                     },
                     "capabilityVersions": {
                         "kspStream": status.ksp_stream_version,
+                        "stageDependencies": status.stage_dependencies_version,
+                        "subtaskJoins": status.subtask_joins_version,
                     },
                     "writePathHealth": status.write_path_health,
                 });
@@ -972,6 +981,11 @@ impl ParamDef {
                 }
                 Ok(parsed)
             }
+            ParamType::ObjectArray => {
+                let parsed = serde_json::from_str::<Value>(raw)
+                    .map_err(|e| format!("{} must be a JSON array of objects: {e}", self.name))?;
+                object_array_value(parsed, &self.name)
+            }
         }
     }
 }
@@ -1010,6 +1024,9 @@ fn input_schema(tool: &ToolDef) -> Value {
                 serde_json::json!({ "type": "array", "items": { "type": "string" } })
             }
             ParamType::Object => serde_json::json!({ "type": "object" }),
+            ParamType::ObjectArray => {
+                serde_json::json!({ "type": "array", "items": { "type": "object" } })
+            }
         };
 
         if let Some(description) = &param.description {
@@ -1450,6 +1467,7 @@ fn value_for_param(
                 .collect(),
         ),
         ParamType::Object => value,
+        ParamType::ObjectArray => object_array_value(value, &param.name)?,
     };
     Ok(Some(value))
 }
@@ -1504,6 +1522,13 @@ fn integer_value(
         number = number.min(max);
     }
     Ok(number)
+}
+
+fn object_array_value(value: Value, name: &str) -> Result<Value, String> {
+    match &value {
+        Value::Array(entries) if entries.iter().all(Value::is_object) => Ok(value),
+        _ => Err(format!("{name} must be an array of objects")),
+    }
 }
 
 fn string_array_value(value: &Value, name: &str) -> Result<Vec<String>, String> {
@@ -1795,6 +1820,82 @@ pub fn is_relevant_subscription_event(event: &Value) -> bool {
         ) => true,
         _ => is_actionable_task_event(event),
     }
+}
+
+/// The stage-dependency contract (spec §9) a server serves: `dependencies`
+/// on task creation installs stage edges on an unstarted task. Advertised as
+/// `stageDependenciesVersion` on `GET /v1/status`, beside `kspStreamVersion`.
+pub const STAGE_DEPENDENCIES_VERSION: u8 = 1;
+
+/// Does this request need the target server to honour stage dependencies?
+/// A task creation carrying a non-empty `dependencies` list does: a server
+/// that predates them ignores the unknown field and starts an ordinary,
+/// ungated task.
+pub fn requires_stage_dependencies(request: &ResolvedRequest) -> bool {
+    request.method == Method::Post
+        && request.path == "/v1/tasks"
+        && request
+            .body
+            .get("dependencies")
+            .and_then(Value::as_array)
+            .is_some_and(|dependencies| !dependencies.is_empty())
+}
+
+/// Refuse, before anything is created, unless the target server's
+/// `GET /v1/status` confirms it serves stage dependencies.
+pub fn confirm_stage_dependencies_supported(status: &Value) -> Result<(), String> {
+    let advertised = status
+        .get("stageDependenciesVersion")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if advertised >= u64::from(STAGE_DEPENDENCIES_VERSION) {
+        return Ok(());
+    }
+    Err(format!(
+        "stage_dependencies_unsupported: the destination server did not confirm \
+         stageDependenciesVersion {STAGE_DEPENDENCIES_VERSION}, so it would ignore `dependencies` \
+         and start an ordinary task with no stage gate and no recorded base. Upgrade that server, \
+         or create the task without dependencies. No task was created."
+    ))
+}
+
+/// The subtask-join contract (spec §9, T5) a server serves: children created
+/// in a join from the parent's committed SHA, each result delivered once as a
+/// parent input, the parent held until every child resolves. Advertised as
+/// `subtaskJoinsVersion` on `GET /v1/status`.
+pub const SUBTASK_JOINS_VERSION: u8 = 1;
+
+/// Does this request need the target server to serve subtask joins? Creating
+/// children in a join or reading join state does: a server that predates
+/// them has no such routes, and a client must not read that as "no join".
+pub fn requires_subtask_joins(request: &ResolvedRequest) -> bool {
+    let Some(rest) = request.path.strip_prefix("/v1/tasks/") else {
+        return false;
+    };
+    let route = rest.split('?').next().unwrap_or(rest);
+    match request.method {
+        Method::Post => route.ends_with("/subtasks"),
+        Method::Get => route.ends_with("/joins"),
+        _ => false,
+    }
+}
+
+/// Refuse, before anything is created or read, unless the target server's
+/// `GET /v1/status` confirms it serves subtask joins.
+pub fn confirm_subtask_joins_supported(status: &Value) -> Result<(), String> {
+    let advertised = status
+        .get("subtaskJoinsVersion")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if advertised >= u64::from(SUBTASK_JOINS_VERSION) {
+        return Ok(());
+    }
+    Err(format!(
+        "subtask_joins_unsupported: the destination server did not confirm subtaskJoinsVersion \
+         {SUBTASK_JOINS_VERSION}, so it cannot create children in a join, hold the parent until \
+         they resolve, or report join state. Upgrade that server, or create the children with \
+         kanna_create_task and parent_task_id and reconcile them yourself. Nothing was created."
+    ))
 }
 
 /// A peer predating brief mode may silently ignore unknown query parameters.

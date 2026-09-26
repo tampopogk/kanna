@@ -3,7 +3,11 @@ import type {
   DesktopSummary,
   HumanReviewDecision,
   TaskActivity,
+  TaskDependencyWait,
+  TaskLatestRun,
   TaskReviewContext,
+  TaskSessionHistoryEntry,
+  TaskStageDependency,
   TaskSummary,
   RepoSummary,
   RepoCommandCatalog,
@@ -209,6 +213,26 @@ export interface SessionState {
     reviewContext: TaskReviewContext | null;
     humanReviewDecision: HumanReviewDecision | null;
   } | null;
+  /**
+   * The selected task's most recent recorded result (spec §16.8), when task
+   * detail has reported one.
+   *
+   * Kept as its own field for the same reason as `selectedTaskReviewState`:
+   * detail-only, meaningful for exactly one task, and `taskId` is what keeps
+   * a stale read from being shown against the wrong task.
+   */
+  selectedTaskLatestRun: {
+    taskId: string;
+    latestRun: TaskLatestRun | null;
+    /** Every prior stage-run session for this task, oldest first (T11b). */
+    sessionHistory?: TaskSessionHistoryEntry[];
+    /** Stage-dependency edges into this task's current stage (spec §9, T4). */
+    stageDependencies?: TaskStageDependency[];
+    /** This task's recorded automatic-advance dependency wait (T4). */
+    dependencyWait?: TaskDependencyWait | null;
+    /** True when a person, not a session, must decide (roleless Gate, T3). */
+    gateParked?: boolean | null;
+  } | null;
   pendingTaskAction: PendingTaskAction | null;
   activeView: MobileView;
   pairingCode: string | null;
@@ -403,6 +427,9 @@ export interface SessionStore {
   setSelectedTaskReviewState(
     state: SessionState["selectedTaskReviewState"]
   ): void;
+  setSelectedTaskLatestRun(
+    state: SessionState["selectedTaskLatestRun"]
+  ): void;
   setSelectedTask(taskId: string | null): void;
   beginTaskAction(taskId: string, action: TaskStageAction): boolean;
   finishTaskAction(taskId: string, action: TaskStageAction): void;
@@ -540,6 +567,7 @@ export function createSessionStore(): SessionStore {
     searchResults: [],
     selectedTaskId: null,
     selectedTaskReviewState: null,
+    selectedTaskLatestRun: null,
     pendingTaskAction: null,
     activeView: "tasks",
     pairingCode: null,
@@ -1368,6 +1396,12 @@ export function createSessionStore(): SessionStore {
       state = { ...state, selectedTaskReviewState: reviewState };
       publish();
     },
+    setSelectedTaskLatestRun(latestRun) {
+      const current = state.selectedTaskLatestRun;
+      if (JSON.stringify(current) === JSON.stringify(latestRun)) return;
+      state = { ...state, selectedTaskLatestRun: latestRun };
+      publish();
+    },
     setSelectedTask(selectedTaskId) {
       state = {
         ...state,
@@ -1378,6 +1412,10 @@ export function createSessionStore(): SessionStore {
         selectedTaskReviewState:
           state.selectedTaskReviewState?.taskId === selectedTaskId
             ? state.selectedTaskReviewState
+            : null,
+        selectedTaskLatestRun:
+          state.selectedTaskLatestRun?.taskId === selectedTaskId
+            ? state.selectedTaskLatestRun
             : null,
         taskTerminalTaskId:
           selectedTaskId === null ? null : state.taskTerminalTaskId,
@@ -2221,6 +2259,7 @@ export function createSessionStore(): SessionStore {
         ...state,
         selectedTaskId: null,
         selectedTaskReviewState: null,
+        selectedTaskLatestRun: null,
         taskTerminalTaskId: null,
         taskTerminalStatus: "idle",
         taskTerminalOutput: EMPTY_TERMINAL_OUTPUT,

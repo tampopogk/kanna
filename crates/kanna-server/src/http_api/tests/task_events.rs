@@ -667,6 +667,148 @@ async fn set_task_attention_route_auto_resolves_to_the_owning_sibling_machine() 
     relay.abort();
 }
 
+/// Same-account owner routing through the account-checked relay dispatch:
+/// the owner acts on a forwarded mutation while it is signed in to the
+/// account the relay connection authenticated, and once the owner has left
+/// that account its refusal is not the task's answer - the caller gets an
+/// explicit `task_owner_unreachable` naming it, and nothing is done locally.
+#[tokio::test]
+async fn federated_owner_routing_holds_within_the_account_and_fails_explicitly_outside_it() {
+    use axum::body::to_bytes;
+    use tower::ServiceExt;
+
+    let source = test_state_with_seed("desktop-boundary-source", "Source", |db| {
+        db.insert_test_repo("repo-source", "Source Repo")
+            .expect("insert source repo");
+    });
+    source.set_authenticated_account_uid(Some("uid-1".to_string()));
+    let owner = test_state_with_seed("desktop-boundary-owner", "Owner", |db| {
+        db.insert_test_repo("repo-owner", "Owner Repo")
+            .expect("insert owner repo");
+        db.insert_test_pipeline_item(
+            "owned-task",
+            "repo-owner",
+            "owned-task",
+            Some("owned-task"),
+            "in progress",
+            "2026-09-23 00:00:00",
+        )
+        .expect("insert owned task");
+    });
+    owner.set_authenticated_account_uid(Some("uid-1".to_string()));
+
+    // The relay: lists the owner, and forwards an invoke exactly as the
+    // owner's relay loop dispatches one - as the account its connection
+    // authenticated (`uid-1`).
+    let mut requests = source
+        .take_desktop_relay_requests()
+        .expect("take source relay queue");
+    source.set_desktop_routing_available(true);
+    let relay_owner = Arc::clone(&owner);
+    let relay = tokio::spawn(async move {
+        while let Some(request) = requests.recv().await {
+            match request {
+                crate::http_api::DesktopRelayRequest::ListActive { response, .. } => {
+                    let _ = response.send(Ok(vec![
+                        crate::http_api::RelayDesktopPresence::without_key(
+                            relay_owner.config().desktop_id.clone(),
+                        ),
+                    ]));
+                }
+                crate::http_api::DesktopRelayRequest::Invoke {
+                    method,
+                    path,
+                    body,
+                    response,
+                    ..
+                } => {
+                    let result = crate::http_api::dispatch_authenticated_relay_http_invoke(
+                        Arc::clone(&relay_owner),
+                        "uid-1".to_string(),
+                        Some("desktop-boundary-source".to_string()),
+                        &method,
+                        &path,
+                        body,
+                    )
+                    .await;
+                    let _ = response.send(Ok(result));
+                }
+                crate::http_api::DesktopRelayRequest::PublishTaskSnapshot { response, .. } => {
+                    let _ = response.send(Ok(()));
+                }
+                crate::http_api::DesktopRelayRequest::ListRepoSingletons { response, .. } => {
+                    let _ = response.send(Ok(Vec::new()));
+                }
+                _ => panic!("unexpected relay request"),
+            }
+        }
+    });
+    let app = router(Arc::clone(&source));
+    let set_attention = || {
+        axum::http::Request::put("/v1/tasks/owned-task/attention")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(serde_json::json!({}).to_string()))
+            .expect("request")
+    };
+
+    let response = app
+        .clone()
+        .oneshot(set_attention())
+        .await
+        .expect("response");
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let owner_db = crate::db::Db::open(&owner.config().db_path).expect("open owner db");
+    assert!(
+        owner_db
+            .get_pipeline_item("owned-task")
+            .unwrap()
+            .unwrap()
+            .attention_requested
+    );
+    crate::db::Db::open(&owner.config().db_path)
+        .unwrap()
+        .connection_for_e2e_tests()
+        .execute(
+            "UPDATE pipeline_item SET attention_requested = 0 WHERE id = 'owned-task'",
+            [],
+        )
+        .unwrap();
+
+    // The owner signs in to another account; the relay connection that
+    // forwards the next invoke still carries `uid-1`.
+    owner.set_authenticated_account_uid(Some("uid-2".to_string()));
+    let response = app
+        .clone()
+        .oneshot(set_attention())
+        .await
+        .expect("response");
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    );
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read body");
+    let body = String::from_utf8(body.to_vec()).expect("utf8 body");
+    assert!(body.starts_with("task_owner_unreachable: "), "{body}");
+    assert!(body.contains("desktop-boundary-owner"), "{body}");
+    assert!(body.contains("relay_account_changed"), "{body}");
+    assert!(
+        !owner_db
+            .get_pipeline_item("owned-task")
+            .unwrap()
+            .unwrap()
+            .attention_requested,
+        "the refused owner changed nothing"
+    );
+    let source_db = crate::db::Db::open(&source.config().db_path).expect("open source db");
+    assert!(
+        source_db.get_pipeline_item("owned-task").unwrap().is_none(),
+        "nothing was done locally with the caller's id"
+    );
+    relay.abort();
+}
+
 /// A task absent from every reachable machine is still a flat, honest 404 -
 /// auto-resolve only changes the *found* case.
 #[tokio::test]
@@ -700,13 +842,13 @@ async fn get_task_route_returns_not_found_when_no_reachable_sibling_has_the_task
 }
 
 /// A task genuinely absent everywhere is not the only kind of miss: a
-/// machine this desktop is paired with, but could not reach at all (no relay
-/// routing set up in this test, so `relay_and_lan_desktop_ids` never even
-/// includes it as a candidate to dial), must be named in the 404 rather than
-/// silently collapsed into "no such task" - `paired_but_unchecked` is what
-/// keeps those two readings distinct.
+/// same-account machine this desktop is paired with, but could not reach at
+/// all (no relay routing set up in this test, so `relay_and_lan_desktop_ids`
+/// never even includes it as a candidate to dial), may own the task. That is
+/// an explicit `503 task_owner_unreachable` naming it - never a 404 that
+/// reads as "no such task", and never a local action.
 #[tokio::test]
-async fn get_task_route_names_a_paired_but_unreachable_machine_in_its_not_found_body() {
+async fn get_task_route_fails_explicitly_naming_a_paired_but_unreachable_owner() {
     use axum::body::to_bytes;
     use tower::ServiceExt;
 
@@ -714,6 +856,7 @@ async fn get_task_route_names_a_paired_but_unreachable_machine_in_its_not_found_
         db.insert_test_repo("repo-source", "Source Repo")
             .expect("insert source repo");
     });
+    source.set_authenticated_account_uid(Some("uid-1".to_string()));
 
     let peer_trust_store_path = source
         .config()
@@ -729,8 +872,9 @@ async fn get_task_route_names_a_paired_but_unreachable_machine_in_its_not_found_
             transfer_peer_id: None,
             transfer_public_key: None,
             environment: source.config().environment.clone(),
-            account_uid: None,
-            provenance: crate::peer_trust::PeerProvenance::Verified,
+            account_uid: Some("uid-1".to_string()),
+            provenance: crate::peer_trust::PeerProvenance::Account,
+            account_verified_at_unix_ms: Some(1),
             identity_mismatch_at_unix_ms: None,
             paired_at_unix_ms: 1,
             last_seen_unix_ms: None,
@@ -755,23 +899,79 @@ async fn get_task_route_names_a_paired_but_unreachable_machine_in_its_not_found_
         )
         .await
         .expect("lookup response");
-    assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    );
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read body");
     let body = String::from_utf8(body.to_vec()).expect("utf8 body");
+    assert!(body.starts_with("task_owner_unreachable: "), "{body}");
     assert!(
         body.contains("desktop-unreachable-peer"),
-        "404 must name the paired machine it could not reach to confirm: {body}"
+        "the refusal must name the paired machine it could not reach to confirm: {body}"
     );
+}
+
+/// A pin that does not place the sibling in this desktop's account can never
+/// be asked, so it can never be the owner of a task this desktop may act on:
+/// it does not turn a genuine miss into "owner unreachable".
+#[tokio::test]
+async fn get_task_route_does_not_count_a_pin_outside_the_account_as_a_possible_owner() {
+    use tower::ServiceExt;
+
+    let source = test_state_with_seed("desktop-outside-source", "Source", |db| {
+        db.insert_test_repo("repo-source", "Source Repo")
+            .expect("insert source repo");
+    });
+    source.set_authenticated_account_uid(Some("uid-1".to_string()));
+    let path = source
+        .config()
+        .peer_trust_store_path()
+        .expect("peer trust store path");
+    let mut store = crate::peer_trust::PeerTrustStore::load(&path).expect("load store");
+    for (desktop_id, account) in [
+        ("desktop-signed-out-pin", None),
+        ("desktop-legacy-pin", Some("uid-1")),
+    ] {
+        store
+            .upsert(crate::peer_trust::PeerDesktop {
+                desktop_id: desktop_id.to_string(),
+                display_name: desktop_id.to_string(),
+                channel_public_key: format!("{desktop_id}-key"),
+                transfer_peer_id: None,
+                transfer_public_key: None,
+                environment: source.config().environment.clone(),
+                account_uid: account.map(str::to_string),
+                provenance: crate::peer_trust::PeerProvenance::Verified,
+                account_verified_at_unix_ms: None,
+                identity_mismatch_at_unix_ms: None,
+                paired_at_unix_ms: 1,
+                last_seen_unix_ms: None,
+            })
+            .expect("pin");
+    }
+    store.save(&path).expect("save");
+
+    let response = router(Arc::clone(&source))
+        .oneshot(
+            axum::http::Request::get("/v1/tasks/nowhere-task")
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("lookup response");
+    assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
 }
 
 /// A machine this attempt actually *discovered* (an eligible LAN candidate,
 /// unlike the never-discovered paired peer above) but could not successfully
 /// dispatch to - a first-contact pairing failure or a dial that never
-/// connects - must still be named in the 404, with the reason the dispatch
-/// failed, and must never be silently folded into `paired_but_unchecked`'s
-/// "never even discovered" bucket merely because it was attempted.
+/// connects - must be named in the explicit `task_owner_unreachable`
+/// refusal, with the reason the dispatch failed, and must never be silently
+/// folded into `paired_but_unchecked`'s "never even discovered" bucket
+/// merely because it was attempted.
 #[tokio::test]
 async fn get_task_route_names_a_discovered_but_undialable_machine_with_its_dispatch_reason() {
     use axum::body::to_bytes;
@@ -835,8 +1035,9 @@ async fn get_task_route_names_a_discovered_but_undialable_machine_with_its_dispa
                 transfer_peer_id: None,
                 transfer_public_key: None,
                 environment: source.config().environment.clone(),
-                account_uid: None,
+                account_uid: Some("uid-1".into()),
                 provenance: crate::peer_trust::PeerProvenance::Verified,
+                account_verified_at_unix_ms: Some(1),
                 identity_mismatch_at_unix_ms: None,
                 paired_at_unix_ms: 1,
                 last_seen_unix_ms: None,
@@ -861,18 +1062,22 @@ async fn get_task_route_names_a_discovered_but_undialable_machine_with_its_dispa
         )
         .await
         .expect("lookup response");
-    assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    );
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read body");
     let body = String::from_utf8(body.to_vec()).expect("utf8 body");
+    assert!(body.starts_with("task_owner_unreachable: "), "{body}");
     assert!(
         body.contains("desktop-undialable-peer"),
-        "404 must name the discovered machine it could not dispatch to: {body}"
+        "the refusal must name the discovered machine it could not dispatch to: {body}"
     );
     assert!(
         body.contains("could not dispatch"),
-        "404 must carry the dispatch-failure reason, not just the machine id: {body}"
+        "the refusal must carry the dispatch-failure reason, not just the machine id: {body}"
     );
 }
 
@@ -6602,6 +6807,7 @@ async fn a_manager_watching_a_child_wakes_on_its_own_delivery_to_that_child() {
         db.record_task_input(
             "child-a",
             crate::db::TaskInputSource::Manager,
+            &crate::mutation_provenance::ChannelIdentity::Unknown,
             "please rerun the failing test",
         )
         .expect("record manager input");
@@ -6642,6 +6848,7 @@ async fn a_manager_watching_a_child_wakes_on_its_own_delivery_to_that_child() {
         db.record_task_input(
             "child-a",
             crate::db::TaskInputSource::Operator,
+            &crate::mutation_provenance::ChannelIdentity::Unknown,
             "and please look at the flake too",
         )
         .expect("record operator input");
@@ -6680,8 +6887,13 @@ async fn min_interval_consolidates_the_burst_that_follows_a_send() {
 
     {
         let db = Db::open(&db_path).expect("open db");
-        db.record_task_input("child-a", crate::db::TaskInputSource::Manager, "carry on")
-            .expect("record manager input");
+        db.record_task_input(
+            "child-a",
+            crate::db::TaskInputSource::Manager,
+            &crate::mutation_provenance::ChannelIdentity::Unknown,
+            "carry on",
+        )
+        .expect("record manager input");
     }
     // Cursorless defaults to `now`: this delivery, already durable before the
     // wait below even starts, is not replayed. That is the ordinary

@@ -10,6 +10,7 @@ import {
   type Ref,
 } from "vue";
 import { AGENT_PROVIDERS, getAgentProviderSpec } from "@kanna/agent-protocol";
+import type { ArtifactReference } from "@kanna/core";
 import type { AgentProvider, BlockerDisplayItem } from "../types/kanna";
 import type { TaskUiSlot } from "../types/taskUi";
 import {
@@ -45,6 +46,7 @@ import TreeExplorerModal from "./TreeExplorerModal.vue";
 import CommitGraphModal from "./CommitGraphModal.vue";
 import AnalyticsModal from "./AnalyticsModal.vue";
 import ImageUrlPreviewModal from "./ImageUrlPreviewModal.vue";
+import ArtifactViewer from "./ArtifactViewer.vue";
 import { AGENT_TAB_ID, mainTabScopeKeyForTask, type MainTab } from "../composables/useMainTabs";
 import type { RemoteDirectoryEntry } from "../composables/useTreeExplorer";
 import type { SplitRect } from "../composables/taskPaneLayout";
@@ -314,6 +316,11 @@ const paneActions = computed(() => narrowLayout.value ? [] : [
 ]);
 function openNewView(id: string) {
   if (id === "diff" || id === "shell" || id === "tree" || id === "graph") props.views?.tabs.openTab({ kind: id });
+}
+
+/** Opens a named artifact reference from the task's latest result (spec §16.8) in the existing artifact viewer. */
+function openLatestResultArtifact(reference: Extract<ArtifactReference, { type: "stored" }>) {
+  props.views?.tabs.openTab({ kind: "artifact", artifactRepoId: reference.repoId, artifactId: reference.artifactId });
 }
 /**
  * The panel's own empty state — "no task selected", or the agent-install help
@@ -1003,7 +1010,7 @@ function dismissCommandHint() {
         <span class="mobile-back-arrow">&larr;</span>
         <span>Tasks</span>
       </div>
-      <TaskHeader v-if="headerItem" :item="headerItem" :owner-label="ownerLabel" :task-id="item?.id" :preview-supported="taskDetailIsLocal && !isMobile && !views?.modals.activeTaskViewIsRemote?.value && !!views" @preview="(portName) => views?.tabs.openTab({ kind: 'preview', portName })" />
+      <TaskHeader v-if="headerItem" :item="headerItem" :owner-label="ownerLabel" :task-id="item?.id" :preview-supported="taskDetailIsLocal && !isMobile && !views?.modals.activeTaskViewIsRemote?.value && !!views" :latest-run="taskDetail?.latestRun ?? null" :session-history="taskDetail?.sessionHistory ?? null" :stage-dependencies="taskDetail?.stageDependencies ?? null" :dependency-wait="taskDetail?.dependencyWait ?? null" :gate-parked="taskDetail?.gateParked ?? null" @preview="(portName) => views?.tabs.openTab({ kind: 'preview', portName })" @open-artifact="openLatestResultArtifact" />
       <section v-if="revisionBudgetExhausted" class="revision-exhausted" data-testid="revision-exhausted-status">
         <div>
           <p class="revision-exhausted-title">{{ $t('mainPanel.revisionExhaustedTitle') }}</p>
@@ -1264,6 +1271,14 @@ function dismissCommandHint() {
           embedded
           :active="activeTabId === tab.id"
           @close="closeTab(tab.id)"
+        />
+        <ArtifactViewer
+          v-else-if="tab.kind === 'artifact' && tab.artifactRepoId"
+          v-show="viewVisible(tab.id)"
+          :repo-id="tab.artifactRepoId"
+          :artifact-id="tab.artifactShownId ?? tab.artifactId"
+          :visible="viewVisible(tab.id)"
+          @navigate="(artifactId: string) => views?.tabs.updateArtifactShown(tab.id, artifactId)"
         />
       </div>
       <TaskPreviewCache

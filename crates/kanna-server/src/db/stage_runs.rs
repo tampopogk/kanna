@@ -1,4 +1,5 @@
 use super::{Db, NewStageRun, StageRun, TaskEventKind};
+use crate::mutation_provenance::{ChannelIdentity, MutationProvenance};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -15,6 +16,33 @@ pub(crate) const AGENT_RUN_KINDS: &str = "('main', 'post')";
 
 /// `stage_run.kind` for a workspace teardown session.
 pub(crate) const TEARDOWN_RUN_KIND: &str = "teardown";
+
+/// Where a session's provider transcript lives (spec §6): a reference, never
+/// an input. `path` is known only for providers whose transcript location is
+/// determined by the session id and working directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptRef {
+    pub provider: String,
+    pub session_id: String,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+/// The identity a stage session records when it starts (spec §6, T2).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StageRunSession {
+    /// The `stage_workspace` row, when the workspace is on record.
+    pub workspace_id: Option<String>,
+    /// The branch this session checked out in its workspace.
+    pub branch: Option<String>,
+    pub name: Option<String>,
+    pub transcript: Option<TranscriptRef>,
+    /// Workspace state the start found and preserved rather than resetting
+    /// or merging (uncommitted changes, commits the input lacks).
+    pub workspace_report: Option<String>,
+}
 
 /// Identity of a run closed by `finish_latest_running_stage_run`.
 pub struct FinishedStageRun {
@@ -209,12 +237,19 @@ impl Db {
             trigger,
             None,
             None,
+            None,
         )
     }
 
     /// Insert a run together with the full provenance of how it was started:
-    /// its trigger, and the per-advance provider override that picked its
-    /// model, if any.
+    /// its trigger (the declared role of the entry), the channel the entry
+    /// arrived on, and the per-advance provider override that picked its
+    /// model, if any. `entry_channel` is `None` only for writers that predate
+    /// channel identity; it is stored as NULL and reads as unknown.
+    ///
+    /// A run inserted already carrying a result (a failed spawn, an orphaned
+    /// workspace) records that result as this server's own observation.
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_stage_run_with_provenance(
         &self,
         run: NewStageRun<'_>,
@@ -223,13 +258,16 @@ impl Db {
         trigger: Option<StageTrigger>,
         provider_override: Option<&StageProviderOverride>,
         replaces_run_id: Option<&str>,
+        entry_channel: Option<&ChannelIdentity>,
     ) -> Result<(), rusqlite::Error> {
+        let result_provenance = run.result.map(|_| MutationProvenance::engine());
         self.conn.execute(
             "INSERT INTO stage_run
              (id, task_id, stage, kind, agent, agent_provider, model, effort, status, result, feedback,
               session_id, provider_session_id, cwd, resumed_from_run_id, completion_transition,
-              completion_bound, trigger, provider_override, replaces_run_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              completion_bound, trigger, provider_override, replaces_run_id,
+              entry_channel_identity, result_declared_role, result_channel_identity)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 run.id,
                 run.task_id,
@@ -251,6 +289,13 @@ impl Db {
                 trigger.map(StageTrigger::as_str),
                 provider_override.and_then(StageProviderOverride::to_column),
                 replaces_run_id,
+                entry_channel.map(ChannelIdentity::to_column),
+                result_provenance
+                    .as_ref()
+                    .map(|provenance| provenance.declared_role.as_str()),
+                result_provenance
+                    .as_ref()
+                    .map(|provenance| provenance.channel_identity.to_column()),
             ],
         )?;
         // A pending run has not started anything yet; the watcher wants the
@@ -276,6 +321,8 @@ impl Db {
                     "kind": run.kind,
                     "agent": run.agent,
                     "agentProvider": run.agent_provider,
+                    "declaredRole": trigger.unwrap_or(StageTrigger::Unspecified).as_str(),
+                    "channelIdentity": entry_channel.cloned().unwrap_or_default().to_json(),
                 }),
             )?;
         }
@@ -318,7 +365,8 @@ impl Db {
             "SELECT id, task_id, stage, kind, agent, agent_provider, model, effort, status, result, feedback,
                     session_id, provider_session_id, cwd, resumed_from_run_id,
                     resume_fallback_reason, completion_transition,
-                    COALESCE(trigger, 'unspecified'), provider_override, started_at, finished_at, replaces_run_id, no_work_termination
+                    COALESCE(trigger, 'unspecified'), provider_override, started_at, finished_at, replaces_run_id, no_work_termination,
+                    entry_channel_identity, result_declared_role, result_channel_identity
              FROM stage_run
              WHERE task_id = ? AND kind IN {AGENT_RUN_KINDS}
              ORDER BY rowid ASC"
@@ -335,7 +383,8 @@ impl Db {
             "SELECT id, task_id, stage, kind, agent, agent_provider, model, effort, status, result, feedback,
                     session_id, provider_session_id, cwd, resumed_from_run_id,
                     resume_fallback_reason, completion_transition,
-                    COALESCE(trigger, 'unspecified'), provider_override, started_at, finished_at, replaces_run_id, no_work_termination
+                    COALESCE(trigger, 'unspecified'), provider_override, started_at, finished_at, replaces_run_id, no_work_termination,
+                    entry_channel_identity, result_declared_role, result_channel_identity
              FROM stage_run
              WHERE task_id = ? AND kind IN {AGENT_RUN_KINDS} AND status = 'running'
              ORDER BY rowid ASC"
@@ -373,7 +422,8 @@ impl Db {
                 "SELECT id, task_id, stage, kind, agent, agent_provider, model, effort, status, result,
                         feedback, session_id, provider_session_id, cwd, resumed_from_run_id,
                         resume_fallback_reason, completion_transition,
-                        COALESCE(trigger, 'unspecified'), provider_override, started_at, finished_at, replaces_run_id, no_work_termination
+                        COALESCE(trigger, 'unspecified'), provider_override, started_at, finished_at, replaces_run_id, no_work_termination,
+                    entry_channel_identity, result_declared_role, result_channel_identity
                  FROM stage_run
                  WHERE task_id = ? AND kind IN {AGENT_RUN_KINDS}
                  ORDER BY rowid DESC
@@ -405,7 +455,8 @@ impl Db {
                 "SELECT id, task_id, stage, kind, agent, agent_provider, model, effort, status, result,
                         feedback, session_id, provider_session_id, cwd, resumed_from_run_id,
                         resume_fallback_reason, completion_transition,
-                        COALESCE(trigger, 'unspecified'), provider_override, started_at, finished_at, replaces_run_id, no_work_termination
+                        COALESCE(trigger, 'unspecified'), provider_override, started_at, finished_at, replaces_run_id, no_work_termination,
+                    entry_channel_identity, result_declared_role, result_channel_identity
                  FROM stage_run
                  WHERE task_id = ? AND stage = ? AND kind = ?
                  ORDER BY rowid DESC
@@ -427,7 +478,8 @@ impl Db {
                 "SELECT id, task_id, stage, kind, agent, agent_provider, model, effort, status, result,
                         feedback, session_id, provider_session_id, cwd, resumed_from_run_id,
                         resume_fallback_reason, completion_transition,
-                        COALESCE(trigger, 'unspecified'), provider_override, started_at, finished_at, replaces_run_id, no_work_termination
+                        COALESCE(trigger, 'unspecified'), provider_override, started_at, finished_at, replaces_run_id, no_work_termination,
+                    entry_channel_identity, result_declared_role, result_channel_identity
                  FROM stage_run WHERE id = ?",
                 [run_id],
                 stage_run_from_row,
@@ -450,7 +502,8 @@ impl Db {
                 "SELECT id, task_id, stage, kind, agent, agent_provider, model, effort, status, result,
                         feedback, session_id, provider_session_id, cwd, resumed_from_run_id,
                         resume_fallback_reason, completion_transition,
-                        COALESCE(trigger, 'unspecified'), provider_override, started_at, finished_at, replaces_run_id, no_work_termination
+                        COALESCE(trigger, 'unspecified'), provider_override, started_at, finished_at, replaces_run_id, no_work_termination,
+                    entry_channel_identity, result_declared_role, result_channel_identity
                  FROM stage_run
                  WHERE task_id = ? AND stage = ? AND kind = 'main'
                    AND provider_session_id IS NOT NULL AND cwd IS NOT NULL
@@ -505,14 +558,23 @@ impl Db {
         status: &str,
         result: &str,
         summary: &str,
+        provenance: &MutationProvenance,
     ) -> Result<(), rusqlite::Error> {
         self.in_immediate_transaction_if_needed(|db| {
-            db.finish_stage_run(run_id, status, Some(result), Some(summary))?;
+            db.finish_stage_run_with_provenance(
+                run_id,
+                status,
+                Some(result),
+                Some(summary),
+                provenance,
+            )?;
             db.record_contextless_completion_attempt(attempt_key, run_id, result)
         })
     }
 
-    /// Close a run on a genuine agent or task verdict.
+    /// Close a run on a verdict this server reached itself (a live session
+    /// handing its run to a post, a test fixture). A verdict a caller
+    /// submitted goes through [`Self::finish_stage_run_with_provenance`].
     pub fn finish_stage_run(
         &self,
         id: &str,
@@ -520,7 +582,28 @@ impl Db {
         result: Option<&str>,
         feedback: Option<&str>,
     ) -> Result<(), rusqlite::Error> {
-        self.finish_stage_run_inner(id, status, result, feedback, None)
+        self.finish_stage_run_inner(
+            id,
+            status,
+            result,
+            feedback,
+            None,
+            &MutationProvenance::engine(),
+        )
+    }
+
+    /// Close a run on a verdict a caller submitted, recording who declared it
+    /// and the channel it arrived on beside the result. The run's entry
+    /// provenance is a different mutation and is left untouched.
+    pub fn finish_stage_run_with_provenance(
+        &self,
+        id: &str,
+        status: &str,
+        result: Option<&str>,
+        feedback: Option<&str>,
+        provenance: &MutationProvenance,
+    ) -> Result<(), rusqlite::Error> {
+        self.finish_stage_run_inner(id, status, result, feedback, None, provenance)
     }
 
     /// Close a run that recorded no agent or task verdict, declaring why.
@@ -537,7 +620,14 @@ impl Db {
         feedback: Option<&str>,
         kind: &str,
     ) -> Result<(), rusqlite::Error> {
-        self.finish_stage_run_inner(id, status, result, feedback, Some(kind))
+        self.finish_stage_run_inner(
+            id,
+            status,
+            result,
+            feedback,
+            Some(kind),
+            &MutationProvenance::engine(),
+        )
     }
 
     fn finish_stage_run_inner(
@@ -547,7 +637,11 @@ impl Db {
         result: Option<&str>,
         feedback: Option<&str>,
         no_work_termination: Option<&str>,
+        provenance: &MutationProvenance,
     ) -> Result<(), rusqlite::Error> {
+        // Provenance describes the result, so a close that records none
+        // leaves the columns empty rather than attributing nothing to someone.
+        let result_provenance = result.map(|_| provenance);
         let identity = self
             .conn
             .query_row(
@@ -562,16 +656,35 @@ impl Db {
                 },
             )
             .optional()?;
-        let rows_affected = self.conn.execute(
-            "UPDATE stage_run
-             SET status = ?, result = ?, feedback = ?, no_work_termination = ?,
-                 finished_at = datetime('now')
-             WHERE id = ?",
-            (status, result, feedback, no_work_termination, id),
-        )?;
-        if rows_affected == 0 {
-            return Err(rusqlite::Error::QueryReturnedNoRows);
-        }
+        // A close that records no verdict is still a fact about the run: the
+        // engine records what it observed in the task's ledger, in the same
+        // transaction (T13).
+        let engine_observed = no_work_termination.is_some() || result.is_none();
+        self.in_immediate_transaction_if_needed(|db| {
+            let rows_affected = db.conn.execute(
+                "UPDATE stage_run
+                 SET status = ?, result = ?, feedback = ?, no_work_termination = ?,
+                     result_declared_role = ?, result_channel_identity = ?,
+                     finished_at = datetime('now')
+                 WHERE id = ?",
+                params![
+                    status,
+                    result,
+                    feedback,
+                    no_work_termination,
+                    result_provenance.map(|provenance| provenance.declared_role.as_str()),
+                    result_provenance.map(|provenance| provenance.channel_identity.to_column()),
+                    id,
+                ],
+            )?;
+            if rows_affected == 0 {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+            if engine_observed && status != "running" {
+                db.enqueue_engine_observed_ending(id)?;
+            }
+            Ok(())
+        })?;
         // `run.finished` is a fact about a task's agent: subscribers treat a
         // non-succeeded one as urgent and enrich it with the task's latest
         // run. A workspace teardown has neither an agent nor a verdict, so
@@ -589,10 +702,132 @@ impl Db {
                     "kind": kind,
                     "status": status,
                     "result": result,
+                    "declaredRole": result_provenance.map(|provenance| provenance.declared_role.as_str()),
+                    "channelIdentity": result_provenance.map(|provenance| provenance.channel_identity.to_json()),
                 }),
             )?;
         }
         Ok(())
+    }
+
+    /// Daemon session ids of every session this task's records place in a
+    /// workspace directory — agent, post and teardown runs recorded there,
+    /// runs whose session named the directory's workspace, and terminal
+    /// sessions opened in it — whatever branch the directory is on now.
+    pub fn task_session_ids_in_directory(
+        &self,
+        task_id: &str,
+        directory: &str,
+        workspace_id: &str,
+    ) -> Result<Vec<String>, rusqlite::Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT session_id FROM stage_run
+             WHERE task_id = ?1 AND session_id IS NOT NULL
+               AND (cwd = ?2 OR workspace_id = ?3)
+             UNION
+             SELECT daemon_session_id FROM terminal_session
+             WHERE pipeline_item_id = ?1 AND cwd = ?2 AND daemon_session_id IS NOT NULL",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![task_id, directory, workspace_id], |row| {
+            row.get::<_, String>(0)
+        })?;
+        rows.collect()
+    }
+
+    /// Teardown runs of a task still recorded as running in a workspace
+    /// directory, with their session ids.
+    pub fn running_teardown_runs_in_directory(
+        &self,
+        task_id: &str,
+        directory: &str,
+    ) -> Result<Vec<(String, Option<String>)>, rusqlite::Error> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT id, session_id FROM stage_run
+             WHERE task_id = ?1 AND kind = '{TEARDOWN_RUN_KIND}' AND cwd = ?2
+               AND status = 'running'"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params![task_id, directory], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?;
+        rows.collect()
+    }
+
+    /// Record the identity a session started with (spec §6): the stage
+    /// workspace it runs in, the branch it checked out there, its name, where
+    /// its provider transcript lives, and any workspace state the start
+    /// preserved rather than touched. Written once, beside the run row.
+    pub fn set_stage_run_session(
+        &self,
+        run_id: &str,
+        session: &StageRunSession,
+    ) -> Result<(), rusqlite::Error> {
+        let rows_affected = self.conn.execute(
+            "UPDATE stage_run
+             SET workspace_id = ?, session_branch = ?, session_name = ?,
+                 transcript_ref = ?, workspace_report = ?
+             WHERE id = ?",
+            rusqlite::params![
+                session.workspace_id,
+                session.branch,
+                session.name,
+                session
+                    .transcript
+                    .as_ref()
+                    .map(|transcript| serde_json::to_string(transcript).unwrap_or_default()),
+                session.workspace_report,
+                run_id,
+            ],
+        )?;
+        if rows_affected == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        Ok(())
+    }
+
+    /// The session identity recorded on a run, or `None` for a run that
+    /// predates it (or a teardown run, which is not a session).
+    pub fn stage_run_session(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<StageRunSession>, rusqlite::Error> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT workspace_id, session_branch, session_name, transcript_ref, workspace_report
+                 FROM stage_run WHERE id = ?",
+                [run_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                },
+            )
+            .optional();
+        let row = match row {
+            Ok(row) => row,
+            Err(err) if is_missing_stage_run_table(&err) => return Ok(None),
+            Err(err) => return Err(err),
+        };
+        Ok(row.and_then(
+            |(workspace_id, branch, name, transcript, workspace_report)| {
+                if workspace_id.is_none() && branch.is_none() && name.is_none() {
+                    return None;
+                }
+                Some(StageRunSession {
+                    workspace_id,
+                    branch,
+                    name,
+                    transcript: transcript
+                        .as_deref()
+                        .and_then(|value| serde_json::from_str(value).ok()),
+                    workspace_report,
+                })
+            },
+        ))
     }
 
     pub fn set_stage_run_resume_fallback_reason(
@@ -741,6 +976,7 @@ impl Db {
         let rows_affected = transaction.execute(
             "UPDATE stage_run
              SET status = 'running', result = NULL,
+                 result_declared_role = NULL, result_channel_identity = NULL,
                  feedback = CASE WHEN feedback = ? THEN NULL ELSE feedback END,
                  no_work_termination = NULL, finished_at = NULL
              WHERE id = ?
@@ -872,17 +1108,28 @@ impl Db {
     }
 
     pub fn cancel_running_stage_runs(&self, task_id: &str) -> Result<(), rusqlite::Error> {
-        match self.conn.execute(
-            "UPDATE stage_run
-             SET status = 'cancelled', finished_at = COALESCE(finished_at, datetime('now'))
-             WHERE task_id = ? AND status IN ('pending', 'running')",
-            [task_id],
-        ) {
-            Ok(_) => {}
-            Err(err) if is_missing_stage_run_table(&err) => return Ok(()),
-            Err(err) => return Err(err),
+        let cancelled = self.in_immediate_transaction_if_needed(|db| {
+            let mut statement = db.conn.prepare(
+                "UPDATE stage_run
+                 SET status = 'cancelled', finished_at = COALESCE(finished_at, datetime('now'))
+                 WHERE task_id = ? AND status IN ('pending', 'running')
+                 RETURNING id",
+            )?;
+            let cancelled = statement
+                .query_map([task_id], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(statement);
+            // Each cancelled session ended without a verdict (T13).
+            for run_id in &cancelled {
+                db.enqueue_engine_observed_ending(run_id)?;
+            }
+            Ok(cancelled)
+        });
+        match cancelled {
+            Ok(_) => Ok(()),
+            Err(err) if is_missing_stage_run_table(&err) => Ok(()),
+            Err(err) => Err(err),
         }
-        Ok(())
     }
 
     /// The task's most recently finished run result, whatever its kind. This
@@ -918,7 +1165,8 @@ impl Db {
                     feedback, session_id, provider_session_id, cwd, resumed_from_run_id,
                     resume_fallback_reason, completion_transition,
                     COALESCE(trigger, 'unspecified'), provider_override, started_at, finished_at,
-                    replaces_run_id, no_work_termination
+                    replaces_run_id, no_work_termination,
+                    entry_channel_identity, result_declared_role, result_channel_identity
              FROM stage_run
              WHERE task_id = ? AND kind IN {AGENT_RUN_KINDS}
                AND status IN ('succeeded', 'failed')
@@ -968,6 +1216,7 @@ fn is_missing_stage_run_table(err: &rusqlite::Error) -> bool {
 }
 
 fn stage_run_from_row(row: &rusqlite::Row<'_>) -> Result<StageRun, rusqlite::Error> {
+    let result: Option<String> = row.get(9)?;
     Ok(StageRun {
         id: row.get(0)?,
         task_id: row.get(1)?,
@@ -978,7 +1227,7 @@ fn stage_run_from_row(row: &rusqlite::Row<'_>) -> Result<StageRun, rusqlite::Err
         model: row.get(6)?,
         effort: row.get(7)?,
         status: row.get(8)?,
-        result: row.get(9)?,
+        result: result.clone(),
         feedback: row.get(10)?,
         session_id: row.get(11)?,
         provider_session_id: row.get(12)?,
@@ -992,5 +1241,29 @@ fn stage_run_from_row(row: &rusqlite::Row<'_>) -> Result<StageRun, rusqlite::Err
         finished_at: row.get(20)?,
         replaces_run_id: row.get(21)?,
         no_work_termination: row.get(22)?,
+        entry_channel_identity: ChannelIdentity::from_column(
+            row.get::<_, Option<String>>(23)?.as_deref(),
+        ),
+        result_provenance: result_provenance_from_columns(
+            result.is_some(),
+            row.get(24)?,
+            row.get::<_, Option<String>>(25)?.as_deref(),
+        ),
+    })
+}
+
+/// A run's result provenance, present exactly when it recorded a result. A
+/// result written before provenance existed keeps no label to recover, so it
+/// reads as an undeclared role on an unknown channel.
+fn result_provenance_from_columns(
+    has_result: bool,
+    declared_role: Option<String>,
+    channel_identity: Option<&str>,
+) -> Option<MutationProvenance> {
+    has_result.then(|| {
+        MutationProvenance::new(
+            declared_role.unwrap_or_else(|| "unspecified".to_string()),
+            ChannelIdentity::from_column(channel_identity),
+        )
     })
 }

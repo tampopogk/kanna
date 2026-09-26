@@ -37,6 +37,7 @@ fn bundled_catalog_parses_and_declares_all_tools() {
             "kanna_list_recent_tasks",
             "kanna_get_task",
             "kanna_list_task_children",
+            "kanna_get_task_joins",
             "kanna_wait_task",
             "kanna_wait_events",
             "kanna_notify_mobile",
@@ -54,6 +55,7 @@ fn bundled_catalog_parses_and_declares_all_tools() {
             "kanna_show_agent",
             "kanna_eject_agent",
             "kanna_create_task",
+            "kanna_create_subtasks",
             "kanna_signal_agent",
             "kanna_signal_merge_handoff",
             "kanna_queue_reviewed_pr",
@@ -76,6 +78,14 @@ fn bundled_catalog_parses_and_declares_all_tools() {
             "kanna_is_dependent_tasks_exist",
             "kanna_complete_stage",
             "kanna_request_revision",
+            "kanna_publish_artifact",
+            "kanna_get_artifact",
+            "kanna_open_artifact",
+            "kanna_close_artifact",
+            "kanna_record_artifact_comment",
+            "kanna_record_artifact_decision",
+            "kanna_push_artifact",
+            "kanna_fetch_artifact",
         ]
     );
 }
@@ -921,6 +931,70 @@ fn resolves_expected_requests_for_every_bundled_tool() {
             ResponseKind::Json,
             "/v1/transfers/actions/pull-task",
             json!({ "sourceTaskId": "task-1", "sourceMachine": "peer-primary" }),
+        ),
+        (
+            "kanna_publish_artifact",
+            json!({ "task_id": "task-1", "path": "mockups/login", "kind": "mockup", "previous": "0123456789abcdef0123456789abcdef01234567" }),
+            Method::Post,
+            ResponseKind::Json,
+            "/v1/tasks/task-1/artifacts",
+            json!({ "path": "mockups/login", "kind": "mockup", "previous": "0123456789abcdef0123456789abcdef01234567" }),
+        ),
+        (
+            "kanna_get_artifact",
+            json!({ "repo_id": "repo-1", "artifact_id": "0123456789abcdef0123456789abcdef01234567" }),
+            Method::Get,
+            ResponseKind::Json,
+            "/v1/repos/repo-1/artifacts/0123456789abcdef0123456789abcdef01234567",
+            json!({}),
+        ),
+        (
+            "kanna_open_artifact",
+            json!({ "repo_id": "repo-1", "artifact_id": "0123456789abcdef0123456789abcdef01234567" }),
+            Method::Post,
+            ResponseKind::Json,
+            "/v1/repos/repo-1/artifacts/0123456789abcdef0123456789abcdef01234567/preview",
+            json!({}),
+        ),
+        (
+            "kanna_close_artifact",
+            json!({ "repo_id": "repo-1", "artifact_id": "0123456789abcdef0123456789abcdef01234567" }),
+            Method::Post,
+            ResponseKind::Json,
+            "/v1/repos/repo-1/artifacts/0123456789abcdef0123456789abcdef01234567/preview/close",
+            json!({}),
+        ),
+        (
+            "kanna_record_artifact_comment",
+            json!({ "repo_id": "repo-1", "artifact_id": "0123456789abcdef0123456789abcdef01234567", "author": "designer", "body": "too dark", "anchor": { "path": "css/site.css", "excerpt": "#123" } }),
+            Method::Post,
+            ResponseKind::Json,
+            "/v1/repos/repo-1/artifacts/0123456789abcdef0123456789abcdef01234567/comments",
+            json!({ "author": "designer", "body": "too dark", "anchor": { "path": "css/site.css", "excerpt": "#123" } }),
+        ),
+        (
+            "kanna_record_artifact_decision",
+            json!({ "repo_id": "repo-1", "artifact_id": "0123456789abcdef0123456789abcdef01234567", "who": "owner", "what": "ship v2" }),
+            Method::Post,
+            ResponseKind::Json,
+            "/v1/repos/repo-1/artifacts/0123456789abcdef0123456789abcdef01234567/decisions",
+            json!({ "who": "owner", "what": "ship v2" }),
+        ),
+        (
+            "kanna_push_artifact",
+            json!({ "repo_id": "repo-1", "artifact_id": "0123456789abcdef0123456789abcdef01234567" }),
+            Method::Post,
+            ResponseKind::Json,
+            "/v1/repos/repo-1/artifacts/0123456789abcdef0123456789abcdef01234567/push",
+            json!({}),
+        ),
+        (
+            "kanna_fetch_artifact",
+            json!({ "repo_id": "repo-1", "artifact_id": "0123456789abcdef0123456789abcdef01234567" }),
+            Method::Post,
+            ResponseKind::Json,
+            "/v1/repos/repo-1/artifacts/0123456789abcdef0123456789abcdef01234567/fetch",
+            json!({}),
         ),
     ];
 
@@ -1970,6 +2044,7 @@ fn every_declared_parameter_round_trips_a_cli_spelling() {
                     .and_then(|values| values.first().cloned())
                     .unwrap_or_else(|| "57808275".to_string()),
                 ParamType::Object => "{}".to_string(),
+                ParamType::ObjectArray => "[{}]".to_string(),
             };
             let value = param
                 .parse_cli_value(&raw)
@@ -1980,6 +2055,7 @@ fn every_declared_parameter_round_trips_a_cli_spelling() {
                 ParamType::Boolean => value.is_boolean(),
                 ParamType::StringArray => value.is_array(),
                 ParamType::Object => value.is_object(),
+                ParamType::ObjectArray => value.is_array(),
             };
             assert!(
                 expected_type_ok,
@@ -2007,6 +2083,7 @@ fn every_declared_parameter_round_trips_a_cli_spelling() {
                         .and_then(|values| values.first().cloned())
                         .unwrap_or_else(|| "57808275".to_string()),
                     ParamType::Object => "{}".to_string(),
+                    ParamType::ObjectArray => "[{}]".to_string(),
                 };
                 (
                     param.name.clone(),
@@ -3250,5 +3327,271 @@ fn subscription_descriptions_state_what_a_bounded_delivered_page_carries() {
             description.contains("diagnostic true"),
             "{name} must keep pointing at the verbatim escape hatch"
         );
+    }
+}
+
+#[test]
+fn artifact_tools_name_exact_ids_and_state_how_retention_is_enforced() {
+    let catalog = bundled_catalog();
+    let description = |name: &str| {
+        catalog
+            .tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .unwrap_or_else(|| panic!("{name} declared"))
+            .description
+            .clone()
+    };
+    let publish = description("kanna_publish_artifact");
+    assert!(publish.contains("tree id"), "{publish}");
+    assert!(
+        publish.contains("enforced after the producing task closes"),
+        "{publish}"
+    );
+    assert!(
+        publish.contains("produced, no longer retained"),
+        "{publish}"
+    );
+    let artifacts = catalog
+        .find_param("kanna_complete_stage", "artifacts")
+        .expect("complete_stage accepts named artifact references");
+    assert!(!artifacts.required);
+    let described = artifacts.description.as_deref().unwrap_or_default();
+    assert!(described.contains("nothing is recorded"), "{described}");
+    assert!(
+        publish.contains("outside the working repository"),
+        "{publish}"
+    );
+    for name in [
+        "kanna_record_artifact_comment",
+        "kanna_record_artifact_decision",
+    ] {
+        assert!(
+            description(name).contains("not a verified identity"),
+            "{name}"
+        );
+    }
+    let push = description("kanna_push_artifact");
+    assert!(push.contains("artifacts.remote"), "{push}");
+    assert!(push.contains("never forced"), "{push}");
+    assert!(push.contains("Kanna stores none"), "{push}");
+    assert!(
+        push.contains("no task directory, transcript, environment or credential"),
+        "{push}"
+    );
+    let fetch = description("kanna_fetch_artifact");
+    assert!(fetch.contains("by id alone"), "{fetch}");
+    assert!(fetch.contains("A received decision is data"), "{fetch}");
+    assert!(fetch.contains("artifact_not_on_remote"), "{fetch}");
+    for name in ["kanna_push_artifact", "kanna_fetch_artifact"] {
+        assert!(
+            catalog.find_param(name, "remote").is_none(),
+            "{name}: the remote is configuration, never a parameter"
+        );
+    }
+    let kind = catalog
+        .find_param("kanna_publish_artifact", "kind")
+        .unwrap();
+    assert_eq!(
+        kind.enum_values.as_deref(),
+        Some(
+            ["document", "mockup", "media", "report"]
+                .map(String::from)
+                .as_slice()
+        )
+    );
+    let error = resolve_request(
+        &catalog,
+        "kanna_publish_artifact",
+        &json!({ "task_id": "t", "path": "p", "kind": "diagram" }),
+    )
+    .unwrap_err();
+    assert!(error.contains("kind must be one of"), "{error}");
+}
+
+/// Mixed versions: a `dependencies` create is only sent to a server whose
+/// `GET /v1/status` confirms stage dependencies. An older server would
+/// ignore the field and start an ordinary, ungated task, so the adapters
+/// refuse before any request that could create one.
+#[test]
+fn dependencies_require_a_server_that_advertises_stage_dependencies() {
+    let catalog = bundled_catalog();
+    let with_dependencies = resolve_request(
+        &catalog,
+        "kanna_create_task",
+        &json!({
+            "repo_id": "repo-1",
+            "prompt": "Build on the plan",
+            "dependencies": [{ "taskId": "task-a", "stage": "plan" }]
+        }),
+    )
+    .unwrap();
+    assert!(kanna_tool_catalog::requires_stage_dependencies(
+        &with_dependencies
+    ));
+    for without in [
+        json!({ "repo_id": "repo-1", "prompt": "Plain" }),
+        json!({ "repo_id": "repo-1", "prompt": "Plain", "dependencies": [] }),
+    ] {
+        let request = resolve_request(&catalog, "kanna_create_task", &without).unwrap();
+        assert!(!kanna_tool_catalog::requires_stage_dependencies(&request));
+    }
+
+    let pre_t4_status = json!({
+        "state": "running",
+        "desktopId": "old",
+        "desktopName": "Old Mac",
+        "version": "0.0.1",
+        "environment": "production",
+        "lanHost": "127.0.0.1",
+        "lanPort": 48120,
+        "kspStreamVersion": 2
+    });
+    let refused =
+        kanna_tool_catalog::confirm_stage_dependencies_supported(&pre_t4_status).unwrap_err();
+    assert!(
+        refused.starts_with("stage_dependencies_unsupported"),
+        "{refused}"
+    );
+    assert!(refused.contains("Upgrade that server"), "{refused}");
+    assert!(refused.contains("No task was created"), "{refused}");
+
+    let mut current_status = pre_t4_status.clone();
+    current_status["stageDependenciesVersion"] =
+        json!(kanna_tool_catalog::STAGE_DEPENDENCIES_VERSION);
+    kanna_tool_catalog::confirm_stage_dependencies_supported(&current_status).unwrap();
+
+    // kanna_info reports the capability beside kspStream.
+    let info = runtime_info_snapshot(
+        "http://127.0.0.1:49199",
+        RuntimeAdapterIdentity {
+            name: "kanna-mcp",
+            version: "0.1.0",
+            mcp_protocol_version: None,
+            task_id: None,
+        },
+        Ok(current_status),
+        &["kanna_create_task".to_string()],
+    );
+    assert_eq!(
+        info["serverStatus"]["capabilityVersions"]["stageDependencies"],
+        1
+    );
+    let old_info = runtime_info_snapshot(
+        "http://127.0.0.1:49199",
+        RuntimeAdapterIdentity {
+            name: "kanna-mcp",
+            version: "0.1.0",
+            mcp_protocol_version: None,
+            task_id: None,
+        },
+        Ok(pre_t4_status),
+        &["kanna_create_task".to_string()],
+    );
+    assert!(old_info["serverStatus"]["capabilityVersions"]["stageDependencies"].is_null());
+}
+
+/// Mixed versions: a subtask join is only created or read on a server whose
+/// `GET /v1/status` confirms subtask joins. An older server has no join
+/// routes, and a client must not read that as a parent with nothing to wait
+/// on, so the adapters refuse before sending either request.
+#[test]
+fn subtask_joins_require_a_server_that_advertises_them() {
+    let catalog = bundled_catalog();
+    let create = resolve_request(
+        &catalog,
+        "kanna_create_subtasks",
+        &json!({ "task_id": "task-p", "children": [{ "prompt": "Review security" }] }),
+    )
+    .unwrap();
+    assert_eq!(create.method, Method::Post);
+    assert_eq!(create.path, "/v1/tasks/task-p/subtasks");
+    assert_eq!(create.body["children"][0]["prompt"], "Review security");
+    assert!(kanna_tool_catalog::requires_subtask_joins(&create));
+    let read = resolve_request(
+        &catalog,
+        "kanna_get_task_joins",
+        &json!({ "task_id": "task-p" }),
+    )
+    .unwrap();
+    assert_eq!(read.path, "/v1/tasks/task-p/joins");
+    assert!(kanna_tool_catalog::requires_subtask_joins(&read));
+    for (tool, args) in [
+        ("kanna_list_task_children", json!({ "task_id": "task-p" })),
+        (
+            "kanna_create_task",
+            json!({ "repo_id": "r", "prompt": "Plain" }),
+        ),
+    ] {
+        let request = resolve_request(&catalog, tool, &args).unwrap();
+        assert!(
+            !kanna_tool_catalog::requires_subtask_joins(&request),
+            "{tool}"
+        );
+    }
+
+    let pre_t5_status = json!({
+        "state": "running",
+        "desktopId": "old",
+        "desktopName": "Old Mac",
+        "version": "0.0.1",
+        "environment": "production",
+        "lanHost": "127.0.0.1",
+        "lanPort": 48120,
+        "kspStreamVersion": 2,
+        "stageDependenciesVersion": 1
+    });
+    let refused = kanna_tool_catalog::confirm_subtask_joins_supported(&pre_t5_status).unwrap_err();
+    assert!(
+        refused.starts_with("subtask_joins_unsupported"),
+        "{refused}"
+    );
+    assert!(refused.contains("Nothing was created"), "{refused}");
+    let mut current_status = pre_t5_status.clone();
+    current_status["subtaskJoinsVersion"] = json!(kanna_tool_catalog::SUBTASK_JOINS_VERSION);
+    kanna_tool_catalog::confirm_subtask_joins_supported(&current_status).unwrap();
+
+    let info = runtime_info_snapshot(
+        "http://127.0.0.1:49199",
+        RuntimeAdapterIdentity {
+            name: "kanna-mcp",
+            version: "0.1.0",
+            mcp_protocol_version: None,
+            task_id: None,
+        },
+        Ok(current_status),
+        &["kanna_create_subtasks".to_string()],
+    );
+    assert_eq!(
+        info["serverStatus"]["capabilityVersions"]["subtaskJoins"],
+        1
+    );
+}
+
+/// Review item 4c: complete_stage's `workflow_definition` states both
+/// publication contracts -- named-exit remaining-stage replacement from any
+/// stage with no revision_limit or plan_context, and the legacy final-plan
+/// recipe contract -- instead of only the legacy one.
+#[test]
+fn complete_stage_workflow_definition_documents_both_publication_contracts() {
+    let tools = bundled_catalog().tools_list_value();
+    let tools = tools.as_array().expect("tools array");
+    let description = tools
+        .iter()
+        .find(|tool| tool["name"] == "kanna_complete_stage")
+        .and_then(|tool| {
+            tool["inputSchema"]["properties"]["workflow_definition"]["description"].as_str()
+        })
+        .expect("kanna_complete_stage.workflow_definition description");
+    for phrase in [
+        "Named-exit workflows",
+        "replaces every stage after the current one, from any stage (not only a final 'plan' stage)",
+        "revision_limit and plan_context are refused",
+        "not $PLAN_RESULT",
+        "Legacy workflows (no routing)",
+        "be the final stage",
+        "a finite positive revision_limit is required",
+    ] {
+        assert!(description.contains(phrase), "missing {phrase:?} in {description}");
     }
 }

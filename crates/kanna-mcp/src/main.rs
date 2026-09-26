@@ -1610,6 +1610,18 @@ async fn execute_resolved_request(
     machine_id: Option<&str>,
     client_tool_names: &[String],
 ) -> Result<Value, String> {
+    // Before anything is created: a server that predates stage dependencies
+    // would ignore them and start an ungated task.
+    if kanna_tool_catalog::requires_stage_dependencies(&request) {
+        let status = get_routed_json(base_url, "/v1/status", machine_id).await?;
+        kanna_tool_catalog::confirm_stage_dependencies_supported(&status)?;
+    }
+    // Likewise a server without subtask joins has no join routes, which must
+    // not read as a parent with nothing to wait on.
+    if kanna_tool_catalog::requires_subtask_joins(&request) {
+        let status = get_routed_json(base_url, "/v1/status", machine_id).await?;
+        kanna_tool_catalog::confirm_subtask_joins_supported(&status)?;
+    }
     match (request.method, request.kind) {
         (_, ResponseKind::Guide) => request
             .local_response
@@ -1953,6 +1965,7 @@ mod tests {
                 "kanna_list_recent_tasks",
                 "kanna_get_task",
                 "kanna_list_task_children",
+                "kanna_get_task_joins",
                 "kanna_wait_task",
                 "kanna_wait_events",
                 "kanna_notify_mobile",
@@ -1970,6 +1983,7 @@ mod tests {
                 "kanna_show_agent",
                 "kanna_eject_agent",
                 "kanna_create_task",
+                "kanna_create_subtasks",
                 "kanna_signal_agent",
                 "kanna_signal_merge_handoff",
                 "kanna_queue_reviewed_pr",
@@ -1992,6 +2006,14 @@ mod tests {
                 "kanna_is_dependent_tasks_exist",
                 "kanna_complete_stage",
                 "kanna_request_revision",
+                "kanna_publish_artifact",
+                "kanna_get_artifact",
+                "kanna_open_artifact",
+                "kanna_close_artifact",
+                "kanna_record_artifact_comment",
+                "kanna_record_artifact_decision",
+                "kanna_push_artifact",
+                "kanna_fetch_artifact",
             ]
         );
     }

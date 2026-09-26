@@ -275,6 +275,103 @@ async fn run_lan_machine_invoke_listener(state: Arc<http_api::AppState>) {
     std::future::pending::<()>().await;
 }
 
+/// Publishes enqueued task-ledger entries as they are accepted and retries
+/// the ones a failed flush left pending, then finishes any completion whose
+/// transition was waiting on them. The outbox is what makes publication
+/// durable; this service is what makes it prompt.
+async fn run_task_ledger_publisher(state: Arc<http_api::AppState>) {
+    const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+    static RESUMING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static RECONCILING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    loop {
+        let _ = tokio::time::timeout(RETRY_INTERVAL, crate::task_store::publisher_woken()).await;
+        let db_path = state.config().db_path.clone();
+        let flushed = tokio::task::spawn_blocking(move || {
+            let db = db::Db::open(&db_path)?;
+            let failures = crate::task_store::flush_all(&db, &db_path);
+            let diverged = crate::task_store::authority::diverged_tasks(&db);
+            Ok::<_, rusqlite::Error>((failures, db.ledger_continuation_task_ids()?, diverged))
+        })
+        .await;
+        match flushed {
+            Ok(Ok((failures, continuations, diverged))) => {
+                for (task_id, error) in failures {
+                    log::warn!("task ledger for {task_id} is pending publication: {error}");
+                }
+                // Disk authority (T13c): a task whose disk the flush found
+                // ahead is reconciled under its mutation lease, which a live
+                // transition may hold; like resuming, never inline.
+                if !diverged.is_empty()
+                    && !RECONCILING.swap(true, std::sync::atomic::Ordering::AcqRel)
+                {
+                    let state = Arc::clone(&state);
+                    tokio::spawn(async move {
+                        http_api::storage_authority::reconcile_diverged_tasks(state).await;
+                        RECONCILING.store(false, std::sync::atomic::Ordering::Release);
+                    });
+                }
+                // Resuming waits on each task's mutation lease, which a live
+                // transition may hold for minutes; it must not stall
+                // publication for every other task, nor pile up behind itself.
+                if !continuations.is_empty()
+                    && !RESUMING.swap(true, std::sync::atomic::Ordering::AcqRel)
+                {
+                    let state = Arc::clone(&state);
+                    tokio::spawn(async move {
+                        http_api::task_actions::resume_ledger_continuations(state).await;
+                        RESUMING.store(false, std::sync::atomic::Ordering::Release);
+                    });
+                }
+            }
+            Ok(Err(error)) => {
+                log::error!("task ledger publisher cannot open the database: {error}")
+            }
+            Err(error) => log::error!("task ledger publisher worker failed: {error}"),
+        }
+    }
+}
+
+/// Enforce artifact retention (spec §8) in every repository's artifact
+/// store. Collection is never urgent — a `discard-on-close` version already
+/// waits out a grace period after its task closes — so a coarse interval is
+/// enough, and each sweep runs on the blocking pool.
+async fn run_artifact_retention_sweeper(state: Arc<http_api::AppState>) {
+    const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+    loop {
+        tokio::time::sleep(SWEEP_INTERVAL).await;
+        let state = Arc::clone(&state);
+        let swept = tokio::task::spawn_blocking(move || {
+            http_api::artifacts::sweep_artifact_retention(&state, std::time::SystemTime::now())
+        })
+        .await;
+        match swept {
+            Ok(outcomes) => {
+                for (repo_id, outcome) in outcomes {
+                    match outcome {
+                        Ok(sweep) => {
+                            if !sweep.expired.is_empty() {
+                                log::info!(
+                                    "artifact retention collected {} tree(s) in repository {repo_id}",
+                                    sweep.expired.len()
+                                );
+                            }
+                            if let Some(error) = sweep.prune_error {
+                                log::warn!("artifact retention could not prune repository {repo_id}: {error}");
+                            }
+                        }
+                        Err(error) => {
+                            log::warn!(
+                                "artifact retention sweep of repository {repo_id} failed: {error}"
+                            )
+                        }
+                    }
+                }
+            }
+            Err(error) => log::error!("artifact retention sweeper worker failed: {error}"),
+        }
+    }
+}
+
 pub(crate) async fn run_server_services(
     config: Config,
     db: db::Db,
@@ -286,12 +383,45 @@ pub(crate) async fn run_server_services(
     let daemon_pid = protected_input_daemon.connected_pid();
     let geometry_supported = establish_terminal_geometry_capability(&config).await;
     http_state.set_terminal_geometry_capability(daemon_pid, geometry_supported);
+    // Task ledger recovery comes before anything can schedule or dispatch:
+    // import history for open tasks that predate the ledger and publish what
+    // a previous generation accepted but did not get onto disk.
+    crate::task_store::recover_on_startup(&db, &config.db_path);
     crate::task_creator::reconcile_lifecycle_operations_on_startup(
         &mut protected_input_daemon,
         &config.db_path,
         &db,
     )
     .await;
+    // Reconciliation records the stage moves it lands, so drain those too,
+    // then dispatch the transitions accepted completions still owe.
+    for (task_id, error) in crate::task_store::flush_all(&db, &config.db_path) {
+        log::error!(
+            "task ledger for {task_id} could not be published after reconciliation: {error}"
+        );
+    }
+    http_api::task_actions::resume_ledger_continuations(Arc::clone(&http_state)).await;
+    // Dependents whose upstream moved before a restart but never heard it.
+    tokio::spawn(
+        http_api::stage_dependencies::resume_stage_dependency_readiness(Arc::clone(&http_state)),
+    );
+    // Join members a restart interrupted before creating, and subtask
+    // results whose notice the parent's session never got.
+    tokio::spawn(http_api::subtask_joins::resume_subtask_joins(Arc::clone(
+        &http_state,
+    )));
+    // After recovery, so a merge master whose transition or lifecycle
+    // operation was still owed is seen as busy and left alone.
+    tokio::spawn(http_api::signal_agent::migrate_merge_singletons_on_startup(
+        Arc::clone(&http_state),
+    ));
+    // Likewise after recovery: legacy commit posts become commit steps on
+    // tasks at a quiescent boundary (T13d).
+    tokio::spawn(
+        http_api::storage_authority::migrate_commit_posts_on_startup(Arc::clone(&http_state)),
+    );
+    tokio::spawn(run_task_ledger_publisher(Arc::clone(&http_state)));
+    tokio::spawn(run_artifact_retention_sweeper(Arc::clone(&http_state)));
     let protected_input_maintenance = maintain_protected_input_generations(
         config.clone(),
         Arc::clone(&http_state),

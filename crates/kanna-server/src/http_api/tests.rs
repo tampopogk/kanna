@@ -307,22 +307,35 @@ async fn await_measuring_runtime_drift<T>(
 }
 
 mod actions;
+mod artifacts;
 mod brief_task;
 mod core_routes;
 mod create_task;
+mod disk_authority;
+mod disk_rebuild;
 mod e2e_sql_routes;
+mod exit_routing;
 mod input;
 mod machine_stats_routes;
+mod merge_singleton_identity;
+mod mutation_provenance;
+mod qa_dispatch_fixture;
 mod raw_input;
 mod recent_workflows;
 mod relay_dispatch;
+mod release_workflow;
 mod repo_commands;
 mod repo_definitions;
 mod revision_status;
+mod roleless_stage;
+mod stage_dependencies;
+mod subtask_joins;
+mod t10d_lineup;
 mod task_events;
 mod transfer_history_checkpoint;
 mod transfer_preparation_gate;
 mod transfers;
+mod transition_commit;
 mod workflow_switch;
 
 mod attention;

@@ -1,5 +1,29 @@
 # QA Dispatch Review
 
+> **Superseded in part by T10c.** This document describes the original
+> design, built before T5 (subtask joins) and T1 (named-exit routing)
+> existed. `qa-dispatcher` and the `review-*` specialty agents were converted
+> to the T10 definition formula (spec §12) and now fan out through one
+> `kanna_create_subtasks` join instead of `kanna_create_task` +
+> `kanna_wait_task` + manual `kanna_list_task_children` history-walking; the
+> `specialized-reviewers` workflow moved to `"routing": "exits"` and the
+> dispatcher records its revision through `kanna_complete_stage`'s `exit`
+> parameter (`exit: "revise"`) on that routing, falling back to
+> `kanna_request_revision` only for a task still pinned to a legacy-routed
+> snapshot. Incremental round scoping and cross-round verdict carry-forward
+> are kept, but as policy rather than a prescribed git recipe: on a later
+> loop the dispatcher reviews only what changed since the previous review
+> round (that round's own stage workspace branch still points at exactly
+> what it reviewed, since a review workspace never commits — falling back to
+> the full branch when that point cannot be established) and carries
+> forward each untouched specialty's last recorded verdict from its own
+> prior child instead of re-dispatching it; a carried FAIL still blocks. The
+> old manual `kanna_list_task_children` cross-round history-walk this
+> depended on is what T5 retires — not the round-scoping policy itself. The
+> sections below describe the pre-T10c mechanism and are kept for historical
+> context; read `.kanna/agents/qa-dispatcher/AGENT.md` and
+> `.kanna/workflows/specialized-reviewers.json` for the current behavior.
+
 Dispatched specialty reviews for the review stage: a QA dispatcher agent
 decides at review time which specialty reviews a branch needs (UI, security,
 network/runtime performance, plus repo-defined specialties), fans each one out

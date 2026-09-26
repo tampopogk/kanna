@@ -2147,10 +2147,14 @@ fn legacy_builtin_workflow_names_still_resolve_for_committed_repo_config() {
         assert_eq!(
             names,
             vec![
+                "designed",
+                "mechanical",
                 "no-review",
                 "plan-build-review",
+                "planned",
                 "pr-review",
                 "research",
+                "shaped",
                 "single-reviewer",
                 "specialized-reviewers"
             ]
@@ -3031,11 +3035,15 @@ fn workflow_names_are_sorted_deduped_remote_and_compiled_union() {
         definitions.workflow_names().unwrap(),
         vec![
             "alpha",
+            "designed",
+            "mechanical",
             "no-review",
             "plan-build-review",
+            "planned",
             "pr-review",
             "qa",
             "research",
+            "shaped",
             "single-reviewer",
             "specialized-reviewers",
             "zeta"
@@ -3125,6 +3133,128 @@ fn write_agent_repo(label: &str, agent_md: &str, extend_md: Option<&str>) -> std
     }
     publish_origin_main(&repo_root, "publish agent definition fixture");
     repo_root
+}
+
+/// Owner decision (2026-09-23, spec §12): Kanna never checks a definition's
+/// length or shape. `role`/`providers` remain harmless parsing aliases for
+/// `description`/`agent_provider` — nothing about declaring them opts a
+/// definition into any enforced shape.
+#[test]
+fn agent_definition_role_and_providers_resolve_as_harmless_aliases() {
+    let agent_md = "---\nname: reviewer\nrole: A one-sentence role\nproviders: claude, codex\n---\nShort prompt.";
+    let repo_root = write_agent_repo("alias-role-providers", agent_md, None);
+
+    let definition = resolve_test_agent_definition(&repo_root, "reviewer").unwrap();
+    assert_eq!(definition.description, "A one-sentence role");
+    assert_eq!(
+        definition.agent_providers.len(),
+        2,
+        "{:?}",
+        definition.agent_providers
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// A definition of any length, missing whatever sections it likes, resolves
+/// fine: Kanna does not check a definition's length or shape.
+#[test]
+fn agent_definition_of_any_length_or_shape_resolves() {
+    let agent_md =
+        "---\nname: reviewer\nrole: A role\n---\n## Produces\nx\n## Reads\ny\nno other sections here";
+    let repo_root = write_agent_repo("any-length-or-shape", agent_md, None);
+
+    let definition = resolve_test_agent_definition(&repo_root, "reviewer")
+        .expect("a definition missing sections must still resolve");
+    assert!(definition.prompt.contains("no other sections here"));
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// Bundled definition-formula agents (`implement`, `pr` from T10; `mockup`
+/// from T10d; `plan`, `architect`, `researcher`, `review`, `commit`, `setup`,
+/// `workflow-factory`, `agent-factory` from T10e; `task-manager` from T10f)
+/// resolve through the same path production task creation uses, and remain
+/// lean by not repeating what the runtime preamble injects — that leanness is
+/// a goal for what Kanna ships, never something the loader enforces (spec
+/// §12; T10g removed the enforcement this test used to also prove).
+#[test]
+fn bundled_definition_formula_agents_resolve_from_compiled_resources() {
+    let repo_root = init_git_repo_without_provider_fixtures("formula-builtins");
+    publish_origin_main(&repo_root, "publish empty repo for formula builtins");
+
+    for name in [
+        "implement",
+        "pr",
+        "mockup",
+        "plan",
+        "architect",
+        "researcher",
+        "review",
+        "commit",
+        "setup",
+        "workflow-factory",
+        "agent-factory",
+        "task-manager",
+        // T10c: qa-dispatcher and the specialty reviewers.
+        "qa-dispatcher",
+        "review-ui",
+        "review-security",
+        "review-perf",
+        "review-concurrency",
+        "review-migration",
+        "review-compat",
+    ] {
+        let definition = resolve_test_agent_definition(&repo_root, name).unwrap();
+        assert!(!definition.description.trim().is_empty(), "{name}");
+        assert!(!definition.agent_providers.is_empty(), "{name}");
+    }
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// A long EXTEND.md merged over a long base definition resolves fine — no
+/// length or shape check runs on the resolved document either. The extension
+/// content is this repo's own original 30-line `review/EXTEND.md` (from
+/// 890e30b50, "Verification Proportional to the Change", restored in full by
+/// T10e's round-2 revision per the owner's decision that the formula is a
+/// leanness goal, never an enforced limit), layered over the current bundled
+/// `review` agent.
+#[test]
+fn agent_definition_long_base_and_long_extension_merge_resolves_fine() {
+    const REVIEW_EXTEND: &str = "## Verification Proportional to the Change\n\nOwner feedback (2026-09-10): small terminology and MCP-output changes took\nhours through repeated verification and review. Choose checks from the actual\nchanged behavior and failure modes; do not run `./kd test all` automatically\nfor every review or revision.\n\nFor terminology, documentation, and bounded presentation changes, review the\ndiff and run the relevant definition, compatibility, or component contracts.\nA label change does not by itself require a desktop/mobile appearance matrix\nor justify adjacent layout or accessibility behavior changes. For bounded\nAPI output changes, exercise the real affected routes and consumers, including\nunknown/error and compatibility cases; unrelated native UI gates add no proof.\n\nReuse recorded verification when its command, result, and reviewed head are\nknown and the relevant code is unchanged. Check patch equivalence after a\nrebase. A fresh stage worktree alone is not a reason to repeat a full build.\nIndependent review means independently assessing the code and evidence; it\ndoes not require duplicating every author's test run.\n\nRun `./kd test all` for broad changes or changes whose impact cannot be bounded\nby focused checks, and when explicitly required for a release. Keep meaningful\nintegration tests for changed process, persistence, and protocol boundaries.\nAfter a revision, verify the correction and affected contracts; repeat broader\nchecks only when the new diff, a failure, or an unresolved risk justifies them.\n\nRequest revisions for concrete defects caused by the task. Keep unrelated\nfailures and improvements as follow-ups. Record actual exits and skipped or\ncancelled checks honestly; an accepted review with a qualified gate failure\nmust never be reported as a full gate pass.";
+    assert_eq!(REVIEW_EXTEND.lines().count(), 30, "fixture drifted");
+
+    let repo_root = init_git_repo_without_provider_fixtures("long-base-long-extend");
+    let extend_dir = repo_root.join(".kanna/agents/review");
+    std::fs::create_dir_all(&extend_dir).unwrap();
+    std::fs::write(extend_dir.join("EXTEND.md"), REVIEW_EXTEND).unwrap();
+    publish_origin_main(&repo_root, "publish review EXTEND.md fixture");
+
+    let definition = resolve_test_agent_definition(&repo_root, "review")
+        .expect("a long base merged with a long EXTEND.md must resolve fine");
+    assert!(definition
+        .prompt
+        .contains("Verification Proportional to the Change"));
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// A short extension on a base still resolves cleanly, and legacy result
+/// variables in an extension are no longer rejected (T13 retires the
+/// substitution mechanism itself; this loader never checked for it).
+#[test]
+fn agent_definition_extension_with_legacy_result_variable_resolves() {
+    let agent_md =
+        "---\nname: reviewer\nrole: A one-sentence role\nproviders: claude\n---\nBase prompt.";
+    let extend_md = "Uses $PREV_MAIN_RESULT.";
+    let repo_root = write_agent_repo("extend-result-var-ok", agent_md, Some(extend_md));
+
+    let definition = resolve_test_agent_definition(&repo_root, "reviewer")
+        .expect("an extension referencing a legacy result variable must resolve fine");
+    assert!(definition.prompt.contains("$PREV_MAIN_RESULT"));
+
+    let _ = std::fs::remove_dir_all(&repo_root);
 }
 
 const MALFORMED_AGENT_PROVIDER_CASES: &[(&str, &str, &str)] = &[
@@ -4124,9 +4254,7 @@ fn read_agent_definition_loads_builtin_task_manager_agent_with_codex_first() {
         Some("codex")
     );
     assert!(definition.prompt.contains("kanna_wait_events"));
-    assert!(definition
-        .prompt
-        .contains("scoped to the whole repository"));
+    assert!(definition.prompt.contains("scoped to the whole repository"));
     assert!(definition.prompt.contains("kanna_subscribe_events"));
     assert!(definition
         .prompt
@@ -4137,9 +4265,7 @@ fn read_agent_definition_loads_builtin_task_manager_agent_with_codex_first() {
     assert!(definition
         .prompt
         .contains("A wake means \"read the mailbox.\""));
-    assert!(definition
-        .prompt
-        .contains("debounced for 10 seconds"));
+    assert!(definition.prompt.contains("debounced for 10 seconds"));
     assert!(definition
         .prompt
         .contains("including blocked tasks with no session yet"));
@@ -4149,6 +4275,10 @@ fn read_agent_definition_loads_builtin_task_manager_agent_with_codex_first() {
         .prompt
         .contains("`task.blocked` / `task.unblocked`"));
     assert!(definition.prompt.contains("`task.runtime_settled`"));
+    assert!(definition.prompt.contains("`task.dependency_superseded`"));
+    assert!(definition
+        .prompt
+        .contains("Never rerun or rebase the dependent task silently"));
     assert!(definition.prompt.contains("`task.awaiting_advance`"));
     assert!(definition.prompt.contains("`payload.currentTask`"));
     assert!(definition.prompt.contains("event-time stage"));
@@ -4186,9 +4316,7 @@ fn read_agent_definition_loads_builtin_task_manager_agent_with_codex_first() {
     assert!(definition
         .prompt
         .contains("ask the agent for one concise re-report"));
-    assert!(definition
-        .prompt
-        .contains("a different tool from product"));
+    assert!(definition.prompt.contains("a different tool from product"));
     assert!(definition
         .prompt
         .contains("\"workflow_name\": \"architect-research\""));
@@ -4325,8 +4453,10 @@ fn read_agent_definition_falls_back_to_builtin_default_for_missing_flavor() {
 
     let definition = resolve_test_agent_definition(&repo_root, "pr").unwrap();
 
-    assert!(definition.prompt.contains("create a GitHub pull request"));
-    assert!(definition.prompt.contains("gh pr create"));
+    // `pr` is a T10 definition-formula agent (spec §12): its prompt is the
+    // four required sections rather than a git-command recipe.
+    assert!(definition.prompt.contains("## Produces"));
+    assert!(definition.prompt.contains("pull request"));
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
@@ -4619,11 +4749,18 @@ fn build_target_stage_prompt_sections_a_carried_task_without_rescanning_it() {
         prompt: None,
         agent_provider: None,
         environment: None,
+        exits: None,
+        budget: None,
         policy: super::super::definitions::WorkflowStagePolicy {
             transition: WorkflowStageTransition::Manual,
             revision_transition: None,
+            loop_transition: None,
+            handoff: None,
         },
         post: None,
+        exit_commit: false,
+        setup: None,
+        teardown: None,
     };
 
     let prompt = super::super::prompt::build_target_stage_prompt(
@@ -4772,6 +4909,7 @@ fn build_agent_command_adds_claude_kanna_preamble_as_system_prompt() {
         Some("auto"),
         "operator",
         Some("/tmp/kanna-mcp.json"),
+        None,
     );
 
     let command = super::build_agent_command(
@@ -4883,6 +5021,7 @@ fn singleton_claude_pty_delivers_the_agent_body_as_system_prompt() {
         "singleton-task-manager",
         Some("manual"),
         "unspecified",
+        None,
         None,
     );
     let command = super::build_agent_command(
@@ -5113,6 +5252,82 @@ fn relocating_preserves_the_layered_agent_resolution_byte_for_byte() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
+/// Pinned to the same fixture and literal text as the `buildKannaLedgerSection`
+/// tests in packages/core/src/workflow/prompt-builder.test.ts.
+#[test]
+fn ledger_preamble_matches_the_typescript_builder() {
+    let intro = "Task ledger: `/home/u/.kanna/repos/repo-1/tasks/task-1` (also in `KANNA_TASK_LEDGER_PATH`). It holds this task's `task.json` and, under `ledger/`, its recorded results, tool-delivered inputs, stage transitions and workflow replacements as ordered files. Read an earlier entry there when you need it.";
+    let trigger_section = format!(
+        "{intro}\n\nResult that caused this session: ledger entry `task-1-000003` (`ledger/000003-result.md`), status `success`, recorded by stage `plan` (run `run-7`, branch `task-1-2`, commit `0123abc`). Its message follows verbatim.\n\n-----BEGIN RESULT MESSAGE-----\nPlan ready.\n\nUse {{{{COMPLETION}}}} and $& and $PREV_RESULT literally.\n-----END RESULT MESSAGE-----"
+    );
+    let ledger = crate::task_store::SessionLedger {
+        task_dir: "/home/u/.kanna/repos/repo-1/tasks/task-1".into(),
+        trigger: Some(crate::task_store::TriggeringResult {
+            entry_id: "task-1-000003".into(),
+            file: "ledger/000003-result.md".into(),
+            status: "success".into(),
+            stage: Some("plan".into()),
+            run_id: Some("run-7".into()),
+            branch: Some("task-1-2".into()),
+            committed_sha: Some("0123abc".into()),
+            message: "Plan ready.\n\nUse {{COMPLETION}} and $& and $PREV_RESULT literally.".into(),
+        }),
+        dependencies: Vec::new(),
+    };
+    let preamble = super::build_kanna_preamble(
+        &AgentProvider::Claude,
+        "task-1",
+        "in progress",
+        "plan-build-review",
+        Some("auto"),
+        "auto",
+        None,
+        Some(&ledger),
+    );
+    assert!(preamble.contains(&format!(
+        "This stage was entered by: auto\n\n{trigger_section}\n\nKanna is a desktop app"
+    )));
+    assert!(preamble.contains("Use {{COMPLETION}} and $& and $PREV_RESULT literally."));
+    assert_eq!(
+        preamble
+            .matches("This stage's transition is `auto`")
+            .count(),
+        1
+    );
+
+    let untriggered = super::build_kanna_preamble(
+        &AgentProvider::Claude,
+        "task-1",
+        "in progress",
+        "plan-build-review",
+        Some("auto"),
+        "auto",
+        None,
+        Some(&crate::task_store::SessionLedger {
+            task_dir: "/home/u/.kanna/repos/repo-1/tasks/task-1".into(),
+            trigger: None,
+            dependencies: Vec::new(),
+        }),
+    );
+    assert!(untriggered.contains(&format!(
+        "{intro}\n\nNo recorded result caused this session.\n\nKanna is a desktop app"
+    )));
+
+    // A session with no task ledger renders exactly the pre-ledger preamble.
+    let legacy = super::build_kanna_preamble(
+        &AgentProvider::Claude,
+        "task-1",
+        "in progress",
+        "plan-build-review",
+        Some("auto"),
+        "auto",
+        None,
+        None,
+    );
+    assert!(!legacy.contains("{{LEDGER}}"));
+    assert!(legacy.contains("This stage was entered by: auto\n\nKanna is a desktop app"));
+}
+
 #[test]
 fn build_kanna_preamble_renders_transition_specific_completion_guidance() {
     let auto = super::build_kanna_preamble(
@@ -5122,6 +5337,7 @@ fn build_kanna_preamble_renders_transition_specific_completion_guidance() {
         "qa",
         Some("auto"),
         "auto",
+        None,
         None,
     );
     assert!(auto.contains("This stage's transition is `auto`"));
@@ -5136,6 +5352,7 @@ fn build_kanna_preamble_renders_transition_specific_completion_guidance() {
         "default",
         Some("manual"),
         "operator",
+        None,
         None,
     );
     assert!(manual.contains("This stage's transition is `manual`"));
@@ -5165,6 +5382,7 @@ fn build_kanna_preamble_renders_transition_specific_completion_guidance() {
         None,
         "unspecified",
         None,
+        None,
     );
     assert!(default.contains("This stage's transition is `manual`"));
 }
@@ -5178,6 +5396,7 @@ fn build_agent_command_launches_antigravity_with_prepended_kanna_context() {
         "default",
         Some("manual"),
         "operator",
+        None,
         None,
     );
 
@@ -5505,6 +5724,7 @@ fn build_kanna_preamble_names_automatic_and_fallback_mcp_providers() {
         None,
         "unspecified",
         Some("/tmp/kanna-mcp.json"),
+        None,
     );
     assert!(codex.contains("Codex is launched with Kanna MCP registration"));
     assert!(codex.contains("Kanna MCP tools should be available automatically"));
@@ -5517,6 +5737,7 @@ fn build_kanna_preamble_names_automatic_and_fallback_mcp_providers() {
         None,
         "unspecified",
         Some("/tmp/kanna-mcp.json"),
+        None,
     );
     assert!(antigravity.contains("Antigravity CLI MCP registration is not wired"));
     assert!(antigravity.contains("use the `kanna-cli` fallback for Kanna task operations"));
@@ -6069,7 +6290,11 @@ fn prepare_task_binds_specialty_agent_on_specialty_review_workflow() {
     match prepared.session {
         PreparedSessionSpawn::Pty { args, .. } => {
             let command = args.join(" ");
-            assert!(command.contains("specialty security review agent"));
+            // review-security (T10 definition formula) no longer frames itself
+            // with "You are a specialty security review agent"; its identity
+            // is the frontmatter `role`, and its body opens with its own
+            // security-specific review policy instead.
+            assert!(command.contains("Trace untrusted input"));
             assert!(command.contains("Specialty review dispatched from task parent-1."));
         }
         _ => panic!("expected pty session"),
@@ -8796,6 +9021,8 @@ fn transfer_source_stage_run() -> crate::db::StageRun {
         completion_transition: Some("manual".to_string()),
         trigger: "unspecified".to_string(),
         provider_override: None,
+        entry_channel_identity: Default::default(),
+        result_provenance: None,
         started_at: "2026-09-16 00:00:00".to_string(),
         finished_at: None,
     }

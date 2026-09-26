@@ -2830,3 +2830,382 @@ async fn a_resumed_merge_master_is_not_left_with_an_empty_instructions_block() {
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
+
+/// Spec §6 / T2: after a loop back the task's branch no longer names its
+/// directory. A revision, a rerun and a recovery all start their session
+/// through the same path — the workspace record, not a path built from the
+/// branch — and record the same identity; every existing API field still
+/// resolves the directory the agent is working in.
+#[tokio::test]
+async fn revision_rerun_and_resume_share_the_session_start_path() {
+    let config = test_config("session-start-path");
+    let (repo_root, db) =
+        super::revision::init_resume_revision_fixture("session-start-path", &config);
+    let impl_worktree = repo_root.join(".kanna-worktrees/task-impl");
+    let impl_path = impl_worktree.to_string_lossy().to_string();
+    let claude_config_dir = repo_root.join("claude-config");
+    super::revision::write_resume_transcript(&claude_config_dir, &impl_worktree);
+
+    // --- Revision: the implement directory on a new branch.
+    let revision = {
+        let _env_guard = super::CLAUDE_CONFIG_DIR_LOCK.lock().unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", &claude_config_dir);
+        let prepared = prepare_revision_task_for_api(
+            &db,
+            &config,
+            "review-task",
+            "in progress",
+            "Tighten the error handling.",
+            None,
+        );
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        prepared.unwrap()
+    };
+    let branch = revision
+        .revisited_workspace()
+        .expect("revision re-enters the implement directory")
+        .branch
+        .clone();
+    assert_ne!(branch, "task-impl");
+    assert_eq!(revision.cwd(), impl_path);
+    let fake_daemon = spawn_fake_daemon_fork_transition(config.daemon_dir.clone(), 1).await;
+    let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    spawn_prepared_stage_run_for_api(
+        &config.db_path,
+        &mut daemon,
+        &crate::session_replacements::SessionReplacements::default(),
+        revision,
+    )
+    .await
+    .unwrap();
+    fake_daemon.await.unwrap();
+
+    let revision_run = db.latest_stage_run("review-task").unwrap().unwrap();
+    let session = db
+        .stage_run_session(&revision_run.id)
+        .unwrap()
+        .expect("the revision recorded its session");
+    assert_eq!(session.workspace_id.as_deref(), Some("ws-task-impl"));
+    assert_eq!(session.branch.as_deref(), Some(branch.as_str()));
+    assert_eq!(session.name.as_deref(), Some("In progress: Original task"));
+    let transcript = session.transcript.expect("transcript reference");
+    assert_eq!(transcript.provider, "claude");
+    assert_eq!(transcript.session_id, super::revision::RESUME_SESSION_UUID);
+    let workspaces = db.list_stage_workspaces("review-task").unwrap();
+    assert!(workspaces
+        .iter()
+        .any(|workspace| workspace.id == "ws-task-impl"
+            && workspace.stage == "in progress"
+            && workspace.path == impl_path
+            && workspace.branch == branch));
+
+    // --- Existing API fields resolve the directory, by task id and by the
+    // branch a legacy client may still hold as its session id.
+    assert_eq!(
+        db.get_task_worktree_path("review-task").unwrap().as_deref(),
+        Some(impl_path.as_str())
+    );
+    assert!(db
+        .list_open_task_worktree_paths()
+        .unwrap()
+        .contains(&("review-task".to_string(), impl_path.clone())));
+    let api = crate::mobile_api::MobileApi::new(config.clone(), Db::open(&config.db_path).unwrap());
+    for key in ["review-task", branch.as_str()] {
+        let detail = api.get_task(key).unwrap().expect("task detail");
+        assert_eq!(detail.worktree_path.as_deref(), Some(impl_path.as_str()));
+        assert_eq!(detail.branch.as_deref(), Some(branch.as_str()));
+        let latest = detail.latest_run.expect("latest run");
+        assert_eq!(
+            latest
+                .session
+                .and_then(|session| session.workspace_id)
+                .as_deref(),
+            Some("ws-task-impl")
+        );
+    }
+
+    // --- Rerun: same directory, same branch, same identity.
+    let rerun = prepare_rerun_stage_for_api(&db, &config, "review-task").unwrap();
+    assert_eq!(rerun.cwd, impl_path);
+    assert_eq!(
+        rerun.session_identity.workspace_id.as_deref(),
+        Some("ws-task-impl")
+    );
+    assert_eq!(
+        rerun.session_identity.branch.as_deref(),
+        Some(branch.as_str())
+    );
+    assert!(
+        !repo_root.join(".kanna-worktrees").join(&branch).exists(),
+        "no directory is created for the branch name"
+    );
+
+    // --- Recovery of the interrupted revision: the same again.
+    db.finish_stage_run(&revision_run.id, "failed", None, Some("session died"))
+        .unwrap();
+    let restart = {
+        let _env_guard = super::CLAUDE_CONFIG_DIR_LOCK.lock().unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", &claude_config_dir);
+        let prepared = prepare_resume_task_for_api(&db, &config, "review-task");
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        prepared.unwrap()
+    };
+    assert_eq!(restart.cwd(), impl_path);
+    assert_eq!(
+        restart.session_identity().workspace_id.as_deref(),
+        Some("ws-task-impl")
+    );
+    assert_eq!(
+        restart.session_identity().branch.as_deref(),
+        Some(branch.as_str())
+    );
+    assert!(
+        restart.resume_fallback_reason.is_none(),
+        "{:?}",
+        restart.resume_fallback_reason
+    );
+    assert!(!repo_root.join(".kanna-worktrees").join(&branch).exists());
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// Entry into a stage with no role whose setup had started when the server
+/// stopped. The setup's commands may have acted on the world and nothing says
+/// whether they finished, so restart lands the entry and parks the task there
+/// with that reported: it neither fails the entry (the setup may have run)
+/// nor runs setup again (it may have run already).
+#[tokio::test]
+async fn restart_parks_a_gate_whose_setup_outcome_is_unknown() {
+    let (repo_root, config, db) = init_recovery_fixture("gate-setup-ambiguous");
+    let gate = repo_root.join(".kanna-worktrees/task-recovery-task-2");
+    run_git_fixture(
+        &repo_root,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "task-recovery-task-2",
+            gate.to_string_lossy().as_ref(),
+            "task-recovery",
+        ],
+    );
+    let gate_path = gate.to_string_lossy().to_string();
+    db.insert_stage_run(NewStageRun {
+        id: "run-gate",
+        task_id: "recovery-task",
+        stage: "stakeholder",
+        kind: "main",
+        agent: None,
+        agent_provider: None,
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: None,
+        provider_session_id: None,
+        cwd: Some(&gate_path),
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+    db.insert_lifecycle_operation_intent(
+        "run-gate",
+        "recovery-task",
+        "stage_spawn",
+        "submitted",
+        &gate_intent_payload(&gate_path),
+    )
+    .unwrap();
+
+    let listing = spawn_listing_fake_daemon(config.daemon_dir.clone()).await;
+    let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    crate::task_creator::reconcile_lifecycle_operations_on_startup(
+        &mut daemon,
+        &config.db_path,
+        &db,
+    )
+    .await;
+    listing.await.unwrap();
+
+    let item = db.get_pipeline_item("recovery-task").unwrap().unwrap();
+    assert_eq!(item.stage.as_deref(), Some("stakeholder"));
+    assert_eq!(item.branch.as_deref(), Some("task-recovery-task-2"));
+    assert_eq!(
+        item.activity.as_deref(),
+        Some("unread"),
+        "parked for a person"
+    );
+    assert!(db.list_lifecycle_operation_intents().unwrap().is_empty());
+    assert!(
+        gate.exists(),
+        "the workspace its setup may have written is kept"
+    );
+    assert_eq!(db.stage_run("run-gate").unwrap().unwrap().status, "running");
+    let reported = db
+        .list_task_events(
+            &crate::db::TaskEventScope::Tasks(vec!["recovery-task".to_string()]),
+            0,
+            i64::MAX,
+            20,
+        )
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event_type == "task.lifecycle_failed")
+        .expect("the unknown setup outcome is reported on the task");
+    assert_eq!(reported.payload["operation"], "stage_setup");
+    assert_eq!(reported.payload["stage"], "stakeholder");
+    assert!(reported.payload["error"]
+        .as_str()
+        .unwrap()
+        .contains("not run again"));
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// Before its setup started nothing external happened, so an interrupted
+/// gate entry is failed like any unsubmitted stage spawn: the task stays
+/// where it was and the fresh fork is removed.
+#[tokio::test]
+async fn restart_fails_a_gate_entry_that_never_started_its_setup() {
+    let (repo_root, config, db) = init_recovery_fixture("gate-setup-unstarted");
+    let gate = repo_root.join(".kanna-worktrees/task-recovery-task-2");
+    run_git_fixture(
+        &repo_root,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "task-recovery-task-2",
+            gate.to_string_lossy().as_ref(),
+            "task-recovery",
+        ],
+    );
+    db.insert_lifecycle_operation_intent(
+        "run-gate",
+        "recovery-task",
+        "stage_spawn",
+        "prepared",
+        &gate_intent_payload(&gate.to_string_lossy()),
+    )
+    .unwrap();
+
+    let listing = spawn_listing_fake_daemon(config.daemon_dir.clone()).await;
+    let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    crate::task_creator::reconcile_lifecycle_operations_on_startup(
+        &mut daemon,
+        &config.db_path,
+        &db,
+    )
+    .await;
+    listing.await.unwrap();
+
+    let item = db.get_pipeline_item("recovery-task").unwrap().unwrap();
+    assert_eq!(item.stage.as_deref(), Some("in progress"));
+    assert_eq!(item.branch.as_deref(), Some("task-recovery"));
+    assert!(db.list_lifecycle_operation_intents().unwrap().is_empty());
+    assert!(!gate.exists(), "the unused fork is rolled back");
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+fn gate_intent_payload(gate_path: &str) -> String {
+    serde_json::json!({
+        "version": 2,
+        "task_id": "recovery-task",
+        "session_id": "recovery-task",
+        "run_id": "run-gate",
+        "next_stage": "stakeholder",
+        "run_stage": "stakeholder",
+        "branch": "task-recovery-task-2",
+        "worktree_path": gate_path,
+        "cwd": gate_path,
+        "provider_session_id": null,
+        "completion_transition": "manual",
+        "trigger": "operator",
+        "entry_exit": { "exit": "advance", "source": "operator" },
+        "rollback_on_failure": true,
+        "gate": true,
+    })
+    .to_string()
+}
+
+/// A commit step whose instruction crossed the socket before the server
+/// stopped. Restart binds the delivery the daemon may have accepted exactly
+/// once — the commit run and the one transition it is for — and sends the
+/// session nothing: the listing daemon answers only `List`.
+#[tokio::test]
+async fn restart_binds_an_unacknowledged_commit_step_once() {
+    let (repo_root, config, db) = init_recovery_fixture("commit-step-ack");
+    let worktree = repo_root.join(".kanna-worktrees/task-recovery");
+    let payload = serde_json::json!({
+        "version": 1,
+        "task_id": "recovery-task",
+        "session_id": "recovery-task",
+        "message": "Commit the work that belongs to this task",
+        "run_id": "run-commit",
+        "inherited_run_id": "run-killed-mid-turn",
+        "run_stage": "in progress commit",
+        "completion_transition": "auto",
+        "trigger": "operator",
+        "agent": "implement",
+        "agent_provider": "claude",
+        "model": null,
+        "effort": null,
+        "provider_session_id": null,
+        "cwd": worktree.to_string_lossy(),
+        "commit": {
+            "stage": "in progress",
+            "exit": { "exit": "advance", "source": "operator" },
+        },
+    });
+    db.insert_lifecycle_operation_intent(
+        "run-commit",
+        "recovery-task",
+        "post",
+        "submitted",
+        &payload.to_string(),
+    )
+    .unwrap();
+
+    let listing = spawn_listing_fake_daemon(config.daemon_dir.clone()).await;
+    let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    crate::task_creator::reconcile_lifecycle_operations_on_startup(
+        &mut daemon,
+        &config.db_path,
+        &db,
+    )
+    .await;
+    assert!(matches!(
+        listing.await.unwrap(),
+        kanna_daemon::protocol::Command::List
+    ));
+    // Nothing is left to reconcile on the next boot.
+    crate::task_creator::reconcile_lifecycle_operations_on_startup(
+        &mut daemon,
+        &config.db_path,
+        &db,
+    )
+    .await;
+
+    assert!(db.list_lifecycle_operation_intents().unwrap().is_empty());
+    let posts = db
+        .list_stage_runs_for_task("recovery-task")
+        .unwrap()
+        .into_iter()
+        .filter(|run| run.kind == "post")
+        .collect::<Vec<_>>();
+    assert_eq!(posts.len(), 1, "the commit step is bound once");
+    assert_eq!(posts[0].id, "run-commit");
+    assert_eq!(posts[0].status, "running");
+    let commit = db.transition_commit("run-commit").unwrap().unwrap();
+    assert_eq!(commit.state, "requested");
+    assert_eq!(commit.stage, "in progress");
+    assert_eq!(commit.exit.unwrap().source, "operator");
+    assert_eq!(
+        db.stage_run("run-killed-mid-turn").unwrap().unwrap().status,
+        "succeeded",
+        "the stage's own run hands over to its commit step"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}

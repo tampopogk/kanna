@@ -180,7 +180,16 @@ pub(crate) enum SealedAdmissionError {
     Unavailable(String),
     /// The handshake failed to authenticate or was malformed.
     Handshake(String),
+    /// The handshake authenticated a pinned sibling whose record does not
+    /// place it in this desktop's current account
+    /// (`crate::account_boundary`). Distinct from `Handshake` so the dialer
+    /// never reads it as a changed key.
+    AccountBoundary(crate::account_boundary::AccountBoundaryRefusal),
 }
+
+/// The wire code a sealed admission refused on the account boundary is
+/// answered with; `peer_channel` maps it to `PeerDialError::AccountBoundary`.
+pub(crate) const PEER_ACCOUNT_BOUNDARY_CODE: &str = "peer_account_boundary";
 
 impl std::fmt::Display for SealedAdmissionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -191,6 +200,7 @@ impl std::fmt::Display for SealedAdmissionError {
             Self::Handshake(message) => {
                 write!(formatter, "secure channel handshake refused: {message}")
             }
+            Self::AccountBoundary(refusal) => write!(formatter, "{refusal}"),
         }
     }
 }
@@ -305,6 +315,25 @@ pub(crate) fn admit_sealed_peer_session(
         origin,
         declared_desktop_id: hello.source_desktop_id.clone(),
     };
+    // A pinned sibling is admitted with sibling authority only while its
+    // record places it in this desktop's current account. Refused before
+    // the reply, so no session - request, view or transfer tunnel - exists.
+    // A pairing hello is exempt: re-pairing is how such a record regains
+    // its standing.
+    if let Some(peer) = paired.as_ref() {
+        if hello.intent != HelloIntent::PeerPairing {
+            if let Err(refusal) = crate::account_boundary::peer_standing(
+                peer,
+                state.authenticated_account_uid().as_deref(),
+            ) {
+                log::warn!(
+                    "[ksp] refusing a sealed peer session ({origin:?}, {} pin): {refusal}",
+                    crate::account_boundary::provenance_label(peer)
+                );
+                return Err(SealedAdmissionError::AccountBoundary(refusal));
+            }
+        }
+    }
     // A pairing hello never carries sibling authority, even from a key that
     // is already pinned: re-pairing (a rotated key on the other side, a
     // fresh string) replaces the record through the claim, and a session
@@ -419,6 +448,7 @@ pub(crate) fn recheck_sealed_authority(
         context,
     } = authority
     {
+        let current_account_uid = state.authenticated_account_uid();
         let still_paired = state
             .peer_trust_store()
             .ok()
@@ -428,6 +458,10 @@ pub(crate) fn recheck_sealed_authority(
                         &context.encoded_remote_static(),
                         &state.config().environment,
                     )
+                    .filter(|peer| {
+                        crate::account_boundary::peer_standing(peer, current_account_uid.as_deref())
+                            .is_ok()
+                    })
                     .map(|peer| peer.desktop_id.clone())
             })
             .is_some_and(|paired| paired == desktop_id);
@@ -439,8 +473,8 @@ pub(crate) fn recheck_sealed_authority(
             }
         } else {
             log::info!(
-                "[ksp] peer {desktop_id} was unpaired while its session was being admitted; \
-                 the session is pairing-only"
+                "[ksp] peer {desktop_id} was unpaired, or left this desktop's account, while \
+                 its session was being admitted; the session is pairing-only"
             );
             SealedSessionAuthority::PeerPairingOnly(context)
         };
@@ -2278,8 +2312,18 @@ async fn run_socket_session<S, M, E>(
                                 "secure_channel_unavailable".into()
                             }
                             SealedAdmissionError::Handshake(_) => "secure_channel_refused".into(),
+                            SealedAdmissionError::AccountBoundary(_) => {
+                                PEER_ACCOUNT_BOUNDARY_CODE.into()
+                            }
                         },
-                        message: error.to_string(),
+                        // An account refusal is logged in full above; the
+                        // clear-text answer names neither machine.
+                        message: match &error {
+                            SealedAdmissionError::AccountBoundary(refusal) => {
+                                refusal.wire_message()
+                            }
+                            _ => error.to_string(),
+                        },
                     };
                     if let Ok(json) = serde_json::to_string(&frame) {
                         let _ = ws_tx.send(outbound(json)).await;
@@ -3529,12 +3573,15 @@ async fn dispatch_ksp_request(
             match authority.as_deref() {
                 None => dispatch_authenticated_http_invoke(state, &method, &path, body).await,
                 Some(SealedSessionAuthority::Device {
-                    device_id, pairing, ..
+                    device_id,
+                    pairing,
+                    origin,
                 }) => {
                     crate::http_api::dispatch_sealed_device_http_invoke(
                         state,
                         device_id.clone(),
                         pairing.clone(),
+                        *origin,
                         &method,
                         &path,
                         body,
@@ -3551,10 +3598,13 @@ async fn dispatch_ksp_request(
                     )
                     .await
                 }
-                Some(SealedSessionAuthority::PeerDesktop { desktop_id, .. }) => {
+                Some(SealedSessionAuthority::PeerDesktop {
+                    desktop_id, origin, ..
+                }) => {
                     crate::http_api::dispatch_sealed_peer_http_invoke(
                         state,
                         desktop_id.clone(),
+                        *origin,
                         &method,
                         &path,
                         body,

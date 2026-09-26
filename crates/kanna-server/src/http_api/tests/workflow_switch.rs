@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
 
-fn seed_workflow_task(
+pub(super) fn seed_workflow_task(
     db: &Db,
     repo_path: &str,
     task_id: &str,
@@ -89,7 +89,7 @@ async fn set_workflow_via_legacy_surface(
     (status, String::from_utf8(body.to_vec()).unwrap())
 }
 
-fn workflow_test_repo(label: &str) -> (tempfile::TempDir, String) {
+pub(super) fn workflow_test_repo(label: &str) -> (tempfile::TempDir, String) {
     let temp = tempfile::Builder::new()
         .prefix(&format!("kanna-dynamic-workflow-{label}-"))
         .tempdir()
@@ -464,7 +464,7 @@ async fn replace_workflow(
     )
 }
 
-fn replacement_fixture(label: &str) -> (tempfile::TempDir, Arc<AppState>, Value) {
+pub(super) fn replacement_fixture(label: &str) -> (tempfile::TempDir, Arc<AppState>, Value) {
     let (temp, repo_path) = workflow_test_repo(label);
     let before = serde_json::json!({"name": "pinned", "stages": [
         {"name": "review", "agent": "review", "agent_provider": ["claude-fable", "codex-gpt-6-astra"], "policy": {"transition": "manual"}},
@@ -727,7 +727,7 @@ fn plan_publication_fixture_with_barrier(label: &str) -> BarrieredFixture {
     }
 }
 
-fn plan_publication_fixture(label: &str) -> (tempfile::TempDir, Arc<AppState>, Value) {
+pub(super) fn plan_publication_fixture(label: &str) -> (tempfile::TempDir, Arc<AppState>, Value) {
     let (temp, repo_path) = workflow_test_repo(label);
     let before = serde_json::json!({"name": "research", "stages": [
         {"name": "research", "agent": "researcher", "prompt": "$TASK_PROMPT",
@@ -785,7 +785,7 @@ fn plan_publication_fixture(label: &str) -> (tempfile::TempDir, Arc<AppState>, V
     (temp, state, before)
 }
 
-fn single_reviewer_suffix(before: &Value) -> Value {
+pub(super) fn single_reviewer_suffix(before: &Value) -> Value {
     let mut after = before.clone();
     after["revision_limit"] = serde_json::json!(3);
     let stages = after["stages"].as_array_mut().unwrap();
@@ -969,6 +969,35 @@ async fn a_published_plan_survives_replays_and_refuses_differing_retries() {
         .result
         .unwrap()
         .contains("the full plan"));
+
+    // One result and one plan entry, linked by operation and result id; the
+    // replay and the refused retry added nothing.
+    let files = super::actions::ledger_files(&state.config.db_path, "task-1");
+    let kinds = files.iter().map(|file| file.kind).collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            crate::db::task_store::LedgerEntryKind::Result,
+            crate::db::task_store::LedgerEntryKind::Plan,
+        ]
+    );
+    let (result, plan) = (&files[0], &files[1]);
+    assert_eq!(result.message.as_deref(), Some("the full plan"));
+    assert_eq!(result.body()["request"]["publishesWorkflow"], true);
+    assert_eq!(
+        plan.envelope["operation_id"],
+        result.envelope["operation_id"]
+    );
+    assert_eq!(plan.body()["result_id"], result.envelope["entry_id"]);
+    assert_eq!(plan.body()["before"], before);
+    assert_eq!(plan.body()["after"], published);
+    assert_eq!(plan.body()["source"], "agent");
+
+    // task.json projects the exact pinned workflow the task now runs.
+    let task_dir = crate::task_store::task_dir_for(&db, &state.config.db_path, "task-1").unwrap();
+    let snapshot: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(task_dir.join("task.json")).unwrap()).unwrap();
+    assert_eq!(snapshot["workflow"]["definition"], published);
 }
 
 #[tokio::test]
@@ -985,6 +1014,15 @@ async fn a_stale_read_cannot_publish_stages_over_a_concurrent_edit() {
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     let db = Db::open(&state.config.db_path).unwrap();
     assert_eq!(db.stage_run("run-plan").unwrap().unwrap().status, "running");
+    // The refused publication left no result or plan entry behind; only the
+    // earlier accepted edit is in the ledger.
+    let files = super::actions::ledger_files(&state.config.db_path, "task-1");
+    assert!(files
+        .iter()
+        .all(|file| file.kind == crate::db::task_store::LedgerEntryKind::Plan));
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].body()["operation"], "replace");
+    assert!(files[0].body()["result_id"].is_null());
 }
 
 #[tokio::test]

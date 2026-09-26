@@ -166,11 +166,33 @@ pub(crate) enum PreparedSessionSpawn {
 pub(crate) enum PreparedStageTransition {
     Run(Box<PreparedStageRunSpawn>),
     Post(Box<PreparedPostDispatch>),
+    /// Entering a stage with no role (spec §5): its workspace is forked and
+    /// its setup runs, and the task parks there without an agent.
+    Gate(Box<PreparedGateEntry>),
     Close {
         task_id: String,
         /// Teardown for the final workspace the close leaves behind.
         workspace_teardown: Option<Box<PreparedWorkspaceTeardown>>,
     },
+}
+
+/// Entry into a stage with no role, ready to execute: the fork it parks in,
+/// the setup it runs there, and the teardown of the workspace it leaves.
+pub(crate) struct PreparedGateEntry {
+    pub(super) task_id: String,
+    /// The outgoing agent session, stopped before the gate is entered.
+    pub(super) session_id: String,
+    pub(super) next_stage: String,
+    pub(super) workspace: PreparedRunWorkspace,
+    pub(super) cwd: String,
+    pub(super) env: HashMap<String, String>,
+    /// Repository setup for the fresh fork, then the stage's own setup.
+    pub(super) setup: Vec<String>,
+    pub(super) session_identity: crate::db::StageRunSession,
+    pub(super) workspace_teardown: Option<PreparedWorkspaceTeardown>,
+    pub(super) trigger: crate::db::StageTrigger,
+    pub(super) entry_channel: crate::mutation_provenance::ChannelIdentity,
+    pub(super) entry_exit: Option<crate::db::TransitionExit>,
 }
 
 /// A stage's post, ready to be injected into the task's live agent session.
@@ -185,6 +207,19 @@ pub(crate) struct PreparedPostDispatch {
     /// Run-history label: the post's name.
     pub(super) run_stage: String,
     pub(super) fallback: PreparedStageRunSpawn,
+    /// Set when this post is a stage's commit step (`exit_commit`) rather
+    /// than a declared post.
+    pub(super) commit: Option<TransitionCommitRequest>,
+}
+
+/// The commit step of one requested transition (spec §5): the stage the
+/// transition leaves and the exit it takes. Recorded against the commit run,
+/// so that run's result fires exactly this transition, once.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct TransitionCommitRequest {
+    pub(crate) stage: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) exit: Option<crate::db::TransitionExit>,
 }
 
 pub(crate) struct PreparedStageRerun {
@@ -201,8 +236,14 @@ pub(crate) struct PreparedStageRerun {
     /// Carried forward from the run this rerun reproduces, so the durable
     /// record keeps naming whoever picked the model it respawns with.
     pub(super) provider_override: Option<crate::db::StageProviderOverride>,
+    /// The verified channel the rerun request arrived on. Preparation leaves
+    /// it unknown; the caller that knows the channel sets it.
+    pub(super) entry_channel: crate::mutation_provenance::ChannelIdentity,
     pub(super) completion_transition: WorkflowStageTransition,
     pub(super) provider_session_id: Option<String>,
+    /// The session identity this rerun records (spec §6). Boxed: the
+    /// prepared rerun travels inside request-handler enums by value.
+    pub(super) session_identity: Box<crate::db::StageRunSession>,
     pub(super) cwd: String,
     pub(super) env: HashMap<String, String>,
     /// Reruns execute setup only after the prior session is killed; a
@@ -216,6 +257,54 @@ pub(crate) struct PreparedStageRerun {
     /// The fully-resolved prompt this rerun was actually given, bound to its
     /// stage run once that row exists. See `crate::db::stage_run_prompt`.
     pub(super) resolved_prompt: String,
+}
+
+impl PreparedStageRerun {
+    pub(crate) fn set_entry_channel(
+        &mut self,
+        channel: crate::mutation_provenance::ChannelIdentity,
+    ) {
+        self.entry_channel = channel;
+    }
+}
+
+impl PreparedStageTransition {
+    /// Record the channel this transition's entry arrived on. A post carries
+    /// it on the run it records (live dispatch or fresh fallback alike); a
+    /// close records no stage run to carry it.
+    pub(crate) fn set_entry_channel(
+        &mut self,
+        channel: crate::mutation_provenance::ChannelIdentity,
+    ) {
+        match self {
+            Self::Run(prepared) => prepared.set_entry_channel(channel),
+            Self::Post(prepared) => prepared.fallback.set_entry_channel(channel),
+            Self::Gate(prepared) => prepared.entry_channel = channel,
+            Self::Close { .. } => {}
+        }
+    }
+
+    /// Record the exit this transition takes. A run that enters a stage
+    /// records it; a commit step keeps it for the transition its result
+    /// fires; a declared post stays in its stage (the transition its
+    /// completion later makes records its own), and a close enters none.
+    pub(crate) fn set_entry_exit(&mut self, exit: Option<crate::db::TransitionExit>) {
+        match self {
+            Self::Run(prepared) => prepared.set_entry_exit(exit),
+            Self::Gate(prepared) => prepared.entry_exit = exit,
+            // A commit step carries the exit of the transition it belongs
+            // to, which its result fires; a declared post records none.
+            Self::Post(prepared) => {
+                if let Some(commit) = prepared.commit.as_mut() {
+                    commit.exit = exit.clone();
+                }
+                if let Some(commit) = prepared.fallback.transition_commit.as_mut() {
+                    commit.exit = exit;
+                }
+            }
+            Self::Close { .. } => {}
+        }
+    }
 }
 
 /// A stage-run workspace forked from the task's committed tip: swaps get a
@@ -232,19 +321,58 @@ pub(crate) struct ForkedWorkspace {
 pub(super) enum RunWorkspaceSpec {
     /// Keep the task's current workspace (post fallbacks, reruns).
     Current,
-    /// Fork a fresh branch + worktree from the task's committed tip.
-    Fork { branch: String },
+    /// Fork a fresh branch + worktree. `start_point` is the recorded input
+    /// commit (the triggering result's SHA); without one the fork follows
+    /// the task's current workspace branch, as every fork did before inputs
+    /// were recorded. `report` is what the fork left behind (see
+    /// `session::fork_input_report`).
+    Fork {
+        branch: String,
+        start_point: Option<String>,
+        report: Option<String>,
+    },
     /// Adopt a previous run's workspace and resume its agent-CLI session.
     Resume(ResumeWorkspaceSpec),
+    /// Re-enter a stage's retained directory on a newly allocated branch
+    /// (spec §6 "Loop back"), resuming its conversation when possible.
+    Revisit(RevisitWorkspaceSpec),
     /// Recreate the task's current branch after close removed its worktree.
     /// This is restored durable task state, not a disposable stage fork.
-    Recreate { branch: String },
+    Recreate {
+        branch: String,
+        worktree_path: String,
+    },
     /// Finish initializing a checkout created by an earlier recovery attempt.
     /// Its branch and contents are retained; only repository setup is retried.
     FinishRecreate {
         branch: String,
         worktree_path: String,
     },
+}
+
+/// A loop back into a stage's retained directory. The branch is already
+/// reserved from the task's counter; the checkout happens in
+/// `prepare_stage_run_spawn`, and a failed spawn restores `previous_*`.
+pub(super) struct RevisitWorkspaceSpec {
+    pub(super) worktree_path: String,
+    /// The newly allocated `task-<id>-<n>` branch this session checks out.
+    pub(super) branch: String,
+    /// The input commit the new branch starts at.
+    pub(super) start_point: String,
+    pub(super) previous_branch: Option<String>,
+    pub(super) previous_head: String,
+    /// Whether the plan saw uncommitted changes. With `previous_*` it is the
+    /// state the checkout re-validates and the rollback compares against.
+    pub(super) observed_dirty: bool,
+    /// Retained state the revisit kept in place and reports.
+    pub(super) report: Option<String>,
+    /// The conversation to resume there, when its transcript is present.
+    pub(super) resume: Option<RevisitResume>,
+}
+
+pub(super) struct RevisitResume {
+    pub(super) provider_session_id: String,
+    pub(super) resumed_from_run_id: String,
 }
 
 pub(super) struct ResumeWorkspaceSpec {
@@ -279,6 +407,35 @@ pub(crate) enum PreparedRunWorkspace {
     /// close. Repository setup runs for the new checkout, and a failed spawn
     /// keeps it available for another recovery attempt.
     Recreated(ForkedWorkspace),
+    /// A stage's retained directory re-entered on a new branch. Moves the
+    /// task's branch and worktree record like a fork; a failed spawn checks
+    /// the previous branch back out and deletes the new one, and the
+    /// directory is never removed.
+    Revisited(RevisitedWorkspace),
+}
+
+pub(crate) struct RevisitedWorkspace {
+    pub(super) workspace: ForkedWorkspace,
+    pub(super) start_point: String,
+    pub(super) previous_branch: Option<String>,
+    pub(super) previous_head: String,
+    pub(super) observed_dirty: bool,
+    /// Set once the spawn has checked the new branch out; before that a
+    /// rollback has nothing to undo.
+    pub(super) checked_out: bool,
+}
+
+impl PreparedRunWorkspace {
+    /// The workspace the run moves the task onto, when it moves it at all.
+    pub(super) fn moved_to(&self) -> Option<&ForkedWorkspace> {
+        match self {
+            Self::Forked(workspace) | Self::Resumed(workspace) | Self::Recreated(workspace) => {
+                Some(workspace)
+            }
+            Self::Revisited(revisited) => Some(&revisited.workspace),
+            Self::Current => None,
+        }
+    }
 }
 
 /// A new stage run spawned on an existing task: same task id, but a swap runs
@@ -315,6 +472,19 @@ pub(crate) struct PreparedStageRunSpawn {
     /// How this run's stage was entered. This is caller-declared for explicit
     /// advances and server-owned for automatic policy transitions.
     pub(super) trigger: crate::db::StageTrigger,
+    /// The verified channel the entry arrived on, recorded beside `trigger`
+    /// on the run and its `stage.changed` event. Preparation cannot know it
+    /// and leaves it unknown; the caller that received the request (or the
+    /// engine, for its own transitions) sets it before execution.
+    pub(super) entry_channel: crate::mutation_provenance::ChannelIdentity,
+    /// The exit the transition into this run took (named-exit routing only),
+    /// recorded on the ledger's transition entry. Preparation leaves it unset;
+    /// the caller that routed the result sets it.
+    pub(super) entry_exit: Option<crate::db::TransitionExit>,
+    /// Set when this run is a stage's commit step started as a fresh commit
+    /// session (the live session was dead): recorded with the run, so its
+    /// result fires exactly the transition it was requested for.
+    pub(super) transition_commit: Option<TransitionCommitRequest>,
     /// The provider override the advance that started this run carried, with
     /// the source that declared it. Recorded on the run so the durable record
     /// says who picked this stage's model.
@@ -332,6 +502,8 @@ pub(crate) struct PreparedStageRunSpawn {
     pub(super) replaces_run_id: Option<String>,
     /// Why a requested resume became a fresh provider conversation.
     pub(super) resume_fallback_reason: Option<String>,
+    /// The session identity this run records (spec §6).
+    pub(super) session_identity: crate::db::StageRunSession,
     pub(super) cwd: String,
     pub(super) env: HashMap<String, String>,
     /// Ordered bytes seeded into a replacement PTY's terminal history before
@@ -399,6 +571,17 @@ impl PreparedStageRunSpawn {
         &self.session_id
     }
 
+    pub(crate) fn set_entry_channel(
+        &mut self,
+        channel: crate::mutation_provenance::ChannelIdentity,
+    ) {
+        self.entry_channel = channel;
+    }
+
+    pub(crate) fn set_entry_exit(&mut self, exit: Option<crate::db::TransitionExit>) {
+        self.entry_exit = exit;
+    }
+
     #[cfg(test)]
     pub(crate) fn has_deferred_setup(&self) -> bool {
         self.deferred_setup.is_some()
@@ -428,5 +611,24 @@ impl PreparedStageRunSpawn {
             PreparedRunWorkspace::Resumed(workspace) => Some(workspace),
             _ => None,
         }
+    }
+
+    /// The retained stage directory a loop back re-entered on a new branch.
+    #[cfg(test)]
+    pub(crate) fn revisited_workspace(&self) -> Option<&ForkedWorkspace> {
+        match &self.workspace {
+            PreparedRunWorkspace::Revisited(revisited) => Some(&revisited.workspace),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn session_identity(&self) -> &crate::db::StageRunSession {
+        &self.session_identity
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cwd(&self) -> &str {
+        &self.cwd
     }
 }

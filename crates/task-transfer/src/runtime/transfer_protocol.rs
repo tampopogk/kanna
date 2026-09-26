@@ -113,18 +113,25 @@ impl TransferRuntime {
         }
     }
 
+    /// Both servers must speak the transfer contract. Returns the peer
+    /// server's capabilities reply, so a source can refuse a task the peer
+    /// cannot carry before anything is reserved there.
     pub(super) async fn negotiate_transfer_protocol(
         &self,
         peer: &PeerRegistryEntry,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<Value, RuntimeError> {
         local_capabilities(
             self.config.kanna_server_port,
             self.config.standalone_test_server,
         )
         .await?;
-        self.transfer_protocol_request(peer, json!({ "operation": "capabilities" }))
+        let mut reply = self
+            .transfer_protocol_request(peer, json!({ "operation": "capabilities" }))
             .await?;
-        Ok(())
+        if let Some(reply) = reply.as_object_mut() {
+            reply.remove("request_id");
+        }
+        Ok(reply)
     }
 
     pub async fn notify_transfer_refused(

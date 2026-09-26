@@ -24,6 +24,7 @@
 
 use super::stage_runs::AGENT_RUN_KINDS;
 use super::{Db, TaskEventKind};
+use crate::mutation_provenance::ChannelIdentity;
 use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 use serde_json::json;
@@ -99,6 +100,10 @@ pub struct TaskInputRecord {
     /// reviewer reads it to tell which stage was being instructed.
     pub stage: Option<String>,
     pub source: String,
+    /// The channel this server verified the delivery arrived on, beside the
+    /// caller-declared `source`. Rows from before it was recorded, and inputs
+    /// imported from another machine, read as unknown.
+    pub channel_identity: ChannelIdentity,
     pub message: String,
     pub delivered_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -160,6 +165,7 @@ impl Db {
         &self,
         task_id: &str,
         source: &str,
+        channel: &ChannelIdentity,
         session_pid: u32,
         status: &str,
         writes: &[RawInputWriteRecord],
@@ -204,6 +210,8 @@ impl Db {
             TaskEventKind::RawInputDelivered,
             json!({
                 "source": source,
+                "declaredRole": source,
+                "channelIdentity": channel.to_json(),
                 "runId": run_id,
                 "stage": stage,
                 "sessionPid": session_pid,
@@ -214,10 +222,11 @@ impl Db {
         Ok(true)
     }
 
-    fn insert_delivered_task_input(
+    pub(super) fn insert_delivered_task_input(
         &self,
         task_id: &str,
         source: &str,
+        channel: &ChannelIdentity,
         message: &str,
     ) -> Result<Option<TaskInputRecord>, rusqlite::Error> {
         let stage: Option<Option<String>> = self
@@ -245,9 +254,9 @@ impl Db {
             )
             .optional()?;
         self.conn.execute(
-            "INSERT INTO task_input (task_id, run_id, stage, source, message)
-             VALUES (?, ?, ?, ?, ?)",
-            params![task_id, run_id, stage, source, message],
+            "INSERT INTO task_input (task_id, run_id, stage, source, channel_identity, message)
+             VALUES (?, ?, ?, ?, ?, ?)",
+            params![task_id, run_id, stage, source, channel.to_column(), message],
         )?;
         let id = self.conn.last_insert_rowid();
         let delivered_at: String = self.conn.query_row(
@@ -262,11 +271,27 @@ impl Db {
             json!({
                 "inputId": id,
                 "source": source,
+                "declaredRole": source,
+                "channelIdentity": channel.to_json(),
                 "runId": run_id,
                 "stage": stage,
                 "preview": preview,
                 "truncated": truncated,
             }),
+        )?;
+        // The ledger's copy of this tool-delivered input, committed with the
+        // row and published before the delivery is acknowledged.
+        self.enqueue_task_input_entry(
+            task_id,
+            id,
+            run_id.as_deref(),
+            stage.as_deref(),
+            source,
+            channel,
+            message,
+            None,
+            None,
+            None,
         )?;
         Ok(Some(TaskInputRecord {
             id,
@@ -274,10 +299,69 @@ impl Db {
             run_id,
             stage,
             source: source.to_string(),
+            channel_identity: channel.clone(),
             message: message.to_string(),
             delivered_at,
             origin: None,
         }))
+    }
+
+    /// Enqueue the `input` ledger entry mirroring one `task_input` row. The
+    /// row id is the source identity, so a replayed import finds it again.
+    #[allow(clippy::too_many_arguments)]
+    fn enqueue_task_input_entry(
+        &self,
+        task_id: &str,
+        input_id: i64,
+        run_id: Option<&str>,
+        stage: Option<&str>,
+        source: &str,
+        channel: &ChannelIdentity,
+        message: &str,
+        origin: Option<&TaskInputOrigin>,
+        historical_at: Option<&str>,
+        hold_events_after: Option<i64>,
+    ) -> Result<(), rusqlite::Error> {
+        let delivered_at: String = match historical_at {
+            Some(at) => at.to_string(),
+            None => self.conn.query_row(
+                "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', delivered_at) FROM task_input WHERE id = ?",
+                [input_id],
+                |row| row.get(0),
+            )?,
+        };
+        let source_id = input_id.to_string();
+        let declared_role = super::task_store::declared_input_role(source);
+        self.enqueue_ledger_entry(super::task_store::NewLedgerEntry {
+            task_id,
+            kind: super::task_store::LedgerEntryKind::Input,
+            operation_id: None,
+            source_kind: "task_input",
+            source_id: &source_id,
+            source_origin: origin.map(|origin| {
+                json!({
+                    "peer_id": origin.peer_id,
+                    "task_id": origin.task_id,
+                    "input_id": origin.input_id,
+                    "run_id": origin.run_id,
+                })
+            }),
+            historical: historical_at.is_some(),
+            recorded_at: historical_at,
+            run_id,
+            declared_role: declared_role.as_deref(),
+            channel_identity: channel,
+            body: json!({
+                "input_id": input_id,
+                "source": source,
+                "stage": stage,
+                "delivered_at": delivered_at,
+            }),
+            message: Some(message),
+            hold_events_after,
+            reserved_sequence: None,
+        })?;
+        Ok(())
     }
 
     /// Append one delivered input and announce it.
@@ -295,10 +379,11 @@ impl Db {
         &self,
         task_id: &str,
         source: TaskInputSource,
+        channel: &ChannelIdentity,
         message: &str,
     ) -> Result<Option<TaskInputRecord>, rusqlite::Error> {
-        self.with_immediate_transaction(|db| {
-            db.insert_delivered_task_input(task_id, source.as_str(), message)
+        self.in_immediate_transaction_if_needed(|db| {
+            db.insert_delivered_task_input(task_id, source.as_str(), channel, message)
         })
     }
 
@@ -311,7 +396,8 @@ impl Db {
     ) -> Result<Vec<TaskInputRecord>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
             "SELECT id, task_id, run_id, stage, source, message, delivered_at,
-                    origin_peer_id, origin_task_id, origin_input_id, origin_run_id
+                    origin_peer_id, origin_task_id, origin_input_id, origin_run_id,
+                    channel_identity
              FROM task_input
              WHERE task_id = ?
              ORDER BY id DESC
@@ -328,6 +414,9 @@ impl Db {
                 run_id: row.get(2)?,
                 stage: row.get(3)?,
                 source: row.get(4)?,
+                channel_identity: ChannelIdentity::from_column(
+                    row.get::<_, Option<String>>(11)?.as_deref(),
+                ),
                 message: row.get(5)?,
                 delivered_at: row.get(6)?,
                 origin: match (origin_peer_id, origin_task_id, origin_input_id) {
@@ -383,6 +472,27 @@ impl Db {
                         input.origin.run_id.as_deref(),
                     ],
                 )?;
+                if inserted == 1 {
+                    // Imported history enters the same ledger, keeping the
+                    // origin machine's identity beside the local row id.
+                    let input_id = db.conn.last_insert_rowid();
+                    let delivered_at = super::task_store::sqlite_time_to_iso(&input.delivered_at);
+                    db.enqueue_task_input_entry(
+                        task_id,
+                        input_id,
+                        None,
+                        input.stage.as_deref(),
+                        &input.source,
+                        // A transferred input's channel was verified by the
+                        // origin machine, not this one; this server never
+                        // reconstructs a channel it did not itself verify.
+                        &ChannelIdentity::Unknown,
+                        &input.message,
+                        Some(&input.origin),
+                        Some(&delivered_at),
+                        None,
+                    )?;
+                }
                 if inserted == 0 {
                     let existing: (Option<String>, String, String, String, Option<String>) =
                         db.conn.query_row(

@@ -1,6 +1,8 @@
 use super::lan_trust::PrivilegedTaskAccess;
+use super::mutation_provenance::RequestChannel;
 use super::state::AppState;
 use crate::db::{Db, TaskInputSource};
+use crate::mutation_provenance::ChannelIdentity;
 use crate::task_input_attachments::{
     compose_input_with_attachment, discard_stored_attachment, store_task_input_attachment,
     TaskInputAttachment,
@@ -40,6 +42,14 @@ pub(super) struct TaskInputRequest {
     /// small enough that multipart would buy nothing.
     #[serde(default)]
     attachment: Option<TaskInputAttachment>,
+    /// A singleton signal names the agent it is for, and the task's current
+    /// stage must run that agent: a merge master that has left its merge
+    /// window for a later release stage takes no handoff, rather than having
+    /// it typed into whatever session that stage runs. Omitted by every other
+    /// caller, and ignored by an owner that predates it, whose singletons
+    /// only ever run their one stage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expected_stage_agent: Option<String>,
 }
 
 /// Whether a failed delivery may be attempted again on its own.
@@ -268,6 +278,7 @@ pub(super) async fn send_task_input(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(task_id): axum::extract::Path<String>,
     axum::extract::Query(local_only): axum::extract::Query<super::task_federation::LocalOnlyQuery>,
+    RequestChannel(channel): RequestChannel,
     Json(payload): Json<TaskInputRequest>,
 ) -> Result<Response, TaskInputHttpError> {
     // The test-only delivery stub bypasses real task/DB resolution entirely
@@ -277,7 +288,7 @@ pub(super) async fn send_task_input(
     #[cfg(test)]
     if state.task_input_sender.is_some() {
         let strict_recording = payload.strict_recording;
-        return send_task_input_impl(state, task_id, payload, strict_recording).await;
+        return send_task_input_impl(state, task_id, payload, channel, strict_recording).await;
     }
     // Delivery is auto-resolved only at this HTTP boundary - never inside
     // `deliver_task_input` itself, which server-originated callers (engine
@@ -302,31 +313,28 @@ pub(super) async fn send_task_input(
         Err(error) => return Err(map_task_input_error(error)),
     }
     let strict_recording = payload.strict_recording;
-    send_task_input_impl(state, task_id, payload, strict_recording).await
+    send_task_input_impl(state, task_id, payload, channel, strict_recording).await
 }
 
-/// Deliver server-originated speech through the same live-session discovery,
-/// PID fence, logical-input boundary, and durable ledger as `/tasks/{id}/input`.
+/// Deliver a singleton signal: server-originated speech through the same
+/// live-session discovery, PID fence, logical-input boundary, and durable
+/// ledger as `/tasks/{id}/input`, refused unless the task's current stage runs
+/// `agent`.
 ///
 /// Singleton signals must not use a stage run's historical session id directly:
 /// a daemon handoff or stage replacement can leave that id naming a retired PTY.
-pub(crate) async fn deliver_server_task_input(
+/// Merge handoffs pass `strict_recording`: the durable ledger is then part of
+/// the success contract, because a source task cannot claim it signaled the
+/// merge master unless the merge master has the durable record.
+pub(crate) async fn deliver_singleton_task_input(
     state: Arc<AppState>,
     task_id: String,
     input: String,
+    agent: String,
+    strict_recording: bool,
 ) -> Result<(), (axum::http::StatusCode, String)> {
-    deliver_server_task_input_with_recording(state, task_id, input, false).await
-}
-
-/// Deliver server-originated input whose durable ledger is part of the
-/// success contract. Merge handoffs use this: a source task cannot claim it
-/// signaled the merge master unless the merge master has the durable record.
-pub(crate) async fn deliver_server_task_input_strict(
-    state: Arc<AppState>,
-    task_id: String,
-    input: String,
-) -> Result<(), (axum::http::StatusCode, String)> {
-    deliver_server_task_input_with_recording(state, task_id, input, true).await
+    deliver_server_task_input_with_recording(state, task_id, input, strict_recording, Some(agent))
+        .await
 }
 
 async fn deliver_server_task_input_with_recording(
@@ -334,6 +342,7 @@ async fn deliver_server_task_input_with_recording(
     task_id: String,
     input: String,
     strict_recording: bool,
+    expected_stage_agent: Option<String>,
 ) -> Result<(), (axum::http::StatusCode, String)> {
     match send_task_input_impl(
         state,
@@ -343,7 +352,10 @@ async fn deliver_server_task_input_with_recording(
             strict_recording: false,
             source: None,
             attachment: None,
+            expected_stage_agent,
         },
+        // Server-originated speech: the engine, never an earlier caller.
+        ChannelIdentity::Server,
         strict_recording,
     )
     .await
@@ -352,7 +364,10 @@ async fn deliver_server_task_input_with_recording(
         // A strict ledger failure occurs after acknowledged PTY delivery.
         // Preserve its code so singleton callers cannot classify it as safe
         // to resend merely because the durable record could not be written.
-        Err((status, Json(failure))) if failure.reason == "task_input_record_failed" => {
+        Err((status, Json(failure)))
+            if failure.reason == "task_input_record_failed"
+                || failure.reason == "task_input_publication_pending" =>
+        {
             Err((status, format!("{}: {}", failure.reason, failure.message)))
         }
         Err((status, Json(failure))) => Err((status, failure.message)),
@@ -363,6 +378,7 @@ async fn send_task_input_impl(
     state: Arc<AppState>,
     task_id: String,
     payload: TaskInputRequest,
+    channel: ChannelIdentity,
     strict_recording: bool,
 ) -> Result<Response, TaskInputHttpError> {
     #[cfg(test)]
@@ -390,7 +406,58 @@ async fn send_task_input_impl(
         })?,
         None => TaskInputSource::Unspecified,
     };
-    deliver_task_input(state, task_id, payload, source, None, strict_recording).await
+    deliver_task_input(
+        state,
+        task_id,
+        payload,
+        source,
+        channel,
+        None,
+        strict_recording,
+    )
+    .await
+}
+
+/// Refuse a singleton signal whose task's current stage runs another agent.
+/// Checked under the task-mutation lease the delivery holds, so a stage
+/// advance cannot move the task between this check and the write. A task
+/// with no recorded run yet (a singleton still being spawned) is left to the
+/// ordinary live-session checks, exactly as before.
+// The error is the one every delivery path answers with, so the caller can
+// return it unchanged.
+#[allow(clippy::result_large_err)]
+fn refuse_singleton_outside_its_stage(
+    state: &AppState,
+    task_id: &str,
+    agent: &str,
+) -> Result<(), TaskInputHttpError> {
+    let db_error = |error: rusqlite::Error| {
+        task_input_http_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "db_error",
+            error.to_string(),
+            None,
+        )
+    };
+    let db = Db::open(&state.config.db_path).map_err(db_error)?;
+    let Some(run) = db.latest_stage_run(task_id).map_err(db_error)? else {
+        return Ok(());
+    };
+    if run.agent.as_deref() == Some(agent) {
+        return Ok(());
+    }
+    Err(task_input_http_error(
+        axum::http::StatusCode::CONFLICT,
+        "singleton_outside_its_stage",
+        format!(
+            "task {task_id} is at stage '{}', which runs {} rather than the {agent} agent this \
+             signal is for; nothing was delivered. A merge master that has left its merge window \
+             takes no handoff until its release closes.",
+            run.stage,
+            run.agent.as_deref().unwrap_or("no agent"),
+        ),
+        None,
+    ))
 }
 
 /// A wake that did not reach its session, carrying enough for the subscription
@@ -410,12 +477,14 @@ pub(super) async fn send_engine_wake(
         strict_recording: false,
         source: None,
         attachment: None,
+        expected_stage_agent: None,
     };
     deliver_task_input(
         state,
         subscription.task_id.clone(),
         payload,
         TaskInputSource::Engine,
+        ChannelIdentity::Server,
         Some(subscription.run_id.clone()),
         false,
     )
@@ -432,9 +501,21 @@ async fn deliver_task_input(
     task_id: String,
     payload: TaskInputRequest,
     source: TaskInputSource,
+    channel: ChannelIdentity,
     expected_run: Option<String>,
     strict_recording: bool,
 ) -> Result<Response, TaskInputHttpError> {
+    // A tool-delivered input is a ledger entry the next session may read; an
+    // empty one says nothing and is refused before anything is typed. An
+    // attachment alone is not empty: the delivered text names its path.
+    if payload.input.trim().is_empty() && payload.attachment.is_none() {
+        return Err(task_input_http_error(
+            axum::http::StatusCode::BAD_REQUEST,
+            "empty_input",
+            "task input is empty; nothing was delivered".to_string(),
+            None,
+        ));
+    }
     let task_id = super::task_actions::resolve_task_id_for_mutation(&state, &task_id)
         .await
         .map_err(map_task_input_error)?;
@@ -449,6 +530,9 @@ async fn deliver_task_input(
             ),
         ));
     };
+    if let Some(agent) = payload.expected_stage_agent.as_deref() {
+        refuse_singleton_outside_its_stage(&state, &task_id, agent)?;
+    }
     if let Some(expected) = expected_run {
         let db = Db::open(&state.config.db_path).map_err(|error| {
             task_input_http_error(
@@ -677,9 +761,38 @@ async fn deliver_task_input(
     let record_message = task_input_message(&delivered_input).to_string();
     let recorded = tokio::task::spawn_blocking(move || {
         let db = Db::open(&db_path)?;
-        db.record_task_input(&record_task_id, source, &record_message)
+        let record = db.record_task_input(&record_task_id, source, &channel, &record_message)?;
+        // The input's ledger file is published before the delivery is
+        // acknowledged. A failure leaves it pending, retried by the
+        // publisher from the stored row — never by typing the text again.
+        let publication = record
+            .is_some()
+            .then(|| crate::task_store::flush_task(&db, &db_path, &record_task_id).err())
+            .flatten();
+        Ok::<_, rusqlite::Error>((record, publication))
     })
     .await;
+    let recorded = match recorded {
+        Ok(Ok((record, Some(publication_error)))) => {
+            log::warn!(
+                "task input reached task {task_id} and was recorded, but its ledger entry is pending: {publication_error}"
+            );
+            if strict_recording {
+                return Err(task_input_http_error(
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    "task_input_publication_pending",
+                    format!(
+                        "terminal input reached task {task_id} and its durable record was written, but its ledger entry is not yet published: {publication_error}. Do not resend; Kanna publishes it from the record."
+                    ),
+                    None,
+                ));
+            }
+            Ok(Ok(record))
+        }
+        Ok(Ok((record, None))) => Ok(Ok(record)),
+        Ok(Err(error)) => Ok(Err(error)),
+        Err(error) => Err(error),
+    };
     match recorded {
         Ok(Ok(Some(_))) => {}
         Ok(Ok(None)) if strict_recording => {

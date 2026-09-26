@@ -464,8 +464,12 @@ negative cache, so the eager and lazy triggers cannot become a dial storm.
 An automatic record is always account-bound, so `retain_account` drops it on
 sign-out or an account change and it re-enrolls on the next sign-in. A
 signed-out machine, or one on another account, is never listed by the relay,
-so `peer_pairing_required` remains its answer — with the reason attached —
-and the ceremony remains its path.
+so `peer_pairing_required` remains its answer — with the reason attached.
+The ceremony does not route around that: it pins only when the relay, for
+this desktop's current account, lists the other desktop with exactly the key
+being pinned (checked on both sides before the offer is spent), because
+machines are never paired across accounts
+(`tasks-sessions-structured-workflows.md` §8).
 
 **Authority.** Decided at the handshake in `ksp::admit_sealed_peer_session`:
 a key in the peer trust store → `TrustedPeerDesktopAccess { desktop_id }`,
@@ -486,8 +490,16 @@ first and then announces: every live sealed peer session for that sibling
 closes with an authenticated `peer revoked` close, the pooled outbound
 session ends, the transfer route is withdrawn, and the next handshake with
 that key is pairing-only. Records bound to an account are dropped on
-sign-out or account change through the same announcement (a pairing made
-while signed out is kept: it is LAN trust a person established by hand).
+sign-out or account change through the same announcement. A record that does
+not prove the sibling shares this desktop's current account — a pairing made
+while signed out, or a ceremony pin from before the ceremony checked the
+sibling's account — is kept but carries no sibling authority: every session,
+request, view and transfer tunnel with it is refused as
+`peer_account_boundary` (`account_boundary.rs`), the machine list reports it
+by name with the re-pairing that restores it (`accountStanding`,
+`accountDiagnostic`), and it is never flagged as a changed key.
+Sibling authority likewise ends at sign-out or an account change on every
+live session, request by request, before the purge closes it.
 A rotated peer identity on either side fails every handshake against the
 old pin (`peer_identity_mismatch`) until the machines pair again.
 
@@ -497,7 +509,8 @@ old pin (`peer_identity_mismatch`) until the machines pair again.
 |---|---|---|
 | Paired, sibling on this build | invoke route `peer-lan`/`peer-relay`, view spliced, transfer over the sealed tunnel | ciphertext only after the tunnel setup |
 | Not paired, same account, both online on this build | enrolled automatically, then invoke route `peer-lan`/`peer-relay`; provenance `account` | one extra sealed handshake and claim |
-| Not paired, this desktop signed out or the sibling on another account | `peer_pairing_required` naming the reason; the ceremony is the path | nothing |
+| Not paired, this desktop signed out or the sibling on another account | `peer_pairing_required` naming the reason; the ceremony refuses too (`peer_pairing_account_unconfirmed`) | nothing |
+| Paired, but the record does not prove one account (signed-out or pre-check ceremony pin), or this desktop is signed out or on another account now | `peer_account_boundary` naming the refusal and its repair; never a key-change notice | the clear-text refusal frame, naming neither machine |
 | Not paired, sibling announces no key (older Kanna) or the relay predates key presence | `peer_pairing_required` naming which | nothing |
 | Not paired and not enrollable, sibling older than 0.4.0 | the pre-Slice-5 relay-attested / LAN-bearer path (`relay`/`lan`), machine listed as `legacy` | plaintext, as before |
 | Not paired and not enrollable, sibling on 0.4.0 or later | the same attempt, refused at the sibling's end with `peer_legacy_access_refused` (401) | plaintext request, refused answer |

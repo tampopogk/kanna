@@ -5,6 +5,9 @@ import type {
   TaskTerminalStatus
 } from "../state/sessionStore";
 import type {
+  ArtifactDetail,
+  ArtifactFileContent,
+  ArtifactReference,
   TaskReviewContext
 } from "../lib/api/types";
 import {
@@ -163,6 +166,10 @@ vi.mock("./VisualCompanionModal", () => ({
   VisualCompanionModal: "VisualCompanionModal"
 }));
 
+vi.mock("./ArtifactViewer", () => ({
+  ArtifactViewer: "ArtifactViewer"
+}));
+
 vi.mock("./TaskPreviewModal", () => ({
   TaskPreviewModal: "TaskPreviewModal"
 }));
@@ -218,6 +225,7 @@ interface RenderTaskScreenOptions {
   desktopWorkspace?: boolean;
   agentType?: "agent" | "pty";
   blockedByTaskIds?: string[];
+  runtimeState?: "busy" | "waiting" | "idle" | "exited" | null;
   blockerTasks?: Array<{
     blockerTaskId: string;
     task: { id: string; repoId: string; title: string; stage: string } | null;
@@ -301,6 +309,32 @@ interface RenderTaskScreenOptions {
     | "advance-stage"
     | "close-task"
     | null;
+  latestRun?: {
+    id?: string;
+    stage?: string;
+    kind?: string;
+    status?: string;
+    verdict?: string | null;
+    summary?: string | null;
+    exit?: string | null;
+    artifacts?: Record<string, ArtifactReference> | null;
+    session?: { name?: string | null } | null;
+    commitStep?: { state: string; exit?: string | null } | null;
+  } | null;
+  sessionHistory?: Array<{
+    runId: string;
+    stage: string;
+    session: { name?: string | null };
+  }> | null;
+  stageDependencies?: Array<{
+    upstreamTaskId: string;
+    upstreamStage: string;
+    supersededAt?: string | null;
+  }> | null;
+  dependencyWait?: { fromStage: string; toStage: string } | null;
+  gateParked?: boolean | null;
+  onGetArtifact?: (repoId: string, artifactId: string) => Promise<ArtifactDetail>;
+  onReadArtifactFile?: (repoId: string, artifactId: string, path: string) => Promise<ArtifactFileContent>;
 }
 
 function renderTaskScreen(options: RenderTaskScreenOptions = {}): ElementNode {
@@ -312,6 +346,7 @@ function renderTaskScreen(options: RenderTaskScreenOptions = {}): ElementNode {
     agentType = "pty",
     desktopWorkspace = false,
     blockedByTaskIds,
+    runtimeState,
     blockerTasks,
     terminalOutputEpoch = 1,
     terminalOutputStart = 0,
@@ -372,6 +407,13 @@ function renderTaskScreen(options: RenderTaskScreenOptions = {}): ElementNode {
     onCompanionOpenChange = vi.fn(),
     onSendCompanionEvent = vi.fn(),
     pendingTaskAction = null,
+    latestRun = null,
+    sessionHistory = null,
+    stageDependencies = null,
+    dependencyWait = null,
+    gateParked = null,
+    onGetArtifact,
+    onReadArtifactFile,
   } = options;
 
   hookHarness.callbackIndex = 0;
@@ -393,6 +435,7 @@ function renderTaskScreen(options: RenderTaskScreenOptions = {}): ElementNode {
       agentType,
       activity,
       blockedByTaskIds,
+      runtimeState,
     },
     blockerTasks,
     terminalOutput,
@@ -444,7 +487,30 @@ function renderTaskScreen(options: RenderTaskScreenOptions = {}): ElementNode {
     onCloseTaskPreview,
     taskPreviewRouteAvailable,
     onCompanionOpenChange,
-    onSendCompanionEvent
+    onSendCompanionEvent,
+    latestRun: latestRun
+      ? {
+          id: latestRun.id ?? "run-1",
+          stage: latestRun.stage ?? "in progress",
+          kind: latestRun.kind ?? "main",
+          status: latestRun.status ?? "failed",
+          verdict: latestRun.verdict,
+          summary: latestRun.summary,
+          exit: latestRun.exit,
+          artifacts: latestRun.artifacts,
+          resumedFromRunId: null,
+          resumeFallbackReason: null,
+          finishedAt: null,
+          session: latestRun.session,
+          commitStep: latestRun.commitStep
+        }
+      : null,
+    sessionHistory,
+    stageDependencies,
+    dependencyWait,
+    gateParked,
+    onGetArtifact,
+    onReadArtifactFile
   }) as ElementNode;
 }
 
@@ -1357,6 +1423,21 @@ describe("TaskScreen", () => {
     expect(
       findByTestId(tree, MOBILE_E2E_IDS.taskInput)?.props?.editable
     ).toBe(false);
+  });
+
+  it("keeps the terminal attached for a task blocked at a later stage whose current stage is already running (T11b)", () => {
+    // A T4 later-stage dependency wait, or a T5 subtask-join wait, can leave
+    // `blockedByTaskIds` non-empty while the task's current-stage session is
+    // live. `runtimeState` — the server-provided session signal — says so,
+    // and the terminal must stay attached rather than showing the blocked
+    // placeholder that says "The agent starts when its blockers finish."
+    const tree = renderTaskScreen({
+      blockedByTaskIds: ["task-b"],
+      runtimeState: "busy",
+    });
+
+    expect(findByTestId(tree, MOBILE_E2E_IDS.taskBlockedPlaceholder)).toBeNull();
+    expect(findByType(tree, "TerminalWebView")).not.toBeNull();
   });
 
   it("falls back to blocker ids when a blocker is not in the collections", () => {
@@ -2348,6 +2429,187 @@ describe("TaskScreen", () => {
       zIndex: 4
     });
     expect(styleEntries(titleDismissLayer)).toContainEqual({ top: 64 });
+  });
+
+  describe("latest result (T11a)", () => {
+    const SIX_VERDICTS = ["success", "unverified", "partial", "needs-input", "declined", "failure"];
+
+    function expandedTreeWithLatestRun(
+      latestRun: RenderTaskScreenOptions["latestRun"],
+      extra: Partial<RenderTaskScreenOptions> = {}
+    ): ElementNode {
+      let tree = renderTaskScreen({ latestRun, ...extra });
+      pressByTestId(tree, MOBILE_E2E_IDS.taskTitleButton);
+      tree = renderTaskScreen({ latestRun, ...extra });
+      return tree;
+    }
+
+    it.each(SIX_VERDICTS)("renders the %s verdict verbatim", (verdict) => {
+      const tree = expandedTreeWithLatestRun({ verdict, summary: null });
+      expect(findByTestId(tree, MOBILE_E2E_IDS.taskLatestResultVerdict)?.props.children).toBe(
+        verdict
+      );
+    });
+
+    it("shows the result message", () => {
+      const tree = expandedTreeWithLatestRun({
+        verdict: "success",
+        summary: "Tests pass; verified in browser."
+      });
+      expect(findByTestId(tree, MOBILE_E2E_IDS.taskLatestResultMessage)?.props.children).toBe(
+        "Tests pass; verified in browser."
+      );
+    });
+
+    it("shows the exit taken when present", () => {
+      const tree = expandedTreeWithLatestRun({
+        verdict: "success",
+        summary: "Done.",
+        exit: "needs-followup"
+      });
+      expect(findByTestId(tree, MOBILE_E2E_IDS.taskLatestResultExit)?.props.children).toBe(
+        "exit: needs-followup"
+      );
+    });
+
+    it("shows no exit element when absent", () => {
+      const tree = expandedTreeWithLatestRun({ verdict: "success", summary: "Done." });
+      expect(findByTestId(tree, MOBILE_E2E_IDS.taskLatestResultExit)).toBeNull();
+    });
+
+    it("opens a named stored artifact reference in the artifact viewer on press", () => {
+      const onGetArtifact = vi.fn();
+      const onReadArtifactFile = vi.fn();
+      const tree = expandedTreeWithLatestRun(
+        {
+          verdict: "success",
+          summary: "Done.",
+          artifacts: {
+            "review-notes": { type: "stored", repoId: "repo-1", artifactId: "abc123", kind: "report" }
+          }
+        },
+        { onGetArtifact, onReadArtifactFile }
+      );
+
+      pressByTestId(tree, MOBILE_E2E_IDS.taskLatestResultArtifact("review-notes"));
+      const reopened = renderTaskScreen({
+        latestRun: {
+          verdict: "success",
+          summary: "Done.",
+          artifacts: {
+            "review-notes": { type: "stored", repoId: "repo-1", artifactId: "abc123", kind: "report" }
+          }
+        },
+        onGetArtifact,
+        onReadArtifactFile
+      });
+
+      const viewer = findByType(reopened, "ArtifactViewer");
+      expect(viewer?.props).toMatchObject({
+        repoId: "repo-1",
+        initialArtifactId: "abc123"
+      });
+    });
+
+    it("renders exactly as today when the server omits latestRun entirely", () => {
+      const tree = expandedTreeWithLatestRun(null);
+      expect(findByTestId(tree, MOBILE_E2E_IDS.taskLatestResult)).toBeNull();
+    });
+
+    it("renders nothing for a run still in flight (no verdict, message, exit or artifacts)", () => {
+      const tree = expandedTreeWithLatestRun({ verdict: null, summary: null });
+      expect(findByTestId(tree, MOBILE_E2E_IDS.taskLatestResult)).toBeNull();
+    });
+  });
+
+  describe("session, gate and dependency state (T11b)", () => {
+    function expandedTree(extra: Partial<RenderTaskScreenOptions> = {}): ElementNode {
+      let tree = renderTaskScreen(extra);
+      pressByTestId(tree, MOBILE_E2E_IDS.taskTitleButton);
+      tree = renderTaskScreen(extra);
+      return tree;
+    }
+
+    it("shows the latest run's session name", () => {
+      const tree = expandedTree({
+        latestRun: { summary: null, session: { name: "in progress: Fix port ordering" } }
+      });
+      expect(findByTestId(tree, MOBILE_E2E_IDS.taskSessionName)?.props.children).toBe(
+        "in progress: Fix port ordering"
+      );
+    });
+
+    it("omits the session name when the server predates it", () => {
+      const tree = expandedTree({ latestRun: { summary: null } });
+      expect(findByTestId(tree, MOBILE_E2E_IDS.taskSessionName)).toBeNull();
+    });
+
+    it("lists prior stage-run sessions under a history toggle, excluding the current run", () => {
+      const tree = expandedTree({
+        latestRun: { id: "run-2", summary: null, session: { name: "review: Fix port ordering" } },
+        sessionHistory: [
+          { runId: "run-1", stage: "in progress", session: { name: "in progress: Fix port ordering" } },
+          { runId: "run-2", stage: "review", session: { name: "review: Fix port ordering" } }
+        ]
+      });
+
+      expect(findByTestId(tree, MOBILE_E2E_IDS.taskSessionHistoryToggle)?.props.children).toBe(
+        "History (1)"
+      );
+      expect(
+        findByTestId(tree, MOBILE_E2E_IDS.taskSessionHistoryEntry("run-1"))
+      ).not.toBeNull();
+      expect(
+        findByTestId(tree, MOBILE_E2E_IDS.taskSessionHistoryEntry("run-2"))
+      ).toBeNull();
+    });
+
+    it("shows a pending commit step", () => {
+      const tree = expandedTree({
+        latestRun: { summary: null, commitStep: { state: "requested" } }
+      });
+      expect(findByTestId(tree, MOBILE_E2E_IDS.taskLatestResultCommitStep)?.props.children).toBe(
+        "commit: requested"
+      );
+    });
+
+    it("shows a parked-gate notice when a person, not a session, must decide", () => {
+      const tree = expandedTree({ gateParked: true });
+      expect(findByTestId(tree, MOBILE_E2E_IDS.taskGateParked)).not.toBeNull();
+    });
+
+    it("shows no parked-gate notice when the current stage has a role", () => {
+      const tree = expandedTree({ gateParked: false });
+      expect(findByTestId(tree, MOBILE_E2E_IDS.taskGateParked)).toBeNull();
+    });
+
+    it("shows which upstream stage a dependency wait is holding for", () => {
+      const tree = expandedTree({
+        dependencyWait: { fromStage: "in progress", toStage: "review" }
+      });
+      expect(findByTestId(tree, MOBILE_E2E_IDS.taskDependencyWait)?.props.children).toBe(
+        "Waiting on in progress → review dependencies"
+      );
+    });
+
+    it("notices a superseded dependency without discarding what was actually consumed", () => {
+      const tree = expandedTree({
+        stageDependencies: [
+          { upstreamTaskId: "task-a", upstreamStage: "plan", supersededAt: "2026-09-23T00:00:00Z" },
+          { upstreamTaskId: "task-b", upstreamStage: "plan", supersededAt: null }
+        ]
+      });
+      const notice = findByTestId(tree, MOBILE_E2E_IDS.taskDependencySuperseded);
+      expect(notice).not.toBeNull();
+      expect(JSON.stringify(notice)).toContain("task-a");
+      expect(JSON.stringify(notice)).not.toContain("task-b");
+    });
+
+    it("shows no dependency notices when the server predates T4 projections", () => {
+      const tree = expandedTree();
+      expect(findByTestId(tree, MOBILE_E2E_IDS.taskDependencyWait)).toBeNull();
+      expect(findByTestId(tree, MOBILE_E2E_IDS.taskDependencySuperseded)).toBeNull();
+    });
   });
 
   it("keeps the collapsed header's task ID complete when the title truncates", () => {

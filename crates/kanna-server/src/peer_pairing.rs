@@ -6,10 +6,14 @@
 //! the entry fee: desktops signed into one account are introduced by the
 //! relay and pin each other automatically (`peer_enrollment`). What the
 //! ceremony remains is the *stronger* claim - the key came off a screen, so
-//! no relay was ever in a position to substitute it - and the only path for
-//! a machine that is signed out or on another account. Run against a peer
-//! that was pinned automatically it is the out-of-band verification, and
-//! replaces that record with a `verified` one.
+//! no relay was ever in a position to substitute it. It is not a way around
+//! the account boundary: both sides pin only when the relay, for their
+//! current account, lists the other desktop with exactly the key being
+//! pinned (`crate::account_boundary::relay_confirms_sibling`), so a machine
+//! that is signed out or on another account is refused here too. Run
+//! against a peer that was pinned automatically - or one pinned before this
+//! check existed - it is the out-of-band verification, and replaces that
+//! record with a `verified` one that carries the account evidence.
 //!
 //! The string is the trust anchor, exactly as the phone's `KANNA2` QR is:
 //!
@@ -249,23 +253,12 @@ pub(crate) fn verify_claim(
     local_environment: &str,
     now_ms: u64,
 ) -> Result<(), PeerClaimError> {
-    if !desktop_id_is_pairable(&claim.desktop_id) {
-        return Err(PeerClaimError::InvalidRequest("desktop id".into()));
-    }
-    if claim.desktop_name.trim().is_empty() || claim.desktop_name.len() > 256 {
-        return Err(PeerClaimError::InvalidRequest("desktop name".into()));
-    }
-    if declared_desktop_id.is_some_and(|declared| declared != claim.desktop_id) {
-        return Err(PeerClaimError::InvalidRequest(
-            "desktop id does not match the handshake".into(),
-        ));
-    }
-    if claim.desktop_id == local_desktop_id {
-        return Err(PeerClaimError::SelfPairing);
-    }
-    if claim.environment != local_environment {
-        return Err(PeerClaimError::EnvironmentMismatch);
-    }
+    validate_claim(
+        claim,
+        declared_desktop_id,
+        local_desktop_id,
+        local_environment,
+    )?;
     let Some(active) = offer.as_mut() else {
         return Err(PeerClaimError::NoActiveOffer);
     };
@@ -295,6 +288,35 @@ pub(crate) fn verify_claim(
     }
     // Consumed: a second claim with the same string finds no offer.
     *offer = None;
+    Ok(())
+}
+
+/// The checks on a claim that touch no offer state, so the issuer can refuse
+/// a malformed claim before anything else - including the account check,
+/// which must not spend the offer either.
+pub(crate) fn validate_claim(
+    claim: &PeerPairingClaim,
+    declared_desktop_id: Option<&str>,
+    local_desktop_id: &str,
+    local_environment: &str,
+) -> Result<(), PeerClaimError> {
+    if !desktop_id_is_pairable(&claim.desktop_id) {
+        return Err(PeerClaimError::InvalidRequest("desktop id".into()));
+    }
+    if claim.desktop_name.trim().is_empty() || claim.desktop_name.len() > 256 {
+        return Err(PeerClaimError::InvalidRequest("desktop name".into()));
+    }
+    if declared_desktop_id.is_some_and(|declared| declared != claim.desktop_id) {
+        return Err(PeerClaimError::InvalidRequest(
+            "desktop id does not match the handshake".into(),
+        ));
+    }
+    if claim.desktop_id == local_desktop_id {
+        return Err(PeerClaimError::SelfPairing);
+    }
+    if claim.environment != local_environment {
+        return Err(PeerClaimError::EnvironmentMismatch);
+    }
     Ok(())
 }
 

@@ -1,4 +1,9 @@
 use super::analytics::get_repo_analytics;
+use super::artifacts::{
+    close_artifact_preview, fetch_artifact, get_artifact, get_artifact_remote,
+    open_artifact_preview, publish_artifact, push_artifact, read_artifact_file,
+    record_artifact_comment, record_artifact_decision,
+};
 use super::backup::create_backup;
 use super::cloud_desktops::{invoke_cloud_desktop, list_cloud_desktops};
 use super::cloud_relay::{reconnect_cloud_relay, sign_out_desktop_cloud_account};
@@ -18,6 +23,7 @@ use super::lan_trust::{
 use super::lan_trust::{TrustedLanDeviceAccess, TrustedPeerDesktopAccess};
 use super::machine_stats::machine_stats;
 use super::mobile_notifications::{mobile_push_registration, notify_mobile};
+use super::mutation_provenance::attach_dispatched_channel_identity;
 use super::operator_events::post_operator_events;
 use super::pairing::{
     claim_pairing_session, confirm_pending_pairing, create_pairing_session, mobile_builds,
@@ -35,8 +41,8 @@ use super::repos::{
     list_repos, patch_repo, reconcile_repo_metadata, refresh_repo_origin, reorder_repos,
     start_repo_checkout,
 };
-use super::secure_channel::SealedPairingContext;
 use super::secure_channel::SealedPeerPairingContext;
+use super::secure_channel::{SealedPairingContext, StreamOrigin};
 use super::settings::{delete_setting, get_setting, put_cloud_transfer_identity, put_setting};
 use super::signal_agent::{
     find_local_singletons, release_closed_singleton, signal_agent, signal_merge_handoff,
@@ -82,6 +88,9 @@ use super::transfers::{
     wait_cloud_transfer_refresh_commands,
 };
 use super::window_workspace::mutate_window_workspace;
+use crate::mutation_provenance::{
+    ChannelIdentity, PairedDeviceEvidence, PeerDesktopEvidence, SecureChannelTransport,
+};
 use axum::body::Body;
 use axum::http::Request;
 use axum::response::IntoResponse;
@@ -277,6 +286,14 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(super::task_serviced::record_task_serviced),
         )
         .route("/v1/tasks/{task_id}/children", get(get_task_children))
+        .route(
+            "/v1/tasks/{task_id}/subtasks",
+            post(super::subtask_joins::create_subtasks),
+        )
+        .route(
+            "/v1/tasks/{task_id}/joins",
+            get(super::subtask_joins::get_task_joins),
+        )
         .route("/v1/tasks/{task_id}/inputs", get(get_task_inputs))
         .route(
             "/v1/tasks/{task_id}/transfer-history",
@@ -417,6 +434,43 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/tasks/{task_id}/preview",
             post(open_task_preview).delete(close_task_preview),
+        )
+        .route("/v1/tasks/{task_id}/artifacts", post(publish_artifact))
+        .route(
+            "/v1/repos/{repo_id}/artifact-remote",
+            get(get_artifact_remote),
+        )
+        .route(
+            "/v1/repos/{repo_id}/artifacts/{artifact_id}",
+            get(get_artifact),
+        )
+        .route(
+            "/v1/repos/{repo_id}/artifacts/{artifact_id}/files",
+            get(read_artifact_file),
+        )
+        .route(
+            "/v1/repos/{repo_id}/artifacts/{artifact_id}/comments",
+            post(record_artifact_comment),
+        )
+        .route(
+            "/v1/repos/{repo_id}/artifacts/{artifact_id}/decisions",
+            post(record_artifact_decision),
+        )
+        .route(
+            "/v1/repos/{repo_id}/artifacts/{artifact_id}/preview",
+            post(open_artifact_preview),
+        )
+        .route(
+            "/v1/repos/{repo_id}/artifacts/{artifact_id}/preview/close",
+            post(close_artifact_preview),
+        )
+        .route(
+            "/v1/repos/{repo_id}/artifacts/{artifact_id}/push",
+            post(push_artifact),
+        )
+        .route(
+            "/v1/repos/{repo_id}/artifacts/{artifact_id}/fetch",
+            post(fetch_artifact),
         )
         .route(
             "/v1/tasks/{task_id}/actions/run-merge-agent",
@@ -755,7 +809,17 @@ pub async fn dispatch_http_invoke(
     path: &str,
     body: serde_json::Value,
 ) -> HttpInvokeResponse {
-    dispatch_http_invoke_with_access(state, method, path, body, false, None, None).await
+    dispatch_http_invoke_with_access(
+        state,
+        method,
+        path,
+        body,
+        false,
+        None,
+        None,
+        ChannelIdentity::Unknown,
+    )
+    .await
 }
 
 pub async fn dispatch_authenticated_http_invoke(
@@ -764,9 +828,27 @@ pub async fn dispatch_authenticated_http_invoke(
     path: &str,
     body: serde_json::Value,
 ) -> HttpInvokeResponse {
-    dispatch_http_invoke_with_access(state, method, path, body, true, None, None).await
+    // Authenticated, but by nothing this dispatch can name: a legacy KSP
+    // socket or a relay message without an account. The channel stays
+    // unknown rather than borrowing the relay's account-level identity.
+    dispatch_http_invoke_with_access(
+        state,
+        method,
+        path,
+        body,
+        true,
+        None,
+        None,
+        ChannelIdentity::Unknown,
+    )
+    .await
 }
 
+/// Dispatches a relay invoke. `actor` is the account this desktop's relay
+/// connection authenticated as when the invoke arrived; it acts only while
+/// this desktop is still signed in to exactly that account, so a sign-out or
+/// an account switch revokes every invoke still in flight on the old
+/// connection (`crate::account_boundary`).
 pub async fn dispatch_authenticated_relay_http_invoke(
     state: Arc<AppState>,
     actor: String,
@@ -775,6 +857,20 @@ pub async fn dispatch_authenticated_relay_http_invoke(
     path: &str,
     body: serde_json::Value,
 ) -> HttpInvokeResponse {
+    if let Err(refusal) = crate::account_boundary::relay_invoke_account(
+        Some(&actor),
+        state.authenticated_account_uid().as_deref(),
+    ) {
+        log::warn!(
+            "refusing relay invoke {method} {}: {refusal}",
+            loggable_path(path)
+        );
+        return account_boundary_response(&refusal);
+    }
+    let channel = ChannelIdentity::RelayAccount {
+        account_uid: actor.clone(),
+        source_desktop_id: source_desktop_id.clone(),
+    };
     dispatch_http_invoke_with_access(
         state,
         method,
@@ -783,33 +879,59 @@ pub async fn dispatch_authenticated_relay_http_invoke(
         true,
         Some(actor),
         source_desktop_id,
+        channel,
     )
     .await
 }
 
 /// Dispatches a call that arrived on the dedicated LAN machine-invoke
 /// listener, already authenticated by `LanMachineInvokeAuthenticated`'s
-/// bearer-secret check. The actor is this desktop's own current account
-/// (a LAN caller does not carry a separate account claim the way a relay
-/// message does - `LanMachineInvokeAuthenticated` already proved the
-/// caller's secret verifies under exactly that account), and
-/// `source_desktop_id` is the verified device id from that same check.
+/// bearer-secret check. `source_desktop_id` is the verified device id from
+/// that check and `verified_account_uid` the account it verified the secret
+/// under. That verified account is both the authorization actor and the
+/// recorded channel's account - never a fresh read of the current account,
+/// which a sign-out or account switch can change while the gateway awaited
+/// the body. If the current account is no longer that one, the credential no
+/// longer holds and the call is refused (`crate::account_boundary`).
 pub async fn dispatch_authenticated_lan_http_invoke(
     state: Arc<AppState>,
     source_desktop_id: String,
+    verified_account_uid: Option<String>,
     method: &str,
     path: &str,
     body: serde_json::Value,
 ) -> HttpInvokeResponse {
-    let actor = state.authenticated_account_uid();
+    let actor = match crate::account_boundary::lan_invoke_account(
+        &source_desktop_id,
+        verified_account_uid.as_deref(),
+        state.authenticated_account_uid().as_deref(),
+    ) {
+        Ok(actor) => actor,
+        Err(refusal) => {
+            log::warn!(
+                "refusing LAN machine invoke {method} {} from {source_desktop_id}: {refusal}",
+                loggable_path(path)
+            );
+            return account_boundary_response(&refusal);
+        }
+    };
+    // Same `AuthenticatedHttpInvoke` marker as a relay invoke, but a
+    // different channel: the bearer secret proved a sibling desktop, and
+    // the account is this desktop's own, not a relay attestation.
+    let channel = ChannelIdentity::PeerDesktop {
+        desktop_id: source_desktop_id.clone(),
+        evidence: PeerDesktopEvidence::LanMachineTrust,
+        account_uid: Some(actor.clone()),
+    };
     dispatch_http_invoke_with_access(
         state,
         method,
         path,
         body,
         true,
-        actor,
+        Some(actor),
         Some(source_desktop_id),
+        channel,
     )
     .await
 }
@@ -825,13 +947,21 @@ pub async fn dispatch_sealed_device_http_invoke(
     state: Arc<AppState>,
     device_id: String,
     pairing: SealedPairingContext,
+    origin: StreamOrigin,
     method: &str,
     path: &str,
     body: serde_json::Value,
 ) -> HttpInvokeResponse {
+    let channel = ChannelIdentity::PairedDevice {
+        device_id: device_id.clone(),
+        evidence: PairedDeviceEvidence::SecureChannel {
+            transport: secure_channel_transport(origin),
+        },
+    };
     dispatch_http_invoke_with_extensions(state, method, path, body, move |extensions| {
         extensions.insert(TrustedLanDeviceAccess::new(device_id));
         extensions.insert(pairing);
+        attach_dispatched_channel_identity(extensions, channel);
     })
     .await
 }
@@ -846,18 +976,88 @@ pub async fn dispatch_sealed_device_http_invoke(
 /// `SealedPeerPairingContext`: the peer pairing claim is for a key that is
 /// *not yet* paired, and a paired sibling must not be able to consume
 /// another desktop's pairing offer.
+///
+/// The session was admitted only for a sibling in this desktop's account;
+/// each request re-checks that against the pin as it stands now, so a
+/// sign-out or account switch refuses the next request even before the
+/// account-transition purge closes the session.
 pub async fn dispatch_sealed_peer_http_invoke(
     state: Arc<AppState>,
     desktop_id: String,
+    origin: StreamOrigin,
     method: &str,
     path: &str,
     body: serde_json::Value,
 ) -> HttpInvokeResponse {
+    let peer = match state.paired_peer(&desktop_id) {
+        Ok(Some(peer)) => peer,
+        Ok(None) => {
+            return refused_invoke(
+                axum::http::StatusCode::UNAUTHORIZED,
+                format!("desktop {desktop_id} is no longer a paired peer"),
+            )
+        }
+        Err(error) => {
+            return refused_invoke(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                format!("peer trust store unavailable: {error}"),
+            )
+        }
+    };
+    if let Err(refusal) =
+        crate::account_boundary::peer_standing(&peer, state.authenticated_account_uid().as_deref())
+    {
+        log::warn!(
+            "refusing sealed peer request {method} {} from {desktop_id}: {refusal}",
+            loggable_path(path)
+        );
+        return account_boundary_response(&refusal);
+    }
+    // The account the pin proves the sibling shares, which the check above
+    // just held against the current one.
+    let account_uid = peer.same_account_evidence().map(str::to_string);
+    let channel = ChannelIdentity::PeerDesktop {
+        desktop_id: desktop_id.clone(),
+        evidence: PeerDesktopEvidence::SecureChannel {
+            transport: secure_channel_transport(origin),
+        },
+        account_uid,
+    };
     dispatch_http_invoke_with_extensions(state, method, path, body, move |extensions| {
         extensions.insert(TrustedPeerDesktopAccess::new(desktop_id));
         extensions.insert(super::task_files::AuthenticatedTaskFileAccess);
+        attach_dispatched_channel_identity(extensions, channel);
     })
     .await
+}
+
+/// An invoke refused before it reached the router, shaped like a route's own
+/// refusal (`response_to_http_invoke`): the text is both body and error.
+fn refused_invoke(status: axum::http::StatusCode, message: String) -> HttpInvokeResponse {
+    HttpInvokeResponse {
+        status: status.as_u16(),
+        body: Some(serde_json::Value::String(message.clone())),
+        error: Some(message),
+    }
+}
+
+fn account_boundary_response(
+    refusal: &crate::account_boundary::AccountBoundaryRefusal,
+) -> HttpInvokeResponse {
+    refused_invoke(refusal.status(), refusal.to_string())
+}
+
+/// A dispatched path for a log line, without its query (which may carry a
+/// credential-shaped value; see `loggable_target`).
+fn loggable_path(path: &str) -> &str {
+    path.split('?').next().unwrap_or(path)
+}
+
+fn secure_channel_transport(origin: StreamOrigin) -> SecureChannelTransport {
+    match origin {
+        StreamOrigin::Lan => SecureChannelTransport::Lan,
+        StreamOrigin::RelayTunnel => SecureChannelTransport::Relay,
+    }
 }
 
 /// Dispatches a request from a sealed peer session whose static key is not
@@ -892,6 +1092,7 @@ pub async fn dispatch_sealed_pairing_http_invoke(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_http_invoke_with_access(
     state: Arc<AppState>,
     method: &str,
@@ -900,6 +1101,7 @@ async fn dispatch_http_invoke_with_access(
     authenticated_file_access: bool,
     authenticated_human_actor: Option<String>,
     source_desktop_id: Option<String>,
+    channel: ChannelIdentity,
 ) -> HttpInvokeResponse {
     dispatch_http_invoke_with_extensions(state, method, path, body, move |extensions| {
         if authenticated_file_access {
@@ -909,6 +1111,7 @@ async fn dispatch_http_invoke_with_access(
             });
             extensions.insert(super::task_files::AuthenticatedTaskFileAccess);
         }
+        attach_dispatched_channel_identity(extensions, channel);
     })
     .await
 }

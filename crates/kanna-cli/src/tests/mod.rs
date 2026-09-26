@@ -1,13 +1,13 @@
 use crate::api::{
-    advance_stage_via_api, block_task_via_api, close_task_via_api, create_task_via_api,
-    dependent_tasks_exist_path, dependent_tasks_exist_via_api, get_task_via_api,
-    list_task_children_via_api, parse_wait_until, reconcile_repo_metadata_via_api,
-    rename_task_via_api, repo_agent_list_path, repo_task_list_path, request_revision_via_api,
-    rerun_stage_via_api, resume_task_via_api, send_task_input_via_api, set_task_parent_via_api,
-    set_task_workflow_via_api, signal_agent_path, signal_agent_via_api,
-    signal_merge_handoff_via_api, task_children_path, task_get_path, task_list_path,
-    task_logs_path, task_matches_wait_until, task_search_path, unblock_task_via_api,
-    wait_task_via_api, NextStageProviderOverride, WaitTaskOutcome,
+    advance_stage_via_api, block_task_via_api, close_task_via_api, complete_stage_via_api,
+    create_task_via_api, dependent_tasks_exist_path, dependent_tasks_exist_via_api,
+    get_task_via_api, list_task_children_via_api, parse_wait_until,
+    reconcile_repo_metadata_via_api, rename_task_via_api, repo_agent_list_path,
+    repo_task_list_path, request_revision_via_api, rerun_stage_via_api, resume_task_via_api,
+    send_task_input_via_api, set_task_parent_via_api, set_task_workflow_via_api, signal_agent_path,
+    signal_agent_via_api, signal_merge_handoff_via_api, task_children_path, task_get_path,
+    task_list_path, task_logs_path, task_matches_wait_until, task_search_path,
+    unblock_task_via_api, wait_task_via_api, NextStageProviderOverride, WaitTaskOutcome,
 };
 use crate::commands::guide::{
     build_guide_context, render_guide_json, render_guide_markdown, run_guide_command,
@@ -393,6 +393,7 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
                     ("parent_task_id", "parent_task"),
                     ("allowed_tools", "allowed_tool"),
                     ("blocker_task_ids", "blocker_task_id"),
+                    ("dependencies", "dependency"),
                 ],
             },
         ),
@@ -579,6 +580,8 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
                     ("metadata", "metadata"),
                     ("workflow_definition", "workflow_definition"),
                     ("expected_definition", "expected_definition"),
+                    ("exit", "exit"),
+                    ("artifacts", "artifacts"),
                 ],
             },
         ),
@@ -613,7 +616,19 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
 /// here, so an un-surfaced addition keeps failing
 /// `typed_cli_surfaces_match_catalog_tools_and_params` rather than silently
 /// passing.
-const TOOL_CALL_ONLY_TOOLS: &[&str] = &["kanna_doctor"];
+const TOOL_CALL_ONLY_TOOLS: &[&str] = &[
+    "kanna_doctor",
+    "kanna_publish_artifact",
+    "kanna_get_artifact",
+    "kanna_open_artifact",
+    "kanna_close_artifact",
+    "kanna_record_artifact_comment",
+    "kanna_record_artifact_decision",
+    "kanna_push_artifact",
+    "kanna_fetch_artifact",
+    "kanna_create_subtasks",
+    "kanna_get_task_joins",
+];
 
 fn command_for_path<'a>(command: &'a Command, path: &[&str]) -> Option<&'a Command> {
     let mut current = command;

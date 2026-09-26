@@ -941,6 +941,7 @@ fn typed_create_body_matches_catalog_create_task_body() {
         allowed_tool: vec!["Read".to_string(), "Write".to_string()],
         blocker_task_id: vec!["blocker-1".to_string()],
         parent_task: Some("root-1".to_string()),
+        dependency: Vec::new(),
     });
     let typed_body = serde_json::to_value(request).unwrap();
     let catalog = kanna_tool_catalog::bundled_catalog();
@@ -1540,4 +1541,71 @@ fn workspace_cli_and_open_view_destinations_match_catalog() {
         "remote",
     ]);
     assert!(parsed.is_ok());
+}
+
+#[test]
+fn typed_create_dependencies_match_catalog_create_task_body() {
+    let dependency = |raw: &str| crate::commands::task::parse_stage_dependency(raw).unwrap();
+    let request = build_create_task_request(TaskCreateOptions {
+        repo_id: "repo-1".to_string(),
+        prompt: "Build on the plan".to_string(),
+        display_name: None,
+        workflow_name: None,
+        base_ref: None,
+        diff_base_ref: None,
+        review_context: None,
+        agent: None,
+        agent_provider: None,
+        model: None,
+        effort: None,
+        permission_mode: None,
+        allowed_tool: Vec::new(),
+        blocker_task_id: Vec::new(),
+        parent_task: None,
+        dependency: vec![
+            dependency("task-a:plan"),
+            dependency("task-b:pr:in progress"),
+        ],
+    });
+    let typed_body = serde_json::to_value(request).unwrap();
+    let catalog = kanna_tool_catalog::bundled_catalog();
+    let resolved = kanna_tool_catalog::resolve_request(
+        &catalog,
+        "kanna_create_task",
+        &json!({
+            "repo_id": "repo-1",
+            "prompt": "Build on the plan",
+            "dependencies": [
+                { "taskId": "task-a", "stage": "plan" },
+                { "taskId": "task-b", "stage": "pr", "dependentStage": "in progress" }
+            ]
+        }),
+    )
+    .unwrap();
+    assert_eq!(typed_body, resolved.body);
+    assert_eq!(
+        typed_body["dependencies"][1],
+        json!({ "taskId": "task-b", "stage": "pr", "dependentStage": "in progress" })
+    );
+
+    // The generic tool-call path takes the same JSON, and refuses a shape
+    // that is not a list of edges.
+    let param = catalog
+        .find_param("kanna_create_task", "dependencies")
+        .expect("dependencies param");
+    assert_eq!(
+        param
+            .parse_cli_value(r#"[{"taskId":"task-a","stage":"plan"}]"#)
+            .unwrap(),
+        json!([{ "taskId": "task-a", "stage": "plan" }])
+    );
+    assert!(param.parse_cli_value(r#"["task-a"]"#).is_err());
+    assert!(kanna_tool_catalog::resolve_request(
+        &catalog,
+        "kanna_create_task",
+        &json!({ "repo_id": "repo-1", "prompt": "x", "dependencies": "task-a" }),
+    )
+    .is_err());
+    assert!(crate::commands::task::parse_stage_dependency("task-a").is_err());
+    assert!(crate::commands::task::parse_stage_dependency(":plan").is_err());
 }

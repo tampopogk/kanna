@@ -710,6 +710,19 @@ function TaskDetailRoute({
   selectedTaskIdRef.current = state.selectedTaskId;
   cleanupTaskIdRef.current = cleanupTaskId;
   taskFileAccessRef.current = { controller, routeTaskId, state };
+  // Artifact records and sharing are repository-scoped; nothing here names the task.
+  const artifactActions = useMemo(
+    () => ({
+      getArtifactRemote: (repoId: string) => controller.getArtifactRemote(repoId),
+      recordArtifactComment: (...args: Parameters<typeof controller.recordArtifactComment>) =>
+        controller.recordArtifactComment(...args),
+      recordArtifactDecision: (...args: Parameters<typeof controller.recordArtifactDecision>) =>
+        controller.recordArtifactDecision(...args),
+      pushArtifact: (...args: Parameters<typeof controller.pushArtifact>) => controller.pushArtifact(...args),
+      fetchArtifact: (repoId: string, artifactId: string) => controller.fetchArtifact(repoId, artifactId)
+    }),
+    [controller]
+  );
   const readTaskFileRange = useCallback((path: string, startLine: number, lineCount: number, metadataOnly?: boolean, startByte?: number) => {
     const access = taskFileAccessRef.current;
     const durableTaskId = resolveDurableTaskId(access.state, access.routeTaskId);
@@ -770,6 +783,14 @@ function TaskDetailRoute({
       (resolveDurableTaskId(state, routeTaskId) ?? routeTaskId)
       ? state.pendingTaskAction.action
       : null);
+  const latestRun =
+    state.selectedTaskLatestRun?.taskId === task.id
+      ? state.selectedTaskLatestRun.latestRun
+      : null;
+  const selectedTaskDetailState =
+    state.selectedTaskLatestRun?.taskId === task.id
+      ? state.selectedTaskLatestRun
+      : null;
   const previewTaskId = resolveDurableTaskId(state, routeTaskId);
   const fileAccessScopeKey = [
     state.auth.status === "signedIn" ? state.auth.user.uid : "signed-out",
@@ -783,6 +804,11 @@ function TaskDetailRoute({
       desktopWorkspace={isTabletWorkspace}
       e2eTaskSnapshotMarker={e2eTaskSnapshotMarker}
       task={task}
+      latestRun={latestRun}
+      sessionHistory={selectedTaskDetailState?.sessionHistory ?? null}
+      stageDependencies={selectedTaskDetailState?.stageDependencies ?? null}
+      dependencyWait={selectedTaskDetailState?.dependencyWait ?? null}
+      gateParked={selectedTaskDetailState?.gateParked ?? null}
       terminalErrorMessage={state.taskTerminalErrorMessage}
       terminalOutput={state.taskTerminalOutput}
       terminalOutputEpoch={state.taskTerminalOutputEpoch}
@@ -864,6 +890,11 @@ function TaskDetailRoute({
           ? controller.readTaskDiff(durableTaskId, request)
           : Promise.reject(new Error("Task creation is still in progress."));
       }}
+      onGetArtifact={(repoId, artifactId) => controller.getArtifact(repoId, artifactId)}
+      onReadArtifactFile={(repoId, artifactId, path) =>
+        controller.readArtifactFile(repoId, artifactId, path)
+      }
+      artifactActions={artifactActions}
       taskPreviewRouteAvailable={
         previewTaskId
           ? (controller.canOpenTaskPreview?.(previewTaskId) ?? false)

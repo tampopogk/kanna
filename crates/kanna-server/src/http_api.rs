@@ -1,4 +1,6 @@
 mod analytics;
+mod artifact_preview;
+pub(crate) mod artifacts;
 mod backup;
 mod blocking;
 mod capacity_notice;
@@ -21,6 +23,7 @@ mod lan_listener;
 mod lan_trust;
 mod machine_stats;
 mod mobile_notifications;
+mod mutation_provenance;
 mod operator_events;
 mod pairing;
 pub(crate) mod peers;
@@ -34,13 +37,16 @@ mod resume_recovery;
 mod routes;
 pub(crate) mod secure_channel;
 pub(crate) mod settings;
-mod signal_agent;
+pub(crate) mod signal_agent;
 mod snapshot;
+pub(crate) mod stage_dependencies;
 mod stage_run_prompts;
 mod state;
 mod status;
+pub(crate) mod storage_authority;
 mod subscription_timing;
-mod task_actions;
+pub(crate) mod subtask_joins;
+pub(crate) mod task_actions;
 pub(crate) mod task_activity;
 mod task_agent_session;
 mod task_attention;
@@ -130,21 +136,26 @@ pub(crate) async fn dispatch_sealed_device_http_invoke(
     state: std::sync::Arc<AppState>,
     device_id: String,
     pairing: secure_channel::SealedPairingContext,
+    origin: secure_channel::StreamOrigin,
     method: &str,
     path: &str,
     body: serde_json::Value,
 ) -> HttpInvokeResponse {
-    routes::dispatch_sealed_device_http_invoke(state, device_id, pairing, method, path, body).await
+    routes::dispatch_sealed_device_http_invoke(
+        state, device_id, pairing, origin, method, path, body,
+    )
+    .await
 }
 
 pub(crate) async fn dispatch_sealed_peer_http_invoke(
     state: std::sync::Arc<AppState>,
     desktop_id: String,
+    origin: secure_channel::StreamOrigin,
     method: &str,
     path: &str,
     body: serde_json::Value,
 ) -> HttpInvokeResponse {
-    routes::dispatch_sealed_peer_http_invoke(state, desktop_id, method, path, body).await
+    routes::dispatch_sealed_peer_http_invoke(state, desktop_id, origin, method, path, body).await
 }
 
 pub(crate) async fn dispatch_sealed_peer_pairing_http_invoke(

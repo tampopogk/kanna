@@ -237,6 +237,63 @@ async fn named_keys_write_exact_bytes_in_order_fenced_to_the_observed_pid() {
     cleanup(&config, &daemon.socket_path, &daemon.daemon_dir);
 }
 
+/// A relay caller declaring `operator` is announced as exactly that: the
+/// declaration verbatim, and beside it the account the relay attested — not
+/// a local process, which the in-process dispatch's synthetic loopback
+/// address would otherwise suggest.
+#[tokio::test]
+async fn a_relay_raw_input_announces_the_declared_source_beside_the_attested_account() {
+    let unique = format!("raw-input-provenance-{}", unique_test_suffix());
+    let daemon = scripted_daemon(&unique);
+    let listener = daemon.listener;
+    let daemon_server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let (read_half, mut write_half) = stream.into_split();
+        let mut reader = BufReader::new(read_half);
+        for _ in 0..2 {
+            let command = read_test_daemon_command(&mut reader, &mut write_half).await;
+            let response = match &command {
+                DaemonCommand::List => DaemonEvent::SessionList {
+                    sessions: vec![live_session("task-relay-keys", 4242)],
+                },
+                DaemonCommand::RawInputIfSession { .. } => DaemonEvent::Ok,
+                other => panic!("unexpected daemon command: {other:?}"),
+            };
+            write_half
+                .write_all(format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes())
+                .await
+                .unwrap();
+        }
+    });
+
+    let config = raw_input_test_config(&unique, &daemon.daemon_dir);
+    seed_live_task(&config, "task-relay-keys");
+    let state = Arc::new(super::AppState::new(config.clone()));
+    state.set_authenticated_account_uid(Some("uid-owner".to_string()));
+    let response = crate::http_api::dispatch_authenticated_relay_http_invoke(
+        state,
+        "uid-owner".to_string(),
+        None,
+        "POST",
+        "/v1/tasks/task-relay-keys/raw-input",
+        serde_json::json!({ "keys": ["escape"], "source": "operator" }),
+    )
+    .await;
+    assert_eq!(response.status, 200, "{:?}", response.body);
+    daemon_server.await.unwrap();
+
+    let events = raw_input_events(&config, "task-relay-keys");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["source"], "operator");
+    assert_eq!(events[0]["declaredRole"], "operator");
+    assert_eq!(
+        events[0]["channelIdentity"],
+        serde_json::json!({ "kind": "relayAccount", "accountUid": "uid-owner" })
+    );
+
+    cleanup(&config, &daemon.socket_path, &daemon.daemon_dir);
+}
+
 /// A bare Escape is one draft-class write of one byte, with nothing appended.
 /// The route adds no CR of its own — that is the whole difference from
 /// `POST /v1/tasks/{id}/input`.

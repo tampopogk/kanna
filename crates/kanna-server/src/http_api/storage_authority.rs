@@ -1,0 +1,114 @@
+//! Disk authority at runtime (spec §11, §16.11 — T13c): a task the
+//! publisher found the disk ahead of is reconciled from its directory under
+//! the task's mutation lease, so no mutation of the task runs meanwhile.
+//! And the legacy retirement that runs at the same startup boundary (T13d):
+//! open tasks' commit posts become commit steps.
+
+use super::AppState;
+use crate::db::Db;
+use crate::task_store::authority::{self, Mode};
+use std::collections::BTreeSet;
+use std::sync::Arc;
+
+/// Reconcile every task flagged as diverged. A task with an operation in
+/// flight (a ledger reservation) waits for the publisher's next pass.
+pub(crate) async fn reconcile_diverged_tasks(state: Arc<AppState>) {
+    let db_path = state.config().db_path.clone();
+    let root = crate::task_store::root_for_db(&db_path);
+    if authority::mode_for_root(&root) != Mode::Disk {
+        return;
+    }
+    let diverged = {
+        let db_path = db_path.clone();
+        tokio::task::spawn_blocking(move || {
+            Db::open(&db_path)
+                .map(|db| authority::diverged_tasks(&db))
+                .unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default()
+    };
+    for task_id in diverged {
+        let _lease = state.begin_requested_task_mutation(&task_id).await;
+        let db_path = db_path.clone();
+        let task = task_id.clone();
+        let reconciled = tokio::task::spawn_blocking(move || {
+            let db = Db::open(&db_path).map_err(|error| format!("open database: {error}"))?;
+            if db
+                .has_ledger_reservation(&task)
+                .map_err(|error| format!("db error: {error}"))?
+            {
+                return Ok(None);
+            }
+            authority::reconcile_from_disk(&db, &db_path, Some(&BTreeSet::from([task]))).map(Some)
+        })
+        .await;
+        match reconciled {
+            Ok(Ok(Some(report))) => {
+                for (task, reasons) in &report.reconciled {
+                    log::warn!("task {task} reconciled from disk: {}", reasons.join("; "));
+                }
+                for (task, error) in &report.failed {
+                    log::error!("task {task} could not be reconciled from disk: {error}");
+                }
+            }
+            Ok(Ok(None)) => {}
+            Ok(Err(error)) => {
+                log::error!("task {task_id} could not be reconciled from disk: {error}")
+            }
+            Err(error) => log::error!("disk reconciliation worker for {task_id} failed: {error}"),
+        }
+    }
+}
+
+/// Migrate every open task's legacy commit posts to commit steps
+/// (`exit_commit`), once, at startup, each under its task-mutation lease
+/// (T13d). A task not at a quiescent boundary is left exactly as it was and
+/// keeps its commit post until a later start finds it quiescent.
+pub(crate) async fn migrate_commit_posts_on_startup(state: Arc<AppState>) {
+    let db_path = state.config().db_path.clone();
+    let listed = {
+        let db_path = db_path.clone();
+        tokio::task::spawn_blocking(move || {
+            Db::open(&db_path).and_then(|db| db.open_task_ids_with_pinned_workflow())
+        })
+        .await
+    };
+    let task_ids = match listed {
+        Ok(Ok(task_ids)) => task_ids,
+        Ok(Err(error)) => {
+            log::error!("commit post migration could not list open tasks: {error}");
+            return;
+        }
+        Err(error) => {
+            log::error!("commit post migration scan failed: {error}");
+            return;
+        }
+    };
+    for task_id in task_ids {
+        let _lease = state.begin_requested_task_mutation(&task_id).await;
+        let db_path = db_path.clone();
+        let task = task_id.clone();
+        let migrated = tokio::task::spawn_blocking(move || {
+            let db = Db::open(&db_path).map_err(|error| format!("open database: {error}"))?;
+            crate::task_creator::migrate_commit_posts_to_exit_commit(&db, &db_path, &task)
+        })
+        .await;
+        use crate::task_creator::CommitPostMigration;
+        match migrated {
+            Ok(Ok(CommitPostMigration::Migrated(stages))) => {
+                log::info!("task {task_id} now commits {stages:?} through commit steps");
+                state.publish_state_changed(kanna_agent_protocol::StateChangeScope::Tasks);
+            }
+            Ok(Ok(CommitPostMigration::NotApplicable)) => {}
+            Ok(Ok(CommitPostMigration::KeptLegacy(reason))) => {
+                log::info!("task {task_id} keeps its legacy commit post: {reason}")
+            }
+            Ok(Ok(CommitPostMigration::Deferred(reason))) => {
+                log::info!("task {task_id} keeps its commit post for now: {reason}")
+            }
+            Ok(Err(error)) => log::warn!("task {task_id}: {error}"),
+            Err(error) => log::error!("commit post migration worker for {task_id} failed: {error}"),
+        }
+    }
+}

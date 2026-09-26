@@ -26,6 +26,8 @@ pub(crate) fn build_complete_stage_request(
         metadata,
         workflow_definition,
         expected_definition,
+        exit: None,
+        artifacts: None,
     }
 }
 
@@ -43,6 +45,7 @@ pub(crate) fn render_stage_complete_confirmation(
     format!("Stage completion recorded for task {task_id} (status: {status}).")
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run(
     task_id: String,
     status: String,
@@ -50,6 +53,8 @@ pub(crate) async fn run(
     metadata: Option<String>,
     workflow_definition: Option<String>,
     expected_definition: Option<String>,
+    exit: Option<String>,
+    artifacts: Option<String>,
     server_url: Option<&str>,
 ) {
     // Validated here against the shared vocabulary table, before anything is
@@ -62,6 +67,12 @@ pub(crate) async fn run(
     let metadata_value = parse_metadata_json(&metadata).unwrap_or_else(|e| {
         eprintln!("Error: {e}");
         process::exit(1);
+    });
+    let artifacts_value = artifacts.map(|raw| {
+        serde_json::from_str::<Value>(&raw).unwrap_or_else(|error| {
+            eprintln!("Error: --artifacts must be a JSON object: {error}");
+            process::exit(1);
+        })
     });
 
     // Refused here rather than at the server, so a planner that sent only one
@@ -96,6 +107,8 @@ pub(crate) async fn run(
         workflow_definition,
         expected_definition,
     );
+    request.exit = exit;
+    request.artifacts = artifacts_value;
     bind_completion_request(&base_url, &task_id, &mut request)
         .await
         .unwrap_or_else(|error| {
@@ -112,6 +125,14 @@ pub(crate) async fn run(
         "{}",
         render_stage_complete_confirmation(&task_id, &status, &response.task_id)
     );
+    if let Some(message) = response
+        .routing
+        .as_ref()
+        .and_then(|routing| routing.get("message"))
+        .and_then(Value::as_str)
+    {
+        println!("{message}");
+    }
     if request.workflow_definition.is_some() {
         // An older server ignores the arguments and answers without the flag;
         // saying so is the difference between a published workflow and a plan

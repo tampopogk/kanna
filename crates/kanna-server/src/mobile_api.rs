@@ -80,6 +80,24 @@ pub struct MobileServerStatus {
     /// attach control rather than sending into that silence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_input_attachment_version: Option<u8>,
+    /// Version of the stage-dependency contract (T4): task creation accepts
+    /// `dependencies`. Absent on a build that predates it, which would ignore
+    /// the field and start an ungated task — so a client refuses to send
+    /// `dependencies` unless this is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_dependencies_version: Option<u8>,
+    /// Version of the subtask-join contract (T5): `POST
+    /// /v1/tasks/{id}/subtasks` and `GET /v1/tasks/{id}/joins`. Absent on a
+    /// build that predates them, so a client refuses to call either rather
+    /// than read a missing route as an empty join.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtask_joins_version: Option<u8>,
+    /// Version of the carried-task-state transfer contract (T9): this server
+    /// imports a transferred task's ledger, workflow rows and artifact
+    /// objects. The peer-to-peer check a source relies on is the transfer
+    /// protocol's own capabilities reply; this mirrors it for clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_state_transfer_version: Option<u8>,
     /// This desktop's secure-channel public key (unpadded base64url X25519),
     /// present when the desktop can serve end-to-end encrypted sessions.
     /// Read over plaintext LAN it is *not* a trust anchor - a typed-code
@@ -324,6 +342,97 @@ pub struct TaskDetail {
     /// that is not coming or treat a live session as parked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_capacity_notice: Option<TaskProviderCapacityNotice>,
+    /// Every prior stage-run session for this task, oldest first (spec
+    /// §16.8, T11b) — the session identity T2 recorded at each run's start.
+    /// Runs that predate session recording, or that recorded no identity at
+    /// all (a teardown run), are omitted rather than padded with nulls.
+    #[serde(default)]
+    pub session_history: Vec<TaskSessionHistoryEntry>,
+    /// Stage-dependency edges into this task's current stage (spec §9, T4),
+    /// dependent side, in edge order — which upstream task/stage each edge
+    /// gates, and what it consumed or had superseded. The legacy
+    /// `blockedByTaskIds` above keeps reporting task-level blockers; this is
+    /// the finer-grained stage-edge picture and is empty for a task that
+    /// only has legacy blockers.
+    #[serde(default)]
+    pub stage_dependencies: Vec<TaskStageDependency>,
+    /// This task's recorded automatic-advance dependency wait (T4), when the
+    /// engine is holding a completed run at a stage boundary until edges
+    /// into the next stage are satisfied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependency_wait: Option<TaskDependencyWait>,
+    /// True when the task's current stage has no agent role and its latest
+    /// run is parked waiting for a person to decide (spec's roleless Gate
+    /// stage, T3): no session records this stage's result, only a human or
+    /// manager advance-stage call does. Absent when the current stage has a
+    /// role, or when there is no latest run yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_parked: Option<bool>,
+}
+
+/// One historical stage-run session (spec §16.8, T11b), sourced from T2's
+/// per-run session identity rather than the run's own agent/verdict fields.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskSessionHistoryEntry {
+    pub run_id: String,
+    pub stage: String,
+    pub status: String,
+    pub started_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+    pub session: crate::db::StageRunSession,
+}
+
+/// One stage-dependency edge into this task, dependent side (spec §9, T4).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskStageDependency {
+    pub upstream_task_id: String,
+    pub upstream_stage: String,
+    pub dependent_stage: String,
+    pub position: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumed_result_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumed_sha: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumed_at: Option<String>,
+    /// Set when a newer upstream result superseded what this edge had
+    /// already consumed (`task.dependency_superseded`) — the consumed
+    /// fields above still show what was actually used to start or gate this
+    /// stage; these show that a later result was ready and was not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_result_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_sha: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_at: Option<String>,
+}
+
+impl From<crate::db::StageEdge> for TaskStageDependency {
+    fn from(edge: crate::db::StageEdge) -> Self {
+        Self {
+            upstream_task_id: edge.upstream_task_id,
+            upstream_stage: edge.upstream_stage,
+            dependent_stage: edge.dependent_stage,
+            position: edge.position,
+            consumed_result_id: edge.consumed_result_id,
+            consumed_sha: edge.consumed_sha,
+            consumed_at: edge.consumed_at,
+            superseded_result_id: edge.superseded_result_id,
+            superseded_sha: edge.superseded_sha,
+            superseded_at: edge.superseded_at,
+        }
+    }
+}
+
+/// This task's recorded automatic-advance dependency wait (spec §9, T4).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskDependencyWait {
+    pub from_stage: String,
+    pub to_stage: String,
 }
 
 /// A provider's own refusal of a turn, as task detail reports it.
@@ -436,6 +545,14 @@ pub struct TaskLatestRun {
     /// picked this stage's model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_override: Option<crate::db::StageProviderOverride>,
+    /// The verified channel this run's entry arrived on, beside `trigger`
+    /// (its declared role). Unknown for legacy runs and older peers.
+    #[serde(default)]
+    pub entry_channel_identity: crate::mutation_provenance::ChannelIdentity,
+    /// Who declared this run's result and the channel it arrived on; absent
+    /// while the run has recorded no result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_provenance: Option<crate::mutation_provenance::MutationProvenance>,
     #[serde(default)]
     pub agent: Option<String>,
     #[serde(default)]
@@ -459,9 +576,55 @@ pub struct TaskLatestRun {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict: Option<String>,
     pub summary: Option<String>,
+    /// The named exit (spec §5) this result took, when the pinned workflow
+    /// routes by exits and the agent named one. Absent on a legacy-routed
+    /// task, on a result that took none, or when the run recorded no result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<String>,
+    /// Named artifact references (spec §7, §8) this result carries, keyed by
+    /// the name the agent gave them. Absent when the result named none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifacts:
+        Option<std::collections::BTreeMap<String, crate::artifacts::types::ArtifactReference>>,
     pub resumed_from_run_id: Option<String>,
     pub resume_fallback_reason: Option<String>,
     pub finished_at: Option<String>,
+    /// The session this run is (spec §6): its stage workspace, the branch it
+    /// checked out there, its name, its transcript reference, and any
+    /// workspace state its start preserved and reported. Absent for runs
+    /// from before session identity was recorded, and from older peers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<crate::db::StageRunSession>,
+    /// Set when this run is the commit step of a transition (spec §5): a
+    /// phase of leaving `stage`, not a stage or a declared post. Absent for
+    /// every other run and from older peers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_step: Option<TransitionCommitStep>,
+}
+
+/// A commit step as task detail shows it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TransitionCommitStep {
+    /// The stage the transition leaves.
+    pub stage: String,
+    /// The exit the transition takes, and who chose it (named-exit routing).
+    pub exit: Option<String>,
+    pub exit_source: Option<String>,
+    /// `requested` until the step's result arrives, then `succeeded` (the
+    /// transition fired on it) or `failed` (the task parked).
+    pub state: String,
+}
+
+impl From<crate::db::TransitionCommit> for TransitionCommitStep {
+    fn from(commit: crate::db::TransitionCommit) -> Self {
+        Self {
+            stage: commit.stage,
+            exit: commit.exit.as_ref().and_then(|exit| exit.exit.clone()),
+            exit_source: commit.exit.map(|exit| exit.source),
+            state: commit.state,
+        }
+    }
 }
 
 fn default_stage_trigger() -> String {
@@ -603,6 +766,11 @@ pub struct TransferImportSummary {
     /// `transferred_task_history` rather than from this in-flight request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history: Vec<TransferredHistoryRecordSummary>,
+    /// Why the destination's first session starts fresh instead of resuming
+    /// the transferred transcript (T9). Stated in that session's prompt; the
+    /// ledger's `transfer_import` transition records it durably.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fresh_start_reason: Option<String>,
 }
 
 /// [`TransferImportSummary::history`]'s entry shape — a copy of
@@ -768,6 +936,10 @@ pub struct CompleteStageRequest {
     #[serde(default)]
     pub completion_attempt_key: Option<String>,
     pub status: String,
+    /// The result message (spec §7). `summary` is the established spelling;
+    /// `message` is accepted as an alias. Its first line is the one-line
+    /// summary surfaces show; an empty one is refused.
+    #[serde(alias = "message")]
     pub summary: String,
     pub metadata: Option<serde_json::Value>,
     /// Remaining stages a planning stage publishes for its own task, in the
@@ -780,6 +952,18 @@ pub struct CompleteStageRequest {
     /// Required with `workflow_definition`; a stale one is a 409.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_definition: Option<serde_json::Value>,
+    /// Named artifact references the result carries (spec §7, §8): name →
+    /// a stored artifact's tree id in the task's repository, or a tagged
+    /// reference (`stored`, `commit`, `pr`). Stored content must resolve in
+    /// the task's artifact repository or the result is refused unrecorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifacts: Option<serde_json::Value>,
+    /// Named-exit routing (spec §5): one of the current stage's declared
+    /// exits, or `advance`. Omitted takes the default — `advance` on
+    /// success, park otherwise. Refused on a legacy-routed task. A session
+    /// names an exit, never a stage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -913,6 +1097,29 @@ pub struct TaskActionResponse {
     /// arguments can never read as a successful extension.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_extended: Option<bool>,
+    /// Set by `complete-stage` on a named-exit task: which exit the result
+    /// took and what happened to the task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<ResultRoutingStatus>,
+}
+
+/// Where a named-exit result sent the task (spec §5).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResultRoutingStatus {
+    /// The exit the result named, or `advance` when it named none.
+    pub exit: String,
+    /// `explicit` when the result named the exit, `default` when it did not.
+    pub exit_source: String,
+    /// The stage a loop exit leads to; absent for `advance`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<String>,
+    /// `advance` (the stage's transition policy decides whether the task
+    /// moves now or parks at a manual gate), `loop` (the task goes back to
+    /// `destination`), or `parked` (a non-success status, or an exhausted
+    /// destination budget: the result is recorded and the task waits).
+    pub outcome: String,
+    pub message: String,
 }
 
 /// The revision-round budget as it stands after a revision request.
@@ -1134,7 +1341,7 @@ impl MobileApi {
             .map(|item| {
                 let blocked_by_task_ids = self
                     ._db
-                    .list_open_task_blocker_ids(&item.id)
+                    .list_blocking_task_ids(&item.id)
                     .map_err(|e| format!("db error: {}", e))?;
                 let repo_name = repo_names.get(&item.repo_id).cloned();
                 let agent = self
@@ -1202,7 +1409,7 @@ impl MobileApi {
         };
         let blocked_by_task_ids = self
             ._db
-            .list_open_task_blocker_ids(&item.id)
+            .list_blocking_task_ids(&item.id)
             .map_err(|e| format!("db error: {}", e))?;
         let child_task_ids = self
             ._db
@@ -1255,6 +1462,61 @@ impl MobileApi {
             },
         );
         detail.runtime_settled = runtime_settled;
+        if let Some(run) = detail.latest_run.as_mut() {
+            run.session = self
+                ._db
+                .stage_run_session(&run.id)
+                .map_err(|e| format!("db error: {e}"))?;
+            run.commit_step = self
+                ._db
+                .transition_commit(&run.id)
+                .map_err(|e| format!("db error: {e}"))?
+                .map(TransitionCommitStep::from);
+        }
+        detail.session_history = self
+            ._db
+            .list_stage_runs_for_task(&task_id)
+            .map_err(|e| format!("db error: {e}"))?
+            .into_iter()
+            .map(|run| -> Result<Option<TaskSessionHistoryEntry>, String> {
+                let session = self
+                    ._db
+                    .stage_run_session(&run.id)
+                    .map_err(|e| format!("db error: {e}"))?;
+                Ok(session.map(|session| TaskSessionHistoryEntry {
+                    run_id: run.id,
+                    stage: run.stage,
+                    status: run.status,
+                    started_at: run.started_at,
+                    finished_at: run.finished_at,
+                    session,
+                }))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+        detail.stage_dependencies = self
+            ._db
+            .list_stage_edges_into(&task_id)
+            .map_err(|e| format!("db error: {e}"))?
+            .into_iter()
+            .map(TaskStageDependency::from)
+            .collect();
+        detail.dependency_wait = self
+            ._db
+            .dependency_wait(&task_id)
+            .map_err(|e| format!("db error: {e}"))?
+            .map(|wait| TaskDependencyWait {
+                from_stage: wait.from_stage,
+                to_stage: wait.to_stage,
+            });
+        let roleless_current_stage =
+            crate::task_creator::current_stage_is_roleless(&self._db, &task_id).unwrap_or(false);
+        detail.gate_parked = detail
+            .latest_run
+            .as_ref()
+            .map(|run| roleless_current_stage && run.status == "running" && run.agent.is_none());
         Ok(Some(detail))
     }
 
@@ -1404,6 +1666,14 @@ impl MobileApi {
         else {
             return Ok(None);
         };
+        // A child is created in its parent's repository, so bare artifact ids
+        // in a child's latest result resolve against the parent's repo.
+        let repo_id = self
+            ._db
+            .get_pipeline_item(&task_id)
+            .map_err(|e| format!("db error: {}", e))?
+            .map(|item| item.repo_id)
+            .unwrap_or_default();
         let children = self
             ._db
             .list_pipeline_item_children(&task_id)
@@ -1423,7 +1693,7 @@ impl MobileApi {
                     legacy_pipeline_name: child.pipeline,
                     created_at: child.created_at,
                     closed_at: child.closed_at,
-                    latest_run: latest_run.map(map_task_latest_run),
+                    latest_run: latest_run.map(|run| map_task_latest_run(run, &repo_id)),
                 })
             })
             .collect::<Result<Vec<_>, String>>()
@@ -1600,6 +1870,9 @@ fn map_task_detail(
     repo: Option<&crate::db::Repo>,
     relations: TaskDetailRelations,
 ) -> TaskDetail {
+    // Captured before `item`'s fields move: bare artifact ids in the latest
+    // result resolve against the task's own repository.
+    let latest_run_repo_id = item.repo_id.clone();
     let TaskDetailRelations {
         worktree_path,
         latest_run,
@@ -1724,7 +1997,7 @@ fn map_task_detail(
         commits_behind: git_state.commits_behind,
         base_ref_unresolved: git_state.base_ref_unresolved.then_some(true),
         dirty: git_state.dirty,
-        latest_run: latest_run.map(map_task_latest_run),
+        latest_run: latest_run.map(|run| map_task_latest_run(run, &latest_run_repo_id)),
         revision_rounds: item.revision_rounds,
         revision_limit,
         delivered_input_count,
@@ -1736,6 +2009,14 @@ fn map_task_detail(
         ports: (!ports.is_empty()).then_some(ports),
         provider_rejection,
         provider_capacity_notice,
+        // Filled in by `get_task` after this builder returns, the same way
+        // `latest_run.session`/`latest_run.commit_step` are: they need the
+        // task id this function only has through `item`, already consumed
+        // above.
+        session_history: Vec::new(),
+        stage_dependencies: Vec::new(),
+        dependency_wait: None,
+        gate_parked: None,
     }
 }
 
@@ -1748,7 +2029,41 @@ fn spawn_option_from_json(raw: Option<&str>, key: &str) -> Option<String> {
         .and_then(|options| options.get(key)?.as_str().map(str::to_string))
 }
 
-fn map_task_latest_run(run: crate::db::StageRun) -> TaskLatestRun {
+/// The artifact references a result names, as the gate views show them.
+///
+/// The stage run stores the caller's raw `artifacts` payload (it is part of
+/// the result's replay identity), so this normalizes it with the binder's own
+/// rule (`bind_result_artifacts`): a bare tree id is a stored artifact in the
+/// task's repository, and an object is a tagged reference. Each entry is read
+/// on its own, so one unreadable entry never hides the rest.
+fn project_result_artifacts(
+    raw: &serde_json::Value,
+    repo_id: &str,
+) -> Option<std::collections::BTreeMap<String, crate::artifacts::types::ArtifactReference>> {
+    use crate::artifacts::types::{ArtifactContentKind, ArtifactReference};
+    let entries = raw.as_object()?;
+    Some(
+        entries
+            .iter()
+            .filter_map(|(name, value)| {
+                let reference = match value {
+                    serde_json::Value::String(id) => ArtifactReference::Stored {
+                        repo_id: repo_id.to_string(),
+                        artifact_id: id.clone(),
+                        kind: ArtifactContentKind::Document,
+                    },
+                    serde_json::Value::Object(_) => {
+                        serde_json::from_value::<ArtifactReference>(value.clone()).ok()?
+                    }
+                    _ => return None,
+                };
+                Some((name.clone(), reference))
+            })
+            .collect(),
+    )
+}
+
+fn map_task_latest_run(run: crate::db::StageRun, repo_id: &str) -> TaskLatestRun {
     let recorded = run
         .result
         .as_deref()
@@ -1761,6 +2076,15 @@ fn map_task_latest_run(run: crate::db::StageRun) -> TaskLatestRun {
         .and_then(|result| result.get("status"))
         .and_then(serde_json::Value::as_str)
         .map(str::to_string);
+    let exit = recorded
+        .as_ref()
+        .and_then(|result| result.get("exit"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let artifacts = recorded
+        .as_ref()
+        .and_then(|result| result.get("artifacts"))
+        .and_then(|artifacts| project_result_artifacts(artifacts, repo_id));
     let summary = recorded
         .and_then(|result| {
             result
@@ -1777,15 +2101,21 @@ fn map_task_latest_run(run: crate::db::StageRun) -> TaskLatestRun {
         kind: run.kind,
         trigger: run.trigger,
         provider_override: run.provider_override,
+        entry_channel_identity: run.entry_channel_identity,
+        result_provenance: run.result_provenance,
         agent: run.agent,
         agent_provider: run.agent_provider,
         model: run.model,
         status: run.status,
         verdict,
         summary,
+        exit,
+        artifacts,
         resumed_from_run_id: run.resumed_from_run_id,
         resume_fallback_reason: run.resume_fallback_reason,
         finished_at: run.finished_at,
+        session: None,
+        commit_step: None,
     }
 }
 
@@ -2079,6 +2409,11 @@ pub fn build_mobile_server_status(
         pairing_code,
         ksp_stream_version: Some(2),
         task_input_attachment_version: Some(TASK_INPUT_ATTACHMENT_VERSION),
+        stage_dependencies_version: Some(kanna_tool_catalog::STAGE_DEPENDENCIES_VERSION),
+        subtask_joins_version: Some(kanna_tool_catalog::SUBTASK_JOINS_VERSION),
+        task_state_transfer_version: Some(
+            crate::transfer_engine::payload::TASK_STATE_VERSION as u8,
+        ),
         channel_public_key: None,
         secure_channel_version: None,
         agent_providers: Some(crate::agent_inventory::installed_agent_providers()),
@@ -2125,12 +2460,125 @@ mod tests {
             completion_transition: None,
             trigger: "operator".into(),
             provider_override: None,
+            entry_channel_identity: Default::default(),
+            result_provenance: None,
             started_at: "2026-09-12 00:00:00".into(),
             finished_at: None,
         };
-        let result = serde_json::to_value(super::map_task_latest_run(run)).unwrap();
+        let result = serde_json::to_value(super::map_task_latest_run(run, "repo-1")).unwrap();
         assert_eq!(result["agentProvider"], "opencode");
         assert_eq!(result["model"], "local/Qwen-Coder");
+    }
+
+    fn base_run(result: Option<String>) -> crate::db::StageRun {
+        crate::db::StageRun {
+            id: "run-one".into(),
+            task_id: "task-one".into(),
+            stage: "review".into(),
+            kind: "main".into(),
+            agent: None,
+            agent_provider: None,
+            model: None,
+            effort: None,
+            status: "failed".into(),
+            result,
+            feedback: None,
+            session_id: None,
+            provider_session_id: None,
+            cwd: None,
+            no_work_termination: None,
+            replaces_run_id: None,
+            resumed_from_run_id: None,
+            resume_fallback_reason: None,
+            completion_transition: None,
+            trigger: "operator".into(),
+            provider_override: None,
+            entry_channel_identity: Default::default(),
+            result_provenance: None,
+            started_at: "2026-09-12 00:00:00".into(),
+            finished_at: Some("2026-09-12 00:05:00".into()),
+        }
+    }
+
+    #[test]
+    fn latest_run_surfaces_exit_and_artifacts_from_the_recorded_result() {
+        let run = base_run(Some(
+            json!({
+                "status": "declined",
+                "summary": "Already fixed upstream.",
+                "exit": "needs-followup",
+                "artifacts": {
+                    "review-notes": {
+                        "type": "stored",
+                        "repoId": "repo-1",
+                        "artifactId": "abc123",
+                        "kind": "report",
+                    },
+                },
+            })
+            .to_string(),
+        ));
+        let mapped = super::map_task_latest_run(run, "repo-1");
+        assert_eq!(mapped.verdict.as_deref(), Some("declined"));
+        assert_eq!(mapped.summary.as_deref(), Some("Already fixed upstream."));
+        assert_eq!(mapped.exit.as_deref(), Some("needs-followup"));
+        let artifacts = mapped.artifacts.expect("artifacts present");
+        assert_eq!(artifacts.len(), 1);
+        match &artifacts["review-notes"] {
+            crate::artifacts::types::ArtifactReference::Stored {
+                repo_id,
+                artifact_id,
+                ..
+            } => {
+                assert_eq!(repo_id, "repo-1");
+                assert_eq!(artifact_id, "abc123");
+            }
+            other => panic!("expected a stored reference, got {other:?}"),
+        }
+    }
+
+    /// Review item 3: a bare tree id is the documented spelling the binder
+    /// accepts, so the gate views must show it as a stored reference in the
+    /// task's repository — and one unreadable entry must not hide the rest.
+    #[test]
+    fn latest_run_projects_a_bare_tree_id_as_a_stored_reference() {
+        let tree = "0123456789abcdef0123456789abcdef01234567";
+        let run = base_run(Some(
+            json!({
+                "status": "success",
+                "summary": "Mockup ready.",
+                "artifacts": {
+                    "mockup": tree,
+                    "spec": { "type": "commit", "repoId": "repo-1", "sha": tree },
+                    "broken": 7,
+                },
+            })
+            .to_string(),
+        ));
+        let mapped = super::map_task_latest_run(run, "repo-1");
+        let artifacts = serde_json::to_value(mapped.artifacts.expect("artifacts")).unwrap();
+        assert_eq!(
+            artifacts["mockup"],
+            json!({
+                "type": "stored",
+                "repoId": "repo-1",
+                "artifactId": tree,
+                "kind": "document",
+            })
+        );
+        assert_eq!(artifacts["spec"]["type"], "commit");
+        assert!(artifacts.get("broken").is_none(), "{artifacts}");
+    }
+
+    #[test]
+    fn latest_run_omits_exit_and_artifacts_when_the_result_names_none() {
+        let run = base_run(Some(
+            json!({ "status": "success", "summary": "Done." }).to_string(),
+        ));
+        let mapped = super::map_task_latest_run(run, "repo-1");
+        assert_eq!(mapped.verdict.as_deref(), Some("success"));
+        assert!(mapped.exit.is_none());
+        assert!(mapped.artifacts.is_none());
     }
 
     #[test]

@@ -16,6 +16,7 @@ async fn request_revision_route_uses_revision_requester() {
                 follow_task: None,
                 revision_budget: None,
                 workflow_extended: None,
+                routing: None,
             })
         }),
     );
@@ -544,23 +545,24 @@ async fn automatic_revision_completion_dispatches_commit_post_through_http_route
     drop(db);
 
     let app = super::router(Arc::new(super::AppState::new(config.clone())));
-    let revision_response = app
-        .clone()
-        .oneshot(
-            Request::post("/v1/tasks/review-task/actions/request-revision")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "targetStage": "in progress",
-                        "summary": "missing server coverage",
-                        "prompt": "Add the missing server coverage."
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
+    let mut revision_request = Request::post("/v1/tasks/review-task/actions/request-revision")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "targetStage": "in progress",
+                "summary": "missing server coverage",
+                "prompt": "Add the missing server coverage."
+            })
+            .to_string(),
+        ))
         .unwrap();
+    revision_request
+        .extensions_mut()
+        .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            50_000,
+        ))));
+    let revision_response = app.clone().oneshot(revision_request).await.unwrap();
     assert_eq!(revision_response.status(), StatusCode::OK);
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(10), sync_rx.recv())
@@ -583,6 +585,53 @@ async fn automatic_revision_completion_dispatches_commit_post_through_http_route
     let revision_run = revision_run.expect("revision stage run was not persisted");
     assert_eq!(revision_run.kind, "main");
     assert_eq!(revision_run.completion_transition.as_deref(), Some("auto"));
+    // The backward transition carries the loopback caller's channel; the
+    // review verdict it recorded carries the request's declared origin
+    // (omitted, so the route's `agent` default) on that same channel.
+    let loopback = crate::mutation_provenance::ChannelIdentity::LocalProcess {
+        evidence: crate::mutation_provenance::LocalProcessEvidence::Loopback,
+    };
+    assert_eq!(revision_run.entry_channel_identity, loopback);
+    let review_result = db
+        .stage_run("review-run")
+        .unwrap()
+        .unwrap()
+        .result_provenance
+        .expect("the review verdict's provenance");
+    assert_eq!(review_result.declared_role, "agent");
+    assert_eq!(review_result.channel_identity, loopback);
+    // The run row lands before the stage move commits; wait for the move.
+    let mut events = Vec::new();
+    for _ in 0..100 {
+        events = db
+            .list_task_events(
+                &crate::db::TaskEventScope::Tasks(vec!["review-task".to_string()]),
+                0,
+                i64::MAX,
+                100,
+            )
+            .unwrap();
+        if events
+            .iter()
+            .any(|event| event.event_type == "stage.changed")
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let requested = events
+        .iter()
+        .find(|event| event.event_type == "task.revision_requested")
+        .expect("task.revision_requested event");
+    assert_eq!(requested.payload["declaredRole"], "agent");
+    assert_eq!(requested.payload["origin"], "agent");
+    assert_eq!(requested.payload["channelIdentity"], loopback.to_json());
+    let backward = events
+        .iter()
+        .find(|event| event.event_type == "stage.changed")
+        .expect("stage.changed event");
+    assert_eq!(backward.payload["toStage"], "in progress");
+    assert_eq!(backward.payload["channelIdentity"], loopback.to_json());
 
     let completion_response = app
         .oneshot(
@@ -625,6 +674,12 @@ async fn automatic_revision_completion_dispatches_commit_post_through_http_route
         post_run.is_some(),
         "automatic completion did not start the commit post"
     );
+    // The post the verdict triggered is the engine applying the stage's
+    // policy: it records the server's channel, not the completing caller's.
+    assert_eq!(
+        post_run.unwrap().entry_channel_identity,
+        crate::mutation_provenance::ChannelIdentity::Server
+    );
     let revision_run = db
         .list_stage_runs_for_task("review-task")
         .unwrap()
@@ -632,6 +687,14 @@ async fn automatic_revision_completion_dispatches_commit_post_through_http_route
         .find(|run| run.id == revision_run.id)
         .unwrap();
     assert_eq!(revision_run.status, "succeeded");
+    // An in-process router call proves no channel: the result is the
+    // agent-convention role on an unknown channel.
+    let completion = revision_run.result_provenance.expect("result provenance");
+    assert_eq!(completion.declared_role, "agent");
+    assert_eq!(
+        completion.channel_identity,
+        crate::mutation_provenance::ChannelIdentity::Unknown
+    );
     let item = db.get_pipeline_item("review-task").unwrap().unwrap();
     assert_eq!(item.stage.as_deref(), Some("in progress"));
     assert_eq!(item.activity.as_deref(), Some("working"));

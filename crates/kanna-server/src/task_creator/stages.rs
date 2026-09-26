@@ -2,8 +2,9 @@ use crate::config::Config;
 use crate::db::{Db, StageProviderOverride, StageTrigger, TaskStageSource};
 
 use super::definitions::{
-    parse_stored_workflow_definition, post_as_stage, resolve_stage_position, RepoDefinitions,
-    StagePosition, WorkflowDefinition, WorkflowStage, WorkflowStageTransition,
+    describe_stage_exits, parse_stored_workflow_definition, parse_workflow_definition,
+    post_as_stage, resolve_stage_position, RepoDefinitions, StagePosition, WorkflowDefinition,
+    WorkflowStage, WorkflowStageTransition, ADVANCE_EXIT,
 };
 use super::prepare_stage_run_spawn;
 use super::prompt::{
@@ -11,17 +12,18 @@ use super::prompt::{
     build_revision_task_prompt, build_target_stage_prompt_parts,
     build_target_stage_prompt_with_instructions, RevisionRound, StagePromptParts,
 };
-use super::resume::{prepare_resume_workspace, same_cwd};
+use super::resume::{prepare_resume_session, prepare_resume_workspace, same_cwd};
+use super::session::{self, RevisitPlan};
 use super::types::{
     PreparedPostDispatch, PreparedRunWorkspace, PreparedStageRunSpawn, PreparedStageTransition,
-    RunWorkspaceSpec,
+    RevisitResume, RunWorkspaceSpec, TransitionCommitRequest,
 };
-use super::worktree::next_fork_branch;
-use super::worktree::resolve_current_source_worktree_branch;
+use super::worktree::allocate_task_branch;
 use super::AgentInstructions;
 use super::SpawnAgentOverrides;
 use super::FALLBACK_WORKFLOW_NAME;
 use crate::db::Repo;
+use crate::db::TransitionExit;
 
 pub(super) const REREVIEW_VERDICT_COMPLETION_INSTRUCTION: &str = "Your run is not complete until you have called `kanna_complete_stage` or `kanna_request_revision`; a summary without one of these is an unfinished review.";
 
@@ -63,15 +65,17 @@ fn load_stage_identity(db: &Db, source_task_id: &str) -> Result<LoadedStageIdent
 
 /// Load everything a stage preparation needs, with the task's workspace
 /// identity first reconciled onto the branch that actually holds its committed
-/// work.
+/// work — unless the triggering result recorded the input commit, which is
+/// then the base (see `session::stage_input`).
 ///
-/// Every fork below cuts from `source_task.branch`, so that field has to be
-/// the task's real committed tip before anything else reads it. A revision
-/// round whose commit landed on a workspace the field no longer named used to
-/// be dropped by the next fork, and the next reviewer re-raised the same
-/// finding — see `work_tip` and its regression tests.
+/// A fork without a recorded input cuts from `source_task.branch`, so that
+/// field has to be the task's real committed tip before anything else reads
+/// it. A revision round whose commit landed on a workspace the field no
+/// longer named used to be dropped by the next fork, and the next reviewer
+/// re-raised the same finding — see `work_tip` and its regression tests.
 fn load_stage_transition_source(
     db: &Db,
+    config: &Config,
     identity: LoadedStageIdentity,
     source_task_id: &str,
 ) -> Result<LoadedStageTransitionSource, String> {
@@ -79,7 +83,15 @@ fn load_stage_transition_source(
         mut source_task,
         repo,
     } = identity;
-    if source_task.closed_at.is_none() {
+    // When the triggering result recorded the commit the next session takes
+    // (spec §6), that commit is the base and newest-branch discovery must not
+    // move the task. Discovery remains the safety net only for a transition
+    // with no recorded input, which is every transition from before the
+    // ledger recorded one.
+    let recorded_input = source_task.stage.as_deref().is_some_and(|stage| {
+        session::stage_input(config, db, &repo.path, source_task_id, stage).is_some()
+    });
+    if source_task.closed_at.is_none() && !recorded_input {
         super::work_tip::reconcile_task_work_branch(
             db,
             &repo.path,
@@ -163,7 +175,18 @@ pub(crate) fn prepare_advance_stage_for_api_with_intent(
     if open_blockers > 0 {
         return Err(format!("task is blocked: {}", source_task_id));
     }
-    let loaded = load_stage_transition_source(db, identity, source_task_id)?;
+    // A parent waiting on its subtask join (T5) does not progress until
+    // every child in it has resolved.
+    let waiting_children = db
+        .unresolved_join_children(source_task_id)
+        .map_err(|e| format!("db error: {}", e))?;
+    if !waiting_children.is_empty() {
+        return Err(subtask_join_pending_error(
+            source_task_id,
+            &waiting_children,
+        ));
+    }
+    let loaded = load_stage_transition_source(db, config, identity, source_task_id)?;
     let context = StageTransitionContext {
         source_task: &loaded.source_task,
         source_task_id,
@@ -180,10 +203,11 @@ pub(crate) fn prepare_advance_stage_for_api_with_intent(
         // the post is the current context, so advancing swaps past its owner.
         StagePosition::Post { owner } => {
             prepare_swap_to_index(db, config, &context, owner + 1, trigger, provider_override)
+                .map(|transition| with_operator_advance_exit(&loaded.workflow, transition))
         }
         StagePosition::Stage(index) => {
             let stage = &loaded.workflow.stages[index];
-            if let Some(post) = &stage.post {
+            if let Some(post) = stage.transition_post() {
                 let latest = db
                     .latest_stage_run(source_task_id)
                     .map_err(|e| format!("db error: {}", e))?;
@@ -225,12 +249,33 @@ pub(crate) fn prepare_advance_stage_for_api_with_intent(
                             provider_override.provider,
                         ));
                     }
-                    return prepare_post_dispatch(db, config, &context, index, trigger);
+                    // A commit step fires the transition this advance asked
+                    // for, so it carries that transition's exit.
+                    return prepare_post_dispatch(db, config, &context, index, trigger).map(
+                        |transition| with_operator_advance_exit(&loaded.workflow, transition),
+                    );
                 }
             }
             prepare_swap_to_index(db, config, &context, index + 1, trigger, provider_override)
+                .map(|transition| with_operator_advance_exit(&loaded.workflow, transition))
         }
     }
+}
+
+/// An explicit advance of a named-exit task is a person or manager operating
+/// the stage's gate: the transition takes `advance`, and no session chose it.
+fn with_operator_advance_exit(
+    workflow: &WorkflowDefinition,
+    mut transition: PreparedStageTransition,
+) -> PreparedStageTransition {
+    if workflow.routes_by_exits() {
+        transition.set_entry_exit(Some(TransitionExit {
+            exit: Some(ADVANCE_EXIT.to_string()),
+            source: TransitionExit::OPERATOR.to_string(),
+            budget: None,
+        }));
+    }
+    transition
 }
 
 /// Routes a stage-run completion verdict (`complete-stage` with
@@ -255,9 +300,12 @@ pub(crate) fn prepare_stage_completion_for_api(
         finished_run_kind,
         completion_transition,
         None,
+        None,
     )
 }
 
+/// `exit` is the exit the completion took; it is only kept so a completion
+/// parked on stage dependency edges replays with it.
 pub(crate) fn prepare_stage_completion_for_api_with_trigger(
     db: &Db,
     config: &Config,
@@ -265,12 +313,25 @@ pub(crate) fn prepare_stage_completion_for_api_with_trigger(
     finished_run_kind: Option<&str>,
     completion_transition: Option<&str>,
     finished_run_trigger: Option<&str>,
+    exit: Option<&crate::db::TransitionExit>,
 ) -> Result<Option<PreparedStageTransition>, String> {
     let identity = load_stage_identity(db, source_task_id)?;
     if identity.source_task.closed_at.is_some() {
         return Ok(None);
     }
-    let loaded = load_stage_transition_source(db, identity, source_task_id)?;
+    // A completion replayed later (a parked dependency wait, an owed ledger
+    // continuation) is progression too: a join the task created meanwhile
+    // (T5) holds it until every child has resolved.
+    let waiting_children = db
+        .unresolved_join_children(source_task_id)
+        .map_err(|e| format!("db error: {}", e))?;
+    if !waiting_children.is_empty() {
+        return Err(subtask_join_pending_error(
+            source_task_id,
+            &waiting_children,
+        ));
+    }
+    let loaded = load_stage_transition_source(db, config, identity, source_task_id)?;
     let context = StageTransitionContext {
         source_task: &loaded.source_task,
         source_task_id,
@@ -285,27 +346,31 @@ pub(crate) fn prepare_stage_completion_for_api_with_trigger(
     match position {
         // Legacy in-flight task parked at a folded post name: success means
         // the post finished, which always advances past its owner.
-        StagePosition::Post { owner } => prepare_swap_to_index(
+        StagePosition::Post { owner } => swap_or_wait_on_dependencies(
             db,
             config,
             &context,
             owner + 1,
             stage_trigger_from_stored(finished_run_trigger),
-            None,
-        )
-        .map(Some),
+            finished_run_kind,
+            completion_transition,
+            finished_run_trigger,
+            exit,
+        ),
         StagePosition::Stage(index) => {
             let stage = &loaded.workflow.stages[index];
             if finished_run_kind == Some("post") {
-                return prepare_swap_to_index(
+                return swap_or_wait_on_dependencies(
                     db,
                     config,
                     &context,
                     index + 1,
                     stage_trigger_from_stored(finished_run_trigger),
-                    None,
-                )
-                .map(Some);
+                    finished_run_kind,
+                    completion_transition,
+                    finished_run_trigger,
+                    exit,
+                );
             }
             let transition = match completion_transition {
                 Some("manual") => WorkflowStageTransition::Manual,
@@ -318,7 +383,7 @@ pub(crate) fn prepare_stage_completion_for_api_with_trigger(
             if transition != WorkflowStageTransition::Auto {
                 return Ok(None);
             }
-            if stage.post.is_some() {
+            if stage.transition_post().is_some() {
                 return prepare_post_dispatch(db, config, &context, index, StageTrigger::Auto)
                     .map(Some);
             }
@@ -328,13 +393,152 @@ pub(crate) fn prepare_stage_completion_for_api_with_trigger(
                 // final stage.
                 return Ok(None);
             }
-            prepare_swap_to_index(db, config, &context, index + 1, StageTrigger::Auto, None)
-                .map(Some)
+            swap_or_wait_on_dependencies(
+                db,
+                config,
+                &context,
+                index + 1,
+                StageTrigger::Auto,
+                finished_run_kind,
+                completion_transition,
+                finished_run_trigger,
+                exit,
+            )
         }
     }
 }
 
+/// Swap to `next_index`, gated on the stage dependency edges into that stage
+/// (T4): with any unsatisfied the move is refused as blocked, and otherwise
+/// the new session is told which upstream results held it. Gating never
+/// changes the new stage's base.
 fn prepare_swap_to_index(
+    db: &Db,
+    config: &Config,
+    context: &StageTransitionContext<'_>,
+    next_index: usize,
+    trigger: StageTrigger,
+    provider_override: Option<StageProviderOverride>,
+) -> Result<PreparedStageTransition, String> {
+    let Some(next_stage) = context.workflow.stages.get(next_index) else {
+        return prepare_swap_to_index_ungated(
+            db,
+            config,
+            context,
+            next_index,
+            trigger,
+            provider_override,
+        );
+    };
+    let pending = db
+        .unsatisfied_stage_edges_into(context.source_task_id, &next_stage.name)
+        .map_err(|e| format!("db error: {}", e))?;
+    if !pending.is_empty() {
+        return Err(stage_dependencies_pending_error(
+            context.source_task_id,
+            &next_stage.name,
+            &pending,
+        ));
+    }
+    // The session is told these inputs; the entry that commits this
+    // transition records exactly them, not a result that lands meanwhile.
+    // Selected and reserved in one immediate transaction.
+    let inputs = db
+        .select_and_reserve_stage_edge_inputs(context.source_task_id, &next_stage.name, false)
+        .map_err(|e| format!("db error: {}", e))?
+        .unwrap_or_default();
+    crate::task_store::with_dependency_inputs(
+        inputs
+            .iter()
+            .map(crate::db::ConsumedDependency::to_session_input)
+            .collect(),
+        || {
+            prepare_swap_to_index_ungated(
+                db,
+                config,
+                context,
+                next_index,
+                trigger,
+                provider_override,
+            )
+        },
+    )
+}
+
+/// Refusal of a parent's progression while children of its subtask joins
+/// have not resolved (T5). Starts with `task is blocked:` so every route
+/// answers it as a conflict.
+pub(crate) fn subtask_join_pending_error(task_id: &str, children: &[String]) -> String {
+    format!(
+        "task is blocked: {task_id} is waiting on its subtask join; these children have not \
+         recorded a result yet: {}. Their results are delivered to this task's inputs as they \
+         arrive. A child whose session died stays unresolved until it is resumed, rerun or \
+         closed (kanna_get_task_joins shows which)",
+        children.join(", ")
+    )
+}
+
+fn stage_dependencies_pending_error(
+    task_id: &str,
+    stage: &str,
+    pending: &[crate::db::StageEdge],
+) -> String {
+    let edges = pending
+        .iter()
+        .map(|edge| format!("{} ({})", edge.upstream_task_id, edge.upstream_stage))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("task is blocked: {task_id} cannot enter stage '{stage}' until its dependencies leave their stages: {edges}")
+}
+
+/// A completion's automatic swap to `next_index`, or — when edges into that
+/// stage are not satisfied yet — a recorded wait that replays this
+/// completion once they are. The task parks in its stage meanwhile.
+#[allow(clippy::too_many_arguments)]
+fn swap_or_wait_on_dependencies(
+    db: &Db,
+    config: &Config,
+    context: &StageTransitionContext<'_>,
+    next_index: usize,
+    trigger: StageTrigger,
+    finished_run_kind: Option<&str>,
+    completion_transition: Option<&str>,
+    finished_run_trigger: Option<&str>,
+    exit: Option<&crate::db::TransitionExit>,
+) -> Result<Option<PreparedStageTransition>, String> {
+    if let Some(next_stage) = context.workflow.stages.get(next_index) {
+        let pending = db
+            .unsatisfied_stage_edges_into(context.source_task_id, &next_stage.name)
+            .map_err(|e| format!("db error: {}", e))?;
+        if !pending.is_empty() {
+            let from_stage = context.source_task.stage.clone().unwrap_or_default();
+            db.record_dependency_wait(
+                context.source_task_id,
+                &from_stage,
+                &next_stage.name,
+                &serde_json::json!({
+                    "kind": finished_run_kind,
+                    "completionTransition": completion_transition,
+                    "trigger": finished_run_trigger,
+                    "exit": exit,
+                }),
+            )
+            .map_err(|e| format!("db error: {}", e))?;
+            log::info!(
+                "{}",
+                stage_dependencies_pending_error(
+                    context.source_task_id,
+                    &next_stage.name,
+                    &pending
+                )
+            );
+            return Ok(None);
+        }
+    }
+    prepare_swap_to_index(db, config, context, next_index, trigger, None).map(Some)
+}
+
+fn prepare_swap_to_index_ungated(
     db: &Db,
     config: &Config,
     context: &StageTransitionContext<'_>,
@@ -380,6 +584,44 @@ fn prepare_swap_to_index(
         .stage
         .as_deref()
         .ok_or_else(|| format!("task has no stage: {}", context.source_task_id))?;
+    if context.workflow.is_roleless_stage(next_stage) {
+        if let Some(provider_override) = provider_override {
+            return Err(format!(
+                "cannot apply a provider override for the next stage of {}: stage '{}' has no \
+                 role and runs no agent. Requested provider: {}.",
+                context.source_task_id, next_stage.name, provider_override.provider,
+            ));
+        }
+        let branch = context
+            .source_task
+            .branch
+            .as_deref()
+            .ok_or_else(|| format!("task has no branch: {}", context.source_task_id))?;
+        let current_worktree =
+            session::current_workspace_path(db, &context.repo.path, context.source_task_id, branch);
+        let workspace = fork_spec(
+            db,
+            config,
+            context,
+            Some(&current_worktree),
+            &next_stage.name,
+            None,
+        )?;
+        return super::prepare_gate_entry(
+            db,
+            config,
+            context.repo,
+            context.definitions,
+            context.source_task_id,
+            context.workflow,
+            next_stage,
+            workspace,
+            branch,
+            from_stage,
+            trigger,
+        )
+        .map(|gate| PreparedStageTransition::Gate(Box::new(gate)));
+    }
     let prompt_suffix = if next_stage.agent.as_deref() == Some("review")
         && db
             .latest_stage_run_for_stage(context.source_task_id, &next_stage.name, "main")
@@ -430,7 +672,7 @@ fn prepare_post_dispatch(
     let completion_instruction = format!(
         "When this work is complete, record stage completion: call MCP `kanna_complete_stage {{\"task_id\": \"{task_id}\", \"status\": \"success\", \"summary\": \"...\"}}`; only if MCP tools are unavailable, fall back to `kanna-cli stage-complete --task-id \"{task_id}\" --status success --summary \"...\"`. Kanna will then advance this task's workflow."
     );
-    let (fallback, message) = prepare_stage_run_for_target_returning_prompt(
+    let (mut fallback, message) = prepare_stage_run_for_target_returning_prompt(
         db,
         config,
         context,
@@ -445,8 +687,18 @@ fn prepare_post_dispatch(
         None,
         trigger,
         None,
+        None,
     )?;
 
+    // `exit_commit` makes this the transition's commit step: the request is
+    // bound to whichever run delivers it (the live session's, or the fresh
+    // commit session's), and the exit is filled in by the caller that routed
+    // the transition.
+    let commit = owner.exit_commit.then(|| TransitionCommitRequest {
+        stage: owner.name.clone(),
+        exit: None,
+    });
+    fallback.transition_commit = commit.clone();
     Ok(PreparedStageTransition::Post(Box::new(
         PreparedPostDispatch {
             task_id: context.source_task_id.to_string(),
@@ -454,6 +706,7 @@ fn prepare_post_dispatch(
             message,
             run_stage,
             fallback,
+            commit,
         },
     )))
 }
@@ -493,6 +746,7 @@ fn prepare_stage_run_for_target(
         prompt_suffix,
         trigger,
         provider_override,
+        None,
     )
 }
 
@@ -511,6 +765,7 @@ fn prepare_stage_run_for_target_with_provider(
     prompt_suffix: Option<&str>,
     trigger: StageTrigger,
     provider_override: Option<StageProviderOverride>,
+    workspace: Option<RunWorkspaceSpec>,
 ) -> Result<PreparedStageRunSpawn, String> {
     prepare_stage_run_for_target_returning_prompt(
         db,
@@ -527,6 +782,7 @@ fn prepare_stage_run_for_target_with_provider(
         prompt_suffix,
         trigger,
         provider_override,
+        workspace,
     )
     .map(|(run, _)| run)
 }
@@ -547,30 +803,45 @@ fn prepare_stage_run_for_target_returning_prompt(
     prompt_suffix: Option<&str>,
     trigger: StageTrigger,
     provider_override: Option<StageProviderOverride>,
+    workspace: Option<RunWorkspaceSpec>,
 ) -> Result<(PreparedStageRunSpawn, String), String> {
     let source_task = context.source_task;
-    let source_branch =
-        resolve_current_source_worktree_branch(&context.repo.path, source_task.branch.as_deref());
+    let current_worktree = source_task.branch.as_deref().map(|branch| {
+        session::current_workspace_path(db, &context.repo.path, context.source_task_id, branch)
+    });
+    let source_branch = current_worktree
+        .as_deref()
+        .and_then(super::resume::current_branch)
+        .or_else(|| source_task.branch.clone());
     let prev_result = previous_stage_result(db, context.source_task_id, source_task)?;
     let prev_main_result = previous_main_stage_result(db, context.source_task_id)?;
     let plan_result = stamped_plan_result(db, context.source_task_id);
     let task_prompt = prompt_override
         .or(source_task.prompt.as_deref())
         .unwrap_or("");
-    // Stage transitions fork a fresh workspace from the task's committed
-    // tip, named `task-<taskid>-<n>` — the durable task id plus a workspace
-    // counter (N worktrees, N branches, one PR — the PR agent renames the
-    // final branch into something meaningful). Posts run inside the stage,
-    // so their fallback spawn keeps the stage's workspace.
-    let workspace_spec = if run_kind == "main" {
-        RunWorkspaceSpec::Fork {
-            branch: next_fork_branch(&context.repo.path, context.source_task_id)?,
-        }
-    } else {
-        RunWorkspaceSpec::Current
+    // Entering a stage forks a fresh workspace, named `task-<taskid>-<n>`
+    // — the durable task id plus the task's persisted branch counter (N
+    // worktrees, N branches, one PR — the PR agent renames the final branch
+    // into something meaningful). It starts at the commit the triggering
+    // result recorded; a task with no recorded input forks from its current
+    // workspace as before. Posts run inside the stage, so their fallback
+    // spawn keeps the stage's workspace. A loop back hands in its own
+    // revisit of the stage's retained directory.
+    let workspace_spec = match workspace {
+        Some(workspace) => workspace,
+        None if run_kind == "main" => fork_spec(
+            db,
+            config,
+            context,
+            current_worktree.as_deref(),
+            &target_stage.name,
+            None,
+        )?,
+        None => RunWorkspaceSpec::Current,
     };
     let prompt_branch = match &workspace_spec {
-        RunWorkspaceSpec::Fork { branch } => Some(branch.clone()),
+        RunWorkspaceSpec::Fork { branch, .. } => Some(branch.clone()),
+        RunWorkspaceSpec::Revisit(revisit) => Some(revisit.branch.clone()),
         _ => source_branch.clone(),
     };
     let StagePromptParts {
@@ -866,7 +1137,7 @@ pub(crate) fn prepare_revision_task_for_api(
     // round on nothing and silently loses the verdict that triggered it.
     let revision_feedback = resolve_revision_feedback(db, source_task_id, revision_prompt)?;
     let revision_prompt = revision_feedback.as_str();
-    let loaded = load_stage_transition_source(db, identity, source_task_id)?;
+    let loaded = load_stage_transition_source(db, config, identity, source_task_id)?;
     let context = StageTransitionContext {
         source_task: &loaded.source_task,
         source_task_id,
@@ -882,6 +1153,9 @@ pub(crate) fn prepare_revision_task_for_api(
     {
         StagePosition::Stage(index) => {
             let stage = loaded.workflow.stages[index].clone();
+            if loaded.workflow.is_roleless_stage(&stage) {
+                return Err(roleless_restart_refusal(&stage.name));
+            }
             let item_stage = stage.name.clone();
             (stage, item_stage, "main")
         }
@@ -896,17 +1170,59 @@ pub(crate) fn prepare_revision_task_for_api(
         }
     };
 
-    // Prefer resuming the target stage's previous agent session: it already
-    // holds the exploration and decision context the feedback refers to.
-    // Every failed precondition falls back to today's fresh-fork behavior.
-    let resume_fallback_reason = if run_kind == "main" {
-        match prepare_revision_resume(db, config, &context, &target_stage, revision_prompt, round)?
-        {
-            ResumePreparation::Resumed(prepared) => return Ok(*prepared),
-            ResumePreparation::Fallback(reason) => Some(reason),
+    // A loop back re-enters the stage's retained directory on a newly
+    // allocated branch (spec §6). There it prefers resuming the stage's
+    // previous agent session, which already holds the exploration and
+    // decision context the feedback refers to; without a transcript the
+    // session starts fresh in the same directory from the ledger. A
+    // directory that cannot be reused without moving what it holds is
+    // preserved, reported, and the stage forks fresh instead.
+    let (workspace, resume_fallback_reason) = if run_kind == "main" {
+        let current_worktree = loaded.source_task.branch.as_deref().map(|branch| {
+            session::current_workspace_path(db, &loaded.repo.path, source_task_id, branch)
+        });
+        let plan = session::plan_stage_revisit(
+            config,
+            db,
+            &loaded.repo.path,
+            source_task_id,
+            &target_stage.name,
+            current_worktree.as_deref().unwrap_or(&loaded.repo.path),
+        )?;
+        match plan {
+            RevisitPlan::Reuse(revisit) => {
+                match prepare_revision_resume(
+                    db,
+                    config,
+                    &context,
+                    &target_stage,
+                    revision_prompt,
+                    round,
+                    revisit,
+                )? {
+                    ResumePreparation::Resumed(prepared) => return Ok(*prepared),
+                    ResumePreparation::Fallback(reason, revisit) => {
+                        (Some(RunWorkspaceSpec::Revisit(*revisit)), Some(reason))
+                    }
+                }
+            }
+            RevisitPlan::Fresh { reason, report } => (
+                Some(fork_spec(
+                    db,
+                    config,
+                    &context,
+                    current_worktree.as_deref(),
+                    &target_stage.name,
+                    report,
+                )?),
+                Some(reason),
+            ),
         }
     } else {
-        Some("post runs do not have an independently resumable provider session".to_string())
+        (
+            None,
+            Some("post runs do not have an independently resumable provider session".to_string()),
+        )
     };
 
     // Fresh fallback: compose the original task prompt with the reviewer's
@@ -978,9 +1294,44 @@ pub(crate) fn prepare_revision_task_for_api(
         } else {
             None
         },
+        workspace,
     )?;
     prepared.resume_fallback_reason = resume_fallback_reason;
     Ok(prepared)
+}
+
+/// A fresh workspace for entering `stage`: the task's next counter branch,
+/// started at the recorded input commit when there is one. `report` carries
+/// what the caller already preserved; otherwise it is what the fork leaves
+/// behind in the task's current workspace.
+fn fork_spec(
+    db: &Db,
+    config: &Config,
+    context: &StageTransitionContext<'_>,
+    current_worktree: Option<&str>,
+    stage: &str,
+    report: Option<String>,
+) -> Result<RunWorkspaceSpec, String> {
+    let input = session::stage_input(
+        config,
+        db,
+        &context.repo.path,
+        context.source_task_id,
+        stage,
+    );
+    let report = report.or_else(|| {
+        input
+            .as_ref()
+            .zip(current_worktree)
+            .and_then(|(input, current)| {
+                session::fork_input_report(&context.repo.path, current, input)
+            })
+    });
+    Ok(RunWorkspaceSpec::Fork {
+        branch: allocate_task_branch(db, &context.repo.path, context.source_task_id)?,
+        start_point: input.map(|input| input.commit),
+        report,
+    })
 }
 
 /// Why a stage is being restarted in place, and whether the previous run's
@@ -1176,7 +1527,7 @@ fn prepare_stage_restart(
     if identity.source_task.closed_at.is_some() {
         return Err(format!("task is closed: {task_id}"));
     }
-    let loaded = load_stage_transition_source(db, identity, task_id)?;
+    let loaded = load_stage_transition_source(db, config, identity, task_id)?;
     let source_task = &loaded.source_task;
     let run = db
         .latest_stage_run(task_id)
@@ -1247,6 +1598,9 @@ fn prepare_stage_restart(
                 owner,
             ),
         };
+    if loaded.workflow.is_roleless_stage(&target_stage) {
+        return Err(roleless_restart_refusal(&target_stage.name));
+    }
     if run.kind != run_kind || run_owner != current_owner {
         return Err(format!(
             "latest interrupted run is not the task's current stage: {}",
@@ -1257,7 +1611,7 @@ fn prepare_stage_restart(
         .branch
         .as_deref()
         .ok_or_else(|| format!("task has no branch: {task_id}"))?;
-    let current_worktree = format!("{}/.kanna-worktrees/{branch}", loaded.repo.path);
+    let current_worktree = session::current_workspace_path(db, &loaded.repo.path, task_id, branch);
     let setup_pending = db
         .task_worktree_setup_pending(task_id)
         .map_err(|error| format!("db error: {error}"))?;
@@ -1274,6 +1628,7 @@ fn prepare_stage_restart(
         } else {
             RunWorkspaceSpec::Recreate {
                 branch: branch.to_string(),
+                worktree_path: current_worktree.clone(),
             }
         }
     };
@@ -1566,17 +1921,41 @@ fn prepare_stage_restart(
     // it and cannot carry this; without a separate pointer the chain back to a
     // recorded verdict breaks at the first fallback.
     prepared.replaces_run_id = Some(run.id.clone());
+    // A restarted commit step is the same operation: the replacement run
+    // takes over the one requested transition (the row is re-keyed to it when
+    // it is recorded), so its result settles that transition exactly once. A
+    // step that already settled authorizes nothing more.
+    if let Some(commit) = db
+        .task_transition_commit(&run.task_id, &run.id)
+        .map_err(|error| format!("db error: {error}"))?
+    {
+        if commit.state != crate::db::TransitionCommit::REQUESTED {
+            return Err(format!(
+                "run {} is the commit step of the transition out of '{}', which already \
+                 settled ({}); it is not restarted. Advance the task to request a new commit \
+                 step.",
+                commit.run_id, commit.stage, commit.state
+            ));
+        }
+        prepared.transition_commit = Some(TransitionCommitRequest {
+            stage: commit.stage,
+            exit: commit.exit,
+        });
+    }
     Ok(prepared)
 }
 
 enum ResumePreparation {
     Resumed(Box<PreparedStageRunSpawn>),
-    Fallback(String),
+    /// The conversation cannot be resumed; the session starts fresh in the
+    /// same revisited directory, whose branch is already reserved.
+    Fallback(String, Box<super::types::RevisitWorkspaceSpec>),
 }
 
 /// Try to prepare a revision as a resumed run of the target stage's previous
-/// provider session. Every unavailable precondition becomes a durable
-/// fresh-spawn reason on the replacement run.
+/// provider session, in the stage's revisited directory on its new branch.
+/// Every unavailable precondition becomes a durable fresh-spawn reason on the
+/// replacement run, which still starts in that directory.
 fn prepare_revision_resume(
     db: &Db,
     config: &Config,
@@ -1584,11 +1963,18 @@ fn prepare_revision_resume(
     target_stage: &WorkflowStage,
     revision_prompt: &str,
     round: Option<RevisionRound>,
+    mut revisit: super::types::RevisitWorkspaceSpec,
 ) -> Result<ResumePreparation, String> {
     let task_id = context.source_task_id;
-    let fall_back = |reason: &str| {
-        log::info!("revision resume unavailable for task {task_id}: {reason}; forking fresh");
-        Ok(ResumePreparation::Fallback(reason.to_string()))
+    let fall_back = |reason: &str, revisit: super::types::RevisitWorkspaceSpec| {
+        log::info!(
+            "revision resume unavailable for task {task_id}: {reason}; starting fresh in {}",
+            revisit.worktree_path
+        );
+        Ok(ResumePreparation::Fallback(
+            reason.to_string(),
+            Box::new(revisit),
+        ))
     };
 
     let run = match db
@@ -1596,34 +1982,42 @@ fn prepare_revision_resume(
         .map_err(|e| format!("db error: {}", e))?
     {
         Some(run) => run,
-        None => return fall_back("no stage run recorded a provider session"),
+        None => return fall_back("no stage run recorded a provider session", revisit),
     };
     if db
         .stage_run_workflow_superseded(task_id, &run.id)
         .map_err(|error| format!("db error: {error}"))?
     {
-        return fall_back("pinned workflow execution binding changed");
+        return fall_back("pinned workflow execution binding changed", revisit);
+    }
+    // Provider transcripts are keyed by working directory, so only a
+    // conversation held in this very directory can continue here.
+    if !run
+        .cwd
+        .as_deref()
+        .is_some_and(|cwd| same_cwd(cwd, &revisit.worktree_path))
+    {
+        return fall_back(
+            "the stage's latest conversation ran in a different directory",
+            revisit,
+        );
     }
     let source_task = context.source_task;
-    let Some(current_branch_name) = source_task.branch.as_deref() else {
-        return fall_back("task has no branch");
-    };
-    let current_worktree = format!(
-        "{}/.kanna-worktrees/{}",
-        context.repo.path, current_branch_name
-    );
-    let (provider, resume_workspace) = match prepare_resume_workspace(
+    let (provider, provider_session_id) = match prepare_resume_session(
         run.agent_provider.as_deref(),
         source_task.agent_type.as_deref(),
-        run.cwd.as_deref(),
+        &revisit.worktree_path,
         run.provider_session_id.as_deref(),
-        &run.id,
-        &current_worktree,
     ) {
         Ok(resume) => resume,
-        Err(reason) => return fall_back(&reason),
+        Err(reason) => return fall_back(&reason, revisit),
     };
-    let provider_session_id = resume_workspace.provider_session_id.clone();
+    let current_branch_name = revisit.branch.clone();
+    let start_point = revisit.start_point.clone();
+    revisit.resume = Some(RevisitResume {
+        provider_session_id: provider_session_id.clone(),
+        resumed_from_run_id: run.id.clone(),
+    });
 
     let message = build_revision_resume_message(
         source_task.prompt.as_deref().unwrap_or(""),
@@ -1651,12 +2045,12 @@ fn prepare_revision_resume(
         &target_stage.name,
         "main",
         target_stage.policy.revision_transition(),
-        RunWorkspaceSpec::Resume(resume_workspace),
+        RunWorkspaceSpec::Revisit(revisit),
         message,
         // A revision resume message is a continuation turn, not a composed
         // stage prompt: the session already carries its agent instructions.
         None,
-        current_branch_name,
+        &current_branch_name,
         Some(revision_prompt.to_string()),
         source_task.agent_type.as_deref(),
         agent_overrides,
@@ -1665,17 +2059,42 @@ fn prepare_revision_resume(
         run.provider_override.clone(),
     )?;
     // A definition that changed provider or session type since the source run
-    // cannot continue that conversation.
+    // cannot continue that conversation. The branch checkout is undone so the
+    // fresh start below can make it again.
     if prepared.agent_provider != provider.as_str()
         || prepared.provider_session_id.as_deref() != Some(provider_session_id.as_str())
     {
-        return fall_back("stage no longer resolves to the recorded resumable provider session");
+        let PreparedRunWorkspace::Revisited(revisited) = &prepared.workspace else {
+            return Err("revision resume prepared a workspace it did not revisit".to_string());
+        };
+        if let Some(preserved) =
+            super::lifecycle::roll_back_prepared_workspace(&prepared.workspace)?
+        {
+            return Err(format!(
+                "stage no longer resolves to the recorded resumable provider session; {preserved}"
+            ));
+        }
+        let revisit = super::types::RevisitWorkspaceSpec {
+            worktree_path: revisited.workspace.worktree_path.clone(),
+            branch: revisited.workspace.branch.clone(),
+            start_point,
+            previous_branch: revisited.previous_branch.clone(),
+            previous_head: revisited.previous_head.clone(),
+            observed_dirty: revisited.observed_dirty,
+            report: prepared.session_identity.workspace_report.clone(),
+            resume: None,
+        };
+        return fall_back(
+            "stage no longer resolves to the recorded resumable provider session",
+            revisit,
+        );
     }
     log::info!(
-        "revision resumes task {task_id} stage '{}' from run {} in {}",
+        "revision resumes task {task_id} stage '{}' from run {} in {} on {}",
         target_stage.name,
         run.id,
-        prepared.cwd
+        prepared.cwd,
+        current_branch_name,
     );
     Ok(ResumePreparation::Resumed(Box::new(prepared)))
 }
@@ -1731,15 +2150,25 @@ pub(crate) fn resolve_revision_budget(
 /// without delivering one.
 const MERGE_APPROVE_POST: &str = "approve";
 
-/// True when the task's pinned stage declares the merge-signaling `approve`
-/// post. Pre-change snapshots and custom workflows without that post promise
-/// no merge side effect, so nothing may be enforced on their behalf.
-pub(crate) fn stage_declares_merge_approve_post(
+/// How a task's pinned stage promises the merge master a handoff.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MergeHandoffDeclaration {
+    /// The legacy `approve` post, which signals the merge master itself.
+    ApprovePost,
+    /// A named-exit final stage's `policy.handoff`: leaving it hands off.
+    TransitionPolicy,
+}
+
+/// How the task's pinned stage promises the merge master a handoff: the
+/// merge-signaling `approve` post, or a `policy.handoff` transition policy.
+/// Pre-change snapshots and custom workflows without either promise no merge
+/// side effect, so nothing may be enforced on their behalf.
+pub(crate) fn stage_declares_merge_handoff(
     repo: &Repo,
     workflow_name: &str,
     workflow_def: Option<&str>,
     stage_name: &str,
-) -> Result<bool, String> {
+) -> Result<Option<MergeHandoffDeclaration>, String> {
     let workflow = match workflow_def.filter(|value| !value.trim().is_empty()) {
         Some(stored) => parse_stored_workflow_definition(stored)?,
         None => RepoDefinitions::resolve(repo)?.workflow(workflow_name)?,
@@ -1747,11 +2176,17 @@ pub(crate) fn stage_declares_merge_approve_post(
     let owner = match resolve_stage_position(&workflow, stage_name) {
         Some(StagePosition::Stage(index)) => index,
         Some(StagePosition::Post { owner }) => owner,
-        None => return Ok(false),
+        None => return Ok(None),
     };
-    Ok(workflow.stages[owner].post.as_ref().is_some_and(|post| {
+    let stage = &workflow.stages[owner];
+    if stage.post.as_ref().is_some_and(|post| {
         post.name == MERGE_APPROVE_POST || post.agent.as_deref() == Some(MERGE_APPROVE_POST)
-    }))
+    }) {
+        return Ok(Some(MergeHandoffDeclaration::ApprovePost));
+    }
+    Ok((workflow.routes_by_exits()
+        && stage.policy.handoff == Some(super::definitions::WorkflowHandoff::Merge))
+    .then_some(MergeHandoffDeclaration::TransitionPolicy))
 }
 
 pub(crate) fn resolve_stage_transition(
@@ -1783,7 +2218,7 @@ pub(crate) fn resolve_stage_transition(
 // Shared with notification enrichment: an auto main completion dispatches a
 // post or enters a successor, but never closes a final stage without a post.
 fn main_completion_has_continuation(workflow: &WorkflowDefinition, index: usize) -> bool {
-    workflow.stages[index].post.is_some() || workflow.stages.get(index + 1).is_some()
+    workflow.stages[index].transition_post().is_some() || workflow.stages.get(index + 1).is_some()
 }
 
 pub(crate) fn main_completion_continuation(
@@ -1809,4 +2244,207 @@ pub(crate) fn main_completion_continuation(
         Some(StagePosition::Post { .. }) => Some(true),
         None => None,
     })
+}
+
+/// A stage with no role has no session to resume, rerun or send work back
+/// to; it is left by advancing it.
+pub(crate) fn roleless_restart_refusal(stage: &str) -> String {
+    format!(
+        "stage '{stage}' has no role, so there is no agent session to resume, rerun or send \
+         work to; a person or manager leaves it by advancing the task"
+    )
+}
+
+/// True when the task's current stage is a stage with no role (spec §5).
+pub(crate) fn current_stage_is_roleless(db: &Db, task_id: &str) -> Result<bool, String> {
+    let workflow = task_workflow_for_routing(db, task_id)?;
+    let Some(stage) = db
+        .get_pipeline_item(task_id)
+        .map_err(|error| format!("db error: {error}"))?
+        .and_then(|item| item.stage)
+    else {
+        return Ok(false);
+    };
+    Ok(workflow
+        .stages
+        .iter()
+        .find(|candidate| candidate.name == stage)
+        .is_some_and(|candidate| workflow.is_roleless_stage(candidate)))
+}
+
+/// Where a result goes under named-exit routing (spec §5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedResultExit {
+    /// The exit taken or requested: `advance` or a declared loop exit.
+    pub(crate) exit: String,
+    /// [`TransitionExit::EXPLICIT`] when the result named it,
+    /// [`TransitionExit::DEFAULT`] when it named none.
+    pub(crate) source: &'static str,
+    /// The loop exit's destination stage; `None` for `advance`.
+    pub(crate) destination: Option<String>,
+    /// The destination's budget; `None` for `advance`.
+    pub(crate) budget_limit: Option<i64>,
+}
+
+impl ResolvedResultExit {
+    /// The exit a commit step's result takes: the one its transition was
+    /// requested with (`advance`, chosen by the session, by default or by a
+    /// person), never one the commit result names.
+    pub(crate) fn for_commit_step(requested: Option<&TransitionExit>) -> Self {
+        let source = match requested.map(|exit| exit.source.as_str()) {
+            Some(TransitionExit::OPERATOR) => TransitionExit::OPERATOR,
+            Some(TransitionExit::EXPLICIT) => TransitionExit::EXPLICIT,
+            _ => TransitionExit::DEFAULT,
+        };
+        Self {
+            exit: requested
+                .and_then(|exit| exit.exit.clone())
+                .unwrap_or_else(|| ADVANCE_EXIT.to_string()),
+            source,
+            destination: None,
+            budget_limit: None,
+        }
+    }
+
+    /// The transition record for this exit, with the budget it spent.
+    pub(crate) fn transition_exit(
+        &self,
+        budget: Option<crate::db::StageBudgetSpend>,
+    ) -> TransitionExit {
+        TransitionExit {
+            exit: Some(self.exit.clone()),
+            source: self.source.to_string(),
+            budget,
+        }
+    }
+}
+
+/// The workflow a task routes by: its pinned snapshot, else the named one.
+fn task_workflow_for_routing(db: &Db, task_id: &str) -> Result<WorkflowDefinition, String> {
+    let identity = load_stage_identity(db, task_id)?;
+    let source = &identity.source_task;
+    match source
+        .pipeline_def
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        Some(stored) => parse_stored_workflow_definition(stored),
+        None => RepoDefinitions::resolve(&identity.repo)?
+            .workflow(source.pipeline.as_deref().unwrap_or(FALLBACK_WORKFLOW_NAME)),
+    }
+}
+
+/// True when the task's workflow routes results by named exits.
+pub(crate) fn task_routes_by_exits(db: &Db, task_id: &str) -> Result<bool, String> {
+    Ok(task_workflow_for_routing(db, task_id)?.routes_by_exits())
+}
+
+/// Resolve the exit a result on `run` names (or the default it takes).
+///
+/// `Ok(None)` for a legacy-routed task that named no exit: the legacy
+/// adapter routes it exactly as before. A legacy task naming an exit is
+/// refused, since its workflow declares none. `publishing` is the definition
+/// the same call publishes, which the result then routes by. Only a main run
+/// of the task's current stage may name a loop exit; a post always advances.
+pub(crate) fn resolve_result_exit(
+    db: &Db,
+    task_id: &str,
+    run: &crate::db::StageRun,
+    requested: Option<&str>,
+    publishing: Option<&serde_json::Value>,
+) -> Result<Option<ResolvedResultExit>, String> {
+    let workflow = match publishing {
+        Some(definition) => parse_workflow_definition(&definition.to_string())?,
+        None => task_workflow_for_routing(db, task_id)?,
+    };
+    let requested = requested.map(str::trim).filter(|exit| !exit.is_empty());
+    if !workflow.routes_by_exits() {
+        return match requested {
+            None => Ok(None),
+            Some(exit) => Err(format!(
+                "this task's workflow does not route by named exits, so a result cannot name \
+                 exit '{exit}'; record the result without an exit (a review asks for changes \
+                 through kanna_request_revision naming the stage)"
+            )),
+        };
+    }
+    let Some(exit) = requested else {
+        return Ok(Some(ResolvedResultExit {
+            exit: ADVANCE_EXIT.to_string(),
+            source: TransitionExit::DEFAULT,
+            destination: None,
+            budget_limit: None,
+        }));
+    };
+    let stage = db
+        .get_pipeline_item(task_id)
+        .map_err(|error| format!("db error: {error}"))?
+        .and_then(|item| item.stage)
+        .ok_or_else(|| format!("task has no stage: {task_id}"))?;
+    if exit != ADVANCE_EXIT && (run.kind != "main" || run.stage != stage) {
+        return Err(format!(
+            "only the main run of stage '{stage}' may name a loop exit; this is the {} run of \
+             '{}', which can only advance",
+            run.kind, run.stage
+        ));
+    }
+    let destination = workflow.resolve_exit(&stage, exit)?;
+    let budget_limit = destination
+        .as_deref()
+        .map(|destination| workflow.stage_budget(destination));
+    Ok(Some(ResolvedResultExit {
+        exit: exit.to_string(),
+        source: TransitionExit::EXPLICIT,
+        destination,
+        budget_limit,
+    }))
+}
+
+/// For a person sending a named-exit task from `from_stage` back to
+/// `destination`: the exit of `from_stage` that leads there, if one does.
+pub(crate) fn exit_leading_to(
+    db: &Db,
+    task_id: &str,
+    from_stage: &str,
+    destination: &str,
+) -> Result<Option<String>, String> {
+    let workflow = task_workflow_for_routing(db, task_id)?;
+    Ok(workflow
+        .stages
+        .iter()
+        .find(|stage| stage.name == from_stage)
+        .and_then(|stage| {
+            stage
+                .exits
+                .iter()
+                .flatten()
+                .find(|(_, target)| target.as_str() == destination)
+                .map(|(name, _)| name.clone())
+        }))
+}
+
+/// The exits a named-exit task's current stage offers, for a refusal that
+/// tells an agent what it may name instead.
+pub(crate) fn describe_current_stage_exits(db: &Db, task_id: &str) -> Result<String, String> {
+    let workflow = task_workflow_for_routing(db, task_id)?;
+    let stage = db
+        .get_pipeline_item(task_id)
+        .map_err(|error| format!("db error: {error}"))?
+        .and_then(|item| item.stage)
+        .ok_or_else(|| format!("task has no stage: {task_id}"))?;
+    Ok(workflow
+        .stages
+        .iter()
+        .find(|candidate| candidate.name == stage)
+        .map(describe_stage_exits)
+        .unwrap_or_else(|| format!("'{ADVANCE_EXIT}'")))
+}
+
+/// The budget of `stage` in a named-exit task's workflow.
+pub(crate) fn resolve_stage_budget_limit(
+    db: &Db,
+    task_id: &str,
+    stage: &str,
+) -> Result<i64, String> {
+    Ok(task_workflow_for_routing(db, task_id)?.stage_budget(stage))
 }

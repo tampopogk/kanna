@@ -1,9 +1,10 @@
-import type {
-  WorkflowDefinition,
-  WorkflowPlanContext,
-  WorkflowPost,
-  WorkflowStage,
-  WorkflowStagePolicy,
+import {
+  ADVANCE_EXIT,
+  type WorkflowDefinition,
+  type WorkflowPlanContext,
+  type WorkflowPost,
+  type WorkflowStage,
+  type WorkflowStagePolicy,
 } from "./workflow-types";
 import { parseAgentSelection, parseAgentProviderSelector, type AgentSelection } from "../config/agent-providers";
 
@@ -86,6 +87,19 @@ function parseStagePolicy(raw: Record<string, unknown>, stageName: string): Pars
           (transition) =>
             `Stage "${stageName}" has invalid policy.revision_transition "${transition}"; must be "manual" or "auto"`
         );
+    const loopTransition = p["loop_transition"] === undefined
+      ? undefined
+      : parseTransition(
+          p["loop_transition"],
+          (transition) =>
+            `Stage "${stageName}" has invalid policy.loop_transition "${transition}"; must be "manual" or "auto"`
+        );
+    const handoff = p["handoff"];
+    if (handoff !== undefined && handoff !== "merge") {
+      throw validationError(
+        `Stage "${stageName}" has invalid policy.handoff "${formatRawValue(handoff)}"; must be "merge"`
+      );
+    }
     return {
       policy: {
         transition: parseTransition(
@@ -96,6 +110,8 @@ function parseStagePolicy(raw: Record<string, unknown>, stageName: string): Pars
         ...(revisionTransition === undefined
           ? {}
           : { revision_transition: revisionTransition }),
+        ...(loopTransition === undefined ? {} : { loop_transition: loopTransition }),
+        ...(handoff === undefined ? {} : { handoff }),
       },
       legacyContinue: parseLegacyContinueMarker(p["execution"], stageName),
     };
@@ -176,7 +192,184 @@ export function validateWorkflow(def: WorkflowDefinition): string[] {
     }
   }
 
+  errors.push(...validateWorkflowRouting(def));
+
   return errors;
+}
+
+const EXIT_NAME = /^[a-z][a-z0-9_-]*$/;
+
+/**
+ * The routing contract's own rules, mirroring `validate_workflow_routing` in
+ * the server's definitions.rs: the two contracts do not mix, budgets are
+ * non-negative, every named-exit stage names its agent, and every loop exit
+ * leads to its own stage or an earlier one.
+ */
+function validateWorkflowRouting(def: WorkflowDefinition): string[] {
+  const errors: string[] = [];
+  const usesExitFields =
+    def.budget !== undefined ||
+    def.stages.some(
+      (stage) =>
+        stage.exits !== undefined ||
+        stage.budget !== undefined ||
+        stage.policy?.loop_transition !== undefined
+    );
+  // exit_commit is a property of a stage's transition in either routing: a
+  // legacy workflow's commit post migrates to it.
+  const usesTransitionFields = def.stages.some(
+    (stage) => stage.setup !== undefined || stage.teardown !== undefined
+  );
+  for (const stage of def.stages) {
+    if (stage.exit_commit && stage.post !== undefined) {
+      errors.push(
+        `Stage "${stage.name}": exit_commit is the commit step of this stage's transition and cannot be combined with a post`
+      );
+    }
+  }
+  const usesHandoff = def.stages.some((stage) => stage.policy?.handoff !== undefined);
+  if (def.routing !== "exits") {
+    if (usesHandoff) {
+      errors.push(
+        'policy.handoff belongs to named-exit routing; declare "routing": "exits" to use it (a legacy workflow hands off through its approve post)'
+      );
+    }
+    if (usesExitFields) {
+      errors.push(
+        'exits, budget and loop_transition belong to named-exit routing; declare "routing": "exits" to use them'
+      );
+    }
+    if (usesTransitionFields) {
+      errors.push(
+        'stage setup/teardown belong to named-exit routing; declare "routing": "exits" to use them (a legacy workflow runs scripts through its environments)'
+      );
+    }
+    return errors;
+  }
+  if (def.revision_limit !== undefined) {
+    errors.push(
+      'routing "exits" budgets each destination stage (budget); revision_limit is the legacy task-wide cap and cannot be combined with it'
+    );
+  }
+  if (def.plan_context !== undefined) {
+    errors.push(
+      'routing "exits" keeps the plan in the task ledger; plan_context belongs to legacy plan publication'
+    );
+  }
+  def.stages.forEach((stage, index) => {
+    if (stage.policy?.revision_transition !== undefined) {
+      errors.push(
+        `Stage "${stage.name}": routing "exits" uses policy.loop_transition; revision_transition is the legacy revision policy`
+      );
+    }
+    if (stage.agent !== undefined && stage.agent.trim() === "") {
+      errors.push(
+        `Stage "${stage.name}": agent must name a role; omit it for a stage without a role`
+      );
+    }
+    if (stage.policy?.handoff !== undefined && index !== def.stages.length - 1) {
+      errors.push(
+        `Stage "${stage.name}": policy.handoff runs as the task leaves its final stage; declare it on the final stage`
+      );
+    }
+    for (const field of ["setup", "teardown"] as const) {
+      if ((stage[field] ?? []).some((command) => command.trim() === "")) {
+        errors.push(`Stage "${stage.name}": ${field} commands must not be empty`);
+      }
+    }
+    // A stage with no role enters, runs setup and parks until a person or
+    // manager advances it (spec §5); the shapes this build does not run are
+    // refused, mirroring the server.
+    if (stage.agent === undefined) {
+      const refuse = (reason: string) =>
+        errors.push(`stage '${stage.name}' has no role, so ${reason}`);
+      if (index === 0) {
+        refuse("it cannot be the first stage yet: task creation starts the first stage's agent");
+      } else if (
+        stage.policy?.transition !== "manual" ||
+        (stage.policy?.loop_transition !== undefined && stage.policy.loop_transition !== "manual")
+      ) {
+        refuse("it parks until a person or manager advances it; its transition must be manual");
+      } else if (stage.exits !== undefined) {
+        refuse("no session can name an exit; it declares none");
+      } else if (stage.exit_commit || stage.post !== undefined) {
+        refuse("no session can run a commit step or post on its way out");
+      } else if (stage.prompt !== undefined || stage.agent_provider !== undefined) {
+        refuse("it runs no agent; prompt and agent_provider do not apply");
+      }
+    }
+    for (const [exit, destination] of Object.entries(stage.exits ?? {})) {
+      if (!EXIT_NAME.test(exit)) {
+        errors.push(
+          `Stage "${stage.name}": exit name "${exit}" must be lowercase letters, digits, '_' or '-', starting with a letter`
+        );
+      } else if (exit === ADVANCE_EXIT) {
+        errors.push(
+          `Stage "${stage.name}": "${ADVANCE_EXIT}" is every stage's implicit exit to the next stage and cannot be declared`
+        );
+      } else if (!def.stages.slice(0, index + 1).some((candidate) => candidate.name === destination)) {
+        errors.push(
+          `Stage "${stage.name}": exit "${exit}" leads to "${destination}", which is not this stage or an earlier stage of the workflow`
+        );
+      } else if (def.stages.slice(0, index + 1).find((candidate) => candidate.name === destination)?.agent === undefined) {
+        errors.push(
+          `Stage "${stage.name}": exit "${exit}" leads to "${destination}", a stage without a role; loops into such a stage are not supported yet`
+        );
+      }
+    }
+  });
+  return errors;
+}
+
+/**
+ * Keys a routing "exits" document may use at each level: exactly what
+ * `.kanna/workflows/schema.json` defines (a parity test holds the two
+ * together), plus the legacy stage spellings the loader rewrites. A named-exit
+ * workflow opts into a contract whose fields this build either runs or
+ * refuses, so an unknown key there is refused rather than silently dropped.
+ * Legacy definitions keep their historical tolerance.
+ */
+export const WORKFLOW_ROOT_KEYS = [
+  "$schema", "name", "description", "visibility", "routing", "budget", "plan_context",
+  "revision_limit", "environments", "stages",
+] as const;
+export const WORKFLOW_STAGE_KEYS = [
+  "name", "description", "agent", "prompt", "agent_provider", "environment", "exits",
+  "budget", "policy", "post", "exit_commit", "setup", "teardown",
+] as const;
+export const WORKFLOW_POST_KEYS = [
+  "name", "description", "agent", "prompt", "agent_provider",
+] as const;
+const LEGACY_STAGE_KEYS = ["transition", "mode", "post_action"];
+
+function unknownExitWorkflowFields(obj: Record<string, unknown>): string[] {
+  const unknown: string[] = [];
+  const check = (value: unknown, known: readonly string[], where: string) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return;
+    for (const key of Object.keys(value)) {
+      if (!known.includes(key)) unknown.push(`${where}${key}`);
+    }
+  };
+  check(obj, WORKFLOW_ROOT_KEYS, "");
+  if (Array.isArray(obj["stages"])) {
+    (obj["stages"] as unknown[]).forEach((stage, index) => {
+      check(stage, [...WORKFLOW_STAGE_KEYS, ...LEGACY_STAGE_KEYS], `stages[${index}].`);
+      if (stage !== null && typeof stage === "object") {
+        check((stage as Record<string, unknown>)["post"], WORKFLOW_POST_KEYS, `stages[${index}].post.`);
+      }
+    });
+  }
+  return unknown;
+}
+
+function parseBudget(value: unknown, location: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw validationError(
+      `${location} has an invalid budget ${formatRawValue(value)}; must be a non-negative integer`
+    );
+  }
+  return value;
 }
 
 /**
@@ -235,6 +428,28 @@ export function parseWorkflowJson(raw: string): WorkflowDefinition {
       );
     }
     def.plan_context = planContext as WorkflowPlanContext;
+  }
+
+  const routing = obj["routing"];
+  if (routing !== undefined && routing !== null) {
+    if (routing !== "legacy" && routing !== "exits") {
+      throw validationError(
+        `Workflow "${def.name}" has an invalid routing ${formatRawValue(routing)}; must be "legacy" or "exits"`
+      );
+    }
+    def.routing = routing;
+  }
+  const budget = parseBudget(obj["budget"], `Workflow "${def.name}"`);
+  if (budget !== undefined) {
+    def.budget = budget;
+  }
+  if (def.routing === "exits") {
+    const unknown = unknownExitWorkflowFields(obj);
+    if (unknown.length > 0) {
+      throw validationError(
+        `Workflow "${def.name}" uses routing "exits" with fields this version does not support: ${unknown.join(", ")}; remove them rather than rely on them being ignored`
+      );
+    }
   }
 
   if (obj["environments"] !== undefined && obj["environments"] !== null) {
@@ -342,6 +557,41 @@ function extractStages(obj: Record<string, unknown>): WorkflowStage[] {
     }
     if (typeof s["environment"] === "string") {
       stage.environment = s["environment"];
+    }
+    const exits = s["exits"];
+    if (exits !== undefined && exits !== null) {
+      if (
+        typeof exits !== "object" ||
+        Array.isArray(exits) ||
+        Object.values(exits).some((destination) => typeof destination !== "string" || destination === "")
+      ) {
+        throw validationError(
+          `Stage "${name || "(unnamed)"}" has invalid exits ${formatRawValue(exits)}; must map exit names to stage names`
+        );
+      }
+      stage.exits = { ...(exits as Record<string, string>) };
+    }
+    const stageBudget = parseBudget(s["budget"], `Stage "${name || "(unnamed)"}"`);
+    if (stageBudget !== undefined) {
+      stage.budget = stageBudget;
+    }
+    if (s["exit_commit"] !== undefined && s["exit_commit"] !== null) {
+      if (typeof s["exit_commit"] !== "boolean") {
+        throw validationError(
+          `Stage "${name || "(unnamed)"}" has an invalid exit_commit ${formatRawValue(s["exit_commit"])}; must be true or false`
+        );
+      }
+      stage.exit_commit = s["exit_commit"];
+    }
+    for (const field of ["setup", "teardown"] as const) {
+      const commands = s[field];
+      if (commands === undefined || commands === null) continue;
+      if (!Array.isArray(commands) || commands.some((command) => typeof command !== "string")) {
+        throw validationError(
+          `Stage "${name || "(unnamed)"}" has an invalid ${field} ${formatRawValue(commands)}; must be an array of commands`
+        );
+      }
+      stage[field] = [...(commands as string[])];
     }
 
     const post = extractPost(s["post"], stage.name || "(unnamed)");

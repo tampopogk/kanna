@@ -9,8 +9,10 @@
 //!   reachable only inside a sealed peer session whose key is *not yet*
 //!   paired (`SealedPeerPairingContext`). The first is authorized by a
 //!   one-time secret a person carried; the second by relay presence under
-//!   this desktop's own account (`peer_enrollment`). Both pin; only the
-//!   first records `verified` provenance.
+//!   this desktop's own account (`peer_enrollment`). Both also require that
+//!   relay presence - machines never pair across accounts - and both stamp
+//!   it as the record's account evidence. Both pin; only the first records
+//!   `verified` provenance.
 //! - `GET /v1/peers/transfer-identity` answers a paired sibling
 //!   (`TrustedPeerDesktopAccess`) or the local desktop.
 //! - `GET /v1/peers/channel` is the sealed endpoint itself; nothing about
@@ -70,6 +72,13 @@ pub(super) struct PeerView {
     /// succeeded since. Loud on purpose - it is the event automatic trust
     /// must never retry away.
     identity_changed: bool,
+    /// `sameAccount` when the record proves the sibling shares this
+    /// desktop's current account, otherwise the refusal code every sibling
+    /// session with it meets (`crate::account_boundary`).
+    account_standing: &'static str,
+    /// For a refused record: which record and the action that restores it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account_diagnostic: Option<String>,
     paired_at_unix_ms: u64,
     last_seen_unix_ms: Option<u64>,
     transfer_identity_pinned: bool,
@@ -104,25 +113,32 @@ pub(super) async fn list_peers(
     } else {
         Vec::new()
     };
+    let current_account_uid = state.authenticated_account_uid();
     let peers = store
         .peers
         .iter()
         .filter(|peer| peer.environment == environment)
-        .map(|peer| PeerView {
-            desktop_id: peer.desktop_id.clone(),
-            display_name: peer.display_name.clone(),
-            encryption: "e2ee",
-            provenance: peer.provenance.as_str(),
-            identity_changed: peer.identity_mismatch_at_unix_ms.is_some(),
-            paired_at_unix_ms: peer.paired_at_unix_ms,
-            last_seen_unix_ms: peer.last_seen_unix_ms,
-            transfer_identity_pinned: peer.transfer_peer_id.is_some()
-                && peer.transfer_public_key.is_some(),
-            reachable: PeerReachability {
-                lan: state.lan_api_candidate_for(&peer.desktop_id).is_some(),
-                relay: state.desktop_tunnel_available()
-                    && relay_active.iter().any(|id| id == &peer.desktop_id),
-            },
+        .map(|peer| {
+            let (account_standing, account_diagnostic) =
+                crate::account_boundary::peer_standing_report(peer, current_account_uid.as_deref());
+            PeerView {
+                desktop_id: peer.desktop_id.clone(),
+                display_name: peer.display_name.clone(),
+                encryption: "e2ee",
+                provenance: peer.provenance.as_str(),
+                identity_changed: peer.identity_mismatch_at_unix_ms.is_some(),
+                account_standing,
+                account_diagnostic,
+                paired_at_unix_ms: peer.paired_at_unix_ms,
+                last_seen_unix_ms: peer.last_seen_unix_ms,
+                transfer_identity_pinned: peer.transfer_peer_id.is_some()
+                    && peer.transfer_public_key.is_some(),
+                reachable: PeerReachability {
+                    lan: state.lan_api_candidate_for(&peer.desktop_id).is_some(),
+                    relay: state.desktop_tunnel_available()
+                        && relay_active.iter().any(|id| id == &peer.desktop_id),
+                },
+            }
         })
         .collect();
     Ok(Json(PeerListResponse {
@@ -196,6 +212,13 @@ pub(super) async fn pair_with_string(
             "that pairing string is this desktop's own".to_string(),
         ));
     }
+    // Machines pair only within one account. Checked before dialing, so a
+    // refused ceremony consumes nothing on the other desktop.
+    let issuer_key = kanna_secure_channel::encode_key(&parsed.channel_public_key);
+    let account_uid =
+        crate::account_boundary::relay_confirms_sibling(&state, &parsed.desktop_id, &issuer_key)
+            .await
+            .map_err(pairing_account_refusal)?;
     let local_transfer_identity = local_transfer_identity(&state).await;
     let sealed = dial_peer_with_key_for_pairing(&state, &parsed).await?;
     let route = sealed.route.as_str();
@@ -291,10 +314,15 @@ pub(super) async fn pair_with_string(
         ));
     }
     let now_ms = unix_time_ms()?;
+    if state.authenticated_account_uid().as_deref() != Some(account_uid.as_str()) {
+        return Err(pairing_account_refusal(
+            "this desktop's account changed while pairing".to_string(),
+        ));
+    }
     let peer = PeerDesktop {
         desktop_id: parsed.desktop_id.clone(),
         display_name: body.desktop_name.clone(),
-        channel_public_key: kanna_secure_channel::encode_key(&parsed.channel_public_key),
+        channel_public_key: issuer_key,
         transfer_peer_id: body
             .transfer_identity
             .as_ref()
@@ -304,12 +332,13 @@ pub(super) async fn pair_with_string(
             .as_ref()
             .map(|identity| identity.public_key.clone()),
         environment: config.environment.clone(),
-        account_uid: state.authenticated_account_uid(),
+        account_uid: Some(account_uid),
         // The ceremony is the strong claim, and running it against a peer
         // this desktop had pinned automatically is exactly how that record
         // is upgraded - the replacement carries `Verified` and no stale
         // identity-change notice.
         provenance: crate::peer_trust::PeerProvenance::Verified,
+        account_verified_at_unix_ms: Some(now_ms),
         identity_mismatch_at_unix_ms: None,
         paired_at_unix_ms: now_ms,
         last_seen_unix_ms: Some(now_ms),
@@ -329,6 +358,32 @@ pub(super) async fn pair_with_string(
         route,
         transfer_identity_pinned,
     }))
+}
+
+fn claim_error_response(error: peer_pairing::PeerClaimError) -> (StatusCode, String) {
+    let status = match error {
+        peer_pairing::PeerClaimError::NoActiveOffer => StatusCode::CONFLICT,
+        peer_pairing::PeerClaimError::Expired => StatusCode::GONE,
+        peer_pairing::PeerClaimError::InvalidCode => StatusCode::BAD_REQUEST,
+        peer_pairing::PeerClaimError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+        peer_pairing::PeerClaimError::EnvironmentMismatch
+        | peer_pairing::PeerClaimError::SelfPairing
+        | peer_pairing::PeerClaimError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
+    };
+    (status, error.to_string())
+}
+
+/// A ceremony refused because the relay could not place the other desktop in
+/// this desktop's account. Pairing across accounts is never allowed; the
+/// artifact remote is how work crosses accounts.
+fn pairing_account_refusal(reason: String) -> (StatusCode, String) {
+    (
+        StatusCode::FORBIDDEN,
+        format!(
+            "peer_pairing_account_unconfirmed: machines pair only when both are signed in to the \
+             same Kanna account and the relay can confirm it ({reason})"
+        ),
+    )
 }
 
 async fn dial_peer_with_key_for_pairing(
@@ -351,6 +406,7 @@ fn dial_error_response(error: PeerDialError) -> (StatusCode, String) {
             StatusCode::PRECONDITION_FAILED
         }
         PeerDialError::IdentityUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+        PeerDialError::AccountBoundary(_) => StatusCode::FORBIDDEN,
         PeerDialError::UpgradeRequired(_) | PeerDialError::IdentityMismatch(_) => {
             StatusCode::BAD_GATEWAY
         }
@@ -481,6 +537,36 @@ pub(super) async fn claim_pairing_offer(
         ));
     };
     let config = state.config();
+    peer_pairing::validate_claim(
+        &claim,
+        context.declared_desktop_id.as_deref(),
+        &config.desktop_id,
+        &config.environment,
+    )
+    .map_err(claim_error_response)?;
+    // No offer, nothing to check the account for (`verify_claim` below
+    // re-reads it under the lock; this peek only spares the relay a call).
+    if state.peer_pairing_offer.lock().await.is_none() {
+        return Err(claim_error_response(
+            peer_pairing::PeerClaimError::NoActiveOffer,
+        ));
+    }
+    // The claimant must be listed by this desktop's account with exactly the
+    // key this session authenticated. Checked before the offer is touched,
+    // so a refusal here leaves the string usable once both are signed in.
+    let account_uid = crate::account_boundary::relay_confirms_sibling(
+        &state,
+        &claim.desktop_id,
+        &context.encoded_remote_static(),
+    )
+    .await
+    .map_err(|reason| {
+        log::warn!(
+            "[peer] refusing a pairing claim from {}: {reason}",
+            claim.desktop_id
+        );
+        pairing_account_refusal(reason)
+    })?;
     let now_ms = unix_time_ms()?;
     {
         let mut offer = state.peer_pairing_offer.lock().await;
@@ -492,18 +578,12 @@ pub(super) async fn claim_pairing_offer(
             &config.environment,
             now_ms,
         )
-        .map_err(|error| {
-            let status = match error {
-                peer_pairing::PeerClaimError::NoActiveOffer => StatusCode::CONFLICT,
-                peer_pairing::PeerClaimError::Expired => StatusCode::GONE,
-                peer_pairing::PeerClaimError::InvalidCode => StatusCode::BAD_REQUEST,
-                peer_pairing::PeerClaimError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
-                peer_pairing::PeerClaimError::EnvironmentMismatch
-                | peer_pairing::PeerClaimError::SelfPairing
-                | peer_pairing::PeerClaimError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
-            };
-            (status, error.to_string())
-        })?;
+        .map_err(claim_error_response)?;
+    }
+    if state.authenticated_account_uid().as_deref() != Some(account_uid.as_str()) {
+        return Err(pairing_account_refusal(
+            "this desktop's account changed while pairing".to_string(),
+        ));
     }
     let peer = PeerDesktop {
         desktop_id: claim.desktop_id.clone(),
@@ -518,12 +598,13 @@ pub(super) async fn claim_pairing_offer(
             .as_ref()
             .map(|identity| identity.public_key.clone()),
         environment: config.environment.clone(),
-        account_uid: state.authenticated_account_uid(),
+        account_uid: Some(account_uid),
         // The ceremony is the strong claim, and running it against a peer
         // this desktop had pinned automatically is exactly how that record
         // is upgraded - the replacement carries `Verified` and no stale
         // identity-change notice.
         provenance: crate::peer_trust::PeerProvenance::Verified,
+        account_verified_at_unix_ms: Some(now_ms),
         identity_mismatch_at_unix_ms: None,
         paired_at_unix_ms: now_ms,
         last_seen_unix_ms: Some(now_ms),
@@ -683,6 +764,7 @@ pub(super) async fn claim_account_enrollment(
         environment: config.environment.clone(),
         account_uid: Some(account_uid),
         provenance: crate::peer_trust::PeerProvenance::Account,
+        account_verified_at_unix_ms: Some(now_ms),
         identity_mismatch_at_unix_ms: None,
         paired_at_unix_ms: now_ms,
         last_seen_unix_ms: Some(now_ms),

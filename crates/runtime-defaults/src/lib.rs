@@ -38,6 +38,10 @@ pub const STAGING_DESKTOP_BUNDLE_IDENTIFIER: &str = "build.kanna.staging";
 pub const LEGACY_DESKTOP_BUNDLE_IDENTIFIER: &str = "com.kanna.app";
 pub const PRODUCT_APP_SUPPORT_DIR: &str = "Kanna";
 pub const DEFAULT_DB_NAME: &str = "kanna-v2.db";
+/// Asks `kanna-server` to switch its storage authority (`sql` or `disk`) at
+/// its next start. It is an operator's switch, never an ambient one: the
+/// packaged desktop strips it from what the server it launches inherits.
+pub const STORAGE_AUTHORITY_ENV: &str = "KANNA_STORAGE_AUTHORITY";
 /// The database a headless worker owns by default, beside its other state
 /// under its data directory. It is named differently from the desktop's on
 /// purpose: a worker is a separate instance, and its default must never

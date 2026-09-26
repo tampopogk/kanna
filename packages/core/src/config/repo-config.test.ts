@@ -292,3 +292,19 @@ it("rejects a non-string or conflicting auto-compact window", () => {
     expect(() => parseRepoConfig(JSON.stringify({ agentProviders: { implement: value } }))).toThrow();
   }
 });
+
+// Mirrors the server's committed-config parser: unknown retention values and
+// empty paths are dropped, and the server supplies the defaults.
+it("parses the artifact store location and retention policy", () => {
+  expect(parseRepoConfig(JSON.stringify({
+    artifacts: { repositoryPath: " ~/art/a.git ", retention: "discard-on-close" },
+  })).artifacts).toEqual({ repositoryPath: "~/art/a.git", retention: "discard-on-close" });
+  expect(parseRepoConfig(JSON.stringify({ artifacts: { retention: "30-days" } })).artifacts)
+    .toEqual({ retention: "30-days" });
+  expect(parseRepoConfig(JSON.stringify({ artifacts: { remote: " git@host:team/a.git " } })).artifacts)
+    .toEqual({ remote: "git@host:team/a.git" });
+  expect(parseRepoConfig(JSON.stringify({ artifacts: { remote: " " } })).artifacts).toBeUndefined();
+  expect(parseRepoConfig(JSON.stringify({ artifacts: { repositoryPath: "", retention: "forever" } })).artifacts)
+    .toBeUndefined();
+  expect(parseRepoConfig(JSON.stringify({ artifacts: ["a.git"] })).artifacts).toBeUndefined();
+});

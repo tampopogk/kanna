@@ -37,7 +37,12 @@ import type {
   TaskInputResult,
   TaskDetail,
   TaskPreviewOpenResult,
-  TaskSummary
+  TaskSummary,
+  ArtifactDetail,
+  ArtifactFileContent,
+  ArtifactCommentInput,
+  ArtifactDecisionInput,
+  ArtifactPushBinding
 } from "../api/types";
 import { parseAgentProviderInventory } from "../api/agentProviders";
 
@@ -238,6 +243,32 @@ export function createLanTransport(
     return response.json() as Promise<T>;
   };
 
+  const requireArtifactAccess = () => {
+    if (!authenticated) {
+      throw new Error(
+        "Opening an artifact requires a paired device or an authenticated relay connection."
+      );
+    }
+  };
+
+  // Artifact writes are addressed by repository and exact tree id; none names
+  // a task, and the remote a push or fetch uses is the repository's own
+  // configuration, never a parameter.
+  const artifactPost = async <T>(
+    repoId: string,
+    artifactId: string,
+    suffix: string,
+    body?: unknown
+  ): Promise<T> => {
+    requireArtifactAccess();
+    return request<T>(
+      `/v1/repos/${encodeURIComponent(repoId)}/artifacts/${encodeURIComponent(artifactId)}${suffix}`,
+      body === undefined
+        ? { method: "POST" }
+        : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+    );
+  };
+
   return {
     getStatus: async () => {
       const status = await request<MobileServerStatus>("/v1/status");
@@ -428,6 +459,41 @@ export function createLanTransport(
         }
       );
     },
+    getArtifact: async (repoId: string, artifactId: string): Promise<ArtifactDetail> => {
+      if (!authenticated) {
+        throw new Error(
+          "Opening an artifact requires a paired device or an authenticated relay connection."
+        );
+      }
+      return request<ArtifactDetail>(
+        `/v1/repos/${encodeURIComponent(repoId)}/artifacts/${encodeURIComponent(artifactId)}`
+      );
+    },
+    readArtifactFile: async (
+      repoId: string,
+      artifactId: string,
+      path: string
+    ): Promise<ArtifactFileContent> => {
+      if (!authenticated) {
+        throw new Error(
+          "Opening an artifact requires a paired device or an authenticated relay connection."
+        );
+      }
+      return request<ArtifactFileContent>(
+        `/v1/repos/${encodeURIComponent(repoId)}/artifacts/${encodeURIComponent(artifactId)}/files?path=${encodeURIComponent(path)}`
+      );
+    },
+    getArtifactRemote: (repoId: string) => {
+      requireArtifactAccess();
+      return request(`/v1/repos/${encodeURIComponent(repoId)}/artifact-remote`);
+    },
+    recordArtifactComment: (repoId: string, artifactId: string, input: ArtifactCommentInput) =>
+      artifactPost(repoId, artifactId, "/comments", input),
+    recordArtifactDecision: (repoId: string, artifactId: string, input: ArtifactDecisionInput) =>
+      artifactPost(repoId, artifactId, "/decisions", input),
+    pushArtifact: (repoId: string, artifactId: string, binding?: ArtifactPushBinding) =>
+      artifactPost(repoId, artifactId, "/push", binding),
+    fetchArtifact: (repoId: string, artifactId: string) => artifactPost(repoId, artifactId, "/fetch"),
     readTaskDiff: (
       taskId: string,
       diffRequest?: TaskDiffRequest

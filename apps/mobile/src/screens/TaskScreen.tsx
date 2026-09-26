@@ -29,9 +29,16 @@ import type {
   TaskInputAttachment,
   TaskPort,
   TaskPreviewOpenResult,
-  TaskSummary
+  TaskSummary,
+  TaskLatestRun,
+  TaskSessionHistoryEntry,
+  TaskStageDependency,
+  TaskDependencyWait,
+  ArtifactDetail,
+  ArtifactFileContent,
+  ArtifactReference
 } from "../lib/api/types";
-import { isTaskBlocked, type BlockerTaskRef } from "../lib/api/taskIdentity";
+import { isTaskBlockedWithoutSession, type BlockerTaskRef } from "../lib/api/taskIdentity";
 import {
   ImageAttachmentError,
   type PreparedImageAttachment
@@ -65,6 +72,7 @@ import type {
 import { AgentMessageView } from "./AgentMessageView";
 import { TaskDiffPreview } from "./TaskDiffPreview";
 import { TaskPreviewModal } from "./TaskPreviewModal";
+import { ArtifactViewer, type ArtifactViewerActions } from "./ArtifactViewer";
 import { TaskFilePreview } from "./TaskFilePreview";
 import { TaskMentionedFiles } from "./TaskMentionedFiles";
 import { RepoExplorer } from "./RepoExplorer";
@@ -123,6 +131,18 @@ const EMPTY_MENTIONED_FILES: TerminalFileMentionHistory = {
 
 interface TaskScreenProps {
   task: TaskSummary;
+  /** The task's most recent recorded result (spec §16.8), when task detail
+   * has reported one; absent on an older server or before detail loads. */
+  latestRun?: TaskLatestRun | null;
+  /** Every prior stage-run session for this task, oldest first (T11b). */
+  sessionHistory?: TaskSessionHistoryEntry[] | null;
+  /** Stage-dependency edges into this task's current stage (spec §9, T4). */
+  stageDependencies?: TaskStageDependency[] | null;
+  /** This task's recorded automatic-advance dependency wait (T4). */
+  dependencyWait?: TaskDependencyWait | null;
+  /** True when the current stage has no agent role and a person, not a
+   * session, must decide (spec's roleless Gate stage, T3). */
+  gateParked?: boolean | null;
   desktopWorkspace?: boolean;
   blockerTasks?: readonly BlockerTaskRef[];
   e2eTaskSnapshotMarker?: string;
@@ -164,6 +184,11 @@ interface TaskScreenProps {
   onListTaskDirectory(path: string, showAllFiles?: boolean, offset?: number, filter?: string): Promise<RepoDirectoryListing>;
   onReadTaskFileRange(path: string, startLine: number, lineCount: number, metadataOnly?: boolean, startByte?: number): Promise<RepoFileRange>;
   onReadTaskDiff(request: TaskDiffRequest): Promise<TaskDiffContent>;
+  /** Artifacts of this task's repository, by tree id; absent where unsupported. */
+  onGetArtifact?(repoId: string, artifactId: string): Promise<ArtifactDetail>;
+  onReadArtifactFile?(repoId: string, artifactId: string, path: string): Promise<ArtifactFileContent>;
+  /** Comments, decisions, push and fetch for the artifact viewer; absent where unsupported. */
+  artifactActions?: ArtifactViewerActions;
   taskPreviewRouteAvailable?: boolean;
   onOpenTaskPreview?(portName?: string): Promise<TaskPreviewOpenResult>;
   onCloseTaskPreview?(): Promise<void>;
@@ -220,6 +245,11 @@ function composerInputFailureMessage(
 
 export function TaskScreen({
   task,
+  latestRun = null,
+  sessionHistory = null,
+  stageDependencies = null,
+  dependencyWait = null,
+  gateParked = null,
   desktopWorkspace = false,
   blockerTasks = [],
   e2eTaskSnapshotMarker,
@@ -256,6 +286,9 @@ export function TaskScreen({
   onListTaskDirectory,
   onReadTaskFileRange,
   onReadTaskDiff,
+  onGetArtifact,
+  onReadArtifactFile,
+  artifactActions,
   taskPreviewRouteAvailable = true,
   onOpenTaskPreview = () =>
     Promise.reject(new Error("This desktop does not support dev-server preview.")),
@@ -276,6 +309,27 @@ export function TaskScreen({
   // The list colours rows by stage; the detail header wears the same colour so
   // opening a task does not drop the signal that led the eye to it.
   const stageTheme = resolveTaskStageTheme(task.stage);
+  // A run still in flight has a non-null `latestRun` with no verdict,
+  // summary, exit or artifacts recorded yet (mobile_api.rs's
+  // `map_task_latest_run` yields all `None` until a result lands). Showing
+  // the container then would be an empty bordered row under the task id.
+  const hasLatestResult = Boolean(
+    latestRun &&
+      (latestRun.verdict ||
+        latestRun.summary ||
+        latestRun.exit ||
+        latestRun.commitStep ||
+        (latestRun.artifacts && Object.keys(latestRun.artifacts).length > 0))
+  );
+  const sessionName = latestRun?.session?.name || null;
+  // The latest run's own session is shown by `sessionName`; the history
+  // list is what came before, oldest first as recorded (T11b).
+  const priorSessionHistory = (sessionHistory ?? []).filter(
+    (entry) => entry.runId !== latestRun?.id && entry.session.name
+  );
+  const supersededDependencies = (stageDependencies ?? []).filter(
+    (dependency) => dependency.supersededAt
+  );
   const [draftInput, setDraftInput] = useState("");
   // A transient transport reconnect does not invalidate the authoritative
   // snapshot already on screen. Keep the same xterm document mounted so the
@@ -359,6 +413,8 @@ export function TaskScreen({
   );
   const [diffModalTaskId, setDiffModalTaskId] = useState<string | null>(null);
   const [previewModalTaskId, setPreviewModalTaskId] = useState<string | null>(null);
+  const [artifactViewerTaskId, setArtifactViewerTaskId] = useState<string | null>(null);
+  const [artifactViewerInitialId, setArtifactViewerInitialId] = useState<string | null>(null);
   const [explorerTaskId, setExplorerTaskId] = useState<string | null>(null);
   const [terminalDirectInputEnabled, setTerminalDirectInputEnabled] =
     useState(false);
@@ -380,7 +436,11 @@ export function TaskScreen({
   const windowHeightRef = useRef(windowHeight);
   windowHeightRef.current = windowHeight;
   const isAgentTask = task.agentType === "agent";
-  const isBlocked = isTaskBlocked(task);
+  // Blocked with a live session (a T4 later-stage wait, or a T5 join wait,
+  // while the current stage already has a session) is not this: the
+  // terminal/composer stay attached for that, using `runtimeState` — the
+  // server-provided session signal — rather than `blockedByTaskIds` alone.
+  const isBlocked = isTaskBlockedWithoutSession(task);
   // Callers pass resolved blocker summaries; fall back to bare ids so the
   // placeholder stays truthful when a blocker is not in the collections.
   const blockedRefs: readonly BlockerTaskRef[] = blockerTasks.length
@@ -758,6 +818,9 @@ export function TaskScreen({
       {
         mentionedFilesLabel: mentionedFilesActionLabel(activeMentionedFiles),
         ...(previewAvailable ? { previewAvailable: true } : {}),
+        ...(taskCreationPhase === "idle" && onGetArtifact && onReadArtifactFile
+          ? { artifactsAvailable: true }
+          : {}),
         ...(taskCreationPhase !== "idle" ? { taskCreation: true } : {})
       },
       (action: TaskAction) => {
@@ -777,6 +840,9 @@ export function TaskScreen({
             break;
           case "view-diff":
             setDiffModalTaskId(task.id);
+            break;
+          case "open-artifact":
+            setArtifactViewerTaskId(task.id);
             break;
           case "advance-stage":
             onAdvanceTaskStage();
@@ -822,6 +888,13 @@ export function TaskScreen({
       lifecycle.onOpenChange?.(false);
     };
   }, [task.id]);
+
+  /** Opens a named stored artifact reference from the task's latest result (spec §16.8) in the existing artifact viewer. */
+  const openLatestResultArtifact = (reference: ArtifactReference) => {
+    if (reference.type !== "stored") return;
+    setArtifactViewerInitialId(reference.artifactId);
+    setArtifactViewerTaskId(task.id);
+  };
 
   const openCompanion = () => {
     setCompanionModalTaskId(task.id);
@@ -1228,6 +1301,125 @@ export function TaskScreen({
                   {expandedTaskId}
                 </Text>
               </View>
+              {sessionName ? (
+                <Text
+                  accessible={false}
+                  selectable
+                  style={styles.sessionName}
+                  testID={MOBILE_E2E_IDS.taskSessionName}
+                >
+                  {sessionName}
+                </Text>
+              ) : null}
+              {priorSessionHistory.length ? (
+                <View accessible={false}>
+                  <Text
+                    accessible={false}
+                    style={styles.sessionHistoryToggle}
+                    testID={MOBILE_E2E_IDS.taskSessionHistoryToggle}
+                  >
+                    {`History (${priorSessionHistory.length})`}
+                  </Text>
+                  {priorSessionHistory.map((entry) => (
+                    <Text
+                      accessible={false}
+                      key={entry.runId}
+                      selectable
+                      style={styles.sessionHistoryEntry}
+                      testID={MOBILE_E2E_IDS.taskSessionHistoryEntry(entry.runId)}
+                    >
+                      {`${entry.stage}: ${entry.session.name}`}
+                    </Text>
+                  ))}
+                </View>
+              ) : null}
+              {gateParked ? (
+                <Text
+                  accessible={false}
+                  style={styles.gateParked}
+                  testID={MOBILE_E2E_IDS.taskGateParked}
+                >
+                  Waiting for a person to decide
+                </Text>
+              ) : null}
+              {dependencyWait ? (
+                <Text
+                  accessible={false}
+                  style={styles.dependencyNotice}
+                  testID={MOBILE_E2E_IDS.taskDependencyWait}
+                >
+                  {`Waiting on ${dependencyWait.fromStage} → ${dependencyWait.toStage} dependencies`}
+                </Text>
+              ) : null}
+              {supersededDependencies.length ? (
+                <View accessible={false} testID={MOBILE_E2E_IDS.taskDependencySuperseded}>
+                  {supersededDependencies.map((dependency) => (
+                    <Text
+                      accessible={false}
+                      key={`${dependency.upstreamTaskId}:${dependency.upstreamStage}`}
+                      style={styles.dependencyNotice}
+                    >
+                      {`A newer result from ${dependency.upstreamTaskId} (${dependency.upstreamStage}) was not used`}
+                    </Text>
+                  ))}
+                </View>
+              ) : null}
+              {hasLatestResult && latestRun ? (
+                <View style={styles.latestResult} testID={MOBILE_E2E_IDS.taskLatestResult}>
+                  {latestRun.verdict ? (
+                    <Text
+                      accessible={false}
+                      style={styles.latestResultVerdict}
+                      testID={MOBILE_E2E_IDS.taskLatestResultVerdict}
+                    >
+                      {latestRun.verdict}
+                    </Text>
+                  ) : null}
+                  {latestRun.summary ? (
+                    <Text
+                      accessible={false}
+                      selectable
+                      style={styles.latestResultMessage}
+                      testID={MOBILE_E2E_IDS.taskLatestResultMessage}
+                    >
+                      {latestRun.summary}
+                    </Text>
+                  ) : null}
+                  {latestRun.exit ? (
+                    <Text
+                      accessible={false}
+                      style={styles.latestResultExit}
+                      testID={MOBILE_E2E_IDS.taskLatestResultExit}
+                    >
+                      {`exit: ${latestRun.exit}`}
+                    </Text>
+                  ) : null}
+                  {latestRun.commitStep ? (
+                    <Text
+                      accessible={false}
+                      style={styles.latestResultCommitStep}
+                      testID={MOBILE_E2E_IDS.taskLatestResultCommitStep}
+                    >
+                      {`commit: ${latestRun.commitStep.state}`}
+                    </Text>
+                  ) : null}
+                  {latestRun.artifacts
+                    ? Object.entries(latestRun.artifacts).map(([name, reference]) => (
+                        <Pressable
+                          key={name}
+                          accessibilityLabel={`Open artifact ${name}`}
+                          accessibilityRole="button"
+                          disabled={reference.type !== "stored"}
+                          style={styles.latestResultArtifactChip}
+                          testID={MOBILE_E2E_IDS.taskLatestResultArtifact(name)}
+                          onPress={() => openLatestResultArtifact(reference)}
+                        >
+                          <Text style={styles.latestResultArtifactChipLabel}>{name}</Text>
+                        </Pressable>
+                      ))
+                    : null}
+                </View>
+              ) : null}
             </>
           ) : (
             <>
@@ -1653,6 +1845,19 @@ export function TaskScreen({
           }
         />
       ) : null}
+      {artifactViewerTaskId === task.id && onGetArtifact && onReadArtifactFile ? (
+        <ArtifactViewer
+          repoId={task.repoId}
+          initialArtifactId={artifactViewerInitialId ?? undefined}
+          getArtifact={onGetArtifact}
+          readArtifactFile={onReadArtifactFile}
+          actions={artifactActions}
+          onClose={() => {
+            setArtifactViewerTaskId(null);
+            setArtifactViewerInitialId(null);
+          }}
+        />
+      ) : null}
       {previewModalTaskId === task.id ? (
         <TaskPreviewModal
           ports={previewPorts}
@@ -1942,6 +2147,76 @@ const styles = StyleSheet.create({
     color: "#9BB0CC",
     fontSize: 11,
     lineHeight: 16
+  },
+  latestResult: {
+    borderTopColor: "#22304D",
+    borderTopWidth: 1,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 8,
+    paddingTop: 8
+  },
+  latestResultVerdict: {
+    color: "#D5DEEC",
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.4,
+    textTransform: "uppercase"
+  },
+  latestResultMessage: {
+    color: "#D5DEEC",
+    flexBasis: "100%",
+    fontSize: 12,
+    lineHeight: 16
+  },
+  latestResultExit: {
+    color: "#9BB0CC",
+    fontSize: 11
+  },
+  latestResultArtifactChip: {
+    backgroundColor: "#1B2740",
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2
+  },
+  latestResultArtifactChipLabel: {
+    color: "#7FA7D9",
+    fontSize: 11
+  },
+  latestResultCommitStep: {
+    color: "#9BB0CC",
+    fontSize: 11
+  },
+  sessionName: {
+    color: "#9BB0CC",
+    fontSize: 11,
+    marginTop: 4
+  },
+  sessionHistoryToggle: {
+    color: "#7FA7D9",
+    fontSize: 11,
+    marginTop: 2
+  },
+  sessionHistoryEntry: {
+    color: "#9BB0CC",
+    fontSize: 11,
+    marginTop: 2
+  },
+  gateParked: {
+    backgroundColor: "#3A2E12",
+    borderRadius: 4,
+    color: "#E0B84B",
+    fontSize: 12,
+    fontWeight: "600",
+    marginTop: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4
+  },
+  dependencyNotice: {
+    color: "#9BB0CC",
+    fontSize: 11,
+    marginTop: 4
   },
   /**
    * The badge is a flag, so it is a glyph beside the stage. Font scaling is off

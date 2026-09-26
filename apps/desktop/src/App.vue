@@ -452,6 +452,7 @@ const appTaskNavigation = useAppTaskNavigation({
   openPeerPicker,
   openPairPeerPicker,
   pullSelectedWorkspaceTask: appTaskTransfer.pullSelectedWorkspaceTask,
+  openArtifact: (repoId: string) => appModals.openArtifact(repoId),
 });
 function closeSelectedWorkspaceTask(): Promise<boolean> {
   return closeSelectedWorkspaceTaskRaw(

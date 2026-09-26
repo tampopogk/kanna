@@ -1,0 +1,40 @@
+{
+  "$schema": "./schema.json",
+  "name": "release",
+  "description": "The release workflow a repository's merge master runs: merge window -> QA gauntlet -> ship staging -> soak -> ship production. Kanna binds it when it claims the merge master through a merge handoff or a merge signal; it is never created by name. Every transition is manual: the gauntlet and the soak are stages without a role that park for a person, and no stage prompt authorizes a publish, so the ship agent reports what would ship unless a person authorizes an operation in its session.",
+  "visibility": "internal",
+  "routing": "exits",
+  "stages": [
+    {
+      "name": "in progress",
+      "description": "Merge window: the merge master takes reviewed pull requests as handoffs arrive and merges what the repository's policy accepts. It keeps the stage name every merge master has run under, so a live merge master moves onto this workflow without renaming its stage.",
+      "agent": "merge",
+      "prompt": "$TASK_PROMPT",
+      "policy": { "transition": "manual" }
+    },
+    {
+      "name": "qa gauntlet",
+      "description": "The window's merges go through the repository's long-running verification. A repository adds the setup that starts it; a person advances once it has passed.",
+      "policy": { "transition": "manual" }
+    },
+    {
+      "name": "ship staging",
+      "description": "The shipping agent reports what would ship to staging through the repository's declared release procedure.",
+      "agent": "ship",
+      "prompt": "Programmatic mode. Report what would ship to staging from the work this release's merge window merged: use only the repository's declared read-only status and dry-run surfaces, then record your result. This prompt authorizes no publish, deployment, rollback or release-branch change; a person who wants one asks for it in this session.",
+      "policy": { "transition": "manual" }
+    },
+    {
+      "name": "soak",
+      "description": "Staging soaks for the period the repository's release procedure sets. Kanna runs no timer; a person advances when the soak is over.",
+      "policy": { "transition": "manual" }
+    },
+    {
+      "name": "ship production",
+      "description": "The shipping agent reports what a production promotion of the soaked release would ship.",
+      "agent": "ship",
+      "prompt": "Programmatic mode. Report what a production promotion of the soaked staging release would ship: use only the repository's declared read-only status and dry-run surfaces, then record your result. This prompt authorizes no production operation; production requires the request of a named human in this session, as your definition says.",
+      "policy": { "transition": "manual" }
+    }
+  ]
+}

@@ -68,6 +68,18 @@ pub(crate) async fn execute_catalog_request(
     machine_id: Option<&str>,
     client_tool_names: &[String],
 ) -> Result<Value, String> {
+    // Before anything is created: a server that predates stage dependencies
+    // would ignore them and start an ungated task.
+    if kanna_tool_catalog::requires_stage_dependencies(&request) {
+        let status = get_routed_json(base_url, "/v1/status", machine_id).await?;
+        kanna_tool_catalog::confirm_stage_dependencies_supported(&status)?;
+    }
+    // Likewise a server without subtask joins has no join routes, which must
+    // not read as a parent with nothing to wait on.
+    if kanna_tool_catalog::requires_subtask_joins(&request) {
+        let status = get_routed_json(base_url, "/v1/status", machine_id).await?;
+        kanna_tool_catalog::confirm_subtask_joins_supported(&status)?;
+    }
     match (request.method, request.kind) {
         (_, ResponseKind::Guide) => request
             .local_response

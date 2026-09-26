@@ -7,8 +7,35 @@ export interface WorkflowEnvironment {
 
 export interface WorkflowStagePolicy {
   transition: "manual" | "auto";
+  /** Legacy routing: how a stage entered by a revision request leaves. */
   revision_transition?: "manual" | "auto";
+  /**
+   * Routing "exits" only: how a stage re-entered by a loop leaves through its
+   * `advance` exit. Defaults to `transition`.
+   */
+  loop_transition?: "manual" | "auto";
+  /**
+   * Routing "exits" only, final stage only: leaving the stage hands the
+   * task's pull request to the repository's merge master, delivering the same
+   * request a legacy approve post sends.
+   */
+  handoff?: "merge";
 }
+
+/**
+ * How a stage's result chooses where the task goes. Absent means "legacy":
+ * success follows the transition policy and a reviewer names a stage through
+ * the revision API under the task-wide `revision_limit`. "exits" opts into
+ * named exits: a result names one of its stage's exits (never a stage), and
+ * each loop spends its destination stage's own `budget`.
+ */
+export type WorkflowRouting = "legacy" | "exits";
+
+/** Every stage's implicit exit to the next stage; never declared. */
+export const ADVANCE_EXIT = "advance";
+
+/** Loops into a stage before a further one parks, when no budget is set. */
+export const DEFAULT_STAGE_BUDGET = 5;
 
 /**
  * Tail work of a stage, injected into the stage's running agent session when
@@ -40,8 +67,25 @@ export interface WorkflowStage {
    */
   agent_provider?: AgentSelection;
   environment?: string;
+  /**
+   * Routing "exits" only: loop exits by name, each mapped to this stage or an
+   * earlier one (e.g. `{ revise: "in progress", replan: "plan" }`).
+   */
+  exits?: Record<string, string>;
+  /** Routing "exits" only: agent loops into this stage before one parks. */
+  budget?: number;
   policy: WorkflowStagePolicy;
   post?: WorkflowPost;
+  /**
+   * Routing "exits" only: the stage's forward transition starts with a commit
+   * step — the live session commits and records its result (or a short commit
+   * session runs in the same workspace), and the transition fires on it.
+   */
+  exit_commit?: boolean;
+  /** Routing "exits" only: commands run in the workspace on entering the stage. */
+  setup?: string[];
+  /** Routing "exits" only: commands run in the workspace on leaving the stage. */
+  teardown?: string[];
 }
 
 export interface WorkflowDefinition {
@@ -64,6 +108,10 @@ export interface WorkflowDefinition {
    * reserved `$PLAN_RESULT` prompt variable for the whole extended workflow.
    */
   plan_context?: WorkflowPlanContext;
+  /** Result routing contract; absent means "legacy". */
+  routing?: WorkflowRouting;
+  /** Routing "exits" only: the budget of a stage that declares none. */
+  budget?: number;
 }
 
 export interface WorkflowPlanContext {

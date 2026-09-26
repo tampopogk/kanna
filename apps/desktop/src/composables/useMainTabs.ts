@@ -22,7 +22,8 @@ export type MainTabKind =
   | "graph"
   | "analytics"
   | "image"
-  | "preview";
+  | "preview"
+  | "artifact";
 
 /**
  * Which shell a `shell` tab runs: the task's worktree (⌘J) or the repository
@@ -61,6 +62,19 @@ export interface MainTabDescriptor {
   shellScope?: ShellTabScope;
   /** `image` tabs: the URL of the image to show. */
   imageUrl?: string;
+  /**
+   * `artifact` tabs: the repository whose artifact store holds the tree, and
+   * the tree id the tab opened at. The identity is the hash, so the tab
+   * restores honestly; the preview listener is minted again on show.
+   */
+  artifactRepoId?: string;
+  artifactId?: string;
+  /**
+   * `artifact` tabs: the tree id on screen when it is not the one the tab
+   * opened at (the reader followed `previous`, or opened another id). The tab
+   * keeps its identity; a restart reopens this version.
+   */
+  artifactShownId?: string;
   /**
    * `file` and `tree` tabs an agent opened through `kanna_open_view`: read
    * this task's content through the server's contained resolution rather than
@@ -132,6 +146,8 @@ export function isRestorableTab(tab: MainTabDescriptor): boolean {
       return false;
     case "preview":
       return typeof tab.portName === "string" && tab.portName.length > 0;
+    case "artifact":
+      return typeof tab.artifactRepoId === "string" && tab.artifactRepoId.length > 0;
     case "editor":
       return Boolean(tab.editorSession && [tab.editorSession.sessionId, tab.editorSession.worktreePath, tab.editorSession.filePath, tab.editorSession.command]
         .every(value => typeof value === "string" && value.length > 0));
@@ -167,6 +183,9 @@ function persistedDescriptor(tab: MainTabDescriptor): MainTabDescriptor {
   if (tab.filePath !== undefined) descriptor.filePath = tab.filePath;
   if (tab.initialLine !== undefined) descriptor.initialLine = tab.initialLine;
   if (tab.shellScope !== undefined) descriptor.shellScope = tab.shellScope;
+  if (tab.artifactRepoId !== undefined) descriptor.artifactRepoId = tab.artifactRepoId;
+  if (tab.artifactId !== undefined) descriptor.artifactId = tab.artifactId;
+  if (typeof tab.artifactShownId === "string" && tab.artifactShownId) descriptor.artifactShownId = tab.artifactShownId;
   return descriptor;
 }
 
@@ -229,6 +248,7 @@ const TAB_SHORTCUT_CONTEXTS: Record<MainTabKind, ShortcutContext> = {
   analytics: "main",
   image: "file",
   preview: "preview",
+  artifact: "preview",
 };
 
 /**
@@ -250,6 +270,8 @@ export function mainTabId(descriptor: MainTabDescriptor): string {
       return `preview:${descriptor.portName ?? ""}`;
     case "image":
       return `image:${descriptor.imageUrl ?? ""}`;
+    case "artifact":
+      return `artifact:${descriptor.artifactRepoId ?? ""}:${descriptor.artifactId ?? ""}`;
     default:
       // One per scope: the diff, the tree, the graph, and analytics.
       return descriptor.kind;
@@ -524,6 +546,14 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     if (tab) tab.reading = reading;
   }
 
+  /** Record the version an artifact tab is showing, so persistence restores it. */
+  function updateArtifactShown(id: string, artifactId: string): void {
+    const tab = tabs.value.find(tab => tab.id === id);
+    if (!tab || tab.kind !== "artifact") return;
+    if (artifactId === tab.artifactId) delete tab.artifactShownId;
+    else tab.artifactShownId = artifactId;
+  }
+
   function isOpen(id: string): boolean {
     return tabs.value.some((tab) => tab.id === id);
   }
@@ -711,6 +741,7 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     split,
     setSplit,
     updateReading,
+    updateArtifactShown,
     tabs,
     activeTabId,
     activeTab,

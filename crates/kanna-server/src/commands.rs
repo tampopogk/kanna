@@ -121,6 +121,17 @@ pub async fn handle_invoke(
                 .resolve_pipeline_item_id(task_id)
                 .map_err(|e| format!("db error: {}", e))?
                 .ok_or_else(|| format!("task not found: {task_id}"))?;
+            // Same guard as every other close path (spec §3), checked before
+            // any session is killed so a refused close changes nothing.
+            let open_children = db
+                .children_blocking_close(&pipeline_item_id)
+                .map_err(|e| format!("db error: {}", e))?;
+            if !open_children.is_empty() {
+                return Err(format!(
+                    "task has open subtasks; close or detach subtasks first: {}",
+                    open_children.join(", ")
+                ));
+            }
             let workspace_teardown =
                 task_creator::prepare_workspace_teardown_for_close(db, config, &pipeline_item_id);
             let has_workspace_teardown = workspace_teardown.is_some();
@@ -180,6 +191,16 @@ pub async fn handle_invoke(
             )?;
             let transition = {
                 let db = Db::open(&config.db_path).map_err(|e| format!("db error: {}", e))?;
+                // Leaving a stage with no role records its result with the
+                // operator's verified channel; this command path carries
+                // none, so it leaves that to the task advance route.
+                if task_creator::current_stage_is_roleless(&db, task_id).unwrap_or(false) {
+                    return Err(format!(
+                        "task {task_id} is at a stage with no role; advance it through \
+                         POST /v1/tasks/{task_id}/actions/advance-stage, which records who \
+                         left it"
+                    ));
+                }
                 task_creator::prepare_advance_stage_for_api_with_intent(
                     &db,
                     config,
@@ -210,6 +231,16 @@ pub async fn handle_invoke(
                     )
                     .await?;
                     serde_json::to_value(dispatched).map_err(|e| format!("serialize error: {}", e))
+                }
+                task_creator::PreparedStageTransition::Gate(prepared) => {
+                    let entered = task_creator::enter_prepared_gate_for_api(
+                        &config.db_path,
+                        daemon,
+                        replacements,
+                        *prepared,
+                    )
+                    .await?;
+                    serde_json::to_value(entered).map_err(|e| format!("serialize error: {}", e))
                 }
                 task_creator::PreparedStageTransition::Close {
                     task_id,

@@ -1,5 +1,12 @@
+import { readFileSync } from "node:fs";
 import { describe, it, expect } from "vitest";
-import { parseWorkflowJson, validateWorkflow } from "./workflow-loader";
+import {
+  parseWorkflowJson,
+  validateWorkflow,
+  WORKFLOW_POST_KEYS,
+  WORKFLOW_ROOT_KEYS,
+  WORKFLOW_STAGE_KEYS,
+} from "./workflow-loader";
 
 describe("parseWorkflowJson", () => {
   it("parses valid workflow JSON", () => {
@@ -652,5 +659,123 @@ describe("plan context", () => {
     expect(() =>
       parseWorkflowJson(JSON.stringify({ ...base, plan_context: { source_run_id: "run-1" } }))
     ).toThrow(/invalid plan_context/);
+  });
+});
+
+describe("named-exit routing (parity with the server loader)", () => {
+  interface RoutingFixture {
+    name: string;
+    valid: boolean;
+    rejects?: string;
+    definition: unknown;
+  }
+  const fixtures = (
+    JSON.parse(readFileSync(new URL("./routing-fixtures.json", import.meta.url), "utf8")) as {
+      cases: RoutingFixture[];
+    }
+  ).cases;
+
+  for (const fixture of fixtures) {
+    it(`${fixture.valid ? "accepts" : "refuses"} ${fixture.name}`, () => {
+      const parse = () => parseWorkflowJson(JSON.stringify(fixture.definition));
+      if (fixture.valid) {
+        expect(parse).not.toThrow();
+      } else {
+        expect(parse).toThrow(fixture.rejects);
+      }
+    });
+  }
+
+  it("keeps the named-exit fields a routed workflow declares", () => {
+    const parsed = parseWorkflowJson(JSON.stringify(fixtures[0].definition));
+    expect(parsed.routing).toBe("exits");
+    expect(parsed.budget).toBe(4);
+    const review = parsed.stages.find((stage) => stage.name === "review");
+    expect(review?.exits).toEqual({ revise: "in progress", replan: "plan" });
+    expect(review?.budget).toBe(3);
+    expect(parsed.stages.find((stage) => stage.name === "in progress")?.policy).toEqual({
+      transition: "auto",
+      loop_transition: "auto",
+    });
+  });
+
+  it("names exactly the keys the bundled schema defines", () => {
+    const schema = JSON.parse(
+      readFileSync(new URL("../../../../.kanna/workflows/schema.json", import.meta.url), "utf8"),
+    );
+    const keys = (node: { properties: Record<string, unknown> }) => Object.keys(node.properties).sort();
+    expect([...WORKFLOW_ROOT_KEYS].sort()).toEqual(keys(schema));
+    expect([...WORKFLOW_STAGE_KEYS].sort()).toEqual(keys(schema.properties.stages.items));
+    expect([...WORKFLOW_POST_KEYS].sort()).toEqual(keys(schema.properties.stages.items.properties.post));
+  });
+
+  it("loads the release workflow the merge master runs, as the server does", () => {
+    // task_creator/tests/stage.rs asserts the same shape through the server
+    // loader.
+    const release = parseWorkflowJson(
+      readFileSync(new URL("../../../../.kanna/workflows/release.json", import.meta.url), "utf8"),
+    );
+    expect(release.name).toBe("release");
+    expect(release.routing).toBe("exits");
+    expect(
+      release.stages.map((stage) => [stage.name, stage.agent ?? null, stage.policy?.transition]),
+    ).toEqual([
+      ["in progress", "merge", "manual"],
+      ["qa gauntlet", null, "manual"],
+      ["ship staging", "ship", "manual"],
+      ["soak", null, "manual"],
+      ["ship production", "ship", "manual"],
+    ]);
+    expect(release.stages[0].prompt).toBe("$TASK_PROMPT");
+    expect(release.stages.some((stage) => stage.policy?.handoff !== undefined)).toBe(false);
+  });
+
+  it("loads the T10d intake lineup (shaped, planned, designed) as the server does", () => {
+    // Loader parity with task_creator/tests/stage.rs's
+    // builtin_{shaped,planned,designed}_workflow_* assertions.
+    const shaped = parseWorkflowJson(
+      readFileSync(new URL("../../../../.kanna/workflows/shaped.json", import.meta.url), "utf8"),
+    );
+    expect(shaped.routing).toBe("exits");
+    expect(shaped.stages.map((stage) => stage.name)).toEqual(["in progress", "review", "pr"]);
+    expect(shaped.stages.find((stage) => stage.name === "review")?.exits).toEqual({
+      revise: "in progress",
+    });
+    expect(shaped.stages.find((stage) => stage.name === "pr")?.policy.handoff).toBe("merge");
+
+    const planned = parseWorkflowJson(
+      readFileSync(new URL("../../../../.kanna/workflows/planned.json", import.meta.url), "utf8"),
+    );
+    expect(planned.stages.map((stage) => stage.name)).toEqual(["plan", "in progress", "review", "pr"]);
+    expect(planned.stages.find((stage) => stage.name === "review")?.exits).toEqual({
+      revise: "in progress",
+      replan: "plan",
+    });
+
+    const designed = parseWorkflowJson(
+      readFileSync(new URL("../../../../.kanna/workflows/designed.json", import.meta.url), "utf8"),
+    );
+    expect(designed.stages.map((stage) => stage.name)).toEqual([
+      "mockup",
+      "stakeholder",
+      "plan",
+      "in progress",
+      "review",
+      "pr",
+      "pr-review",
+    ]);
+    const stakeholder = designed.stages.find((stage) => stage.name === "stakeholder");
+    expect(stakeholder?.agent).toBeUndefined();
+    expect(stakeholder?.exits).toBeUndefined();
+    expect(designed.stages.find((stage) => stage.name === "pr-review")?.policy.handoff).toBe("merge");
+  });
+
+  it("ships a schema example that loads", () => {
+    const schema = JSON.parse(
+      readFileSync(new URL("../../../../.kanna/workflows/schema.json", import.meta.url), "utf8"),
+    ) as { examples: unknown[] };
+    for (const example of schema.examples) {
+      expect(() => parseWorkflowJson(JSON.stringify(example))).not.toThrow();
+    }
   });
 });

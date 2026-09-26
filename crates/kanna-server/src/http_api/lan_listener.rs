@@ -74,6 +74,7 @@ async fn handle_invoke(
     let response = super::routes::dispatch_authenticated_lan_http_invoke(
         state,
         source.source_desktop_id,
+        source.verified_account_uid,
         &request.method,
         &request.path,
         request.body,
@@ -91,6 +92,7 @@ async fn handle_invoke(
 #[cfg(test)]
 pub(super) async fn handle_invoke_for_test(
     source_desktop_id: &str,
+    verified_account_uid: Option<&str>,
     state: State<Arc<AppState>>,
     request: serde_json::Value,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
@@ -99,6 +101,7 @@ pub(super) async fn handle_invoke_for_test(
     handle_invoke(
         LanMachineInvokeAuthenticated {
             source_desktop_id: source_desktop_id.to_string(),
+            verified_account_uid: verified_account_uid.map(str::to_string),
         },
         state,
         Json(request),
@@ -246,6 +249,101 @@ mod tests {
             lan_routing_port: 4460,
             activity_event_debounce_seconds: 300,
             pairing_store_path: dir.join("pairings.json").to_string_lossy().into_owned(),
+        }
+    }
+
+    /// The whole gateway, extractor through body: the bearer secret is
+    /// verified from the headers under the account current then, and the
+    /// body is read afterwards. The body stream below signals when it is
+    /// first polled - which is only after `LanMachineInvokeAuthenticated`
+    /// has run - and holds the body back until the account has been changed,
+    /// so each case lands the change exactly in that window.
+    ///
+    /// Whatever the account does in that window, an admitted caller is then
+    /// refused as legacy access (`secure_channel::LEGACY_PEER_ACCESS_ALLOWED`)
+    /// and nothing is dispatched; `mutation_provenance` covers the account
+    /// check the dispatch itself makes. Headers never name an account: forged
+    /// account/channel headers change nothing, and a device id or secret that
+    /// is not the verified pair is refused before any body is read.
+    #[tokio::test]
+    async fn an_account_switch_between_verification_and_dispatch_refuses_the_invoke() {
+        use futures_util::StreamExt as _;
+        use tower::ServiceExt as _;
+
+        let config = test_config("lan-switch-target");
+        let state = Arc::new(AppState::new(config.clone()));
+        state.set_authenticated_account_uid(Some("uid-a".to_string()));
+        let now_ms = crate::machine_trust::unix_time_ms().unwrap();
+        let mut store = crate::machine_trust::MachineTrustStore::default();
+        store.accept_inbound(
+            "desk-src",
+            &crate::pairing::hash_device_secret("s3cret"),
+            "uid-a",
+            &config.environment,
+            &config.desktop_id,
+            now_ms,
+        );
+        store
+            .save(&config.machine_trust_store_path().unwrap())
+            .unwrap();
+
+        let invoke = serde_json::json!({ "method": "GET", "path": "/v1/tasks/recent" });
+        // (device id, secret, account switched to while the body is held,
+        //  whether the bearer check admits the caller)
+        let cases = [
+            ("desk-src", "s3cret", Some("uid-a"), true),
+            ("desk-src", "s3cret", Some("uid-b"), true),
+            ("desk-src", "s3cret", None, true),
+            // The secret belongs to desk-src; claiming another id proves nothing.
+            ("desk-forged", "s3cret", Some("uid-a"), false),
+            ("desk-src", "not-the-secret", Some("uid-a"), false),
+        ];
+        for (index, (device_id, secret, switch_to, admitted)) in cases.into_iter().enumerate() {
+            state.set_authenticated_account_uid(Some("uid-a".to_string()));
+            let (polled_tx, polled_rx) = tokio::sync::oneshot::channel::<()>();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+            let bytes = serde_json::to_vec(&invoke).unwrap();
+            let body = futures_util::stream::once(async move {
+                let _ = polled_tx.send(());
+                let _ = release_rx.await;
+                Ok::<_, std::io::Error>(bytes)
+            })
+            .boxed();
+            let request = axum::http::Request::post("/invoke")
+                .header("content-type", "application/json")
+                .header(super::super::lan_trust::DEVICE_ID_HEADER, device_id)
+                .header(super::super::lan_trust::DEVICE_SECRET_HEADER, secret)
+                // Forged: nothing reads an account or a channel from a header.
+                .header("x-kanna-account-uid", "uid-a")
+                .header(
+                    "x-kanna-channel-identity",
+                    r#"{"kind":"relayAccount","accountUid":"uid-a"}"#,
+                )
+                .body(axum::body::Body::from_stream(body))
+                .unwrap();
+            let pending = tokio::spawn(router(Arc::clone(&state)).oneshot(request));
+            if admitted {
+                tokio::time::timeout(std::time::Duration::from_secs(5), polled_rx)
+                    .await
+                    .expect("the body is read after the extractor admits the caller")
+                    .unwrap();
+                state.set_authenticated_account_uid(switch_to.map(str::to_string));
+            }
+            let _ = release_tx.send(());
+            let response = pending.await.unwrap().unwrap();
+            assert_eq!(response.status().as_u16(), 401, "case {index}");
+            let text = String::from_utf8(
+                axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap()
+                    .to_vec(),
+            )
+            .unwrap();
+            assert_eq!(
+                text.starts_with("peer_legacy_access_refused"),
+                admitted,
+                "case {index}: {text}"
+            );
         }
     }
 

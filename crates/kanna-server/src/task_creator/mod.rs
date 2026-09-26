@@ -1,4 +1,5 @@
 mod commands;
+mod commit_posts;
 mod definition_cache;
 mod definition_source;
 mod definitions;
@@ -10,6 +11,7 @@ mod merge;
 mod prompt;
 mod provider;
 mod resume;
+mod session;
 pub(crate) use resume::{
     claude_project_slug, claude_projects_dir, home_child, resolve_codex_session_id_in, same_cwd,
 };
@@ -26,9 +28,9 @@ pub(crate) use worktree::generate_task_id;
 pub(crate) use workflow_edit::unknown_workflow_fields;
 
 pub(crate) use workflow_edit::{
-    validate_plan_workflow_extension, validate_task_workflow_replacement,
-    validate_task_workflow_replacement_with_plan_context, PlanContextPolicy,
-    ValidatedWorkflowReplacement,
+    validate_plan_workflow_extension, validate_remaining_plan_replacement,
+    validate_task_workflow_replacement, validate_task_workflow_replacement_with_plan_context,
+    PlanContextPolicy, ValidatedWorkflowReplacement,
 };
 
 #[cfg(test)]
@@ -64,7 +66,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use types::{
     CreatedTask, DeferredStageSetup, ForkedWorkspace, PreparedRunWorkspace, PreparedSessionSpawn,
-    RunWorkspaceSpec, TaskCreationRequest,
+    RevisitedWorkspace, RunWorkspaceSpec, TaskCreationRequest,
 };
 pub(crate) use types::{
     PrepareTaskError, PreparedStageRerun, PreparedStageRunSpawn, PreparedStageTransition,
@@ -75,12 +77,14 @@ use worktree::{
     MergeBranchesError,
 };
 
+pub(crate) use commit_posts::{migrate_commit_posts_to_exit_commit, CommitPostMigration};
 pub(crate) use definitions::ResolvedAgentDefinition;
+pub(crate) use definitions::ADVANCE_EXIT;
 pub(crate) use definitions::DEFAULT_REVISION_LIMIT;
 pub(crate) use environment::{resolve_agent_executable, warm_login_shell_path};
 pub(crate) use lifecycle::{
-    daemon_session_presence, dispatch_prepared_post_for_api, finish_teardown_run,
-    kill_session_replacing, prepared_task_id, prepared_task_worktree,
+    daemon_session_presence, dispatch_prepared_post_for_api, enter_prepared_gate_for_api,
+    finish_teardown_run, kill_session_replacing, prepared_task_id, prepared_task_worktree,
     prune_completion_contexts_on_startup, reconcile_lifecycle_operations_on_startup,
     remove_completion_contexts, rerun_prepared_stage_for_api, resolve_legacy_completion_retry_run,
     rollback_prepared_stage_run_for_api, rollback_prepared_task_for_api,
@@ -94,20 +98,33 @@ pub(crate) use lifecycle::{
 };
 pub(crate) use merge::prepare_merge_agent_for_api;
 pub use merge::run_merge_agent;
+pub(crate) use merge::{
+    migrate_merge_singleton_to_release_workflow, MergeSingletonMigration, MERGE_SINGLETON_WORKFLOW,
+};
 pub(crate) use prompt::RevisionRound;
+pub(crate) use stages::{
+    current_stage_is_roleless, describe_current_stage_exits, exit_leading_to, resolve_result_exit,
+    resolve_stage_budget_limit, task_routes_by_exits, ResolvedResultExit,
+};
 pub(crate) use stages::{
     main_completion_continuation, prepare_advance_stage_for_api_with_intent,
     prepare_fresh_restart_after_rejected_resume, prepare_provider_fallback_for_api,
     prepare_resume_task_for_api, prepare_revision_task_for_api,
     prepare_stage_completion_for_api_with_trigger, resolve_revision_budget, resolve_revision_limit,
-    resolve_stage_transition, stage_declares_merge_approve_post, RevisionBudget,
-    StageAdvanceIntent,
+    resolve_stage_transition, stage_declares_merge_handoff, subtask_join_pending_error,
+    MergeHandoffDeclaration, RevisionBudget, StageAdvanceIntent,
 };
 #[cfg(test)]
 pub(crate) use stages::{prepare_advance_stage_for_api, prepare_stage_completion_for_api};
 pub(crate) use worktree::{local_branch_exists, resolve_current_source_worktree_branch};
 
 pub(crate) const FALLBACK_WORKFLOW_NAME: &str = "no-review";
+
+/// A fresh task id, as task creation generates one — for callers that must
+/// record the id before the task exists (a subtask join's members).
+pub(crate) fn generate_new_task_id() -> Result<String, String> {
+    generate_task_id()
+}
 
 #[derive(Clone, Debug)]
 pub(crate) enum DefinitionLookupError {
@@ -632,6 +649,57 @@ pub(crate) fn resolve_available_agent_providers(
         .map_err(|error| error.to_string())
 }
 
+/// A repository's artifact storage policy, from the same resolved
+/// configuration (committed config plus the machine-local layer) that task
+/// launch uses.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RepoArtifactPolicy {
+    pub(crate) repository_path: Option<String>,
+    pub(crate) retention: crate::artifacts::ArtifactRetention,
+    pub(crate) remote: Option<String>,
+    /// Which file the `remote` in force came from; `None` when no remote is
+    /// configured.
+    pub(crate) remote_source: Option<ArtifactRemoteSource>,
+}
+
+/// The configuration layer an `artifacts.remote` was resolved from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArtifactRemoteSource {
+    /// `.kanna/config.json` at the resolved default-branch snapshot.
+    Committed,
+    /// This machine's `.kanna/config.local.json`.
+    MachineLocal,
+}
+
+pub(crate) fn load_repo_artifact_policy(
+    cache: &RepoDefinitionsCache,
+    repo: &Repo,
+) -> Result<RepoArtifactPolicy, String> {
+    cache
+        .with_definitions(repo, |definitions| {
+            let config = definitions.config();
+            let artifacts = config.artifacts.clone().unwrap_or_default();
+            let remote_source = artifacts.remote.as_ref().map(|_| {
+                if config
+                    .local_override
+                    .as_ref()
+                    .is_some_and(|local| local.wrote_entry("artifacts", "remote"))
+                {
+                    ArtifactRemoteSource::MachineLocal
+                } else {
+                    ArtifactRemoteSource::Committed
+                }
+            });
+            Ok(RepoArtifactPolicy {
+                repository_path: artifacts.repository_path,
+                retention: artifacts.retention.unwrap_or_default(),
+                remote: artifacts.remote,
+                remote_source,
+            })
+        })
+        .map_err(|error| error.to_string())
+}
+
 /// Resolve discovery with the same repository environment and executable rules
 /// as task launch, without creating a task or running its setup commands.
 pub(crate) fn opencode_inventory_context(
@@ -808,6 +876,9 @@ pub(crate) fn prepare_rerun_stage_for_api(
             }
         };
     let current_stage = &current_stage;
+    if workflow.is_roleless_stage(current_stage) {
+        return Err(stages::roleless_restart_refusal(&current_stage.name));
+    }
     let agent = match current_stage.agent.as_deref() {
         Some(agent_name) => Some(definitions.agent(agent_name)?),
         None => None,
@@ -842,7 +913,7 @@ pub(crate) fn prepare_rerun_stage_for_api(
             vars: repo_config.vars.as_ref(),
         },
     );
-    let worktree_path = format!("{}/.kanna-worktrees/{}", repo.path, branch);
+    let worktree_path = session::current_workspace_path(db, &repo.path, task_id, branch);
     let provider_workspace_root = if std::path::Path::new(&worktree_path).is_dir() {
         worktree_path.as_str()
     } else {
@@ -1036,12 +1107,7 @@ pub(crate) fn prepare_rerun_stage_for_api(
         &kanna_server_base_url(config),
         &mut spawn_env,
     )?;
-    let stage_setup = current_stage
-        .environment
-        .as_deref()
-        .and_then(|name| workflow.environments.as_ref()?.get(name))
-        .and_then(|environment| environment.setup.clone())
-        .unwrap_or_default();
+    let stage_setup = current_stage.setup_commands(&workflow);
     let defer_headless_setup = agent_type == AgentSessionType::Agent && !stage_setup.is_empty();
     let stage_run_model = model.clone();
     let resolved_prompt = prompt.clone();
@@ -1078,9 +1144,12 @@ pub(crate) fn prepare_rerun_stage_for_api(
         .resolve_task_terminal_session_id(task_id)
         .map_err(|e| format!("db error: {}", e))?
         .unwrap_or_else(|| task_id.to_string());
+    let session_identity =
+        session::current_session_identity(db, task_id, &stage_name, &worktree_path, branch);
     Ok(PreparedStageRerun {
         task_id: task_id.to_string(),
         session_id,
+        session_identity: Box::new(session_identity),
         stage: current_stage.name.clone(),
         run_kind,
         stage_agent: current_stage.agent.clone(),
@@ -1088,6 +1157,7 @@ pub(crate) fn prepare_rerun_stage_for_api(
         model: stage_run_model,
         effort,
         provider_override,
+        entry_channel: crate::mutation_provenance::ChannelIdentity::Unknown,
         completion_transition: current_stage.policy.transition,
         provider_session_id,
         cwd: worktree_path,
@@ -1231,9 +1301,17 @@ pub(crate) fn prepare_create_task_repair_for_api(
             .resolve_task_terminal_session_id(task_id)
             .map_err(|error| format!("db error: {error}"))?
             .unwrap_or_else(|| task_id.to_string());
+        let session_identity = session::current_session_identity(
+            db,
+            task_id,
+            &resolved.stage_name,
+            &worktree_path,
+            branch,
+        );
         return Ok(Some(PreparedStageRerun {
             task_id: task_id.to_string(),
             session_id,
+            session_identity: Box::new(session_identity),
             stage: resolved.stage_name,
             run_kind: "main",
             stage_agent: resolved.stage_agent,
@@ -1243,6 +1321,7 @@ pub(crate) fn prepare_create_task_repair_for_api(
             // Rebuilding a task's *first* spawn from its creation request:
             // no stage advance, and so no advance-carried override.
             provider_override: None,
+            entry_channel: crate::mutation_provenance::ChannelIdentity::Unknown,
             completion_transition: resolved.stage_transition,
             provider_session_id,
             cwd: worktree_path,
@@ -1361,10 +1440,18 @@ pub(crate) fn prepare_create_task_repair_for_api(
         .resolve_task_terminal_session_id(task_id)
         .map_err(|error| format!("db error: {error}"))?
         .unwrap_or_else(|| task_id.to_string());
+    let session_identity = session::current_session_identity(
+        db,
+        task_id,
+        &resolved.stage_name,
+        &worktree_path,
+        branch,
+    );
 
     Ok(Some(PreparedStageRerun {
         task_id: task_id.to_string(),
         session_id,
+        session_identity: Box::new(session_identity),
         stage: resolved.stage_name,
         run_kind: "main",
         stage_agent: resolved.stage_agent,
@@ -1372,6 +1459,7 @@ pub(crate) fn prepare_create_task_repair_for_api(
         model,
         effort,
         provider_override: None,
+        entry_channel: crate::mutation_provenance::ChannelIdentity::Unknown,
         completion_transition: resolved.stage_transition,
         provider_session_id,
         cwd: worktree_path,
@@ -1456,17 +1544,27 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
     let repository_setup_pending = match &workspace_spec {
         RunWorkspaceSpec::Resume(resume) => resume.repository_setup_pending,
         RunWorkspaceSpec::Recreate { .. } | RunWorkspaceSpec::FinishRecreate { .. } => true,
-        RunWorkspaceSpec::Current | RunWorkspaceSpec::Fork { .. } => false,
+        RunWorkspaceSpec::Current
+        | RunWorkspaceSpec::Fork { .. }
+        | RunWorkspaceSpec::Revisit(_) => false,
     };
+    // The task's current workspace is wherever its record says: after a loop
+    // back, the branch checked out there no longer names the directory.
+    let current_worktree = session::current_workspace_path(db, &repo.path, task_id, branch);
+    let mut workspace_report = None;
     let (workspace, resume_session_id, resumed_from_run_id) = match workspace_spec {
         RunWorkspaceSpec::Fork {
             branch: fork_branch,
+            start_point,
+            report,
         } => {
-            // Fork from the branch actually checked out in the current
-            // worktree (agents may have renamed it — the PR agent does).
-            let start_point =
-                worktree::resolve_current_source_worktree_branch(&repo.path, Some(branch))
-                    .unwrap_or_else(|| branch.to_string());
+            workspace_report = report;
+            // The recorded input commit when there is one. Otherwise fork
+            // from the branch actually checked out in the current worktree
+            // (agents may have renamed it — the PR agent does).
+            let start_point = start_point.unwrap_or_else(|| {
+                resume::current_branch(&current_worktree).unwrap_or_else(|| branch.to_string())
+            });
             let worktree_path = format!("{}/.kanna-worktrees/{}", repo.path, fork_branch);
             create_worktree(&repo.path, &fork_branch, &worktree_path, Some(&start_point))?;
             (
@@ -1476,6 +1574,36 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
                 }),
                 None,
                 None,
+            )
+        }
+        RunWorkspaceSpec::Revisit(revisit) => {
+            workspace_report = revisit.report;
+            // Nothing in the directory changes here. The branch is checked
+            // out by the spawn, after it has stopped the sessions Kanna runs
+            // in this directory (`lifecycle::check_out_revisited_workspace`),
+            // so no process Kanna controls can commit between the check of
+            // the directory and the switch.
+            let (resume_session_id, resumed_from_run_id) = match revisit.resume {
+                Some(resume) => (
+                    Some(resume.provider_session_id),
+                    Some(resume.resumed_from_run_id),
+                ),
+                None => (None, None),
+            };
+            (
+                PreparedRunWorkspace::Revisited(RevisitedWorkspace {
+                    workspace: ForkedWorkspace {
+                        branch: revisit.branch,
+                        worktree_path: revisit.worktree_path,
+                    },
+                    start_point: revisit.start_point,
+                    previous_branch: revisit.previous_branch,
+                    previous_head: revisit.previous_head,
+                    observed_dirty: revisit.observed_dirty,
+                    checked_out: false,
+                }),
+                resume_session_id,
+                resumed_from_run_id,
             )
         }
         RunWorkspaceSpec::Resume(resume) => (
@@ -1488,8 +1616,8 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
         ),
         RunWorkspaceSpec::Recreate {
             branch: restored_branch,
+            worktree_path,
         } => {
-            let worktree_path = format!("{}/.kanna-worktrees/{}", repo.path, restored_branch);
             create_worktree(
                 &repo.path,
                 &restored_branch,
@@ -1534,12 +1662,21 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
         ),
         RunWorkspaceSpec::Current => (PreparedRunWorkspace::Current, None, None),
     };
-    let worktree_path = match &workspace {
-        PreparedRunWorkspace::Forked(workspace)
-        | PreparedRunWorkspace::Resumed(workspace)
-        | PreparedRunWorkspace::Recreated(workspace) => workspace.worktree_path.clone(),
-        PreparedRunWorkspace::Current => format!("{}/.kanna-worktrees/{}", repo.path, branch),
+    let (worktree_path, session_branch) = match workspace.moved_to() {
+        Some(moved) => (moved.worktree_path.clone(), moved.branch.clone()),
+        None => (
+            current_worktree.clone(),
+            resume::current_branch(&current_worktree).unwrap_or_else(|| branch.to_string()),
+        ),
     };
+    let session_identity = session::session_identity(
+        db,
+        task_id,
+        item_stage,
+        &worktree_path,
+        &session_branch,
+        workspace_report,
+    );
 
     let prepared_session = (|| {
         let repo_config = definitions.config();
@@ -1568,14 +1705,7 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
         // session, so rerunning stage setup here would cause eager side
         // effects even when the fallback is never spawned.
         if run_kind != "post" {
-            setup.extend(
-                target_stage
-                    .environment
-                    .as_deref()
-                    .and_then(|name| workflow.environments.as_ref()?.get(name))
-                    .and_then(|environment| environment.setup.clone())
-                    .unwrap_or_default(),
-            );
+            setup.extend(target_stage.setup_commands(workflow));
         }
         let permission_mode = agent
             .as_ref()
@@ -1690,16 +1820,13 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
     ) = match prepared_session {
         Ok(prepared) => prepared,
         Err(error) => {
-            if let PreparedRunWorkspace::Forked(fork) = &workspace {
-                if let Err(rollback_error) =
-                    remove_prepared_worktree(&fork.worktree_path, &fork.branch)
-                {
-                    return Err(format!(
-                        "{error}; fork preparation rollback failed: {rollback_error}"
-                    ));
+            return Err(match lifecycle::roll_back_prepared_workspace(&workspace) {
+                Ok(None) => error,
+                Ok(Some(preserved)) => format!("{error}; {preserved}"),
+                Err(rollback_error) => {
+                    format!("{error}; fork preparation rollback failed: {rollback_error}")
                 }
-            }
-            return Err(error);
+            });
         }
     };
 
@@ -1718,12 +1845,16 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
         effort: stage_run_effort,
         completion_transition,
         trigger,
+        entry_channel: crate::mutation_provenance::ChannelIdentity::Unknown,
+        entry_exit: None,
+        transition_commit: None,
         provider_override,
         feedback,
         provider_session_id,
         resumed_from_run_id,
         replaces_run_id: None,
         resume_fallback_reason: None,
+        session_identity,
         cwd: worktree_path,
         env: spawn_env,
         terminal_prelude: None,
@@ -1733,6 +1864,104 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
         resolved_prompt: final_prompt,
         #[cfg(test)]
         setup_timeout_signal: None,
+    })
+}
+
+/// Prepare entry into a stage with no role (spec §5): fork its workspace
+/// from the triggering result's commit and resolve the setup it runs there.
+/// Nothing is started; `lifecycle::enter_prepared_gate_for_api` runs the
+/// setup and parks the task in the stage without spawning an agent.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::task_creator) fn prepare_gate_entry(
+    db: &Db,
+    config: &Config,
+    repo: &Repo,
+    definitions: &RepoDefinitions,
+    task_id: &str,
+    workflow: &definitions::WorkflowDefinition,
+    target_stage: &WorkflowStage,
+    workspace_spec: RunWorkspaceSpec,
+    branch: &str,
+    departed_stage: &str,
+    trigger: crate::db::StageTrigger,
+) -> Result<types::PreparedGateEntry, String> {
+    let RunWorkspaceSpec::Fork {
+        branch: fork_branch,
+        start_point,
+        report,
+    } = workspace_spec
+    else {
+        return Err(format!(
+            "stage '{}' has no role and is entered only through a fresh workspace",
+            target_stage.name
+        ));
+    };
+    let current_worktree = session::current_workspace_path(db, &repo.path, task_id, branch);
+    let start_point = start_point.unwrap_or_else(|| {
+        resume::current_branch(&current_worktree).unwrap_or_else(|| branch.to_string())
+    });
+    let worktree_path = format!("{}/.kanna-worktrees/{}", repo.path, fork_branch);
+    create_worktree(&repo.path, &fork_branch, &worktree_path, Some(&start_point))?;
+    let workspace = PreparedRunWorkspace::Forked(ForkedWorkspace {
+        branch: fork_branch.clone(),
+        worktree_path: worktree_path.clone(),
+    });
+    let prepared = (|| {
+        let repo_config = definitions.config();
+        let port_env = claim_task_ports(db, task_id, repo_config)?;
+        let env = build_spawn_env(config, task_id, &port_env, &worktree_path, repo_config)?;
+        // A fresh fork runs the repository's worktree setup, then the stage's.
+        let mut setup = repo_config.setup.clone().unwrap_or_default();
+        setup.extend(target_stage.setup_commands(workflow));
+        let session_id = db
+            .resolve_task_terminal_session_id(task_id)
+            .map_err(|e| format!("db error: {e}"))?
+            .unwrap_or_else(|| task_id.to_string());
+        Ok::<_, String>((env, setup, session_id))
+    })();
+    let (env, setup, session_id) = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            return Err(match lifecycle::roll_back_prepared_workspace(&workspace) {
+                Ok(None) => error,
+                Ok(Some(preserved)) => format!("{error}; {preserved}"),
+                Err(rollback_error) => {
+                    format!("{error}; fork preparation rollback failed: {rollback_error}")
+                }
+            });
+        }
+    };
+    let session_identity = session::session_identity(
+        db,
+        task_id,
+        &target_stage.name,
+        &worktree_path,
+        &fork_branch,
+        report,
+    );
+    let workspace_teardown = prepare_workspace_teardown(
+        db,
+        config,
+        repo,
+        definitions,
+        task_id,
+        workflow,
+        departed_stage,
+        branch,
+    );
+    Ok(types::PreparedGateEntry {
+        task_id: task_id.to_string(),
+        session_id,
+        next_stage: target_stage.name.clone(),
+        workspace,
+        cwd: worktree_path,
+        env,
+        setup,
+        session_identity,
+        workspace_teardown,
+        trigger,
+        entry_channel: crate::mutation_provenance::ChannelIdentity::Unknown,
+        entry_exit: None,
     })
 }
 
@@ -1978,13 +2207,22 @@ fn prepare_workspace_teardown_with_extra(
     let port_env = claim_task_ports(db, task_id, repo_config).ok()?;
     let mut spawn_env =
         build_spawn_env(config, task_id, &port_env, &worktree_path, repo_config).ok()?;
-    let session_id = format!("td-{branch}");
     // A durable identity for the detached cleanup session, stamped into its
     // environment so the daemon binds its terminal archive to this run.
     // `build_spawn_env` strips the key precisely so no session inherits
     // another's; teardown gets its own, and deliberately not a completion
     // context — a workspace cleanup records no stage verdict.
     let run_id = generate_failure_run_id(task_id);
+    // One name per teardown operation: the workspace directory it cleans and
+    // the run it is recorded as. A revisited directory can be departed again
+    // while an earlier teardown's supervisor is still waiting, and no two
+    // teardowns may answer to the same name. The run row records the
+    // directory as its cwd, which is how a revisit finds it again.
+    let workspace_name = std::path::Path::new(&worktree_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(branch);
+    let session_id = format!("td-{workspace_name}-{run_id}");
     spawn_env.insert(
         kanna_tool_catalog::KANNA_STAGE_RUN_ID_ENV.to_string(),
         run_id.clone(),
@@ -2064,19 +2302,15 @@ fn stage_environment_teardown(
     workflow: &definitions::WorkflowDefinition,
     stage_name: &str,
 ) -> Vec<String> {
-    let environment_name = match definitions::resolve_stage_position(workflow, stage_name) {
+    match definitions::resolve_stage_position(workflow, stage_name) {
         Some(definitions::StagePosition::Stage(index)) => {
-            workflow.stages[index].environment.as_ref()
+            workflow.stages[index].teardown_commands(workflow)
         }
         Some(definitions::StagePosition::Post { owner }) => {
-            workflow.stages[owner].environment.as_ref()
+            workflow.stages[owner].teardown_commands(workflow)
         }
-        None => None,
-    };
-    environment_name
-        .and_then(|name| workflow.environments.as_ref()?.get(name))
-        .and_then(|environment| environment.teardown.clone())
-        .unwrap_or_default()
+        None => Vec::new(),
+    }
 }
 
 /// Build the daemon spawn for a stage run's agent session. Claude and Copilot
@@ -2170,6 +2404,7 @@ fn build_prepared_session(
                 commands::ProviderSessionBinding::Assign(session_id)
                 | commands::ProviderSessionBinding::Resume(session_id) => session_id.clone(),
             });
+            let ledger = crate::task_store::session_ledger(spawn_env, stage_name);
             let preamble = build_kanna_preamble(
                 &provider,
                 task_id,
@@ -2178,6 +2413,7 @@ fn build_prepared_session(
                 stage_transition,
                 stage_trigger,
                 mcp_config_path.as_deref(),
+                ledger.as_ref(),
             );
             let (prompt, appended_system_prompt) = relocate_agent_instructions(
                 provider,
@@ -2259,6 +2495,7 @@ fn build_prepared_session(
                     worktree_path,
                 )?
             };
+            let ledger = crate::task_store::session_ledger(spawn_env, stage_name);
             let system_prompt = build_kanna_preamble(
                 &provider,
                 task_id,
@@ -2267,6 +2504,7 @@ fn build_prepared_session(
                 stage_transition,
                 stage_trigger,
                 mcp_config_path.as_deref(),
+                ledger.as_ref(),
             );
             (
                 PreparedSessionSpawn::Agent {
@@ -2414,31 +2652,14 @@ pub(crate) fn prepare_singleton_agent_task_for_api(
         None
     };
     let workflow_name = format!("{SINGLETON_WORKFLOW_PREFIX}{agent_name}");
-    let workflow = definitions::WorkflowDefinition {
-        name: Some(workflow_name.clone()),
-        description: None,
-        stages: vec![WorkflowStage {
-            name: "in progress".to_string(),
-            description: None,
-            agent: Some(agent_name.to_string()),
-            prompt: Some("$TASK_PROMPT".to_string()),
-            agent_provider: None,
-            environment: None,
-            policy: WorkflowStagePolicy {
-                transition: WorkflowStageTransition::Manual,
-                revision_transition: None,
-            },
-            post: None,
-        }],
-        environments: None,
-        revision_limit: None,
-        plan_context: None,
-        // Kanna binds this synthetic workflow itself; it is never a listed
-        // choice, and visibility is never consulted on resolution anyway.
-        visibility: definitions::DefinitionVisibility::Internal,
+    // The merge master is claimed onto the repository's release workflow and
+    // runs as its merge window (spec §10). Other singletons keep their
+    // one-stage workflow.
+    let workflow_def = if agent_name == merge::MERGE_AGENT {
+        merge::merge_singleton_workflow_definition(&repo)?
+    } else {
+        synthetic_singleton_workflow_definition(&workflow_name, agent_name)?
     };
-    let workflow_def =
-        serde_json::to_string(&workflow).map_err(|e| format!("serialize error: {}", e))?;
     let display_name = match agent_name {
         "merge" => Some("Merge Master".to_string()),
         "task-manager" => Some("Task Manager".to_string()),
@@ -2480,6 +2701,47 @@ pub(crate) fn prepare_singleton_agent_task_for_api(
             parent_task_id: None,
         },
     )
+}
+
+/// The one-stage workflow a singleton other than the merge master is claimed
+/// onto.
+fn synthetic_singleton_workflow_definition(
+    workflow_name: &str,
+    agent_name: &str,
+) -> Result<String, String> {
+    let workflow = definitions::WorkflowDefinition {
+        name: Some(workflow_name.to_string()),
+        description: None,
+        stages: vec![WorkflowStage {
+            name: "in progress".to_string(),
+            description: None,
+            agent: Some(agent_name.to_string()),
+            prompt: Some("$TASK_PROMPT".to_string()),
+            agent_provider: None,
+            environment: None,
+            exits: None,
+            budget: None,
+            policy: WorkflowStagePolicy {
+                transition: WorkflowStageTransition::Manual,
+                revision_transition: None,
+                loop_transition: None,
+                handoff: None,
+            },
+            post: None,
+            exit_commit: false,
+            setup: None,
+            teardown: None,
+        }],
+        environments: None,
+        revision_limit: None,
+        plan_context: None,
+        routing: Default::default(),
+        budget: None,
+        // Kanna binds this synthetic workflow itself; it is never a listed
+        // choice, and visibility is never consulted on resolution anyway.
+        visibility: definitions::DefinitionVisibility::Internal,
+    };
+    serde_json::to_string(&workflow).map_err(|e| format!("serialize error: {}", e))
 }
 
 pub(crate) fn generate_singleton_task_id() -> Result<String, String> {
@@ -2680,9 +2942,13 @@ completion with status success so Kanna can run the commit post and close this i
             prompt: Some("$TASK_PROMPT".to_string()),
             agent_provider: None,
             environment: None,
+            exits: None,
+            budget: None,
             policy: WorkflowStagePolicy {
                 transition: WorkflowStageTransition::Auto,
                 revision_transition: None,
+                loop_transition: None,
+                handoff: None,
             },
             post: Some(definitions::WorkflowPost {
                 name: "commit".to_string(),
@@ -2693,10 +2959,15 @@ completion with status success so Kanna can run the commit post and close this i
                 )),
                 agent_provider: None,
             }),
+            exit_commit: false,
+            setup: None,
+            teardown: None,
         }],
         environments: None,
         revision_limit: None,
         plan_context: None,
+        routing: Default::default(),
+        budget: None,
         // Kanna binds this synthetic workflow itself; it is never a listed
         // choice, and visibility is never consulted on resolution anyway.
         visibility: definitions::DefinitionVisibility::Internal,
@@ -2745,6 +3016,18 @@ pub(crate) fn create_dormant_task_for_api_with_error(
     db: &Db,
     request: crate::mobile_api::CreateTaskRequest,
     requested_task_id: Option<String>,
+) -> Result<crate::mobile_api::CreateTaskResponse, PrepareTaskError> {
+    create_dormant_task_with_stage_edges(db, request, requested_task_id, &[])
+}
+
+/// Create a task that has not started yet, installing its stage dependency
+/// edges (T4) in the same transaction as its row, so no workspace can start
+/// before every edge into its first stage exists.
+pub(crate) fn create_dormant_task_with_stage_edges(
+    db: &Db,
+    request: crate::mobile_api::CreateTaskRequest,
+    requested_task_id: Option<String>,
+    stage_edges: &[crate::db::NewStageEdge],
 ) -> Result<crate::mobile_api::CreateTaskResponse, PrepareTaskError> {
     let create_intent_json =
         serde_json::to_string(&request).map_err(|e| format!("serialize error: {e}"))?;
@@ -2800,6 +3083,15 @@ pub(crate) fn create_dormant_task_for_api_with_error(
             .first()
             .ok_or_else(|| format!("workflow has no stages: {}", workflow_name))?
     };
+    // A dependent starts in its starting stage's agent session once its
+    // edges allow; a stage with no role (T3) is entered only by a
+    // transition into it, never by a start.
+    if !stage_edges.is_empty() && workflow.is_roleless_stage(stage) {
+        return Err(PrepareTaskError::InvalidRequest(format!(
+            "dependencies cannot start a task in stage '{}': it has no role",
+            stage.name
+        )));
+    }
     let stage_agent = request.agent.clone().or_else(|| stage.agent.clone());
     let agent = if let Some(agent_name) = stage_agent.as_deref() {
         Some(definitions.agent(agent_name)?)
@@ -2901,6 +3193,15 @@ pub(crate) fn create_dormant_task_for_api_with_error(
         .map_err(|error| classify_pipeline_item_insert_error(error, has_requested_task_id))?;
         db.insert_create_task_intent(&task_id, &create_intent_json)
             .map_err(|error| PrepareTaskError::Other(format!("db error: {error}")))?;
+        if !stage_edges.is_empty() {
+            db.insert_stage_edges(&task_id, stage_edges)
+                .map_err(|error| match error {
+                    crate::db::StageEdgeError::Database(error) => {
+                        PrepareTaskError::Other(format!("db error: {error}"))
+                    }
+                    other => PrepareTaskError::InvalidRequest(other.to_string()),
+                })?;
+        }
         Ok::<(), PrepareTaskError>(())
     })?;
 
@@ -2915,6 +3216,34 @@ pub(crate) fn create_dormant_task_for_api_with_error(
         agent_type: agent_type.as_str().to_string(),
         worktree_path: None,
     })
+}
+
+/// Undo a dependency start that was interrupted after its workspace was
+/// recorded but before its first run was: the run row is written before the
+/// daemon is asked to spawn, so no session can exist. The worktree, its
+/// branch and the rows `prepare_start_dormant_task_for_api` wrote are removed
+/// and the task is unstarted again; the edges keep their reserved (or
+/// consumed) inputs, so the start that follows forks from the same commit.
+pub(crate) fn rollback_interrupted_dependency_start(db: &Db, task_id: &str) -> Result<(), String> {
+    let item = db
+        .get_pipeline_item(task_id)
+        .map_err(|e| format!("db error: {}", e))?
+        .ok_or_else(|| format!("task not found: {}", task_id))?;
+    let branch = item
+        .branch
+        .clone()
+        .filter(|branch| !branch.trim().is_empty())
+        .unwrap_or_else(|| format!("task-{}", task_id));
+    if let Some(worktree_path) = db
+        .get_task_worktree_path(task_id)
+        .map_err(|e| format!("db error: {}", e))?
+    {
+        if std::path::Path::new(&worktree_path).exists() {
+            remove_prepared_worktree(&worktree_path, &branch)?;
+        }
+    }
+    db.delete_dormant_task_start_artifacts(task_id, None)
+        .map_err(|e| format!("db error: {}", e))
 }
 
 pub(crate) fn prepare_start_dormant_task_for_api(
@@ -2945,6 +3274,32 @@ pub(crate) fn prepare_start_dormant_task_for_api(
     if item.closed_at.is_some() {
         return Ok(None);
     }
+    // Stage dependency edges (T4) into the stage this task starts in: every
+    // one must be satisfied, the first gives the fork point (the commit its
+    // upstream result recorded) and the rest are listed to the session. With
+    // any such edge the engine merges nothing, whatever legacy blocker
+    // branches the caller passed.
+    let starting_stage = item.stage.clone().unwrap_or_default();
+    // Selected and reserved in one immediate transaction, durable before any
+    // workspace exists: the start records exactly these inputs, a retried or
+    // recovered start reuses them, and an upstream departure afterwards is
+    // recorded as superseding them.
+    let stage_inputs = match db
+        .select_and_reserve_stage_edge_inputs(task_id, &starting_stage, true)
+        .map_err(|e| format!("db error: {}", e))?
+    {
+        Some(inputs) => inputs,
+        None => return Ok(None),
+    };
+    let blocker_branches = if stage_inputs.is_empty() {
+        blocker_branches
+    } else {
+        Vec::new()
+    };
+    let has_stage_edges = !db
+        .list_stage_edges_into(task_id)
+        .map_err(|e| format!("db error: {}", e))?
+        .is_empty();
     let create_request = db
         .get_create_task_intent(task_id)
         .map_err(|error| format!("db error: {error}"))?
@@ -3019,9 +3374,34 @@ pub(crate) fn prepare_start_dormant_task_for_api(
         .unwrap_or_else(|| format!("task-{}", task_id));
     let previous_base_ref = item.base_ref.clone();
     let worktree_path = format!("{}/.kanna-worktrees/{}", repo.path, branch);
-    let base_ref = blocker_branches
-        .first()
-        .cloned()
+    let edge_base = match stage_inputs.first() {
+        Some(base) => match base.input.committed_sha.as_deref() {
+            // Never the upstream's current branch tip: the commit its result
+            // recorded, which must exist in this repository.
+            Some(recorded) => Some(worktree::resolve_commit(&repo.path, recorded).ok_or_else(
+                || {
+                    format!(
+                        "dependency result {} of task {} recorded commit {recorded}, which this \
+                         repository does not have",
+                        base.input.result_id.as_deref().unwrap_or("unknown"),
+                        base.edge.upstream_task_id,
+                    )
+                },
+            )?),
+            None => None,
+        },
+        None => None,
+    };
+    // A task created with stage edges but none into its first stage starts
+    // like any new task: from the base ref it asked for, if any. Legacy
+    // dormant tasks keep ignoring it, as they always have.
+    let requested_base = create_request
+        .as_ref()
+        .filter(|_| has_stage_edges)
+        .and_then(|request| request.base_ref.clone());
+    let base_ref = edge_base
+        .or(requested_base)
+        .or_else(|| blocker_branches.first().cloned())
         .or_else(|| item.base_ref.clone());
     let base_ref = match base_ref {
         Some(base_ref) => Some(base_ref),
@@ -3103,12 +3483,7 @@ pub(crate) fn prepare_start_dormant_task_for_api(
     let max_budget_usd = create_request
         .as_ref()
         .and_then(|request| request.max_budget_usd);
-    let stage_setup = stage
-        .environment
-        .as_deref()
-        .and_then(|name| workflow.environments.as_ref()?.get(name))
-        .and_then(|environment| environment.setup.clone())
-        .unwrap_or_default();
+    let stage_setup = stage.setup_commands(&workflow);
     let setup = new_task_setup_cmds(
         repo_config,
         &stage_setup,
@@ -3199,37 +3574,52 @@ pub(crate) fn prepare_start_dormant_task_for_api(
     let stage_run_effort = effort.clone();
     let mut setup_record = None;
     let resolved_prompt = final_prompt.clone();
-    let (session, provider_session_id) = match build_prepared_session(
-        provider,
-        agent_type,
-        task_id,
-        &stage_name,
-        &workflow_name,
-        Some(stage.policy.transition.as_str()),
-        "unspecified",
-        final_prompt,
-        agent_instructions.map(AgentInstructions::at_prompt_head),
-        model,
-        effort,
-        autocompact,
-        permission_mode,
-        allowed_tools,
-        disallowed_tools,
-        max_turns,
-        max_budget_usd,
-        mcp_config_path,
-        &spawn_env,
-        &worktree_path,
-        &setup,
-        false,
-        &mut setup_record,
-        None,
-        None,
-        repo_config.local_override.as_ref(),
-    ) {
+    let session_dependencies = stage_inputs
+        .iter()
+        .map(crate::db::ConsumedDependency::to_session_input)
+        .collect();
+    let prepared_session = crate::task_store::with_dependency_inputs(session_dependencies, || {
+        build_prepared_session(
+            provider,
+            agent_type,
+            task_id,
+            &stage_name,
+            &workflow_name,
+            Some(stage.policy.transition.as_str()),
+            "unspecified",
+            final_prompt,
+            agent_instructions.map(AgentInstructions::at_prompt_head),
+            model,
+            effort,
+            autocompact,
+            permission_mode,
+            allowed_tools,
+            disallowed_tools,
+            max_turns,
+            max_budget_usd,
+            mcp_config_path,
+            &spawn_env,
+            &worktree_path,
+            &setup,
+            false,
+            &mut setup_record,
+            None,
+            None,
+            repo_config.local_override.as_ref(),
+        )
+    });
+    let (session, provider_session_id) = match prepared_session {
         Ok(prepared) => prepared,
         Err(error) => return Err(rollback_start(error.into())),
     };
+    if !stage_inputs.is_empty() {
+        if let Err(error) = db
+            .record_dependency_start(task_id, &stage_name, &branch, &stage_inputs)
+            .map_err(|e| format!("db error: {}", e))
+        {
+            return Err(rollback_start(error.into()));
+        }
+    }
     let prompt = item.prompt.clone().unwrap_or_default();
     let title = item
         .display_name
@@ -3730,6 +4120,18 @@ fn pin_task_workflow_definition(
     workflow_name: &str,
     stored: Option<&str>,
 ) -> Result<(definitions::WorkflowDefinition, String), String> {
+    // Only the merge singleton's claim pins the release workflow, as its
+    // definition. A task created or switched onto it by name would run a
+    // second merge master beside the claimed one.
+    if stored.is_none_or(|value| value.trim().is_empty())
+        && workflow_name == definitions::RELEASE_WORKFLOW_NAME
+    {
+        return Err(format!(
+            "{workflow_name} is the release workflow the repository's merge master runs; it is \
+             bound when the merge master is claimed through kanna_signal_merge_handoff or \
+             kanna_signal_agent (agent: merge) and cannot be selected by name"
+        ));
+    }
     let workflow = definitions.task_workflow(workflow_name, stored)?;
     let definition_json =
         serde_json::to_string(&workflow).map_err(|e| format!("serialize error: {e}"))?;
@@ -3855,7 +4257,18 @@ restart or repeat work solely because task ownership moved."
                 // active-stage context, including the pinned plan and source
                 // predecessor/revision snapshots.
                 agent_instructions = fresh_session.agent_instructions;
-                fresh_session.prompt
+                // Appended, never prepended: relocated agent instructions are
+                // matched at the head of the prompt.
+                match import.fresh_start_reason.as_deref() {
+                    Some(reason) => format!(
+                        "{}\n\nKanna transferred this task to this machine and started this \
+session fresh because {reason}. The task's recorded results, inputs and stage transitions, \
+including those from before the transfer, are in its ledger (`$KANNA_TASK_LEDGER_PATH`); read \
+what you need there before continuing, and do not repeat work the ledger shows was done.",
+                        fresh_session.prompt
+                    ),
+                    None => fresh_session.prompt,
+                }
             }
         } else {
             original_prompt.clone()
@@ -3979,12 +4392,7 @@ restart or repeat work solely because task ownership moved."
         provider_candidates,
         requested_agent_type: request.agent_type,
         initial_terminal_geometry: request.initial_terminal_geometry,
-        stage_setup: stage
-            .environment
-            .as_deref()
-            .and_then(|name| workflow.environments.as_ref()?.get(name))
-            .and_then(|environment| environment.setup.clone())
-            .unwrap_or_default(),
+        stage_setup: stage.setup_commands(&workflow),
         final_prompt,
         agent_instructions,
         tuning,

@@ -1883,6 +1883,55 @@ export function createCloudLanClient(
       }
       return route.client.resolveTaskFileMentions(route.taskId, mentions);
     },
+    getArtifact: async (repoId, artifactId) => {
+      const route = routeForRepo(repoId);
+      if (route.source === "unavailable") {
+        throw new Error(route.message);
+      }
+      return route.client.getArtifact(route.repoId, artifactId);
+    },
+    readArtifactFile: async (repoId, artifactId, path) => {
+      const route = routeForRepo(repoId);
+      if (route.source === "unavailable") {
+        throw new Error(route.message);
+      }
+      return route.client.readArtifactFile(route.repoId, artifactId, path);
+    },
+    getArtifactRemote: async (repoId) => {
+      const route = routeForRepo(repoId);
+      if (route.source === "unavailable") {
+        throw new Error(route.message);
+      }
+      return route.client.getArtifactRemote(route.repoId);
+    },
+    recordArtifactComment: async (repoId, artifactId, input) => {
+      const route = routeForRepo(repoId);
+      if (route.source === "unavailable") {
+        throw new Error(route.message);
+      }
+      return route.client.recordArtifactComment(route.repoId, artifactId, input);
+    },
+    recordArtifactDecision: async (repoId, artifactId, input) => {
+      const route = routeForRepo(repoId);
+      if (route.source === "unavailable") {
+        throw new Error(route.message);
+      }
+      return route.client.recordArtifactDecision(route.repoId, artifactId, input);
+    },
+    pushArtifact: async (repoId, artifactId, binding) => {
+      const route = routeForRepo(repoId);
+      if (route.source === "unavailable") {
+        throw new Error(route.message);
+      }
+      return route.client.pushArtifact(route.repoId, artifactId, binding);
+    },
+    fetchArtifact: async (repoId, artifactId) => {
+      const route = routeForRepo(repoId);
+      if (route.source === "unavailable") {
+        throw new Error(route.message);
+      }
+      return route.client.fetchArtifact(route.repoId, artifactId);
+    },
     readTaskDiff: async (taskId, request): Promise<TaskDiffContent> => {
       const route = routeForTask(taskId);
       if (route.source === "unavailable") {

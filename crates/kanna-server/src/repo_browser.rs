@@ -508,7 +508,7 @@ fn add_ignore(
 }
 
 #[cfg(unix)]
-fn open_browse_root(path: &Path) -> Result<OwnedFd, BrowseError> {
+pub(crate) fn open_browse_root(path: &Path) -> Result<OwnedFd, BrowseError> {
     openat_owned(
         libc::AT_FDCWD,
         path.as_os_str(),
@@ -518,7 +518,10 @@ fn open_browse_root(path: &Path) -> Result<OwnedFd, BrowseError> {
 }
 
 #[cfg(unix)]
-fn open_directory_from_root(root: &OwnedFd, relative: &Path) -> Result<OwnedFd, BrowseError> {
+pub(crate) fn open_directory_from_root(
+    root: &OwnedFd,
+    relative: &Path,
+) -> Result<OwnedFd, BrowseError> {
     traverse_from_root(root, relative, true)
 }
 
@@ -566,7 +569,10 @@ fn traverse_from_root(
 }
 
 #[cfg(unix)]
-fn open_child(directory: &OwnedFd, name: &std::ffi::OsStr) -> Result<OwnedFd, BrowseError> {
+pub(crate) fn open_child(
+    directory: &OwnedFd,
+    name: &std::ffi::OsStr,
+) -> Result<OwnedFd, BrowseError> {
     openat_owned(
         directory.as_raw_fd(),
         name,
@@ -576,7 +582,7 @@ fn open_child(directory: &OwnedFd, name: &std::ffi::OsStr) -> Result<OwnedFd, Br
 }
 
 #[cfg(unix)]
-fn directory_names(directory: &OwnedFd) -> Result<Vec<std::ffi::OsString>, BrowseError> {
+pub(crate) fn directory_names(directory: &OwnedFd) -> Result<Vec<std::ffi::OsString>, BrowseError> {
     use std::ffi::CStr;
     use std::os::unix::ffi::OsStrExt;
 

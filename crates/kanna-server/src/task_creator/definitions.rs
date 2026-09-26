@@ -42,6 +42,8 @@ pub(super) struct RepoConfig {
     pub(super) stage_order: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) workspace: Option<RepoWorkspaceConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) artifacts: Option<RepoArtifactsConfig>,
     /// Provenance of the machine-local `.kanna/config.local.json` layer merged
     /// over the committed config, or `None` when no local file applies. It is
     /// recorded during resolution rather than read from either file, so it
@@ -53,6 +55,24 @@ pub(super) struct RepoConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub(super) local_override: Option<LocalConfigOverride>,
+}
+
+/// Where this repository's artifact repository lives and which retention
+/// policy new artifact versions record (spec §8). Both fields are optional;
+/// the artifact module supplies the defaults.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub(super) struct RepoArtifactsConfig {
+    #[serde(
+        rename = "repositoryPath",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(super) repository_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) retention: Option<crate::artifacts::ArtifactRetention>,
+    /// The artifact remote: a Git URL or path both sharing homes can reach.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) remote: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -228,7 +248,45 @@ pub(super) struct WorkflowDefinition {
     /// `$PLAN_RESULT` for every stage and post of the extended workflow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) plan_context: Option<WorkflowPlanContext>,
+    /// How results route (spec §5). Absent means legacy, so every snapshot
+    /// pinned before named exits existed reads, serializes and routes exactly
+    /// as it did.
+    #[serde(default, skip_serializing_if = "WorkflowRouting::is_legacy")]
+    pub(super) routing: WorkflowRouting,
+    /// Routing `exits` only: the budget of a stage that declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) budget: Option<i64>,
 }
+
+/// How a stage's result chooses where the task goes.
+///
+/// `Legacy` is today's contract: success follows the stage's transition
+/// policy, and a reviewer names a target *stage* through the revision API
+/// under one task-wide round budget. `Exits` is the target contract: a result
+/// names one of its stage's declared exits (or none, taking the default), and
+/// each loop spends its destination stage's own budget. It is opt-in per
+/// workflow, so a pinned legacy task keeps the adapter it was started under.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WorkflowRouting {
+    #[default]
+    Legacy,
+    Exits,
+}
+
+impl WorkflowRouting {
+    fn is_legacy(&self) -> bool {
+        matches!(self, Self::Legacy)
+    }
+}
+
+/// The exit every stage has: the next stage, under the stage's transition
+/// policy. Never declared, so a workflow cannot remap it.
+pub(crate) const ADVANCE_EXIT: &str = "advance";
+
+/// Agent-chosen loops into a stage before a further one parks the task, for
+/// a routing `exits` workflow that sets no budget (spec §5).
+pub(crate) const DEFAULT_STAGE_BUDGET: i64 = 5;
 
 /// The stamped plan carried by an extended workflow. `result` is the full
 /// recorded stage result of the publishing run, in the same shape
@@ -264,6 +322,73 @@ impl WorkflowDefinition {
     pub(super) fn revision_limit(&self) -> i64 {
         self.revision_limit.unwrap_or(DEFAULT_REVISION_LIMIT)
     }
+
+    /// True when `stage` has no role under named-exit routing (spec §5). A
+    /// legacy stage without `agent` runs the default agent, as it always has.
+    pub(crate) fn is_roleless_stage(&self, stage: &WorkflowStage) -> bool {
+        self.routes_by_exits() && stage.is_roleless()
+    }
+
+    /// True when results route by named exits rather than the legacy
+    /// revision adapter.
+    pub(crate) fn routes_by_exits(&self) -> bool {
+        self.routing == WorkflowRouting::Exits
+    }
+
+    /// Loops back into `stage_name` the task may take before a further one
+    /// parks it: the stage's own budget, else the workflow default, else 5.
+    pub(crate) fn stage_budget(&self, stage_name: &str) -> i64 {
+        self.stages
+            .iter()
+            .find(|stage| stage.name == stage_name)
+            .and_then(|stage| stage.budget)
+            .or(self.budget)
+            .unwrap_or(DEFAULT_STAGE_BUDGET)
+    }
+
+    /// Where `exit` leads from `stage_name`: `Ok(None)` for `advance` (the
+    /// next stage, under the transition policy), `Ok(Some(destination))` for a
+    /// declared loop exit, and an error naming the stage's exits otherwise.
+    pub(crate) fn resolve_exit(
+        &self,
+        stage_name: &str,
+        exit: &str,
+    ) -> Result<Option<String>, String> {
+        if exit == ADVANCE_EXIT {
+            return Ok(None);
+        }
+        let stage = self
+            .stages
+            .iter()
+            .find(|stage| stage.name == stage_name)
+            .ok_or_else(|| format!("stage '{stage_name}' is not a stage of this workflow"))?;
+        stage
+            .exits
+            .as_ref()
+            .and_then(|exits| exits.get(exit))
+            .cloned()
+            .map(Some)
+            .ok_or_else(|| {
+                format!(
+                    "stage '{stage_name}' declares no exit '{exit}'; its exits are {}",
+                    describe_stage_exits(stage)
+                )
+            })
+    }
+}
+
+/// `advance`, then every declared loop exit with its destination.
+pub(crate) fn describe_stage_exits(stage: &WorkflowStage) -> String {
+    std::iter::once(format!("'{ADVANCE_EXIT}'"))
+        .chain(
+            stage
+                .exits
+                .iter()
+                .flatten()
+                .map(|(name, destination)| format!("'{name}' (to '{destination}')")),
+        )
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -279,9 +404,180 @@ pub(super) struct WorkflowStage {
     pub(super) agent_provider: Option<Vec<AgentSelectionEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) environment: Option<String>,
+    /// Routing `exits` only: loop exits by name, each mapped to this stage or
+    /// an earlier one. `advance` is implicit and never listed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) exits: Option<BTreeMap<String, String>>,
+    /// Routing `exits` only: agent-chosen loops into this stage before a
+    /// further one parks the task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) budget: Option<i64>,
     pub(super) policy: WorkflowStagePolicy,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) post: Option<WorkflowPost>,
+    /// Routing `exits` only: this stage's forward transition starts with the
+    /// commit step (spec §5) — the live session is told to commit and record
+    /// its result, or a short commit session runs in the same workspace when
+    /// it is dead — and the transition fires on that result.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) exit_commit: bool,
+    /// Routing `exits` only: commands run in the stage's workspace when the
+    /// stage is entered, after the environment's setup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) setup: Option<Vec<String>>,
+    /// Routing `exits` only: commands run in the stage's workspace when the
+    /// task leaves it, after the environment's teardown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) teardown: Option<Vec<String>>,
+}
+
+/// Prompt variables that carry an earlier result (spec §17, 2026-09-23):
+/// still substituted in user-authored definitions, and deprecated. The
+/// engine delivers the triggering result and the ledger path to every
+/// session instead.
+pub(super) const DEPRECATED_RESULT_VARIABLES: &[&str] =
+    &["PREV_RESULT", "PREV_MAIN_RESULT", "PLAN_RESULT"];
+
+/// The deprecated result variables `text` names (`$NAME` or `${NAME}`), in
+/// the order of [`DEPRECATED_RESULT_VARIABLES`].
+pub(super) fn deprecated_result_variables(text: &str) -> Vec<&'static str> {
+    let mut named = BTreeSet::new();
+    let mut rest = text;
+    while let Some(dollar) = rest.find('$') {
+        rest = &rest[dollar + 1..];
+        let name = match rest.strip_prefix('{') {
+            Some(braced) => braced.split('}').next().unwrap_or(""),
+            None => {
+                let end = rest
+                    .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+                    .unwrap_or(rest.len());
+                &rest[..end]
+            }
+        };
+        named.insert(name.to_string());
+    }
+    DEPRECATED_RESULT_VARIABLES
+        .iter()
+        .copied()
+        .filter(|variable| named.contains(*variable))
+        .collect()
+}
+
+/// The deprecated result variables a workflow's stage and post prompts
+/// name: `(JSON location, variables)`.
+pub(super) fn workflow_result_variables(
+    workflow: &WorkflowDefinition,
+) -> Vec<(String, Vec<&'static str>)> {
+    let mut found = Vec::new();
+    for (index, stage) in workflow.stages.iter().enumerate() {
+        for (location, prompt) in [
+            (format!("/stages/{index}/prompt"), stage.prompt.as_deref()),
+            (
+                format!("/stages/{index}/post/prompt"),
+                stage.post.as_ref().and_then(|post| post.prompt.as_deref()),
+            ),
+        ] {
+            let variables = prompt.map(deprecated_result_variables).unwrap_or_default();
+            if !variables.is_empty() {
+                found.push((location, variables));
+            }
+        }
+    }
+    found
+}
+
+/// One notice per repository definition file and content, when it names a
+/// deprecated result variable. Never an error: the variables still work.
+fn notice_result_variables(path: &str, content: &str, variables: &[&'static str]) {
+    use std::hash::{Hash, Hasher};
+    static NOTICED: std::sync::LazyLock<std::sync::Mutex<BTreeSet<(String, u64)>>> =
+        std::sync::LazyLock::new(Default::default);
+    if variables.is_empty() {
+        return;
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    content.hash(&mut hasher);
+    let first = NOTICED
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .insert((path.to_string(), hasher.finish()));
+    if first {
+        log::info!(
+            "{path} uses deprecated result prompt variables {}: still substituted; sessions receive the triggering result and the task ledger (kanna_guide workflows)",
+            variables
+                .iter()
+                .map(|variable| format!("${variable}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+}
+
+/// Name, agent and prompt of the commit step a stage's `exit_commit` adds to
+/// its forward transition. The name is the run-history label of its run,
+/// unique per stage so recovery resolves the run back to its own stage. It runs through the post delivery machinery (live
+/// session first, a fresh commit session in the same workspace when the
+/// session is dead), but it is a phase of the transition, not a declared post.
+pub(super) fn commit_step_name(stage: &str) -> String {
+    format!("{stage} commit")
+}
+pub(super) const COMMIT_STEP_AGENT: &str = "commit";
+pub(super) const COMMIT_STEP_PROMPT: &str = "The task is leaving this stage. Commit the work \
+     that belongs to this task in this workspace now (leave unrelated local changes alone), then \
+     record your result again: its message is what the next stage receives, so carry forward \
+     what that stage must know about this stage's work and say what you committed. Record \
+     `failure` if task work remains that you cannot safely commit; the task then stays here.";
+
+impl WorkflowStage {
+    /// Names no agent. Only a named-exit workflow reads that as a stage with
+    /// no role; see [`WorkflowDefinition::is_roleless_stage`].
+    fn is_roleless(&self) -> bool {
+        self.agent.is_none()
+    }
+
+    /// The work a forward transition out of this stage runs in the stage's
+    /// session before it fires: the declared post, or the commit step that
+    /// `exit_commit` asks for. A workflow cannot declare both.
+    pub(super) fn transition_post(&self) -> Option<std::borrow::Cow<'_, WorkflowPost>> {
+        if let Some(post) = self.post.as_ref() {
+            return Some(std::borrow::Cow::Borrowed(post));
+        }
+        self.exit_commit.then(|| {
+            std::borrow::Cow::Owned(WorkflowPost {
+                name: commit_step_name(&self.name),
+                description: Some("Commit step of this stage's transition".to_string()),
+                agent: Some(COMMIT_STEP_AGENT.to_string()),
+                prompt: Some(COMMIT_STEP_PROMPT.to_string()),
+                agent_provider: None,
+            })
+        })
+    }
+
+    /// Setup commands entering this stage runs: its environment's, then its
+    /// own.
+    pub(super) fn setup_commands(&self, workflow: &WorkflowDefinition) -> Vec<String> {
+        let mut commands = self
+            .environment
+            .as_deref()
+            .and_then(|name| workflow.environments.as_ref()?.get(name))
+            .and_then(|environment| environment.setup.clone())
+            .unwrap_or_default();
+        commands.extend(self.setup.iter().flatten().cloned());
+        commands
+    }
+
+    /// Teardown commands leaving this stage runs: its environment's, then its
+    /// own.
+    pub(super) fn teardown_commands(&self, workflow: &WorkflowDefinition) -> Vec<String> {
+        let mut commands = self
+            .environment
+            .as_deref()
+            .and_then(|name| workflow.environments.as_ref()?.get(name))
+            .and_then(|environment| environment.teardown.clone())
+            .unwrap_or_default();
+        commands.extend(self.teardown.iter().flatten().cloned());
+        commands
+    }
 }
 
 /// Tail work of a stage, injected into the stage's running agent session when
@@ -306,11 +602,34 @@ pub(super) struct WorkflowStagePolicy {
     pub(super) transition: WorkflowStageTransition,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) revision_transition: Option<WorkflowStageTransition>,
+    /// Routing `exits` only: how a stage re-entered by a loop leaves through
+    /// `advance`. Never set together with `revision_transition`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) loop_transition: Option<WorkflowStageTransition>,
+    /// Routing `exits` only, final stage only: leaving the stage hands the
+    /// task's pull request to the repository's merge master (spec §10, "the
+    /// `pr` stage's `advance` hands to it"). It delivers the request a legacy
+    /// `approve` post sends, through the same pre-close backstop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) handoff: Option<WorkflowHandoff>,
+}
+
+/// Who a stage's transition hands the task's work to. The merge master is the
+/// only receiver this build has.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WorkflowHandoff {
+    Merge,
 }
 
 impl WorkflowStagePolicy {
+    /// How a run entered by a loop (a legacy revision, or a loop exit) leaves
+    /// the stage. The two fields belong to different routing contracts and
+    /// are never both set.
     pub(super) fn revision_transition(&self) -> WorkflowStageTransition {
-        self.revision_transition.unwrap_or(self.transition)
+        self.revision_transition
+            .or(self.loop_transition)
+            .unwrap_or(self.transition)
     }
 }
 
@@ -363,8 +682,7 @@ pub(super) fn resolve_stage_position(
         .iter()
         .position(|stage| {
             stage
-                .post
-                .as_ref()
+                .transition_post()
                 .is_some_and(|post| post.name == stage_name)
         })
         .map(|owner| StagePosition::Post { owner })
@@ -375,18 +693,25 @@ pub(super) fn resolve_stage_position(
 /// tasks parked at a folded post name. Post success always advances, so the
 /// synthetic policy is `auto`.
 pub(super) fn post_as_stage(owner: &WorkflowStage) -> Option<WorkflowStage> {
-    owner.post.as_ref().map(|post| WorkflowStage {
+    owner.transition_post().map(|post| WorkflowStage {
         name: post.name.clone(),
         description: post.description.clone(),
         agent: post.agent.clone(),
         prompt: post.prompt.clone(),
         agent_provider: post.agent_provider.clone(),
         environment: owner.environment.clone(),
+        exits: None,
+        budget: None,
         policy: WorkflowStagePolicy {
             transition: WorkflowStageTransition::Auto,
             revision_transition: None,
+            loop_transition: None,
+            handoff: None,
         },
         post: None,
+        exit_commit: false,
+        setup: None,
+        teardown: None,
     })
 }
 
@@ -401,6 +726,9 @@ struct RawWorkflowDefinition {
     visibility: DefinitionVisibility,
     #[serde(default)]
     plan_context: Option<WorkflowPlanContext>,
+    #[serde(default)]
+    routing: WorkflowRouting,
+    budget: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -412,17 +740,25 @@ struct RawWorkflowStage {
     #[serde(default, deserialize_with = "deserialize_optional_provider_list")]
     agent_provider: Option<Vec<AgentSelectionEntry>>,
     environment: Option<String>,
+    exits: Option<BTreeMap<String, String>>,
+    budget: Option<i64>,
     policy: Option<RawWorkflowStagePolicy>,
     transition: Option<WorkflowStageTransition>,
     mode: Option<RawWorkflowStageExecution>,
     post: Option<RawWorkflowPost>,
     post_action: Option<RawWorkflowPostAction>,
+    #[serde(default)]
+    exit_commit: bool,
+    setup: Option<Vec<String>>,
+    teardown: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
 struct RawWorkflowStagePolicy {
     transition: WorkflowStageTransition,
     revision_transition: Option<WorkflowStageTransition>,
+    loop_transition: Option<WorkflowStageTransition>,
+    handoff: Option<WorkflowHandoff>,
     execution: Option<RawWorkflowStageExecution>,
 }
 
@@ -459,8 +795,16 @@ enum RawWorkflowStageExecution {
 struct AgentFrontmatter {
     name: Option<String>,
     description: Option<String>,
+    /// Alias for `description`: "one sentence" naming the role. `description`
+    /// wins when both are present. Kanna never checks a definition's length
+    /// or shape (spec §12); this is a harmless parsing alias only.
+    role: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_yaml_value")]
     agent_provider: Option<YamlValue>,
+    /// Alias for `agent_provider` ("ordered candidates"). `agent_provider`
+    /// wins when both are present.
+    #[serde(default, deserialize_with = "deserialize_optional_yaml_value")]
+    providers: Option<YamlValue>,
     model: Option<String>,
     effort: Option<String>,
     permission_mode: Option<String>,
@@ -611,8 +955,16 @@ impl RepoDefinitions {
         name: &str,
     ) -> Result<Option<WorkflowDefinition>, String> {
         let path = format!(".kanna/workflows/{name}.json");
+        let noticed = |path: &str, content: &str, workflow: &WorkflowDefinition| {
+            let variables: BTreeSet<&'static str> = workflow_result_variables(workflow)
+                .into_iter()
+                .flat_map(|(_, variables)| variables)
+                .collect();
+            notice_result_variables(path, content, &variables.into_iter().collect::<Vec<_>>());
+        };
         match read_snapshot_utf8(&self.snapshot, &path)? {
             Some(content) => parse_workflow_definition(&content)
+                .inspect(|workflow| noticed(&path, &content, workflow))
                 .map(Some)
                 .map_err(|error| definition_error(&self.snapshot, &path, error)),
             None => {
@@ -622,6 +974,7 @@ impl RepoDefinitions {
                 let legacy_path = format!(".kanna/pipelines/{name}.json");
                 match read_snapshot_utf8(&self.snapshot, &legacy_path)? {
                     Some(content) => parse_workflow_definition(&content)
+                        .inspect(|workflow| noticed(&legacy_path, &content, workflow))
                         .map(Some)
                         .map_err(|error| definition_error(&self.snapshot, &legacy_path, error)),
                     None => compiled_builtin_resource(&path)
@@ -666,6 +1019,11 @@ impl RepoDefinitions {
                 let content = self
                     .expand_partials(&content, &agent_path)
                     .map_err(|error| definition_error(&self.snapshot, &agent_path, error))?;
+                notice_result_variables(
+                    &agent_path,
+                    &content,
+                    &deprecated_result_variables(&content),
+                );
                 definition = Some(
                     parse_agent_definition(&content)
                         .map_err(|error| definition_error(&self.snapshot, &agent_path, error))?,
@@ -703,6 +1061,11 @@ impl RepoDefinitions {
                 let extension = self
                     .expand_partials(&extension, &extension_path)
                     .map_err(|error| definition_error(&self.snapshot, &extension_path, error))?;
+                notice_result_variables(
+                    &extension_path,
+                    &extension,
+                    &deprecated_result_variables(&extension),
+                );
                 apply_agent_extension(&mut definition, &extension)
                     .map_err(|error| definition_error(&self.snapshot, &extension_path, error))?;
                 break;
@@ -1143,6 +1506,35 @@ fn repo_config_from_object(raw: &serde_json::Map<String, serde_json::Value>) -> 
             (env.is_some() || path.is_some()).then_some(RepoWorkspaceConfig { env, path })
         });
 
+    let artifacts = raw
+        .get("artifacts")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|artifacts_raw| {
+            let repository_path = artifacts_raw
+                .get("repositoryPath")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(str::to_string);
+            let retention = artifacts_raw
+                .get("retention")
+                .and_then(serde_json::Value::as_str)
+                .and_then(crate::artifacts::ArtifactRetention::parse);
+            let remote = artifacts_raw
+                .get("remote")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|remote| !remote.is_empty())
+                .map(str::to_string);
+            (repository_path.is_some() || retention.is_some() || remote.is_some()).then_some(
+                RepoArtifactsConfig {
+                    repository_path,
+                    retention,
+                    remote,
+                },
+            )
+        });
+
     RepoConfig {
         // `pipeline` is the retired spelling of the `workflow` key; repo
         // configs written before the rename must keep loading.
@@ -1162,6 +1554,7 @@ fn repo_config_from_object(raw: &serde_json::Map<String, serde_json::Value>) -> 
         reserved_ports: integer_array("reserved_ports", |value| (1..=65535).contains(&value)),
         stage_order: string_array("stage_order"),
         workspace,
+        artifacts,
         local_override: None,
     }
 }
@@ -1308,8 +1701,23 @@ pub(super) fn parse_workflow_definition(content: &str) -> Result<WorkflowDefinit
     reject_explicit_null_workflow_providers(&value)?;
     let raw: RawWorkflowDefinition = serde_json::from_value(value)
         .map_err(|error| format!("invalid workflow definition: {error}"))?;
-    normalize_workflow_definition(raw)
-        .map_err(|error| format!("invalid workflow definition: {error}"))
+    let workflow = normalize_workflow_definition(raw)
+        .map_err(|error| format!("invalid workflow definition: {error}"))?;
+    // A legacy definition keeps its historical tolerance of fields this build
+    // ignores. A named-exit definition opts into a contract whose fields this
+    // build either runs or refuses, so an unknown field there is refused, not
+    // dropped.
+    if workflow.routes_by_exits() {
+        let unknown = super::workflow_edit::unknown_workflow_fields(content);
+        if !unknown.is_empty() {
+            return Err(format!(
+                "invalid workflow definition: routing \"exits\" does not support {} in this \
+                 version of Kanna; remove them rather than rely on them being ignored",
+                unknown.join(", ")
+            ));
+        }
+    }
+    Ok(workflow)
 }
 
 fn reject_explicit_null_workflow_providers(value: &serde_json::Value) -> Result<(), String> {
@@ -1581,6 +1989,10 @@ const BUILTIN_AGENT_RESOURCES: &[(&str, &str)] = &[
         include_str!("../../../../.kanna/agents/plan/AGENT.md"),
     ),
     (
+        ".kanna/agents/mockup/AGENT.md",
+        include_str!("../../../../.kanna/agents/mockup/AGENT.md"),
+    ),
+    (
         ".kanna/agents/merge/AGENT.md",
         include_str!("../../../../.kanna/agents/merge/AGENT.md"),
     ),
@@ -1759,6 +2171,22 @@ const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
         include_str!("../../../../.kanna/workflows/no-review.json"),
     ),
     (
+        "mechanical",
+        include_str!("../../../../.kanna/workflows/mechanical.json"),
+    ),
+    (
+        "shaped",
+        include_str!("../../../../.kanna/workflows/shaped.json"),
+    ),
+    (
+        "planned",
+        include_str!("../../../../.kanna/workflows/planned.json"),
+    ),
+    (
+        "designed",
+        include_str!("../../../../.kanna/workflows/designed.json"),
+    ),
+    (
         "plan-build-review",
         include_str!("../../../../.kanna/workflows/plan-build-review.json"),
     ),
@@ -1786,7 +2214,17 @@ const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
         "specialty-review",
         include_str!("../../../../.kanna/workflows/specialty-review.json"),
     ),
+    (
+        RELEASE_WORKFLOW_NAME,
+        include_str!("../../../../.kanna/workflows/release.json"),
+    ),
 ];
+
+/// The release workflow a repository's merge master runs (spec §10): the
+/// merge singleton is claimed onto it, so its first stage is the merge window
+/// and runs the `merge` agent. It is internal, and task creation by name
+/// refuses it: a second task running it would be a competing merge master.
+pub(crate) const RELEASE_WORKFLOW_NAME: &str = "release";
 
 /// The `visibility` a workflow definition file declares, probed tolerantly for
 /// listing: `workflow_names()` must not fail — or silently drop a name —
@@ -1918,12 +2356,11 @@ fn parse_agent_definition(content: &str) -> Result<AgentDefinition, String> {
         }
         None => AgentFrontmatter::default(),
     };
-
     let definition = AgentDefinition {
         name: fm.name.unwrap_or_default(),
-        description: fm.description.unwrap_or_default(),
+        description: fm.description.or(fm.role).unwrap_or_default(),
         prompt: body.trim().to_string(),
-        agent_providers: parse_agent_providers(fm.agent_provider)?,
+        agent_providers: parse_agent_providers(fm.agent_provider.or(fm.providers))?,
         model: fm.model,
         effort: fm.effort,
         permission_mode: validate_permission_mode(fm.permission_mode)?,
@@ -1945,12 +2382,13 @@ fn parse_agent_extension(content: &str) -> Result<AgentExtension, String> {
 
     let agent_providers = fm
         .agent_provider
+        .or(fm.providers)
         .map(|value| parse_agent_providers(Some(value)))
         .transpose()?;
 
     Ok(AgentExtension {
         prompt: body.trim().to_string(),
-        description: fm.description,
+        description: fm.description.or(fm.role),
         agent_providers,
         model: fm.model,
         effort: fm.effort,
@@ -2084,21 +2522,30 @@ fn normalize_workflow_definition(raw: RawWorkflowDefinition) -> Result<WorkflowD
             prompt,
             agent_provider,
             environment,
+            exits,
+            budget,
             policy,
             transition,
             mode,
             post,
             post_action,
+            exit_commit,
+            setup,
+            teardown,
         } = stage;
 
-        let (transition, revision_transition, continues) = match policy {
+        let (transition, revision_transition, loop_transition, handoff, continues) = match policy {
             Some(policy) => (
                 policy.transition,
                 policy.revision_transition,
+                policy.loop_transition,
+                policy.handoff,
                 matches!(policy.execution, Some(RawWorkflowStageExecution::Continue)),
             ),
             None => (
                 transition.ok_or_else(|| format!("stage {name:?} is missing policy.transition"))?,
+                None,
+                None,
                 None,
                 matches!(mode, Some(RawWorkflowStageExecution::Continue)),
             ),
@@ -2148,11 +2595,18 @@ fn normalize_workflow_definition(raw: RawWorkflowDefinition) -> Result<WorkflowD
             prompt,
             agent_provider,
             environment,
+            exits,
+            budget,
             policy: WorkflowStagePolicy {
                 transition,
                 revision_transition,
+                loop_transition,
+                handoff,
             },
             post,
+            exit_commit,
+            setup,
+            teardown,
         });
     }
 
@@ -2168,7 +2622,7 @@ fn normalize_workflow_definition(raw: RawWorkflowDefinition) -> Result<WorkflowD
         }
     }
 
-    Ok(WorkflowDefinition {
+    let workflow = WorkflowDefinition {
         name: raw.name,
         description: raw.description,
         stages,
@@ -2176,7 +2630,216 @@ fn normalize_workflow_definition(raw: RawWorkflowDefinition) -> Result<WorkflowD
         revision_limit: raw.revision_limit,
         visibility: raw.visibility,
         plan_context: raw.plan_context,
-    })
+        routing: raw.routing,
+        budget: raw.budget,
+    };
+    validate_workflow_routing(&workflow)?;
+    Ok(workflow)
+}
+
+/// The routing contract's own rules (spec §5), checked wherever a definition
+/// is read — a repo file, a replacement, or a pinned snapshot — so a
+/// definition cannot mix the two contracts or reach an exit that goes
+/// nowhere.
+fn validate_workflow_routing(workflow: &WorkflowDefinition) -> Result<(), String> {
+    let uses_exit_fields = workflow.budget.is_some()
+        || workflow.stages.iter().any(|stage| {
+            stage.exits.is_some()
+                || stage.budget.is_some()
+                || stage.policy.loop_transition.is_some()
+        });
+    // `exit_commit` is a property of a stage's transition in either routing
+    // (T13d): a legacy workflow's commit post migrates to it.
+    let uses_transition_fields = workflow
+        .stages
+        .iter()
+        .any(|stage| stage.setup.is_some() || stage.teardown.is_some());
+    for stage in &workflow.stages {
+        if stage.exit_commit && stage.post.is_some() {
+            return Err(format!(
+                "stage '{}': exit_commit is the commit step of this stage's transition and \
+                 cannot be combined with a post",
+                stage.name
+            ));
+        }
+    }
+    let uses_handoff = workflow
+        .stages
+        .iter()
+        .any(|stage| stage.policy.handoff.is_some());
+    if !workflow.routes_by_exits() {
+        if uses_handoff {
+            return Err(
+                "policy.handoff belongs to named-exit routing; declare \"routing\": \"exits\" \
+                 to use it (a legacy workflow hands off through its approve post)"
+                    .into(),
+            );
+        }
+        if uses_exit_fields {
+            return Err(
+                "exits, budget and loop_transition belong to named-exit routing; declare \
+                 \"routing\": \"exits\" to use them"
+                    .into(),
+            );
+        }
+        if uses_transition_fields {
+            return Err(
+                "stage setup/teardown belong to named-exit routing; declare \
+                 \"routing\": \"exits\" to use them (a legacy workflow runs scripts through \
+                 its environments)"
+                    .into(),
+            );
+        }
+        return Ok(());
+    }
+    if workflow.revision_limit.is_some() {
+        return Err(
+            "routing \"exits\" budgets each destination stage (budget); revision_limit is \
+             the legacy task-wide cap and cannot be combined with it"
+                .into(),
+        );
+    }
+    if workflow.plan_context.is_some() {
+        return Err(
+            "routing \"exits\" keeps the plan in the task ledger; plan_context belongs to \
+             legacy plan publication"
+                .into(),
+        );
+    }
+    if let Some(budget) = workflow.budget.filter(|budget| *budget < 0) {
+        return Err(format!("budget must be zero or greater, got {budget}"));
+    }
+    for (index, stage) in workflow.stages.iter().enumerate() {
+        if stage.policy.revision_transition.is_some() {
+            return Err(format!(
+                "stage '{}': routing \"exits\" uses policy.loop_transition; \
+                 revision_transition is the legacy revision policy",
+                stage.name
+            ));
+        }
+        if let Some(budget) = stage.budget.filter(|budget| *budget < 0) {
+            return Err(format!(
+                "stage '{}': budget must be zero or greater, got {budget}",
+                stage.name
+            ));
+        }
+        if stage
+            .agent
+            .as_deref()
+            .is_some_and(|agent| agent.trim().is_empty())
+        {
+            return Err(format!(
+                "stage '{}': agent must name a role; omit it for a stage without a role",
+                stage.name
+            ));
+        }
+        // The handoff runs where the legacy approve post's backstop runs: as
+        // the task closes after its final stage.
+        if stage.policy.handoff.is_some() && index + 1 != workflow.stages.len() {
+            return Err(format!(
+                "stage '{}': policy.handoff runs as the task leaves its final stage; declare it \
+                 on the final stage",
+                stage.name
+            ));
+        }
+        for (field, commands) in [("setup", &stage.setup), ("teardown", &stage.teardown)] {
+            if commands
+                .iter()
+                .flatten()
+                .any(|command| command.trim().is_empty())
+            {
+                return Err(format!(
+                    "stage '{}': {field} commands must not be empty",
+                    stage.name
+                ));
+            }
+        }
+        // A stage with no role enters, runs setup and parks until a person or
+        // manager advances it (spec §5). The shapes that would need a session
+        // to decide something, or a way in this build does not run, are
+        // refused rather than run as something the definition does not say.
+        if stage.is_roleless() {
+            let refuse =
+                |reason: &str| Err(format!("stage '{}' has no role, so {reason}", stage.name));
+            if index == 0 {
+                return refuse(
+                    "it cannot be the first stage yet: task creation starts the first \
+                     stage's agent",
+                );
+            }
+            if stage.policy.transition != WorkflowStageTransition::Manual
+                || stage
+                    .policy
+                    .loop_transition
+                    .is_some_and(|transition| transition != WorkflowStageTransition::Manual)
+            {
+                return refuse(
+                    "it parks until a person or manager advances it; its transition must be \
+                     manual",
+                );
+            }
+            if stage.exits.is_some() {
+                return refuse("no session can name an exit; it declares none");
+            }
+            if stage.exit_commit || stage.post.is_some() {
+                return refuse("no session can run a commit step or post on its way out");
+            }
+            if stage.prompt.is_some() || stage.agent_provider.is_some() {
+                return refuse("it runs no agent; prompt and agent_provider do not apply");
+            }
+        }
+        for (exit, destination) in stage.exits.iter().flatten() {
+            let valid_name = exit
+                .chars()
+                .next()
+                .is_some_and(|first| first.is_ascii_lowercase())
+                && exit.chars().all(|character| {
+                    character.is_ascii_lowercase()
+                        || character.is_ascii_digit()
+                        || character == '_'
+                        || character == '-'
+                });
+            if !valid_name {
+                return Err(format!(
+                    "stage '{}': exit name '{exit}' must be lowercase letters, digits, '_' or '-', \
+                     starting with a letter",
+                    stage.name
+                ));
+            }
+            if exit == ADVANCE_EXIT {
+                return Err(format!(
+                    "stage '{}': '{ADVANCE_EXIT}' is every stage's implicit exit to the next \
+                     stage and cannot be declared",
+                    stage.name
+                ));
+            }
+            // A loop goes back: to this stage or an earlier one. A forward
+            // jump would be a route the linear stage order does not show.
+            match workflow.stages[..=index]
+                .iter()
+                .position(|candidate| &candidate.name == destination)
+            {
+                // A loop re-enters its destination with a new session; a
+                // stage without a role has none to re-enter in this build.
+                Some(target) if workflow.stages[target].is_roleless() => {
+                    return Err(format!(
+                        "stage '{}': exit '{exit}' leads to '{destination}', a stage without a \
+                         role; loops into such a stage are not supported yet",
+                        stage.name
+                    ))
+                }
+                Some(_) => {}
+                None => {
+                    return Err(format!(
+                        "stage '{}': exit '{exit}' leads to '{destination}', which is not this \
+                         stage or an earlier stage of the workflow",
+                        stage.name
+                    ))
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn deserialize_optional_provider_list<'de, D>(

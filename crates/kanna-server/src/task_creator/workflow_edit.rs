@@ -153,8 +153,59 @@ pub(crate) fn validate_task_workflow_replacement_with_plan_context(
     }
     let mut workflow = parse_workflow_definition(&value.to_string())?;
     let prior = parse_stored_workflow_definition(previous)?;
+    // A running session was instructed under its workflow's routing contract
+    // (a legacy reviewer names a stage through the revision API; a named-exit
+    // one names an exit). Switching the contract under it would silently
+    // change what its instructions mean, so the switch waits for a moment
+    // when no run is live.
+    if workflow.routing != prior.routing && runs.iter().any(|run| run.status == "running") {
+        return Err(format!(
+            "cannot change this task's result routing from {:?} to {:?} while a stage run is \
+             running: its session was instructed under the current routing. Replace the \
+             workflow once the run has finished.",
+            prior.routing, workflow.routing
+        ));
+    }
+    if workflow.routes_by_exits() {
+        // The remaining plan is replaced wholesale; the one thing it may not
+        // do is change what the task is doing now (spec §10).
+        let role = |definition: &WorkflowDefinition| {
+            definition
+                .stages
+                .iter()
+                .find(|stage| stage.name == current_stage)
+                .map(|stage| stage.agent.clone())
+        };
+        match (role(&prior), role(&workflow)) {
+            (Some(before), Some(after)) if before != after => {
+                return Err(format!(
+                    "the current stage '{current_stage}' must keep its role: it runs {} and the \
+                     replacement names {}",
+                    before.as_deref().unwrap_or("no agent"),
+                    after.as_deref().unwrap_or("no agent"),
+                ))
+            }
+            (_, None) => {
+                return Err(format!(
+                    "the current stage '{current_stage}' must survive the replacement as a stage"
+                ))
+            }
+            _ => {}
+        }
+    }
     match plan_context {
+        PlanContextPolicy::Stamp(_) if workflow.routes_by_exits() => {
+            return Err(
+                "a named-exit workflow keeps its plan in the task ledger; plan_context is not \
+                 stamped onto it"
+                    .into(),
+            )
+        }
         PlanContextPolicy::Stamp(stamp) => workflow.plan_context = Some(stamp.clone()),
+        // Named-exit routing reads the plan from the ledger, so a legacy stamp
+        // is not carried across a routing switch (the parse above already
+        // refused one authored by the caller).
+        PlanContextPolicy::Preserve if workflow.routes_by_exits() => {}
         PlanContextPolicy::Preserve => {
             if workflow.plan_context.is_some() && workflow.plan_context != prior.plan_context {
                 return Err(
@@ -219,6 +270,21 @@ pub(crate) fn validate_task_workflow_replacement_with_plan_context(
                 "cannot change the main/post ownership of recorded stage '{name}'"
             ));
         }
+    }
+    // A task parked at a stage with no role has no session, and one at a
+    // stage with an agent has no gate run: the current stage keeps which of
+    // the two it is.
+    let roleless = |definition: &WorkflowDefinition| {
+        definition
+            .stages
+            .iter()
+            .find(|stage| stage.name == current_stage)
+            .is_some_and(|stage| definition.is_roleless_stage(stage))
+    };
+    if roleless(&prior) != roleless(&workflow) {
+        return Err(format!(
+            "cannot change whether current stage '{current_stage}' has a role"
+        ));
     }
     let protected: std::collections::BTreeSet<&str> = std::iter::once(current_stage)
         .chain(runs.iter().map(|run| run.stage.as_str()))
@@ -307,6 +373,31 @@ pub(crate) fn validate_task_workflow_replacement_with_plan_context(
         superseded_run_ids,
         changed_execution_stages,
     })
+}
+
+/// Validate the remaining plan a named-exit task's result publishes for itself
+/// (spec §10): the replacement is wholesale, fenced by the caller on the
+/// definition it read, and the only rules are the ordinary replacement ones —
+/// recorded stages keep their names and order, the current stage keeps its
+/// role, and every stage, role and exit resolves. There is no recipe and no
+/// stamped plan: the result that published it is in the ledger.
+pub(crate) fn validate_remaining_plan_replacement(
+    repo: &Repo,
+    value: &Value,
+    previous: &str,
+    current_stage: &str,
+    runs: &[StageRun],
+) -> Result<ValidatedWorkflowReplacement, String> {
+    let prior = parse_stored_workflow_definition(previous)?;
+    let workflow = parse_workflow_definition(&value.to_string())?;
+    if !prior.routes_by_exits() || !workflow.routes_by_exits() {
+        return Err(
+            "a result may replace its task's remaining plan only when both the pinned workflow \
+             and the replacement route by named exits (\"routing\": \"exits\")"
+                .into(),
+        );
+    }
+    validate_task_workflow_replacement(repo, value, previous, current_stage, runs)
 }
 
 /// The stage suffixes a plan stage may publish for its own task.

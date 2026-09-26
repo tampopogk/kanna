@@ -67,6 +67,16 @@ pub(crate) enum Commands {
         #[arg(long)]
         expected_definition: Option<String>,
 
+        /// Named-exit workflows only: one of this stage's exits (`advance`,
+        /// or a declared loop exit such as `revise`). Omit for the default.
+        #[arg(long)]
+        exit: Option<String>,
+
+        /// Optional JSON object naming artifacts this result produced or is
+        /// about, recorded on the result's ledger entry.
+        #[arg(long)]
+        artifacts: Option<String>,
+
         /// Override the local Kanna server base URL
         #[arg(long)]
         server_url: Option<String>,
@@ -575,6 +585,14 @@ pub(crate) enum TaskCommands {
         /// ordinary top-level work and creator/orchestrator ownership.
         #[arg(long)]
         parent_task: Option<String>,
+
+        /// Stage dependency edge `<task>:<stage>[:<dependent stage>]`: this
+        /// task's dependent stage (default: its first) waits until <task>
+        /// leaves <stage> with a success result (its final stage: until it
+        /// closes). Repeat for several, in order; the first edge into the
+        /// first stage gives the fork point.
+        #[arg(long, value_parser = crate::commands::task::parse_stage_dependency)]
+        dependency: Vec<crate::models::StageDependency>,
     },
     /// Request a new revision task from an existing task branch
     RequestRevision {
@@ -1358,6 +1376,8 @@ async fn main() {
             metadata,
             workflow_definition,
             expected_definition,
+            exit,
+            artifacts,
             server_url,
         } => {
             commands::stage_complete::run(
@@ -1367,6 +1387,8 @@ async fn main() {
                 metadata,
                 workflow_definition,
                 expected_definition,
+                exit,
+                artifacts,
                 server_url.as_deref(),
             )
             .await;

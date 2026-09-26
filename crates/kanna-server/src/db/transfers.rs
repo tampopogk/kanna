@@ -546,6 +546,31 @@ impl Db {
         transfer_id: &str,
         task_id: &str,
     ) -> Result<Result<(), String>, rusqlite::Error> {
+        self.claim_task_workflow_for_transfer_checked(transfer_id, task_id, false)
+    }
+
+    /// [`Db::claim_task_workflow_for_transfer`] for a finalization about to
+    /// act on the source: it is also refused while the task has anything
+    /// pending that the transfer would split — an owed transition, an
+    /// operation in flight, an open edge or join
+    /// ([`Db::transfer_state_blocker`]). Checked in the claiming transaction,
+    /// so nothing can become pending between the check and the claim; once
+    /// the claim exists the writers of those states refuse
+    /// ([`Db::refuse_while_transferring`]).
+    pub fn claim_task_workflow_for_transfer_finalization(
+        &self,
+        transfer_id: &str,
+        task_id: &str,
+    ) -> Result<Result<(), String>, rusqlite::Error> {
+        self.claim_task_workflow_for_transfer_checked(transfer_id, task_id, true)
+    }
+
+    fn claim_task_workflow_for_transfer_checked(
+        &self,
+        transfer_id: &str,
+        task_id: &str,
+        refuse_pending_state: bool,
+    ) -> Result<Result<(), String>, rusqlite::Error> {
         self.with_immediate_transaction(|db| {
             let association = db
                 .conn
@@ -622,6 +647,13 @@ impl Db {
                      finish this task here."
                 )));
             }
+            if refuse_pending_state {
+                if let Some(reason) = db.transfer_state_blocker(task_id)? {
+                    return Ok(Err(format!(
+                        "{reason}. The transfer is refused with the source task untouched."
+                    )));
+                }
+            }
             db.conn.execute(
                 "INSERT INTO task_transfer_workflow_claim (pipeline_item_id, transfer_id)
                  VALUES (?, ?)
@@ -632,6 +664,27 @@ impl Db {
             )?;
             Ok(Ok(()))
         })
+    }
+
+    /// Does this transfer still effectively own its source task, by the rule
+    /// claiming uses (`transfer_still_owns_source`)? `false` for no such
+    /// transfer. Disk authority's repair (T13c) keeps such a transfer's row.
+    pub(crate) fn transfer_still_owns_its_source(
+        &self,
+        transfer_id: &str,
+    ) -> Result<bool, rusqlite::Error> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT {} FROM task_transfer AS owner WHERE owner.id = ?",
+                    transfer_still_owns_source("owner")
+                ),
+                [transfer_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .optional()?
+            .unwrap_or(false))
     }
 
     /// Is a transfer holding this task's workflow right now?

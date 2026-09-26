@@ -92,6 +92,14 @@ const OVERRIDABLE_KEYS: &[OverridableKey] = &[
         merge: LocalMerge::Replace,
         validate: validate_string_array,
     },
+    // Where this machine keeps artifact storage, and which artifact remote it
+    // shares through, is plumbing. Merged field by field, so a local
+    // `repositoryPath` keeps the committed `retention`.
+    OverridableKey {
+        name: "artifacts",
+        merge: LocalMerge::Entries,
+        validate: validate_artifacts,
+    },
 ];
 
 /// Provenance of an applied local layer, carried on the resolved
@@ -102,6 +110,13 @@ const OVERRIDABLE_KEYS: &[OverridableKey] = &[
 pub(super) struct LocalConfigOverride {
     path: String,
     keys: Vec<String>,
+    /// Named entries a [`LocalMerge::Entries`] key wrote, as `key.entry`
+    /// (for example `artifacts.remote`), sorted. `keys` says a key was
+    /// touched; this says which of its entries now come from this machine,
+    /// so a caller can attribute one resolved value to its file. Not
+    /// serialized: the recorded provenance shape is unchanged.
+    #[serde(skip)]
+    entries: Vec<String>,
 }
 
 impl LocalConfigOverride {
@@ -115,6 +130,14 @@ impl LocalConfigOverride {
     /// Config keys the local file replaced or merged into, sorted.
     pub(super) fn keys(&self) -> &[String] {
         &self.keys
+    }
+
+    /// Whether the local file wrote the named entry of an entries-merged key,
+    /// e.g. `("artifacts", "remote")`.
+    pub(super) fn wrote_entry(&self, key: &str, entry: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|written| written.split_once('.') == Some((key, entry)))
     }
 }
 
@@ -146,6 +169,7 @@ pub(super) fn apply_local_config_override(
     };
 
     let mut keys = Vec::new();
+    let mut entries = Vec::new();
     for (key, value) in &local {
         // Editors resolve `$schema` for completion; it configures nothing.
         if key == "$schema" {
@@ -187,6 +211,7 @@ pub(super) fn apply_local_config_override(
                 if let (Some(base), Some(overrides)) = (entry.as_object_mut(), value.as_object()) {
                     for (name, value) in overrides {
                         base.insert(name.clone(), value.clone());
+                        entries.push(format!("{canonical_key}.{name}"));
                     }
                 }
             }
@@ -200,9 +225,11 @@ pub(super) fn apply_local_config_override(
         return Ok(None);
     }
     keys.sort();
+    entries.sort();
     Ok(Some(LocalConfigOverride {
         path: path.to_string_lossy().into_owned(),
         keys,
+        entries,
     }))
 }
 
@@ -253,6 +280,42 @@ fn validate_ports(value: &Value) -> Result<(), String> {
                 "entry `{name}` must be a port number between 1 and {}",
                 u16::MAX
             ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_artifacts(value: &Value) -> Result<(), String> {
+    let entries = value.as_object().ok_or_else(|| {
+        "must be an object with optional `repositoryPath`, `retention` and `remote`".to_string()
+    })?;
+    for (name, entry) in entries {
+        match name.as_str() {
+            "repositoryPath" => {
+                if entry.as_str().is_none_or(|path| path.trim().is_empty()) {
+                    return Err("`repositoryPath` must be a non-empty path".to_string());
+                }
+            }
+            "remote" => {
+                if entry.as_str().is_none_or(|remote| remote.trim().is_empty()) {
+                    return Err("`remote` must be a non-empty Git URL or path".to_string());
+                }
+            }
+            "retention" => {
+                if !entry.as_str().is_some_and(|value| {
+                    crate::artifacts::ArtifactRetention::parse(value).is_some()
+                }) {
+                    return Err(format!(
+                        "`retention` must be one of {}",
+                        crate::artifacts::ArtifactRetention::ALL.join(", ")
+                    ));
+                }
+            }
+            other => {
+                return Err(format!(
+                "has unknown field `{other}` (expected `repositoryPath`, `retention` or `remote`)"
+            ))
+            }
         }
     }
     Ok(())
@@ -459,7 +522,7 @@ mod tests {
             "{error}"
         );
         assert!(
-            error.contains("agentProviders, workflow, ports, setup, teardown, test"),
+            error.contains("agentProviders, workflow, ports, setup, teardown, test, artifacts"),
             "{error}"
         );
         assert_eq!(config["vars"], json!({"OWNER": "kanna"}));
@@ -514,6 +577,82 @@ mod tests {
                 error.contains(".kanna/config.local.json"),
                 "{local}: {error}"
             );
+        }
+    }
+
+    #[test]
+    fn artifacts_merge_field_by_field_and_reject_unknown_values() {
+        let temp = tempfile::tempdir().unwrap();
+        write_local(
+            temp.path(),
+            &json!({"artifacts": {"repositoryPath": "/Volumes/fast/artifacts.git"}}).to_string(),
+        );
+        let mut config = committed();
+        config.insert(
+            "artifacts".to_string(),
+            json!({"repositoryPath": "~/committed.git", "retention": "30-days",
+                   "remote": "ssh://team.example/artifacts.git"}),
+        );
+
+        let applied = apply_local_config_override(temp.path(), &mut config)
+            .unwrap()
+            .expect("local artifacts override applies");
+
+        assert_eq!(applied.keys(), ["artifacts"]);
+        // Which entry came from this machine is recorded per entry, so a
+        // committed remote under a local location is still the committed one.
+        assert!(applied.wrote_entry("artifacts", "repositoryPath"));
+        assert!(!applied.wrote_entry("artifacts", "remote"));
+        assert!(!applied.wrote_entry("artifacts", "retention"));
+        // The entry list is provenance for callers, not recorded output.
+        assert_eq!(
+            serde_json::to_value(&applied).unwrap(),
+            json!({"path": applied.path(), "keys": ["artifacts"]})
+        );
+        assert_eq!(
+            config["artifacts"],
+            json!({"repositoryPath": "/Volumes/fast/artifacts.git", "retention": "30-days",
+                   "remote": "ssh://team.example/artifacts.git"}),
+            "a local location must keep the committed retention policy and remote"
+        );
+
+        write_local(
+            temp.path(),
+            &json!({"artifacts": {"remote": "/Volumes/shared/artifacts.git"}}).to_string(),
+        );
+        let applied = apply_local_config_override(temp.path(), &mut config)
+            .unwrap()
+            .expect("local remote override applies");
+        assert!(applied.wrote_entry("artifacts", "remote"));
+        assert!(!applied.wrote_entry("artifacts", "repositoryPath"));
+        assert_eq!(
+            config["artifacts"]["remote"], "/Volumes/shared/artifacts.git",
+            "a local remote replaces only the remote"
+        );
+        assert_eq!(config["artifacts"]["retention"], "30-days");
+
+        for (local, expected) in [
+            (
+                json!({"artifacts": {"retention": "forever"}}),
+                "`retention` must be one of keep, 30-days, discard-on-close",
+            ),
+            (
+                json!({"artifacts": {"repositoryPath": " "}}),
+                "`repositoryPath` must be a non-empty path",
+            ),
+            (
+                json!({"artifacts": {"origin": "ssh://host/a.git"}}),
+                "unknown field `origin`",
+            ),
+            (
+                json!({"artifacts": {"remote": ""}}),
+                "`remote` must be a non-empty Git URL or path",
+            ),
+            (json!({"artifacts": "~/a.git"}), "must be an object"),
+        ] {
+            write_local(temp.path(), &local.to_string());
+            let error = apply_local_config_override(temp.path(), &mut committed()).unwrap_err();
+            assert!(error.contains(expected), "{local}: {error}");
         }
     }
 

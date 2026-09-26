@@ -300,6 +300,17 @@
       ]
     },
     {
+      "name": "kanna_get_task_joins",
+      "description": "Read the subtask joins this task created with kanna_create_subtasks, and whether it is blocked on them. Each join names its baseSha (the parent commit every child forked from) and each member child's state: running, resolved (its outcome — result, closed or not_created — with the child's resultId, status, stage and committedSha, and the inputId it was delivered to this task as), creating, or stalled (no result and no live session: nothing counts it until it is resumed with kanna_resume_task, rerun with kanna_rerun_stage, or closed with kanna_close_task; `actions` lists which apply). Only members count toward a join; other children never satisfy it. Requires a server advertising subtaskJoinsVersion 1.",
+      "method": "GET",
+      "path": "/v1/tasks/{task_id}/joins",
+      "response": "json",
+      "params": [
+        { "name": "machine_id", "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.", "type": "string", "required": false, "location": "routing" },
+        { "name": "task_id", "description": "Task id (stable across stages) or one of the task's branch names (task-{id} or task-{id}-{n}).", "type": "string", "required": true, "location": "path" }
+      ]
+    },
+    {
       "name": "kanna_wait_task",
       "description": "Wait for one task to need reconciliation. The default until=reconcile resolves immediately for observed non-busy runtime that survived the server debounce, including an agent parked without recording a verdict, or for recorded termination — and also the instant the task gains an unresolved blocker, gains an attention badge, or is reported provider-parked or provider-capacity-noticed, even while its agent is still busy: those are durable facts, not a flickering transition, so none of them wait out a settling window the way runtime does. Unread is the one exception: activity stays unread for a busy task too — sending input to a stopped child and immediately waiting on it produces exactly that shape — so unread only resolves reconcile once the runtime is no longer busy; an unconditional unread check would resolve on an actively running agent and keep doing so on every call. Explicit until=finished requires a closed task, terminal latest run, or exited session; until=closed requires closure. Resolving reconcile does not declare success or advance a manual gate. For continuous management use kanna_subscribe_events so observation does not depend on a harness background wait. Bounded waits return the latest detail with waitOutcome=timeout when their window expires.",
       "method": "GET",
@@ -720,7 +731,20 @@
         { "name": "parent_task_id", "description": "Existing durable work-item id to nest this task under as a genuine semantic subtask in a decomposition or fan-out. Omit for ordinary top-level work and when the creator merely owns, assigns, or monitors it.", "type": "string", "required": false, "location": "body", "key": "parentTaskId" },
         { "name": "allowed_tools", "description": "Allow-listed tool names passed to the agent CLI.", "type": "string_array", "required": false, "location": "body", "key": "allowedTools" },
         { "name": "review_context", "description": "For a pull-request review task, the PR this task reviews, as an object: prUrl (required, absolute URL), headSha (required, the exact commit being reviewed), baseRef (required, the branch the PR merges into), and optionally headRepo (owner/name, for a fork PR), headRef (the PR's own head branch), baseSha, producingTaskId and producingMachineId (the Kanna task that produced the PR, when there is one), triageParentTaskId and triageRank (legacy field names for the PR review manager task and accepted review order), and relatedPrUrls (other open PRs touching overlapping files, or the PR this one is stacked on). This is candidate information about the forge and confers NO approval: it exists so the operator's own merge control, and later the merge agent, have a durable PR identity. Without it a review child names only its task-* branch and the local pr/<n> ref it forked from, neither of which the forge can merge. Never put the review task's own branch in headRef.", "type": "object", "required": false, "location": "body", "key": "reviewContext" },
-        { "name": "blocker_task_ids", "description": "Task ids that must finish before this task; it shows as blocked until they do.", "type": "string_array", "required": false, "location": "body", "key": "blockerTaskIds" }
+        { "name": "blocker_task_ids", "description": "Task ids that must finish before this task; it shows as blocked until they do.", "type": "string_array", "required": false, "location": "body", "key": "blockerTaskIds" },
+        { "name": "dependencies", "description": "Stage dependency edges, in order: an array of objects {taskId, stage, dependentStage?}. The new task's dependentStage (default: the stage it starts in) waits until task taskId leaves its stage `stage` with a success result — for that task's final stage, until it closes. The task is created unstarted and enters its first stage once every edge into it is satisfied, forked from the commit the first such edge's result recorded (never the upstream's current branch tip); further first-stage edges are listed to its session to merge itself, and the engine merges nothing. Edges into later stages only hold that stage. A newer upstream result later is announced as task.dependency_superseded and changes nothing. Refused: an unknown task or stage, a cycle, a stage the upstream already left without a recorded success result, and combining with blocker_task_ids.", "type": "object_array", "required": false, "location": "body" }
+      ]
+    },
+    {
+      "name": "kanna_create_subtasks",
+      "description": "Create child tasks of task_id in one join (spec: parallel work is subtasks). Every child forks from task_id's committed HEAD at this call (uncommitted edits are not included), recorded as the join's baseSha; each is a task with its own workspace, branch and session, parented to task_id. The engine then holds task_id: it reads as blocked on the children (blockedByTaskIds, task.blocked) and a successful kanna_complete_stage or kanna_advance_stage is refused until every child in the join has resolved, while its session keeps running. Each child resolves once, on its first recorded result of any status (or on closing without one); that result's message is delivered once into task_id's inputs (source subtask_join, see kanna_task_inputs), announced as task.subtask_result, and typed into its live session. A child whose session dies without a result stays unresolved until resumed, rerun or closed. The engine merges and aggregates nothing — the parent combines the results. Read progress with kanna_get_task_joins. Requires a server advertising subtaskJoinsVersion 1; closing a task with open children is refused.",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/subtasks",
+      "response": "json",
+      "params": [
+        { "name": "machine_id", "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.", "type": "string", "required": false, "location": "routing" },
+        { "name": "task_id", "description": "Task id (stable across stages) or one of the task's branch names (task-{id} or task-{id}-{n}).", "type": "string", "required": true, "location": "path" },
+        { "name": "children", "description": "The children to create, in order: an array of objects {prompt, displayName?, workflowName?, agent?, agentProvider?, model?, effort?, permissionMode?, allowedTools?}, with the same meanings as on kanna_create_task. Repository, parent and fork point are the join's; any other field is refused. At most 32.", "type": "object_array", "required": true, "location": "body" }
       ]
     },
     {
@@ -1013,13 +1037,15 @@
         { "name": "status", "description": "Your verdict on this stage's work. 'success' \u2014 did the work and verified it; the only value that can trigger configured auto-advance. 'unverified' \u2014 did the work but could not prove it; say what is unproven. 'partial' \u2014 did some of the scope; say what remains. 'needs-input' \u2014 stopped because the task as specified does not say enough to proceed; state the specific question. 'declined' \u2014 deliberately did not do it because the premise was wrong, it was already done, or it should not be done; say which. 'failure' \u2014 tried, could not. Everything except 'success' records the result and stops advancement, and none of them is a worse verdict than another: recording 'failure' for work you declined or could only partly verify makes the task history unreadable. Closing a task is a lifecycle action, not a verdict, so there is no 'closed' status.", "type": "string", "required": true, "location": "body", "enum": ["success", "unverified", "partial", "needs-input", "declined", "failure"] },
         { "name": "summary", "description": "Short summary of what happened. Every status except 'success' owes a specific fact: what is unproven (unverified), what remains (partial), the question that blocked you (needs-input), which reason applies (declined), or what stopped you (failure).", "type": "string", "required": true, "location": "body" },
         { "name": "metadata", "description": "Optional structured result data stored on the stage run and readable from task detail's latestRun. PR stages should include pr_url so later stages can resolve the pull request. A pull-request review agent that was not dispatched with a review context may publish or refresh one here as reviewContext, with the same fields kanna_create_task accepts; it is validated and stored on the task, a malformed one is refused rather than dropped, and refreshing it deliberately invalidates any earlier human merge decision taken against the old head. Publishing a review context is not an approval and authorizes nothing.", "type": "object", "required": false, "location": "body" },
-        { "name": "workflow_definition", "description": "Complete replacement pinned workflow that appends this task's remaining stages after the current planning stage, in the same shape kanna_replace_task_workflow takes. Valid only with status 'success', on the task's current main run, when that stage is named 'plan', declares policy.transition 'manual', has no post, and is the final stage of the pinned workflow. The existing stages must survive byte-for-byte as a prefix, and the appended stages must follow a supported recipe -- 'in progress' (+commit post) -> 'pr' (+approve post), or 'in progress' (+commit post) -> 'review' -> 'pr' (+approve post) -- while each stage's agent and agent_provider are yours to choose. A finite positive revision_limit is required. Kanna stamps plan_context onto the stored definition and binds it to $PLAN_RESULT; do not author that field.", "type": "object", "required": false, "location": "body", "key": "workflowDefinition" },
-        { "name": "expected_definition", "description": "Exact workflowDefinition object last read from task detail. Required with workflow_definition; a stale one returns 409 and nothing is recorded.", "type": "object", "required": false, "location": "body", "key": "expectedDefinition" }
+        { "name": "workflow_definition", "description": "Complete replacement pinned workflow publishing this task's remaining stages together with the result, in the same shape kanna_replace_task_workflow takes; valid only with status 'success' on the task's current main run, and fenced on expected_definition. Two contracts, chosen by the pinned workflow. Named-exit workflows (\"routing\": \"exits\"): replaces every stage after the current one, from any stage (not only a final 'plan' stage); the current stage keeps its name and role, every stage, role and exit must resolve, there is no recipe, loops are declared as stage exits under each destination stage's budget, and revision_limit and plan_context are refused -- the plan reaches later sessions through the ledger, not $PLAN_RESULT. Legacy workflows (no routing): the current stage must be named 'plan', declare policy.transition 'manual', have no post, and be the final stage; the existing stages must survive byte-for-byte as a prefix; the appended stages must follow a supported recipe -- 'in progress' (+commit post) -> 'pr' (+approve post), or 'in progress' (+commit post) -> 'review' -> 'pr' (+approve post) -- with each stage's agent and agent_provider yours to choose; a finite positive revision_limit is required; Kanna stamps plan_context onto the stored definition and binds it to $PLAN_RESULT, so do not author that field.", "type": "object", "required": false, "location": "body", "key": "workflowDefinition" },
+        { "name": "expected_definition", "description": "Exact workflowDefinition object last read from task detail. Required with workflow_definition; a stale one returns 409 and nothing is recorded.", "type": "object", "required": false, "location": "body", "key": "expectedDefinition" },
+        { "name": "artifacts", "description": "Optional named artifacts this result produced or is about, recorded in the result's ledger entry: an object mapping a name to either an artifact id from kanna_publish_artifact (a stored artifact in this task's repository) or a reference object {type: 'stored', repoId, artifactId, kind}, {type: 'commit', repoId, sha} or {type: 'pr', url, headSha}. Every stored artifact must still be retained in this task's artifact repository, or the whole result is refused and nothing is recorded. Naming a stored artifact keeps it from retention while this task is open. At most 64 names. A server that predates artifact references refuses nothing but records none.", "type": "object", "required": false, "location": "body" },
+        { "name": "exit", "description": "Only for a task whose workflow declares \"routing\": \"exits\": the name of one of your stage's exits, which says where the task goes -- 'advance' (the next stage, under the stage's transition policy; naming it never operates a manual gate) or a loop exit the stage declares, such as 'revise' or 'replan', which sends the task back to that exit's stage with your message and spends one unit of that stage's budget. You name an exit, never a stage. Omit it to take the default: success advances. Any status other than success parks the task with your message whatever exit you name. When the destination's budget is spent the result is recorded and the task parks for a person. On a workflow without named exits the argument is refused; use kanna_request_revision there. The response's routing field says what happened. On a named-exit task, workflow_definition may replace the task's remaining stages from any stage (fenced on expected_definition; the current stage keeps its role; no recipe or plan_context).", "type": "string", "required": false, "location": "body" }
       ]
     },
     {
       "name": "kanna_request_revision",
-      "description": "Request and schedule a revision on a Kanna task: preparation errors are returned before the review run is closed, while a successful non-exhausted response means the serialized revision transition was accepted and later run/stage events report its durable outcome. Kanna resumes the target stage's previous provider conversation in its worktree when supported, otherwise starts fresh and records why resume was unavailable. Kanna delivers the original task prompt alongside the revision prompt, so focus on required changes. Agent-requested revisions are budgeted per task: revisionBudget reports rounds/limit, and once spent the request starts nothing and parks for its human (revisionBudget.exhausted). After an explicit human instruction to continue, relay it with origin 'human' to use the existing human recovery path and reset the budget; this is caller-declared provenance, not authenticated human identity. Never choose human origin yourself.",
+      "description": "Request and schedule a revision on a Kanna task: preparation errors are returned before the review run is closed, while a successful non-exhausted response means the serialized revision transition was accepted and later run/stage events report its durable outcome. Kanna resumes the target stage's previous provider conversation in its worktree when supported, otherwise starts fresh and records why resume was unavailable. Kanna delivers the original task prompt alongside the revision prompt, so focus on required changes. Agent-requested revisions are budgeted per task: revisionBudget reports rounds/limit, and once spent the request starts nothing and parks for its human (revisionBudget.exhausted). After an explicit human instruction to continue, relay it with origin 'human' to use the existing human recovery path and reset the budget; this is caller-declared provenance, not authenticated human identity. Never choose human origin yourself. On a task whose workflow routes by named exits (\"routing\": \"exits\") an agent-origin request is refused: record your result with kanna_complete_stage and name one of your stage's exits instead; a relayed human request still sends the task back and resets that destination stage's budget.",
       "method": "POST",
       "path": "/v1/tasks/{task_id}/actions/request-revision",
       "response": "json",
@@ -1031,6 +1057,308 @@
         { "name": "prompt", "description": "Instructions for the revising agent. Kanna delivers the original task prompt alongside this, so describe only the required changes.", "type": "string", "required": true, "location": "body" },
         { "name": "origin", "description": "Caller-declared revision origin. Omit for the normal agent-budgeted path. Pass 'human' only to relay an explicit human instruction in the conversation to continue revisions; it resets the exhausted budget through the existing human recovery path. This declaration is not authenticated human identity and must never be self-authorized by an agent.", "type": "string", "required": false, "location": "body", "enum": ["agent", "human"] },
         { "name": "metadata", "description": "Optional structured data (e.g. review findings) stored on the revision request.", "type": "object", "required": false, "location": "body" }
+      ]
+    },
+    {
+      "name": "kanna_publish_artifact",
+      "description": "Publish a file or directory from a task's workspace as an immutable artifact in the repository's local artifact store (a bare Git repository outside the working repository; nothing is committed to the working repo). The artifact id is the Git tree id of the content: identical bytes always yield the same id, and every publication records its own version (kind, entrypoint, previous, producing task, retention policy). A directory's relative layout is kept, so an HTML mockup's relative CSS/JS/image references keep working. Symlinks, special files, .git entries and paths outside the workspace are refused, as are payloads over the size limits. The repository's retention policy (keep, 30-days, discard-on-close) is recorded on the version and enforced after the producing task closes; content a still-open task produced or named in a result is never collected, and a collected artifact keeps its records and reads as expired (produced, no longer retained). Name it in your result with kanna_complete_stage's artifacts argument. The path is read on the machine that owns the task. CLI: kanna-cli tool call kanna_publish_artifact --arg task_id=<id> --arg path=<dir> --arg kind=mockup.",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/artifacts",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "task_id",
+          "description": "Task whose workspace holds the content (usually your own KANNA_TASK_ID).",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "path",
+          "description": "File or directory relative to the task workspace root.",
+          "type": "string",
+          "required": true,
+          "location": "body"
+        },
+        {
+          "name": "kind",
+          "description": "What the content is. A mockup needs an HTML entrypoint.",
+          "type": "string",
+          "required": true,
+          "location": "body",
+          "enum": [
+            "document",
+            "mockup",
+            "media",
+            "report"
+          ]
+        },
+        {
+          "name": "entrypoint",
+          "description": "File to open, relative to the published directory. Defaults to index.html when present, or the file itself when publishing one file.",
+          "type": "string",
+          "required": false,
+          "location": "body"
+        },
+        {
+          "name": "previous",
+          "description": "Artifact id this version supersedes. Must already be published to the same repository; it is a metadata link and does not change this artifact's id.",
+          "type": "string",
+          "required": false,
+          "location": "body"
+        }
+      ]
+    },
+    {
+      "name": "kanna_get_artifact",
+      "description": "Read one artifact by exact id: whether its content is still retained, its file list, every version record (with previous links), and the comments and decisions recorded about exactly this id. Comments on an older version stay on that version. A missing id returns artifact_not_found naming the repository and id. CLI: kanna-cli tool call kanna_get_artifact --arg repo_id=<id> --arg artifact_id=<tree-id>.",
+      "method": "GET",
+      "path": "/v1/repos/{repo_id}/artifacts/{artifact_id}",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "repo_id",
+          "description": "Repository id the artifact was published to (repoId in kanna_publish_artifact's result or kanna_get_task).",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "artifact_id",
+          "description": "Exact artifact id: the full 40-character tree id. Abbreviations, branch names and working-repository commit SHAs are refused.",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        }
+      ]
+    },
+    {
+      "name": "kanna_open_artifact",
+      "description": "Open an artifact for viewing: returns a loopback browser url serving exactly this tree, read-only, from the artifact store, starting at its entrypoint. The url is a short-lived bearer link for this one artifact (idle timeout 15 minutes, at most one hour); it launches nothing. Pages run sandboxed: scripts and styles from the artifact work, but they cannot reach Kanna or the network, submit forms, or open popups. Opening again while the preview is live returns the same url. CLI: kanna-cli tool call kanna_open_artifact --arg repo_id=<id> --arg artifact_id=<tree-id>.",
+      "method": "POST",
+      "path": "/v1/repos/{repo_id}/artifacts/{artifact_id}/preview",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "repo_id",
+          "description": "Repository id the artifact was published to (repoId in kanna_publish_artifact's result or kanna_get_task).",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "artifact_id",
+          "description": "Exact artifact id: the full 40-character tree id. Abbreviations, branch names and working-repository commit SHAs are refused.",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        }
+      ]
+    },
+    {
+      "name": "kanna_close_artifact",
+      "description": "Close an artifact's browser preview so its url stops working. Returns closed:false when no preview was open. CLI: kanna-cli tool call kanna_close_artifact --arg repo_id=<id> --arg artifact_id=<tree-id>.",
+      "method": "POST",
+      "path": "/v1/repos/{repo_id}/artifacts/{artifact_id}/preview/close",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "repo_id",
+          "description": "Repository id the artifact was published to (repoId in kanna_publish_artifact's result or kanna_get_task).",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "artifact_id",
+          "description": "Exact artifact id: the full 40-character tree id. Abbreviations, branch names and working-repository commit SHAs are refused.",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        }
+      ]
+    },
+    {
+      "name": "kanna_record_artifact_comment",
+      "description": "Record a comment about one exact artifact id (use an older id to comment on an older version). The author is caller-declared text, not a verified identity. An anchor path must name a file in the artifact. Comments are stored with the artifact, not the task, and never move a task. CLI: kanna-cli tool call kanna_record_artifact_comment --arg repo_id=<id> --arg artifact_id=<tree-id> --arg author=<name> --arg body=<text>.",
+      "method": "POST",
+      "path": "/v1/repos/{repo_id}/artifacts/{artifact_id}/comments",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "repo_id",
+          "description": "Repository id the artifact was published to (repoId in kanna_publish_artifact's result or kanna_get_task).",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "artifact_id",
+          "description": "Exact artifact id: the full 40-character tree id. Abbreviations, branch names and working-repository commit SHAs are refused.",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "author",
+          "description": "Caller-declared author name.",
+          "type": "string",
+          "required": true,
+          "location": "body"
+        },
+        {
+          "name": "body",
+          "description": "Comment text (at most 64 KiB).",
+          "type": "string",
+          "required": true,
+          "location": "body"
+        },
+        {
+          "name": "anchor",
+          "description": "Optional { path, position, excerpt }: the artifact file, a caller-defined position (line, selector, region) and the quoted text it refers to.",
+          "type": "object",
+          "required": false,
+          "location": "body"
+        }
+      ]
+    },
+    {
+      "name": "kanna_record_artifact_decision",
+      "description": "Record a decision about one exact artifact id: who decided what. Who is caller-declared text, not a verified identity, and recording a decision does not approve, advance or otherwise change any task. CLI: kanna-cli tool call kanna_record_artifact_decision --arg repo_id=<id> --arg artifact_id=<tree-id> --arg who=<name> --arg what=<decision>.",
+      "method": "POST",
+      "path": "/v1/repos/{repo_id}/artifacts/{artifact_id}/decisions",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "repo_id",
+          "description": "Repository id the artifact was published to (repoId in kanna_publish_artifact's result or kanna_get_task).",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "artifact_id",
+          "description": "Exact artifact id: the full 40-character tree id. Abbreviations, branch names and working-repository commit SHAs are refused.",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "who",
+          "description": "Caller-declared name of who decided.",
+          "type": "string",
+          "required": true,
+          "location": "body"
+        },
+        {
+          "name": "what",
+          "description": "The decision (at most 64 KiB).",
+          "type": "string",
+          "required": true,
+          "location": "body"
+        }
+      ]
+    },
+    {
+      "name": "kanna_push_artifact",
+      "description": "Send one artifact to the repository's artifact remote (artifacts.remote in .kanna/config.json or .kanna/config.local.json): its content, every earlier version its previous links reach, and every version, comment and decision record about them. Nothing else leaves the machine: no task directory, transcript, environment or credential. Every remote name is written once and never forced, so pushes from different homes never overwrite or reject each other; a name that already holds different objects is reported as artifact_remote_conflict. Git's own SSH keys and credential helpers authenticate; Kanna stores none. Tell the other person the artifact id yourself. CLI: kanna-cli tool call kanna_push_artifact --arg repo_id=<id> --arg artifact_id=<tree-id>.",
+      "method": "POST",
+      "path": "/v1/repos/{repo_id}/artifacts/{artifact_id}/push",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "repo_id",
+          "description": "Repository id the artifact belongs to on this machine (repoId in kanna_publish_artifact's result or kanna_get_task). The receiving home uses its own repository id; the artifact id is the same on both.",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "artifact_id",
+          "description": "Exact artifact id: the full 40-character tree id. Abbreviations, branch names and working-repository commit SHAs are refused.",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        }
+      ]
+    },
+    {
+      "name": "kanna_fetch_artifact",
+      "description": "Receive one artifact by id alone from the repository's artifact remote, with every earlier version its previous links name and all version, comment and decision records about them, then return it as kanna_get_artifact would. Received content is validated (regular files and directories within publication limits) and received records are validated before import; anything refused is listed with its reason. A received decision is data: it approves, advances or changes no task. An id the remote does not hold returns artifact_not_on_remote. CLI: kanna-cli tool call kanna_fetch_artifact --arg repo_id=<id> --arg artifact_id=<tree-id>.",
+      "method": "POST",
+      "path": "/v1/repos/{repo_id}/artifacts/{artifact_id}/fetch",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "repo_id",
+          "description": "Repository id the artifact belongs to on this machine (repoId in kanna_publish_artifact's result or kanna_get_task). The receiving home uses its own repository id; the artifact id is the same on both.",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "artifact_id",
+          "description": "Exact artifact id: the full 40-character tree id. Abbreviations, branch names and working-repository commit SHAs are refused.",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        }
       ]
     }
   ],
@@ -1051,7 +1379,7 @@
         },
         {
           "title": "Committed and local layers",
-          "body": "`.kanna/config.json` is the shared repository contract. `.kanna/config.local.json` is read from the open checkout's working tree, never from the origin snapshot, and is deep-merged over the committed file with local values winning. Local config may contain only `agentProviders`, `workflow`, `ports`, `setup`, `teardown`, and `test`; an unknown key, invalid JSON, or invalid value fails definition resolution and names the file. `agentProviders` and `ports` merge entry by entry, with a local entry replacing the committed entry of the same name. Every other permitted key replaces wholesale, and arrays never concatenate. Keep local config gitignored and do not put task-defining fields such as `vars`, `flavors`, `workspace`, `stage_order`, or reserved ports in it.",
+          "body": "`.kanna/config.json` is the shared repository contract. `.kanna/config.local.json` is read from the open checkout's working tree, never from the origin snapshot, and is deep-merged over the committed file with local values winning. Local config may contain only `agentProviders`, `workflow`, `ports`, `setup`, `teardown`, `test`, and `artifacts`; an unknown key, invalid JSON, or invalid value fails definition resolution and names the file. `agentProviders`, `ports`, and `artifacts` merge entry by entry, with a local entry replacing the committed entry of the same name. Every other permitted key replaces wholesale, and arrays never concatenate. Keep local config gitignored and do not put task-defining fields such as `vars`, `flavors`, `workspace`, `stage_order`, or reserved ports in it.",
           "schemaPaths": [""]
         },
         {
@@ -1073,6 +1401,11 @@
           "title": "Provider, model, and effort resolution",
           "body": "`agentProviders` maps exact agent names or `*` globs to a provider name or to `{ provider, model, effort }`; `provider` may be an ordered candidate list. Exact keys beat globs. Among matching globs, the most non-`*` characters wins and lexical order breaks ties. Selection precedence is: explicit task or stage override; matching `agentProviders` entry (including the local layer); layered `AGENT.md`/`EXTEND.md` frontmatter; global default provider. A rerun, resume, revision, or recovery reproduces the recorded run's provider as an explicit override, while a plain stage advance re-resolves the chain and uses the task's stamp only as the final fallback. Provider-specific model and effort values are layer-coherent: Kanna never combines them across providers or layers. It walks the same chain and takes the first value from a layer that would itself select the resolved provider. In an ordered provider list, model and effort belong only to the leading candidate; fallback candidates use a lower coherent layer or their own stamped/default values. `autocompact` follows the same coherence rule and is Claude-only.",
           "schemaPaths": ["/properties/agentProviders"]
+        },
+        {
+          "title": "Artifact storage",
+          "body": "`artifacts` configures the repository's artifact store: a bare Git repository outside the working repository that holds published mockups, documents, media, and reports addressed by their Git tree id. `repositoryPath` defaults to `~/.kanna/repos/<repo-id>/artifacts.git`; a relative path resolves against the repository root, `~/` against the home directory, and any location inside the working repository, its Git directory, or one of its worktrees is refused. `retention` is `keep` (the default), `30-days`, or `discard-on-close`; it is recorded on each published version and enforced by a periodic sweep: `30-days` content goes 30 days after its producing task closes, `discard-on-close` content an hour after (so an undone close still finds it), and content that a still-open task produced or named in a result is never collected. Content fetched from the artifact remote follows this repository's own `retention`, counted from when it was received or from when the last local task that named it closed; a record received from another home never keeps or releases content on its producer's behalf. Collection deletes only the content; version records, comments, decisions and result bindings stay, and the artifact reads as expired. `remote` names the artifact remote used to share artifacts with another Kanna home: an ordinary Git remote both can reach, as an absolute or `~/` path, a `file`, `ssh`, `git`, `http` or `https` URL, or scp-style `host:path`; remote helpers such as `ext::` are refused. Git's own SSH keys and credential helpers authenticate, and only artifact content with its version, comment and decision records is pushed there. Local config may set any of these fields, and a local field replaces only that field. A Kanna server older than artifact support rejects an `artifacts` block in config.local.json (its local allowlist does not know the key) while ignoring one in the committed config.json.",
+          "schemaPaths": ["/properties/artifacts"]
         }
       ]
     },
@@ -1083,12 +1416,12 @@
       "sections": [
         {
           "title": "Definition shape",
-          "body": "A workflow requires `name` and a non-empty `stages` array and should declare `\"$schema\": \"./schema.json\"`. It may define `description`, named `environments` with setup/teardown commands, and `revision_limit` (default 5 agent-requested rounds; `0` means unlimited). Each stage requires `name` and `policy.transition` (`manual` or `auto`), and may set `agent`, `prompt`, `agent_provider`, `environment`, and a `post`. Stage and post `agent_provider` accept structured { harness, model?, effort? } objects or ordered lists, preserving native model/effort text literally. The same objects work in agent frontmatter and repo agentProviders entries. Structured lists reject repeated harnesses. Omitted fields inherit lower coherent layers then native CLI defaults. Legacy strings remain compact provider selectors, `provider[-model[-effort]]`: a plain provider id (`codex`), a provider with a model passed to the CLI verbatim (`claude-fable`, `codex-gpt-5.6-sol`), and an optional trailing effort token (`lo`/`low`, `med`/`medium`, `hi`/`high`, `xhi`/`xhigh`, `max`) — e.g. `claude-fable-hi`, `codex-gpt-6-astra-lo`. Each selector in an ordered fallback list carries its own coherent model/effort pair; anything under-specified inherits the provider CLI's own defaults. Stage prompts support Kanna runtime variables such as `$TASK_PROMPT`, `$BRANCH`, `$BASE_REF`, `$PREV_RESULT`, `$PREV_MAIN_RESULT`, and `$STAGE_TRIGGER` (`auto`, `operator`, `manager`, or `unspecified`).",
+          "body": "A workflow requires `name` and a non-empty `stages` array and should declare `\"$schema\": \"./schema.json\"`. It may define `description`, named `environments` with setup/teardown commands, and `revision_limit` (default 5 agent-requested rounds; `0` means unlimited). Each stage requires `name` and `policy.transition` (`manual` or `auto`), and may set `agent`, `prompt`, `agent_provider`, `environment`, and a `post`. Stage and post `agent_provider` accept structured { harness, model?, effort? } objects or ordered lists, preserving native model/effort text literally. The same objects work in agent frontmatter and repo agentProviders entries. Structured lists reject repeated harnesses. Omitted fields inherit lower coherent layers then native CLI defaults. Legacy strings remain compact provider selectors, `provider[-model[-effort]]`: a plain provider id (`codex`), a provider with a model passed to the CLI verbatim (`claude-fable`, `codex-gpt-5.6-sol`), and an optional trailing effort token (`lo`/`low`, `med`/`medium`, `hi`/`high`, `xhi`/`xhigh`, `max`) — e.g. `claude-fable-hi`, `codex-gpt-6-astra-lo`. Each selector in an ordered fallback list carries its own coherent model/effort pair; anything under-specified inherits the provider CLI's own defaults. Stage prompts support Kanna runtime variables such as `$TASK_PROMPT`, `$BRANCH`, `$BASE_REF`, and `$STAGE_TRIGGER` (`auto`, `operator`, `manager`, or `unspecified`). The result variables `$PREV_RESULT`, `$PREV_MAIN_RESULT`, and `$PLAN_RESULT` are deprecated: they are still substituted in definitions that use them, and `kanna_doctor` and the definition loader note each use, but no definition needs them, because every session's preamble already names the result that caused it and the task ledger that holds every earlier one.",
           "schemaPaths": []
         },
         {
           "title": "Stages, transitions, and posts",
-          "body": "A manual transition waits for explicit advancement; an auto transition advances after the agent records successful completion. `policy.revision_transition` controls completion after entering that stage through a revision and defaults to `transition`. Advancing to an ordinary next stage forks a fresh branch, worktree, and agent session from the committed prior tip, so only committed work crosses the boundary. A stage `post` is different: it is tail work injected into the stage's running session before transition; its `agent` is the fallback if that session is dead.",
+          "body": "A manual transition waits for explicit advancement; an auto transition advances after the agent records successful completion. `policy.revision_transition` controls completion after entering that stage through a revision and defaults to `transition`. Advancing to an ordinary next stage forks a fresh branch, worktree, and agent session from the committed prior tip, so only committed work crosses the boundary. A stage `post` is different: it is tail work injected into the stage's running session before transition; its `agent` is the fallback if that session is dead. Committing is not a post but a property of the transition: `exit_commit: true` runs the stage's commit step (the live session commits in place, a fresh commit session in the same workspace if it is dead) and records what it committed. The engine migrates an open task's legacy `commit` post to `exit_commit` when the task is at a quiescent boundary (recorded as an `engine` workflow replacement in its ledger); other posts, such as `approve`, keep running as before.",
           "schemaPaths": []
         },
         {
@@ -1103,7 +1436,7 @@
         },
         {
           "title": "Extending one task's workflow as the decision is made",
-          "body": "A task's workflow does not have to be chosen in full before the task starts. One task can grow its own linear workflow as the decision is made: an owner opens a `research` task, and when the owner chooses an outcome and asks to proceed, the task manager appends a manual `plan` stage to THAT SAME task with `kanna_replace_task_workflow` (carrying the chosen objective and the research context in the stage prompt) and advances it normally. No replacement development task is needed. The planning agent then chooses the implementation approach, review depth, agents, providers and revision budget, and publishes the remaining stages together with its plan in one `kanna_complete_stage` call that also passes `workflow_definition` and `expected_definition`. The published suffix must follow one of the existing recipes -- `in progress` (+`commit` post) -> `pr` (+`approve` post), or `in progress` (+`commit` post) -> `review` -> `pr` (+`approve` post) -- while each stage's `agent` and `agent_provider` are chosen freely, which is how one recipe covers both an ordinary `review` agent and the `qa-dispatcher` panel. The stages already recorded must survive byte-for-byte as a prefix: a plan decides only what has not happened yet. Kanna stamps `plan_context` onto the stored definition and binds its recorded result to the reserved `$PLAN_RESULT` prompt variable for every stage and post of the extended workflow, so the approved plan stays readable after later stages, revisions, resume, and recovery -- unlike `$PREV_MAIN_RESULT`, which each later main stage overwrites. The task stays parked at its manual `plan` gate; a person or an already-authorized manager reviews the plan and the actual appended stages and advances as usual, passing the definition it inspected as `expected_definition` so a concurrent edit is a conflict rather than a silent change of tail.",
+          "body": "A task's workflow does not have to be chosen in full before the task starts. One task can grow its own linear workflow as the decision is made: an owner opens a `research` task, and when the owner chooses an outcome and asks to proceed, the task manager appends a manual `plan` stage to THAT SAME task with `kanna_replace_task_workflow` (carrying the chosen objective and the research context in the stage prompt) and advances it normally. No replacement development task is needed. The planning agent then chooses the implementation approach, review depth, agents, providers and revision budget, and publishes the remaining stages together with its plan in one `kanna_complete_stage` call that also passes `workflow_definition` and `expected_definition`. The published suffix must follow one of the existing recipes -- `in progress` (+`commit` post) -> `pr` (+`approve` post), or `in progress` (+`commit` post) -> `review` -> `pr` (+`approve` post) -- while each stage's `agent` and `agent_provider` are chosen freely, which is how one recipe covers both an ordinary `review` agent and the `qa-dispatcher` panel. The stages already recorded must survive byte-for-byte as a prefix: a plan decides only what has not happened yet. Kanna stamps `plan_context` onto the stored definition and binds its recorded result to the reserved (deprecated) `$PLAN_RESULT` prompt variable for every stage and post of the extended workflow, so the approved plan stays readable after later stages, revisions, resume, and recovery -- unlike `$PREV_MAIN_RESULT`, which each later main stage overwrites. The task stays parked at its manual `plan` gate; a person or an already-authorized manager reviews the plan and the actual appended stages and advances as usual, passing the definition it inspected as `expected_definition` so a concurrent edit is a conflict rather than a silent change of tail.",
           "schemaPaths": []
         }
       ]

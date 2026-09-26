@@ -38,9 +38,174 @@ fn builtin_single_reviewer_workflow_ships_approve_as_pr_stage_post() {
         .unwrap()
         .agent("review")
         .unwrap();
-    assert!(review_agent
-        .prompt
-        .ends_with(super::super::stages::REREVIEW_VERDICT_COMPLETION_INSTRUCTION));
+    // The review definition carries its own completion obligation in its
+    // "Stop when" section; the re-review reminder is appended by the engine
+    // on re-review runs (covered by the re-review spawn test below), not by
+    // static definition text.
+    assert!(review_agent.prompt.contains("## Stop when"));
+    assert!(review_agent.prompt.contains("record `success`"));
+    assert!(review_agent.prompt.contains("kanna_request_revision"));
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// Loader parity for the T10d intake lineup (spec §10): `shaped` is
+/// implement -> review(A) -> pr(M), the review stage's only loop exit is
+/// `revise` back to "in progress", and the final `pr` stage hands off to the
+/// merge master under budgeted named-exit routing.
+#[test]
+fn builtin_shaped_workflow_declares_a_revise_exit_and_hands_off_at_pr() {
+    let repo_root = init_git_repo_without_provider_fixtures("builtin-shaped-workflow");
+    let repo = crate::db::Repo {
+        id: "repo-builtin-shaped".to_string(),
+        path: repo_root.to_string_lossy().into_owned(),
+        name: "Builtin shaped".to_string(),
+        default_branch: Some("main".to_string()),
+        default_branch_source: None,
+        remote_url_hash: None,
+        hidden: None,
+        sort_order: None,
+        created_at: None,
+        last_opened_at: None,
+    };
+    let workflow = super::super::definitions::RepoDefinitions::resolve(&repo)
+        .unwrap()
+        .workflow("shaped")
+        .unwrap();
+    assert!(workflow.routes_by_exits());
+    assert_eq!(
+        workflow
+            .stages
+            .iter()
+            .map(|stage| stage.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["in progress", "review", "pr"]
+    );
+    let implement = &workflow.stages[0];
+    assert!(implement.exit_commit);
+    let review = &workflow.stages[1];
+    assert_eq!(
+        review
+            .exits
+            .as_ref()
+            .unwrap()
+            .get("revise")
+            .map(String::as_str),
+        Some("in progress")
+    );
+    let pr_stage = &workflow.stages[2];
+    assert_eq!(
+        pr_stage.policy.handoff,
+        Some(super::super::definitions::WorkflowHandoff::Merge)
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// `planned` is plan(M) -> implement(A) -> review(A) -> pr(M); the review
+/// stage's two loop exits split by the nature of the findings (spec §10).
+#[test]
+fn builtin_planned_workflow_declares_revise_and_replan_exits() {
+    let repo_root = init_git_repo_without_provider_fixtures("builtin-planned-workflow");
+    let repo = crate::db::Repo {
+        id: "repo-builtin-planned".to_string(),
+        path: repo_root.to_string_lossy().into_owned(),
+        name: "Builtin planned".to_string(),
+        default_branch: Some("main".to_string()),
+        default_branch_source: None,
+        remote_url_hash: None,
+        hidden: None,
+        sort_order: None,
+        created_at: None,
+        last_opened_at: None,
+    };
+    let workflow = super::super::definitions::RepoDefinitions::resolve(&repo)
+        .unwrap()
+        .workflow("planned")
+        .unwrap();
+    assert!(workflow.routes_by_exits());
+    assert_eq!(
+        workflow
+            .stages
+            .iter()
+            .map(|stage| stage.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["plan", "in progress", "review", "pr"]
+    );
+    let review = workflow
+        .stages
+        .iter()
+        .find(|stage| stage.name == "review")
+        .unwrap();
+    let exits = review.exits.as_ref().unwrap();
+    assert_eq!(exits.get("revise").map(String::as_str), Some("in progress"));
+    assert_eq!(exits.get("replan").map(String::as_str), Some("plan"));
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// `designed` is the front-loaded flow (spec §10): mockup -> stakeholder(M,
+/// no role) -> plan(A) -> implement(A) -> review(M) -> pr(M) -> pr-review(M,
+/// hands off to merge). The stakeholder gate declares no exits of its own
+/// (roleless stages cannot yet declare them); a person iterates it back to
+/// mockup with an operator-origin revision instead.
+#[test]
+fn builtin_designed_workflow_chains_mockup_gate_plan_and_pr_review_with_handoff() {
+    let repo_root = init_git_repo_without_provider_fixtures("builtin-designed-workflow");
+    let repo = crate::db::Repo {
+        id: "repo-builtin-designed".to_string(),
+        path: repo_root.to_string_lossy().into_owned(),
+        name: "Builtin designed".to_string(),
+        default_branch: Some("main".to_string()),
+        default_branch_source: None,
+        remote_url_hash: None,
+        hidden: None,
+        sort_order: None,
+        created_at: None,
+        last_opened_at: None,
+    };
+    let definitions = super::super::definitions::RepoDefinitions::resolve(&repo).unwrap();
+    let workflow = definitions.workflow("designed").unwrap();
+    assert!(workflow.routes_by_exits());
+    assert_eq!(
+        workflow
+            .stages
+            .iter()
+            .map(|stage| stage.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "mockup",
+            "stakeholder",
+            "plan",
+            "in progress",
+            "review",
+            "pr",
+            "pr-review"
+        ]
+    );
+    let mockup = &workflow.stages[0];
+    assert_eq!(mockup.agent.as_deref(), Some("mockup"));
+    let stakeholder = &workflow.stages[1];
+    assert!(
+        workflow.is_roleless_stage(stakeholder),
+        "stakeholder has no agent: it is a gate"
+    );
+    assert!(stakeholder.exits.is_none());
+    let pr_review = &workflow.stages[6];
+    assert_eq!(pr_review.agent.as_deref(), Some("pr-reviewer"));
+    assert_eq!(
+        pr_review.policy.handoff,
+        Some(super::super::definitions::WorkflowHandoff::Merge)
+    );
+
+    let mockup_agent = definitions.agent("mockup").unwrap();
+    assert!(!mockup_agent.description.trim().is_empty());
+    for var in ["$PREV_RESULT", "$PREV_MAIN_RESULT", "$PLAN_RESULT"] {
+        assert!(
+            !mockup_agent.prompt.contains(var),
+            "mockup must not reference {var}; the engine delivers results through the ledger"
+        );
+    }
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
@@ -295,6 +460,131 @@ fn prepare_merge_agent_creates_in_progress_task() {
     assert!(!runtime_prompt.contains("Implement the requested task in this worktree."));
 
     let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// The merge master is claimed onto the repository's release workflow, under
+/// the unchanged `singleton-merge` marker (spec §10, T14).
+#[test]
+fn prepare_merge_agent_pins_the_release_workflow_under_the_singleton_marker() {
+    let repo_root = init_git_repo("merge-singleton-release-workflow");
+    let config = test_config("merge-singleton-release-workflow");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+    db.insert_test_pipeline_item(
+        "task-1",
+        "repo-1",
+        "Create a PR",
+        Some("Create a PR"),
+        "pr",
+        "2026-06-07 00:00:00",
+    )
+    .unwrap();
+    db.update_test_pipeline_item_stage_context("task-1", "task-task-1", "default", None, "claude")
+        .unwrap();
+
+    let prepared = prepare_merge_agent_for_api(&db, &config, "task-1").unwrap();
+    let item = db
+        .get_pipeline_item(&prepared.created_task.task_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(item.pipeline.as_deref(), Some("singleton-merge"));
+    let pinned: serde_json::Value =
+        serde_json::from_str(item.pipeline_def.as_deref().unwrap()).unwrap();
+    assert_eq!(pinned["name"], "release");
+    assert_eq!(pinned["routing"], "exits");
+    assert_eq!(pinned["stages"][0]["name"], "in progress");
+    assert_eq!(pinned["stages"][0]["agent"], "merge");
+    assert_eq!(pinned["stages"][0]["prompt"], "$TASK_PROMPT");
+    assert_eq!(pinned["stages"].as_array().unwrap().len(), 5);
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+fn test_repo_at(repo_root: &std::path::Path, label: &str) -> crate::db::Repo {
+    let config = test_config(label);
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+    db.get_repo("repo-1").unwrap().unwrap()
+}
+
+/// Only the merge singleton's claim pins the release workflow; naming it
+/// would start a second merge master.
+#[test]
+fn the_release_workflow_cannot_be_selected_by_name() {
+    let repo_root = init_git_repo("release-workflow-by-name");
+    let repo = test_repo_at(&repo_root, "release-workflow-by-name");
+    let error = super::super::resolve_task_workflow_snapshot(&repo, "release")
+        .err()
+        .expect("refused");
+    assert!(error.contains("merge master"), "{error}");
+    assert!(error.contains("cannot be selected by name"), "{error}");
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// A repository whose release workflow does not open with the merge agent
+/// gets no merge master rather than one the singleton lookup cannot find.
+#[test]
+fn a_release_workflow_that_does_not_open_with_the_merge_window_is_refused() {
+    let repo_root = init_git_repo("release-workflow-wrong-first-stage");
+    std::fs::create_dir_all(repo_root.join(".kanna/workflows")).unwrap();
+    std::fs::write(
+        repo_root.join(".kanna/workflows/release.json"),
+        serde_json::json!({
+            "name": "release",
+            "routing": "exits",
+            "stages": [
+                { "name": "ship", "agent": "ship", "prompt": "Report.",
+                  "policy": { "transition": "manual" } }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    publish_origin_main(&repo_root, "a release workflow without a merge window");
+    let repo = test_repo_at(&repo_root, "release-workflow-wrong-first-stage");
+    let error = super::super::merge::merge_singleton_workflow_definition(&repo).unwrap_err();
+    assert!(error.contains("must open with the merge window"), "{error}");
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// Loader parity: the TypeScript loader asserts the same shape for the same
+/// file (workflow-loader.test.ts).
+#[test]
+fn the_release_workflow_loads_with_the_shape_the_typescript_loader_sees() {
+    let release = super::super::definitions::parse_workflow_definition(include_str!(
+        "../../../../../.kanna/workflows/release.json"
+    ))
+    .unwrap();
+    assert_eq!(release.name.as_deref(), Some("release"));
+    assert!(release.routes_by_exits());
+    let shape: Vec<(&str, Option<&str>, &str)> = release
+        .stages
+        .iter()
+        .map(|stage| {
+            (
+                stage.name.as_str(),
+                stage.agent.as_deref(),
+                stage.policy.transition.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            ("in progress", Some("merge"), "manual"),
+            ("qa gauntlet", None, "manual"),
+            ("ship staging", Some("ship"), "manual"),
+            ("soak", None, "manual"),
+            ("ship production", Some("ship"), "manual"),
+        ]
+    );
+    assert_eq!(release.stages[0].prompt.as_deref(), Some("$TASK_PROMPT"));
+    assert!(release
+        .stages
+        .iter()
+        .all(|stage| stage.policy.handoff.is_none()));
 }
 
 /// The production spawn wiring, not a hand-stitched composition.
@@ -590,12 +880,16 @@ async fn acknowledged_stage_survives_db_failure_restart_and_can_complete() {
         effort: None,
         completion_transition: WorkflowStageTransition::Manual,
         trigger: crate::db::StageTrigger::Unspecified,
+        entry_channel: Default::default(),
+        entry_exit: None,
+        transition_commit: None,
         provider_override: None,
         feedback: None,
         provider_session_id: None,
         resumed_from_run_id: None,
         replaces_run_id: None,
         resume_fallback_reason: None,
+        session_identity: Default::default(),
         cwd: "/tmp".to_string(),
         env: std::collections::HashMap::new(),
         terminal_prelude: None,
@@ -1083,6 +1377,7 @@ fn prepare_advance_stage_uses_stored_workflow_snapshot_for_existing_task() {
     let run = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Run(run) => run,
         PreparedStageTransition::Post(_) => panic!("expected stage swap, got post dispatch"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => panic!("expected in-place stage run"),
     };
 
@@ -1205,6 +1500,7 @@ fn prepare_advance_stage_applies_repo_agent_extension() {
     let run = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Run(run) => run,
         PreparedStageTransition::Post(_) => panic!("expected stage swap, got post dispatch"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => panic!("expected in-place stage run"),
     };
 
@@ -1338,6 +1634,7 @@ fn prepare_advance_stage_substitutes_previous_stage_run_result_before_legacy_sta
     let run = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Run(run) => run,
         PreparedStageTransition::Post(_) => panic!("expected stage swap, got post dispatch"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => panic!("expected in-place stage run"),
     };
 
@@ -1580,6 +1877,7 @@ async fn prepare_advance_stage_forks_workspace_and_reinforces_rereview_verdict()
     let run = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Run(run) => run,
         PreparedStageTransition::Post(_) => panic!("expected stage swap, got post dispatch"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => {
             panic!("stage advance must spawn a new run in place")
         }
@@ -1706,10 +2004,11 @@ async fn prepare_advance_stage_forks_workspace_and_reinforces_rereview_verdict()
     assert_eq!(runs[2].status, "running");
     assert_eq!(runs[2].session_id.as_deref(), Some("task-1"));
 
-    // The counter skips workspaces that still exist: with `-2` live, the
-    // next fork for this task is `-3`.
+    // The fork spent counter number 2; the next fork for this task is `-3`.
+    assert_eq!(db.task_branch_counter("task-1").unwrap(), Some(2));
     assert_eq!(
-        super::super::worktree::next_fork_branch(&repo_root.to_string_lossy(), "task-1").unwrap(),
+        super::super::worktree::allocate_task_branch(&db, &repo_root.to_string_lossy(), "task-1")
+            .unwrap(),
         "task-task-1-3"
     );
 
@@ -1918,6 +2217,7 @@ fn stage_advance_takes_the_local_entry_over_the_stamp_with_a_coherent_pair() {
     let run = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Run(run) => run,
         PreparedStageTransition::Post(_) => panic!("expected stage swap, got post dispatch"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => panic!("expected stage swap, got close"),
     };
 
@@ -1985,6 +2285,7 @@ async fn prompt_only_stage_provider_overrides_source_task_provider_in_daemon_spa
     let run = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Run(run) => run,
         PreparedStageTransition::Post(_) => panic!("expected stage swap, got post dispatch"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => panic!("expected stage swap, got close"),
     };
     let fake_daemon = spawn_fake_daemon_fork_transition(config.daemon_dir.clone(), 1).await;
@@ -2126,6 +2427,7 @@ async fn stage_transition_tears_down_departed_stage_environment_before_repo_tear
     let run = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Run(run) => run,
         PreparedStageTransition::Post(_) => panic!("expected stage swap, got post dispatch"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => panic!("expected stage run"),
     };
     let fork_worktree = run.forked_workspace().unwrap().worktree_path.clone();
@@ -2153,7 +2455,8 @@ async fn stage_transition_tears_down_departed_stage_environment_before_repo_tear
     ));
     assert!(matches!(
         commands.get(2),
-        Some(kanna_daemon::protocol::Command::Kill { session_id }) if session_id == "td-task-source"
+        Some(kanna_daemon::protocol::Command::Kill { session_id })
+            if session_id.starts_with("td-task-source-run-task-1-")
     ));
     match commands.get(3) {
         Some(kanna_daemon::protocol::Command::Spawn {
@@ -2176,7 +2479,7 @@ async fn stage_transition_tears_down_departed_stage_environment_before_repo_tear
             env,
             ..
         }) => {
-            assert_eq!(session_id, "td-task-source");
+            assert!(session_id.starts_with("td-task-source-run-task-1-"));
             assert_eq!(cwd, &source_worktree.to_string_lossy());
             let command = args.join(" ");
             let env_index = command
@@ -2217,7 +2520,11 @@ async fn stage_transition_tears_down_departed_stage_environment_before_repo_tear
     // task just entered.
     assert_eq!(teardown_run.stage, "in progress");
     assert_eq!(teardown_run.status, "running");
-    assert_eq!(teardown_run.session_id.as_deref(), Some("td-task-source"));
+    // One name per teardown: the workspace directory and this run.
+    assert_eq!(
+        teardown_run.session_id,
+        Some(format!("td-task-source-{teardown_run_id}"))
+    );
     assert_eq!(
         teardown_run.cwd.as_deref(),
         Some(source_worktree.to_string_lossy().as_ref())
@@ -2569,6 +2876,7 @@ fn prepare_advance_stage_at_final_stage_prepares_close() {
         .unwrap();
 
     match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { task_id, .. } => assert_eq!(task_id, "task-1"),
         PreparedStageTransition::Run(_) | PreparedStageTransition::Post(_) => {
             panic!("advancing past the final stage must close the task")
@@ -2659,6 +2967,7 @@ fn prepare_auto_stage_completion_spawns_next_run_in_same_task() {
     let run = match prepared {
         Some(PreparedStageTransition::Run(run)) => run,
         Some(PreparedStageTransition::Post(_)) => panic!("expected stage swap, got post dispatch"),
+        Some(PreparedStageTransition::Gate(_)) => panic!("unexpected gate entry"),
         Some(PreparedStageTransition::Close { .. }) => panic!("expected in-place stage run"),
         None => panic!("expected auto transition"),
     };
@@ -2872,6 +3181,7 @@ fn workflow_null_task_uses_no_review_across_lifecycle_paths_when_repo_defines_de
     let post = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Post(post) => post,
         PreparedStageTransition::Run(_) => panic!("no-review advance should dispatch its post"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => {
             panic!("repo-authored default must not close a workflow-null task")
         }
@@ -2922,6 +3232,7 @@ fn prepare_advance_stage_dispatches_post_into_running_session() {
     let post = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Post(post) => post,
         PreparedStageTransition::Run(_) => panic!("expected post dispatch, got stage swap"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => panic!("expected post dispatch, got close"),
     };
 
@@ -3017,6 +3328,7 @@ fn prepare_advance_stage_swaps_after_succeeded_post() {
     let run = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Run(run) => run,
         PreparedStageTransition::Post(_) => panic!("post already succeeded; expected swap"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => panic!("expected swap, got close"),
     };
     assert_eq!(run.next_stage, "pr");
@@ -3062,6 +3374,7 @@ fn prepare_advance_stage_redispatches_failed_post() {
     match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Post(post) => assert_eq!(post.run_stage, "commit"),
         PreparedStageTransition::Run(_) => panic!("failed post must be re-dispatched"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => panic!("expected post dispatch, got close"),
     }
 
@@ -3088,6 +3401,7 @@ fn stage_completion_of_post_run_swaps_past_manual_gate() {
                 "expected swap after post completion, got {}",
                 match other {
                     Some(PreparedStageTransition::Post(_)) => "post dispatch",
+                    Some(PreparedStageTransition::Gate(_)) => panic!("unexpected gate entry"),
                     Some(PreparedStageTransition::Close { .. }) => "close",
                     None => "park",
                     Some(PreparedStageTransition::Run(_)) => unreachable!(),
@@ -3215,6 +3529,7 @@ fn post_completion_preserves_declared_advance_trigger() {
         Some("post"),
         None,
         Some(post.fallback.trigger.as_str()),
+        None,
     )
     .unwrap();
     match next {
@@ -3382,6 +3697,7 @@ fn legacy_task_parked_at_folded_post_stage_advances_past_owner() {
     let run = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Run(run) => run,
         PreparedStageTransition::Post(_) => panic!("folded post position must swap past owner"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => panic!("expected swap, got close"),
     };
     assert_eq!(run.next_stage, "pr");
@@ -3733,12 +4049,16 @@ fn current_stage_spawn_fixture(
         effort: None,
         completion_transition: WorkflowStageTransition::Manual,
         trigger: crate::db::StageTrigger::Operator,
+        entry_channel: Default::default(),
+        entry_exit: None,
+        transition_commit: None,
         provider_override: None,
         feedback: None,
         provider_session_id: None,
         resumed_from_run_id: None,
         replaces_run_id: None,
         resume_fallback_reason: None,
+        session_identity: Default::default(),
         cwd: "/tmp".to_string(),
         env: HashMap::new(),
         terminal_prelude: None,
@@ -4418,7 +4738,9 @@ fn edited_workflow_spawn_case(seed_run: bool) {
             source: "operator",
             superseded_run_ids: &validated.superseded_run_ids,
             changed_execution_stages: &validated.changed_execution_stages,
+            ledger_result_id: None,
         }),
+        &crate::mutation_provenance::ChannelIdentity::Unknown,
     )
     .unwrap();
     let rerun = prepare_rerun_stage_for_api(&db, &config, "task-1").unwrap();
@@ -4637,13 +4959,9 @@ fn commit_prepared_run(
     run: &super::super::types::PreparedStageRunSpawn,
     run_id: &str,
 ) -> (String, String) {
-    let (branch, worktree_path) = match &run.workspace {
-        super::super::types::PreparedRunWorkspace::Forked(workspace)
-        | super::super::types::PreparedRunWorkspace::Resumed(workspace)
-        | super::super::types::PreparedRunWorkspace::Recreated(workspace) => {
-            (workspace.branch.clone(), workspace.worktree_path.clone())
-        }
-        super::super::types::PreparedRunWorkspace::Current => (
+    let (branch, worktree_path) = match run.workspace.moved_to() {
+        Some(workspace) => (workspace.branch.clone(), workspace.worktree_path.clone()),
+        None => (
             db.get_pipeline_item(&run.task_id)
                 .unwrap()
                 .unwrap()
@@ -4999,6 +5317,581 @@ fn a_task_pinned_to_the_retired_consultation_definition_still_reads_and_advances
         ),
         "advancing past the pinned final stage must still close the task"
     );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+fn routing_repo(label: &str) -> (std::path::PathBuf, crate::db::Repo) {
+    let repo_root = init_git_repo_without_provider_fixtures(label);
+    let repo = crate::db::Repo {
+        id: format!("repo-{label}"),
+        path: repo_root.to_string_lossy().into_owned(),
+        name: "Routing".to_string(),
+        default_branch: Some("main".to_string()),
+        default_branch_source: None,
+        remote_url_hash: None,
+        hidden: None,
+        sort_order: None,
+        created_at: None,
+        last_opened_at: None,
+    };
+    (repo_root, repo)
+}
+
+/// The TypeScript loader runs the same fixtures (workflow-loader.test.ts), so
+/// both loaders accept and refuse the same named-exit definitions.
+#[test]
+fn named_exit_routing_fixtures_match_the_typescript_loader() {
+    let fixtures: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../packages/core/src/workflow/routing-fixtures.json"
+    ))
+    .unwrap();
+    for case in fixtures["cases"].as_array().unwrap() {
+        let name = case["name"].as_str().unwrap();
+        let parsed =
+            super::super::definitions::parse_workflow_definition(&case["definition"].to_string());
+        if case["valid"].as_bool().unwrap() {
+            assert!(parsed.is_ok(), "{name}: {:?}", parsed.err());
+        } else {
+            let error = parsed.err().unwrap_or_else(|| panic!("{name}: accepted"));
+            let expected = case["rejects"].as_str().unwrap();
+            assert!(error.contains(expected), "{name}: {error}");
+        }
+    }
+}
+
+#[test]
+fn a_legacy_definition_round_trips_without_any_routing_field() {
+    // `specialized-reviewers.json` moved to named-exit routing (T10c); `no-review.json`
+    // is still a legacy-routed workflow with the same revision_transition: auto shape
+    // this test exercises.
+    let legacy = include_str!("../../../../../.kanna/workflows/no-review.json");
+    let parsed = super::super::definitions::parse_workflow_definition(legacy).unwrap();
+    assert!(!parsed.routes_by_exits());
+    let stored = serde_json::to_string(&parsed).unwrap();
+    for key in ["routing", "\"budget\"", "exits", "loop_transition"] {
+        assert!(!stored.contains(key), "{key} leaked into {stored}");
+    }
+    let reparsed = super::super::definitions::parse_stored_workflow_definition(&stored).unwrap();
+    assert_eq!(serde_json::to_string(&reparsed).unwrap(), stored);
+    let implement = &reparsed.stages[0];
+    assert_eq!(
+        implement.policy.revision_transition(),
+        WorkflowStageTransition::Auto
+    );
+}
+
+#[test]
+fn named_exits_resolve_by_name_and_budgets_fall_back_to_the_workflow_then_five() {
+    let workflow = super::super::definitions::parse_workflow_definition(
+        &serde_json::json!({
+            "name": "x", "routing": "exits", "budget": 3,
+            "stages": [
+                { "name": "plan", "agent": "plan", "budget": 1, "policy": { "transition": "manual" } },
+                { "name": "in progress", "agent": "implement",
+                  "policy": { "transition": "manual", "loop_transition": "auto" } },
+                { "name": "review", "agent": "review", "policy": { "transition": "auto" },
+                  "exits": { "revise": "in progress", "replan": "plan" } }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert!(workflow.routes_by_exits());
+    assert_eq!(workflow.stage_budget("plan"), 1);
+    assert_eq!(workflow.stage_budget("in progress"), 3);
+    assert_eq!(workflow.resolve_exit("review", "advance").unwrap(), None);
+    assert_eq!(
+        workflow
+            .resolve_exit("review", "replan")
+            .unwrap()
+            .as_deref(),
+        Some("plan")
+    );
+    let refused = workflow.resolve_exit("in progress", "revise").unwrap_err();
+    assert!(refused.contains("its exits are 'advance'"), "{refused}");
+    // The re-entered stage leaves by loop_transition, independently of its
+    // first-entry transition.
+    assert_eq!(
+        workflow.stages[1].policy.revision_transition(),
+        WorkflowStageTransition::Auto
+    );
+    assert_eq!(
+        workflow.stages[1].policy.transition,
+        WorkflowStageTransition::Manual
+    );
+
+    let unbudgeted = super::super::definitions::parse_workflow_definition(
+        &serde_json::json!({
+            "name": "y", "routing": "exits",
+            "stages": [{ "name": "in progress", "agent": "implement",
+                         "policy": { "transition": "manual" } }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        unbudgeted.stage_budget("in progress"),
+        super::super::definitions::DEFAULT_STAGE_BUDGET
+    );
+}
+
+#[test]
+fn a_remaining_plan_replacement_keeps_the_current_role_and_the_routing_under_a_live_run() {
+    let (repo_root, repo) = routing_repo("remaining-plan-rules");
+    let db = Db::open_for_tests(&Db::test_db_path("remaining-plan-rules")).unwrap();
+    db.insert_test_repo_with_path(&repo.id, &repo.path, "Routing")
+        .unwrap();
+    db.insert_test_pipeline_item(
+        "task-1",
+        &repo.id,
+        "T",
+        Some("T"),
+        "review",
+        "2026-09-23 00:00:00",
+    )
+    .unwrap();
+    db.insert_stage_run(NewStageRun {
+        id: "run-review",
+        task_id: "task-1",
+        stage: "review",
+        kind: "main",
+        agent: Some("review"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: Some("task-1"),
+        provider_session_id: None,
+        cwd: None,
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+    let runs = db.list_stage_runs_for_task("task-1").unwrap();
+    let pinned = serde_json::json!({
+        "name": "x", "routing": "exits",
+        "stages": [
+            { "name": "in progress", "agent": "implement", "policy": { "transition": "manual" } },
+            { "name": "review", "agent": "review", "policy": { "transition": "auto" },
+              "exits": { "revise": "in progress" } },
+            { "name": "pr", "agent": "pr", "policy": { "transition": "manual" } }
+        ]
+    });
+
+    // The remaining stages are replaced wholesale.
+    let mut appended = pinned.clone();
+    appended["stages"][2] = serde_json::json!(
+        { "name": "document", "agent": "implement", "policy": { "transition": "auto" } });
+    super::super::validate_remaining_plan_replacement(
+        &repo,
+        &appended,
+        &pinned.to_string(),
+        "review",
+        &runs,
+    )
+    .unwrap();
+
+    // The current stage keeps its role.
+    let mut recast = pinned.clone();
+    recast["stages"][1]["agent"] = serde_json::json!("implement");
+    let error = super::super::validate_remaining_plan_replacement(
+        &repo,
+        &recast,
+        &pinned.to_string(),
+        "review",
+        &runs,
+    )
+    .err()
+    .expect("refused");
+    assert!(error.contains("must keep its role"), "{error}");
+
+    // An exit must lead to a stage that exists at or before it.
+    let mut dangling = pinned.clone();
+    dangling["stages"][1]["exits"] = serde_json::json!({ "revise": "gone" });
+    let error = super::super::validate_remaining_plan_replacement(
+        &repo,
+        &dangling,
+        &pinned.to_string(),
+        "review",
+        &runs,
+    )
+    .err()
+    .expect("refused");
+    assert!(
+        error.contains("not this stage or an earlier stage"),
+        "{error}"
+    );
+
+    // A legacy task cannot be turned into a named-exit one under the review
+    // session that was instructed to name a stage.
+    let legacy = serde_json::json!({
+        "name": "x",
+        "stages": [
+            { "name": "in progress", "agent": "implement", "policy": { "transition": "manual" } },
+            { "name": "review", "agent": "review", "policy": { "transition": "auto" } },
+            { "name": "pr", "agent": "pr", "policy": { "transition": "manual" } }
+        ]
+    });
+    let error = super::super::validate_task_workflow_replacement(
+        &repo,
+        &pinned,
+        &legacy.to_string(),
+        "review",
+        &runs,
+    )
+    .err()
+    .expect("refused");
+    assert!(error.contains("while a stage run is running"), "{error}");
+    let error = super::super::validate_remaining_plan_replacement(
+        &repo,
+        &pinned,
+        &legacy.to_string(),
+        "review",
+        &runs,
+    )
+    .err()
+    .expect("refused");
+    assert!(error.contains("route by named exits"), "{error}");
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// Two prompt-only stages, so an advance from `in progress` forks `review`.
+fn write_two_stage_workflow(repo_root: &std::path::Path) {
+    std::fs::create_dir_all(repo_root.join(".kanna/workflows")).unwrap();
+    std::fs::write(
+        repo_root.join(".kanna/workflows/default.json"),
+        serde_json::json!({
+            "name": "default",
+            "stages": [
+                { "name": "in progress", "agent_provider": "claude", "prompt": "$TASK_PROMPT",
+                  "policy": { "transition": "manual" } },
+                { "name": "review", "agent_provider": "claude", "prompt": "Review $BRANCH",
+                  "policy": { "transition": "manual" } }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    publish_origin_main(repo_root, "publish two-stage workflow");
+}
+
+fn prepare_fork(db: &Db, config: &Config) -> Box<super::super::types::PreparedStageRunSpawn> {
+    match prepare_advance_stage_for_api(db, config, "task-1").unwrap() {
+        PreparedStageTransition::Run(run) => run,
+        _ => panic!("expected a forked stage run"),
+    }
+}
+
+/// Spec §6: every session gets `task-<id>-<n>` from the task's counter, and
+/// an earlier number is never reused. Deleting a branch and its directory
+/// used to make its number the first free suffix again.
+#[test]
+fn a_deleted_branch_number_is_never_allocated_again() {
+    let repo_root = init_git_repo("stage-counter-deleted-ref");
+    write_two_stage_workflow(&repo_root);
+    let config = test_config("stage-counter-deleted-ref");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    seed_stage_advance_task(&db, &repo_root, "claude");
+    // A task that forked before the counter existed: its highest suffix on
+    // record is 5, so the counter is seeded above it.
+    run_git_fixture(&repo_root, &["branch", "task-task-1-5"]);
+
+    let first = prepare_fork(&db, &config);
+    let first_fork = first.forked_workspace().expect("fork");
+    assert_eq!(first_fork.branch, "task-task-1-6");
+    crate::task_creator::worktree::remove_prepared_worktree(
+        &first_fork.worktree_path,
+        &first_fork.branch,
+    )
+    .unwrap();
+    run_git_fixture(&repo_root, &["branch", "-D", "task-task-1-5"]);
+    assert!(!crate::task_creator::local_branch_exists(
+        &repo_root.to_string_lossy(),
+        "task-task-1-6"
+    ));
+
+    // Neither ref nor directory exists any more; the numbers stay spent.
+    let second = prepare_fork(&db, &config);
+    let second_fork = second.forked_workspace().expect("fork");
+    assert_eq!(second_fork.branch, "task-task-1-7");
+    assert_eq!(db.task_branch_counter("task-1").unwrap(), Some(7));
+    crate::task_creator::worktree::remove_prepared_worktree(
+        &second_fork.worktree_path,
+        &second_fork.branch,
+    )
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// The number is reserved before any git work, so an attempt whose worktree
+/// could not be created still spends it.
+#[test]
+fn a_failed_fork_attempt_consumes_its_branch_number() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo_root = init_git_repo("stage-counter-failed-attempt");
+    write_two_stage_workflow(&repo_root);
+    let config = test_config("stage-counter-failed-attempt");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    seed_stage_advance_task(&db, &repo_root, "claude");
+    let worktrees = repo_root.join(".kanna-worktrees");
+    std::fs::set_permissions(&worktrees, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let failed = prepare_advance_stage_for_api(&db, &config, "task-1");
+    std::fs::set_permissions(&worktrees, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(failed.is_err(), "the worktree could not be created");
+    assert_eq!(db.task_branch_counter("task-1").unwrap(), Some(2));
+    assert!(!worktrees.join("task-task-1-2").exists());
+
+    let retried = prepare_fork(&db, &config);
+    let fork = retried.forked_workspace().expect("fork");
+    assert_eq!(fork.branch, "task-task-1-3");
+    crate::task_creator::worktree::remove_prepared_worktree(&fork.worktree_path, &fork.branch)
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn task_branch_numbers_parse_only_the_tasks_own_workspace_names() {
+    use crate::task_creator::worktree::task_branch_number;
+    assert_eq!(task_branch_number("ab12", "task-ab12"), Some(1));
+    assert_eq!(task_branch_number("ab12", "task-ab12-9"), Some(9));
+    assert_eq!(task_branch_number("ab12", "task-ab12-10"), Some(10));
+    assert_eq!(task_branch_number("ab12", "task-ab123-4"), None);
+    assert_eq!(task_branch_number("ab12", "task-ab12-"), None);
+    assert_eq!(task_branch_number("ab12", "task-ab12-x"), None);
+    assert_eq!(task_branch_number("ab12", "feature/ab12"), None);
+}
+
+fn write_exit_commit_workflow(repo_root: &std::path::Path) {
+    std::fs::create_dir_all(repo_root.join(".kanna/workflows")).unwrap();
+    std::fs::write(
+        repo_root.join(".kanna/workflows/default.json"),
+        serde_json::json!({
+            "name": "default",
+            "routing": "exits",
+            "stages": [
+                { "name": "in progress", "agent": "implement", "prompt": "$TASK_PROMPT",
+                  "exit_commit": true, "policy": { "transition": "manual" } },
+                { "name": "stakeholder", "policy": { "transition": "manual" } },
+                { "name": "pr", "agent": "pr", "prompt": "Open the PR",
+                  "policy": { "transition": "manual" } }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    publish_origin_main(repo_root, "publish exit_commit workflow");
+}
+
+fn running_main_run(db: &Db, stage: &str) {
+    db.insert_stage_run(NewStageRun {
+        id: "run-main",
+        task_id: "task-1",
+        stage,
+        kind: "main",
+        agent: Some("implement"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: Some("task-1"),
+        provider_session_id: None,
+        cwd: None,
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+}
+
+/// `exit_commit` rides the post delivery machinery as the transition's
+/// commit step: advancing prepares one instruction for the live session and
+/// a commit-agent fallback in the same workspace, both bound to the one
+/// transition the advance asked for (its exit is the operator's), under a
+/// run name of its own stage rather than a declared post's.
+#[test]
+fn advancing_an_exit_commit_stage_prepares_its_commit_step() {
+    let repo_root = init_git_repo("advance-exit-commit");
+    write_exit_commit_workflow(&repo_root);
+    let config = test_config("advance-exit-commit");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    seed_stage_advance_task(&db, &repo_root, "claude");
+    running_main_run(&db, "in progress");
+
+    let post = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
+        PreparedStageTransition::Post(post) => post,
+        _ => panic!("an exit_commit stage commits before it transitions"),
+    };
+    assert_eq!(post.run_stage, "in progress commit");
+    assert!(post.message.contains("Commit the work"), "{}", post.message);
+    let commit = post.commit.clone().expect("bound to its transition");
+    assert_eq!(commit.stage, "in progress");
+    let exit = commit.exit.expect("the operator's advance");
+    assert_eq!(exit.exit.as_deref(), Some("advance"));
+    assert_eq!(exit.source, crate::db::TransitionExit::OPERATOR);
+    assert_eq!(post.fallback.transition_commit, post.commit);
+    assert_eq!(post.fallback.stage_agent.as_deref(), Some("commit"));
+    assert!(
+        matches!(
+            post.fallback.workspace,
+            super::super::types::PreparedRunWorkspace::Current
+        ),
+        "the dead-session fallback commits in the stage's own workspace"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// The bundled `mechanical` workflow (T10, spec §10: "implement → pr(M)")
+/// runs end to end from nothing but the ledger/preamble context the engine
+/// delivers: no `.kanna/workflows/mechanical.json` or agent override is
+/// written to the repo, so this resolves the real compiled-in definitions.
+/// Its "in progress" stage advances through the `exit_commit` commit step
+/// exactly like the synthetic exit_commit fixture above, and its final "pr"
+/// stage declares `policy.handoff: merge` instead of a legacy `approve` post.
+#[test]
+fn mechanical_workflow_runs_its_commit_step_and_hands_off_to_merge_with_no_result_variables() {
+    let repo_root = init_git_repo("mechanical-e2e");
+    publish_origin_main(&repo_root, "publish bare repo for the mechanical workflow");
+    let config = test_config("mechanical-e2e");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    seed_stage_advance_task(&db, &repo_root, "claude");
+    db.update_test_pipeline_item_stage_context(
+        "task-1",
+        "task-source",
+        "mechanical",
+        None,
+        "claude",
+    )
+    .unwrap();
+    running_main_run(&db, "in progress");
+
+    let definitions_repo = crate::db::Repo {
+        id: format!("repo-{}", repo_root.display()),
+        path: repo_root.to_string_lossy().into_owned(),
+        name: "Mechanical fixture".to_string(),
+        default_branch: Some("main".to_string()),
+        default_branch_source: None,
+        remote_url_hash: None,
+        hidden: None,
+        sort_order: None,
+        created_at: None,
+        last_opened_at: None,
+    };
+    let definitions =
+        super::super::definitions::RepoDefinitions::resolve(&definitions_repo).unwrap();
+    let mechanical = definitions.workflow("mechanical").unwrap();
+    assert_eq!(mechanical.stages.len(), 2);
+    let pr_stage = &mechanical.stages[1];
+    assert_eq!(pr_stage.name, "pr");
+    assert_eq!(
+        pr_stage.policy.handoff,
+        Some(super::super::definitions::WorkflowHandoff::Merge),
+        "the final stage hands off to the merge master instead of an approve post"
+    );
+    for agent_name in ["implement", "pr"] {
+        let agent = definitions.agent(agent_name).unwrap();
+        for var in ["$PREV_RESULT", "$PREV_MAIN_RESULT", "$PLAN_RESULT"] {
+            assert!(
+                !agent.prompt.contains(var),
+                "{agent_name} must not reference {var}; the engine delivers results through the ledger"
+            );
+        }
+    }
+
+    let post = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
+        PreparedStageTransition::Post(post) => post,
+        _ => panic!("mechanical's exit_commit stage commits before it transitions"),
+    };
+    assert_eq!(post.run_stage, "in progress commit");
+    let commit = post.commit.clone().expect("bound to its transition");
+    assert_eq!(commit.stage, "in progress");
+    let exit = commit.exit.expect("the operator's advance");
+    assert_eq!(exit.exit.as_deref(), Some("advance"));
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// A declared post of a legacy workflow keeps dispatching exactly as it did:
+/// it is not a commit step and binds no transition.
+#[test]
+fn a_legacy_post_is_not_a_commit_step() {
+    let repo_root = init_git_repo("legacy-post-unbound");
+    write_post_workflow_fixtures(&repo_root);
+    let config = test_config("legacy-post-unbound");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    seed_post_workflow_task(&config, &db, &repo_root);
+    running_main_run(&db, "in progress");
+
+    let post = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
+        PreparedStageTransition::Post(post) => post,
+        _ => panic!("expected post dispatch"),
+    };
+    assert_eq!(post.run_stage, "commit");
+    assert!(post.commit.is_none());
+    assert!(post.fallback.transition_commit.is_none());
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// Advancing into a stage with no role forks its workspace from the
+/// triggering commit and prepares its setup, and never an agent session;
+/// resume, rerun and revision refuse it, since it has no session.
+#[test]
+fn a_stage_with_no_role_is_entered_as_a_gate_and_refuses_session_restarts() {
+    let repo_root = init_git_repo("advance-into-gate");
+    write_exit_commit_workflow(&repo_root);
+    let config = test_config("advance-into-gate");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    seed_stage_advance_task(&db, &repo_root, "claude");
+    running_main_run(&db, "in progress");
+    // The commit step already ran for this visit.
+    db.insert_stage_run(NewStageRun {
+        id: "run-commit",
+        task_id: "task-1",
+        stage: "in progress commit",
+        kind: "post",
+        agent: Some("commit"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "succeeded",
+        result: None,
+        feedback: None,
+        session_id: Some("task-1"),
+        provider_session_id: None,
+        cwd: None,
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+
+    let gate = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
+        PreparedStageTransition::Gate(gate) => gate,
+        _ => panic!("a stage with no role is entered as a gate"),
+    };
+    assert_eq!(gate.next_stage, "stakeholder");
+    assert!(matches!(
+        gate.workspace,
+        super::super::types::PreparedRunWorkspace::Forked(_)
+    ));
+    assert!(std::path::Path::new(&gate.cwd).exists());
+    super::super::lifecycle::roll_back_prepared_workspace(&gate.workspace).unwrap();
+
+    // Parked at the gate, nothing can restart a session there.
+    Connection::open(&config.db_path)
+        .unwrap()
+        .execute(
+            "UPDATE pipeline_item SET stage = 'stakeholder' WHERE id = 'task-1'",
+            [],
+        )
+        .unwrap();
+    let error = prepare_revision_task_for_api(&db, &config, "task-1", "stakeholder", "again", None)
+        .err()
+        .expect("a revision into a gate is refused");
+    assert!(error.contains("has no role"), "{error}");
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }

@@ -113,6 +113,10 @@ fn toml_string(value: &Path) -> String {
 }
 
 async fn launch_server(label: &str) -> RunningServer {
+    launch_server_with_env(label, &[]).await
+}
+
+async fn launch_server_with_env(label: &str, env: &[(&str, &Path)]) -> RunningServer {
     let lan = TcpListener::bind(("127.0.0.1", 0)).expect("reserve LAN port");
     let transfer = TcpListener::bind(("127.0.0.1", 0)).expect("reserve transfer port");
     let port = lan.local_addr().expect("lan addr").port();
@@ -149,6 +153,7 @@ async fn launch_server(label: &str) -> RunningServer {
     drop(lan);
     drop(transfer);
     let child = Command::new(kanna_server_binary())
+        .envs(env.iter().copied())
         .env("KANNA_SERVER_CONFIG", &config_path)
         .env("KANNA_E2E_TEST_SQL", "1")
         .env("RUST_LOG", "off")
@@ -589,6 +594,20 @@ impl RunningMcp {
 /// negotiated over that socket.
 pub async fn start_bare_chain(label: &str) -> (RunningServer, FakeDaemon, RunningMcp) {
     let mut server = launch_server(label).await;
+    let daemon = spawn_fake_daemon(&server.daemon_dir);
+    wait_for_server(&mut server).await;
+    daemon.await_subscription();
+    let mcp = launch_mcp(&server);
+    (server, daemon, mcp)
+}
+
+/// [`start_bare_chain`] with extra server environment, such as a `HOME` of
+/// its own so two chains are two independent Kanna homes.
+pub async fn start_bare_chain_with_env(
+    label: &str,
+    env: &[(&str, &Path)],
+) -> (RunningServer, FakeDaemon, RunningMcp) {
+    let mut server = launch_server_with_env(label, env).await;
     let daemon = spawn_fake_daemon(&server.daemon_dir);
     wait_for_server(&mut server).await;
     daemon.await_subscription();

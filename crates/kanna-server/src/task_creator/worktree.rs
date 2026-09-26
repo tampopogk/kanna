@@ -1,3 +1,4 @@
+use crate::db::Db;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -107,28 +108,407 @@ pub(crate) fn local_branch_exists(repo_path: &str, branch: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Branch/worktree name for a stage fork: the task's durable id plus a
-/// workspace counter (`task-<id>-2`, `task-<id>-3`, ...). The creation
-/// workspace `task-<id>` is workspace 1, so forks count from 2. Each
-/// workspace is an ephemeral manifestation of the task; the visible id ties
-/// it back to the durable row. Suffixes whose branch or worktree directory
-/// still exists are skipped (revisions can revisit a stage).
-pub(super) fn next_fork_branch(repo_path: &str, task_id: &str) -> Result<String, String> {
-    for n in 2u32..10_000 {
-        let candidate = format!("task-{}-{}", task_id, n);
-        let branch_exists = local_branch_exists(repo_path, &candidate);
-        let worktree_exists = Path::new(repo_path)
-            .join(".kanna-worktrees")
-            .join(&candidate)
-            .exists();
-        if !branch_exists && !worktree_exists {
-            return Ok(candidate);
+/// The workspace number a task branch or worktree directory name carries:
+/// `task-<id>` is the creation workspace (1), `task-<id>-<n>` is `n`.
+/// Anything else (a renamed PR branch, another task's name) carries none.
+pub(crate) fn task_branch_number(task_id: &str, name: &str) -> Option<i64> {
+    let prefix = format!("task-{task_id}");
+    let rest = name.strip_prefix(&prefix)?;
+    if rest.is_empty() {
+        return Some(1);
+    }
+    let digits = rest.strip_prefix('-')?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// The highest workspace number anything already names for this task: local
+/// refs, directories under `.kanna-worktrees`, and every branch or workspace
+/// the task's own records mention. At least 1, the creation workspace.
+fn used_task_branch_floor(db: &Db, repo_path: &str, task_id: &str) -> Result<i64, String> {
+    let mut floor = 1;
+    let mut consider = |name: &str| {
+        if let Some(number) = task_branch_number(task_id, name) {
+            floor = floor.max(number);
+        }
+    };
+    let output = Command::new("git")
+        .args([
+            "for-each-ref",
+            "--format=%(refname:short)",
+            &format!("refs/heads/task-{task_id}"),
+            &format!("refs/heads/task-{task_id}-*"),
+        ])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|error| format!("failed to run git for-each-ref: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "failed to list task branches: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    for name in String::from_utf8_lossy(&output.stdout).lines() {
+        consider(name.trim());
+    }
+    if let Ok(entries) = std::fs::read_dir(Path::new(repo_path).join(".kanna-worktrees")) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                consider(name);
+            }
         }
     }
+    for name in db
+        .task_recorded_branch_names(task_id)
+        .map_err(|error| format!("db error: {error}"))?
+    {
+        consider(&name);
+    }
+    Ok(floor)
+}
+
+/// Reserve the task's next workspace branch, `task-<id>-<n>` (spec §6).
+///
+/// `n` comes from the task's persisted high-water counter and is durable
+/// before this returns, so it is spent before any git work: a failed
+/// worktree add, a rolled-back spawn, or a branch deleted later never makes
+/// the number available again. The counter is seeded above every suffix a
+/// ref, a directory, or the task's records already use, so tasks that forked
+/// before the counter existed continue above their highest workspace.
+pub(super) fn allocate_task_branch(
+    db: &Db,
+    repo_path: &str,
+    task_id: &str,
+) -> Result<String, String> {
+    let floor = used_task_branch_floor(db, repo_path, task_id)?;
+    let number = db
+        .reserve_task_branch_number(task_id, floor)
+        .map_err(|error| format!("db error: {error}"))?;
+    Ok(format!("task-{task_id}-{number}"))
+}
+
+/// A retained workspace's git state, read without changing it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WorkspaceGitState {
+    pub(super) head: String,
+    /// The branch checked out, or `None` for a detached HEAD.
+    pub(super) branch: Option<String>,
+    /// Uncommitted changes, including untracked files.
+    pub(super) dirty: bool,
+}
+
+pub(super) fn workspace_git_state(worktree_path: &str) -> Result<WorkspaceGitState, String> {
+    let git = |args: &[&str]| -> Result<std::process::Output, String> {
+        Command::new("git")
+            .args(args)
+            .current_dir(worktree_path)
+            .output()
+            .map_err(|error| format!("failed to run git {}: {error}", args.join(" ")))
+    };
+    let head = git(&["rev-parse", "--verify", "-q", "HEAD^{commit}"])?;
+    if !head.status.success() {
+        return Err(format!("{worktree_path} has no committed HEAD"));
+    }
+    let branch = git(&["symbolic-ref", "--short", "-q", "HEAD"])?;
+    let status = git(&["status", "--porcelain", "--untracked-files=normal"])?;
+    if !status.status.success() {
+        return Err(format!(
+            "git status failed in {worktree_path}: {}",
+            String::from_utf8_lossy(&status.stderr).trim()
+        ));
+    }
+    let branch = String::from_utf8_lossy(&branch.stdout).trim().to_string();
+    Ok(WorkspaceGitState {
+        head: String::from_utf8_lossy(&head.stdout).trim().to_string(),
+        branch: (!branch.is_empty()).then_some(branch),
+        dirty: !status.stdout.is_empty(),
+    })
+}
+
+/// The full commit id `revision` names in `repo_path`, if it names a commit.
+pub(super) fn resolve_commit(repo_path: &str, revision: &str) -> Option<String> {
+    let output = Command::new("git")
+        .args([
+            "rev-parse",
+            "--verify",
+            "-q",
+            "--end-of-options",
+            &format!("{revision}^{{commit}}"),
+        ])
+        .current_dir(repo_path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!commit.is_empty()).then_some(commit)
+}
+
+/// Whether `ancestor` is reachable from `descendant` (true when equal).
+pub(super) fn is_ancestor(repo_path: &str, ancestor: &str, descendant: &str) -> bool {
+    if ancestor == descendant {
+        return true;
+    }
+    Command::new("git")
+        .args([
+            "merge-base",
+            "--is-ancestor",
+            "--end-of-options",
+            ancestor,
+            descendant,
+        ])
+        .current_dir(repo_path)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Confirm a retained workspace is still in the state a revisit plan
+/// observed, immediately before its branch is switched. Anything that moved
+/// in between — a commit, a branch change, new local changes — means the
+/// plan's reasons no longer hold; the difference is returned so the caller
+/// can preserve the directory and report it.
+pub(super) fn revalidate_revisit(
+    worktree_path: &str,
+    previous_branch: Option<&str>,
+    previous_head: &str,
+    observed_dirty: bool,
+) -> Result<(), String> {
+    let state = workspace_git_state(worktree_path)?;
+    let mut changes = Vec::new();
+    if state.head != previous_head {
+        changes.push(format!(
+            "HEAD moved from {} to {}",
+            short(previous_head),
+            short(&state.head)
+        ));
+    }
+    if state.branch.as_deref() != previous_branch {
+        changes.push(format!(
+            "branch changed from {} to {}",
+            previous_branch.unwrap_or("detached HEAD"),
+            state.branch.as_deref().unwrap_or("detached HEAD")
+        ));
+    }
+    if state.dirty != observed_dirty {
+        changes.push(if state.dirty {
+            "it gained uncommitted changes".to_string()
+        } else {
+            "its uncommitted changes went away".to_string()
+        });
+    }
+    if changes.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "retained workspace {worktree_path} changed after it was planned for reuse ({})",
+            changes.join("; ")
+        ))
+    }
+}
+
+fn short(commit: &str) -> &str {
+    &commit[..commit.len().min(12)]
+}
+
+/// One revisit's branch change in a retained workspace: the branch it
+/// checks out, where that branch starts, and what the directory had before.
+pub(super) struct RevisitCheckout<'a> {
+    pub(super) worktree_path: &'a str,
+    pub(super) new_branch: &'a str,
+    pub(super) start_point: &'a str,
+    pub(super) previous_branch: Option<&'a str>,
+    pub(super) previous_head: &'a str,
+    pub(super) observed_dirty: bool,
+}
+
+fn git_in(worktree_path: &str, args: &[&str]) -> Result<std::process::Output, String> {
+    Command::new("git")
+        .args(args)
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|error| format!("failed to run git {}: {error}", args.join(" ")))
+}
+
+fn git_line(worktree_path: &str, args: &[&str]) -> Option<String> {
+    let output = git_in(worktree_path, args).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+fn git_checked(worktree_path: &str, args: &[&str]) -> Result<(), String> {
+    let output = git_in(worktree_path, args)?;
+    if output.status.success() {
+        return Ok(());
+    }
     Err(format!(
-        "no free fork workspace suffix for task {}",
-        task_id
+        "git {} failed in {worktree_path}: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr).trim()
     ))
+}
+
+/// Create the revisit's branch and check it out.
+///
+/// The ref is created by compare-and-swap at the recorded input — it must
+/// not already exist — so the branch can never be pointed at anything but
+/// its start point, nor take over a branch someone else made. After the
+/// switch, whatever the directory held just before it (the previous branch's
+/// tip, or HEAD@{1} for a detached HEAD) is compared with what the plan saw.
+/// A commit that landed in between is not lost — it stays on its branch — and
+/// the returned report names it so the session does not silently start from
+/// a stale point.
+pub(super) fn check_out_revisit(checkout: &RevisitCheckout<'_>) -> Result<Option<String>, String> {
+    let RevisitCheckout {
+        worktree_path,
+        new_branch,
+        start_point,
+        previous_branch,
+        previous_head,
+        ..
+    } = *checkout;
+    let reference = format!("refs/heads/{new_branch}");
+    git_checked(worktree_path, &["update-ref", &reference, start_point, ""])?;
+    if let Err(error) = git_checked(worktree_path, &["switch", "--no-guess", new_branch]) {
+        // Nothing was checked out; drop the ref only while it is still the
+        // one this call made.
+        let _ = git_in(
+            worktree_path,
+            &["update-ref", "-d", &reference, start_point],
+        );
+        return Err(error);
+    }
+    let before_switch = match previous_branch {
+        Some(branch) => git_line(
+            worktree_path,
+            &[
+                "rev-parse",
+                "--verify",
+                "-q",
+                &format!("refs/heads/{branch}"),
+            ],
+        ),
+        None => git_line(worktree_path, &["rev-parse", "--verify", "-q", "HEAD@{1}"]),
+    };
+    Ok(before_switch
+        .filter(|head| head != previous_head)
+        .map(|head| {
+            let range = format!("{previous_head}..{head}");
+            let commits = git_line(worktree_path, &["rev-list", "--oneline", &range])
+                .unwrap_or_else(|| short(&head).to_string());
+            format!(
+                "{} moved from {} to {} after this revisit was planned; this session starts \
+                 at {} without: {}",
+                previous_branch.unwrap_or("the detached HEAD"),
+                short(previous_head),
+                short(&head),
+                short(start_point),
+                commits.replace('\n', "; "),
+            )
+        }))
+}
+
+/// Undo [`check_out_revisit`] after a failed spawn: return the workspace
+/// to what it had checked out and delete the unused branch. The directory
+/// itself is retained; its number stays spent.
+///
+/// The caller has stopped the sessions Kanna runs in the directory. The
+/// guard below keeps the undo from touching a directory someone still used
+/// after the checkout; [`undo_revisit_checkout`] then makes the ref change
+/// itself compare-and-swap, so a commit that lands after the guard's read is
+/// still never deleted.
+pub(super) fn restore_revisited_workspace(
+    checkout: &RevisitCheckout<'_>,
+) -> Result<Option<String>, String> {
+    let RevisitCheckout {
+        worktree_path,
+        new_branch,
+        start_point,
+        observed_dirty,
+        ..
+    } = *checkout;
+    let state = workspace_git_state(worktree_path)?;
+    let mut changes = Vec::new();
+    if state.branch.as_deref() != Some(new_branch) {
+        changes.push(format!(
+            "{} is checked out instead of {new_branch}",
+            state.branch.as_deref().unwrap_or("detached HEAD")
+        ));
+    } else if state.head != start_point {
+        changes.push(format!(
+            "{new_branch} moved from {} to {}",
+            short(start_point),
+            short(&state.head)
+        ));
+    }
+    if state.dirty && !observed_dirty {
+        changes.push("it has uncommitted changes made after the checkout".to_string());
+    }
+    if !changes.is_empty() {
+        return Ok(Some(preserved_report(
+            worktree_path,
+            new_branch,
+            &changes.join("; "),
+        )));
+    }
+    undo_revisit_checkout(checkout)
+}
+
+fn preserved_report(worktree_path: &str, new_branch: &str, what: &str) -> String {
+    format!(
+        "retained workspace {worktree_path} was used after {new_branch} was checked out \
+         ({what}); the branch and directory were preserved untouched"
+    )
+}
+
+/// The switch-and-delete step of a rollback. The branch is deleted with
+/// compare-and-swap: only while it still points at its start point. If it
+/// moved — a commit landed on it — the deletion is refused, the directory is
+/// switched back onto it, and the branch is kept and reported.
+pub(super) fn undo_revisit_checkout(
+    checkout: &RevisitCheckout<'_>,
+) -> Result<Option<String>, String> {
+    let RevisitCheckout {
+        worktree_path,
+        new_branch,
+        start_point,
+        previous_branch,
+        previous_head,
+        ..
+    } = *checkout;
+    match previous_branch {
+        Some(branch) => git_checked(worktree_path, &["switch", "--no-guess", branch])?,
+        None => git_checked(worktree_path, &["switch", "--detach", previous_head])?,
+    }
+    let reference = format!("refs/heads/{new_branch}");
+    if git_checked(
+        worktree_path,
+        &["update-ref", "-d", &reference, start_point],
+    )
+    .is_ok()
+    {
+        return Ok(None);
+    }
+    let Some(tip) = git_line(worktree_path, &["rev-parse", "--verify", "-q", &reference]) else {
+        // Gone already: nothing held on it can be lost by this call.
+        return Ok(None);
+    };
+    git_checked(worktree_path, &["switch", "--no-guess", new_branch])?;
+    Ok(Some(preserved_report(
+        worktree_path,
+        new_branch,
+        &format!(
+            "{new_branch} moved from {} to {}",
+            short(start_point),
+            short(&tip)
+        ),
+    )))
 }
 
 pub(crate) fn generate_task_id() -> Result<String, String> {

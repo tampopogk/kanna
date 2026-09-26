@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 import {
   KANNA_TASK_ENVIRONMENT_TEMPLATE,
+  buildKannaLedgerSection,
   buildKannaMcpStatusLine,
   buildKannaRuntimeSystemPrompt,
   buildKannaRuntimeUserPrompt,
@@ -438,5 +439,76 @@ describe("buildKannaRuntimeUserPrompt", () => {
 
     expect(result).toMatch(/## Your Task\n\nExplain this excerpt:/);
     expect(result.match(/^## Your Task$/gm)).toHaveLength(2);
+  });
+});
+
+// The same fixture and expected text are pinned in the Rust task creator's
+// `ledger_preamble_matches_the_typescript_builder` test
+// (crates/kanna-server/src/task_creator/tests/core.rs), so both renderers are
+// held to one literal string.
+const LEDGER_PATH = "/home/u/.kanna/repos/repo-1/tasks/task-1";
+const LEDGER_INTRO =
+  "Task ledger: `/home/u/.kanna/repos/repo-1/tasks/task-1` (also in `KANNA_TASK_LEDGER_PATH`). It holds this task's `task.json` and, under `ledger/`, its recorded results, tool-delivered inputs, stage transitions and workflow replacements as ordered files. Read an earlier entry there when you need it.";
+const TRIGGER = {
+  entryId: "task-1-000003",
+  file: "ledger/000003-result.md",
+  status: "success",
+  stage: "plan",
+  runId: "run-7",
+  branch: "task-1-2",
+  committedSha: "0123abc",
+  message: "Plan ready.\n\nUse {{COMPLETION}} and $& and $PREV_RESULT literally.",
+};
+const TRIGGER_SECTION =
+  LEDGER_INTRO +
+  "\n\nResult that caused this session: ledger entry `task-1-000003` (`ledger/000003-result.md`), status `success`, recorded by stage `plan` (run `run-7`, branch `task-1-2`, commit `0123abc`). Its message follows verbatim.\n\n-----BEGIN RESULT MESSAGE-----\nPlan ready.\n\nUse {{COMPLETION}} and $& and $PREV_RESULT literally.\n-----END RESULT MESSAGE-----";
+
+describe("buildKannaLedgerSection", () => {
+  it("renders nothing for a context without a task ledger", () => {
+    expect(buildKannaLedgerSection()).toBeNull();
+    expect(buildKannaLedgerSection({ taskId: "task-1" })).toBeNull();
+  });
+
+  it("says plainly when no recorded result caused the session", () => {
+    expect(buildKannaLedgerSection({ ledgerPath: LEDGER_PATH })).toBe(
+      `${LEDGER_INTRO}\n\nNo recorded result caused this session.`
+    );
+  });
+
+  it("delivers the triggering result verbatim with its engine provenance", () => {
+    expect(buildKannaLedgerSection({ ledgerPath: LEDGER_PATH, triggeringResult: TRIGGER })).toBe(
+      TRIGGER_SECTION
+    );
+  });
+
+  it("names unknown provenance instead of inventing it", () => {
+    const section = buildKannaLedgerSection({
+      ledgerPath: LEDGER_PATH,
+      triggeringResult: { entryId: "t-000001", file: "ledger/000001-result.md", status: "failure", message: "m" },
+    });
+    expect(section).toContain("recorded by stage `unknown` (run `unknown`, branch `unknown`, commit `unknown`)");
+  });
+});
+
+describe("buildKannaRuntimeSystemPrompt ledger delivery", () => {
+  it("keeps a legacy context byte-identical to the preamble without a ledger", () => {
+    const legacy = buildKannaRuntimeSystemPrompt({ taskId: "task-1", stageTrigger: "auto" });
+    expect(legacy).not.toContain("{{LEDGER}}");
+    expect(legacy).not.toContain("Task ledger:");
+    expect(legacy).toContain("This stage was entered by: auto\n\nKanna is a desktop app");
+  });
+
+  it("places the ledger after the stage trigger and keeps marker text in the message literal", () => {
+    const prompt = buildKannaRuntimeSystemPrompt({
+      taskId: "task-1",
+      stageTrigger: "auto",
+      transition: "auto",
+      ledgerPath: LEDGER_PATH,
+      triggeringResult: TRIGGER,
+    });
+    expect(prompt).toContain(`This stage was entered by: auto\n\n${TRIGGER_SECTION}\n\nKanna is a desktop app`);
+    expect(prompt).toContain("Use {{COMPLETION}} and $& and $PREV_RESULT literally.");
+    // The real completion guidance was still substituted exactly once.
+    expect(prompt.split("This stage's transition is `auto`").length).toBe(2);
   });
 });

@@ -81,6 +81,16 @@ function present(tab: MainTab): MainTabPresentation {
       closable,
     };
   }
+  if (tab.kind === "artifact") {
+    // The version on screen, which following `previous` can change.
+    const id = tab.artifactShownId ?? tab.artifactId ?? "";
+    return {
+      id: tab.id,
+      label: id ? t("mainTabs.artifactLabel", { id: id.slice(0, 8) }) : t("mainTabs.artifact"),
+      title: id ? t("mainTabs.artifactTitle", { id }) : t("mainTabs.artifactEmptyTitle"),
+      closable,
+    };
+  }
   if (tab.kind === "shell") {
     const label = t(tab.shellScope === "repo" ? "mainTabs.repoShell" : "mainTabs.shell");
     return { id: tab.id, label, title: label, closable };

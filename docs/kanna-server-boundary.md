@@ -1213,9 +1213,15 @@ MCP) still routes directly through `/v1/cloud/desktops/{id}/invoke` as
 before, bypassing this probe entirely. Three answers are kept distinct rather
 than folded into one 404: task genuinely absent everywhere reachable; a
 candidate reached but its delivery was `delivery_uncertain` (terminal, never
-silently retried, reported as 503 naming the machine); and a paired machine
-this attempt could not even reach to ask, named in the final 404 rather than
-indistinguishable from "no such task". The cost is at most one sequential
+silently retried, reported as 503 naming the machine); and a same-account
+machine this attempt could not reach or dispatch to, which may be the owner,
+so the answer is an explicit `503 task_owner_unreachable` naming it (and the
+dispatch reason) rather than a 404 indistinguishable from "no such task" —
+nothing is done locally while the owner may be unreachable. Only same-account
+machines are candidates (`account_boundary.rs`): a pin that does not prove the
+sibling shares this desktop's account is never asked and never counted as a
+possible owner, and a sibling that refuses this desktop on the account
+boundary is a dispatch failure, not the task's answer. The cost is at most one sequential
 probe round trip per currently-reachable sibling, paid only on a local miss
 — a local hit costs nothing extra. There is no persistent task-to-machine
 index; ownership is discovered live on every miss, the same tradeoff

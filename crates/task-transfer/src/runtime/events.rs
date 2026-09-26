@@ -12,6 +12,9 @@ pub struct PreflightResult {
     pub transfer_id: String,
     pub source_peer_id: String,
     pub target_has_repo: bool,
+    /// The destination server's transfer-protocol capabilities, as its
+    /// sidecar relayed them during negotiation.
+    pub peer_capabilities: Value,
 }
 
 #[derive(Debug, Clone, PartialEq)]

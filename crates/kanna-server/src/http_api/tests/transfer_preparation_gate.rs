@@ -218,6 +218,7 @@ async fn create_transferred_task(
         task_id.to_string(),
         Vec::new(),
         source_payload,
+        None,
     )
     .await
     {
@@ -838,6 +839,7 @@ async fn ordinary_put_resume_and_rerun_refuse_unprepared_bound_task() {
                 follow_task: None,
                 revision_budget: None,
                 workflow_extended: None,
+                routing: None,
             })
         }),
     )));

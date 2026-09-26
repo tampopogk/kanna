@@ -13,7 +13,8 @@ use super::types::{
 };
 use super::{
     build_agent_command, build_kanna_preamble, build_prepared_session, build_spawn_env,
-    build_stage_prompt, create_dormant_task_for_api_with_error, prepare_advance_stage_for_api,
+    build_stage_prompt, create_dormant_task_for_api_with_error,
+    create_dormant_task_with_stage_edges, prepare_advance_stage_for_api,
     prepare_merge_agent_for_api, prepare_rerun_stage_for_api, prepare_resume_task_for_api,
     prepare_revision_task_for_api, prepare_singleton_agent_task_for_api,
     prepare_stage_completion_for_api, prepare_start_dormant_task_for_api, prepare_task_for_api,
@@ -44,6 +45,7 @@ static CLAUDE_CONFIG_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static CODEX_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 mod core;
+mod dependencies;
 mod local_config;
 mod provider_session;
 mod quota_recovery;
@@ -497,6 +499,13 @@ async fn spawn_fake_daemon_fork_transition(
             }
             let response = match &command {
                 kanna_daemon::protocol::Command::Kill { .. } => kanna_daemon::protocol::Event::Ok,
+                // A revisit lists live sessions to find the ones in its
+                // directory; this daemon runs none.
+                kanna_daemon::protocol::Command::List => {
+                    kanna_daemon::protocol::Event::SessionList {
+                        sessions: Vec::new(),
+                    }
+                }
                 kanna_daemon::protocol::Command::Spawn { session_id, .. }
                 | kanna_daemon::protocol::Command::SpawnAgent { session_id, .. } => {
                     spawns += 1;

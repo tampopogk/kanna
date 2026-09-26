@@ -14,7 +14,9 @@ import type {
   TaskFileMentionResolution,
   TaskInputAttachment,
   TaskPreviewOpenResult,
-  TaskSummary
+  TaskSummary,
+  ArtifactDetail,
+  ArtifactFileContent
 } from "../lib/api/types";
 import type {
   KannaClient,
@@ -56,7 +58,7 @@ import type {
   PersistedSessionContext,
   TrustedDesktopRecord
 } from "./sessionPersistence";
-import { isTaskBlocked } from "../lib/api/taskIdentity";
+import { isTaskBlockedWithoutSession } from "../lib/api/taskIdentity";
 import { taskMatchesSearchQuery } from "../lib/api/taskSearch";
 import { resolveAgentProviderForDesktop } from "../lib/api/agentProviders";
 import { buildMachineInventory } from "./machineInventory";
@@ -142,6 +144,13 @@ export interface MobileController {
     mentions: readonly TaskFileMentionInput[]
   ): Promise<TaskFileMentionResolution>;
   readTaskDiff(taskId: string, request?: TaskDiffRequest): Promise<TaskDiffContent>;
+  getArtifact(repoId: string, artifactId: string): Promise<ArtifactDetail>;
+  readArtifactFile(repoId: string, artifactId: string, path: string): Promise<ArtifactFileContent>;
+  getArtifactRemote: KannaClient["getArtifactRemote"];
+  recordArtifactComment: KannaClient["recordArtifactComment"];
+  recordArtifactDecision: KannaClient["recordArtifactDecision"];
+  pushArtifact: KannaClient["pushArtifact"];
+  fetchArtifact: KannaClient["fetchArtifact"];
   canOpenTaskPreview?(taskId: string): boolean;
   openTaskPreview(taskId: string, portName?: string): Promise<TaskPreviewOpenResult>;
   closeTaskPreview(taskId: string): Promise<void>;
@@ -421,6 +430,19 @@ export function createMobileController(
          * present on first open and gone forever afterwards.
          */
         reviewState: SessionState["selectedTaskReviewState"];
+        /** The latest-result read this detail carried, kept beside the
+         * prompt for the same cache-hit reason as `reviewState`. */
+        latestRun: SessionState["selectedTaskLatestRun"];
+        /**
+         * The task's `stage` and `activityRevision` as of this read, the same
+         * markers the desktop client's own detail watch keys off. A
+         * collection refresh that reports either one changed means the task
+         * recorded a new result since this cache entry was written, so a
+         * cache hit alone would replay a stale `latestRun` until the task was
+         * closed and reopened.
+         */
+        stage: string | null;
+        activityRevision: number;
       }
     | null = null;
   /**
@@ -699,17 +721,30 @@ export function createMobileController(
     }
     const routeIdentity = taskPromptRouteIdentity(task);
     const detailIdentity = JSON.stringify([taskId, routeIdentity]);
+    // A collection refresh re-enters here on every poll, and `stage` /
+    // `activityRevision` are the same markers the desktop client's own
+    // detail watch keys off (MainPanel.vue). Either one changing since the
+    // cached read means the task has recorded something new — most
+    // importantly a fresh `latestRun` — so the cache is stale even though
+    // the task and route identity have not changed.
+    const cacheStaleForNewActivity =
+      loadedTaskPrompt?.taskId === taskId &&
+      loadedTaskPrompt.routeIdentity === routeIdentity &&
+      (loadedTaskPrompt.stage !== task.stage ||
+        loadedTaskPrompt.activityRevision !== (task.activityRevision ?? 0));
     if (
       !force &&
+      !cacheStaleForNewActivity &&
       loadedTaskPrompt?.taskId === taskId &&
       loadedTaskPrompt.routeIdentity === routeIdentity
     ) {
       store.setTaskPrompt(taskId, loadedTaskPrompt.prompt);
       store.setTaskPorts(taskId, loadedTaskPrompt.ports);
       store.setSelectedTaskReviewState(loadedTaskPrompt.reviewState);
+      store.setSelectedTaskLatestRun(loadedTaskPrompt.latestRun);
       return;
     }
-    if (!force && activeTaskDetailIdentity === detailIdentity) {
+    if (!force && !cacheStaleForNewActivity && activeTaskDetailIdentity === detailIdentity) {
       return;
     }
 
@@ -738,18 +773,35 @@ export function createMobileController(
               }
             : null;
         store.setSelectedTaskReviewState(reviewState);
+        const latestRun: SessionState["selectedTaskLatestRun"] = {
+          taskId,
+          latestRun: detail.latestRun ?? null,
+          sessionHistory: detail.sessionHistory,
+          stageDependencies: detail.stageDependencies,
+          dependencyWait: detail.dependencyWait ?? null,
+          gateParked: detail.gateParked ?? null
+        };
+        store.setSelectedTaskLatestRun(latestRun);
         observedTaskWorkflow = {
           taskId,
           routeIdentity,
           definition: detail.workflowDefinition ?? null
         };
         if (typeof detail.prompt === "string") {
+          // Re-read at write time rather than closing over the `task` found
+          // when this read started: a collection refresh landing while the
+          // request was in flight must not have its newer markers
+          // overwritten by the stale ones the read was asked with.
+          const currentTask = findTask(taskId) ?? task;
           loadedTaskPrompt = {
             taskId,
             routeIdentity,
             prompt: detail.prompt,
             ports: detail.ports,
-            reviewState
+            reviewState,
+            latestRun,
+            stage: currentTask.stage,
+            activityRevision: currentTask.activityRevision ?? 0
           };
           store.setTaskPrompt(taskId, detail.prompt);
         }
@@ -1899,10 +1951,13 @@ export function createMobileController(
     }
     loadSelectedTaskPrompt(taskId);
     loadSelectedTaskAttachmentSupport(taskId);
-    if (isTaskBlocked(task)) {
-      // A blocked task has no agent session to attach; the task screen
-      // renders the blocked placeholder instead. Collection refreshes
-      // re-enter here, so attachment starts as soon as the task unblocks.
+    if (isTaskBlockedWithoutSession(task)) {
+      // Blocked with nothing running yet has no agent session to attach;
+      // the task screen renders the blocked placeholder instead. Collection
+      // refreshes re-enter here, so attachment starts as soon as the task
+      // unblocks. A task blocked by a T4 later-stage edge or a T5 join wait
+      // while its current stage already has a live session is not this —
+      // `runtimeState` says so, and that session stays attached below.
       if (activeTaskTerminal || activeTaskAgent || activeTaskCompanion) {
         stopTaskSession();
         store.clearTaskTerminal();
@@ -4076,6 +4131,34 @@ export function createMobileController(
 
     readTaskFile(taskId, path) {
       return client.readTaskFile(taskId, path);
+    },
+
+    getArtifact(repoId, artifactId) {
+      return client.getArtifact(repoId, artifactId);
+    },
+
+    readArtifactFile(repoId, artifactId, path) {
+      return client.readArtifactFile(repoId, artifactId, path);
+    },
+
+    getArtifactRemote(repoId) {
+      return client.getArtifactRemote(repoId);
+    },
+
+    recordArtifactComment(repoId, artifactId, input) {
+      return client.recordArtifactComment(repoId, artifactId, input);
+    },
+
+    recordArtifactDecision(repoId, artifactId, input) {
+      return client.recordArtifactDecision(repoId, artifactId, input);
+    },
+
+    pushArtifact(repoId, artifactId, binding) {
+      return client.pushArtifact(repoId, artifactId, binding);
+    },
+
+    fetchArtifact(repoId, artifactId) {
+      return client.fetchArtifact(repoId, artifactId);
     },
 
     downloadTaskFile(taskId, path) {

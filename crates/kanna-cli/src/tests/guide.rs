@@ -80,9 +80,9 @@ fn guide_markdown_includes_live_context_and_all_catalog_tools() {
     assert!(guide.contains("delivery_uncertain"));
     assert!(guide.contains("## Machine-Local Repository Config"));
     assert!(guide.contains("`.kanna/config.local.json`"));
-    assert!(
-        guide.contains("`agentProviders`, `workflow`, `ports`, `setup`, `teardown`, and `test`")
-    );
+    assert!(guide.contains(
+        "`agentProviders`, `workflow`, `ports`, `setup`, `teardown`, `test`, and `artifacts`"
+    ));
     assert!(guide.contains("arrays never concatenate"));
     assert!(guide.contains("https://schemas.kanna.build/config.schema.json"));
     assert!(guide.contains("## Further Topics"));
