@@ -290,6 +290,12 @@ export function createExpoConfig(
       // so their Swift pods always require static frameworks. This Podfile
       // configuration is separate from environment-specific initialization.
       "./plugins/withKannaFirebasePodfile",
+      // Apps linked against the iOS 27 SDK trap at launch in UIKit unless they
+      // adopt the UIScene life cycle. SDK 57 makes that an opt-in (it needs
+      // expo >= 57.0.23): the AppDelegate stops creating the window and
+      // Expo's scene delegate starts React Native instead. Every identity gets
+      // it because staging and store archives build with the same Xcode.
+      ["expo-build-properties", { ios: { enableSceneSupport: true } }],
       // Dev has no Firebase Apple app/plist matching build.kanna.app.dev.
       // Do not initialize it with the production native identity.
       ...(appEnvironment.name === "dev"

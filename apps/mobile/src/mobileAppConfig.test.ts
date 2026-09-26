@@ -37,10 +37,10 @@ describe("mobile app config", () => {
         channel: "production",
         manifestUrl: "https://relay.kanna.build/ota/manifest"
       },
-      runtimeVersion: "2.3.0"
+      runtimeVersion: "2.3.1"
     });
     expect(config.extra.kanna.releaseVersion).toBe(readRepoVersion());
-    expect(config.runtimeVersion).toBe("2.3.0");
+    expect(config.runtimeVersion).toBe("2.3.1");
     expect(config.icon).toBe("./assets/icon.png");
     expect(config.android.adaptiveIcon).toEqual({
       foregroundImage: "./assets/adaptive-icon-foreground.png",
@@ -105,9 +105,9 @@ describe("mobile app config", () => {
         channel: null,
         manifestUrl: null
       },
-      runtimeVersion: "2.3.0"
+      runtimeVersion: "2.3.1"
     });
-    expect(config.runtimeVersion).toBe("2.3.0");
+    expect(config.runtimeVersion).toBe("2.3.1");
     expect(config.updates).toBeUndefined();
   });
 
@@ -188,9 +188,9 @@ describe("mobile app config", () => {
         channel: "staging",
         manifestUrl: "https://relay-staging.kanna.build/ota/manifest"
       },
-      runtimeVersion: "2.3.0"
+      runtimeVersion: "2.3.1"
     });
-    expect(config.runtimeVersion).toBe("2.3.0");
+    expect(config.runtimeVersion).toBe("2.3.1");
     expect(config.updates).toMatchObject({
       url: "https://relay-staging.kanna.build/ota/manifest",
       requestHeaders: { "expo-channel-name": "staging" }
@@ -348,7 +348,7 @@ describe("mobile app config", () => {
         recordAudioAndroid: false
       }
     ]);
-    expect(config.runtimeVersion).toBe("2.3.0");
+    expect(config.runtimeVersion).toBe("2.3.1");
   });
 
   it("declares the composer attachment permissions and captures no audio", () => {
@@ -404,6 +404,17 @@ describe("Android OTA native config transformation", () => {
   });
 });
 
+
+describe("iOS scene life cycle", () => {
+  it("opts every identity into UIScene, which iOS 27 SDK builds require to launch", () => {
+    for (const env of ["dev", "staging", "prod"]) {
+      expect(createExpoConfig({ KANNA_APP_ENV: env }).plugins).toContainEqual([
+        "expo-build-properties",
+        { ios: { enableSceneSupport: true } }
+      ]);
+    }
+  });
+});
 
 describe("native Apple billing configuration", () => {
   it("bundles the supported adapter in every new native runtime", () => {
