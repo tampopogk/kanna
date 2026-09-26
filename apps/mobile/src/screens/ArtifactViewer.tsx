@@ -773,7 +773,10 @@ export function ArtifactViewer({
                 allowUniversalAccessFromFileURLs={false}
                 allowsLinkPreview={false}
                 cacheEnabled={false}
-                dataDetectorTypes="none"
+                // An array, not the string form: Android passes props straight
+                // to the codegen component, whose array prop aborts natively on
+                // a string. iOS wraps a string into this same array.
+                dataDetectorTypes={["none"]}
                 domStorageEnabled={false}
                 incognito
                 javaScriptCanOpenWindowsAutomatically={false}

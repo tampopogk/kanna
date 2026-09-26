@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import React from "react";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -399,6 +401,28 @@ describe("ArtifactViewer (mobile)", () => {
     const html = framedPage();
     expect(html.indexOf(`<meta http-equiv="Content-Security-Policy" content="default-src 'none';`)).toBeLessThan(html.indexOf("<link"));
     expect(html).toContain("connect-src 'none'");
+  });
+
+  it("passes the WebView props its Android native component can parse", async () => {
+    // Android hands these props to the codegen component unchanged, and a
+    // string where the spec declares an array aborts the app natively
+    // (SIGABRT in RNCWebViewProps) when the view mounts.
+    const spec = readFileSync(
+      createRequire(import.meta.url).resolve("react-native-webview/src/RNCWebViewNativeComponent.ts"),
+      "utf8"
+    );
+    const arrayProps = [...spec.matchAll(/^ {2}(\w+)\?: (?:WithDefault<\s*)?ReadonlyArray</gm)].map((m) => m[1]!);
+    expect(arrayProps).toContain("dataDetectorTypes");
+    await open(V2);
+    const props = webView().props;
+    for (const name of arrayProps) {
+      if (props[name] !== undefined) expect(Array.isArray(props[name]), name).toBe(true);
+    }
+    const detectorTypes = /^ {2}dataDetectorTypes\?: WithDefault<\s*ReadonlyArray<([^>]*)>/m.exec(spec)![1]!
+      .match(/'(\w+)'/g)!.map((value) => value.slice(1, -1));
+    // Still no phone, link or address detection on iOS.
+    expect(props.dataDetectorTypes).toEqual(["none"]);
+    expect(detectorTypes).toContain("none");
   });
 
   it("does not rely on the JS navigation callback: the page runs in a sandboxed frame of a trusted host", async () => {

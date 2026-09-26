@@ -1,4 +1,9 @@
-import { ActionSheetIOS, Alert, Platform } from "react-native";
+import {
+  ActionSheetIOS,
+  Platform,
+  TurboModuleRegistry,
+  type TurboModule
+} from "react-native";
 import type { TaskStageAction } from "../state/sessionStore";
 
 export type TaskAction =
@@ -24,6 +29,27 @@ export interface TaskActionMenuOptions {
 
 const MENU_TITLE = "Task Actions";
 const CANCEL_LABEL = "Cancel";
+
+/**
+ * React Native's Android dialog module, which `Alert.alert` wraps. `Alert`
+ * keeps only three buttons (positive, negative, neutral) and drops the rest,
+ * so a longer menu goes through the module's `items` list instead: an
+ * AlertDialog item list with no cap. A tapped item reports `buttonClicked`
+ * with its index (>= 0); the buttons report negative keys.
+ */
+interface AndroidDialogManager extends TurboModule {
+  getConstants(): { buttonClicked: string; dismissed: string };
+  showAlert(
+    config: {
+      title?: string;
+      items?: string[];
+      buttonNegative?: string;
+      cancelable?: boolean;
+    },
+    onError: (error: string) => void,
+    onAction: (action: string, buttonKey?: number) => void
+  ): void;
+}
 
 export function showTaskActionMenu(
   options: TaskActionMenuOptions,
@@ -68,17 +94,34 @@ export function showTaskActionMenu(
     return;
   }
 
-  Alert.alert(
-    MENU_TITLE,
-    undefined,
-    [
-      ...taskActions.map((action) => ({
-        text: action.label,
-        style: action.style,
-        onPress: () => onSelect(action.id)
-      })),
-      { text: CANCEL_LABEL, style: "cancel" as const, onPress: onDismiss }
-    ],
-    { cancelable: true, onDismiss }
+  const dialogManager =
+    TurboModuleRegistry.get<AndroidDialogManager>("DialogManagerAndroid");
+  if (!dialogManager) {
+    onDismiss();
+    return;
+  }
+  const { buttonClicked } = dialogManager.getConstants();
+  dialogManager.showAlert(
+    {
+      title: MENU_TITLE,
+      items: taskActions.map((action) => action.label),
+      buttonNegative: CANCEL_LABEL,
+      cancelable: true
+    },
+    (error) => {
+      console.warn(error);
+      onDismiss();
+    },
+    (dialogAction, buttonKey) => {
+      const action =
+        dialogAction === buttonClicked && buttonKey !== undefined
+          ? taskActions[buttonKey]
+          : undefined;
+      if (action) {
+        onSelect(action.id);
+      } else {
+        onDismiss();
+      }
+    }
   );
 }
