@@ -9,6 +9,7 @@ import { useAgentStream } from "./useAgentStream";
 import { useSlashCommands, type SlashCommand } from "./useSlashCommands";
 import { useKannaStore } from "../stores/kanna";
 import type { AgentMessageAppearance } from "../stores/state";
+import { fetchDesktopAgentCatalog, type AgentCatalogModel } from "../services/desktopServerClient";
 import { getShikiTheme } from "../theme/theme";
 import { useThemeRuntime } from "../theme/runtime";
 
@@ -272,6 +273,13 @@ export function useAgentMessageView(props: UseAgentMessageViewProps) {
 
   onMounted(() => {
     focusComposerAfterSelection();
+    void fetchDesktopAgentCatalog().then((catalog) => {
+      loadedModelOptions.value = props.agentProvider
+        ? catalog.harnesses[props.agentProvider]?.models ?? []
+        : catalog.harnesses.claude.models;
+    }).catch(() => {
+      // A stale/older server still leaves the bundled UI fallback usable.
+    });
   });
 
   onUnmounted(() => {
@@ -313,7 +321,8 @@ export function useAgentMessageView(props: UseAgentMessageViewProps) {
   }
 
   // ── Model selection ─────────────────────────────────────────
-  const modelOptions = computed(() => agentModelsFor(props.agentProvider));
+  const loadedModelOptions = ref<AgentCatalogModel[] | null>(null);
+  const modelOptions = computed(() => loadedModelOptions.value ?? agentModelsFor(props.agentProvider));
   // The first option is the best/default model for the provider.
   const bestModel = computed(() => modelOptions.value[0]?.id ?? "");
   // Reflect the running model from the latest turn when it matches a known option.

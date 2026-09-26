@@ -1641,6 +1641,26 @@ export async function fetchDesktopCopilotModels(repoId: string): Promise<Copilot
   return requestJson(`/v1/repos/${encodeURIComponent(repoId)}/copilot-models`);
 }
 
+export interface AgentCatalogModel {
+  id: string;
+  label: string;
+}
+
+export interface AgentCatalogHarness {
+  models: AgentCatalogModel[];
+  efforts: string[];
+}
+
+export interface AgentCatalog {
+  version: number;
+  harnesses: Record<AgentProvider, AgentCatalogHarness>;
+  source?: string;
+}
+
+export async function fetchDesktopAgentCatalog(): Promise<AgentCatalog> {
+  return requestJson("/v1/agent-catalog");
+}
+
 export interface PinnedTaskWorkflow {
   [key: string]: unknown;
   stages: Array<{ [key: string]: unknown; name: string; agent_provider?: AgentSelectionEntry | AgentSelectionEntry[]; post?: unknown }>;

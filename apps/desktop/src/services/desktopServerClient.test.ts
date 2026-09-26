@@ -20,6 +20,7 @@ import {
   setDesktopTaskWorkflow,
   replaceDesktopTaskWorkflow,
   fetchDesktopCopilotModels,
+  fetchDesktopAgentCatalog,
   fetchDesktopOpenCodeModels,
   ensureDesktopReady,
   approveIncomingTaskTransfer,
@@ -90,6 +91,18 @@ describe("desktopServerClient", () => {
       method: "POST", headers: JSON_REQUEST_HEADERS,
       body: JSON.stringify({ expectedDefinition: before, workflowDefinition: after, source: "operator" }),
     });
+  });
+
+  it("loads the hot agent catalog from the local server", async () => {
+    const catalog = { version: 1, harnesses: {}, source: "override" };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(catalog), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await fetchDesktopAgentCatalog()).toEqual(catalog);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:48121/v1/agent-catalog",
+      expect.objectContaining({ method: "GET", headers: LOCAL_CREDENTIAL_HEADERS }),
+    );
   });
 
   beforeEach(() => {

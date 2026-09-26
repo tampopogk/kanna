@@ -1,3 +1,4 @@
+mod agent_catalog;
 mod agent_inventory;
 mod bonjour;
 mod channel_identity;
