@@ -15,7 +15,7 @@ use libghostty_vt::{
     render::{CellIterator, RenderState, RowIterator},
     screen::CellWide,
     terminal::Mode,
-    Terminal, TerminalOptions,
+    Terminal,
 };
 
 use crate::detection::progress::ProgressScanner;
@@ -30,8 +30,8 @@ use crate::detection::classify::starts_with_glyph;
 
 type HeadlessTerminalResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-// Ghostty's C API names this "max_scrollback", but it is a byte budget, not a
-// row count. Budget against the full grid so 10K logical rows survive snapshot.
+// Ghostty's scrollback limit is a byte budget, not a row count. Budget against
+// the full grid so 10K logical rows survive snapshot.
 const GHOSTTY_SCROLLBACK_BYTES_PER_CELL: usize = 20;
 
 /// One reading of the composer row's *cells*, with the styling and cursor the
@@ -137,11 +137,8 @@ impl HeadlessTerminal {
         max_scrollback: usize,
     ) -> HeadlessTerminalResult<Self> {
         let pty_writes = Rc::new(RefCell::new(Vec::new()));
-        let mut terminal = Box::new(Terminal::new(TerminalOptions {
-            cols,
-            rows,
-            max_scrollback,
-        })?);
+        let mut terminal = Box::new(Terminal::new(cols, rows)?);
+        terminal.set_scrollback_max_bytes(Some(max_scrollback))?;
         let render_state = RenderState::new()?;
         let row_iterator = RowIterator::new()?;
         let cell_iterator = CellIterator::new()?;
@@ -228,7 +225,7 @@ impl HeadlessTerminal {
             Ok(snapshot) => {
                 let mut vt = snapshot.serialized_candidate;
                 // Temporary compatibility for ghostty-xterm-compat-serialize
-                // 06895c8: it retains mouse tracking but omits its encoding.
+                // 542896a: it retains mouse tracking but omits its encoding.
                 // After a viewer reset this turns OpenCode's SGR reports into
                 // legacy binary reports. Preserve the daemon's actual SGR mode
                 // for every attach, resize and handoff consumer. Remove when

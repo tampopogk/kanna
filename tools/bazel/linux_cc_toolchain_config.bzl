@@ -118,7 +118,7 @@ def _zig_cc_toolchain_config_impl(ctx):
         target_system_name = ctx.attr.target,
         target_cpu = ctx.attr.target_cpu,
         target_libc = "glibc-2.39",
-        compiler = "zig-0.15.2",
+        compiler = "zig-0.16.0",
         abi_version = "gnu.2.39",
         abi_libc_version = "2.39",
         builtin_sysroot = sysroot,
@@ -233,9 +233,9 @@ def zig_linux_cc_toolchain(name, target, target_cpu, multiarch, sysroot, sysroot
 def zig_linux_cc_toolchains(name, target, target_cpu, multiarch, sysroot, sysroot_marker, target_compatible_with):
     """Declare one target toolchain for each supported execution host."""
     for exec_name, zig_repository, exec_constraints in (
-        ("macos_arm64", "@@rules_zig++zig+zig_0.15.2_aarch64-macos", ["@platforms//cpu:aarch64", "@platforms//os:osx"]),
-        ("linux_x86_64", "@@rules_zig++zig+zig_0.15.2_x86_64-linux", ["@platforms//cpu:x86_64", "@platforms//os:linux"]),
-        ("linux_arm64", "@@rules_zig++zig+zig_0.15.2_aarch64-linux", ["@platforms//cpu:aarch64", "@platforms//os:linux"]),
+        ("macos_arm64", "@@rules_zig++zig+zig_0.16.0_aarch64-macos", ["@platforms//cpu:aarch64", "@platforms//os:osx"]),
+        ("linux_x86_64", "@@rules_zig++zig+zig_0.16.0_x86_64-linux", ["@platforms//cpu:x86_64", "@platforms//os:linux"]),
+        ("linux_arm64", "@@rules_zig++zig+zig_0.16.0_aarch64-linux", ["@platforms//cpu:aarch64", "@platforms//os:linux"]),
     ):
         zig_linux_cc_toolchain(
             name = "{}_on_{}".format(name, exec_name),

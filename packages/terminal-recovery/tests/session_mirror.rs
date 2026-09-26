@@ -1,6 +1,6 @@
 use kanna_terminal_recovery::protocol::RecoverySnapshot;
 use kanna_terminal_recovery::session_mirror::{scrollback_byte_limit, SessionMirror};
-use libghostty_vt::{Terminal, TerminalOptions};
+use libghostty_vt::Terminal;
 
 #[test]
 fn mirror_serializes_full_scrollback_after_multiple_writes() {
@@ -38,12 +38,10 @@ fn mirror_serializes_ten_thousand_scrollback_lines() {
 
 #[test]
 fn ghostty_terminal_keeps_ten_thousand_scrollback_lines() {
-    let mut terminal = Terminal::new(TerminalOptions {
-        cols: 120,
-        rows: 45,
-        max_scrollback: scrollback_byte_limit(120, 45, 10_000),
-    })
-    .expect("terminal should initialize");
+    let mut terminal = Terminal::new(120, 45).expect("terminal should initialize");
+    terminal
+        .set_scrollback_max_bytes(Some(scrollback_byte_limit(120, 45, 10_000)))
+        .expect("scrollback limit should be settable");
 
     for line in 1..=10_050 {
         terminal.vt_write(format!("GSCROLL{line:05}\r\n").as_bytes());

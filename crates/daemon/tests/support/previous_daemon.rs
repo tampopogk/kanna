@@ -108,11 +108,13 @@ pub fn binary_or_skip(test: &str) -> Option<PathBuf> {
     if binary.is_none() {
         let notice = if PREVIOUS_RELEASE_RUNS_HERE {
             format!(
-                "SKIP {test}: no local ghostty checkout for the previous-daemon fixture. \
-                 The cross-version handoff invariants in crates/daemon/SPEC.md were NOT \
-                 exercised. Build this workspace first (`cargo build -p kanna-daemon`), or \
-                 point GHOSTTY_SOURCE_DIR at a ghostty checkout, or set \
-                 KANNA_PREVIOUS_DAEMON_BIN to a prebuilt {PREVIOUS_TAG} daemon.\n"
+                "SKIP {test}: no local checkout of the ghostty commit {PREVIOUS_TAG} pins \
+                 for the previous-daemon fixture. The cross-version handoff invariants in \
+                 crates/daemon/SPEC.md were NOT exercised. This workspace's own build only \
+                 provides one when its ghostty pin matches {PREVIOUS_TAG}'s. Otherwise point \
+                 GHOSTTY_SOURCE_DIR at a checkout of that commit, with the Zig release it \
+                 requires first on PATH, or set KANNA_PREVIOUS_DAEMON_BIN to a prebuilt \
+                 {PREVIOUS_TAG} daemon.\n"
             )
         } else {
             format!(
