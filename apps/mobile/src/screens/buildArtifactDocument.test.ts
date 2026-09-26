@@ -5,6 +5,7 @@ import {
   buildArtifactDocument,
   ArtifactBuildCancelled,
   artifactHostOpenPath,
+  artifactHostOpenTitlePath,
   decodeBase64,
   decodeUtf8,
   encodeBase64,
@@ -171,6 +172,17 @@ describe("buildArtifactDocument", () => {
     expect(artifactHostOpenPath("kanna-host:open?path=%E0%A4%A", files)).toBeNull();
     expect(artifactHostOpenPath("kanna-host:open?path=", files)).toBeNull();
     expect(artifactHostOpenPath("https://example.com/?path=index.html", files)).toBeNull();
+  });
+
+  it("names only a file of the tree in a host-open title", () => {
+    const files = new Set(["index.html", "pages/a b.html"]);
+    expect(artifactHostOpenTitlePath("kanna-host-open:pages%2Fa%20b.html", files)).toBe("pages/a b.html");
+    expect(artifactHostOpenTitlePath("kanna-host-open:..%2Findex.html", files)).toBeNull();
+    expect(artifactHostOpenTitlePath("kanna-host-open:%E0%A4%A", files)).toBeNull();
+    expect(artifactHostOpenTitlePath("kanna-host-open:", files)).toBeNull();
+    expect(artifactHostOpenTitlePath("index.html", files)).toBeNull();
+    expect(artifactHostOpenTitlePath("data:text/html;charset=utf-8;base64,", files)).toBeNull();
+    expect(artifactHostOpenTitlePath("kanna-host:open?path=index.html", files)).toBeNull();
   });
 
   it("resolves references the way a browser does under the tree root, and never outside it", () => {

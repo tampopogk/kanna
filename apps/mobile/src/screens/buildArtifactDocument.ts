@@ -436,21 +436,50 @@ export const ARTIFACT_FRAME_SANDBOX = "allow-scripts";
 
 /**
  * The top-level navigation the host document makes to ask the viewer for
- * another file of the tree. Only the host can make it: the sandboxed frame can
- * neither navigate the top-level document nor its own frame.
+ * another file of the tree, where the viewer's navigation callback is always
+ * answered before the engine proceeds (iOS). Only the host can make it: the
+ * sandboxed frame can neither navigate the top-level document nor its own
+ * frame.
  */
 export const ARTIFACT_HOST_OPEN_PREFIX = "kanna-host:open?path=";
+
+/**
+ * The host document's own title while it asks the viewer for another file of
+ * the tree on Android: this prefix and the encoded path. Nothing there may
+ * navigate for it — react-native-webview lets through a navigation the JS
+ * thread has not answered within 250 ms, and an unknown scheme then fails on
+ * screen with its URL logged. So the host sets its title and then changes its
+ * own URL fragment with `history.replaceState`, which loads nothing and asks no
+ * navigation callback. The library reports that change to `onLoadStart`
+ * (`doUpdateVisitedHistory`) with the WebView's title, whenever the JS thread
+ * gets to it; the URL it reports is the document's load URL, never the
+ * fragment. Only the host can set this title: the page's frame is another
+ * origin.
+ */
+export const ARTIFACT_HOST_OPEN_TITLE_PREFIX = "kanna-host-open:";
+
+/** How the host asks the viewer for a file: a refused navigation, or its title. */
+export type ArtifactHostOpen = "navigation" | "title";
+
+function hostOpenStatement(mode: ArtifactHostOpen): string {
+  // Each request gets a fragment of its own, so each is a change to report.
+  return mode === "title"
+    ? `document.title=${JSON.stringify(ARTIFACT_HOST_OPEN_TITLE_PREFIX)}+encodeURIComponent(d.path);history.replaceState(null,"","#kanna-host-open-"+(++opens))`
+    : `location.href=${JSON.stringify(ARTIFACT_HOST_OPEN_PREFIX)}+encodeURIComponent(d.path)`;
+}
 
 /**
  * The trusted host document's own script. It shows the page it was given in
  * its frame. When the frame asks for another file, it accepts the request only
  * from its own frame, only of the one kind, and only for a path that is a file
  * of this tree other than the one shown; then it asks the viewer for that file
- * by a top-level navigation to ARTIFACT_HOST_OPEN_PREFIX + the path, which the
- * viewer refuses and answers by rendering the file. Anything else is ignored.
- * The host has no bridge to reach: the WebView gets no `onMessage`.
+ * (`hostOpenStatement`), which the viewer answers by rendering the file.
+ * Anything else is ignored. The host has no bridge to reach: the WebView gets
+ * no `onMessage`.
  */
-const ARTIFACT_HOST_SCRIPT = `(function(){var data=JSON.parse(document.getElementById("kanna-artifact-host").textContent);var files=new Set(data.files);var frame=document.getElementById("kanna-artifact-frame");frame.setAttribute("data-path",data.current);frame.srcdoc=data.page;window.addEventListener("message",function(e){if(e.source!==frame.contentWindow)return;var d=e.data;if(!d||typeof d!=="object"||d.kind!==${JSON.stringify(ARTIFACT_NAVIGATE_MESSAGE)}||typeof d.path!=="string"||d.path===data.current||!files.has(d.path))return;frame.setAttribute("data-requested",d.path);location.href=${JSON.stringify(ARTIFACT_HOST_OPEN_PREFIX)}+encodeURIComponent(d.path)})})();`;
+function artifactHostScript(mode: ArtifactHostOpen): string {
+  return `(function(){var opens=0;var data=JSON.parse(document.getElementById("kanna-artifact-host").textContent);var files=new Set(data.files);var frame=document.getElementById("kanna-artifact-frame");frame.setAttribute("data-path",data.current);frame.srcdoc=data.page;window.addEventListener("message",function(e){if(e.source!==frame.contentWindow)return;var d=e.data;if(!d||typeof d!=="object"||d.kind!==${JSON.stringify(ARTIFACT_NAVIGATE_MESSAGE)}||typeof d.path!=="string"||d.path===data.current||!files.has(d.path))return;frame.setAttribute("data-requested",d.path);${hostOpenStatement(mode)}})})();`;
+}
 
 export interface ArtifactHostOptions {
   /** The rendered page to show. */
@@ -459,6 +488,8 @@ export interface ArtifactHostOptions {
   current: string;
   /** Every file path of the tree, from the artifact's own descriptor. */
   files: readonly string[];
+  /** How the host asks for another file; `navigation` unless the viewer says otherwise. */
+  hostOpen?: ArtifactHostOpen;
 }
 
 /**
@@ -473,7 +504,7 @@ export interface ArtifactHostOptions {
  * cannot navigate itself either (`frame-src 'none'`). An in-tree link is a
  * request to the host, which forwards only a file of this tree to the viewer.
  */
-export function isolateArtifactDocument({ page, current, files }: ArtifactHostOptions): string {
+export function isolateArtifactDocument({ page, current, files, hostOpen = "navigation" }: ArtifactHostOptions): string {
   // JSON inside a script element: `<` escaped so no `</script>` can end it.
   const data = JSON.stringify({ page, current, files }).replace(/</g, "\\u003c");
   return `<!doctype html>
@@ -483,7 +514,7 @@ export function isolateArtifactDocument({ page, current, files }: ArtifactHostOp
 <style>html,body{margin:0;height:100%;background:#fff}iframe{display:block;border:0;width:100%;height:100%}</style>
 <iframe id="kanna-artifact-frame" sandbox="${ARTIFACT_FRAME_SANDBOX}" referrerpolicy="no-referrer"></iframe>
 <script type="application/json" id="kanna-artifact-host">${data}</script>
-<script>${ARTIFACT_HOST_SCRIPT}</script>`;
+<script>${artifactHostScript(hostOpen)}</script>`;
 }
 
 /**
@@ -495,6 +526,21 @@ export function artifactHostOpenPath(url: string, files: ReadonlySet<string>): s
   let path: string;
   try {
     path = decodeURIComponent(url.slice(ARTIFACT_HOST_OPEN_PREFIX.length));
+  } catch {
+    return null;
+  }
+  return files.has(path) ? path : null;
+}
+
+/**
+ * The file the host document's title asks for, if it is exactly one of
+ * `files`; null for any other title.
+ */
+export function artifactHostOpenTitlePath(title: string, files: ReadonlySet<string>): string | null {
+  if (!title.startsWith(ARTIFACT_HOST_OPEN_TITLE_PREFIX)) return null;
+  let path: string;
+  try {
+    path = decodeURIComponent(title.slice(ARTIFACT_HOST_OPEN_TITLE_PREFIX.length));
   } catch {
     return null;
   }

@@ -8,11 +8,13 @@ import type { ArtifactDetail, ArtifactFileContent } from "../lib/api/types";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const linking = vi.hoisted(() => ({ openURL: vi.fn(), canOpenURL: vi.fn() }));
+const platform = vi.hoisted(() => ({ OS: "ios" as "ios" | "android" }));
 
 vi.mock("react-native", () => ({
   ActivityIndicator: "ActivityIndicator",
   Linking: linking,
   Modal: "Modal",
+  Platform: platform,
   Pressable: "Pressable",
   SafeAreaView: "SafeAreaView",
   ScrollView: "ScrollView",
@@ -121,6 +123,7 @@ afterEach(() => {
   act(() => renderer?.unmount());
   renderer = null;
   linking.openURL.mockClear();
+  platform.OS = "ios";
 });
 
 async function flush() {
@@ -168,6 +171,10 @@ interface HostRun {
   frame: { contentWindow: object; srcdoc: string; attributes: Record<string, string> };
   /** Where the host navigated the top-level document, if it did. */
   navigations: string[];
+  /** URLs the host wrote into its own history entry, if it did. */
+  replacedUrls: string[];
+  /** Titles the host gave its own document, if it did. */
+  titles: string[];
   /** Deliver a message to the host, as if sent by `source` (the frame by default). */
   post(data: unknown, source?: object): void;
 }
@@ -193,7 +200,9 @@ function runHost(host = webView().props.source.html as string): HostRun {
   const navigations: string[] = [];
   const listeners: Array<(event: { data: unknown; source: object }) => void> = [];
   const hostWindow = { addEventListener: (_type: string, listener: (typeof listeners)[number]) => listeners.push(listener) };
+  const titles: string[] = [];
   const hostDocument = {
+    set title(value: string) { titles.push(value); },
     getElementById: (id: string) =>
       id === "kanna-artifact-host" ? { textContent: dataText } : id === "kanna-artifact-frame" ? frame : null
   };
@@ -201,10 +210,16 @@ function runHost(host = webView().props.source.html as string): HostRun {
     set href(value: string) { navigations.push(value); },
     get href() { return "about:blank"; }
   };
-  new Function("window", "document", "location", scripts[0])(hostWindow, hostDocument, hostLocation);
+  const replacedUrls: string[] = [];
+  const hostHistory = {
+    replaceState: (_state: unknown, _title: string, url: string) => replacedUrls.push(url)
+  };
+  new Function("window", "document", "location", "history", scripts[0])(hostWindow, hostDocument, hostLocation, hostHistory);
   return {
     frame,
     navigations,
+    replacedUrls,
+    titles,
     post: (data, source = frame.contentWindow) => listeners.forEach((listener) => listener({ data, source }))
   };
 }
@@ -765,7 +780,13 @@ describe("ArtifactViewer (mobile) recording and sharing", () => {
     expect(actions.fetchArtifact).toHaveBeenCalledWith("repo-1", MISSING);
   });
 
-  it("answers a late host-open load error with its own loading state, never the library's error page", async () => {
+  it("on Android, opens an in-tree link without any navigation, however late the JS thread answers", async () => {
+    // react-native-webview lets through a navigation the JS thread has not
+    // answered within 250 ms, and an unknown scheme then fails on screen, with
+    // its URL logged. On Android the host therefore never navigates: it
+    // puts the request in its own title and changes its own fragment, which
+    // the library reports to onLoadStart with the WebView's title.
+    platform.OS = "android";
     const api = client();
     let releaseAbout = () => undefined as void;
     const readArtifactFile = vi.fn((repoId: string, artifactId: string, path: string) =>
@@ -780,30 +801,56 @@ describe("ArtifactViewer (mobile) recording and sharing", () => {
       );
     });
     await flush();
-    const { onError, renderError } = webView().props;
-    // Nothing drawn for a load error names the failure.
-    const generic = create(renderError("undefined", -10, "net::ERR_UNKNOWN_URL_SCHEME"));
-    expect(JSON.stringify(generic.toJSON())).not.toContain("ERR_UNKNOWN_URL_SCHEME");
-    // Android let the host-open through after 250 ms and failed it. The commit
-    // that learns of it swaps the failed WebView for the viewer's own loading
-    // state for the requested file.
-    await act(async () => {
-      onError({ nativeEvent: { url: "kanna-host:open?path=pages%2Fabout.html", code: -10, description: "net::ERR_UNKNOWN_URL_SCHEME" } });
+    const hostHtml = webView().props.source.html as string;
+    expect(hostHtml).not.toContain("kanna-host:open");
+    expect(hostHtml).not.toMatch(/location\.(href|replace|assign)|location=/);
+    const host = runHost(hostHtml);
+    host.post({ kind: "kanna-artifact-navigate", path: "pages/about.html" });
+    host.post({ kind: "kanna-artifact-navigate", path: "pages/about.html" });
+    expect(host.navigations).toEqual([]);
+    expect(host.titles).toEqual(["kanna-host-open:pages%2Fabout.html", "kanna-host-open:pages%2Fabout.html"]);
+    // A fresh fragment per request, and no path in any URL.
+    expect(host.replacedUrls).toEqual(["#kanna-host-open-1", "#kanna-host-open-2"]);
+    // The navigation callback is never asked. The library reports the change
+    // whenever the JS thread gets to it; Android names the document's load
+    // URL, not the fragment, and the WebView's current title.
+    const loadStart = (title: string) => act(async () => {
+      webView().props.onLoadStart({ nativeEvent: { url: "data:text/html;charset=utf-8;base64,", title } });
     });
+    await loadStart("kanna-host-open:pages%2Fabout.html");
     expect(renderer!.root.findAll((node) => node.type === "WebView")).toHaveLength(0);
     expect(text(renderer!.root)).toContain("Loading pages/about.html");
-    expect(readArtifactFile).toHaveBeenCalledWith("repo-1", V2, "pages/about.html");
-    // The late callback for the same navigation changes nothing further.
     releaseAbout();
     await flush();
-    expect(framedPage()).toContain("About v2");
+    const about = runHost();
+    expect(about.frame.attributes["data-path"]).toBe("pages/about.html");
+    expect(about.frame.srcdoc).toContain("About v2");
+    // A second, late report of the same request reads nothing more.
+    await loadStart("kanna-host-open:pages%2Fabout.html");
+    await flush();
     expect(readArtifactFile.mock.calls.filter((call) => call[2] === "pages/about.html")).toHaveLength(1);
-    // Any other load error is not a request.
+    // Nothing but the host's own request for a file of this tree is one.
+    const before = readArtifactFile.mock.calls.length;
+    for (const title of [
+      "kanna-host-open:..%2Fsecret",
+      "kanna-host-open:missing.html",
+      "kanna-host-open:%E0%A4%A",
+      "kanna-host:open?path=index.html",
+      "index.html",
+      ""
+    ]) {
+      await loadStart(title);
+    }
     await act(async () => {
-      webView().props.onError({ nativeEvent: { url: "kanna-host:open?path=..%2Fsecret", code: -10, description: "x" } });
+      webView().props.onLoadStart({ nativeEvent: { url: "kanna-host:open?path=index.html" } });
+      webView().props.onError({ nativeEvent: { url: "kanna-host:open?path=index.html", code: -10, description: "x" } });
     });
     await flush();
-    expect(readArtifactFile).not.toHaveBeenCalledWith("repo-1", V2, "../secret");
+    expect(readArtifactFile.mock.calls.length).toBe(before);
+    expect(runHost().frame.attributes["data-path"]).toBe("pages/about.html");
+    // A load error names nothing it failed on.
+    const generic = create(webView().props.renderError("undefined", -10, "net::ERR_UNKNOWN_URL_SCHEME"));
+    expect(JSON.stringify(generic.toJSON())).not.toContain("ERR_UNKNOWN_URL_SCHEME");
   });
 
   it("binds the push to the remote shown: a changed config is refused and asked about again", async () => {

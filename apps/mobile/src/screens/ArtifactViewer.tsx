@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Modal,
+  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -15,7 +16,7 @@ import {
   type WebViewNavigation,
   type WebViewProps
 } from "react-native-webview";
-import type { WebViewErrorEvent } from "react-native-webview/lib/WebViewTypes";
+import type { WebViewNavigationEvent } from "react-native-webview/lib/WebViewTypes";
 import type {
   ArtifactComment,
   ArtifactCommentInput,
@@ -31,9 +32,11 @@ import type {
 import {
   ArtifactBuildCancelled,
   artifactHostOpenPath,
+  artifactHostOpenTitlePath,
   buildArtifactDocument,
   isolateArtifactDocument,
-  type ArtifactDocument
+  type ArtifactDocument,
+  type ArtifactHostOpen
 } from "./buildArtifactDocument";
 
 /**
@@ -53,19 +56,20 @@ import {
  * trusted host document (`isolateArtifactDocument`): the engine refuses the
  * page's top-level navigation and new windows, and the policy refuses any
  * navigation of the frame. An in-tree link is a request to the host document,
- * which checks it against this tree's files and only then asks the viewer, by
- * a top-level `kanna-host:open` navigation the frame itself cannot make. The
- * viewer checks the path again, refuses the navigation and renders that one
- * file; only the page on screen is ever read. The whitelist is `*` on purpose —
+ * which checks it against this tree's files and only then asks the viewer in a
+ * way the frame itself cannot. On iOS that is a top-level `kanna-host:open`
+ * navigation; the viewer refuses it and renders that one file. On Android it
+ * is no navigation at all: the host puts the request in its own title and
+ * changes its URL fragment (`history.replaceState`), which the library reports
+ * to `onLoadStart` with that title. A navigation to an unknown scheme there
+ * would reach Chromium whenever the 250 ms answer window lapsed, fail on
+ * screen, and have its URL logged by the library's cookie lookup; a fragment
+ * change loads nothing, however late the JS thread reads it, and the path is
+ * never in a URL. Either way the viewer checks the path again, and only the
+ * page on screen is ever read. The whitelist is `*` on purpose —
  * react-native-webview hands any URL
  * that fails the whitelist to `Linking.openURL`, which would let a page open
  * Safari or another app.
- *
- * When Android's 250 ms answer window lapses, the engine goes ahead with the
- * host-open navigation, fails it (an unknown scheme) and reports a load error.
- * That error is the same request arriving late: the viewer opens the path from
- * it and covers the failed document with its own loading state, so the reader
- * never sees the library's error page, and the URL is not logged.
  *
  * Comments and decisions recorded here are records about the exact tree id on
  * screen. A decision moves no task: whoever owns the task operates its gate on
@@ -176,15 +180,20 @@ function lineOf(position: string | undefined): number | undefined {
   return Number.isInteger(line) && line > 0 ? line : undefined;
 }
 
+/** How this platform's host document asks the viewer for another file. */
+function hostOpenMode(): ArtifactHostOpen {
+  return Platform.OS === "android" ? "title" : "navigation";
+}
+
 /**
- * A load error for a host-open navigation Android let through after its answer
- * window lapsed: the path it asked for, or null for any other failure.
+ * A load-start event carrying the host document's title after it asked for
+ * another file (Android): the path it asked for, or null for any other event.
  */
-export function lateArtifactHostOpenPath(
-  event: Pick<WebViewErrorEvent["nativeEvent"], "url">,
+export function artifactHostOpenRequestPath(
+  event: Pick<WebViewNavigationEvent["nativeEvent"], "title">,
   files: ReadonlySet<string>
 ): string | null {
-  return artifactHostOpenPath(event.url ?? "", files);
+  return artifactHostOpenTitlePath(event.title ?? "", files);
 }
 
 /**
@@ -244,8 +253,6 @@ export function ArtifactViewer({
   const [target, setTarget] = useState<FileTarget | null>(null);
   const [detailState, setDetailState] = useState<DetailState>({ status: "idle" });
   const [documentState, setDocumentState] = useState<DocumentState>({ status: "idle" });
-  /** The last WebView load error was a late host-open, already being answered. */
-  const [hostOpenFailed, setHostOpenFailed] = useState(false);
   /**
    * File reads still on the wire. A read over the sealed LAN channel or the
    * relay cannot be withdrawn once sent, so a new page waits for an abandoned
@@ -340,7 +347,6 @@ export function ArtifactViewer({
     let active = true;
     const artifactId = currentId;
     setDocumentState({ status: "loading", key: documentKey });
-    setHostOpenFailed(false);
     const path = filePath;
     const inflight = inflightReads.current;
     let deadline: ReturnType<typeof setTimeout> | undefined;
@@ -611,7 +617,8 @@ export function ArtifactViewer({
         ? isolateArtifactDocument({
             page: documentState.document.html,
             current: documentState.path,
-            files: [...files]
+            files: [...files],
+            hostOpen: hostOpenMode()
           })
         : "",
     [documentState, files]
@@ -785,21 +792,15 @@ export function ArtifactViewer({
                 onShouldStartLoadWithRequest={(request: WebViewNavigation) =>
                   shouldStartArtifactLoad(request, files, (path) => setTarget({ path }))
                 }
-                onError={(event: WebViewErrorEvent) => {
-                  const path = lateArtifactHostOpenPath(event.nativeEvent, files);
-                  setHostOpenFailed(Boolean(path));
+                onLoadStart={(event: WebViewNavigationEvent) => {
+                  const path = artifactHostOpenRequestPath(event.nativeEvent, files);
                   if (path) setTarget({ path });
                 }}
+                // Without a handler the library logs the failed load, URL and all.
+                onError={() => undefined}
                 renderError={() => (
                   <View style={styles.webViewCover} testID="artifact-viewer-webview-error">
-                    {hostOpenFailed ? (
-                      <>
-                        <ActivityIndicator color="#73b7ff" size="large" />
-                        <Text style={styles.stateText}>Loading…</Text>
-                      </>
-                    ) : (
-                      <Text style={styles.errorTitle}>Couldn’t show this page</Text>
-                    )}
+                    <Text style={styles.errorTitle}>Couldn’t show this page</Text>
                   </View>
                 )}
                 originWhitelist={["*"]}

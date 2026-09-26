@@ -28,6 +28,8 @@ vi.mock("react-native", () => ({
   ActivityIndicator: "ActivityIndicator",
   Linking: { openURL: vi.fn(), canOpenURL: vi.fn() },
   Modal: "Modal",
+  // The engine here is WebKit: the viewer builds its iOS host document.
+  Platform: { OS: "ios" },
   Pressable: "Pressable",
   SafeAreaView: "SafeAreaView",
   ScrollView: "ScrollView",
