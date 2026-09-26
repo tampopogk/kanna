@@ -1,6 +1,6 @@
 import React from "react";
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
@@ -45,6 +45,7 @@ import { encodeBase64, encodeUtf8 } from "./buildArtifactDocument";
 
 const WORKTREE_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const HARNESS_SOURCE = fileURLToPath(new URL("../../tests/webkit/artifact-host-harness.swift", import.meta.url));
+const COOKIE_SERVER = fileURLToPath(new URL("../../tests/webkit/cookie-header-server.py", import.meta.url));
 
 function swiftAvailable(): boolean {
   if (process.platform !== "darwin") return false;
@@ -58,6 +59,7 @@ function swiftAvailable(): boolean {
 
 const BENIGN = "6".repeat(40);
 const HOSTILE = "7".repeat(40);
+const COOKIE_PROBE = "8".repeat(40);
 const FORGED = "kanna-host:open?path=pages%2Fabout.html";
 
 const FILES: Record<string, Record<string, string>> = {
@@ -84,6 +86,15 @@ var attempts = [
 attempts.forEach(function (attempt) { try { attempt(); } catch (error) {} });
 </script>`,
     "pages/about.html": `<h1>About page</h1>`
+  },
+  [COOKIE_PROBE]: {
+    "index.html": `<h1>Cookie probe</h1><form id="cookie-form" method="post"></form><script>
+document.cookie = "kanna_frame_cookie=secret; SameSite=None; Secure";
+var image = new Image(); image.src = "__COOKIE_ENDPOINT__/image"; document.body.appendChild(image);
+fetch("__COOKIE_ENDPOINT__/fetch", { mode: "no-cors", credentials: "include" }).catch(function () {});
+document.getElementById("cookie-form").action = "__COOKIE_ENDPOINT__/form";
+try { document.getElementById("cookie-form").submit(); } catch (error) {}
+</script>`
   }
 };
 
@@ -113,7 +124,7 @@ async function readArtifactFile(repoId: string, artifactId: string, path: string
 type HarnessEvent =
   | { kind: "navigation"; url: string; mainFrame: boolean }
   | { kind: "window-open"; url: string }
-  | { kind: "document"; top: boolean; mainFrame: boolean; text: string }
+  | { kind: "document"; top: boolean; mainFrame: boolean; text: string; load: number; cookieBefore: string; cookieAfter: string; cookieReadError: string; cookieWriteError: string }
   | { kind: "click"; selector: string; found: boolean; mainFrame: boolean };
 
 describe.skipIf(!swiftAvailable())("ArtifactViewer in a real WKWebView", () => {
@@ -169,6 +180,18 @@ describe.skipIf(!swiftAvailable())("ArtifactViewer in a real WKWebView", () => {
     const file = join(directory, `${name}.html`);
     writeFileSync(file, html);
     const output = execFileSync(harness, [file, selector, "2"], { encoding: "utf8", timeout: 30_000 });
+    return output.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as HarnessEvent);
+  }
+
+  function runSequenceInWebKit(name: string, documents: string[]): HarnessEvent[] {
+    const files = documents.map((html, index) => {
+      const file = join(directory, `${name}-${index}.html`);
+      writeFileSync(file, html);
+      return file;
+    });
+    const output = execFileSync(harness, [files.join("|"), "", String(documents.length * 1.5)], {
+      encoding: "utf8", timeout: 30_000
+    });
     return output.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as HarnessEvent);
   }
 
@@ -228,5 +251,64 @@ describe.skipIf(!swiftAvailable())("ArtifactViewer in a real WKWebView", () => {
     const control = refusedRequests(runInWebKit("", "hostile-unsandboxed", unsandboxed));
     expect(control).toContainEqual({ kind: "navigation", url: FORGED, mainFrame: true });
     expect(control).toContainEqual({ kind: "window-open", url: "https://example.com/popup" });
+  }, 60_000);
+
+  it("does not expose, retain, or share cookies written by the sandboxed frame", async () => {
+    await open(BENIGN);
+    const firstArtifact = webViewProps().source.html as string;
+    await open(HOSTILE);
+    const laterArtifact = webViewProps().source.html as string;
+
+    // Load the same artifact twice (viewer reload), then a different artifact,
+    // without replacing the WKWebView or its non-persistent data store.
+    const events = runSequenceInWebKit("cookie-isolation", [firstArtifact, firstArtifact, laterArtifact]);
+    const documents = events.filter((event): event is Extract<HarnessEvent, { kind: "document" }> =>
+      event.kind === "document"
+    );
+    const frames = documents.filter((event) => !event.top);
+    const hosts = documents.filter((event) => event.top);
+
+    expect(new Set(frames.map((event) => event.load))).toEqual(new Set([0, 1, 2]));
+    expect(frames.every((event) => event.cookieBefore === "" && event.cookieAfter === "")).toBe(true);
+    expect(hosts.every((event) => !event.cookieBefore.includes("kanna_frame_cookie=") &&
+      !event.cookieAfter.includes("kanna_frame_cookie="))).toBe(true);
+    // WebKit's cookie-averse about:srcdoc behavior is an empty value/no-op;
+    // Chromium may instead throw SecurityError. Both demonstrate isolation.
+    expect(frames.every((event) => event.cookieReadError === "" || event.cookieReadError === "SecurityError")).toBe(true);
+    expect(frames.every((event) => event.cookieWriteError === "" || event.cookieWriteError === "SecurityError")).toBe(true);
+
+    // A new harness invocation is a separate WKWebView and process. Nothing
+    // written above can appear in its host or artifact frame either.
+    const separate = runInWebKit("", "cookie-separate-webview", firstArtifact)
+      .filter((event): event is Extract<HarnessEvent, { kind: "document" }> => event.kind === "document");
+    expect(separate.every((event) => event.cookieBefore === "" && event.cookieAfter === "")).toBe(true);
+
+    // Observe the actual HTTP requests triggered by frame script. A server on
+    // loopback stands in for the task's LAN server and records raw headers.
+    const portFile = join(directory, "cookie-server.port");
+    const logFile = join(directory, "cookie-server.jsonl");
+    const server = spawn("python3", [COOKIE_SERVER, portFile, logFile], { stdio: "ignore" });
+    try {
+      const deadline = Date.now() + 5_000;
+      while (!existsSync(portFile) && Date.now() < deadline) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+      }
+      expect(existsSync(portFile)).toBe(true);
+      const endpoint = `http://127.0.0.1:${readFileSync(portFile, "utf8")}`;
+      const original = FILES[COOKIE_PROBE]["index.html"];
+      FILES[COOKIE_PROBE]["index.html"] = original.replaceAll("__COOKIE_ENDPOINT__", endpoint);
+      await open(COOKIE_PROBE);
+      runInWebKit("", "cookie-network");
+      FILES[COOKIE_PROBE]["index.html"] = original;
+
+      const requests = readFileSync(logFile, "utf8").trim().split("\n").filter(Boolean)
+        .map((line) => JSON.parse(line) as { path: string; cookie: string });
+      // The generated page's CSP rejects fetch and image loads, and the frame
+      // sandbox rejects form submission. The controlled server sees no request
+      // at all, so no Cookie header can escape by any of those paths.
+      expect(requests).toEqual([]);
+    } finally {
+      server.kill("SIGTERM");
+    }
   }, 60_000);
 });
