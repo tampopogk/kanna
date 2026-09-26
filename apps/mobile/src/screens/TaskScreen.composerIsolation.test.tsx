@@ -31,6 +31,7 @@ const webViewHarness = vi.hoisted(() => ({
   renderCount: 0
 }));
 
+vi.mock("./DesignDocumentView", () => ({ DesignDocumentView: "DesignDocumentView" }));
 vi.mock("react-native", () => ({
   ActivityIndicator: "ActivityIndicator",
   Keyboard: {

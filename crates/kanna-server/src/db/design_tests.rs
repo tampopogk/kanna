@@ -189,3 +189,27 @@ fn document_updates_advance_the_revision_and_compact() {
     db.restore_design_doc(&task, &[7], 10).unwrap();
     assert_eq!(db.design_doc_updates(&task).unwrap(), vec![(2, vec![9, 9])]);
 }
+
+#[test]
+fn a_task_with_a_live_design_is_not_transferred_until_handed_off() {
+    let (db, task) = db_with_task();
+    session(&db, &task);
+    let transfer = |id: &str| crate::db::NewTaskTransfer {
+        id: id.to_string(),
+        direction: "outgoing".into(),
+        status: "pending".into(),
+        source_peer_id: Some("peer-a".into()),
+        target_peer_id: Some("peer-b".into()),
+        source_desktop_id: None,
+        target_desktop_id: None,
+        source_task_id: Some(task.clone()),
+        local_task_id: Some(task.clone()),
+        error: None,
+        payload_json: None,
+    };
+    let refused = db.insert_task_transfer(&transfer("tr-1")).unwrap_err();
+    assert!(crate::db::is_live_design_transfer_refusal(&refused), "{refused}");
+    db.set_design_session_status(&task, DesignSessionRow::HANDED_OFF)
+        .unwrap();
+    db.insert_task_transfer(&transfer("tr-2")).unwrap();
+}

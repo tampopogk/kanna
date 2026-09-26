@@ -47,6 +47,7 @@ const componentMocks = vi.hoisted(() => ({
   alert: vi.fn()
 }));
 
+vi.mock("./DesignDocumentView", () => ({ DesignDocumentView: "DesignDocumentView" }));
 vi.mock("react", async (importActual) => {
   const actual = await importActual<typeof import("react")>();
 

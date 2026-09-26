@@ -19,6 +19,7 @@ import { DEFAULT_TASK_QUICK_REPLIES } from "./taskQuickReplies";
 
 const agentViewHarness = vi.hoisted(() => ({ renderCount: 0 }));
 
+vi.mock("./DesignDocumentView", () => ({ DesignDocumentView: "DesignDocumentView" }));
 vi.mock("react-native", async () => {
   const ReactModule = await import("react");
   const { MOBILE_E2E_IDS: ids } = await import("../e2eTestIds");

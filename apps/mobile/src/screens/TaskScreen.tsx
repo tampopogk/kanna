@@ -11,7 +11,6 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  useColorScheme,
   useWindowDimensions,
   View
 } from "react-native";
@@ -341,8 +340,6 @@ export function TaskScreen({
   const supersededDependencies = (stageDependencies ?? []).filter(
     (dependency) => dependency.supersededAt
   );
-  const [designOpen, setDesignOpen] = useState(false);
-  const colorScheme = useColorScheme();
   const [draftInput, setDraftInput] = useState("");
   // A transient transport reconnect does not invalidate the authoritative
   // snapshot already on screen. Keep the same xterm document mounted so the
@@ -433,6 +430,8 @@ export function TaskScreen({
     useState(false);
   const [terminalDirectInputFocusRequest, setTerminalDirectInputFocusRequest] =
     useState(0);
+  // Kept after every other state hook: tests address the draft's by order.
+  const [designOpen, setDesignOpen] = useState(false);
   const companionLifecycleRef = useRef<{
     isOpen: boolean;
     onOpenChange: ((isOpen: boolean) => void) | undefined;
@@ -1888,7 +1887,8 @@ export function TaskScreen({
         <DesignDocumentView
           visible={designOpen}
           title={task.title}
-          theme={colorScheme === "dark" ? "dark" : "light"}
+          // The phone app is dark throughout; the design page matches it.
+          theme="dark"
           onClose={() => setDesignOpen(false)}
           onRequest={onDesignRequest}
         />

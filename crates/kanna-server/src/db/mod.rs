@@ -113,7 +113,7 @@ pub use token_usage::{
 #[allow(unused_imports)]
 pub use transfer_work::{TransferWorkItem, MAX_TRANSFER_WORK_ATTEMPTS};
 pub use transfers::{
-    is_active_outgoing_transfer_conflict, NewTaskTransfer, NewTaskTransferProvenance,
+    is_active_outgoing_transfer_conflict, is_live_design_transfer_refusal, LIVE_DESIGN_TRANSFER_REFUSAL, NewTaskTransfer, NewTaskTransferProvenance,
     PendingIncomingTransfer, TaskTransfer, TransferredHistoryRecord,
 };
 pub use transition_commits::TransitionCommit;
