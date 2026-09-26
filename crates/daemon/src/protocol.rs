@@ -29,6 +29,46 @@ pub const TERMINAL_GEOMETRY_PROTOCOL_VERSION: u32 = 2;
 pub const RAW_INPUT_PROTOCOL_VERSION: u32 =
     kanna_runtime_defaults::terminal_keys::RAW_INPUT_PROTOCOL_VERSION;
 
+/// Server/daemon contract for App Design feedback delivery
+/// ([`Command::SubmitDesignInput`], [`Command::QueryDesignDelivery`]).
+pub const DESIGN_DELIVERY_PROTOCOL_VERSION: u32 = 1;
+
+/// What a daemon knows about one design delivery id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum DesignDeliveryOutcome {
+    /// Every byte of the message and its submission boundary reached the PTY.
+    Delivered,
+    /// Nothing was written: the agent was not free (busy, waiting on a
+    /// prompt, an unsent draft at its composer, or no runtime verdict yet).
+    NotFree { reason: String },
+    /// Accepted for writing and not yet known to be written. A retry must not
+    /// type it again.
+    Accepted,
+    /// Accepted, then the terminal writer ended; some bytes may have been
+    /// written. A retry must not type it again without a person deciding.
+    WriteFailed { message: String },
+    /// This daemon never received the id.
+    Unknown,
+}
+
+/// Receipts a handing-off daemon passes to its successor, so a delivery that
+/// was written before a graceful daemon upgrade is not written again after it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignReceiptTransfer {
+    /// The daemon instances these receipts cover (the sender's and every
+    /// instance it inherited from).
+    pub instances: Vec<String>,
+    /// `(delivery id, outcome)`, oldest first.
+    pub receipts: Vec<(String, DesignDeliveryOutcome)>,
+}
+
+impl DesignReceiptTransfer {
+    pub fn is_empty(&self) -> bool {
+        self.instances.is_empty() && self.receipts.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
@@ -470,6 +510,28 @@ pub enum Command {
         expected_pid: u32,
         data: Vec<u8>,
     },
+    /// Prove this daemon understands [`Command::SubmitDesignInput`] before
+    /// any design feedback is sent. Touches no PTY, so a daemon that does not
+    /// answer it has written nothing.
+    NegotiateDesignDelivery {
+        version: u32,
+    },
+    /// App Design feedback: one logical message, written only if the
+    /// session's agent is free at this moment (idle with a runtime verdict,
+    /// and no attested draft at its composer), and remembered by
+    /// `delivery_id`. A repeated id answers from its receipt and never types
+    /// the message twice. Answered by [`Event::DesignDelivery`].
+    SubmitDesignInput {
+        session_id: String,
+        expected_pid: u32,
+        delivery_id: String,
+        data: Vec<u8>,
+    },
+    /// What this daemon (and the daemons it adopted sessions from) knows
+    /// about `delivery_id`. Answered by [`Event::DesignDelivery`].
+    QueryDesignDelivery {
+        delivery_id: String,
+    },
     /// Latency-sensitive terminal input. Success is deliberately not
     /// acknowledged, so callers can pipeline ordered bytes without waiting.
     /// Failures are still emitted as asynchronous `Event::Error` values.
@@ -636,6 +698,19 @@ pub enum Event {
     TerminalGeometryReady {
         version: u32,
     },
+    /// This daemon speaks the design-delivery contract at `version`;
+    /// `instance` identifies this daemon process.
+    DesignDeliveryReady {
+        version: u32,
+        instance: String,
+    },
+    DesignDelivery {
+        delivery_id: String,
+        outcome: DesignDeliveryOutcome,
+        /// The instances whose receipts this daemon holds: an id sent to one
+        /// of them and unknown here was never received.
+        known_instances: Vec<String>,
+    },
     Output {
         session_id: String,
         data: Vec<u8>,
@@ -727,6 +802,8 @@ pub enum Event {
     },
     HandoffReady {
         sessions: Vec<HandoffSession>,
+        #[serde(default, skip_serializing_if = "DesignReceiptTransfer::is_empty")]
+        design_receipts: DesignReceiptTransfer,
     },
     HandoffUnsupported,
     ShuttingDown,
@@ -1222,13 +1299,14 @@ mod tests {
                 typed_draft_bytes: Some(9),
                 pending_logical_inputs: vec![b"manager message".to_vec()],
             }],
+            design_receipts: Default::default(),
         };
 
         let json = serde_json::to_string(&evt).unwrap();
         let decoded: Event = serde_json::from_str(&json).unwrap();
 
         match decoded {
-            Event::HandoffReady { sessions } => {
+            Event::HandoffReady { sessions, .. } => {
                 assert_eq!(sessions.len(), 1);
                 assert_eq!(sessions[0].session_id, "sess-1");
                 assert_eq!(sessions[0].rows, 24);
@@ -1261,7 +1339,7 @@ mod tests {
 
         let decoded: Event = serde_json::from_str(json).unwrap();
         match decoded {
-            Event::HandoffReady { sessions } => {
+            Event::HandoffReady { sessions, .. } => {
                 assert!(!sessions[0].raw_input_draft_active);
                 assert!(!sessions[0].raw_input_draft_state_known);
                 assert!(sessions[0].pending_logical_inputs.is_empty());
@@ -1444,7 +1522,7 @@ mod tests {
         }"#;
 
         match serde_json::from_str::<Event>(json).unwrap() {
-            Event::HandoffReady { sessions } => {
+            Event::HandoffReady { sessions, .. } => {
                 assert_eq!(sessions[0].pending_logical_inputs, [b"hi".to_vec()]);
             }
             other => panic!("wrong variant: {other:?}"),

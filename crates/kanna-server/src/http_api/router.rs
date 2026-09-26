@@ -269,6 +269,65 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/v1/tasks/{task_id}",
             get(get_task).put(put_task).patch(update_task),
         )
+        // App Design (docs/specs/app-design.md): see `design` for who may
+        // call which route.
+        .route("/v1/tasks/{task_id}/design", get(super::design::get_design))
+        .route(
+            "/v1/tasks/{task_id}/design/changes",
+            get(super::design::wait_for_changes),
+        )
+        .route(
+            "/v1/tasks/{task_id}/design/document/sync",
+            post(super::design::sync_document_as_operator),
+        )
+        .route(
+            "/v1/tasks/{task_id}/design/document/read",
+            post(super::design::sync_document_read_only),
+        )
+        .route(
+            "/v1/tasks/{task_id}/design/threads",
+            post(super::design::create_thread),
+        )
+        .route(
+            "/v1/tasks/{task_id}/design/threads/{thread_id}/comments",
+            post(super::design::reply_to_thread),
+        )
+        .route(
+            "/v1/tasks/{task_id}/design/threads/{thread_id}/resolve",
+            post(super::design::resolve_thread_as_operator),
+        )
+        .route(
+            "/v1/tasks/{task_id}/design/deliveries/{delivery_id}/retry",
+            post(super::design::retry_delivery),
+        )
+        .route(
+            "/v1/tasks/{task_id}/design/position",
+            post(super::design::set_position),
+        )
+        .route(
+            "/v1/tasks/{task_id}/design/agent/edits",
+            post(super::design::agent_edit),
+        )
+        .route(
+            "/v1/tasks/{task_id}/design/agent/threads/{thread_id}/replies",
+            post(super::design::agent_reply),
+        )
+        .route(
+            "/v1/tasks/{task_id}/design/agent/threads/{thread_id}/resolve",
+            post(super::design::agent_resolve),
+        )
+        .route(
+            "/v1/tasks/{task_id}/design/approval/candidate",
+            post(super::design::prepare_candidate),
+        )
+        .route(
+            "/v1/tasks/{task_id}/design/approval/reopen",
+            post(super::design::reopen_design),
+        )
+        .route(
+            "/v1/tasks/{task_id}/design/approval/retry",
+            post(super::design::retry_handoff),
+        )
         .route(
             "/v1/tasks/{task_id}/attention",
             axum::routing::put(set_task_attention).delete(clear_task_attention),

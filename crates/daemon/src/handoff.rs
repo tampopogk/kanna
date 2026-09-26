@@ -172,7 +172,13 @@ pub(crate) fn parse_handoff_response(
     match serde_json::from_str::<Event>(line)
         .map_err(|error| HandoffRequestError::Other(format!("invalid handoff response: {error}")))?
     {
-        Event::HandoffReady { sessions } => Ok(sessions),
+        Event::HandoffReady {
+            sessions,
+            design_receipts,
+        } => {
+            crate::design_delivery::import(design_receipts);
+            Ok(sessions)
+        }
         Event::Error {
             code: Some(protocol::ErrorCode::HandoffVersionMismatch),
             message,
@@ -1308,7 +1314,10 @@ pub(crate) async fn handle_handoff(
 
     // v2 deployed adopters understand this full payload and ignore optional
     // metadata fields introduced by hardened senders.
-    let evt = Event::HandoffReady { sessions: infos };
+    let evt = Event::HandoffReady {
+        sessions: infos,
+        design_receipts: crate::design_delivery::export(),
+    };
     if let Err(error) = write_event(&mut *writer.lock().await, &evt).await {
         log::error!("[handoff] failed to write HandoffReady: {}", error);
         lifecycle_audit(format_args!(

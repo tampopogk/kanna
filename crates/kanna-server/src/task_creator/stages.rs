@@ -207,6 +207,12 @@ pub(crate) fn prepare_advance_stage_for_api_with_intent(
         }
         StagePosition::Stage(index) => {
             let stage = &loaded.workflow.stages[index];
+            // An App Design stage leaves only through its hand-off
+            // (docs/specs/app-design.md §6): a person's or manager's plain
+            // advance cannot skip the approval and its verified commit.
+            if stage.design.is_some() {
+                crate::design::approval::guard_design_exit(db, source_task_id, &stage.name)?;
+            }
             if let Some(post) = stage.transition_post() {
                 let latest = db
                     .latest_stage_run(source_task_id)
@@ -360,6 +366,11 @@ pub(crate) fn prepare_stage_completion_for_api_with_trigger(
         StagePosition::Stage(index) => {
             let stage = &loaded.workflow.stages[index];
             if finished_run_kind == Some("post") {
+                // The hand-off's commit step: the next stage starts only from
+                // a commit that holds exactly the approved, retained results.
+                if stage.design.is_some() {
+                    crate::design::approval::verify_handoff_commit(db, source_task_id)?;
+                }
                 return swap_or_wait_on_dependencies(
                     db,
                     config,
@@ -669,9 +680,21 @@ fn prepare_post_dispatch(
     // an explicit completion instruction before the post's task section.
     // `item_stage` stays the owner: a post never moves the task's stage.
     let task_id = context.source_task_id;
+    // An App Design hand-off tells the live session what was approved and
+    // exactly which files to commit, instead of the generic "commit the
+    // work", which would sweep up anything in the worktree.
+    let design_instruction = if owner.design.is_some() {
+        Some(crate::design::approval::commit_step_instruction(db, task_id)?)
+    } else {
+        None
+    };
     let completion_instruction = format!(
         "When this work is complete, record stage completion: call MCP `kanna_complete_stage {{\"task_id\": \"{task_id}\", \"status\": \"success\", \"summary\": \"...\"}}`; only if MCP tools are unavailable, fall back to `kanna-cli stage-complete --task-id \"{task_id}\" --status success --summary \"...\"`. Kanna will then advance this task's workflow."
     );
+    let completion_instruction = match design_instruction {
+        Some(design) => format!("{design}\n\n{completion_instruction}"),
+        None => completion_instruction,
+    };
     let (mut fallback, message) = prepare_stage_run_for_target_returning_prompt(
         db,
         config,
@@ -2270,6 +2293,62 @@ pub(crate) fn current_stage_is_roleless(db: &Db, task_id: &str) -> Result<bool, 
         .iter()
         .find(|candidate| candidate.name == stage)
         .is_some_and(|candidate| workflow.is_roleless_stage(candidate)))
+}
+
+/// A task's App Design stage (docs/specs/app-design.md §3): its name, its
+/// positions, the stage after it, and whether the task is in it now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TaskDesignStage {
+    pub(crate) stage: String,
+    pub(crate) design: super::definitions::WorkflowDesign,
+    pub(crate) next_stage: Option<String>,
+    pub(crate) current_stage: Option<String>,
+}
+
+impl TaskDesignStage {
+    pub(crate) fn is_current(&self) -> bool {
+        self.current_stage.as_deref() == Some(self.stage.as_str())
+    }
+}
+
+/// The task's design stage, if its workflow has one: the current stage when
+/// it is a design stage, otherwise the last design stage before it.
+pub(crate) fn task_design_stage(db: &Db, task_id: &str) -> Result<Option<TaskDesignStage>, String> {
+    let workflow = task_workflow_for_routing(db, task_id)?;
+    let current_stage = db
+        .get_pipeline_item(task_id)
+        .map_err(|error| format!("db error: {error}"))?
+        .and_then(|item| item.stage);
+    let current_index = current_stage
+        .as_deref()
+        .and_then(|stage| workflow.stages.iter().position(|candidate| candidate.name == stage));
+    let candidates = workflow
+        .stages
+        .iter()
+        .enumerate()
+        .filter(|(_, stage)| stage.design.is_some())
+        .collect::<Vec<_>>();
+    let chosen = candidates
+        .iter()
+        .rev()
+        .find(|(index, _)| current_index.is_none_or(|current| *index <= current))
+        .or_else(|| candidates.first());
+    Ok(chosen.map(|(index, stage)| TaskDesignStage {
+        stage: stage.name.clone(),
+        design: stage.design.clone().expect("filtered on design"),
+        next_stage: workflow.stages.get(index + 1).map(|next| next.name.clone()),
+        current_stage: current_stage.clone(),
+    }))
+}
+
+/// The stage names of the task's workflow, in order (for the header's
+/// stage chain).
+pub(crate) fn task_stage_names(db: &Db, task_id: &str) -> Result<Vec<String>, String> {
+    Ok(task_workflow_for_routing(db, task_id)?
+        .stages
+        .iter()
+        .map(|stage| stage.name.clone())
+        .collect())
 }
 
 /// Where a result goes under named-exit routing (spec §5).

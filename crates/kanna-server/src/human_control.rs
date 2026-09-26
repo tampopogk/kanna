@@ -21,6 +21,15 @@ struct TrustedDesktopIdentity {
 #[serde(tag = "action", rename_all = "snake_case")]
 enum HumanControlRequest {
     AdoptDesktop,
+    /// The person confirmed an App Design candidate in the desktop's own
+    /// confirmation dialog (docs/specs/app-design.md §6). Only this socket's
+    /// kernel-verified desktop peer can send it: approval is the person's
+    /// action, never an agent's, and no HTTP route can make it.
+    ConfirmDesignApproval {
+        task_id: String,
+        approval_id: String,
+        token: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -78,7 +87,7 @@ pub async fn serve(state: Arc<AppState>) -> Result<(), String> {
 }
 
 async fn handle_connection(
-    _state: Arc<AppState>,
+    state: Arc<AppState>,
     mut stream: UnixStream,
     trusted_desktop: Arc<Mutex<Option<TrustedDesktopIdentity>>>,
 ) -> Result<(), String> {
@@ -136,6 +145,11 @@ async fn handle_connection(
             body: Some(serde_json::json!({ "adopted": true })),
             error: None,
         },
+        HumanControlRequest::ConfirmDesignApproval {
+            task_id,
+            approval_id,
+            token,
+        } => confirm_design_approval(&state, task_id, approval_id, token, peer_pid).await,
     };
     let mut encoded = serde_json::to_vec(&response)
         .map_err(|error| format!("failed to encode native control response: {error}"))?;
@@ -144,6 +158,54 @@ async fn handle_connection(
         .write_all(&encoded)
         .await
         .map_err(|error| format!("failed to write native control response: {error}"))
+}
+
+async fn confirm_design_approval(
+    state: &Arc<AppState>,
+    task_id: String,
+    approval_id: String,
+    token: String,
+    peer_pid: libc::pid_t,
+) -> HumanControlResponse {
+    let work_state = Arc::clone(state);
+    let result = tokio::task::spawn_blocking(move || {
+        let db_path = work_state.config().db_path.clone();
+        let db = crate::db::Db::open(&db_path).map_err(|error| {
+            crate::design::service::DesignError::internal(format!("db error: {error}"))
+        })?;
+        crate::design::approval::confirm(
+            &work_state,
+            &db,
+            &work_state.design,
+            &db_path,
+            &task_id,
+            &approval_id,
+            &token,
+            &format!("person (Kanna desktop, pid {peer_pid})"),
+        )
+    })
+    .await;
+    state.publish_state_changed(kanna_agent_protocol::StateChangeScope::Tasks);
+    match result {
+        Ok(Ok(approval)) => HumanControlResponse {
+            ok: true,
+            status: 200,
+            body: serde_json::to_value(approval).ok(),
+            error: None,
+        },
+        Ok(Err(error)) => HumanControlResponse {
+            ok: false,
+            status: 409,
+            body: serde_json::to_value(&error).ok(),
+            error: Some(error.message().to_string()),
+        },
+        Err(error) => HumanControlResponse {
+            ok: false,
+            status: 500,
+            body: None,
+            error: Some(format!("approval worker failed: {error}")),
+        },
+    }
 }
 
 fn authenticate_peer_before_frame(

@@ -22,6 +22,7 @@ mod blockers;
 pub(crate) mod claude_channel;
 pub(crate) mod copilot_wake;
 mod create_intents;
+pub(crate) mod design;
 mod disk_authority;
 pub(crate) mod disk_first;
 mod disk_rebuild;
@@ -238,6 +239,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "102_transferred_task_state",
     "103_disk_state_records",
     "104_disk_divergence",
+    "105_app_design",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2760,6 +2762,9 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     run_migration(conn, "104_disk_divergence", |conn| {
         conn.execute_batch(disk_authority::DIVERGENCE_SCHEMA)
     })?;
+    // App Design (docs/specs/app-design.md): design sessions, the live
+    // document's updates, threads, the feedback outbox and approvals.
+    run_migration(conn, "105_app_design", |conn| conn.execute_batch(design::SCHEMA))?;
     task_state::sync_disk_state_triggers(conn)?;
 
     Ok(())

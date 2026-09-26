@@ -2147,6 +2147,7 @@ fn legacy_builtin_workflow_names_still_resolve_for_committed_repo_config() {
         assert_eq!(
             names,
             vec![
+                "app-design",
                 "designed",
                 "mechanical",
                 "no-review",
@@ -3035,6 +3036,7 @@ fn workflow_names_are_sorted_deduped_remote_and_compiled_union() {
         definitions.workflow_names().unwrap(),
         vec![
             "alpha",
+            "app-design",
             "designed",
             "mechanical",
             "no-review",
@@ -3187,6 +3189,7 @@ fn bundled_definition_formula_agents_resolve_from_compiled_resources() {
         "implement",
         "pr",
         "mockup",
+        "app-design",
         "plan",
         "architect",
         "researcher",
@@ -4761,6 +4764,7 @@ fn build_target_stage_prompt_sections_a_carried_task_without_rescanning_it() {
         exit_commit: false,
         setup: None,
         teardown: None,
+        design: None,
     };
 
     let prompt = super::super::prompt::build_target_stage_prompt(

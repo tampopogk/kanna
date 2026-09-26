@@ -422,6 +422,10 @@ pub(crate) async fn run_server_services(
     );
     tokio::spawn(run_task_ledger_publisher(Arc::clone(&http_state)));
     tokio::spawn(run_artifact_retention_sweeper(Arc::clone(&http_state)));
+    // App Design: queued feedback reaches each live design session when it is
+    // free, and approved hand-offs advance; both catch up from durable state
+    // first, so a restart neither resends nor loses anything.
+    tokio::spawn(crate::design::delivery::run(Arc::clone(&http_state)));
     let protected_input_maintenance = maintain_protected_input_generations(
         config.clone(),
         Arc::clone(&http_state),

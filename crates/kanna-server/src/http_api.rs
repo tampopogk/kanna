@@ -8,6 +8,7 @@ mod claude_channel;
 mod cloud_desktops;
 pub(crate) mod cloud_relay;
 mod copilot_wake;
+mod design;
 mod desktop;
 mod desktop_views;
 #[cfg(debug_assertions)]
@@ -201,6 +202,7 @@ pub(crate) use capacity_notice::{
 #[cfg(test)]
 pub(crate) use quota_recovery::parked_action_for_tests;
 pub(crate) use quota_recovery::{handle_quota_rejection, QuotaRejectionNotice};
+pub(crate) use design::advance_design_stage;
 pub(crate) use task_actions::close_task_in_process;
 pub(crate) use tasks::create_transferred_task_in_process;
 

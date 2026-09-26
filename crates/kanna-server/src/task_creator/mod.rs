@@ -103,6 +103,7 @@ pub(crate) use merge::{
 };
 pub(crate) use prompt::RevisionRound;
 pub(crate) use stages::{
+    task_design_stage, task_stage_names, TaskDesignStage,
     current_stage_is_roleless, describe_current_stage_exits, exit_leading_to, resolve_result_exit,
     resolve_stage_budget_limit, task_routes_by_exits, ResolvedResultExit,
 };
@@ -696,6 +697,56 @@ pub(crate) fn load_repo_artifact_policy(
                 remote: artifacts.remote,
                 remote_source,
             })
+        })
+        .map_err(|error| error.to_string())
+}
+
+/// What an App Design hand-off retains in the repository
+/// (docs/specs/app-design.md §7a), from its committed `.kanna/config.json`.
+/// A repository without a policy retains nothing: the approved snapshot stays
+/// in the artifact store and no file is committed on its behalf.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RepoDesignHandoffPolicy {
+    pub(crate) retain: DesignRetention,
+    /// Repository-relative folder with `{task}` still unexpanded.
+    pub(crate) path: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum DesignRetention {
+    ResultsAndSummary,
+    Nothing,
+}
+
+pub(crate) const DEFAULT_DESIGN_RESULTS_PATH: &str = "docs/design-results/{task}";
+
+pub(crate) fn load_repo_design_policy(
+    cache: &RepoDefinitionsCache,
+    repo: &Repo,
+) -> Result<RepoDesignHandoffPolicy, String> {
+    cache
+        .with_definitions(repo, |definitions| {
+            let handoff = definitions
+                .config()
+                .design
+                .clone()
+                .and_then(|design| design.handoff)
+                .unwrap_or_default();
+            let retain = match handoff.retain.as_deref() {
+                Some("results-and-summary") => DesignRetention::ResultsAndSummary,
+                Some("nothing") | None => DesignRetention::Nothing,
+                Some(other) => {
+                    return Err(DefinitionLookupError::Other(format!(
+                        "design.handoff.retain is '{other}'; expected results-and-summary or nothing"
+                    )))
+                }
+            };
+            let path = handoff
+                .path
+                .unwrap_or_else(|| DEFAULT_DESIGN_RESULTS_PATH.to_string());
+            Ok(RepoDesignHandoffPolicy { retain, path })
         })
         .map_err(|error| error.to_string())
 }
@@ -2731,6 +2782,7 @@ fn synthetic_singleton_workflow_definition(
             exit_commit: false,
             setup: None,
             teardown: None,
+            design: None,
         }],
         environments: None,
         revision_limit: None,
@@ -2962,6 +3014,7 @@ completion with status success so Kanna can run the commit post and close this i
             exit_commit: false,
             setup: None,
             teardown: None,
+            design: None,
         }],
         environments: None,
         revision_limit: None,

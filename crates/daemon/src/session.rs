@@ -1205,6 +1205,11 @@ impl SessionHandle {
         }
     }
 
+    /// Whether the session has a rendered runtime verdict for its status.
+    pub async fn status_observed(&self) -> bool {
+        self.state.lock().await.status_observed
+    }
+
     pub async fn info(&self, session_id: String) -> SessionInfo {
         let mut pty = self.pty.lock().await;
         let state = match pty.try_wait() {

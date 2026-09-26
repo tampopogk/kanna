@@ -573,6 +573,7 @@ impl Db {
         self.conn.execute_batch(super::subtask_joins::SCHEMA)?;
         self.conn
             .execute_batch(super::transfer_task_state::SCHEMA)?;
+        self.conn.execute_batch(super::design::SCHEMA)?;
         create_blocker_revision_triggers(&self.conn)?;
         let mut stmt = self
             .conn

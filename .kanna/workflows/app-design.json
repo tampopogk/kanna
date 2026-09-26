@@ -1,0 +1,53 @@
+{
+  "$schema": "./schema.json",
+  "name": "app-design",
+  "description": "Use for new or large work with a UI whose shape should come from something you can see and use rather than a written spec (docs/specs/app-design.md). One live session with the design agent: the person and the agent move freely between static mockup, interactive mockup and prototype, share a live document with comment threads, and the person's feedback is queued to the agent as it becomes free. The person approves an exact snapshot for build; the hand-off commits the results the repository's design policy retains, then the software factory plans, builds, reviews and opens the PR. Not for work whose shape is already obvious (planned, shaped) or whose outcome is not yet chosen (research).",
+  "routing": "exits",
+  "stages": [
+    {
+      "name": "design",
+      "description": "The person and one live design agent iterate on a live document through the design positions; Approve for build commits the retained results and hands off to the software factory",
+      "agent": "app-design",
+      "prompt": "$TASK_PROMPT",
+      "policy": { "transition": "manual" },
+      "exit_commit": true,
+      "design": {
+        "positions": [
+          { "name": "static", "label": "Static mockup", "artifact": "document" },
+          { "name": "interactive", "label": "Interactive mockup", "artifact": "document" },
+          { "name": "prototype", "label": "Prototype", "artifact": "document" }
+        ]
+      }
+    },
+    {
+      "name": "plan",
+      "description": "Planning agent turns the approved design into an implementation plan; the person reviews the plan before building",
+      "agent": "plan",
+      "prompt": "$TASK_PROMPT\n\nThe design was approved for build in this task's design stage. Plan from the approved design: the results committed under the repository's design results folder, and the approved snapshot named in the task ledger. The prototype, if any, is a reference only; plan to build it properly.",
+      "policy": { "transition": "manual" }
+    },
+    {
+      "name": "in progress",
+      "description": "Agent implements the approved plan; the transition commits its work",
+      "agent": "implement",
+      "prompt": "$TASK_PROMPT",
+      "policy": { "transition": "auto", "loop_transition": "auto" },
+      "exit_commit": true
+    },
+    {
+      "name": "review",
+      "description": "Review agent checks quality and coverage against the approved design and plan, choosing the revision target by the nature of the findings, before the human reads the verdict",
+      "agent": "review",
+      "prompt": "Review branch $BRANCH against base $BASE_REF, the approved design results and the plan in the task ledger. This workflow routes results by named exits, not kanna_request_revision (which this task refuses for agent-origin calls). Record your verdict with kanna_complete_stage: status \"success\", your findings as the message, and an exit chosen by the nature of the blocking findings: \"revise\" for implementation defects, back to \"in progress\"; \"replan\" when the plan itself is structurally wrong, back to \"plan\". A pass is status \"success\" with no exit, which advances to pr once a person confirms it. Never call kanna_request_revision on this task.",
+      "policy": { "transition": "manual" },
+      "exits": { "revise": "in progress", "replan": "plan" }
+    },
+    {
+      "name": "pr",
+      "description": "Agent creates a GitHub PR",
+      "agent": "pr",
+      "prompt": "Create a PR for the reviewed work on branch $BRANCH. Link the approved design snapshot named in the task ledger.",
+      "policy": { "transition": "manual" }
+    }
+  ]
+}

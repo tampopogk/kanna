@@ -77,6 +77,7 @@ fn parse_handoff_response_accepts_v2_payload() {
             typed_draft_bytes: Some(0),
             pending_logical_inputs: Vec::new(),
         }],
+        design_receipts: Default::default(),
     })
     .unwrap();
 

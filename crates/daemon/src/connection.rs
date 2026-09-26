@@ -68,6 +68,96 @@ async fn logical_input_event(
     }
 }
 
+/// Answer one `SubmitDesignInput`: write App Design feedback only when the
+/// session's agent is free, exactly once per delivery id.
+///
+/// "Free" is read from the session's own state immediately before the
+/// message is queued to its single writer: an idle runtime verdict that was
+/// actually observed, and no attested draft at the composer. Anything else
+/// writes nothing and says why, so kanna-server keeps the feedback queued.
+/// What remains between this check and the write is the writer's queue: a
+/// raw keystroke already queued ahead of the message still reaches the PTY
+/// first.
+async fn design_input_event(
+    daemon_lifecycle: &tokio::sync::RwLock<DaemonLifecycleState>,
+    sessions: &Arc<Mutex<SessionManager>>,
+    session_id: &str,
+    expected_pid: u32,
+    delivery_id: &str,
+    data: Vec<u8>,
+) -> Event {
+    let known = crate::design_delivery::known_instances;
+    let answer = |outcome: protocol::DesignDeliveryOutcome| Event::DesignDelivery {
+        delivery_id: delivery_id.to_string(),
+        outcome,
+        known_instances: known(),
+    };
+    let not_free = |reason: String| answer(protocol::DesignDeliveryOutcome::NotFree { reason });
+    let lifecycle = daemon_lifecycle.read().await;
+    if *lifecycle != DaemonLifecycleState::Running {
+        return error_event(
+            Some(protocol::ErrorCode::RetryOnSuccessor),
+            "daemon handoff already committed; submit design input to the adopting daemon",
+        );
+    }
+    if let Err(existing) = crate::design_delivery::claim(delivery_id) {
+        // A repeated id: answer from the receipt, never type it twice.
+        return answer(existing);
+    }
+    let Some(session) = session_handle(sessions, session_id).await else {
+        crate::design_delivery::release(delivery_id);
+        return error_event(
+            Some(protocol::ErrorCode::SessionNotFound),
+            format!("session not found: {session_id}"),
+        );
+    };
+    let (actual_pid, exited) = {
+        let mut pty = session.pty.lock().await;
+        (pty.pid(), pty.try_wait().is_some())
+    };
+    if actual_pid != expected_pid || exited {
+        crate::design_delivery::release(delivery_id);
+        return error_event(
+            Some(protocol::ErrorCode::SessionIncarnationMismatch),
+            format!(
+                "session incarnation changed for {session_id}: expected pid {expected_pid}, found {actual_pid}"
+            ),
+        );
+    }
+    if session.operator_input_only().await {
+        crate::design_delivery::release(delivery_id);
+        return error_event(
+            Some(protocol::ErrorCode::InputUnauthorized),
+            format!("session requires authenticated operator input: {session_id}"),
+        );
+    }
+    let status = session.status().await;
+    let observed = session.status_observed().await;
+    let attestation = session.composer_attestation();
+    let refusal = if !observed {
+        Some("the agent has no runtime verdict yet".to_string())
+    } else if status != protocol::SessionStatus::Idle {
+        Some(format!("the agent is {status:?}").to_lowercase())
+    } else if attestation == protocol::ComposerAttestation::Typed {
+        Some("someone has an unsent draft at the agent's composer".to_string())
+    } else {
+        None
+    };
+    if let Some(reason) = refusal {
+        crate::design_delivery::release(delivery_id);
+        return not_free(reason);
+    }
+    let outcome = match logical_input_event(&session, session_id, data).await {
+        Event::Ok => protocol::DesignDeliveryOutcome::Delivered,
+        Event::Error { message, .. } => protocol::DesignDeliveryOutcome::WriteFailed { message },
+        other => protocol::DesignDeliveryOutcome::WriteFailed {
+            message: format!("unexpected write outcome: {other:?}"),
+        },
+    };
+    crate::design_delivery::settle(delivery_id, outcome.clone());
+    answer(outcome)
+}
+
 /// What happened to a geometry proposal once the daemon tried to apply it.
 #[derive(Debug)]
 pub(crate) enum GeometryOutcome {
@@ -314,6 +404,25 @@ pub(crate) async fn handle_connection(
                         format!(
                             "unsupported raw-input protocol {version}; this daemon speaks {}",
                             protocol::RAW_INPUT_PROTOCOL_VERSION
+                        ),
+                    )
+                };
+                let _ = write_event(&mut *writer.lock().await, &event).await;
+            }
+            Some(Command::NegotiateDesignDelivery { version }) => {
+                // A capability answer only: it touches no session, so a
+                // caller may treat any failure as proof nothing was written.
+                let event = if version == protocol::DESIGN_DELIVERY_PROTOCOL_VERSION {
+                    Event::DesignDeliveryReady {
+                        version,
+                        instance: crate::design_delivery::instance(),
+                    }
+                } else {
+                    error_event(
+                        None,
+                        format!(
+                            "unsupported design-delivery protocol {version}; this daemon speaks {}",
+                            protocol::DESIGN_DELIVERY_PROTOCOL_VERSION
                         ),
                     )
                 };
@@ -1168,6 +1277,33 @@ pub(crate) async fn handle_command(
                 return;
             }
             let evt = logical_input_event(&session, &session_id, data).await;
+            let _ = write_event(&mut *writer.lock().await, &evt).await;
+        }
+
+        Command::SubmitDesignInput {
+            session_id,
+            expected_pid,
+            delivery_id,
+            data,
+        } => {
+            let evt = design_input_event(
+                &daemon_lifecycle,
+                &sessions,
+                &session_id,
+                expected_pid,
+                &delivery_id,
+                data,
+            )
+            .await;
+            let _ = write_event(&mut *writer.lock().await, &evt).await;
+        }
+
+        Command::QueryDesignDelivery { delivery_id } => {
+            let evt = Event::DesignDelivery {
+                outcome: crate::design_delivery::outcome(&delivery_id),
+                delivery_id,
+                known_instances: crate::design_delivery::known_instances(),
+            };
             let _ = write_event(&mut *writer.lock().await, &evt).await;
         }
 
@@ -2230,6 +2366,7 @@ pub(crate) async fn handle_command(
         | Command::AuthorizeServer { .. }
         | Command::NegotiateProtectedInput { .. }
         | Command::NegotiateRawInput { .. }
+        | Command::NegotiateDesignDelivery { .. }
         | Command::NegotiateTerminalGeometry { .. } => {
             let event = error_event(None, "unexpected nested authority command");
             let _ = write_event(&mut *writer.lock().await, &event).await;
@@ -2329,5 +2466,154 @@ mod geometry_log_tests {
         let (level, text) = line(&before, &after, None, &GeometryOutcome::NoChange);
         assert_eq!(level, log::Level::Debug);
         assert!(text.contains("owner_changed=false"), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod design_delivery_tests {
+    use super::*;
+    use crate::headless_terminal::HeadlessTerminal;
+    use crate::pty::PtySession;
+    use crate::session::SessionRecord;
+    use protocol::{DesignDeliveryOutcome, SessionStatus};
+
+    fn record(status: SessionStatus, observed: bool, typed: Option<u64>) -> SessionRecord {
+        SessionRecord {
+            pty: PtySession::spawn(
+                "/bin/sh",
+                &[String::from("-c"), String::from("sleep 10")],
+                "/tmp",
+                &std::collections::HashMap::new(),
+                80,
+                24,
+            )
+            .unwrap(),
+            headless_terminal: HeadlessTerminal::new(80, 24, 10_000).unwrap(),
+            notice_terminal: HeadlessTerminal::new_notice_projection(80, 24).unwrap(),
+            stream_control: None,
+            agent_provider: Some(protocol::AgentProvider::Claude),
+            cli_version: None,
+            status,
+            status_observed: observed,
+            last_status_check_at: None,
+            operator_input_only: false,
+            input_policy_classified: true,
+            raw_input_draft_active: false,
+            raw_input_draft_state_known: true,
+            typed_draft_bytes: typed,
+            pending_logical_inputs: Vec::new(),
+        }
+    }
+
+    async fn manager_with(
+        session_id: &str,
+        record: SessionRecord,
+    ) -> (Arc<Mutex<SessionManager>>, Arc<SessionHandle>, u32) {
+        let handle = Arc::new(SessionHandle::new(record));
+        let pid = handle.pty.lock().await.pid();
+        let mut manager = SessionManager::new();
+        manager.insert(session_id.to_string(), Arc::clone(&handle));
+        (Arc::new(Mutex::new(manager)), handle, pid)
+    }
+
+    fn running() -> tokio::sync::RwLock<DaemonLifecycleState> {
+        tokio::sync::RwLock::new(DaemonLifecycleState::Running)
+    }
+
+    fn outcome(event: &Event) -> DesignDeliveryOutcome {
+        match event {
+            Event::DesignDelivery { outcome, .. } => outcome.clone(),
+            other => panic!("expected a design delivery answer, got {other:?}"),
+        }
+    }
+
+    fn id(label: &str) -> String {
+        format!("{label}-{}", crate::design_delivery::instance())
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_is_not_free_is_written_nothing() {
+        for (label, record) in [
+            ("busy", record(SessionStatus::Busy, true, Some(0))),
+            ("waiting", record(SessionStatus::Waiting, true, Some(0))),
+            ("unobserved", record(SessionStatus::Idle, false, Some(0))),
+            ("draft", record(SessionStatus::Idle, true, Some(3))),
+        ] {
+            let (sessions, handle, pid) = manager_with("task-1", record).await;
+            let mut input_rx = handle.take_input_rx().await.unwrap();
+            let delivery = id(label);
+            let answer =
+                design_input_event(&running(), &sessions, "task-1", pid, &delivery, b"hello".to_vec()).await;
+            assert!(
+                matches!(outcome(&answer), DesignDeliveryOutcome::NotFree { .. }),
+                "{label}: {answer:?}"
+            );
+            assert!(input_rx.try_recv().is_err(), "{label}: nothing may reach the writer");
+            // Refused ids are not remembered: the same batch may be sent later.
+            assert_eq!(crate::design_delivery::outcome(&delivery), DesignDeliveryOutcome::Unknown);
+            handle.kill().await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_free_agent_is_written_once_and_a_repeat_answers_from_the_receipt() {
+        let (sessions, handle, pid) = manager_with("task-2", record(SessionStatus::Idle, true, Some(0))).await;
+        let mut input_rx = handle.take_input_rx().await.unwrap();
+        // Stand in for the PTY writer: acknowledge each queued input once.
+        let writer = tokio::spawn(async move {
+            let mut written = Vec::new();
+            while let Some(pending) = input_rx.recv().await {
+                written.push(pending.data.clone());
+                pending.acknowledge_written();
+            }
+            written
+        });
+        let delivery = id("free");
+        let first =
+            design_input_event(&running(), &sessions, "task-2", pid, &delivery, b"feedback".to_vec()).await;
+        assert_eq!(outcome(&first), DesignDeliveryOutcome::Delivered);
+        let again =
+            design_input_event(&running(), &sessions, "task-2", pid, &delivery, b"feedback".to_vec()).await;
+        assert_eq!(outcome(&again), DesignDeliveryOutcome::Delivered);
+        handle.kill().await.unwrap();
+        drop(sessions);
+        drop(handle);
+        let written = tokio::time::timeout(std::time::Duration::from_secs(5), writer)
+            .await
+            .map(|joined| joined.unwrap())
+            .unwrap_or_default();
+        let text: Vec<u8> = written.concat();
+        assert_eq!(
+            text.windows(b"feedback".len()).filter(|window| window == b"feedback").count(),
+            1,
+            "the message is typed exactly once"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_changed_session_or_a_committed_handoff_writes_nothing() {
+        let (sessions, handle, pid) = manager_with("task-3", record(SessionStatus::Idle, true, Some(0))).await;
+        let mut input_rx = handle.take_input_rx().await.unwrap();
+        let wrong_pid =
+            design_input_event(&running(), &sessions, "task-3", pid + 1, &id("pid"), b"x".to_vec()).await;
+        assert!(matches!(
+            wrong_pid,
+            Event::Error {
+                code: Some(protocol::ErrorCode::SessionIncarnationMismatch),
+                ..
+            }
+        ));
+        let committed = tokio::sync::RwLock::new(DaemonLifecycleState::HandoffCommitted);
+        let handing_off =
+            design_input_event(&committed, &sessions, "task-3", pid, &id("handoff"), b"x".to_vec()).await;
+        assert!(matches!(
+            handing_off,
+            Event::Error {
+                code: Some(protocol::ErrorCode::RetryOnSuccessor),
+                ..
+            }
+        ));
+        assert!(input_rx.try_recv().is_err());
+        handle.kill().await.unwrap();
     }
 }

@@ -352,6 +352,11 @@ impl DesignDocument {
             })
     }
 
+    /// Apply an update this server already validated and stored.
+    pub fn apply_client_update_trusted(&mut self, update: &[u8]) -> Result<(), DocumentError> {
+        self.apply_unchecked(update)
+    }
+
     /// Apply a client's update, refusing one that would leave the document
     /// outside the schema. It is tried on a copy first, so a refused update
     /// changes nothing. Returns whether the document changed.

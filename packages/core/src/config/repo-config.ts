@@ -53,6 +53,19 @@ export interface RepoArtifactsConfig {
   remote?: string;
 }
 
+/**
+ * What an App Design hand-off keeps in the repository (docs/specs/app-design.md
+ * §7a). Committed policy only; separate from artifact-store retention.
+ */
+export interface RepoDesignConfig {
+  handoff?: {
+    /** `nothing` (default) or `results-and-summary`. */
+    retain?: "results-and-summary" | "nothing";
+    /** Repository-relative folder; `{task}` is replaced by the task id. */
+    path?: string;
+  };
+}
+
 export interface RepoConfig {
   workflow?: string;
   setup?: string[];
@@ -67,6 +80,7 @@ export interface RepoConfig {
   stage_order?: string[];
   workspace?: RepoWorkspaceConfig;
   artifacts?: RepoArtifactsConfig;
+  design?: RepoDesignConfig;
 }
 
 export function parseRepoConfig(json: string): RepoConfig {
@@ -278,6 +292,18 @@ export function parseRepoConfig(json: string): RepoConfig {
     }
     if (Object.keys(artifacts).length > 0) {
       config.artifacts = artifacts;
+    }
+  }
+
+  const designRaw = raw.design;
+  if (designRaw && typeof designRaw === "object" && !Array.isArray(designRaw)) {
+    const handoffRaw = (designRaw as Record<string, unknown>).handoff;
+    if (handoffRaw && typeof handoffRaw === "object" && !Array.isArray(handoffRaw)) {
+      const { retain, path } = handoffRaw as Record<string, unknown>;
+      const handoff: NonNullable<RepoDesignConfig["handoff"]> = {};
+      if (retain === "results-and-summary" || retain === "nothing") handoff.retain = retain;
+      if (typeof path === "string" && path.trim().length > 0) handoff.path = path.trim();
+      config.design = { handoff };
     }
   }
 
