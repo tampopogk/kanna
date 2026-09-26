@@ -4,6 +4,7 @@ import {
   type TaskQuickReply,
   validateTaskQuickReplies
 } from "../screens/taskQuickReplies";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export const TASK_QUICK_REPLY_STORAGE_KEY = "kanna.mobile.quick-replies.v1";
 export const TASK_QUICK_REPLY_BACKUP_STORAGE_KEY =
@@ -159,9 +160,8 @@ export function createTaskQuickReplyPreferences(
 }
 
 export async function createDefaultTaskQuickReplyPreferences(): Promise<TaskQuickReplyPreferences> {
-  const module = await import("@react-native-async-storage/async-storage");
   return createTaskQuickReplyPreferences(
-    module.default as TaskQuickReplyStorageAdapter
+    AsyncStorage as TaskQuickReplyStorageAdapter
   );
 }
 

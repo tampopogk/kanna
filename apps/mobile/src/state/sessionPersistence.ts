@@ -9,6 +9,8 @@ import type {
   PushPairingCertificate
 } from "../lib/api/types";
 import { isAgentProvider } from "@kanna/agent-protocol";
+// AsyncStorage belongs in the startup bundle; a lazy split can outrun iOS HMR setup.
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { normalizePersistedCustomRelayUrl } from "../relaySettings";
 
 const MOBILE_CONTEXT_STORAGE_KEY = "kanna.mobile.context.v1";
@@ -89,8 +91,7 @@ export function createSessionPersistence(storage: StorageAdapter): SessionPersis
 }
 
 export async function createDefaultSessionPersistence(): Promise<SessionPersistence> {
-  const module = await import("@react-native-async-storage/async-storage");
-  return createSessionPersistence(module.default as StorageAdapter);
+  return createSessionPersistence(AsyncStorage as StorageAdapter);
 }
 
 function parsePersistedSessionContext(
