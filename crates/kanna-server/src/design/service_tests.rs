@@ -12,10 +12,9 @@ pub(crate) struct Fixture {
     pub(crate) task: String,
 }
 
-/// A task pinned to the bundled `app-design` workflow, in its design stage.
-pub(crate) fn fixture(label: &str) -> Fixture {
-    let db_path = Db::test_db_path(&format!("design-{label}"));
-    let db = Db::open_for_tests(&db_path).unwrap();
+/// Seed `task-d`, pinned to the bundled `app-design` workflow and in its
+/// design stage.
+pub(crate) fn seed_design_task(db: &Db) {
     db.insert_test_repo("repo-1", "Repo One").unwrap();
     db.insert_test_pipeline_item(
         "task-d",
@@ -31,6 +30,13 @@ pub(crate) fn fixture(label: &str) -> Fixture {
         APP_DESIGN.replace('\'', "''")
     ))
     .unwrap();
+}
+
+/// A task pinned to the bundled `app-design` workflow, in its design stage.
+pub(crate) fn fixture(label: &str) -> Fixture {
+    let db_path = Db::test_db_path(&format!("design-{label}"));
+    let db = Db::open_for_tests(&db_path).unwrap();
+    seed_design_task(&db);
     Fixture {
         db,
         db_path,

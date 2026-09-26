@@ -82,9 +82,10 @@ pub(crate) struct BoundPolicy {
 /// Expand and check a policy path: relative, inside the repository, no
 /// parent components.
 fn bind_policy(policy: &RepoDesignHandoffPolicy, task_id: &str) -> Result<BoundPolicy, DesignError> {
-    let path = policy.path.replace("{task}", task_id);
-    let path = path.trim_matches('/').to_string();
+    let expanded = policy.path.replace("{task}", task_id);
+    let path = expanded.trim_end_matches('/').to_string();
     let valid = !path.is_empty()
+        && !path.starts_with('/')
         && !path.starts_with('~')
         && Path::new(&path)
             .components()

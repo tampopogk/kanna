@@ -33,7 +33,7 @@ use kanna_daemon::protocol::{
     SessionKind, SessionState, SessionStatus,
 };
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const TICK: Duration = Duration::from_secs(2);
@@ -53,9 +53,14 @@ struct TurnFence {
     saw_busy: bool,
 }
 
-static FENCES: LazyLock<Mutex<HashMap<String, TurnFence>>> = LazyLock::new(Default::default);
-/// The daemon instance whose design-delivery capability was confirmed.
-static CAPABLE_INSTANCE: LazyLock<Mutex<Option<String>>> = LazyLock::new(Default::default);
+/// What the worker remembers between passes, per server: the turn fences and
+/// the daemon instance whose design-delivery capability was confirmed. Lost on
+/// restart by design: a restart re-reads durable state and asks the daemon.
+#[derive(Default)]
+pub(crate) struct DeliveryMemory {
+    fences: HashMap<String, TurnFence>,
+    capable_instance: Option<String>,
+}
 
 /// Whether the task's live session can take feedback now.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -308,8 +313,11 @@ fn render_message(task_id: &str, items: &[String]) -> String {
     )
 }
 
-async fn daemon_instance(daemon: &mut crate::daemon_client::DaemonClient) -> Result<String, String> {
-    if let Some(instance) = CAPABLE_INSTANCE.lock().unwrap().clone() {
+async fn daemon_instance(
+    runtime: &DesignRuntime,
+    daemon: &mut crate::daemon_client::DaemonClient,
+) -> Result<String, String> {
+    if let Some(instance) = runtime.delivery.lock().unwrap().capable_instance.clone() {
         return Ok(instance);
     }
     match daemon
@@ -319,7 +327,7 @@ async fn daemon_instance(daemon: &mut crate::daemon_client::DaemonClient) -> Res
         .await
     {
         Ok(DaemonEvent::DesignDeliveryReady { instance, .. }) => {
-            *CAPABLE_INSTANCE.lock().unwrap() = Some(instance.clone());
+            runtime.delivery.lock().unwrap().capable_instance = Some(instance.clone());
             Ok(instance)
         }
         // Never a silent downgrade to immediate delivery: an older daemon
@@ -333,8 +341,8 @@ async fn daemon_instance(daemon: &mut crate::daemon_client::DaemonClient) -> Res
     }
 }
 
-fn forget_capability() {
-    *CAPABLE_INSTANCE.lock().unwrap() = None;
+fn forget_capability(runtime: &DesignRuntime) {
+    runtime.delivery.lock().unwrap().capable_instance = None;
 }
 
 async fn deliver_task(state: &Arc<AppState>, task_id: &str) -> Result<(), String> {
@@ -346,11 +354,17 @@ async fn deliver_task(state: &Arc<AppState>, task_id: &str) -> Result<(), String
     // The turn fence: after a batch, wait for the agent to start working on
     // it (or for the grace period) before judging it free again.
     let readiness = session_readiness(state, task_id).await;
-    let fence = FENCES.lock().unwrap().get(task_id).copied();
+    let fence = state.design.delivery.lock().unwrap().fences.get(task_id).copied();
     if let Some(mut fence) = fence {
         if matches!(readiness, Readiness::Busy { .. }) {
             fence.saw_busy = true;
-            FENCES.lock().unwrap().insert(task_id.to_string(), fence);
+            state
+                .design
+                .delivery
+                .lock()
+                .unwrap()
+                .fences
+                .insert(task_id.to_string(), fence);
         }
         if !fence.saw_busy && fence.delivered_at.elapsed() < TURN_GRACE {
             return Ok(());
@@ -373,7 +387,7 @@ async fn deliver_task(state: &Arc<AppState>, task_id: &str) -> Result<(), String
     let mut daemon = crate::daemon_client::DaemonClient::connect(&state.config().daemon_dir)
         .await
         .map_err(|error| format!("daemon unavailable: {error}"))?;
-    let instance = match daemon_instance(&mut daemon).await {
+    let instance = match daemon_instance(&state.design, &mut daemon).await {
         Ok(instance) => instance,
         Err(reason) => return note(state, &batch, &reason).await,
     };
@@ -426,7 +440,7 @@ async fn deliver_task(state: &Arc<AppState>, task_id: &str) -> Result<(), String
                     "waiting: the design session changed; it will be delivered to the live session".to_string()
                 }
                 Some(ErrorCode::RetryOnSuccessor) => {
-                    forget_capability();
+                    forget_capability(&state.design);
                     "waiting: the terminal daemon is being upgraded".to_string()
                 }
                 _ => format!("waiting: {message}"),
@@ -438,7 +452,7 @@ async fn deliver_task(state: &Arc<AppState>, task_id: &str) -> Result<(), String
         }
         Err(error) => {
             // The answer was lost; the daemon may or may not have written.
-            forget_capability();
+            forget_capability(&state.design);
             match reconnect_and_query(state, &attempt_id).await {
                 Ok((outcome, known)) => {
                     settle_outcome(state, task_id, &attempt_id, &batch.message, outcome, &instance, &known).await
@@ -561,7 +575,7 @@ async fn settle_delivered(
     })
     .await?;
     if fence {
-        FENCES.lock().unwrap().insert(
+        state.design.delivery.lock().unwrap().fences.insert(
             task_id.to_string(),
             TurnFence {
                 delivered_at: Instant::now(),

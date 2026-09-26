@@ -922,4 +922,4 @@ pub(crate) fn decode_base64_field(value: &str, label: &str) -> Result<Vec<u8>, D
 
 #[cfg(test)]
 #[path = "service_tests.rs"]
-mod tests;
+pub(crate) mod tests;

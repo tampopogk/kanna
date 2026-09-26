@@ -28,6 +28,7 @@ pub(crate) struct DesignRuntime {
     pub(crate) documents: live::LiveDocuments,
     feeds: Arc<Mutex<HashMap<String, watch::Sender<u64>>>>,
     delivery_wake: Arc<Notify>,
+    pub(crate) delivery: Arc<Mutex<delivery::DeliveryMemory>>,
 }
 
 impl DesignRuntime {

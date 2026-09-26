@@ -73,7 +73,7 @@ mod workspace_setup_logs;
 #[cfg(test)]
 mod peer_tests;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
 
