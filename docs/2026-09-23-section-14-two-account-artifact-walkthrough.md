@@ -184,10 +184,15 @@ report("origin", self.origin === "null" ? "opaque" : "NOT OPAQUE " + self.origin
 attempt("read host document", function () { return parent.document.title; }, function () { return false; });
 attempt("RN bridge", function () { return typeof window.ReactNativeWebView; }, function (v) { return v === "undefined"; });
 attempt("cookies", function () {
+  var before = document.cookie;
   var marker = "kanna_probe_cookie=" + Date.now();
-  document.cookie = marker + "; SameSite=None; Secure";
-  var value = document.cookie;
-  return value.indexOf(marker) === -1 ? "isolated (write not readable)" : "LEAKED " + value;
+  var writeError;
+  try { document.cookie = marker + "; SameSite=None; Secure"; }
+  catch (e) { writeError = e; }
+  if (before) return "LEAKED " + before;
+  if (writeError) throw writeError;
+  var after = document.cookie;
+  return after ? "LEAKED " + after : "isolated (write not readable)";
 }, function (v) { return /^isolated/.test(v); });
 attempt("localStorage", function () { return localStorage.length; }, function () { return false; });
 attempt("window.open", function () { return window.open("https://example.com/"); }, function (v) { return v === null; });
@@ -204,8 +209,9 @@ setTimeout(function () {
 
 `pages/about.html`: `<link rel="stylesheet" href="../css/site.css"><h1>About (same tree)</h1>`
 
-For the cookie line, `blocked (SecurityError)` and `isolated (write not
-readable)` are equivalent passing engine behaviours. The HTML Standard says
+For the cookie line, `blocked (SecurityError)` and `blocked (isolated (write not
+readable))` are equivalent passing engine behaviours. Any nonempty value read
+before or after the write is reported as `ALLOWED (LEAKED ...)`. The HTML Standard says
 the sandboxed-origin flag prevents both reads and writes to `document.cookie`.
 WebKit's `Document::cookie` and `Document::setCookie` first handle a
 cookie-averse document: the `about:srcdoc` getter returns an empty string and
