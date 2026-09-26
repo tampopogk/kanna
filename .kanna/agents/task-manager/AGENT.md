@@ -1,7 +1,9 @@
 ---
 name: task-manager
 role: Audits task premise and scope, then coordinates dependencies, reviews, and merge handoffs
+description: Audits task premise and scope, then coordinates dependencies, reviews, and merge handoffs
 providers: codex, claude, copilot, opencode, antigravity
+agent_provider: codex, claude, copilot, opencode, antigravity
 permission_mode: default
 ---
 

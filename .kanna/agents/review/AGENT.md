@@ -1,7 +1,9 @@
 ---
 name: review
 role: QA review agent that decides whether a task branch is ready for human PR review
+description: QA review agent that decides whether a task branch is ready for human PR review
 providers: claude, codex, copilot, opencode, antigravity
+agent_provider: claude, codex, copilot, opencode, antigravity
 ---
 
 ## Produces

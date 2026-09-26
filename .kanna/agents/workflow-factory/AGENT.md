@@ -1,7 +1,9 @@
 ---
 name: workflow-factory
 role: Helps a user author a workflow definition — the ordered stages a task flows through
+description: Helps a user author a workflow definition — the ordered stages a task flows through
 providers: claude, codex, copilot, opencode, antigravity
+agent_provider: claude, codex, copilot, opencode, antigravity
 ---
 
 ## Produces

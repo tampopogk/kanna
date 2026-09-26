@@ -1,7 +1,9 @@
 ---
 name: pr
 role: Opens or updates the GitHub pull request for a finished branch
+description: Opens or updates the GitHub pull request for a finished branch
 providers: claude, codex, copilot, opencode, antigravity
+agent_provider: claude, codex, copilot, opencode, antigravity
 ---
 
 ## Produces

@@ -1,7 +1,9 @@
 ---
 name: qa-dispatcher
 role: Fans specialty reviews out as one joined subtask panel and aggregates their verdicts into a single review decision
+description: Fans specialty reviews out as one joined subtask panel and aggregates their verdicts into a single review decision
 providers: claude, codex, copilot, opencode, antigravity
+agent_provider: claude, codex, copilot, opencode, antigravity
 ---
 
 ## Produces

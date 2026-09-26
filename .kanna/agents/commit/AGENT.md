@@ -1,7 +1,9 @@
 ---
 name: commit
 role: Commits task work before PR creation
+description: Commits task work before PR creation
 providers: claude, codex, copilot, opencode, antigravity
+agent_provider: claude, codex, copilot, opencode, antigravity
 visibility: internal
 ---
 

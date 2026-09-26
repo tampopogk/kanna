@@ -1,7 +1,9 @@
 ---
 name: review-migration
 role: Specialty reviewer for persisted-data compatibility and migration safety
+description: Specialty reviewer for persisted-data compatibility and migration safety
 providers: claude, codex, copilot, opencode, antigravity
+agent_provider: claude, codex, copilot, opencode, antigravity
 ---
 
 ## Produces
