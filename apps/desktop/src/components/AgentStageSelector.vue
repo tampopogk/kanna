@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { AgentTerminalAttempt, WorkspaceSetupRun } from "../services/desktopServerClient";
-import { stageHistoryItems } from "../utils/agentStageHistory";
+import { CREATION_SELECTION, stageHistoryItems } from "../utils/agentStageHistory";
 const props = defineProps<{
   attempts: AgentTerminalAttempt[];
+  creationOutput?: boolean;
   setupRuns?: WorkspaceSetupRun[];
   selected: string;
   currentStage?: string;
@@ -16,12 +17,21 @@ const emit = defineEmits<{ select: [id: string] }>();
 // sessions, the teardown that cleaned a departed workspace up, and the setup
 // that prepared each spawn. `stageHistoryItems` owns the labelling and the
 // attempt numbering, which counts agent sessions only.
-const items = computed(() => stageHistoryItems(props.attempts, props.setupRuns ?? []));
+const items = computed(() => {
+  // The full initial transcript already contains this run's setup script.
+  // Keep later stages' setup records, and fall back to the stored initial
+  // setup when the live transcript is no longer retained.
+  const initialRun = props.creationOutput
+    ? props.attempts.find(attempt => attempt.kind !== "teardown")?.id
+    : undefined;
+  return stageHistoryItems(props.attempts,
+    (props.setupRuns ?? []).filter(run => run.runId !== initialRun));
+});
 function selectorKey(event: KeyboardEvent) {
   // Native option navigation stays local; app shortcuts still cycle tabs.
   if (!event.metaKey && !event.ctrlKey) event.stopPropagation();
 }
-const stage = computed(() => (props.selected
+const stage = computed(() => props.selected === CREATION_SELECTION ? "Setup" : (props.selected
   ? items.value.find(item => item.value === props.selected)?.title
   : props.currentStage) ?? 'Agent');
 </script>
@@ -36,6 +46,7 @@ const stage = computed(() => (props.selected
     <select aria-label="Agent stage output" :value="selected" @click.stop @keydown="selectorKey" @change="emit('select', ($event.target as HTMLSelectElement).value)">
       <option value="">Latest{{ currentStage ? ` · ${currentStage}` : '' }}</option>
       <option v-for="item in items" :key="item.value" :value="item.value">{{ item.label }}</option>
+      <option v-if="creationOutput" :value="CREATION_SELECTION">Setup</option>
       <option v-if="historyStatus" value="" disabled>{{ historyStatus }}</option>
     </select>
   </span>

@@ -306,3 +306,16 @@ describe("task UI slots", () => {
     expect(removeTaskUiSlot([creatingSlot(), other], "create:slot-1")).toEqual([other]);
   });
 });
+
+it("keeps failed creation diagnostics without hiding other tasks and hydrates its durable failure", () => {
+  const failed = creatingSlot();
+  failed.draft.creation_task_id = "failed-task";
+  failed.draft.creation_error = "setup exited 23";
+  const other = task("other-task");
+  const first = reconcileTaskUiSlots([failed], [other]);
+  expect(first.map(slot => slot.task_id)).toContain("other-task");
+  const hydrated = reconcileTaskUiSlots(first, [other, task("failed-task")]);
+  expect(hydrated.find(slot => slot.slot_id === failed.slot_id)).toMatchObject({
+    state: "ready", task_id: "failed-task", draft: { creation_error: "setup exited 23" },
+  });
+});

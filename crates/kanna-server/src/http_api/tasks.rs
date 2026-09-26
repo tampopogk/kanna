@@ -943,8 +943,25 @@ pub(super) async fn create_task_with_requested_id(
     payload: crate::mobile_api::CreateTaskRequest,
     requested_task_id: Option<String>,
 ) -> Result<Json<crate::mobile_api::CreateTaskResponse>, (axum::http::StatusCode, String)> {
-    create_task_with_requested_id_and_inputs(state, payload, requested_task_id, Vec::new(), None)
-        .await
+    let task_id = match requested_task_id {
+        Some(id) => id,
+        None => crate::task_creator::generate_task_id()
+            .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error))?,
+    };
+    crate::creation_progress::begin(&task_id);
+    let result = create_task_with_requested_id_and_inputs(
+        state,
+        payload,
+        Some(task_id.clone()),
+        Vec::new(),
+        None,
+    )
+    .await;
+    crate::creation_progress::finish(
+        &task_id,
+        result.as_ref().err().map(|(_, error)| error.as_str()),
+    );
+    result
 }
 
 fn persist_transferred_task_context(
@@ -1320,12 +1337,15 @@ async fn create_task_with_requested_id_and_inputs(
                         format!("db error: {}", e),
                     )
                 })?;
-                match crate::task_creator::prepare_task_for_api_with_error(
-                    &db,
-                    &state.config,
-                    payload,
-                    requested_task_id,
-                ) {
+                let progress_id = requested_task_id.clone().unwrap_or_default();
+                match crate::creation_progress::scoped(&progress_id, || {
+                    crate::task_creator::prepare_task_for_api_with_error(
+                        &db,
+                        &state.config,
+                        payload,
+                        requested_task_id,
+                    )
+                }) {
                     Ok(prepared) => prepared,
                     Err(error) => {
                         let requested_task =

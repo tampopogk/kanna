@@ -217,7 +217,7 @@ function isTerminalRequestError(error: unknown): boolean {
 
 async function requestJson<T>(
   path: string,
-  options: { method?: string; body?: unknown; retryMs?: number } = {},
+  options: { method?: string; body?: unknown; retryMs?: number; retryStatuses?: number[] } = {},
 ): Promise<T> {
   const deadline = Date.now() + (options.retryMs ?? 0);
   let lastError: unknown = null;
@@ -256,6 +256,8 @@ async function requestJson<T>(
       }
     }
 
+    if (lastError instanceof DesktopServerRequestError && options.retryStatuses
+      && !options.retryStatuses.includes(lastError.status)) throw lastError;
     if (Date.now() >= deadline) {
       throw lastError instanceof Error ? lastError : new Error(`GET ${path} failed`);
     }
@@ -442,6 +444,8 @@ export async function createDesktopTask(
     method: requestedTaskId ? "PUT" : "POST",
     body,
     retryMs: requestedTaskId ? 15_000 : undefined,
+    // An answered setup failure is final; replaying PUT can rerun the script.
+    retryStatuses: [409],
   });
 }
 
@@ -1709,4 +1713,14 @@ export function listWorkspaceSetupRuns(taskId: string): Promise<WorkspaceSetupRu
 }
 export function readWorkspaceSetupRun(taskId: string, runId: string): Promise<WorkspaceSetupRun | null> {
   return requestJson(`/v1/tasks/${encodeURIComponent(taskId)}/setup-logs/${encodeURIComponent(runId)}`);
+}
+
+export interface TaskCreationProgress {
+  error?: string | null;
+  phase: string;
+  status: "running" | "succeeded" | "failed";
+  output: string;
+}
+export function readTaskCreationProgress(taskId: string): Promise<TaskCreationProgress | null> {
+  return requestJson(`/v1/tasks/${encodeURIComponent(taskId)}/creation-progress`);
 }

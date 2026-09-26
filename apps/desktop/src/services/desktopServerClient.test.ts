@@ -274,6 +274,14 @@ describe("desktopServerClient", () => {
    * duplicate-transfer work briefly did) turns that transient conflict into an
    * immediate throw and loses the task.
    */
+  it("does not replay an answered setup failure when creation has a requested ID", async () => {
+    const fetchMock = vi.fn(async () => new Response("workspace setup failed: CONTROLLED_FAILURE exit 23", { status: 500 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(createDesktopTask({ repoId: "repo-1", prompt: "Ship it", requestedTaskId: "a9360002" }))
+      .rejects.toThrow("CONTROLLED_FAILURE exit 23");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("retries a requested task creation that is already in flight instead of failing on its 409", async () => {
     const response = {
       taskId: "task-requested",

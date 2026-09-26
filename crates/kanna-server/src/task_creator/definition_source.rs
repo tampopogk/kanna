@@ -320,11 +320,12 @@ fn has_any_remote(repo_path: &Path) -> Result<bool, String> {
 /// logged rather than raised: the refs already on disk remain a usable answer,
 /// and refusing to resolve because the network is down would strand the repo.
 pub(crate) fn fetch_origin(repo_path: &Path) {
-    match Command::new("git")
-        .args(["fetch", "origin"])
-        .current_dir(repo_path)
-        .output()
-    {
+    match crate::creation_progress::command(
+        "Git fetch origin",
+        Command::new("git")
+            .args(["fetch", "origin"])
+            .current_dir(repo_path),
+    ) {
         Ok(output) if !output.status.success() => {
             log::warn!(
                 "failed to fetch definitions from origin in {} (status {}): {}",
