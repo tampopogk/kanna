@@ -1,0 +1,210 @@
+{
+  "version": "kanna-design-doc/1 blocknote@0.55.0",
+  "fragment": "document-store",
+  "blocks": {
+    "paragraph": {
+      "content": "inline",
+      "props": {
+        "backgroundColor": {
+          "default": "default",
+          "type": "string"
+        },
+        "textColor": {
+          "default": "default",
+          "type": "string"
+        },
+        "textAlignment": {
+          "default": "left",
+          "type": "string",
+          "values": [
+            "left",
+            "center",
+            "right",
+            "justify"
+          ]
+        }
+      }
+    },
+    "heading": {
+      "content": "inline",
+      "props": {
+        "backgroundColor": {
+          "default": "default",
+          "type": "string"
+        },
+        "textColor": {
+          "default": "default",
+          "type": "string"
+        },
+        "textAlignment": {
+          "default": "left",
+          "type": "string",
+          "values": [
+            "left",
+            "center",
+            "right",
+            "justify"
+          ]
+        },
+        "level": {
+          "default": 1,
+          "type": "number",
+          "values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        },
+        "isToggleable": {
+          "default": false,
+          "type": "boolean"
+        }
+      }
+    },
+    "bulletListItem": {
+      "content": "inline",
+      "props": {
+        "backgroundColor": {
+          "default": "default",
+          "type": "string"
+        },
+        "textColor": {
+          "default": "default",
+          "type": "string"
+        },
+        "textAlignment": {
+          "default": "left",
+          "type": "string",
+          "values": [
+            "left",
+            "center",
+            "right",
+            "justify"
+          ]
+        }
+      }
+    },
+    "numberedListItem": {
+      "content": "inline",
+      "props": {
+        "backgroundColor": {
+          "default": "default",
+          "type": "string"
+        },
+        "textColor": {
+          "default": "default",
+          "type": "string"
+        },
+        "textAlignment": {
+          "default": "left",
+          "type": "string",
+          "values": [
+            "left",
+            "center",
+            "right",
+            "justify"
+          ]
+        },
+        "start": {
+          "default": null,
+          "type": "number"
+        }
+      }
+    },
+    "checkListItem": {
+      "content": "inline",
+      "props": {
+        "backgroundColor": {
+          "default": "default",
+          "type": "string"
+        },
+        "textColor": {
+          "default": "default",
+          "type": "string"
+        },
+        "textAlignment": {
+          "default": "left",
+          "type": "string",
+          "values": [
+            "left",
+            "center",
+            "right",
+            "justify"
+          ]
+        },
+        "checked": {
+          "default": false,
+          "type": "boolean"
+        }
+      }
+    },
+    "toggleListItem": {
+      "content": "inline",
+      "props": {
+        "backgroundColor": {
+          "default": "default",
+          "type": "string"
+        },
+        "textColor": {
+          "default": "default",
+          "type": "string"
+        },
+        "textAlignment": {
+          "default": "left",
+          "type": "string",
+          "values": [
+            "left",
+            "center",
+            "right",
+            "justify"
+          ]
+        }
+      }
+    },
+    "quote": {
+      "content": "inline",
+      "props": {
+        "backgroundColor": {
+          "default": "default",
+          "type": "string"
+        },
+        "textColor": {
+          "default": "default",
+          "type": "string"
+        }
+      }
+    },
+    "codeBlock": {
+      "content": "plain",
+      "props": {
+        "language": {
+          "default": "text",
+          "type": "string"
+        }
+      }
+    },
+    "divider": {
+      "content": "none",
+      "props": {}
+    }
+  },
+  "styles": {
+    "bold": "boolean",
+    "italic": "boolean",
+    "underline": "boolean",
+    "strike": "boolean",
+    "code": "boolean",
+    "textColor": "string",
+    "backgroundColor": "string"
+  },
+  "inlineContent": [
+    "text",
+    "link"
+  ],
+  "marks": [
+    "comment"
+  ]
+}
