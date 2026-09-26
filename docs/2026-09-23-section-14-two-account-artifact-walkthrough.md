@@ -23,7 +23,7 @@ what the automation proves, so the human steps only cover what it can't.
 | Two homes, one bare remote, real HTTP API | `crates/kanna-server/src/http_api/tests/artifacts.rs` `section_14_two_accounts_share_review_through_one_remote_without_pairing` | Two servers, each with its own home and database. A publishes a multi-file mockup from a task and pushes (refs created; pushing again reports them up to date). B has no artifact store beforehand; it fetches by hash, reads a file, records an anchored comment and a decision, and pushes. A fetches (2 records imported) and sees the anchor and decision on the exact hash. The decision moves no task on A. B cannot address A's task (404). A's own advance-stage moves A's task. The test enters that last step through the route's test hook, not a spawned agent. |
 | Remote source reporting | same file, `the_artifact_remote_route_reports_what_push_and_fetch_will_use` | `GET /v1/repos/{id}/artifact-remote` reports the redacted remote and whether `.kanna/config.json` (committed) or `.kanna/config.local.json` (machine-local) chose it. A password containing `/` is redacted too (`remote_tests.rs`). |
 | Desktop viewer | `apps/desktop/src/components/__tests__/ArtifactViewer.test.ts` | The remote and its config source are shown. The first push to a remote waits for confirmation. Push outcomes, refused refs, fetch outcomes, refused imports and missing earlier versions are rendered. The navigated id is emitted for tab persistence. In-flight file reads are aborted. |
-| Mobile viewer | `apps/mobile/src/screens/ArtifactViewer.test.tsx` | Comments are anchored to the exact version and file. A decision is recorded as data and the UI says it operates no gate. Remote, source, first-push confirmation, push/fetch outcomes. The Android late host-open is answered without the library's error page. An abandoned page's reads settle before the next page's reads start. |
+| Mobile viewer | `apps/mobile/src/screens/ArtifactViewer.test.tsx` | Comments are anchored to the exact version and file. A decision is recorded as data and the UI says it operates no gate. Remote, source, first-push confirmation, push/fetch outcomes. On Android the host asks for an in-tree file without navigating (its own title, then `history.replaceState`), and the viewer opens the file from `onLoadStart` however late the JS thread answers, with no path in any URL (`on Android, opens an in-tree link without any navigation, however late the JS thread answers`). An abandoned page's reads settle before the next page's reads start. |
 | Real WebKit click path | `apps/mobile/src/screens/ArtifactViewer.webkit.test.tsx` (macOS; builds `apps/mobile/tests/webkit/artifact-host-harness.swift`) | A DOM click inside the sandboxed frame in a real WKWebView reaches the navigation delegate as `kanna-host:open?path=…`. The viewer's real callback refuses that navigation and renders the page, and WebKit shows it. A hostile page's attempts to reach the delegate or leave the frame all fail: top navigation, self-navigation, popups, form submission, meta refresh and `_top` links. A positive control without the sandbox shows the same attempts reach the delegate. |
 | Desktop isolation in the Tauri webview | `apps/desktop/tests/e2e/mock/artifact-viewer.test.ts` (mock E2E lane) | The probe page's fetches fail. The page reports a `connect-src` CSP violation, and a loopback listener that only the test knows about receives no request. |
 
@@ -231,12 +231,17 @@ All of the iOS items, plus:
       **No "Webpage not available" / `ERR_UNKNOWN_URL_SCHEME` page appears at
       any point.** The viewer goes straight from the page to its own
       "Loading pages/about.html…" state and then shows the page.
-- [ ] If `adb logcat -s RNCWebViewClient` prints "Did not receive response to
-      shouldOverrideUrlLoading in time, defaulting to allow loading", the 250 ms
-      fail-open path was exercised during that tap. Note whether you saw it:
-      it shows whether the check covered the late path or only the normal one.
-- [ ] `adb logcat` shows no warning containing `kanna-host:open` or an artifact
-      file path. The viewer handles the load error itself and does not log it.
+- [ ] On Android a host-open never navigates: the host sets its own title and
+      calls `history.replaceState`, and the viewer reads the title from
+      `onLoadStart`. So `adb logcat -s RNCWebViewClient` prints no "Did not
+      receive response to shouldOverrideUrlLoading in time, defaulting to allow
+      loading" during those taps. A warning there means a navigation reached
+      the library's 250 ms fail-open again.
+- [ ] A full `adb logcat` capture taken over those taps has no line containing
+      `kanna-host` or an artifact file path (`pages/about`, `pages%2Fabout`,
+      `css/site.css`). Chromium's `cr_CookieManager` "Bad port" lines for bare
+      `about:blank` and `data:text/html;charset=utf-8;base64,` URLs appear on
+      every page load and are expected; they name no file.
 
 ### Recording the result
 
