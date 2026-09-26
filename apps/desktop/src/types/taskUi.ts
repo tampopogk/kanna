@@ -2,6 +2,8 @@ import type { AgentExecutionType } from "../stores/agentExecutionType";
 import type { AgentProvider, PipelineItem } from "./kanna";
 
 export interface TaskUiDraft {
+  creation_task_id?: string;
+  creation_error?: string;
   repo_id: string;
   prompt: string;
   display_name: string | null;

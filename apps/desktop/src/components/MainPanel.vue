@@ -25,7 +25,7 @@ import {
   type DesktopTaskDetail,
   type WorkspaceSetupRun,
 } from "../services/desktopServerClient";
-import { parseStageHistorySelection } from "../utils/agentStageHistory";
+import { CREATION_SELECTION, parseStageHistorySelection } from "../utils/agentStageHistory";
 import { isBlockerResolved } from "../utils/blockerResolution";
 import { isRemotePresentationTaskId } from "../utils/remoteTaskIdentity";
 import { invoke } from "../invoke";
@@ -33,6 +33,7 @@ import TaskPreviewCache from "./TaskPreviewCache.vue";
 import TaskHeader from "./TaskHeader.vue";
 import TerminalTabs from "./TerminalTabs.vue";
 import AgentHistoryView from "./AgentHistoryView.vue";
+import TaskCreationProgress from "./TaskCreationProgress.vue";
 import WorkspaceSetupLogView from "./WorkspaceSetupLogView.vue";
 import MainTabBar from "./MainTabBar.vue";
 import { usePaneTabDrag } from "../composables/usePaneTabDrag";
@@ -94,6 +95,13 @@ const TERMINAL_EDITOR_NOTICE_SETTING_KEY = "hideTerminalEditorNotice";
 const item = computed(() => props.uiSlot?.task ?? null);
 const selectedAttempt = ref("");
 const agentAttempts = ref<AgentTerminalAttempt[]>([]);
+const completedCreationTask = ref("");
+const creationComplete = computed(() => !props.cloudTask && !!completedCreationTask.value
+  && completedCreationTask.value === (props.uiSlot?.draft.creation_task_id || props.uiSlot?.task_id));
+function creationCompleted(status: string | null) {
+  completedCreationTask.value = status ? (props.uiSlot?.draft.creation_task_id || props.uiSlot?.task_id || "") : "";
+  if (status === "failed") selectedAttempt.value = CREATION_SELECTION;
+}
 const agentSetupRuns = ref<WorkspaceSetupRun[]>([]);
 const agentHistoryStatus = ref("");
 let attemptsRequest = 0;
@@ -206,6 +214,9 @@ onBeforeUnmount(() => workAreaObserver?.disconnect());
 const paneRects = computed(() => props.views?.tabs.panes.value ?? []);
 const narrowLayout = computed(() => isMobile || workAreaWidth.value < 800);
 const visiblePanes = computed(() => {
+  // A creating slot has no task tab scope yet. Show its progress instead of
+  // the previous repository's panes until the durable task is acknowledged.
+  if (props.uiSlot?.state === "creating") return [];
   const maximizedPaneId = props.views?.tabs.maximizedPaneId.value;
   if (maximizedPaneId) {
     const maximized = paneRects.value.find((rect) => rect.pane.id === maximizedPaneId);
@@ -221,7 +232,7 @@ const splitVisible = computed(() => visiblePanes.value.length > 1);
 function viewVisible(id: string) {
   return !props.views ? id === AGENT_TAB_ID : visiblePanes.value.some(rect => rect.pane.active === id);
 }
-const agentVisible = computed(() => viewVisible(AGENT_TAB_ID));
+const agentVisible = computed(() => props.uiSlot?.state === "creating" || viewVisible(AGENT_TAB_ID));
 // Pane geometry changes without reparenting content: moving an iframe in the
 // DOM reloads it, and remounting terminal views loses their local reading state.
 function tabStyle(id: string) {
@@ -798,7 +809,13 @@ watch(
       agentAttempts.value = [];
       agentSetupRuns.value = [];
       agentHistoryStatus.value = "";
-      selectedAttempt.value = "";
+      // A failed snapshot can arrive before the durable task is hydrated.
+      // Preserve its selection across that acknowledgement, not task/source switches.
+      const hydratingSelectedCreation = previous?.[0] === null
+        && taskId === completedCreationTask.value
+        && !props.cloudTask && !agentHistoryRemoteRoute.value
+        && selectedAttempt.value === CREATION_SELECTION;
+      if (!hydratingSelectedCreation) selectedAttempt.value = "";
     }
     if (taskId) {
       void loadAgentAttempts(taskId, sourceKey);
@@ -1020,6 +1037,7 @@ function dismissCommandHint() {
           @close-pane="views?.tabs.closePane(rect.pane.id)"
           :agent-attempts="item ? agentAttempts : undefined"
           :agent-setup-runs="agentSetupRuns"
+          :creation-output="creationComplete"
           :agent-history-status="agentHistoryStatus"
           :selected-attempt="selectedAttempt"
           :current-stage="item?.stage"
@@ -1088,6 +1106,14 @@ function dismissCommandHint() {
             </p>
           </div>
         </section>
+        <TaskCreationProgress
+          v-if="(uiSlot.draft.creation_task_id || uiSlot.task_id) && !cloudTask"
+          :task-id="uiSlot.draft.creation_task_id || uiSlot.task_id!"
+          :creating="uiSlot.state === 'creating'"
+          :error="uiSlot.draft.creation_error"
+          :selected="historySelection.kind === 'creation'"
+          @completed="creationCompleted"
+        />
         <AgentHistoryView
           ref="agentHistoryRef"
           v-if="selectedArchiveRunId && item"
@@ -1102,7 +1128,7 @@ function dismissCommandHint() {
           :task-id="agentHistoryBindingTaskId"
           :run-id="selectedSetupRunId"
         />
-        <div v-show="!selectedAttempt" class="agent-live-content">
+        <div v-show="!selectedAttempt && uiSlot.state !== 'creating'" class="agent-live-content">
         <CloudTerminalCache
           :active-terminal="activeCloudTerminal"
           :focused="agentTabActive && !selectedAttempt"
@@ -1110,7 +1136,7 @@ function dismissCommandHint() {
           :discard-key="discardedCloudTerminalKey"
         />
         <template v-if="uiSlot.state !== 'ready' || !item">
-          <div class="setup-placeholder">
+          <div v-if="!uiSlot.draft.creation_task_id" class="setup-placeholder">
             <p class="setup-title">{{ $t('mainPanel.taskSettingUp') }}</p>
           </div>
         </template>

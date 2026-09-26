@@ -296,7 +296,21 @@ pub(crate) async fn spawn_prepared_task_for_api_recording_stage_run_detailed(
     // stage after this one uses, rather than as a prefix inside the agent's
     // own shell command. The run row above already exists, so the stream is
     // bound to this stage's run whether setup succeeds or fails.
-    if let Err(error) = run_first_spawn_workspace_setup(db_path, &run_id, &mut prepared) {
+    let setup_db_path = db_path.to_string();
+    let setup_run_id = run_id.clone();
+    let (setup_prepared, setup_result) = tokio::task::spawn_blocking(move || {
+        let task_id = prepared.created_task.task_id.clone();
+        let result = crate::creation_progress::scoped(&task_id, || {
+            run_first_spawn_workspace_setup(&setup_db_path, &setup_run_id, &mut prepared)
+        });
+        (prepared, result)
+    })
+    .await
+    .map_err(|error| {
+        PreparedTaskDeliveryError::BeforeAcknowledgement(format!("setup worker failed: {error}"))
+    })?;
+    prepared = setup_prepared;
+    if let Err(error) = setup_result {
         // The run this recorded is running and its agent will never start, so
         // it is closed here for the same reason a rejected spawn is.
         let record_db_path = db_path.to_string();
@@ -314,6 +328,9 @@ pub(crate) async fn spawn_prepared_task_for_api_recording_stage_run_detailed(
         };
         return Err(PreparedTaskDeliveryError::BeforeAcknowledgement(error));
     }
+    crate::creation_progress::scoped(&prepared.created_task.task_id, || {
+        crate::creation_progress::phase("Starting agent")
+    });
     bind_terminal_launch(db_path, &run_id, &prepared.session)
         .map_err(PreparedTaskDeliveryError::BeforeAcknowledgement)?;
     let created = match spawn_prepared_task_classified(daemon, prepared.clone()).await {

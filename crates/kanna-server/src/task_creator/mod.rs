@@ -23,6 +23,7 @@ pub(crate) use work_tip::task_work_tip_for_transfer;
 mod workflow_edit;
 mod worktree;
 pub(crate) use definitions::WorkflowPlanContext;
+pub(crate) use worktree::generate_task_id;
 
 pub(crate) use workflow_edit::unknown_workflow_fields;
 
@@ -72,8 +73,8 @@ pub(crate) use types::{
     PreparedTaskSpawn, PreparedWorkspaceTeardown, SingletonAgentOverrides,
 };
 use worktree::{
-    create_worktree, fetch_start_point, generate_task_id, merge_branches_into_worktree,
-    remove_prepared_worktree, MergeBranchesError,
+    create_worktree, fetch_start_point, merge_branches_into_worktree, remove_prepared_worktree,
+    MergeBranchesError,
 };
 
 pub(crate) use commit_posts::{migrate_commit_posts_to_exit_commit, CommitPostMigration};

@@ -511,7 +511,7 @@ pub(super) fn undo_revisit_checkout(
     )))
 }
 
-pub(super) fn generate_task_id() -> Result<String, String> {
+pub(crate) fn generate_task_id() -> Result<String, String> {
     let mut bytes = [0u8; 4];
     File::open("/dev/urandom")
         .map_err(|e| format!("failed to open /dev/urandom: {}", e))?
@@ -548,10 +548,12 @@ pub(super) fn fetch_start_point(
     let branch = default_branch.unwrap_or("main");
     let remote_tracking_ref = format!("refs/remotes/origin/{branch}");
     let fetch_refspec = format!("+refs/heads/{branch}:{remote_tracking_ref}");
-    let fetch_output = Command::new("git")
-        .args(["fetch", "--no-tags", "--", "origin", &fetch_refspec])
-        .current_dir(repo_path)
-        .output();
+    let fetch_output = crate::creation_progress::command(
+        "Git fetch base branch",
+        Command::new("git")
+            .args(["fetch", "--no-tags", "--", "origin", &fetch_refspec])
+            .current_dir(repo_path),
+    );
 
     // The fetch above explicitly refreshes the remote-tracking ref. It may
     // fail when the repo is offline or has no origin; an already-fetched
@@ -613,11 +615,11 @@ pub(super) fn create_worktree(
                 "retrying git worktree add for {branch} after lock contention: {last_error}"
             );
         }
-        let output = Command::new("git")
-            .args(&args)
-            .current_dir(repo_path)
-            .output()
-            .map_err(|e| format!("failed to run git worktree add: {}", e))?;
+        let output = crate::creation_progress::command(
+            "Creating workspace / git worktree",
+            Command::new("git").args(&args).current_dir(repo_path),
+        )
+        .map_err(|e| format!("failed to run git worktree add: {}", e))?;
         if output.status.success() {
             last_error.clear();
             break;

@@ -19,7 +19,7 @@ export * from "./artifacts/types.js";
 // Custom Tasks
 export * from "./config/custom-tasks.js";
 
-// Agent models (UI picker + CLI contract source of truth)
+// Agent models (compatibility fallback for the server-owned runtime catalog)
 export * from "./agent-models.js";
 
 // Claude transcript layout (task transfer source + receiver share one slug rule)

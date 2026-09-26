@@ -23,6 +23,8 @@ import type { AgentTerminalAttempt, WorkspaceSetupRun } from "../services/deskto
  * two need distinct option values. Run ids are uuids and never carry this
  * prefix themselves.
  */
+export const CREATION_SELECTION = "creation:";
+
 const SETUP_SELECTION_PREFIX = "setup:";
 
 export type StageHistoryKind = "attempt" | "teardown" | "setup";
@@ -40,6 +42,7 @@ export interface StageHistoryItem {
 
 export type StageHistorySelection =
   | { kind: "latest" }
+  | { kind: "creation" }
   | { kind: "attempt"; runId: string }
   | { kind: "setup"; runId: string };
 
@@ -53,6 +56,7 @@ export function setupSelectionValue(runId: string): string {
  * not care which kind of session produced the frames.
  */
 export function parseStageHistorySelection(value: string): StageHistorySelection {
+  if (value === CREATION_SELECTION) return { kind: "creation" };
   if (!value) return { kind: "latest" };
   if (value.startsWith(SETUP_SELECTION_PREFIX)) {
     return { kind: "setup", runId: value.slice(SETUP_SELECTION_PREFIX.length) };

@@ -6,21 +6,18 @@ Rust bindings and safe API for [libghostty-vt](https://ghostty.org), the virtual
 
 - `crates/libghostty-vt-sys` — raw FFI bindings generated from `ghostty/vt.h`
 - `crates/libghostty-vt` — safe Rust wrappers (Terminal, RenderState, KeyEncoder, MouseEncoder, etc.)
+- `example/grid_ref_tracked_rs` — focused example of tracked grid references following cells through scrollback and reset
 - `example/ghostling_rs` — Rust port of [ghostling](https://github.com/ghostty-org/ghostling), a minimal terminal emulator using [macroquad](https://macroquad.rs)
 
 ## Quick Start
 
 ```rust
-use libghostty_vt::{Terminal, TerminalOptions, RenderState};
+use libghostty_vt::{Terminal, RenderState};
 use libghostty_vt::render::{RowIterator, CellIterator};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create a terminal with 80 columns, 24 rows, and scrollback.
-    let mut terminal = Terminal::new(TerminalOptions {
-        cols: 80,
-        rows: 24,
-        max_scrollback: 10_000,
-    })?;
+    // Create a terminal with 80 columns and 24 rows.
+    let mut terminal = Terminal::new(80, 24)?;
 
     // Register an effect handler for PTY write-back (e.g. query responses).
     terminal.on_pty_write(|_term, data| {
@@ -54,7 +51,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Building
 
-Requires [Zig](https://ziglang.org/) 0.15.x on PATH. The ghostty source is fetched automatically at build time from the pinned `jemdiggity/ghostty` commit in `build.rs`. Set `GHOSTTY_SOURCE_DIR` to use a local checkout instead.
+Requires [Zig](https://ziglang.org/) 0.16.x on PATH. By default, the ghostty
+source is fetched automatically at build time from the pinned
+`jemdiggity/ghostty` commit in `build.rs`. Set `GHOSTTY_SOURCE_DIR` to make the build use a local Ghostty
+checkout instead. Package managers that need network-free builds can also set
+`GHOSTTY_ZIG_SYSTEM_DIR` to a pre-fetched Zig package directory; this is passed
+to `zig build --system` so Zig does not download package dependencies during
+the Cargo build script.
+
+Vendored builds derive Zig's optimize mode from Cargo's profile: dev builds use
+`Debug`, size-optimized builds use `ReleaseSmall`, and other release builds use
+`ReleaseFast`. Set `LIBGHOSTTY_VT_SYS_OPTIMIZE` to `Debug`, `ReleaseSafe`,
+`ReleaseFast`, or `ReleaseSmall` to override that choice explicitly.
+
+Vendored builds target Zig's portable `baseline` CPU so published binaries can
+run on older processors. For a binary that will run on the build machine, set
+`LIBGHOSTTY_VT_SYS_CPU=native`; a named Zig CPU model such as `x86_64_v3` can be
+used when all deployment machines support that target.
+
+The `pkg-config` path is opt-in. If you enable `libghostty-vt-sys/pkg-config`,
+the build will prefer an installed `libghostty-vt` discovered through
+`pkg-config` when `GHOSTTY_SOURCE_DIR` is unset. libghostty-vt is pre-1.0, so
+the checked-in bindings are expected to move with the pinned Ghostty source and
+do not guarantee compatibility with arbitrary installed C API revisions. An
+explicit `GHOSTTY_SOURCE_DIR` always wins.
+
+Nix builds in this repository prefetch the pinned Ghostty source and Ghostty's
+Zig package dependencies up front, then set `GHOSTTY_SOURCE_DIR` and
+`GHOSTTY_ZIG_SYSTEM_DIR` for the Cargo build. Downstream Nix packaging should
+use the same contract rather than adding `git` or allowing network access in
+the sandbox.
+
+By default, `libghostty-vt` and `libghostty-vt-sys` link `libghostty-vt.a`.
+This statically links the Ghostty VT archive, but the final binary may still
+depend on platform runtime libraries. To link the shared library instead,
+enable `libghostty-vt/link-dynamic`.
 
 ```sh
 nix develop
@@ -63,14 +94,29 @@ cargo test -p libghostty-vt-sys
 cargo build -p ghostling_rs
 ```
 
-### Running the example
+### Miri Verification
+
+Run the Rust-owned soundness checks with:
 
 ```sh
-# Linux
-LD_LIBRARY_PATH=$(dirname $(find target/debug/build/libghostty-vt-sys-*/out -name "libghostty-vt*" | head -1)) \
-  cargo run -p ghostling_rs
-
-# macOS
-DYLD_LIBRARY_PATH=$(dirname $(find target/debug/build/libghostty-vt-sys-*/out -name "libghostty-vt*" | head -1)) \
-  cargo run -p ghostling_rs
+nix run .#miri
 ```
+
+The command supplies its own nightly Miri toolchain and checks both binding and
+wrapper crates. These checks intentionally stay on Rust-owned unsafe seams such
+as string, slice, and allocator plumbing. They do not execute the native
+Ghostty FFI backend.
+
+Use `nix develop .#miri` when working interactively with the same toolchain.
+
+### Running the example
+
+Run the examples by entering the folder, and run:
+
+```sh
+cargo run
+```
+
+When building with `link-dynamic`, set `LD_LIBRARY_PATH` on Linux or
+`DYLD_LIBRARY_PATH` on macOS to the directory containing the generated
+`libghostty-vt` shared library.

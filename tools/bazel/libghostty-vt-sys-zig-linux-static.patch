@@ -1,57 +1,34 @@
 --- a/build.rs
 +++ b/build.rs
-@@ -28,6 +28,15 @@
-     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR must be set"));
-     let target = env::var("TARGET").expect("TARGET must be set");
-     let host = env::var("HOST").expect("HOST must be set");
-+    if target.contains("linux") {
-+        for (key, suffix) in [("HOME", "home"), ("XDG_CACHE_HOME", "xdg-cache"),
-+            ("ZIG_GLOBAL_CACHE_DIR", "zig-cache/global"), ("ZIG_LOCAL_CACHE_DIR", "zig-cache/local")] {
-+            let dir = out_dir.join(suffix);
-+            fs::create_dir_all(&dir).expect("create private Zig cache");
-+            // Required on native Linux too: annotations do not expand OUT_DIR.
-+            unsafe { env::set_var(key, dir); }
-+        }
-+    }
- 
-     // Locate ghostty source: env override > fetch into OUT_DIR.
-     let ghostty_dir = match env::var("GHOSTTY_SOURCE_DIR") {
-@@ -59,7 +59,7 @@
- 
-     // Only pass -Dtarget when cross-compiling. For native builds, let zig
-     // auto-detect the host (matches how ghostty's own CMakeLists.txt works).
--    if target != host {
-+    if target != host || target.contains("linux") {
-         let zig_target = zig_target(&target);
+@@ -242,13 +242,26 @@
+     // Pass -Dtarget only for non-iOS cross targets; native builds let zig
+     // auto-detect the host. iOS builds run host-native inside the xcframework
+     // emit, so they must not pass -Dtarget or a global --sysroot.
+-    if target != host && ios_platform.is_none() {
++    // Linux builds always name a target so glibc stays at the sysroot's 2.39.
++    if (target != host || target.contains("linux")) && ios_platform.is_none() {
+         let zig_target = zig_target(target);
          build.arg(format!("-Dtarget={zig_target}"));
      }
-@@ -106,6 +106,25 @@
-     if target.contains("darwin") {
-         println!("cargo:rustc-link-lib=c++");
-     }
+ 
+     run(build, "zig build");
+ 
 +    if target.contains("linux") {
-+        // The shared Zig action builds these archives from the pinned SDK in
-+        // this action's private cache. Never resolve a host C++ installation.
-+        let cache = PathBuf::from(env::var("ZIG_GLOBAL_CACHE_DIR").expect("declared Zig cache"));
-+        for name in ["c++", "c++abi"] {
-+            let archive = find_file_recursive(&cache, &format!("lib{name}.a"))
-+                .unwrap_or_else(|| panic!("Zig did not build lib{name}.a"));
-+            fs::copy(&archive, lib_dir.join(format!("lib{name}.a"))).expect("stage Zig C++ archive");
-+            println!("cargo:rustc-link-lib=static={name}");
-+        }
-+        // Only static outputs are consumed. Shared aliases confuse the Rust
++        // Only the static archive is consumed. Shared aliases confuse the Rust
 +        // build-script output symlink action and are never packaged.
-+        for entry in fs::read_dir(&lib_dir).expect("Ghostty install lib") {
++        let lib_dir = install_prefix.join("lib");
++        for entry in std::fs::read_dir(&lib_dir).expect("Ghostty install lib") {
 +            let path = entry.expect("Ghostty output").path();
 +            if path.file_name().unwrap().to_string_lossy().contains(".so") {
-+                fs::remove_file(path).expect("remove unused shared Ghostty output");
++                std::fs::remove_file(path).expect("remove unused shared Ghostty output");
 +            }
 +        }
 +    }
-     println!("cargo:include={}", include_dir.display());
- }
- 
-@@ -213,9 +232,9 @@
++
+     // The emit also installs host-native flat artifacts; replace them with the
+     // iOS library so the link emission below picks up the right arch.
+     if let Some(platform) = ios_platform {
+@@ -567,9 +580,9 @@
  
  fn zig_target(target: &str) -> String {
      let value = match target {

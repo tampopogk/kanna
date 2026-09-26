@@ -70,6 +70,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn creation_progress_is_readable_before_task_row_and_after_failure() {
+        let app = crate::http_api::test_support::test_router_with_seed(
+            "creation-live",
+            "creation-live",
+            seed,
+        );
+        let id = "deadbeef";
+        crate::creation_progress::begin(id);
+        crate::creation_progress::scoped(id, || {
+            crate::creation_progress::phase("Running workspace setup");
+            crate::creation_progress::output("FIRST\n");
+        });
+        for failed in [false, true] {
+            if failed {
+                crate::creation_progress::finish(id, Some("CONTROLLED_FAILURE exit 23"));
+            }
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/v1/tasks/deadbeef/creation-progress")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let snapshot: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                snapshot["status"],
+                if failed { "failed" } else { "running" }
+            );
+            assert!(snapshot["output"].as_str().unwrap().contains("FIRST"));
+            if failed {
+                assert_eq!(snapshot["error"], "CONTROLLED_FAILURE exit 23");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn setup_log_routes_serve_the_record_and_scope_it_to_its_task() {
         let app =
             crate::http_api::test_support::test_router_with_seed("setup-logs", "setup-logs", seed);
@@ -115,4 +158,12 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(read, "null");
     }
+}
+
+/// Available before the task row exists, under the same privileged access as setup logs.
+pub(super) async fn creation(
+    _access: PrivilegedTaskAccess,
+    Path(task): Path<String>,
+) -> Json<Option<crate::creation_progress::Snapshot>> {
+    Json(crate::creation_progress::read(&task))
 }

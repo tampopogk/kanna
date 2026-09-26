@@ -1,13 +1,14 @@
 import type { AgentProvider } from "@kanna/agent-protocol";
 
 /**
- * Models offered by the agent UI's model picker, per provider.
+ * Compatibility fallback for the agent UI's model picker.
  *
  * These ids are passed verbatim to the provider CLI (`--model` for Claude's
- * stream-json `set_model`, `-m` for `codex exec`). They are the source of truth
- * for both the desktop dropdown and the real CLI contract tests. New releases
- * can be verified without inference using native CLI metadata; see
- * docs/2026-09-22-harness-model-options.md for identifiers and effort support.
+ * stream-json `set_model`, `-m` for `codex exec`). The running server's
+ * hot-loadable agent catalog is authoritative; this list keeps the picker
+ * useful while connected to an older or temporarily unavailable server.
+ * New releases can be verified without inference using native CLI metadata;
+ * see docs/2026-09-22-harness-model-options.md for identifiers and effort support.
  */
 export interface AgentModelOption {
   /** Model id passed to the CLI. */

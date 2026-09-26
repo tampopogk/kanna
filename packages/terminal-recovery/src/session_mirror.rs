@@ -1,11 +1,11 @@
 use ghostty_xterm_compat_serialize::serialize_terminal;
-use libghostty_vt::{Terminal, TerminalOptions};
+use libghostty_vt::Terminal;
 
 use crate::protocol::RecoverySnapshot;
 
 const SCROLLBACK_LIMIT: usize = 10_000;
-// Ghostty's C API names this "max_scrollback", but it is a byte budget, not a
-// row count. Budget against the full grid so 10K logical rows survive snapshot.
+// Ghostty's scrollback limit is a byte budget, not a row count. Budget against
+// the full grid so 10K logical rows survive snapshot.
 const GHOSTTY_SCROLLBACK_BYTES_PER_CELL: usize = 20;
 
 pub struct SessionMirror {
@@ -18,12 +18,11 @@ pub struct SessionMirror {
 
 impl SessionMirror {
     pub fn new(session_id: impl Into<String>, cols: u16, rows: u16) -> Result<Self, String> {
-        let terminal = Terminal::new(TerminalOptions {
-            cols,
-            rows,
-            max_scrollback: scrollback_byte_limit(cols, rows, SCROLLBACK_LIMIT),
-        })
-        .map_err(|error| format!("failed to create terminal mirror: {}", error))?;
+        let mut terminal = Terminal::new(cols, rows)
+            .map_err(|error| format!("failed to create terminal mirror: {}", error))?;
+        terminal
+            .set_scrollback_max_bytes(Some(scrollback_byte_limit(cols, rows, SCROLLBACK_LIMIT)))
+            .map_err(|error| format!("failed to create terminal mirror: {}", error))?;
 
         Ok(Self {
             session_id: session_id.into(),

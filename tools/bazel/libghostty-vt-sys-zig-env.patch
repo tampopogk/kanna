@@ -1,83 +1,42 @@
 --- a/build.rs
 +++ b/build.rs
-@@ -19,6 +19,9 @@
-     println!("cargo:rerun-if-env-changed=GHOSTTY_SOURCE_DIR");
-     println!("cargo:rerun-if-env-changed=TARGET");
-     println!("cargo:rerun-if-env-changed=HOST");
-+    println!("cargo:rerun-if-env-changed=DEBUG");
-+    println!("cargo:rerun-if-env-changed=OPT_LEVEL");
-+    println!("cargo:rerun-if-env-changed=PROFILE");
-     println!("cargo:rerun-if-changed=build.rs");
- 
-     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR must be set"));
-@@ -42,10 +45,14 @@
-     // Build libghostty-vt via zig.
-     let install_prefix = out_dir.join("ghostty-install");
+@@ -175,7 +175,23 @@
+         );
+     }
  
 -    let mut build = Command::new("zig");
-+    let zig = env::var("ZIG").unwrap_or_else(|_| "zig".to_string());
++    let zig = env::var("ZIG").unwrap_or_else(|_| "zig".to_owned());
 +    println!("cargo:rerun-if-env-changed=ZIG");
 +
 +    let mut build = Command::new(zig);
++    // Bazel annotations cannot expand OUT_DIR, so give Zig private caches
++    // under the real one instead of the sandbox's HOME.
++    for (key, suffix) in [
++        ("HOME", "home"),
++        ("XDG_CACHE_HOME", "xdg-cache"),
++        ("ZIG_GLOBAL_CACHE_DIR", "zig-cache/global"),
++        ("ZIG_LOCAL_CACHE_DIR", "zig-cache/local"),
++    ] {
++        let dir = out_dir.join(suffix);
++        std::fs::create_dir_all(&dir)
++            .unwrap_or_else(|error| panic!("failed to create {}: {error}", dir.display()));
++        build.env(key, dir);
++    }
      build
          .arg("build")
-         .arg("-Demit-lib-vt")
-+        .arg(format!("-Doptimize={}", zig_optimize_mode()))
-         .arg("--prefix")
-         .arg(&install_prefix)
-         .current_dir(&ghostty_dir);
-@@ -60,7 +67,8 @@
-     run(build, "zig build");
+         .arg("-Demit-lib-vt=true")
+@@ -240,7 +256,13 @@
+     }
  
      let lib_dir = install_prefix.join("lib");
 -    let include_dir = install_prefix.join("include");
-+    let installed_include_dir = install_prefix.join("include");
-+    let source_include_dir = ghostty_dir.join("include");
- 
-     let lib_name = if target.contains("windows") {
-         "ghostty-vt-static.lib"
-@@ -73,11 +81,17 @@
-         "expected static library at {}",
-         lib_dir.join(lib_name).display()
-     );
--    assert!(
--        include_dir.join("ghostty").join("vt.h").exists(),
--        "expected header at {}",
--        include_dir.join("ghostty").join("vt.h").display()
--    );
-+    let include_dir = if installed_include_dir.join("ghostty").join("vt.h").exists() {
-+        installed_include_dir
++    // Zig's directory install skips symlinks, which is every source file in a
++    // Bazel sandbox, so fall back to Ghostty's own public headers.
++    let include_dir = if install_prefix.join("include/ghostty/vt.h").exists() {
++        install_prefix.join("include")
 +    } else {
-+        assert!(
-+            source_include_dir.join("ghostty").join("vt.h").exists(),
-+            "expected header at {} or {}",
-+            installed_include_dir.join("ghostty").join("vt.h").display(),
-+            source_include_dir.join("ghostty").join("vt.h").display()
-+        );
-+        source_include_dir
++        ghostty_dir.join("include")
 +    };
- 
-     println!("cargo:rustc-link-search=native={}", lib_dir.display());
-     println!("cargo:rustc-link-lib=static=ghostty-vt");
-@@ -93,6 +107,21 @@
-         println!("cargo:rustc-link-lib=c++");
-     }
-     println!("cargo:include={}", include_dir.display());
-+}
-+
-+fn zig_optimize_mode() -> &'static str {
-+    if env::var("DEBUG")
-+        .ok()
-+        .is_some_and(|value| value.eq_ignore_ascii_case("true"))
-+    {
-+        return "Debug";
-+    }
-+
-+    match env::var("OPT_LEVEL").as_deref() {
-+        Ok("0") => "Debug",
-+        Ok(_) => "ReleaseFast",
-+        Err(_) => "ReleaseFast",
-+    }
- }
- 
- fn find_companion_static_libs(ghostty_dir: &Path) -> Vec<PathBuf> {
+     let search_dirs = library_search_dirs(target, &install_prefix);
+     if ios_platform.is_none() {
+         warn_unused_xcframework(&lib_dir);

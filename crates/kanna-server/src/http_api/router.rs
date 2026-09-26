@@ -101,9 +101,14 @@ use std::sync::Arc;
 use tower::ServiceExt;
 use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 
+async fn agent_catalog() -> axum::Json<crate::agent_catalog::AgentCatalog> {
+    axum::Json(crate::agent_catalog::load())
+}
+
 pub fn router(state: Arc<AppState>) -> Router {
     let router = Router::new()
         .route("/v1/status", get(status))
+        .route("/v1/agent-catalog", get(agent_catalog))
         .route("/v1/machine-stats", get(machine_stats))
         .route("/v1/snapshot", get(get_snapshot))
         .route("/v1/backup", post(create_backup))
@@ -327,6 +332,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/tasks/{task_id}/terminal-attempts/{run_id}",
             get(super::terminal_archives::read),
+        )
+        .route(
+            "/v1/tasks/{task_id}/creation-progress",
+            get(super::workspace_setup_logs::creation),
         )
         .route(
             "/v1/tasks/{task_id}/setup-logs",

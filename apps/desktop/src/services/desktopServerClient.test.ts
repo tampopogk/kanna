@@ -20,6 +20,7 @@ import {
   setDesktopTaskWorkflow,
   replaceDesktopTaskWorkflow,
   fetchDesktopCopilotModels,
+  fetchDesktopAgentCatalog,
   fetchDesktopOpenCodeModels,
   ensureDesktopReady,
   approveIncomingTaskTransfer,
@@ -90,6 +91,18 @@ describe("desktopServerClient", () => {
       method: "POST", headers: JSON_REQUEST_HEADERS,
       body: JSON.stringify({ expectedDefinition: before, workflowDefinition: after, source: "operator" }),
     });
+  });
+
+  it("loads the hot agent catalog from the local server", async () => {
+    const catalog = { version: 1, harnesses: {}, source: "override" };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(catalog), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await fetchDesktopAgentCatalog()).toEqual(catalog);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:48121/v1/agent-catalog",
+      expect.objectContaining({ method: "GET", headers: LOCAL_CREDENTIAL_HEADERS }),
+    );
   });
 
   beforeEach(() => {
@@ -261,6 +274,14 @@ describe("desktopServerClient", () => {
    * duplicate-transfer work briefly did) turns that transient conflict into an
    * immediate throw and loses the task.
    */
+  it("does not replay an answered setup failure when creation has a requested ID", async () => {
+    const fetchMock = vi.fn(async () => new Response("workspace setup failed: CONTROLLED_FAILURE exit 23", { status: 500 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(createDesktopTask({ repoId: "repo-1", prompt: "Ship it", requestedTaskId: "a9360002" }))
+      .rejects.toThrow("CONTROLLED_FAILURE exit 23");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("retries a requested task creation that is already in flight instead of failing on its 409", async () => {
     const response = {
       taskId: "task-requested",

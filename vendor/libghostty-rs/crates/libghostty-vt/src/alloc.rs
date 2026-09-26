@@ -17,7 +17,7 @@ use crate::{
 
 /// A custom allocator that libghostty uses for its memory allocations.
 ///
-/// The allocator may depend on some external state `Ctx` for the
+/// The allocator may depend on some external state for the
 /// duration of lifetime `'ctx`. This is useful for adapting external,
 /// stateful allocators that may not have a `'static` lifetime.
 ///
@@ -25,14 +25,20 @@ use crate::{
 /// lifetime is Rust's own default allocator, which can also be used
 /// within libghostty as [`Allocator::GLOBAL`].
 #[derive(Debug)]
-pub struct Allocator<'ctx, Ctx: 'ctx = ()> {
+pub struct Allocator<'ctx> {
     pub(crate) inner: ffi::Allocator,
-    _phan: PhantomData<&'ctx Ctx>,
+    _phan: PhantomData<&'ctx ()>,
 }
 
-impl<Ctx> Allocator<'_, Ctx> {
+impl Allocator<'_> {
     pub(crate) fn to_raw(&self) -> *const ffi::Allocator {
         std::ptr::from_ref(&self.inner)
+    }
+    pub(crate) unsafe fn from_raw(raw: *const ffi::Allocator) -> Self {
+        Self {
+            inner: unsafe { *raw },
+            _phan: PhantomData,
+        }
     }
 }
 
@@ -45,6 +51,26 @@ pub(crate) struct Object<'alloc, T> {
 }
 
 impl<T> Object<'_, T> {
+    pub(crate) fn new(raw: *mut T) -> Result<Self> {
+        let ptr = NonNull::new(raw).ok_or(Error::OutOfMemory)?;
+        Ok(Self {
+            ptr,
+            _phan: PhantomData,
+        })
+    }
+    pub(crate) fn as_raw(&self) -> *mut T {
+        self.ptr.as_ptr()
+    }
+}
+
+/// Borrowed version of `Object`.
+#[derive(Debug)]
+pub(crate) struct Ref<'a, T> {
+    pub(crate) ptr: NonNull<T>,
+    _phan: PhantomData<&'a ()>,
+}
+
+impl<T> Ref<'_, T> {
     pub(crate) fn new(raw: *mut T) -> Result<Self> {
         let ptr = NonNull::new(raw).ok_or(Error::OutOfMemory)?;
         Ok(Self {
@@ -77,8 +103,8 @@ impl<'alloc> Bytes<'alloc> {
     /// Allocate `len` bytes with a custom allocator.
     ///
     /// Not really useful except in very niche cases.
-    pub fn new_with_alloc<'ctx: 'alloc, Ctx>(
-        alloc: &'alloc Allocator<'ctx, Ctx>,
+    pub fn new_with_alloc<'ctx: 'alloc>(
+        alloc: &'alloc Allocator<'ctx>,
         len: usize,
     ) -> Result<Self> {
         // SAFETY: Borrow checking should forbid invalid allocators
@@ -227,7 +253,7 @@ unsafe extern "C" fn _global_remap(
 
 /// Adapt a Rust Allocator into a libghostty Allocator.
 #[cfg(feature = "allocator_api")]
-impl<'ctx, A: alloc::Allocator + 'ctx> From<A> for Allocator<'ctx, A> {
+impl<'ctx, A: alloc::Allocator + 'ctx> From<A> for Allocator<'ctx> {
     fn from(value: A) -> Self {
         Self {
             inner: ffi::Allocator {
@@ -339,4 +365,78 @@ unsafe extern "C" fn _remap<A: alloc::Allocator>(
 #[cfg(feature = "allocator_api")]
 unsafe fn get_allocator<'a, A: alloc::Allocator>(ptr: *mut c_void) -> Option<&'a A> {
     unsafe { ptr.cast::<A>().as_ref() }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ptr::NonNull;
+
+    use super::{_global_alloc, _global_free, _global_remap};
+
+    // These tests stay entirely within Rust-owned allocator callbacks so Miri can
+    // validate the pointer and initialization flow without executing Ghostty.
+
+    #[test]
+    fn global_allocator_respects_requested_alignment() {
+        let len = 16usize;
+        let alignment_log2 = 4u8;
+        let expected_alignment = 1usize << alignment_log2;
+
+        let raw = unsafe { _global_alloc(std::ptr::null_mut(), len, alignment_log2, 0) };
+        let mem = NonNull::new(raw.cast::<u8>()).expect("global allocator returned null");
+
+        assert_eq!((mem.as_ptr() as usize) % expected_alignment, 0);
+
+        unsafe {
+            _global_free(
+                std::ptr::null_mut(),
+                mem.as_ptr().cast(),
+                len,
+                alignment_log2,
+                0,
+            )
+        };
+    }
+
+    #[test]
+    fn global_allocator_round_trip_preserves_written_bytes() {
+        let initial_len = 16usize;
+        let new_len = 32usize;
+        let alignment_log2 = 3u8;
+
+        let raw = unsafe { _global_alloc(std::ptr::null_mut(), initial_len, alignment_log2, 0) };
+        let mem = NonNull::new(raw.cast::<u8>()).expect("global allocator returned null");
+
+        let initial = unsafe { std::slice::from_raw_parts_mut(mem.as_ptr(), initial_len) };
+        for (index, byte) in initial.iter_mut().enumerate() {
+            *byte = index as u8;
+        }
+
+        let raw = unsafe {
+            _global_remap(
+                std::ptr::null_mut(),
+                mem.as_ptr().cast(),
+                initial_len,
+                alignment_log2,
+                new_len,
+                0,
+            )
+        };
+        let mem = NonNull::new(raw.cast::<u8>()).expect("global remap returned null");
+
+        let grown = unsafe { std::slice::from_raw_parts(mem.as_ptr(), new_len) };
+        for (index, byte) in grown[..initial_len].iter().copied().enumerate() {
+            assert_eq!(byte, index as u8);
+        }
+
+        unsafe {
+            _global_free(
+                std::ptr::null_mut(),
+                mem.as_ptr().cast(),
+                new_len,
+                alignment_log2,
+                0,
+            )
+        };
+    }
 }

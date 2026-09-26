@@ -385,6 +385,10 @@ pub(super) fn run_workspace_setup_commands_captured(
     if setup_cmds.is_empty() {
         return Ok(None);
     }
+    crate::creation_progress::phase(&format!(
+        "Running workspace setup\n{}",
+        setup_cmds.join("\n")
+    ));
     let started = std::time::Instant::now();
     let command = workspace_setup_shell_command(setup_cmds, env);
     let outcome = crate::workspace_commands::run_workspace_command_captured(
@@ -403,6 +407,10 @@ pub(super) fn run_workspace_setup_commands_captured_with_armed_timeout(
     env: &HashMap<String, String>,
     armed_timeout: &std::sync::atomic::AtomicBool,
 ) -> Result<Option<WorkspaceSetupRunResult>, String> {
+    crate::creation_progress::phase(&format!(
+        "Running workspace setup\n{}",
+        setup_cmds.join("\n")
+    ));
     let started = std::time::Instant::now();
     let command = workspace_setup_shell_command(setup_cmds, env);
     let outcome = crate::workspace_commands::run_workspace_command_with_armed_timeout_for_test(

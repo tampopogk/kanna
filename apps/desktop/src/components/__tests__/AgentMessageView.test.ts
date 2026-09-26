@@ -52,6 +52,11 @@ vi.mock("../../composables/useSlashCommands", () => ({
   }),
 }));
 
+vi.mock("../../services/desktopServerClient", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../services/desktopServerClient")>(),
+  fetchDesktopAgentCatalog: () => Promise.reject(new Error("catalog unavailable in component fixture")),
+}));
+
 describe("AgentMessageView", () => {
   beforeEach(() => {
     setActivePinia(createPinia());

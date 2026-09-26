@@ -1,4 +1,5 @@
 mod account_boundary;
+mod agent_catalog;
 mod agent_inventory;
 mod artifacts;
 mod bonjour;
@@ -8,6 +9,7 @@ mod cloud_transfer_proxy;
 mod commands;
 mod config;
 mod copilot_models;
+mod creation_progress;
 mod daemon_client;
 mod db;
 mod forge_pull_requests;
