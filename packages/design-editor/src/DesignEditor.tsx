@@ -79,32 +79,27 @@ function CommentToolbarButton({ onComment, labels }: { onComment: () => void; la
 }
 
 /**
- * The live design document (docs/specs/app-design.md §4): BlockNote on the
- * session's Yjs document, in the one shared schema, with the person's comment
- * threads served by kanna-server. Mount it only after the session's first
- * sync, so BlockNote never writes an initial block of its own into a
- * document the server already has.
+ * BlockNote on a design session: the one schema, collaboration on the
+ * session's Yjs document, and comments served by kanna-server. Shared by the
+ * desktop editor and the phone's view, so both render the same document the
+ * same way.
  */
-export function DesignEditor(props: DesignEditorProps): ReactElement {
-  const { session, theme, editable } = props;
-  const labels = props.labels ?? ENGLISH_LABELS;
-  const container = useRef<HTMLDivElement>(null);
-  const sending = useRef(false);
-  const notice = useRef(props.onNotice);
-  notice.current = props.onNotice;
-
-  const editableRef = useRef(editable);
-  editableRef.current = editable;
+export function useDesignBlockNote(
+  session: DesignSession,
+  labels: DesignEditorLabels,
+  handlers: { canWrite: () => boolean; onError: (error: unknown) => void },
+) {
+  const handlerRef = useRef(handlers);
+  handlerRef.current = handlers;
   const threadStore = useMemo(
     () =>
       new KannaThreadStore(session, {
-        canWrite: () => editableRef.current,
-        onError: () => notice.current?.(labels.commentFailed, "error"),
+        canWrite: () => handlerRef.current.canWrite(),
+        onError: (error) => handlerRef.current.onError(error),
       }),
     [session],
   );
   useEffect(() => () => threadStore.destroy(), [threadStore]);
-
   const editor = useCreateBlockNote(
     withCollaboration({
       schema: designSchema,
@@ -127,6 +122,31 @@ export function DesignEditor(props: DesignEditorProps): ReactElement {
     }),
     [session, threadStore],
   );
+  return { editor, threadStore };
+}
+
+/**
+ * The live design document (docs/specs/app-design.md §4): BlockNote on the
+ * session's Yjs document, in the one shared schema, with the person's comment
+ * threads served by kanna-server. Mount it only after the session's first
+ * sync, so BlockNote never writes an initial block of its own into a
+ * document the server already has.
+ */
+export function DesignEditor(props: DesignEditorProps): ReactElement {
+  const { session, theme, editable } = props;
+  const labels = props.labels ?? ENGLISH_LABELS;
+  const container = useRef<HTMLDivElement>(null);
+  const sending = useRef(false);
+  const notice = useRef(props.onNotice);
+  notice.current = props.onNotice;
+
+  const editableRef = useRef(editable);
+  editableRef.current = editable;
+  const { editor, threadStore } = useDesignBlockNote(session, labels, {
+    canWrite: () => editableRef.current,
+    onError: () => notice.current?.(labels.commentFailed, "error"),
+  });
+  void threadStore;
 
   const comments = () => editor.getExtension(CommentsExtension);
   const startComment = () => comments()?.startPendingComment();

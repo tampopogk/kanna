@@ -7,7 +7,8 @@
   "scripts": {
     "test": "vitest run --maxWorkers=2",
     "typecheck": "tsc --noEmit",
-    "fixtures": "tsx scripts/generate-fixtures.ts"
+    "fixtures": "tsx scripts/generate-fixtures.ts",
+    "build:phone": "tsx scripts/build-phone-assets.ts"
   },
   "dependencies": {
     "@blocknote/core": "0.55.0",
@@ -31,6 +32,7 @@
     "jsdom": "^27.0.0",
     "tsx": "^4.21.0",
     "typescript": "^5",
+    "vite": "^6.4.2",
     "vitest": "^4.1.4"
   }
 }

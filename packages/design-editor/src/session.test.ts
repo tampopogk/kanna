@@ -131,8 +131,8 @@ async function until(check: () => boolean, label: string) {
 describe("DesignSession", () => {
   it("keeps two clients' concurrent edits and converges through the server", async () => {
     const server = new FakeServer();
-    const a = new DesignSession(server.transport(), { schemaVersion: SCHEMA, flushDelayMs: 5, wait: () => wait(5) });
-    const b = new DesignSession(server.transport(), { schemaVersion: SCHEMA, flushDelayMs: 5, wait: () => wait(5) });
+    const a = new DesignSession(server.transport(), { schemaVersion: SCHEMA, flushDelayMs: 5, wait: async () => { await wait(5); } });
+    const b = new DesignSession(server.transport(), { schemaVersion: SCHEMA, flushDelayMs: 5, wait: async () => { await wait(5); } });
     await a.start();
     await b.start();
     a.doc.getText("t").insert(0, "from a ");
@@ -151,7 +151,7 @@ describe("DesignSession", () => {
 
   it("keeps edits made while offline and sends them on reconnect", async () => {
     const server = new FakeServer();
-    const session = new DesignSession(server.transport(), { schemaVersion: SCHEMA, flushDelayMs: 5, wait: () => wait(5) });
+    const session = new DesignSession(server.transport(), { schemaVersion: SCHEMA, flushDelayMs: 5, wait: async () => { await wait(5); } });
     await session.start();
     server.down = true;
     session.doc.getText("t").insert(0, "typed offline");
@@ -167,7 +167,7 @@ describe("DesignSession", () => {
 
   it("stops editing when the server refuses its schema", async () => {
     const server = new FakeServer();
-    const session = new DesignSession(server.transport(), { schemaVersion: "older-schema", wait: () => wait(5) });
+    const session = new DesignSession(server.transport(), { schemaVersion: "older-schema", wait: async () => { await wait(5); } });
     await expect(session.start()).rejects.toThrow();
     expect(session.status).toBe("incompatible");
     session.close();
@@ -175,12 +175,12 @@ describe("DesignSession", () => {
 
   it("follows the feed and a read-only viewer never sends updates", async () => {
     const server = new FakeServer();
-    const viewer = new DesignSession(server.transport(), { schemaVersion: SCHEMA, readOnly: true, wait: () => wait(5) });
+    const viewer = new DesignSession(server.transport(), { schemaVersion: SCHEMA, readOnly: true, wait: async () => { await wait(5); } });
     await viewer.start();
     viewer.doc.getText("t").insert(0, "local only");
     await viewer.whenSaved();
     expect(server.doc.getText("t").toString()).toBe("");
-    const writer = new DesignSession(server.transport(), { schemaVersion: SCHEMA, wait: () => wait(5) });
+    const writer = new DesignSession(server.transport(), { schemaVersion: SCHEMA, wait: async () => { await wait(5); } });
     await writer.start();
     await writer.createThread({ threadId: "th-1", commentId: "cm-1", kind: "message", body: "hello" });
     await until(() => viewer.view?.threads.length === 1, "the viewer's feed");

@@ -50,6 +50,7 @@ import type {
   TaskPreviewOpenResult,
   TaskSummary
 } from "./types";
+import type { DesignOperation } from "./design";
 
 export type TaskTerminalInputKind = "draft" | "submission" | "control";
 /** Positive user intent is separate from how the daemon classifies the bytes. */
@@ -208,6 +209,12 @@ export interface KannaTransport {
    * authenticated path the transport uses (sealed request or legacy
    * headers). Absent on transports with no paired identity. */
   reportMobileBuild?(report: MobileBuildReport): Promise<void>;
+  /**
+   * One App Design operation for a task (docs/specs/app-design.md), as the
+   * phone's design page asks for it. Absent on a transport that cannot reach
+   * a design session.
+   */
+  requestDesign?(taskId: string, operation: DesignOperation): Promise<unknown>;
   listDesktops(): Promise<DesktopSummary[]>;
   listRepos(): Promise<RepoSummary[]>;
   startRepoCheckout?(
@@ -297,6 +304,12 @@ export interface KannaTransport {
 
 export interface KannaClient {
   reportMobileBuild?(report: MobileBuildReport): Promise<void>;
+  /**
+   * One App Design operation for a task (docs/specs/app-design.md), as the
+   * phone's design page asks for it. Absent on a transport that cannot reach
+   * a design session.
+   */
+  requestDesign?(taskId: string, operation: DesignOperation): Promise<unknown>;
   observeDesktopTaskSummaries?(
     desktopId: string,
     listener: (event: TaskSummaryStreamEvent) => void
@@ -430,7 +443,14 @@ export function createKannaClient(transport: KannaTransport): KannaClient {
   const reissuePushPairingCertificate = transport.reissuePushPairingCertificate;
   const reportMobileBuild = transport.reportMobileBuild;
   const resumeTask = transport.resumeTask;
+  const requestDesign = transport.requestDesign;
   return {
+    ...(requestDesign
+      ? {
+          requestDesign: (taskId: string, operation: DesignOperation) =>
+            requestDesign.call(transport, taskId, operation)
+        }
+      : {}),
     ...(transport.observeDesktopTaskSummaries
       ? {
           observeDesktopTaskSummaries: (desktopId: string, listener: (event: TaskSummaryStreamEvent) => void) =>

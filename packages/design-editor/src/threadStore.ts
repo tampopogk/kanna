@@ -180,25 +180,14 @@ export class KannaThreadStore extends ThreadStore {
     const pending = this.pending.get(options.threadId);
     if (!pending) return;
     this.pending.delete(options.threadId);
-    const tiptap = (options.editor as unknown as { _tiptapEditor: TiptapLike })._tiptapEditor;
     const from = Math.min(options.selection.from ?? options.selection.anchor ?? 0, options.selection.to ?? options.selection.head ?? 0);
     const to = Math.max(options.selection.from ?? options.selection.anchor ?? 0, options.selection.to ?? options.selection.head ?? 0);
-    const quotedText = tiptap.state.doc.textBetween(from, to, " ").trim();
-    const blockId = blockIdAt(options.editor, from);
-    tiptap.chain().setTextSelection({ from, to }).setMark("comment", { orphan: false, threadId: pending.id }).run();
     try {
-      await this.session.whenSaved();
-      await this.session.createThread({
+      await createAnchoredComment(this.session, options.editor, { from, to }, pending.body, {
         threadId: pending.id,
         commentId: pending.commentId,
-        kind: "comment",
-        body: pending.body,
-        anchor: { blockId: blockId ?? "", quotedText: quotedText || pending.body.slice(0, 80), stateVector: this.session.stateVector() },
       });
     } catch (error) {
-      // Not accepted: take the anchor back out so nothing claims feedback
-      // that the agent will never get.
-      tiptap.chain().setTextSelection({ from, to }).unsetMark("comment").run();
       this.handlers.onError?.(error);
       throw error;
     }
@@ -240,6 +229,40 @@ export class KannaThreadStore extends ThreadStore {
   async addReaction(): Promise<void> {}
 
   async deleteReaction(): Promise<void> {}
+}
+
+/**
+ * Comment on a range of the document: write the comment mark, wait until the
+ * server has acknowledged the document with the mark in it, then create the
+ * thread with the state vector that includes it. A refused thread takes its
+ * mark back out, so no text claims feedback the agent will never get. Ids are
+ * the caller's so a retry is the same thread on the server.
+ */
+export async function createAnchoredComment(
+  session: DesignSession,
+  editor: BlockNoteEditor<any, any, any>,
+  range: { from: number; to: number },
+  body: string,
+  ids: { threadId: string; commentId: string } = { threadId: newId("th"), commentId: newId("cm") },
+): Promise<void> {
+  const tiptap = (editor as unknown as { _tiptapEditor: TiptapLike })._tiptapEditor;
+  const { from, to } = range;
+  const quotedText = tiptap.state.doc.textBetween(from, to, " ").trim();
+  const blockId = blockIdAt(editor, from);
+  tiptap.chain().setTextSelection({ from, to }).setMark("comment", { orphan: false, threadId: ids.threadId }).run();
+  try {
+    await session.whenSaved();
+    await session.createThread({
+      threadId: ids.threadId,
+      commentId: ids.commentId,
+      kind: "comment",
+      body,
+      anchor: { blockId: blockId ?? "", quotedText: quotedText || body.slice(0, 80), stateVector: session.stateVector() },
+    });
+  } catch (error) {
+    tiptap.chain().setTextSelection({ from, to }).unsetMark("comment").run();
+    throw error;
+  }
 }
 
 interface TiptapLike {

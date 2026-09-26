@@ -1,3 +1,4 @@
+import { designRoute, designTaskPath, type DesignOperation } from "../api/design";
 import {
   readServerFailureBody,
   readServerRefusal,
@@ -494,6 +495,20 @@ export function createLanTransport(
     pushArtifact: (repoId: string, artifactId: string, binding?: ArtifactPushBinding) =>
       artifactPost(repoId, artifactId, "/push", binding),
     fetchArtifact: (repoId: string, artifactId: string) => artifactPost(repoId, artifactId, "/fetch"),
+    requestDesign: (taskId: string, operation: DesignOperation): Promise<unknown> => {
+      if (!authenticated) {
+        return Promise.reject(
+          new Error("App Design requires a paired device or an authenticated relay connection.")
+        );
+      }
+      const route = designRoute(operation);
+      return request(
+        designTaskPath(taskId, route),
+        route.body === null
+          ? { method: route.method }
+          : { method: route.method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(route.body) }
+      );
+    },
     readTaskDiff: (
       taskId: string,
       diffRequest?: TaskDiffRequest

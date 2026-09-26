@@ -1,0 +1,190 @@
+:root {
+  color-scheme: light;
+  --phone-bg: #ffffff;
+  --phone-fg: #1d1d1f;
+  --phone-muted: #6e6e73;
+  --phone-border: #e3e3e8;
+  --phone-card: #f6f6f8;
+  --phone-accent: #7b4ff0;
+  --phone-danger: #c0392b;
+  --phone-success: #2e8b57;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --phone-bg: #18181b;
+  --phone-fg: #ececf1;
+  --phone-muted: #9a9aa3;
+  --phone-border: #2e2e34;
+  --phone-card: #222228;
+  --phone-accent: #b58cf0;
+  --phone-danger: #ff6b5e;
+  --phone-success: #5fd394;
+}
+html,
+body {
+  margin: 0;
+  background: var(--phone-bg);
+  color: var(--phone-fg);
+  font: 16px/1.45 -apple-system, system-ui, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+.kanna-phone {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  padding-bottom: 96px;
+}
+.kanna-phone-status {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding: 6px 16px;
+  font-size: 12px;
+  color: var(--phone-muted);
+  background: var(--phone-bg);
+  border-bottom: 1px solid var(--phone-border);
+}
+.kanna-phone-status.status-offline,
+.kanna-phone-status.status-incompatible {
+  color: var(--phone-danger);
+}
+.kanna-phone-document {
+  padding: 12px 0;
+}
+.kanna-phone-document .bn-editor {
+  padding-inline: 16px;
+}
+.kanna-phone-comment-button {
+  position: fixed;
+  right: 16px;
+  bottom: 110px;
+  z-index: 10;
+  border: 0;
+  border-radius: 20px;
+  padding: 10px 16px;
+  font: inherit;
+  background: var(--phone-accent);
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+.kanna-phone-feed {
+  padding: 8px 16px 16px;
+  border-top: 1px solid var(--phone-border);
+}
+.kanna-phone-feed h2 {
+  font-size: 14px;
+  margin: 8px 0;
+}
+.kanna-phone-thread,
+.kanna-phone-pending {
+  background: var(--phone-card);
+  border: 1px solid var(--phone-border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 8px 0;
+}
+.kanna-phone-thread.resolved {
+  opacity: 0.7;
+}
+.kanna-phone-thread header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--phone-muted);
+  font-size: 13px;
+}
+.kanna-phone-number {
+  min-width: 20px;
+  height: 20px;
+  border-radius: 10px;
+  background: var(--phone-accent);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+}
+.kanna-phone-thread p {
+  margin: 6px 0;
+  white-space: pre-wrap;
+}
+.kanna-phone-thread small,
+.kanna-phone-pending small {
+  display: block;
+  color: var(--phone-muted);
+  font-size: 12px;
+}
+.delivery-uncertain,
+.kanna-phone-pending.failed small {
+  color: var(--phone-danger) !important;
+}
+.delivery-agent_replied,
+.delivery-delivered {
+  color: var(--phone-success) !important;
+}
+.kanna-phone-reply {
+  border-left: 2px solid var(--phone-accent);
+  padding-left: 8px;
+}
+.kanna-phone-thread footer {
+  display: flex;
+  gap: 16px;
+  justify-content: flex-end;
+}
+.kanna-phone-link {
+  border: 0;
+  background: none;
+  color: var(--phone-accent);
+  font: inherit;
+  font-size: 14px;
+  padding: 6px 0;
+}
+.kanna-phone-empty {
+  color: var(--phone-muted);
+  font-size: 14px;
+}
+.kanna-phone-composer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10;
+  background: var(--phone-bg);
+  border-top: 1px solid var(--phone-border);
+  padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+}
+.kanna-phone-composer-context {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--phone-muted);
+}
+.kanna-phone-composer-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+.kanna-phone-composer textarea {
+  flex: 1;
+  min-height: 38px;
+  max-height: 120px;
+  resize: none;
+  border: 1px solid var(--phone-border);
+  border-radius: 18px;
+  padding: 8px 12px;
+  font: inherit;
+  background: var(--phone-card);
+  color: var(--phone-fg);
+}
+.kanna-phone-composer button[type="submit"] {
+  border: 0;
+  border-radius: 18px;
+  padding: 9px 16px;
+  font: inherit;
+  background: var(--phone-accent);
+  color: #fff;
+}
+.kanna-phone-composer button[type="submit"]:disabled {
+  opacity: 0.5;
+}

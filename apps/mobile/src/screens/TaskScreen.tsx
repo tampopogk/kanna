@@ -11,11 +11,15 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useColorScheme,
   useWindowDimensions,
   View
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { MOBILE_E2E_IDS } from "../e2eTestIds";
+import type { DesignOperation } from "../lib/api/design";
+import { DesignDocumentView } from "./DesignDocumentView";
+import { designButtonLabel } from "./designPresentation";
 import { LoadingText } from "../components/LoadingText";
 import { displayTaskId } from "../lib/api/taskIdentity";
 import type {
@@ -34,6 +38,7 @@ import type {
   TaskSessionHistoryEntry,
   TaskStageDependency,
   TaskDependencyWait,
+  TaskDesignSummary,
   ArtifactDetail,
   ArtifactFileContent,
   ArtifactReference
@@ -143,6 +148,10 @@ interface TaskScreenProps {
   /** True when the current stage has no agent role and a person, not a
    * session, must decide (spec's roleless Gate stage, T3). */
   gateParked?: boolean | null;
+  /** App Design: present when the task's workflow has a design stage. */
+  design?: TaskDesignSummary | null;
+  /** Perform one App Design operation for this task (its design page's requests). */
+  onDesignRequest?(operation: DesignOperation): Promise<unknown>;
   desktopWorkspace?: boolean;
   blockerTasks?: readonly BlockerTaskRef[];
   e2eTaskSnapshotMarker?: string;
@@ -250,6 +259,8 @@ export function TaskScreen({
   stageDependencies = null,
   dependencyWait = null,
   gateParked = null,
+  design = null,
+  onDesignRequest,
   desktopWorkspace = false,
   blockerTasks = [],
   e2eTaskSnapshotMarker,
@@ -330,6 +341,8 @@ export function TaskScreen({
   const supersededDependencies = (stageDependencies ?? []).filter(
     (dependency) => dependency.supersededAt
   );
+  const [designOpen, setDesignOpen] = useState(false);
+  const colorScheme = useColorScheme();
   const [draftInput, setDraftInput] = useState("");
   // A transient transport reconnect does not invalidate the authoritative
   // snapshot already on screen. Keep the same xterm document mounted so the
@@ -1342,6 +1355,19 @@ export function TaskScreen({
                   Waiting for a person to decide
                 </Text>
               ) : null}
+              {design && onDesignRequest ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Open the design"
+                  onPress={() => setDesignOpen(true)}
+                  style={styles.designButton}
+                  testID="task-design-open"
+                >
+                  <Text style={styles.designButtonText}>
+                    {designButtonLabel(design)}
+                  </Text>
+                </Pressable>
+              ) : null}
               {dependencyWait ? (
                 <Text
                   accessible={false}
@@ -1858,6 +1884,15 @@ export function TaskScreen({
           }}
         />
       ) : null}
+      {design && onDesignRequest ? (
+        <DesignDocumentView
+          visible={designOpen}
+          title={task.title}
+          theme={colorScheme === "dark" ? "dark" : "light"}
+          onClose={() => setDesignOpen(false)}
+          onRequest={onDesignRequest}
+        />
+      ) : null}
       {previewModalTaskId === task.id ? (
         <TaskPreviewModal
           ports={previewPorts}
@@ -2202,6 +2237,19 @@ const styles = StyleSheet.create({
     color: "#9BB0CC",
     fontSize: 11,
     marginTop: 2
+  },
+  designButton: {
+    alignSelf: "flex-start",
+    marginTop: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    backgroundColor: "rgba(123, 79, 240, 0.14)"
+  },
+  designButtonText: {
+    fontSize: 13,
+    color: "#7b4ff0",
+    fontWeight: "600"
   },
   gateParked: {
     backgroundColor: "#3A2E12",
