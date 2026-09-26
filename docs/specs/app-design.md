@@ -9,10 +9,10 @@ decides that. Statements marked **Owner** were decided by the owner and are not
 open. **Prototype** marks behaviour that was built and used in the prototype.
 **Proposed** and **Open** are not decisions.
 
-It builds on the structured-workflows work (`tasks-sessions-structured-workflows.md`,
-pull request #1641, open against `main` on 2026-09-26): its `designed` workflow,
-`mockup` agent, artifact store, named exits and gate stages. Where the two differ,
-this spec says so.
+It builds on the structured-workflows work
+([`tasks-sessions-structured-workflows.md`](tasks-sessions-structured-workflows.md),
+merged in #1641 on 2026-09-26): its `designed` workflow, `mockup` agent, artifact
+store, named exits and gate stages. Where the two differ, this spec says so.
 
 ## 1. Why
 
