@@ -86,6 +86,11 @@ fn bundled_catalog_parses_and_declares_all_tools() {
             "kanna_record_artifact_decision",
             "kanna_push_artifact",
             "kanna_fetch_artifact",
+            "kanna_design_get",
+            "kanna_design_edit",
+            "kanna_design_reply",
+            "kanna_design_resolve",
+            "kanna_design_set_position",
         ]
     );
 }
@@ -995,6 +1000,53 @@ fn resolves_expected_requests_for_every_bundled_tool() {
             ResponseKind::Json,
             "/v1/repos/repo-1/artifacts/0123456789abcdef0123456789abcdef01234567/fetch",
             json!({}),
+        ),
+        (
+            "kanna_design_get",
+            json!({ "task_id": "task 1" }),
+            Method::Get,
+            ResponseKind::Json,
+            "/v1/tasks/task%201/design?include=document",
+            json!({}),
+        ),
+        (
+            "kanna_design_edit",
+            json!({
+                "task_id": "task-1",
+                "op_id": "edit-1",
+                "ops": [{ "op": "replace_text", "block_id": "b1", "expected_text": "a", "text": "b" }],
+            }),
+            Method::Post,
+            ResponseKind::Json,
+            "/v1/tasks/task-1/design/agent/edits",
+            json!({
+                "opId": "edit-1",
+                "ops": [{ "op": "replace_text", "block_id": "b1", "expected_text": "a", "text": "b" }],
+            }),
+        ),
+        (
+            "kanna_design_reply",
+            json!({ "task_id": "task-1", "thread_id": "th-1", "op_id": "r1", "body": "Done." }),
+            Method::Post,
+            ResponseKind::Json,
+            "/v1/tasks/task-1/design/agent/threads/th-1/replies",
+            json!({ "opId": "r1", "body": "Done." }),
+        ),
+        (
+            "kanna_design_resolve",
+            json!({ "task_id": "task-1", "thread_id": "th-1" }),
+            Method::Post,
+            ResponseKind::Json,
+            "/v1/tasks/task-1/design/agent/threads/th-1/resolve",
+            json!({ "resolved": true }),
+        ),
+        (
+            "kanna_design_set_position",
+            json!({ "task_id": "task-1", "position": "prototype" }),
+            Method::Post,
+            ResponseKind::Json,
+            "/v1/tasks/task-1/design/position",
+            json!({ "position": "prototype" }),
         ),
     ];
 

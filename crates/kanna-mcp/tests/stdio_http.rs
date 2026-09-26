@@ -2759,3 +2759,65 @@ fn attention_tools_set_locally_and_clear_on_owning_machine() {
     assert_eq!(tool_text(&responses[2])["attentionRequested"], json!(false));
     assert_eq!(server.join().unwrap().len(), 3);
 }
+
+/// App Design tools reach the same typed routes through MCP that `kanna-cli
+/// tool call` reaches (see the CLI's `design_tools_reach_the_typed_routes`),
+/// and a conflict comes back as the server's structured answer.
+#[test]
+fn design_tools_call_the_typed_design_routes() {
+    let ops = json!([{ "op": "replace_text", "block_id": "b1", "expected_text": "old", "text": "new" }]);
+    let (base_url, server) = start_http_fixture(vec![
+        ExpectedRequest {
+            method: "GET",
+            path: "/v1/tasks/task-1/design?include=document",
+            body: None,
+            response_status: "200 OK",
+            response_body: json!({"position":"static","document":{"blocks":[]},"threads":[]}),
+        },
+        ExpectedRequest {
+            method: "POST",
+            path: "/v1/tasks/task-1/design/agent/edits",
+            body: Some(json!({ "opId": "e1", "ops": ops.clone() })),
+            response_status: "200 OK",
+            response_body: json!({"status":"conflict","conflicts":[{"blockId":"b1","current":{"text":"changed"}}]}),
+        },
+        ExpectedRequest {
+            method: "POST",
+            path: "/v1/tasks/task-1/design/agent/threads/th-1/replies",
+            body: Some(json!({ "opId": "r1", "body": "Done." })),
+            response_status: "200 OK",
+            response_body: json!({"id":"th-1","deliveryStatus":"agent_replied"}),
+        },
+        ExpectedRequest {
+            method: "POST",
+            path: "/v1/tasks/task-1/design/agent/threads/th-1/resolve",
+            body: Some(json!({ "resolved": true })),
+            response_status: "200 OK",
+            response_body: json!({"id":"th-1","status":"resolved"}),
+        },
+        ExpectedRequest {
+            method: "POST",
+            path: "/v1/tasks/task-1/design/position",
+            body: Some(json!({ "position": "prototype" })),
+            response_status: "200 OK",
+            response_body: json!({"position":"prototype"}),
+        },
+    ]);
+    let responses = run_kanna_mcp(
+        &base_url,
+        &[
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize"}),
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"kanna_design_get","arguments":{"task_id":"task-1"}}}),
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"kanna_design_edit","arguments":{"task_id":"task-1","op_id":"e1","ops":ops}}}),
+            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"kanna_design_reply","arguments":{"task_id":"task-1","thread_id":"th-1","op_id":"r1","body":"Done."}}}),
+            json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"kanna_design_resolve","arguments":{"task_id":"task-1","thread_id":"th-1"}}}),
+            json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"kanna_design_set_position","arguments":{"task_id":"task-1","position":"prototype"}}}),
+        ],
+    );
+    assert_eq!(tool_text(&responses[1])["position"], json!("static"));
+    assert_eq!(tool_text(&responses[2])["status"], json!("conflict"));
+    assert_eq!(tool_text(&responses[3])["deliveryStatus"], json!("agent_replied"));
+    assert_eq!(tool_text(&responses[4])["status"], json!("resolved"));
+    assert_eq!(tool_text(&responses[5])["position"], json!("prototype"));
+    assert_eq!(server.join().unwrap().len(), 5);
+}
