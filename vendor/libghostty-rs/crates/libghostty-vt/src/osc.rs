@@ -28,7 +28,7 @@ impl<'alloc> Parser<'alloc> {
     ///
     /// See the [crate-level documentation](crate#memory-management-and-lifetimes)
     /// regarding custom memory management and lifetimes.
-    pub fn new_with_alloc<'ctx: 'alloc, Ctx>(alloc: &'alloc Allocator<'ctx, Ctx>) -> Result<Self> {
+    pub fn new_with_alloc<'ctx: 'alloc>(alloc: &'alloc Allocator<'ctx>) -> Result<Self> {
         // SAFETY: Borrow checking should forbid invalid allocators
         unsafe { Self::new_inner(alloc.to_raw()) }
     }
@@ -164,7 +164,7 @@ impl<'p> Command<'p, '_> {
 }
 
 /// Type of an OSC command.
-#[repr(u32)]
+#[repr(i32)]
 #[derive(Debug, Clone, Default)]
 #[expect(missing_docs, reason = "missing upstream docs")]
 pub enum CommandType<'p> {

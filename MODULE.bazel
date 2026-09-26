@@ -16,20 +16,6 @@ bazel_dep(name = "bazel_lib", version = "3.2.2")
 bazel_dep(name = "aspect_rules_js", version = "3.2.3")
 bazel_dep(name = "rules_nodejs", version = "6.7.3")
 
-# The Xcode 26.5 macOS SDK's top-level libSystem TBD targets omit arm64-macos,
-# while the Command Line Tools 26.2 SDK retains it. Official Zig 0.15.2 fails
-# to link against the former and links through the CLT-scoped wrapper below.
-# Keep Ghostty on its required 0.15.2 compiler and select the CLT SDK for it.
-single_version_override(
-    module_name = "rules_zig",
-    patch_strip = 1,
-    patches = [
-        "//tools/bazel:rules-zig-0.15.2-macos-clt-sdk.patch",
-        "//tools/bazel:rules-zig-linux-build.patch",
-    ],
-    version = "0.12.3",
-)
-
 git_override(
     module_name = "rules_tauri",
     commit = "38064855850d88c1d7c579a58ffe6b9f95658461",
@@ -61,13 +47,9 @@ filegroup(
     ),
 )
 """,
-    commit = "665a03f380204ce1976941d36649963b4da80880",
+    commit = "1f61d9644f42eb1949cf955d61b9bcec41ae22ce",
     patch_args = ["-p1"],
-    patches = [
-        "//tools/bazel:ghostty-libvt-fast-path.patch",
-        "//tools/bazel:ghostty-simdutf-include.patch",
-        "//tools/bazel:ghostty-zig-ar.patch",
-    ],
+    patches = ["//tools/bazel:ghostty-simdutf-include.patch"],
     remote = "https://github.com/jemdiggity/ghostty.git",
 )
 
@@ -188,11 +170,7 @@ crate.from_cargo(
 crate.annotation(
     build_script_env = {
         "GHOSTTY_SOURCE_DIR": "$${pwd}/external/+git_repository+kanna_ghostty_src",
-        "HOME": "$${OUT_DIR}/home",
-        "XDG_CACHE_HOME": "$${OUT_DIR}/xdg-cache",
         "ZIG": "$${pwd}/$(ZIG_BIN)",
-        "ZIG_GLOBAL_CACHE_DIR": "$${OUT_DIR}/zig-cache/global",
-        "ZIG_LOCAL_CACHE_DIR": "$${OUT_DIR}/zig-cache/local",
     },
     build_script_toolchains = ["@rules_zig//zig:resolved_toolchain"],
     crate = "libghostty-vt-sys",
@@ -327,18 +305,21 @@ use_repo(
 )
 
 zig = use_extension("@rules_zig//zig:extensions.bzl", "zig")
+
+# rules_zig 0.12.3 predates Zig 0.16.0; this index adds its official archives.
+zig.index(file = "//tools/bazel:zig-versions.json")
 zig.mirrors(
     urls = ["https://zig.chainsafe.dev"],
 )
 zig.toolchain(
     default = True,
-    zig_version = "0.15.2",
+    zig_version = "0.16.0",
 )
 use_repo(
     zig,
-    "zig_0.15.2_aarch64-linux",
-    "zig_0.15.2_aarch64-macos",
-    "zig_0.15.2_x86_64-linux",
+    "zig_0.16.0_aarch64-linux",
+    "zig_0.16.0_aarch64-macos",
+    "zig_0.16.0_x86_64-linux",
     "zig_toolchains",
 )
 

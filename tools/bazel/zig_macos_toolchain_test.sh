@@ -1,14 +1,8 @@
 #!/bin/sh
 set -eu
 
+# The pinned Zig must link a native executable against the default macOS SDK.
 zig="$1"
-case "$zig" in
-  *zig-macos-sdk-wrapper) ;;
-  *)
-    echo "resolved Zig toolchain did not select the patched macOS SDK wrapper: $zig" >&2
-    exit 1
-    ;;
-esac
 
 case "$zig" in
   external/*) zig="${RUNFILES_DIR:?}/${zig#external/}" ;;
