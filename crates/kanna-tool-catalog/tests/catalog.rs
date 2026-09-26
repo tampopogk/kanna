@@ -1006,7 +1006,7 @@ fn resolves_expected_requests_for_every_bundled_tool() {
             json!({ "task_id": "task 1" }),
             Method::Get,
             ResponseKind::Json,
-            "/v1/tasks/task%201/design?include=document",
+            "/v1/tasks/task%201/design/agent",
             json!({}),
         ),
         (

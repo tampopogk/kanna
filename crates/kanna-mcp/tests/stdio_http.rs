@@ -2770,10 +2770,10 @@ fn design_tools_call_the_typed_design_routes() {
     let (base_url, server) = start_http_fixture(vec![
         ExpectedRequest {
             method: "GET",
-            path: "/v1/tasks/task-1/design?include=document",
+            path: "/v1/tasks/task-1/design/agent",
             body: None,
             response_status: "200 OK",
-            response_body: json!({"position":"static","document":{"blocks":[]},"threads":[]}),
+            response_body: json!({"position":"static","document":[],"threads":[]}),
         },
         ExpectedRequest {
             method: "POST",

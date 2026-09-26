@@ -305,6 +305,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(super::design::set_position),
         )
         .route(
+            "/v1/tasks/{task_id}/design/agent",
+            get(super::design::get_design_for_agent),
+        )
+        .route(
             "/v1/tasks/{task_id}/design/agent/edits",
             post(super::design::agent_edit),
         )

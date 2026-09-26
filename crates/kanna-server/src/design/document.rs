@@ -94,6 +94,16 @@ static SCHEMA: LazyLock<SchemaDescription> = LazyLock::new(|| {
     schema
 });
 
+/// Whether `value` is what the schema gives `prop` of a `block_type` block
+/// when nobody set it: a compact reading leaves such props out.
+pub fn is_default_prop(block_type: &str, prop: &str, value: &Value) -> bool {
+    SCHEMA
+        .blocks
+        .get(block_type)
+        .and_then(|block| block.props.get(prop))
+        .is_some_and(|description| &description.default == value)
+}
+
 /// Why a document or an edit was refused.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]

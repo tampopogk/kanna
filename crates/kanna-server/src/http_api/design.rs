@@ -192,6 +192,36 @@ pub(super) async fn get_design(
 }
 
 #[derive(Debug, Deserialize)]
+pub(super) struct AgentDesignQuery {
+    #[serde(default)]
+    document: Option<bool>,
+    #[serde(default)]
+    resolved: Option<bool>,
+}
+
+/// `kanna_design_get`: the compact reading in `design::agent_view`.
+pub(super) async fn get_design_for_agent(
+    _access: PrivilegedTaskAccess,
+    State(state): State<Arc<AppState>>,
+    Path(task_id): Path<String>,
+    Query(query): Query<AgentDesignQuery>,
+) -> Response {
+    let include_document = query.document.unwrap_or(true);
+    let include_resolved = query.resolved.unwrap_or(false);
+    with_db(&state, "design view", move |db, runtime, db_path| {
+        crate::design::agent_view::agent_view(
+            db,
+            runtime,
+            db_path,
+            &task_id,
+            include_document,
+            include_resolved,
+        )
+    })
+    .await
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ChangesQuery {
     #[serde(default)]

@@ -1363,9 +1363,9 @@
     },
     {
       "name": "kanna_design_get",
-      "description": "Read an App Design task's live design (docs/specs/app-design.md): its current position (static mockup, interactive mockup, prototype, ...), the live document as blocks with stable ids, types, props, text and formatting runs (a run's `threads` names the comment threads anchored on it), every comment thread in creation order with its number, status, anchor (the quoted text, and whether it is still attached) and comments, each person's comment's delivery state, the approval if one is under way, and `scratchRepository`, the disposable git repository outside the worktree where throwaway prototype code goes. Reading never changes the document. A document holding content outside this schema is refused with an explicit error rather than read in a narrower form.",
+      "description": "Read an App Design task's live design (docs/specs/app-design.md), compactly: the current `position` and the `positions` you may move to; `scratchRepository`, the disposable git repository outside the worktree where throwaway prototype code goes; the approval phase if one is under way; the open comment threads in creation order (id, number, kind, the anchor's block id and quoted text, and each comment's author and body), with resolved ones counted in `resolvedThreads`; and the document as blocks, each its id, type and text, with `props` only where they differ from the defaults, `runs` only when its text has formatting, a link or a comment anchor (a run's `threads` names the threads anchored on it) and `children` only when it has some. Reading never changes the document. A document holding content outside this schema is refused with an explicit error rather than read in a narrower form.",
       "method": "GET",
-      "path": "/v1/tasks/{task_id}/design",
+      "path": "/v1/tasks/{task_id}/design/agent",
       "response": "json",
       "params": [
         {
@@ -1383,12 +1383,18 @@
           "location": "path"
         },
         {
-          "name": "include",
-          "description": "`document` (the default) includes the document's blocks; pass an empty string to read only the session and threads.",
-          "type": "string",
+          "name": "document",
+          "description": "Include the document's blocks (the default). Pass false to read only the position and threads.",
+          "type": "boolean",
           "required": false,
-          "location": "query",
-          "default": "document"
+          "location": "query"
+        },
+        {
+          "name": "resolved",
+          "description": "Also list resolved threads, each with its status.",
+          "type": "boolean",
+          "required": false,
+          "location": "query"
         }
       ]
     },

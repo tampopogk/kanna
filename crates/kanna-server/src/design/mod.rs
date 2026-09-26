@@ -10,6 +10,7 @@
 //! - [`delivery`]: feedback queued to the live session as it becomes free.
 //! - [`approval`]: Approve for build and the hand-off to the factory.
 
+pub(crate) mod agent_view;
 pub(crate) mod approval;
 pub(crate) mod delivery;
 pub(crate) mod document;

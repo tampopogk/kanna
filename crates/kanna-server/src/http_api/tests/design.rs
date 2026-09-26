@@ -122,16 +122,12 @@ async fn only_the_person_writes_feedback_and_the_agent_reads_it() {
 
     let (status, body) = send(
         &app,
-        as_agent("GET", "/v1/tasks/task-d/design?include=document", None),
+        as_agent("GET", "/v1/tasks/task-d/design/agent", None),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["threads"].as_array().unwrap().len(), 2);
-    assert_eq!(body["document"]["blocks"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        body["schemaVersion"],
-        crate::design::document::SCHEMA_VERSION
-    );
+    assert_eq!(body["document"].as_array().unwrap().len(), 1);
 
     // The agent answers through its own route; the answer is not queued back.
     let (status, body) = send(
@@ -194,10 +190,10 @@ async fn the_agent_edits_through_typed_operations_never_raw_sync() {
 
     let (_, view) = send(
         &app,
-        as_agent("GET", "/v1/tasks/task-d/design?include=document", None),
+        as_agent("GET", "/v1/tasks/task-d/design/agent", None),
     )
     .await;
-    let block = view["document"]["blocks"][0]["id"]
+    let block = view["document"][0]["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -224,10 +220,10 @@ async fn the_agent_edits_through_typed_operations_never_raw_sync() {
     assert_eq!(replay["replayed"], true);
     let (_, view) = send(
         &app,
-        as_agent("GET", "/v1/tasks/task-d/design?include=document", None),
+        as_agent("GET", "/v1/tasks/task-d/design/agent", None),
     )
     .await;
-    assert_eq!(view["document"]["blocks"][0]["text"], "Agent wrote this");
+    assert_eq!(view["document"][0]["text"], "Agent wrote this");
 }
 
 #[tokio::test]
