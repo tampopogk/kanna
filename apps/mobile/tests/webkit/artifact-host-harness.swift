@@ -9,13 +9,15 @@
 // hands the delegate. Like the viewer it allows only the host document and the
 // frame document it sets, and refuses everything else.
 //
-// usage: artifact-host-harness <host.html> <css selector to click in the frame, or ""> <seconds>
+// usage: artifact-host-harness <host.html[|next-host.html...]> <css selector to click in the frame, or ""> <seconds>
 // output: one JSON object per line on stdout.
 
 import AppKit
 import WebKit
 
 final class Harness: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+  var load = 0
+
   func emit(_ event: [String: Any]) {
     guard let data = try? JSONSerialization.data(withJSONObject: event) else { return }
     FileHandle.standardOutput.write(data)
@@ -46,14 +48,17 @@ final class Harness: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessa
   func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
     guard var body = message.body as? [String: Any] else { return }
     body["mainFrame"] = message.frameInfo.isMainFrame
+    body["load"] = load
     emit(body)
   }
 }
 
 let arguments = CommandLine.arguments
-guard arguments.count == 4, let html = try? String(contentsOfFile: arguments[1], encoding: .utf8),
+let paths = arguments.count > 1 ? arguments[1].split(separator: "|", omittingEmptySubsequences: false).map(String.init) : []
+guard arguments.count == 4, !paths.isEmpty,
+      let firstHTML = try? String(contentsOfFile: paths[0], encoding: .utf8),
       let seconds = Double(arguments[3]) else {
-  FileHandle.standardError.write("usage: artifact-host-harness <host.html> <selector> <seconds>\n".data(using: .utf8)!)
+  FileHandle.standardError.write("usage: artifact-host-harness <host.html[|next-host.html...]> <selector> <seconds>\n".data(using: .utf8)!)
   exit(2)
 }
 let selector = String(data: try! JSONSerialization.data(withJSONObject: [arguments[2]]), encoding: .utf8)!
@@ -73,7 +78,13 @@ configuration.userContentController.addUserScript(WKUserScript(
   (function () {
     var post = function (event) { window.webkit.messageHandlers.harness.postMessage(event); };
     var selector = \(selector)[0];
-    post({ kind: "document", top: window === window.top, text: document.body ? document.body.innerText : "" });
+    var cookieBefore = "", cookieAfter = "", cookieReadError = "", cookieWriteError = "";
+    try { cookieBefore = document.cookie; } catch (error) { cookieReadError = error.name; }
+    try { document.cookie = "kanna_frame_cookie=secret; SameSite=None; Secure"; } catch (error) { cookieWriteError = error.name; }
+    try { cookieAfter = document.cookie; } catch (error) { cookieReadError = error.name; }
+    post({ kind: "document", top: window === window.top, text: document.body ? document.body.innerText : "",
+      cookieBefore: cookieBefore, cookieAfter: cookieAfter,
+      cookieReadError: cookieReadError, cookieWriteError: cookieWriteError });
     if (window !== window.top && selector) {
       setTimeout(function () {
         var target = document.querySelector(selector);
@@ -99,6 +110,16 @@ webView.navigationDelegate = harness
 webView.uiDelegate = harness
 window.contentView!.addSubview(webView)
 window.orderBack(nil)
-webView.loadHTMLString(html, baseURL: nil)
+webView.loadHTMLString(firstHTML, baseURL: nil)
+if paths.count > 1 {
+  let interval = seconds / Double(paths.count)
+  for index in 1..<paths.count {
+    DispatchQueue.main.asyncAfter(deadline: .now() + interval * Double(index)) {
+      guard let html = try? String(contentsOfFile: paths[index], encoding: .utf8) else { return }
+      harness.load = index
+      webView.loadHTMLString(html, baseURL: nil)
+    }
+  }
+}
 DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { exit(0) }
 app.run()

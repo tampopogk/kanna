@@ -173,7 +173,7 @@ Publish this directory from any task (kind `mockup`) and open it on the phone
 function report(name, outcome) {
   var li = document.createElement("li");
   li.textContent = name + ": " + outcome;
-  li.className = /^(blocked|absent|opaque)/.test(outcome) ? "ok" : "bad";
+  li.className = /^(blocked|absent|opaque|isolated)/.test(outcome) ? "ok" : "bad";
   document.getElementById("probe").appendChild(li);
 }
 function attempt(name, action, blocked) {
@@ -183,7 +183,17 @@ function attempt(name, action, blocked) {
 report("origin", self.origin === "null" ? "opaque" : "NOT OPAQUE " + self.origin);
 attempt("read host document", function () { return parent.document.title; }, function () { return false; });
 attempt("RN bridge", function () { return typeof window.ReactNativeWebView; }, function (v) { return v === "undefined"; });
-attempt("cookies", function () { return document.cookie; }, function () { return false; });
+attempt("cookies", function () {
+  var before = document.cookie;
+  var marker = "kanna_probe_cookie=" + Date.now();
+  var writeError;
+  try { document.cookie = marker + "; SameSite=None; Secure"; }
+  catch (e) { writeError = e; }
+  if (before) return "LEAKED " + before;
+  if (writeError) throw writeError;
+  var after = document.cookie;
+  return after ? "LEAKED " + after : "isolated (write not readable)";
+}, function (v) { return /^isolated/.test(v); });
 attempt("localStorage", function () { return localStorage.length; }, function () { return false; });
 attempt("window.open", function () { return window.open("https://example.com/"); }, function (v) { return v === null; });
 fetch("https://example.com/").then(function () { report("fetch", "ALLOWED"); }, function (e) { report("fetch", "blocked (" + e.name + ")"); });
@@ -199,6 +209,20 @@ setTimeout(function () {
 
 `pages/about.html`: `<link rel="stylesheet" href="../css/site.css"><h1>About (same tree)</h1>`
 
+For the cookie line, `blocked (SecurityError)` and `blocked (isolated (write not
+readable))` are equivalent passing engine behaviours. Any nonempty value read
+before or after the write is reported as `ALLOWED (LEAKED ...)`. The HTML Standard says
+the sandboxed-origin flag prevents both reads and writes to `document.cookie`.
+WebKit's `Document::cookie` and `Document::setCookie` first handle a
+cookie-averse document: the `about:srcdoc` getter returns an empty string and
+the setter does nothing, before the later sandbox access check that can throw.
+The real-WKWebView regression test also repeats the write across a reload, a
+later artifact and a separate WebView, checks the host document, and observes
+with a loopback server that the fetch, form and image attempts send no request.
+See the
+[HTML sandboxed-origin definition](https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-origin-browsing-context-flag)
+and [WebKit's cookie implementation](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/dom/Document.cpp#L7390-L7428).
+
 Some "assigned" results are expected. The sandbox lets the assignment run
 and refuses the navigation itself. Pass or fail is whether the viewer
 stays on the probe page.
@@ -207,7 +231,7 @@ stays on the probe page.
 
 - [ ] The probe page renders with the dark-blue heading (the stylesheet loaded
       from the tree).
-- [ ] Every probe line reads `blocked`, `absent` or `opaque`, except `form
+- [ ] Every probe line reads `blocked`, `absent`, `opaque` or `isolated`, except `form
       submit`, `top navigation` and `forged host-open`, which may read
       `ALLOWED (assigned|submitted)`. **After 2 s the viewer still shows the
       probe page**: no Safari, no other app, no blank page, and the header
