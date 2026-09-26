@@ -285,8 +285,11 @@ repository (§7, §7a).
 **Approved for build** by the owner on 2026-09-26 (given in the design
 session): prototype commit `5b93047b10a2890351c239262d1c1bd74f37215c`. The
 approval note is [`app-design/APPROVAL.md`](app-design/APPROVAL.md). The
-running Kanna build had no artifact store, so no artifact id was recorded;
-under Kanna's policy (§7a) the committed results in this folder are the record.
+approved snapshot (the built prototype, its source at that commit and the note)
+is artifact `01e43bb75d4df7aaa46c2bc0860ee4e0c88881b6` in repository
+`repo-18d823663f668988`'s artifact store, with the decision "approved for build"
+recorded on it. Under Kanna's policy (§7a) the committed results in this folder
+remain the record kept in the repository.
 
 Evidence: the prototype's disposable repository (`.tmp/prototype` in task
 `2d6b4196`'s worktree, 2026-09-25), the 18 pins on the interactive mockup, and
