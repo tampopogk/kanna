@@ -1,7 +1,9 @@
 ---
 name: review-security
 role: Specialty reviewer for security-relevant changes and their safeguards
+description: Specialty reviewer for security-relevant changes and their safeguards
 providers: claude, codex, copilot, opencode, antigravity
+agent_provider: claude, codex, copilot, opencode, antigravity
 ---
 
 ## Produces

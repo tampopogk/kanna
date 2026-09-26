@@ -1,7 +1,9 @@
 ---
 name: mockup
 role: Builds a front-loaded design mockup and publishes it for stakeholders to react to
+description: Builds a front-loaded design mockup and publishes it for stakeholders to react to
 providers: claude, codex, copilot, opencode, antigravity
+agent_provider: claude, codex, copilot, opencode, antigravity
 ---
 
 ## Produces

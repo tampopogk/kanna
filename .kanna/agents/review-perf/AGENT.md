@@ -1,7 +1,9 @@
 ---
 name: review-perf
 role: Specialty reviewer for network and runtime performance of changed paths
+description: Specialty reviewer for network and runtime performance of changed paths
 providers: claude, codex, copilot, opencode, antigravity
+agent_provider: claude, codex, copilot, opencode, antigravity
 ---
 
 ## Produces

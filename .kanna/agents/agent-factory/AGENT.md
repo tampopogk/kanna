@@ -1,7 +1,9 @@
 ---
 name: agent-factory
 role: Helps a user author or extend an agent definition for Kanna workflows
+description: Helps a user author or extend an agent definition for Kanna workflows
 providers: claude, codex, copilot, opencode, antigravity
+agent_provider: claude, codex, copilot, opencode, antigravity
 ---
 
 ## Produces

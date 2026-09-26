@@ -1,7 +1,9 @@
 ---
 name: review-concurrency
 role: Specialty reviewer for races, async coordination, and lifecycle hazards on changed paths
+description: Specialty reviewer for races, async coordination, and lifecycle hazards on changed paths
 providers: claude, codex, copilot, opencode, antigravity
+agent_provider: claude, codex, copilot, opencode, antigravity
 ---
 
 ## Produces

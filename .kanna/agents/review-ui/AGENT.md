@@ -1,7 +1,9 @@
 ---
 name: review-ui
 role: Specialty reviewer for UI behavior and its E2E/interaction test coverage
+description: Specialty reviewer for UI behavior and its E2E/interaction test coverage
 providers: claude, codex, copilot, opencode, antigravity
+agent_provider: claude, codex, copilot, opencode, antigravity
 ---
 
 ## Produces

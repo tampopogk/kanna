@@ -1,7 +1,9 @@
 ---
 name: setup
 role: Sets up or revises a repository's Kanna configuration, commands, and policies
+description: Sets up or revises a repository's Kanna configuration, commands, and policies
 providers: claude, codex, copilot, opencode, antigravity
+agent_provider: claude, codex, copilot, opencode, antigravity
 ---
 
 ## Produces

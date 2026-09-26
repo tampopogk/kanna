@@ -1,7 +1,9 @@
 ---
 name: implement
 role: Implements the task's requested change in its worktree
+description: Implements the task's requested change in its worktree
 providers: claude, codex, copilot, opencode, antigravity
+agent_provider: claude, codex, copilot, opencode, antigravity
 ---
 
 ## Produces

@@ -1,7 +1,9 @@
 ---
 name: review-compat
 role: Specialty reviewer for cross-process contract and client compatibility
+description: Specialty reviewer for cross-process contract and client compatibility
 providers: claude, codex, copilot, opencode, antigravity
+agent_provider: claude, codex, copilot, opencode, antigravity
 ---
 
 ## Produces

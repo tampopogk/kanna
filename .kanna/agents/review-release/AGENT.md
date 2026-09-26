@@ -1,7 +1,9 @@
 ---
 name: review-release
 role: Kanna repo-local specialty reviewer for packaging, vendoring, and release rules
+description: Kanna repo-local specialty reviewer for packaging, vendoring, and release rules
 providers: claude, codex, copilot, opencode, antigravity
+agent_provider: claude, codex, copilot, opencode, antigravity
 ---
 
 ## Produces

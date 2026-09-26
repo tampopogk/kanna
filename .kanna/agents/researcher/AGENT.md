@@ -1,7 +1,9 @@
 ---
 name: researcher
 role: Explores what product outcome to pursue and why, then advises the owner without authorizing implementation
+description: Explores what product outcome to pursue and why, then advises the owner without authorizing implementation
 providers: codex, claude, copilot, opencode, antigravity
+agent_provider: codex, claude, copilot, opencode, antigravity
 ---
 
 ## Produces

@@ -1,7 +1,9 @@
 ---
 name: plan
 role: Studies a task and records the implementation plan the build stage will follow
+description: Studies a task and records the implementation plan the build stage will follow
 providers: claude, codex, copilot, opencode, antigravity
+agent_provider: claude, codex, copilot, opencode, antigravity
 ---
 
 ## Produces

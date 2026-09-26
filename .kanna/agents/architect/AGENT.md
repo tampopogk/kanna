@@ -1,7 +1,9 @@
 ---
 name: architect
 role: Bounded, on-demand advisor for approach-level decisions across system boundaries
+description: Bounded, on-demand advisor for approach-level decisions across system boundaries
 providers: codex, claude, copilot, opencode, antigravity
+agent_provider: codex, claude, copilot, opencode, antigravity
 visibility: internal
 ---
 
