@@ -23,7 +23,9 @@ export type MainTabKind =
   | "analytics"
   | "image"
   | "preview"
-  | "artifact";
+  | "artifact"
+  /** An App Design task's design surface (one per task scope). */
+  | "design";
 
 /**
  * Which shell a `shell` tab runs: the task's worktree (⌘J) or the repository
@@ -249,6 +251,7 @@ const TAB_SHORTCUT_CONTEXTS: Record<MainTabKind, ShortcutContext> = {
   image: "file",
   preview: "preview",
   artifact: "preview",
+  design: "preview",
 };
 
 /**

@@ -9,6 +9,7 @@ export default defineConfig({
     alias: {
       "@kanna/db": path.resolve(__dirname, "../../packages/db/src"),
       "@kanna/core": path.resolve(__dirname, "../../packages/core/src"),
+      "@kanna/design-editor": path.resolve(__dirname, "../../packages/design-editor/src"),
     },
   },
   test: {

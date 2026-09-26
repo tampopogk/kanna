@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@kanna/agent-protocol": "workspace:*",
+    "@kanna/design-editor": "workspace:*",
     "@kanna/stream-client": "workspace:*",
     "@kanna/visual-companion": "workspace:*",
     "@pierre/diffs": "^1.1.0",

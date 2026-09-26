@@ -529,6 +529,7 @@ const mainTabViews: MainTabViewsController = {
   tabs: mainTabs,
   modals: appModals,
   store,
+  setAppTheme: (theme) => void appPreferences.handlePreferenceUpdate("appTheme", theme),
 };
 
 let keyboardActions = {} as KeyboardActions;

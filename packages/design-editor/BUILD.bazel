@@ -1,5 +1,6 @@
 package(default_visibility = ["//visibility:public"])
 
+load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
 load("@kanna_npm//:defs.bzl", "npm_link_all_packages")
 
 npm_link_all_packages(
@@ -15,4 +16,9 @@ filegroup(
         ["src/**"],
         exclude = ["src/**/*.test.ts"],
     ),
+)
+
+copy_to_bin(
+    name = "srcs_in_bin",
+    srcs = [":srcs"],
 )

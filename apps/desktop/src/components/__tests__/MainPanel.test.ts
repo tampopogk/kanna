@@ -15,6 +15,11 @@ import { performDesktopViewOpen, parseDesktopViewOpenCommand, type DesktopViewOp
 import { AGENT_TAB_ID, useMainTabs } from "../../composables/useMainTabs";
 import type { MainTabViewsController } from "../MainPanel.types";
 
+vi.mock("../design/DesignView.vue", () => ({
+  __esModule: true,
+  default: { name: "DesignView", props: ["taskId", "visible"], template: '<div data-testid="design-view-stub">{{ taskId }}</div>' },
+}));
+
 const invokeMock = vi.fn();
 const fetchTaskDetailMock = vi.fn();
 const openTerminalEditorMock = vi.fn();
@@ -1935,4 +1940,90 @@ it("returns Latest to the same live terminal instance after inert history", asyn
   expect(wrapper.get('[data-testid="live-terminal"]').element).toBe(terminal);
   expect(wrapper.get('[data-testid="live-terminal"]').attributes('data-active')).toBe('false');
   vm.selectAttempt("");await flushPromises();expect(wrapper.get('[data-testid="live-terminal"]').element).toBe(terminal);expect(wrapper.find('[data-testid="history-stub"]').exists()).toBe(false);wrapper.unmount();
+});
+
+describe("App Design tasks", () => {
+  it("open their design surface beside the agent terminal, once, without moving the terminal", async () => {
+    fetchTaskDetailMock.mockImplementation(async (taskId: string) => ({
+      id: taskId,
+      stage: "design",
+      closedAt: null,
+      latestRun: null,
+      revisionRounds: 0,
+      revisionLimit: 3,
+      childTaskIds: [],
+      design: {
+        stage: "design",
+        inDesignStage: true,
+        status: "designing",
+        position: "static",
+        positions: [{ name: "static", label: "Static mockup" }],
+        nextStage: "plan",
+        openThreads: 0,
+        waitingFeedback: 0,
+        uncertainFeedback: 0,
+        approvalPhase: null,
+      },
+    }));
+    listAgentTerminalAttemptsMock.mockResolvedValue([]);
+    listWorkspaceSetupRunsMock.mockResolvedValue([]);
+    invokeMock.mockImplementation(() => Promise.reject(new Error("missing")));
+    vi.stubGlobal("__KANNA_MOBILE__", false);
+    const resizeObserver = globalThis.ResizeObserver;
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe() { this.callback([{ contentRect: { width: 1400 } }] as ResizeObserverEntry[], this as unknown as ResizeObserver); }
+      disconnect() {}
+      unobserve() {}
+    });
+    const tabs = useMainTabs({ scopeKey: computed(() => "item:task-design") });
+    const { default: MainPanel } = await import("../MainPanel.vue");
+    const wrapper = mount(MainPanel, {
+      props: {
+        uiSlot: readySlot(durableTask({ id: "task-design", stage: "design" })),
+        repoPath: "/repo",
+        hasRepos: true,
+        views: {
+          tabs,
+          modals: {
+            activeTaskViewIsRemote: computed(() => false),
+            activeRemoteTaskRoute: computed(() => null),
+            activeRepoPath: computed(() => "/repo"),
+            activeWorktreePath: computed(() => "/repo/task-design"),
+            activeDiffWorktreePath: computed(() => "/repo/task-design"),
+            currentDiffViewState: computed(() => ({ scope: "working" })),
+            currentDiffViewKey: computed(() => "task-design"),
+            treeExplorerRoot: computed(() => "/repo/task-design"),
+            homePath: computed(() => "/home/tester"),
+          },
+          store: {},
+        } as unknown as MainTabViewsController,
+      },
+      attachTo: document.body,
+      global: {
+        mocks: { $t: (key: string) => key },
+        stubs: { TaskHeader: true, MainTabBar: true, TerminalTabs: { template: '<div data-testid="live-terminal" />' } },
+      },
+    });
+    try {
+      await flushPromises();
+      await flushPromises();
+      expect(tabs.isOpen("design")).toBe(true);
+      const panes = tabs.panes.value.map((rect) => rect.pane.tabs);
+      expect(panes).toEqual([[AGENT_TAB_ID], ["design"]]);
+      // The agent stays the active tab: the design opens beside it, not over it.
+      expect(tabs.activeTabId.value).toBe(AGENT_TAB_ID);
+      expect(wrapper.find('[data-testid="live-terminal"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="design-view-stub"]').text()).toBe("task-design");
+
+      // Closed by the person, it stays closed for the rest of the session.
+      tabs.closeTab("design");
+      await wrapper.setProps({ uiSlot: readySlot(durableTask({ id: "task-design", stage: "design", updated_at: "later" })) });
+      await flushPromises();
+      expect(tabs.isOpen("design")).toBe(false);
+    } finally {
+      wrapper.unmount();
+      vi.stubGlobal("ResizeObserver", resizeObserver);
+    }
+  });
 });

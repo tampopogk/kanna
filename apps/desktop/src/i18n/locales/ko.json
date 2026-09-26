@@ -516,7 +516,12 @@
     "commitStepLabel": "커밋:",
     "gateParked": "사람의 결정을 기다리는 중",
     "dependencyWait": "{fromStage} → {toStage} 의존성 대기 중",
-    "dependencySuperseded": "{upstreamTaskId}({upstreamStage})의 새 결과는 사용되지 않았습니다"
+    "dependencySuperseded": "{upstreamTaskId}({upstreamStage})의 새 결과는 사용되지 않았습니다",
+    "designInProgress": "앱 디자인 · {position}",
+    "designHandedOff": "앱 디자인 · 넘어감",
+    "designOpen": "열림 {count}",
+    "designWaiting": "대기 {count}",
+    "designUncertain": "전달 안 됨 {count}"
   },
   "app": {
     "selectRepoFirst": "먼저 저장소를 선택하세요",
@@ -667,6 +672,88 @@
       "fetchFailed": "가져오기 실패.",
       "changed": "이 패널을 불러온 뒤 아티팩트 원격 저장소가 바뀌었습니다. 아무것도 푸시하지 않았습니다. 지금 푸시될 곳을 확인하세요.",
       "pushCancelled": "여기서 푸시를 취소했습니다. 데스크톱에서 이미 시작했다면 완료될 수 있습니다. 원격 저장소 상태를 보려면 다시 푸시하세요."
+    }
+  },
+  "design": {
+    "workflowName": "앱 디자인",
+    "positionsLabel": "디자인 단계",
+    "freeMove": "디자인 단계 사이를 자유롭게 이동",
+    "handoffArrow": "빌드 승인 후: 소프트웨어 팩토리",
+    "lightTheme": "라이트 모드로 전환",
+    "darkTheme": "다크 모드로 전환",
+    "incompatible": "이 디자인 문서는 다른 편집기 버전을 사용합니다. 편집하기 전에 Kanna를 업데이트하세요. 아무것도 변경되지 않았습니다.",
+    "handedOffBanner": "승인되어 소프트웨어 팩토리로 넘어갔습니다. 변경하려면 디자인을 다시 여세요.",
+    "status": {
+      "connecting": "연결 중…",
+      "saving": "저장 중…",
+      "saved": "저장됨",
+      "offline": "오프라인: 편집 내용은 보관되고 다시 연결되면 전송됩니다",
+      "incompatible": "편집기 버전 불일치"
+    },
+    "editor": {
+      "comment": "댓글",
+      "agentItemTitle": "에이전트",
+      "agentItemSubtext": "에이전트에게 보내기: /agent 메시지 입력 후 Enter",
+      "agentGroup": "에이전트",
+      "person": "나",
+      "messageSent": "에이전트 대기열에 추가됨",
+      "messageFailed": "메시지를 보내지 못했습니다",
+      "commentFailed": "댓글을 보내지 못했습니다"
+    },
+    "feedback": {
+      "title": "피드백 → 에이전트",
+      "openCount": "열림 {count}",
+      "resolvedCount": "해결됨 {count}",
+      "number": "스레드 {number}",
+      "message": "✦ 에이전트에게 보낸 메시지",
+      "detached": "텍스트 삭제됨",
+      "agent": "에이전트",
+      "resolvedTag": "해결됨 ✓",
+      "resolve": "해결",
+      "reopen": "다시 열기",
+      "reply": "답글",
+      "replyLabel": "스레드 {number}에 답글",
+      "replyPlaceholder": "답글…",
+      "send": "보내기",
+      "resend": "다시 보내기",
+      "empty": "문서에서 단어를 선택하고 💬 댓글이나 ⌘↵를 누르거나 /agent를 입력하세요. 피드백은 대기열에 들어가 에이전트가 한가할 때 전달됩니다."
+    },
+    "delivery": {
+      "queued": "에이전트 대기 중",
+      "delivering": "전달 중…",
+      "delivered": "세션에 전달됨 ✓",
+      "agent_replied": "에이전트가 답함",
+      "uncertain": "전달 안 됨: 에이전트 터미널을 확인한 뒤 다시 보내세요",
+      "held": "보류: 디자인이 넘어갔습니다",
+      "cancelled": "전달 안 됨",
+      "none": ""
+    },
+    "approval": {
+      "hint": "에이전트와 반복한 뒤 디자인을 빌드 승인하세요.",
+      "approve": "빌드 승인 →",
+      "preparing": "준비 중…",
+      "dialogTitle": "빌드를 승인할까요?",
+      "dialogIntro": "디자인을 소프트웨어 팩토리로 넘깁니다:",
+      "dialogSnapshot": "디자인의 일회용 저장소를 커밋하고, 스냅샷(문서, 커밋된 소스, 이 승인)을 Kanna 아티팩트 저장소에 보관합니다.",
+      "dialogRetained": "다음 결과물을 저장소에 커밋합니다:",
+      "dialogNothingRetained": "저장소에는 아무것도 커밋하지 않습니다. 이 저장소의 정책은 스냅샷만 보관합니다.",
+      "dialogNext": "그런 다음 그 커밋에서 {stage} 단계가 시작됩니다.",
+      "dialogPrototype": "프로토타입 코드는 참고용이며 소프트웨어 팩토리가 제대로 다시 만듭니다.",
+      "dialogOpenFeedback": "열린 스레드 {open}개, 에이전트에게 전달되지 않은 항목 {waiting}개가 있습니다. 승인 기록에 남습니다.",
+      "keepIterating": "계속 반복",
+      "confirm": "빌드 승인",
+      "approving": "승인 중…",
+      "reopen": "디자인 다시 열기",
+      "reopenHint": "디자인으로 돌아갑니다. 승인은 철회되며 새 승인이 필요합니다",
+      "retry": "인계 다시 시도",
+      "failed": "인계가 멈췄습니다: {error}",
+      "progress": {
+        "approved": "빌드 승인됨: 보관할 결과물을 쓰는 중…",
+        "exported": "빌드 승인됨: 디자인 세션의 커밋을 기다리는 중…",
+        "committing": "빌드 승인됨: 디자인 세션이 커밋하는 중…",
+        "committed": "커밋 확인됨: 소프트웨어 팩토리를 시작하는 중…",
+        "entered": "소프트웨어 팩토리로 넘어갔습니다 ({stage})."
+      }
     }
   }
 }

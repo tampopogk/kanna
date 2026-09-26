@@ -515,7 +515,12 @@
     "commitStepLabel": "コミット:",
     "gateParked": "担当者の判断を待っています",
     "dependencyWait": "{fromStage} → {toStage} の依存関係を待機中",
-    "dependencySuperseded": "{upstreamTaskId}（{upstreamStage}）の新しい結果は使用されませんでした"
+    "dependencySuperseded": "{upstreamTaskId}（{upstreamStage}）の新しい結果は使用されませんでした",
+    "designInProgress": "アプリデザイン · {position}",
+    "designHandedOff": "アプリデザイン · 引き渡し済み",
+    "designOpen": "未解決 {count}",
+    "designWaiting": "待機 {count}",
+    "designUncertain": "未達 {count}"
   },
   "app": {
     "selectRepoFirst": "リポジトリを先に選択してください",
@@ -666,6 +671,88 @@
       "fetchFailed": "フェッチに失敗しました。",
       "changed": "このパネルを読み込んだ後にアーティファクトリモートが変わりました。何もプッシュしていません。現在のプッシュ先を確認してください。",
       "pushCancelled": "ここではプッシュを取り消しました。デスクトップですでに開始していた場合は完了することがあります。状態を確認するには再度プッシュしてください。"
+    }
+  },
+  "design": {
+    "workflowName": "アプリデザイン",
+    "positionsLabel": "デザインの段階",
+    "freeMove": "デザインの段階は自由に行き来できます",
+    "handoffArrow": "ビルド承認後: ソフトウェアファクトリー",
+    "lightTheme": "ライトモードに切り替え",
+    "darkTheme": "ダークモードに切り替え",
+    "incompatible": "このデザイン文書は別のエディターバージョンで作られています。編集する前に Kanna を更新してください。何も変更されていません。",
+    "handedOffBanner": "承認済みでソフトウェアファクトリーに引き渡されました。変更するにはデザインを再開してください。",
+    "status": {
+      "connecting": "接続中…",
+      "saving": "保存中…",
+      "saved": "保存済み",
+      "offline": "オフライン: 編集は保持され、再接続時に送信されます",
+      "incompatible": "エディターのバージョン不一致"
+    },
+    "editor": {
+      "comment": "コメント",
+      "agentItemTitle": "エージェント",
+      "agentItemSubtext": "エージェントに送信: /agent メッセージ のあと Enter",
+      "agentGroup": "エージェント",
+      "person": "あなた",
+      "messageSent": "エージェントのキューに追加しました",
+      "messageFailed": "メッセージを送信できませんでした",
+      "commentFailed": "コメントを送信できませんでした"
+    },
+    "feedback": {
+      "title": "フィードバック → エージェント",
+      "openCount": "未解決 {count}",
+      "resolvedCount": "解決済み {count}",
+      "number": "スレッド {number}",
+      "message": "✦ エージェントへのメッセージ",
+      "detached": "本文は削除済み",
+      "agent": "エージェント",
+      "resolvedTag": "解決済み ✓",
+      "resolve": "解決",
+      "reopen": "再開",
+      "reply": "返信",
+      "replyLabel": "スレッド {number} に返信",
+      "replyPlaceholder": "返信…",
+      "send": "送信",
+      "resend": "再送信",
+      "empty": "文書の文字を選択して 💬 コメント か ⌘↵、または /agent と入力します。フィードバックはキューに入り、エージェントが空いたときに届きます。"
+    },
+    "delivery": {
+      "queued": "エージェント待ち",
+      "delivering": "送信中…",
+      "delivered": "セッションに届きました ✓",
+      "agent_replied": "エージェントが返信",
+      "uncertain": "未達: エージェントの端末を確認してから再送信",
+      "held": "保留: デザインは引き渡し済み",
+      "cancelled": "未達",
+      "none": ""
+    },
+    "approval": {
+      "hint": "エージェントと反復し、デザインをビルド承認します。",
+      "approve": "ビルドを承認 →",
+      "preparing": "準備中…",
+      "dialogTitle": "ビルドを承認しますか?",
+      "dialogIntro": "デザインをソフトウェアファクトリーに引き渡します:",
+      "dialogSnapshot": "デザインの使い捨てリポジトリをコミットし、スナップショット(文書、コミット済みのソース、この承認)を Kanna のアーティファクトストアに保存します。",
+      "dialogRetained": "次の成果物をリポジトリにコミットします:",
+      "dialogNothingRetained": "リポジトリには何もコミットしません。このリポジトリの方針ではスナップショットのみ保存します。",
+      "dialogNext": "その後、そのコミットから {stage} ステージが始まります。",
+      "dialogPrototype": "プロトタイプのコードは参考のみで、ソフトウェアファクトリーが作り直します。",
+      "dialogOpenFeedback": "未解決のスレッドが {open} 件、エージェントに届いていない項目が {waiting} 件あります。承認記録に残ります。",
+      "keepIterating": "反復を続ける",
+      "confirm": "ビルドを承認",
+      "approving": "承認中…",
+      "reopen": "デザインを再開",
+      "reopenHint": "デザインに戻ります。承認は取り消され、改めて承認が必要です",
+      "retry": "引き渡しを再試行",
+      "failed": "引き渡しが止まりました: {error}",
+      "progress": {
+        "approved": "ビルド承認済み: 保存する成果物を書き出しています…",
+        "exported": "ビルド承認済み: デザインセッションのコミットを待っています…",
+        "committing": "ビルド承認済み: デザインセッションがコミットしています…",
+        "committed": "コミットを確認しました: ソフトウェアファクトリーを開始しています…",
+        "entered": "ソフトウェアファクトリーに引き渡しました ({stage})。"
+      }
     }
   }
 }

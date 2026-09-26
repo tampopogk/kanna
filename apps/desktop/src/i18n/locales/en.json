@@ -513,7 +513,12 @@
     "commitStepLabel": "commit:",
     "gateParked": "Waiting for a person to decide",
     "dependencyWait": "Waiting on {fromStage} → {toStage} dependencies",
-    "dependencySuperseded": "A newer result from {upstreamTaskId} ({upstreamStage}) was not used"
+    "dependencySuperseded": "A newer result from {upstreamTaskId} ({upstreamStage}) was not used",
+    "designInProgress": "App Design · {position}",
+    "designHandedOff": "App Design · handed off",
+    "designOpen": "{count} open",
+    "designWaiting": "{count} queued",
+    "designUncertain": "{count} not delivered"
   },
   "app": {
     "selectRepoFirst": "Select a repository first",
@@ -664,6 +669,88 @@
       "fetchFailed": "Fetch failed.",
       "changed": "The artifact remote changed since this panel loaded. Nothing was pushed; check where it goes now.",
       "pushCancelled": "Push cancelled here. If the desktop had already started it, it may still complete; push again to see where the remote stands."
+    }
+  },
+  "design": {
+    "workflowName": "App Design",
+    "positionsLabel": "Design positions",
+    "freeMove": "Move freely between design positions",
+    "handoffArrow": "After Approve for build: the software factory",
+    "lightTheme": "Switch to light mode",
+    "darkTheme": "Switch to dark mode",
+    "incompatible": "This design document uses a different editor version. Update Kanna before editing; nothing was changed.",
+    "handedOffBanner": "Approved and handed to the software factory. The design is read-only; reopen it to change it.",
+    "status": {
+      "connecting": "Connecting…",
+      "saving": "Saving…",
+      "saved": "Saved",
+      "offline": "Offline: edits are kept and sent when reconnected",
+      "incompatible": "Editor version mismatch"
+    },
+    "editor": {
+      "comment": "Comment",
+      "agentItemTitle": "Agent",
+      "agentItemSubtext": "Message the agent: /agent your message, then Enter",
+      "agentGroup": "Agent",
+      "person": "You",
+      "messageSent": "Queued for the agent",
+      "messageFailed": "The message was not sent",
+      "commentFailed": "The comment was not sent"
+    },
+    "feedback": {
+      "title": "Feedback → agent",
+      "openCount": "{count} open",
+      "resolvedCount": "{count} resolved",
+      "number": "Thread {number}",
+      "message": "✦ message to the agent",
+      "detached": "text deleted",
+      "agent": "Agent",
+      "resolvedTag": "resolved ✓",
+      "resolve": "Resolve",
+      "reopen": "Reopen",
+      "reply": "Reply",
+      "replyLabel": "Reply to thread {number}",
+      "replyPlaceholder": "Reply…",
+      "send": "Send",
+      "resend": "Send again",
+      "empty": "Select words in the document and press 💬 Comment or ⌘↵, or type /agent. Feedback is queued for the agent and delivered when it is free."
+    },
+    "delivery": {
+      "queued": "queued for the agent",
+      "delivering": "delivering…",
+      "delivered": "delivered to session ✓",
+      "agent_replied": "agent replied",
+      "uncertain": "not delivered: check the agent's terminal, then send again",
+      "held": "held: the design was handed off",
+      "cancelled": "not delivered",
+      "none": ""
+    },
+    "approval": {
+      "hint": "Iterate with the agent, then approve the design for build.",
+      "approve": "Approve for build →",
+      "preparing": "Preparing…",
+      "dialogTitle": "Approve for build?",
+      "dialogIntro": "This hands the design to the software factory:",
+      "dialogSnapshot": "The design's disposable repository is committed, and a snapshot (the document, its committed source and this approval) is kept in Kanna's artifact store.",
+      "dialogRetained": "These results are committed to the repository:",
+      "dialogNothingRetained": "Nothing is committed to the repository; this repository's policy keeps only the snapshot.",
+      "dialogNext": "Then the {stage} stage starts from that commit.",
+      "dialogPrototype": "Prototype code is a reference only; the software factory rebuilds it properly.",
+      "dialogOpenFeedback": "{open} thread(s) are still open and {waiting} item(s) have not reached the agent. They stay attached to the approved record.",
+      "keepIterating": "Keep iterating",
+      "confirm": "Approve for build",
+      "approving": "Approving…",
+      "reopen": "Reopen design",
+      "reopenHint": "Back to designing; the approval is withdrawn and a new one is needed",
+      "retry": "Retry hand-off",
+      "failed": "Hand-off stopped: {error}",
+      "progress": {
+        "approved": "Approved for build: writing the retained results…",
+        "exported": "Approved for build: waiting for the design session to commit the results…",
+        "committing": "Approved for build: the design session is committing the results…",
+        "committed": "Results committed and verified: starting the software factory…",
+        "entered": "Handed to the software factory ({stage})."
+      }
     }
   }
 }
