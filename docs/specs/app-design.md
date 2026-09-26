@@ -1,6 +1,6 @@
 # App Design: design-first workflows
 
-Status: owner-directed design, 2026-09-25, from task `2d6b4196`. The design was
+Status: owner-directed design, approved for build 2026-09-26, from task `2d6b4196`. The design was
 worked out by building it: a mockup, an interactive mockup, then a working
 prototype that the owner used and marked up. This spec records what the
 prototype proved, the decisions the owner made along the way, and what remains
@@ -9,10 +9,10 @@ decides that. Statements marked **Owner** were decided by the owner and are not
 open. **Prototype** marks behaviour that was built and used in the prototype.
 **Proposed** and **Open** are not decisions.
 
-It builds on the unmerged structured-workflows work
-([`tasks-sessions-structured-workflows.md`](tasks-sessions-structured-workflows.md)
-on branch `task-482a02db-3`): its `designed` workflow, `mockup` agent, artifact
-store, named exits and gate stages. Where the two differ, this spec says so.
+It builds on the structured-workflows work (`tasks-sessions-structured-workflows.md`,
+pull request #1641, open against `main` on 2026-09-26): its `designed` workflow,
+`mockup` agent, artifact store, named exits and gate stages. Where the two differ,
+this spec says so.
 
 ## 1. Why
 
@@ -52,13 +52,13 @@ After "Approve for build" (§6) the task continues through the software factory
 you react, the agent revises, repeat. There is no reviewer agent and no
 send-back loop, because iterating with a person is not an agent review.
 
-- Today each stage starts a fresh session in a fresh workspace.
-  **Proposed:** moving between design stages keeps the same session and
-  workspace, the way the structured-workflows commit step already instructs the
-  live session in place. This is an engine change; until it exists, a design
-  workflow can run as one long stage with a manual gate, which the
-  structured-workflows spec already allows ("the person may keep working with
-  the session ... the latest result is what the next stage receives").
+- **Owner:** iterations are inherently serial, so nothing is gained by parallel
+  sessions or by starting a new session. A design task keeps **one live session
+  and one workspace** from its first stage to the hand-off; moving between
+  design stages never starts a new session. How the engine does that (one
+  engine stage with the design stages as positions inside it, or a transition
+  that keeps the session the way the structured-workflows commit step instructs
+  the live session in place) is a planning decision.
 - Only committed work crosses the hand-off to the software factory (§6).
 
 ## 4. The design surface
@@ -71,8 +71,11 @@ task:
   name. Design stages are clickable (⇄); other workflows move forward only (→).
   **Owner:** no Doc/Mockup/Prototype tabs, because you are in one stage at a
   time. The main area shows **the current stage's artifact**.
-- **Session panel (left):** what actually reached the agent's session, with the
-  agent's replies, plus an input line to message the agent directly.
+- **Agent terminal (left):** the real agent session, in its TUI, per Kanna's
+  first principle that the agent's terminal is the main interaction. Delivered
+  feedback (§8) appears there as input. (The prototype showed a mock panel of
+  what reached the session, with an input line; the real product uses the
+  terminal itself, not an imitation of it.)
 - **Artifact (centre):** the stage's artifact (§5), with the hand-off bar below:
   "Approve for build →" on design tasks, "Request changes / Approve PR" on PR
   review.
@@ -129,6 +132,10 @@ task:
 3. records the decision "approved for build" on that exact artifact id; and
 4. tells the task's live session what was approved.
 
+The artifact store is used when the Kanna build has it; either way the approval
+is the prototype commit plus its snapshot, and what is kept afterwards follows
+the project's policy (§7a).
+
 **Owner:** the UI shows no version number; the approval still records the exact
 commit behind the scenes. Approval is the person's action, never an agent's.
 After approval the stage chain shows the hand-off to the software factory, and
@@ -146,6 +153,15 @@ rebuilds it properly.
   (`rad auth`); private repositories on the LAN connect directly, and across the
   internet need a direct connection or a seed node the owner runs.
 
+## 7a. What is kept at the hand-off
+
+**Owner:** what happens to the live docs, threads and artifacts after the
+hand-off is decided by **project policy**. For Kanna itself: don't keep every
+version; keep **the results and a summary**, committed into the monorepo. That
+commit is **a step of the workflow** at the hand-off, not a manual chore. For
+this design it is the spec plus the final artifacts in
+[`app-design/`](app-design/) (§12).
+
 ## 8. Feedback reaches the agent's live session
 
 **Prototype.** Every kind of feedback is delivered into the task's live agent
@@ -160,6 +176,9 @@ operator`), with enough context for the agent to act without asking:
 | App (HTML) pin | the same, plus the selector |
 | Simulator pin | the spot as a percentage, and zoom and context crops with a ring on it |
 
+- **Owner:** feedback is **queued** and fed to the agent as it becomes free, not
+  typed into the session mid-turn. (The prototype delivered immediately, and
+  comments landed in the middle of the agent's work.)
 - Each message carries the thread id and how to answer in place; the agent
   replies in the thread, resolves it, or edits the artifact.
 - The surface shows each comment's delivery status ("delivered to session ✓",
@@ -189,7 +208,33 @@ Recorded so the real build does not repeat them:
 6. **Screenshots make the Simulator flash.** Capture only while a preview is
    watched.
 
-## 10. Not in scope, and open questions
+## 10. Building it
+
+**Owner:** vertical slices are vertical: each slice captures **all layers** as
+the work moves through it (UI, server, agent tools, delivery), not one layer at
+a time. The software factory builds this spec that way.
+
+**Proposed** slice order, each one end to end:
+
+1. **App Design core:** a design task in one live session; the live doc with
+   comments and `/agent`; feedback queued to the agent's terminal; the agent's
+   tools to edit, reply and resolve (§10a); Approve for build with the results
+   committed per policy.
+2. **Mockups:** static and interactive mockup stages with element pins.
+3. **System Design:** the living spec document with per-stage summaries.
+4. **Mobile:** the live HTML device view with element pins; the simulator view.
+
+Later, outside the first slices: the long-term simulator approach, Radicle
+sharing, one comment model.
+
+### 10a. Agent tools
+
+**Proposed:** the prototype's agent used scripts to read and edit the live doc,
+reply to and resolve threads, publish mockups and answer pins. In the product
+these become Kanna tools (MCP and `kanna-cli`) with a stable contract, and the
+`mockup` agent definition uses them.
+
+## 11. Not in scope, and open questions
 
 - **Simulator long term (Open).** Users run Kanna, they don't build it, so
   nothing from Kanna's own toolchain can be assumed. Options:
@@ -209,14 +254,18 @@ Recorded so the real build does not repeat them:
   mockup pins together through the bridge. The real build should have one Kanna
   comment model across docs, mockups, app pins and messages.
 - **Where live docs are served (Open).** The prototype ran its own Yjs sync
-  server; whether that belongs in `kanna-server`, the daemon or a separate
-  process is a planning decision.
+  server. Recommended: inside `kanna-server`, which already owns durable task
+  state and the API, reaches the phone through the relay, and can queue
+  delivery itself; the alternative is a separate sync process.
+- **What the phone gets (Open).** Kanna treats mobile as a first-class
+  companion. Recommended minimum: view the current stage's artifact and
+  comment or pin from the phone; otherwise V1 is explicitly desktop only.
 - **Element identity on the simulator (Open).** A simulator pin knows *where*
   but not *what*; a native app would need the accessibility tree (XCTest).
 - Multi-user editing beyond one person and one agent, and cross-account sharing
   of live docs, are not in scope.
 
-## 11. The final artifacts
+## 12. The final artifacts
 
 The last revision of each design artifact is kept next to this spec, as text
 (HTML and SVG). Open them in a browser; they need nothing else.
@@ -231,10 +280,13 @@ The last revision of each design artifact is kept next to this spec, as text
 | [`merge-diff.html`](app-design/merge-diff.html) | The PR review diff with the agent's risk flags |
 
 The working prototype itself is throwaway code and is not kept in the
-repository (§7). Its approved revision is the **Approve for build** snapshot in
-Kanna's artifact store: the built prototype, its committed source and the
-approval note, with the owner's decision recorded on that exact artifact id.
-Artifact id: *recorded when the owner approves it*.
+repository (§7, §7a).
+
+**Approved for build** by the owner on 2026-09-26 (given in the design
+session): prototype commit `5b93047b10a2890351c239262d1c1bd74f37215c`. The
+approval note is [`app-design/APPROVAL.md`](app-design/APPROVAL.md). The
+running Kanna build had no artifact store, so no artifact id was recorded;
+under Kanna's policy (§7a) the committed results in this folder are the record.
 
 Evidence: the prototype's disposable repository (`.tmp/prototype` in task
 `2d6b4196`'s worktree, 2026-09-25), the 18 pins on the interactive mockup, and
