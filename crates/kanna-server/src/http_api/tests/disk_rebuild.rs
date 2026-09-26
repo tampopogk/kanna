@@ -518,6 +518,18 @@ pub(super) async fn build_fixture_with(authority: crate::task_store::authority::
         [],
     )
     .unwrap();
+    // An App Design session with a thread, its comment and delivery, an
+    // agent operation and an approval.
+    for statement in [
+        "INSERT INTO design_session (task_id, stage, epoch, position, schema_version) VALUES ('active', 'in progress', 1, 'static', 'kanna-design-doc/1')",
+        "INSERT INTO design_thread (id, task_id, epoch, number, kind, anchor_block_id, quoted_text) VALUES ('th-1', 'active', 1, 1, 'comment', 'block-1', 'the text')",
+        "INSERT INTO design_comment (id, thread_id, task_id, author, body, client_op_id) VALUES ('cm-1', 'th-1', 'active', 'operator', 'tighten this', 'cm-1')",
+        "INSERT INTO design_delivery (id, task_id, epoch, sequence, comment_id, state) VALUES ('dl-1', 'active', 1, 1, 'cm-1', 'queued')",
+        "INSERT INTO design_agent_op (task_id, op_id, kind, result) VALUES ('active', 'op-1', 'reply', '{}')",
+        "INSERT INTO design_approval (id, task_id, epoch, phase, doc_revision, doc_sha256, policy_json) VALUES ('ap-1', 'active', 1, 'candidate', 0, 'sha', '{}')",
+    ] {
+        conn.execute(statement, []).unwrap();
+    }
     // A completion retry key on the parked gate, and the PR it reviews.
     db.record_contextless_completion_attempt("attempt-1", "gate-run", "success")
         .unwrap();

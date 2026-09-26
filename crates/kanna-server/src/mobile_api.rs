@@ -1522,8 +1522,8 @@ impl MobileApi {
             .latest_run
             .as_ref()
             .map(|run| roleless_current_stage && run.status == "running" && run.agent.is_none());
-        detail.design = crate::design::service::task_summary(&self._db, &task_id)
-            .unwrap_or_else(|error| {
+        detail.design =
+            crate::design::service::task_summary(&self._db, &task_id).unwrap_or_else(|error| {
                 log::warn!("design summary for {task_id} unavailable: {error}");
                 None
             });

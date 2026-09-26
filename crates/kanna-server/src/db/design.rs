@@ -258,9 +258,6 @@ pub struct DesignDeliveryRow {
 impl DesignDeliveryRow {
     pub const QUEUED: &'static str = "queued";
     pub const DELIVERING: &'static str = "delivering";
-    pub const DELIVERED: &'static str = "delivered";
-    pub const UNCERTAIN: &'static str = "uncertain";
-    pub const CANCELLED: &'static str = "cancelled";
 
     fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
@@ -359,7 +356,10 @@ impl DesignApprovalRow {
 /// a retried request with the same idempotency key).
 #[derive(Debug, Clone)]
 pub struct CreatedDesignComment {
+    // The rows are what the tests inspect; callers answer from the view.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub thread: DesignThreadRow,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub comment: DesignCommentRow,
     pub created: bool,
 }
@@ -383,8 +383,7 @@ const SESSION_COLUMNS: &str = "task_id, stage, epoch, position, schema_version, 
      status, created_at, updated_at";
 const THREAD_COLUMNS: &str = "id, task_id, epoch, number, kind, anchor_block_id, quoted_text, \
      anchor_state_vector, status, created_at, resolved_at, resolved_by";
-const COMMENT_COLUMNS: &str =
-    "id, thread_id, task_id, author, body, client_op_id, created_at";
+const COMMENT_COLUMNS: &str = "id, thread_id, task_id, author, body, client_op_id, created_at";
 const DELIVERY_COLUMNS: &str = "id, task_id, epoch, sequence, comment_id, kind, body, state, \
      attempt_id, daemon_instance, attempts, detail, created_at, updated_at, delivered_at";
 const APPROVAL_COLUMNS: &str = "id, task_id, epoch, phase, doc_revision, doc_sha256, \
@@ -579,10 +578,8 @@ impl Db {
                 [task_id],
                 |row| row.get(0),
             )?;
-            db.conn.execute(
-                "DELETE FROM design_doc_update WHERE task_id = ?",
-                [task_id],
-            )?;
+            db.conn
+                .execute("DELETE FROM design_doc_update WHERE task_id = ?", [task_id])?;
             db.conn.execute(
                 "INSERT INTO design_doc_update (task_id, seq, update_bytes, origin)
                  VALUES (?, ?, ?, 'compacted')",
@@ -717,7 +714,15 @@ impl Db {
         self.conn.execute(
             "INSERT INTO design_delivery (id, task_id, epoch, sequence, comment_id, kind, body)
              VALUES (?, ?, ?, ?, ?, ?, ?)",
-            params![delivery_id, task_id, epoch, sequence, comment_id, kind, body],
+            params![
+                delivery_id,
+                task_id,
+                epoch,
+                sequence,
+                comment_id,
+                kind,
+                body
+            ],
         )?;
         Ok(())
     }
@@ -902,6 +907,7 @@ impl Db {
 
     // -- deliveries ---------------------------------------------------------
 
+    #[cfg(test)]
     pub(crate) fn design_delivery(
         &self,
         delivery_id: &str,
@@ -1099,20 +1105,6 @@ impl Db {
     }
 
     // -- approvals ----------------------------------------------------------
-
-    pub(crate) fn design_approvals(
-        &self,
-        task_id: &str,
-    ) -> Result<Vec<DesignApprovalRow>, rusqlite::Error> {
-        let mut statement = self.conn.prepare(&format!(
-            "SELECT {APPROVAL_COLUMNS} FROM design_approval WHERE task_id = ?
-             ORDER BY created_at, rowid"
-        ))?;
-        let rows = statement
-            .query_map([task_id], DesignApprovalRow::from_row)?
-            .collect();
-        rows
-    }
 
     pub(crate) fn design_approval(
         &self,

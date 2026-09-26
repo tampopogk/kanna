@@ -467,10 +467,9 @@ impl Db {
         // strand them. Refused until the design is handed off.
         if transfer.direction == "outgoing" {
             if let Some(source) = transfer.source_task_id.as_deref() {
-                if self
-                    .design_session(source)?
-                    .is_some_and(|session| session.status != super::design::DesignSessionRow::HANDED_OFF)
-                {
+                if self.design_session(source)?.is_some_and(|session| {
+                    session.status != super::design::DesignSessionRow::HANDED_OFF
+                }) {
                     return Err(rusqlite::Error::SqliteFailure(
                         rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
                         Some(format!(

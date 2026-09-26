@@ -23,15 +23,29 @@ const MAX_QUOTE_CHARS: usize = 2_000;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub(crate) enum DesignError {
-    NotFound { message: String },
+    NotFound {
+        message: String,
+    },
     /// The task has no design stage, or is not in it for this operation.
-    NotDesigning { message: String },
-    Invalid { message: String },
-    Conflict { message: String },
+    NotDesigning {
+        message: String,
+    },
+    Invalid {
+        message: String,
+    },
+    Conflict {
+        message: String,
+    },
     /// A client or document on another schema version.
-    Schema { message: String },
-    Unavailable { message: String },
-    Internal { message: String },
+    Schema {
+        message: String,
+    },
+    Unavailable {
+        message: String,
+    },
+    Internal {
+        message: String,
+    },
 }
 
 impl DesignError {
@@ -67,7 +81,9 @@ impl From<rusqlite::Error> for DesignError {
                 message: "not found".into(),
             },
             error if error.to_string().contains("transfer") => Self::Conflict {
-                message: format!("the task is being transferred; try again after it settles ({error})"),
+                message: format!(
+                    "the task is being transferred; try again after it settles ({error})"
+                ),
             },
             error => Self::internal(format!("db error: {error}")),
         }
@@ -79,7 +95,9 @@ impl From<LiveError> for DesignError {
         match error {
             LiveError::Document(document::DocumentError::UnsupportedSchema { detail }) => {
                 Self::Schema {
-                    message: format!("the document holds content this schema does not know: {detail}"),
+                    message: format!(
+                        "the document holds content this schema does not know: {detail}"
+                    ),
                 }
             }
             LiveError::Document(document::DocumentError::BlockNotFound { block_id }) => {
@@ -249,7 +267,8 @@ impl ApprovalView {
             error: row.error.clone(),
             approved_at: row.approved_at.clone(),
             confirmation_expires_at: row.confirmation_expires_at.clone(),
-            stale: row.phase == DesignApprovalRow::CANDIDATE && row.doc_revision != current_revision,
+            stale: row.phase == DesignApprovalRow::CANDIDATE
+                && row.doc_revision != current_revision,
         }
     }
 }
@@ -282,9 +301,15 @@ pub(crate) fn task_summary(db: &Db, task_id: &str) -> Result<Option<TaskDesignSu
     let Some(stage) = crate::task_creator::task_design_stage(db, task_id)? else {
         return Ok(None);
     };
-    let session = db.design_session(task_id).map_err(|error| error.to_string())?;
-    let threads = db.design_threads(task_id).map_err(|error| error.to_string())?;
-    let deliveries = db.design_deliveries(task_id).map_err(|error| error.to_string())?;
+    let session = db
+        .design_session(task_id)
+        .map_err(|error| error.to_string())?;
+    let threads = db
+        .design_threads(task_id)
+        .map_err(|error| error.to_string())?;
+    let deliveries = db
+        .design_deliveries(task_id)
+        .map_err(|error| error.to_string())?;
     let approval = db
         .current_design_approval(task_id)
         .map_err(|error| error.to_string())?;
@@ -297,7 +322,13 @@ pub(crate) fn task_summary(db: &Db, task_id: &str) -> Result<Option<TaskDesignSu
         position: session
             .as_ref()
             .map(|session| session.position.clone())
-            .or_else(|| stage.design.positions.first().map(|position| position.name.clone()))
+            .or_else(|| {
+                stage
+                    .design
+                    .positions
+                    .first()
+                    .map(|position| position.name.clone())
+            })
             .unwrap_or_default(),
         positions: stage
             .design
@@ -310,12 +341,18 @@ pub(crate) fn task_summary(db: &Db, task_id: &str) -> Result<Option<TaskDesignSu
             .collect(),
         next_stage: stage.next_stage.clone(),
         stage: stage.stage,
-        open_threads: threads.iter().filter(|thread| thread.status == "open").count() as i64,
+        open_threads: threads
+            .iter()
+            .filter(|thread| thread.status == "open")
+            .count() as i64,
         waiting_feedback: deliveries
             .iter()
             .filter(|row| matches!(row.state.as_str(), "queued" | "delivering"))
             .count() as i64,
-        uncertain_feedback: deliveries.iter().filter(|row| row.state == "uncertain").count() as i64,
+        uncertain_feedback: deliveries
+            .iter()
+            .filter(|row| row.state == "uncertain")
+            .count() as i64,
         approval_phase: approval.map(|approval| approval.phase),
     }))
 }
@@ -349,9 +386,7 @@ pub(crate) fn ensure_session(
         .map(|position| position.name.clone())
         .ok_or_else(|| DesignError::internal("design stage has no positions"))?;
     let session = match db.design_session(task_id)? {
-        Some(session)
-            if stage.is_current() && session.status == DesignSessionRow::HANDED_OFF =>
-        {
+        Some(session) if stage.is_current() && session.status == DesignSessionRow::HANDED_OFF => {
             db.begin_design_epoch(task_id, &stage.stage)?;
             db.design_session(task_id)?.expect("session exists")
         }
@@ -391,7 +426,11 @@ fn require_designing(
 
 /// Where the design's throwaway prototype code lives: a git repository in
 /// the task's directory, outside the monorepo worktree, created on first use.
-pub(crate) fn scratch_repository(db_path: &str, task_id: &str, epoch: i64) -> Option<std::path::PathBuf> {
+pub(crate) fn scratch_repository(
+    db_path: &str,
+    task_id: &str,
+    epoch: i64,
+) -> Option<std::path::PathBuf> {
     let dir = crate::task_store::task_dir_for_db_path(db_path, task_id)?
         .join("design")
         .join(format!("scratch-{epoch}"));
@@ -410,18 +449,22 @@ pub(crate) fn view(
     include_document: bool,
 ) -> Result<DesignView, DesignError> {
     let (stage, session) = ensure_session(db, task_id)?;
-    let stage_chain = crate::task_creator::task_stage_names(db, task_id).map_err(DesignError::internal)?;
-    let (blocks, revision, covers) = runtime.documents.read(db, db_path, task_id, |document, revision| {
-        let blocks = document.project();
-        let threads = db.design_threads(task_id)?;
-        let mut covers = HashMap::new();
-        for thread in &threads {
-            if let Some(vector) = &thread.anchor_state_vector {
-                covers.insert(thread.id.clone(), document.covers(vector).unwrap_or(true));
-            }
-        }
-        Ok((blocks, revision, covers))
-    })?;
+    let stage_chain =
+        crate::task_creator::task_stage_names(db, task_id).map_err(DesignError::internal)?;
+    let (blocks, revision, covers) =
+        runtime
+            .documents
+            .read(db, db_path, task_id, |document, revision| {
+                let blocks = document.project();
+                let threads = db.design_threads(task_id)?;
+                let mut covers = HashMap::new();
+                for thread in &threads {
+                    if let Some(vector) = &thread.anchor_state_vector {
+                        covers.insert(thread.id.clone(), document.covers(vector).unwrap_or(true));
+                    }
+                }
+                Ok((blocks, revision, covers))
+            })?;
     let anchors = blocks
         .as_ref()
         .map(|blocks| document::comment_anchors(blocks))
@@ -481,7 +524,10 @@ fn thread_views(
     let threads = db.design_threads(task_id)?;
     let mut comments: HashMap<String, Vec<DesignCommentRow>> = HashMap::new();
     for comment in db.design_comments(task_id)? {
-        comments.entry(comment.thread_id.clone()).or_default().push(comment);
+        comments
+            .entry(comment.thread_id.clone())
+            .or_default()
+            .push(comment);
     }
     let deliveries: HashMap<String, DesignDeliveryRow> = db
         .design_deliveries(task_id)?
@@ -703,7 +749,9 @@ pub(crate) fn create_thread(
     let vector = match (&request.kind[..], &request.anchor) {
         ("comment", Some(anchor)) => {
             if anchor.block_id.is_empty() || anchor.quoted_text.trim().is_empty() {
-                return Err(DesignError::invalid("a comment needs the text it is anchored to"));
+                return Err(DesignError::invalid(
+                    "a comment needs the text it is anchored to",
+                ));
             }
             anchor
                 .state_vector
@@ -712,7 +760,9 @@ pub(crate) fn create_thread(
                 .transpose()?
         }
         ("comment", None) => {
-            return Err(DesignError::invalid("a comment needs an anchor; send an /agent message instead"))
+            return Err(DesignError::invalid(
+                "a comment needs an anchor; send an /agent message instead",
+            ))
         }
         ("message", None) => None,
         ("message", Some(_)) => return Err(DesignError::invalid("a message has no anchor")),
@@ -729,7 +779,10 @@ pub(crate) fn create_thread(
             thread_id: &request.thread_id,
             comment_id: &request.comment_id,
             kind: &request.kind,
-            anchor_block_id: request.anchor.as_ref().map(|anchor| anchor.block_id.as_str()),
+            anchor_block_id: request
+                .anchor
+                .as_ref()
+                .map(|anchor| anchor.block_id.as_str()),
             quoted_text: quoted.as_deref(),
             anchor_state_vector: vector.as_deref(),
             body,
@@ -792,7 +845,16 @@ pub(crate) fn reply_as_agent(
     ensure_session(db, task_id)?;
     let comment_id = new_id("cm")?;
     let created = db
-        .add_design_comment(task_id, thread_id, &comment_id, "agent", body, Some(op_id), None, None)
+        .add_design_comment(
+            task_id,
+            thread_id,
+            &comment_id,
+            "agent",
+            body,
+            Some(op_id),
+            None,
+            None,
+        )
         .map_err(|error| match error {
             rusqlite::Error::QueryReturnedNoRows => DesignError::NotFound {
                 message: format!("thread {thread_id} is not in task {task_id}"),

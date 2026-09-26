@@ -117,7 +117,12 @@ pub(crate) fn state_digest(state: &[u8]) -> String {
 }
 
 impl LiveDocuments {
-    fn load(&self, db: &Db, db_path: &str, task_id: &str) -> Result<Arc<Mutex<LiveDocument>>, LiveError> {
+    fn load(
+        &self,
+        db: &Db,
+        db_path: &str,
+        task_id: &str,
+    ) -> Result<Arc<Mutex<LiveDocument>>, LiveError> {
         if let Some(live) = self.documents.lock().unwrap().get(task_id) {
             return Ok(Arc::clone(live));
         }
@@ -255,13 +260,15 @@ impl LiveDocuments {
         db_path: &str,
         task_id: &str,
         op_id: &str,
-        edit: impl FnOnce(&mut DesignDocument) -> Result<(serde_json::Value, Option<Vec<u8>>), LiveError>,
+        edit: impl FnOnce(
+            &mut DesignDocument,
+        ) -> Result<(serde_json::Value, Option<Vec<u8>>), LiveError>,
     ) -> Result<(serde_json::Value, i64), LiveError> {
         let live = self.load(db, db_path, task_id)?;
         let mut guard = live.lock().unwrap();
         if let Some((_, recorded)) = db.design_agent_op(task_id, op_id)? {
-            let mut value: serde_json::Value =
-                serde_json::from_str(&recorded).map_err(|error| LiveError::Db(error.to_string()))?;
+            let mut value: serde_json::Value = serde_json::from_str(&recorded)
+                .map_err(|error| LiveError::Db(error.to_string()))?;
             value["replayed"] = serde_json::Value::Bool(true);
             return Ok((value, guard.revision));
         }

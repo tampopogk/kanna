@@ -2542,22 +2542,36 @@ mod design_delivery_tests {
             let (sessions, handle, pid) = manager_with("task-1", record).await;
             let mut input_rx = handle.take_input_rx().await.unwrap();
             let delivery = id(label);
-            let answer =
-                design_input_event(&running(), &sessions, "task-1", pid, &delivery, b"hello".to_vec()).await;
+            let answer = design_input_event(
+                &running(),
+                &sessions,
+                "task-1",
+                pid,
+                &delivery,
+                b"hello".to_vec(),
+            )
+            .await;
             assert!(
                 matches!(outcome(&answer), DesignDeliveryOutcome::NotFree { .. }),
                 "{label}: {answer:?}"
             );
-            assert!(input_rx.try_recv().is_err(), "{label}: nothing may reach the writer");
+            assert!(
+                input_rx.try_recv().is_err(),
+                "{label}: nothing may reach the writer"
+            );
             // Refused ids are not remembered: the same batch may be sent later.
-            assert_eq!(crate::design_delivery::outcome(&delivery), DesignDeliveryOutcome::Unknown);
+            assert_eq!(
+                crate::design_delivery::outcome(&delivery),
+                DesignDeliveryOutcome::Unknown
+            );
             handle.kill().await.unwrap();
         }
     }
 
     #[tokio::test]
     async fn a_free_agent_is_written_once_and_a_repeat_answers_from_the_receipt() {
-        let (sessions, handle, pid) = manager_with("task-2", record(SessionStatus::Idle, true, Some(0))).await;
+        let (sessions, handle, pid) =
+            manager_with("task-2", record(SessionStatus::Idle, true, Some(0))).await;
         let mut input_rx = handle.take_input_rx().await.unwrap();
         // Stand in for the PTY writer: acknowledge each queued input once.
         let writer = tokio::spawn(async move {
@@ -2569,11 +2583,25 @@ mod design_delivery_tests {
             written
         });
         let delivery = id("free");
-        let first =
-            design_input_event(&running(), &sessions, "task-2", pid, &delivery, b"feedback".to_vec()).await;
+        let first = design_input_event(
+            &running(),
+            &sessions,
+            "task-2",
+            pid,
+            &delivery,
+            b"feedback".to_vec(),
+        )
+        .await;
         assert_eq!(outcome(&first), DesignDeliveryOutcome::Delivered);
-        let again =
-            design_input_event(&running(), &sessions, "task-2", pid, &delivery, b"feedback".to_vec()).await;
+        let again = design_input_event(
+            &running(),
+            &sessions,
+            "task-2",
+            pid,
+            &delivery,
+            b"feedback".to_vec(),
+        )
+        .await;
         assert_eq!(outcome(&again), DesignDeliveryOutcome::Delivered);
         handle.kill().await.unwrap();
         drop(sessions);
@@ -2584,7 +2612,9 @@ mod design_delivery_tests {
             .unwrap_or_default();
         let text: Vec<u8> = written.concat();
         assert_eq!(
-            text.windows(b"feedback".len()).filter(|window| window == b"feedback").count(),
+            text.windows(b"feedback".len())
+                .filter(|window| window == b"feedback")
+                .count(),
             1,
             "the message is typed exactly once"
         );
@@ -2592,10 +2622,18 @@ mod design_delivery_tests {
 
     #[tokio::test]
     async fn a_changed_session_or_a_committed_handoff_writes_nothing() {
-        let (sessions, handle, pid) = manager_with("task-3", record(SessionStatus::Idle, true, Some(0))).await;
+        let (sessions, handle, pid) =
+            manager_with("task-3", record(SessionStatus::Idle, true, Some(0))).await;
         let mut input_rx = handle.take_input_rx().await.unwrap();
-        let wrong_pid =
-            design_input_event(&running(), &sessions, "task-3", pid + 1, &id("pid"), b"x".to_vec()).await;
+        let wrong_pid = design_input_event(
+            &running(),
+            &sessions,
+            "task-3",
+            pid + 1,
+            &id("pid"),
+            b"x".to_vec(),
+        )
+        .await;
         assert!(matches!(
             wrong_pid,
             Event::Error {
@@ -2604,8 +2642,15 @@ mod design_delivery_tests {
             }
         ));
         let committed = tokio::sync::RwLock::new(DaemonLifecycleState::HandoffCommitted);
-        let handing_off =
-            design_input_event(&committed, &sessions, "task-3", pid, &id("handoff"), b"x".to_vec()).await;
+        let handing_off = design_input_event(
+            &committed,
+            &sessions,
+            "task-3",
+            pid,
+            &id("handoff"),
+            b"x".to_vec(),
+        )
+        .await;
         assert!(matches!(
             handing_off,
             Event::Error {

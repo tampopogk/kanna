@@ -4,8 +4,15 @@ fn db_with_task() -> (Db, String) {
     let path = Db::test_db_path("design");
     let db = Db::open_for_tests(&path).unwrap();
     db.insert_test_repo("repo-1", "Repo One").unwrap();
-    db.insert_test_pipeline_item("task-1", "repo-1", "prompt", None, "design", "2026-09-26 00:00:00")
-        .unwrap();
+    db.insert_test_pipeline_item(
+        "task-1",
+        "repo-1",
+        "prompt",
+        None,
+        "design",
+        "2026-09-26 00:00:00",
+    )
+    .unwrap();
     (db, "task-1".to_string())
 }
 
@@ -44,7 +51,10 @@ fn a_session_is_created_once() {
     assert_eq!(first, second);
     assert!(db.set_design_position(&task, "prototype").unwrap());
     assert!(!db.set_design_position(&task, "prototype").unwrap());
-    assert_eq!(db.design_session(&task).unwrap().unwrap().position, "prototype");
+    assert_eq!(
+        db.design_session(&task).unwrap().unwrap().position,
+        "prototype"
+    );
 }
 
 #[test]
@@ -71,8 +81,12 @@ fn feedback_and_its_delivery_are_one_write_and_retries_are_the_same_thread() {
         .unwrap();
     db.add_design_comment(&task, "t1", "c3", "agent", "done", Some("op-1"), None, None)
         .unwrap();
-    assert!(db.set_design_thread_resolved(&task, "t1", true, "agent").unwrap());
-    assert!(!db.set_design_thread_resolved(&task, "t1", true, "agent").unwrap());
+    assert!(db
+        .set_design_thread_resolved(&task, "t1", true, "agent")
+        .unwrap());
+    assert!(!db
+        .set_design_thread_resolved(&task, "t1", true, "agent")
+        .unwrap());
     let numbers: Vec<(String, i64, String)> = db
         .design_threads(&task)
         .unwrap()
@@ -117,7 +131,10 @@ fn an_attempt_is_reserved_released_or_settled_once() {
     assert_eq!(db.delivering_design_deliveries().unwrap().len(), 2);
     let settled = db.mark_design_attempt_delivered("attempt-3").unwrap();
     assert_eq!(settled.len(), 2);
-    assert!(db.mark_design_attempt_delivered("attempt-3").unwrap().is_empty());
+    assert!(db
+        .mark_design_attempt_delivered("attempt-3")
+        .unwrap()
+        .is_empty());
     assert!(db.tasks_with_open_design_deliveries().unwrap().is_empty());
 }
 
@@ -144,7 +161,17 @@ fn a_new_epoch_invalidates_unfinished_approvals_and_keeps_queued_feedback() {
     db.create_design_thread(&task, thread("t1", "c1", Some("d1")))
         .unwrap();
     db.insert_design_candidate(
-        "a1", &task, 1, 3, "sha", "commit", None, None, "{}", "hash", "2099-01-01T00:00:00Z",
+        "a1",
+        &task,
+        1,
+        3,
+        "sha",
+        "commit",
+        None,
+        None,
+        "{}",
+        "hash",
+        "2099-01-01T00:00:00Z",
     )
     .unwrap();
     assert!(db
@@ -167,10 +194,18 @@ fn a_new_epoch_invalidates_unfinished_approvals_and_keeps_queued_feedback() {
             &DesignApprovalUpdate::default(),
         )
         .unwrap());
-    assert!(db.design_approval("a1").unwrap().unwrap().confirmation_hash.is_none());
+    assert!(db
+        .design_approval("a1")
+        .unwrap()
+        .unwrap()
+        .confirmation_hash
+        .is_none());
     let epoch = db.begin_design_epoch(&task, "design").unwrap();
     assert_eq!(epoch, 2);
-    assert_eq!(db.design_approval("a1").unwrap().unwrap().phase, "invalidated");
+    assert_eq!(
+        db.design_approval("a1").unwrap().unwrap().phase,
+        "invalidated"
+    );
     assert!(db.current_design_approval(&task).unwrap().is_none());
     assert_eq!(db.design_delivery("d1").unwrap().unwrap().epoch, 2);
 }
@@ -179,8 +214,14 @@ fn a_new_epoch_invalidates_unfinished_approvals_and_keeps_queued_feedback() {
 fn document_updates_advance_the_revision_and_compact() {
     let (db, task) = db_with_task();
     session(&db, &task);
-    assert_eq!(db.append_design_doc_update(&task, &[1], "client").unwrap(), 1);
-    assert_eq!(db.append_design_doc_update(&task, &[2], "agent").unwrap(), 2);
+    assert_eq!(
+        db.append_design_doc_update(&task, &[1], "client").unwrap(),
+        1
+    );
+    assert_eq!(
+        db.append_design_doc_update(&task, &[2], "agent").unwrap(),
+        2
+    );
     assert_eq!(db.design_doc_updates(&task).unwrap().len(), 2);
     db.compact_design_doc(&task, &[9, 9]).unwrap();
     assert_eq!(db.design_doc_updates(&task).unwrap(), vec![(2, vec![9, 9])]);
@@ -208,7 +249,10 @@ fn a_task_with_a_live_design_is_not_transferred_until_handed_off() {
         payload_json: None,
     };
     let refused = db.insert_task_transfer(&transfer("tr-1")).unwrap_err();
-    assert!(crate::db::is_live_design_transfer_refusal(&refused), "{refused}");
+    assert!(
+        crate::db::is_live_design_transfer_refusal(&refused),
+        "{refused}"
+    );
     db.set_design_session_status(&task, DesignSessionRow::HANDED_OFF)
         .unwrap();
     db.insert_task_transfer(&transfer("tr-2")).unwrap();

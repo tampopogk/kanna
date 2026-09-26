@@ -2765,7 +2765,8 @@ fn attention_tools_set_locally_and_clear_on_owning_machine() {
 /// and a conflict comes back as the server's structured answer.
 #[test]
 fn design_tools_call_the_typed_design_routes() {
-    let ops = json!([{ "op": "replace_text", "block_id": "b1", "expected_text": "old", "text": "new" }]);
+    let ops =
+        json!([{ "op": "replace_text", "block_id": "b1", "expected_text": "old", "text": "new" }]);
     let (base_url, server) = start_http_fixture(vec![
         ExpectedRequest {
             method: "GET",
@@ -2816,7 +2817,10 @@ fn design_tools_call_the_typed_design_routes() {
     );
     assert_eq!(tool_text(&responses[1])["position"], json!("static"));
     assert_eq!(tool_text(&responses[2])["status"], json!("conflict"));
-    assert_eq!(tool_text(&responses[3])["deliveryStatus"], json!("agent_replied"));
+    assert_eq!(
+        tool_text(&responses[3])["deliveryStatus"],
+        json!("agent_replied")
+    );
     assert_eq!(tool_text(&responses[4])["status"], json!("resolved"));
     assert_eq!(tool_text(&responses[5])["position"], json!("prototype"));
     assert_eq!(server.join().unwrap().len(), 5);

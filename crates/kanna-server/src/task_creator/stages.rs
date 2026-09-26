@@ -684,7 +684,9 @@ fn prepare_post_dispatch(
     // exactly which files to commit, instead of the generic "commit the
     // work", which would sweep up anything in the worktree.
     let design_instruction = if owner.design.is_some() {
-        Some(crate::design::approval::commit_step_instruction(db, task_id)?)
+        Some(crate::design::approval::commit_step_instruction(
+            db, task_id,
+        )?)
     } else {
         None
     };
@@ -2319,9 +2321,12 @@ pub(crate) fn task_design_stage(db: &Db, task_id: &str) -> Result<Option<TaskDes
         .get_pipeline_item(task_id)
         .map_err(|error| format!("db error: {error}"))?
         .and_then(|item| item.stage);
-    let current_index = current_stage
-        .as_deref()
-        .and_then(|stage| workflow.stages.iter().position(|candidate| candidate.name == stage));
+    let current_index = current_stage.as_deref().and_then(|stage| {
+        workflow
+            .stages
+            .iter()
+            .position(|candidate| candidate.name == stage)
+    });
     let candidates = workflow
         .stages
         .iter()

@@ -65,7 +65,12 @@ fn block_markdown(block: &ProjectedBlock, depth: usize, number: &mut usize, out:
     }
     let line = match block.kind.as_str() {
         "heading" => {
-            let level = block.props.get("level").and_then(Value::as_u64).unwrap_or(1).clamp(1, 6);
+            let level = block
+                .props
+                .get("level")
+                .and_then(Value::as_u64)
+                .unwrap_or(1)
+                .clamp(1, 6);
             format!("{} {text}", "#".repeat(level as usize))
         }
         "bulletListItem" | "toggleListItem" => format!("{indent}- {text}"),
@@ -135,10 +140,19 @@ fn run_html(run: &ProjectedRun, numbers: &BTreeMap<String, i64>) -> String {
 }
 
 fn block_html(block: &ProjectedBlock, numbers: &BTreeMap<String, i64>, out: &mut String) {
-    let content: String = block.content.iter().map(|run| run_html(run, numbers)).collect();
+    let content: String = block
+        .content
+        .iter()
+        .map(|run| run_html(run, numbers))
+        .collect();
     let body = match block.kind.as_str() {
         "heading" => {
-            let level = block.props.get("level").and_then(Value::as_u64).unwrap_or(1).clamp(1, 6);
+            let level = block
+                .props
+                .get("level")
+                .and_then(Value::as_u64)
+                .unwrap_or(1)
+                .clamp(1, 6);
             format!("<h{level}>{content}</h{level}>")
         }
         "bulletListItem" | "toggleListItem" => format!("<ul><li>{content}</li></ul>"),
@@ -168,7 +182,11 @@ fn block_html(block: &ProjectedBlock, numbers: &BTreeMap<String, i64>, out: &mut
 
 /// The document as a self-contained page for the snapshot. Anchored text is
 /// marked the way the editor marks it; no script, no external resource.
-pub(crate) fn document_html(title: &str, blocks: &[ProjectedBlock], threads: &[ThreadView]) -> String {
+pub(crate) fn document_html(
+    title: &str,
+    blocks: &[ProjectedBlock],
+    threads: &[ThreadView],
+) -> String {
     let numbers: BTreeMap<String, i64> = threads
         .iter()
         .map(|thread| (thread.id.clone(), thread.number))
@@ -227,7 +245,10 @@ pub(crate) fn feedback_markdown(threads: &[ThreadView]) -> String {
             } else {
                 "Person"
             };
-            out.push_str(&format!("- **{who}:** {}\n", comment.body.replace('\n', " ")));
+            out.push_str(&format!(
+                "- **{who}:** {}\n",
+                comment.body.replace('\n', " ")
+            ));
         }
         out.push('\n');
     }
@@ -250,7 +271,10 @@ pub(crate) struct SummaryFacts<'a> {
 
 /// The hand-off summary the repository keeps beside the document.
 pub(crate) fn summary_markdown(facts: &SummaryFacts<'_>, threads: &[ThreadView]) -> String {
-    let open = threads.iter().filter(|thread| thread.status == "open").count();
+    let open = threads
+        .iter()
+        .filter(|thread| thread.status == "open")
+        .count();
     let mut out = format!(
         "# Design summary: {}\n\n\
          Approved for build{}. The approved design is `design.md` beside this file; \

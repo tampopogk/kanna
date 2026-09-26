@@ -2740,12 +2740,16 @@ fn validate_design_stages(workflow: &WorkflowDefinition) -> Result<(), String> {
             ));
         }
         if design.positions.is_empty() {
-            return Err(format!("stage '{name}': design needs at least one position"));
+            return Err(format!(
+                "stage '{name}': design needs at least one position"
+            ));
         }
         let mut seen = std::collections::BTreeSet::new();
         for position in &design.positions {
             if position.name.is_empty() || position.label.is_empty() {
-                return Err(format!("stage '{name}': a design position needs a name and label"));
+                return Err(format!(
+                    "stage '{name}': a design position needs a name and label"
+                ));
             }
             if !seen.insert(position.name.as_str()) {
                 return Err(format!(
@@ -2778,9 +2782,10 @@ fn validate_workflow_routing(workflow: &WorkflowDefinition) -> Result<(), String
         });
     // `exit_commit` is a property of a stage's transition in either routing
     // (T13d): a legacy workflow's commit post migrates to it.
-    let uses_transition_fields = workflow.stages.iter().any(|stage| {
-        stage.setup.is_some() || stage.teardown.is_some() || stage.design.is_some()
-    });
+    let uses_transition_fields = workflow
+        .stages
+        .iter()
+        .any(|stage| stage.setup.is_some() || stage.teardown.is_some() || stage.design.is_some());
     validate_design_stages(workflow)?;
     for stage in &workflow.stages {
         if stage.exit_commit && stage.post.is_some() {

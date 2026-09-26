@@ -138,13 +138,19 @@ fn design_failure(error: DesignError) -> Response {
 async fn with_db<T: serde::Serialize + Send + 'static>(
     state: &Arc<AppState>,
     label: &'static str,
-    work: impl FnOnce(&Db, &crate::design::DesignRuntime, &str) -> Result<T, DesignError> + Send + 'static,
+    work: impl FnOnce(&Db, &crate::design::DesignRuntime, &str) -> Result<T, DesignError>
+        + Send
+        + 'static,
 ) -> Response {
     let db_path = state.config.db_path.clone();
     let runtime = state.design.clone();
     let result = run_handler_blocking(label, move || {
-        let db = Db::open(&db_path)
-            .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, format!("db error: {error}")))?;
+        let db = Db::open(&db_path).map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("db error: {error}"),
+            )
+        })?;
         Ok(work(&db, &runtime, &db_path))
     })
     .await;
@@ -211,11 +217,20 @@ pub(super) async fn wait_for_changes(
         let db_path = state.config.db_path.clone();
         let task = task_id.clone();
         run_handler_blocking("design revision", move || {
-            let db = Db::open(&db_path)
-                .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, format!("db error: {error}")))?;
+            let db = Db::open(&db_path).map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("db error: {error}"),
+                )
+            })?;
             Ok(db
                 .design_session(&task)
-                .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, format!("db error: {error}")))?
+                .map_err(|error| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("db error: {error}"),
+                    )
+                })?
                 .map(|session| session.doc_revision)
                 .unwrap_or(0))
         })
@@ -228,7 +243,9 @@ pub(super) async fn wait_for_changes(
     let mut docs = state.design.documents.subscribe(&task_id, current_doc);
     let mut feed = state.design.subscribe_feed(&task_id);
     let doc_ahead = |docs: &tokio::sync::watch::Receiver<i64>| {
-        query.doc.is_none_or(|known| (*docs.borrow()).max(current_doc) != known)
+        query
+            .doc
+            .is_none_or(|known| (*docs.borrow()).max(current_doc) != known)
     };
     let feed_ahead = |feed: &tokio::sync::watch::Receiver<u64>| {
         query.feed.is_none_or(|known| *feed.borrow() != known)
@@ -274,7 +291,10 @@ async fn sync_document(
     request: SyncRequest,
     may_write: bool,
 ) -> Response {
-    let wrote = request.update.as_deref().is_some_and(|update| !update.is_empty());
+    let wrote = request
+        .update
+        .as_deref()
+        .is_some_and(|update| !update.is_empty());
     if wrote && !may_write {
         return failure(
             StatusCode::FORBIDDEN,
@@ -379,7 +399,14 @@ pub(super) async fn resolve_thread_as_operator(
     Json(request): Json<ResolveRequest>,
 ) -> Response {
     with_db(&state, "design resolve", move |db, runtime, _| {
-        service::set_resolved(db, runtime, &task_id, &thread_id, request.resolved, "operator")
+        service::set_resolved(
+            db,
+            runtime,
+            &task_id,
+            &thread_id,
+            request.resolved,
+            "operator",
+        )
     })
     .await
 }
@@ -453,7 +480,14 @@ pub(super) async fn agent_reply(
     Json(request): Json<AgentReplyRequest>,
 ) -> Response {
     let response = with_db(&state, "design agent reply", move |db, runtime, _| {
-        service::reply_as_agent(db, runtime, &task_id, &thread_id, &request.op_id, &request.body)
+        service::reply_as_agent(
+            db,
+            runtime,
+            &task_id,
+            &thread_id,
+            &request.op_id,
+            &request.body,
+        )
     })
     .await;
     changed(&state);
@@ -503,9 +537,6 @@ pub(super) async fn reopen_design(
     response
 }
 
-#[derive(Debug, Deserialize)]
-pub(super) struct NoBody {}
-
 pub(super) async fn retry_handoff(
     _desktop: DesignDesktop,
     State(state): State<Arc<AppState>>,
@@ -520,9 +551,13 @@ pub(super) async fn retry_handoff(
 /// The hand-off's own stage advance: it dispatches the design stage's commit
 /// step to the live session. Refused by the stage engine for any other
 /// caller (see `design::approval::guard_design_exit`).
-pub(crate) async fn advance_design_stage(state: Arc<AppState>, task_id: &str) -> Result<(), String> {
+pub(crate) async fn advance_design_stage(
+    state: Arc<AppState>,
+    task_id: &str,
+) -> Result<(), String> {
     let request: super::task_actions::AdvanceStageRequest =
-        serde_json::from_value(json!({ "source": "operator" })).map_err(|error| error.to_string())?;
+        serde_json::from_value(json!({ "source": "operator" }))
+            .map_err(|error| error.to_string())?;
     let response = super::task_actions::advance_stage(
         PrivilegedTaskAccess,
         State(state),

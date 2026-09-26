@@ -116,7 +116,11 @@ fn concurrent_edits_to_different_blocks_both_survive_in_either_order() {
     let mut agent = base();
     let edit = applied(
         agent
-            .apply_ops(&[replace("title", "App Design notes", "App Design core notes")])
+            .apply_ops(&[replace(
+                "title",
+                "App Design notes",
+                "App Design core notes",
+            )])
             .unwrap(),
     );
     // Agent first, then the person's concurrent update…
@@ -282,14 +286,24 @@ fn inserts_deletes_and_updates_blocks() {
                 },
                 BlockOp::UpdateProps {
                     block_id: "check".into(),
-                    props: serde_json::json!({"checked": false}).as_object().unwrap().clone(),
+                    props: serde_json::json!({"checked": false})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
                 },
             ])
             .unwrap(),
     );
     assert_eq!(
         edit.block_ids,
-        vec!["agent-block-1", "agent-block-2", "agent-block-3", "quote", "nested", "check"]
+        vec![
+            "agent-block-1",
+            "agent-block-2",
+            "agent-block-3",
+            "quote",
+            "nested",
+            "check"
+        ]
     );
     let blocks = document.project().unwrap();
     let ids: Vec<&str> = blocks.iter().map(|block| block.id.as_str()).collect();
@@ -313,11 +327,17 @@ fn refuses_invalid_operations_without_writing() {
     let invalid = [
         BlockOp::UpdateProps {
             block_id: "title".into(),
-            props: serde_json::json!({"level": "two"}).as_object().unwrap().clone(),
+            props: serde_json::json!({"level": "two"})
+                .as_object()
+                .unwrap()
+                .clone(),
         },
         BlockOp::UpdateProps {
             block_id: "title".into(),
-            props: serde_json::json!({"shadow": true}).as_object().unwrap().clone(),
+            props: serde_json::json!({"shadow": true})
+                .as_object()
+                .unwrap()
+                .clone(),
         },
         replace("missing", "", "x"),
         replace("divider", "", "text in a divider"),
@@ -333,7 +353,10 @@ fn refuses_invalid_operations_without_writing() {
         },
     ];
     for op in invalid {
-        assert!(document.apply_ops(&[op.clone()]).is_err(), "{op:?}");
+        assert!(
+            document.apply_ops(std::slice::from_ref(&op)).is_err(),
+            "{op:?}"
+        );
         assert_eq!(document.encode_state(), state);
     }
 }
@@ -483,7 +506,7 @@ fn agent_edits_fixture_is_current() {
         serde_json::from_str::<Value>(&json).unwrap()
     );
     // The committed document is the same one this test produced.
-    let written = DesignDocument::from_state(&std::fs::read(dir.join("agent-edits.ydoc")).unwrap())
-        .unwrap();
+    let written =
+        DesignDocument::from_state(&std::fs::read(dir.join("agent-edits.ydoc")).unwrap()).unwrap();
     assert_eq!(written.project().unwrap(), projection);
 }

@@ -26,7 +26,12 @@ static RECEIPTS: LazyLock<Mutex<Receipts>> = LazyLock::new(|| {
     let mut bytes = [0u8; 12];
     let instance = std::fs::File::open("/dev/urandom")
         .and_then(|mut random| std::io::Read::read_exact(&mut random, &mut bytes))
-        .map(|_| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>())
+        .map(|_| {
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        })
         .unwrap_or_else(|_| {
             format!(
                 "{}-{}",
@@ -189,7 +194,10 @@ mod tests {
             ],
         });
         assert_eq!(outcome(&delivered), DesignDeliveryOutcome::Delivered);
-        assert!(matches!(outcome(&in_flight), DesignDeliveryOutcome::WriteFailed { .. }));
+        assert!(matches!(
+            outcome(&in_flight),
+            DesignDeliveryOutcome::WriteFailed { .. }
+        ));
         assert!(known_instances().contains(&"predecessor".to_string()));
         assert!(export().receipts.iter().any(|(id, _)| id == &delivered));
     }

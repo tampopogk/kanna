@@ -94,10 +94,12 @@ fn serve(daemon_dir: &str, script: Shared) -> tokio::task::JoinHandle<()> {
                                     .into_iter()
                                     .collect(),
                             },
-                            Command::NegotiateDesignDelivery { version } => Event::DesignDeliveryReady {
-                                version,
-                                instance: script.instance.clone(),
-                            },
+                            Command::NegotiateDesignDelivery { version } => {
+                                Event::DesignDeliveryReady {
+                                    version,
+                                    instance: script.instance.clone(),
+                                }
+                            }
                             Command::QueryDesignDelivery { delivery_id } => Event::DesignDelivery {
                                 outcome: script
                                     .receipts
@@ -129,9 +131,10 @@ fn serve(daemon_dir: &str, script: Shared) -> tokio::task::JoinHandle<()> {
                                     }
                                 } else {
                                     script.written.push(String::from_utf8(data).unwrap());
-                                    script
-                                        .receipts
-                                        .insert(delivery_id.clone(), DesignDeliveryOutcome::Delivered);
+                                    script.receipts.insert(
+                                        delivery_id.clone(),
+                                        DesignDeliveryOutcome::Delivered,
+                                    );
                                     if script.answer == Answer::WriteThenHangUp {
                                         return;
                                     }
@@ -202,7 +205,9 @@ fn states(state: &AppState) -> Vec<String> {
 
 fn inputs(state: &AppState) -> usize {
     with_db(state, |db| {
-        db.list_task_inputs("task-d", 100).map(|inputs| inputs.len()).unwrap_or(0)
+        db.list_task_inputs("task-d", 100)
+            .map(|inputs| inputs.len())
+            .unwrap_or(0)
     })
 }
 
@@ -231,7 +236,11 @@ async fn a_busy_agent_receives_nothing_and_a_free_one_receives_one_batch_once() 
     // Nothing is sent twice, and new feedback waits for the agent's turn.
     message(&state, "t3", "third");
     deliver_task(&state, "task-d").await.unwrap();
-    assert_eq!(script.lock().unwrap().written.len(), 1, "the turn fence holds the next batch");
+    assert_eq!(
+        script.lock().unwrap().written.len(),
+        1,
+        "the turn fence holds the next batch"
+    );
     script.lock().unwrap().status = SessionStatus::Busy;
     deliver_task(&state, "task-d").await.unwrap();
     script.lock().unwrap().status = SessionStatus::Idle;
@@ -266,7 +275,9 @@ async fn a_draft_a_prompt_or_no_verdict_is_not_free() {
         assert!(script.lock().unwrap().written.is_empty());
         assert_eq!(states(&state), vec!["queued"]);
     }
-    let detail = with_db(&state, |db| db.design_deliveries("task-d").unwrap()[0].detail.clone());
+    let detail = with_db(&state, |db| {
+        db.design_deliveries("task-d").unwrap()[0].detail.clone()
+    });
     assert!(detail.unwrap().contains("not running"));
 }
 
@@ -292,7 +303,11 @@ async fn a_lost_answer_with_nothing_written_is_queued_again() {
     message(&state, "t1", "hello");
     script.lock().unwrap().answer = Answer::HangUpUnwritten;
     deliver_task(&state, "task-d").await.unwrap();
-    assert_eq!(states(&state), vec!["queued"], "the daemon that would have written it never received it");
+    assert_eq!(
+        states(&state),
+        vec!["queued"],
+        "the daemon that would have written it never received it"
+    );
     script.lock().unwrap().answer = Answer::Normally;
     deliver_task(&state, "task-d").await.unwrap();
     assert_eq!(states(&state), vec!["delivered"]);
@@ -322,15 +337,22 @@ async fn after_a_restart_in_flight_batches_are_settled_from_receipts_or_marked_u
         .insert("da-written".into(), DesignDeliveryOutcome::Delivered);
     reconcile_in_flight(&state).await;
     assert_eq!(states(&state), vec!["delivered", "uncertain"]);
-    assert!(script.lock().unwrap().written.is_empty(), "reconciliation never types");
+    assert!(
+        script.lock().unwrap().written.is_empty(),
+        "reconciliation never types"
+    );
     assert_eq!(inputs(&state), 1);
 
     // Nothing retries an uncertain batch on its own…
     deliver_task(&state, "task-d").await.unwrap();
     assert!(script.lock().unwrap().written.is_empty());
     // …until the person resends it.
-    let id = with_db(&state, |db| db.design_deliveries("task-d").unwrap()[1].id.clone());
-    with_db(&state, |db| design_service::retry_delivery(db, &state.design, "task-d", &id).unwrap());
+    let id = with_db(&state, |db| {
+        db.design_deliveries("task-d").unwrap()[1].id.clone()
+    });
+    with_db(&state, |db| {
+        design_service::retry_delivery(db, &state.design, "task-d", &id).unwrap()
+    });
     state.design.delivery.lock().unwrap().fences.clear();
     deliver_task(&state, "task-d").await.unwrap();
     assert_eq!(states(&state), vec!["delivered", "delivered"]);
@@ -379,7 +401,10 @@ async fn a_comment_waits_for_its_anchor_and_order_is_kept() {
     });
     message(&state, "t-after", "after it");
     deliver_task(&state, "task-d").await.unwrap();
-    assert!(script.lock().unwrap().written.is_empty(), "the anchor has not arrived");
+    assert!(
+        script.lock().unwrap().written.is_empty(),
+        "the anchor has not arrived"
+    );
     assert_eq!(states(&state), vec!["queued", "queued"]);
 }
 
@@ -405,6 +430,150 @@ fn items_name_their_thread_quote_and_kind() {
     let rendered = render_message("task-d", &["#1 (thread t) /agent message:\n  hi".into()]);
     assert!(rendered.starts_with("Kanna App Design feedback (1 item,"));
     assert!(rendered.contains("\"task_id\": \"task-d\""));
-    assert!(older_than("2026-09-26T10:00:00.000Z", "2026-09-26T10:00:31.000Z", ANCHOR_GRACE));
-    assert!(!older_than("2026-09-26T10:00:00.000Z", "2026-09-26T10:00:10.000Z", ANCHOR_GRACE));
+    assert!(older_than(
+        "2026-09-26T10:00:00.000Z",
+        "2026-09-26T10:00:31.000Z",
+        ANCHOR_GRACE
+    ));
+    assert!(!older_than(
+        "2026-09-26T10:00:00.000Z",
+        "2026-09-26T10:00:10.000Z",
+        ANCHOR_GRACE
+    ));
+}
+
+/// The whole path against a real `kanna-daemon` process: the daemon's own
+/// classifier judges the session idle, the server negotiates the
+/// design-delivery capability, the message reaches the PTY once, and the
+/// daemon keeps its receipt.
+mod real_daemon {
+    use super::*;
+    use crate::test_fixture_binaries::{fixture_binary_or_skip, KANNA_DAEMON};
+    use std::process::{Child, Command as ProcessCommand};
+    use std::time::Duration;
+
+    struct OwnedDaemon(Child);
+    impl Drop for OwnedDaemon {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    async fn start_daemon(
+        daemon_dir: &str,
+        binary: &std::path::Path,
+    ) -> (OwnedDaemon, crate::daemon_client::DaemonClient) {
+        std::fs::create_dir_all(daemon_dir).unwrap();
+        let mut owned = OwnedDaemon(
+            ProcessCommand::new(binary)
+                .env("KANNA_DAEMON_DIR", daemon_dir)
+                .env(
+                    "KANNA_TERMINAL_RECOVERY_BIN",
+                    "/nonexistent-design-fixture-sidecar",
+                )
+                .spawn()
+                .unwrap(),
+        );
+        let client = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                assert!(owned.0.try_wait().unwrap().is_none(), "the daemon exited");
+                if let Ok(client) = crate::daemon_client::DaemonClient::connect(daemon_dir).await {
+                    break client;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("daemon starts");
+        (owned, client)
+    }
+
+    #[tokio::test]
+    async fn feedback_reaches_a_real_idle_session_exactly_once() {
+        let binary = fixture_binary_or_skip!(KANNA_DAEMON);
+        let (state, daemon_dir) = super::state("real-daemon");
+        let (_daemon, mut client) = start_daemon(&daemon_dir, &binary).await;
+        let received = std::path::Path::new(&daemon_dir).join("received.txt");
+        // A stand-in agent whose screen the Codex classifier reads as idle (an
+        // empty `›` composer),
+        // and which records every line it is sent.
+        let spawn = serde_json::from_value::<Command>(serde_json::json!({
+            "type": "Spawn",
+            "session_id": "task-d",
+            "executable": "/bin/sh",
+            "args": ["-c", format!("printf 'OpenAI Codex\\r\\n\\r\\n\\342\\200\\272 '; cat >> {}", received.display())],
+            "cwd": daemon_dir,
+            "env": {},
+            "cols": 100,
+            "rows": 30,
+            "agent_provider": "codex",
+        }))
+        .unwrap();
+        assert!(matches!(
+            client.send_command(&spawn).await.unwrap(),
+            Event::SessionCreated { .. }
+        ));
+        let idle = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if matches!(
+                    session_readiness(&state, "task-d").await,
+                    Readiness::Free { .. }
+                ) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        })
+        .await;
+        if idle.is_err() {
+            eprintln!(
+                "skipping: the daemon never classified the stand-in session idle on this host"
+            );
+            return;
+        }
+
+        message(&state, "t1", "hello from the person");
+        deliver_task(&state, "task-d").await.unwrap();
+        assert_eq!(states(&state), vec!["delivered"]);
+        let text = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let text = std::fs::read_to_string(&received).unwrap_or_default();
+                if text.contains("hello from the person") {
+                    break text;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the message reaches the session");
+        assert_eq!(text.matches("hello from the person").count(), 1);
+
+        // Nothing more to send, and asking again types nothing.
+        state.design.delivery.lock().unwrap().fences.clear();
+        deliver_task(&state, "task-d").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let text = std::fs::read_to_string(&received).unwrap();
+        assert_eq!(text.matches("hello from the person").count(), 1);
+
+        // The daemon kept the receipt a lost answer would be settled from.
+        let attempt = with_db(&state, |db| {
+            db.design_deliveries("task-d").unwrap()[0]
+                .attempt_id
+                .clone()
+                .unwrap()
+        });
+        match client
+            .send_command(&Command::QueryDesignDelivery {
+                delivery_id: attempt,
+            })
+            .await
+            .unwrap()
+        {
+            Event::DesignDelivery { outcome, .. } => {
+                assert_eq!(outcome, DesignDeliveryOutcome::Delivered)
+            }
+            other => panic!("unexpected answer {other:?}"),
+        }
+    }
 }

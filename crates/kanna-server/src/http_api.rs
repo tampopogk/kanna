@@ -193,6 +193,7 @@ pub async fn serve(state: std::sync::Arc<AppState>) -> Result<(), String> {
 pub(crate) use capacity_notice::{
     handle_provider_capacity_notice, ProviderCapacityNotice, CAPACITY_ACTION,
 };
+pub(crate) use design::advance_design_stage;
 /// In-process entry points the transfer engine calls.
 ///
 /// The engine performs the same task lifecycle actions the LAN routes serve —
@@ -202,7 +203,6 @@ pub(crate) use capacity_notice::{
 #[cfg(test)]
 pub(crate) use quota_recovery::parked_action_for_tests;
 pub(crate) use quota_recovery::{handle_quota_rejection, QuotaRejectionNotice};
-pub(crate) use design::advance_design_stage;
 pub(crate) use task_actions::close_task_in_process;
 pub(crate) use tasks::create_transferred_task_in_process;
 

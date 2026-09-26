@@ -52,9 +52,11 @@ fn now() -> String {
 }
 
 fn task_title(db: &Db, task_id: &str) -> Result<String, DesignError> {
-    let item = db.get_pipeline_item(task_id)?.ok_or_else(|| DesignError::NotFound {
-        message: format!("task not found: {task_id}"),
-    })?;
+    let item = db
+        .get_pipeline_item(task_id)?
+        .ok_or_else(|| DesignError::NotFound {
+            message: format!("task not found: {task_id}"),
+        })?;
     Ok(item
         .display_name
         .filter(|name| !name.trim().is_empty())
@@ -81,7 +83,10 @@ pub(crate) struct BoundPolicy {
 
 /// Expand and check a policy path: relative, inside the repository, no
 /// parent components.
-fn bind_policy(policy: &RepoDesignHandoffPolicy, task_id: &str) -> Result<BoundPolicy, DesignError> {
+fn bind_policy(
+    policy: &RepoDesignHandoffPolicy,
+    task_id: &str,
+) -> Result<BoundPolicy, DesignError> {
     let expanded = policy.path.replace("{task}", task_id);
     let path = expanded.trim_end_matches('/').to_string();
     let valid = !path.is_empty()
@@ -136,7 +141,9 @@ fn commit_scratch(repo_dir: &Path, message: &str) -> Result<String, DesignError>
         .map_err(DesignError::internal)?;
     index.write().map_err(DesignError::internal)?;
     let tree_id = index.write_tree().map_err(DesignError::internal)?;
-    let tree = repository.find_tree(tree_id).map_err(DesignError::internal)?;
+    let tree = repository
+        .find_tree(tree_id)
+        .map_err(DesignError::internal)?;
     let parent = repository
         .head()
         .ok()
@@ -149,14 +156,25 @@ fn commit_scratch(repo_dir: &Path, message: &str) -> Result<String, DesignError>
     let signature = signature()?;
     let parents: Vec<&git2::Commit<'_>> = parent.iter().collect();
     let commit = repository
-        .commit(Some("HEAD"), &signature, &signature, message, &tree, &parents)
+        .commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            message,
+            &tree,
+            &parents,
+        )
         .map_err(DesignError::internal)?;
     Ok(commit.to_string())
 }
 
 /// Copy the committed tree of the disposable repository into `target`
 /// (source files only; oversized files are left out and listed).
-fn copy_committed_source(repo_dir: &Path, commit: &str, target: &Path) -> Result<Vec<String>, DesignError> {
+fn copy_committed_source(
+    repo_dir: &Path,
+    commit: &str,
+    target: &Path,
+) -> Result<Vec<String>, DesignError> {
     let repository = git2::Repository::open(repo_dir).map_err(DesignError::internal)?;
     let commit = repository
         .find_commit(git2::Oid::from_str(commit).map_err(DesignError::internal)?)
@@ -190,7 +208,9 @@ fn copy_committed_source(repo_dir: &Path, commit: &str, target: &Path) -> Result
     })
     .map_err(DesignError::internal)?;
     if let Some(error) = failure {
-        return Err(DesignError::internal(format!("copying the prototype source: {error}")));
+        return Err(DesignError::internal(format!(
+            "copying the prototype source: {error}"
+        )));
     }
     Ok(skipped)
 }
@@ -257,20 +277,27 @@ pub(crate) fn prepare_candidate(
             });
         }
     }
-    let item = db.get_pipeline_item(task_id)?.ok_or_else(|| DesignError::NotFound {
-        message: format!("task not found: {task_id}"),
-    })?;
-    let repo = db.get_repo(&item.repo_id)?.ok_or_else(|| DesignError::NotFound {
-        message: format!("repository {} not found", item.repo_id),
-    })?;
+    let item = db
+        .get_pipeline_item(task_id)?
+        .ok_or_else(|| DesignError::NotFound {
+            message: format!("task not found: {task_id}"),
+        })?;
+    let repo = db
+        .get_repo(&item.repo_id)?
+        .ok_or_else(|| DesignError::NotFound {
+            message: format!("repository {} not found", item.repo_id),
+        })?;
     let policy = crate::task_creator::load_repo_design_policy(state.repo_definitions(), &repo)
         .map_err(|error| DesignError::Unavailable {
             message: format!("the repository's design policy could not be read: {error}"),
         })?;
     let policy = bind_policy(&policy, task_id)?;
-    let (blocks, state_bytes, revision) = runtime.documents.read(db, db_path, task_id, |document, revision| {
-        Ok((document.project(), document.encode_state(), revision))
-    })?;
+    let (blocks, state_bytes, revision) =
+        runtime
+            .documents
+            .read(db, db_path, task_id, |document, revision| {
+                Ok((document.project(), document.encode_state(), revision))
+            })?;
     let blocks = blocks.map_err(|error| DesignError::Schema {
         message: format!("the document cannot be exported: {error}"),
     })?;
@@ -281,11 +308,12 @@ pub(crate) fn prepare_candidate(
     let feedback_md = export::feedback_markdown(&view.threads);
 
     // 1. Commit the disposable repository, with the exported design in it.
-    let scratch = service::scratch_repository(db_path, task_id, session.epoch).ok_or_else(|| {
-        DesignError::Unavailable {
-            message: "the design's disposable repository could not be created".into(),
-        }
-    })?;
+    let scratch =
+        service::scratch_repository(db_path, task_id, session.epoch).ok_or_else(|| {
+            DesignError::Unavailable {
+                message: "the design's disposable repository could not be created".into(),
+            }
+        })?;
     let record = scratch.join(".kanna-design");
     std::fs::create_dir_all(&record).map_err(DesignError::internal)?;
     std::fs::write(record.join("design.md"), &design_md).map_err(DesignError::internal)?;
@@ -296,7 +324,10 @@ pub(crate) fn prepare_candidate(
     )?;
 
     // 2. Publish the snapshot: rendered document, committed source, metadata.
-    let approval_id = format!("ap-{}", crate::artifacts::random_hex(12).map_err(DesignError::internal)?);
+    let approval_id = format!(
+        "ap-{}",
+        crate::artifacts::random_hex(12).map_err(DesignError::internal)?
+    );
     let candidates = candidates_dir(db_path, task_id).ok_or_else(|| DesignError::Unavailable {
         message: "the task directory is unavailable".into(),
     })?;
@@ -374,11 +405,20 @@ pub(crate) fn prepare_candidate(
         confirmation_token: token,
         policy,
         next_stage: stage.next_stage,
-        open_threads: view.threads.iter().filter(|thread| thread.status == "open").count(),
+        open_threads: view
+            .threads
+            .iter()
+            .filter(|thread| thread.status == "open")
+            .count(),
         undelivered_feedback: view
             .threads
             .iter()
-            .filter(|thread| matches!(thread.delivery_status.as_str(), "queued" | "delivering" | "uncertain"))
+            .filter(|thread| {
+                matches!(
+                    thread.delivery_status.as_str(),
+                    "queued" | "delivering" | "uncertain"
+                )
+            })
             .count(),
         skipped_source_files: skipped,
     })
@@ -390,6 +430,7 @@ pub(crate) fn prepare_candidate(
 
 /// The person's confirmation of a candidate. Reached only through
 /// `crate::human_control`, whose peer the kernel identifies as the desktop.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn confirm(
     state: &AppState,
     db: &Db,
@@ -425,7 +466,10 @@ pub(crate) fn confirm(
     };
     if approval.phase != DesignApprovalRow::CANDIDATE {
         return Err(DesignError::Conflict {
-            message: format!("approval {approval_id} is {}, not awaiting confirmation", approval.phase),
+            message: format!(
+                "approval {approval_id} is {}, not awaiting confirmation",
+                approval.phase
+            ),
         });
     }
     let expected = approval.confirmation_hash.as_deref().unwrap_or("");
@@ -441,7 +485,10 @@ pub(crate) fn confirm(
     {
         return stale("the confirmation expired");
     }
-    if !stage.is_current() || session.status != DesignSessionRow::DESIGNING || approval.epoch != session.epoch {
+    if !stage.is_current()
+        || session.status != DesignSessionRow::DESIGNING
+        || approval.epoch != session.epoch
+    {
         return stale("the design moved on since this candidate was prepared");
     }
     let current_revision = runtime
@@ -450,22 +497,29 @@ pub(crate) fn confirm(
     if current_revision != approval.doc_revision {
         return stale("the document changed after this candidate was prepared");
     }
-    let policy: BoundPolicy = serde_json::from_str(&approval.policy_json).map_err(DesignError::internal)?;
-    let item = db.get_pipeline_item(task_id)?.ok_or_else(|| DesignError::NotFound {
-        message: format!("task not found: {task_id}"),
-    })?;
-    let repo = db.get_repo(&item.repo_id)?.ok_or_else(|| DesignError::NotFound {
-        message: format!("repository {} not found", item.repo_id),
-    })?;
-    let current_policy = crate::task_creator::load_repo_design_policy(state.repo_definitions(), &repo)
-        .map_err(|error| DesignError::Unavailable { message: error })?;
+    let policy: BoundPolicy =
+        serde_json::from_str(&approval.policy_json).map_err(DesignError::internal)?;
+    let item = db
+        .get_pipeline_item(task_id)?
+        .ok_or_else(|| DesignError::NotFound {
+            message: format!("task not found: {task_id}"),
+        })?;
+    let repo = db
+        .get_repo(&item.repo_id)?
+        .ok_or_else(|| DesignError::NotFound {
+            message: format!("repository {} not found", item.repo_id),
+        })?;
+    let current_policy =
+        crate::task_creator::load_repo_design_policy(state.repo_definitions(), &repo)
+            .map_err(|error| DesignError::Unavailable { message: error })?;
     if bind_policy(&current_policy, task_id)? != policy {
         return stale("the repository's design policy changed after this candidate was prepared");
     }
 
     // The decision is recorded on the exact snapshot before the phase moves:
     // a failure here leaves the candidate confirmable again.
-    if let (Some(repo_id), Some(artifact_id)) = (&approval.artifact_repo_id, &approval.artifact_id) {
+    if let (Some(repo_id), Some(artifact_id)) = (&approval.artifact_repo_id, &approval.artifact_id)
+    {
         artifact_store(state, db, repo_id)?
             .record_decision(
                 artifact_id,
@@ -516,7 +570,11 @@ pub(crate) fn confirm(
 /// approval (or candidate) no longer hands anything off, and files it
 /// exported into the worktree are removed. After the factory started, the
 /// task is sent back to its design stage instead, which begins a new epoch.
-pub(crate) fn reopen(db: &Db, runtime: &DesignRuntime, task_id: &str) -> Result<Value, DesignError> {
+pub(crate) fn reopen(
+    db: &Db,
+    runtime: &DesignRuntime,
+    task_id: &str,
+) -> Result<Value, DesignError> {
     let (stage, session) = service::ensure_session(db, task_id)?;
     if !stage.is_current() {
         return Err(DesignError::NotDesigning {
@@ -584,7 +642,11 @@ fn remove_exported(db: &Db, task_id: &str, approval: &DesignApprovalRow) {
 }
 
 /// Resume a failed hand-off from its last good phase.
-pub(crate) fn retry_handoff(db: &Db, runtime: &DesignRuntime, task_id: &str) -> Result<Value, DesignError> {
+pub(crate) fn retry_handoff(
+    db: &Db,
+    runtime: &DesignRuntime,
+    task_id: &str,
+) -> Result<Value, DesignError> {
     let approval = db
         .current_design_approval(task_id)?
         .filter(|approval| approval.phase == DesignApprovalRow::FAILED)
@@ -646,7 +708,11 @@ pub(crate) fn guard_design_exit(db: &Db, task_id: &str, stage: &str) -> Result<(
     let commit_already_ran = db
         .latest_stage_run(task_id)
         .map_err(|error| format!("db error: {error}"))?
-        .is_some_and(|run| run.kind == "post" && run.stage == format!("{stage} commit") && run.status == "succeeded");
+        .is_some_and(|run| {
+            run.kind == "post"
+                && run.stage == format!("{stage} commit")
+                && run.status == "succeeded"
+        });
     if commit_already_ran && approval.phase != DesignApprovalRow::COMMITTED {
         verify_handoff_commit(db, task_id)?;
     }
@@ -667,7 +733,9 @@ pub(crate) fn commit_step_instruction(db: &Db, task_id: &str) -> Result<String, 
         .map_err(|error| format!("retained files unreadable: {error}"))?
         .unwrap_or_default();
     let snapshot = match (&approval.artifact_repo_id, &approval.artifact_id) {
-        (Some(repo), Some(artifact)) => format!("artifact {artifact} in repository {repo}'s artifact store"),
+        (Some(repo), Some(artifact)) => {
+            format!("artifact {artifact} in repository {repo}'s artifact store")
+        }
         _ => "the approved snapshot".to_string(),
     };
     let files = if retained.is_empty() {
@@ -706,7 +774,9 @@ pub(crate) fn verify_handoff_commit(db: &Db, task_id: &str) -> Result<String, St
         .filter(|approval| {
             matches!(
                 approval.phase.as_str(),
-                DesignApprovalRow::COMMITTING | DesignApprovalRow::COMMITTED | DesignApprovalRow::EXPORTED
+                DesignApprovalRow::COMMITTING
+                    | DesignApprovalRow::COMMITTED
+                    | DesignApprovalRow::EXPORTED
             )
         })
         .ok_or_else(|| "no approved design is being committed for this stage".to_string())?;
@@ -714,7 +784,11 @@ pub(crate) fn verify_handoff_commit(db: &Db, task_id: &str) -> Result<String, St
         Ok(sha) => {
             db.advance_design_approval(
                 &approval.id,
-                &[DesignApprovalRow::COMMITTING, DesignApprovalRow::EXPORTED, DesignApprovalRow::COMMITTED],
+                &[
+                    DesignApprovalRow::COMMITTING,
+                    DesignApprovalRow::EXPORTED,
+                    DesignApprovalRow::COMMITTED,
+                ],
                 DesignApprovalRow::COMMITTED,
                 &DesignApprovalUpdate {
                     committed_sha: Some(&sha),
@@ -728,7 +802,11 @@ pub(crate) fn verify_handoff_commit(db: &Db, task_id: &str) -> Result<String, St
             let message = format!("the hand-off commit was not accepted: {reason}");
             let _ = db.advance_design_approval(
                 &approval.id,
-                &[DesignApprovalRow::COMMITTING, DesignApprovalRow::EXPORTED, DesignApprovalRow::COMMITTED],
+                &[
+                    DesignApprovalRow::COMMITTING,
+                    DesignApprovalRow::EXPORTED,
+                    DesignApprovalRow::COMMITTED,
+                ],
                 DesignApprovalRow::FAILED,
                 &DesignApprovalUpdate {
                     error: Some(&message),
@@ -766,7 +844,10 @@ fn check_commit(db: &Db, task_id: &str, approval: &DesignApprovalRow) -> Result<
             .find_blob(entry.id())
             .map_err(|_| format!("{} is not a file in the commit", file.path))?;
         if sha256_hex(blob.content()) != file.sha256 {
-            return Err(format!("{} was committed with different content", file.path));
+            return Err(format!(
+                "{} was committed with different content",
+                file.path
+            ));
         }
     }
     if let Some(base) = approval.handoff_base_sha.as_deref() {
@@ -774,12 +855,19 @@ fn check_commit(db: &Db, task_id: &str, approval: &DesignApprovalRow) -> Result<
             .find_commit(git2::Oid::from_str(base).map_err(|error| error.to_string())?)
             .map_err(|error| format!("the pre-commit HEAD {base} is gone: {error}"))?;
         let diff = repository
-            .diff_tree_to_tree(Some(&base.tree().map_err(|e| e.to_string())?), Some(&tree), None)
+            .diff_tree_to_tree(
+                Some(&base.tree().map_err(|e| e.to_string())?),
+                Some(&tree),
+                None,
+            )
             .map_err(|error| error.to_string())?;
         let allowed: std::collections::BTreeSet<&str> =
             retained.iter().map(|file| file.path.as_str()).collect();
         for delta in diff.deltas() {
-            for path in [delta.old_file().path(), delta.new_file().path()].into_iter().flatten() {
+            for path in [delta.old_file().path(), delta.new_file().path()]
+                .into_iter()
+                .flatten()
+            {
                 let path = path.to_string_lossy();
                 if !allowed.contains(path.as_ref()) {
                     return Err(format!(
@@ -803,7 +891,8 @@ pub(crate) async fn run_handoffs(state: &Arc<AppState>) {
     let db_path = state.config().db_path.clone();
     let pending = tokio::task::spawn_blocking(move || -> Result<Vec<DesignApprovalRow>, String> {
         let db = Db::open(&db_path).map_err(|error| error.to_string())?;
-        db.handing_off_design_approvals().map_err(|error| error.to_string())
+        db.handing_off_design_approvals()
+            .map_err(|error| error.to_string())
     })
     .await;
     let pending = match pending {
@@ -819,7 +908,10 @@ pub(crate) async fn run_handoffs(state: &Arc<AppState>) {
     };
     for approval in pending {
         if let Err(error) = advance_one(state, &approval).await {
-            log::warn!("design hand-off for {} did not advance: {error}", approval.task_id);
+            log::warn!(
+                "design hand-off for {} did not advance: {error}",
+                approval.task_id
+            );
         }
     }
 }
@@ -883,8 +975,15 @@ async fn advance_one(state: &Arc<AppState>, approval: &DesignApprovalRow) -> Res
                 return Ok(());
             }
             state.design.feed_changed(&task_id);
-            if let Err(error) = crate::http_api::advance_design_stage(Arc::clone(state), &task_id).await {
-                fail(state, approval, &format!("the commit step could not start: {error}")).await;
+            if let Err(error) =
+                crate::http_api::advance_design_stage(Arc::clone(state), &task_id).await
+            {
+                fail(
+                    state,
+                    approval,
+                    &format!("the commit step could not start: {error}"),
+                )
+                .await;
             }
             Ok(())
         }
@@ -906,7 +1005,10 @@ async fn advance_one(state: &Arc<AppState>, approval: &DesignApprovalRow) -> Res
                             DesignApprovalRow::ENTERED,
                             &DesignApprovalUpdate::default(),
                         )?;
-                        db.set_design_session_status(&approval.task_id, DesignSessionRow::HANDED_OFF)
+                        db.set_design_session_status(
+                            &approval.task_id,
+                            DesignSessionRow::HANDED_OFF,
+                        )
                     })
                     .map_err(|error| error.to_string())?;
                     state_for_work.design.feed_changed(&approval.task_id);
@@ -946,7 +1048,11 @@ async fn advance_one(state: &Arc<AppState>, approval: &DesignApprovalRow) -> Res
     }
 }
 
-async fn record_waiting(state: &Arc<AppState>, approval: &DesignApprovalRow, reason: &str) -> Result<(), String> {
+async fn record_waiting(
+    state: &Arc<AppState>,
+    approval: &DesignApprovalRow,
+    reason: &str,
+) -> Result<(), String> {
     if approval.error.as_deref() == Some(reason) {
         return Ok(());
     }
@@ -1000,7 +1106,8 @@ fn export_retained(state: &AppState, approval: &DesignApprovalRow) -> Result<(),
     let db_path = state.config().db_path.clone();
     let db = Db::open(&db_path).map_err(|error| error.to_string())?;
     let task_id = &approval.task_id;
-    let policy: BoundPolicy = serde_json::from_str(&approval.policy_json).map_err(|error| error.to_string())?;
+    let policy: BoundPolicy =
+        serde_json::from_str(&approval.policy_json).map_err(|error| error.to_string())?;
     let mut retained = Vec::new();
     if !policy.files.is_empty() {
         let worktree = db
@@ -1010,8 +1117,10 @@ fn export_retained(state: &AppState, approval: &DesignApprovalRow) -> Result<(),
         let snapshot = candidates_dir(&db_path, task_id)
             .ok_or("the task directory is unavailable")?
             .join(&approval.id);
-        let design_md = std::fs::read(snapshot.join("design.md")).map_err(|error| error.to_string())?;
-        let view = service::view(&db, &state.design, &db_path, task_id, false).map_err(|error| error.message().to_string())?;
+        let design_md =
+            std::fs::read(snapshot.join("design.md")).map_err(|error| error.to_string())?;
+        let view = service::view(&db, &state.design, &db_path, task_id, false)
+            .map_err(|error| error.message().to_string())?;
         let title = task_title(&db, task_id).map_err(|error| error.message().to_string())?;
         let summary = export::summary_markdown(
             &export::SummaryFacts {

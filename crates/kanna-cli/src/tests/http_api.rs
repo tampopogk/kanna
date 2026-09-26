@@ -1707,7 +1707,9 @@ async fn design_tools_reach_the_typed_routes() {
             "kanna_design_edit",
             json!({"task_id":"task-1","op_id":"e1","ops":[{"op":"delete_block","block_id":"b1","expected_text":"x"}]}),
             "POST /v1/tasks/task-1/design/agent/edits HTTP/1.1",
-            Some(json!({"opId":"e1","ops":[{"op":"delete_block","block_id":"b1","expected_text":"x"}]})),
+            Some(
+                json!({"opId":"e1","ops":[{"op":"delete_block","block_id":"b1","expected_text":"x"}]}),
+            ),
         ),
         (
             "kanna_design_reply",
@@ -1734,7 +1736,11 @@ async fn design_tools_reach_the_typed_routes() {
             .await
             .unwrap_or_else(|error| panic!("{name}: {error}"));
         let requests = server.await.unwrap();
-        assert!(requests[0].starts_with(request_line), "{name}: {}", requests[0]);
+        assert!(
+            requests[0].starts_with(request_line),
+            "{name}: {}",
+            requests[0]
+        );
         if let Some(body) = body {
             let sent: serde_json::Value =
                 serde_json::from_str(requests[0].split("\r\n\r\n").nth(1).unwrap()).unwrap();

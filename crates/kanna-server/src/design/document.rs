@@ -42,8 +42,8 @@ use yrs::types::Attrs;
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{
-    Any, Doc, Out, ReadTxn, StateVector, Text, Transact, Update, Xml, XmlElementRef,
-    XmlFragment, XmlFragmentRef, XmlTextRef,
+    Any, Doc, Out, ReadTxn, StateVector, Text, Transact, Update, Xml, XmlElementRef, XmlFragment,
+    XmlFragmentRef, XmlTextRef,
 };
 
 /// The schema every client of a design document must use. Kept equal to
@@ -86,7 +86,10 @@ static SCHEMA: LazyLock<SchemaDescription> = LazyLock::new(|| {
     let schema: SchemaDescription =
         serde_json::from_str(include_str!("../../resources/design-schema.json"))
             .expect("resources/design-schema.json is valid");
-    assert_eq!(schema.version, SCHEMA_VERSION, "design schema version drifted");
+    assert_eq!(
+        schema.version, SCHEMA_VERSION,
+        "design schema version drifted"
+    );
     assert_eq!(schema.fragment, FRAGMENT, "design schema fragment drifted");
     schema
 });
@@ -97,20 +100,32 @@ static SCHEMA: LazyLock<SchemaDescription> = LazyLock::new(|| {
 pub enum DocumentError {
     /// The document holds something this schema does not know. Nothing was
     /// read into a narrower form and nothing was written.
-    UnsupportedSchema { detail: String },
+    UnsupportedSchema {
+        detail: String,
+    },
     /// The bytes are not a Yjs update.
-    MalformedUpdate { detail: String },
-    TooLarge { detail: String },
+    MalformedUpdate {
+        detail: String,
+    },
+    TooLarge {
+        detail: String,
+    },
     /// The operation names a block that is not in the document.
-    BlockNotFound { block_id: String },
+    BlockNotFound {
+        block_id: String,
+    },
     /// The operation is well formed but cannot apply to that block.
-    InvalidOperation { detail: String },
+    InvalidOperation {
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for DocumentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::UnsupportedSchema { detail } => write!(f, "unsupported document schema: {detail}"),
+            Self::UnsupportedSchema { detail } => {
+                write!(f, "unsupported document schema: {detail}")
+            }
             Self::MalformedUpdate { detail } => write!(f, "malformed document update: {detail}"),
             Self::TooLarge { detail } => write!(f, "document too large: {detail}"),
             Self::BlockNotFound { block_id } => write!(f, "block not found: {block_id}"),
@@ -337,7 +352,9 @@ impl DesignDocument {
             }
         })?;
         let ours = self.doc.transact().state_vector();
-        Ok(theirs.iter().all(|(client, clock)| ours.get(client) >= *clock))
+        Ok(theirs
+            .iter()
+            .all(|(client, clock)| ours.get(client) >= *clock))
     }
 
     fn apply_unchecked(&self, update: &[u8]) -> Result<(), DocumentError> {
@@ -363,7 +380,10 @@ impl DesignDocument {
     pub fn apply_client_update(&mut self, update: &[u8]) -> Result<bool, DocumentError> {
         if update.len() > MAX_UPDATE_BYTES {
             return Err(DocumentError::TooLarge {
-                detail: format!("update of {} bytes exceeds {MAX_UPDATE_BYTES}", update.len()),
+                detail: format!(
+                    "update of {} bytes exceeds {MAX_UPDATE_BYTES}",
+                    update.len()
+                ),
             });
         }
         let before = self.state_vector();
@@ -384,13 +404,11 @@ impl DesignDocument {
     pub fn project(&self) -> Result<Vec<ProjectedBlock>, DocumentError> {
         let copy = Doc::new();
         copy.transact_mut()
-            .apply_update(
-                Update::decode_v1(&self.encode_state()).map_err(|error| {
-                    DocumentError::MalformedUpdate {
-                        detail: error.to_string(),
-                    }
-                })?,
-            )
+            .apply_update(Update::decode_v1(&self.encode_state()).map_err(|error| {
+                DocumentError::MalformedUpdate {
+                    detail: error.to_string(),
+                }
+            })?)
             .map_err(|error| DocumentError::MalformedUpdate {
                 detail: error.to_string(),
             })?;
@@ -733,9 +751,7 @@ fn project_inline<T: ReadTxn>(
                     element.tag()
                 )))
             }
-            XmlOut::Fragment(_) => {
-                return Err(unsupported(format!("block {id} holds a fragment")))
-            }
+            XmlOut::Fragment(_) => return Err(unsupported(format!("block {id} holds a fragment"))),
         }
     }
     Ok(runs)
@@ -765,7 +781,9 @@ fn project_chunk(id: &str, chunk: Diff<YChange>) -> Result<ProjectedRun, Documen
         let key = key.as_ref();
         if key.starts_with(COMMENT_ATTRIBUTE_PREFIX) {
             let Any::Map(mark) = value else {
-                return Err(unsupported(format!("block {id} has a malformed comment mark")));
+                return Err(unsupported(format!(
+                    "block {id} has a malformed comment mark"
+                )));
             };
             if let Some(Any::String(thread)) = mark.get("threadId") {
                 if !thread.is_empty() {
@@ -792,7 +810,9 @@ fn project_chunk(id: &str, chunk: Diff<YChange>) -> Result<ProjectedRun, Documen
             };
             run.styles.insert(key.to_string(), styled);
         } else {
-            return Err(unsupported(format!("block {id} has unknown formatting {key}")));
+            return Err(unsupported(format!(
+                "block {id} has unknown formatting {key}"
+            )));
         }
     }
     run.threads.sort();
@@ -919,14 +939,20 @@ fn find_container<T: ReadTxn>(
     None
 }
 
-fn root_group<T: ReadTxn>(txn: &T, fragment: &XmlFragmentRef) -> Result<XmlElementRef, DocumentError> {
+fn root_group<T: ReadTxn>(
+    txn: &T,
+    fragment: &XmlFragmentRef,
+) -> Result<XmlElementRef, DocumentError> {
     match fragment.get(txn, 0) {
         Some(XmlOut::Element(group)) => Ok(group),
         _ => Err(unsupported("the document has no blockGroup")),
     }
 }
 
-fn content_element<T: ReadTxn>(txn: &T, container: &XmlElementRef) -> Result<XmlElementRef, DocumentError> {
+fn content_element<T: ReadTxn>(
+    txn: &T,
+    container: &XmlElementRef,
+) -> Result<XmlElementRef, DocumentError> {
     match container.get(txn, 0) {
         Some(XmlOut::Element(content)) => Ok(content),
         _ => Err(unsupported("a block has no content node")),
@@ -1013,12 +1039,13 @@ fn insert_container(
     id: &str,
     block: &NewBlock,
 ) -> Result<(), DocumentError> {
-    let description = SCHEMA
-        .blocks
-        .get(&block.kind)
-        .ok_or_else(|| DocumentError::InvalidOperation {
-            detail: format!("unknown block type {}", block.kind),
-        })?;
+    let description =
+        SCHEMA
+            .blocks
+            .get(&block.kind)
+            .ok_or_else(|| DocumentError::InvalidOperation {
+                detail: format!("unknown block type {}", block.kind),
+            })?;
     let container = group.insert(txn, index, XmlElementPrelim::empty("blockContainer"));
     container.insert_attribute(txn, "id", Any::String(id.into()));
     let content = container.push_back(txn, XmlElementPrelim::empty(block.kind.as_str()));

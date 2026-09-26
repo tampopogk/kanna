@@ -103,9 +103,9 @@ pub(crate) use merge::{
 };
 pub(crate) use prompt::RevisionRound;
 pub(crate) use stages::{
-    task_design_stage, task_stage_names, TaskDesignStage,
     current_stage_is_roleless, describe_current_stage_exits, exit_leading_to, resolve_result_exit,
-    resolve_stage_budget_limit, task_routes_by_exits, ResolvedResultExit,
+    resolve_stage_budget_limit, task_design_stage, task_routes_by_exits, task_stage_names,
+    ResolvedResultExit, TaskDesignStage,
 };
 pub(crate) use stages::{
     main_completion_continuation, prepare_advance_stage_for_api_with_intent,
@@ -737,11 +737,9 @@ pub(crate) fn load_repo_design_policy(
             let retain = match handoff.retain.as_deref() {
                 Some("results-and-summary") => DesignRetention::ResultsAndSummary,
                 Some("nothing") | None => DesignRetention::Nothing,
-                Some(other) => {
-                    return Err(DefinitionLookupError::Other(format!(
-                        "design.handoff.retain is '{other}'; expected results-and-summary or nothing"
-                    )))
-                }
+                Some(other) => return Err(DefinitionLookupError::Other(format!(
+                    "design.handoff.retain is '{other}'; expected results-and-summary or nothing"
+                ))),
             };
             let path = handoff
                 .path

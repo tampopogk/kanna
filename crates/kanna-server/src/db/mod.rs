@@ -113,8 +113,9 @@ pub use token_usage::{
 #[allow(unused_imports)]
 pub use transfer_work::{TransferWorkItem, MAX_TRANSFER_WORK_ATTEMPTS};
 pub use transfers::{
-    is_active_outgoing_transfer_conflict, is_live_design_transfer_refusal, LIVE_DESIGN_TRANSFER_REFUSAL, NewTaskTransfer, NewTaskTransferProvenance,
-    PendingIncomingTransfer, TaskTransfer, TransferredHistoryRecord,
+    is_active_outgoing_transfer_conflict, is_live_design_transfer_refusal, NewTaskTransfer,
+    NewTaskTransferProvenance, PendingIncomingTransfer, TaskTransfer, TransferredHistoryRecord,
+    LIVE_DESIGN_TRANSFER_REFUSAL,
 };
 pub use transition_commits::TransitionCommit;
 
@@ -2764,7 +2765,9 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     })?;
     // App Design (docs/specs/app-design.md): design sessions, the live
     // document's updates, threads, the feedback outbox and approvals.
-    run_migration(conn, "105_app_design", |conn| conn.execute_batch(design::SCHEMA))?;
+    run_migration(conn, "105_app_design", |conn| {
+        conn.execute_batch(design::SCHEMA)
+    })?;
     task_state::sync_disk_state_triggers(conn)?;
 
     Ok(())

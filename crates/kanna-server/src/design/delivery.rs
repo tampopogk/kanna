@@ -65,23 +65,30 @@ pub(crate) struct DeliveryMemory {
 /// Whether the task's live session can take feedback now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Readiness {
-    Free { pid: u32 },
-    Busy { reason: String },
+    Free {
+        pid: u32,
+    },
+    Busy {
+        reason: String,
+    },
     /// No live PTY session for the task.
     Absent,
     /// The daemon could not be asked.
-    Unknown { reason: String },
+    Unknown {
+        reason: String,
+    },
 }
 
 pub(crate) async fn session_readiness(state: &AppState, task_id: &str) -> Readiness {
-    let mut daemon = match crate::daemon_client::DaemonClient::connect(&state.config().daemon_dir).await {
-        Ok(daemon) => daemon,
-        Err(error) => {
-            return Readiness::Unknown {
-                reason: format!("daemon unavailable: {error}"),
+    let mut daemon =
+        match crate::daemon_client::DaemonClient::connect(&state.config().daemon_dir).await {
+            Ok(daemon) => daemon,
+            Err(error) => {
+                return Readiness::Unknown {
+                    reason: format!("daemon unavailable: {error}"),
+                }
             }
-        }
-    };
+        };
     let sessions = match daemon.send_command(&DaemonCommand::List).await {
         Ok(DaemonEvent::SessionList { sessions }) => sessions,
         Ok(other) => {
@@ -186,7 +193,10 @@ fn next_batch(db: &Db, runtime: &DesignRuntime, task_id: &str) -> Result<Option<
         // One batch at a time: the one in flight settles first.
         return Ok(None);
     }
-    let Some(session) = db.design_session(task_id).map_err(|error| error.to_string())? else {
+    let Some(session) = db
+        .design_session(task_id)
+        .map_err(|error| error.to_string())?
+    else {
         return Ok(None);
     };
     let design = crate::task_creator::task_design_stage(db, task_id)?;
@@ -223,12 +233,17 @@ fn next_batch(db: &Db, runtime: &DesignRuntime, task_id: &str) -> Result<Option<
         };
         // A thread whose anchor has not reached the server's document waits
         // a moment for it, and holds everything after it (order is kept).
-        if thread.anchor.as_ref().is_some_and(|anchor| anchor.state == "pending")
+        if thread
+            .anchor
+            .as_ref()
+            .is_some_and(|anchor| anchor.state == "pending")
             && !older_than(&row.created_at, &now, ANCHOR_GRACE)
         {
             break;
         }
-        if rows.len() == MAX_BATCH_ITEMS || (chars > 0 && chars + comment.body.len() > MAX_BATCH_CHARS) {
+        if rows.len() == MAX_BATCH_ITEMS
+            || (chars > 0 && chars + comment.body.len() > MAX_BATCH_CHARS)
+        {
             break;
         }
         chars += comment.body.len();
@@ -238,10 +253,10 @@ fn next_batch(db: &Db, runtime: &DesignRuntime, task_id: &str) -> Result<Option<
     if rows.is_empty() {
         return Ok(None);
     }
-    let earlier_attempt = rows[0]
-        .attempt_id
-        .clone()
-        .filter(|attempt| rows.iter().all(|row| row.attempt_id.as_deref() == Some(attempt)));
+    let earlier_attempt = rows[0].attempt_id.clone().filter(|attempt| {
+        rows.iter()
+            .all(|row| row.attempt_id.as_deref() == Some(attempt))
+    });
     Ok(Some(Batch {
         message: render_message(task_id, &items),
         rows,
@@ -354,7 +369,14 @@ async fn deliver_task(state: &Arc<AppState>, task_id: &str) -> Result<(), String
     // The turn fence: after a batch, wait for the agent to start working on
     // it (or for the grace period) before judging it free again.
     let readiness = session_readiness(state, task_id).await;
-    let fence = state.design.delivery.lock().unwrap().fences.get(task_id).copied();
+    let fence = state
+        .design
+        .delivery
+        .lock()
+        .unwrap()
+        .fences
+        .get(task_id)
+        .copied();
     if let Some(mut fence) = fence {
         if matches!(readiness, Readiness::Busy { .. }) {
             fence.saw_busy = true;
@@ -430,14 +452,24 @@ async fn deliver_task(state: &Arc<AppState>, task_id: &str) -> Result<(), String
         .map_err(|error| error.to_string());
     match answer {
         Ok(DaemonEvent::DesignDelivery { outcome, .. }) => {
-            settle_outcome(state, task_id, &attempt_id, &batch.message, outcome, &instance, &[]).await
+            settle_outcome(
+                state,
+                task_id,
+                &attempt_id,
+                &batch.message,
+                outcome,
+                &instance,
+                &[],
+            )
+            .await
         }
         Ok(DaemonEvent::Error { code, message }) => {
             use kanna_daemon::protocol::ErrorCode;
             // Every daemon refusal is answered before a byte is written.
             let detail = match code {
                 Some(ErrorCode::SessionNotFound | ErrorCode::SessionIncarnationMismatch) => {
-                    "waiting: the design session changed; it will be delivered to the live session".to_string()
+                    "waiting: the design session changed; it will be delivered to the live session"
+                        .to_string()
                 }
                 Some(ErrorCode::RetryOnSuccessor) => {
                     forget_capability(&state.design);
@@ -448,7 +480,13 @@ async fn deliver_task(state: &Arc<AppState>, task_id: &str) -> Result<(), String
             release(state, task_id, &attempt_id, &detail).await
         }
         Ok(other) => {
-            mark_uncertain(state, task_id, &attempt_id, &format!("unexpected daemon answer: {other:?}")).await
+            mark_uncertain(
+                state,
+                task_id,
+                &attempt_id,
+                &format!("unexpected daemon answer: {other:?}"),
+            )
+            .await
         }
         Err(error) => {
             // The answer was lost; the daemon may or may not have written.
@@ -565,7 +603,12 @@ async fn settle_delivered(
         db.in_immediate_transaction_if_needed(|db| {
             let settled = db.mark_design_attempt_delivered(&attempt)?;
             if !settled.is_empty() {
-                db.record_task_input(&task, TaskInputSource::Operator, &ChannelIdentity::Server, &message)?;
+                db.record_task_input(
+                    &task,
+                    TaskInputSource::Operator,
+                    &ChannelIdentity::Server,
+                    &message,
+                )?;
             }
             Ok::<_, rusqlite::Error>(())
         })
@@ -588,7 +631,12 @@ async fn settle_delivered(
     Ok(())
 }
 
-async fn release(state: &Arc<AppState>, task_id: &str, attempt_id: &str, detail: &str) -> Result<(), String> {
+async fn release(
+    state: &Arc<AppState>,
+    task_id: &str,
+    attempt_id: &str,
+    detail: &str,
+) -> Result<(), String> {
     let attempt = attempt_id.to_string();
     let detail = detail.to_string();
     blocking(state, move |db| {
@@ -601,7 +649,12 @@ async fn release(state: &Arc<AppState>, task_id: &str, attempt_id: &str, detail:
     Ok(())
 }
 
-async fn mark_uncertain(state: &Arc<AppState>, task_id: &str, attempt_id: &str, detail: &str) -> Result<(), String> {
+async fn mark_uncertain(
+    state: &Arc<AppState>,
+    task_id: &str,
+    attempt_id: &str,
+    detail: &str,
+) -> Result<(), String> {
     let attempt = attempt_id.to_string();
     let detail = detail.to_string();
     blocking(state, move |db| {
@@ -617,7 +670,11 @@ async fn mark_uncertain(state: &Arc<AppState>, task_id: &str, attempt_id: &str, 
 
 /// Say why queued feedback is waiting, on its rows, without changing them.
 async fn note(state: &Arc<AppState>, batch: &Batch, detail: &str) -> Result<(), String> {
-    if batch.rows.iter().all(|row| row.detail.as_deref() == Some(detail)) {
+    if batch
+        .rows
+        .iter()
+        .all(|row| row.detail.as_deref() == Some(detail))
+    {
         return Ok(());
     }
     let ids: Vec<String> = batch.rows.iter().map(|row| row.id.clone()).collect();
@@ -671,7 +728,16 @@ async fn reconcile_in_flight(state: &Arc<AppState>) {
         .unwrap_or_default();
         let result = match outcome {
             Ok((outcome, known)) => {
-                settle_outcome(state, &task_id, &attempt_id, &message, outcome, &instance, &known).await
+                settle_outcome(
+                    state,
+                    &task_id,
+                    &attempt_id,
+                    &message,
+                    outcome,
+                    &instance,
+                    &known,
+                )
+                .await
             }
             Err(error) => {
                 mark_uncertain(
