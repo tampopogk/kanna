@@ -33,11 +33,14 @@ concurrency:
 # https://schemas.kanna.build/config.schema.json contract served stale bytes for
 # six days with no job log to explain why.
 #
-# The entry point bought nothing either: `linux-release-check.yml` declares its
-# own `workflow_dispatch`, with the inputs this one could not pass
-# (`prepared_pair_asset_id`, `prepared_pair_sha256`,
-# `prepared_pair_evidence_dir`, `apt_interop_only`). `gh workflow run
-# linux-release-check.yml` is the better way in and always was.
+# `linux-release-check.yml` itself is gone now: per the owner's 2026-09-26
+# directive ("i hate remote ci. open a task to remove linux ci on gh."), Linux
+# builds, the apt/GnuPG interop lane, and the installed/upgrade checks it ran
+# on hosted runners were deleted rather than kept working around this failure
+# mode. They run only by hand now, on the Linux dev VM (`./kd build
+# linux-package`, `./kd test linux-installed --old-artifact <deb>
+# --new-artifact <deb>`). There is nothing left here to call back into, even
+# by accident.
 #
 # Do not add a `uses:` back. This workflow is continuous deployment of a public
 # contract; it must not be able to fail for a reason belonging to another lane.

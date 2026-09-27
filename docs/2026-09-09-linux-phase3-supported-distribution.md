@@ -330,6 +330,13 @@ Each item, with what it needs.
    revision (the merge base) with a distinct version so the two `.deb` names do
    not collide, uploaded alongside the candidate. The first attempt at this job
    was removed for promising acceptance it could not perform; see §5.
+   **2026-09-26 update:** moot — under the owner's directive to remove Linux CI
+   on GitHub ("i hate remote ci. open a task to remove linux ci on gh."),
+   `linux-release-check.yml` was deleted rather than wired further. These
+   lanes, and the apt/GnuPG interop and prepared-pair A/B upgrade lanes that
+   file also carried, run only by hand now on the Linux dev VM
+   (`./kd test linux-installed --old-artifact <deb> --new-artifact <deb>`); no
+   hosted host replaces any of them.
 4. **Phase 2's E2E gaps (M4) are untouched.** Two simultaneous isolated
    instances, the Linux mock and real desktop lanes, real WebKitGTK credential
    tests, clipboard/drag/scaling, and paired-mobile LAN acceptance all remain
