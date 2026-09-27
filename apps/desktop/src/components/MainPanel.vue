@@ -635,7 +635,9 @@ function dismissActiveTab(): boolean {
   const tab = controller?.activeTab.value;
   if (!controller || !tab || tab.kind === "agent") return false;
   // A shell tab is a live terminal; Escape belongs to whatever runs in it.
-  if (tab.kind === "shell" || tab.kind === "editor") return false;
+  // The design surface is a workspace too: Escape cancels its comment box
+  // and closes its editor's menus, and never throws the design away.
+  if (tab.kind === "shell" || tab.kind === "editor" || tab.kind === "design") return false;
   // A view with its own layered dismiss — a file's search, the tree's filter,
   // the graph's detail pane — gets to close that first.
   if (viewRefs.get(tab.id)?.dismiss?.() === false) return true;

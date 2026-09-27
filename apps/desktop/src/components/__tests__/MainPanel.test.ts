@@ -2016,6 +2016,13 @@ describe("App Design tasks", () => {
       expect(wrapper.find('[data-testid="live-terminal"]').exists()).toBe(true);
       expect(wrapper.find('[data-testid="design-view-stub"]').text()).toBe("task-design");
 
+      // Escape belongs to the design surface (its comment box, its editor's
+      // menus): it never closes the design.
+      tabs.activateTab("design");
+      await flushPromises();
+      expect((wrapper.vm as unknown as { dismissActiveTab: () => boolean }).dismissActiveTab()).toBe(false);
+      expect(tabs.isOpen("design")).toBe(true);
+
       // Closed by the person, it stays closed for the rest of the session.
       tabs.closeTab("design");
       await wrapper.setProps({ uiSlot: readySlot(durableTask({ id: "task-design", stage: "design", updated_at: "later" })) });
