@@ -42,6 +42,8 @@ pub(crate) struct AgentDesignView {
 pub(crate) struct AgentPosition {
     pub(crate) name: String,
     pub(crate) label: String,
+    /// What it shows: `mockup` (the HTML you publish for it) or `document`.
+    pub(crate) shows: String,
     /// The artifact id of the HTML mockup it shows, once one is published.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) mockup: Option<String>,
@@ -161,6 +163,7 @@ pub(crate) fn compact(view: DesignView, include_resolved: bool) -> AgentDesignVi
             .map(|position| AgentPosition {
                 name: position.name,
                 label: position.label,
+                shows: position.artifact,
                 mockup: position.mockup.map(|mockup| mockup.artifact_id),
             })
             .collect(),
