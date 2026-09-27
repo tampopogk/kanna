@@ -121,6 +121,17 @@ pub(crate) struct PositionView {
     pub(crate) name: String,
     pub(crate) label: String,
     pub(crate) artifact: String,
+    /// The HTML mockup this position shows, once the agent has published one.
+    pub(crate) mockup: Option<MockupView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MockupView {
+    pub(crate) repo_id: String,
+    pub(crate) artifact_id: String,
+    pub(crate) entrypoint: String,
+    pub(crate) published_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -408,7 +419,7 @@ pub(crate) fn ensure_session(
 }
 
 /// Refuse a change to the design unless the task is designing now.
-fn require_designing(
+pub(crate) fn require_designing(
     stage: &crate::task_creator::TaskDesignStage,
     session: &DesignSessionRow,
 ) -> Result<(), DesignError> {
@@ -474,6 +485,7 @@ pub(crate) fn view(
         .current_design_approval(task_id)?
         .map(|row| ApprovalView::from_row(&row, revision));
     let item = db.get_pipeline_item(task_id)?;
+    let mockups = db.design_mockups(task_id, session.epoch)?;
     let document = if include_document {
         Some(DocumentView {
             revision,
@@ -500,6 +512,15 @@ pub(crate) fn view(
                 name: position.name.clone(),
                 label: position.label.clone(),
                 artifact: position.artifact.clone(),
+                mockup: mockups
+                    .iter()
+                    .find(|mockup| mockup.position == position.name)
+                    .map(|mockup| MockupView {
+                        repo_id: mockup.repo_id.clone(),
+                        artifact_id: mockup.artifact_id.clone(),
+                        entrypoint: mockup.entrypoint.clone(),
+                        published_at: mockup.published_at.clone(),
+                    }),
             })
             .collect(),
         schema_version: session.schema_version,
@@ -936,6 +957,20 @@ pub(crate) fn set_position(
 ) -> Result<String, DesignError> {
     let (stage, session) = ensure_session(db, task_id)?;
     require_designing(&stage, &session)?;
+    require_position(&stage, position)?;
+    // A position is design state inside the one stage: no transition, no new
+    // session, no workspace, no reviewer, no budget.
+    if db.set_design_position(task_id, position)? {
+        runtime.feed_changed(task_id);
+    }
+    Ok(position.to_string())
+}
+
+/// Refuse a position the design stage does not declare.
+pub(crate) fn require_position(
+    stage: &crate::task_creator::TaskDesignStage,
+    position: &str,
+) -> Result<(), DesignError> {
     if !stage
         .design
         .positions
@@ -954,12 +989,7 @@ pub(crate) fn set_position(
                 .join(", ")
         )));
     }
-    // A position is design state inside the one stage: no transition, no new
-    // session, no workspace, no reviewer, no budget.
-    if db.set_design_position(task_id, position)? {
-        runtime.feed_changed(task_id);
-    }
-    Ok(position.to_string())
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

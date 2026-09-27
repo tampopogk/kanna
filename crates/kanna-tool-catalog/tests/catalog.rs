@@ -91,6 +91,7 @@ fn bundled_catalog_parses_and_declares_all_tools() {
             "kanna_design_reply",
             "kanna_design_resolve",
             "kanna_design_set_position",
+            "kanna_design_publish_mockup",
         ]
     );
 }
@@ -1047,6 +1048,14 @@ fn resolves_expected_requests_for_every_bundled_tool() {
             ResponseKind::Json,
             "/v1/tasks/task-1/design/position",
             json!({ "position": "prototype" }),
+        ),
+        (
+            "kanna_design_publish_mockup",
+            json!({ "task_id": "task-1", "op_id": "m1", "path": "mockups/static" }),
+            Method::Post,
+            ResponseKind::Json,
+            "/v1/tasks/task-1/design/agent/mockups",
+            json!({ "opId": "m1", "path": "mockups/static" }),
         ),
     ];
 

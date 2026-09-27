@@ -631,6 +631,7 @@ const TOOL_CALL_ONLY_TOOLS: &[&str] = &[
     "kanna_design_reply",
     "kanna_design_resolve",
     "kanna_design_set_position",
+    "kanna_design_publish_mockup",
     "kanna_create_subtasks",
     "kanna_get_task_joins",
 ];

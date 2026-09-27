@@ -527,6 +527,7 @@ pub(super) async fn build_fixture_with(authority: crate::task_store::authority::
         "INSERT INTO design_delivery (id, task_id, epoch, sequence, comment_id, state) VALUES ('dl-1', 'active', 1, 1, 'cm-1', 'queued')",
         "INSERT INTO design_agent_op (task_id, op_id, kind, result) VALUES ('active', 'op-1', 'reply', '{}')",
         "INSERT INTO design_approval (id, task_id, epoch, phase, doc_revision, doc_sha256, policy_json) VALUES ('ap-1', 'active', 1, 'candidate', 0, 'sha', '{}')",
+        "INSERT INTO design_mockup (task_id, epoch, position, repo_id, artifact_id, entrypoint, source_path) VALUES ('active', 1, 'static', 'repo-1', 'abc', 'index.html', 'mockups/static')",
     ] {
         conn.execute(statement, []).unwrap();
     }

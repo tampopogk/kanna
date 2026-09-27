@@ -134,6 +134,24 @@ pub(super) const SCHEMA: &str = r#"
     CREATE INDEX IF NOT EXISTS idx_design_approval_task ON design_approval(task_id, epoch);
 "#;
 
+/// Schema of migration `106_app_design_mockups`: the HTML mockup each design
+/// position currently shows, as a version in the repository's artifact store.
+pub(super) const MOCKUP_SCHEMA: &str = r#"
+    CREATE TABLE IF NOT EXISTS design_mockup (
+        task_id TEXT NOT NULL REFERENCES pipeline_item(id) ON DELETE CASCADE,
+        epoch INTEGER NOT NULL,
+        position TEXT NOT NULL,
+        repo_id TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        entrypoint TEXT NOT NULL,
+        -- The file or directory in the design's disposable repository it was
+        -- published from.
+        source_path TEXT NOT NULL,
+        published_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        PRIMARY KEY (task_id, position)
+    );
+"#;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DesignSessionRow {
@@ -391,6 +409,34 @@ const APPROVAL_COLUMNS: &str = "id, task_id, epoch, phase, doc_revision, doc_sha
      committed_sha, \
      confirmation_hash, confirmation_expires_at, approved_at, approved_by, error, created_at, \
      updated_at";
+
+/// The mockup a design position shows now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesignMockupRow {
+    pub task_id: String,
+    pub epoch: i64,
+    pub position: String,
+    pub repo_id: String,
+    pub artifact_id: String,
+    pub entrypoint: String,
+    pub source_path: String,
+    pub published_at: String,
+}
+
+impl DesignMockupRow {
+    fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            task_id: row.get("task_id")?,
+            epoch: row.get("epoch")?,
+            position: row.get("position")?,
+            repo_id: row.get("repo_id")?,
+            artifact_id: row.get("artifact_id")?,
+            entrypoint: row.get("entrypoint")?,
+            source_path: row.get("source_path")?,
+            published_at: row.get("published_at")?,
+        })
+    }
+}
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 
@@ -1071,6 +1117,63 @@ impl Db {
             .query_map([], DesignDeliveryRow::from_row)?
             .collect();
         rows
+    }
+
+    // -- mockups ------------------------------------------------------------
+
+    /// The mockups of the task's current design epoch, one per position.
+    pub(crate) fn design_mockups(
+        &self,
+        task_id: &str,
+        epoch: i64,
+    ) -> Result<Vec<DesignMockupRow>, rusqlite::Error> {
+        let mut statement = self.conn.prepare(
+            "SELECT task_id, epoch, position, repo_id, artifact_id, entrypoint, source_path,
+                    published_at
+             FROM design_mockup WHERE task_id = ? AND epoch = ? ORDER BY position",
+        )?;
+        let rows = statement
+            .query_map(params![task_id, epoch], DesignMockupRow::from_row)?
+            .collect();
+        rows
+    }
+
+    /// Make `artifact_id` what `position` shows; `true` when that changed it.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn set_design_mockup(
+        &self,
+        task_id: &str,
+        epoch: i64,
+        position: &str,
+        repo_id: &str,
+        artifact_id: &str,
+        entrypoint: &str,
+        source_path: &str,
+    ) -> Result<bool, rusqlite::Error> {
+        let changed = self.conn.execute(
+            &format!(
+                "INSERT INTO design_mockup
+                    (task_id, epoch, position, repo_id, artifact_id, entrypoint, source_path)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT (task_id, position) DO UPDATE SET
+                    epoch = excluded.epoch, repo_id = excluded.repo_id,
+                    artifact_id = excluded.artifact_id, entrypoint = excluded.entrypoint,
+                    source_path = excluded.source_path, published_at = {NOW}
+                 WHERE design_mockup.epoch <> excluded.epoch
+                    OR design_mockup.artifact_id <> excluded.artifact_id
+                    OR design_mockup.entrypoint <> excluded.entrypoint"
+            ),
+            params![
+                task_id,
+                epoch,
+                position,
+                repo_id,
+                artifact_id,
+                entrypoint,
+                source_path
+            ],
+        )?;
+        Ok(changed == 1)
     }
 
     // -- agent operations ---------------------------------------------------

@@ -25,7 +25,7 @@ pub(crate) struct AgentDesignView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) in_design_stage: Option<bool>,
     pub(crate) position: String,
-    /// Position name to its label, in workflow order.
+    /// The positions in workflow order.
     pub(crate) positions: Vec<AgentPosition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) scratch_repository: Option<String>,
@@ -42,6 +42,9 @@ pub(crate) struct AgentDesignView {
 pub(crate) struct AgentPosition {
     pub(crate) name: String,
     pub(crate) label: String,
+    /// The artifact id of the HTML mockup it shows, once one is published.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) mockup: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -155,6 +158,7 @@ pub(crate) fn compact(view: DesignView, include_resolved: bool) -> AgentDesignVi
             .map(|position| AgentPosition {
                 name: position.name,
                 label: position.label,
+                mockup: position.mockup.map(|mockup| mockup.artifact_id),
             })
             .collect(),
         scratch_repository: view.scratch_repository,

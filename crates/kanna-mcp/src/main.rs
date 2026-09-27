@@ -2019,6 +2019,7 @@ mod tests {
                 "kanna_design_reply",
                 "kanna_design_resolve",
                 "kanna_design_set_position",
+                "kanna_design_publish_mockup",
             ]
         );
     }

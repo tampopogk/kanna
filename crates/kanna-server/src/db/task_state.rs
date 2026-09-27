@@ -736,6 +736,23 @@ pub const CARRIED_TABLES: &[CarriedTable] = &[
             "the digest of a single-use, minutes-long confirmation token: a capability, never written to disk; a rebuilt database asks the person to confirm again",
         )],
     },
+    CarriedTable {
+        table: "design_mockup",
+        rows_of_task: OWNED_BY_TASK_ID,
+        owner: "{r}.task_id",
+        columns: &[
+            "task_id",
+            "epoch",
+            "position",
+            "repo_id",
+            "artifact_id",
+            "entrypoint",
+            "source_path",
+            "published_at",
+        ],
+        quiet: &[],
+        left_out: &[],
+    },
 ];
 
 /// Why a table is not carried in `state`.

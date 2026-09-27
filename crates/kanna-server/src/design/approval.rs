@@ -215,7 +215,11 @@ fn copy_committed_source(
     Ok(skipped)
 }
 
-fn artifact_store(state: &AppState, db: &Db, repo_id: &str) -> Result<ArtifactStore, DesignError> {
+pub(super) fn artifact_store(
+    state: &AppState,
+    db: &Db,
+    repo_id: &str,
+) -> Result<ArtifactStore, DesignError> {
     let repo = db.get_repo(repo_id)?.ok_or_else(|| DesignError::NotFound {
         message: format!("repository {repo_id} not found"),
     })?;
@@ -355,6 +359,20 @@ pub(crate) fn prepare_candidate(
         "policy": policy,
         "nextStage": stage.next_stage,
         "skippedSourceFiles": skipped,
+        // The mockup each position showed; its files are in `source` too.
+        "mockups": view
+            .positions
+            .iter()
+            .filter_map(|position| {
+                position.mockup.as_ref().map(|mockup| {
+                    json!({
+                        "position": position.name,
+                        "artifactId": mockup.artifact_id,
+                        "entrypoint": mockup.entrypoint,
+                    })
+                })
+            })
+            .collect::<Vec<_>>(),
     });
     std::fs::write(
         snapshot.join("approval.json"),

@@ -4,10 +4,20 @@
  * phone, which reach it through different transports.
  */
 
+export interface DesignMockup {
+  repoId: string;
+  /** The artifact store's tree id of the published page. */
+  artifactId: string;
+  entrypoint: string;
+  publishedAt: string;
+}
+
 export interface DesignPosition {
   name: string;
   label: string;
   artifact: string;
+  /** The HTML mockup the position shows, once the agent has published one. */
+  mockup?: DesignMockup | null;
 }
 
 export interface DesignDelivery {

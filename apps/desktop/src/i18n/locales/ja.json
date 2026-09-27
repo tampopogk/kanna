@@ -682,6 +682,12 @@
     "darkTheme": "ダークモードに切り替え",
     "incompatible": "このデザイン文書は別のエディターバージョンで作られています。編集する前に Kanna を更新してください。何も変更されていません。",
     "handedOffBanner": "承認済みでソフトウェアファクトリーに引き渡されました。変更するにはデザインを再開してください。",
+    "mockupTitle": "{position}のモックアップ",
+    "showNotes": "ノート",
+    "showMockup": "モックアップ",
+    "showNotesTitle": "ライブドキュメントを表示",
+    "showMockupTitle": "モックアップを表示",
+    "mockupOpening": "モックアップを開いています…",
     "status": {
       "connecting": "接続中…",
       "saving": "保存中…",

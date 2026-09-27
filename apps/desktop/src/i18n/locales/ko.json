@@ -683,6 +683,12 @@
     "darkTheme": "다크 모드로 전환",
     "incompatible": "이 디자인 문서는 다른 편집기 버전을 사용합니다. 편집하기 전에 Kanna를 업데이트하세요. 아무것도 변경되지 않았습니다.",
     "handedOffBanner": "승인되어 소프트웨어 팩토리로 넘어갔습니다. 변경하려면 디자인을 다시 여세요.",
+    "mockupTitle": "{position} 목업",
+    "showNotes": "노트",
+    "showMockup": "목업",
+    "showNotesTitle": "라이브 문서 보기",
+    "showMockupTitle": "목업 보기",
+    "mockupOpening": "목업을 여는 중…",
     "status": {
       "connecting": "연결 중…",
       "saving": "저장 중…",

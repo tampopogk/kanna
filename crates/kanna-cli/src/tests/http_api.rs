@@ -1700,7 +1700,7 @@ async fn design_tools_reach_the_typed_routes() {
         (
             "kanna_design_get",
             json!({"task_id":"task-1"}),
-            "GET /v1/tasks/task-1/design?include=document HTTP/1.1",
+            "GET /v1/tasks/task-1/design/agent HTTP/1.1",
             None,
         ),
         (
@@ -1728,6 +1728,12 @@ async fn design_tools_reach_the_typed_routes() {
             json!({"task_id":"task-1","position":"static"}),
             "POST /v1/tasks/task-1/design/position HTTP/1.1",
             Some(json!({"position":"static"})),
+        ),
+        (
+            "kanna_design_publish_mockup",
+            json!({"task_id":"task-1","op_id":"m1","path":"index.html","position":"static"}),
+            "POST /v1/tasks/task-1/design/agent/mockups HTTP/1.1",
+            Some(json!({"opId":"m1","path":"index.html","position":"static"})),
         ),
     ] {
         let (base_url, server) =

@@ -680,6 +680,12 @@
     "darkTheme": "Switch to dark mode",
     "incompatible": "This design document uses a different editor version. Update Kanna before editing; nothing was changed.",
     "handedOffBanner": "Approved and handed to the software factory. The design is read-only; reopen it to change it.",
+    "mockupTitle": "{position} mockup",
+    "showNotes": "Notes",
+    "showMockup": "Mockup",
+    "showNotesTitle": "Show the live document",
+    "showMockupTitle": "Show the mockup",
+    "mockupOpening": "Opening the mockup…",
     "status": {
       "connecting": "Connecting…",
       "saving": "Saving…",

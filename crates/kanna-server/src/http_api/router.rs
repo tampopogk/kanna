@@ -309,6 +309,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(super::design::get_design_for_agent),
         )
         .route(
+            "/v1/tasks/{task_id}/design/agent/mockups",
+            post(super::design::agent_publish_mockup),
+        )
+        .route(
             "/v1/tasks/{task_id}/design/agent/edits",
             post(super::design::agent_edit),
         )

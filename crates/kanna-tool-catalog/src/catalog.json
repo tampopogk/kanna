@@ -1552,6 +1552,61 @@
           "key": "position"
         }
       ]
+    },
+    {
+      "name": "kanna_design_publish_mockup",
+      "description": "Show an HTML mockup in an App Design task's design pane. Write the mockup (an .html file, or a directory with index.html and its CSS, JS and images, all referenced relatively) in the design's disposable repository, the `scratchRepository` kanna_design_get names, then publish it here: it becomes an immutable version in the repository's artifact store and the position's page, rendered sandboxed in place of the document (no network access, no reaching Kanna). Publish again after each change; each version chains to the one before. Returns the position, the artifact id and the page it opens.",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/design/agent/mockups",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "task_id",
+          "description": "Task id (stable across stages) or one of the task's branch names (task-{id} or task-{id}-{n}).",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "op_id",
+          "description": "An id you choose for this call (letters, digits, '-' or '_'). Reuse it only to retry the same call: a retried id returns the first call's result and changes nothing twice.",
+          "type": "string",
+          "required": true,
+          "location": "body",
+          "key": "opId"
+        },
+        {
+          "name": "path",
+          "description": "The mockup's file or directory, relative to the disposable repository (or an absolute path inside it).",
+          "type": "string",
+          "required": true,
+          "location": "body",
+          "key": "path"
+        },
+        {
+          "name": "position",
+          "description": "The position that shows it (a name kanna_design_get lists); the current position when omitted.",
+          "type": "string",
+          "required": false,
+          "location": "body",
+          "key": "position"
+        },
+        {
+          "name": "entrypoint",
+          "description": "The page to open inside a published directory; index.html (or the single file) when omitted.",
+          "type": "string",
+          "required": false,
+          "location": "body",
+          "key": "entrypoint"
+        }
+      ]
     }
   ],
   "guides": [

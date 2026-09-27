@@ -16,6 +16,7 @@ pub(crate) mod delivery;
 pub(crate) mod document;
 pub(crate) mod export;
 pub(crate) mod live;
+pub(crate) mod mockup;
 pub(crate) mod service;
 
 use std::collections::HashMap;

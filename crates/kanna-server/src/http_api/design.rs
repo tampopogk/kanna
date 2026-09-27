@@ -496,6 +496,21 @@ pub(super) async fn agent_edit(
     .await
 }
 
+pub(super) async fn agent_publish_mockup(
+    _access: PrivilegedTaskAccess,
+    State(state): State<Arc<AppState>>,
+    Path(task_id): Path<String>,
+    Json(request): Json<crate::design::mockup::PublishMockupRequest>,
+) -> Response {
+    let state_for_work = Arc::clone(&state);
+    let response = with_db(&state, "design mockup", move |db, runtime, db_path| {
+        crate::design::mockup::publish(&state_for_work, db, runtime, db_path, &task_id, &request)
+    })
+    .await;
+    changed(&state);
+    response
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct AgentReplyRequest {

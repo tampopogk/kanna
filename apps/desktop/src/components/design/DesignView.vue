@@ -24,12 +24,15 @@ import {
 import { useThemeRuntime } from "../../theme/runtime";
 import DesignFeedbackPanel from "./DesignFeedbackPanel.vue";
 import DesignApprovalBar from "./DesignApprovalBar.vue";
+import DesignMockupFrame from "./DesignMockupFrame.vue";
 
 /**
  * An App Design task's design surface (docs/specs/app-design.md §4), opened
  * as a view beside the task's agent terminal — the real session, which this
- * view never replaces. It shows the current position's artifact (the live
- * document, in this release), the one feedback panel, and the hand-off bar.
+ * view never replaces. It shows the current position's artifact — its HTML
+ * mockup once the agent has published one, else the live document, which
+ * stays one click away as the position's notes — the one feedback panel,
+ * and the hand-off bar.
  */
 const props = defineProps<{
   taskId: string;
@@ -55,6 +58,17 @@ const theme = computed<"light" | "dark">(() => (effectiveAppTheme.value === "lig
 const editable = computed(
   () => !!view.value?.inDesignStage && view.value.status === "designing" && status.value !== "incompatible",
 );
+const currentPosition = computed(() => view.value?.positions.find((position) => position.name === view.value?.position));
+const mockup = computed(() => currentPosition.value?.mockup ?? null);
+/** The person chose the notes over this position's mockup. */
+const showingNotes = ref(false);
+const showMockup = computed(() => !!mockup.value && !showingNotes.value);
+// A newly published page, or another position, shows its mockup again.
+watch(
+  () => `${view.value?.position ?? ""}\u0000${mockup.value?.artifactId ?? ""}`,
+  () => (showingNotes.value = false),
+);
+
 const factoryStages = computed(() => {
   const chain = view.value?.stageChain ?? [];
   const index = chain.indexOf(view.value?.stage ?? "");
@@ -232,7 +246,29 @@ const approvalActions = {
       <div class="artifact-column">
         <p v-if="status === 'incompatible'" class="banner error" role="alert">{{ t("design.incompatible") }}</p>
         <p v-else-if="view && !view.inDesignStage" class="banner">{{ t("design.handedOffBanner") }}</p>
-        <div ref="editorHost" class="editor-host" data-testid="design-editor-host" />
+        <div v-if="mockup" class="artifact-bar">
+          <span class="artifact-title">{{ t("design.mockupTitle", { position: currentPosition?.label ?? "" }) }}</span>
+          <span class="spacer" />
+          <button
+            type="button"
+            class="artifact-toggle"
+            data-testid="design-artifact-toggle"
+            :title="showMockup ? t('design.showNotesTitle') : t('design.showMockupTitle')"
+            :aria-pressed="!showMockup"
+            @click="showingNotes = !showingNotes"
+          >
+            {{ showMockup ? t("design.showNotes") : t("design.showMockup") }}
+          </button>
+        </div>
+        <DesignMockupFrame
+          v-if="showMockup && mockup"
+          :repo-id="mockup.repoId"
+          :artifact-id="mockup.artifactId"
+          :entrypoint="mockup.entrypoint"
+          :title="t('design.mockupTitle', { position: currentPosition?.label ?? '' })"
+        />
+        <!-- Kept mounted under the mockup: the live document keeps syncing. -->
+        <div v-show="!showMockup" ref="editorHost" class="editor-host" data-testid="design-editor-host" />
         <DesignApprovalBar
           v-if="view"
           :approval="view.approval"
@@ -352,6 +388,24 @@ const approvalActions = {
   min-height: 0;
   overflow-y: auto;
   padding: 24px 12px;
+}
+.artifact-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--kn-border-default);
+  font-size: 12px;
+  color: var(--kn-text-secondary);
+}
+.artifact-toggle {
+  border: 1px solid var(--kn-border-strong);
+  background: none;
+  color: var(--kn-text-secondary);
+  border-radius: 10px;
+  padding: 1px 10px;
+  font: inherit;
+  cursor: pointer;
 }
 .banner {
   margin: 0;

@@ -241,6 +241,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "103_disk_state_records",
     "104_disk_divergence",
     "105_app_design",
+    "106_app_design_mockups",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2767,6 +2768,10 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     // document's updates, threads, the feedback outbox and approvals.
     run_migration(conn, "105_app_design", |conn| {
         conn.execute_batch(design::SCHEMA)
+    })?;
+    // The HTML mockup each design position shows.
+    run_migration(conn, "106_app_design_mockups", |conn| {
+        conn.execute_batch(design::MOCKUP_SCHEMA)
     })?;
     task_state::sync_disk_state_triggers(conn)?;
 

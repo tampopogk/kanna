@@ -456,3 +456,113 @@ fn policy_paths_stay_inside_the_repository() {
     .unwrap();
     assert_eq!(bound.path, "docs/design/t1");
 }
+
+fn publish_mockup(
+    setup: &Setup,
+    op_id: &str,
+    path: &str,
+    position: Option<&str>,
+) -> Result<super::super::mockup::PublishMockupResult, DesignError> {
+    super::super::mockup::publish(
+        &setup.state,
+        &setup.db(),
+        &setup.state.design,
+        &setup.db_path(),
+        "task-d",
+        &super::super::mockup::PublishMockupRequest {
+            op_id: op_id.into(),
+            path: path.into(),
+            position: position.map(str::to_string),
+            entrypoint: None,
+        },
+    )
+}
+
+#[test]
+fn a_mockup_is_published_from_the_disposable_repository_and_shown_by_its_position() {
+    let setup = setup("mockup", "results-and-summary");
+    let view = service::view(
+        &setup.db(),
+        &setup.state.design,
+        &setup.db_path(),
+        "task-d",
+        false,
+    )
+    .unwrap();
+    assert!(view
+        .positions
+        .iter()
+        .all(|position| position.mockup.is_none()));
+    let scratch = PathBuf::from(view.scratch_repository.unwrap());
+    let dir = scratch.join("mockups/static");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("index.html"),
+        "<link rel=stylesheet href=style.css><h1>Tasks</h1>",
+    )
+    .unwrap();
+    std::fs::write(dir.join("style.css"), "h1 { color: teal }").unwrap();
+
+    let first = publish_mockup(&setup, "m1", "mockups/static", None).unwrap();
+    assert_eq!(first.position, "static");
+    assert_eq!(first.entrypoint, "index.html");
+    assert!(first.changed);
+    // A retry is the same call, applied once.
+    let retried = publish_mockup(&setup, "m1", "mockups/static", None).unwrap();
+    assert!(retried.replayed);
+    assert_eq!(retried.artifact_id, first.artifact_id);
+
+    let view = service::view(
+        &setup.db(),
+        &setup.state.design,
+        &setup.db_path(),
+        "task-d",
+        false,
+    )
+    .unwrap();
+    let shown = view.positions[0].mockup.as_ref().unwrap();
+    assert_eq!(shown.artifact_id, first.artifact_id);
+    let store = artifact_store(&setup.state, &setup.db(), "repo-1").unwrap();
+    assert!(store.read_file(&first.artifact_id, "style.css").is_ok());
+
+    // A revision chains to the page it replaces; an absolute path inside the
+    // disposable repository is accepted.
+    std::fs::write(dir.join("index.html"), "<h1>Tasks, revised</h1>").unwrap();
+    let second = publish_mockup(&setup, "m2", &dir.to_string_lossy(), Some("static")).unwrap();
+    assert_ne!(second.artifact_id, first.artifact_id);
+    let detail = serde_json::to_value(store.detail(&second.artifact_id).unwrap()).unwrap();
+    assert!(detail.to_string().contains(&first.artifact_id), "{detail}");
+
+    // Only an HTML page, only from the disposable repository, only for a
+    // declared position.
+    std::fs::write(scratch.join("notes.txt"), "not a page").unwrap();
+    assert!(publish_mockup(&setup, "m3", "notes.txt", None).is_err());
+    assert!(publish_mockup(
+        &setup,
+        "m4",
+        &setup.repo.join("README.md").to_string_lossy(),
+        None
+    )
+    .is_err());
+    assert!(publish_mockup(&setup, "m5", "mockups/static", Some("storyboard")).is_err());
+    // An op id means one call.
+    assert!(matches!(
+        publish_mockup(&setup, "m2", "mockups/static", Some("interactive")),
+        Ok(result) if result.replayed && result.position == "static"
+    ));
+
+    // The approved snapshot names the mockup each position showed.
+    setup.write_document("With a mockup");
+    let candidate = setup.candidate();
+    let artifact = candidate.approval.artifact_id.unwrap();
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&store.read_file(&artifact, "approval.json").unwrap().bytes)
+            .unwrap();
+    assert_eq!(
+        metadata["mockups"][0]["artifactId"],
+        second.artifact_id.as_str()
+    );
+    assert!(store
+        .read_file(&artifact, "source/mockups/static/index.html")
+        .is_ok());
+}
