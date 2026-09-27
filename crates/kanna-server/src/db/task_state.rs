@@ -648,6 +648,7 @@ pub const CARRIED_TABLES: &[CarriedTable] = &[
             "anchor_block_id",
             "quoted_text",
             "anchor_state_vector",
+            "anchor_element",
             "status",
             "created_at",
             "resolved_at",

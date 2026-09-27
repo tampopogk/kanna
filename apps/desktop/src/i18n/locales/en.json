@@ -719,7 +719,8 @@
       "replyPlaceholder": "Reply…",
       "send": "Send",
       "resend": "Send again",
-      "empty": "Select words in the document and press 💬 Comment or ⌘↵, or type /agent. Feedback is queued for the agent and delivered when it is free."
+      "empty": "Select words in the document and press 💬 Comment or ⌘↵, or type /agent. Feedback is queued for the agent and delivered when it is free.",
+      "outdated": "on an earlier mockup version"
     },
     "delivery": {
       "queued": "queued for the agent",
@@ -757,6 +758,14 @@
         "committed": "Results committed and verified: starting the software factory…",
         "entered": "Handed to the software factory ({stage})."
       }
+    },
+    "mockupHint": "Click any element to comment on it · ⌥-click uses the mockup",
+    "pin": {
+      "placeholder": "Comment on this element…",
+      "submit": "Comment",
+      "cancel": "Cancel",
+      "failed": "The comment was not saved.",
+      "readOnly": "The design is read-only; reopen it to comment."
     }
   }
 }

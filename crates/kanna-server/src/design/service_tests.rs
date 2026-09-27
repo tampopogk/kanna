@@ -81,6 +81,7 @@ impl Fixture {
                     block_id: block.into(),
                     quoted_text: "quoted".into(),
                     state_vector: None,
+                    element: None,
                 }),
             },
             Some("{\"kind\":\"test\"}"),

@@ -134,6 +134,15 @@ pub(super) const SCHEMA: &str = r#"
     CREATE INDEX IF NOT EXISTS idx_design_approval_task ON design_approval(task_id, epoch);
 "#;
 
+/// Schema of migration `107_app_design_pins`: a comment may be pinned on an
+/// element of a position's HTML mockup instead of on document text. The
+/// anchor is JSON: the mockup (position, artifact id, page) and the element
+/// as the person's click described it (selector, tag, id, classes,
+/// container, visible text, HTML excerpt).
+pub(super) const PINS_SCHEMA: &str = r#"
+    ALTER TABLE design_thread ADD COLUMN anchor_element TEXT;
+"#;
+
 /// Schema of migration `106_app_design_mockups`: the HTML mockup each design
 /// position currently shows, as a version in the repository's artifact store.
 pub(super) const MOCKUP_SCHEMA: &str = r#"
@@ -198,6 +207,8 @@ pub struct DesignThreadRow {
     pub quoted_text: Option<String>,
     #[serde(skip)]
     pub anchor_state_vector: Option<Vec<u8>>,
+    /// A mockup pin's anchor, as JSON (migration 107).
+    pub anchor_element: Option<String>,
     pub status: String,
     pub created_at: String,
     pub resolved_at: Option<String>,
@@ -215,6 +226,7 @@ impl DesignThreadRow {
             anchor_block_id: row.get("anchor_block_id")?,
             quoted_text: row.get("quoted_text")?,
             anchor_state_vector: row.get("anchor_state_vector")?,
+            anchor_element: row.get("anchor_element")?,
             status: row.get("status")?,
             created_at: row.get("created_at")?,
             resolved_at: row.get("resolved_at")?,
@@ -389,6 +401,7 @@ pub struct NewDesignThread<'a> {
     pub anchor_block_id: Option<&'a str>,
     pub quoted_text: Option<&'a str>,
     pub anchor_state_vector: Option<&'a [u8]>,
+    pub anchor_element: Option<&'a str>,
     pub body: &'a str,
     pub author: &'a str,
     pub client_op_id: Option<&'a str>,
@@ -400,7 +413,7 @@ pub struct NewDesignThread<'a> {
 const SESSION_COLUMNS: &str = "task_id, stage, epoch, position, schema_version, doc_revision, \
      status, created_at, updated_at";
 const THREAD_COLUMNS: &str = "id, task_id, epoch, number, kind, anchor_block_id, quoted_text, \
-     anchor_state_vector, status, created_at, resolved_at, resolved_by";
+     anchor_state_vector, anchor_element, status, created_at, resolved_at, resolved_by";
 const COMMENT_COLUMNS: &str = "id, thread_id, task_id, author, body, client_op_id, created_at";
 const DELIVERY_COLUMNS: &str = "id, task_id, epoch, sequence, comment_id, kind, body, state, \
      attempt_id, daemon_instance, attempts, detail, created_at, updated_at, delivered_at";
@@ -814,8 +827,9 @@ impl Db {
             )?;
             db.conn.execute(
                 "INSERT INTO design_thread
-                    (id, task_id, epoch, number, kind, anchor_block_id, quoted_text, anchor_state_vector)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (id, task_id, epoch, number, kind, anchor_block_id, quoted_text,
+                     anchor_state_vector, anchor_element)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params![
                     new.thread_id,
                     task_id,
@@ -825,6 +839,7 @@ impl Db {
                     new.anchor_block_id,
                     new.quoted_text,
                     new.anchor_state_vector,
+                    new.anchor_element,
                 ],
             )?;
             db.conn.execute(

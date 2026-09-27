@@ -29,6 +29,7 @@ fn thread<'a>(id: &'a str, comment: &'a str, delivery: Option<&'a str>) -> NewDe
         anchor_block_id: Some("block-1"),
         quoted_text: Some("quoted"),
         anchor_state_vector: Some(&[1, 2, 3]),
+        anchor_element: None,
         body: "please change this",
         author: "operator",
         client_op_id: Some(comment),

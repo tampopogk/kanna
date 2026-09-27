@@ -30,15 +30,22 @@ const first = "a".repeat(40);
 const second = "b".repeat(40);
 
 describe("DesignMockupFrame", () => {
-  it("frames the published page through the store's sandboxing shell and lets go of it", async () => {
+  it("frames the published page, with pins, through the store's sandboxing shell and lets go of it", async () => {
     const wrapper = mount(DesignMockupFrame, {
-      props: { repoId: "repo-1", artifactId: first, entrypoint: "screens/index.html", title: "Static mockup" },
+      props: {
+        repoId: "repo-1",
+        artifactId: first,
+        entrypoint: "screens/index.html",
+        title: "Static mockup",
+        pins: [],
+        selectedPin: null,
+      },
       global: { plugins: [i18n()] },
     });
     await flushPromises();
     const frame = wrapper.get("[data-testid='design-mockup-frame']");
     expect(frame.attributes("src")).toBe(
-      `http://127.0.0.1:41000/a/${"c".repeat(32)}/screens/index.html?kanna-shell`,
+      `http://127.0.0.1:41000/p/${"c".repeat(32)}/screens/index.html?kanna-shell`,
     );
     expect(frame.attributes("sandbox")).toBe("allow-scripts allow-same-origin");
     expect(frame.attributes("title")).toBe("Static mockup");
@@ -51,5 +58,20 @@ describe("DesignMockupFrame", () => {
 
     wrapper.unmount();
     expect(preview.released).toEqual([`repo-1/${first}`, `repo-1/${second}`]);
+  });
+
+  it("ignores a pin that does not come from the mockup inside its own frame", async () => {
+    const wrapper = mount(DesignMockupFrame, {
+      props: { repoId: "repo-1", artifactId: first, entrypoint: "index.html", title: "Mockup", pins: [], selectedPin: null },
+      global: { plugins: [i18n()] },
+      attachTo: document.body,
+    });
+    await flushPromises();
+    const pin = { kind: "kanna-mockup", type: "pin", pin: { selector: "#save", tag: "button", page: "", rect: {} } };
+    window.dispatchEvent(new MessageEvent("message", { data: pin, source: window }));
+    window.dispatchEvent(new MessageEvent("message", { data: pin }));
+    await flushPromises();
+    expect(wrapper.emitted("pin")).toBeUndefined();
+    wrapper.unmount();
   });
 });

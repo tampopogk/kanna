@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "fixtures": "tsx scripts/generate-fixtures.ts",
     "build:phone": "tsx scripts/build-phone-assets.ts",
-    "test:browser": "tsx e2e/run-browser.ts"
+    "test:browser": "tsx e2e/run-browser.ts",
+    "test:pins": "tsx e2e/mockup-pins.ts"
   },
   "dependencies": {
     "@blocknote/core": "0.55.0",

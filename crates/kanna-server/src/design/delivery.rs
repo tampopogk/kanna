@@ -283,12 +283,30 @@ fn older_than(created_at: &str, now: &str, grace: Duration) -> bool {
     }
 }
 
-fn render_item(thread: &service::ThreadView, comment: &service::CommentView) -> String {
+pub(super) fn render_item(thread: &service::ThreadView, comment: &service::CommentView) -> String {
     let is_reply = thread
         .comments
         .first()
         .is_some_and(|first| first.id != comment.id);
     let what = match (&thread.anchor, thread.kind.as_str()) {
+        (Some(service::AnchorView {
+            element: Some(element),
+            state,
+            ..
+        }), _) => format!(
+            "{} pinned on {} in the {} mockup (page {}, selector `{}`{}), which reads \u{201c}{}\u{201d}",
+            if is_reply { "reply" } else { "comment" },
+            element.label(),
+            element.position,
+            if element.page.is_empty() { "index" } else { &element.page },
+            element.selector,
+            if *state == "outdated" {
+                ", on a mockup version you have since replaced"
+            } else {
+                ""
+            },
+            element.text
+        ),
         (Some(anchor), _) => format!(
             "{} on \u{201c}{}\u{201d} (block {}{})",
             if is_reply { "reply" } else { "comment" },

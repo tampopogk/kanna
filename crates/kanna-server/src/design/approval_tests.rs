@@ -566,3 +566,123 @@ fn a_mockup_is_published_from_the_disposable_repository_and_shown_by_its_positio
         .read_file(&artifact, "source/mockups/static/index.html")
         .is_ok());
 }
+
+#[test]
+fn a_comment_pinned_on_a_mockup_element_reaches_the_agent_and_outlives_its_version() {
+    let setup = setup("pin", "results-and-summary");
+    let view = service::view(
+        &setup.db(),
+        &setup.state.design,
+        &setup.db_path(),
+        "task-d",
+        false,
+    )
+    .unwrap();
+    let scratch = PathBuf::from(view.scratch_repository.unwrap());
+    std::fs::write(
+        scratch.join("screen.html"),
+        "<main><button id=save>Save</button></main>",
+    )
+    .unwrap();
+    let mockup = publish_mockup(&setup, "m1", "screen.html", None).unwrap();
+
+    let element = service::ElementAnchor {
+        position: "static".into(),
+        artifact_id: mockup.artifact_id.clone(),
+        page: "screen.html".into(),
+        selector: "#save".into(),
+        tag: "button".into(),
+        element_id: "save".into(),
+        classes: String::new(),
+        container: "main".into(),
+        text: "Save".into(),
+        html: "<button id=\"save\">Save</button>".into(),
+    };
+    let request = |thread: &str, element: service::ElementAnchor| service::CreateThreadRequest {
+        thread_id: thread.into(),
+        comment_id: format!("{thread}-c"),
+        kind: "comment".into(),
+        body: "Make this the primary action".into(),
+        anchor: Some(service::AnchorRequest {
+            block_id: String::new(),
+            quoted_text: String::new(),
+            state_vector: None,
+            element: Some(element),
+        }),
+    };
+    let thread = service::create_thread(
+        &setup.db(),
+        &setup.state.design,
+        "task-d",
+        request("pin-1", element.clone()),
+        None,
+    )
+    .unwrap();
+    let anchor = thread.anchor.clone().unwrap();
+    assert_eq!(anchor.state, "attached");
+    assert_eq!(anchor.quoted_text.as_deref(), Some("Save"));
+    assert_eq!(anchor.element.as_ref().unwrap().selector, "#save");
+    assert!(anchor.block_id.is_none());
+
+    // The agent is told which element, where, and what it reads.
+    let item = super::super::delivery::render_item(&thread, &thread.comments[0]);
+    assert!(
+        item.contains("pinned on <button id=\"save\"> in main"),
+        "{item}"
+    );
+    assert!(
+        item.contains("static mockup (page screen.html, selector `#save`)"),
+        "{item}"
+    );
+    assert!(item.contains("Make this the primary action"), "{item}");
+
+    // A pin names a declared position and a mockup artifact.
+    for bad in [
+        service::ElementAnchor {
+            position: "storyboard".into(),
+            ..element.clone()
+        },
+        service::ElementAnchor {
+            artifact_id: "not-an-id".into(),
+            ..element.clone()
+        },
+        service::ElementAnchor {
+            selector: " ".into(),
+            ..element.clone()
+        },
+    ] {
+        assert!(service::create_thread(
+            &setup.db(),
+            &setup.state.design,
+            "task-d",
+            request("pin-bad", bad),
+            None
+        )
+        .is_err());
+    }
+
+    // Once the agent publishes a new version, the pin stays with its thread,
+    // marked as on the earlier one.
+    std::fs::write(
+        scratch.join("screen.html"),
+        "<main><button id=save class=primary>Save</button></main>",
+    )
+    .unwrap();
+    publish_mockup(&setup, "m2", "screen.html", None).unwrap();
+    let view = service::view(
+        &setup.db(),
+        &setup.state.design,
+        &setup.db_path(),
+        "task-d",
+        false,
+    )
+    .unwrap();
+    let pinned = view
+        .threads
+        .iter()
+        .find(|thread| thread.id == "pin-1")
+        .unwrap();
+    assert_eq!(pinned.anchor.as_ref().unwrap().state, "outdated");
+    let item = super::super::delivery::render_item(pinned, &pinned.comments[0]);
+    assert!(item.contains("since replaced"), "{item}");
+}

@@ -13,7 +13,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use super::document::{self, ProjectedBlock, ProjectedRun};
-use super::service::{self, AnchorView, DesignError, DesignView, ThreadView};
+use super::service::{self, AnchorView, DesignError, DesignView, ElementAnchor, ThreadView};
 use super::DesignRuntime;
 use crate::db::Db;
 
@@ -78,13 +78,16 @@ pub(crate) struct AgentAnchor {
     pub(crate) block_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) quote: Option<String>,
-    /// Present only when the anchor is not in the document: `pending` or
-    /// `detached`.
+    /// Present only when the anchor is not in place: `pending` or
+    /// `detached` text, or a pin on a replaced mockup (`outdated`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) state: Option<&'static str>,
     /// The anchored text now, when the person has changed it since.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) current_text: Option<String>,
+    /// A pin: the mockup element the comment is on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) element: Option<ElementAnchor>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -206,6 +209,7 @@ fn compact_anchor(anchor: AnchorView) -> AgentAnchor {
         quote: anchor.quoted_text,
         state: (anchor.state != "attached").then_some(anchor.state),
         current_text,
+        element: anchor.element,
     }
 }
 

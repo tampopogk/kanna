@@ -2,6 +2,7 @@
 import { computed, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import type { DesignThread } from "@kanna/design-editor";
+import { elementLabel } from "./mockupPins";
 
 /**
  * Feedback → agent (docs/specs/app-design.md §4): one panel of threads in
@@ -69,6 +70,11 @@ function statusDetail(thread: DesignThread): string | null {
 
 function anchorLabel(thread: DesignThread): string {
   if (thread.kind === "message") return t("design.feedback.message");
+  const element = thread.anchor?.element;
+  if (element) {
+    const shown = element.text.length > 40 ? `${element.text.slice(0, 40)}…` : element.text;
+    return shown ? `${elementLabel(element)} “${shown}”` : elementLabel(element);
+  }
   const quote = thread.anchor?.quotedText ?? "";
   return `“${quote.length > 60 ? `${quote.slice(0, 60)}…` : quote}”`;
 }
@@ -112,8 +118,9 @@ function sendReply(thread: DesignThread) {
         >
           <div class="thread-anchor">
             <span class="number" :aria-label="t('design.feedback.number', { number: thread.number })">{{ thread.number }}</span>
-            <span class="anchor" :class="{ detached: thread.anchor?.state === 'detached' }">{{ anchorLabel(thread) }}</span>
+            <span class="anchor" :class="{ detached: thread.anchor?.state === 'detached', pin: !!thread.anchor?.element }">{{ anchorLabel(thread) }}</span>
             <span v-if="thread.anchor?.state === 'detached'" class="detached-note">{{ t("design.feedback.detached") }}</span>
+            <span v-else-if="thread.anchor?.state === 'outdated'" class="detached-note">{{ t("design.feedback.outdated") }}</span>
           </div>
           <p class="body">{{ lastPersonComment(thread)?.body }}</p>
           <p class="status" :class="`status-${thread.deliveryStatus}`" :title="statusDetail(thread) ?? undefined">

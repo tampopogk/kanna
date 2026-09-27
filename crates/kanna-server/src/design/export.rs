@@ -218,6 +218,14 @@ pub(crate) fn feedback_markdown(threads: &[ThreadView]) -> String {
     let mut out = String::new();
     for thread in threads {
         let what = match &thread.anchor {
+            Some(super::service::AnchorView {
+                element: Some(element),
+                ..
+            }) => format!(
+                "pinned on {} in the {} mockup",
+                element.label(),
+                element.position
+            ),
             Some(anchor) => format!(
                 "on \u{201c}{}\u{201d}{}",
                 anchor.quoted_text.as_deref().unwrap_or(""),

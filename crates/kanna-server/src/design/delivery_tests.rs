@@ -393,6 +393,7 @@ async fn a_comment_waits_for_its_anchor_and_order_is_kept() {
                     block_id: block,
                     quoted_text: "the text".into(),
                     state_vector: Some(base64::engine::general_purpose::STANDARD.encode(&ahead)),
+                    element: None,
                 }),
             },
             None,

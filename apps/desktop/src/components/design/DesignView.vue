@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   DESIGN_SCHEMA_VERSION,
@@ -25,6 +25,7 @@ import { useThemeRuntime } from "../../theme/runtime";
 import DesignFeedbackPanel from "./DesignFeedbackPanel.vue";
 import DesignApprovalBar from "./DesignApprovalBar.vue";
 import DesignMockupFrame from "./DesignMockupFrame.vue";
+import { elementLabel, type MockupPinDescriptor, type MockupPinMarker } from "./mockupPins";
 
 /**
  * An App Design task's design surface (docs/specs/app-design.md §4), opened
@@ -68,6 +69,107 @@ watch(
   () => `${view.value?.position ?? ""}\u0000${mockup.value?.artifactId ?? ""}`,
   () => (showingNotes.value = false),
 );
+
+// Pins on the mockup shown now: open threads anchored on its elements.
+const mockupPins = computed<MockupPinMarker[]>(() =>
+  (view.value?.threads ?? [])
+    .filter(
+      (thread) =>
+        thread.status === "open"
+        && thread.anchor?.element?.position === view.value?.position
+        && thread.anchor?.element?.artifactId === mockup.value?.artifactId,
+    )
+    .map((thread) => ({
+      number: thread.number,
+      page: thread.anchor!.element!.page,
+      selector: thread.anchor!.element!.selector,
+    })),
+);
+const selectedPin = computed(() => {
+  const thread = view.value?.threads.find((candidate) => candidate.id === selectedThreadId.value);
+  return thread?.anchor?.element ? thread.number : null;
+});
+
+/** The element the person just clicked in the mockup, awaiting their comment. */
+const pending = ref<{ pin: MockupPinDescriptor; left: number; top: number } | null>(null);
+const pendingBody = ref("");
+const pendingSaving = ref(false);
+const artifactColumn = ref<HTMLElement | null>(null);
+const composerInput = ref<HTMLTextAreaElement | null>(null);
+
+function startPin(pin: MockupPinDescriptor, frameRect: DOMRect) {
+  if (!editable.value) {
+    showNotice(t("design.pin.readOnly"));
+    return;
+  }
+  const column = artifactColumn.value?.getBoundingClientRect();
+  const width = 300;
+  const left = frameRect.left - (column?.left ?? 0) + pin.rect.x;
+  const top = frameRect.top - (column?.top ?? 0) + pin.rect.y + pin.rect.height + 6;
+  const maxLeft = (column?.width ?? width) - width - 8;
+  const maxTop = (column?.height ?? 200) - 160;
+  pending.value = {
+    pin,
+    left: Math.max(8, Math.min(left, maxLeft)),
+    top: Math.max(8, Math.min(top, maxTop)),
+  };
+  pendingBody.value = "";
+  void nextTick(() => composerInput.value?.focus());
+}
+
+function cancelPin() {
+  pending.value = null;
+  pendingBody.value = "";
+}
+
+async function submitPin() {
+  const current = pending.value;
+  const body = pendingBody.value.trim();
+  if (!current || !body || !session.value || !mockup.value || !view.value || pendingSaving.value) return;
+  const { rect: _rect, ...element } = current.pin;
+  const threadId = newId("th");
+  pendingSaving.value = true;
+  try {
+    await session.value.createThread({
+      threadId,
+      commentId: newId("cm"),
+      kind: "comment",
+      body,
+      anchor: { element: { ...element, position: view.value.position, artifactId: mockup.value.artifactId } },
+    });
+    selectedThreadId.value = threadId;
+    cancelPin();
+  } catch (error) {
+    showNotice(error instanceof Error ? error.message : t("design.pin.failed"), "error");
+  } finally {
+    pendingSaving.value = false;
+  }
+}
+
+function composerKey(event: KeyboardEvent) {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    cancelPin();
+  } else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+    event.preventDefault();
+    void submitPin();
+  }
+}
+
+function selectPin(number: number) {
+  const thread = view.value?.threads.find((candidate) => candidate.number === number);
+  if (thread) selectedThreadId.value = thread.id;
+}
+
+function selectThread(id: string) {
+  selectedThreadId.value = id;
+  const thread = view.value?.threads.find((candidate) => candidate.id === id);
+  // A pin on the mockup shown now: show the mockup, where its marker is.
+  if (thread?.anchor?.element && thread.anchor.element.position === view.value?.position && mockup.value) {
+    showingNotes.value = false;
+  }
+}
+watch(() => mockup.value?.artifactId, () => cancelPin());
 
 const factoryStages = computed(() => {
   const chain = view.value?.stageChain ?? [];
@@ -243,7 +345,7 @@ const approvalActions = {
       </button>
     </header>
     <div class="design-body">
-      <div class="artifact-column">
+      <div ref="artifactColumn" class="artifact-column">
         <p v-if="status === 'incompatible'" class="banner error" role="alert">{{ t("design.incompatible") }}</p>
         <p v-else-if="view && !view.inDesignStage" class="banner">{{ t("design.handedOffBanner") }}</p>
         <div v-if="mockup" class="artifact-bar">
@@ -266,7 +368,38 @@ const approvalActions = {
           :artifact-id="mockup.artifactId"
           :entrypoint="mockup.entrypoint"
           :title="t('design.mockupTitle', { position: currentPosition?.label ?? '' })"
+          :pins="mockupPins"
+          :selected-pin="selectedPin"
+          @pin="startPin"
+          @select="selectPin"
         />
+        <form
+          v-if="pending && showMockup"
+          class="pin-composer"
+          :style="{ left: `${pending.left}px`, top: `${pending.top}px` }"
+          data-testid="design-pin-composer"
+          @submit.prevent="submitPin"
+        >
+          <p class="pin-target">
+            <code>{{ elementLabel(pending.pin) }}</code>
+            <span v-if="pending.pin.text">“{{ pending.pin.text.length > 80 ? `${pending.pin.text.slice(0, 80)}…` : pending.pin.text }}”</span>
+          </p>
+          <textarea
+            ref="composerInput"
+            v-model="pendingBody"
+            rows="3"
+            :placeholder="t('design.pin.placeholder')"
+            :aria-label="t('design.pin.placeholder')"
+            data-testid="design-pin-body"
+            @keydown="composerKey"
+          />
+          <div class="pin-actions">
+            <button type="button" class="linkish" @click="cancelPin">{{ t("design.pin.cancel") }}</button>
+            <button type="submit" class="primary" :disabled="!pendingBody.trim() || pendingSaving" data-testid="design-pin-submit">
+              {{ t("design.pin.submit") }} <kbd>⌘↵</kbd>
+            </button>
+          </div>
+        </form>
         <!-- Kept mounted under the mockup: the live document keeps syncing. -->
         <div v-show="!showMockup" ref="editorHost" class="editor-host" data-testid="design-editor-host" />
         <DesignApprovalBar
@@ -286,7 +419,7 @@ const approvalActions = {
         :threads="view?.threads ?? []"
         :can-write="editable"
         :selected-thread-id="selectedThreadId"
-        @select="(id) => (selectedThreadId = id)"
+        @select="selectThread"
         @resolve="(id, resolved) => feedbackAction(() => session!.resolve(id, resolved))"
         @reply="(id, body) => feedbackAction(() => session!.reply(id, { commentId: newId('cm'), body }))"
         @retry="(id) => feedbackAction(() => session!.retryDelivery(id))"
@@ -378,10 +511,67 @@ const approvalActions = {
   grid-template-columns: minmax(0, 1fr) minmax(240px, 320px);
 }
 .artifact-column {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 0;
   min-width: 0;
+}
+.pin-composer {
+  position: absolute;
+  z-index: 5;
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--kn-bg-panel-raised);
+  border: 1px solid var(--kn-border-strong);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+  font-size: 12px;
+}
+.pin-target {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--kn-text-secondary);
+  overflow-wrap: anywhere;
+}
+.pin-composer textarea {
+  resize: vertical;
+  font: inherit;
+  padding: 6px;
+  border-radius: 6px;
+  border: 1px solid var(--kn-border-strong);
+  background: var(--kn-bg-app);
+  color: var(--kn-text-primary);
+}
+.pin-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.pin-actions .primary {
+  border: 0;
+  border-radius: 6px;
+  padding: 4px 10px;
+  background: var(--kn-accent);
+  color: var(--kn-text-on-accent, #fff);
+  font: inherit;
+  cursor: pointer;
+}
+.pin-actions .primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.pin-actions .linkish {
+  border: 0;
+  background: none;
+  color: var(--kn-text-secondary);
+  font: inherit;
+  cursor: pointer;
 }
 .editor-host {
   flex: 1;

@@ -36,12 +36,36 @@ export interface DesignComment {
   delivery?: DesignDelivery;
 }
 
+/**
+ * An element of a position's HTML mockup, as the person's click described it
+ * (docs/specs/app-design.md §5). It comes from the mockup page, which the
+ * agent wrote: text to show, never markup to render.
+ */
+export interface DesignElementAnchor {
+  position: string;
+  artifactId: string;
+  /** The page inside the mockup, relative to its root. */
+  page: string;
+  selector: string;
+  tag: string;
+  elementId: string;
+  classes: string;
+  container: string;
+  text: string;
+  html: string;
+}
+
 export interface DesignAnchor {
   blockId: string | null;
   quotedText: string | null;
-  /** attached | pending | detached */
-  state: "attached" | "pending" | "detached";
+  /**
+   * Document text: attached | pending | detached. A mockup pin: attached,
+   * or outdated once the agent published a newer mockup.
+   */
+  state: "attached" | "pending" | "detached" | "outdated";
   currentText?: string;
+  /** A pin: the mockup element the comment is on. */
+  element?: DesignElementAnchor;
 }
 
 /** queued | delivering | delivered | agent_replied | uncertain | held | none */
@@ -141,7 +165,8 @@ export interface CreateThreadRequest {
   commentId: string;
   kind: "comment" | "message";
   body: string;
-  anchor?: { blockId: string; quotedText: string; stateVector?: string };
+  /** Selected document text, or a pinned mockup element. */
+  anchor?: { blockId: string; quotedText: string; stateVector?: string } | { element: DesignElementAnchor };
 }
 
 /**

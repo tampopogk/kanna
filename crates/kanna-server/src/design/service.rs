@@ -142,10 +142,15 @@ pub(crate) struct AnchorView {
     pub(crate) quoted_text: Option<String>,
     /// `attached` (the mark is in the document), `pending` (its update has
     /// not reached the server yet) or `detached` (the anchored text was
-    /// deleted; the thread and its quotation remain).
+    /// deleted; the thread and its quotation remain). A pin is `attached`
+    /// while its position shows the mockup it was placed on, and `outdated`
+    /// once the agent has published a newer one.
     pub(crate) state: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) current_text: Option<String>,
+    /// A pin: the mockup element the comment is on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) element: Option<ElementAnchor>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -543,6 +548,12 @@ fn thread_views(
     covers: &HashMap<String, bool>,
 ) -> Result<Vec<ThreadView>, DesignError> {
     let threads = db.design_threads(task_id)?;
+    // What each position shows now: a pin on anything else is outdated.
+    let mockups: Vec<(String, String)> = db
+        .design_mockups(task_id, session.epoch)?
+        .into_iter()
+        .map(|mockup| (mockup.position, mockup.artifact_id))
+        .collect();
     let mut comments: HashMap<String, Vec<DesignCommentRow>> = HashMap::new();
     for comment in db.design_comments(task_id)? {
         comments
@@ -557,7 +568,17 @@ fn thread_views(
         .collect();
     Ok(threads
         .into_iter()
-        .map(|thread| thread_view(thread, &comments, &deliveries, anchors, covers, session))
+        .map(|thread| {
+            thread_view(
+                thread,
+                &comments,
+                &deliveries,
+                anchors,
+                covers,
+                &mockups,
+                session,
+            )
+        })
         .collect())
 }
 
@@ -567,6 +588,7 @@ fn thread_view(
     deliveries: &HashMap<String, DesignDeliveryRow>,
     anchors: &BTreeMap<String, document::AnchorLocation>,
     covers: &HashMap<String, bool>,
+    mockups: &[(String, String)],
     session: &DesignSessionRow,
 ) -> ThreadView {
     let rows = comments.get(&thread.id).cloned().unwrap_or_default();
@@ -602,7 +624,23 @@ fn thread_view(
             }
         }
     };
+    let element: Option<ElementAnchor> = thread
+        .anchor_element
+        .as_deref()
+        .and_then(|json| serde_json::from_str(json).ok());
     let anchor = (thread.kind == "comment").then(|| {
+        if let Some(element) = element {
+            let current = mockups.iter().any(|(position, artifact)| {
+                *position == element.position && *artifact == element.artifact_id
+            });
+            return AnchorView {
+                block_id: None,
+                quoted_text: thread.quoted_text.clone(),
+                state: if current { "attached" } else { "outdated" },
+                current_text: None,
+                element: Some(element),
+            };
+        }
         let location = anchors.get(&thread.id);
         let state = if location.is_some() {
             "attached"
@@ -618,6 +656,7 @@ fn thread_view(
             quoted_text: thread.quoted_text.clone(),
             state,
             current_text: location.map(|location| location.text.clone()),
+            element: None,
         }
     });
     ThreadView {
@@ -692,12 +731,92 @@ pub(crate) fn sync_document(
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AnchorRequest {
+    /// Document text: the block and the selected text. Empty for a pin.
+    #[serde(default)]
     pub(crate) block_id: String,
+    #[serde(default)]
     pub(crate) quoted_text: String,
+    /// A pin on an element of a position's HTML mockup, instead of text.
+    #[serde(default)]
+    pub(crate) element: Option<ElementAnchor>,
     /// Base64 of the client's document state vector once its comment mark
     /// was written: delivery waits until the server's document covers it.
     #[serde(default)]
     pub(crate) state_vector: Option<String>,
+}
+
+/// An element of a mockup page, as the person's click described it
+/// (docs/specs/app-design.md §5: tag, id, classes, container, visible text
+/// and an HTML excerpt, plus the selector that finds it again). It comes
+/// from the mockup's page, which the agent wrote: it is a description to
+/// show and pass on, bounded here, never markup Kanna renders.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ElementAnchor {
+    pub(crate) position: String,
+    pub(crate) artifact_id: String,
+    /// The page inside the mockup, relative to its root.
+    #[serde(default)]
+    pub(crate) page: String,
+    pub(crate) selector: String,
+    pub(crate) tag: String,
+    #[serde(default)]
+    pub(crate) element_id: String,
+    #[serde(default)]
+    pub(crate) classes: String,
+    #[serde(default)]
+    pub(crate) container: String,
+    #[serde(default)]
+    pub(crate) text: String,
+    #[serde(default)]
+    pub(crate) html: String,
+}
+
+impl ElementAnchor {
+    /// Bound every field; refuse what is not a pin of this design.
+    fn checked(
+        mut self,
+        stage: &crate::task_creator::TaskDesignStage,
+    ) -> Result<Self, DesignError> {
+        require_position(stage, &self.position)?;
+        if self.artifact_id.len() != 40 || !self.artifact_id.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(DesignError::invalid("a pin names the mockup's artifact id"));
+        }
+        let clip = |value: &mut String, max: usize| {
+            if value.chars().count() > max {
+                *value = value.chars().take(max).collect();
+            }
+        };
+        if self.selector.trim().is_empty() || self.tag.trim().is_empty() {
+            return Err(DesignError::invalid("a pin names its element"));
+        }
+        clip(&mut self.page, 300);
+        clip(&mut self.selector, 1_000);
+        clip(&mut self.tag, 40);
+        clip(&mut self.element_id, 200);
+        clip(&mut self.classes, 300);
+        clip(&mut self.container, 200);
+        clip(&mut self.text, 500);
+        clip(&mut self.html, 1_000);
+        Ok(self)
+    }
+
+    /// How a person or the agent reads the pinned element in one line.
+    pub(crate) fn label(&self) -> String {
+        let mut label = format!("<{}", self.tag);
+        if !self.element_id.is_empty() {
+            label.push_str(&format!(" id=\"{}\"", self.element_id));
+        }
+        if !self.classes.is_empty() {
+            label.push_str(&format!(" class=\"{}\"", self.classes));
+        }
+        label.push('>');
+        if !self.container.is_empty() {
+            label.push_str(&format!(" in {}", self.container));
+        }
+        label
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -767,7 +886,16 @@ pub(crate) fn create_thread(
     let body = check_body(&request.body)?;
     let (stage, session) = ensure_session(db, task_id)?;
     require_designing(&stage, &session)?;
+    let element = match request
+        .anchor
+        .as_ref()
+        .and_then(|anchor| anchor.element.clone())
+    {
+        Some(element) if request.kind == "comment" => Some(element.checked(&stage)?),
+        _ => None,
+    };
     let vector = match (&request.kind[..], &request.anchor) {
+        ("comment", Some(_)) if element.is_some() => None,
         ("comment", Some(anchor)) => {
             if anchor.block_id.is_empty() || anchor.quoted_text.trim().is_empty() {
                 return Err(DesignError::invalid(
@@ -789,10 +917,20 @@ pub(crate) fn create_thread(
         ("message", Some(_)) => return Err(DesignError::invalid("a message has no anchor")),
         (other, _) => return Err(DesignError::invalid(format!("unknown thread kind {other}"))),
     };
-    let quoted: Option<String> = request
-        .anchor
+    // A pin's quotation is its element's visible text, so every reader of
+    // quoted text has something to show.
+    let quoted: Option<String> = match &element {
+        Some(element) => Some(element.text.chars().take(MAX_QUOTE_CHARS).collect()),
+        None => request
+            .anchor
+            .as_ref()
+            .map(|anchor| anchor.quoted_text.chars().take(MAX_QUOTE_CHARS).collect()),
+    };
+    let element_json = element
         .as_ref()
-        .map(|anchor| anchor.quoted_text.chars().take(MAX_QUOTE_CHARS).collect());
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(DesignError::internal)?;
     let delivery_id = new_id("dl")?;
     let created = db.create_design_thread(
         task_id,
@@ -803,9 +941,11 @@ pub(crate) fn create_thread(
             anchor_block_id: request
                 .anchor
                 .as_ref()
+                .filter(|_| element.is_none())
                 .map(|anchor| anchor.block_id.as_str()),
             quoted_text: quoted.as_deref(),
             anchor_state_vector: vector.as_deref(),
+            anchor_element: element_json.as_deref(),
             body,
             author: "operator",
             client_op_id: Some(&request.comment_id),
