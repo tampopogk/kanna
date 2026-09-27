@@ -429,7 +429,7 @@
         "e2e-file:tests/linux-installed/src/installed.e2e.test.ts",
         "e2e-file:tests/linux-installed/src/upgrade.e2e.test.ts"
       ],
-      "note": "Refuses to run off Linux, and the package's default `test` script runs only src/installedLayout.test.ts. `.github/workflows/linux-release-check.yml` runs installed.e2e.test.ts alone on hosted x86_64 and arm64 runners; the upgrade half needs two packages from distinct source revisions, which is wired nowhere. Under the directive to delete GitHub CI this lane has no replacement host yet."
+      "note": "Refuses to run off Linux, and the package's default `test` script runs only src/installedLayout.test.ts. `.github/workflows/linux-release-check.yml` used to run installed.e2e.test.ts alone on hosted x86_64 and arm64 runners, plus an apt/GnuPG interop lane and a workflow_dispatch A/B prepared-pair upgrade lane; the upgrade half still needed two packages from distinct source revisions, which was wired nowhere. Per the owner's 2026-09-26 directive to remove Linux CI on GitHub, that workflow was deleted outright rather than finished, so none of those lanes have a hosted host at all now. This lane runs only by hand: `./kd test linux-installed --old-artifact <deb> --new-artifact <deb>`."
     },
     {
       "id": "cli-contract-live",
