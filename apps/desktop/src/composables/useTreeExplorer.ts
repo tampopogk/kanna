@@ -102,6 +102,8 @@ export function useTreeExplorer(
   repoRoot: Ref<string>,
   remoteDirectoryLoader: Ref<RemoteDirectoryLoader | undefined>,
   remoteContentLoader: Ref<RemoteContentLoader | undefined> = shallowRef(undefined),
+  previewIdentity: Ref<string> = shallowRef(""),
+  previewEnabled: Ref<boolean> = shallowRef(true),
 ) {
   const cache = new Map<string, TreeNode[]>();
   const effectiveRoot = computed(() => rootPath.value);
@@ -229,6 +231,10 @@ export function useTreeExplorer(
   const debouncedCursor = refDebounced(cursorIndex, 50);
   const previewEntry = computed(() => currentEntries.value[debouncedCursor.value] ?? null);
   const previewContentEvaluating = ref(false);
+  const previewContent = shallowRef<FilePreviewContent | null>(null);
+  watch(selectedEntry, (entry) => {
+    if (previewContent.value?.path !== entry?.path) previewContent.value = null;
+  });
 
   /**
    * Read one file through whatever path this explorer is allowed to read
@@ -251,44 +257,69 @@ export function useTreeExplorer(
    * `error`, which the explorer already renders, the same way a failed
    * directory look-ahead does.
    */
-  const previewContent = computedAsync<FilePreviewContent | null>(
-    async () => {
-      const entry = previewEntry.value;
-      if (!entry || entry.isDir) return null;
-      if (hasBinaryExtension(entry.name)) return null;
-      // A directory loader without a content loader means this explorer is
-      // browsing something that is not the local filesystem — a remote task,
-      // or one whose reads the server resolves inside its worktree. Reading
-      // the entry's path off this machine instead would preview a different
-      // file under the task's name, so there is simply no preview.
-      if (remoteDirectoryLoader.value && !remoteContentLoader.value) return null;
+  // Refresh the selected file through the same contained read as the initial
+  // preview. There is no file-change event in the desktop view transport; a
+  // bounded read while this column is open also works for remote worktrees.
+  watch(
+    [previewEntry, rootPath, remoteDirectoryLoader, remoteContentLoader, previewIdentity, previewEnabled],
+    ([entry], _previous, onCleanup) => {
+      let cancelled = false;
+      let reading = false;
+      let timer: ReturnType<typeof setInterval> | null = null;
+      let previewError: string | null = null;
+      previewContent.value = null;
+      previewContentEvaluating.value = false;
+      onCleanup(() => {
+        cancelled = true;
+        if (timer !== null) clearInterval(timer);
+        if (previewError && error.value === previewError) error.value = null;
+      });
+      if (!previewEnabled.value || !entry || entry.isDir || hasBinaryExtension(entry.name)
+        || (remoteDirectoryLoader.value && !remoteContentLoader.value)) return;
+      const file = entry;
 
-      let raw: string;
-      try {
-        raw = await readFileContent(entry.path);
-      } catch (caught) {
-        const message = caught instanceof Error ? caught.message : String(caught);
-        if (isUnpreviewableFile(caught, message)) return null;
-        error.value = `Task files unavailable: ${message}`;
-        console.error("[tree-explorer] failed to load preview content:", message);
-        return null;
+      async function refresh() {
+        if (reading || cancelled) return;
+        reading = true;
+        previewContentEvaluating.value = true;
+        try {
+          const raw = await readFileContent(file.path);
+          if (cancelled || selectedEntry.value?.path !== file.path) return;
+          if (previewError && error.value === previewError) error.value = null;
+          previewError = null;
+          if (raw.length > PREVIEW_MAX_CHARS || raw.includes("\u0000")) {
+            previewContent.value = null;
+          } else {
+            const lines = raw.split("\n");
+            const truncated = lines.length > PREVIEW_MAX_LINES;
+            previewContent.value = {
+              path: file.path,
+              text: truncated ? lines.slice(0, PREVIEW_MAX_LINES).join("\n") : raw,
+              truncated,
+            };
+          }
+        } catch (caught) {
+          if (cancelled || selectedEntry.value?.path !== file.path) return;
+          previewContent.value = null;
+          const message = caught instanceof Error ? caught.message : String(caught);
+          if (isUnpreviewableFile(caught, message)) {
+            if (previewError && error.value === previewError) error.value = null;
+            previewError = null;
+          } else {
+            previewError = `Task files unavailable: ${message}`;
+            error.value = previewError;
+            console.error("[tree-explorer] failed to load preview content:", message);
+          }
+        } finally {
+          reading = false;
+          if (!cancelled) previewContentEvaluating.value = false;
+        }
       }
 
-      if (raw.length > PREVIEW_MAX_CHARS) return null;
-      // A NUL byte is the rest of the binaries: decodable as UTF-8, painted as
-      // control-picture noise if it reached the column.
-      if (raw.includes("\u0000")) return null;
-
-      const lines = raw.split("\n");
-      const truncated = lines.length > PREVIEW_MAX_LINES;
-      return {
-        path: entry.path,
-        text: truncated ? lines.slice(0, PREVIEW_MAX_LINES).join("\n") : raw,
-        truncated,
-      };
+      void refresh();
+      timer = setInterval(() => { void refresh(); }, 1000);
     },
-    null,
-    previewContentEvaluating,
+    { immediate: true },
   );
 
   /**

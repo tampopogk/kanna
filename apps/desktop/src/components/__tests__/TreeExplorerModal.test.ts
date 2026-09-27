@@ -251,6 +251,117 @@ describe("TreeExplorerModal preview column", () => {
     wrapper.unmount();
   });
 
+  it("refreshes the selected file after an external edit without moving the cursor", async () => {
+    const files = { [`${LOCAL_ROOT}/notes.txt`]: "before\n" };
+    mockLocalFs({ entries: [{ name: "notes.txt", is_dir: false }], textByPath: files });
+    const wrapper = mountLocal();
+    await settlePreview();
+    const preview = wrapper.get('[data-testid="tree-preview-content"]');
+    preview.element.scrollTop = 48;
+
+    files[`${LOCAL_ROOT}/notes.txt`] = "after\n";
+    await new Promise((resolve) => setTimeout(resolve, 1050));
+    await settle();
+
+    expect(wrapper.get('[data-testid="tree-preview-content"]').text()).toContain("after");
+    expect(wrapper.get('[data-testid="tree-preview-content"]').text()).not.toContain("before");
+    expect(wrapper.get('[data-testid="tree-preview-content"]').element).toBe(preview.element);
+    expect(preview.element.scrollTop).toBe(48);
+    expect(wrapper.get(".col-current .cursor").text()).toContain("notes.txt");
+    wrapper.unmount();
+  });
+
+  it("clears a deleted file and recovers when it can be read again", async () => {
+    let file: string | null = "before\n";
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "read_dir_entries") return [{ name: "notes.txt", is_dir: false }];
+      if (file === null) throw new Error("file not found");
+      return file;
+    });
+    const wrapper = mountLocal();
+    await settlePreview();
+    file = null;
+    await new Promise((resolve) => setTimeout(resolve, 1050));
+    await settle();
+    expect(wrapper.find('[data-testid="tree-preview-content"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="tree-explorer-unavailable"]').text()).toContain("file not found");
+
+    file = "restored\n";
+    await new Promise((resolve) => setTimeout(resolve, 1050));
+    await settle();
+    expect(wrapper.get('[data-testid="tree-preview-content"]').text()).toContain("restored");
+    expect(wrapper.find('[data-testid="tree-explorer-unavailable"]').exists()).toBe(false);
+    wrapper.unmount();
+    consoleError.mockRestore();
+  });
+
+  it("does not let a late read replace the new selection", async () => {
+    let releaseFirst!: (value: string) => void;
+    const firstRead = new Promise<string>((resolve) => { releaseFirst = resolve; });
+    invokeMock.mockImplementation(async (command: string, args: { path: string }) => {
+      if (command === "read_dir_entries") return [
+        { name: "first.txt", is_dir: false },
+        { name: "second.txt", is_dir: false },
+      ];
+      return args.path.endsWith("first.txt") ? firstRead : "second contents\n";
+    });
+    const wrapper = mountLocal();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await settle();
+    await wrapper.findAll(".col-current .tree-item")[1].trigger("click");
+    await settlePreview();
+    releaseFirst("late first contents\n");
+    await settle();
+
+    expect(wrapper.get('[data-testid="tree-preview-content"]').text()).toContain("second contents");
+    expect(wrapper.text()).not.toContain("late first contents");
+    wrapper.unmount();
+  });
+
+  it("ignores a late refresh from the previous task and stops reading after close", async () => {
+    let releaseOld!: (value: string) => void;
+    const oldRead = new Promise<string>((resolve) => { releaseOld = resolve; });
+    const oldLoader = vi.fn().mockResolvedValue("old initial\n");
+    const newLoader = vi.fn().mockResolvedValue("new task\n");
+    const directoryLoader = vi.fn(async () => ({
+      entries: [{ name: "notes.txt", path: "notes.txt", isDir: false }],
+    }));
+    const wrapper = mount(TreeExplorerModal, {
+      props: {
+        worktreePath: "task-old",
+        repoRoot: "task-old",
+        remoteTaskId: "old",
+        remoteDesktopId: "machine-old",
+        remoteDirectoryLoader: directoryLoader,
+        remoteContentLoader: oldLoader,
+      },
+    });
+    await settlePreview();
+    oldLoader.mockReturnValueOnce(oldRead);
+    await new Promise((resolve) => setTimeout(resolve, 1050));
+    expect(oldLoader).toHaveBeenCalledTimes(2);
+
+    await wrapper.setProps({
+      worktreePath: "task-new",
+      repoRoot: "task-new",
+      remoteTaskId: "new",
+      remoteDesktopId: "machine-new",
+      remoteContentLoader: newLoader,
+    });
+    await settlePreview();
+    releaseOld("late old task\n");
+    await settle();
+    expect(wrapper.get('[data-testid="tree-preview-content"]').text()).toContain("new task");
+    expect(wrapper.text()).not.toContain("late old task");
+    expect(invokeMock).not.toHaveBeenCalled();
+
+    wrapper.unmount();
+    const readsAtClose = newLoader.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 1050));
+    expect(newLoader).toHaveBeenCalledTimes(readsAtClose);
+  });
+
   it("syntax-highlights a file whose extension Shiki has a grammar for", async () => {
     mockLocalFs({
       entries: [{ name: "main.ts", is_dir: false }],

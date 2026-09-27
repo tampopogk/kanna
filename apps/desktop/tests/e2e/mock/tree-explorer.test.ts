@@ -10,6 +10,7 @@ import { callVueMethod, execDb, closeMainTabsScript } from "../helpers/vue";
 
 const REPO_NAME = "task-switch-minimal";
 const IGNORED_FILE = "ignored-output.log";
+const PREVIEW_REFRESH_FILE = "preview-refresh.txt";
 
 function isVueCallError(result: unknown): result is { __error: string } {
   return Boolean(
@@ -234,6 +235,41 @@ describe("tree explorer", () => {
     await pressActiveElementKey(client, "a");
     await waitForExplorerText(client, IGNORED_FILE);
     expect(await textContent(client, ".show-all-toggle")).toContain("showing all");
+  });
+
+  it("refreshes the selected preview after an external file edit without navigation", async () => {
+    await ensureRepoImported();
+    await writeFile(join(fixtureRepoPath, PREVIEW_REFRESH_FILE), "before external edit\n", "utf8");
+
+    await client.executeSync(
+      closeMainTabsScript(["tree", "file"]),
+    );
+    await pressKey(client, "E", { meta: true, shift: true });
+    await client.waitForElement(".tree-modal", 5_000);
+    await waitForExplorerText(client, PREVIEW_REFRESH_FILE);
+
+    await clickTreeItem(client, ".col-current", PREVIEW_REFRESH_FILE);
+    await client.waitForText(
+      '[data-testid="tree-preview-content"]',
+      "before external edit",
+      5_000,
+    );
+
+    await writeFile(
+      join(fixtureRepoPath, PREVIEW_REFRESH_FILE),
+      "after external edit\n",
+      "utf8",
+    );
+
+    await client.waitForText(
+      '[data-testid="tree-preview-content"]',
+      "after external edit",
+      5_000,
+    );
+    expect(await textContent(client, '[data-testid="tree-preview-content"]'))
+      .not.toContain("before external edit");
+    expect(await textContent(client, ".col-current .cursor"))
+      .toContain(PREVIEW_REFRESH_FILE);
   });
 
   it("renders a removed local task worktree as unavailable instead of an empty tree or repo fallback", async () => {
