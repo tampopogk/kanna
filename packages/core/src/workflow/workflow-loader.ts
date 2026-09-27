@@ -9,6 +9,9 @@ import {
 } from "./workflow-types";
 import { parseAgentSelection, parseAgentProviderSelector, type AgentSelection } from "../config/agent-providers";
 
+/** What an App Design position may show (docs/specs/app-design.md §5). */
+const DESIGN_ARTIFACTS: readonly string[] = ["document", "mockup"];
+
 function formatRawValue(value: unknown): string {
   if (value === undefined) {
     return "undefined";
@@ -230,9 +233,9 @@ function validateDesignStages(def: WorkflowDefinition): string[] {
         errors.push(`stage '${name}': design position '${position.name}' is listed twice`);
       }
       seen.add(position.name);
-      if ((position.artifact ?? "document") !== "document") {
+      if (!DESIGN_ARTIFACTS.includes(position.artifact ?? "document")) {
         errors.push(
-          `stage '${name}': design position '${position.name}' shows '${position.artifact as string}'; only "document" is supported`
+          `stage '${name}': design position '${position.name}' shows '${position.artifact as string}'; a position shows "document" or "mockup"`
         );
       }
     }
@@ -524,8 +527,9 @@ function parseDesign(value: unknown, stageName: string): WorkflowDesign {
       if (typeof name !== "string" || !DESIGN_POSITION_NAME.test(name) || typeof label !== "string") {
         throw invalid();
       }
-      if (artifact !== undefined && artifact !== "document") throw invalid();
-      return artifact === undefined ? { name, label } : { name, label, artifact };
+      if (artifact === undefined) return { name, label };
+      if (artifact !== "document" && artifact !== "mockup") throw invalid();
+      return { name, label, artifact };
     }),
   };
 }

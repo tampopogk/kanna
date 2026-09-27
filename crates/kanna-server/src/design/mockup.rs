@@ -1,6 +1,8 @@
-//! HTML mockups (docs/specs/app-design.md §5): the agent writes a mockup in
-//! the design's disposable repository and publishes it as the page a
-//! position shows. The page becomes an immutable version in the repository's
+//! HTML mockups (docs/specs/app-design.md §5): the agent sets a position's
+//! mockup HTML (as the prototype's `html/set` did), or publishes a mockup
+//! directory it wrote in the design's disposable repository. Either way the
+//! mockup is in the disposable repository, so the approved snapshot carries
+//! it, and becomes the page the position shows. The page becomes an immutable version in the repository's
 //! artifact store, so what the person sees is exactly what was published and
 //! renders through the store's sandboxed preview, never from the agent's
 //! files directly. Republishing a position chains the new version to the
@@ -19,13 +21,20 @@ use crate::db::Db;
 use crate::http_api::AppState;
 
 const OP_KIND: &str = "mockup";
+/// One inline mockup page; a mockup with large assets is a directory.
+const MAX_HTML_BYTES: usize = 2 << 20;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PublishMockupRequest {
     pub(crate) op_id: String,
-    /// A file or directory in the design's disposable repository.
-    pub(crate) path: String,
+    /// The mockup page itself: one HTML document, written to
+    /// `mockups/<position>/index.html` in the disposable repository.
+    #[serde(default)]
+    pub(crate) html: Option<String>,
+    /// Or a file or directory in the design's disposable repository.
+    #[serde(default)]
+    pub(crate) path: Option<String>,
     /// The position that shows it; the current one when absent.
     #[serde(default)]
     pub(crate) position: Option<String>,
@@ -90,7 +99,29 @@ pub(crate) fn publish(
                 message: "the design's disposable repository could not be created".into(),
             }
         })?;
-    let source_path = relative_to(&scratch, &request.path)?;
+    let source_path = match (&request.html, &request.path) {
+        (Some(html), None) => {
+            if html.trim().is_empty() {
+                return Err(DesignError::invalid("html is empty"));
+            }
+            if html.len() > MAX_HTML_BYTES {
+                return Err(DesignError::invalid(format!(
+                    "a mockup page is at most {MAX_HTML_BYTES} bytes; put larger assets in files and publish the directory with path"
+                )));
+            }
+            let relative = format!("mockups/{position}");
+            let dir = scratch.join(&relative);
+            std::fs::create_dir_all(&dir).map_err(DesignError::internal)?;
+            std::fs::write(dir.join("index.html"), html).map_err(DesignError::internal)?;
+            relative
+        }
+        (None, Some(path)) => relative_to(&scratch, path)?,
+        _ => {
+            return Err(DesignError::invalid(
+                "send the mockup as html, or the path of its file or directory, not both",
+            ))
+        }
+    };
     let previous = db
         .design_mockups(task_id, session.epoch)?
         .into_iter()

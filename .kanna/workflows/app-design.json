@@ -13,8 +13,8 @@
       "exit_commit": true,
       "design": {
         "positions": [
-          { "name": "static", "label": "Static mockup", "artifact": "document" },
-          { "name": "interactive", "label": "Interactive mockup", "artifact": "document" },
+          { "name": "static", "label": "Static mockup", "artifact": "mockup" },
+          { "name": "interactive", "label": "Interactive mockup", "artifact": "mockup" },
           { "name": "prototype", "label": "Prototype", "artifact": "document" }
         ]
       }

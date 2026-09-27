@@ -513,12 +513,7 @@
     "commitStepLabel": "commit:",
     "gateParked": "Waiting for a person to decide",
     "dependencyWait": "Waiting on {fromStage} → {toStage} dependencies",
-    "dependencySuperseded": "A newer result from {upstreamTaskId} ({upstreamStage}) was not used",
-    "designInProgress": "App Design · {position}",
-    "designHandedOff": "App Design · handed off",
-    "designOpen": "{count} open",
-    "designWaiting": "{count} queued",
-    "designUncertain": "{count} not delivered"
+    "dependencySuperseded": "A newer result from {upstreamTaskId} ({upstreamStage}) was not used"
   },
   "app": {
     "selectRepoFirst": "Select a repository first",
@@ -673,18 +668,11 @@
   },
   "design": {
     "workflowName": "App Design",
-    "positionsLabel": "Design positions",
     "freeMove": "Move freely between design positions",
-    "handoffArrow": "After Approve for build: the software factory",
     "lightTheme": "Switch to light mode",
     "darkTheme": "Switch to dark mode",
     "incompatible": "This design document uses a different editor version. Update Kanna before editing; nothing was changed.",
-    "handedOffBanner": "Approved and handed to the software factory. The design is read-only; reopen it to change it.",
     "mockupTitle": "{position} mockup",
-    "showNotes": "Notes",
-    "showMockup": "Mockup",
-    "showNotesTitle": "Show the live document",
-    "showMockupTitle": "Show the mockup",
     "mockupOpening": "Opening the mockup…",
     "status": {
       "connecting": "Connecting…",
@@ -719,53 +707,65 @@
       "replyPlaceholder": "Reply…",
       "send": "Send",
       "resend": "Send again",
-      "empty": "Select words in the document and press 💬 Comment or ⌘↵, or type /agent. Feedback is queued for the agent and delivered when it is free.",
-      "outdated": "on an earlier mockup version"
+      "empty": "Select words in the doc and press 💬 or ⌘↵, or type /agent. It is queued for the agent's session.",
+      "openDivider": "open"
     },
     "delivery": {
-      "queued": "queued for the agent",
-      "delivering": "delivering…",
-      "delivered": "delivered to session ✓",
+      "queued": "queued",
+      "delivering": "sending…",
+      "delivered": "delivered ✓",
       "agent_replied": "agent replied",
-      "uncertain": "not delivered: check the agent's terminal, then send again",
-      "held": "held: the design was handed off",
-      "cancelled": "not delivered",
+      "uncertain": "not delivered ✕",
+      "held": "held",
+      "cancelled": "not delivered ✕",
       "none": ""
     },
     "approval": {
-      "hint": "Iterate with the agent, then approve the design for build.",
       "approve": "Approve for build →",
       "preparing": "Preparing…",
       "dialogTitle": "Approve for build?",
       "dialogIntro": "This hands the design to the software factory:",
-      "dialogSnapshot": "The design's disposable repository is committed, and a snapshot (the document, its committed source and this approval) is kept in Kanna's artifact store.",
+      "dialogSnapshot": "A snapshot is published to Kanna's artifact store, with your decision on it",
       "dialogRetained": "These results are committed to the repository:",
-      "dialogNothingRetained": "Nothing is committed to the repository; this repository's policy keeps only the snapshot.",
-      "dialogNext": "Then the {stage} stage starts from that commit.",
-      "dialogPrototype": "Prototype code is a reference only; the software factory rebuilds it properly.",
+      "dialogNothingRetained": "Nothing is committed to the repository; this repository's policy keeps only the snapshot",
+      "dialogNext": "Then the {stage} stage starts from that commit",
+      "dialogPrototype": "The prototype code is a reference only; agents rebuild it properly",
       "dialogOpenFeedback": "{open} thread(s) are still open and {waiting} item(s) have not reached the agent. They stay attached to the approved record.",
       "keepIterating": "Keep iterating",
-      "confirm": "Approve for build",
-      "approving": "Approving…",
+      "confirm": "Approve",
+      "approving": "approving…",
       "reopen": "Reopen design",
       "reopenHint": "Back to designing; the approval is withdrawn and a new one is needed",
       "retry": "Retry hand-off",
-      "failed": "Hand-off stopped: {error}",
+      "failed": "approval failed: {error}",
       "progress": {
         "approved": "Approved for build: writing the retained results…",
         "exported": "Approved for build: waiting for the design session to commit the results…",
         "committing": "Approved for build: the design session is committing the results…",
         "committed": "Results committed and verified: starting the software factory…",
         "entered": "Handed to the software factory ({stage})."
-      }
+      },
+      "dialogCommit": "The prototype repo is committed; that commit is what you approve",
+      "approvedLine": "approved · commit {commit} · artifact {artifact}…",
+      "repoLine": "disposable repo · {path}"
     },
-    "mockupHint": "Click any element to comment on it · ⌥-click uses the mockup",
     "pin": {
-      "placeholder": "Comment on this element…",
       "submit": "Comment",
-      "cancel": "Cancel",
-      "failed": "The comment was not saved.",
-      "readOnly": "The design is read-only; reopen it to comment."
+      "cancel": "Cancel"
+    },
+    "goTo": "Go to {position}",
+    "handedOffStep": "Handed to the software factory",
+    "softwareFactory": "Software factory",
+    "youAreHere": "You're here",
+    "nowIn": "Now in “{position}”",
+    "room": {
+      "title": "Comments",
+      "hint": "Click any element in the mockup to comment on it. ⌥-click uses the mockup.",
+      "empty": "No comments yet.",
+      "waiting": "Waiting for the agent to publish a mockup…",
+      "elementGone": "element gone",
+      "composerPlaceholder": "What should change here? (⌘↵ to send)",
+      "pinned": "Pinned: queued for the agent"
     }
   }
 }

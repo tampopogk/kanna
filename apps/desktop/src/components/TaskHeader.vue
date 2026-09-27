@@ -4,6 +4,9 @@ import { useI18n } from "vue-i18n";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { ArtifactReference } from "@kanna/core";
 import { isTauri } from "../tauri-mock";
+import DesignLadder from "./design/DesignLadder.vue";
+import { sayDesign } from "./design/designToast";
+import { setDesignPosition } from "../services/designClient";
 
 const { t } = useI18n();
 
@@ -80,12 +83,15 @@ const props = defineProps<{
    * feedback at a glance; opens the design surface. */
   design?: {
     inDesignStage: boolean;
+    status?: string;
     position: string;
     positions: Array<{ name: string; label: string }>;
     openThreads: number;
     waitingFeedback: number;
     uncertainFeedback: number;
   } | null;
+  /** Persist the app-wide theme choice; the design ladder carries the toggle. */
+  setAppTheme?: (theme: "light" | "dark") => void;
 }>();
 
 const emit = defineEmits<{
@@ -94,14 +100,23 @@ const emit = defineEmits<{
   (e: "open-design"): void;
 }>();
 
-const designLabel = computed(() => {
+/** A design position picked in the ladder: move there and show the design. */
+async function pickDesignPosition(position: string) {
   const design = props.design;
-  if (!design) return null;
-  const position = design.positions.find((candidate) => candidate.name === design.position)?.label ?? design.position;
-  return design.inDesignStage
-    ? t("taskHeader.designInProgress", { position })
-    : t("taskHeader.designHandedOff");
-});
+  if (!design || !props.taskId) return;
+  emit("open-design");
+  const label = design.positions.find((candidate) => candidate.name === position)?.label ?? position;
+  if (position === design.position) {
+    sayDesign(t("design.youAreHere"));
+    return;
+  }
+  try {
+    await setDesignPosition(props.taskId, position);
+    sayDesign(t("design.nowIn", { position: label }));
+  } catch (error) {
+    sayDesign(error instanceof Error ? error.message : String(error), "error");
+  }
+}
 
 const latestResultArtifacts = computed(() => {
   const artifacts = props.latestRun?.artifacts;
@@ -198,20 +213,9 @@ function openLocalhostPort(port: number) {
         :title="item.stage_advance_pending ? $t('taskHeader.stageAdvancePending') : undefined"
       >{{ stageBadgeLabel }}</span>
       <h2 class="task-title" :title="taskPromptTooltip(item)" @mousedown.stop>{{ title(item) }}</h2>
-      <button
-        v-if="design && designLabel"
-        type="button"
-        class="design-badge"
-        data-testid="task-header-design"
-        @mousedown.stop
-        @click="emit('open-design')"
-      >
-        {{ designLabel }}
-        <span v-if="design.openThreads"> · {{ $t("taskHeader.designOpen", { count: design.openThreads }) }}</span>
-        <span v-if="design.waitingFeedback"> · {{ $t("taskHeader.designWaiting", { count: design.waitingFeedback }) }}</span>
-        <span v-if="design.uncertainFeedback" class="design-uncertain"> · {{ $t("taskHeader.designUncertain", { count: design.uncertainFeedback }) }}</span>
-      </button>
+
     </div>
+    <DesignLadder v-if="design" :design="design" :set-app-theme="setAppTheme" @pick="pickDesignPosition" />
     <div class="header-meta">
       <span v-if="taskId" class="meta-item">{{ taskId }} · {{ ownerLabel }}</span>
       <span v-if="item.branch" class="meta-item branch" @dblclick="copyBranch">
@@ -492,20 +496,5 @@ function openLocalhostPort(port: number) {
 
 .commit-step[data-commit-state="succeeded"] {
   color: var(--kn-success);
-}
-.design-badge {
-  margin-left: 8px;
-  border: 1px solid var(--kn-border-strong);
-  background: var(--kn-bg-accent-subtle);
-  color: var(--kn-text-secondary);
-  border-radius: 10px;
-  padding: 1px 8px;
-  font: inherit;
-  font-size: 11px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.design-uncertain {
-  color: var(--kn-danger);
 }
 </style>

@@ -121,9 +121,9 @@ const cases: Array<[string, (page: Page) => Promise<void>]> = [
       await mark.waitFor();
       const style = await mark.evaluate((node) => {
         const computed = getComputedStyle(node);
-        return { line: computed.textDecorationLine, background: computed.backgroundColor };
+        return { line: `${computed.borderBottomStyle} ${computed.borderBottomWidth}`, background: computed.backgroundColor };
       });
-      assert.match(style.line, /underline/);
+      assert.equal(style.line, "solid 2px", "underlined");
       assert.notEqual(style.background, "rgba(0, 0, 0, 0)");
       assert.match(await page.evaluate(() => window.__harness.serverText()), /comment--/, "the anchor reached the server");
     },

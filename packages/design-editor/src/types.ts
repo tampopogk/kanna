@@ -47,22 +47,21 @@ export interface DesignElementAnchor {
   /** The page inside the mockup, relative to its root. */
   page: string;
   selector: string;
+  /** The element's visible text, parts joined with " · ". */
+  excerpt: string;
   tag: string;
-  elementId: string;
-  classes: string;
-  container: string;
-  text: string;
+  /** `tag#id.class.class` */
+  label: string;
+  /** The nearest containing landmark, as a label. */
+  context: string;
   html: string;
 }
 
 export interface DesignAnchor {
   blockId: string | null;
   quotedText: string | null;
-  /**
-   * Document text: attached | pending | detached. A mockup pin: attached,
-   * or outdated once the agent published a newer mockup.
-   */
-  state: "attached" | "pending" | "detached" | "outdated";
+  /** Document text: attached | pending | detached. A mockup pin: attached. */
+  state: "attached" | "pending" | "detached";
   currentText?: string;
   /** A pin: the mockup element the comment is on. */
   element?: DesignElementAnchor;

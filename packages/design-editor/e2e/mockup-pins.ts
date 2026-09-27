@@ -47,8 +47,8 @@ const kannaHtml = `<!doctype html><html><body style="margin:0">
     if (event.source !== window.mockup()) { window.forged.push(event.data); return; }
     window.received.push(event.data);
   });
-  window.sendPins = (pins, selected) =>
-    window.mockup().postMessage({ kind: "kanna-mockup", type: "pins", pins, selected, reveal: true }, "*");
+  window.sendPins = (pins, reveal) =>
+    window.mockup().postMessage({ kind: "kanna-mockup", type: "pins", pins, reveal }, "*");
 </script></body></html>`;
 
 const shellHtml = `<!doctype html><meta charset=utf-8>
@@ -58,12 +58,12 @@ const shellHtml = `<!doctype html><meta charset=utf-8>
 async function open(browser: Browser): Promise<{ page: Page; mockup: Frame }> {
   const page = await browser.newPage({ viewport: { width: 900, height: 600 } });
   page.on("pageerror", (error) => console.error(`page error: ${error.message}`));
-  await page.route(`${KANNA}/**`, (route) => route.fulfill({ contentType: "text/html", body: kannaHtml }));
+  await page.route(`${KANNA}/**`, (route) => route.fulfill({ contentType: "text/html; charset=utf-8", body: kannaHtml }));
   await page.route(`${LISTENER}/**`, (route) => {
     const url = new URL(route.request().url());
-    if (url.search === "?kanna-shell") return route.fulfill({ contentType: "text/html", body: shellHtml });
+    if (url.search === "?kanna-shell") return route.fulfill({ contentType: "text/html; charset=utf-8", body: shellHtml });
     return route.fulfill({
-      contentType: "text/html",
+      contentType: "text/html; charset=utf-8",
       headers: { "content-security-policy": "sandbox allow-scripts; connect-src 'none'" },
       body: `${mockupHtml}\n<script data-kanna-pins>${pinScript}</script>\n`,
     });
@@ -75,81 +75,87 @@ async function open(browser: Browser): Promise<{ page: Page; mockup: Frame }> {
   return { page, mockup };
 }
 
-type Received = { type: string; page?: string; number?: number; pin?: Record<string, unknown> };
+type Received = { type: string; page?: string; id?: string; pin?: Record<string, unknown> };
 const received = (page: Page) => page.evaluate(() => (window as unknown as { received: Received[] }).received);
 
 const cases: Array<[string, (page: Page, mockup: Frame) => Promise<void>]> = [
   [
-    "a click pins the element and tells Kanna what it is, without using the mockup",
+    "a click pins the element and tells Kanna what it is, as the prototype did, without using the mockup",
     async (page, mockup) => {
       const ready = (await received(page)).find((message) => message.type === "ready");
       assert.equal(ready?.page, "index.html");
       await mockup.locator("#save").click();
-      await page.waitForFunction(() => (window as unknown as { received: Received[] }).received.some((m) => m.type === "pin"));
-      const pin = (await received(page)).find((message) => message.type === "pin")!.pin!;
+      await page.waitForFunction(() => (window as unknown as { received: Received[] }).received.some((m) => m.type === "pick"));
+      const pin = (await received(page)).find((message) => message.type === "pick")!.pin!;
       assert.equal(pin.selector, "#save");
       assert.equal(pin.tag, "button");
-      assert.equal(pin.elementId, "save");
-      assert.equal(pin.text, "Save");
+      assert.equal(pin.label, "button#save");
+      assert.equal(pin.excerpt, "Save");
       assert.equal(pin.page, "index.html");
-      assert.match(String(pin.container), /main/);
-      assert.match(String(pin.html), /^<button id="save"/);
+      assert.equal(pin.context, "main", "the containing landmark");
+      assert.equal(pin.html, '<button id="save" onclick="document.title = \'clicked\'">Save</button>', "no Kanna hover class");
       assert.notEqual(await mockup.evaluate(() => document.title), "clicked", "the mockup's own handler did not run");
       const forged = await page.evaluate(() => (window as unknown as { forged: unknown[] }).forged);
       assert.deepEqual(forged, []);
     },
   ],
   [
-    "an element without an id gets a selector that finds it again",
+    "a container reads as its parts, and an element without an id gets a selector that finds it again",
     async (page, mockup) => {
-      await mockup.locator("li.selected").click();
-      await page.waitForFunction(() => (window as unknown as { received: Received[] }).received.some((m) => m.type === "pin"));
-      const pin = (await received(page)).find((message) => message.type === "pin")!.pin!;
-      assert.equal(pin.classes, "row selected");
-      const found = await mockup.evaluate((selector) => document.querySelector(selector)?.textContent, String(pin.selector));
-      assert.equal(found, "Review design");
+      await mockup.locator("ul").click({ position: { x: 5, y: 5 } });
+      await page.waitForFunction(() => (window as unknown as { received: Received[] }).received.some((m) => m.type === "pick"));
+      const pin = (await received(page)).find((message) => message.type === "pick")!.pin!;
+      assert.equal(pin.excerpt, "First · Review design");
+      const found = await mockup.evaluate((selector) => document.querySelector(selector)?.localName, String(pin.selector));
+      assert.equal(found, "ul");
     },
   ],
   [
-    "Option/Alt-click uses the mockup instead of pinning",
+    "hovering outlines the element; Option/Alt-click uses the mockup instead of pinning",
     async (page, mockup) => {
+      await mockup.locator("#save").hover();
+      assert.ok(await mockup.locator("#save.__kanna-hover").count(), "outlined");
       await mockup.locator("#save").click({ modifiers: ["Alt"] });
       assert.equal(await mockup.evaluate(() => document.title), "clicked");
       await page.waitForTimeout(200);
-      assert.ok(!(await received(page)).some((message) => message.type === "pin"));
+      assert.ok(!(await received(page)).some((message) => message.type === "pick"));
     },
   ],
   [
-    "pins Kanna sends are drawn as numbered markers, and clicking one selects its thread",
+    "pins Kanna sends are drawn on their elements, a badge click focuses its thread, and a lost element is reported",
     async (page, mockup) => {
       await page.evaluate(() =>
-        (window as unknown as { sendPins: (pins: unknown[], selected: number) => void }).sendPins(
+        (window as unknown as { sendPins: (pins: unknown[], reveal: string | null) => void }).sendPins(
           [
-            { number: 3, page: "index.html", selector: "#save" },
-            { number: 4, page: "other.html", selector: "#save" },
-            { number: 5, page: "index.html", selector: "#missing" },
+            { id: "th-3", n: 3, page: "index.html", selector: "#save", excerpt: "Save" },
+            { id: "th-4", n: 4, page: "other.html", selector: "#save", excerpt: "Save" },
+            { id: "th-5", n: 5, page: "index.html", selector: "#missing", excerpt: "Nowhere to be found" },
+            { id: "th-6", n: 6, page: "index.html", selector: "#renamed", excerpt: "Review design" },
           ],
-          3,
+          "th-3",
         ),
       );
-      const marker = mockup.locator("[data-kanna-pins] button");
-      await marker.first().waitFor();
-      assert.deepEqual(await marker.allTextContents(), ["3"], "only this page's pins whose element exists");
-      await marker.first().click();
-      await page.waitForFunction(() => (window as unknown as { received: Received[] }).received.some((m) => m.type === "select"));
-      const select = (await received(page)).find((message) => message.type === "select");
-      assert.equal(select?.number, 3);
-      assert.ok(!(await received(page)).some((message) => message.type === "pin"), "a marker click is not a pin");
+      const badge = mockup.locator(".__kanna-pin");
+      await badge.first().waitFor();
+      assert.deepEqual(await badge.allTextContents(), ["3", "6"], "this page's pins, found by selector or by text");
+      await page.waitForFunction(() => (window as unknown as { received: Received[] }).received.some((m) => m.type === "detached"));
+      const detached = (await received(page)).filter((message) => message.type === "detached").at(-1) as unknown as { ids: string[] };
+      assert.deepEqual(detached.ids, ["th-5"]);
+      await badge.first().click();
+      await page.waitForFunction(() => (window as unknown as { received: Received[] }).received.some((m) => m.type === "focus"));
+      const focus = (await received(page)).find((message) => message.type === "focus") as unknown as { id: string };
+      assert.equal(focus.id, "th-3");
+      assert.ok(!(await received(page)).some((message) => message.type === "pick"), "a badge click is not a pin");
     },
   ],
   [
     "the mockup's own scripts cannot draw pins by posting to themselves",
     async (_page, mockup) => {
       await mockup.evaluate(() =>
-        window.postMessage({ kind: "kanna-mockup", type: "pins", pins: [{ number: 9, page: "index.html", selector: "#save" }] }, "*"),
+        window.postMessage({ kind: "kanna-mockup", type: "pins", pins: [{ id: "x", n: 9, page: "index.html", selector: "#save" }] }, "*"),
       );
       await new Promise((resolve) => setTimeout(resolve, 200));
-      assert.equal(await mockup.locator("[data-kanna-pins] button").count(), 0);
+      assert.equal(await mockup.locator(".__kanna-pin").count(), 0);
     },
   ],
 ];

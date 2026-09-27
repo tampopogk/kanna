@@ -142,9 +142,8 @@ pub(crate) struct AnchorView {
     pub(crate) quoted_text: Option<String>,
     /// `attached` (the mark is in the document), `pending` (its update has
     /// not reached the server yet) or `detached` (the anchored text was
-    /// deleted; the thread and its quotation remain). A pin is `attached`
-    /// while its position shows the mockup it was placed on, and `outdated`
-    /// once the agent has published a newer one.
+    /// deleted; the thread and its quotation remain). A pin is `attached`:
+    /// it belongs to its position's mockup, whichever version is shown.
     pub(crate) state: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) current_text: Option<String>,
@@ -548,12 +547,6 @@ fn thread_views(
     covers: &HashMap<String, bool>,
 ) -> Result<Vec<ThreadView>, DesignError> {
     let threads = db.design_threads(task_id)?;
-    // What each position shows now: a pin on anything else is outdated.
-    let mockups: Vec<(String, String)> = db
-        .design_mockups(task_id, session.epoch)?
-        .into_iter()
-        .map(|mockup| (mockup.position, mockup.artifact_id))
-        .collect();
     let mut comments: HashMap<String, Vec<DesignCommentRow>> = HashMap::new();
     for comment in db.design_comments(task_id)? {
         comments
@@ -566,29 +559,46 @@ fn thread_views(
         .into_iter()
         .filter_map(|delivery| Some((delivery.comment_id.clone()?, delivery)))
         .collect();
+    // Numbers as the person sees them: one panel at a time (spec §4, Owner),
+    // so the document's feed counts its own threads and each mockup counts
+    // its own pins, all in creation order. Threads are never deleted, so a
+    // number never changes.
+    let mut counters: HashMap<Option<String>, i64> = HashMap::new();
     Ok(threads
         .into_iter()
         .map(|thread| {
+            let element = thread
+                .anchor_element
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<ElementAnchor>(json).ok());
+            let counter = counters
+                .entry(element.as_ref().map(|element| element.position.clone()))
+                .or_default();
+            *counter += 1;
+            let number = *counter;
             thread_view(
                 thread,
+                number,
+                element,
                 &comments,
                 &deliveries,
                 anchors,
                 covers,
-                &mockups,
                 session,
             )
         })
         .collect())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn thread_view(
     thread: DesignThreadRow,
+    number: i64,
+    element: Option<ElementAnchor>,
     comments: &HashMap<String, Vec<DesignCommentRow>>,
     deliveries: &HashMap<String, DesignDeliveryRow>,
     anchors: &BTreeMap<String, document::AnchorLocation>,
     covers: &HashMap<String, bool>,
-    mockups: &[(String, String)],
     session: &DesignSessionRow,
 ) -> ThreadView {
     let rows = comments.get(&thread.id).cloned().unwrap_or_default();
@@ -624,19 +634,15 @@ fn thread_view(
             }
         }
     };
-    let element: Option<ElementAnchor> = thread
-        .anchor_element
-        .as_deref()
-        .and_then(|json| serde_json::from_str(json).ok());
     let anchor = (thread.kind == "comment").then(|| {
+        // A pin stays with its position across new versions of the mockup,
+        // as in the prototype's review room; whether its element is still on
+        // the page is for the page to say ("element gone").
         if let Some(element) = element {
-            let current = mockups.iter().any(|(position, artifact)| {
-                *position == element.position && *artifact == element.artifact_id
-            });
             return AnchorView {
                 block_id: None,
                 quoted_text: thread.quoted_text.clone(),
-                state: if current { "attached" } else { "outdated" },
+                state: "attached",
                 current_text: None,
                 element: Some(element),
             };
@@ -661,7 +667,7 @@ fn thread_view(
     });
     ThreadView {
         id: thread.id,
-        number: thread.number,
+        number,
         kind: thread.kind,
         status: thread.status,
         anchor,
@@ -745,11 +751,12 @@ pub(crate) struct AnchorRequest {
     pub(crate) state_vector: Option<String>,
 }
 
-/// An element of a mockup page, as the person's click described it
-/// (docs/specs/app-design.md §5: tag, id, classes, container, visible text
-/// and an HTML excerpt, plus the selector that finds it again). It comes
-/// from the mockup's page, which the agent wrote: it is a description to
-/// show and pass on, bounded here, never markup Kanna renders.
+/// An element of a mockup page, as the person's click described it — the
+/// prototype's pin (docs/specs/app-design.md §5): the selector that finds it
+/// again, its visible text (`excerpt`), tag, a short `label`
+/// (`tag#id.class.class`), the nearest containing landmark (`context`) and
+/// an HTML excerpt. It comes from the mockup page, which the agent wrote: a
+/// description to show and pass on, bounded here, never markup Kanna renders.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ElementAnchor {
@@ -759,15 +766,13 @@ pub(crate) struct ElementAnchor {
     #[serde(default)]
     pub(crate) page: String,
     pub(crate) selector: String,
+    #[serde(default)]
+    pub(crate) excerpt: String,
     pub(crate) tag: String,
     #[serde(default)]
-    pub(crate) element_id: String,
+    pub(crate) label: String,
     #[serde(default)]
-    pub(crate) classes: String,
-    #[serde(default)]
-    pub(crate) container: String,
-    #[serde(default)]
-    pub(crate) text: String,
+    pub(crate) context: String,
     #[serde(default)]
     pub(crate) html: String,
 }
@@ -793,29 +798,26 @@ impl ElementAnchor {
         }
         clip(&mut self.page, 300);
         clip(&mut self.selector, 1_000);
+        clip(&mut self.excerpt, 300);
         clip(&mut self.tag, 40);
-        clip(&mut self.element_id, 200);
-        clip(&mut self.classes, 300);
-        clip(&mut self.container, 200);
-        clip(&mut self.text, 500);
-        clip(&mut self.html, 1_000);
+        clip(&mut self.label, 200);
+        clip(&mut self.context, 200);
+        clip(&mut self.html, 400);
         Ok(self)
     }
 
-    /// How a person or the agent reads the pinned element in one line.
+    /// The element as the prototype named it: `button#save.primary in main#list`.
     pub(crate) fn label(&self) -> String {
-        let mut label = format!("<{}", self.tag);
-        if !self.element_id.is_empty() {
-            label.push_str(&format!(" id=\"{}\"", self.element_id));
+        let label = if self.label.is_empty() {
+            format!("<{}>", self.tag)
+        } else {
+            self.label.clone()
+        };
+        if self.context.is_empty() {
+            label
+        } else {
+            format!("{label} in {}", self.context)
         }
-        if !self.classes.is_empty() {
-            label.push_str(&format!(" class=\"{}\"", self.classes));
-        }
-        label.push('>');
-        if !self.container.is_empty() {
-            label.push_str(&format!(" in {}", self.container));
-        }
-        label
     }
 }
 
@@ -920,7 +922,7 @@ pub(crate) fn create_thread(
     // A pin's quotation is its element's visible text, so every reader of
     // quoted text has something to show.
     let quoted: Option<String> = match &element {
-        Some(element) => Some(element.text.chars().take(MAX_QUOTE_CHARS).collect()),
+        Some(element) => Some(element.excerpt.chars().take(MAX_QUOTE_CHARS).collect()),
         None => request
             .anchor
             .as_ref()

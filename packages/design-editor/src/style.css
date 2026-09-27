@@ -1,48 +1,55 @@
 /*
  * The design editor inside Kanna. Comments must be hard to miss
  * (docs/specs/app-design.md §4, Owner): commented text is tinted and
- * underlined, not just highlighted.
+ * underlined, not just highlighted. Colours are the design prototype's.
  */
 .kanna-design-editor {
-  --kanna-anchor-tint: rgba(123, 79, 240, 0.14);
+  --kanna-anchor-tint: #efe8ff;
   --kanna-anchor-line: #7b4ff0;
   height: 100%;
 }
 .kanna-design-editor[data-theme="dark"] {
-  --kanna-anchor-tint: rgba(181, 140, 240, 0.22);
-  --kanna-anchor-line: #b58cf0;
+  --kanna-anchor-tint: #2c2442;
+  --kanna-anchor-line: #8b66f5;
 }
+/* As in the design prototype: a tint plus a solid underline. */
 .kanna-design-editor .bn-thread-mark:not([data-orphan="true"]) {
-  background: var(--kanna-anchor-tint);
-  text-decoration: underline;
-  text-decoration-color: var(--kanna-anchor-line);
-  text-decoration-thickness: 2px;
-  text-underline-offset: 3px;
+  background: var(--kanna-anchor-tint) !important;
+  border-bottom: 2px solid var(--kanna-anchor-line);
 }
 .kanna-design-editor .bn-thread-mark:not([data-orphan="true"]).bn-thread-mark-selected {
-  background: color-mix(in srgb, var(--kanna-anchor-line) 30%, transparent);
+  background: color-mix(in srgb, var(--kanna-anchor-line) 30%, transparent) !important;
 }
+/* The prototype's Comment button: first in the toolbar, a purple pill. */
 .kanna-toolbar-comment {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   border: 0;
-  border-radius: 6px;
-  padding: 4px 8px;
+  border-radius: 999px;
+  margin: 2px 6px 2px 2px;
+  padding: 4px 6px 4px 10px;
   font: inherit;
-  font-size: 13px;
+  font-size: 12.5px;
+  font-weight: 600;
   cursor: pointer;
-  background: var(--kanna-anchor-tint);
-  color: inherit;
+  color: #fff;
+  background: linear-gradient(135deg, #7b4ff0, #6d4be0);
+}
+.kanna-toolbar-comment:hover {
+  filter: brightness(1.08);
 }
 .kanna-toolbar-comment:focus-visible {
   outline: 2px solid var(--kanna-anchor-line);
   outline-offset: 1px;
 }
 .kanna-toolbar-comment kbd {
-  font: inherit;
-  font-size: 11px;
-  opacity: 0.7;
+  font: 600 10.5px Inter, system-ui, sans-serif;
+  background: rgba(255, 255, 255, 0.95);
+  color: #6d4be0;
+  border-radius: 999px;
+  padding: 1px 6px;
+  line-height: 14px;
 }
 .kanna-agent-icon {
   color: var(--kanna-anchor-line);

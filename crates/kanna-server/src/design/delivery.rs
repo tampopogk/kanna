@@ -288,25 +288,38 @@ pub(super) fn render_item(thread: &service::ThreadView, comment: &service::Comme
         .comments
         .first()
         .is_some_and(|first| first.id != comment.id);
-    let what = match (&thread.anchor, thread.kind.as_str()) {
-        (Some(service::AnchorView {
-            element: Some(element),
-            state,
-            ..
-        }), _) => format!(
-            "{} pinned on {} in the {} mockup (page {}, selector `{}`{}), which reads \u{201c}{}\u{201d}",
-            if is_reply { "reply" } else { "comment" },
-            element.label(),
+    let body = comment
+        .body
+        .lines()
+        .map(|line| format!("  {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    // A pin, as the prototype delivered it: which mockup, which element (its
+    // label, container and text), and its HTML to find it by.
+    if let Some(element) = thread
+        .anchor
+        .as_ref()
+        .and_then(|anchor| anchor.element.as_ref())
+    {
+        let excerpt: String = element.excerpt.chars().take(100).collect();
+        let html: String = element.html.chars().take(200).collect();
+        return format!(
+            "Pin #{} on the {} mockup (thread {}) {} {} \u{201c}{excerpt}\u{201d} \
+             (page {}, selector `{}`; element html: {html}):\n{body}",
+            thread.number,
             element.position,
-            if element.page.is_empty() { "index" } else { &element.page },
-            element.selector,
-            if *state == "outdated" {
-                ", on a mockup version you have since replaced"
+            thread.id,
+            if is_reply { "reply on" } else { "on" },
+            element.label(),
+            if element.page.is_empty() {
+                "index.html"
             } else {
-                ""
+                &element.page
             },
-            element.text
-        ),
+            element.selector,
+        );
+    }
+    let what = match (&thread.anchor, thread.kind.as_str()) {
         (Some(anchor), _) => format!(
             "{} on \u{201c}{}\u{201d} (block {}{})",
             if is_reply { "reply" } else { "comment" },
@@ -325,12 +338,6 @@ pub(super) fn render_item(thread: &service::ThreadView, comment: &service::Comme
             }
         }
     };
-    let body = comment
-        .body
-        .lines()
-        .map(|line| format!("  {line}"))
-        .collect::<Vec<_>>()
-        .join("\n");
     format!("#{} (thread {}) {what}:\n{body}", thread.number, thread.id)
 }
 
@@ -339,7 +346,8 @@ fn render_message(task_id: &str, items: &[String]) -> String {
         "Kanna App Design feedback ({} item{}, queued until you were free). Answer each in its \
          thread with kanna_design_reply {{\"task_id\": \"{task_id}\", \"thread_id\": \"<thread>\", \
          \"op_id\": \"<your id>\", \"body\": \"...\"}}, resolve it with kanna_design_resolve when \
-         done, and edit the document with kanna_design_edit after reading it with kanna_design_get.\n\n{}",
+         done, edit the document with kanna_design_edit after reading it with kanna_design_get, \
+         and change a mockup with kanna_design_publish_mockup.\n\n{}",
         items.len(),
         if items.len() == 1 { "" } else { "s" },
         items.join("\n\n")

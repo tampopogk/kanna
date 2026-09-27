@@ -38,7 +38,7 @@ describe("DesignMockupFrame", () => {
         entrypoint: "screens/index.html",
         title: "Static mockup",
         pins: [],
-        selectedPin: null,
+        reveal: null,
       },
       global: { plugins: [i18n()] },
     });
@@ -62,12 +62,12 @@ describe("DesignMockupFrame", () => {
 
   it("ignores a pin that does not come from the mockup inside its own frame", async () => {
     const wrapper = mount(DesignMockupFrame, {
-      props: { repoId: "repo-1", artifactId: first, entrypoint: "index.html", title: "Mockup", pins: [], selectedPin: null },
+      props: { repoId: "repo-1", artifactId: first, entrypoint: "index.html", title: "Mockup", pins: [], reveal: null },
       global: { plugins: [i18n()] },
       attachTo: document.body,
     });
     await flushPromises();
-    const pin = { kind: "kanna-mockup", type: "pin", pin: { selector: "#save", tag: "button", page: "", rect: {} } };
+    const pin = { kind: "kanna-mockup", type: "pick", pin: { selector: "#save", tag: "button", page: "", rect: {} } };
     window.dispatchEvent(new MessageEvent("message", { data: pin, source: window }));
     window.dispatchEvent(new MessageEvent("message", { data: pin }));
     await flushPromises();

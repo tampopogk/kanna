@@ -4,14 +4,15 @@ import { useI18n } from "vue-i18n";
 import type { DesignApproval, DesignCandidate } from "@kanna/design-editor";
 
 /**
- * The hand-off bar under the design (docs/specs/app-design.md §6).
+ * The sign-off bar under the design (docs/specs/app-design.md §6), as in the
+ * design prototype: where the work lives on the left, "Approve for build →"
+ * on the right.
  *
- * "Approve for build →" prepares a candidate — the disposable repository is
- * committed and an immutable snapshot published — and shows what approving
- * will keep and what happens next. Only the person's click in that dialog
- * confirms it, and the confirmation is bound to exactly that candidate. The
- * UI never shows a version number; the approval records the exact commit
- * behind the scenes.
+ * Approving first prepares a candidate — the disposable repository is
+ * committed and an immutable snapshot published — then asks, naming what is
+ * kept and what happens next. Only the person's click there confirms it, and
+ * the confirmation is bound to exactly that candidate. No version number is
+ * shown; the approval records the exact commit.
  */
 const props = defineProps<{
   approval: DesignApproval | null;
@@ -19,6 +20,9 @@ const props = defineProps<{
   status: string;
   inDesignStage: boolean;
   nextStage: string | null;
+  scratchRepository: string | null;
+  /** A sync problem worth saying, if any. */
+  syncProblem: string | null;
   prepare: () => Promise<DesignCandidate>;
   confirm: (candidate: DesignCandidate) => Promise<unknown>;
   reopen: () => Promise<unknown>;
@@ -30,26 +34,26 @@ const candidate = ref<DesignCandidate | null>(null);
 const working = ref<"preparing" | "confirming" | "reopening" | "retrying" | null>(null);
 const error = ref<string | null>(null);
 
-const handingOff = computed(() =>
-  ["approved", "exported", "committing", "committed"].includes(props.approval?.phase ?? ""),
+const phase = computed(() => props.approval?.phase ?? null);
+const handingOff = computed(() => ["approved", "exported", "committing", "committed"].includes(phase.value ?? ""));
+const handedOff = computed(() => phase.value === "entered" || props.status === "handed_off");
+const failed = computed(() => phase.value === "failed");
+const canReopen = computed(
+  () => (handingOff.value && phase.value !== "committing" && phase.value !== "committed") || failed.value,
 );
-const handedOff = computed(() => props.approval?.phase === "entered" || props.status === "handed_off");
-const failed = computed(() => props.approval?.phase === "failed");
 
 const progress = computed(() => {
-  switch (props.approval?.phase) {
+  switch (phase.value) {
     case "approved":
       return t("design.approval.progress.approved");
     case "exported":
-      return props.approval.error ?? t("design.approval.progress.exported");
+      return props.approval?.error ?? t("design.approval.progress.exported");
     case "committing":
       return t("design.approval.progress.committing");
     case "committed":
       return t("design.approval.progress.committed");
-    case "entered":
-      return t("design.approval.progress.entered", { stage: props.nextStage ?? "" });
     default:
-      return null;
+      return "";
   }
 });
 
@@ -84,18 +88,27 @@ function cancel() {
 </script>
 
 <template>
-  <div class="design-approval-bar" data-testid="design-approval-bar">
-    <span class="state" :class="{ failed }">
-      <template v-if="failed">{{ t("design.approval.failed", { error: approval?.error ?? "" }) }}</template>
-      <template v-else-if="progress">{{ progress }}</template>
-      <template v-else>{{ t("design.approval.hint") }}</template>
+  <div class="signoff-bar" data-testid="design-approval-bar">
+    <span class="repo">
+      <span v-if="error && !candidate" class="kd-bad" role="alert">{{ error }}</span>
+      <span v-else-if="failed" class="kd-bad" :title="approval?.error ?? undefined">
+        {{ t("design.approval.failed", { error: (approval?.error ?? "").slice(0, 80) }) }}
+      </span>
+      <span v-else-if="handingOff" class="working">{{ t("design.approval.approving") }} {{ progress }}</span>
+      <template v-else-if="handedOff && approval">
+        {{ t("design.approval.approvedLine", {
+          commit: (approval.committedSha ?? approval.sourceCommit ?? "").slice(0, 7),
+          artifact: (approval.artifactId ?? "").slice(0, 10),
+        }) }}
+      </template>
+      <span v-else-if="syncProblem" class="kd-bad">{{ syncProblem }}</span>
+      <template v-else-if="scratchRepository">{{ t("design.approval.repoLine", { path: scratchRepository }) }}</template>
     </span>
-    <span v-if="error && !candidate" class="error" role="alert">{{ error }}</span>
     <span class="spacer" />
     <button
       v-if="failed"
       type="button"
-      class="btn"
+      class="kd-btn"
       :disabled="working !== null"
       data-testid="design-approval-retry"
       @click="run('retrying', retry)"
@@ -103,9 +116,9 @@ function cancel() {
       {{ t("design.approval.retry") }}
     </button>
     <button
-      v-if="(handingOff && approval?.phase !== 'committing' && approval?.phase !== 'committed') || failed"
+      v-if="canReopen"
       type="button"
-      class="btn"
+      class="kd-btn"
       :disabled="working !== null"
       :title="t('design.approval.reopenHint')"
       data-testid="design-approval-reopen"
@@ -116,7 +129,7 @@ function cancel() {
     <button
       v-if="!handingOff && !handedOff && !failed"
       type="button"
-      class="btn approve"
+      class="kd-btn approve"
       :disabled="!inDesignStage || working !== null"
       data-testid="design-approve"
       @click="askToApprove"
@@ -124,9 +137,9 @@ function cancel() {
       {{ working === "preparing" ? t("design.approval.preparing") : t("design.approval.approve") }}
     </button>
   </div>
-  <div v-if="candidate" class="modal-scrim" @click.self="cancel">
+  <div v-if="candidate" class="modal-bg" @click.self="cancel">
     <section
-      class="approve-dialog"
+      class="modal"
       role="dialog"
       aria-modal="true"
       aria-labelledby="design-approve-title"
@@ -134,8 +147,9 @@ function cancel() {
       @keydown.esc="cancel"
     >
       <h3 id="design-approve-title">{{ t("design.approval.dialogTitle") }}</h3>
-      <p>{{ t("design.approval.dialogIntro") }}</p>
+      <div>{{ t("design.approval.dialogIntro") }}</div>
       <ul>
+        <li>{{ t("design.approval.dialogCommit") }}</li>
         <li>{{ t("design.approval.dialogSnapshot") }}</li>
         <li v-if="candidate.policy.files.length">
           {{ t("design.approval.dialogRetained") }}
@@ -150,14 +164,14 @@ function cancel() {
       <p v-if="candidate.openThreads || candidate.undeliveredFeedback" class="warning">
         {{ t("design.approval.dialogOpenFeedback", { open: candidate.openThreads, waiting: candidate.undeliveredFeedback }) }}
       </p>
-      <p v-if="error" class="error" role="alert">{{ error }}</p>
-      <div class="dialog-actions">
-        <button type="button" class="btn" :disabled="working === 'confirming'" @click="cancel">
+      <p v-if="error" class="kd-bad" role="alert">{{ error }}</p>
+      <div class="row">
+        <button type="button" class="kd-btn" :disabled="working === 'confirming'" @click="cancel">
           {{ t("design.approval.keepIterating") }}
         </button>
         <button
           type="button"
-          class="btn approve"
+          class="kd-btn approve"
           :disabled="working === 'confirming'"
           data-testid="design-approve-confirm"
           autofocus
@@ -171,78 +185,70 @@ function cancel() {
 </template>
 
 <style scoped>
-.design-approval-bar {
+.signoff-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  border-top: 1px solid var(--kn-border-default);
-  background: var(--kn-bg-panel);
-  font-size: 12px;
-  color: var(--kn-text-secondary);
+  gap: 12px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--kd-line);
+  background: var(--kd-panel);
 }
-.state.failed,
-.error {
-  color: var(--kn-danger);
+.repo {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--kd-muted);
+}
+.working {
+  color: var(--kd-warn-ink);
 }
 .spacer {
   flex: 1;
 }
-.btn {
-  border: 1px solid var(--kn-border-strong);
-  background: var(--kn-bg-panel-raised);
-  color: var(--kn-text-primary);
-  border-radius: 6px;
-  padding: 5px 12px;
-  font: inherit;
-  font-size: 13px;
-  cursor: pointer;
-}
-.btn:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-.btn.approve {
-  background: var(--kn-success);
-  border-color: var(--kn-success);
-  color: var(--kn-text-inverse);
-}
-.modal-scrim {
+.modal-bg {
   position: fixed;
   inset: 0;
+  background: rgba(10, 9, 14, 0.5);
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--kn-overlay-scrim);
-  z-index: 1000;
+  z-index: 40;
 }
-.approve-dialog {
-  width: min(520px, calc(100vw - 32px));
-  background: var(--kn-bg-panel);
-  color: var(--kn-text-primary);
-  border: 1px solid var(--kn-border-strong);
-  border-radius: 10px;
-  box-shadow: var(--kn-shadow-modal);
-  padding: 18px 20px;
-  font-size: 13px;
+.modal {
+  background: var(--kd-panel);
+  color: var(--kd-ink);
+  border: 1px solid var(--kd-line);
+  border-radius: 12px;
+  padding: 20px 22px;
+  width: 400px;
+  max-width: calc(100vw - 32px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
 }
-.approve-dialog h3 {
+.modal h3 {
   margin: 0 0 8px;
-  font-size: 15px;
+  font-size: 16px;
 }
-.approve-dialog ul {
+.modal ul {
   padding-left: 18px;
+  margin: 8px 0 14px;
+  line-height: 1.6;
+  color: var(--kd-ink-2);
 }
-.files {
-  margin: 4px 0;
+.modal ul.files {
+  margin: 2px 0;
 }
 .warning {
-  color: var(--kn-warning);
+  color: var(--kd-warn-ink);
+  background: var(--kd-warn-soft);
+  border-radius: 8px;
+  padding: 6px 10px;
 }
-.dialog-actions {
+.row {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 14px;
 }
 </style>

@@ -471,7 +471,8 @@ fn publish_mockup(
         "task-d",
         &super::super::mockup::PublishMockupRequest {
             op_id: op_id.into(),
-            path: path.into(),
+            html: None,
+            path: Some(path.into()),
             position: position.map(str::to_string),
             entrypoint: None,
         },
@@ -568,7 +569,72 @@ fn a_mockup_is_published_from_the_disposable_repository_and_shown_by_its_positio
 }
 
 #[test]
-fn a_comment_pinned_on_a_mockup_element_reaches_the_agent_and_outlives_its_version() {
+fn the_agent_sets_a_mockup_as_html_like_the_prototype() {
+    let setup = setup("mockup-html", "results-and-summary");
+    let set = |op: &str, html: &str, position: Option<&str>| {
+        super::super::mockup::publish(
+            &setup.state,
+            &setup.db(),
+            &setup.state.design,
+            &setup.db_path(),
+            "task-d",
+            &super::super::mockup::PublishMockupRequest {
+                op_id: op.into(),
+                html: Some(html.into()),
+                path: None,
+                position: position.map(str::to_string),
+                entrypoint: None,
+            },
+        )
+    };
+    let first = set("h1", "<h1>Tasks</h1>", Some("interactive")).unwrap();
+    assert_eq!(first.position, "interactive");
+    assert_eq!(first.entrypoint, "index.html");
+    let view = service::view(
+        &setup.db(),
+        &setup.state.design,
+        &setup.db_path(),
+        "task-d",
+        false,
+    )
+    .unwrap();
+    // It lives in the disposable repository, so the approved snapshot has it.
+    let scratch = PathBuf::from(view.scratch_repository.clone().unwrap());
+    assert_eq!(
+        std::fs::read_to_string(scratch.join("mockups/interactive/index.html")).unwrap(),
+        "<h1>Tasks</h1>"
+    );
+    let shown = view
+        .positions
+        .iter()
+        .find(|position| position.name == "interactive")
+        .and_then(|position| position.mockup.clone())
+        .unwrap();
+    assert_eq!(shown.artifact_id, first.artifact_id);
+    // Setting it again replaces the page.
+    let second = set("h2", "<h1>Tasks, revised</h1>", Some("interactive")).unwrap();
+    assert_ne!(second.artifact_id, first.artifact_id);
+    // Exactly one of html and path.
+    assert!(set("h3", "  ", Some("interactive")).is_err());
+    let both = super::super::mockup::publish(
+        &setup.state,
+        &setup.db(),
+        &setup.state.design,
+        &setup.db_path(),
+        "task-d",
+        &super::super::mockup::PublishMockupRequest {
+            op_id: "h4".into(),
+            html: Some("<p>x</p>".into()),
+            path: Some("mockups/interactive".into()),
+            position: None,
+            entrypoint: None,
+        },
+    );
+    assert!(both.is_err());
+}
+
+#[test]
+fn a_comment_pinned_on_a_mockup_element_reaches_the_agent_and_stays_with_its_position() {
     let setup = setup("pin", "results-and-summary");
     let view = service::view(
         &setup.db(),
@@ -581,21 +647,36 @@ fn a_comment_pinned_on_a_mockup_element_reaches_the_agent_and_outlives_its_versi
     let scratch = PathBuf::from(view.scratch_repository.unwrap());
     std::fs::write(
         scratch.join("screen.html"),
-        "<main><button id=save>Save</button></main>",
+        "<main id=list><button id=save>Save</button></main>",
     )
     .unwrap();
     let mockup = publish_mockup(&setup, "m1", "screen.html", None).unwrap();
+
+    // A document thread first: pins are numbered within their mockup.
+    service::create_thread(
+        &setup.db(),
+        &setup.state.design,
+        "task-d",
+        service::CreateThreadRequest {
+            thread_id: "msg-1".into(),
+            comment_id: "msg-1-c".into(),
+            kind: "message".into(),
+            body: "hello".into(),
+            anchor: None,
+        },
+        None,
+    )
+    .unwrap();
 
     let element = service::ElementAnchor {
         position: "static".into(),
         artifact_id: mockup.artifact_id.clone(),
         page: "screen.html".into(),
         selector: "#save".into(),
+        excerpt: "Save".into(),
         tag: "button".into(),
-        element_id: "save".into(),
-        classes: String::new(),
-        container: "main".into(),
-        text: "Save".into(),
+        label: "button#save".into(),
+        context: "main#list".into(),
         html: "<button id=\"save\">Save</button>".into(),
     };
     let request = |thread: &str, element: service::ElementAnchor| service::CreateThreadRequest {
@@ -618,20 +699,20 @@ fn a_comment_pinned_on_a_mockup_element_reaches_the_agent_and_outlives_its_versi
         None,
     )
     .unwrap();
+    assert_eq!(thread.number, 1, "the static mockup's first pin");
     let anchor = thread.anchor.clone().unwrap();
     assert_eq!(anchor.state, "attached");
     assert_eq!(anchor.quoted_text.as_deref(), Some("Save"));
-    assert_eq!(anchor.element.as_ref().unwrap().selector, "#save");
     assert!(anchor.block_id.is_none());
 
-    // The agent is told which element, where, and what it reads.
+    // The agent is told which mockup, which element, and how to find it.
     let item = super::super::delivery::render_item(&thread, &thread.comments[0]);
     assert!(
-        item.contains("pinned on <button id=\"save\"> in main"),
+        item.starts_with("Pin #1 on the static mockup (thread pin-1) on button#save in main#list \u{201c}Save\u{201d}"),
         "{item}"
     );
     assert!(
-        item.contains("static mockup (page screen.html, selector `#save`)"),
+        item.contains("selector `#save`; element html: <button id=\"save\">Save</button>"),
         "{item}"
     );
     assert!(item.contains("Make this the primary action"), "{item}");
@@ -661,11 +742,20 @@ fn a_comment_pinned_on_a_mockup_element_reaches_the_agent_and_outlives_its_versi
         .is_err());
     }
 
-    // Once the agent publishes a new version, the pin stays with its thread,
-    // marked as on the earlier one.
+    // A second pin on the same mockup is #2; the document's feed still has
+    // its own #1. A new version of the mockup keeps its pins.
+    let second = service::create_thread(
+        &setup.db(),
+        &setup.state.design,
+        "task-d",
+        request("pin-2", element.clone()),
+        None,
+    )
+    .unwrap();
+    assert_eq!(second.number, 2);
     std::fs::write(
         scratch.join("screen.html"),
-        "<main><button id=save class=primary>Save</button></main>",
+        "<main id=list><button id=save class=primary>Save</button></main>",
     )
     .unwrap();
     publish_mockup(&setup, "m2", "screen.html", None).unwrap();
@@ -677,12 +767,21 @@ fn a_comment_pinned_on_a_mockup_element_reaches_the_agent_and_outlives_its_versi
         false,
     )
     .unwrap();
-    let pinned = view
+    let numbers: Vec<(String, i64)> = view
         .threads
         .iter()
-        .find(|thread| thread.id == "pin-1")
-        .unwrap();
-    assert_eq!(pinned.anchor.as_ref().unwrap().state, "outdated");
-    let item = super::super::delivery::render_item(pinned, &pinned.comments[0]);
-    assert!(item.contains("since replaced"), "{item}");
+        .map(|thread| (thread.id.clone(), thread.number))
+        .collect();
+    assert_eq!(
+        numbers,
+        vec![
+            ("msg-1".into(), 1),
+            ("pin-1".into(), 1),
+            ("pin-2".into(), 2)
+        ]
+    );
+    assert!(view.threads.iter().all(|thread| thread
+        .anchor
+        .as_ref()
+        .is_none_or(|anchor| anchor.state == "attached")));
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   DESIGN_SCHEMA_VERSION,
@@ -9,6 +9,7 @@ import {
   type DesignCandidate,
   type DesignEditorLabels,
   type DesignSessionStatus,
+  type DesignThread,
   type DesignView,
   type MountedDesignEditor,
 } from "@kanna/design-editor";
@@ -19,26 +20,28 @@ import {
   prepareDesignCandidate,
   reopenDesign,
   retryDesignHandoff,
-  setDesignPosition,
 } from "../../services/designClient";
 import { useThemeRuntime } from "../../theme/runtime";
-import DesignFeedbackPanel from "./DesignFeedbackPanel.vue";
-import DesignApprovalBar from "./DesignApprovalBar.vue";
-import DesignMockupFrame from "./DesignMockupFrame.vue";
-import { elementLabel, type MockupPinDescriptor, type MockupPinMarker } from "./mockupPins";
+import DesignFeed from "./DesignFeed.vue";
+import DesignMockupRoom from "./DesignMockupRoom.vue";
+import DesignSignoffBar from "./DesignSignoffBar.vue";
+import { designToast, sayDesign } from "./designToast";
+import type { MockupPinDescriptor } from "./mockupPins";
+import "./design-surface.css";
 
 /**
- * An App Design task's design surface (docs/specs/app-design.md §4), opened
- * as a view beside the task's agent terminal — the real session, which this
- * view never replaces. It shows the current position's artifact — its HTML
- * mockup once the agent has published one, else the live document, which
- * stays one click away as the position's notes — the one feedback panel,
- * and the hand-off bar.
+ * An App Design task's design surface (docs/specs/app-design.md §4), laid out
+ * as the approved design prototype: beside the task's real agent terminal
+ * (Owner: the terminal itself, not an imitation), the current position's
+ * artifact with the sign-off bar under it, and one comment panel. A mockup
+ * position shows its mockup and its own pin comments; the document position
+ * shows the live document and the "Feedback → agent" feed. The position
+ * ladder is in the task header.
  */
 const props = defineProps<{
   taskId: string;
   visible: boolean;
-  /** Persist the app-wide theme choice (the same setting Preferences uses). */
+  /** Kept for the tab's callers; the theme toggle is in the task header. */
   setAppTheme?: (theme: "light" | "dark") => void;
 }>();
 const { t } = useI18n();
@@ -47,135 +50,23 @@ const { effectiveAppTheme } = useThemeRuntime();
 const session = shallowRef<DesignSession | null>(null);
 const view = shallowRef<DesignView | null>(null);
 const status = ref<DesignSessionStatus>("connecting");
-const statusError = ref<string | null>(null);
 const selectedThreadId = ref<string | null>(null);
-const notice = ref<{ text: string; kind: "info" | "error" } | null>(null);
 const editorHost = ref<HTMLElement | null>(null);
 let editor: MountedDesignEditor | null = null;
 let unsubscribe: (() => void) | null = null;
-let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 
 const theme = computed<"light" | "dark">(() => (effectiveAppTheme.value === "light" ? "light" : "dark"));
 const editable = computed(
   () => !!view.value?.inDesignStage && view.value.status === "designing" && status.value !== "incompatible",
 );
-const currentPosition = computed(() => view.value?.positions.find((position) => position.name === view.value?.position));
-const mockup = computed(() => currentPosition.value?.mockup ?? null);
-/** The person chose the notes over this position's mockup. */
-const showingNotes = ref(false);
-const showMockup = computed(() => !!mockup.value && !showingNotes.value);
-// A newly published page, or another position, shows its mockup again.
-watch(
-  () => `${view.value?.position ?? ""}\u0000${mockup.value?.artifactId ?? ""}`,
-  () => (showingNotes.value = false),
+const position = computed(() => view.value?.positions.find((candidate) => candidate.name === view.value?.position) ?? null);
+/** What the position shows: its mockup room, or the live document. */
+const showsMockup = computed(() => position.value?.artifact === "mockup");
+const pins = computed<DesignThread[]>(() =>
+  (view.value?.threads ?? []).filter((thread) => thread.anchor?.element?.position === view.value?.position),
 );
-
-// Pins on the mockup shown now: open threads anchored on its elements.
-const mockupPins = computed<MockupPinMarker[]>(() =>
-  (view.value?.threads ?? [])
-    .filter(
-      (thread) =>
-        thread.status === "open"
-        && thread.anchor?.element?.position === view.value?.position
-        && thread.anchor?.element?.artifactId === mockup.value?.artifactId,
-    )
-    .map((thread) => ({
-      number: thread.number,
-      page: thread.anchor!.element!.page,
-      selector: thread.anchor!.element!.selector,
-    })),
-);
-const selectedPin = computed(() => {
-  const thread = view.value?.threads.find((candidate) => candidate.id === selectedThreadId.value);
-  return thread?.anchor?.element ? thread.number : null;
-});
-
-/** The element the person just clicked in the mockup, awaiting their comment. */
-const pending = ref<{ pin: MockupPinDescriptor; left: number; top: number } | null>(null);
-const pendingBody = ref("");
-const pendingSaving = ref(false);
-const artifactColumn = ref<HTMLElement | null>(null);
-const composerInput = ref<HTMLTextAreaElement | null>(null);
-
-function startPin(pin: MockupPinDescriptor, frameRect: DOMRect) {
-  if (!editable.value) {
-    showNotice(t("design.pin.readOnly"));
-    return;
-  }
-  const column = artifactColumn.value?.getBoundingClientRect();
-  const width = 300;
-  const left = frameRect.left - (column?.left ?? 0) + pin.rect.x;
-  const top = frameRect.top - (column?.top ?? 0) + pin.rect.y + pin.rect.height + 6;
-  const maxLeft = (column?.width ?? width) - width - 8;
-  const maxTop = (column?.height ?? 200) - 160;
-  pending.value = {
-    pin,
-    left: Math.max(8, Math.min(left, maxLeft)),
-    top: Math.max(8, Math.min(top, maxTop)),
-  };
-  pendingBody.value = "";
-  void nextTick(() => composerInput.value?.focus());
-}
-
-function cancelPin() {
-  pending.value = null;
-  pendingBody.value = "";
-}
-
-async function submitPin() {
-  const current = pending.value;
-  const body = pendingBody.value.trim();
-  if (!current || !body || !session.value || !mockup.value || !view.value || pendingSaving.value) return;
-  const { rect: _rect, ...element } = current.pin;
-  const threadId = newId("th");
-  pendingSaving.value = true;
-  try {
-    await session.value.createThread({
-      threadId,
-      commentId: newId("cm"),
-      kind: "comment",
-      body,
-      anchor: { element: { ...element, position: view.value.position, artifactId: mockup.value.artifactId } },
-    });
-    selectedThreadId.value = threadId;
-    cancelPin();
-  } catch (error) {
-    showNotice(error instanceof Error ? error.message : t("design.pin.failed"), "error");
-  } finally {
-    pendingSaving.value = false;
-  }
-}
-
-function composerKey(event: KeyboardEvent) {
-  if (event.key === "Escape") {
-    event.preventDefault();
-    cancelPin();
-  } else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-    event.preventDefault();
-    void submitPin();
-  }
-}
-
-function selectPin(number: number) {
-  const thread = view.value?.threads.find((candidate) => candidate.number === number);
-  if (thread) selectedThreadId.value = thread.id;
-}
-
-function selectThread(id: string) {
-  selectedThreadId.value = id;
-  const thread = view.value?.threads.find((candidate) => candidate.id === id);
-  // A pin on the mockup shown now: show the mockup, where its marker is.
-  if (thread?.anchor?.element && thread.anchor.element.position === view.value?.position && mockup.value) {
-    showingNotes.value = false;
-  }
-}
-watch(() => mockup.value?.artifactId, () => cancelPin());
-
-const factoryStages = computed(() => {
-  const chain = view.value?.stageChain ?? [];
-  const index = chain.indexOf(view.value?.stage ?? "");
-  return index >= 0 ? chain.slice(index + 1) : [];
-});
+const documentThreads = computed<DesignThread[]>(() => (view.value?.threads ?? []).filter((thread) => !thread.anchor?.element));
+const syncProblem = computed(() => (status.value === "offline" ? t("design.status.offline") : null));
 
 const labels = computed<DesignEditorLabels>(() => ({
   comment: t("design.editor.comment"),
@@ -190,12 +81,6 @@ const labels = computed<DesignEditorLabels>(() => ({
   commentFailed: t("design.editor.commentFailed"),
 }));
 
-function showNotice(text: string, kind: "info" | "error" = "info") {
-  notice.value = { text, kind };
-  if (noticeTimer) clearTimeout(noticeTimer);
-  noticeTimer = setTimeout(() => (notice.value = null), 2600);
-}
-
 function mountEditor() {
   if (!editorHost.value || !session.value || editor) return;
   editor = mountDesignEditor(editorHost.value, {
@@ -203,7 +88,7 @@ function mountEditor() {
     theme: theme.value,
     editable: editable.value,
     labels: labels.value,
-    onNotice: showNotice,
+    onNotice: (text, kind) => sayDesign(text, kind),
     selectedThreadId: selectedThreadId.value,
   });
 }
@@ -215,7 +100,6 @@ function open(taskId: string) {
   unsubscribe = next.subscribe(() => {
     view.value = next.view;
     status.value = next.status;
-    statusError.value = next.lastError;
   });
   void next
     .start()
@@ -235,10 +119,7 @@ function close() {
 }
 
 onMounted(() => open(props.taskId));
-onBeforeUnmount(() => {
-  close();
-  if (noticeTimer) clearTimeout(noticeTimer);
-});
+onBeforeUnmount(() => close());
 watch(() => props.taskId, (taskId) => open(taskId));
 watch([theme, editable, labels, selectedThreadId], () =>
   editor?.update({
@@ -249,44 +130,39 @@ watch([theme, editable, labels, selectedThreadId], () =>
   }),
 );
 
-async function choosePosition(position: string) {
-  if (!view.value || position === view.value.position || !editable.value) return;
+async function act<T>(action: () => Promise<T>): Promise<T | null> {
   try {
-    await setDesignPosition(props.taskId, position);
-    await session.value?.refreshView();
+    return await action();
   } catch (error) {
-    showNotice(error instanceof Error ? error.message : String(error), "error");
+    sayDesign(error instanceof Error ? error.message : String(error), "error");
+    return null;
   }
 }
 
-function toggleTheme() {
-  props.setAppTheme?.(theme.value === "dark" ? "light" : "dark");
+async function createPin(pin: MockupPinDescriptor, body: string): Promise<string | null> {
+  const mockup = position.value?.mockup;
+  if (!session.value || !view.value || !mockup) return null;
+  const { rect: _rect, ...element } = pin;
+  const threadId = newId("th");
+  const created = await act(() =>
+    session.value!.createThread({
+      threadId,
+      commentId: newId("cm"),
+      kind: "comment",
+      body,
+      anchor: { element: { ...element, position: view.value!.position, artifactId: mockup.artifactId } },
+    }),
+  );
+  if (!created) return null;
+  sayDesign(t("design.room.pinned"));
+  return threadId;
 }
 
-async function feedbackAction(action: () => Promise<unknown>) {
-  try {
-    await action();
-  } catch (error) {
-    showNotice(error instanceof Error ? error.message : String(error), "error");
-  }
-}
-
-const statusText = computed(() => {
-  switch (status.value) {
-    case "connecting":
-      return t("design.status.connecting");
-    case "saving":
-      return t("design.status.saving");
-    case "offline":
-      return t("design.status.offline");
-    case "incompatible":
-      return t("design.status.incompatible");
-    case "closed":
-      return "";
-    default:
-      return t("design.status.saved");
-  }
-});
+const threadActions = {
+  reply: (threadId: string, body: string) => act(() => session.value!.reply(threadId, { commentId: newId("cm"), body })),
+  resolve: (threadId: string, resolved: boolean) => act(() => session.value!.resolve(threadId, resolved)),
+  retry: (deliveryId: string) => act(() => session.value!.retryDelivery(deliveryId)),
+};
 
 const approvalActions = {
   prepare: () => prepareDesignCandidate(props.taskId).then(async (candidate) => {
@@ -303,332 +179,132 @@ const approvalActions = {
 </script>
 
 <template>
-  <section class="design-view" :class="`theme-${theme}`" data-testid="design-view">
-    <header class="design-bar">
-      <span class="workflow">{{ t("design.workflowName") }}</span>
-      <nav class="positions" :aria-label="t('design.positionsLabel')">
-        <template v-for="(position, index) in view?.positions ?? []" :key="position.name">
-          <span v-if="index > 0" class="arrow" :title="t('design.freeMove')">⇄</span>
-          <button
-            type="button"
-            class="position"
-            :class="{ now: position.name === view?.position, done: !view?.inDesignStage }"
-            :aria-current="position.name === view?.position ? 'step' : undefined"
-            :disabled="!editable"
-            :data-testid="`design-position-${position.name}`"
-            @click="choosePosition(position.name)"
-          >
-            {{ position.label }}
-          </button>
-        </template>
-        <template v-if="factoryStages.length">
-          <span class="arrow" :title="t('design.handoffArrow')">⇢</span>
-          <template v-for="(stage, index) in factoryStages" :key="stage">
-            <span v-if="index > 0" class="arrow">→</span>
-            <span class="factory-stage" :class="{ now: stage === view?.currentStage }">{{ stage }}</span>
-          </template>
-        </template>
-      </nav>
-      <span class="spacer" />
-      <span class="sync-status" :class="`status-${status}`" :title="statusError ?? undefined" data-testid="design-sync-status">
-        {{ statusText }}
-      </span>
-      <button
-        v-if="setAppTheme"
-        type="button"
-        class="theme-toggle"
-        :aria-label="theme === 'dark' ? t('design.lightTheme') : t('design.darkTheme')"
-        :title="theme === 'dark' ? t('design.lightTheme') : t('design.darkTheme')"
-        @click="toggleTheme"
-      >
-        {{ theme === "dark" ? "☀" : "☾" }}
-      </button>
-    </header>
-    <div class="design-body">
-      <div ref="artifactColumn" class="artifact-column">
-        <p v-if="status === 'incompatible'" class="banner error" role="alert">{{ t("design.incompatible") }}</p>
-        <p v-else-if="view && !view.inDesignStage" class="banner">{{ t("design.handedOffBanner") }}</p>
-        <div v-if="mockup" class="artifact-bar">
-          <span class="artifact-title">{{ t("design.mockupTitle", { position: currentPosition?.label ?? "" }) }}</span>
-          <span class="spacer" />
-          <button
-            type="button"
-            class="artifact-toggle"
-            data-testid="design-artifact-toggle"
-            :title="showMockup ? t('design.showNotesTitle') : t('design.showMockupTitle')"
-            :aria-pressed="!showMockup"
-            @click="showingNotes = !showingNotes"
-          >
-            {{ showMockup ? t("design.showNotes") : t("design.showMockup") }}
-          </button>
-        </div>
-        <DesignMockupFrame
-          v-if="showMockup && mockup"
-          :repo-id="mockup.repoId"
-          :artifact-id="mockup.artifactId"
-          :entrypoint="mockup.entrypoint"
-          :title="t('design.mockupTitle', { position: currentPosition?.label ?? '' })"
-          :pins="mockupPins"
-          :selected-pin="selectedPin"
-          @pin="startPin"
-          @select="selectPin"
+  <section class="kd design-surface" :class="`theme-${theme}`" data-testid="design-view">
+    <p v-if="status === 'incompatible'" class="banner" role="alert">{{ t("design.incompatible") }}</p>
+    <div class="workspace">
+      <section class="surface-col">
+        <DesignMockupRoom
+          v-if="showsMockup"
+          :mockup="position?.mockup ?? null"
+          :position-label="position?.label ?? ''"
+          :threads="pins"
+          :can-write="editable"
+          :create-pin="createPin"
+          :reply="threadActions.reply"
+          :resolve="threadActions.resolve"
+          :retry="threadActions.retry"
         />
-        <form
-          v-if="pending && showMockup"
-          class="pin-composer"
-          :style="{ left: `${pending.left}px`, top: `${pending.top}px` }"
-          data-testid="design-pin-composer"
-          @submit.prevent="submitPin"
-        >
-          <p class="pin-target">
-            <code>{{ elementLabel(pending.pin) }}</code>
-            <span v-if="pending.pin.text">“{{ pending.pin.text.length > 80 ? `${pending.pin.text.slice(0, 80)}…` : pending.pin.text }}”</span>
-          </p>
-          <textarea
-            ref="composerInput"
-            v-model="pendingBody"
-            rows="3"
-            :placeholder="t('design.pin.placeholder')"
-            :aria-label="t('design.pin.placeholder')"
-            data-testid="design-pin-body"
-            @keydown="composerKey"
-          />
-          <div class="pin-actions">
-            <button type="button" class="linkish" @click="cancelPin">{{ t("design.pin.cancel") }}</button>
-            <button type="submit" class="primary" :disabled="!pendingBody.trim() || pendingSaving" data-testid="design-pin-submit">
-              {{ t("design.pin.submit") }} <kbd>⌘↵</kbd>
-            </button>
+        <!-- Kept mounted on a mockup position: the live document keeps syncing. -->
+        <div v-show="!showsMockup" class="surface">
+          <div class="page">
+            <div ref="editorHost" class="editor-host" data-testid="design-editor-host" />
           </div>
-        </form>
-        <!-- Kept mounted under the mockup: the live document keeps syncing. -->
-        <div v-show="!showMockup" ref="editorHost" class="editor-host" data-testid="design-editor-host" />
-        <DesignApprovalBar
+        </div>
+        <DesignSignoffBar
           v-if="view"
           :approval="view.approval"
           :status="view.status"
           :in-design-stage="view.inDesignStage"
           :next-stage="view.nextStage"
+          :scratch-repository="view.scratchRepository"
+          :sync-problem="syncProblem"
           :prepare="approvalActions.prepare"
           :confirm="approvalActions.confirm"
           :reopen="approvalActions.reopen"
           :retry="approvalActions.retry"
         />
-      </div>
-      <DesignFeedbackPanel
-        class="feedback-column"
-        :threads="view?.threads ?? []"
+      </section>
+      <DesignFeed
+        v-if="!showsMockup"
+        :threads="documentThreads"
         :can-write="editable"
         :selected-thread-id="selectedThreadId"
-        @select="selectThread"
-        @resolve="(id, resolved) => feedbackAction(() => session!.resolve(id, resolved))"
-        @reply="(id, body) => feedbackAction(() => session!.reply(id, { commentId: newId('cm'), body }))"
-        @retry="(id) => feedbackAction(() => session!.retryDelivery(id))"
+        @open="(id) => (selectedThreadId = id)"
+        @resolve="threadActions.resolve"
+        @retry="threadActions.retry"
       />
     </div>
-    <div v-if="notice" class="notice" :class="notice.kind" role="status">{{ notice.text }}</div>
+    <div class="toast" :class="{ show: !!designToast, error: designToast?.kind === 'error' }" role="status">
+      {{ designToast?.text ?? "" }}
+    </div>
   </section>
 </template>
 
 <style scoped>
-.design-view {
+.design-surface {
   position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  background: var(--kn-bg-app);
-  color: var(--kn-text-primary);
-}
-.design-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--kn-border-default);
-  font-size: 12px;
-}
-.workflow {
-  font-weight: 600;
-  color: var(--kn-text-secondary);
-}
-.positions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-.position {
-  border: 1px solid var(--kn-border-strong);
-  background: none;
-  color: var(--kn-text-secondary);
-  border-radius: 12px;
-  padding: 2px 10px;
-  font: inherit;
-  cursor: pointer;
-}
-.position.now {
-  border-color: var(--kn-accent);
-  color: var(--kn-text-primary);
-  background: var(--kn-bg-accent-subtle);
-}
-.position:disabled {
-  cursor: default;
-}
-.position.done {
-  opacity: 0.6;
-}
-.arrow {
-  color: var(--kn-text-muted);
-}
-.factory-stage {
-  color: var(--kn-text-muted);
-}
-.factory-stage.now {
-  color: var(--kn-text-primary);
-  font-weight: 600;
-}
-.spacer {
-  flex: 1;
-}
-.sync-status {
-  color: var(--kn-text-muted);
-}
-.sync-status.status-offline,
-.sync-status.status-incompatible {
-  color: var(--kn-danger);
-}
-.theme-toggle {
-  border: 0;
-  background: none;
-  color: var(--kn-text-secondary);
-  cursor: pointer;
-  font-size: 14px;
-}
-.design-body {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(240px, 320px);
-}
-.artifact-column {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  min-width: 0;
-}
-.pin-composer {
-  position: absolute;
-  z-index: 5;
-  width: 300px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px;
-  border-radius: 8px;
-  background: var(--kn-bg-panel-raised);
-  border: 1px solid var(--kn-border-strong);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
-  font-size: 12px;
-}
-.pin-target {
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  color: var(--kn-text-secondary);
-  overflow-wrap: anywhere;
-}
-.pin-composer textarea {
-  resize: vertical;
-  font: inherit;
-  padding: 6px;
-  border-radius: 6px;
-  border: 1px solid var(--kn-border-strong);
-  background: var(--kn-bg-app);
-  color: var(--kn-text-primary);
-}
-.pin-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-.pin-actions .primary {
-  border: 0;
-  border-radius: 6px;
-  padding: 4px 10px;
-  background: var(--kn-accent);
-  color: var(--kn-text-on-accent, #fff);
-  font: inherit;
-  cursor: pointer;
-}
-.pin-actions .primary:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-.pin-actions .linkish {
-  border: 0;
-  background: none;
-  color: var(--kn-text-secondary);
-  font: inherit;
-  cursor: pointer;
-}
-.editor-host {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 24px 12px;
-}
-.artifact-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 12px;
-  border-bottom: 1px solid var(--kn-border-default);
-  font-size: 12px;
-  color: var(--kn-text-secondary);
-}
-.artifact-toggle {
-  border: 1px solid var(--kn-border-strong);
-  background: none;
-  color: var(--kn-text-secondary);
-  border-radius: 10px;
-  padding: 1px 10px;
-  font: inherit;
-  cursor: pointer;
+  background: var(--kd-bg);
+  color: var(--kd-ink);
+  font-family: Inter, system-ui, sans-serif;
 }
 .banner {
   margin: 0;
   padding: 6px 12px;
   font-size: 12px;
-  background: var(--kn-bg-accent-subtle);
-  color: var(--kn-text-secondary);
-}
-.banner.error {
   background: var(--kn-danger-bg);
   color: var(--kn-danger);
 }
-.feedback-column {
+.workspace {
+  flex: 1;
+  display: flex;
   min-height: 0;
 }
-.notice {
+.surface-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--kd-panel-2);
+}
+.surface {
+  flex: 1;
+  overflow: auto;
+  padding: 18px;
+  position: relative;
+}
+.page {
+  max-width: 720px;
+  margin: 0 auto;
+  background: var(--kd-page);
+  border-radius: 10px;
+  box-shadow: var(--kd-shadow);
+  border: 1px solid var(--kd-line-2);
+  padding: 28px 0;
+  min-height: 70vh;
+}
+.editor-host {
+  min-height: 100%;
+}
+.toast {
   position: absolute;
-  bottom: 56px;
+  bottom: 60px;
   left: 50%;
   transform: translateX(-50%);
-  padding: 6px 12px;
-  border-radius: 6px;
-  background: var(--kn-bg-panel-raised);
-  border: 1px solid var(--kn-border-strong);
-  font-size: 12px;
+  background: var(--kd-ink);
+  color: var(--kd-bg);
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  opacity: 0;
+  transition: opacity 0.2s;
+  pointer-events: none;
+  z-index: 30;
+  max-width: calc(100% - 32px);
 }
-.notice.error {
-  color: var(--kn-danger);
+.toast.show {
+  opacity: 1;
+}
+.toast.error {
+  background: var(--kd-bad);
+  color: #fff;
 }
 @media (max-width: 720px) {
-  .design-body {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) minmax(160px, 40%);
+  .workspace {
+    flex-direction: column;
   }
 }
 </style>

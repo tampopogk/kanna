@@ -217,29 +217,35 @@ pub(crate) fn feedback_markdown(threads: &[ThreadView]) -> String {
     }
     let mut out = String::new();
     for thread in threads {
-        let what = match &thread.anchor {
+        // Pins are numbered within their mockup, so they are named by it.
+        let (number, what) = match &thread.anchor {
             Some(super::service::AnchorView {
                 element: Some(element),
                 ..
-            }) => format!(
-                "pinned on {} in the {} mockup",
-                element.label(),
-                element.position
+            }) => (
+                format!("{} mockup pin #{}", element.position, thread.number),
+                format!("on {}", element.label()),
             ),
-            Some(anchor) => format!(
-                "on \u{201c}{}\u{201d}{}",
-                anchor.quoted_text.as_deref().unwrap_or(""),
-                if anchor.state == "detached" {
-                    " (text since removed)"
-                } else {
-                    ""
-                }
+            Some(anchor) => (
+                format!("#{}", thread.number),
+                format!(
+                    "on \u{201c}{}\u{201d}{}",
+                    anchor.quoted_text.as_deref().unwrap_or(""),
+                    if anchor.state == "detached" {
+                        " (text since removed)"
+                    } else {
+                        ""
+                    }
+                ),
             ),
-            None => "message to the agent".to_string(),
+            None => (
+                format!("#{}", thread.number),
+                "message to the agent".to_string(),
+            ),
         };
         out.push_str(&format!(
-            "### #{} {} — {}\n\n",
-            thread.number,
+            "### {} {} — {}\n\n",
+            number,
             what,
             if thread.status == "resolved" {
                 "resolved"

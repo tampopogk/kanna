@@ -1555,7 +1555,7 @@
     },
     {
       "name": "kanna_design_publish_mockup",
-      "description": "Show an HTML mockup in an App Design task's design pane. Write the mockup (an .html file, or a directory with index.html and its CSS, JS and images, all referenced relatively) in the design's disposable repository, the `scratchRepository` kanna_design_get names, then publish it here: it becomes an immutable version in the repository's artifact store and the position's page, rendered sandboxed in place of the document (no network access, no reaching Kanna). Publish again after each change; each version chains to the one before. Returns the position, the artifact id and the page it opens.",
+      "description": "Set the HTML mockup an App Design position shows (for the app-design workflow: the static and interactive mockup positions). Send the whole page as `html`, the way the design prototype's html/set did, each time you change it; or, for a mockup with separate CSS, JS or images, write it in the design's disposable repository (`scratchRepository` in kanna_design_get) and send its file or directory as `path`. The page is kept in the disposable repository and as an immutable version in the repository's artifact store, and the person sees it at once, rendered sandboxed with no network access: inline or bundle everything it needs, and keep text in HTML, never in images. The person pins comments on its elements; they reach you as \"Pin #n on the <position> mockup\" with the element's selector and HTML, and you answer them with kanna_design_reply like any thread. Returns the position, the artifact id and the page it opens.",
       "method": "POST",
       "path": "/v1/tasks/{task_id}/design/agent/mockups",
       "response": "json",
@@ -1583,10 +1583,18 @@
           "key": "opId"
         },
         {
-          "name": "path",
-          "description": "The mockup's file or directory, relative to the disposable repository (or an absolute path inside it).",
+          "name": "html",
+          "description": "The mockup page: one complete HTML document. Omit it when you send path.",
           "type": "string",
-          "required": true,
+          "required": false,
+          "location": "body",
+          "key": "html"
+        },
+        {
+          "name": "path",
+          "description": "Instead of html: the mockup's file or directory, relative to the disposable repository (or an absolute path inside it).",
+          "type": "string",
+          "required": false,
           "location": "body",
           "key": "path"
         },

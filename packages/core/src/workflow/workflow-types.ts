@@ -97,8 +97,11 @@ export interface WorkflowStage {
 export interface WorkflowDesignPosition {
   name: string;
   label: string;
-  /** What the position shows; "document" is the only kind this release renders. */
-  artifact?: "document";
+  /**
+   * What the position shows: "document" (the live design document and its
+   * feedback feed) or "mockup" (the agent's HTML mockup with pinned comments).
+   */
+  artifact?: "document" | "mockup";
 }
 
 export interface WorkflowDesign {

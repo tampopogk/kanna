@@ -467,11 +467,15 @@ pub(crate) struct WorkflowDesign {
 pub(crate) struct WorkflowDesignPosition {
     pub(crate) name: String,
     pub(crate) label: String,
-    /// What the position shows; `document` (the live design document) is the
-    /// only kind this release renders.
+    /// What the position shows: `document` (the live design document and its
+    /// feedback feed) or `mockup` (the HTML mockup the agent publishes for
+    /// it, with pinned comments).
     #[serde(default = "default_design_artifact")]
     pub(crate) artifact: String,
 }
+
+/// What a design position may show.
+pub(crate) const DESIGN_ARTIFACTS: &[&str] = &["document", "mockup"];
 
 fn default_design_artifact() -> String {
     "document".to_string()
@@ -2757,10 +2761,10 @@ fn validate_design_stages(workflow: &WorkflowDefinition) -> Result<(), String> {
                     position.name
                 ));
             }
-            if position.artifact != "document" {
+            if !DESIGN_ARTIFACTS.contains(&position.artifact.as_str()) {
                 return Err(format!(
-                    "stage '{name}': design position '{}' shows '{}'; only \"document\" is \
-                     supported",
+                    "stage '{name}': design position '{}' shows '{}'; a position shows \
+                     \"document\" or \"mockup\"",
                     position.name, position.artifact
                 ));
             }

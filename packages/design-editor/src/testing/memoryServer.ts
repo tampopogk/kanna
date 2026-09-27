@@ -98,7 +98,7 @@ export class MemoryDesignServer {
           anchor: !request.anchor
             ? null
             : "element" in request.anchor
-              ? { blockId: null, quotedText: request.anchor.element.text, state: "attached", element: request.anchor.element }
+              ? { blockId: null, quotedText: request.anchor.element.excerpt, state: "attached", element: request.anchor.element }
               : { blockId: request.anchor.blockId, quotedText: request.anchor.quotedText, state: "attached" },
           comments: [
             { id: request.commentId, author: "operator", body: request.body, createdAt: new Date(0).toISOString(), delivery: { id: "d", state: "queued" } },

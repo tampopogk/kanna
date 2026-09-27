@@ -304,9 +304,10 @@
                       "minLength": 1
                     },
                     "artifact": {
-                      "description": "What the position shows. \"document\" is the live design document; the only kind in this release.",
+                      "description": "What the position shows: \"document\", the live design document with its feedback feed, or \"mockup\", the HTML mockup the agent publishes for it, with comments pinned on its elements.",
                       "enum": [
-                        "document"
+                        "document",
+                        "mockup"
                       ]
                     }
                   }
