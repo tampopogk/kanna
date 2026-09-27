@@ -500,7 +500,8 @@
     "artifact": "アーティファクト",
     "artifactLabel": "アーティファクト: {id}",
     "artifactTitle": "アーティファクト {id}",
-    "artifactEmptyTitle": "ツリーIDでアーティファクトを開く"
+    "artifactEmptyTitle": "ツリーIDでアーティファクトを開く",
+    "design": "デザイン"
   },
   "terminalTabs": {
     "noSession": "アクティブなエージェントセッションがありません"

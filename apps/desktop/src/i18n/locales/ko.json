@@ -501,7 +501,8 @@
     "artifact": "아티팩트",
     "artifactLabel": "아티팩트: {id}",
     "artifactTitle": "아티팩트 {id}",
-    "artifactEmptyTitle": "트리 ID로 아티팩트 열기"
+    "artifactEmptyTitle": "트리 ID로 아티팩트 열기",
+    "design": "디자인"
   },
   "terminalTabs": {
     "noSession": "활성 에이전트 세션 없음"

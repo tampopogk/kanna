@@ -498,7 +498,8 @@
     "artifact": "Artifact",
     "artifactLabel": "Artifact: {id}",
     "artifactTitle": "Artifact {id}",
-    "artifactEmptyTitle": "Open an artifact by tree id"
+    "artifactEmptyTitle": "Open an artifact by tree id",
+    "design": "Design"
   },
   "terminalTabs": {
     "noSession": "No agent session active"

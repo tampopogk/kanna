@@ -519,6 +519,10 @@ pub(super) async fn replace_task_workflow(
     };
     if response["changed"] == true {
         state.publish_state_changed(StateChangeScope::Tasks);
+        // An open design surface reads its positions from the workflow.
+        if let Some(task_id) = response["taskId"].as_str() {
+            state.design.feed_changed(task_id);
+        }
     }
     Ok(Json(response).into_response())
 }
