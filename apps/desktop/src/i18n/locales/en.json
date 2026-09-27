@@ -761,7 +761,7 @@
     "nowIn": "Now in “{position}”",
     "room": {
       "title": "Comments",
-      "hint": "Click any element in the mockup to comment on it. ⌥-click uses the mockup.",
+      "hint": "⌘-click any element in the mockup to comment on it. A plain click uses the mockup.",
       "empty": "No comments yet.",
       "waiting": "Waiting for the agent to publish a mockup…",
       "elementGone": "element gone",

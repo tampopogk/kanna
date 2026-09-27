@@ -80,11 +80,11 @@ const received = (page: Page) => page.evaluate(() => (window as unknown as { rec
 
 const cases: Array<[string, (page: Page, mockup: Frame) => Promise<void>]> = [
   [
-    "a click pins the element and tells Kanna what it is, as the prototype did, without using the mockup",
+    "a ⌘-click pins the element and tells Kanna what it is, as the prototype did, without using the mockup",
     async (page, mockup) => {
       const ready = (await received(page)).find((message) => message.type === "ready");
       assert.equal(ready?.page, "index.html");
-      await mockup.locator("#save").click();
+      await mockup.locator("#save").click({ modifiers: ["ControlOrMeta"] });
       await page.waitForFunction(() => (window as unknown as { received: Received[] }).received.some((m) => m.type === "pick"));
       const pin = (await received(page)).find((message) => message.type === "pick")!.pin!;
       assert.equal(pin.selector, "#save");
@@ -102,7 +102,7 @@ const cases: Array<[string, (page: Page, mockup: Frame) => Promise<void>]> = [
   [
     "a container reads as its parts, and an element without an id gets a selector that finds it again",
     async (page, mockup) => {
-      await mockup.locator("ul").click({ position: { x: 5, y: 5 } });
+      await mockup.locator("ul").click({ position: { x: 5, y: 5 }, modifiers: ["ControlOrMeta"] });
       await page.waitForFunction(() => (window as unknown as { received: Received[] }).received.some((m) => m.type === "pick"));
       const pin = (await received(page)).find((message) => message.type === "pick")!.pin!;
       assert.equal(pin.excerpt, "First · Review design");
@@ -111,14 +111,22 @@ const cases: Array<[string, (page: Page, mockup: Frame) => Promise<void>]> = [
     },
   ],
   [
-    "hovering outlines the element; Option/Alt-click uses the mockup instead of pinning",
+    "a plain click uses the mockup; the outline shows only while ⌘ is held",
     async (page, mockup) => {
       await mockup.locator("#save").hover();
-      assert.ok(await mockup.locator("#save.__kanna-hover").count(), "outlined");
-      await mockup.locator("#save").click({ modifiers: ["Alt"] });
-      assert.equal(await mockup.evaluate(() => document.title), "clicked");
+      assert.equal(await mockup.locator(".__kanna-hover").count(), 0, "no outline without the modifier");
+      await mockup.locator("#save").click();
+      assert.equal(await mockup.evaluate(() => document.title), "clicked", "the mockup's own handler ran");
       await page.waitForTimeout(200);
-      assert.ok(!(await received(page)).some((message) => message.type === "pick"));
+      assert.ok(!(await received(page)).some((message) => message.type === "pick"), "a plain click does not pin");
+      const box = (await mockup.locator("#save").boundingBox())!;
+      await page.keyboard.down("ControlOrMeta");
+      await page.mouse.move(box.x + 4, box.y + 4);
+      await page.mouse.move(box.x + 6, box.y + 6);
+      assert.ok(await mockup.locator("#save.__kanna-hover").count(), "outlined while ⌘ is held");
+      await page.keyboard.up("ControlOrMeta");
+      await page.mouse.move(box.x + 8, box.y + 8);
+      assert.equal(await mockup.locator(".__kanna-hover").count(), 0, "gone once released");
     },
   ],
   [

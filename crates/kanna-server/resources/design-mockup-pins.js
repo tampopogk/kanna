@@ -6,9 +6,11 @@
 // mockup (an opaque origin with no network), so all it can do is talk to the
 // Kanna window by postMessage:
 //
-// - Marking up is always on (Owner): a click pins the element under it and
+// - Command-click (Ctrl-click off macOS) pins the element under it and
 //   tells Kanna what it is (selector, visible text, tag, label, containing
-//   landmark, HTML excerpt); Alt/Option-click uses the mockup instead.
+//   landmark, HTML excerpt). A plain click is the mockup's own, so an
+//   interactive mockup stays usable (Owner, 2026-09-27); the outline shows
+//   only while the modifier is held.
 // - Kanna sends the pins to draw (id, number, selector, text); a pin badge
 //   click asks Kanna to focus its thread; pins whose element is gone are
 //   reported so their threads can say so.
@@ -139,14 +141,26 @@
     send({ type: "detached", ids: gone });
   }
 
-  document.addEventListener(
-    "mouseover",
-    (event) => {
-      const target = event.target;
-      if (event.altKey || !target || target.nodeType !== 1 || skipped(target) || target === document.documentElement) return;
+  // The pin modifier: Command on macOS, Control elsewhere.
+  const pinning = (event) => !!(event.metaKey || event.ctrlKey);
+
+  function hover(target) {
+    if (!target || target.nodeType !== 1 || skipped(target) || target === document.documentElement) {
       unhover();
-      hovered = target;
-      hovered.classList.add("__kanna-hover");
+      return;
+    }
+    if (target === hovered) return;
+    unhover();
+    hovered = target;
+    hovered.classList.add("__kanna-hover");
+  }
+  let pointed = null;
+  document.addEventListener(
+    "mousemove",
+    (event) => {
+      pointed = event.target;
+      if (pinning(event)) hover(event.target);
+      else unhover();
     },
     true,
   );
@@ -154,13 +168,17 @@
     if (event.target === hovered) unhover();
   }, true);
   window.addEventListener("keydown", (event) => {
-    if (event.key === "Alt") unhover();
+    if (event.key === "Meta" || event.key === "Control") hover(pointed);
   });
+  window.addEventListener("keyup", (event) => {
+    if (event.key === "Meta" || event.key === "Control") unhover();
+  });
+  window.addEventListener("blur", unhover);
 
-  // A plain click pins, and does nothing else in the mockup; Alt/Option-click
+  // Command-click pins, and does nothing else in the mockup; a plain click
   // is the mockup's own.
   const swallow = (event) => {
-    if (event.altKey || skipped(event.target)) return false;
+    if (!pinning(event) || skipped(event.target)) return false;
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
@@ -169,17 +187,16 @@
   window.addEventListener("mousedown", swallow, true);
   window.addEventListener("mouseup", swallow, true);
   window.addEventListener("auxclick", swallow, true);
-  window.addEventListener(
-    "click",
-    (event) => {
-      if (!swallow(event)) return;
-      const element = event.target;
-      if (!element || element.nodeType !== 1 || element === document.documentElement) return;
-      element.classList.remove("__kanna-hover");
-      send({ type: "pick", pin: pinOf(element) });
-    },
-    true,
-  );
+  const pick = (event) => {
+    if (!swallow(event)) return;
+    const element = event.target;
+    if (!element || element.nodeType !== 1 || element === document.documentElement) return;
+    unhover();
+    send({ type: "pick", pin: pinOf(element) });
+  };
+  window.addEventListener("click", pick, true);
+  // On macOS a Control-click is a context-menu click, never a "click".
+  window.addEventListener("contextmenu", pick, true);
 
   let scheduled = false;
   const redraw = () => {

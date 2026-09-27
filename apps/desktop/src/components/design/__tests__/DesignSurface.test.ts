@@ -274,7 +274,7 @@ describe("DesignMockupRoom", () => {
     const { wrapper, calls } = room([pin(1), pin(2, { status: "resolved" })]);
     expect(wrapper.get('[data-testid="design-mockup-waiting"]').text()).toBe("Waiting for the agent to publish a mockup…");
     expect(wrapper.get("h2").text()).toBe("Comments");
-    expect(wrapper.get(".hint").text()).toContain("Click any element in the mockup");
+    expect(wrapper.get(".hint").text()).toBe("⌘-click any element in the mockup to comment on it. A plain click uses the mockup.");
     const first = wrapper.get('[data-testid="design-pin-thread-1"]');
     expect(first.get(".anchor").text()).toBe("1 button#save “Save”");
     expect(first.get(".c").text()).toBe("Youfeedback 1");
