@@ -118,7 +118,6 @@ describe("tree explorer", () => {
     fixtureRepoPath = await createSeedFixtureRepo("task-switch-minimal");
     await writeFile(join(fixtureRepoPath, ".gitignore"), "*.log\n", "utf8");
     await writeFile(join(fixtureRepoPath, IGNORED_FILE), "ignored\n", "utf8");
-    await writeFile(join(fixtureRepoPath, PREVIEW_REFRESH_FILE), "before external edit\n", "utf8");
     await client.createSession();
     await resetDatabase(client);
   });
@@ -240,6 +239,7 @@ describe("tree explorer", () => {
 
   it("refreshes the selected preview after an external file edit without navigation", async () => {
     await ensureRepoImported();
+    await writeFile(join(fixtureRepoPath, PREVIEW_REFRESH_FILE), "before external edit\n", "utf8");
 
     await client.executeSync(
       closeMainTabsScript(["tree", "file"]),
