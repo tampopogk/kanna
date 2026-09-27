@@ -516,7 +516,9 @@
     "commitStepLabel": "コミット:",
     "gateParked": "担当者の判断を待っています",
     "dependencyWait": "{fromStage} → {toStage} の依存関係を待機中",
-    "dependencySuperseded": "{upstreamTaskId}（{upstreamStage}）の新しい結果は使用されませんでした"
+    "dependencySuperseded": "{upstreamTaskId}（{upstreamStage}）の新しい結果は使用されませんでした",
+    "designAt": "App Design · {position} ›",
+    "designHandedOff": "App Design · 引き渡し済み ›"
   },
   "app": {
     "selectRepoFirst": "リポジトリを先に選択してください",

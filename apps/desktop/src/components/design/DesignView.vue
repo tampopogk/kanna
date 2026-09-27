@@ -17,12 +17,14 @@ import "@kanna/design-editor/styles";
 import {
   confirmDesignApproval,
   desktopDesignTransport,
+  setDesignPosition,
   prepareDesignCandidate,
   reopenDesign,
   retryDesignHandoff,
 } from "../../services/designClient";
 import { useThemeRuntime } from "../../theme/runtime";
 import DesignFeed from "./DesignFeed.vue";
+import DesignLadder from "./DesignLadder.vue";
 import DesignMockupRoom from "./DesignMockupRoom.vue";
 import DesignSignoffBar from "./DesignSignoffBar.vue";
 import { designToast, sayDesign } from "./designToast";
@@ -41,7 +43,7 @@ import "./design-surface.css";
 const props = defineProps<{
   taskId: string;
   visible: boolean;
-  /** Kept for the tab's callers; the theme toggle is in the task header. */
+  /** Persist the app-wide theme choice (the same setting Preferences uses). */
   setAppTheme?: (theme: "light" | "dark") => void;
 }>();
 const { t } = useI18n();
@@ -158,6 +160,21 @@ async function createPin(pin: MockupPinDescriptor, body: string): Promise<string
   return threadId;
 }
 
+/** A position picked in the ladder: the design moves there, inside the one stage. */
+async function pickPosition(name: string) {
+  const current = view.value;
+  if (!current) return;
+  const label = current.positions.find((candidate) => candidate.name === name)?.label ?? name;
+  if (name === current.position) {
+    sayDesign(t("design.youAreHere"));
+    return;
+  }
+  const moved = await act(() => setDesignPosition(props.taskId, name));
+  if (moved === null) return;
+  await session.value?.refreshView();
+  sayDesign(t("design.nowIn", { position: label }));
+}
+
 const threadActions = {
   reply: (threadId: string, body: string) => act(() => session.value!.reply(threadId, { commentId: newId("cm"), body })),
   resolve: (threadId: string, resolved: boolean) => act(() => session.value!.resolve(threadId, resolved)),
@@ -180,6 +197,7 @@ const approvalActions = {
 
 <template>
   <section class="kd design-surface" :class="`theme-${theme}`" data-testid="design-view">
+    <DesignLadder v-if="view" :design="view" :set-app-theme="setAppTheme" @pick="pickPosition" />
     <p v-if="status === 'incompatible'" class="banner" role="alert">{{ t("design.incompatible") }}</p>
     <div class="workspace">
       <section class="surface-col">

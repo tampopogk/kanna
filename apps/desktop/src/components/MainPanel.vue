@@ -1041,7 +1041,7 @@ function dismissCommandHint() {
         <span class="mobile-back-arrow">&larr;</span>
         <span>Tasks</span>
       </div>
-      <TaskHeader v-if="headerItem" :item="headerItem" :owner-label="ownerLabel" :task-id="item?.id" :preview-supported="taskDetailIsLocal && !isMobile && !views?.modals.activeTaskViewIsRemote?.value && !!views" :latest-run="taskDetail?.latestRun ?? null" :session-history="taskDetail?.sessionHistory ?? null" :stage-dependencies="taskDetail?.stageDependencies ?? null" :dependency-wait="taskDetail?.dependencyWait ?? null" :gate-parked="taskDetail?.gateParked ?? null" :design="taskDetail?.design ?? null" :set-app-theme="views?.setAppTheme" @open-design="views?.tabs.openTab({ kind: 'design' })" @preview="(portName) => views?.tabs.openTab({ kind: 'preview', portName })" @open-artifact="openLatestResultArtifact" />
+      <TaskHeader v-if="headerItem" :item="headerItem" :owner-label="ownerLabel" :task-id="item?.id" :preview-supported="taskDetailIsLocal && !isMobile && !views?.modals.activeTaskViewIsRemote?.value && !!views" :latest-run="taskDetail?.latestRun ?? null" :session-history="taskDetail?.sessionHistory ?? null" :stage-dependencies="taskDetail?.stageDependencies ?? null" :dependency-wait="taskDetail?.dependencyWait ?? null" :gate-parked="taskDetail?.gateParked ?? null" :design="taskDetail?.design ?? null" @open-design="views?.tabs.openTab({ kind: 'design' })" @preview="(portName) => views?.tabs.openTab({ kind: 'preview', portName })" @open-artifact="openLatestResultArtifact" />
       <section v-if="revisionBudgetExhausted" class="revision-exhausted" data-testid="revision-exhausted-status">
         <div>
           <p class="revision-exhausted-title">{{ $t('mainPanel.revisionExhaustedTitle') }}</p>

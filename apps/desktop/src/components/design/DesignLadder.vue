@@ -5,8 +5,8 @@ import { useThemeRuntime } from "../../theme/runtime";
 import "./design-surface.css";
 
 /**
- * An App Design task's stage chain in the task header (docs/specs/app-design.md
- * §4): the workflow's name, then its design positions, clickable in any
+ * An App Design task's stage chain, at the top of the design surface above
+ * the artifact (docs/specs/app-design.md §4): the workflow's name, then its design positions, clickable in any
  * order (⇄) while designing; once approved for build, "⇢ Software factory".
  * As in the design prototype, a position is where the design is, inside one
  * stage: moving starts no session and forks nothing.
@@ -74,7 +74,9 @@ const handedOff = computed(() => !props.design.inDesignStage || props.design.sta
   gap: 6px;
   font-size: 12px;
   flex-wrap: wrap;
-  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--kd-panel);
+  border-bottom: 1px solid var(--kd-line);
 }
 .wf {
   font-size: 10.5px;
