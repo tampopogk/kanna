@@ -141,8 +141,10 @@
     send({ type: "detached", ids: gone });
   }
 
-  // The pin modifier: Command on macOS, Control elsewhere.
-  const pinning = (event) => !!(event.metaKey || event.ctrlKey);
+  // The pin modifier: Command on macOS (Owner: Command-click only there),
+  // Control elsewhere, which has no Command key.
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "");
+  const pinning = (event) => (mac ? event.metaKey : event.ctrlKey);
 
   function hover(target) {
     if (!target || target.nodeType !== 1 || skipped(target) || target === document.documentElement) {
@@ -167,11 +169,12 @@
   document.addEventListener("mouseout", (event) => {
     if (event.target === hovered) unhover();
   }, true);
+  const modifierKey = mac ? "Meta" : "Control";
   window.addEventListener("keydown", (event) => {
-    if (event.key === "Meta" || event.key === "Control") hover(pointed);
+    if (event.key === modifierKey) hover(pointed);
   });
   window.addEventListener("keyup", (event) => {
-    if (event.key === "Meta" || event.key === "Control") unhover();
+    if (event.key === modifierKey) unhover();
   });
   window.addEventListener("blur", unhover);
 
@@ -195,8 +198,6 @@
     send({ type: "pick", pin: pinOf(element) });
   };
   window.addEventListener("click", pick, true);
-  // On macOS a Control-click is a context-menu click, never a "click".
-  window.addEventListener("contextmenu", pick, true);
 
   let scheduled = false;
   const redraw = () => {

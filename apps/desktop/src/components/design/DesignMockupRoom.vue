@@ -9,8 +9,8 @@ import { pinLabel, type MockupPinDescriptor, type MockupPinMarker } from "./mock
  * A mockup position (docs/specs/app-design.md §5), as the design prototype's
  * review room showed it: the mockup on the left, its pin comments on the
  * right. One comment panel at a time (Owner): a mockup brings its own pins,
- * so the document's feed makes way for them. ⌘-click (Ctrl-click off
- * macOS) on the mockup pins that element; a plain click uses the mockup, so
+ * so the document's feed makes way for them. ⌘-click (Ctrl-click where
+ * there is no ⌘) on the mockup pins that element; a plain click uses the mockup, so
  * an interactive mockup stays clickable (Owner, 2026-09-27).
  */
 const props = defineProps<{
@@ -298,6 +298,8 @@ h2 {
   overflow-wrap: anywhere;
 }
 .num {
+  flex-shrink: 0;
+  white-space: nowrap;
   background: var(--kd-accent);
   color: #fff;
   border-radius: 10px;

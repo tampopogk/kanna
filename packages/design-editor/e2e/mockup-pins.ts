@@ -127,6 +127,12 @@ const cases: Array<[string, (page: Page, mockup: Frame) => Promise<void>]> = [
       await page.keyboard.up("ControlOrMeta");
       await page.mouse.move(box.x + 8, box.y + 8);
       assert.equal(await mockup.locator(".__kanna-hover").count(), 0, "gone once released");
+      if (process.platform === "darwin") {
+        // On a Mac only Command pins; Control-click is the mockup's (Owner).
+        await mockup.locator("h1").click({ modifiers: ["Control"] });
+        await page.waitForTimeout(200);
+        assert.ok(!(await received(page)).some((message) => message.type === "pick"), "Control-click does not pin on a Mac");
+      }
     },
   ],
   [

@@ -87,6 +87,7 @@
 }
 .kd .kd-num {
   display: inline-block;
+  white-space: nowrap;
   background: var(--kd-accent);
   color: #fff;
   border-radius: 9px;

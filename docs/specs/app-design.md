@@ -109,7 +109,8 @@ task:
   spec: text lives in HTML, never in a PNG). They render sandboxed, and the
   person pins comments on any element; a pin names the element (tag, id,
   classes, container), its visible text and an HTML excerpt. **Owner**
-  (2026-09-27): ⌘-click (Ctrl-click off macOS) pins; a plain click uses the
+  (2026-09-27): ⌘-click pins (Ctrl-click only where there is no ⌘; on a Mac,
+  Ctrl-click is not a pin); a plain click uses the
   mockup, so an interactive mockup stays clickable. There is still no mode to
   switch into; the outline shows while ⌘ is held.
 - **Prototypes** are real, throwaway code (§7) in a disposable repository.
