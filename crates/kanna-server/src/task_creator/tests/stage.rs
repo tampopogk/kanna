@@ -5436,6 +5436,89 @@ fn named_exits_resolve_by_name_and_budgets_fall_back_to_the_workflow_then_five()
     );
 }
 
+/// A stage's `exit_commit` records its commit step as a run named
+/// "<stage> commit". A later stage — the plan after an App Design stage —
+/// may still replace the remaining stages; only removing that recorded
+/// commit step is refused.
+#[test]
+fn a_recorded_commit_step_does_not_block_replacing_the_remaining_stages() {
+    let (_repo_root, repo) = routing_repo("remaining-plan-after-commit-step");
+    let db = Db::open_for_tests(&Db::test_db_path("remaining-plan-after-commit-step")).unwrap();
+    db.insert_test_repo_with_path(&repo.id, &repo.path, "Routing")
+        .unwrap();
+    db.insert_test_pipeline_item(
+        "task-1",
+        &repo.id,
+        "T",
+        Some("T"),
+        "plan",
+        "2026-09-27 00:00:00",
+    )
+    .unwrap();
+    for (id, stage, kind, status) in [
+        ("run-design", "design", "main", "succeeded"),
+        ("run-design-commit", "design commit", "post", "succeeded"),
+        ("run-plan", "plan", "main", "running"),
+    ] {
+        db.insert_stage_run(NewStageRun {
+            id,
+            task_id: "task-1",
+            stage,
+            kind,
+            agent: Some("implement"),
+            agent_provider: Some("claude"),
+            model: None,
+            effort: None,
+            status,
+            result: None,
+            feedback: None,
+            session_id: Some("task-1"),
+            provider_session_id: None,
+            cwd: None,
+            resumed_from_run_id: None,
+        })
+        .unwrap();
+    }
+    let runs = db.list_stage_runs_for_task("task-1").unwrap();
+    let pinned = serde_json::json!({
+        "name": "x", "routing": "exits",
+        "stages": [
+            { "name": "design", "agent": "implement", "policy": { "transition": "manual" }, "exit_commit": true },
+            { "name": "plan", "agent": "implement", "policy": { "transition": "manual" } },
+            { "name": "in progress", "agent": "implement", "policy": { "transition": "auto" }, "exit_commit": true }
+        ]
+    });
+    let mut replaced = pinned.clone();
+    replaced["stages"][2] = serde_json::json!(
+        { "name": "build", "agent": "implement", "policy": { "transition": "auto" }, "exit_commit": true });
+    replaced["stages"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({ "name": "review", "agent": "review", "policy": { "transition": "manual" } }));
+    super::super::validate_remaining_plan_replacement(
+        &repo,
+        &replaced,
+        &pinned.to_string(),
+        "plan",
+        &runs,
+    )
+    .unwrap();
+
+    // The recorded commit step is kept: its stage cannot stop committing.
+    let mut dropped = replaced.clone();
+    dropped["stages"][0]["exit_commit"] = serde_json::json!(false);
+    let error = super::super::validate_remaining_plan_replacement(
+        &repo,
+        &dropped,
+        &pinned.to_string(),
+        "plan",
+        &runs,
+    )
+    .err()
+    .expect("refused");
+    assert!(error.contains("design commit"), "{error}");
+}
+
 #[test]
 fn a_remaining_plan_replacement_keeps_the_current_role_and_the_routing_under_a_live_run() {
     let (repo_root, repo) = routing_repo("remaining-plan-rules");
