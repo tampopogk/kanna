@@ -110,7 +110,7 @@ try:
         json.dumps(
             {
                 "workflow": "fixture",
-                "agentFrontends": {"codex": "agent-tui"},
+                "agentFrontends": {"codex": "native"},
                 "workspace": {
                     "path": {"prepend": ["./.kanna/bin"]},
                     "env": {"KANNA_HOST_TEST_CONTROL": str(control)},
@@ -168,6 +168,7 @@ try:
             "workflowName": "fixture",
             "agent": "fixture",
             "agentProvider": "codex",
+            "agentFrontend": "agent-tui",
             "model": "fixture",
             "effort": "low",
         },
@@ -249,6 +250,7 @@ try:
             "workflowName": "fixture",
             "agent": "fixture",
             "agentProvider": "codex",
+            "agentFrontend": "agent-tui",
             "model": "fixture",
             "effort": "low",
         },

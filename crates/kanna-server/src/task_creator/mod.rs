@@ -1101,7 +1101,8 @@ pub(crate) fn prepare_rerun_stage_for_api(
         .map_err(|e| format!("db error: {}", e))?;
     }
     let port_env = claim_task_ports(db, task_id, repo_config)?;
-    let mut spawn_env = build_spawn_env(config, task_id, &port_env, &worktree_path, repo_config)?;
+    let mut spawn_env =
+        build_spawn_env(db, config, task_id, &port_env, &worktree_path, repo_config)?;
     let mcp_config_path = write_kanna_mcp_config(
         &config.daemon_dir,
         task_id,
@@ -1251,7 +1252,7 @@ pub(crate) fn prepare_create_task_repair_for_api(
         let port_env = claim_task_ports(db, task_id, repo_config)?;
         persist_task_ports(db, task_id, &port_env)?;
         let mut spawn_env =
-            build_spawn_env(config, task_id, &port_env, &worktree_path, repo_config)?;
+            build_spawn_env(db, config, task_id, &port_env, &worktree_path, repo_config)?;
         let mcp_config_path = write_kanna_mcp_config(
             &config.daemon_dir,
             task_id,
@@ -1385,7 +1386,8 @@ pub(crate) fn prepare_create_task_repair_for_api(
     let agent_type = resolve_agent_type(source_task.agent_type.as_deref(), provider)?;
     let port_env = claim_task_ports(db, task_id, repo_config)?;
     persist_task_ports(db, task_id, &port_env)?;
-    let mut spawn_env = build_spawn_env(config, task_id, &port_env, &worktree_path, repo_config)?;
+    let mut spawn_env =
+        build_spawn_env(db, config, task_id, &port_env, &worktree_path, repo_config)?;
     let mcp_config_path = write_kanna_mcp_config(
         &config.daemon_dir,
         task_id,
@@ -1683,7 +1685,7 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
         let repo_config = definitions.config();
         let port_env = claim_task_ports(db, task_id, repo_config)?;
         let mut spawn_env =
-            build_spawn_env(config, task_id, &port_env, &worktree_path, repo_config)?;
+            build_spawn_env(db, config, task_id, &port_env, &worktree_path, repo_config)?;
         let mcp_config_path = write_kanna_mcp_config(
             &config.daemon_dir,
             task_id,
@@ -1910,7 +1912,7 @@ pub(in crate::task_creator) fn prepare_gate_entry(
     let prepared = (|| {
         let repo_config = definitions.config();
         let port_env = claim_task_ports(db, task_id, repo_config)?;
-        let env = build_spawn_env(config, task_id, &port_env, &worktree_path, repo_config)?;
+        let env = build_spawn_env(db, config, task_id, &port_env, &worktree_path, repo_config)?;
         // A fresh fork runs the repository's worktree setup, then the stage's.
         let mut setup = repo_config.setup.clone().unwrap_or_default();
         setup.extend(target_stage.setup_commands(workflow));
@@ -2207,7 +2209,7 @@ fn prepare_workspace_teardown_with_extra(
 
     let port_env = claim_task_ports(db, task_id, repo_config).ok()?;
     let mut spawn_env =
-        build_spawn_env(config, task_id, &port_env, &worktree_path, repo_config).ok()?;
+        build_spawn_env(db, config, task_id, &port_env, &worktree_path, repo_config).ok()?;
     // A durable identity for the detached cleanup session, stamped into its
     // environment so the daemon binds its terminal archive to this run.
     // `build_spawn_env` strips the key precisely so no session inherits
@@ -3181,6 +3183,7 @@ pub(crate) fn create_dormant_task_with_stage_edges(
         "maxTurns": request.max_turns,
         "maxBudgetUsd": request.max_budget_usd,
         "taskTemplate": request.task_template,
+        "agentFrontend": request.agent_frontend,
     }))
     .map_err(|error| format!("serialize error: {error}"))?;
     let has_requested_task_id = requested_task_id.is_some();
@@ -3580,7 +3583,7 @@ pub(crate) fn prepare_start_dormant_task_for_api(
     }
 
     let mut spawn_env =
-        match build_spawn_env(config, task_id, &port_env, &worktree_path, repo_config) {
+        match build_spawn_env(db, config, task_id, &port_env, &worktree_path, repo_config) {
             Ok(spawn_env) => spawn_env,
             Err(error) => return Err(rollback_start(error.into())),
         };
@@ -3713,6 +3716,7 @@ fn resolve_initial_terminal_geometry(cols: Option<u16>, rows: Option<u16>) -> Op
 }
 
 struct ResolvedTaskSpawn {
+    agent_frontend: Option<kanna_agent_protocol::hosted_frontend::Frontend>,
     original_prompt: String,
     display_name: Option<String>,
     workflow_name: String,
@@ -3935,6 +3939,7 @@ fn prepare_task_spawn_with_error(
         )?;
 
         prepare_new_task_session(
+            db,
             config,
             &task_id,
             &worktree_path,
@@ -4166,6 +4171,19 @@ fn resolve_task_spawn(
     request: TaskCreationRequest,
     definitions: &RepoDefinitions,
 ) -> Result<ResolvedTaskSpawn, PrepareTaskError> {
+    let intent: serde_json::Value = request
+        .create_intent_json
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|error| format!("invalid task creation intent: {error}"))?
+        .unwrap_or_default();
+    let agent_frontend = intent
+        .get("agentFrontend")
+        .filter(|value| !value.is_null())
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
+        .map_err(|error| format!("invalid task frontend: {error}"))?;
     // Kept on the internal request shape while older callers are compiled in;
     // task creation deliberately does not persist the retired registration.
     let _retired_notify_task_id = request.notify_task_id.as_deref();
@@ -4405,6 +4423,7 @@ what you need there before continuing, and do not repeat work the ledger shows w
         .or_else(|| request.base_ref.clone());
 
     Ok(ResolvedTaskSpawn {
+        agent_frontend,
         original_prompt,
         display_name,
         workflow_name,
@@ -4507,6 +4526,7 @@ fn agent_spawn_options_json(
         "maxTurns": resolved.max_turns,
         "maxBudgetUsd": resolved.max_budget_usd,
         "taskTemplate": resolved.task_template,
+        "agentFrontend": resolved.agent_frontend,
     }))
     .map_err(|e| format!("serialize error: {}", e))
 }
@@ -4653,6 +4673,7 @@ struct PreparedNewTaskSession {
 }
 
 fn prepare_new_task_session(
+    db: &Db,
     config: &Config,
     task_id: &str,
     worktree_path: &str,
@@ -4660,7 +4681,7 @@ fn prepare_new_task_session(
     repo_config: &RepoConfig,
     resolved: &ResolvedTaskSpawn,
 ) -> Result<PreparedNewTaskSession, String> {
-    let mut spawn_env = build_spawn_env(config, task_id, port_env, worktree_path, repo_config)?;
+    let mut spawn_env = build_spawn_env(db, config, task_id, port_env, worktree_path, repo_config)?;
     let mcp_config_path = write_kanna_mcp_config(
         &config.daemon_dir,
         task_id,

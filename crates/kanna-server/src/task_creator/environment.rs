@@ -84,6 +84,7 @@ fn add_reserved_ports(occupied: &mut HashSet<i64>, repo_config: &RepoConfig) {
 }
 
 pub(super) fn build_spawn_env(
+    db: &Db,
     config: &Config,
     task_id: &str,
     port_env: &HashMap<String, String>,
@@ -158,9 +159,28 @@ pub(super) fn build_spawn_env(
             task_dir.to_string_lossy().to_string(),
         );
     }
+    let mut frontends = repo_config.agent_frontends.clone();
+    if let Some(intent) = db
+        .get_pipeline_item_agent_spawn_options(task_id)
+        .map_err(|error| error.to_string())?
+    {
+        let request: serde_json::Value = serde_json::from_str(&intent)
+            .map_err(|error| format!("invalid stored task launch options: {error}"))?;
+        if let Some(value) = request
+            .get("agentFrontend")
+            .filter(|value| !value.is_null())
+        {
+            let frontend: kanna_agent_protocol::hosted_frontend::Frontend =
+                serde_json::from_value(value.clone())
+                    .map_err(|error| format!("invalid task frontend: {error}"))?;
+            for provider in ["claude", "codex"] {
+                frontends.insert(provider.into(), frontend);
+            }
+        }
+    }
     env.insert(
         kanna_agent_protocol::hosted_frontend::FRONTENDS_ENV.into(),
-        serde_json::to_string(&repo_config.agent_frontends).map_err(|error| error.to_string())?,
+        serde_json::to_string(&frontends).map_err(|error| error.to_string())?,
     );
     env.insert("KANNA_WORKTREE".to_string(), "1".to_string());
     env.insert("KANNA_TASK_ID".to_string(), task_id.to_string());

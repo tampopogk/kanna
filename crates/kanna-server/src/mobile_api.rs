@@ -858,6 +858,9 @@ impl TransferImportSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateTaskRequest {
+    /// Task-scoped PTY frontend override; omission inherits repository configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_frontend: Option<kanna_agent_protocol::hosted_frontend::Frontend>,
     pub repo_id: String,
     pub prompt: String,
     #[serde(alias = "display_name")]

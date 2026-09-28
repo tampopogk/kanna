@@ -15,6 +15,12 @@ The bundled sidecar launches the resolved real harness with typed native option
 translation, including MCP, permissions, model/effort, initial prompt and resume.
 Unknown/incompatible explicit options fail; there is no silent native fallback.
 
+The desktop new-task window offers **Custom TUI mode** for Claude and Codex.
+Checked selects `agent-tui`; unchecked selects `native` for that task. The
+`agentFrontend` creation option is stored with the task and overrides repository
+defaults across later stages, recovery and resume. API callers that omit it
+continue to inherit repository configuration.
+
 Claude uses bidirectional stream-json and correlated replayed user UUIDs.
 Codex uses initialize, thread/start or thread/resume, and turn/start JSON-RPC.
 The original six skins, sprite, cards and keyboard behavior remain; the header
@@ -131,3 +137,15 @@ Private receipt journals remain as reconciliation evidence. A restart
 initially refused authentication because Cargo test binaries in `.build/debug`
 shadowed the staged target-triple sidecars; moving those generated artifacts
 aside restored the pinned executable paths. No authorization check was relaxed.
+
+## Per-task checkbox follow-up
+
+The new-task checkbox was verified with 114 desktop component, creation and
+request tests, a clean `vue-tsc --noEmit`, and all 186 task-creator core tests.
+The Rust coverage includes explicit native/agent-tui/inherited settings,
+fresh-task persistence and database reload after creation-intent removal.
+`./kd build sidecars` rebuilt all seven bundled executables. The real
+server/daemon/frontend contract passed with the fixture repository defaulting
+to native and each task explicitly requesting agent-tui, proving that the
+per-task choice reaches the actual launch. Existing original-acceptance limits
+above remain separate from these checkbox checks.

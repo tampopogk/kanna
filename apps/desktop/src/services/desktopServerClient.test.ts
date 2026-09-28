@@ -239,7 +239,7 @@ describe("desktopServerClient", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const ordinaryRequest = { repoId: "repo-1", prompt: "Ship it" };
+    const ordinaryRequest = { repoId: "repo-1", prompt: "Ship it", agentFrontend: "agent-tui" as const };
     await createDesktopTask(ordinaryRequest);
     await createDesktopTask({
       ...ordinaryRequest,

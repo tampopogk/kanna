@@ -1,5 +1,6 @@
 {
   "tasks": {
+    "customTuiMode": "사용자 지정 TUI 모드",
     "newTask": "새 작업",
     "closeTask": "닫기 / 거부",
     "undoClose": "닫기 취소",

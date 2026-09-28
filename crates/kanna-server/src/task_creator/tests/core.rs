@@ -13,6 +13,7 @@ use super::*;
 
 fn default_base_task_request() -> CreateTaskRequest {
     CreateTaskRequest {
+        agent_frontend: None,
         repo_id: "repo-1".to_string(),
         prompt: "Create from the recorded default branch".to_string(),
         display_name: None,
@@ -68,6 +69,7 @@ fn task_creation_records_an_explicit_diff_base_separately_from_the_fork_point() 
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             base_ref: Some("pr/42".to_string()),
             diff_base_ref: Some("main".to_string()),
             ..default_base_task_request()
@@ -110,6 +112,7 @@ fn task_creation_defaults_the_diff_base_to_the_fork_point() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             base_ref: Some("feature-base".to_string()),
             diff_base_ref: None,
             ..default_base_task_request()
@@ -213,6 +216,7 @@ fn repo_command_template_identity_persists_the_selected_teardown_for_close() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: launch.prompt,
             display_name: Some(launch.display_name),
@@ -698,6 +702,7 @@ fn create_task_rejects_model_for_provider_without_a_verified_flag() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Use an unsupported model override".to_string(),
             display_name: None,
@@ -752,6 +757,7 @@ fn create_task_rejects_unsupported_effort_before_persisting_state() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Use an unsupported effort override".to_string(),
             display_name: None,
@@ -810,6 +816,7 @@ fn create_task_rejects_unsupported_provider_before_persisting_state() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Use an unsupported provider".to_string(),
             display_name: None,
@@ -1369,6 +1376,7 @@ fn task_creation_uses_one_remote_default_branch_definition_context() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Do remote work".to_string(),
             display_name: None,
@@ -4854,6 +4862,7 @@ fn prepare_task_rejects_unsupported_headless_provider_before_persisting_state() 
             &db,
             &config,
             CreateTaskRequest {
+                agent_frontend: None,
                 repo_id: "repo-1".to_string(),
                 prompt: format!("Use {provider} headlessly"),
                 display_name: None,
@@ -5771,6 +5780,7 @@ fn build_spawn_env_prepends_kanna_cli_directory_to_path() {
     let _kanna_mcp_sidecar = ensure_test_sidecar("kanna-mcp");
     config.kanna_cli_path = Some(kanna_cli_sidecar.path().to_string_lossy().to_string());
     let env = build_spawn_env(
+        &Db::open_for_tests(&config.db_path).unwrap(),
         &config,
         "task-1",
         &HashMap::new(),
@@ -5805,6 +5815,7 @@ fn prepare_task_defaults_to_pty_session_for_claude_and_codex() {
             &db,
             &config,
             CreateTaskRequest {
+                agent_frontend: None,
                 repo_id: "repo-1".to_string(),
                 prompt: format!("Use {provider}"),
                 display_name: None,
@@ -5901,6 +5912,7 @@ fn a_pty_task_spawn_names_the_agent_cli_the_daemon_probes_for_its_version() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             agent_provider: Some("claude".to_string()),
             agent_type: Some("pty".to_string()),
             prompt: "Name the agent executable".to_string(),
@@ -5978,6 +5990,7 @@ fn prepare_task_uses_requested_initial_terminal_geometry() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Use requested geometry".to_string(),
             display_name: None,
@@ -6034,6 +6047,7 @@ fn prepare_task_uses_default_initial_terminal_geometry_for_oversized_request() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Reject oversized geometry".to_string(),
             display_name: None,
@@ -6099,6 +6113,7 @@ fn prepare_task_uses_create_request_agent_selector() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Set up Kanna for this repository.".to_string(),
             display_name: Some("Set Up Repository".to_string()),
@@ -6181,6 +6196,7 @@ fn prepare_task_named_agent_without_provider_uses_configured_default() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Ship this repository.".to_string(),
             display_name: None,
@@ -6249,6 +6265,7 @@ fn prepare_task_binds_specialty_agent_on_specialty_review_workflow() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Specialty review dispatched from task parent-1.".to_string(),
             display_name: Some("Security Review".to_string()),
@@ -6334,6 +6351,7 @@ fn prepare_task_binds_bounded_architect_research_to_assessed_work_item() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: prompt.to_string(),
             display_name: Some("Architect research: lifecycle owner".to_string()),
@@ -6407,6 +6425,7 @@ fn prepare_task_persists_create_spawn_options_and_custom_setup() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Run with custom options".to_string(),
             display_name: None,
@@ -6500,6 +6519,7 @@ fn prepare_task_for_api_resumes_requested_claude_session() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Resume imported work".to_string(),
             display_name: None,
@@ -6562,6 +6582,7 @@ fn prepare_task_for_api_prints_transfer_import_summary_before_the_agent() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Continue the transferred work".to_string(),
             display_name: None,
@@ -6633,6 +6654,7 @@ fn prepare_task_for_api_omits_the_import_banner_for_local_tasks() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Do local work".to_string(),
             display_name: None,
@@ -6688,6 +6710,7 @@ fn prepare_task_for_api_creates_worktree_without_cargo_config() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Create a task worktree".to_string(),
             display_name: None,
@@ -6750,6 +6773,7 @@ fn prepare_task_for_api_uses_requested_task_id() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Create with a requested id".to_string(),
             display_name: None,
@@ -6800,6 +6824,7 @@ fn create_dormant_task_for_api_uses_requested_task_id() {
     let created = create_dormant_task_for_api_with_error(
         &db,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Create a dormant task with a requested id".to_string(),
             display_name: None,
@@ -6859,6 +6884,7 @@ fn dormant_start_preparation_rechecks_open_blockers() {
     let created = create_dormant_task_for_api_with_error(
         &db,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Do not prepare while blocked".to_string(),
             display_name: None,
@@ -6926,6 +6952,7 @@ fn dormant_task_preserves_explicit_provider_and_model_until_spawn() {
     let created = create_dormant_task_for_api_with_error(
         &db,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Start with the requested Codex model".to_string(),
             display_name: None,
@@ -7023,6 +7050,7 @@ fn dormant_task_composes_repo_preference_with_complete_persisted_spawn_options()
     let created = create_dormant_task_for_api_with_error(
         &db,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Start with repo preferences and stored spawn options".to_string(),
             display_name: None,
@@ -7167,6 +7195,7 @@ fn dormant_start_uses_stored_explicit_agent_provider_and_model() {
     let created = create_dormant_task_for_api_with_error(
         &db,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Resume with stored explicit preferences".to_string(),
             display_name: None,
@@ -7249,6 +7278,7 @@ fn dormant_start_uses_repo_provider_preference_without_stored_explicit_values() 
     let created = create_dormant_task_for_api_with_error(
         &db,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Resume with the repo provider preference".to_string(),
             display_name: None,
@@ -7347,6 +7377,7 @@ fn prepare_task_for_api_classifies_requested_task_id_primary_key_collision() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Create once".to_string(),
             display_name: None,
@@ -7411,6 +7442,7 @@ fn create_dormant_task_for_api_classifies_requested_task_id_primary_key_collisio
     let error = match create_dormant_task_for_api_with_error(
         &db,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Create dormant once".to_string(),
             display_name: None,
@@ -7468,6 +7500,7 @@ fn prepare_codex_agent_uses_resolved_executable_for_headless_spawn() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Use codex".to_string(),
             display_name: None,
@@ -7545,6 +7578,7 @@ fn prepare_headless_agent_uses_worktree_workspace_path_for_executable_resolution
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Use codex".to_string(),
             display_name: None,
@@ -7610,6 +7644,7 @@ fn prepare_task_defaults_to_pty_session_for_copilot() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Use copilot".to_string(),
             display_name: None,
@@ -7697,6 +7732,7 @@ fn prepare_pty_task_restores_workspace_path_inside_login_shell_command() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Use codex".to_string(),
             display_name: None,
@@ -7778,6 +7814,7 @@ fn prepare_task_stores_parent_task_id_for_subtasks() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Child prompt".to_string(),
             display_name: None,
@@ -7832,6 +7869,7 @@ fn prepare_task_rejects_missing_parent_task() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Child prompt".to_string(),
             display_name: None,
@@ -7877,6 +7915,7 @@ fn build_spawn_env_prefers_configured_kanna_cli_path() {
     config.kanna_cli_path = Some("/Applications/Kanna.app/Contents/MacOS/kanna-cli".to_string());
 
     let env = build_spawn_env(
+        &Db::open_for_tests(&config.db_path).unwrap(),
         &config,
         "task-1",
         &HashMap::new(),
@@ -7978,6 +8017,7 @@ fn prepare_task_uses_builtin_default_workflow_when_repo_has_no_local_default_wor
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Implement the fallback".to_string(),
             display_name: None,
@@ -8105,6 +8145,7 @@ fn prepare_task_prefers_explicit_then_repo_then_agent_definition_over_default_pr
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Use the built-in implement provider".to_string(),
             display_name: None,
@@ -8161,6 +8202,7 @@ fn prepare_task_prefers_explicit_then_repo_then_agent_definition_over_default_pr
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Use the layered agent definition".to_string(),
             display_name: None,
@@ -8220,6 +8262,7 @@ fn prepare_task_prefers_explicit_then_repo_then_agent_definition_over_default_pr
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Use the repo provider preference".to_string(),
             display_name: None,
@@ -8263,6 +8306,7 @@ fn prepare_task_prefers_explicit_then_repo_then_agent_definition_over_default_pr
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Use the explicit provider".to_string(),
             display_name: None,
@@ -8322,6 +8366,7 @@ fn create_task_model_and_provider_precedence_reaches_claude_and_codex_pty_argv()
     ))
     .unwrap();
     let request_defaults = || CreateTaskRequest {
+        agent_frontend: None,
         repo_id: String::new(),
         prompt: String::new(),
         display_name: None,
@@ -8383,6 +8428,7 @@ fn create_task_model_and_provider_precedence_reaches_claude_and_codex_pty_argv()
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Use definition model".to_string(),
             workflow_name: Some("model-contract".to_string()),
@@ -8399,6 +8445,7 @@ fn create_task_model_and_provider_precedence_reaches_claude_and_codex_pty_argv()
             &db,
             &config,
             CreateTaskRequest {
+                agent_frontend: None,
                 repo_id: "repo-1".to_string(),
                 prompt: format!("Use explicit {} model", contract.provider),
                 workflow_name: Some("model-contract".to_string()),
@@ -8428,6 +8475,7 @@ fn create_task_model_and_provider_precedence_reaches_claude_and_codex_pty_argv()
                 &db,
                 &config,
                 CreateTaskRequest {
+                    agent_frontend: None,
                     repo_id: "repo-1".to_string(),
                     prompt: format!("Use explicit {} model headlessly", contract.provider),
                     workflow_name: Some("model-contract".to_string()),
@@ -8457,6 +8505,7 @@ fn create_task_model_and_provider_precedence_reaches_claude_and_codex_pty_argv()
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Use provider default model".to_string(),
             agent_provider: Some("codex".to_string()),
@@ -8486,6 +8535,7 @@ fn create_task_effort_reaches_every_provider_native_pty_control() {
     ))
     .unwrap();
     let request_defaults = || CreateTaskRequest {
+        agent_frontend: None,
         repo_id: String::new(),
         prompt: String::new(),
         display_name: None,
@@ -8547,6 +8597,7 @@ fn create_task_effort_reaches_every_provider_native_pty_control() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Use definition effort".to_string(),
             workflow_name: Some("effort-contract".to_string()),
@@ -8562,6 +8613,7 @@ fn create_task_effort_reaches_every_provider_native_pty_control() {
             &db,
             &config,
             CreateTaskRequest {
+                agent_frontend: None,
                 repo_id: "repo-1".to_string(),
                 prompt: format!("Use explicit {} effort", contract.provider),
                 workflow_name: Some("effort-contract".to_string()),
@@ -9336,6 +9388,7 @@ fn configured_autocompact_reaches_the_claude_pty_argv_and_a_default_always_does(
     ))
     .unwrap();
     let request_defaults = || CreateTaskRequest {
+        agent_frontend: None,
         repo_id: String::new(),
         prompt: String::new(),
         display_name: None,
@@ -9426,6 +9479,7 @@ fn configured_autocompact_reaches_the_claude_pty_argv_and_a_default_always_does(
             &db,
             &config,
             CreateTaskRequest {
+                agent_frontend: None,
                 repo_id: "repo-1".to_string(),
                 prompt: format!("autocompact {stage}"),
                 workflow_name: Some("autocompact-contract".to_string()),
@@ -9642,4 +9696,91 @@ fn hosted_frontend_preserves_shell_argument_boundaries() {
         assert!(args.iter().any(|arg| arg == "model name"));
     }
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn task_frontend_override_survives_reload_and_overrides_repo_defaults() {
+    use kanna_agent_protocol::hosted_frontend::{Frontend, FRONTENDS_ENV};
+    let _sidecar_guard = crate::test_sidecar_guard_blocking();
+    let mut config = test_config("task-frontend-override");
+    let cli = ensure_test_sidecar("kanna-cli");
+    let _mcp = ensure_test_sidecar("kanna-mcp");
+    config.kanna_cli_path = Some(cli.path().to_string_lossy().into_owned());
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo("repo-frontend", "Frontend").unwrap();
+    db.insert_test_pipeline_item(
+        "task-frontend",
+        "repo-frontend",
+        "prompt",
+        None,
+        "in progress",
+        "2026-09-28 00:00:00",
+    )
+    .unwrap();
+    let mut repo_config = definitions::RepoConfig::default();
+    repo_config
+        .agent_frontends
+        .insert("claude".into(), Frontend::AgentTui);
+    repo_config
+        .agent_frontends
+        .insert("codex".into(), Frontend::Native);
+    let mut request = default_base_task_request();
+    for frontend in [Some(Frontend::AgentTui), Some(Frontend::Native), None] {
+        request.agent_frontend = frontend;
+        let encoded = serde_json::to_string(&request).unwrap();
+        db.update_pipeline_item_agent_binding("task-frontend", "claude", "pty", Some(&encoded))
+            .unwrap();
+        // Creation intents are deleted after launch; the task option must survive.
+        assert!(db
+            .get_create_task_intent("task-frontend")
+            .unwrap()
+            .is_none());
+        let reopened = Db::open(&config.db_path).unwrap();
+        let env = build_spawn_env(
+            &reopened,
+            &config,
+            "task-frontend",
+            &HashMap::new(),
+            "/tmp/worktree",
+            &repo_config,
+        )
+        .unwrap();
+        let actual: serde_json::Value = serde_json::from_str(&env[FRONTENDS_ENV]).unwrap();
+        for provider in ["claude", "codex"] {
+            let expected = frontend.unwrap_or(repo_config.agent_frontends[provider]);
+            assert_eq!(actual[provider], serde_json::to_value(expected).unwrap());
+        }
+    }
+}
+
+#[test]
+fn task_creation_persists_frontend_selection_for_later_launches() {
+    use kanna_agent_protocol::hosted_frontend::Frontend;
+    let repo_root = init_git_repo("frontend-create");
+    let config = test_config("frontend-create");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+    for frontend in [Some(Frontend::AgentTui), Some(Frontend::Native), None] {
+        let prepared = prepare_task_for_api(
+            &db,
+            &config,
+            CreateTaskRequest {
+                agent_frontend: frontend,
+                ..default_base_task_request()
+            },
+        )
+        .unwrap();
+        let options = db
+            .get_pipeline_item_agent_spawn_options(&prepared.created_task.task_id)
+            .unwrap()
+            .unwrap();
+        let options: serde_json::Value = serde_json::from_str(&options).unwrap();
+        assert_eq!(
+            options["agentFrontend"],
+            serde_json::to_value(frontend).unwrap()
+        );
+    }
+    let _ = std::fs::remove_dir_all(repo_root);
+    let _ = std::fs::remove_file(config.db_path);
 }

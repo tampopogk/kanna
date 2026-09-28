@@ -1961,6 +1961,7 @@ fn build_create_request_from_payload(
     source_machine: Option<String>,
 ) -> crate::mobile_api::CreateTaskRequest {
     crate::mobile_api::CreateTaskRequest {
+        agent_frontend: None,
         repo_id: repo_id.to_string(),
         prompt: payload.task.prompt.clone().unwrap_or_default(),
         display_name: payload.task.display_name.clone(),

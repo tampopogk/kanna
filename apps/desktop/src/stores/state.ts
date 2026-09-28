@@ -139,6 +139,7 @@ export interface KannaSnapshot {
 }
 
 export interface CreateItemOptions {
+  agentFrontend?: "native" | "agent-tui";
   requestedTaskId?: string;
   baseBranch?: string;
   baseRef?: string | null;

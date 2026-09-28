@@ -34,12 +34,14 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  submit: [prompt: string, agentProvider: AgentProvider, workflowName: string, baseBranch: string, agentType: AgentExecutionType, blockerTaskIds: string[], model?: string];
+  submit: [prompt: string, agentProvider: AgentProvider, workflowName: string, baseBranch: string, agentType: AgentExecutionType, blockerTaskIds: string[], model?: string, customTui?: boolean];
   cancel: [];
 }>();
 
 const prompt = ref("");
 const model = ref("");
+const customTui = ref(false);
+const supportsCustomTui = computed(() => agentProvider.value === "claude" || agentProvider.value === "codex");
 const agentProvider = ref<AgentProvider>(props.defaultAgentProvider ?? "claude");
 const workflowOptions = computed(() => {
   if (props.workflows && props.workflows.length > 0) return props.workflows;
@@ -205,6 +207,11 @@ function handleSubmit() {
     || !hasValidBaseBranch.value
     || selectedBaseBranch.value === null
   ) return;
+  const frontendOptions: [model?: string, customTui?: boolean] = supportsCustomTui.value
+    ? [undefined, customTui.value]
+    : (agentProvider.value === "opencode" || agentProvider.value === "copilot") && model.value
+      ? [model.value]
+      : [];
   emit(
     "submit",
     text,
@@ -213,9 +220,7 @@ function handleSubmit() {
     selectedBaseBranch.value,
     "pty",
     selectedBlockerItems.value.map((item) => item.id),
-    ...((agentProvider.value === "opencode" || agentProvider.value === "copilot") && model.value
-      ? [model.value] as [string]
-      : [] as []),
+    ...frontendOptions,
   );
   prompt.value = "";
 }
@@ -425,6 +430,10 @@ function handleKeydown(e: KeyboardEvent) {
           :placeholder="$t('tasks.descriptionPlaceholder')"
           rows="6"
         />
+        <label v-if="supportsCustomTui" class="custom-tui-option">
+          <input v-model="customTui" type="checkbox" data-testid="custom-tui-checkbox" :disabled="submissionPending" />
+          {{ $t("tasks.customTuiMode") }}
+        </label>
         <div
           v-if="optionsLoading"
           class="task-options-loading"
@@ -604,6 +613,13 @@ function handleKeydown(e: KeyboardEvent) {
 </template>
 
 <style scoped>
+.custom-tui-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
 .modal-overlay {
   position: fixed;
   inset: 0;
