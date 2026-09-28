@@ -1,0 +1,36 @@
+[package]
+name = "agent-tui"
+version = "0.1.0"
+edition = "2021"
+description = "Interactive terminal client for Claude Code and Codex over their bidirectional JSON protocols"
+license = "MIT"
+
+[[bin]]
+name = "agent-tui"
+path = "src/main.rs"
+
+[features]
+# Opt-in live integration tests against real, authenticated harnesses.
+live = []
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crossterm = { version = "0.28", features = ["event-stream", "bracketed-paste"] }
+futures = "0.3"
+libc = "0.2"
+rand = "0.8"
+ratatui = "0.29"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+unicode-width = "0.2"
+
+[dev-dependencies]
+insta = "1"
+
+[lib]
+name = "agent_tui"
+path = "src/lib.rs"

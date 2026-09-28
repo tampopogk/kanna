@@ -1,0 +1,14 @@
+---
+source: tests/replay.rs
+expression: s
+---
+you: Edit notes.txt: change the line beta to gamma. Use your file editing (apply_patch) tool, not a shell command.
+assistant: I’ll check `notes.txt` and use `apply_patch` to change `beta` to `gamma`.
+Tools · 2 completed
+    Succeeded Shell cat notes.txt
+    Succeeded Edit notes.txt [diff]
+approval [cat notes.txt] Codex wants to run a command (Answered("Allowed once"))
+approval [notes.txt] Codex wants to change files (Answered("Allowed once"))
+assistant: Updated `notes.txt`: changed `beta` to `gamma` using `apply_patch`.
+end: ✓ Turn complete
+status: Ready

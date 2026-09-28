@@ -1,0 +1,15 @@
+---
+source: tests/replay.rs
+expression: summary(&app)
+---
+you: Call the project-docs MCP tool search_docs with query 'parser', then call read_document with id 'missing-42'. Then summarize in one sentence.
+assistant: I'll fetch the schema for the project-docs tools and then execute those calls.
+Tools · 2 completed · 1 failed
+    Succeeded ToolSearch select:mcp__project-docs__search_docs,mcp__project
+    Succeeded MCP project-docs/search_docs query
+    Failed MCP project-docs/read_document id
+approval [{"query":"parser"}] Claude wants to call MCP project-docs / search_docs (Answered("Allowed once"))
+approval [{"id":"missing-42"}] Claude wants to call MCP project-docs / read_document (Answered("Allowed once"))
+assistant: The search for 'parser' found 2 documents (parser.md on JSONL framing and tui.md
+end: ✓ Turn complete
+status: Ready

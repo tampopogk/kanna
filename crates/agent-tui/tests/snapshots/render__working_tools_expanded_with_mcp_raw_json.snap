@@ -1,0 +1,44 @@
+---
+source: tests/render.rs
+expression: d
+---
+ ›_  Harness Claude   Model claude-sonnet-4-6   Effort high (requested)           ● Working · 00:18
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ ▌ Fix the parser's handling of partial JSON lines.
+
+   I'll check the parser and add a regression test.
+
+   ⌄ Tools · 3 completed · 1 failed · 1 running
+     › ✓ Read src/parser.ts · 0 ms
+     › ✓ Edit src/parser.ts +3 −1 · 0 ms
+     ⌄ ✓ MCP · project-docs / search_docs · succeeded
+         t3 · 0 ms · succeeded
+         docs/streaming.md: Buffer partial records until a newline arrives.
+▎        ⌄ Raw input · JSON
+▎          {
+▎            "query": "stream parser",
+▎            "limit": 2
+▎          }
+         › Raw output · JSON
+     › ✕ MCP · project-docs / read_document · failed
+     › ● Shell npm test -- parser · running
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ › Also check CRLF input.
+   Transcript · ↑↓ select · Enter expand · Ctrl+R raw JSON · Tab composer
+ Enter send   Ctrl+J newline   Ctrl+C stop turn   / commands   Tab focus       ● Skin Graphite ▾ F2
