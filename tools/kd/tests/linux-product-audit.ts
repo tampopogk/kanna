@@ -31,4 +31,4 @@ for (const expected of report.executables) {
   const measured = parseReadelf(path, execFileSync("readelf", ["--wide", "-h", "-l", "-d", "-V", path], { encoding: "utf8" }));
   deepStrictEqual(normalize(measured), normalize(expected), `${expected.path}: native readelf disagrees with the Bazel audit`);
 }
-process.stdout.write("All eight installed executable hashes and native readelf facts match the Bazel package report.\n");
+process.stdout.write("All installed executable hashes and native readelf facts match the Bazel package report.\n");

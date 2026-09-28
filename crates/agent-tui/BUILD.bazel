@@ -14,6 +14,7 @@ rust_library(
     crate_root = "src/lib.rs",
     crate_name = "agent_tui",
     edition = "2021",
+    version = "0.1.0",
     deps = all_crate_deps(normal = True),
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
@@ -24,6 +25,7 @@ rust_binary(
     crate_root = "src/main.rs",
     crate_name = "agent_tui",
     edition = "2021",
+    version = "0.1.0",
     deps = all_crate_deps(normal = True) + [":agent_tui_lib"],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
@@ -34,6 +36,7 @@ rust_binary(
     crate_root = "src/main.rs",
     crate_name = "agent_tui",
     edition = "2021",
+    version = "0.1.0",
     deps = all_crate_deps(normal = True) + [":agent_tui_lib"],
     proc_macro_deps = all_crate_deps(proc_macro = True),
     platform = "//tools/bazel:macos_x86_64",
