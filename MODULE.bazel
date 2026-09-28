@@ -56,6 +56,11 @@ filegroup(
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2021",
+    # Opt-mode rustc strips debuginfo on Apple with its bundled rust-objcopy,
+    # which can leave the Mach-O string table only 4-byte aligned. macOS 27
+    # dyld refuses to dlopen such dylibs, so rustc fails to load exec-built
+    # proc macros (E0463). Exec outputs are never shipped; keep them unstripped.
+    extra_exec_rustc_flags = ["-Cstrip=none"],
     extra_target_triples = [
         "aarch64-unknown-linux-gnu",
         "x86_64-apple-darwin",

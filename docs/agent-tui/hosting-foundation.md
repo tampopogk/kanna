@@ -70,8 +70,12 @@ is **unverified**. The build failed in rules_rust's own host dependency
 `thiserror-impl 1.0.69`, before compiling agent-tui. Disabling the shared disk cache
 and rebuilding reproduced it. `codesign --verify` succeeds on that dylib, but
 `dlopen` reports `mis-aligned LINKEDIT string pool, fileOffset=0x00167F6C`; rustc
-reports E0463 for `thiserror_impl`. No repository-wide linker/toolchain change was
-made to work around this. Neither Linux release packages nor an installed desktop
+reports E0463 for `thiserror_impl`. Root cause (fixed separately): exec-config
+(opt) rustc runs `-Cstrip=debuginfo`, which on Apple rewrites the dylib with its
+bundled `rust-objcopy` and can leave the LC_SYMTAB string table only 4-byte
+aligned; macOS 27 dyld rejects that. `MODULE.bazel` now passes `-Cstrip=none` via
+`extra_exec_rustc_flags`, guarded by `//tools/bazel:exec_proc_macro_macho_test`.
+Neither Linux release packages nor an installed desktop
 bundle were built.
 
 ### Direct protocol probes (not hosted acceptance)
