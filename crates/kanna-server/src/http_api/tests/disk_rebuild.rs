@@ -295,6 +295,37 @@ pub(super) async fn build_fixture_with(authority: crate::task_store::authority::
         "status?",
     )
     .unwrap();
+    let binding = kanna_agent_protocol::hosted_frontend::Binding {
+        task_id: "active".into(),
+        run_id: "active-run".into(),
+        session_id: "active".into(),
+        incarnation: "rebuild-fixture".into(),
+    };
+    let attempt = db
+        .prepare_task_input_delivery(
+            &binding,
+            "hosted-delivery",
+            "confirmed hosted input",
+            "operator",
+            &ChannelIdentity::Server,
+            false,
+            None,
+        )
+        .unwrap();
+    db.reconcile_task_input_delivery(
+        &binding,
+        &kanna_agent_protocol::hosted_frontend::Delivery {
+            run_id: "active-run".into(),
+            initial_prompt: false,
+            delivery_id: attempt.id,
+            sequence: 1,
+            payload_hash: attempt.payload_hash,
+            text: None,
+            state: kanna_agent_protocol::hosted_frontend::DeliveryState::Submitted,
+            error: None,
+        },
+    )
+    .unwrap();
     db.insert_task_blocker("blocked", "active").unwrap();
     let artifact_sha = git_head(&artifact);
     if authority == crate::task_store::authority::Mode::Disk {

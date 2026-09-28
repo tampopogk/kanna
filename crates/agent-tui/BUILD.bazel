@@ -15,8 +15,8 @@ rust_library(
     crate_name = "agent_tui",
     edition = "2021",
     version = "0.1.0",
-    deps = all_crate_deps(normal = True),
-    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = all_crate_deps(normal = True, package_name = "crates/agent-tui") + ["//crates/kanna-agent-protocol:kanna_agent_protocol_for_agent_tui"],
+    proc_macro_deps = all_crate_deps(proc_macro = True, package_name = "crates/agent-tui"),
 )
 
 rust_binary(
@@ -26,8 +26,8 @@ rust_binary(
     crate_name = "agent_tui",
     edition = "2021",
     version = "0.1.0",
-    deps = all_crate_deps(normal = True) + [":agent_tui_lib"],
-    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = all_crate_deps(normal = True, package_name = "crates/agent-tui") + ["//crates/kanna-agent-protocol:kanna_agent_protocol_for_agent_tui"] + [":agent_tui_lib"],
+    proc_macro_deps = all_crate_deps(proc_macro = True, package_name = "crates/agent-tui"),
 )
 
 rust_binary(
@@ -37,7 +37,7 @@ rust_binary(
     crate_name = "agent_tui",
     edition = "2021",
     version = "0.1.0",
-    deps = all_crate_deps(normal = True) + [":agent_tui_lib"],
-    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = all_crate_deps(normal = True, package_name = "crates/agent-tui") + ["//crates/kanna-agent-protocol:kanna_agent_protocol_for_agent_tui"] + [":agent_tui_lib"],
+    proc_macro_deps = all_crate_deps(proc_macro = True, package_name = "crates/agent-tui"),
     platform = "//tools/bazel:macos_x86_64",
 )

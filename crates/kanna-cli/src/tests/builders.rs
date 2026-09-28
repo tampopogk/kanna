@@ -325,7 +325,7 @@ async fn send_task_input_posts_input_to_task_endpoint() {
     .await;
 
     server.join().unwrap();
-    assert_eq!(response, Ok(TaskInputResponse { ok: true }));
+    assert_eq!(response, Ok(TaskInputResponse::Native { ok: true }));
 }
 
 #[tokio::test]

@@ -221,6 +221,13 @@ impl CodexAdapter {
                     .map(MetaValue::reported);
                 Output {
                     events: vec![
+                        AgentEvent::History {
+                            messages: if self.cfg.resume.is_some() {
+                                crate::history::codex(&result["thread"])
+                            } else {
+                                vec![]
+                            },
+                        },
                         AgentEvent::SessionMeta {
                             model,
                             effort,
@@ -1006,7 +1013,7 @@ impl Adapter for CodexAdapter {
     fn on_record(&mut self, v: &Value) -> Output {
         let has_id = v.get("id").is_some();
         let has_method = v.get("method").is_some();
-        match (has_method, has_id) {
+        let mut output = match (has_method, has_id) {
             (true, true) => self.on_server_request(v),
             (true, false) => self.on_notification(v),
             (false, true) if v.get("result").is_some() || v.get("error").is_some() => {
@@ -1015,7 +1022,32 @@ impl Adapter for CodexAdapter {
             _ => Output::event(AgentEvent::Diagnostic {
                 text: "Record is neither a JSON-RPC request, response nor notification".into(),
             }),
+        };
+        if v.get("method").and_then(Value::as_str) == Some("turn/completed") {
+            use kanna_agent_protocol::hosted_frontend::{NoticeKind, ProviderNotice};
+            let kind = match v
+                .pointer("/params/turn/error/codexErrorInfo")
+                .and_then(Value::as_str)
+            {
+                Some("usageLimitExceeded") => Some(NoticeKind::QuotaRejected),
+                Some("serverOverloaded" | "flexUnavailable") => Some(NoticeKind::CapacityRefused),
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                output
+                    .events
+                    .push(AgentEvent::ProviderNotice(ProviderNotice {
+                        kind,
+                        scope: None,
+                        text: v
+                            .pointer("/params/turn/error/message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("provider refused the turn")
+                            .into(),
+                    }));
+            }
         }
+        output
     }
 
     fn on_malformed(&mut self, raw: &str) -> Vec<AgentEvent> {

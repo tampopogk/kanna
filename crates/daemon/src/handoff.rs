@@ -293,7 +293,7 @@ async fn request_handoff(
     let mut reader = tokio::io::BufReader::with_capacity(1, read_half);
     let mut writer = write_half;
 
-    let cmd = serde_json::json!({ "type": "Handoff", "version": mode.version() });
+    let cmd = serde_json::json!({ "type": "Handoff", "version": mode.version(), "hosted_frontend_version": kanna_agent_protocol::hosted_frontend::VERSION });
     let mut json = serde_json::to_string(&cmd).map_err(|e| {
         HandoffRequestError::Other(format!("failed to serialize handoff command: {}", e))
     })?;
@@ -868,6 +868,7 @@ pub(crate) async fn attempt_handoff(pid_path: &PathBuf, socket_path: &PathBuf) -
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_handoff(
     version: u32,
+    hosted_frontend_version: Option<u32>,
     socket_fd: std::os::unix::io::RawFd,
     reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
     sessions: Arc<Mutex<SessionManager>>,
@@ -964,6 +965,22 @@ pub(crate) async fn handle_handoff(
     if *daemon_lifecycle_guard != DaemonLifecycleState::Running {
         let evt = error_event(None, "daemon handoff already committed");
         let _ = write_event(&mut *writer.lock().await, &evt).await;
+        return false;
+    }
+
+    if hosted_frontend_version != Some(kanna_agent_protocol::hosted_frontend::VERSION)
+        && sessions
+            .lock()
+            .await
+            .handles()
+            .iter()
+            .any(|(_, handle)| handle.hosted_frontend.is_some())
+    {
+        let event = error_event(
+            Some(protocol::ErrorCode::HandoffVersionMismatch),
+            "successor does not support the active hosted frontend protocol; upgrade Kanna or stop hosted tasks before downgrading",
+        );
+        let _ = write_event(&mut *writer.lock().await, &event).await;
         return false;
     }
 
@@ -1124,6 +1141,7 @@ pub(crate) async fn handle_handoff(
                     );
                 }
                 infos.push(protocol::HandoffSession {
+                    hosted_frontend_config: parts.hosted_frontend_config,
                     archive_binding: parts.archive_binding,
                     archive_unavailable_reason: parts.archive_unavailable_reason,
                     session_id: id.clone(),
@@ -1230,6 +1248,7 @@ pub(crate) async fn handle_handoff(
             session_fds
         );
         infos.push(protocol::HandoffSession {
+            hosted_frontend_config: None,
             archive_binding: None,
             archive_unavailable_reason: None,
             session_id: id.clone(),

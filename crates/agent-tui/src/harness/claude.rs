@@ -824,6 +824,21 @@ impl Adapter for ClaudeAdapter {
                 }),
                 _ => Output::unknown(),
             },
+            Some("rate_limit_event")
+                if v.pointer("/rate_limit_info/status").and_then(Value::as_str)
+                    == Some("rejected") =>
+            {
+                use kanna_agent_protocol::hosted_frontend::{NoticeKind, ProviderNotice};
+                Output::event(AgentEvent::ProviderNotice(ProviderNotice {
+                    kind: NoticeKind::QuotaRejected,
+                    scope: v
+                        .pointer("/rate_limit_info/model")
+                        .or_else(|| v.pointer("/rate_limit_info/rateLimitType"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    text: "Claude reported rate_limit_info.status=rejected".into(),
+                }))
+            }
             Some("stream_event") => self.on_stream_event(v),
             Some("assistant") => self.on_assistant(v),
             Some("user") if v.get("isReplay").and_then(Value::as_bool) == Some(true) => {

@@ -232,12 +232,13 @@ function preserveExpandedTextSelection(): void {
  */
 type ComposerInputFailure = {
   taskId: string;
-  outcome: Extract<TaskInputSendOutcome, { status: "failed" | "uncertain" }>;
+  outcome: Extract<TaskInputSendOutcome, { status: "failed" | "uncertain" | "queued" }>;
 };
 
 function composerInputFailureMessage(
   outcome: ComposerInputFailure["outcome"]
 ): string {
+  if (outcome.status === "queued") return `Queued for the next ready turn. Delivery ${outcome.deliveryId}.`;
   return outcome.status === "failed"
     ? `Not sent: ${outcome.message} Your text is still here.`
     : `Couldn't confirm this was sent: ${outcome.message} Check the desktop terminal before sending it again. Your text is still here.`;
@@ -743,6 +744,7 @@ export function TaskScreen({
         Keyboard.dismiss();
         return;
       }
+      if (resolvedOutcome.status === "queued") { clearDraftInput(); Keyboard.dismiss(); }
       setInputFailure({
         taskId: submission.taskId,
         outcome: resolvedOutcome

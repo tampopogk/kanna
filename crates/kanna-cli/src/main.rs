@@ -624,8 +624,22 @@ pub(crate) enum TaskCommands {
         #[arg(long)]
         server_url: Option<String>,
     },
+    /// Inspect queued, confirmed, failed, or uncertain hosted input deliveries
+    InputDeliveries {
+        #[arg(long)]
+        task_id: String,
+        #[arg(long)]
+        delivery_id: Option<String>,
+        #[arg(long)]
+        machine_id: Option<String>,
+        #[arg(long)]
+        server_url: Option<String>,
+    },
     /// Send feedback or instructions to a running agent task
     SendInput {
+        /// Stable id for hosted input retries with the same payload
+        #[arg(long)]
+        delivery_id: Option<String>,
         /// The target task ID
         #[arg(long)]
         task_id: String,

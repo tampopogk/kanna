@@ -126,6 +126,8 @@ pub(super) fn build_spawn_env(
     // checkout may customize its workspace, but it cannot redirect Kanna's
     // task identity or control-plane binaries and endpoints.
     for key in [
+        kanna_agent_protocol::hosted_frontend::CONFIG_ENV,
+        kanna_agent_protocol::hosted_frontend::FRONTENDS_ENV,
         "KANNA_WORKTREE",
         "KANNA_TASK_ID",
         "KANNA_SOCKET_PATH",
@@ -156,6 +158,10 @@ pub(super) fn build_spawn_env(
             task_dir.to_string_lossy().to_string(),
         );
     }
+    env.insert(
+        kanna_agent_protocol::hosted_frontend::FRONTENDS_ENV.into(),
+        serde_json::to_string(&repo_config.agent_frontends).map_err(|error| error.to_string())?,
+    );
     env.insert("KANNA_WORKTREE".to_string(), "1".to_string());
     env.insert("KANNA_TASK_ID".to_string(), task_id.to_string());
     env.insert(
@@ -731,4 +737,12 @@ pub(super) fn write_copilot_wake_plugin(path: &str) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
     std::fs::rename(manifest, root.join("plugin.json")).map_err(|e| e.to_string())
+}
+
+/// Hosting must use the executable shipped with this Kanna installation.
+pub(super) fn resolve_frontend_sidecar() -> Result<String, String> {
+    sidecar_candidates("agent-tui").into_iter()
+        .find(|path| kanna_runtime_defaults::is_executable_file(path))
+        .map(|path| path.to_string_lossy().into_owned())
+        .ok_or_else(|| "agent-tui frontend sidecar is missing; rebuild Kanna sidecars with ./kd build sidecars or reinstall Kanna".into())
 }

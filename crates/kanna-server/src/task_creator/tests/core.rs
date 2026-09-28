@@ -9583,3 +9583,63 @@ fn retired_workflow_names_resolve_to_the_renamed_definitions() {
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
+
+#[test]
+fn hosted_frontend_preserves_shell_argument_boundaries() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = crate::test_paths::unique_test_dir("hosted-argv");
+    std::fs::create_dir_all(&root).unwrap();
+    let frontend = root.join("frontend's executable");
+    std::fs::write(
+        &frontend,
+        "#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&frontend, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let executable = "/provider's directory/real harness";
+    let prompt = "line one 'quoted'\nline two $(false) `false` $HOME";
+    for provider in [AgentProvider::Claude, AgentProvider::Codex] {
+        let native = super::build_agent_command(
+            &provider,
+            executable,
+            prompt,
+            Some("model name"),
+            Some("low"),
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let command = super::super::commands::hosted_frontend_command(
+            frontend.to_str().unwrap(),
+            provider,
+            executable,
+            &native,
+        )
+        .unwrap();
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", &command])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let args: Vec<String> = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            &args[..5],
+            [provider.as_str(), "--kanna", "--bin", executable, "--"]
+        );
+        assert_eq!(args.last().unwrap(), prompt);
+        assert!(args.iter().any(|arg| arg == "model name"));
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}

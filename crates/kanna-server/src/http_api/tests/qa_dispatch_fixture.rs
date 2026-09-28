@@ -84,6 +84,7 @@ fn spawn_join_daemon(daemon_dir: &Path) -> Commands {
                     let response = match &command {
                         DaemonCommand::List => DaemonEvent::SessionList {
                             sessions: vec![SessionInfo {
+                                hosted_frontend: None,
                                 session_id: PARENT.to_string(),
                                 pid: PARENT_PID,
                                 cwd: "/tmp".to_string(),

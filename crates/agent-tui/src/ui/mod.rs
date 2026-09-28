@@ -163,6 +163,9 @@ fn draw_header(f: &mut Frame, app: &App, theme: &Theme, area: Rect, big: bool) {
             status.push_str(&format!(" · {e}"));
         }
     }
+    if app.queued_count > 0 {
+        status.push_str(&format!(" · {} queued", app.queued_count));
+    }
     let status_span = Span::styled(
         format!("{status} "),
         status_style(st, theme).add_modifier(Modifier::BOLD),

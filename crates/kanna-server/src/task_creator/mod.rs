@@ -15,6 +15,7 @@ mod session;
 pub(crate) use resume::{
     claude_project_slug, claude_projects_dir, home_child, resolve_codex_session_id_in, same_cwd,
 };
+pub(crate) use session::transcript_ref;
 mod stages;
 mod terminal_marker;
 mod types;
@@ -2449,6 +2450,28 @@ fn build_prepared_session(
                     "{agent_cmd} --experimental --plugin-dir '{}'",
                     plugin.replace('\'', "'\"'\"'")
                 )
+            } else {
+                agent_cmd
+            };
+            let frontends = spawn_env
+                .get(kanna_agent_protocol::hosted_frontend::FRONTENDS_ENV)
+                .map(|value| {
+                    serde_json::from_str::<serde_json::Value>(value)
+                        .map_err(|error| error.to_string())
+                })
+                .transpose()?
+                .map(|value| kanna_agent_protocol::hosted_frontend::parse_frontends(&value))
+                .transpose()?
+                .unwrap_or_default();
+            let agent_cmd = if frontends.get(provider.as_str())
+                == Some(&kanna_agent_protocol::hosted_frontend::Frontend::AgentTui)
+            {
+                commands::hosted_frontend_command(
+                    &environment::resolve_frontend_sidecar()?,
+                    provider,
+                    &executable,
+                    &agent_cmd,
+                )?
             } else {
                 agent_cmd
             };

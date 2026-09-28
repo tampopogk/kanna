@@ -9,3 +9,7 @@ pub mod transport;
 pub mod ui;
 
 pub mod launch;
+
+pub mod host;
+
+pub mod history;

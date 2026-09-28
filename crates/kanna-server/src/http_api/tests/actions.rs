@@ -956,7 +956,15 @@ async fn close_pr_task_sends_blocker_close_instruction_with_renamed_branch_to_ru
                 continue;
             }
             match (index, command) {
-                (0, DaemonCommand::SubmitInput { session_id, data }) => {
+                (
+                    0,
+                    DaemonCommand::SubmitInput {
+                        delivery_id: None,
+                        run_id: _,
+                        session_id,
+                        data,
+                    },
+                ) => {
                     assert_eq!(session_id, "task-b-session");
                     let message = String::from_utf8(data).unwrap();
                     assert!(message.contains("has finished its workflow and closed"));

@@ -17,6 +17,8 @@ use tokio::sync::mpsc;
 
 use agent_tui::app::App;
 use agent_tui::harness::{make_adapter, HarnessOptions};
+use agent_tui::host::Host;
+use agent_tui::launch::HostedLaunch;
 use agent_tui::process::{HarnessProcess, ProcEvent};
 use agent_tui::protocol::HarnessKind;
 use agent_tui::ui::skins::{ColorMode, SkinId};
@@ -49,6 +51,9 @@ struct Cli {
     /// Path to the harness executable (defaults to `claude` / `codex` on PATH).
     #[arg(long)]
     bin: Option<String>,
+    /// Run inside Kanna using its authenticated hosting protocol.
+    #[arg(long)]
+    kanna: bool,
     /// Extra arguments passed to the harness after `--`.
     #[arg(last = true)]
     harness_args: Vec<String>,
@@ -140,6 +145,26 @@ fn main() -> Result<()> {
         extra_args: cli.harness_args.clone(),
     };
 
+    let hosted_launch = if cli.kanna {
+        if cli.model.is_some() || cli.effort.is_some() {
+            anyhow::bail!("in --kanna mode pass native model/effort flags after --");
+        }
+        let program = cli
+            .bin
+            .clone()
+            .context("--kanna requires --bin with the real provider executable")?;
+        Some(
+            HostedLaunch::parse(
+                opts.kind,
+                program,
+                cwd.to_string_lossy().into_owned(),
+                &cli.harness_args,
+            )
+            .map_err(anyhow::Error::msg)?,
+        )
+    } else {
+        None
+    };
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -149,7 +174,7 @@ fn main() -> Result<()> {
         restore_terminal(enhanced);
         default_hook(info);
     }));
-    let result = rt.block_on(run(&mut term, enhanced, opts, skin, cwd));
+    let result = rt.block_on(run(&mut term, enhanced, opts, skin, cwd, hosted_launch));
     restore_terminal(enhanced);
     // Background reader tasks may still hold pipes; don't wait on them.
     rt.shutdown_timeout(Duration::from_millis(200));
@@ -162,11 +187,49 @@ async fn run(
     opts: HarnessOptions,
     skin: SkinId,
     cwd: PathBuf,
+    hosted_launch: Option<HostedLaunch>,
 ) -> Result<()> {
     // Installed before the harness starts so no signal can skip its shutdown.
     let mut signals = shutdown_signals()?;
     let mode = ColorMode::detect();
-    let mut app = App::new(make_adapter(&opts), skin);
+    let mut host = match &hosted_launch {
+        Some(launch) => {
+            let path = std::env::var_os(kanna_agent_protocol::hosted_frontend::CONFIG_ENV)
+                .context("Kanna host configuration is missing; launch through Kanna")?;
+            Some(Host::open(
+                std::path::Path::new(&path),
+                launch.initial_prompt.clone(),
+            )?)
+        }
+        None => None,
+    };
+    let adapter = hosted_launch
+        .as_ref()
+        .map_or_else(|| make_adapter(&opts), HostedLaunch::adapter);
+    let mut app = App::new(adapter, skin);
+    app.hosted = host.is_some();
+    if let Some(launch) = &hosted_launch {
+        if let agent_tui::launch::HostedConfig::Claude(config) = &launch.config {
+            if config.extra_args.iter().any(|arg| arg == "--resume") {
+                if let Some(id) = &config.expected_session_id {
+                    let home = std::env::var_os("CLAUDE_CONFIG_DIR")
+                        .map(PathBuf::from)
+                        .or_else(|| {
+                            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude"))
+                        });
+                    if let Some(home) = home {
+                        match agent_tui::history::claude(&home, &cwd.to_string_lossy(), id) {
+                            Ok(messages) => app.load_history(messages),
+                            Err(error) => {
+                                tracing::warn!("previous Claude history unavailable: {error}")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     app.shift_enter = enhanced;
     app.cwd_label = cwd
         .file_name()
@@ -184,8 +247,18 @@ async fn run(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut dirty = true;
     let mut last_second = 0u64;
+    let mut outcome = Ok(());
 
     loop {
+        if let Some(host) = host.as_mut() {
+            if let Err(error) = host.advance(&mut app) {
+                app.take_outbox();
+                outcome = Err(error.context("persisting Kanna input state; dispatch stopped"));
+                break;
+            }
+            dirty = true;
+        }
+        flush(&mut app, proc.as_ref());
         if dirty {
             app.tick(Instant::now());
             if let Err(e) = term.draw(|f| ui::draw(f, &mut app, &mut cache, mode)) {
@@ -198,6 +271,20 @@ async fn run(
             dirty = false;
         }
         tokio::select! {
+            incoming = async {
+                match host.as_mut() {
+                    Some(host) => host.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if let (Some(host), Some(incoming)) = (host.as_mut(), incoming) {
+                    if let Err(error) = host.handle(incoming) {
+                        outcome = Err(error);
+                        break;
+                    }
+                }
+                dirty = true;
+            }
             ev = events.next() => {
                 match ev {
                     Some(Ok(Event::Key(k))) => app.on_key(k),
@@ -236,7 +323,11 @@ async fn run(
                 }
             }
         }
-        flush(&mut app, proc.as_ref());
+        // Hosted writes are flushed at the top of the loop, after the
+        // correlated receipt and submitting boundary have been persisted.
+        if host.is_none() {
+            flush(&mut app, proc.as_ref());
+        }
 
         if app.restart_requested {
             if let Some(mut p) = proc.take() {
@@ -252,6 +343,16 @@ async fn run(
             break;
         }
     }
+    if let Some(host) = host.as_mut() {
+        host.snapshot.retired = true;
+        if let Err(error) = host
+            .advance(&mut app)
+            .and_then(|_| host.retire("frontend exited"))
+        {
+            app.take_outbox();
+            outcome = Err(error);
+        }
+    }
     if app.phase == agent_tui::app::Phase::Working {
         app.stop_turn();
     }
@@ -259,7 +360,7 @@ async fn run(
     if let Some(mut p) = proc.take() {
         p.shutdown(Duration::from_secs(3)).await;
     }
-    Ok(())
+    outcome
 }
 
 /// SIGHUP (terminal closed), SIGTERM and SIGINT all take the Stop & quit

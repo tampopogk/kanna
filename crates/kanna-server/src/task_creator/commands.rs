@@ -632,3 +632,27 @@ fn safe_antigravity_alias_name(value: &str) -> String {
         })
         .collect()
 }
+
+/// Wrap exactly the native argv produced by this module. Every executable is
+/// independently quoted; a command prefix is never passed as an executable.
+pub(super) fn hosted_frontend_command(
+    frontend: &str,
+    provider: AgentProvider,
+    executable: &str,
+    native: &str,
+) -> Result<String, String> {
+    if !matches!(provider, AgentProvider::Claude | AgentProvider::Codex) {
+        return Err("agent-tui supports only Claude and Codex".into());
+    }
+    let native_executable = format!("'{}'", shell_single_quote(executable));
+    let args = native
+        .strip_prefix(&native_executable)
+        .ok_or("native executable prefix mismatch")?;
+    Ok(format!(
+        "'{}' {} --kanna --bin '{}' --{}",
+        shell_single_quote(frontend),
+        provider.as_str(),
+        shell_single_quote(executable),
+        args
+    ))
+}

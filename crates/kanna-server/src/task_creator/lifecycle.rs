@@ -9,7 +9,7 @@ use super::types::{
 use super::worktree::remove_prepared_worktree;
 use crate::daemon_client::{DaemonClient, SpawnDeliveryError, SpawnSubmission};
 use crate::db::{Db, NewStageRun};
-use crate::http_api::{try_submit_task_input, TaskInputError};
+use crate::http_api::{try_submit_task_input_for_run, TaskInputError};
 use crate::mutation_provenance::ChannelIdentity;
 use crate::session_replacements::SessionReplacements;
 use kanna_daemon::protocol::{
@@ -2548,7 +2548,9 @@ pub(crate) async fn dispatch_prepared_post_for_api(
     let run_id = generate_stage_run_id(&task_id);
     let post_payload =
         persist_post_operation_intent(db_path, &prepared, &run_id, inherited.as_ref())?;
-    match try_submit_task_input(daemon, &prepared.session_id, &prepared.message).await {
+    match try_submit_task_input_for_run(daemon, &prepared.session_id, &prepared.message, &run_id)
+        .await
+    {
         Ok(()) => {}
         Err(TaskInputError::SessionNotFound) => {
             abort_lifecycle_operation(db_path, &run_id)?;
@@ -4284,6 +4286,7 @@ mod lifecycle_operation_tests {
 
     fn live_session(session_id: &str, cwd: &str) -> SessionInfo {
         SessionInfo {
+            hosted_frontend: None,
             session_id: session_id.to_string(),
             pid: 4242,
             cwd: cwd.to_string(),
@@ -5582,6 +5585,7 @@ mod teardown_deadline_tests {
                     (DaemonCommand::List, "List") => {
                         let response = DaemonEvent::SessionList {
                             sessions: vec![SessionInfo {
+                                hosted_frontend: None,
                                 session_id: "td-task-1".to_string(),
                                 pid: 42,
                                 cwd: "/tmp".to_string(),
@@ -5676,6 +5680,7 @@ mod teardown_deadline_tests {
                             sessions: live
                                 .iter()
                                 .map(|(session_id, pid)| SessionInfo {
+                                    hosted_frontend: None,
                                     session_id: session_id.to_string(),
                                     pid: if lists > 1 {
                                         later_pid.unwrap_or(*pid)
@@ -5884,6 +5889,7 @@ mod teardown_deadline_tests {
                     (DaemonCommand::List, "List") => {
                         let response = DaemonEvent::SessionList {
                             sessions: vec![SessionInfo {
+                                hosted_frontend: None,
                                 session_id: "td-task-transient".to_string(),
                                 pid: 42,
                                 cwd: "/tmp".to_string(),

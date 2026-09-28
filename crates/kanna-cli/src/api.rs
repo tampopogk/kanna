@@ -790,9 +790,10 @@ pub(crate) async fn send_task_input_via_api(
     task_id: &str,
     request: &TaskInputRequest,
 ) -> Result<TaskInputResponse, String> {
-    post_no_content_json(base_url, &format!("/v1/tasks/{task_id}/input"), request)
-        .await
-        .map(|_| TaskInputResponse { ok: true })
+    let body = serde_json::to_value(request).map_err(|error| error.to_string())?;
+    let response =
+        post_catalog_json(base_url, &format!("/v1/tasks/{task_id}/input"), &body).await?;
+    serde_json::from_value(response).map_err(|error| error.to_string())
 }
 
 /// Write raw terminal input into a task's live PTY.

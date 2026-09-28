@@ -693,7 +693,7 @@ fn xdg_dir_for_home(value: Option<&std::ffi::OsStr>, home: &Path, fallback: &str
 /// runtime directory removes that outright. It falls back to `/tmp` when the
 /// session manager provides none (a container, a bare `su`), which is no
 /// worse than macOS.
-fn socket_dir() -> PathBuf {
+pub fn socket_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
         PathBuf::from("/tmp")

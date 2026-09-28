@@ -510,6 +510,7 @@ mod tests {
         kind: kanna_daemon::protocol::SessionKind,
     ) -> kanna_daemon::protocol::SessionInfo {
         kanna_daemon::protocol::SessionInfo {
+            hosted_frontend: None,
             session_id: session_id.to_string(),
             pid: 1,
             cwd: "/tmp".to_string(),

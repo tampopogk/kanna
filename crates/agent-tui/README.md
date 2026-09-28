@@ -20,9 +20,35 @@ agent-tui codex --effort low -- -c approval_policy="on-request" -c sandbox_mode=
 agent-tui claude --skin duke
 ```
 
-Arguments after `--` are passed to the harness unchanged. agent-tui never
+In standalone mode, arguments after `--` are passed to the harness unchanged. agent-tui never
 chooses a bypass permission mode; your harness configuration decides what
 needs approval.
+
+## Kanna hosting
+
+Kanna selects the bundled frontend with repository config:
+
+```json
+{ "agentFrontends": { "claude": "agent-tui", "codex": "agent-tui" } }
+```
+
+Omission (or `native`) retains the native terminal. Provider identity, model
+selection, permissions, config homes, MCP and native transcripts remain the
+provider's. SDK sessions keep their existing path. Kanna launches
+`agent-tui claude|codex --kanna --bin <provider> -- <native arguments>`;
+hosting requires its private versioned socket configuration and cannot be
+invoked as a standalone permission bypass.
+
+Kanna logical messages enter a bounded durable FIFO, separate from the human
+composer. They wait through startup, turns and request cards. The header shows
+queued count. A provider acknowledgement changes a receipt to `submitted`;
+a crash gap is `uncertain` and is never automatically replayed. Query receipts
+with `kanna_task_input_deliveries` or `kanna-cli task input-deliveries`.
+Raw keys still operate the focused TUI control. Human Enter while busy retains
+its draft. Hosted `/new` directs the operator to Kanna rerun; resume reopens the
+native provider conversation and loads bounded display-only history.
+
+See [hosting implementation and verification](../../docs/agent-tui/hosting.md).
 
 ## Screen
 
@@ -41,7 +67,7 @@ needs approval.
   offering the choices the harness supports. A new card never takes focus, so
   an Enter meant for your draft cannot answer it.
 - **Composer**: always editable. While a turn runs, Enter keeps the draft and
-  tells you why nothing was sent. There is no silent queue.
+  tells you why nothing was sent. Human input is not silently queued.
 - **Footer**: key hints and the skin selector share one row.
 
 ## Keys

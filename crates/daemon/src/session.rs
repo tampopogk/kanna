@@ -213,6 +213,7 @@ pub struct SessionRecord {
 }
 
 pub struct SessionRuntimeState {
+    hosted: bool,
     pub headless_terminal: HeadlessTerminal,
     /// Live PTY output only on fresh spawn. Same-PTY adoption can restore this
     /// projection; legacy/degraded primary-snapshot fallback retains its old
@@ -495,6 +496,8 @@ impl fmt::Display for PtyOccupancySnapshot {
 }
 
 pub struct SessionHandle {
+    pub hosted_frontend: Option<kanna_daemon::hosted_frontend::Frontend>,
+    hosted_snapshot: std::sync::Mutex<Option<kanna_agent_protocol::hosted_frontend::Snapshot>>,
     pub(crate) pty: Mutex<PtySession>,
     /// Set by the first teardown to claim this session. Makes Kill
     /// single-flight per session so concurrent/retried Kill calls cannot
@@ -539,10 +542,15 @@ impl SessionHandle {
                 unreachable!("new session input receiver must be open");
             }
         }
+        let hosted_frontend = record.pty.hosted_frontend.clone();
+        let hosted = hosted_frontend.is_some();
         Self {
+            hosted_frontend,
+            hosted_snapshot: std::sync::Mutex::new(None),
             pty: Mutex::new(record.pty),
             teardown_claimed: std::sync::atomic::AtomicBool::new(false),
             state: Mutex::new(SessionRuntimeState {
+                hosted,
                 headless_terminal: record.headless_terminal,
                 notice_terminal: record.notice_terminal,
                 classifier: Classifier::with_version(record.agent_provider, record.cli_version),
@@ -564,6 +572,45 @@ impl SessionHandle {
             bracketed_paste_mode: AtomicBool::new(bracketed_paste_mode),
             retired: AtomicBool::new(false),
         }
+    }
+
+    pub async fn refresh_hosted(&self) -> Option<kanna_agent_protocol::hosted_frontend::Snapshot> {
+        use kanna_agent_protocol::hosted_frontend::{Command, Response, RuntimeState};
+        let frontend = self.hosted_frontend.as_ref()?;
+        let mut snapshot = match frontend.request(Command::Inspect).await {
+            Ok(Response::Snapshot { snapshot }) => snapshot,
+            Ok(_) => frontend.disconnected_snapshot("invalid frontend state response".into()),
+            Err(error) => {
+                frontend.disconnected_snapshot(format!("frontend state unavailable: {error}"))
+            }
+        };
+        {
+            let mut previous = self.hosted_snapshot.lock().ok()?;
+            if previous.as_ref().is_some_and(|old| {
+                old.sequence > snapshot.sequence
+                    || (old.frontend_pid != 0 && snapshot.frontend_pid != old.frontend_pid)
+            }) {
+                snapshot = previous.clone()?;
+                snapshot.state = RuntimeState::Unavailable;
+                snapshot.diagnostic = Some("stale frontend process or sequence rejected".into());
+            }
+            if previous.as_ref() == Some(&snapshot) {
+                return None;
+            }
+            *previous = Some(snapshot.clone());
+        }
+        let mut state = self.state.lock().await;
+        state.status = match snapshot.state {
+            RuntimeState::Waiting => SessionStatus::Waiting,
+            RuntimeState::Idle => SessionStatus::Idle,
+            _ => SessionStatus::Busy,
+        };
+        state.status_observed = snapshot.state != RuntimeState::Unavailable;
+        Some(snapshot)
+    }
+
+    pub fn hosted_snapshot(&self) -> Option<kanna_agent_protocol::hosted_frontend::Snapshot> {
+        self.hosted_snapshot.lock().ok()?.clone()
     }
 
     pub fn retire(&self) {
@@ -958,6 +1005,12 @@ impl SessionHandle {
     pub async fn codex_resume_session_id(
         &self,
     ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(frontend) = &self.hosted_frontend {
+            return Ok(self
+                .hosted_snapshot()
+                .or_else(|| frontend.journal().ok())
+                .and_then(|snapshot| snapshot.provider_session_id));
+        }
         let mut state = self.state.lock().await;
         if state.agent_provider != Some(AgentProvider::Codex) {
             return Ok(None);
@@ -985,6 +1038,9 @@ impl SessionHandle {
     pub async fn waiting_prompt_snippet(
         &self,
     ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+        if self.hosted_frontend.is_some() {
+            return Ok(None);
+        }
         let mut state = self.state.lock().await;
         let SessionRuntimeState {
             headless_terminal,
@@ -1161,6 +1217,13 @@ impl SessionHandle {
         if !self.claim_teardown() {
             return Ok(());
         }
+        if let Some(frontend) = &self.hosted_frontend {
+            let _ = frontend
+                .request(kanna_agent_protocol::hosted_frontend::Command::Retire {
+                    reason: "Kanna session stopped".into(),
+                })
+                .await;
+        }
         // Phase 1 under the lock: freeze the leader and consume the
         // one-shot reap token. No process-table scan or SIGKILL happens here.
         let (plan, reap) = {
@@ -1188,6 +1251,9 @@ impl SessionHandle {
             if let Err(error) = kanna_daemon::reaper::try_reap(ownership) {
                 kanna_daemon::reaper::reap(error.into_ownership()).await;
             }
+        }
+        if let Some(frontend) = &self.hosted_frontend {
+            frontend.remove_socket();
         }
         result
     }
@@ -1223,6 +1289,11 @@ impl SessionHandle {
         let status_observed = self.state.lock().await.status_observed;
 
         SessionInfo {
+            hosted_frontend: self.hosted_snapshot().or_else(|| {
+                self.hosted_frontend
+                    .as_ref()
+                    .map(|frontend| frontend.disconnected_snapshot("frontend is starting".into()))
+            }),
             session_id,
             pid,
             cwd,
@@ -1252,6 +1323,21 @@ impl SessionHandle {
     /// verdict: nothing readable can say whether somebody typed there, and no
     /// reader may treat the text as an instruction without that proof.
     pub fn composer_attestation(&self) -> ComposerAttestation {
+        if self.hosted_frontend.is_some() {
+            return match self.hosted_snapshot() {
+                Some(snapshot)
+                    if snapshot.state
+                        != kanna_agent_protocol::hosted_frontend::RuntimeState::Unavailable =>
+                {
+                    if snapshot.composer_text.is_empty() {
+                        ComposerAttestation::NotTyped
+                    } else {
+                        ComposerAttestation::Typed
+                    }
+                }
+                _ => ComposerAttestation::Unknown,
+            };
+        }
         self.input_coordination
             .lock()
             .map(|state| state.composer_attestation())
@@ -1260,6 +1346,9 @@ impl SessionHandle {
 
     /// Whether attestation still has something a frame could resolve.
     fn attestation_unresolved(&self) -> bool {
+        if self.hosted_frontend.is_some() {
+            return false;
+        }
         self.input_coordination
             .lock()
             .map(|state| state.attestation_unresolved())
@@ -1269,6 +1358,11 @@ impl SessionHandle {
     /// The text currently rendered on this session's composer line, when its
     /// frame draws a readable one.
     async fn composer_line(&self) -> Option<String> {
+        if self.hosted_frontend.is_some() {
+            return self
+                .hosted_snapshot()
+                .map(|snapshot| snapshot.composer_text);
+        }
         let mut state = self.state.lock().await;
         let SessionRuntimeState {
             headless_terminal,
@@ -1308,7 +1402,11 @@ impl SessionHandle {
     pub async fn take_composer_transition(&self) -> Option<(Option<String>, ComposerAttestation)> {
         let attestation = self.composer_attestation();
         let mut state = self.state.lock().await;
-        let text = {
+        let text = if self.hosted_frontend.is_some() {
+            Ok(self
+                .hosted_snapshot()
+                .map(|snapshot| snapshot.composer_text))
+        } else {
             let SessionRuntimeState {
                 headless_terminal,
                 classifier,
@@ -1409,6 +1507,10 @@ impl SessionHandle {
             .lock()
             .map_err(|_| "terminal input coordination lock was poisoned")?;
         Ok(Some(SessionHandoffParts {
+            hosted_frontend_config: self
+                .hosted_frontend
+                .as_ref()
+                .map(|frontend| frontend.config_path.clone()),
             archive_unavailable_reason,
             archive_binding,
             pid,
@@ -1433,6 +1535,7 @@ impl SessionHandle {
 }
 
 pub struct SessionHandoffParts {
+    pub hosted_frontend_config: Option<String>,
     pub archive_unavailable_reason: Option<String>,
     pub archive_binding: Option<crate::protocol::TerminalAttemptBinding>,
     pub pid: u32,
@@ -1990,7 +2093,7 @@ fn read_new_notice_if_frame_was_read(
     state: &mut SessionRuntimeState,
     now: Instant,
 ) -> Option<Notice> {
-    if state.last_status_check_at != Some(now) {
+    if state.hosted || state.last_status_check_at != Some(now) {
         return None;
     }
     let SessionRuntimeState {
@@ -2018,6 +2121,9 @@ fn detect_runtime_status_if_due(
     throttle: Duration,
     allow_idle: bool,
 ) -> Result<Option<SessionStatus>, Box<dyn std::error::Error + Send + Sync>> {
+    if state.hosted {
+        return Ok(None);
+    }
     detect_headless_terminal_status_if_due(
         &mut state.headless_terminal,
         &mut state.classifier,

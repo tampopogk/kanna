@@ -170,7 +170,10 @@ pub struct App {
     pub cwd_label: String,
     pub should_quit: bool,
     pub restart_requested: bool,
+    pub hosted: bool,
+    pub queued_count: usize,
     outbox: Vec<String>,
+    pub provider_notice: Option<kanna_agent_protocol::hosted_frontend::ProviderNotice>,
     pub input_receipts: Vec<(String, Result<(), String>)>,
 }
 
@@ -206,8 +209,11 @@ impl App {
             cwd_label: String::new(),
             should_quit: false,
             restart_requested: false,
+            hosted: false,
+            queued_count: 0,
             outbox: Vec::new(),
             input_receipts: Vec::new(),
+            provider_notice: None,
         };
         app.pick_quote();
         app
@@ -216,6 +222,21 @@ impl App {
     // ----- session plumbing -------------------------------------------------
 
     /// Records to write right after the harness starts.
+    pub fn load_history(&mut self, messages: Vec<crate::history::Message>) {
+        for (index, message) in messages.into_iter().enumerate() {
+            let kind = if message.user {
+                EntryKind::User { text: message.text }
+            } else {
+                EntryKind::Assistant {
+                    item_id: format!("history-{index}"),
+                    text: message.text,
+                    done: true,
+                }
+            };
+            self.push_entry(kind, vec![]);
+        }
+    }
+
     pub fn start(&mut self) {
         let msgs = self.adapter.start();
         self.send_all(msgs);
@@ -447,6 +468,10 @@ impl App {
                     vec![raw],
                 );
             }
+            AgentEvent::ProviderNotice(notice) => {
+                self.provider_notice = Some(notice);
+            }
+            AgentEvent::History { messages } => self.load_history(messages),
             AgentEvent::SessionMeta {
                 model,
                 effort,
@@ -762,6 +787,7 @@ impl App {
             return Err("a request is still awaiting a human answer".into());
         }
         let messages = self.adapter.send_logical_prompt(&text, delivery_id)?;
+        self.provider_notice = None;
         let raw = self.send_all(messages);
         self.transcript.turn_tools = None;
         self.push_entry(EntryKind::User { text }, raw);
@@ -777,6 +803,7 @@ impl App {
         }
         match self.adapter.send_prompt(&text) {
             Ok(msgs) => {
+                self.provider_notice = None;
                 let raw = self.send_all(msgs);
                 self.transcript.turn_tools = None;
                 self.view.follow = true;
@@ -893,6 +920,10 @@ impl App {
                 }
                 "stop" => self.stop_turn(),
                 "new" => {
+                    if self.hosted {
+                        self.set_hint(NoticeLevel::Warn, "This conversation is bound to Kanna. Use Kanna rerun to start a new conversation.");
+                        return;
+                    }
                     // Only a healthy running turn blocks a restart. Stopping and
                     // Degraded may never see a completion, so /new must work there.
                     if self.phase == Phase::Working && self.degraded.is_none() {

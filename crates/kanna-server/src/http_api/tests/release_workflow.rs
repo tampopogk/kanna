@@ -550,6 +550,7 @@ fn spawn_live_session_daemon(
                     let response = match &command {
                         DaemonCommand::List => DaemonEvent::SessionList {
                             sessions: vec![SessionInfo {
+                                hosted_frontend: None,
                                 session_id: MASTER.to_string(),
                                 pid: 42,
                                 cwd: "/tmp".to_string(),

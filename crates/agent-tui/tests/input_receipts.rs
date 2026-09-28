@@ -226,3 +226,42 @@ fn recorded_claude_2_1_284_echo_acknowledges_the_supplied_uuid() {
     app.on_record(record(3, &echoed.to_string()));
     assert_eq!(app.input_receipts, [(uuid.into(), Ok(()))]);
 }
+
+#[test]
+fn hosted_provider_notices_require_structured_rejection() {
+    use kanna_agent_protocol::hosted_frontend::NoticeKind;
+    let mut claude = App::new(launch(HarnessKind::Claude).adapter(), SkinId::Graphite);
+    initialize(&mut claude);
+    claude.on_record(record(
+        10,
+        &json!({"type":"rate_limit_event", "rate_limit_info":{
+        "status":"allowed", "overageStatus":"rejected"}})
+        .to_string(),
+    ));
+    assert!(claude.provider_notice.is_none());
+    claude.on_record(record(
+        11,
+        &json!({"type":"rate_limit_event", "rate_limit_info":{
+        "status":"rejected", "rateLimitType":"five_hour"}})
+        .to_string(),
+    ));
+    let notice = claude.provider_notice.unwrap();
+    assert_eq!(notice.kind, NoticeKind::QuotaRejected);
+    assert_eq!(notice.scope.as_deref(), Some("five_hour"));
+    for (code, expected) in [
+        ("usageLimitExceeded", Some(NoticeKind::QuotaRejected)),
+        ("serverOverloaded", Some(NoticeKind::CapacityRefused)),
+        ("other", None),
+    ] {
+        let mut codex = App::new(launch(HarnessKind::Codex).adapter(), SkinId::Graphite);
+        initialize(&mut codex);
+        codex.on_record(record(
+            10,
+            &json!({"method":"turn/completed", "params":{"threadId":"thread-1",
+            "turn":{"id":"turn-1", "status":"failed", "error":{"message":"quota exceeded",
+                "codexErrorInfo":code}}}})
+            .to_string(),
+        ));
+        assert_eq!(codex.provider_notice.map(|n| n.kind), expected);
+    }
+}

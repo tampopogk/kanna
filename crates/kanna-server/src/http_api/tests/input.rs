@@ -63,6 +63,7 @@ async fn assert_signal_agent_reuses_open_task_with_run_status(run_status: &str, 
             let event = match command {
                 DaemonCommand::List => DaemonEvent::SessionList {
                     sessions: vec![SessionInfo {
+                        hosted_frontend: None,
                         session_id: "task-merge".to_string(),
                         pid: 42,
                         cwd: "/tmp".to_string(),
@@ -77,6 +78,8 @@ async fn assert_signal_agent_reuses_open_task_with_run_status(run_status: &str, 
                     }],
                 },
                 DaemonCommand::SubmitInputIfSession {
+                    delivery_id: None,
+                    run_id: _,
                     session_id,
                     expected_pid,
                     data,
@@ -1108,6 +1111,7 @@ async fn merge_handoff_route_sends_an_ordinary_repo_policy_request() {
             let event = match read_test_daemon_command(&mut reader, &mut write_half).await {
                 DaemonCommand::List => DaemonEvent::SessionList {
                     sessions: vec![SessionInfo {
+                        hosted_frontend: None,
                         session_id: "task-merge".to_string(),
                         pid: 42,
                         cwd: "/tmp".to_string(),
@@ -1122,6 +1126,8 @@ async fn merge_handoff_route_sends_an_ordinary_repo_policy_request() {
                     }],
                 },
                 DaemonCommand::SubmitInputIfSession {
+                    delivery_id: None,
+                    run_id: _,
                     session_id,
                     expected_pid,
                     data,
@@ -1258,6 +1264,7 @@ async fn merge_handoff_does_not_signal_when_the_local_singleton_rejects_the_writ
                     "{}\n",
                     serde_json::to_string(&DaemonEvent::SessionList {
                         sessions: vec![SessionInfo {
+                            hosted_frontend: None,
                             session_id: "task-merge".to_string(),
                             pid: 42,
                             cwd: "/tmp".to_string(),
@@ -2312,6 +2319,7 @@ async fn send_task_input_rejects_a_finished_task_without_a_live_daemon_session()
                     // child exits. Its Input queue can still acknowledge bytes
                     // during that window, but no agent can consume them.
                     sessions: vec![SessionInfo {
+                        hosted_frontend: None,
                         session_id: "task-finished".to_string(),
                         pid: 42,
                         cwd: "/tmp".to_string(),
@@ -2440,6 +2448,7 @@ async fn send_task_input_delivers_to_a_live_session_after_a_finished_run() {
             let response = match &command {
                 DaemonCommand::List => DaemonEvent::SessionList {
                     sessions: vec![SessionInfo {
+                        hosted_frontend: None,
                         session_id: "task-live".to_string(),
                         pid: 42,
                         cwd: "/tmp".to_string(),
@@ -2522,7 +2531,8 @@ async fn send_task_input_delivers_to_a_live_session_after_a_finished_run() {
     assert!(matches!(commands[0], DaemonCommand::List));
     assert!(matches!(
         &commands[1],
-        DaemonCommand::SubmitInputIfSession { session_id, expected_pid, data }
+        DaemonCommand::SubmitInputIfSession {
+            delivery_id: None, run_id: _, session_id, expected_pid, data }
             if session_id == "task-live" && *expected_pid == 42 && data == b"One more change"
     ));
 
@@ -2737,6 +2747,7 @@ fn spawn_live_session_daemon(
             let response = match &command {
                 DaemonCommand::List => DaemonEvent::SessionList {
                     sessions: vec![SessionInfo {
+                        hosted_frontend: None,
                         session_id: task_id.to_string(),
                         pid: 42,
                         cwd: "/tmp".to_string(),
@@ -2959,6 +2970,7 @@ async fn send_task_input_reports_daemon_write_failure_as_delivery_uncertain() {
             let response = match &command {
                 DaemonCommand::List => DaemonEvent::SessionList {
                     sessions: vec![SessionInfo {
+                        hosted_frontend: None,
                         session_id: "task-write-failed".to_string(),
                         pid: 42,
                         cwd: "/tmp".to_string(),
@@ -3046,6 +3058,7 @@ async fn send_task_input_reports_daemon_write_failure_as_delivery_uncertain() {
     assert!(matches!(
         daemon_server.await.unwrap().as_slice(),
         [DaemonCommand::List, DaemonCommand::SubmitInputIfSession {
+            delivery_id: None, run_id: _,
             session_id,
             expected_pid: 42,
             data,
@@ -3090,7 +3103,12 @@ async fn submit_task_input_sends_one_semantic_daemon_message() {
         for _ in 0..1 {
             let command = read_test_daemon_command(&mut reader, &mut write_half).await;
             match command {
-                DaemonCommand::SubmitInput { session_id, data } => {
+                DaemonCommand::SubmitInput {
+                    delivery_id: None,
+                    run_id: _,
+                    session_id,
+                    data,
+                } => {
                     assert_eq!(session_id, "task-target");
                     inputs.push(data);
                 }
@@ -3533,6 +3551,7 @@ mod merge_handoff_on_close {
                         let response = match command {
                             DaemonCommand::List => DaemonEvent::SessionList {
                                 sessions: vec![SessionInfo {
+                                    hosted_frontend: None,
                                     session_id: "task-merge".to_string(),
                                     pid: 42,
                                     cwd: "/tmp".to_string(),
@@ -4713,6 +4732,7 @@ async fn an_input_whose_publication_fails_after_delivery_is_not_sent_again() {
                 let response = match &command {
                     DaemonCommand::List => DaemonEvent::SessionList {
                         sessions: vec![SessionInfo {
+                            hosted_frontend: None,
                             session_id: "task-live".to_string(),
                             pid: 42,
                             cwd: "/tmp".to_string(),

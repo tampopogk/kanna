@@ -194,6 +194,7 @@ export interface MobileController {
  */
 export type TaskInputSendOutcome =
   | { status: "delivered" }
+  | { status: "queued"; deliveryId: string }
   | {
       status: "failed";
       reason: "transport_rejected" | "server_rejected";

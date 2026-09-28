@@ -61,6 +61,7 @@ impl HarnessProcess {
         events: mpsc::UnboundedSender<(u64, ProcEvent)>,
     ) -> std::io::Result<Self> {
         let mut cmd = Command::new(&spec.program);
+        cmd.env_remove(kanna_agent_protocol::hosted_frontend::CONFIG_ENV);
         cmd.args(&spec.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

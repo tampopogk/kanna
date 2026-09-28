@@ -11,6 +11,13 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
+fn deserialize_agent_frontends<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, kanna_agent_protocol::hosted_frontend::Frontend>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    kanna_agent_protocol::hosted_frontend::parse_frontends(&value).map_err(serde::de::Error::custom)
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub(super) struct RepoConfig {
     #[serde(alias = "workflow", skip_serializing_if = "Option::is_none")]
@@ -34,6 +41,13 @@ pub(super) struct RepoConfig {
         deserialize_with = "deserialize_optional_agent_provider_preferences"
     )]
     pub(super) agent_providers: Option<BTreeMap<String, AgentProviderPreference>>,
+    #[serde(
+        rename = "agentFrontends",
+        default,
+        deserialize_with = "deserialize_agent_frontends",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub(super) agent_frontends: BTreeMap<String, kanna_agent_protocol::hosted_frontend::Frontend>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) reserved_ports: Vec<i64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1394,6 +1408,9 @@ fn parse_config_object(
 fn validate_structured_preferences(
     raw: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
+    if let Some(value) = raw.get("agentFrontends") {
+        kanna_agent_protocol::hosted_frontend::parse_frontends(value)?;
+    }
     if let Some(entries) = raw
         .get("agentProviders")
         .and_then(serde_json::Value::as_object)
@@ -1550,6 +1567,10 @@ fn repo_config_from_object(raw: &serde_json::Map<String, serde_json::Value>) -> 
         flavors: string_map(raw.get("flavors")),
         vars: string_map(raw.get("vars")),
         agent_providers,
+        agent_frontends: raw
+            .get("agentFrontends")
+            .and_then(|value| kanna_agent_protocol::hosted_frontend::parse_frontends(value).ok())
+            .unwrap_or_default(),
         reserved_port_offsets: integer_array("reserved_port_offsets", |value| value >= 0),
         reserved_ports: integer_array("reserved_ports", |value| (1..=65535).contains(&value)),
         stage_order: string_array("stage_order"),

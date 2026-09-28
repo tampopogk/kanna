@@ -1,4 +1,7 @@
-# Agent TUI hosting foundation — partial implementation
+# Agent TUI hosting foundation — historical checkpoint
+
+> This records the earlier foundation checkpoint. It is superseded by
+> [the hosting implementation and verification](hosting.md).
 
 Task `93a5a7d0`, build workspace `task-93a5a7d0-2`, 2026-09-28.
 This is **not a completed Kanna-hosted frontend**. Kanna still launches native

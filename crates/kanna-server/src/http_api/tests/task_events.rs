@@ -3282,6 +3282,7 @@ async fn stage_start_emits_one_settled_working_edge_and_suppresses_a_resume_flic
         let sessions = ["settled-start", "flicker-start"]
             .into_iter()
             .map(|task_id| SessionInfo {
+                hosted_frontend: None,
                 session_id: task_id.to_string(),
                 pid: 42,
                 cwd: "/tmp".to_string(),

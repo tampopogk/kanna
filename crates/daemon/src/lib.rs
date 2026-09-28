@@ -24,3 +24,5 @@ pub mod subprocess_env;
 pub mod terminal_perf;
 
 pub mod terminal_archive;
+
+pub mod hosted_frontend;

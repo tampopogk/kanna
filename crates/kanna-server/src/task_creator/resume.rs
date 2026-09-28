@@ -114,6 +114,35 @@ fn resolve_codex_session_id(cwd: &str, recorded: Option<&str>) -> Option<String>
     resolve_codex_session_id_in(&config_dir.join("sessions"), cwd, recorded)
 }
 
+pub(crate) fn codex_transcript_path(cwd: &str, id: &str) -> Option<String> {
+    let root = home_child("CODEX_HOME", ".codex")?.join("sessions");
+    let mut pending = vec![(root, 0)];
+    while let Some((directory, depth)) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() && depth < 4 {
+                pending.push((path, depth + 1));
+            } else if kind.is_file()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(&format!("{id}.jsonl")))
+                && codex_session_metadata(&path)
+                    .is_some_and(|(found, found_cwd)| found == id && same_cwd(&found_cwd, cwd))
+            {
+                return Some(path.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
+}
+
 /// Shared by local recovery and transfer export: a fresh Codex process writes
 /// its rollout before Kanna learns the provider id from the exit footer.
 pub(crate) fn resolve_codex_session_id_in(

@@ -164,6 +164,10 @@ pub enum NoticeLevel {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentEvent {
+    ProviderNotice(kanna_agent_protocol::hosted_frontend::ProviderNotice),
+    History {
+        messages: Vec<crate::history::Message>,
+    },
     /// Handshake finished; prompts can be sent.
     Ready {
         commands: Vec<HarnessCommand>,

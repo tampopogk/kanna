@@ -511,6 +511,7 @@ async fn delivered_input_records_the_declared_source_and_the_verified_channel() 
             let response = match &command {
                 DaemonCommand::List => DaemonEvent::SessionList {
                     sessions: vec![SessionInfo {
+                        hosted_frontend: None,
                         session_id: "task-live".to_string(),
                         pid: 42,
                         cwd: "/tmp".to_string(),

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.kanna.build/config.schema.json",
   "title": "Kanna Repo Config",
-  "description": "`.kanna/config.json` is the shared repository contract. `.kanna/config.local.json` is read from the open checkout's working tree, never from the origin snapshot, and is deep-merged over the committed file with local values winning. Local config may contain only `agentProviders`, `workflow`, `ports`, `setup`, `teardown`, `test`, and `artifacts`; an unknown key, invalid JSON, or invalid value fails definition resolution and names the file. `agentProviders`, `ports`, and `artifacts` merge entry by entry, with a local entry replacing the committed entry of the same name. Every other permitted key replaces wholesale, and arrays never concatenate. Keep local config gitignored and do not put task-defining fields such as `vars`, `flavors`, `workspace`, `stage_order`, or reserved ports in it.",
+  "description": "`.kanna/config.json` is the shared repository contract. `.kanna/config.local.json` is read from the open checkout's working tree, never from the origin snapshot, and is deep-merged over the committed file with local values winning. Local config may contain only `agentProviders`, `agentFrontends`, `workflow`, `ports`, `setup`, `teardown`, `test`, and `artifacts`; an unknown key, invalid JSON, or invalid value fails definition resolution and names the file. `agentProviders`, `agentFrontends`, `ports`, and `artifacts` merge entry by entry, with a local entry replacing the committed entry of the same name. Every other permitted key replaces wholesale, and arrays never concatenate. Keep local config gitignored and do not put task-defining fields such as `vars`, `flavors`, `workspace`, `stage_order`, or reserved ports in it.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -52,7 +52,7 @@
     },
     "agentProviders": {
       "type": "object",
-      "description": "`agentProviders` maps exact agent names or `*` globs to a provider name or to `{ provider, model, effort }`; `provider` may be an ordered candidate list. Exact keys beat globs. Among matching globs, the most non-`*` characters wins and lexical order breaks ties. Selection precedence is: explicit task or stage override; matching `agentProviders` entry (including the local layer); layered `AGENT.md`/`EXTEND.md` frontmatter; global default provider. A rerun, resume, revision, or recovery reproduces the recorded run's provider as an explicit override, while a plain stage advance re-resolves the chain and uses the task's stamp only as the final fallback. Provider-specific model and effort values are layer-coherent: Kanna never combines them across providers or layers. It walks the same chain and takes the first value from a layer that would itself select the resolved provider. In an ordered provider list, model and effort belong only to the leading candidate; fallback candidates use a lower coherent layer or their own stamped/default values. `autocompact` follows the same coherence rule and is Claude-only.",
+      "description": "`agentProviders` maps exact agent names or `*` globs to a provider name or to `{ provider, model, effort }`; `provider` may be an ordered candidate list. Exact keys beat globs. Among matching globs, the most non-`*` characters wins and lexical order breaks ties. Selection precedence is: explicit task or stage override; matching `agentProviders` entry (including the local layer); layered `AGENT.md`/`EXTEND.md` frontmatter; global default provider. A rerun, resume, revision, or recovery reproduces the recorded run's provider as an explicit override, while a plain stage advance re-resolves the chain and uses the task's stamp only as the final fallback. Provider-specific model and effort values are layer-coherent: Kanna never combines them across providers or layers. It walks the same chain and takes the first value from a layer that would itself select the resolved provider. In an ordered provider list, model and effort belong only to the leading candidate; fallback candidates use a lower coherent layer or their own stamped/default values. `autocompact` follows the same coherence rule and is Claude-only. `agentFrontends` separately maps `claude` or `codex` to `native` (the default) or `agent-tui`. It chooses the bundled PTY frontend after provider/model resolution, preserves provider identity and native transcripts, and does not change SDK/headless sessions. Hosted logical input is queued durably and reports a delivery receipt; only provider-confirmed inputs enter delivered history. Inspect pending or uncertain messages with `kanna_task_input_deliveries`.",
       "propertyNames": {
         "type": "string",
         "minLength": 1
@@ -97,17 +97,17 @@
               "model": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Model id for the provider this entry selects \u2014 the first name in `provider`. It is not applied to any other provider, including a fallback candidate listed behind that name; such a candidate takes its model from a lower layer written for it, or runs on its own stamped or default model."
+                "description": "Model id for the provider this entry selects — the first name in `provider`. It is not applied to any other provider, including a fallback candidate listed behind that name; such a candidate takes its model from a lower layer written for it, or runs on its own stamped or default model."
               },
               "effort": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Reasoning effort for the provider this entry selects \u2014 the first name in `provider`. Effort vocabularies are provider-specific, so this value is not applied to any other provider; a fallback candidate listed behind that name takes its effort from a lower layer written for it, or runs on its own stamped or default effort."
+                "description": "Reasoning effort for the provider this entry selects — the first name in `provider`. Effort vocabularies are provider-specific, so this value is not applied to any other provider; a fallback candidate listed behind that name takes its effort from a lower layer written for it, or runs on its own stamped or default effort."
               },
               "autocompact": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Claude only: the auto-compact window for the provider this entry selects \u2014 the first name in `provider`. `auto` (the model's native window) or 100k-1M tokens (`500k`, `200000`, `0.5M`, or `200` as shorthand for 200k). Kanna passes `auto` when nothing is configured, so a session never inherits the machine-wide `autoCompactWindow` from the operator's own `~/.claude/settings.json`. It is not applied to a fallback candidate listed behind that name, and naming it for a non-claude provider is an error."
+                "description": "Claude only: the auto-compact window for the provider this entry selects — the first name in `provider`. `auto` (the model's native window) or 100k-1M tokens (`500k`, `200000`, `0.5M`, or `200` as shorthand for 200k). Kanna passes `auto` when nothing is configured, so a session never inherits the machine-wide `autoCompactWindow` from the operator's own `~/.claude/settings.json`. It is not applied to a fallback candidate listed behind that name, and naming it for a non-claude provider is an error."
               }
             }
           },
@@ -215,6 +215,27 @@
           }
         }
       }
+    },
+    "agentFrontends": {
+      "type": "object",
+      "description": "`agentProviders` maps exact agent names or `*` globs to a provider name or to `{ provider, model, effort }`; `provider` may be an ordered candidate list. Exact keys beat globs. Among matching globs, the most non-`*` characters wins and lexical order breaks ties. Selection precedence is: explicit task or stage override; matching `agentProviders` entry (including the local layer); layered `AGENT.md`/`EXTEND.md` frontmatter; global default provider. A rerun, resume, revision, or recovery reproduces the recorded run's provider as an explicit override, while a plain stage advance re-resolves the chain and uses the task's stamp only as the final fallback. Provider-specific model and effort values are layer-coherent: Kanna never combines them across providers or layers. It walks the same chain and takes the first value from a layer that would itself select the resolved provider. In an ordered provider list, model and effort belong only to the leading candidate; fallback candidates use a lower coherent layer or their own stamped/default values. `autocompact` follows the same coherence rule and is Claude-only. `agentFrontends` separately maps `claude` or `codex` to `native` (the default) or `agent-tui`. It chooses the bundled PTY frontend after provider/model resolution, preserves provider identity and native transcripts, and does not change SDK/headless sessions. Hosted logical input is queued durably and reports a delivery receipt; only provider-confirmed inputs enter delivered history. Inspect pending or uncertain messages with `kanna_task_input_deliveries`.",
+      "additionalProperties": false,
+      "properties": {
+        "claude": {
+          "type": "string",
+          "enum": [
+            "native",
+            "agent-tui"
+          ]
+        },
+        "codex": {
+          "type": "string",
+          "enum": [
+            "native",
+            "agent-tui"
+          ]
+        }
+      }
     }
   },
   "examples": [
@@ -302,7 +323,7 @@
         "autocompact": {
           "type": "string",
           "minLength": 1,
-          "description": "Claude only: this session's auto-compact window \u2014 `auto` (the model's native window) or 100k-1M tokens (`500k`, `200000`, `0.5M`, or `200` as shorthand for 200k). Kanna passes `auto` when nothing is configured, so a session never inherits the machine-wide `autoCompactWindow` from the operator's own `~/.claude/settings.json`. Naming it beside any other harness is an error: no other CLI has the flag."
+          "description": "Claude only: this session's auto-compact window — `auto` (the model's native window) or 100k-1M tokens (`500k`, `200000`, `0.5M`, or `200` as shorthand for 200k). Kanna passes `auto` when nothing is configured, so a session never inherits the machine-wide `autoCompactWindow` from the operator's own `~/.claude/settings.json`. Naming it beside any other harness is an error: no other CLI has the flag."
         }
       }
     }

@@ -3760,7 +3760,12 @@ async fn dispatch_post_injects_message_into_live_session_and_records_post_run() 
 
     assert_eq!(response.task_id, "task-1");
     match &commands[0] {
-        kanna_daemon::protocol::Command::SubmitInput { session_id, data } => {
+        kanna_daemon::protocol::Command::SubmitInput {
+            delivery_id: None,
+            run_id: _,
+            session_id,
+            data,
+        } => {
             assert_eq!(session_id, "task-1");
             let text = String::from_utf8(data.clone()).unwrap();
             assert!(text.contains("Commit agent."), "input: {text}");
