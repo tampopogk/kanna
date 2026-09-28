@@ -23,6 +23,9 @@ pub struct CodexConfig {
     pub effort: Option<String>,
     pub cwd: Option<String>,
     pub extra_args: Vec<String>,
+    pub resume: Option<String>,
+    pub sandbox: Option<String>,
+    pub approval_policy: Option<String>,
 }
 
 impl Default for CodexConfig {
@@ -33,6 +36,9 @@ impl Default for CodexConfig {
             effort: None,
             cwd: None,
             extra_args: Vec::new(),
+            resume: None,
+            sandbox: None,
+            approval_policy: None,
         }
     }
 }
@@ -68,6 +74,7 @@ pub struct CodexAdapter {
     cfg: CodexConfig,
     next_id: i64,
     pending: HashMap<i64, Pending>,
+    input_requests: HashMap<i64, String>,
     requests: HashMap<String, ServerRequest>,
     thread_id: Option<String>,
     turn_id: Option<String>,
@@ -94,6 +101,7 @@ impl CodexAdapter {
             cfg,
             next_id: 0,
             pending: HashMap::new(),
+            input_requests: HashMap::new(),
             requests: HashMap::new(),
             thread_id: None,
             turn_id: None,
@@ -136,6 +144,7 @@ impl CodexAdapter {
                 .map(str::to_string)
                 .unwrap_or_else(|| e.to_string())
         });
+        let delivery_id = id.and_then(|id| self.input_requests.remove(&id));
         let result = v.get("result").cloned().unwrap_or(Value::Null);
         match (kind, err) {
             (Pending::Initialize, Some(e)) => Output::event(AgentEvent::StartupFailed {
@@ -152,15 +161,33 @@ impl CodexAdapter {
                 if let Some(e) = &self.cfg.effort {
                     params.insert("config".into(), json!({"model_reasoning_effort": e}));
                 }
-                let start =
-                    self.request(Pending::ThreadStart, "thread/start", Value::Object(params));
+                if let Some(sandbox) = &self.cfg.sandbox {
+                    params.insert("sandbox".into(), json!(sandbox));
+                }
+                if let Some(policy) = &self.cfg.approval_policy {
+                    params.insert("approvalPolicy".into(), json!(policy));
+                }
+                let method = if let Some(id) = &self.cfg.resume {
+                    params.insert("threadId".into(), json!(id));
+                    "thread/resume"
+                } else {
+                    "thread/start"
+                };
+                let start = self.request(Pending::ThreadStart, method, Value::Object(params));
                 Output {
                     events: vec![AgentEvent::Unknown],
                     outgoing: vec![json!({"jsonrpc": "2.0", "method": "initialized"}), start],
                 }
             }
             (Pending::ThreadStart, Some(e)) => Output::event(AgentEvent::StartupFailed {
-                message: format!("Codex could not start a thread: {e}"),
+                message: format!(
+                    "Codex could not {} a thread: {e}",
+                    if self.cfg.resume.is_some() {
+                        "resume"
+                    } else {
+                        "start"
+                    }
+                ),
             }),
             (Pending::ThreadStart, None) => {
                 self.thread_id = result
@@ -170,6 +197,18 @@ impl CodexAdapter {
                 if self.thread_id.is_none() {
                     return Output::event(AgentEvent::StartupFailed {
                         message: "thread/start returned no thread id".into(),
+                    });
+                }
+                if self
+                    .cfg
+                    .resume
+                    .as_ref()
+                    .is_some_and(|id| Some(id) != self.thread_id.as_ref())
+                {
+                    self.thread_id = None;
+                    return Output::event(AgentEvent::StartupFailed {
+                        message: "Codex resumed a different thread; refusing to dispatch input"
+                            .into(),
                     });
                 }
                 let model = result
@@ -195,16 +234,42 @@ impl CodexAdapter {
             (Pending::TurnStart, Some(e)) => {
                 self.turn_active = false;
                 self.interrupt_when_known = false;
-                Output::event(AgentEvent::TurnCompleted {
+                let mut events = Vec::new();
+                if let Some(delivery_id) = delivery_id {
+                    events.push(AgentEvent::InputRejected {
+                        delivery_id,
+                        reason: e.clone(),
+                    });
+                }
+                events.push(AgentEvent::TurnCompleted {
                     outcome: TurnOutcome::Failed(Some(e)),
                     usage: None,
-                })
+                });
+                Output {
+                    events,
+                    outgoing: vec![],
+                }
             }
             (Pending::TurnStart, None) => {
-                if let Some(t) = result.pointer("/turn/id").and_then(Value::as_str) {
+                let acknowledged_turn = result
+                    .pointer("/turn/id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty());
+                if let Some(t) = acknowledged_turn {
                     self.turn_id = Some(t.to_string());
                 }
                 let mut out = Output::unknown();
+                if let Some(delivery_id) = delivery_id {
+                    if acknowledged_turn.is_some() {
+                        out.events.push(AgentEvent::InputAccepted { delivery_id });
+                    } else {
+                        out.events.push(AgentEvent::Degraded {
+                            reason:
+                                "turn/start response has no turn id; input acceptance is uncertain"
+                                    .into(),
+                        });
+                    }
+                }
                 if self.interrupt_when_known {
                     self.interrupt_when_known = false;
                     out.outgoing.extend(self.interrupt_msg());
@@ -979,6 +1044,15 @@ impl Adapter for CodexAdapter {
             "turn/start",
             json!({"threadId": thread, "input": [{"type": "text", "text": text, "text_elements": []}]}),
         )])
+    }
+
+    fn send_logical_prompt(&mut self, text: &str, delivery_id: &str) -> Result<Vec<Value>, String> {
+        let messages = self.send_prompt(text)?;
+        let id = messages[0]["id"]
+            .as_i64()
+            .ok_or("turn/start has no request id")?;
+        self.input_requests.insert(id, delivery_id.to_string());
+        Ok(messages)
     }
 
     fn respond(&mut self, request_id: &str, answer: &Answer) -> Result<Vec<Value>, String> {

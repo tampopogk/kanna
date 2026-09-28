@@ -23,6 +23,7 @@ pub fn make_adapter(o: &HarnessOptions) -> Box<dyn Adapter> {
             model: o.model.clone(),
             effort: o.effort.clone(),
             extra_args: o.extra_args.clone(),
+            ..Default::default()
         })),
         HarnessKind::Codex => Box::new(codex::CodexAdapter::new(codex::CodexConfig {
             program: o.program.clone().unwrap_or_else(|| "codex".into()),
@@ -30,6 +31,7 @@ pub fn make_adapter(o: &HarnessOptions) -> Box<dyn Adapter> {
             effort: o.effort.clone(),
             cwd: o.cwd.clone(),
             extra_args: o.extra_args.clone(),
+            ..Default::default()
         })),
     }
 }

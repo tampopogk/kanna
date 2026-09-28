@@ -177,6 +177,15 @@ pub enum AgentEvent {
         effort: Option<MetaValue>,
         session_id: Option<String>,
     },
+    /// Provider-confirmed acceptance of a specifically correlated logical input.
+    InputAccepted {
+        delivery_id: String,
+    },
+    /// The provider explicitly rejected a correlated turn/start request.
+    InputRejected {
+        delivery_id: String,
+        reason: String,
+    },
     TurnStarted,
     AssistantDelta {
         item_id: String,
@@ -292,6 +301,13 @@ pub trait Adapter: Send {
     /// A line that failed to parse. Returns the events it should produce.
     fn on_malformed(&mut self, raw: &str) -> Vec<AgentEvent>;
     fn send_prompt(&mut self, text: &str) -> Result<Vec<Value>, String>;
+    fn send_logical_prompt(
+        &mut self,
+        _text: &str,
+        _delivery_id: &str,
+    ) -> Result<Vec<Value>, String> {
+        Err("this adapter cannot acknowledge logical input".into())
+    }
     fn respond(&mut self, request_id: &str, answer: &Answer) -> Result<Vec<Value>, String>;
     fn interrupt(&mut self) -> Result<Vec<Value>, String>;
 }

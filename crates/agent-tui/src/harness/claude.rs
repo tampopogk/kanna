@@ -26,6 +26,8 @@ pub struct ClaudeConfig {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub extra_args: Vec<String>,
+    pub expected_session_id: Option<String>,
+    pub replay_user_messages: bool,
 }
 
 impl Default for ClaudeConfig {
@@ -35,6 +37,8 @@ impl Default for ClaudeConfig {
             model: None,
             effort: None,
             extra_args: Vec::new(),
+            expected_session_id: None,
+            replay_user_messages: false,
         }
     }
 }
@@ -68,6 +72,7 @@ pub struct ClaudeAdapter {
     ready: bool,
     turn_active: bool,
     interrupt_requested: bool,
+    pending_input: Option<(String, String)>,
 }
 
 const CONTROL_MARKERS: &[&str] = &[
@@ -94,6 +99,7 @@ impl ClaudeAdapter {
             ready: false,
             turn_active: false,
             interrupt_requested: false,
+            pending_input: None,
         }
     }
 
@@ -748,6 +754,9 @@ impl Adapter for ClaudeAdapter {
         if let Some(e) = &self.cfg.effort {
             args.extend(["--effort".into(), e.clone()]);
         }
+        if self.cfg.replay_user_messages {
+            args.push("--replay-user-messages".into());
+        }
         args.extend(self.cfg.extra_args.iter().cloned());
         SpawnSpec {
             program: self.cfg.program.clone(),
@@ -787,6 +796,17 @@ impl Adapter for ClaudeAdapter {
                         .get("session_id")
                         .and_then(Value::as_str)
                         .map(str::to_string);
+                    if self
+                        .cfg
+                        .expected_session_id
+                        .as_ref()
+                        .is_some_and(|id| Some(id) != session_id.as_ref())
+                    {
+                        self.ready = false;
+                        return Output::event(AgentEvent::StartupFailed {
+                            message: "Claude reported a different session identity; refusing further input".into(),
+                        });
+                    }
                     Output::event(AgentEvent::SessionMeta {
                         model,
                         effort: None,
@@ -806,6 +826,23 @@ impl Adapter for ClaudeAdapter {
             },
             Some("stream_event") => self.on_stream_event(v),
             Some("assistant") => self.on_assistant(v),
+            Some("user") if v.get("isReplay").and_then(Value::as_bool) == Some(true) => {
+                let matched = self.pending_input.as_ref().is_some_and(|(id, text)| {
+                    v.get("uuid").and_then(Value::as_str) == Some(id.as_str())
+                        && v.pointer("/message/role").and_then(Value::as_str) == Some("user")
+                        && v.pointer("/message/content").and_then(Value::as_str)
+                            == Some(text.as_str())
+                        && self.cfg.expected_session_id.as_ref().is_none_or(|id| {
+                            v.get("session_id").and_then(Value::as_str) == Some(id.as_str())
+                        })
+                });
+                if matched {
+                    let (delivery_id, _) = self.pending_input.take().unwrap();
+                    Output::event(AgentEvent::InputAccepted { delivery_id })
+                } else {
+                    Output::unknown()
+                }
+            }
             Some("user") => self.on_user(v),
             Some("result") => self.on_result(v),
             Some(_) => Output::unknown(),
@@ -841,6 +878,22 @@ impl Adapter for ClaudeAdapter {
             "parent_tool_use_id": null,
             "session_id": ""
         })])
+    }
+
+    fn send_logical_prompt(&mut self, text: &str, delivery_id: &str) -> Result<Vec<Value>, String> {
+        if !self.cfg.replay_user_messages {
+            return Err("Claude replay acknowledgements were not enabled".into());
+        }
+        if self.pending_input.is_some() {
+            return Err("previous Claude input has no correlated acknowledgement".into());
+        }
+        let mut messages = self.send_prompt(text)?;
+        messages[0]["uuid"] = json!(delivery_id);
+        if let Some(session_id) = &self.cfg.expected_session_id {
+            messages[0]["session_id"] = json!(session_id);
+        }
+        self.pending_input = Some((delivery_id.to_string(), text.to_string()));
+        Ok(messages)
     }
 
     fn respond(&mut self, request_id: &str, answer: &Answer) -> Result<Vec<Value>, String> {

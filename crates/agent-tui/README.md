@@ -196,3 +196,12 @@ Both artifacts remain in original repository `repo-18d8f429a6316298`; these
 references do not relocate or modify the original task or artifact store.
 The original Cargo.lock is retained as provenance; Kanna's workspace lockfile
 governs integrated builds.
+
+### Hosting integration status
+
+Kanna builds and bundles this crate, but does not yet launch it as a task
+frontend. `HostedLaunch` and the correlated-input adapter methods are library
+foundations; the executable has no `--kanna` mode yet. The standalone live checks
+above are upstream evidence, not Kanna-hosted acceptance. See
+[the partial implementation and verification record](../../docs/agent-tui/hosting-foundation.md)
+for completed work and the remaining approved scope.

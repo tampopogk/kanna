@@ -171,6 +171,7 @@ pub struct App {
     pub should_quit: bool,
     pub restart_requested: bool,
     outbox: Vec<String>,
+    pub input_receipts: Vec<(String, Result<(), String>)>,
 }
 
 impl App {
@@ -206,6 +207,7 @@ impl App {
             should_quit: false,
             restart_requested: false,
             outbox: Vec::new(),
+            input_receipts: Vec::new(),
         };
         app.pick_quote();
         app
@@ -422,6 +424,13 @@ impl App {
 
     pub fn apply(&mut self, event: AgentEvent, raw: RawId) {
         match event {
+            AgentEvent::InputAccepted { delivery_id } => {
+                self.input_receipts.push((delivery_id, Ok(())))
+            }
+            AgentEvent::InputRejected {
+                delivery_id,
+                reason,
+            } => self.input_receipts.push((delivery_id, Err(reason))),
             AgentEvent::Ready { commands } => {
                 self.commands = commands;
                 if self.phase == Phase::Starting {
@@ -742,6 +751,23 @@ impl App {
             Phase::Stopping => Some("Stopping the turn — draft kept.".into()),
             Phase::Disconnected(_) => Some("Disconnected — draft kept. /new starts a new session.".into()),
         }
+    }
+
+    /// Structured input never visits the composer or local slash dispatcher.
+    pub fn send_logical_prompt(&mut self, text: String, delivery_id: &str) -> Result<(), String> {
+        if let Some(reason) = self.can_send_reason() {
+            return Err(reason);
+        }
+        if self.transcript.pending_cards().next().is_some() {
+            return Err("a request is still awaiting a human answer".into());
+        }
+        let messages = self.adapter.send_logical_prompt(&text, delivery_id)?;
+        let raw = self.send_all(messages);
+        self.transcript.turn_tools = None;
+        self.push_entry(EntryKind::User { text }, raw);
+        self.phase = Phase::Working;
+        self.turn_started = Some(self.now);
+        Ok(())
     }
 
     fn send_prompt(&mut self, text: String) {
