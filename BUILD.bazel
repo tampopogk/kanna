@@ -95,6 +95,27 @@ filegroup(
 )
 
 genrule(
+    name = "agent_tui_arm64",
+    srcs = ["//crates/agent-tui:agent_tui"],
+    outs = ["agent-tui-aarch64-apple-darwin"],
+    cmd = "cp $< $@ && chmod +x $@",
+)
+
+genrule(
+    name = "agent_tui_release_arm64",
+    srcs = ["//crates/agent-tui:agent_tui"],
+    outs = ["release/agent-tui-aarch64-apple-darwin"],
+    cmd = "cp $< $@ && chmod +x $@",
+)
+
+genrule(
+    name = "agent_tui_release_x86_64",
+    srcs = ["//crates/agent-tui:agent_tui_x86_64"],
+    outs = ["release/agent-tui-x86_64-apple-darwin"],
+    cmd = "cp $< $@ && chmod +x $@",
+)
+
+genrule(
     name = "kanna_daemon_arm64",
     srcs = ["//crates/daemon:kanna_daemon"],
     outs = ["kanna-daemon-aarch64-apple-darwin"],
@@ -299,6 +320,7 @@ tauri_bundle_inputs(
         ":kanna_server_arm64",
         ":kanna_task_transfer_arm64",
         ":kanna_terminal_recovery_arm64",
+        ":agent_tui_arm64",
     ],
     resource_trees = {
         ":kanna_builtin_resources": "",
@@ -330,6 +352,7 @@ tauri_bundle_inputs(
         ":kanna_server_release_arm64",
         ":kanna_task_transfer_release_arm64",
         ":kanna_terminal_recovery_release_arm64",
+        ":agent_tui_release_arm64",
     ],
     resource_trees = {
         ":kanna_builtin_resources": "",
@@ -401,6 +424,7 @@ tauri_bundle_inputs(
         ":kanna_server_release_x86_64",
         ":kanna_task_transfer_release_x86_64",
         ":kanna_terminal_recovery_release_x86_64",
+        ":agent_tui_release_x86_64",
     ],
     resource_trees = {
         ":kanna_builtin_resources": "",
@@ -472,6 +496,7 @@ tauri_bundle_inputs(
         ":kanna_server_release_arm64",
         ":kanna_task_transfer_release_arm64",
         ":kanna_terminal_recovery_release_arm64",
+        ":agent_tui_release_arm64",
     ],
     resource_trees = {
         ":kanna_builtin_resources": "",
@@ -543,6 +568,7 @@ tauri_bundle_inputs(
         ":kanna_server_release_x86_64",
         ":kanna_task_transfer_release_x86_64",
         ":kanna_terminal_recovery_release_x86_64",
+        ":agent_tui_release_x86_64",
     ],
     resource_trees = {
         ":kanna_builtin_resources": "",

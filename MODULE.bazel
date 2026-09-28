@@ -80,6 +80,17 @@ use_repo(rust_host_tools, "kanna_rust_host_tools")
 
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
 crate.from_cargo(
+    name = "agent_tui_crates",
+    cargo_lockfile = "//crates/agent-tui:Cargo.lock",
+    manifests = ["//:Cargo.agent-tui.toml"],
+    supported_platform_triples = [
+        "aarch64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+    ],
+)
+crate.from_cargo(
     name = "kanna_cli_crates",
     cargo_lockfile = "//crates/kanna-cli:Cargo.lock",
     manifests = ["//:Cargo.cli.toml"],
@@ -285,7 +296,7 @@ crate.annotation(
     ],
     repositories = ["desktop_crates"],
 )
-use_repo(crate, "kanna_cli_crates")
+use_repo(crate, "agent_tui_crates", "kanna_cli_crates")
 use_repo(
     crate,
     "daemon_crates",
