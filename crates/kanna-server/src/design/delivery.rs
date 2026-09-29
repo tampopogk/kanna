@@ -42,6 +42,10 @@ const TICK: Duration = Duration::from_secs(2);
 const TURN_GRACE: Duration = Duration::from_secs(20);
 /// How long a comment waits for its anchor's document update.
 const ANCHOR_GRACE: Duration = Duration::from_secs(30);
+/// How long a batch may stay in flight — accepted by the daemon but not yet
+/// confirmed written, or with a daemon that cannot be asked — before it is
+/// uncertain, so the person can check the terminal and resend it.
+const IN_FLIGHT_LIMIT: Duration = Duration::from_secs(120);
 const MAX_BATCH_ITEMS: usize = 8;
 const MAX_BATCH_CHARS: usize = 12_000;
 
@@ -135,6 +139,9 @@ pub(crate) async fn run(state: Arc<AppState>) {
     reconcile_in_flight(&state).await;
     loop {
         let _ = tokio::time::timeout(TICK, state.design.delivery_woken()).await;
+        // A batch still in flight blocks its task's later feedback: settle
+        // it from the daemon's receipt first, on every pass.
+        settle_in_flight(&state, false).await;
         deliver_all(&state).await;
         super::approval::run_handoffs(&state).await;
     }
@@ -719,6 +726,15 @@ async fn note(state: &Arc<AppState>, batch: &Batch, detail: &str) -> Result<(), 
 /// before anything else is sent. A batch no daemon remembers, sent to a
 /// daemon that is gone, is uncertain.
 async fn reconcile_in_flight(state: &Arc<AppState>) {
+    settle_in_flight(state, true).await;
+}
+
+/// Settle every batch recorded as being written from the daemon's receipt:
+/// written is delivered, refused is queued again, and one that is still only
+/// accepted — or whose daemon cannot be asked — is asked again on the next
+/// pass until [`IN_FLIGHT_LIMIT`], then uncertain. After a restart there is
+/// no waiting: a daemon that cannot be asked makes the batch uncertain.
+async fn settle_in_flight(state: &Arc<AppState>, after_restart: bool) {
     let rows = match blocking(state, |db| {
         db.delivering_design_deliveries()
             .map_err(|error| error.to_string())
@@ -731,19 +747,22 @@ async fn reconcile_in_flight(state: &Arc<AppState>) {
             return;
         }
     };
-    let mut attempts: Vec<(String, String, String)> = rows
+    let mut attempts: Vec<(String, String, String, String)> = rows
         .iter()
         .filter_map(|row| {
             Some((
                 row.task_id.clone(),
                 row.attempt_id.clone()?,
                 row.daemon_instance.clone().unwrap_or_default(),
+                row.updated_at.clone(),
             ))
         })
         .collect();
     attempts.sort();
-    attempts.dedup();
-    for (task_id, attempt_id, instance) in attempts {
+    attempts.dedup_by(|later, earlier| later.0 == earlier.0 && later.1 == earlier.1);
+    let now = crate::artifacts::rfc3339_utc(std::time::SystemTime::now());
+    for (task_id, attempt_id, instance, reserved_at) in attempts {
+        let overdue = older_than(&reserved_at, &now, IN_FLIGHT_LIMIT);
         let outcome = reconnect_and_query(state, &attempt_id).await;
         let message = blocking(state, {
             let task_id = task_id.clone();
@@ -753,6 +772,15 @@ async fn reconcile_in_flight(state: &Arc<AppState>) {
         .await
         .unwrap_or_default();
         let result = match outcome {
+            Ok((DesignDeliveryOutcome::Accepted, _)) if overdue => {
+                mark_uncertain(
+                    state,
+                    &task_id,
+                    &attempt_id,
+                    "the terminal daemon accepted it but never confirmed writing it; check the agent's terminal before resending",
+                )
+                .await
+            }
             Ok((outcome, known)) => {
                 settle_outcome(
                     state,
@@ -765,15 +793,17 @@ async fn reconcile_in_flight(state: &Arc<AppState>) {
                 )
                 .await
             }
-            Err(error) => {
+            Err(error) if after_restart || overdue => {
                 mark_uncertain(
                     state,
                     &task_id,
                     &attempt_id,
-                    &format!("could not ask the terminal daemon after a restart ({error})"),
+                    &format!("could not ask the terminal daemon whether it was written ({error})"),
                 )
                 .await
             }
+            // Asked again on the next pass.
+            Err(_) => Ok(()),
         };
         if let Err(error) = result {
             log::warn!("design delivery reconciliation for {task_id}: {error}");

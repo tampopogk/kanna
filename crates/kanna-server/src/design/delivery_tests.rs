@@ -21,6 +21,9 @@ enum Answer {
     WriteThenHangUp,
     /// Hang up before doing anything: a lost round trip with nothing written.
     HangUpUnwritten,
+    /// Accept it, start writing, and hang up: the answer is lost while the
+    /// daemon's receipt still says `Accepted`.
+    AcceptThenHangUp,
 }
 
 struct Script {
@@ -113,6 +116,12 @@ fn serve(daemon_dir: &str, script: Shared) -> tokio::task::JoinHandle<()> {
                                 delivery_id, data, ..
                             } => {
                                 if script.answer == Answer::HangUpUnwritten {
+                                    return;
+                                }
+                                if script.answer == Answer::AcceptThenHangUp {
+                                    script
+                                        .receipts
+                                        .insert(delivery_id, DesignDeliveryOutcome::Accepted);
                                     return;
                                 }
                                 if let Some(existing) = script.receipts.get(&delivery_id) {
@@ -312,6 +321,99 @@ async fn a_lost_answer_with_nothing_written_is_queued_again() {
     deliver_task(&state, "task-d").await.unwrap();
     assert_eq!(states(&state), vec!["delivered"]);
     assert_eq!(script.lock().unwrap().written.len(), 1);
+}
+
+/// Review round 1, finding 2: a batch whose answer was lost while the daemon
+/// was still writing it is settled on a later pass, not left `delivering`
+/// with every later comment stuck behind it.
+#[tokio::test]
+async fn a_lost_answer_while_still_writing_is_settled_on_a_later_pass() {
+    let (state, daemon_dir) = state("still-writing");
+    let script = script();
+    let _daemon = serve(&daemon_dir, Arc::clone(&script));
+    message(&state, "t1", "one");
+    script.lock().unwrap().answer = Answer::AcceptThenHangUp;
+    deliver_task(&state, "task-d").await.unwrap();
+    assert_eq!(states(&state), vec!["delivering"]);
+    message(&state, "t2", "two");
+
+    // Still being written: asked again, left alone, and the next comment waits.
+    settle_in_flight(&state, false).await;
+    assert_eq!(states(&state), vec!["delivering", "queued"]);
+    // The write completes; the next pass applies the receipt, typing nothing.
+    let attempt = with_db(&state, |db| {
+        db.design_deliveries("task-d").unwrap()[0]
+            .attempt_id
+            .clone()
+            .unwrap()
+    });
+    {
+        let mut script = script.lock().unwrap();
+        script
+            .receipts
+            .insert(attempt, DesignDeliveryOutcome::Delivered);
+        script.answer = Answer::Normally;
+    }
+    settle_in_flight(&state, false).await;
+    assert_eq!(states(&state), vec!["delivered", "queued"]);
+    assert_eq!(inputs(&state), 1);
+    assert!(
+        script.lock().unwrap().written.is_empty(),
+        "settling never types"
+    );
+    // And the comment behind it is delivered.
+    state.design.delivery.lock().unwrap().fences.clear();
+    deliver_task(&state, "task-d").await.unwrap();
+    assert_eq!(states(&state), vec!["delivered", "delivered"]);
+}
+
+#[tokio::test]
+async fn a_batch_in_flight_too_long_becomes_uncertain() {
+    let (state, daemon_dir) = state("in-flight-limit");
+    let script = script();
+    let daemon = serve(&daemon_dir, Arc::clone(&script));
+    message(&state, "t1", "one");
+    message(&state, "t2", "two");
+    with_db(&state, |db| {
+        let rows = db.design_deliveries("task-d").unwrap();
+        db.reserve_design_deliveries(&[rows[0].id.clone()], "da-accepted", "daemon-a")
+            .unwrap();
+    });
+    script
+        .lock()
+        .unwrap()
+        .receipts
+        .insert("da-accepted".into(), DesignDeliveryOutcome::Accepted);
+    let age = |state: &AppState, attempt: &str| {
+        with_db(state, |db| {
+            db.execute_test_sql(&format!(
+                "UPDATE design_delivery SET updated_at = '2026-01-01T00:00:00.000Z' WHERE attempt_id = '{attempt}'"
+            ))
+            .unwrap()
+        })
+    };
+    // Accepted and never confirmed, past the limit: uncertain, typed by nobody.
+    age(&state, "da-accepted");
+    settle_in_flight(&state, false).await;
+    assert_eq!(states(&state)[0], "uncertain");
+
+    // A daemon that cannot be asked: asked again while young…
+    daemon.abort();
+    let _ = std::fs::remove_file(kanna_runtime_defaults::socket_path(std::path::Path::new(
+        &daemon_dir,
+    )));
+    with_db(&state, |db| {
+        let rows = db.design_deliveries("task-d").unwrap();
+        db.reserve_design_deliveries(&[rows[1].id.clone()], "da-unasked", "daemon-a")
+            .unwrap();
+    });
+    settle_in_flight(&state, false).await;
+    assert_eq!(states(&state)[1], "delivering");
+    // …and uncertain once past the limit, so the person can resend it.
+    age(&state, "da-unasked");
+    settle_in_flight(&state, false).await;
+    assert_eq!(states(&state), vec!["uncertain", "uncertain"]);
+    assert!(script.lock().unwrap().written.is_empty());
 }
 
 #[tokio::test]
