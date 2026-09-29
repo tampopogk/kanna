@@ -309,7 +309,7 @@ impl Db {
     /// Enqueue the `input` ledger entry mirroring one `task_input` row. The
     /// row id is the source identity, so a replayed import finds it again.
     #[allow(clippy::too_many_arguments)]
-    fn enqueue_task_input_entry(
+    pub(super) fn enqueue_task_input_entry(
         &self,
         task_id: &str,
         input_id: i64,

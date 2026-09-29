@@ -86,6 +86,7 @@ fn bundled_catalog_parses_and_declares_all_tools() {
             "kanna_record_artifact_decision",
             "kanna_push_artifact",
             "kanna_fetch_artifact",
+            "kanna_task_input_deliveries",
         ]
     );
 }
@@ -302,18 +303,16 @@ fn task_input_and_resume_descriptions_document_delivery_and_recovery_contracts()
 
     let send_input = description("kanna_send_task_input");
     for required in [
-        "live daemon PTY session",
-        "PTY process ID",
-        "no_live_agent_session",
+        "Native terminals retain the PTY write-and-Enter contract",
+        "bounded durable FIFO queue",
+        "correlated provider acknowledgement",
+        "kanna_task_inputs",
+        "delivery_id",
+        "changed payload is rejected",
+        "kanna_task_input_deliveries",
+        "do not resend",
         "kanna_resume_task",
         "kanna_rerun_stage",
-        // The owner's 2026-09-08 decision, stated where a caller reads it: a
-        // live session always takes the message, and a human's unsent draft is
-        // a collision rather than a reason to withhold it. A caller told
-        // otherwise waits for a delivery that already happened.
-        "always takes the message",
-        "without waiting for the terminal to settle",
-        "Nothing is ever queued, parked, or refused",
     ] {
         assert!(
             send_input.contains(required),

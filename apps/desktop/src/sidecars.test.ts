@@ -59,6 +59,7 @@ describe("desktop sidecar packaging", () => {
     expect(tauriConf.bundle.externalBin).toContain("binaries/kanna-mcp");
     expect(stageSidecarsScript).toContain("binaries/kanna-mcp");
     expect(stageSidecarsScript).toContain("binaries/kanna-server");
+    expect(stageSidecarsScript).toContain("binaries/agent-tui");
   });
 
   it("stages and bundles the task transfer sidecar", () => {
@@ -94,6 +95,9 @@ describe("desktop sidecar packaging", () => {
     expect(moduleBazel).toContain('manifests = ["//:Cargo.mcp.toml"]');
     expect(moduleBazel).toContain('name = "kanna_server_crates"');
     expect(moduleBazel).toContain('manifests = ["//:Cargo.server.toml"]');
+    expect(bazelBuild).toContain('":agent_tui_release_arm64"');
+    expect(bazelBuild).toContain('":agent_tui_release_x86_64"');
+    expect(moduleBazel).toContain('name = "agent_tui_crates"');
     expect(moduleBazel).toContain('name = "task_transfer_crates"');
     expect(moduleBazel).toContain('manifests = ["//:Cargo.task-transfer.toml"]');
   });

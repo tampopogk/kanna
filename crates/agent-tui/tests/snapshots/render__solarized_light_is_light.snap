@@ -1,0 +1,34 @@
+---
+source: tests/render.rs
+expression: dump(&buf)
+---
+ ›_  Harness Claude   Model claude-sonnet-4-6   Effort high (requested)           ● Working · 00:18
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ ▌ Fix the parser's handling of partial JSON lines.
+
+   I'll check the parser and add a regression test.
+
+   › Tools · 3 completed · 1 failed · 1 running
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ › Also check CRLF input.
+   Draft saved · waiting for current turn
+ Enter send   Ctrl+J newline   Ctrl+C stop turn   / commands            ● Skin Solarized Light ▾ F2

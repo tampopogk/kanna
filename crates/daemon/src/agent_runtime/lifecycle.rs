@@ -139,6 +139,7 @@ pub async fn agent_session_infos(agents: &AgentSessions) -> Vec<protocol::Sessio
                 SessionState::Active
             };
             protocol::SessionInfo {
+                hosted_frontend: None,
                 session_id: id.clone(),
                 pid: record.pid,
                 cwd: record.params.cwd.clone(),

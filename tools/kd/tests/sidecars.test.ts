@@ -7,6 +7,7 @@ import { buildSidecarCargoCommands, stageSidecars } from "../src/runtime/sidecar
 describe("sidecar runtime", () => {
   it("builds each desktop sidecar for the host target", () => {
     expect(buildSidecarCargoCommands("aarch64-apple-darwin")).toEqual([
+      ["cargo", ["build", "--target", "aarch64-apple-darwin", "--manifest-path", "crates/agent-tui/Cargo.toml"]],
       ["cargo", ["build", "--target", "aarch64-apple-darwin", "--manifest-path", "crates/daemon/Cargo.toml"]],
       ["cargo", ["build", "--target", "aarch64-apple-darwin", "--manifest-path", "crates/kanna-cli/Cargo.toml"]],
       ["cargo", ["build", "--target", "aarch64-apple-darwin", "--manifest-path", "crates/kanna-mcp/Cargo.toml"]],
@@ -21,6 +22,7 @@ describe("sidecar runtime", () => {
     const src = join(root, ".build", "aarch64-apple-darwin", "debug");
     mkdirSync(src, { recursive: true });
     for (const name of [
+      "agent-tui",
       "kanna-daemon",
       "kanna-cli",
       "kanna-mcp",
@@ -34,6 +36,7 @@ describe("sidecar runtime", () => {
     const staged = stageSidecars({ repoRoot: root, target: "aarch64-apple-darwin", profile: "debug", buildDir: ".build" });
 
     expect(staged.map((path) => path.replace(root, ""))).toEqual([
+      "/apps/desktop/src-tauri/binaries/agent-tui-aarch64-apple-darwin",
       "/apps/desktop/src-tauri/binaries/kanna-daemon-aarch64-apple-darwin",
       "/apps/desktop/src-tauri/binaries/kanna-cli-aarch64-apple-darwin",
       "/apps/desktop/src-tauri/binaries/kanna-mcp-aarch64-apple-darwin",

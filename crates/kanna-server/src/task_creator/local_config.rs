@@ -63,6 +63,11 @@ struct OverridableKey {
 ///   `setup` cannot already cover.
 const OVERRIDABLE_KEYS: &[OverridableKey] = &[
     OverridableKey {
+        name: "agentFrontends",
+        merge: LocalMerge::Entries,
+        validate: |value| kanna_agent_protocol::hosted_frontend::parse_frontends(value).map(|_| ()),
+    },
+    OverridableKey {
         name: "agentProviders",
         merge: LocalMerge::Entries,
         validate: validate_agent_providers,
@@ -522,7 +527,9 @@ mod tests {
             "{error}"
         );
         assert!(
-            error.contains("agentProviders, workflow, ports, setup, teardown, test, artifacts"),
+            error.contains(
+                "agentFrontends, agentProviders, workflow, ports, setup, teardown, test, artifacts"
+            ),
             "{error}"
         );
         assert_eq!(config["vars"], json!({"OWNER": "kanna"}));

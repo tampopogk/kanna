@@ -1,4 +1,5 @@
 load("@rules_python//python:defs.bzl", "py_test")
+load("@rules_rust//rust:defs.bzl", "rust_proc_macro")
 load("@rules_cc//cc:defs.bzl", "cc_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@rules_zig//zig:toolchain.bzl", "zig_target_toolchain")
@@ -101,6 +102,32 @@ py_test(
     ],
     main = "macos_deployment_target_test.py",
     python_version = "PY3",
+)
+
+rust_proc_macro(
+    name = "exec_proc_macro_probe",
+    srcs = ["exec_proc_macro_probe.rs"],
+    edition = "2021",
+)
+
+# `tools` builds the probe in the exec configuration (opt), like every proc
+# macro rustc loads during a build.
+genrule(
+    name = "exec_proc_macro_probe_dylib",
+    outs = ["exec_proc_macro_probe.dylib"],
+    cmd = "cp $(execpath :exec_proc_macro_probe) $@",
+    target_compatible_with = ["@platforms//os:osx"],
+    tools = [":exec_proc_macro_probe"],
+)
+
+py_test(
+    name = "exec_proc_macro_macho_test",
+    srcs = ["exec_proc_macro_macho_test.py"],
+    data = [":exec_proc_macro_probe_dylib"],
+    env = {"EXEC_PROC_MACRO_DYLIB": "$(rootpath :exec_proc_macro_probe_dylib)"},
+    main = "exec_proc_macro_macho_test.py",
+    python_version = "PY3",
+    target_compatible_with = ["@platforms//os:osx"],
 )
 
 sh_test(

@@ -128,6 +128,10 @@ pub const CARRIED_TABLES: &[CarriedTable] = &[
         ],
     },
     CarriedTable {
+        table: "task_input_delivery", rows_of_task: OWNED_BY_TASK_ID, owner: "{r}.task_id",
+        columns: &["task_id", "id", "attempt_json"], quiet: &[], left_out: &[],
+    },
+    CarriedTable {
         table: "stage_run",
         rows_of_task: OWNED_BY_TASK_ID,
         owner: "{r}.task_id",

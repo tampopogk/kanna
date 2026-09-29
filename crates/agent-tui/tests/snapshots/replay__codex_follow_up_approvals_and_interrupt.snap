@@ -1,0 +1,29 @@
+---
+source: tests/replay.rs
+expression: s
+---
+you: Reply with exactly: hello
+assistant: hello
+end: ✓ Turn complete
+you: What word did you just reply with? One word.
+assistant: hello
+end: ✓ Turn complete
+you: Create a file named made.txt containing spike-ok by running the shell command `echo spike-ok > made.txt`. If it is declined, try exactly once more.
+assistant: I’ll run the command to create `made.txt`.⏎
+Tools · 1 completed · 1 failed
+    Declined Shell echo spike-ok > made.txt
+    Succeeded Shell echo spike-ok > made.txt
+approval [echo spike-ok > made.txt] Codex wants to run a command (Answered("Denied"))
+approval [echo spike-ok > made.txt] Codex wants to run a command (Answered("Allowed once"))
+assistant: Created `made.txt` containing `spike-ok` on the second attempt.
+end: ✓ Turn complete
+you: Run the shell command `sleep 30` and wait for it.
+assistant: I’ll run `sleep 30` and wait for it to finish.⏎
+Tools · 0 completed · 1 stopped
+    Stopped Shell sleep 30
+approval [sleep 30] Codex wants to run a command (Answered("Allowed once"))
+end: ■ Turn stopped
+you: Reply with just: ok
+assistant: ok
+end: ✓ Turn complete
+status: Ready

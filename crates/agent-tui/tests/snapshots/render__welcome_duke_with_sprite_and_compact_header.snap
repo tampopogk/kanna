@@ -1,0 +1,34 @@
+---
+source: tests/render.rs
+expression: d
+---
+  ▀▀▀▀▀▀
+ ▄▀▀▀▀▀▀▄  Harness Claude   Model claude-sonnet-4-6   Effort high (requested)               ✓ Ready
+  ▀▀▀▀▀▀
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+
+
+     ▀▀▀▀▀▀▀▀▀▀▀▀     Hail to the king, baby.
+     ▀▀▀▀▀▀▀▀▀▀▀▀     It's time to kick ass and chew bubble gum…
+     ▀▀▀▀▀▀▀▀▀▀▀▀
+   ▄▄▀▀▀▀▀▀▀▀▀▀▀▀▄▄   Start a conversation in this project. Your agent can read files, make changes
+   ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀   and run commands.
+     ▀▀▀▀▀▀▀▀▀▀▀▀
+                      ✓ Connected · Claude · example
+
+
+
+
+
+
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ › Message your agent, or / for commands
+
+ Enter send   Ctrl+J newline   Ctrl+Q quit   / commands   Tab focus       ● Skin Duke Nukem 3D ▾ F2

@@ -57,6 +57,7 @@ mod task_federation;
 mod task_files;
 mod task_graph;
 mod task_input;
+mod task_input_delivery;
 mod task_logs;
 mod task_ports;
 mod task_raw_input;
@@ -207,7 +208,7 @@ pub(crate) use tasks::create_transferred_task_in_process;
 pub(crate) use task_input::{
     handle_task_terminal_state, mark_task_session_interrupted,
     mark_task_session_interrupted_for_recovery, restore_task_run_for_live_session,
-    try_submit_task_input, try_submit_task_input_if_session, TaskInputError,
+    try_submit_task_input_for_run, try_submit_task_input_if_session, TaskInputError,
     SESSION_INTERRUPTION_FEEDBACK,
 };
 

@@ -1,0 +1,11 @@
+---
+source: tests/replay.rs
+expression: summary(&app)
+---
+you: /context
+assistant: ## Context Usage⏎⏎**Model:** claude-haiku-4-5-20251001  ⏎**Tokens:** 19.1k / 200
+end: ✓ Turn complete
+you: Reply with just: ok
+assistant: ok
+end: ✓ Turn complete
+status: Ready

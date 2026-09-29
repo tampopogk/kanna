@@ -795,15 +795,51 @@
     },
     {
       "name": "kanna_send_task_input",
-      "description": "Send ordinary input text to a Kanna task's live daemon PTY session as one logical message with its own Enter. Delivery is live-session-only and fenced to the PTY process ID observed before acceptance while holding the task's lifecycle lease. A live session always takes the message: the daemon types the text and writes its submission boundary immediately, without waiting for the terminal to settle and without inspecting the composer. If a human has an unsent draft at that terminal the message lands after it and both are submitted \u2014 an accepted collision, chosen deliberately over a delivery path that could strand a message at a prompt nobody pressed Enter at. Nothing is ever queued, parked, or refused because of what is on that composer. If no live input-capable agent session exists, or that session is replaced before acceptance, the call fails with reason no_live_agent_session and reports the latest run status and finish time when available; use kanna_resume_task to preserve provider context when possible, or kanna_rerun_stage to start fresh. A delivery_uncertain failure means the round trip to the daemon was lost after the message may already have reached the PTY, so it must not be retried blindly. This can steer a merge singleton under its repo-defined policy. Every accepted delivery is recorded durably against the task and is readable afterwards through kanna_task_inputs, so a later stage can see what was instructed here; an uncertain delivery is deliberately not recorded. Set source to say who is speaking.",
+      "description": "Send a logical message to a live task session. Native terminals retain the PTY write-and-Enter contract (HTTP 204). Kanna-hosted agent-tui sessions accept messages into a bounded durable FIFO queue (HTTP 202 with delivery id and state); queued input never edits a human draft, answers an approval card, or interrupts a turn. Only a correlated provider acknowledgement changes an attempt to submitted and adds it to kanna_task_inputs. Use delivery_id for idempotent retries; reusing it with a changed payload is rejected. Inspect queued, failed, or uncertain attempts with kanna_task_input_deliveries. An uncertain attempt may have reached the provider: do not resend it with a new id. No live session requires kanna_resume_task or kanna_rerun_stage recovery. Set source to declare who is speaking; verified channel provenance is recorded separately.",
       "method": "POST",
       "path": "/v1/tasks/{task_id}/input",
       "response": "json",
       "params": [
-        { "name": "machine_id", "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.", "type": "string", "required": false, "location": "routing" },
-        { "name": "task_id", "description": "Task id (stable across stages) or one of the task's branch names (task-{id} or task-{id}-{n}).", "type": "string", "required": true, "location": "path" },
-        { "name": "input", "description": "Text to type into the task's agent terminal.", "type": "string", "required": true, "location": "body" },
-        { "name": "source", "description": "Who is speaking: \"operator\" when you are a human or are relaying a human's own words, \"manager\" when an orchestrating agent is instructing the task on its own authority. Omit it when neither applies. The server records the label you declare without verifying it, beside the message and time it can verify.", "type": "string", "required": false, "location": "body", "enum": ["operator", "manager"] }
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "task_id",
+          "description": "Task id (stable across stages) or one of the task's branch names (task-{id} or task-{id}-{n}).",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "input",
+          "description": "Text to type into the task's agent terminal.",
+          "type": "string",
+          "required": true,
+          "location": "body"
+        },
+        {
+          "name": "source",
+          "description": "Who is speaking: \"operator\" when you are a human or are relaying a human's own words, \"manager\" when an orchestrating agent is instructing the task on its own authority. Omit it when neither applies. The server records the label you declare without verifying it, beside the message and time it can verify.",
+          "type": "string",
+          "required": false,
+          "location": "body",
+          "enum": [
+            "operator",
+            "manager"
+          ]
+        },
+        {
+          "name": "delivery_id",
+          "description": "Optional stable input id for hosted-session idempotency. Reuse only with identical text and attachment.",
+          "type": "string",
+          "required": false,
+          "location": "body",
+          "key": "deliveryId"
+        }
       ]
     },
     {
@@ -1360,6 +1396,36 @@
           "location": "path"
         }
       ]
+    },
+    {
+      "name": "kanna_task_input_deliveries",
+      "description": "Inspect durable hosted input attempts, including queued, submitting, submitted, failed and uncertain states. Queued or uncertain entries are not delivered conversation and must not be blindly replayed. Omit delivery_id to list attempts for the task.",
+      "method": "GET",
+      "path": "/v1/tasks/{task_id}/input-deliveries",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "task_id",
+          "description": "Task id (stable across stages) or one of the task's branch names (task-{id} or task-{id}-{n}).",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "delivery_id",
+          "description": "Filter by the stable delivery id returned when submitting input.",
+          "type": "string",
+          "required": false,
+          "location": "query"
+        }
+      ]
     }
   ],
   "guides": [
@@ -1379,7 +1445,7 @@
         },
         {
           "title": "Committed and local layers",
-          "body": "`.kanna/config.json` is the shared repository contract. `.kanna/config.local.json` is read from the open checkout's working tree, never from the origin snapshot, and is deep-merged over the committed file with local values winning. Local config may contain only `agentProviders`, `workflow`, `ports`, `setup`, `teardown`, `test`, and `artifacts`; an unknown key, invalid JSON, or invalid value fails definition resolution and names the file. `agentProviders`, `ports`, and `artifacts` merge entry by entry, with a local entry replacing the committed entry of the same name. Every other permitted key replaces wholesale, and arrays never concatenate. Keep local config gitignored and do not put task-defining fields such as `vars`, `flavors`, `workspace`, `stage_order`, or reserved ports in it.",
+          "body": "`.kanna/config.json` is the shared repository contract. `.kanna/config.local.json` is read from the open checkout's working tree, never from the origin snapshot, and is deep-merged over the committed file with local values winning. Local config may contain only `agentProviders`, `agentFrontends`, `workflow`, `ports`, `setup`, `teardown`, `test`, and `artifacts`; an unknown key, invalid JSON, or invalid value fails definition resolution and names the file. `agentProviders`, `agentFrontends`, `ports`, and `artifacts` merge entry by entry, with a local entry replacing the committed entry of the same name. Every other permitted key replaces wholesale, and arrays never concatenate. Keep local config gitignored and do not put task-defining fields such as `vars`, `flavors`, `workspace`, `stage_order`, or reserved ports in it.",
           "schemaPaths": [""]
         },
         {
@@ -1399,8 +1465,8 @@
         },
         {
           "title": "Provider, model, and effort resolution",
-          "body": "`agentProviders` maps exact agent names or `*` globs to a provider name or to `{ provider, model, effort }`; `provider` may be an ordered candidate list. Exact keys beat globs. Among matching globs, the most non-`*` characters wins and lexical order breaks ties. Selection precedence is: explicit task or stage override; matching `agentProviders` entry (including the local layer); layered `AGENT.md`/`EXTEND.md` frontmatter; global default provider. A rerun, resume, revision, or recovery reproduces the recorded run's provider as an explicit override, while a plain stage advance re-resolves the chain and uses the task's stamp only as the final fallback. Provider-specific model and effort values are layer-coherent: Kanna never combines them across providers or layers. It walks the same chain and takes the first value from a layer that would itself select the resolved provider. In an ordered provider list, model and effort belong only to the leading candidate; fallback candidates use a lower coherent layer or their own stamped/default values. `autocompact` follows the same coherence rule and is Claude-only.",
-          "schemaPaths": ["/properties/agentProviders"]
+          "body": "`agentProviders` maps exact agent names or `*` globs to a provider name or to `{ provider, model, effort }`; `provider` may be an ordered candidate list. Exact keys beat globs. Among matching globs, the most non-`*` characters wins and lexical order breaks ties. Selection precedence is: explicit task or stage override; matching `agentProviders` entry (including the local layer); layered `AGENT.md`/`EXTEND.md` frontmatter; global default provider. A rerun, resume, revision, or recovery reproduces the recorded run's provider as an explicit override, while a plain stage advance re-resolves the chain and uses the task's stamp only as the final fallback. Provider-specific model and effort values are layer-coherent: Kanna never combines them across providers or layers. It walks the same chain and takes the first value from a layer that would itself select the resolved provider. In an ordered provider list, model and effort belong only to the leading candidate; fallback candidates use a lower coherent layer or their own stamped/default values. `autocompact` follows the same coherence rule and is Claude-only. `agentFrontends` separately maps `claude` or `codex` to `native` (the default) or `agent-tui`. It chooses the bundled PTY frontend after provider/model resolution, preserves provider identity and native transcripts, and does not change SDK/headless sessions. Hosted logical input is queued durably and reports a delivery receipt; only provider-confirmed inputs enter delivered history. Inspect pending or uncertain messages with `kanna_task_input_deliveries`.",
+          "schemaPaths": ["/properties/agentProviders", "/properties/agentFrontends"]
         },
         {
           "title": "Artifact storage",

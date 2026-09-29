@@ -435,12 +435,7 @@ async fn advance_stage_posts_the_next_stage_provider_override() {
     let request = handle.await.unwrap();
 
     // The advance is the operator's; the model is the agent's.
-    assert!(
-        request.ends_with(
-            r#"{"nextStageAgentProvider":"codex","nextStageEffort":"low","nextStageModel":"gpt-6-astra","nextStageProviderSource":"agent","source":"operator"}"#
-        ),
-        "unexpected request: {request}"
-    );
+    assert_eq!(serde_json::from_str::<serde_json::Value>(request.split_once("\r\n\r\n").unwrap().1).unwrap(), serde_json::from_str::<serde_json::Value>(r#"{"nextStageAgentProvider":"codex","nextStageEffort":"low","nextStageModel":"gpt-6-astra","nextStageProviderSource":"agent","source":"operator"}"#).unwrap());
 }
 
 #[tokio::test]
@@ -1308,12 +1303,7 @@ async fn subscribe_events_posts_diagnostic_filters_and_timing_overrides_in_the_r
     let request = handle.await.unwrap();
 
     assert!(request.starts_with("POST /v1/event-subscriptions HTTP/1.1"));
-    assert!(
-        request.contains(
-            r#"{"delivery":"input","diagnostic":true,"eventTypes":["run.finished"],"excludeEventTypes":["task.activity_changed"],"excludeTaskIds":[],"localOnly":false,"minAdmissionIntervalMs":60000,"taskId":"task-123","taskIds":[]}"#
-        ),
-        "{request}"
-    );
+    assert_eq!(serde_json::from_str::<serde_json::Value>(request.split_once("\r\n\r\n").unwrap().1).unwrap(), serde_json::from_str::<serde_json::Value>(r#"{"delivery":"input","diagnostic":true,"eventTypes":["run.finished"],"excludeEventTypes":["task.activity_changed"],"excludeTaskIds":[],"localOnly":false,"minAdmissionIntervalMs":60000,"taskId":"task-123","taskIds":[]}"#).unwrap());
 }
 
 #[tokio::test]
@@ -1335,12 +1325,7 @@ async fn subscribe_events_omits_timing_overrides_and_filters_when_not_specified(
         .expect("subscribe-events catalog call");
     let request = handle.await.unwrap();
 
-    assert!(
-        request.contains(
-            r#"{"delivery":"input","diagnostic":false,"excludeTaskIds":[],"localOnly":false,"taskId":"task-123","taskIds":[]}"#
-        ),
-        "{request}"
-    );
+    assert_eq!(serde_json::from_str::<serde_json::Value>(request.split_once("\r\n\r\n").unwrap().1).unwrap(), serde_json::from_str::<serde_json::Value>(r#"{"delivery":"input","diagnostic":false,"excludeTaskIds":[],"localOnly":false,"taskId":"task-123","taskIds":[]}"#).unwrap());
     assert!(!request.contains("quietMs"), "{request}");
     assert!(!request.contains("maxHoldMs"), "{request}");
     assert!(!request.contains("minAdmissionIntervalMs"), "{request}");
@@ -1689,4 +1674,19 @@ async fn subtask_join_tools_are_refused_by_a_server_without_subtask_joins() {
         seen.iter().all(|line| line.starts_with("GET /v1/status ")),
         "nothing but the status read was sent: {seen:?}"
     );
+}
+
+#[tokio::test]
+async fn hosted_input_202_preserves_delivery_receipt() {
+    let body = json!({"id":"delivery-1", "state":"queued", "sequence":2});
+    let (base_url, handle) =
+        serve_single_http_response(http_json_response("202 Accepted", &body.to_string())).await;
+    let mut request =
+        build_send_task_input_request("line one\nline two".into(), Some("manager".into()));
+    request.delivery_id = Some("delivery-1".into());
+    let response = send_task_input_via_api(&base_url, "task-1", &request)
+        .await
+        .unwrap();
+    assert_eq!(response, TaskInputResponse::Hosted(body));
+    assert!(handle.await.unwrap().contains("deliveryId"));
 }

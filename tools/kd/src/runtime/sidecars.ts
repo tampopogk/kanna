@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import type { CommandRunner } from "./process";
 
 const cargoManifests = [
+  "crates/agent-tui/Cargo.toml",
   "crates/daemon/Cargo.toml",
   "crates/kanna-cli/Cargo.toml",
   "crates/kanna-mcp/Cargo.toml",
@@ -12,6 +13,7 @@ const cargoManifests = [
 ];
 
 const sidecarBinaries = [
+  "agent-tui",
   "kanna-daemon",
   "kanna-cli",
   "kanna-mcp",

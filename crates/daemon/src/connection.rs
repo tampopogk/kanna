@@ -32,21 +32,44 @@ use crate::util::{error_event, recovery_snapshot_to_terminal_snapshot};
 use crate::{agent_runtime, headless_terminal, pty};
 use kanna_daemon::terminal_perf;
 
-/// Answer one `SubmitInput`, waiting for the whole message — its text and its
-/// submission boundary — to reach the PTY before calling it delivered.
-///
-/// There is no withheld, parked, or queued outcome. Until 2026-09-08 this
-/// function could answer "the text is at that composer and its Enter was not
-/// written", or refuse outright because the session's composer had never been
-/// attested, and both answers stranded owner messages until a human typed into
-/// somebody else's terminal. The owner's decision is that a message colliding
-/// with a human's unsent draft is far cheaper than one that silently never
-/// arrives, so a delivery either reaches the PTY or fails loudly.
+/// Native sessions acknowledge text plus Enter at the PTY boundary. Hosted
+/// sessions use the authenticated queue and return its durable receipt; raw
+/// keyboard input continues through the PTY.
 async fn logical_input_event(
     session: &Arc<SessionHandle>,
     session_id: &str,
     data: Vec<u8>,
+    delivery_id: Option<String>,
+    run_id: Option<String>,
 ) -> Event {
+    if let Some(frontend) = &session.hosted_frontend {
+        use kanna_agent_protocol::hosted_frontend::{Command as HostCommand, Response};
+        let text = match String::from_utf8(data) {
+            Ok(text) => text,
+            Err(_) => {
+                return error_event(
+                    Some(protocol::ErrorCode::WriteFailed),
+                    "hosted input must be UTF-8",
+                )
+            }
+        };
+        let workflow_prompt = delivery_id.is_none();
+        let delivery_id = match delivery_id
+            .map(Ok)
+            .unwrap_or_else(kanna_daemon::hosted_frontend::random_id)
+        {
+            Ok(id) => id,
+            Err(error) => {
+                return error_event(Some(protocol::ErrorCode::WriteFailed), error.to_string())
+            }
+        };
+        return match frontend.request(HostCommand::Submit { delivery_id: delivery_id.clone(), text, workflow_prompt, run_id }).await {
+            Ok(Response::Accepted { delivery }) => Event::InputAccepted { session_id: session_id.into(), binding: frontend.config.binding.clone(), delivery },
+            Ok(Response::Rejected { reason }) => error_event(Some(protocol::ErrorCode::HostedInputRejected), reason),
+            Ok(_) => error_event(Some(protocol::ErrorCode::WriteFailed), "unexpected host response"),
+            Err(error) => error_event(Some(protocol::ErrorCode::WriteFailed), format!("host input {delivery_id} acceptance is uncertain: {error}; reconcile the same delivery id before retrying")),
+        };
+    }
     let written = match session.enqueue_logical_input(data) {
         Ok(written) => written,
         Err(_) => {
@@ -243,9 +266,13 @@ pub(crate) async fn handle_connection(
         let cmd = read_command(&mut reader).await;
         match cmd {
             None => break,
-            Some(Command::Handoff { version }) => {
+            Some(Command::Handoff {
+                version,
+                hosted_frontend_version,
+            }) => {
                 let should_close = handle_handoff(
                     version,
+                    hosted_frontend_version,
                     raw_fd,
                     &mut reader,
                     sessions.clone(),
@@ -547,7 +574,7 @@ pub(crate) async fn handle_command(
             executable,
             args,
             cwd,
-            env,
+            mut env,
             cols,
             rows,
             agent_provider,
@@ -608,6 +635,33 @@ pub(crate) async fn handle_command(
 
             lost_handoff_sessions.lock().await.remove(&session_id);
 
+            // The server stamps the resolved map after repository variables.
+            // Never forward a parent's frontend capability into a new session.
+            env.remove(kanna_agent_protocol::hosted_frontend::CONFIG_ENV);
+            let selected = env
+                .get(kanna_daemon::hosted_frontend::FRONTENDS_ENV)
+                .and_then(|value| {
+                    serde_json::from_str::<std::collections::BTreeMap<String, String>>(value).ok()
+                })
+                .is_some_and(|frontends| {
+                    agent_provider.is_some_and(|provider| {
+                        frontends
+                            .get(provider.as_str())
+                            .is_some_and(|value| value == "agent-tui")
+                    })
+                });
+            if selected {
+                if let Err(error) =
+                    kanna_daemon::hosted_frontend::Frontend::prepare(&session_id, &mut env)
+                {
+                    let evt = error_event(
+                        Some(protocol::ErrorCode::PtySpawnFailed),
+                        format!("hosted frontend setup failed: {error}"),
+                    );
+                    let _ = write_event(&mut *writer.lock().await, &evt).await;
+                    return;
+                }
+            }
             match pty::PtySession::spawn(&executable, &args, &cwd, &env, cols, rows) {
                 Ok(mut pty_session) => {
                     // Keep the authoritative duplicate check, one-shot seed
@@ -1096,7 +1150,12 @@ pub(crate) async fn handle_command(
             let _ = write_event(&mut *writer.lock().await, &evt).await;
         }
 
-        Command::SubmitInput { session_id, data } => {
+        Command::SubmitInput {
+            session_id,
+            data,
+            delivery_id,
+            run_id,
+        } => {
             let daemon_lifecycle_guard = daemon_lifecycle.read().await;
             if *daemon_lifecycle_guard != DaemonLifecycleState::Running {
                 let evt = error_event(
@@ -1122,11 +1181,13 @@ pub(crate) async fn handle_command(
                 let _ = write_event(&mut *writer.lock().await, &evt).await;
                 return;
             }
-            let evt = logical_input_event(&session, &session_id, data).await;
+            let evt = logical_input_event(&session, &session_id, data, delivery_id, run_id).await;
             let _ = write_event(&mut *writer.lock().await, &evt).await;
         }
 
         Command::SubmitInputIfSession {
+            run_id,
+            delivery_id,
             session_id,
             expected_pid,
             data,
@@ -1167,7 +1228,7 @@ pub(crate) async fn handle_command(
                 let _ = write_event(&mut *writer.lock().await, &evt).await;
                 return;
             }
-            let evt = logical_input_event(&session, &session_id, data).await;
+            let evt = logical_input_event(&session, &session_id, data, delivery_id, run_id).await;
             let _ = write_event(&mut *writer.lock().await, &evt).await;
         }
 
@@ -1956,6 +2017,18 @@ pub(crate) async fn handle_command(
                         ) {
                             log::warn!("[attempt-archive] kill capture failed: {error}");
                         }
+                    }
+                }
+                if let Some(frontend) = session
+                    .as_ref()
+                    .and_then(|session| session.hosted_frontend.as_ref())
+                {
+                    let event = Event::HostedFrontend {
+                        session_id: session_id.clone(),
+                        snapshot: frontend.final_snapshot(),
+                    };
+                    if let Ok(json) = serde_json::to_string(&event) {
+                        let _ = broadcast_tx.send(json);
                     }
                 }
                 let exit_evt = Event::Exit {

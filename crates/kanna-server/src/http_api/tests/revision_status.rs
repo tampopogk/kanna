@@ -460,7 +460,12 @@ async fn automatic_revision_completion_dispatches_commit_post_through_http_route
         let mut reader = BufReader::new(read_half);
         let command = read_test_daemon_command(&mut reader, &mut write_half).await;
         match command {
-            DaemonCommand::SubmitInput { session_id, data } => {
+            DaemonCommand::SubmitInput {
+                delivery_id: None,
+                run_id: _,
+                session_id,
+                data,
+            } => {
                 assert_eq!(session_id, revision_session_id);
                 let message = String::from_utf8(data).unwrap();
                 assert!(message.contains("Commit changes for"));
@@ -1547,7 +1552,10 @@ async fn human_revision_request_ignores_the_budget_and_hands_it_back() {
         .into_iter()
         .filter(|run| run.stage == "in progress" && run.kind == "main")
         .count();
-    assert_eq!(revision_runs, 1, "the authorized request starts exactly once");
+    assert_eq!(
+        revision_runs, 1,
+        "the authorized request starts exactly once"
+    );
 
     // The announced budget is the one the revision leaves behind. Reporting
     // the pre-reset count made a human revision claim a spent budget

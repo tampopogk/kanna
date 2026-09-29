@@ -33,6 +33,7 @@
       "infoPlist": "Info.plist"
     },
     "externalBin": [
+      "binaries/agent-tui",
       "binaries/kanna-daemon",
       "binaries/kanna-cli",
       "binaries/kanna-mcp",

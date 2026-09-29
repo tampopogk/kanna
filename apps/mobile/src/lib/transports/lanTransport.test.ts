@@ -8,6 +8,12 @@ import {
 import { ServerRefusalError } from "./serverRefusal";
 
 describe("createLanTransport", () => {
+  it("preserves a hosted 202 queue receipt instead of claiming delivery", async () => {
+    const fetchImpl = vi.fn<FetchLike>().mockResolvedValue({ ok: true, status: 202, json: async () => ({ id: "delivery-1", state: "queued" }) });
+    const transport = createLanTransport("http://127.0.0.1:48120", fetchImpl);
+    await expect(transport.sendTaskInput("task-1", "next turn")).resolves.toEqual({ status: "queued", deliveryId: "delivery-1" });
+  });
+
   it("posts missing-session recovery to the task resume action", async () => {
     const fetchImpl = vi.fn<FetchLike>().mockResolvedValue({
       ok: true,

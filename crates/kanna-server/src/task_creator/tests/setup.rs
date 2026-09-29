@@ -321,6 +321,7 @@ async fn failed_initial_pty_setup_records_its_stream_against_the_failed_run() {
 
 fn setup_create_request(agent_provider: &str) -> CreateTaskRequest {
     CreateTaskRequest {
+        agent_frontend: None,
         repo_id: "repo-1".to_string(),
         prompt: "Use the setup-provisioned provider".to_string(),
         display_name: None,
@@ -404,6 +405,7 @@ fn initial_pty_task_binds_first_provider_before_setup() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Use the first configured provider".to_string(),
             display_name: None,
@@ -479,6 +481,7 @@ async fn initial_headless_task_runs_setup_before_resolving_workspace_provider() 
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Use the setup-provisioned Codex".to_string(),
             display_name: None,

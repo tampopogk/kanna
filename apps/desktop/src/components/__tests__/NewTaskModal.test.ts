@@ -27,6 +27,36 @@ vi.mock("../../invoke", () => ({
 }));
 
 describe("NewTaskModal", () => {
+  it.each(["claude", "codex"] as const)("submits the custom TUI choice for %s", async (provider) => {
+    const wrapper = mount(NewTaskModal, {
+      props: { availableAgentProviders: [provider], defaultAgentProvider: provider, baseBranches: ["origin/main"] },
+      global: { mocks: { $t: (key: string) => key } },
+    });
+    const checkbox = wrapper.get('[data-testid="custom-tui-checkbox"]');
+    expect((checkbox.element as HTMLInputElement).checked).toBe(false);
+    await checkbox.setValue(true);
+    await wrapper.get("textarea").setValue("Use custom frontend");
+    await wrapper.get(".btn-primary").trigger("click");
+    expect(wrapper.emitted("submit")?.at(-1)?.slice(-2)).toEqual([undefined, true]);
+    await checkbox.setValue(false);
+    await wrapper.get("textarea").setValue("Use native frontend");
+    await wrapper.get(".btn-primary").trigger("click");
+    expect(wrapper.emitted("submit")?.at(-1)?.slice(-2)).toEqual([undefined, false]);
+  });
+
+  it("does not apply a hidden custom TUI choice to an unsupported provider", async () => {
+    const wrapper = mount(NewTaskModal, {
+      props: { availableAgentProviders: ["claude", "opencode"], defaultAgentProvider: "claude", baseBranches: ["origin/main"] },
+      global: { mocks: { $t: (key: string) => key } },
+    });
+    await wrapper.get('[data-testid="custom-tui-checkbox"]').setValue(true);
+    await wrapper.get(".agent-provider").trigger("click");
+    expect(wrapper.find('[data-testid="custom-tui-checkbox"]').exists()).toBe(false);
+    await wrapper.get("textarea").setValue("Use OpenCode");
+    await wrapper.get(".btn-primary").trigger("click");
+    expect(wrapper.emitted("submit")?.at(-1)).toEqual(["Use OpenCode", "opencode", "no-review", "origin/main", "pty", []]);
+  });
+
   it("submits an explicit Copilot model with the new task", async () => {
     const wrapper = mount(NewTaskModal, {
       props: { availableAgentProviders: ["copilot"], defaultAgentProvider: "copilot", baseBranches: ["origin/main"] },
@@ -112,7 +142,7 @@ describe("NewTaskModal", () => {
     await wrapper.get("textarea").trigger("keydown", { key: "Enter", metaKey: true });
 
     expect(wrapper.emitted("submit")?.[0]).toEqual([
-      "Use the configured workflow", "claude", "qa-review", "origin/main", "pty", [],
+      "Use the configured workflow", "claude", "qa-review", "origin/main", "pty", [], undefined, false,
     ]);
   });
 
@@ -647,7 +677,7 @@ describe("NewTaskModal", () => {
     await wrapper.get("textarea").trigger("keydown", { key: "Enter", metaKey: true });
 
     expect(wrapper.emitted("submit")).toEqual([
-      ["Ship branch picker", "claude", "default", "feature/task-base-branch", "pty", []],
+      ["Ship branch picker", "claude", "default", "feature/task-base-branch", "pty", [], undefined, false],
     ]);
   });
 
@@ -734,7 +764,7 @@ describe("NewTaskModal", () => {
     expect(wrapper.find('[data-testid="workflow-option-review"]').exists()).toBe(false);
     await wrapper.get("textarea").trigger("keydown", { key: "Enter", metaKey: true });
 
-    expect(wrapper.emitted("submit")).toEqual([["Ship workflow picker", "claude", "review", "origin/main", "pty", []]]);
+    expect(wrapper.emitted("submit")).toEqual([["Ship workflow picker", "claude", "review", "origin/main", "pty", [], undefined, false]]);
   });
 
   it("submits only terminal agent choices", async () => {
@@ -758,7 +788,7 @@ describe("NewTaskModal", () => {
     await wrapper.get("textarea").setValue("Keep raw");
     await wrapper.get("textarea").trigger("keydown", { key: "Enter", metaKey: true });
 
-    expect(wrapper.emitted("submit")?.at(-1)).toEqual(["Keep raw", "claude", "default", "origin/main", "pty", []]);
+    expect(wrapper.emitted("submit")?.at(-1)).toEqual(["Keep raw", "claude", "default", "origin/main", "pty", [], undefined, false]);
 
     await wrapper.get(".agent-provider").trigger("click");
     await flushPromises();
@@ -767,7 +797,7 @@ describe("NewTaskModal", () => {
     await wrapper.get("textarea").setValue("Use codex raw");
     await wrapper.get("textarea").trigger("keydown", { key: "Enter", metaKey: true });
 
-    expect(wrapper.emitted("submit")?.at(-1)).toEqual(["Use codex raw", "codex", "default", "origin/main", "pty", []]);
+    expect(wrapper.emitted("submit")?.at(-1)).toEqual(["Use codex raw", "codex", "default", "origin/main", "pty", [], undefined, false]);
 
     await wrapper.get(".agent-provider").trigger("click");
     await flushPromises();
@@ -789,7 +819,7 @@ describe("NewTaskModal", () => {
     await wrapper.get("textarea").setValue("Use claude");
     await wrapper.get("textarea").trigger("keydown", { key: "Enter", metaKey: true });
 
-    expect(wrapper.emitted("submit")?.at(-1)).toEqual(["Use claude", "claude", "default", "origin/main", "pty", []]);
+    expect(wrapper.emitted("submit")?.at(-1)).toEqual(["Use claude", "claude", "default", "origin/main", "pty", [], undefined, false]);
   });
 
   it("supports keyboard navigation in the workflow picker and returns focus to the toggle", async () => {
@@ -951,7 +981,7 @@ describe("NewTaskModal", () => {
     await search.trigger("keydown", { key: "Enter", metaKey: true });
 
     expect(wrapper.emitted("submit")).toEqual([
-      ["Ship branch picker submit", "claude", "default", "origin/main", "pty", []],
+      ["Ship branch picker submit", "claude", "default", "origin/main", "pty", [], undefined, false],
     ]);
 
     wrapper.unmount();
@@ -1043,7 +1073,7 @@ describe("NewTaskModal", () => {
     await wrapper.get("textarea").trigger("keydown", { key: "Enter", metaKey: true });
 
     expect(wrapper.emitted("submit")).toEqual([
-      ["Ship branch fallback", "claude", "default", "origin/main", "pty", []],
+      ["Ship branch fallback", "claude", "default", "origin/main", "pty", [], undefined, false],
     ]);
   });
 
@@ -1164,7 +1194,7 @@ describe("NewTaskModal", () => {
       await wrapper.get("textarea").trigger("keydown", { key: "Enter", metaKey: true });
 
       expect(wrapper.emitted("submit")?.at(-1)).toEqual([
-        "Ship blocked task", "claude", "default", "origin/main", "pty", ["task-a", "task-b"],
+        "Ship blocked task", "claude", "default", "origin/main", "pty", ["task-a", "task-b"], undefined, false,
       ]);
     });
 
@@ -1185,7 +1215,7 @@ describe("NewTaskModal", () => {
       await wrapper.get("textarea").trigger("keydown", { key: "Enter", metaKey: true });
 
       expect(wrapper.emitted("submit")?.at(-1)).toEqual([
-        "Ship pruned blockers", "claude", "default", "origin/main", "pty", ["task-a"],
+        "Ship pruned blockers", "claude", "default", "origin/main", "pty", ["task-a"], undefined, false,
       ]);
     });
   });

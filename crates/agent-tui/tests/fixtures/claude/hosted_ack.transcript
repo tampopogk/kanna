@@ -1,0 +1,4 @@
+# Claude Code 2.1.284, 2026-09-28; user request and its correlated replay echo.
+# Other provider output omitted. Native session and message UUIDs preserved.
+> {"type":"user","uuid":"f5a383e0-7893-4758-9e42-f438f38240ac","session_id":"4adc0e06-42a6-4694-9610-94cfdd4068da","parent_tool_use_id":null,"message":{"role":"user","content":"Reply exactly: acknowledgement-probe. Do not use tools."}}
+< {"type":"user","message":{"role":"user","content":"Reply exactly: acknowledgement-probe. Do not use tools."},"session_id":"4adc0e06-42a6-4694-9610-94cfdd4068da","parent_tool_use_id":null,"uuid":"f5a383e0-7893-4758-9e42-f438f38240ac","timestamp":"2026-09-28T20:08:03.861Z","isReplay":true}

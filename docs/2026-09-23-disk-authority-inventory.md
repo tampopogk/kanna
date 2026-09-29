@@ -571,3 +571,5 @@ kanna-server storage-authority status    # mode: sql, no "disk-first writes sinc
   start.
 - Making `disk` the default authority is a later rollout, after `disk` has
   run on staging (owner, 2026-09-23).
+
+Hosted frontend input attempts (`task_input_delivery`, migration 105) are carried in task.json state. Only correlated provider receipts create input ledger entries. Pending/uncertain attempts block transfer; completed history remains in the carried source task.json. Rebuild restores attempts without executing or replaying them.

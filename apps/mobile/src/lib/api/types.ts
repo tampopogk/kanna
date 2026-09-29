@@ -420,7 +420,11 @@ export interface TaskPreviewOpenResult {
   ports: TaskPreviewPort[];
 }
 
-export type TaskInputResult = { status: "delivered" };
+export type TaskInputResult =
+  | { status: "delivered" }
+  | { status: "queued"; deliveryId: string }
+  | { status: "uncertain"; message: string }
+  | { status: "failed"; reason: "transport_rejected" | "server_rejected"; message: string };
 
 export interface TaskLatestRun {
   id: string;

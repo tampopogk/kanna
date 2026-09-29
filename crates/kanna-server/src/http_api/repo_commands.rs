@@ -100,6 +100,7 @@ pub(super) async fn run_repo_command(
     let response = super::tasks::create_task_with_requested_id(
         Arc::clone(&state),
         crate::mobile_api::CreateTaskRequest {
+            agent_frontend: None,
             repo_id: repo_id.clone(),
             prompt: launch.prompt,
             display_name: Some(launch.display_name),

@@ -43,6 +43,7 @@ pub(crate) mod stage_edges;
 pub(crate) mod stage_run_prompt;
 pub(crate) mod stage_runs;
 pub(crate) mod subtask_joins;
+pub(crate) mod task_input_delivery;
 pub(crate) mod terminal_archives;
 pub(crate) mod transfer_task_state;
 pub use terminal_archives::AgentTerminalAttempt;
@@ -238,6 +239,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "102_transferred_task_state",
     "103_disk_state_records",
     "104_disk_divergence",
+    "105_hosted_input_delivery",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2760,6 +2762,11 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     run_migration(conn, "104_disk_divergence", |conn| {
         conn.execute_batch(disk_authority::DIVERGENCE_SCHEMA)
     })?;
+    run_migration(
+        conn,
+        "105_hosted_input_delivery",
+        task_input_delivery::create_schema,
+    )?;
     task_state::sync_disk_state_triggers(conn)?;
 
     Ok(())

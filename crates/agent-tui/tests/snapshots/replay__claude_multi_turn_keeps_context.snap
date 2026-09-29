@@ -1,0 +1,20 @@
+---
+source: tests/replay.rs
+expression: summary(&app)
+---
+you: Reply with exactly: hello
+assistant: hello
+end: ✓ Turn complete
+you: What word did you just reply with? One word.
+assistant: hello
+end: ✓ Turn complete
+you: Run the shell command `echo spike-ok > made.txt` with Bash. If denied, try exactly once more.
+Tools · 0 completed · 2 failed
+    Declined Shell echo spike-ok > made.txt
+    Declined Shell echo spike-ok > made.txt
+assistant: The command was denied both times. It requires approval to create or modify file
+end: ✓ Turn complete
+you: Use AskUserQuestion to ask me whether I prefer red or blue, then tell me my answer.
+assistant: I don't have access to an "AskUserQuestion" tool in my current environment. The 
+end: ✓ Turn complete
+status: Ready

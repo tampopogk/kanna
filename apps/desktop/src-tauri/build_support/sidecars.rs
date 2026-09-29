@@ -4,7 +4,7 @@
 //! `tauri_build` hard-fails on a missing `externalBin` entry, which made
 //! `cargo check --workspace` and `cargo clippy --all-targets` unusable in a
 //! fresh worktree: neither produces a bundle, but both run this crate's build
-//! script. Staging the sidecars costs six cargo builds, so paying it to lint
+//! script. Staging the sidecars costs seven cargo builds, so paying it to lint
 //! is the wrong trade.
 //!
 //! The Bazel release path already resolved this the same way — see the

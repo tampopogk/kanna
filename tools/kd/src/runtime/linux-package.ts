@@ -23,12 +23,13 @@ export type LinuxArchitecture = "x86_64" | "arm64";
  *  `/usr/bin` launcher and the real binary cannot collide in a PATH lookup. */
 export const DESKTOP_BINARY_NAME = "kanna-desktop";
 
-/** Everything a package ships beside the desktop binary: the six sidecars the
+/** Everything a package ships beside the desktop binary: the seven sidecars the
  *  desktop spawns plus `kanna-worker`, which is Kanna-owned and so bundled
  *  rather than assumed present. */
 export const INSTALLED_EXECUTABLES = [
   DESKTOP_BINARY_NAME,
   "kanna-worker",
+  "agent-tui",
   "kanna-daemon",
   "kanna-cli",
   "kanna-mcp",

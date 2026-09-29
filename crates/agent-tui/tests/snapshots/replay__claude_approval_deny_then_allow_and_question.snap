@@ -1,0 +1,24 @@
+---
+source: tests/replay.rs
+expression: summary(&app)
+---
+you: Run the shell command `echo spike-ok > made.txt` with Bash. If denied, try exactly once more.
+Tools · 1 completed · 1 failed
+    Declined Shell echo spike-ok > made.txt
+    Succeeded Shell echo spike-ok > made.txt
+approval [echo spike-ok > made.txt] Claude wants to run a command (Answered("Denied"))
+approval [echo spike-ok > made.txt] Claude wants to run a command (Answered("Allowed once"))
+assistant: Done. Created `made.txt` with the content "spike-ok" on the second attempt.
+end: ✓ Turn complete
+you: Use AskUserQuestion to ask me whether I prefer red or blue, then tell me my answer.
+Tools · 1 completed
+    Succeeded AskUserQuestion 
+question Do you prefer red or blue? (Answered("Answered: Blue"))
+assistant: You prefer **blue**.
+end: ✓ Turn complete
+you: Run `sleep 30` with Bash in the foreground (not in background).
+Tools · 0 completed · 1 failed
+    Failed Shell sleep 30
+assistant: The Bash tool has blocked the standalone `sleep 30` command. The tool doesn't al
+end: ✓ Turn complete
+status: Ready
