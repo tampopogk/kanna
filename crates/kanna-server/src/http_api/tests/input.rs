@@ -2426,6 +2426,209 @@ async fn send_task_input_rejects_a_finished_task_without_a_live_daemon_session()
 }
 
 #[tokio::test]
+async fn send_task_input_delivers_to_a_hosted_live_session_after_a_finished_run() {
+    use kanna_agent_protocol::hosted_frontend::{
+        Binding, Delivery, DeliveryState, RuntimeState, Snapshot, VERSION,
+    };
+    use kanna_daemon::protocol::{
+        Command as DaemonCommand, Event as DaemonEvent, SessionInfo, SessionState, SessionStatus,
+    };
+    use sha2::{Digest, Sha256};
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::net::UnixListener;
+
+    let unique = format!("task-input-hosted-live-finished-{}", unique_test_suffix());
+    let daemon_dir = std::env::temp_dir().join(format!("{unique}-daemon"));
+    std::fs::create_dir_all(&daemon_dir).unwrap();
+    let socket_path = daemon_socket_path_for_dir(&daemon_dir.to_string_lossy());
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let snapshot = Snapshot {
+        version: VERSION,
+        binding: Binding {
+            task_id: "task-live".into(),
+            run_id: "run-original".into(),
+            session_id: "task-live".into(),
+            incarnation: "live-incarnation".into(),
+        },
+        frontend_pid: 42,
+        active_run_id: "run-succeeded".into(),
+        sequence: 0,
+        provider_session_id: None,
+        state: RuntimeState::Idle,
+        diagnostic: None,
+        composer_text: String::new(),
+        queued_count: 0,
+        deliveries: Vec::new(),
+        retired: false,
+        notice: None,
+    };
+    let active_run_id = snapshot.active_run_id.clone();
+    let daemon_server = tokio::spawn(async move {
+        let mut commands = Vec::new();
+        for command_count in [2, 1] {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            for _ in 0..command_count {
+                let command = read_test_daemon_command(&mut reader, &mut write_half).await;
+                let response = match &command {
+                    DaemonCommand::List => DaemonEvent::SessionList {
+                        sessions: vec![SessionInfo {
+                            hosted_frontend: Some(snapshot.clone()),
+                            session_id: "task-live".to_string(),
+                            pid: 42,
+                            cwd: "/tmp".to_string(),
+                            state: SessionState::Active,
+                            idle_seconds: 0,
+                            status: SessionStatus::Idle,
+                            status_observed: true,
+                            kind: Default::default(),
+                            composer_text: None,
+                            composer_attestation: Default::default(),
+                            attempt_id: None,
+                        }],
+                    },
+                    DaemonCommand::SubmitInputIfSession {
+                        delivery_id: Some(id),
+                        run_id: Some(run_id),
+                        data,
+                        ..
+                    } => DaemonEvent::InputAccepted {
+                        session_id: "task-live".into(),
+                        binding: snapshot.binding.clone(),
+                        delivery: Delivery {
+                            initial_prompt: false,
+                            run_id: run_id.clone(),
+                            delivery_id: id.clone(),
+                            sequence: 1,
+                            payload_hash: format!("{:x}", Sha256::digest(data)),
+                            text: None,
+                            state: DeliveryState::Submitted,
+                            error: None,
+                        },
+                    },
+                    other => panic!("unexpected daemon command: {other:?}"),
+                };
+                commands.push(command);
+                write_half
+                    .write_all(
+                        format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+        commands
+    });
+
+    let config = merge_test_config(&unique, &daemon_dir);
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo("repo-1", "Repo One").unwrap();
+    db.insert_test_pipeline_item(
+        "task-live",
+        "repo-1",
+        "Live task",
+        Some("Live task"),
+        "in progress",
+        "2026-08-12 04:00:00",
+    )
+    .unwrap();
+    db.insert_stage_run(crate::db::NewStageRun {
+        id: "run-succeeded",
+        task_id: "task-live",
+        stage: "in progress",
+        kind: "main",
+        agent: Some("implement"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: Some("task-live"),
+        provider_session_id: None,
+        cwd: None,
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+    db.finish_stage_run("run-succeeded", "succeeded", Some("done"), None)
+        .unwrap();
+    drop(db);
+
+    let app = super::router(Arc::new(super::AppState::new(config.clone())));
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/v1/tasks/task-live/input")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "input": "One more change",
+                        "source": "operator",
+                        "deliveryId": "after-finish",
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let receipt: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(receipt["state"], "submitted");
+    assert_eq!(receipt["runId"], active_run_id);
+    assert_eq!(receipt["stage"], "in progress");
+
+    // A real ID conflict must still return 409, without another submission.
+    let conflict = app
+        .oneshot(
+            Request::post("/v1/tasks/task-live/input")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "input": "Different message",
+                        "deliveryId": "after-finish",
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(conflict.status(), StatusCode::CONFLICT);
+    let body = axum::body::to_bytes(conflict.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(error["reason"], "delivery_conflict");
+    let commands = daemon_server.await.unwrap();
+    assert!(matches!(commands[0], DaemonCommand::List));
+    assert!(matches!(
+        &commands[1],
+        DaemonCommand::SubmitInputIfSession {
+            delivery_id: Some(id), run_id: Some(run_id), session_id, expected_pid, data }
+            if session_id == "task-live" && *expected_pid == 42
+                && data == b"One more change" && id == "after-finish"
+                && run_id == &active_run_id
+    ));
+    assert!(matches!(commands[2], DaemonCommand::List));
+    let db = Db::open(&config.db_path).unwrap();
+    let inputs = db.list_task_inputs("task-live", 100).unwrap();
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs[0].run_id.as_deref(), Some(active_run_id.as_str()));
+    assert_eq!(inputs[0].message, "One more change");
+    drop(db);
+
+    let _ = std::fs::remove_file(socket_path);
+    let _ = std::fs::remove_dir_all(daemon_dir);
+    let _ = std::fs::remove_file(config.db_path);
+}
+
+#[tokio::test]
 async fn send_task_input_delivers_to_a_live_session_after_a_finished_run() {
     use kanna_daemon::protocol::{
         Command as DaemonCommand, Event as DaemonEvent, SessionInfo, SessionState, SessionStatus,

@@ -83,6 +83,7 @@ impl Db {
     pub(crate) fn prepare_task_input_delivery(
         &self,
         binding: &Binding,
+        active_run_id: &str,
         id: &str,
         message: &str,
         source: &str,
@@ -101,7 +102,13 @@ impl Db {
             let (run_id, stage): (String, Option<String>) = if initial_prompt {
                 self.conn.query_row("SELECT id, stage FROM stage_run WHERE id = ? AND task_id = ?", params![binding.run_id, binding.task_id], |row| Ok((row.get(0)?, row.get(1)?)))?
             } else {
-                self.conn.query_row("SELECT id, stage FROM stage_run WHERE task_id = ? AND status = 'running' AND kind IN ('main','post') ORDER BY rowid DESC LIMIT 1", [&binding.task_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                let running = self.conn.query_row("SELECT id, stage FROM stage_run WHERE task_id = ? AND status = 'running' AND kind IN ('main','post') ORDER BY rowid DESC LIMIT 1", [&binding.task_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+                match running {
+                    Some(run) => run,
+                    // A live frontend still accepts operator input at a manual
+                    // gate. Its active run can differ from its original binding.
+                    None => self.conn.query_row("SELECT id, stage FROM stage_run WHERE id = ? AND task_id = ?", params![active_run_id, binding.task_id], |row| Ok((row.get(0)?, row.get(1)?)))?,
+                }
             };
             let attempt = Attempt { id: id.into(), binding: binding.clone(), run_id, stage, sequence: None, payload_hash: hash,
                 request_fingerprint, message: message.into(), source: source.into(), channel_identity: channel.clone(), state: DeliveryState::Queued,
@@ -231,6 +238,7 @@ impl Db {
                         binding.run_id = delivery.run_id.clone();
                         let mut attempt = self.prepare_task_input_delivery(
                             &binding,
+                            &binding.run_id,
                             &delivery.delivery_id,
                             text,
                             "engine",
@@ -299,6 +307,7 @@ mod tests {
         let attempt = db
             .prepare_task_input_delivery(
                 &binding,
+                &binding.run_id,
                 "delivery-1",
                 "first\nsecond",
                 "operator",
@@ -341,6 +350,7 @@ mod tests {
         assert!(db
             .prepare_task_input_delivery(
                 &binding,
+                &binding.run_id,
                 "delivery-1",
                 "changed",
                 "operator",
@@ -352,11 +362,56 @@ mod tests {
     }
 
     #[test]
+    fn finished_run_uses_frontend_active_run_and_records_one_input() {
+        let (db, mut binding) = fixture();
+        db.finish_stage_run("run-host", "succeeded", Some("done"), None)
+            .unwrap();
+        // A retained frontend may have started on an earlier run.
+        binding.run_id = "run-original".into();
+        let attempt = db
+            .prepare_task_input_delivery(
+                &binding,
+                "run-host",
+                "after-finish",
+                "One more change",
+                "operator",
+                &ChannelIdentity::Server,
+                false,
+                None,
+            )
+            .unwrap();
+        assert_eq!(attempt.run_id, "run-host");
+        assert_eq!(attempt.stage.as_deref(), Some("in progress"));
+        assert_eq!(attempt.state, DeliveryState::Queued);
+        assert!(db.list_task_inputs("task-host", 100).unwrap().is_empty());
+        let delivery = Delivery {
+            initial_prompt: false,
+            run_id: attempt.run_id,
+            delivery_id: attempt.id,
+            sequence: 1,
+            payload_hash: attempt.payload_hash,
+            text: None,
+            state: DeliveryState::Submitted,
+            error: None,
+        };
+        db.reconcile_task_input_delivery(&binding, &delivery)
+            .unwrap();
+        db.reconcile_task_input_delivery(&binding, &delivery)
+            .unwrap();
+        let inputs = db.list_task_inputs("task-host", 100).unwrap();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].run_id.as_deref(), Some("run-host"));
+        assert_eq!(inputs[0].stage.as_deref(), Some("in progress"));
+        assert_eq!(inputs[0].message, "One more change");
+    }
+
+    #[test]
     fn stale_incarnation_cannot_confirm_or_relabel_an_attempt() {
         let (db, binding) = fixture();
         let attempt = db
             .prepare_task_input_delivery(
                 &binding,
+                &binding.run_id,
                 "delivery-1",
                 "message",
                 "manager",
@@ -403,6 +458,7 @@ mod tests {
         std::fs::write(&attachment, b"fixture").unwrap();
         db.prepare_task_input_delivery(
             &binding,
+            &binding.run_id,
             "uncertain",
             "see fixture.png",
             "operator",
@@ -426,6 +482,7 @@ mod tests {
         let (db, binding) = fixture();
         db.prepare_task_input_delivery(
             &binding,
+            &binding.run_id,
             "pending",
             "retained\nmessage",
             "operator",

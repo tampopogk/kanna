@@ -304,6 +304,7 @@ pub(super) async fn build_fixture_with(authority: crate::task_store::authority::
     let attempt = db
         .prepare_task_input_delivery(
             &binding,
+            &binding.run_id,
             "hosted-delivery",
             "confirmed hosted input",
             "operator",

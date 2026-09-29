@@ -907,6 +907,7 @@ async fn deliver_task_input(
         let attempt = db
             .prepare_task_input_delivery(
                 &snapshot.binding,
+                &snapshot.active_run_id,
                 &id,
                 &delivered_input,
                 source.as_str(),
@@ -915,12 +916,16 @@ async fn deliver_task_input(
                 Some(request_fingerprint),
             )
             .map_err(|error| {
-                task_input_http_error(
-                    axum::http::StatusCode::CONFLICT,
-                    "delivery_conflict",
-                    error.to_string(),
-                    None,
-                )
+                let (status, reason) = match &error {
+                    rusqlite::Error::InvalidParameterName(_) => {
+                        (axum::http::StatusCode::CONFLICT, "delivery_conflict")
+                    }
+                    _ => (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "delivery_record_failed",
+                    ),
+                };
+                task_input_http_error(status, reason, error.to_string(), None)
             })?;
         // The accepted record is on disk before contacting the frontend. A
         // retry of a confirmed or uncertain attempt never starts another turn.
