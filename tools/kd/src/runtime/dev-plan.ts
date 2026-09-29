@@ -8,6 +8,7 @@ import {
   type KdEnvironmentProfile
 } from "./environment";
 import { selectPreferredLanAddress } from "./lan-address";
+import { readStagingVersion } from "./release-version";
 
 export interface DevWindow {
   name: string;
@@ -267,6 +268,9 @@ export function buildDevPlan(input: BuildDevPlanInput): DevPlan {
     env: {
       ...sharedEnv,
       KANNA_ADVERTISED_RELAY_URL: resolveRelayUrl(input),
+      // `tauri dev` bypasses Bazel, so build.rs would report the Cargo.toml
+      // placeholder. Report what a staging build of this commit reports.
+      KANNA_VERSION: input.env.KANNA_VERSION?.trim() || readStagingVersion(input.repoRoot),
       ...linuxDesktopWebkitEnv(input),
       ...(input.desktopSecretEnv ?? {}),
     },

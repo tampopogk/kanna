@@ -57,6 +57,20 @@ export function readReleaseCandidateNumber(repoRoot: string): number {
 }
 
 /**
+ * The version a staging build of this checkout reports: `VERSION` plus
+ * `-staging.` plus `VERSION_RC`, the same composition `//:staging_version_file`
+ * gives a Bazel bundle. Undefined when either file is missing or malformed, so
+ * a checkout without them keeps whatever version the build falls back to.
+ */
+export function readStagingVersion(repoRoot: string): string | undefined {
+  try {
+    return `${readCurrentVersion(repoRoot)}-staging.${readReleaseCandidateNumber(repoRoot)}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Splits a published version into the two values the build reads.
  *
  * The staging bundle composes its version as `VERSION`-staging-`VERSION_RC`, so

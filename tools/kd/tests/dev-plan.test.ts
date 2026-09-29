@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildDevPlan, buildProductionMobilePlan, linuxDesktopWebkitEnv } from "../src/runtime/dev-plan";
 
@@ -22,6 +25,26 @@ describe("buildDevPlan", () => {
     // A dev build produces a runnable app, so the Tauri build script must keep
     // treating unstaged externalBin sidecars as fatal.
     expect(plan.windows[0]?.command).toContain("KANNA_REQUIRE_SIDECARS=1 ");
+  });
+
+  it("gives the desktop window the version a staging build of the checkout reports", () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "kd-dev-version-"));
+    writeFileSync(join(repoRoot, "VERSION"), "0.4.2\n");
+    writeFileSync(join(repoRoot, "VERSION_RC"), "3\n");
+    const input = {
+      repoRoot,
+      env: { KANNA_DEV_PORT: "1421" },
+      mobile: false,
+      emulators: false,
+      firebaseConfigPath: `${repoRoot}/.firebase.json`,
+      mobileServerUrl: "http://127.0.0.1:48120"
+    };
+
+    expect(buildDevPlan(input).windows[0]?.env.KANNA_VERSION).toBe("0.4.2-staging.3");
+    expect(
+      buildDevPlan({ ...input, env: { ...input.env, KANNA_VERSION: "9.9.9" } }).windows[0]?.env.KANNA_VERSION
+    ).toBe("9.9.9");
+    expect(buildDevPlan({ ...input, repoRoot: "/nonexistent" }).windows[0]?.env.KANNA_VERSION).toBeUndefined();
   });
 
   it("prefixes desktop command with E2E agent override environment", () => {
