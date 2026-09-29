@@ -474,8 +474,7 @@ fn a_live_design_session_guards_its_stage_whatever_the_workflow_says() {
             5,
             &crate::mutation_provenance::ChannelIdentity::Unknown,
         )
-        .err()
-        .expect("refused");
+        .expect_err("refused");
     assert!(
         error.to_string().contains("live App Design stage"),
         "{error}"
