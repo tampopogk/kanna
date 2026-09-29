@@ -901,6 +901,16 @@ describe("MainPanel", () => {
     // closing that tab is the moment to look again.
     const shellTabId = tabs.openTab({ kind: "shell", shellScope: "repo" });
     await flushPromises();
+    const extraShellId = tabs.openTab({ kind: "shell", shellScope: "repo" })!;
+    await flushPromises();
+    const shellViews = wrapper.findAllComponents({ name: "ShellModal" });
+    expect(shellViews).toHaveLength(2);
+    const sessionIds = shellViews.map(view => view.props("sessionId"));
+    expect(sessionIds[0]).toBe("shell-home");
+    expect(sessionIds[1]).toMatch(/^shell-home:/);
+    tabs.closeTab(extraShellId);
+    await flushPromises();
+    expect(invokeMock).toHaveBeenCalledWith("kill_session", { sessionId: sessionIds[1] });
     opencodeInstalled = true;
     tabs.closeTab(shellTabId!);
     await flushPromises();

@@ -91,7 +91,7 @@ export function createSessionsApi(context: StoreContext): SessionsApi {
   function taskIdFromWorktreeShellSessionId(sessionId: string): string | null {
     const prefix = "shell-wt-";
     if (!sessionId.startsWith(prefix)) return null;
-    const taskId = sessionId.slice(prefix.length);
+    const taskId = sessionId.slice(prefix.length).split(":", 1)[0];
     return taskId.length > 0 ? taskId : null;
   }
 

@@ -457,7 +457,9 @@ mod tests {
                     "close_task set closed_at before killing {expected_session_id}"
                 );
 
-                if expected_session_id.starts_with("td-") {
+                if expected_session_id.starts_with("td-")
+                    || expected_session_id.starts_with("shell-wt-")
+                {
                     let mut inventory = String::new();
                     reader.read_line(&mut inventory).await.unwrap();
                     assert!(matches!(
@@ -566,7 +568,9 @@ mod tests {
             let expected = ["task-1", "shell-wt-task-1", "td-task-1"];
 
             for expected_session_id in expected {
-                if expected_session_id.starts_with("td-") {
+                if expected_session_id.starts_with("td-")
+                    || expected_session_id.starts_with("shell-wt-")
+                {
                     let mut inventory = String::new();
                     reader.read_line(&mut inventory).await.unwrap();
                     assert!(matches!(

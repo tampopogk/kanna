@@ -278,6 +278,19 @@ describe("useAppKeyboardActions durable selection", () => {
     expect(toast.warning).not.toHaveBeenCalled();
   });
 
+  it("opens a new shell on every invocation of either shell shortcut", () => {
+    const { keyboardActions, mainTabs } = createHarness({ currentItem: item("task-1"), selectedTaskId: "task-1" });
+    keyboardActions.openShell();
+    keyboardActions.openShell();
+    keyboardActions.openShellRepoRoot();
+    keyboardActions.openShellRepoRoot();
+    const shells = mainTabs.tabs.value.filter(tab => tab.kind === "shell");
+    expect(shells).toHaveLength(4);
+    expect(new Set(shells.map(tab => tab.id)).size).toBe(4);
+    expect(shells.map(tab => tab.shellScope)).toEqual(["worktree", "worktree", "repo", "repo"]);
+    expect(mainTabs.activeTabId.value).toBe(shells[3].id);
+  });
+
   it("refuses the repo-root shell shortcut for a task owned by another machine", () => {
     const workspaceTask = remoteWorkspaceTask("cloud:repo:task-remote");
     workspaceTask.capabilities = { canOpenShell: false } as WorkspaceTask["capabilities"];

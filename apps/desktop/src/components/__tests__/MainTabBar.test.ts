@@ -210,3 +210,16 @@ it('labels teardown and setup streams beside the agent attempts they belong to',
   expect(optionValues(wrapper)).toEqual(['', 'setup:later', 'initial', 'setup:initial']);
   wrapper.unmount();
 });
+
+it('numbers shells separately within each directory scope', () => {
+  const wrapper = mount(MainTabBar, { global: { mocks: { $t: (key: string) => key } }, props: { tabs: [
+    { id: 'shell', kind: 'shell' },
+    { id: 'shell:second', kind: 'shell', shellInstance: 'second' },
+    { id: 'shell:repo', kind: 'shell', shellScope: 'repo' },
+  ], activeTabId: 'shell:second' } });
+  expect(wrapper.text()).toContain('mainTabs.shell 1');
+  expect(wrapper.text()).toContain('mainTabs.shell 2');
+  expect(wrapper.text()).toContain('mainTabs.repoShell');
+  expect(wrapper.text()).not.toContain('mainTabs.repoShell 1');
+  wrapper.unmount();
+});

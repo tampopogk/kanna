@@ -101,6 +101,22 @@ describe("useMainTabs", () => {
     ]);
   });
 
+  it.each(["worktree", "repo"] as const)("opens independent %s shells and restores their identities", (shellScope) => {
+    const { tabs } = setup();
+    const first = tabs.openTab({ kind: "shell", shellScope })!;
+    const second = tabs.openTab({ kind: "shell", shellScope })!;
+    const third = tabs.openTab({ kind: "shell", shellScope })!;
+    expect(new Set([first, second, third]).size).toBe(3);
+    expect(tabs.activeTabId.value).toBe(third);
+    const { tabs: restored } = setup();
+    restored.restoreScopes(parsePersistedMainTabs(JSON.stringify(tabs.snapshotScopes()))!);
+    expect(restored.tabs.value).toEqual(tabs.tabs.value);
+    expect(restored.activeTabId.value).toBe(third);
+    restored.closeTab(second);
+    expect(restored.tabs.value.map(tab => tab.id)).toEqual([AGENT_TAB_ID, first, third]);
+    expect(restored.openTab({ kind: "shell", shellScope })).not.toBe(second);
+  });
+
   it("gives every other view exactly one tab per scope", () => {
     const { tabs } = setup();
 

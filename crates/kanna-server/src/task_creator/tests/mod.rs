@@ -494,18 +494,27 @@ async fn spawn_fake_daemon_fork_transition(
         let mut spawns = 0;
         loop {
             let command = read_fake_daemon_command(&mut reader, &mut write_half).await;
+            if matches!(command, kanna_daemon::protocol::Command::List) {
+                write_half
+                    .write_all(
+                        format!(
+                            "{}\n",
+                            serde_json::to_string(&kanna_daemon::protocol::Event::SessionList {
+                                sessions: vec![]
+                            })
+                            .unwrap()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                continue;
+            }
             if answer_terminal_carryover_probe(&command, &mut write_half).await {
                 continue;
             }
             let response = match &command {
                 kanna_daemon::protocol::Command::Kill { .. } => kanna_daemon::protocol::Event::Ok,
-                // A revisit lists live sessions to find the ones in its
-                // directory; this daemon runs none.
-                kanna_daemon::protocol::Command::List => {
-                    kanna_daemon::protocol::Event::SessionList {
-                        sessions: Vec::new(),
-                    }
-                }
                 kanna_daemon::protocol::Command::Spawn { session_id, .. }
                 | kanna_daemon::protocol::Command::SpawnAgent { session_id, .. } => {
                     spawns += 1;
@@ -544,6 +553,22 @@ async fn spawn_fake_daemon_fork_transition_with_teardown(
         while commands.len() < 5 {
             let command_index = commands.len();
             let command = read_fake_daemon_command(&mut reader, &mut write_half).await;
+            if matches!(command, kanna_daemon::protocol::Command::List) {
+                write_half
+                    .write_all(
+                        format!(
+                            "{}\n",
+                            serde_json::to_string(&kanna_daemon::protocol::Event::SessionList {
+                                sessions: vec![]
+                            })
+                            .unwrap()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                continue;
+            }
             if answer_terminal_carryover_probe(&command, &mut write_half).await {
                 continue;
             }

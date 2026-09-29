@@ -93,7 +93,10 @@ function present(tab: MainTab): MainTabPresentation {
     };
   }
   if (tab.kind === "shell") {
-    const label = t(tab.shellScope === "repo" ? "mainTabs.repoShell" : "mainTabs.shell");
+    const baseLabel = t(tab.shellScope === "repo" ? "mainTabs.repoShell" : "mainTabs.shell");
+    const siblings = props.tabs.filter(candidate => candidate.kind === "shell"
+      && (candidate.shellScope ?? "worktree") === (tab.shellScope ?? "worktree"));
+    const label = siblings.length > 1 ? `${baseLabel} ${siblings.findIndex(candidate => candidate.id === tab.id) + 1}` : baseLabel;
     return { id: tab.id, label, title: label, closable };
   }
   const label = t(FIXED_LABEL_KEYS[tab.kind] ?? "mainTabs.agent");
