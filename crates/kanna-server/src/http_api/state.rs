@@ -119,6 +119,8 @@ pub struct AppState {
     /// Where default artifact repositories live; tests point it at a fixture.
     pub(super) artifact_storage: crate::artifacts::ArtifactStorageContext,
     pub(crate) companion_resources: crate::ksp::CompanionResources,
+    /// App Design live documents, feed signals and the delivery wake-up.
+    pub(crate) design: crate::design::DesignRuntime,
     pub(crate) terminal_taps: crate::ksp::TerminalTapRegistry,
     pub(crate) agent_histories: crate::ksp::AgentHistoryRegistry,
     /// Capability negotiated with the daemon generation currently serving the
@@ -511,6 +513,16 @@ pub(super) fn db_write_error(
 }
 
 impl AppState {
+    /// Where this server's artifact repositories live.
+    pub(crate) fn artifact_storage(&self) -> &crate::artifacts::ArtifactStorageContext {
+        &self.artifact_storage
+    }
+
+    /// The repository definitions cache (workflow, agent and config reads).
+    pub(crate) fn repo_definitions(&self) -> &crate::task_creator::RepoDefinitionsCache {
+        &self.repo_definitions
+    }
+
     pub(crate) fn config(&self) -> &Config {
         &self.config
     }
@@ -675,6 +687,7 @@ impl AppState {
             session_replacements: crate::session_replacements::SessionReplacements::default(),
             terminal_attachments: crate::terminal_attachments::TerminalAttachments::default(),
             companion_resources: crate::ksp::CompanionResources::default(),
+            design: crate::design::DesignRuntime::default(),
             terminal_taps: crate::ksp::TerminalTapRegistry::default(),
             agent_histories: crate::ksp::AgentHistoryRegistry::default(),
             terminal_geometry_capability: Arc::new(StdMutex::new(TerminalGeometryCapability {

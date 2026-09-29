@@ -2318,3 +2318,97 @@ async fn a_push_bound_to_the_approved_remote_is_refused_when_the_config_moved_it
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["remote"], moved_remote.to_str().unwrap());
 }
+
+/// App Design mockup pins: the same tree under `/p/<capability>/` carries
+/// Kanna's pin script on its HTML pages, and nothing else changes: other
+/// files are byte for byte the artifact's, the same isolation applies, and
+/// the shell and relative references stay under the pin prefix.
+#[tokio::test]
+async fn the_pin_path_adds_the_pin_script_to_pages_only() {
+    let env = setup("preview-pins", None);
+    let (_, published) = publish(&env.app, json!({ "path": "mock", "kind": "mockup" })).await;
+    let id = published["artifactId"].as_str().unwrap().to_string();
+    let (_, opened) = call(
+        &env.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{id}/preview"),
+        None,
+    )
+    .await;
+    let url = opened["url"].as_str().unwrap().to_string();
+    let pinned = url.replacen("/a/", "/p/", 1);
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    let page = client
+        .get(&pinned)
+        .header("Sec-Fetch-Dest", "iframe")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(page.status(), 200);
+    let policy = page.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(policy.starts_with("sandbox allow-scripts;"), "{policy}");
+    assert!(policy.contains("connect-src 'none'"), "{policy}");
+    let body = page.bytes().await.unwrap();
+    assert!(body.starts_with(INDEX_HTML), "the page itself is unchanged");
+    let added = String::from_utf8_lossy(&body[INDEX_HTML.len()..]).to_string();
+    assert!(added.contains("<script data-kanna-pins>"), "{added}");
+    assert!(added.contains("kanna-mockup"), "{added}");
+
+    // The plain path is still the artifact's exact bytes.
+    let plain = client
+        .get(&url)
+        .header("Sec-Fetch-Dest", "iframe")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(plain.bytes().await.unwrap().as_ref(), INDEX_HTML);
+
+    // A stylesheet is served untouched under the pin path.
+    let css = reqwest::Url::parse(&pinned)
+        .unwrap()
+        .join("css/site.css")
+        .unwrap();
+    let css = client
+        .get(css)
+        .header("Sec-Fetch-Dest", "style")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(css.status(), 200);
+    assert!(!String::from_utf8_lossy(&css.bytes().await.unwrap()).contains("kanna-mockup"));
+
+    // The desktop's named shell frames the pin path, not the plain one.
+    let shell = client
+        .get(format!("{pinned}?kanna-shell"))
+        .header("Sec-Fetch-Dest", "iframe")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let path = reqwest::Url::parse(&pinned).unwrap().path().to_string();
+    assert!(shell.contains(&format!("src=\"{path}\"")), "{shell}");
+
+    // A wrong capability is refused under the pin prefix too.
+    let forged = pinned.replacen(
+        &reqwest::Url::parse(&pinned)
+            .unwrap()
+            .path_segments()
+            .unwrap()
+            .nth(1)
+            .unwrap()
+            .to_string(),
+        &"0".repeat(32),
+        1,
+    );
+    assert_eq!(client.get(forged).send().await.unwrap().status(), 404);
+    env.state.artifact_previews.close("repo-a", &id).await;
+}

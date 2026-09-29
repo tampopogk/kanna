@@ -58,6 +58,8 @@ pub(super) struct RepoConfig {
     pub(super) workspace: Option<RepoWorkspaceConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) artifacts: Option<RepoArtifactsConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) design: Option<RepoDesignConfig>,
     /// Provenance of the machine-local `.kanna/config.local.json` layer merged
     /// over the committed config, or `None` when no local file applies. It is
     /// recorded during resolution rather than read from either file, so it
@@ -87,6 +89,25 @@ pub(super) struct RepoArtifactsConfig {
     /// The artifact remote: a Git URL or path both sharing homes can reach.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) remote: Option<String>,
+}
+
+/// What an App Design hand-off keeps in this repository
+/// (docs/specs/app-design.md §7a). Committed policy only: it decides what the
+/// hand-off's commit step commits, so a machine-local file cannot change it.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub(super) struct RepoDesignConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) handoff: Option<RepoDesignHandoffConfig>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub(super) struct RepoDesignHandoffConfig {
+    /// `results-and-summary` or `nothing`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) retain: Option<String>,
+    /// Repository-relative folder; `{task}` is replaced by the task id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) path: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -443,6 +464,35 @@ pub(super) struct WorkflowStage {
     /// task leaves it, after the environment's teardown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) teardown: Option<Vec<String>>,
+    /// Routing `exits` only: an App Design session (docs/specs/app-design.md
+    /// §3). Its positions are state inside this one stage, never transitions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) design: Option<WorkflowDesign>,
+}
+
+/// A stage's App Design metadata: the positions a person and the stage's one
+/// live session move between freely.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct WorkflowDesign {
+    pub(crate) positions: Vec<WorkflowDesignPosition>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct WorkflowDesignPosition {
+    pub(crate) name: String,
+    pub(crate) label: String,
+    /// What the position shows: `document` (the live design document and its
+    /// feedback feed) or `mockup` (the HTML mockup the agent publishes for
+    /// it, with pinned comments).
+    #[serde(default = "default_design_artifact")]
+    pub(crate) artifact: String,
+}
+
+/// What a design position may show.
+pub(crate) const DESIGN_ARTIFACTS: &[&str] = &["document", "mockup"];
+
+fn default_design_artifact() -> String {
+    "document".to_string()
 }
 
 /// Prompt variables that carry an earlier result (spec §17, 2026-09-23):
@@ -726,6 +776,7 @@ pub(super) fn post_as_stage(owner: &WorkflowStage) -> Option<WorkflowStage> {
         exit_commit: false,
         setup: None,
         teardown: None,
+        design: None,
     })
 }
 
@@ -765,6 +816,7 @@ struct RawWorkflowStage {
     exit_commit: bool,
     setup: Option<Vec<String>>,
     teardown: Option<Vec<String>>,
+    design: Option<WorkflowDesign>,
 }
 
 #[derive(Deserialize)]
@@ -1576,6 +1628,25 @@ fn repo_config_from_object(raw: &serde_json::Map<String, serde_json::Value>) -> 
         stage_order: string_array("stage_order"),
         workspace,
         artifacts,
+        design: raw
+            .get("design")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|design| design.get("handoff"))
+            .and_then(serde_json::Value::as_object)
+            .map(|handoff| RepoDesignConfig {
+                handoff: Some(RepoDesignHandoffConfig {
+                    retain: handoff
+                        .get("retain")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                    path: handoff
+                        .get("path")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::trim)
+                        .filter(|path| !path.is_empty())
+                        .map(str::to_string),
+                }),
+            }),
         local_override: None,
     }
 }
@@ -1982,6 +2053,10 @@ const BUILTIN_AGENT_RESOURCES: &[(&str, &str)] = &[
         include_str!("../../../../.kanna/agents/agent-factory/AGENT.md"),
     ),
     (
+        ".kanna/agents/app-design/AGENT.md",
+        include_str!("../../../../.kanna/agents/app-design/AGENT.md"),
+    ),
+    (
         ".kanna/agents/approve/AGENT.md",
         include_str!("../../../../.kanna/agents/approve/AGENT.md"),
     ),
@@ -2206,6 +2281,10 @@ const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
     (
         "designed",
         include_str!("../../../../.kanna/workflows/designed.json"),
+    ),
+    (
+        "app-design",
+        include_str!("../../../../.kanna/workflows/app-design.json"),
     ),
     (
         "plan-build-review",
@@ -2553,6 +2632,7 @@ fn normalize_workflow_definition(raw: RawWorkflowDefinition) -> Result<WorkflowD
             exit_commit,
             setup,
             teardown,
+            design,
         } = stage;
 
         let (transition, revision_transition, loop_transition, handoff, continues) = match policy {
@@ -2628,6 +2708,7 @@ fn normalize_workflow_definition(raw: RawWorkflowDefinition) -> Result<WorkflowD
             exit_commit,
             setup,
             teardown,
+            design,
         });
     }
 
@@ -2658,6 +2739,61 @@ fn normalize_workflow_definition(raw: RawWorkflowDefinition) -> Result<WorkflowD
     Ok(workflow)
 }
 
+/// An App Design stage (docs/specs/app-design.md §3, §6) is one live session
+/// that leaves only through Approve for build, whose hand-off commits through
+/// the stage's commit step: it needs a role, a manual gate and `exit_commit`,
+/// and its positions need distinct names.
+fn validate_design_stages(workflow: &WorkflowDefinition) -> Result<(), String> {
+    for stage in &workflow.stages {
+        let Some(design) = stage.design.as_ref() else {
+            continue;
+        };
+        let name = &stage.name;
+        if stage.agent.is_none() {
+            return Err(format!("stage '{name}': a design stage needs an agent"));
+        }
+        if stage.policy.transition != WorkflowStageTransition::Manual {
+            return Err(format!(
+                "stage '{name}': a design stage's transition is manual; it leaves through \
+                 Approve for build"
+            ));
+        }
+        if !stage.exit_commit {
+            return Err(format!(
+                "stage '{name}': a design stage needs exit_commit; the hand-off commits the \
+                 results its repository's design policy retains"
+            ));
+        }
+        if design.positions.is_empty() {
+            return Err(format!(
+                "stage '{name}': design needs at least one position"
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for position in &design.positions {
+            if position.name.is_empty() || position.label.is_empty() {
+                return Err(format!(
+                    "stage '{name}': a design position needs a name and label"
+                ));
+            }
+            if !seen.insert(position.name.as_str()) {
+                return Err(format!(
+                    "stage '{name}': design position '{}' is listed twice",
+                    position.name
+                ));
+            }
+            if !DESIGN_ARTIFACTS.contains(&position.artifact.as_str()) {
+                return Err(format!(
+                    "stage '{name}': design position '{}' shows '{}'; a position shows \
+                     \"document\" or \"mockup\"",
+                    position.name, position.artifact
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The routing contract's own rules (spec §5), checked wherever a definition
 /// is read — a repo file, a replacement, or a pinned snapshot — so a
 /// definition cannot mix the two contracts or reach an exit that goes
@@ -2674,7 +2810,8 @@ fn validate_workflow_routing(workflow: &WorkflowDefinition) -> Result<(), String
     let uses_transition_fields = workflow
         .stages
         .iter()
-        .any(|stage| stage.setup.is_some() || stage.teardown.is_some());
+        .any(|stage| stage.setup.is_some() || stage.teardown.is_some() || stage.design.is_some());
+    validate_design_stages(workflow)?;
     for stage in &workflow.stages {
         if stage.exit_commit && stage.post.is_some() {
             return Err(format!(
@@ -2705,7 +2842,7 @@ fn validate_workflow_routing(workflow: &WorkflowDefinition) -> Result<(), String
         }
         if uses_transition_fields {
             return Err(
-                "stage setup/teardown belong to named-exit routing; declare \
+                "stage setup/teardown and design belong to named-exit routing; declare \
                  \"routing\": \"exits\" to use them (a legacy workflow runs scripts through \
                  its environments)"
                     .into(),

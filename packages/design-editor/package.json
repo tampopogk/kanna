@@ -1,0 +1,41 @@
+{
+  "name": "@kanna/design-editor",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "vitest run --maxWorkers=2",
+    "typecheck": "tsc --noEmit",
+    "fixtures": "tsx scripts/generate-fixtures.ts",
+    "build:phone": "tsx scripts/build-phone-assets.ts",
+    "test:browser": "tsx e2e/run-browser.ts",
+    "test:pins": "tsx e2e/mockup-pins.ts"
+  },
+  "dependencies": {
+    "@blocknote/core": "0.55.0",
+    "@blocknote/mantine": "0.55.0",
+    "@blocknote/react": "0.55.0",
+    "@mantine/core": "9.6.2",
+    "@mantine/hooks": "9.6.2",
+    "@tiptap/pm": "3.31.3",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "y-prosemirror": "1.3.7",
+    "y-protocols": "1.0.6",
+    "yjs": "13.6.33"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^27.0.0",
+    "@types/node": "^25.6.0",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "happy-dom": "^20.8.9",
+    "jsdom": "^27.0.0",
+    "playwright": "1.61.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5",
+    "vite": "^6.4.2",
+    "vitest": "^4.1.4"
+  }
+}

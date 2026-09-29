@@ -35,3 +35,9 @@ packageExtensions:
   "@react-native-firebase/app@26.0.0":
     dependencies:
       "@expo/config-plugins": 57.0.6
+  # @mantine/hooks imports react-dom (flushSync) without declaring it, which
+  # fails under pnpm's strict isolation for the App Design editor
+  # (packages/design-editor).
+  "@mantine/hooks@9.6.2":
+    peerDependencies:
+      react-dom: "^19.0.0"

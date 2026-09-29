@@ -1675,6 +1675,69 @@ async fn subtask_join_tools_are_refused_by_a_server_without_subtask_joins() {
         "nothing but the status read was sent: {seen:?}"
     );
 }
+/// The App Design tools through `kanna-cli tool call`: the same routes and
+/// bodies MCP sends (see kanna-mcp's `design_tools_call_the_typed_design_routes`).
+#[tokio::test]
+async fn design_tools_reach_the_typed_routes() {
+    let catalog = kanna_tool_catalog::bundled_catalog();
+    for (name, args, request_line, body) in [
+        (
+            "kanna_design_get",
+            json!({"task_id":"task-1"}),
+            "GET /v1/tasks/task-1/design/agent HTTP/1.1",
+            None,
+        ),
+        (
+            "kanna_design_edit",
+            json!({"task_id":"task-1","op_id":"e1","ops":[{"op":"delete_block","block_id":"b1","expected_text":"x"}]}),
+            "POST /v1/tasks/task-1/design/agent/edits HTTP/1.1",
+            Some(
+                json!({"opId":"e1","ops":[{"op":"delete_block","block_id":"b1","expected_text":"x"}]}),
+            ),
+        ),
+        (
+            "kanna_design_reply",
+            json!({"task_id":"task-1","thread_id":"th-1","op_id":"r1","body":"Done."}),
+            "POST /v1/tasks/task-1/design/agent/threads/th-1/replies HTTP/1.1",
+            Some(json!({"opId":"r1","body":"Done."})),
+        ),
+        (
+            "kanna_design_resolve",
+            json!({"task_id":"task-1","thread_id":"th-1","resolved":false}),
+            "POST /v1/tasks/task-1/design/agent/threads/th-1/resolve HTTP/1.1",
+            Some(json!({"resolved":false})),
+        ),
+        (
+            "kanna_design_set_position",
+            json!({"task_id":"task-1","position":"static"}),
+            "POST /v1/tasks/task-1/design/position HTTP/1.1",
+            Some(json!({"position":"static"})),
+        ),
+        (
+            "kanna_design_publish_mockup",
+            json!({"task_id":"task-1","op_id":"m1","path":"index.html","position":"static"}),
+            "POST /v1/tasks/task-1/design/agent/mockups HTTP/1.1",
+            Some(json!({"opId":"m1","path":"index.html","position":"static"})),
+        ),
+    ] {
+        let (base_url, server) =
+            serve_http_responses(vec![http_json_response("200 OK", "{\"ok\":true}")]).await;
+        call_catalog_tool_with_task_id(&base_url, &catalog, name, &args, None)
+            .await
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        let requests = server.await.unwrap();
+        assert!(
+            requests[0].starts_with(request_line),
+            "{name}: {}",
+            requests[0]
+        );
+        if let Some(body) = body {
+            let sent: serde_json::Value =
+                serde_json::from_str(requests[0].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+            assert_eq!(sent, body, "{name}");
+        }
+    }
+}
 
 #[tokio::test]
 async fn hosted_input_202_preserves_delivery_receipt() {

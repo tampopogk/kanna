@@ -770,6 +770,51 @@ describe("named-exit routing (parity with the server loader)", () => {
     expect(designed.stages.find((stage) => stage.name === "pr-review")?.policy.handoff).toBe("merge");
   });
 
+  it("loads the App Design workflow: one design stage whose positions are state, then the factory", () => {
+    const appDesign = parseWorkflowJson(
+      readFileSync(new URL("../../../../.kanna/workflows/app-design.json", import.meta.url), "utf8"),
+    );
+    expect(appDesign.stages.map((stage) => stage.name)).toEqual(["design", "plan", "in progress", "review", "pr"]);
+    const design = appDesign.stages[0];
+    expect(design.agent).toBe("app-design");
+    expect(design.exit_commit).toBe(true);
+    expect(design.policy.transition).toBe("manual");
+    expect(design.design?.positions.map((position) => position.name)).toEqual(["static", "interactive", "prototype"]);
+    expect(validateWorkflow(appDesign)).toEqual([]);
+  });
+
+  it("refuses design stages the engine could not hand off", () => {
+    const base = {
+      name: "d",
+      routing: "exits",
+      stages: [
+        {
+          name: "design",
+          agent: "app-design",
+          policy: { transition: "manual" },
+          exit_commit: true,
+          design: { positions: [{ name: "static", label: "Static" }] },
+        },
+        { name: "plan", agent: "plan", policy: { transition: "manual" } },
+      ],
+    };
+    const variant = (patch: Record<string, unknown>) =>
+      JSON.stringify({ ...base, stages: [{ ...base.stages[0], ...patch }, base.stages[1]] });
+    expect(validateWorkflow(parseWorkflowJson(JSON.stringify(base)))).toEqual([]);
+    expect(() => parseWorkflowJson(variant({ exit_commit: false }))).toThrow(/needs exit_commit/);
+    expect(() => parseWorkflowJson(variant({ policy: { transition: "auto" } }))).toThrow(/transition is manual/);
+    expect(() =>
+      parseWorkflowJson(variant({ design: { positions: [{ name: "a", label: "A" }, { name: "a", label: "Again" }] } })),
+    ).toThrow(/listed twice/);
+    expect(() => parseWorkflowJson(variant({ design: { positions: [{ name: "Bad Name", label: "x" }] } }))).toThrow();
+    expect(() =>
+      parseWorkflowJson(variant({ design: { positions: [{ name: "a", label: "A", artifact: "simulator" }] } })),
+    ).toThrow();
+    // A legacy workflow cannot declare a design stage.
+    const legacy = { ...JSON.parse(variant({})), routing: undefined };
+    expect(() => parseWorkflowJson(JSON.stringify(legacy))).toThrow(/design belong to named-exit routing/);
+  });
+
   it("ships a schema example that loads", () => {
     const schema = JSON.parse(
       readFileSync(new URL("../../../../.kanna/workflows/schema.json", import.meta.url), "utf8"),

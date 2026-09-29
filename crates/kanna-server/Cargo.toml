@@ -58,6 +58,9 @@ flume = { version = "0.11", default-features = false }
 ignore = "0.4"
 sysinfo = "0.33"
 git2 = "0.19"
+# Yjs-compatible CRDT for App Design live documents (docs/specs/app-design.md);
+# pinned so the BlockNote schema fixtures in packages/design-editor stay valid.
+yrs = "=0.26.0"
 # Keep release TLS independent of the build host's OpenSSL installation.
 openssl-sys = { version = "0.9", features = ["vendored"] }
 

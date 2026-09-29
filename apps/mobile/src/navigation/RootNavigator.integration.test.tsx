@@ -61,6 +61,7 @@ const keyboardHarness = vi.hoisted(() => ({
   >()
 }));
 
+vi.mock("../screens/DesignDocumentView", () => ({ DesignDocumentView: "DesignDocumentView" }));
 vi.mock("@expo/vector-icons", () => ({
   Ionicons: "Ionicons"
 }));

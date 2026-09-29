@@ -54,6 +54,14 @@ it('closes only its pane through a separate control', async () => {
   wrapper.unmount();
 });
 
+it('labels the App Design surface as Design, not Agent', () => {
+  const wrapper = mount(MainTabBar, { global:{mocks:{$t:(key:string)=>key}}, props: {
+    tabs:[{id:'agent',kind:'agent'},{id:'design',kind:'design'}],activeTabId:'design',
+  } });
+  expect(wrapper.get('[data-tab-id="design"]').text()).toContain('mainTabs.design');
+  expect(wrapper.get('[data-tab-id="agent"]').text()).toContain('mainTabs.agent');
+  wrapper.unmount();
+});
 it('closes only tabs visually to the right of the clicked tab, preserving Agent', async () => {
   const wrapper = mount(MainTabBar, { global:{mocks:{$t:(key:string)=>key}}, attachTo:document.body, props: {
     tabs:[{id:'file:left',kind:'file',filePath:'left'},{id:'diff',kind:'diff'},{id:'agent',kind:'agent'},{id:'file:right',kind:'file',filePath:'right'}],activeTabId:'file:left',

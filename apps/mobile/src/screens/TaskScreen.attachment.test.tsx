@@ -21,6 +21,7 @@ const attachmentMenu = vi.hoisted(() => ({
   show: vi.fn()
 }));
 
+vi.mock("./DesignDocumentView", () => ({ DesignDocumentView: "DesignDocumentView" }));
 vi.mock("react-native", () => ({
   ActivityIndicator: "ActivityIndicator",
   Image: "Image",

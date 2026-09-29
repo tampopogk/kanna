@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   computed,
+  defineAsyncComponent,
   nextTick,
   onMounted,
   onBeforeUnmount,
@@ -47,6 +48,9 @@ import CommitGraphModal from "./CommitGraphModal.vue";
 import AnalyticsModal from "./AnalyticsModal.vue";
 import ImageUrlPreviewModal from "./ImageUrlPreviewModal.vue";
 import ArtifactViewer from "./ArtifactViewer.vue";
+// Loaded on first use: the design surface brings the React editor with it,
+// which no other view needs.
+const DesignView = defineAsyncComponent(() => import("./design/DesignView.vue"));
 import { AGENT_TAB_ID, mainTabScopeKeyForTask, type MainTab } from "../composables/useMainTabs";
 import type { RemoteDirectoryEntry } from "../composables/useTreeExplorer";
 import type { SplitRect } from "../composables/taskPaneLayout";
@@ -631,7 +635,9 @@ function dismissActiveTab(): boolean {
   const tab = controller?.activeTab.value;
   if (!controller || !tab || tab.kind === "agent") return false;
   // A shell tab is a live terminal; Escape belongs to whatever runs in it.
-  if (tab.kind === "shell" || tab.kind === "editor") return false;
+  // The design surface is a workspace too: Escape cancels its comment box
+  // and closes its editor's menus, and never throws the design away.
+  if (tab.kind === "shell" || tab.kind === "editor" || tab.kind === "design") return false;
   // A view with its own layered dismiss — a file's search, the tree's filter,
   // the graph's detail pane — gets to close that first.
   if (viewRefs.get(tab.id)?.dismiss?.() === false) return true;
@@ -760,6 +766,31 @@ const reviewedHeadLabel = computed(() => {
     : context.headRef ?? "";
   return branch ? `${branch} @ ${shortReviewedHead.value}` : shortReviewedHead.value;
 });
+
+/**
+ * An App Design task's design surface opens beside its agent terminal, in a
+ * split, the first time the task is seen this session; closing it is then
+ * the person's choice. The terminal itself is never replaced or moved.
+ */
+const designSurfaceOpened = new Set<string>();
+watch(
+  () => [item.value?.id ?? null, taskDetail.value?.id ?? null, taskDetail.value?.design?.stage ?? null] as const,
+  ([taskId, detailId, designStage]) => {
+    const tabs = props.views?.tabs;
+    if (!taskId || taskId !== detailId || !designStage || !tabs || isMobile) return;
+    if (designSurfaceOpened.has(taskId)) return;
+    designSurfaceOpened.add(taskId);
+    if (tabs.isOpen("design")) return;
+    const id = tabs.openTab({ kind: "design" }, { activate: false });
+    if (!id) return;
+    if (tabs.panes.value.length === 1 && !narrowLayout.value) {
+      const activeBefore = tabs.activeTabId.value;
+      tabs.splitPane(tabs.panes.value[0].pane.id, "horizontal", id);
+      // Opening beside the terminal must not take its focus.
+      if (activeBefore) tabs.activateTab(activeBefore);
+    }
+  },
+);
 
 let taskDetailRequest = 0;
 async function loadTaskDetail(taskId: string): Promise<void> {
@@ -1010,7 +1041,7 @@ function dismissCommandHint() {
         <span class="mobile-back-arrow">&larr;</span>
         <span>Tasks</span>
       </div>
-      <TaskHeader v-if="headerItem" :item="headerItem" :owner-label="ownerLabel" :task-id="item?.id" :preview-supported="taskDetailIsLocal && !isMobile && !views?.modals.activeTaskViewIsRemote?.value && !!views" :latest-run="taskDetail?.latestRun ?? null" :session-history="taskDetail?.sessionHistory ?? null" :stage-dependencies="taskDetail?.stageDependencies ?? null" :dependency-wait="taskDetail?.dependencyWait ?? null" :gate-parked="taskDetail?.gateParked ?? null" @preview="(portName) => views?.tabs.openTab({ kind: 'preview', portName })" @open-artifact="openLatestResultArtifact" />
+      <TaskHeader v-if="headerItem" :item="headerItem" :owner-label="ownerLabel" :task-id="item?.id" :preview-supported="taskDetailIsLocal && !isMobile && !views?.modals.activeTaskViewIsRemote?.value && !!views" :latest-run="taskDetail?.latestRun ?? null" :session-history="taskDetail?.sessionHistory ?? null" :stage-dependencies="taskDetail?.stageDependencies ?? null" :dependency-wait="taskDetail?.dependencyWait ?? null" :gate-parked="taskDetail?.gateParked ?? null" :design="taskDetail?.design ?? null" @open-design="views?.tabs.openTab({ kind: 'design' })" @preview="(portName) => views?.tabs.openTab({ kind: 'preview', portName })" @open-artifact="openLatestResultArtifact" />
       <section v-if="revisionBudgetExhausted" class="revision-exhausted" data-testid="revision-exhausted-status">
         <div>
           <p class="revision-exhausted-title">{{ $t('mainPanel.revisionExhaustedTitle') }}</p>
@@ -1279,6 +1310,13 @@ function dismissCommandHint() {
           :artifact-id="tab.artifactShownId ?? tab.artifactId"
           :visible="viewVisible(tab.id)"
           @navigate="(artifactId: string) => views?.tabs.updateArtifactShown(tab.id, artifactId)"
+        />
+        <DesignView
+          v-else-if="tab.kind === 'design' && item"
+          v-show="viewVisible(tab.id)"
+          :task-id="item.id"
+          :visible="viewVisible(tab.id)"
+          :set-app-theme="views?.setAppTheme"
         />
       </div>
       <TaskPreviewCache

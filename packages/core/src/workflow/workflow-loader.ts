@@ -1,12 +1,16 @@
 import {
   ADVANCE_EXIT,
   type WorkflowDefinition,
+  type WorkflowDesign,
   type WorkflowPlanContext,
   type WorkflowPost,
   type WorkflowStage,
   type WorkflowStagePolicy,
 } from "./workflow-types";
 import { parseAgentSelection, parseAgentProviderSelector, type AgentSelection } from "../config/agent-providers";
+
+/** What an App Design position may show (docs/specs/app-design.md §5). */
+const DESIGN_ARTIFACTS: readonly string[] = ["document", "mockup"];
 
 function formatRawValue(value: unknown): string {
   if (value === undefined) {
@@ -198,6 +202,46 @@ export function validateWorkflow(def: WorkflowDefinition): string[] {
 }
 
 const EXIT_NAME = /^[a-z][a-z0-9_-]*$/;
+const DESIGN_POSITION_NAME = /^[a-z][a-z0-9-]*$/;
+
+/**
+ * An App Design stage is one live session that leaves only through Approve
+ * for build, whose hand-off commits through the stage's commit step; mirrors
+ * `validate_design_stages` in the server's definitions.rs.
+ */
+function validateDesignStages(def: WorkflowDefinition): string[] {
+  const errors: string[] = [];
+  for (const stage of def.stages) {
+    const design = stage.design;
+    if (design === undefined) continue;
+    const name = stage.name;
+    if (stage.agent === undefined) errors.push(`stage '${name}': a design stage needs an agent`);
+    if (stage.policy?.transition !== "manual") {
+      errors.push(`stage '${name}': a design stage's transition is manual; it leaves through Approve for build`);
+    }
+    if (!stage.exit_commit) {
+      errors.push(
+        `stage '${name}': a design stage needs exit_commit; the hand-off commits the results its repository's design policy retains`
+      );
+    }
+    if (design.positions.length === 0) errors.push(`stage '${name}': design needs at least one position`);
+    const seen = new Set<string>();
+    for (const position of design.positions) {
+      if (!position.name || !position.label) {
+        errors.push(`stage '${name}': a design position needs a name and label`);
+      } else if (seen.has(position.name)) {
+        errors.push(`stage '${name}': design position '${position.name}' is listed twice`);
+      }
+      seen.add(position.name);
+      if (!DESIGN_ARTIFACTS.includes(position.artifact ?? "document")) {
+        errors.push(
+          `stage '${name}': design position '${position.name}' shows '${position.artifact as string}'; a position shows "document" or "mockup"`
+        );
+      }
+    }
+  }
+  return errors;
+}
 
 /**
  * The routing contract's own rules, mirroring `validate_workflow_routing` in
@@ -218,8 +262,10 @@ function validateWorkflowRouting(def: WorkflowDefinition): string[] {
   // exit_commit is a property of a stage's transition in either routing: a
   // legacy workflow's commit post migrates to it.
   const usesTransitionFields = def.stages.some(
-    (stage) => stage.setup !== undefined || stage.teardown !== undefined
+    (stage) =>
+      stage.setup !== undefined || stage.teardown !== undefined || stage.design !== undefined
   );
+  errors.push(...validateDesignStages(def));
   for (const stage of def.stages) {
     if (stage.exit_commit && stage.post !== undefined) {
       errors.push(
@@ -241,7 +287,7 @@ function validateWorkflowRouting(def: WorkflowDefinition): string[] {
     }
     if (usesTransitionFields) {
       errors.push(
-        'stage setup/teardown belong to named-exit routing; declare "routing": "exits" to use them (a legacy workflow runs scripts through its environments)'
+        'stage setup/teardown and design belong to named-exit routing; declare "routing": "exits" to use them (a legacy workflow runs scripts through its environments)'
       );
     }
     return errors;
@@ -335,7 +381,7 @@ export const WORKFLOW_ROOT_KEYS = [
 ] as const;
 export const WORKFLOW_STAGE_KEYS = [
   "name", "description", "agent", "prompt", "agent_provider", "environment", "exits",
-  "budget", "policy", "post", "exit_commit", "setup", "teardown",
+  "budget", "policy", "post", "exit_commit", "setup", "teardown", "design",
 ] as const;
 export const WORKFLOW_POST_KEYS = [
   "name", "description", "agent", "prompt", "agent_provider",
@@ -466,6 +512,28 @@ export function parseWorkflowJson(raw: string): WorkflowDefinition {
   return def;
 }
 
+function parseDesign(value: unknown, stageName: string): WorkflowDesign {
+  const invalid = () =>
+    validationError(
+      `Stage "${stageName}" has an invalid design ${formatRawValue(value)}; must be { "positions": [{ "name", "label" }] }`
+    );
+  if (typeof value !== "object" || Array.isArray(value) || value === null) throw invalid();
+  const positions = (value as Record<string, unknown>)["positions"];
+  if (!Array.isArray(positions)) throw invalid();
+  return {
+    positions: positions.map((position) => {
+      if (typeof position !== "object" || position === null || Array.isArray(position)) throw invalid();
+      const { name, label, artifact } = position as Record<string, unknown>;
+      if (typeof name !== "string" || !DESIGN_POSITION_NAME.test(name) || typeof label !== "string") {
+        throw invalid();
+      }
+      if (artifact === undefined) return { name, label };
+      if (artifact !== "document" && artifact !== "mockup") throw invalid();
+      return { name, label, artifact };
+    }),
+  };
+}
+
 function extractPost(value: unknown, stageName: string): WorkflowPost | undefined {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -592,6 +660,11 @@ function extractStages(obj: Record<string, unknown>): WorkflowStage[] {
         );
       }
       stage[field] = [...(commands as string[])];
+    }
+
+    const design = s["design"];
+    if (design !== undefined && design !== null) {
+      stage.design = parseDesign(design, name || "(unnamed)");
     }
 
     const post = extractPost(s["post"], stage.name || "(unnamed)");

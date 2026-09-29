@@ -185,6 +185,31 @@
         }
       }
     },
+    "design": {
+      "type": "object",
+      "description": "`design` is what an App Design task's hand-off keeps in this repository (docs/specs/app-design.md \u00a77a). `handoff.retain` is `results-and-summary` (the approved design document and a summary of the design and its feedback are committed by the design stage's commit step under `handoff.path`) or `nothing` (the default: nothing is committed, and the approved snapshot stays in the artifact store). `handoff.path` is a repository-relative folder, default `docs/design-results/{task}`, where `{task}` is the task id. This is committed policy and cannot appear in local config; it is separate from `artifacts.retention`, which governs the artifact store.",
+      "additionalProperties": false,
+      "properties": {
+        "handoff": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "retain": {
+              "type": "string",
+              "enum": [
+                "results-and-summary",
+                "nothing"
+              ]
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^/~][^\\\\]*$"
+            }
+          }
+        }
+      }
+    },
     "workspace": {
       "type": "object",
       "description": "`ports` maps environment-variable names to base ports; Kanna reserves task-specific ports and exports the resolved values so parallel worktrees do not collide. `vars` provides committed string substitutions for agent prompts. `workspace`, `stage_order`, `reserved_ports`, and `reserved_port_offsets` are committed task semantics and cannot appear in local config.",

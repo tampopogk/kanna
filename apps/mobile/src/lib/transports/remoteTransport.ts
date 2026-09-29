@@ -1,3 +1,4 @@
+import { designRoute, designTaskPath, type DesignOperation } from "../api/design";
 import { taskInputResult } from "../api/taskInput";
 import type { AgentProvider } from "@kanna/agent-protocol";
 import type {
@@ -1032,6 +1033,15 @@ export function createRemoteTransport({
       artifactPost<ArtifactPushOutcome>(repoId, artifactId, "/push", binding ?? null),
     fetchArtifact: (repoId: string, artifactId: string) =>
       artifactPost<ArtifactFetchOutcome>(repoId, artifactId, "/fetch", null),
+    requestDesign: (taskId: string, operation: DesignOperation): Promise<unknown> => {
+      const route = designRoute(operation);
+      return requestTask<unknown>(
+        taskId,
+        route.method,
+        (localTaskId) => designTaskPath(localTaskId, route),
+        route.body
+      );
+    },
     readTaskDiff: (taskId: string, diffRequest?: TaskDiffRequest) =>
       requestTask<TaskDiffContent>(
         taskId,

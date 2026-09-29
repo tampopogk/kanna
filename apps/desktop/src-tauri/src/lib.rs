@@ -408,6 +408,7 @@ pub fn run() {
             commands::mobile::create_mobile_pairing_session,
             commands::mobile::desktop_cloud_credential,
             commands::mobile::local_control_credential,
+            commands::mobile::confirm_design_approval,
             // Shell commands
             commands::shell::run_script,
             commands::shell::ensure_term_init,

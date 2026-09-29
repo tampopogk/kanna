@@ -501,7 +501,8 @@
     "artifact": "アーティファクト",
     "artifactLabel": "アーティファクト: {id}",
     "artifactTitle": "アーティファクト {id}",
-    "artifactEmptyTitle": "ツリーIDでアーティファクトを開く"
+    "artifactEmptyTitle": "ツリーIDでアーティファクトを開く",
+    "design": "デザイン"
   },
   "terminalTabs": {
     "noSession": "アクティブなエージェントセッションがありません"
@@ -516,7 +517,9 @@
     "commitStepLabel": "コミット:",
     "gateParked": "担当者の判断を待っています",
     "dependencyWait": "{fromStage} → {toStage} の依存関係を待機中",
-    "dependencySuperseded": "{upstreamTaskId}（{upstreamStage}）の新しい結果は使用されませんでした"
+    "dependencySuperseded": "{upstreamTaskId}（{upstreamStage}）の新しい結果は使用されませんでした",
+    "designAt": "App Design · {position} ›",
+    "designHandedOff": "App Design · 引き渡し済み ›"
   },
   "app": {
     "selectRepoFirst": "リポジトリを先に選択してください",
@@ -667,6 +670,108 @@
       "fetchFailed": "フェッチに失敗しました。",
       "changed": "このパネルを読み込んだ後にアーティファクトリモートが変わりました。何もプッシュしていません。現在のプッシュ先を確認してください。",
       "pushCancelled": "ここではプッシュを取り消しました。デスクトップですでに開始していた場合は完了することがあります。状態を確認するには再度プッシュしてください。"
+    }
+  },
+  "design": {
+    "workflowName": "アプリデザイン",
+    "freeMove": "デザインの段階は自由に行き来できます",
+    "lightTheme": "ライトモードに切り替え",
+    "darkTheme": "ダークモードに切り替え",
+    "incompatible": "このデザイン文書は別のエディターバージョンで作られています。編集する前に Kanna を更新してください。何も変更されていません。",
+    "mockupTitle": "{position}のモックアップ",
+    "mockupOpening": "モックアップを開いています…",
+    "status": {
+      "connecting": "接続中…",
+      "saving": "保存中…",
+      "saved": "保存済み",
+      "offline": "オフライン: 編集は保持され、再接続時に送信されます",
+      "incompatible": "エディターのバージョン不一致"
+    },
+    "editor": {
+      "comment": "コメント",
+      "agentItemTitle": "エージェント",
+      "agentItemSubtext": "エージェントに送信: /agent メッセージ のあと Enter",
+      "agentGroup": "エージェント",
+      "person": "あなた",
+      "messageSent": "エージェントのキューに追加しました",
+      "messageFailed": "メッセージを送信できませんでした",
+      "commentFailed": "コメントを送信できませんでした"
+    },
+    "feedback": {
+      "title": "フィードバック → エージェント",
+      "openCount": "未解決 {count}",
+      "resolvedCount": "解決済み {count}",
+      "number": "スレッド {number}",
+      "message": "✦ エージェントへのメッセージ",
+      "detached": "テキスト削除済み",
+      "agent": "エージェント",
+      "resolvedTag": "解決済み ✓",
+      "resolve": "解決",
+      "reopen": "再開",
+      "reply": "返信",
+      "replyLabel": "スレッド {number} に返信",
+      "replyPlaceholder": "返信…",
+      "send": "送信",
+      "resend": "再送信",
+      "empty": "ドキュメントの語句を選択して💬または⌘↵、または /agent と入力。エージェントのセッションに順番に届きます。",
+      "openDivider": "未解決"
+    },
+    "delivery": {
+      "queued": "待機中",
+      "delivering": "送信中…",
+      "delivered": "配信済み ✓",
+      "agent_replied": "エージェントが返信",
+      "uncertain": "未配信 ✕",
+      "held": "保留",
+      "cancelled": "未配信 ✕",
+      "none": ""
+    },
+    "approval": {
+      "approve": "ビルドを承認 →",
+      "preparing": "準備中…",
+      "dialogTitle": "ビルドを承認しますか？",
+      "dialogIntro": "デザインをソフトウェアファクトリーに引き渡します：",
+      "dialogSnapshot": "スナップショットが Kanna のアーティファクトストアに公開され、承認が記録されます",
+      "dialogRetained": "次の成果物がリポジトリにコミットされます：",
+      "dialogNothingRetained": "リポジトリには何もコミットされません。このリポジトリのポリシーではスナップショットのみ保持します",
+      "dialogNext": "その後、そのコミットから {stage} ステージが始まります",
+      "dialogPrototype": "プロトタイプのコードは参考用です。エージェントが正式に作り直します",
+      "dialogOpenFeedback": "未解決のスレッドが {open} 件、エージェントに届いていない項目が {waiting} 件あります。承認記録に残ります。",
+      "keepIterating": "続けて改善する",
+      "confirm": "承認",
+      "approving": "承認中…",
+      "reopen": "デザインを再開",
+      "reopenHint": "デザインに戻ります。承認は取り消され、改めて承認が必要です",
+      "retry": "引き渡しを再試行",
+      "failed": "承認に失敗：{error}",
+      "progress": {
+        "approved": "ビルド承認済み: 保存する成果物を書き出しています…",
+        "exported": "ビルド承認済み: デザインセッションのコミットを待っています…",
+        "committing": "ビルド承認済み: デザインセッションがコミットしています…",
+        "committed": "コミットを確認しました: ソフトウェアファクトリーを開始しています…",
+        "entered": "ソフトウェアファクトリーに引き渡しました ({stage})。"
+      },
+      "dialogCommit": "プロトタイプのリポジトリがコミットされ、そのコミットが承認対象になります",
+      "approvedLine": "承認済み · コミット {commit} · アーティファクト {artifact}…",
+      "repoLine": "使い捨てリポジトリ · {path}"
+    },
+    "pin": {
+      "submit": "コメント",
+      "cancel": "キャンセル"
+    },
+    "goTo": "{position}へ移動",
+    "handedOffStep": "ソフトウェアファクトリーに引き渡し済み",
+    "softwareFactory": "ソフトウェアファクトリー",
+    "youAreHere": "現在の位置です",
+    "nowIn": "「{position}」に移動しました",
+    "room": {
+      "title": "コメント",
+      "hint": "モックアップの要素を⌘クリックしてコメント。通常のクリックはモックアップを操作します。",
+      "empty": "まだコメントはありません。",
+      "waiting": "エージェントがモックアップを公開するのを待っています…",
+      "elementGone": "要素が見つかりません",
+      "composerPlaceholder": "ここで何を変えますか？（⌘↵で送信）",
+      "pinned": "ピン留め：エージェントに送信待ち"
     }
   }
 }

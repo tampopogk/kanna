@@ -67,6 +67,13 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{oneshot, watch, Mutex};
 
 const CAPABILITY_PREFIX: &str = "/a/";
+/// The same tree with App Design's mockup pins (docs/specs/app-design.md
+/// §5): HTML pages served under this prefix carry
+/// `resources/design-mockup-pins.js`, which lets the person pin comments on
+/// the mockup's elements. Relative links stay under it, so every page of the
+/// mockup is pinnable; the artifact's bytes are unchanged.
+const PINS_PREFIX: &str = "/p/";
+const PINS_SCRIPT: &str = include_str!("../../resources/design-mockup-pins.js");
 const IDLE_TTL: Duration = Duration::from_secs(15 * 60);
 const HARD_TTL: Duration = Duration::from_secs(60 * 60);
 const EXPIRY_POLL: Duration = Duration::from_secs(5);
@@ -458,9 +465,15 @@ async fn serve_artifact_request(
     {
         return not_found("not found");
     }
-    let Some(rest) = request.uri().path().strip_prefix(CAPABILITY_PREFIX) else {
-        return not_found("not found");
+    let path = request.uri().path();
+    let (prefix, rest) = match path.strip_prefix(CAPABILITY_PREFIX) {
+        Some(rest) => (CAPABILITY_PREFIX, rest),
+        None => match path.strip_prefix(PINS_PREFIX) {
+            Some(rest) => (PINS_PREFIX, rest),
+            None => return not_found("not found"),
+        },
     };
+    let pins = prefix == PINS_PREFIX;
     let (presented, file_path) = match rest.split_once('/') {
         Some((capability, file_path)) => (capability, Some(file_path)),
         None => (rest, None),
@@ -494,7 +507,7 @@ async fn serve_artifact_request(
             request.method() == Method::HEAD,
         );
     }
-    let base = format!("{CAPABILITY_PREFIX}{}/", session.capability);
+    let base = format!("{prefix}{}/", session.capability);
     let Some(raw_path) = file_path.filter(|path| !path.is_empty()) else {
         return redirect(&format!("{base}{}", encode_path(&session.entrypoint)));
     };
@@ -535,10 +548,18 @@ async fn serve_artifact_request(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let media_type = media_type(&blob.path);
+    let mut bytes = blob.bytes;
+    if pins && media_type.starts_with("text/html") {
+        // After the document: the parser places it in the body, and it runs
+        // once the mockup's own markup is in place.
+        bytes.extend_from_slice(b"\n<script data-kanna-pins>");
+        bytes.extend_from_slice(PINS_SCRIPT.as_bytes());
+        bytes.extend_from_slice(b"</script>\n");
+    }
     let mut response = if head {
         Response::new(Body::empty())
     } else {
-        Response::new(Body::from(blob.bytes))
+        Response::new(Body::from(bytes))
     };
     let headers = response.headers_mut();
     headers.insert(

@@ -1398,6 +1398,261 @@
       ]
     },
     {
+      "name": "kanna_design_get",
+      "description": "Read an App Design task's live design (docs/specs/app-design.md), compactly: the current `position` and the `positions` you may move to; `scratchRepository`, the disposable git repository outside the worktree where throwaway prototype code goes; the approval phase if one is under way; the open comment threads in creation order (id, number, kind, the anchor's block id and quoted text, and each comment's author and body), with resolved ones counted in `resolvedThreads`; and the document as blocks, each its id, type and text, with `props` only where they differ from the defaults, `runs` only when its text has formatting, a link or a comment anchor (a run's `threads` names the threads anchored on it) and `children` only when it has some. Reading never changes the document. A document holding content outside this schema is refused with an explicit error rather than read in a narrower form.",
+      "method": "GET",
+      "path": "/v1/tasks/{task_id}/design/agent",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "task_id",
+          "description": "Task id (stable across stages) or one of the task's branch names (task-{id} or task-{id}-{n}).",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "document",
+          "description": "Include the document's blocks (the default). Pass false to read only the position and threads.",
+          "type": "boolean",
+          "required": false,
+          "location": "query"
+        },
+        {
+          "name": "resolved",
+          "description": "Also list resolved threads, each with its status.",
+          "type": "boolean",
+          "required": false,
+          "location": "query"
+        }
+      ]
+    },
+    {
+      "name": "kanna_design_edit",
+      "description": "Edit an App Design task's live document with targeted block operations, applied atomically while the person may be typing elsewhere in it. Operations: {\"op\": \"replace_text\", \"block_id\", \"expected_text\", \"text\"} changes only the part of the block's text that differs, keeping formatting and comment anchors outside it; {\"op\": \"insert_block\", \"after\"?: block id, \"parent\"?: block id, \"block\": {\"type\": \"paragraph\"|\"heading\"|\"bulletListItem\"|\"numberedListItem\"|\"checkListItem\"|\"toggleListItem\"|\"quote\"|\"codeBlock\"|\"divider\", \"text\", \"props\"?}} (after a sibling, as the last child of a parent, or at the end); {\"op\": \"delete_block\", \"block_id\", \"expected_text\"}; {\"op\": \"update_props\", \"block_id\", \"props\"} (e.g. heading `level`, check item `checked`, code `language`). `expected_text` is the block's text as you last read it: if the person changed that block, the result is `status: \"conflict\"` with the block's current content and nothing is written; read it and edit again. Never rewrite the whole document. Text is one line per block; insert a block per paragraph. Returns the new document revision and the ids of the blocks each operation touched or created.",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/design/agent/edits",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "task_id",
+          "description": "Task id (stable across stages) or one of the task's branch names (task-{id} or task-{id}-{n}).",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "op_id",
+          "description": "An id you choose for this call (letters, digits, '-' or '_'). Reuse it only to retry the same call: a retried id returns the first call's result and changes nothing twice.",
+          "type": "string",
+          "required": true,
+          "location": "body",
+          "key": "opId"
+        },
+        {
+          "name": "ops",
+          "description": "The operations, in order (at most 200).",
+          "type": "object_array",
+          "required": true,
+          "location": "body",
+          "key": "ops"
+        }
+      ]
+    },
+    {
+      "name": "kanna_design_reply",
+      "description": "Answer a comment thread or /agent message in an App Design task's feedback panel, in place: say what you changed or ask what you need. The person sees it under their comment; it is never delivered back to you. Returns the thread with its comments and delivery status.",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/design/agent/threads/{thread_id}/replies",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "task_id",
+          "description": "Task id (stable across stages) or one of the task's branch names (task-{id} or task-{id}-{n}).",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "thread_id",
+          "description": "Thread id, as kanna_design_get and each delivered feedback item name it.",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "op_id",
+          "description": "An id you choose for this call (letters, digits, '-' or '_'). Reuse it only to retry the same call: a retried id returns the first call's result and changes nothing twice.",
+          "type": "string",
+          "required": true,
+          "location": "body",
+          "key": "opId"
+        },
+        {
+          "name": "body",
+          "description": "Your reply (plain text).",
+          "type": "string",
+          "required": true,
+          "location": "body",
+          "key": "body"
+        }
+      ]
+    },
+    {
+      "name": "kanna_design_resolve",
+      "description": "Resolve an App Design feedback thread when its feedback is done, or reopen it with resolved=false. Resolution is separate from delivery and never renumbers threads; resolved threads are hidden behind a toggle in the feedback panel. Idempotent.",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/design/agent/threads/{thread_id}/resolve",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "task_id",
+          "description": "Task id (stable across stages) or one of the task's branch names (task-{id} or task-{id}-{n}).",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "thread_id",
+          "description": "Thread id, as kanna_design_get and each delivered feedback item name it.",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "resolved",
+          "description": "true to resolve (the default), false to reopen.",
+          "type": "boolean",
+          "required": false,
+          "location": "body",
+          "key": "resolved",
+          "default": true
+        }
+      ]
+    },
+    {
+      "name": "kanna_design_set_position",
+      "description": "Move an App Design task between its design positions (for the app-design workflow: static, interactive, prototype) as the work moves. A position is where the design is inside the one design stage: it starts no session, forks no workspace, runs no reviewer and advances nothing. Approval is the person's, in Kanna; no tool approves a design.",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/design/position",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "task_id",
+          "description": "Task id (stable across stages) or one of the task's branch names (task-{id} or task-{id}-{n}).",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "position",
+          "description": "A position name, as kanna_design_get lists them.",
+          "type": "string",
+          "required": true,
+          "location": "body",
+          "key": "position"
+        }
+      ]
+    },
+    {
+      "name": "kanna_design_publish_mockup",
+      "description": "Set the HTML mockup an App Design position shows (for the app-design workflow: the static and interactive mockup positions). Send the whole page as `html`, the way the design prototype's html/set did, each time you change it; or, for a mockup with separate CSS, JS or images, write it in the design's disposable repository (`scratchRepository` in kanna_design_get) and send its file or directory as `path`. The page is kept in the disposable repository and as an immutable version in the repository's artifact store, and the person sees it at once, rendered sandboxed with no network access: inline or bundle everything it needs, and keep text in HTML, never in images. The person pins comments on its elements; they reach you as \"Pin #n on the <position> mockup\" with the element's selector and HTML, and you answer them with kanna_design_reply like any thread. Returns the position, the artifact id and the page it opens.",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/design/agent/mockups",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "task_id",
+          "description": "Task id (stable across stages) or one of the task's branch names (task-{id} or task-{id}-{n}).",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "op_id",
+          "description": "An id you choose for this call (letters, digits, '-' or '_'). Reuse it only to retry the same call: a retried id returns the first call's result and changes nothing twice.",
+          "type": "string",
+          "required": true,
+          "location": "body",
+          "key": "opId"
+        },
+        {
+          "name": "html",
+          "description": "The mockup page: one complete HTML document. Omit it when you send path.",
+          "type": "string",
+          "required": false,
+          "location": "body",
+          "key": "html"
+        },
+        {
+          "name": "path",
+          "description": "Instead of html: the mockup's file or directory, relative to the disposable repository (or an absolute path inside it).",
+          "type": "string",
+          "required": false,
+          "location": "body",
+          "key": "path"
+        },
+        {
+          "name": "position",
+          "description": "The position that shows it (a name kanna_design_get lists); the current position when omitted.",
+          "type": "string",
+          "required": false,
+          "location": "body",
+          "key": "position"
+        },
+        {
+          "name": "entrypoint",
+          "description": "The page to open inside a published directory; index.html (or the single file) when omitted.",
+          "type": "string",
+          "required": false,
+          "location": "body",
+          "key": "entrypoint"
+        }
+      ]
+    },
+    {
       "name": "kanna_task_input_deliveries",
       "description": "Inspect durable hosted input attempts, including queued, submitting, submitted, failed and uncertain states. Queued or uncertain entries are not delivered conversation and must not be blindly replayed. Omit delivery_id to list attempts for the task.",
       "method": "GET",

@@ -86,6 +86,26 @@ export interface WorkflowStage {
   setup?: string[];
   /** Routing "exits" only: commands run in the workspace on leaving the stage. */
   teardown?: string[];
+  /**
+   * Routing "exits" only: an App Design session (docs/specs/app-design.md).
+   * Its positions are state inside this one stage, never transitions; the
+   * stage leaves only through Approve for build.
+   */
+  design?: WorkflowDesign;
+}
+
+export interface WorkflowDesignPosition {
+  name: string;
+  label: string;
+  /**
+   * What the position shows: "document" (the live design document and its
+   * feedback feed) or "mockup" (the agent's HTML mockup with pinned comments).
+   */
+  artifact?: "document" | "mockup";
+}
+
+export interface WorkflowDesign {
+  positions: WorkflowDesignPosition[];
 }
 
 export interface WorkflowDefinition {

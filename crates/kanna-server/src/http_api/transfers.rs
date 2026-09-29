@@ -1226,6 +1226,13 @@ pub(super) async fn insert_task_transfer(
                 })),
             ))
         }
+        Err(error) if crate::db::is_live_design_transfer_refusal(&error) => Err((
+            axum::http::StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": crate::db::LIVE_DESIGN_TRANSFER_REFUSAL,
+                "message": error.to_string(),
+            })),
+        )),
         Err(error) => Err(json_error(db_error(error))),
     }
 }

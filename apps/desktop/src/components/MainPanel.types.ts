@@ -15,4 +15,6 @@ export interface MainTabViewsController {
   tabs: MainTabsController;
   modals: ReturnType<typeof useAppModals>;
   store: ReturnType<typeof useKannaStore>;
+  /** Persist the app-wide light/dark choice (the design view's toggle). */
+  setAppTheme?: (theme: "light" | "dark") => void;
 }

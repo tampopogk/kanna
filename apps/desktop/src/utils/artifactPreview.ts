@@ -95,3 +95,14 @@ export function artifactFrameUrl(previewUrl: string, path: string | null): strin
   frame.search = `?${ARTIFACT_SHELL_QUERY}`;
   return frame.toString();
 }
+
+/**
+ * The same frame with App Design's mockup pins: the listener serves the tree
+ * under `/p/<capability>/`, adding its pin script to the HTML pages, and the
+ * shell and every relative reference stay under that prefix.
+ */
+export function artifactPinFrameUrl(previewUrl: string, path: string | null): string {
+  const frame = new URL(artifactFrameUrl(previewUrl, path));
+  frame.pathname = frame.pathname.replace(/^\/a\//, "/p/");
+  return frame.toString();
+}

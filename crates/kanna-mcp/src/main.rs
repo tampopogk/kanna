@@ -2014,6 +2014,12 @@ mod tests {
                 "kanna_record_artifact_decision",
                 "kanna_push_artifact",
                 "kanna_fetch_artifact",
+                "kanna_design_get",
+                "kanna_design_edit",
+                "kanna_design_reply",
+                "kanna_design_resolve",
+                "kanna_design_set_position",
+                "kanna_design_publish_mockup",
             ]
         );
     }

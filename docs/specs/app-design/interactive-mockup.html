@@ -1,0 +1,806 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Kanna — Design stage (clickable)</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: Inter, system-ui, sans-serif; font-size:13px; color:#1f1d24; background:#f3f2ef; height:100vh; display:flex; overflow:hidden; }
+  button { font:inherit; cursor:pointer; }
+  #sidebar { width:200px; flex-shrink:0; background:#1c1a22; color:#cfcad8; padding:14px 10px; display:flex; flex-direction:column; gap:4px; }
+  #sidebar h3 { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:#8a8497; margin:10px 8px 4px; }
+  .task { padding:7px 9px; border-radius:7px; display:flex; justify-content:space-between; align-items:center; gap:6px; cursor:pointer; }
+  .task:hover { background:#27242f; }
+  .task.active { background:#2e2a38; color:#fff; }
+  .badge { font-size:10.5px; padding:1px 7px; border-radius:9px; background:#3a3546; color:#cfcad8; white-space:nowrap; }
+  .badge.design { background:#7b4ff0; color:#fff; }
+  .badge.attn { background:#e8a33d; color:#241a05; }
+  .badge.factory { background:#2f8a57; color:#fff; }
+  #app { flex:1; display:flex; flex-direction:column; min-width:0; }
+  #task-header { background:#fff; border-bottom:1px solid #e4e1e8; padding:12px 18px 10px; }
+  #task-title { font-size:16px; font-weight:700; margin:0 0 8px; }
+  #ladder { display:flex; align-items:center; gap:6px; font-size:12px; flex-wrap:wrap; }
+  .step { padding:4px 10px; border-radius:14px; background:#f0eef3; color:#6b6577; border:0; }
+  .step.done { background:#e5dcfb; color:#4b2bb0; }
+  .step.now { background:#7b4ff0; color:#fff; font-weight:600; }
+  .step.factory { background:#e4f4ea; color:#1f5b39; }
+  .step.factory.now { background:#2f8a57; color:#fff; }
+  .step.viewing { outline:2px solid #1f1d24; outline-offset:1px; }
+  .arrow { color:#b5afc0; }
+  #workspace { flex:1; display:flex; min-height:0; }
+  #terminal { width:24%; min-width:200px; background:#15141a; color:#d6d3de; font-family: ui-monospace, Menlo, monospace; font-size:12px; padding:14px; line-height:1.55; overflow:auto; }
+  #terminal .me { color:#b9a3f5; } #terminal .dim { color:#6f6a7c; } #terminal .ok { color:#7fd49c; }
+  #surface { flex:1; display:flex; flex-direction:column; min-width:0; background:#fff; border-left:1px solid #e4e1e8; }
+  #tabs { display:flex; gap:2px; padding:8px 12px 0; border-bottom:1px solid #e4e1e8; }
+  .tab { white-space:nowrap; padding:8px 14px; border-radius:8px 8px 0 0; color:#6b6577; background:none; border:0; }
+  .tab:hover { color:#1f1d24; }
+  .tab.on { background:#f6f4fb; color:#1f1d24; font-weight:600; box-shadow: inset 0 -2px 0 #7b4ff0; }
+  .count { font-size:10.5px; background:#e8a33d; color:#241a05; border-radius:9px; padding:0 6px; margin-left:4px; }
+  .count:empty { display:none; }
+  #preview { flex:1; padding:18px 18px; overflow:auto; background:#f6f4fb; position:relative; }
+  .pane { display:none; } .pane.on { display:block; }
+  .card { background:#fff; border-radius:10px; box-shadow:0 1px 3px rgba(0,0,0,.08); padding:20px 22px; max-width:560px; }
+  .card h1 { font-size:20px; margin:0 0 10px; }
+  .card p { line-height:1.55; margin:8px 0; }
+  .hint { color:#8a8497; font-size:12px; margin-top:12px; }
+  #doc-card { outline:none; transition: box-shadow .15s; }
+  #doc-card:focus { box-shadow: 0 0 0 2px #cdbdf8, 0 1px 3px rgba(0,0,0,.08); }
+  #doc-card h1:empty::before, #doc-card p:empty::before { content:"Type here…"; color:#b5afc0; }
+  .dirs-head h1 { font-size:18px; margin:0 0 4px; } .dirs-head p { margin:0 0 14px; color:#6b6577; }
+  #directions { display:grid; grid-template-columns:repeat(auto-fit, minmax(190px,1fr)); gap:12px; margin-bottom:14px; }
+  .dir { text-align:left; background:#fff; border:1px solid #e4e1e8; border-radius:12px; padding:12px; display:flex; flex-direction:column; gap:10px; transition: transform .12s, box-shadow .12s, border-color .12s; }
+  .dir:hover { transform: translateY(-2px); box-shadow:0 6px 16px rgba(60,40,120,.10); }
+  .dir.sel { border-color:#7b4ff0; box-shadow:0 0 0 3px #efe8ff; }
+  .dir.picked { border-color:#2f8a57; box-shadow:0 0 0 3px #e4f4ea; }
+  .dir-tag { font-weight:700; font-size:12.5px; }
+  .dir-note { font-size:11.5px; color:#6b6577; line-height:1.4; }
+  .wire { display:flex; flex-direction:column; gap:6px; background:#faf9fc; border-radius:8px; padding:10px; min-height:74px; font-size:10.5px; color:#8a8497; }
+  .wire .ln { display:block; height:8px; background:#ebe8f0; border-radius:4px; position:relative; }
+  .wire .ln:has(i) { height:auto; background:none; }
+  .wire .ln.short { width:60%; }
+  .wire i { font-style:normal; color:#1f1d24; }
+  .wire i.hl { background:#fbe7b8; }
+  .wire i.ul { border-bottom:2px solid #7b4ff0; }
+  .wire .dot { position:absolute; right:-4px; top:-1px; background:#7b4ff0; color:#fff; border-radius:9px; font-size:9.5px; padding:0 5px; }
+  .wire.split { flex-direction:row; gap:8px; } .wire .col-a { flex:1.4; display:flex; flex-direction:column; gap:6px; } .wire .col-b { flex:1; min-width:0; display:flex; flex-direction:column; gap:4px; }
+  .bubble { overflow-wrap:anywhere; background:#fff; border:1px solid #e4e1e8; border-radius:6px; padding:3px 5px; color:#1f1d24; } .bubble.agent { color:#2f6fdd; }
+  #dir-detail { max-width:none; }
+  #dir-sample { position:relative; padding-right:30px; font-size:14px; }
+  #dir-dot { display:none; position:absolute; right:0; top:0; background:#7b4ff0; color:#fff; border-radius:10px; font-size:11px; font-weight:700; padding:1px 7px; }
+  #dir-sample.a #dir-mark { background:#fbe7b8; }
+  #dir-sample.b #dir-mark { border-bottom:2px solid #7b4ff0; } #dir-sample.b #dir-dot { display:inline-block; }
+  #dir-sample.c #dir-mark { background:#efe8ff; border-bottom:2px solid #7b4ff0; }
+  #dir-sample.c::after { content:"Jeremy: make this bigger?  ·  Claude: done ✓"; display:block; margin-top:8px; font-size:12px; color:#4a4555; background:#faf9fc; border-left:3px solid #7b4ff0; padding:6px 10px; border-radius:0 6px 6px 0; }
+  .row-end { display:flex; justify-content:flex-end; }
+  #dir-pick:not(:disabled) { background:#7b4ff0; color:#fff; border-color:#7b4ff0; }
+  #surface-head { display:flex; align-items:center; gap:10px; padding:10px 16px; border-bottom:1px solid #e4e1e8; }
+  .stage-chip { font-size:11px; font-weight:700; color:#7b4ff0; background:#efe8ff; border-radius:10px; padding:2px 9px; }
+  .doc-name { font-weight:600; }
+  #comment-count { margin-left:4px; letter-spacing:0; text-transform:none; font-size:10.5px; color:#8a6412; background:#fdf1d8; border-radius:10px; padding:2px 9px; }
+  #comment-count:empty { display:none; }
+  #doc-card { max-width:720px; margin:0 auto; }
+  .embed { margin:14px 0; border:1px solid #e4e1e8; border-radius:12px; padding:12px; background:#fcfbfe; user-select:none; }
+  .embed-bar { display:flex; justify-content:space-between; font-size:11px; color:#8a8497; margin-bottom:10px; letter-spacing:.02em; }
+  .embed-bar span:first-child { color:#7b4ff0; font-weight:700; }
+  #dir-detail { background:#fff; border:1px solid #ece9f1; border-radius:10px; padding:10px 14px; }
+  #popover { align-items:center; padding:5px !important; border-radius:999px !important; background:#fff !important; border:1px solid #e6defc; box-shadow:0 6px 18px rgba(123,79,240,.18) !important; }
+  #popover button { display:inline-flex; align-items:center; gap:5px; border-radius:999px !important; }
+  #pop-open { background:linear-gradient(135deg,#8b5cf6,#6d4be0) !important; color:#fff; padding:5px 10px 5px 8px !important; font-weight:600; }
+  #pop-open:hover { filter:brightness(1.07); transform:translateY(-1px); }
+  .bubble-ico { font-size:13px; }
+  #popover kbd { font:600 11px Inter,system-ui,sans-serif; letter-spacing:.5px; background:rgba(255,255,255,.95); color:#6d4be0; border-radius:999px; padding:1px 7px; line-height:15px; box-shadow:0 1px 0 rgba(0,0,0,.12); margin-left:2px; }
+  #pop-text { border:1px solid #e4e1e8 !important; border-radius:999px !important; padding:5px 10px !important; }
+  #pop-send { background:#7b4ff0 !important; padding:5px 10px !important; }
+  #feed-head { display:flex; align-items:center; justify-content:space-between; }
+  #feed-mode { border:1px solid #e4e1e8; background:#fff; border-radius:999px; width:30px; height:26px; display:grid; place-items:center; font-size:13px; }
+  #feed-mode.on { background:linear-gradient(135deg,#8b5cf6,#6d4be0); border-color:transparent; box-shadow:0 0 0 3px #efe8ff; }
+  #real-feed { display:flex; flex-direction:column; gap:8px; }
+  .fb .pin-n { display:inline-block; background:#7b4ff0; color:#fff; border-radius:9px; font-size:10px; font-weight:700; padding:0 6px; margin-right:4px; }
+  .fb .on-el { color:#8a8497; font-size:11px; display:block; margin-bottom:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .fb .reply { margin-top:6px; padding-top:6px; border-top:1px dashed #ece9f1; color:#2f6fdd; }
+  .fb .reply + .reply { border-top:0; padding-top:0; }
+  .artifact { display:none; height:100%; } .artifact.on { display:block; }
+  #art-static .card { position:relative; }
+  #art-static .card::before { content:"STATIC MOCKUP · look, don't touch"; position:absolute; top:10px; right:14px; font-size:10px; letter-spacing:.08em; color:#8a8497; }
+  #art-static .embed, #art-static .dir { pointer-events:none; }
+  #art-proto { display:none; flex-direction:column; border:1px solid #e4e1e8; border-radius:10px; overflow:hidden; background:#fff; }
+  #art-proto.on { display:flex; }
+  .art-bar { display:flex; justify-content:space-between; padding:7px 12px; background:#f0eef3; font-size:11px; color:#6b6577; }
+  .art-bar span:first-child { color:#7b4ff0; font-weight:700; }
+  #art-proto iframe { flex:1; border:0; width:100%; min-height:520px; }
+  .factory-card h1 { font-size:18px; margin:0 0 8px; }
+  .tpane, .fpane { display:none; } .tpane.on { display:block; } .fpane.on { display:flex; flex-direction:column; gap:8px; }
+  .brief h1 { font-size:18px; margin:0 0 6px; }
+  .chip { display:inline-block; font-size:11px; font-weight:700; border-radius:10px; padding:2px 9px; }
+  .chip.warn { background:#fdf1d8; color:#8a6412; } .chip.ok { background:#e4f4ea; color:#1f5b39; } .chip.info { background:#efe8ff; color:#6d4be0; }
+  .stats { display:flex; gap:10px; margin:12px 0; flex-wrap:wrap; }
+  .stat { background:#faf9fc; border:1px solid #ece9f1; border-radius:8px; padding:8px 12px; } .stat b { display:block; font-size:16px; }
+  .finding { display:flex; gap:10px; padding:9px 0; border-top:1px solid #f0eef3; line-height:1.4; }
+  .sev { width:9px; height:9px; border-radius:50%; margin-top:5px; flex-shrink:0; } .sev.high { background:#e0533d; } .sev.mid { background:#e8a33d; } .sev.low { background:#9aa3b5; }
+  .check { display:flex; gap:10px; align-items:center; padding:7px 0; border-top:1px solid #f0eef3; }
+  .check .box { width:18px; height:18px; border-radius:5px; display:grid; place-items:center; font-size:11px; background:#e4f4ea; color:#1f5b39; }
+  .check.todo .box { background:#f0eef3; color:#8a8497; } .check.doing .box { background:#fdf1d8; color:#8a6412; }
+  .bar { height:8px; background:#f0eef3; border-radius:4px; overflow:hidden; margin:10px 0 4px; } .bar i { display:block; height:100%; background:linear-gradient(90deg,#8b5cf6,#2f8a57); }
+  .phone-wrap { display:flex; gap:20px; align-items:flex-start; flex-wrap:wrap; }
+  .phone { width:260px; height:520px; border-radius:34px; background:#1c1a22; padding:12px; box-shadow:0 10px 30px rgba(0,0,0,.18); flex-shrink:0; }
+  .screen { height:100%; border-radius:24px; background:#fff; overflow:hidden; display:flex; flex-direction:column; position:relative; }
+  .screen .sb { height:26px; display:flex; justify-content:space-between; padding:6px 16px 0; font-size:10px; font-weight:700; }
+  .screen .nav { padding:6px 14px 8px; font-weight:700; font-size:14px; border-bottom:1px solid #f0eef3; display:flex; justify-content:space-between; }
+  .screen .art { flex:1; margin:10px; border-radius:10px; background:#f6f4fb; position:relative; padding:12px; font-size:11px; }
+  .screen .art .blk { height:8px; border-radius:4px; background:#e4e0ec; margin:6px 0; } .screen .art .blk.w { width:60%; }
+  .screen .art .hero { height:70px; border-radius:8px; background:linear-gradient(135deg,#efe8ff,#e3f0ff); margin:8px 0; }
+  .screen .dotpin { position:absolute; background:#7b4ff0; color:#fff; font-size:9px; font-weight:700; border-radius:8px 8px 8px 2px; padding:1px 5px; }
+  .screen .sheet { border-top-left-radius:16px; border-top-right-radius:16px; background:#fff; box-shadow:0 -6px 16px rgba(0,0,0,.08); padding:10px 14px 16px; font-size:11px; }
+  .screen .sheet .grab { width:34px; height:4px; border-radius:2px; background:#ddd; margin:0 auto 8px; }
+  .phone-notes { flex:1; min-width:180px; }
+  .static-tag { font-size:10px; letter-spacing:.08em; color:#8a8497; }
+  .wf { font-size:10.5px; font-weight:700; letter-spacing:.04em; color:#6b6577; background:#fff; border:1px solid #e4e1e8; border-radius:6px; padding:3px 7px; margin-right:4px; }
+  body.no-artifact #surface { display:none; }
+  body.no-artifact #terminal { flex:1; width:auto; font-size:12.5px; padding:18px 22px; }
+  .sev-t.high { color:#f07a63; } .sev-t.mid { color:#e8a33d; } .sev-t.low { color:#9aa3b5; }
+  .spec h1 { font-size:20px; margin:6px 0 12px; }
+  .spec-head { display:flex; justify-content:space-between; align-items:center; }
+  .stage-sums { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:8px; margin-bottom:14px; }
+  .sum { border:1px solid #ece9f1; border-radius:9px; padding:8px 10px; font-size:12px; line-height:1.4; }
+  .sum b { display:block; font-size:12px; margin-bottom:3px; }
+  .sum.done b::after { content:" ✓"; color:#2f8a57; } .sum.now { border-color:#cdbdf8; background:#faf7ff; } .sum.now b { color:#6d4be0; }
+  .sum.todo { color:#8a8497; border-style:dashed; }
+  .spec section { border-top:1px solid #f0eef3; padding-top:10px; margin-top:10px; }
+  .spec h2 { font-size:14px; margin:0 0 6px; display:flex; gap:8px; align-items:baseline; }
+  .spec h2 em { font-style:normal; font-size:10.5px; font-weight:600; color:#7b4ff0; background:#efe8ff; border-radius:8px; padding:1px 7px; }
+  .spec p, .spec li { line-height:1.5; } .spec ul { margin:4px 0; padding-left:18px; }
+  .spikes { width:100%; border-collapse:collapse; margin-top:10px; font-size:12.5px; }
+  .spikes th { text-align:left; font-size:11px; color:#8a8497; font-weight:600; padding:6px 8px; border-bottom:1px solid #ece9f1; }
+  .spikes td { padding:9px 8px; border-bottom:1px solid #f3f1f6; vertical-align:middle; }
+  .spikes tr.pick td { background:#f7fbf8; }
+  .spikes .chip { margin-left:6px; }
+  .lat { display:inline-block; min-width:110px; position:relative; padding-left:4px; }
+  .lat::before { content:""; position:absolute; left:0; top:50%; transform:translateY(-50%); height:14px; width:var(--w); background:#efe8ff; border-radius:3px; z-index:-1; }
+  .card[data-stage="1"] .dotpin, .card[data-stage="2"] .dotpin { cursor:pointer; box-shadow:0 0 0 3px rgba(123,79,240,.25); }
+  .dotpin.sel { background:#1f1d24 !important; }
+  .live-dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:#2f8a57; margin-right:6px; box-shadow:0 0 0 3px #e4f4ea; }
+  .review-only { display:none; }
+  body.review-layout .review-only { display:inline-block; }
+  body.review-layout #share, body.review-layout #signoff, body.review-layout #repo-ref { display:none; }
+  body.review-layout #feed { display:none; }
+  body.review-layout #terminal { width:38%; min-width:260px; }
+  #approve-pr { background:#1f5b39; color:#fff; border-color:#1f5b39; font-weight:600; }
+  .diff { background:#fff; border:1px solid #e4e1e8; border-radius:10px; overflow:hidden; font-size:12px; }
+  .diff-head { display:flex; justify-content:space-between; align-items:center; padding:10px 12px; border-bottom:1px solid #ece9f1; }
+  .flags { display:flex; gap:6px; }
+  .files { display:flex; flex-wrap:wrap; gap:6px; padding:8px 12px; border-bottom:1px solid #ece9f1; background:#faf9fc; }
+  .fl { font-family:ui-monospace,Menlo,monospace; font-size:11px; border-radius:6px; padding:2px 7px; background:#fff; border:1px solid #ece9f1; color:#6b6577; }
+  .fl.high { border-color:#f3b9ad; color:#a2321f; } .fl.mid { border-color:#f1d49c; color:#8a6412; }
+  .file { border-bottom:1px solid #ece9f1; }
+  .fname { font-family:ui-monospace,Menlo,monospace; font-size:11.5px; padding:8px 12px; background:#fcfbfd; display:flex; align-items:center; gap:8px; }
+  .dstat { margin-left:auto; color:#8a8497; }
+  .dot { width:8px; height:8px; border-radius:50%; } .dot.high { background:#e0533d; } .dot.mid { background:#e8a33d; }
+  .dl { display:flex; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; line-height:1.6; }
+  .dl .ln { width:44px; text-align:right; padding-right:8px; color:#b5afc0; flex-shrink:0; user-select:none; }
+  .dl .mk { width:14px; flex-shrink:0; color:#8a8497; } .dl code { white-space:pre; overflow:hidden; text-overflow:ellipsis; }
+  .dl.add { background:#eefaf1; } .dl.add .mk { color:#2f8a57; } .dl.del { background:#fdf0ee; } .dl.del .mk { color:#c2410c; }
+  .dl.hunk { background:#f3f1f8; color:#6b6577; }
+  .anno { margin:6px 12px 10px 58px; border-radius:9px; padding:9px 11px; font-family:Inter,system-ui,sans-serif; line-height:1.45; border:1px solid #ece9f1; border-left:4px solid #9aa3b5; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.05); }
+  .anno.high { border-left-color:#e0533d; } .anno.mid { border-left-color:#e8a33d; }
+  .anno-h { display:flex; align-items:center; gap:8px; margin-bottom:4px; } .anno-h b { color:#2f6fdd; font-size:12px; }
+  .anno code { font-size:11px; background:#f3f1f6; border-radius:4px; padding:0 3px; }
+  .anno-a { display:flex; gap:12px; margin-top:6px; }
+  .linkish { border:0; background:none; padding:0; color:#6d4be0; font-size:11.5px; font-weight:600; }
+  .sevb { font-size:10.5px; font-weight:700; border-radius:9px; padding:1px 8px; } .sevb.high { background:#fde4df; color:#a2321f; } .sevb.mid { background:#fdf1d8; color:#8a6412; }
+  #slash { position:absolute; display:none; width:240px; background:#fff; border:1px solid #e4e1e8; border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,.14); padding:5px; z-index:6; }
+  #slash .item { display:flex; gap:10px; align-items:center; padding:6px 8px; border-radius:7px; cursor:pointer; }
+  #slash .item.sel { background:#f0ebfe; }
+  #slash .ico { width:26px; height:26px; border-radius:6px; background:#f3f2ef; display:grid; place-items:center; font-weight:700; color:#4a4555; flex-shrink:0; }
+  #slash .item.ai .ico { background:#efe8ff; color:#7b4ff0; }
+  #slash small { display:block; color:#8a8497; font-size:11px; }
+  #slash .none { padding:8px; color:#8a8497; }
+  #doc-card h2 { font-size:16px; margin:14px 0 6px; }
+  #doc-card blockquote { margin:10px 0; padding:4px 12px; border-left:3px solid #cdbdf8; color:#4a4555; }
+  #doc-card ul { margin:8px 0; padding-left:20px; line-height:1.55; }
+  #doc-card hr { border:0; border-top:1px solid #e4e1e8; margin:14px 0; }
+  #doc-card .diagram { margin:12px 0; padding:10px; background:#faf9fc; border:1px solid #ece9f1; border-radius:8px; }
+  #doc-card .ai-writing { color:#7b4ff0; font-style:italic; }
+  mark { background:#fbe7b8; border-bottom:2px solid #e8a33d; cursor:pointer; }
+  #popover { position:absolute; display:none; background:#1f1d24; color:#fff; border-radius:8px; padding:6px; gap:6px; box-shadow:0 4px 14px rgba(0,0,0,.25); z-index:5; }
+  #popover input { font:inherit; border:0; border-radius:5px; padding:5px 7px; width:220px; }
+  #popover button { background:#7b4ff0; color:#fff; border:0; border-radius:5px; padding:5px 9px; }
+  .mini-app { display:flex; gap:10px; }
+  .mini-app .col { flex:1; background:#fff; border:1px dashed #cfc7e0; border-radius:8px; padding:10px; min-height:120px; }
+  .proto-frame { background:#fff; border:1px solid #e4e1e8; border-radius:10px; overflow:hidden; max-width:620px; }
+  .proto-bar { background:#f0eef3; padding:6px 10px; font-family: ui-monospace, Menlo, monospace; font-size:11px; color:#6b6577; display:flex; justify-content:space-between; }
+  .proto-body { padding:18px; min-height:150px; }
+  .slice { display:flex; align-items:center; gap:8px; margin:6px 0; }
+  .slice input { accent-color:#7b4ff0; }
+  #signoff-bar { display:flex; align-items:center; gap:12px; padding:10px 16px; border-top:1px solid #e4e1e8; background:#fff; }
+  #repo-ref { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; font-family: ui-monospace, Menlo, monospace; font-size:11.5px; color:#6b6577; }
+  .spacer { flex:1; }
+  .btn { white-space:nowrap; border:1px solid #d9d5e0; background:#fff; border-radius:8px; padding:7px 13px; }
+  .btn:hover { background:#f6f4fb; }
+  #signoff { background:#1f5b39; color:#fff; border-color:#1f5b39; font-weight:600; }
+  #signoff:hover { background:#256b44; }
+  #signoff:disabled { background:#cfe6d8; border-color:#cfe6d8; color:#1f5b39; cursor:default; }
+  #feed { width:220px; flex-shrink:0; background:#fff; border-left:1px solid #e4e1e8; padding:12px; display:flex; flex-direction:column; gap:8px; overflow:auto; }
+  #feed h4 { margin:2px 0 4px; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:#8a8497; }
+  .fb { border:1px solid #ece9f1; border-radius:9px; padding:8px 10px; line-height:1.4; animation: in .25s ease; }
+  .fb small { display:block; color:#8a8497; margin-top:4px; }
+  .fb .reply { margin-top:6px; padding-top:6px; border-top:1px dashed #ece9f1; color:#2f6fdd; }
+  @keyframes in { from { opacity:0; transform:translateY(-4px); } }
+  #modal-bg { position:fixed; inset:0; background:rgba(20,18,26,.45); display:none; align-items:center; justify-content:center; z-index:10; }
+  #modal-bg.open { display:flex; }
+  #modal { background:#fff; border-radius:12px; padding:20px 22px; width:380px; box-shadow:0 10px 30px rgba(0,0,0,.25); }
+  #modal h3 { margin:0 0 8px; font-size:16px; }
+  #modal ul { padding-left:18px; margin:8px 0 14px; line-height:1.6; color:#4a4555; }
+  #modal .row { display:flex; justify-content:flex-end; gap:8px; }
+  #toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:#1f1d24; color:#fff; padding:8px 14px; border-radius:8px; font-size:12.5px; opacity:0; transition:opacity .2s; pointer-events:none; z-index:20; }
+  #toast.show { opacity:1; }
+</style></head>
+<body>
+  <nav id="sidebar">
+    <h3>kanna</h3>
+    <div class="task active" data-task="collab"><span>App Design</span><span class="badge design" id="collab-badge">design</span></div>
+    <div class="task" data-task="merge"><span>Merge structured workflows</span><span class="badge attn">review</span></div>
+    <div class="task" data-task="relay"><span>Relay scaling</span><span class="badge design">design</span></div>
+    <div class="task" data-task="mobile"><span>Mobile artifact viewer</span><span class="badge design">design</span></div>
+  </nav>
+  <div id="app">
+    <header id="task-header">
+      <h2 id="task-title">App Design</h2>
+      <div id="ladder"></div>
+    </header>
+    <div id="workspace">
+      <section id="terminal"><div class="tpane on" data-task="collab" id="term-collab"></div></section>
+      <section id="surface">
+        <div id="preview">
+          <div class="artifact" data-stage="0" id="art-static"></div>
+          <div class="artifact" data-stage="2" id="art-proto">
+            <div class="art-bar"><span>◧ Prototype</span><span>live · 127.0.0.1:8087</span></div>
+            <iframe src="http://127.0.0.1:8087/" title="Prototype"></iframe>
+          </div>
+          <div class="artifact" data-stage="task" id="art-task"></div>
+          <div class="artifact" data-stage="done" id="art-factory"><div class="card factory-card"><h1>In the software factory</h1><p>The design was approved and handed off. Agents are building it properly; the prototype is kept only as a reference.</p></div></div>
+          <div class="artifact on" data-stage="1" id="art-interactive">
+          <article class="card" id="doc-card" contenteditable="true" spellcheck="false">
+            <h1>How should comments show up?</h1>
+            <p>Highlighted text alone is easy to miss as a comment. Three directions below: click one in the live mockup to try it, then pick it. Anything you comment here is <mark>fed back to the agent</mark> in its live session.</p>
+            <div class="embed" contenteditable="false">
+              <div class="embed-bar"><span>◧ Live mockup</span><span>clickable · fake data</span></div>
+            <div id="directions">
+              <button class="dir" data-dir="a">
+                <span class="dir-tag">A · Highlight</span>
+                <span class="wire"><span class="ln"></span><span class="ln"><i class="hl">commented words</i> and more</span><span class="ln short"></span></span>
+                <span class="dir-note">What BlockNote does today. Quiet, and easy to miss.</span>
+              </button>
+              <button class="dir" data-dir="b">
+                <span class="dir-tag">B · Margin markers</span>
+                <span class="wire"><span class="ln"></span><span class="ln"><i class="ul">commented words</i> and more<b class="dot">2</b></span><span class="ln short"></span></span>
+                <span class="dir-note">A numbered dot in the margin with a reply count. Visible without shouting.</span>
+              </button>
+              <button class="dir" data-dir="c">
+                <span class="dir-tag">C · Side threads</span>
+                <span class="wire split"><span class="col-a"><span class="ln"></span><span class="ln"><i class="ul">commented words</i></span><span class="ln short"></span></span><span class="col-b"><span class="bubble">Make this bigger?</span><span class="bubble agent">Done ✓</span></span></span>
+                <span class="dir-note">Threads always open beside the text, like Google Docs. Busy, but nothing is hidden.</span>
+              </button>
+            </div>
+            <div id="dir-detail">
+              <p id="dir-desc">Pick a direction above to see it on a real paragraph.</p>
+              <p id="dir-sample">Leave a comment that is <span id="dir-mark">fed back to the agent</span> in its live session.<span id="dir-dot">2</span></p>
+              <div class="row-end"><button class="btn" id="dir-pick" disabled>Pick this direction</button></div>
+            </div>
+            </div>
+            <p>Type anywhere, press <b>/</b> for blocks, or select words to comment.</p>
+          </article>
+          </div>
+          <div id="slash"></div>
+          <div id="popover"><button id="pop-open"><span class="bubble-ico">💬</span>Comment<kbd>⌘↵</kbd></button><input id="pop-text" placeholder="Say something to Claude…"><button id="pop-send">Send<kbd>⌘↵</kbd></button></div>
+        </div>
+        <div id="signoff-bar">
+          <span id="repo-ref">rad:z3xK…9fQ</span>
+          <span class="spacer"></span>
+          <button class="btn review-only" id="req-changes">Request changes</button>
+          <button class="btn review-only" id="approve-pr">Approve PR</button>
+          <button class="btn" id="share">Share link</button>
+          <button class="btn" id="signoff" title="Makes this prototype the reference and starts the software factory">Approve for build →</button>
+        </div>
+      </section>
+      <aside id="feed">
+        <div id="feed-head"><h4>Feedback → agent <span id="comment-count"></span></h4><button id="feed-mode" data-kanna-ui title="Click any element to comment on it">💬</button></div><div class="fpane on" data-task="collab" id="feed-collab"><div id="real-feed"></div></div>
+      </aside>
+    </div>
+  </div>
+  <div id="modal-bg"><div id="modal">
+    <h3>Approve for build?</h3>
+    <div>This hands the design to the software factory:</div>
+    <ul><li>What you see now becomes the reference</li><li>The prototype code is thrown away</li><li>Agents plan, build and review it properly</li></ul>
+    <div class="row"><button class="btn" id="modal-cancel">Keep iterating</button><button class="btn" id="modal-ok" style="background:#1f5b39;color:#fff;border-color:#1f5b39">Approve</button></div>
+  </div></div>
+  <div id="toast"></div>
+<script>
+// App Design: three stages you can move between freely; approving hands off to the software factory.
+const STEPS = ["Static mockup", "Interactive mockup", "Prototype"];
+const HANDED_OFF = STEPS.length;
+const TASKS = {
+  collab: { title: "App Design", step: 1 },
+  merge: { title: "Merge structured workflows", step: HANDED_OFF },
+  relay: { title: "Relay scaling", step: HANDED_OFF },
+  mobile: { title: "Mobile artifact viewer", step: 0 },
+};
+let current = "collab", viewing = null, approved = false, commentCount = 0;
+const $ = (s) => document.querySelector(s);
+const term = $("#term-collab");
+
+function log(html, cls = "") {
+  const d = document.createElement("div");
+  if (cls) d.className = cls;
+  d.innerHTML = html;
+  term.appendChild(d);
+  $("#terminal").scrollTop = $("#terminal").scrollHeight;
+}
+function logTo(task, html) {
+  const pane = document.querySelector(`.tpane[data-task="${task}"]`);
+  const d = document.createElement("div"); d.innerHTML = html;
+  pane.appendChild(d);
+  $("#terminal").scrollTop = $("#terminal").scrollHeight;
+}
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 1800); }
+
+function showArtifact(step) {
+  const hasArtifact = current === "collab" || !!DEMO[current].artifact;
+  document.body.classList.toggle("no-artifact", !hasArtifact);
+  document.body.classList.toggle("review-layout", !!DEMO[current]?.review);
+  if (current !== "collab") {
+    $("#art-task").innerHTML = DEMO[current].artifact ?? "";
+    decorateStage(current);
+    document.querySelectorAll(".artifact").forEach((a) => a.classList.toggle("on", a.id === "art-task"));
+    return hidePopover();
+  }
+  const key = step >= HANDED_OFF ? "done" : String(step);
+  document.querySelectorAll(".artifact").forEach((a) => a.classList.toggle("on", a.dataset.stage === key));
+  hidePopover();
+}
+// Demo design tasks: the artifact reflects the stage the task is in.
+function decorateStage(task) {
+  const wf = WORKFLOWS[task];
+  const art = $("#art-task");
+  if (task === "relay") {
+    art.querySelectorAll(".sum").forEach((el, i) => el.className = "sum " + (i < wf.now ? "done" : i === wf.now ? "now" : "todo"));
+    const chip = art.querySelector(".spec-head .chip"); if (chip) chip.textContent = "in " + wf.steps[wf.now];
+    const slice = art.querySelectorAll(".sum span")[2];
+    if (slice && wf.now === 2) slice.textContent = "In progress: real shard map wired end to end; migration path next.";
+  }
+  if (task === "mobile") {
+    const tag = art.querySelector(".static-tag");
+    const notes = art.querySelector(".phone-notes .hint");
+    art.querySelector(".card").dataset.stage = wf.now;
+    if (wf.now === 0) { tag.textContent = "STATIC MOCKUP · look, don't touch"; notes.textContent = "Next stage: make the sheet draggable and the pins tappable."; }
+    if (wf.now === 1) { tag.textContent = "INTERACTIVE MOCKUP · tap a pin"; notes.textContent = "Pins open their thread in the bottom sheet. Fake data."; }
+    if (wf.now === 2) { tag.innerHTML = "<span class='live-dot'></span>PROTOTYPE · running on the iOS simulator"; notes.textContent = "Real app build, real artifact from the store, real comments."; }
+    art.querySelectorAll(".dotpin").forEach((pin, i) => pin.onclick = wf.now === 0 ? null : () => {
+      const sheet = art.querySelector(".sheet div:last-child");
+      sheet.textContent = i === 0 ? "Jeremy: hero feels too tall · Claude: trimmed to 56px" : "Jeremy: make this list denser · Claude: done, 8px gaps";
+      art.querySelectorAll(".dotpin").forEach((p) => p.classList.toggle("sel", p === pin));
+    });
+  }
+}
+
+// Each task shows the workflow that fits its kind of work (stage names from
+// the real workflow definitions); only App Design moves freely between stages.
+const WORKFLOWS = {
+  merge: { name: "pr-review", steps: ["PR review", "merge"], now: 0 },
+  relay: { name: "System Design", steps: ["Research", "Spike prototypes", "Vertical slices"], now: 1, free: true },
+  mobile: { name: "App Design", steps: STEPS, now: 0, free: true },
+};
+function renderLadder() {
+  const step = TASKS[current].step;
+  showArtifact(step);
+  const wf = WORKFLOWS[current];
+  if (wf) {
+    $("#ladder").innerHTML = `<span class="wf">${wf.name}</span>` + wf.steps.map((s, i) =>
+      (i ? `<span class="arrow">${wf.free ? "⇄" : "→"}</span>` : "") +
+      `<button class="${["step", !wf.free && i < wf.now ? "done" : "", i === wf.now ? "now" : ""].join(" ")}" data-step="${i}">${s}</button>`).join("");
+    return;
+  }
+  const handedOff = step >= HANDED_OFF;
+  $("#ladder").innerHTML = `<span class="wf">App Design</span>` + STEPS.map((s, i) => {
+    const cls = ["step", handedOff ? "done" : i === step ? "now" : "", viewing === i ? "viewing" : ""].join(" ");
+    return (i ? `<span class="arrow" title="Move freely between stages">⇄</span>` : "") + `<button class="${cls}" data-step="${i}">${s}</button>`;
+  }).join("") + (handedOff ? `<span class="arrow">⇢</span><span class="step factory now">Software factory</span>` : "");
+}
+
+
+function selectTask(id) {
+  current = id; viewing = null;
+  document.querySelectorAll(".task").forEach((t) => t.classList.toggle("active", t.dataset.task === id));
+  $("#task-title").textContent = TASKS[id].title;
+  document.querySelectorAll(".tpane, .fpane").forEach((p) => p.classList.toggle("on", p.dataset.task === id));
+  renderLadder();
+  $("#terminal").scrollTop = $("#terminal").scrollHeight;
+  if (DEMO[id]?.where) toast(DEMO[id].where);
+}
+
+// Selecting text in the doc or mockup pane opens a comment popover.
+let selectionText = "", selectionPane = "doc";
+document.addEventListener("mouseup", (e) => {
+  if (e.target.closest("#popover") || e.target.closest("#slash")) return;
+  const sel = getSelection();
+  const text = sel.toString().trim();
+  if (!text || !e.target.closest("#doc-card")) return hidePopover();
+  selectionText = text;
+  const r = sel.getRangeAt(0).getBoundingClientRect(), host = $("#preview").getBoundingClientRect();
+  const pop = $("#popover");
+  pop.style.left = Math.max(8, r.left - host.left) + "px";
+  pop.style.top = (r.bottom - host.top + $("#preview").scrollTop + 6) + "px";
+  pop.style.display = "flex";
+  setPopoverOpen(false);
+});
+function hidePopover() { $("#popover").style.display = "none"; }
+function setPopoverOpen(open) {
+  $("#pop-open").style.display = open ? "none" : "";
+  $("#pop-text").style.display = open ? "" : "none";
+  $("#pop-send").style.display = open ? "" : "none";
+  if (open) { $("#pop-text").value = ""; $("#pop-text").focus(); }
+}
+
+function sendComment() {
+  const text = $("#pop-text").value.trim();
+  if (!text) return;
+  hidePopover();
+  commentCount++;
+  $("#comment-count").textContent = commentCount + (commentCount === 1 ? " comment" : " comments");
+  const card = document.createElement("div");
+  card.className = "fb";
+  card.innerHTML = `${text.replace(/</g, "&lt;")}<small>Jeremy · on “${selectionText.slice(0, 28).replace(/</g, "&lt;")}” · sending…</small>`;
+  $("#feed-collab").appendChild(card); snapFeed();
+  // Simulated agent loop: delivered into the live session, read, answered.
+  setTimeout(() => {
+    card.querySelector("small").innerHTML = card.querySelector("small").innerHTML.replace("sending…", "delivered ✓");
+    log(`<span class="dim">● comment on “${selectionText.slice(0, 30).replace(/</g, "&lt;")}”: ${text.replace(/</g, "&lt;")}</span>`);
+  }, 700);
+  setTimeout(() => {
+    log("Updated the page. Take a look.", "");
+    const rep = document.createElement("div");
+    rep.className = "reply"; rep.textContent = "Claude: done, updated the page.";
+    card.appendChild(rep); snapFeed();
+  }, 2200);
+}
+
+function approve() {
+  $("#modal-bg").classList.remove("open");
+  approved = true;
+  TASKS.collab.step = HANDED_OFF;
+  renderLadder();
+  $("#signoff").disabled = true;
+  $("#signoff").textContent = "Approved ✓ · building";
+  const badge = $("#collab-badge"); badge.textContent = "plan"; badge.className = "badge factory";
+  log('<span class="ok">✔ Approved for build. Design frozen at rad:z3xK…9fQ (4f2c1e9).</span>');
+  log('<span class="dim">● software factory: plan stage started</span>');
+  toast("Handed to the software factory");
+}
+
+document.addEventListener("click", (e) => {
+  const t = e.target;
+  const task = t.closest(".task");
+  if (task) return selectTask(task.dataset.task);
+  const step = t.closest(".step");
+  if (step) {
+    const i = +step.dataset.step;
+    if (current !== "collab") {
+      const wf = WORKFLOWS[current];
+      if (!wf.free) return toast(`${wf.name} moves forward stage by stage`);
+      if (i === wf.now) return toast("You're here");
+      const from = wf.steps[wf.now];
+      wf.now = i;
+      renderLadder();
+      logTo(current, `<span class="dim">● moved ${i < wf.steps.indexOf(from) ? "back" : "forward"}: ${from} → ${wf.steps[i]}</span>`);
+      toast(`Now in “${wf.steps[i]}”`);
+      return;
+    }
+    if (approved) return toast("Handed to the software factory; the design is frozen");
+    if (i === TASKS.collab.step) return toast("You're here");
+    const from = STEPS[TASKS.collab.step];
+    TASKS.collab.step = i;
+    renderLadder();
+    log(`<span class="dim">● moved ${i < STEPS.indexOf(from) ? "back" : "forward"}: ${from} → ${STEPS[i]}</span>`);
+    toast(`Now in “${STEPS[i]}”`);
+    return;
+  }
+  const dir = t.closest(".dir");
+  if (dir) return chooseDirection(dir.dataset.dir);
+  if (t.id === "dir-pick") return pickDirection();
+  if (t.closest("#pop-open")) return setPopoverOpen(true);
+  if (t.closest("#pop-send")) return sendComment();
+  if (t.id === "req-changes") return (logTo("merge", "<span class='dim'>● you requested changes: the 2 high-risk findings go back to the author</span>"), toast("Changes requested"));
+  if (t.id === "approve-pr") return toast("Approve is blocked: 2 high-risk findings are unresolved");
+  if (t.classList.contains("linkish")) return toast(t.textContent === "Resolve" ? "Finding resolved" : "Reply box opens here");
+  if (t.id === "share") return toast("Link copied: kanna://design/2d6b4196");
+  if (t.id === "signoff" && current !== "collab") return toast("Demo task: open App Design to try approving");
+  if (t.id === "signoff" && !approved) return $("#modal-bg").classList.add("open");
+  if (t.id === "modal-cancel" || t.id === "modal-bg") return $("#modal-bg").classList.remove("open");
+  if (t.id === "modal-ok") return approve();
+});
+document.addEventListener("keydown", (e) => {
+  const pop = $("#popover");
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && pop.style.display === "flex" && $("#pop-text").style.display === "none") {
+    e.preventDefault(); setPopoverOpen(true);
+  }
+});
+$("#pop-text").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey || !e.shiftKey)) { e.preventDefault(); sendComment(); }
+  if (e.key === "Escape") hidePopover();
+});
+document.querySelectorAll("#slice2, #slice3").forEach((cb) => cb.addEventListener("change", () => {
+  const n = 1 + [...document.querySelectorAll("#slice2, #slice3")].filter((c) => c.checked).length;
+  $("#proto-state").textContent = `slice ${n} of 3`;
+  log(`<span class="dim">● prototype: ${cb.nextElementSibling.textContent.toLowerCase()} ${cb.checked ? "working" : "reopened"}</span>`);
+}));
+
+// Demo content for the other tasks: their own session log, feedback and artifact.
+const DEMO = {
+  merge: {
+    where: "pr-review workflow · PR review",
+    term: ["<span class='dim'>claude · review · task 482a02db</span>", "&nbsp;", "<span class='me'>❯</span> review the structured-workflows branch for merge",
+      "<span class='dim'>● 274 commits · 287 files · +73.6k −2.6k</span>", "<span class='dim'>● merging origin/main… conflict in http_api/invoke_desktop.rs</span>",
+      "<span class='dim'>● re-running peer, LAN and relay suites</span>", "&nbsp;",
+      "<b>Review brief · changes needed</b> <span class='dim'>(details on the diff →)</span>",
+      "274 commits · 287 files · 2414 server tests pass · 17 files overlap main", "&nbsp;",
+      "<span class='sev-t high'>●</span> Conflict with main in the peer-access filter (invoke_desktop.rs); re-run peer, LAN and relay suites after resolving.",
+      "<span class='sev-t high'>●</span> Rollback to main is lossy for tasks whose commit post became exit_commit.",
+      "<span class='sev-t mid'>●</span> stages.rs:28 still tells reviewers to call kanna_request_revision.",
+      "<span class='sev-t low'>●</span> Two-account walkthrough and phone WebView checks not run by a person yet.", "&nbsp;",
+      "Verdict: merge after the conflict fix and the two-account walkthrough.", "&nbsp;", "<span class='me'>❯</span> <span class='dim'>_</span>"],
+    feed: [["Should we squash the wip commits?", "Jeremy · agent replied", "Claude: yes. History has a wip: commit and child merges; squash or merge cleanly."],
+      ["Is rolling back to main safe?", "Jeremy · agent replied", "Claude: lossy for tasks whose commit post became exit_commit."]],
+    // PR review template: the diff is the artifact; the agent marks the risky lines.
+    review: true,
+    artifact: `<div class="diff">
+      <div class="diff-head"><b>Structured workflows → main</b><span class="flags"><span class="sevb high">2 high</span><span class="sevb mid">1 medium</span></span></div>
+      <div class="files"><span class="fl high">http_api/invoke_desktop.rs</span><span class="fl high">task_creator/commit_posts.rs</span><span class="fl mid">task_creator/stages.rs</span><span class="fl">+284 more files</span></div>
+      <div class="file"><div class="fname"><span class="dot high"></span>crates/kanna-server/src/http_api/invoke_desktop.rs <span class="dstat">+34 −9</span></div><div class="dl hunk"><span class="ln"></span><span class="mk"></span><code>@@ -406,5 +409,8 @@ pub(crate) fn eligible_lan_desktop_ids</code></div><div class="dl ctx"><span class="ln">409</span><span class="mk"> </span><code>            pinned</code></div><div class="dl ctx"><span class="ln">410</span><span class="mk"> </span><code>                .peer_by_desktop_id(desktop_id, &amp;environment)</code></div><div class="dl del"><span class="ln"></span><span class="mk">-</span><code>                .is_some()</code></div><div class="dl add"><span class="ln">411</span><span class="mk">+</span><code>                .is_some_and(|peer| {</code></div><div class="dl add"><span class="ln">412</span><span class="mk">+</span><code>                    crate::account_boundary::peer_standing(peer, current_account_uid.as_deref())</code></div><div class="dl add"><span class="ln">413</span><span class="mk">+</span><code>                        .is_ok()</code></div><div class="dl add"><span class="ln">414</span><span class="mk">+</span><code>                })</code></div><div class="dl ctx"><span class="ln">415</span><span class="mk"> </span><code>                || legacy</code></div><div class="anno high"><div class="anno-h"><span class="sevb high">High risk</span><b>Claude</b></div><div><b>Conflicts with main.</b> Main removed legacy plaintext peer access in this same filter (#1620), so the <code>|| legacy</code> branch below no longer exists there. Keep the account-boundary check, drop the legacy branch, then re-run the peer, LAN and relay suites.</div><div class="anno-a"><button class="linkish">Reply</button><button class="linkish">Resolve</button></div></div></div>
+      <div class="file"><div class="fname"><span class="dot high"></span>crates/kanna-server/src/task_creator/commit_posts.rs <span class="dstat">new</span></div><div class="dl hunk"><span class="ln"></span><span class="mk"></span><code>@@ -0,0 +1,16 @@ (new file)</code></div><div class="dl add"><span class="ln">7</span><span class="mk">+</span><code>//! Legacy commit posts become commit steps (spec §5, §15, §16.11; T13d).</code></div><div class="dl add"><span class="ln">8</span><span class="mk">+</span><code>//!</code></div><div class="dl add"><span class="ln">9</span><span class="mk">+</span><code>//! A legacy workflow commits through a post named \`commit\` on the stage whose</code></div><div class="dl add"><span class="ln">10</span><span class="mk">+</span><code>//! work it commits. The spec retires posts as a stage-like concept: the</code></div><div class="dl add"><span class="ln">11</span><span class="mk">+</span><code>//! commit is a property of the stage's transition (\`exit_commit\`, T3), which</code></div><div class="dl add"><span class="ln">12</span><span class="mk">+</span><code>//! runs the same post delivery machinery and also records what it committed.</code></div><div class="anno high"><div class="anno-h"><span class="sevb high">High risk</span><b>Claude</b></div><div><b>Rollback hazard.</b> This rewrites open tasks' <code>commit</code> posts to <code>exit_commit</code> at startup. Main ignores <code>exit_commit</code>, so going back to main silently drops the commit step on every converted task. Decide: make main reject the field, or accept a lossy rollback.</div><div class="anno-a"><button class="linkish">Reply</button><button class="linkish">Resolve</button></div></div></div>
+      <div class="file"><div class="fname"><span class="dot mid"></span>crates/kanna-server/src/task_creator/stages.rs</div><div class="dl hunk"><span class="ln"></span><span class="mk"></span><code>@@ stages.rs · rereview verdict instruction</code></div><div class="dl ctx"><span class="ln">936</span><span class="mk"> </span><code>                 a failed review names its target stage</code></div><div class="dl add"><span class="ln">938</span><span class="mk">+</span><code>                 through kanna_request_revision naming the stage)</code></div><div class="anno mid"><div class="anno-h"><span class="sevb mid">Medium</span><b>Claude</b></div><div><b>Stale instruction.</b> Tasks on named-exit workflows refuse <code>kanna_request_revision</code>; this should tell the reviewer to name an exit instead.</div><div class="anno-a"><button class="linkish">Reply</button><button class="linkish">Resolve</button></div></div></div>
+      <p class="static-tag" style="padding:8px 12px">Excerpts from the real branch; the agent flags the lines that carry risk.</p>
+    </div>`,
+  },
+  relay: {
+    where: "System Design workflow · spike prototypes",
+    term: ["<span class='dim'>claude · design session · task 7c1e0f2a</span>", "&nbsp;", "<span class='me'>❯</span> try three ways to scale the relay past one node",
+      "<span class='dim'>● research: 3 candidate designs from the relay notes</span>",
+      "<span class='dim'>● spike A · consistent-hash shards · load test 10k sockets</span>",
+      "<span class='dim'>● spike B · sticky sessions behind the LB · load test 10k sockets</span>",
+      "<span class='dim'>● spike C · pub/sub fan-out · load test 10k sockets</span>",
+      "A holds p99 at 41 ms and survives a node loss. Next: a vertical slice of A, end to end."],
+    feed: [["Also try 50k sockets on A before we slice", "Jeremy · agent replied", "Claude: ran it: p99 63 ms at 50k, still under budget."],
+      ["What happens to live sessions when a shard dies?", "Jeremy · delivered ✓", ""]],
+    // System Design's artifact is a living spec: each stage adds to it and leaves a summary.
+    artifact: `<article class="card spec">
+      <div class="spec-head"><span class="static-tag">SPEC · living document</span><span class="chip info">in Spike prototypes</span></div>
+      <h1>Relay scaling</h1>
+      <nav class="stage-sums">
+        <div class="sum done"><b>Research</b><span>3 candidate designs from the relay notes; target 50k sockets, p99 &lt; 80 ms.</span></div>
+        <div class="sum now"><b>Spike prototypes</b><span>3 throwaway spikes under one load test; A (consistent-hash shards) wins.</span></div>
+        <div class="sum todo"><b>Vertical slices</b><span>Not started: one shard map, one migration path, one dashboard panel, end to end.</span></div>
+      </nav>
+      <section><h2>Goal <em>Research</em></h2><p>Serve 50k concurrent relay sockets with p99 under 80 ms, and survive a node loss without dropping sessions.</p></section>
+      <section><h2>Design decision <em>updated in Spikes</em></h2><p><b>Consistent-hash shards.</b> Each session hashes to a shard; when a node dies its sessions re-home to the next shard in about 2 s.</p></section>
+      <section><h2>Evidence <em>Spikes</em></h2>
+        <table class="spikes"><thead><tr><th>Idea</th><th>p99 at 10k</th><th>Node loss</th><th>Effort</th></tr></thead><tbody>
+          <tr class="pick"><td><b>A · Consistent-hash shards</b></td><td><span class="lat" style="--w:41%">41 ms</span></td><td>re-home in 2 s</td><td>medium</td></tr>
+          <tr><td><b>B · Sticky sessions (LB)</b></td><td><span class="lat" style="--w:58%">58 ms</span></td><td>sessions dropped</td><td>low</td></tr>
+          <tr><td><b>C · Pub/sub fan-out</b></td><td><span class="lat" style="--w:96%">96 ms</span></td><td>no loss</td><td>high</td></tr>
+        </tbody></table>
+        <p class="static-tag" style="margin-top:6px">A at 50k sockets: p99 63 ms.</p></section>
+      <section><h2>Open questions <em>Spikes</em></h2><ul><li>What happens to in-flight messages while a session re-homes?</li><li>Do we keep single-node mode as the default for small installs?</li></ul></section>
+    </article>`,
+  },
+  mobile: {
+    where: "App Design workflow · static mockup",
+    term: ["<span class='dim'>claude · design session · task 9a4d2b10</span>", "&nbsp;", "<span class='me'>❯</span> mock the artifact viewer for the phone",
+      "<span class='dim'>● static mockup published: 1 screen</span>", "Waiting for your pins."],
+    feed: [["The comment sheet should slide up from the bottom", "Jeremy · agent replied", "Claude: yes, it's a bottom sheet in the interactive mockup."]],
+    artifact: `<article class="card"><div class="static-tag">STATIC MOCKUP · look, don't touch</div><div class="phone-wrap" style="margin-top:10px">
+      <div class="phone"><div class="screen"><div class="sb"><span>9:41</span><span>●●● ▮</span></div>
+        <div class="nav"><span>‹ Artifact</span><span style="color:#7b4ff0">Share</span></div>
+        <div class="art"><b>Onboarding flow</b><div class="hero"></div><div class="blk"></div><div class="blk w"></div><div class="blk"></div>
+          <span class="dotpin" style="top:40px;right:14px">1</span><span class="dotpin" style="top:110px;left:40px">2</span></div>
+        <div class="sheet"><div class="grab"></div><b>2 comments</b><div style="color:#6b6577;margin-top:4px">Jeremy: hero feels too tall · Claude: trimmed</div></div></div></div>
+      <div class="phone-notes"><h1 style="font-size:18px;margin:0 0 8px">Artifact viewer · phone</h1><p>Full-screen artifact, pins over it, and a bottom sheet for the thread. Share sits top-right.</p><p class="hint">Next stage: make the sheet draggable and the pins tappable.</p></div>
+    </div></article>`,
+  },
+};
+for (const [id, d] of Object.entries(DEMO)) {
+  const t = document.createElement("div"); t.className = "tpane"; t.dataset.task = id;
+  t.innerHTML = d.term.map((l) => `<div>${l}</div>`).join("");
+  $("#terminal").appendChild(t);
+  const f = document.createElement("div"); f.className = "fpane"; f.dataset.task = id;
+  f.innerHTML = d.feed.map(([text, meta, reply]) => `<div class="fb">${text}<small>${meta}</small>${reply ? `<div class="reply">${reply}</div>` : ""}</div>`).join("");
+  $("#feed").appendChild(f);
+}
+
+// Slash menu: "/" in the doc opens block commands; typing filters them.
+const COMMANDS = [
+  { id: "text", ico: "¶", name: "Text", desc: "Plain paragraph" },
+  { id: "heading", ico: "H", name: "Heading", desc: "Section title" },
+  { id: "list", ico: "•", name: "Bulleted list", desc: "Simple list" },
+  { id: "quote", ico: "❝", name: "Quote", desc: "Call something out" },
+  { id: "divider", ico: "—", name: "Divider", desc: "Separate sections" },
+  { id: "diagram", ico: "◇", name: "Diagram", desc: "Boxes and arrows" },
+  { id: "ask", ico: "✦", name: "Ask Claude…", desc: "Agent writes this block", ai: true },
+];
+let slash = null; // { node, offset, query, sel }
+const slashEl = $("#slash");
+
+function blockOf(node) {
+  let n = node.nodeType === 3 ? node.parentNode : node;
+  while (n && n.parentNode !== $("#doc-card")) n = n.parentNode;
+  return n;
+}
+function renderSlash() {
+  const items = COMMANDS.filter((c) => c.name.toLowerCase().includes(slash.query.toLowerCase()));
+  slash.items = items;
+  slash.sel = Math.min(slash.sel, Math.max(0, items.length - 1));
+  slashEl.innerHTML = items.length ? items.map((c, i) =>
+    `<div class="item${c.ai ? " ai" : ""}${i === slash.sel ? " sel" : ""}" data-cmd="${c.id}"><span class="ico">${c.ico}</span><span>${c.name}<small>${c.desc}</small></span></div>`).join("")
+    : `<div class="none">No matching block</div>`;
+}
+function openSlash() {
+  const sel = getSelection();
+  if (!sel.rangeCount) return;
+  const r = sel.getRangeAt(0);
+  slash = { node: r.startContainer, offset: r.startOffset, query: "", sel: 0 };
+  const rect = r.getBoundingClientRect(), host = $("#preview").getBoundingClientRect();
+  slashEl.style.left = Math.max(8, rect.left - host.left) + "px";
+  slashEl.style.top = (rect.bottom - host.top + $("#preview").scrollTop + 6) + "px";
+  slashEl.style.display = "block";
+  renderSlash();
+}
+function closeSlash() { slash = null; slashEl.style.display = "none"; }
+function caretInto(el, atEnd = true) {
+  const r = document.createRange(); r.selectNodeContents(el); r.collapse(!atEnd);
+  const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+}
+function applyCommand(id) {
+  if (!slash) return;
+  // Remove the "/query" text that opened the menu.
+  const node = slash.node;
+  if (node.nodeType === 3) node.deleteData(Math.max(0, slash.offset - 1), 1 + slash.query.length);
+  const block = blockOf(node) || $("#doc-card").lastElementChild;
+  const text = block.textContent.trim();
+  closeSlash();
+  const make = (tag, html) => { const el = document.createElement(tag); el.innerHTML = html; return el; };
+  let el, after = null;
+  if (id === "text") el = make("p", text || "<br>");
+  if (id === "heading") el = make("h2", text || "<br>");
+  if (id === "list") el = make("ul", `<li>${text || "<br>"}</li>`);
+  if (id === "quote") el = make("blockquote", text || "<br>");
+  if (id === "divider") { el = document.createElement("hr"); after = make("p", "<br>"); }
+  if (id === "diagram") {
+    el = make("div", `<svg viewBox="0 0 420 70" width="100%" height="70" font-family="Inter,system-ui" font-size="12">
+      <rect x="4" y="15" width="110" height="40" rx="8" fill="#efe8ff" stroke="#b9a3f5"/><text x="59" y="40" text-anchor="middle">Mockup</text>
+      <rect x="155" y="15" width="110" height="40" rx="8" fill="#efe8ff" stroke="#b9a3f5"/><text x="210" y="40" text-anchor="middle">Prototype</text>
+      <rect x="306" y="15" width="110" height="40" rx="8" fill="#e4f4ea" stroke="#9fd0b1"/><text x="361" y="40" text-anchor="middle">Build</text>
+      <path d="M114 35h38M265 35h38" stroke="#555" stroke-width="1.5"/><path d="M147 30l6 5-6 5M298 30l6 5-6 5" fill="none" stroke="#555" stroke-width="1.5"/></svg>`);
+    el.className = "diagram"; el.contentEditable = "false";
+    after = make("p", "<br>");
+  }
+  if (id === "ask") {
+    el = make("p", "✦ Claude is writing…"); el.className = "ai-writing";
+    log('<span class="dim">● /ask from the doc: write the next block</span>');
+    setTimeout(() => {
+      el.className = "";
+      el.textContent = "Comments you leave here are delivered into my live session, so I answer by editing this page rather than in a separate chat.";
+      log("Wrote a block in the doc.");
+    }, 1500);
+    after = make("p", "<br>");
+  }
+  block.replaceWith(el);
+  if (after) el.after(after);
+  caretInto(after || (el.tagName === "UL" ? el.firstChild : el));
+  $("#doc-card").dispatchEvent(new Event("input"));
+}
+$("#doc-card").addEventListener("keydown", (e) => {
+  if (slash) {
+    // Ctrl+N / Ctrl+P move like the arrows (Emacs and macOS text bindings).
+    const down = e.key === "ArrowDown" || (e.ctrlKey && e.key.toLowerCase() === "n");
+    const up = e.key === "ArrowUp" || (e.ctrlKey && e.key.toLowerCase() === "p");
+    if (down) { e.preventDefault(); slash.sel = (slash.sel + 1) % Math.max(1, slash.items.length); return renderSlash(); }
+    if (up) { e.preventDefault(); slash.sel = (slash.sel - 1 + slash.items.length) % Math.max(1, slash.items.length); return renderSlash(); }
+    if (e.key === "Enter") { e.preventDefault(); const c = slash.items[slash.sel]; return c ? applyCommand(c.id) : closeSlash(); }
+    if (e.key === "Escape") { e.preventDefault(); return closeSlash(); }
+  }
+});
+$("#doc-card").addEventListener("input", (e) => {
+  if (e.data === "/" && !slash) return openSlash();
+  if (!slash) return;
+  const sel = getSelection();
+  const r = sel.rangeCount && sel.getRangeAt(0);
+  if (!r || r.startContainer !== slash.node || r.startOffset < slash.offset) return closeSlash();
+  slash.query = slash.node.textContent.slice(slash.offset, r.startOffset);
+  if (/\s/.test(slash.query)) return closeSlash();
+  renderSlash();
+});
+slashEl.addEventListener("mousedown", (e) => {
+  const item = e.target.closest(".item");
+  if (item) { e.preventDefault(); applyCommand(item.dataset.cmd); }
+});
+document.addEventListener("mousedown", (e) => { if (slash && !e.target.closest("#slash")) closeSlash(); });
+
+// Mockup tab: compare comment directions, then pick one.
+const DIRS = {
+  a: "A · Highlight: the commented words get a yellow background, and that's all.",
+  b: "B · Margin markers: an underline plus a numbered dot showing how many replies there are.",
+  c: "C · Side threads: the conversation stays open right next to the text.",
+};
+let chosenDir = null;
+function chooseDirection(id) {
+  chosenDir = id;
+  document.querySelectorAll(".dir").forEach((d) => d.classList.toggle("sel", d.dataset.dir === id));
+  $("#dir-sample").className = id;
+  $("#dir-desc").textContent = DIRS[id];
+  const pick = $("#dir-pick");
+  pick.disabled = false; pick.textContent = "Pick direction " + id.toUpperCase();
+}
+function pickDirection() {
+  if (!chosenDir) return;
+  document.querySelectorAll(".dir").forEach((d) => d.classList.toggle("picked", d.dataset.dir === chosenDir));
+  $("#dir-pick").textContent = "Picked ✓"; $("#dir-pick").disabled = true;
+  log(`<span class="dim">● Jeremy picked comment direction ${chosenDir.toUpperCase()}</span>`);
+  setTimeout(() => log(`Applying direction ${chosenDir.toUpperCase()} to the doc and the prototype.`), 900);
+  toast("Direction " + chosenDir.toUpperCase() + " picked");
+}
+
+// Real feedback: the review page sends its pins in, so this feed shows the
+// actual conversation with the agent (the first real slice of the prototype).
+const esc = (t) => String(t).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+// The feed reads like a chat: oldest at the top, newest at the bottom, scrolled to the newest.
+const snapFeed = () => { const f = $("#feed"); f.scrollTop = f.scrollHeight; };
+addEventListener("kanna:pins", (e) => {
+  const latest = (p) => Math.max(...p.comments.map((c) => c.at));
+  const pins = [...e.detail].sort((a, b) => latest(a) - latest(b));
+  $("#real-feed").innerHTML = pins.map((p) => {
+    const human = p.comments.filter((c) => c.author !== "agent");
+    const last = human[human.length - 1];
+    const replies = p.comments.filter((c) => c.author === "agent" && (!last || c.at > last.at));
+    return `<div class="fb"><span class="on-el"><span class="pin-n">${p.n}</span>${esc(p.label ?? p.excerpt)}</span>
+      ${esc(last ? last.text : p.comments[0].text)}
+      <small>${esc(last ? last.name : "")} · ${replies.length ? "agent replied" : "delivered ✓"}</small>
+      ${replies.slice(-1).map((c) => `<div class="reply">Claude: ${esc(c.text.length > 140 ? c.text.slice(0, 140) + "…" : c.text)}</div>`).join("")}</div>`;
+  }).join("");
+  $("#comment-count").textContent = pins.length ? pins.length + (pins.length === 1 ? " thread" : " threads") : "";
+  snapFeed();
+});
+$("#feed-mode").addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (!window.kannaComment) return toast("Comment mode needs the review page");
+  const on = window.kannaComment.toggle();
+  $("#feed-mode").classList.toggle("on", on);
+  toast(on ? "Comment mode on: click anything" : "Comment mode off");
+});
+
+let editTimer = null, editCard = null;
+$("#doc-card").addEventListener("input", () => {
+  hidePopover();
+  clearTimeout(editTimer);
+  editTimer = setTimeout(() => {
+    const first = ($("#doc-card").innerText ?? $("#doc-card").textContent).split("\n").find((l) => l.trim())?.trim() ?? "";
+    if (!editCard) {
+      editCard = document.createElement("div");
+      editCard.className = "fb";
+      $("#feed-collab").appendChild(editCard);
+    }
+    editCard.innerHTML = `You edited the doc<small>seen by agent ✓ · just now</small>`;
+    $("#feed-collab").appendChild(editCard); snapFeed();
+    log(`<span class="dim">● Jeremy edited the doc (“${first.slice(0, 40).replace(/</g, "&lt;")}”)</span>`);
+  }, 1200);
+});
+
+{
+  const frozen = $("#doc-card").cloneNode(true);
+  frozen.removeAttribute("id"); frozen.removeAttribute("contenteditable");
+  frozen.querySelectorAll("[id]").forEach((el) => el.removeAttribute("id"));
+  $("#art-static").appendChild(frozen);
+}
+
+log('<span class="dim">claude · design session · task 2d6b4196</span>');
+log("&nbsp;");
+log('<span class="me">❯</span> make it clickable');
+log('<span class="dim">● clickable mockup published: fake data, real clicks</span>');
+log("Try: select words and comment, press / for blocks, click a stage to move, approve.");
+renderLadder();
+</script>
+</body></html>

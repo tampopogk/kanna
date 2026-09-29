@@ -30,6 +30,76 @@ fn database_open_flags_use_sqlite_mutexes_for_shared_desktop_db() {
 }
 
 #[test]
+fn old_named_app_design_migrations_upgrade_without_readding_the_pin_column() {
+    let path = temp_db_path();
+    let path_string = path.to_string_lossy().to_string();
+    {
+        let db = Db::open_for_tests(&path_string).expect("create current database");
+        db.insert_test_repo("repo-design-upgrade", "Design Upgrade")
+            .expect("insert repo");
+        db.insert_test_pipeline_item(
+            "task-design-upgrade",
+            "repo-design-upgrade",
+            "preserve design data",
+            Some("Design Upgrade"),
+            "design",
+            "2026-09-28 10:00:00",
+        )
+        .expect("insert task");
+        db.conn
+            .execute_batch(
+                "INSERT INTO design_session
+                    (task_id, stage, position, schema_version)
+                 VALUES ('task-design-upgrade', 'design', 'desktop', '1');
+                 INSERT INTO design_thread
+                    (id, task_id, epoch, number, kind, anchor_element)
+                 VALUES
+                    ('thread-pinned', 'task-design-upgrade', 1, 1, 'comment',
+                     '{\"selector\":\"#kept\"}');
+                 DELETE FROM schema_migrations
+                  WHERE id IN ('106_app_design', '107_app_design_mockups', '108_app_design_pins');
+                 INSERT INTO schema_migrations (id) VALUES
+                    ('105_app_design'),
+                    ('106_app_design_mockups'),
+                    ('107_app_design_pins');",
+            )
+            .expect("model the migration names recorded by the published design branch");
+    }
+
+    for pass in 1..=2 {
+        let db = Db::open_migrated(&path_string)
+            .unwrap_or_else(|error| panic!("upgrade/reopen pass {pass} must succeed: {error}"));
+        let anchor: String = db
+            .conn
+            .query_row(
+                "SELECT anchor_element FROM design_thread WHERE id='thread-pinned'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("pinned comment survives migration");
+        assert_eq!(anchor, "{\"selector\":\"#kept\"}");
+        let hosted_table: i64 = db
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master
+                   WHERE type='table' AND name='task_input_delivery')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("probe hosted delivery schema");
+        assert_eq!(hosted_table, 1, "hosted migration 105 remains available");
+        for id in [
+            "105_hosted_input_delivery",
+            "106_app_design",
+            "107_app_design_mockups",
+            "108_app_design_pins",
+        ] {
+            assert!(super::has_migration(&db.conn, id).unwrap(), "missing {id}");
+        }
+    }
+}
+
+#[test]
 fn pin_at_top_rolls_back_existing_pin_order_when_target_update_fails() {
     let path = temp_db_path();
     let path_string = path.to_string_lossy().to_string();
@@ -229,7 +299,7 @@ fn open_creates_and_migrates_fresh_profile_database() {
             |row| row.get(0),
         )
         .expect("latest migration");
-    assert_eq!(latest_migration, "105_hosted_input_delivery");
+    assert_eq!(latest_migration, "108_app_design_pins");
     assert_eq!(
         index_columns(&db.conn, "idx_pipeline_item_parent_created_id"),
         vec!["parent_task_id", "created_at", "id"],

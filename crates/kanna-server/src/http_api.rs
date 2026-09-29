@@ -8,6 +8,7 @@ mod claude_channel;
 mod cloud_desktops;
 pub(crate) mod cloud_relay;
 mod copilot_wake;
+mod design;
 mod desktop;
 mod desktop_views;
 #[cfg(debug_assertions)]
@@ -73,7 +74,7 @@ mod workspace_setup_logs;
 #[cfg(test)]
 mod peer_tests;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
 
@@ -193,6 +194,7 @@ pub async fn serve(state: std::sync::Arc<AppState>) -> Result<(), String> {
 pub(crate) use capacity_notice::{
     handle_provider_capacity_notice, ProviderCapacityNotice, CAPACITY_ACTION,
 };
+pub(crate) use design::advance_design_stage;
 /// In-process entry points the transfer engine calls.
 ///
 /// The engine performs the same task lifecycle actions the LAN routes serve —

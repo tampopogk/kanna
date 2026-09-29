@@ -785,6 +785,7 @@ async fn repo_definition_routes_return_one_remote_revision_and_normalized_snake_
     assert_eq!(
         manifest["workflows"],
         json!([
+            "app-design",
             "broken",
             "designed",
             "mechanical",
@@ -969,6 +970,7 @@ async fn repo_definition_routes_use_bundled_only_values_without_a_remote_ref() {
     assert_eq!(
         manifest["workflows"],
         json!([
+            "app-design",
             "designed",
             "mechanical",
             "no-review",

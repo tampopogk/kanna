@@ -1638,6 +1638,13 @@ function createTrustedLanFallbackClient({
       ),
     readTaskDiff: async (taskId, request) =>
       (await resolveClient(desktopId)).readTaskDiff(taskId, request),
+    requestDesign: async (taskId, operation) => {
+      const client = await resolveClient(desktopId);
+      if (!client.requestDesign) {
+        throw new Error("This connection cannot reach App Design sessions.");
+      }
+      return client.requestDesign(taskId, operation);
+    },
     getArtifact: async (repoId, artifactId) =>
       (await resolveClient(desktopId)).getArtifact(repoId, artifactId),
     readArtifactFile: async (repoId, artifactId, path) =>
@@ -1887,6 +1894,12 @@ function createDelegatingClient(getClient: () => KannaClient): KannaClient {
     resolveTaskFileMentions: (taskId, mentions) =>
       getClient().resolveTaskFileMentions(taskId, mentions),
     readTaskDiff: (taskId, request) => getClient().readTaskDiff(taskId, request),
+    requestDesign: (taskId, operation) => {
+      const client = getClient();
+      return client.requestDesign
+        ? client.requestDesign(taskId, operation)
+        : Promise.reject(new Error("This connection cannot reach App Design sessions."));
+    },
     getArtifact: (repoId, artifactId) => getClient().getArtifact(repoId, artifactId),
     readArtifactFile: (repoId, artifactId, path) =>
       getClient().readArtifactFile(repoId, artifactId, path),

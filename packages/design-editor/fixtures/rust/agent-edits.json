@@ -1,0 +1,248 @@
+[
+  {
+    "id": "title",
+    "type": "heading",
+    "props": {
+      "backgroundColor": "default",
+      "isToggleable": false,
+      "level": 1,
+      "textAlignment": "left",
+      "textColor": "default"
+    },
+    "text": "App Design core notes",
+    "content": [
+      {
+        "text": "App Design core notes",
+        "styles": {}
+      }
+    ],
+    "children": []
+  },
+  {
+    "id": "intro",
+    "type": "paragraph",
+    "props": {
+      "backgroundColor": "default",
+      "textAlignment": "left",
+      "textColor": "default"
+    },
+    "text": "Feedback is queued while the agent is busy.",
+    "content": [
+      {
+        "text": "Feedback ",
+        "styles": {}
+      },
+      {
+        "text": "is ",
+        "styles": {},
+        "threads": [
+          "thread-1"
+        ]
+      },
+      {
+        "text": "queued",
+        "styles": {
+          "bold": true
+        },
+        "threads": [
+          "thread-1"
+        ]
+      },
+      {
+        "text": " while the agent is busy.",
+        "styles": {}
+      }
+    ],
+    "children": [
+      {
+        "id": "nested",
+        "type": "bulletListItem",
+        "props": {
+          "backgroundColor": "default",
+          "textAlignment": "left",
+          "textColor": "default"
+        },
+        "text": "nested italic",
+        "content": [
+          {
+            "text": "nested ",
+            "styles": {}
+          },
+          {
+            "text": "italic",
+            "styles": {
+              "italic": true,
+              "textColor": "red"
+            }
+          }
+        ],
+        "children": []
+      }
+    ]
+  },
+  {
+    "id": "links",
+    "type": "paragraph",
+    "props": {
+      "backgroundColor": "default",
+      "textAlignment": "left",
+      "textColor": "default"
+    },
+    "text": "See the spec and code and struck",
+    "content": [
+      {
+        "text": "See ",
+        "styles": {}
+      },
+      {
+        "text": "the spec",
+        "styles": {
+          "underline": true
+        },
+        "href": "https://kanna.build/spec"
+      },
+      {
+        "text": " and ",
+        "styles": {}
+      },
+      {
+        "text": "code",
+        "styles": {
+          "code": true
+        }
+      },
+      {
+        "text": " and ",
+        "styles": {}
+      },
+      {
+        "text": "struck",
+        "styles": {
+          "backgroundColor": "yellow",
+          "strike": true
+        }
+      }
+    ],
+    "children": []
+  },
+  {
+    "id": "agent-block-1",
+    "type": "bulletListItem",
+    "props": {
+      "backgroundColor": "default",
+      "textAlignment": "left",
+      "textColor": "default"
+    },
+    "text": "added by the agent",
+    "content": [
+      {
+        "text": "added by the agent",
+        "styles": {}
+      }
+    ],
+    "children": []
+  },
+  {
+    "id": "numbered",
+    "type": "numberedListItem",
+    "props": {
+      "backgroundColor": "default",
+      "textAlignment": "left",
+      "textColor": "default"
+    },
+    "text": "first step",
+    "content": [
+      {
+        "text": "first step",
+        "styles": {}
+      }
+    ],
+    "children": []
+  },
+  {
+    "id": "check",
+    "type": "checkListItem",
+    "props": {
+      "backgroundColor": "default",
+      "checked": true,
+      "textAlignment": "left",
+      "textColor": "default"
+    },
+    "text": "done item",
+    "content": [
+      {
+        "text": "done item",
+        "styles": {}
+      }
+    ],
+    "children": []
+  },
+  {
+    "id": "quote",
+    "type": "quote",
+    "props": {
+      "backgroundColor": "default",
+      "textColor": "default"
+    },
+    "text": "a quotation",
+    "content": [
+      {
+        "text": "a quotation",
+        "styles": {}
+      }
+    ],
+    "children": []
+  },
+  {
+    "id": "code",
+    "type": "codeBlock",
+    "props": {
+      "language": "typescript"
+    },
+    "text": "fn main() {}",
+    "content": [
+      {
+        "text": "fn main() {}",
+        "styles": {}
+      }
+    ],
+    "children": []
+  },
+  {
+    "id": "divider",
+    "type": "divider",
+    "props": {},
+    "text": "",
+    "content": [],
+    "children": []
+  },
+  {
+    "id": "agent-line",
+    "type": "paragraph",
+    "props": {
+      "backgroundColor": "default",
+      "textAlignment": "left",
+      "textColor": "default"
+    },
+    "text": "/agent please tighten the intro",
+    "content": [
+      {
+        "text": "/agent please tighten the intro",
+        "styles": {}
+      }
+    ],
+    "children": []
+  },
+  {
+    "id": "empty",
+    "type": "paragraph",
+    "props": {
+      "backgroundColor": "default",
+      "textAlignment": "left",
+      "textColor": "default"
+    },
+    "text": "",
+    "content": [],
+    "children": []
+  }
+]

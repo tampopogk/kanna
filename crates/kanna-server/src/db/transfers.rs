@@ -41,6 +41,13 @@ fn read_task_transfer(row: &rusqlite::Row<'_>) -> Result<TaskTransfer, rusqlite:
 
 /// True when `error` is the active-outgoing index rejecting a duplicate push,
 /// rather than any other constraint the insert could trip.
+/// The refusal an outgoing transfer of a task with a live design session gets.
+pub const LIVE_DESIGN_TRANSFER_REFUSAL: &str = "live_design_session";
+
+pub fn is_live_design_transfer_refusal(error: &rusqlite::Error) -> bool {
+    matches!(error, rusqlite::Error::SqliteFailure(_, Some(message)) if message.starts_with(LIVE_DESIGN_TRANSFER_REFUSAL))
+}
+
 pub fn is_active_outgoing_transfer_conflict(error: &rusqlite::Error) -> bool {
     match error {
         rusqlite::Error::SqliteFailure(failure, message) => {
@@ -454,6 +461,25 @@ impl Db {
     }
 
     pub fn insert_task_transfer(&self, transfer: &NewTaskTransfer) -> Result<(), rusqlite::Error> {
+        // A live App Design session's document lives in this machine's task
+        // directory and its feedback queue drives this machine's terminal;
+        // neither is carried by a transfer yet, so moving the task would
+        // strand them. Refused until the design is handed off.
+        if transfer.direction == "outgoing" {
+            if let Some(source) = transfer.source_task_id.as_deref() {
+                if self.design_session(source)?.is_some_and(|session| {
+                    session.status != super::design::DesignSessionRow::HANDED_OFF
+                }) {
+                    return Err(rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
+                        Some(format!(
+                            "{LIVE_DESIGN_TRANSFER_REFUSAL}: task {source} has a live App Design session; \
+                             hand the design off (Approve for build) before moving the task to another machine"
+                        )),
+                    ));
+                }
+            }
+        }
         self.conn.execute(
             "INSERT INTO task_transfer
              (id, direction, status, source_peer_id, target_peer_id, source_desktop_id, target_desktop_id, source_task_id, local_task_id, error, payload_json)

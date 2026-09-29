@@ -1,0 +1,30 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Artifact viewer · phone · static</title>
+<style>
+  body { margin:0; font-family: Inter, system-ui, sans-serif; background:#f6f4fb; color:#1f1d24; display:flex; gap:40px; padding:40px; align-items:flex-start; flex-wrap:wrap; }
+  .phone { width:280px; height:560px; border-radius:36px; background:#1c1a22; padding:12px; box-shadow:0 12px 32px rgba(0,0,0,.2); flex-shrink:0; }
+  .screen { height:100%; border-radius:26px; background:#fff; overflow:hidden; display:flex; flex-direction:column; position:relative; }
+  .sb { height:28px; display:flex; justify-content:space-between; padding:7px 18px 0; font-size:11px; font-weight:700; }
+  .nav { padding:6px 16px 10px; font-weight:700; font-size:15px; border-bottom:1px solid #f0eef3; display:flex; justify-content:space-between; }
+  .nav .share { color:#7b4ff0; font-weight:600; }
+  .art { flex:1; margin:12px; border-radius:12px; background:#f6f4fb; position:relative; padding:14px; font-size:12px; }
+  .hero { height:84px; border-radius:10px; background:linear-gradient(135deg,#efe8ff,#e3f0ff); margin:10px 0; }
+  .blk { height:9px; border-radius:5px; background:#e4e0ec; margin:8px 0; } .blk.w { width:60%; }
+  .pin { position:absolute; background:#7b4ff0; color:#fff; font-size:10px; font-weight:700; border-radius:9px 9px 9px 2px; padding:1px 6px; }
+  .sheet { border-radius:18px 18px 0 0; background:#fff; box-shadow:0 -6px 18px rgba(0,0,0,.08); padding:10px 16px 18px; font-size:12px; }
+  .grab { width:36px; height:4px; border-radius:2px; background:#ddd; margin:0 auto 8px; }
+  .muted { color:#6b6577; margin-top:4px; }
+  .notes { max-width:320px; line-height:1.5; }
+  .tag { font-size:10.5px; letter-spacing:.08em; color:#8a8497; }
+  h1 { font-size:20px; margin:6px 0 10px; }
+</style></head><body>
+  <div class="phone"><div class="screen">
+    <div class="sb"><span>9:41</span><span>●●● ▮</span></div>
+    <div class="nav"><span>‹ Artifact</span><span class="share">Share</span></div>
+    <div class="art" id="artifact"><b>Onboarding flow</b><div class="hero"></div><div class="blk"></div><div class="blk w"></div><div class="blk"></div>
+      <span class="pin" style="top:44px;right:16px">1</span><span class="pin" style="top:122px;left:44px">2</span></div>
+    <div class="sheet" id="sheet"><div class="grab"></div><b>2 comments</b><div class="muted">Jeremy: hero feels too tall · Claude: trimmed</div></div>
+  </div></div>
+  <div class="notes"><div class="tag">STATIC MOCKUP · look, don't touch</div><h1>Artifact viewer · phone</h1>
+    <p>The artifact fills the screen, pins sit on it, and each pin's thread lives in a bottom sheet. Share is top-right.</p>
+    <p class="muted">Next: make the sheet draggable and the pins tappable.</p></div>
+</body></html>

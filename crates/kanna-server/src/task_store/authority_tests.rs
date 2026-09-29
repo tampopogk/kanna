@@ -1002,11 +1002,18 @@ fn ownership_columns_are_never_in_the_disk_wins_update_set() {
     };
     // Columns the words match that are not a transfer's ownership, each
     // classified on purpose: a new match must be listed on one side.
-    const NOT_TRANSFER_OWNERSHIP: &[(&str, &str, &str)] = &[(
-        "human_review_decision",
-        "owner_desktop_id",
-        "the desktop that delivers a review decision's merge; T9 never reads it",
-    )];
+    const NOT_TRANSFER_OWNERSHIP: &[(&str, &str, &str)] = &[
+        (
+            "human_review_decision",
+            "owner_desktop_id",
+            "the desktop that delivers a review decision's merge; T9 never reads it",
+        ),
+        (
+            "design_approval",
+            "confirmation_expires_at",
+            "when an App Design approval's single-use confirmation lapses; T9 never reads it",
+        ),
+    ];
     for table in crate::db::task_state::CARRIED_TABLES {
         for column in table.columns {
             let ownership = ["claim", "owner", "lease", "expir"]

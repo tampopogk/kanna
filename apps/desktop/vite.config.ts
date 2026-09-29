@@ -43,6 +43,7 @@ export default defineConfig(async () => ({
       "@kanna/agent-protocol": path.resolve(__dirname, "../../packages/agent-protocol/src"),
       "@kanna/stream-client": path.resolve(__dirname, "../../packages/stream-client/src"),
       "@kanna/visual-companion": path.resolve(__dirname, "../../packages/visual-companion/src"),
+      "@kanna/design-editor": path.resolve(__dirname, "../../packages/design-editor/src"),
     },
   },
 

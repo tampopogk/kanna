@@ -809,6 +809,13 @@ function TaskDetailRoute({
       stageDependencies={selectedTaskDetailState?.stageDependencies ?? null}
       dependencyWait={selectedTaskDetailState?.dependencyWait ?? null}
       gateParked={selectedTaskDetailState?.gateParked ?? null}
+      design={selectedTaskDetailState?.design ?? null}
+      onDesignRequest={(operation) => {
+        const durableTaskId = resolveDurableTaskId(state, routeTaskId);
+        return durableTaskId
+          ? controller.requestDesign(durableTaskId, operation)
+          : Promise.reject(new Error("Task creation is still in progress."));
+      }}
       terminalErrorMessage={state.taskTerminalErrorMessage}
       terminalOutput={state.taskTerminalOutput}
       terminalOutputEpoch={state.taskTerminalOutputEpoch}

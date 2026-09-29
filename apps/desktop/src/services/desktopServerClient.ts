@@ -492,6 +492,23 @@ export interface DesktopTaskDetail {
    * stage, T3). Absent when the current stage has a role, when there is no
    * latest run yet, or on a server predating this field. */
   gateParked?: boolean | null;
+  /** App Design (docs/specs/app-design.md): present when the task's workflow
+   * has a design stage. Absent on a server predating it. */
+  design?: DesktopTaskDesignSummary | null;
+}
+
+export interface DesktopTaskDesignSummary {
+  stage: string;
+  inDesignStage: boolean;
+  /** designing | handing_off | handed_off */
+  status: string;
+  position: string;
+  positions: Array<{ name: string; label: string }>;
+  nextStage: string | null;
+  openThreads: number;
+  waitingFeedback: number;
+  uncertainFeedback: number;
+  approvalPhase: string | null;
 }
 
 export async function fetchDesktopTaskDetail(taskId: string, options?: { localOnly?: boolean }): Promise<DesktopTaskDetail> {

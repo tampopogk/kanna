@@ -12,7 +12,9 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "jsx": "preserve",
+    /* The one React island: the App Design editor (packages/design-editor). */
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
 
     /* Path aliases */
     "baseUrl": ".",
@@ -20,7 +22,9 @@
       "@kanna/db": ["../../packages/db/src"],
       "@kanna/core": ["../../packages/core/src"],
       "@kanna/agent-protocol": ["../../packages/agent-protocol/src"],
-      "@kanna/stream-client": ["../../packages/stream-client/src"]
+      "@kanna/stream-client": ["../../packages/stream-client/src"],
+      "@kanna/design-editor": ["../../packages/design-editor/src"],
+      "@kanna/design-editor/*": ["../../packages/design-editor/src/*"]
     },
 
     /* Linting */

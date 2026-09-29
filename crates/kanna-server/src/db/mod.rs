@@ -22,6 +22,7 @@ mod blockers;
 pub(crate) mod claude_channel;
 pub(crate) mod copilot_wake;
 mod create_intents;
+pub(crate) mod design;
 mod disk_authority;
 pub(crate) mod disk_first;
 mod disk_rebuild;
@@ -113,8 +114,9 @@ pub use token_usage::{
 #[allow(unused_imports)]
 pub use transfer_work::{TransferWorkItem, MAX_TRANSFER_WORK_ATTEMPTS};
 pub use transfers::{
-    is_active_outgoing_transfer_conflict, NewTaskTransfer, NewTaskTransferProvenance,
-    PendingIncomingTransfer, TaskTransfer, TransferredHistoryRecord,
+    is_active_outgoing_transfer_conflict, is_live_design_transfer_refusal, NewTaskTransfer,
+    NewTaskTransferProvenance, PendingIncomingTransfer, TaskTransfer, TransferredHistoryRecord,
+    LIVE_DESIGN_TRANSFER_REFUSAL,
 };
 pub use transition_commits::TransitionCommit;
 
@@ -240,6 +242,9 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "103_disk_state_records",
     "104_disk_divergence",
     "105_hosted_input_delivery",
+    "106_app_design",
+    "107_app_design_mockups",
+    "108_app_design_pins",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2767,6 +2772,24 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
         "105_hosted_input_delivery",
         task_input_delivery::create_schema,
     )?;
+    // App Design (docs/specs/app-design.md): design sessions, the live
+    // document's updates, threads, the feedback outbox and approvals.
+    run_migration(conn, "106_app_design", |conn| {
+        conn.execute_batch(design::SCHEMA)
+    })?;
+    // The HTML mockup each design position shows.
+    run_migration(conn, "107_app_design_mockups", |conn| {
+        conn.execute_batch(design::MOCKUP_SCHEMA)
+    })?;
+    // Comments pinned on a mockup's elements.
+    run_migration(conn, "108_app_design_pins", |conn| {
+        add_column(
+            conn,
+            "design_thread",
+            design::PINS_COLUMN,
+            design::PINS_COLUMN_DEFINITION,
+        )
+    })?;
     task_state::sync_disk_state_triggers(conn)?;
 
     Ok(())

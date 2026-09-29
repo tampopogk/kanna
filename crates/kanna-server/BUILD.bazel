@@ -8,7 +8,7 @@ filegroup(
     srcs = [
         "Cargo.lock",
         "Cargo.toml",
-    ] + glob(["src/**/*.rs", "resources/**/*.json", "resources/copilot-wake/*.mjs"]),
+    ] + glob(["src/**/*.rs", "resources/**/*.json", "resources/*.js", "resources/copilot-wake/*.mjs"]),
 )
 
 rust_binary(
@@ -20,6 +20,8 @@ rust_binary(
         "resources/agent-catalog.json",
         "resources/copilot-wake/bridge.mjs",
         "resources/copilot-wake/extension.mjs",
+        "resources/design-mockup-pins.js",
+        "resources/design-schema.json",
         "//:VERSION",
         "//:kanna_builtin_resources",
         "//packages/core:src/workflow/kanna-task-environment.md",
@@ -45,6 +47,8 @@ rust_binary(
         "resources/agent-catalog.json",
         "resources/copilot-wake/bridge.mjs",
         "resources/copilot-wake/extension.mjs",
+        "resources/design-mockup-pins.js",
+        "resources/design-schema.json",
         "//:VERSION",
         "//:kanna_builtin_resources",
         "//packages/core:src/workflow/kanna-task-environment.md",

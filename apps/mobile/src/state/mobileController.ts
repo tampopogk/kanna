@@ -1,3 +1,4 @@
+import type { DesignOperation } from "../lib/api/design";
 import type {
   CreateTaskResponse,
   DesktopSummary,
@@ -144,6 +145,8 @@ export interface MobileController {
     mentions: readonly TaskFileMentionInput[]
   ): Promise<TaskFileMentionResolution>;
   readTaskDiff(taskId: string, request?: TaskDiffRequest): Promise<TaskDiffContent>;
+  /** One App Design operation for a task, as its design page asks for it. */
+  requestDesign(taskId: string, operation: DesignOperation): Promise<unknown>;
   getArtifact(repoId: string, artifactId: string): Promise<ArtifactDetail>;
   readArtifactFile(repoId: string, artifactId: string, path: string): Promise<ArtifactFileContent>;
   getArtifactRemote: KannaClient["getArtifactRemote"];
@@ -780,7 +783,8 @@ export function createMobileController(
           sessionHistory: detail.sessionHistory,
           stageDependencies: detail.stageDependencies,
           dependencyWait: detail.dependencyWait ?? null,
-          gateParked: detail.gateParked ?? null
+          gateParked: detail.gateParked ?? null,
+          design: detail.design ?? null
         };
         store.setSelectedTaskLatestRun(latestRun);
         observedTaskWorkflow = {
@@ -4180,6 +4184,12 @@ export function createMobileController(
 
     readTaskDiff(taskId, request) {
       return client.readTaskDiff(taskId, request);
+    },
+
+    requestDesign(taskId, operation) {
+      return client.requestDesign
+        ? client.requestDesign(taskId, operation)
+        : Promise.reject(new Error("This connection cannot reach App Design sessions."));
     },
 
     async sendTaskInput(taskId, input, attachment) {

@@ -12,6 +12,7 @@ mod copilot_models;
 mod creation_progress;
 mod daemon_client;
 mod db;
+mod design;
 mod forge_pull_requests;
 mod git_refs;
 mod http_api;

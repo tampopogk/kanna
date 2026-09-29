@@ -235,13 +235,15 @@ pub(crate) fn validate_task_workflow_replacement_with_plan_context(
                 {
                     return Err(format!("duplicate stage/post name '{}'", stage.name));
                 }
-                if let Some(post) = &stage.post {
+                // The declared post, or the commit step `exit_commit` adds:
+                // a recorded commit step's run is named for it.
+                if let Some(post) = stage.transition_post() {
                     if bindings
                         .insert(
                             post.name.clone(),
                             (
                                 format!("post:{}", stage.name),
-                                serde_json::to_value(post)
+                                serde_json::to_value(&*post)
                                     .map_err(|error| format!("post '{}': {error}", post.name))?,
                             ),
                         )
@@ -294,10 +296,10 @@ pub(crate) fn validate_task_workflow_replacement_with_plan_context(
             .stages
             .iter()
             .flat_map(|stage| {
-                std::iter::once(&stage.name).chain(stage.post.iter().map(|post| &post.name))
+                std::iter::once(stage.name.clone())
+                    .chain(stage.transition_post().map(|post| post.name.clone()))
             })
             .filter(|name| protected.contains(name.as_str()))
-            .cloned()
             .collect()
     };
     if protected_order(&prior) != protected_order(&workflow) {
@@ -330,12 +332,15 @@ pub(crate) fn validate_task_workflow_replacement_with_plan_context(
     // only. Description/policy edits need no provider re-resolution.
     let execution = |definition: &WorkflowDefinition, name: &str, value: &Value| {
         let owner = definition.stages.iter().find(|stage| {
-            stage.name == name || stage.post.as_ref().is_some_and(|post| post.name == name)
+            stage.name == name
+                || stage
+                    .transition_post()
+                    .is_some_and(|post| post.name == name)
         });
         let environment = owner.and_then(|stage| stage.environment.as_deref());
         let selection = owner.and_then(|stage| {
-            if stage.name == name { stage.agent_provider.as_ref() }
-            else { stage.post.as_ref()?.agent_provider.as_ref() }
+            if stage.name == name { stage.agent_provider.clone() }
+            else { stage.transition_post()?.agent_provider.clone() }
         }).map(|entries| entries.iter().map(|entry| {
             let candidate = entry.resolve(true).expect("validated workflow selection");
             serde_json::json!({"harness": candidate.provider, "model": candidate.model, "effort": candidate.effort})

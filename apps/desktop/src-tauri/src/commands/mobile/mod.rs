@@ -917,6 +917,33 @@ fn native_control_daemon_dir() -> PathBuf {
         .unwrap_or_else(|_| crate::daemon_data_dir())
 }
 
+/// The person's "Approve for build" (docs/specs/app-design.md §6): the
+/// confirmation of a candidate the desktop just showed them. It travels over
+/// the native control socket, whose peer the server identifies by kernel
+/// process identity as this desktop, because approval is the person's action
+/// and no HTTP route (which an agent could also reach) may make it.
+#[tauri::command]
+pub async fn confirm_design_approval(
+    task_id: String,
+    approval_id: String,
+    token: String,
+) -> Result<serde_json::Value, String> {
+    let response = send_native_control_request(
+        &native_control_daemon_dir(),
+        &serde_json::json!({
+            "action": "confirm_design_approval",
+            "task_id": task_id,
+            "approval_id": approval_id,
+            "token": token,
+        }),
+    )
+    .await?;
+    Ok(response
+        .get("body")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null))
+}
+
 async fn adopt_native_desktop(daemon_dir: &Path) -> Result<(), String> {
     send_native_control_request(
         daemon_dir,

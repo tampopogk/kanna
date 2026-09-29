@@ -1,0 +1,102 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Kanna — Design stage</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: Inter, system-ui, sans-serif; font-size:13px; color:#1f1d24; background:#f3f2ef; height:100vh; display:flex; }
+  #sidebar { width:200px; flex-shrink:0; background:#1c1a22; color:#cfcad8; padding:14px 10px; display:flex; flex-direction:column; gap:4px; }
+  #sidebar h3 { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:#8a8497; margin:10px 8px 4px; }
+  .task { padding:7px 9px; border-radius:7px; display:flex; justify-content:space-between; align-items:center; cursor:default; }
+  .task.active { background:#2e2a38; color:#fff; }
+  .badge { font-size:10.5px; padding:1px 7px; border-radius:9px; background:#3a3546; color:#cfcad8; }
+  .badge.design { background:#7b4ff0; color:#fff; }
+  .badge.attn { background:#e8a33d; color:#241a05; }
+  #app { flex:1; display:flex; flex-direction:column; min-width:0; }
+  #task-header { background:#fff; border-bottom:1px solid #e4e1e8; padding:12px 18px 10px; }
+  #task-title { font-size:16px; font-weight:700; margin:0 0 8px; }
+  #ladder { display:flex; align-items:center; gap:6px; font-size:12px; }
+  .step { padding:4px 10px; border-radius:14px; background:#f0eef3; color:#6b6577; }
+  .step.done { background:#e5dcfb; color:#4b2bb0; }
+  .step.now { background:#7b4ff0; color:#fff; font-weight:600; }
+  .step.factory { background:#e4f4ea; color:#1f5b39; }
+  .arrow { color:#b5afc0; }
+  #workspace { flex:1; display:flex; min-height:0; }
+  #terminal { width:30%; min-width:230px; background:#15141a; color:#d6d3de; font-family: ui-monospace, Menlo, monospace; font-size:12px; padding:14px; line-height:1.55; overflow:hidden; }
+  #terminal .me { color:#b9a3f5; }
+  #terminal .dim { color:#6f6a7c; }
+  #surface { flex:1; display:flex; flex-direction:column; min-width:0; background:#fff; border-left:1px solid #e4e1e8; }
+  #tabs { display:flex; gap:2px; padding:8px 12px 0; border-bottom:1px solid #e4e1e8; }
+  .tab { white-space:nowrap; padding:8px 14px; border-radius:8px 8px 0 0; color:#6b6577; }
+  .tab.on { background:#f6f4fb; color:#1f1d24; font-weight:600; box-shadow: inset 0 -2px 0 #7b4ff0; }
+  .count { font-size:10.5px; background:#e8a33d; color:#241a05; border-radius:9px; padding:0 6px; margin-left:4px; }
+  #preview { flex:1; padding:22px 28px; overflow:hidden; background:#f6f4fb; }
+  #doc-card { background:#fff; border-radius:10px; box-shadow:0 1px 3px rgba(0,0,0,.08); padding:22px 26px; max-width:560px; }
+  #doc-card h1 { font-size:20px; margin:0 0 10px; }
+  #doc-card p { line-height:1.55; margin:8px 0; }
+  mark { background:#fbe7b8; border-bottom:2px solid #e8a33d; }
+  #signoff-bar { display:flex; align-items:center; gap:12px; padding:10px 16px; border-top:1px solid #e4e1e8; background:#fff; }
+  #repo-ref { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; font-family: ui-monospace, Menlo, monospace; font-size:11.5px; color:#6b6577; }
+  .spacer { flex:1; }
+  .btn { white-space:nowrap; border:1px solid #d9d5e0; background:#fff; border-radius:8px; padding:7px 13px; font:inherit; }
+  #signoff { background:#1f5b39; color:#fff; border-color:#1f5b39; font-weight:600; }
+  #feed { width:220px; flex-shrink:0; background:#fff; border-left:1px solid #e4e1e8; padding:12px; display:flex; flex-direction:column; gap:8px; }
+  #feed h4 { margin:2px 0 4px; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:#8a8497; }
+  .fb { border:1px solid #ece9f1; border-radius:9px; padding:8px 10px; line-height:1.4; }
+  .fb small { display:block; color:#8a8497; margin-top:4px; }
+</style></head>
+<body>
+  <nav id="sidebar">
+    <h3>kanna</h3>
+    <div class="task active"><span>Collaborative artifact</span><span class="badge design">design</span></div>
+    <div class="task"><span>Merge structured workflows</span><span class="badge attn">review</span></div>
+    <div class="task"><span>Relay scaling</span><span class="badge">build</span></div>
+    <div class="task"><span>Mobile artifact viewer</span><span class="badge">pr</span></div>
+  </nav>
+  <div id="app">
+    <header id="task-header">
+      <h2 id="task-title">Collaborative artifact</h2>
+      <div id="ladder">
+        <span class="step done">Shared doc</span><span class="arrow">→</span>
+        <span class="step now" id="step-mockup">Static mockup</span><span class="arrow">→</span>
+        <span class="step">Clickable</span><span class="arrow">→</span>
+        <span class="step">Prototype</span><span class="arrow">→</span>
+        <span class="step">Sign-off</span><span class="arrow">⇢</span>
+        <span class="step factory">Software factory</span>
+      </div>
+    </header>
+    <div id="workspace">
+      <section id="terminal">
+        <div class="dim">claude · design session · task 2d6b4196</div><br>
+        <div><span class="me">❯</span> make the comment highlight more obvious</div>
+        <div class="dim">● reading pin #1 on &lt;mark&gt; "fed back to the agent"</div>
+        <div class="dim">● editing mockup: margin marker + count badge</div>
+        <div>Published v7. Comments now show a margin marker and a count on the tab.</div><br>
+        <div><span class="me">❯</span> <span class="dim">_</span></div>
+      </section>
+      <section id="surface">
+        <div id="tabs">
+          <span class="tab">Doc</span>
+          <span class="tab on">Mockup <span class="count">2</span></span>
+          <span class="tab">Prototype</span>
+        </div>
+        <div id="preview">
+          <article id="doc-card">
+            <h1>Collaborative artifact</h1>
+            <p>A page you and one agent edit together. You type directly, or highlight text and leave a comment that is <mark>fed back to the agent</mark> in its live session.</p>
+            <p>The agent answers by editing the page, next to your edits, never over them.</p>
+          </article>
+        </div>
+        <div id="signoff-bar">
+          <span id="repo-ref">rad:z3xK…9fQ</span>
+          <span class="spacer"></span>
+          <button class="btn" id="share">Share link</button>
+          <button class="btn" id="signoff" title="Makes this prototype the reference and starts the software factory">Approve for build →</button>
+        </div>
+      </section>
+      <aside id="feed">
+        <h4>Feedback → agent</h4>
+        <div class="fb">Make the highlight more obvious<small>Jeremy · pin #1 · delivered ✓</small></div>
+        <div class="fb">Should sign-off live in the header?<small>Jeremy · pin #2 · agent replied</small></div>
+      </aside>
+    </div>
+  </div>
+</body></html>

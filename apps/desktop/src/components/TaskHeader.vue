@@ -76,12 +76,34 @@ const props = defineProps<{
   /** True when the current stage has no agent role and a person must
    * decide (spec's roleless Gate stage, T3). */
   gateParked?: boolean | null;
+  /** App Design (docs/specs/app-design.md): the design's position and
+   * feedback at a glance; opens the design surface. */
+  design?: {
+    inDesignStage: boolean;
+    status?: string;
+    position: string;
+    positions: Array<{ name: string; label: string }>;
+    openThreads: number;
+    waitingFeedback: number;
+    uncertainFeedback: number;
+  } | null;
 }>();
 
 const emit = defineEmits<{
   (e: "preview", portName: string): void;
   (e: "open-artifact", reference: Extract<ArtifactReference, { type: "stored" }>): void;
+  (e: "open-design"): void;
 }>();
+
+/** App Design: which position the design is at; opens the design surface. */
+const designLabel = computed(() => {
+  const design = props.design;
+  if (!design) return null;
+  const position = design.positions.find((candidate) => candidate.name === design.position)?.label ?? design.position;
+  return design.inDesignStage && design.status !== "handed_off"
+    ? t("taskHeader.designAt", { position })
+    : t("taskHeader.designHandedOff");
+});
 
 const latestResultArtifacts = computed(() => {
   const artifacts = props.latestRun?.artifacts;
@@ -178,6 +200,17 @@ function openLocalhostPort(port: number) {
         :title="item.stage_advance_pending ? $t('taskHeader.stageAdvancePending') : undefined"
       >{{ stageBadgeLabel }}</span>
       <h2 class="task-title" :title="taskPromptTooltip(item)" @mousedown.stop>{{ title(item) }}</h2>
+      <button
+        v-if="designLabel"
+        type="button"
+        class="design-badge"
+        data-testid="task-header-design"
+        @mousedown.stop
+        @click="emit('open-design')"
+      >
+        {{ designLabel }}
+      </button>
+
     </div>
     <div class="header-meta">
       <span v-if="taskId" class="meta-item">{{ taskId }} · {{ ownerLabel }}</span>
@@ -459,5 +492,17 @@ function openLocalhostPort(port: number) {
 
 .commit-step[data-commit-state="succeeded"] {
   color: var(--kn-success);
+}
+.design-badge {
+  margin-left: 8px;
+  border: 1px solid var(--kn-border-strong);
+  background: var(--kn-bg-accent-subtle);
+  color: var(--kn-text-secondary);
+  border-radius: 10px;
+  padding: 1px 8px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
 }
 </style>

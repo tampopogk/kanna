@@ -4,6 +4,7 @@ import type {
   HumanReviewDecision,
   TaskActivity,
   TaskDependencyWait,
+  TaskDesignSummary,
   TaskLatestRun,
   TaskReviewContext,
   TaskSessionHistoryEntry,
@@ -232,6 +233,8 @@ export interface SessionState {
     dependencyWait?: TaskDependencyWait | null;
     /** True when a person, not a session, must decide (roleless Gate, T3). */
     gateParked?: boolean | null;
+    /** App Design: present when the task's workflow has a design stage. */
+    design?: TaskDesignSummary | null;
   } | null;
   pendingTaskAction: PendingTaskAction | null;
   activeView: MobileView;

@@ -1540,6 +1540,13 @@ impl Db {
                     current.2.as_deref().unwrap_or("<none>")
                 )));
             }
+            // Every workflow change passes here: a live App Design stage keeps
+            // what makes it leave only through its approved hand-off.
+            if let Some(refusal) =
+                db.design_workflow_change_refusal(id, current.1.as_deref(), workflow_def)?
+            {
+                return Err(rusqlite::Error::InvalidParameterName(refusal));
+            }
             if let Some(edit) = edit {
                 if current.1.as_deref() != Some(edit.expected_definition) {
                     return Err(rusqlite::Error::InvalidParameterName("pinned workflow changed; read it again before replacing".into()));

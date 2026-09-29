@@ -368,6 +368,11 @@ pub struct TaskDetail {
     /// role, or when there is no latest run yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_parked: Option<bool>,
+    /// App Design (docs/specs/app-design.md): present when the task's
+    /// workflow has a design stage, so a client knows to show the design
+    /// surface beside the terminal and the design positions in the header.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub design: Option<crate::design::service::TaskDesignSummary>,
 }
 
 /// One historical stage-run session (spec §16.8, T11b), sourced from T2's
@@ -1520,6 +1525,11 @@ impl MobileApi {
             .latest_run
             .as_ref()
             .map(|run| roleless_current_stage && run.status == "running" && run.agent.is_none());
+        detail.design =
+            crate::design::service::task_summary(&self._db, &task_id).unwrap_or_else(|error| {
+                log::warn!("design summary for {task_id} unavailable: {error}");
+                None
+            });
         Ok(Some(detail))
     }
 
@@ -2020,6 +2030,7 @@ fn map_task_detail(
         stage_dependencies: Vec::new(),
         dependency_wait: None,
         gate_parked: None,
+        design: None,
     }
 }
 
