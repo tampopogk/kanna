@@ -346,6 +346,18 @@ pub(super) async fn set_task_workflow(
                     ),
                 ));
             }
+            // A live App Design stage keeps its design and exit_commit
+            // (docs/specs/app-design.md §6).
+            if let Some(refusal) = db
+                .design_workflow_change_refusal(
+                    &task_id,
+                    item.pipeline_def.as_deref(),
+                    &snapshot.definition_json,
+                )
+                .map_err(|error| db_write_error("db error", error))?
+            {
+                return Err((axum::http::StatusCode::CONFLICT, refusal));
+            }
 
             let changed = db
                 .update_pipeline_item_pipeline(
@@ -475,6 +487,14 @@ pub(super) async fn replace_task_workflow(
             .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
             let snapshot = validated.snapshot;
             let superseded = validated.superseded_run_ids;
+            // A live App Design stage keeps its design and exit_commit
+            // (docs/specs/app-design.md §6).
+            if let Some(refusal) = db
+                .design_workflow_change_refusal(&task_id, Some(previous), &snapshot.definition_json)
+                .map_err(|error| db_write_error("db error", error))?
+            {
+                return Err((StatusCode::CONFLICT, refusal));
+            }
             let changed = db
                 .replace_task_workflow(
                     &task_id,

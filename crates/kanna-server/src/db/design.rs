@@ -11,6 +11,7 @@
 use super::Db;
 use rusqlite::{params, OptionalExtension, Row};
 use serde::Serialize;
+use serde_json::Value;
 
 /// Schema of migration `105_app_design`.
 pub(super) const SCHEMA: &str = r#"
@@ -1132,6 +1133,53 @@ impl Db {
             .query_map([], DesignDeliveryRow::from_row)?
             .collect();
         rows
+    }
+
+    // -- workflow ------------------------------------------------------------
+
+    /// Why a change of `task_id`'s pinned workflow from `before` to `after`
+    /// must be refused, if it must (docs/specs/app-design.md §6). While the
+    /// task's design is live — its session not handed off — the design
+    /// stage's `design` and `exit_commit` are what make it leave only
+    /// through Approve for build and its verified commit: no replacement or
+    /// workflow switch may remove or alter them.
+    pub(crate) fn design_workflow_change_refusal(
+        &self,
+        task_id: &str,
+        before: Option<&str>,
+        after: &str,
+    ) -> Result<Option<String>, rusqlite::Error> {
+        let Some(session) = self.design_session(task_id)? else {
+            return Ok(None);
+        };
+        if session.status == DesignSessionRow::HANDED_OFF {
+            return Ok(None);
+        }
+        let protected = |definition: Option<&str>| -> Option<(Option<Value>, bool)> {
+            let definition: Value = serde_json::from_str(definition?).ok()?;
+            let stage = definition
+                .get("stages")?
+                .as_array()?
+                .iter()
+                .find(|stage| stage.get("name").and_then(Value::as_str) == Some(&session.stage))?
+                .clone();
+            Some((
+                stage.get("design").cloned(),
+                stage
+                    .get("exit_commit")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            ))
+        };
+        let before = protected(before);
+        if before.is_none() || before == protected(Some(after)) {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "stage '{}' is this task's live App Design stage: its design and exit_commit cannot \
+             be removed or changed until the design is approved for build and handed off",
+            session.stage
+        )))
     }
 
     // -- mockups ------------------------------------------------------------

@@ -437,6 +437,81 @@ fn a_plain_advance_of_the_design_stage_is_refused() {
     assert!(error.contains("Approve for build"), "{error}");
 }
 
+/// Review round 1, finding 1: whatever the pinned workflow says, a stage
+/// whose design session is live leaves only through its hand-off, and every
+/// workflow change — a replacement or a switch — keeps its design and
+/// exit_commit until the design is handed off.
+#[test]
+fn a_live_design_session_guards_its_stage_whatever_the_workflow_says() {
+    let setup = setup("workflow-guard", "results-and-summary");
+    service::view(
+        &setup.db(),
+        &setup.state.design,
+        &setup.db_path(),
+        "task-d",
+        false,
+    )
+    .unwrap();
+    let db = setup.db();
+    let pinned = db
+        .get_pipeline_item("task-d")
+        .unwrap()
+        .unwrap()
+        .pipeline_def
+        .unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&pinned).unwrap();
+    value["stages"][0].as_object_mut().unwrap().remove("design");
+    let without_design = value.to_string();
+
+    // The switch path (set-workflow) refuses it in the same transaction.
+    let error = db
+        .update_pipeline_item_pipeline(
+            "task-d",
+            "design",
+            "app-design",
+            &without_design,
+            0,
+            5,
+            &crate::mutation_provenance::ChannelIdentity::Unknown,
+        )
+        .err()
+        .expect("refused");
+    assert!(
+        error.to_string().contains("live App Design stage"),
+        "{error}"
+    );
+    // A change elsewhere in the workflow is fine.
+    let mut other = serde_json::from_str::<serde_json::Value>(&pinned).unwrap();
+    other["stages"][4]["prompt"] = serde_json::json!("Open the PR.");
+    assert_eq!(
+        db.design_workflow_change_refusal("task-d", Some(&pinned), &other.to_string())
+            .unwrap(),
+        None
+    );
+
+    // Even if the pinned workflow lost `design` some other way, the advance
+    // guard still holds, because the design session is live.
+    db.execute_test_sql(&format!(
+        "UPDATE pipeline_item SET pipeline_def = '{}' WHERE id = 'task-d'",
+        without_design.replace('\'', "''")
+    ))
+    .unwrap();
+    let error =
+        crate::task_creator::prepare_advance_stage_for_api(&db, setup.state.config(), "task-d")
+            .err()
+            .expect("advance refused");
+    assert!(error.contains("Approve for build"), "{error}");
+
+    // Once handed off, the workflow is the factory's to change.
+    db.set_design_session_status("task-d", crate::db::design::DesignSessionRow::HANDED_OFF)
+        .unwrap();
+    assert_eq!(
+        db.design_workflow_change_refusal("task-d", Some(&pinned), &without_design)
+            .unwrap(),
+        None
+    );
+}
+
 #[test]
 fn policy_paths_stay_inside_the_repository() {
     for bad in ["../outside", "/abs/{task}", "~/home", "a/../../b"] {

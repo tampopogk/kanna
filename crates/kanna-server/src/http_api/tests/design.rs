@@ -66,7 +66,10 @@ async fn send(app: &axum::Router, request: Request<Body>) -> (StatusCode, Value)
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+    // A plain-text refusal reads as a JSON string.
+    let body = serde_json::from_slice(&body)
+        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&body).into_owned()));
+    (status, body)
 }
 
 fn setup(label: &str) -> (Arc<AppState>, axum::Router) {
@@ -120,11 +123,7 @@ async fn only_the_person_writes_feedback_and_the_agent_reads_it() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["number"], 2);
 
-    let (status, body) = send(
-        &app,
-        as_agent("GET", "/v1/tasks/task-d/design/agent", None),
-    )
-    .await;
+    let (status, body) = send(&app, as_agent("GET", "/v1/tasks/task-d/design/agent", None)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["threads"].as_array().unwrap().len(), 2);
     assert_eq!(body["document"].as_array().unwrap().len(), 1);
@@ -188,15 +187,8 @@ async fn the_agent_edits_through_typed_operations_never_raw_sync() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
 
-    let (_, view) = send(
-        &app,
-        as_agent("GET", "/v1/tasks/task-d/design/agent", None),
-    )
-    .await;
-    let block = view["document"][0]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let (_, view) = send(&app, as_agent("GET", "/v1/tasks/task-d/design/agent", None)).await;
+    let block = view["document"][0]["id"].as_str().unwrap().to_string();
     let edit = json!({
         "opId": "edit-1",
         "ops": [{ "op": "replace_text", "block_id": block, "expected_text": "", "text": "Agent wrote this" }],
@@ -218,11 +210,7 @@ async fn the_agent_edits_through_typed_operations_never_raw_sync() {
     )
     .await;
     assert_eq!(replay["replayed"], true);
-    let (_, view) = send(
-        &app,
-        as_agent("GET", "/v1/tasks/task-d/design/agent", None),
-    )
-    .await;
+    let (_, view) = send(&app, as_agent("GET", "/v1/tasks/task-d/design/agent", None)).await;
     assert_eq!(view["document"][0]["text"], "Agent wrote this");
 }
 
@@ -320,4 +308,129 @@ async fn the_change_feed_answers_when_feedback_arrives() {
         .unwrap();
     assert_eq!(status, StatusCode::OK);
     assert!(changed["feedRevision"].as_u64().unwrap() > feed);
+}
+
+fn pinned_definition(state: &AppState) -> Value {
+    let db = Db::open(&state.config().db_path).unwrap();
+    serde_json::from_str(
+        &db.get_pipeline_item("task-d")
+            .unwrap()
+            .unwrap()
+            .pipeline_def
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+/// Review round 1, finding 1: the agent cannot drop the design stage's
+/// `design` or `exit_commit` to walk past Approve for build.
+#[tokio::test]
+async fn a_live_design_stage_keeps_its_hand_off_through_any_workflow_change() {
+    // Replacement resolves the repository's definitions from its origin.
+    let repo = crate::test_paths::unique_test_path("design-http-workflow-guard-repo");
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("README.md"), "app\n").unwrap();
+    for args in [
+        vec!["init", "-b", "main"],
+        vec![
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "user.name=T",
+            "add",
+            ".",
+        ],
+        vec![
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "user.name=T",
+            "commit",
+            "-m",
+            "init",
+        ],
+        vec!["update-ref", "refs/remotes/origin/main", "HEAD"],
+    ] {
+        assert!(std::process::Command::new("git")
+            .args(&args)
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+    }
+    let repo_path = repo.to_string_lossy().to_string();
+    let state = test_state_with_seed("design-http-workflow-guard", "Design", move |db| {
+        seed_design_task(db);
+        db.execute_test_sql(&format!(
+            "UPDATE repo SET path = '{repo_path}', default_branch = 'main' WHERE id = 'repo-1'"
+        ))
+        .unwrap();
+    });
+    let app = router(Arc::clone(&state));
+    let (status, _) = send(&app, as_agent("GET", "/v1/tasks/task-d/design/agent", None)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the design session is live once opened"
+    );
+    let pinned = pinned_definition(&state);
+
+    let mut without_design = pinned.clone();
+    without_design["stages"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("design");
+    let mut without_commit = pinned.clone();
+    without_commit["stages"][0]["exit_commit"] = json!(false);
+    // Dropping `design` is this guard's to refuse; turning off exit_commit on
+    // a design stage is already an invalid workflow.
+    for (changed, expected, reason) in [
+        (
+            without_design,
+            StatusCode::CONFLICT,
+            "live App Design stage",
+        ),
+        (
+            without_commit,
+            StatusCode::BAD_REQUEST,
+            "a design stage needs exit_commit",
+        ),
+    ] {
+        let (status, body) = send(
+            &app,
+            as_agent(
+                "POST",
+                "/v1/tasks/task-d/actions/replace-workflow",
+                Some(json!({ "workflowDefinition": changed, "expectedDefinition": pinned, "source": "agent" })),
+            ),
+        )
+        .await;
+        assert_eq!(status, expected, "{body}");
+        assert!(body.to_string().contains(reason), "{body}");
+    }
+    assert_eq!(pinned_definition(&state), pinned, "nothing changed");
+
+    // Switching to another workflow is refused as well.
+    let (status, body) = send(
+        &app,
+        as_agent(
+            "POST",
+            "/v1/tasks/task-d/actions/set-workflow",
+            Some(json!({ "workflowName": "no-review" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(pinned_definition(&state), pinned, "nothing changed");
+
+    // And the stage still leaves only through its hand-off.
+    let error = crate::task_creator::prepare_advance_stage_for_api(
+        &Db::open(&state.config().db_path).unwrap(),
+        state.config(),
+        "task-d",
+    )
+    .err()
+    .expect("advance refused");
+    assert!(error.contains("Approve for build"), "{error}");
 }

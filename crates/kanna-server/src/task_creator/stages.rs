@@ -209,8 +209,17 @@ pub(crate) fn prepare_advance_stage_for_api_with_intent(
             let stage = &loaded.workflow.stages[index];
             // An App Design stage leaves only through its hand-off
             // (docs/specs/app-design.md §6): a person's or manager's plain
-            // advance cannot skip the approval and its verified commit.
-            if stage.design.is_some() {
+            // advance cannot skip the approval and its verified commit. The
+            // live design session says so too, whatever the (editable)
+            // pinned workflow now says about this stage.
+            let live_design = db
+                .design_session(source_task_id)
+                .map_err(|error| format!("db error: {error}"))?
+                .is_some_and(|session| {
+                    session.stage == stage.name
+                        && session.status != crate::db::design::DesignSessionRow::HANDED_OFF
+                });
+            if stage.design.is_some() || live_design {
                 crate::design::approval::guard_design_exit(db, source_task_id, &stage.name)?;
             }
             if let Some(post) = stage.transition_post() {
