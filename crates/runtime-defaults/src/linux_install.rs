@@ -3,7 +3,7 @@
 //!
 //! On macOS the answer is "the app bundle", and `current_exe()`'s directory
 //! plus `../Resources` covers every consumer. A Linux package has no bundle:
-//! the desktop binary, the worker, the six sidecars, the built-in `.kanna/`
+//! the desktop binary, the worker, the seven sidecars, the built-in `.kanna/`
 //! definitions and the desktop-entry icon are all separate files that the
 //! packaging step places and the runtime later has to rediscover. Writing
 //! those paths twice — once in the package build and once in the code that
@@ -136,12 +136,13 @@ pub const DESKTOP_BINARY_NAME: &str = "kanna-desktop";
 /// the same tree into a temporary root.
 pub const DEFAULT_INSTALL_PREFIX: &str = "/usr";
 
-/// Executables a package ships beside the desktop binary. The six sidecars the
+/// Executables a package ships beside the desktop binary. The seven sidecars the
 /// desktop already spawns, plus `kanna-worker`, which is Kanna-owned and
 /// therefore bundled rather than assumed present.
-pub const INSTALLED_EXECUTABLES: [&str; 8] = [
+pub const INSTALLED_EXECUTABLES: [&str; 9] = [
     DESKTOP_BINARY_NAME,
     "kanna-worker",
+    "agent-tui",
     "kanna-daemon",
     "kanna-cli",
     "kanna-mcp",

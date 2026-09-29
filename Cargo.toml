@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/agent-tui",
     "apps/desktop/src-tauri",
     "crates/claude-agent-sdk",
     "crates/daemon",

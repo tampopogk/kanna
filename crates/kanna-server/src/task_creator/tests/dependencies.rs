@@ -8,6 +8,7 @@ use crate::db::NewStageEdge;
 
 fn dependent_request(prompt: &str) -> CreateTaskRequest {
     CreateTaskRequest {
+        agent_frontend: None,
         repo_id: "repo-1".to_string(),
         prompt: prompt.to_string(),
         display_name: None,

@@ -64,7 +64,7 @@ export interface LinuxPackageBuildResult {
   auditOverridden: boolean;
 }
 
-/** Where `kd` stages the eight executables a package ships. Inside `.build/`,
+/** Where `kd` stages the nine executables a package ships. Inside `.build/`,
  *  so it follows the repo's artifact rule and is cleaned with everything else. */
 export function linuxPackageStagingDir(repoRoot: string, architecture: LinuxArchitecture): string {
   return join(repoRoot, ".build", "linux-package", architecture);

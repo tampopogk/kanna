@@ -1,4 +1,5 @@
 import { designRoute, designTaskPath, type DesignOperation } from "../api/design";
+import { taskInputResult } from "../api/taskInput";
 import type { AgentProvider } from "@kanna/agent-protocol";
 import type {
   KannaTransport,
@@ -936,13 +937,13 @@ export function createRemoteTransport({
       input: string,
       attachment?: TaskInputAttachment
     ) => {
-      await requestTask<TaskInputResult | undefined>(
+      const receipt = await requestTask<TaskInputResult | undefined>(
         taskId,
         "POST",
         (localTaskId) => `/v1/tasks/${encodeURIComponent(localTaskId)}/input`,
         attachment ? { input, attachment } : { input }
       );
-      return { status: "delivered" };
+      return taskInputResult(receipt);
     },
     supportsTaskInputAttachments: async (taskId: string) => {
       // Deliberately NOT `getStatus()`: with cloud tasks wired that returns a

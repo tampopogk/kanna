@@ -1,0 +1,14 @@
+---
+source: tests/replay.rs
+expression: summary(&app)
+---
+you: Call the project-docs MCP tool search_docs with query 'parser', then call its read_document tool with id 'missing-42'. Then summarize in one sentence.
+assistant: I’ll look up the project-docs tools, then run the two calls in order.
+Tools · 1 completed · 1 failed
+    Succeeded MCP project-docs/search_docs query
+    Failed MCP project-docs/read_document id
+approval [Allow the project-docs MCP server to run tool "search_docs"?] project-docs requests permission (Answered("Allowed"))
+approval [Allow the project-docs MCP server to run tool "read_document"?] project-docs requests permission (Answered("Allowed"))
+assistant: Searching for “parser” returned docs/parser.md (JSONL framing) and docs/tui.md (
+end: ✓ Turn complete
+status: Ready

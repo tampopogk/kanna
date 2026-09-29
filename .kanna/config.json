@@ -17,6 +17,7 @@
       "path": "docs/design-results/{task}"
     }
   },
+  "agentFrontends": { "claude": "agent-tui", "codex": "agent-tui" },
   "agentProviders": {
     "plan": {
       "provider": "codex",

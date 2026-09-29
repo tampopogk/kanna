@@ -758,8 +758,8 @@ describe("remote transport", () => {
       })
       .mockResolvedValueOnce({ taskId: "task-merge" })
       .mockResolvedValueOnce({ taskId: "task-pr" })
-      .mockResolvedValueOnce({ taskId: "task-1" })
-      .mockResolvedValueOnce({ taskId: "task-1" })
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null);
     const transport = createRemoteTransport({

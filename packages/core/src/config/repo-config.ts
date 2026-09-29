@@ -74,6 +74,7 @@ export interface RepoConfig {
   ports?: Record<string, number>;
   flavors?: Record<string, string>;
   agentProviders?: Record<string, RepoAgentProviderPreference>;
+  agentFrontends?: Partial<Record<"claude" | "codex", "native" | "agent-tui">>;
   vars?: Record<string, string>;
   reserved_port_offsets?: number[];
   reserved_ports?: number[];
@@ -92,6 +93,19 @@ export function parseRepoConfig(json: string): RepoConfig {
 
   const raw = parsed as Record<string, unknown>;
   const config: RepoConfig = {};
+  if (raw.agentFrontends !== undefined) {
+    if (!raw.agentFrontends || typeof raw.agentFrontends !== "object" || Array.isArray(raw.agentFrontends)) {
+      throw new Error("agentFrontends must be an object");
+    }
+    const frontends: NonNullable<RepoConfig["agentFrontends"]> = {};
+    for (const [provider, frontend] of Object.entries(raw.agentFrontends)) {
+      if (provider !== "claude" && provider !== "codex") throw new Error("agentFrontends supports only claude and codex");
+      if (frontend !== "native" && frontend !== "agent-tui") throw new Error("agentFrontends values must be native or agent-tui");
+      frontends[provider] = frontend;
+    }
+    config.agentFrontends = frontends;
+  }
+
 
   const workflow = typeof raw.workflow === "string"
     ? raw.workflow

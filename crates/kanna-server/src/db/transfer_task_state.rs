@@ -224,6 +224,12 @@ impl Db {
     /// Each refusal names what is owed so the operator can finish it here or
     /// wait for it; none of them is discarded to make a transfer possible.
     pub fn transfer_state_blocker(&self, task_id: &str) -> Result<Option<String>, rusqlite::Error> {
+        let pending: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM task_input_delivery WHERE task_id = ? AND json_extract(attempt_json, '$.state') IN ('queued','submitting','uncertain'))",
+            [task_id], |row| row.get(0))?;
+        if pending {
+            return Ok(Some(format!("task {task_id} has pending or uncertain hosted input; reconcile its original conversation before transferring")));
+        }
         let one = |sql: &str| -> Result<Option<String>, rusqlite::Error> {
             self.conn
                 .query_row(sql, [task_id], |row| row.get::<_, String>(0))

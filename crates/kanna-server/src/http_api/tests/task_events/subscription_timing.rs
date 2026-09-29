@@ -136,6 +136,7 @@ for line in sys.stdin:
                                         let composer_text = matches!(composer_attestation, ComposerAttestation::Typed)
                                             .then(|| "half-typed owner draft".to_string());
                                         DaemonEvent::SessionList { sessions: vec![SessionInfo {
+                                            hosted_frontend: None,
                                             session_id: "child-c".into(), pid: 42, cwd: "/workspace/manager".into(),
                                             state: SessionState::Active, idle_seconds: 0, status: SessionStatus::Idle,
                                             status_observed: true, kind: Default::default(), composer_text,
@@ -143,7 +144,7 @@ for line in sys.stdin:
                                             attempt_id: None,
                                         }] }
                                     },
-                                    DaemonCommand::SubmitInputIfSession { session_id, expected_pid, data } => {
+                                    DaemonCommand::SubmitInputIfSession { delivery_id: None, run_id: _, session_id, expected_pid, data } => {
                                         assert_eq!(session_id, "child-c"); assert_eq!(expected_pid, 42);
                                         recorded.lock().unwrap().push(String::from_utf8(data).unwrap());
                                         if uncertain.load(Ordering::SeqCst) { return; }

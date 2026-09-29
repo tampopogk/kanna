@@ -466,6 +466,8 @@ pub(crate) struct RequestRevisionRequest {
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TaskInputRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) delivery_id: Option<String>,
     pub(crate) input: String,
     /// Declared author of the message: `operator` or `manager`. Omitted means
     /// the caller made no claim, which is what an ordinary CLI delivery is.
@@ -575,9 +577,10 @@ pub(crate) struct BlockTaskRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct TaskInputResponse {
-    pub(crate) ok: bool,
+#[serde(untagged)]
+pub(crate) enum TaskInputResponse {
+    Native { ok: bool },
+    Hosted(serde_json::Value),
 }
 
 /// Discrete terminal keys, or explicit bytes, for a task's live PTY.

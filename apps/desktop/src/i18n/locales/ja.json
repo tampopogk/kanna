@@ -1,5 +1,6 @@
 {
   "tasks": {
+    "customTuiMode": "カスタム TUI モード",
     "newTask": "新規タスク",
     "closeTask": "クローズ / 却下",
     "undoClose": "クローズ取り消し",

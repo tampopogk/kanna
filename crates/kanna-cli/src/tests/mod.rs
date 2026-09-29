@@ -441,10 +441,18 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
             },
         ),
         (
+            "kanna_task_input_deliveries",
+            TypedToolSurface {
+                command_path: &["task", "input-deliveries"],
+                param_args: &[("task_id", "task_id"), ("delivery_id", "delivery_id")],
+            },
+        ),
+        (
             "kanna_send_task_input",
             TypedToolSurface {
                 command_path: &["task", "send-input"],
                 param_args: &[
+                    ("delivery_id", "delivery_id"),
                     ("task_id", "task_id"),
                     ("input", "message"),
                     ("source", "source"),

@@ -490,6 +490,25 @@ pub(crate) async fn stream_output(
                     stream_control.mark_stopped();
                     return;
                 }
+                let previous_notice = session.hosted_snapshot().and_then(|snapshot| snapshot.notice);
+                if let Some(snapshot) = session.refresh_hosted().await {
+                    if snapshot.notice != previous_notice {
+                        if let Some(notice) = &snapshot.notice {
+                            emit_provider_notice(&session, &broadcast_tx, &session_id, crate::detection::Notice {
+                                kind: match notice.kind {
+                                    kanna_agent_protocol::hosted_frontend::NoticeKind::QuotaRejected => crate::protocol::ProviderNoticeKind::QuotaRejection,
+                                    kanna_agent_protocol::hosted_frontend::NoticeKind::CapacityRefused => crate::protocol::ProviderNoticeKind::CapacityRefusal,
+                                }, rule_id: "hosted-provider-protocol".into(), scope: notice.scope.clone(), text: notice.text.clone(),
+                            }).await;
+                        }
+                    }
+                    if session.is_retired() { return; }
+                    if snapshot.state != kanna_agent_protocol::hosted_frontend::RuntimeState::Unavailable {
+                        emit_status_changed(&session, &broadcast_tx, &fanouts, &session_id, session.status().await).await;
+                    }
+                    let event = Event::HostedFrontend { session_id: session_id.clone(), snapshot };
+                    if let Ok(json) = serde_json::to_string(&event) { let _ = broadcast_tx.send(json); }
+                }
                 match session
                     .refresh_quiet_status(std::time::Duration::from_millis(STATUS_IDLE_FLUSH_MS))
                     .await
@@ -649,6 +668,16 @@ pub(crate) async fn stream_output(
         }
     }
 
+    if let Some(frontend) = &session.hosted_frontend {
+        let event = Event::HostedFrontend {
+            session_id: session_id.clone(),
+            snapshot: frontend.final_snapshot(),
+        };
+        if let Ok(json) = serde_json::to_string(&event) {
+            let _ = broadcast_tx.send(json);
+        }
+        frontend.remove_socket();
+    }
     let evt = Event::Exit {
         session_id: session_id.clone(),
         code: exit_code,

@@ -315,6 +315,7 @@ pub(crate) fn build_send_task_input_request(
     // /v1/tasks/{id}/input — keeping that policy server-side means kanna-cli,
     // kanna-mcp, and the mobile app all submit consistently.
     TaskInputRequest {
+        delivery_id: None,
         input: message,
         source,
     }
@@ -891,7 +892,20 @@ pub(crate) async fn run(command: TaskCommands) {
                 process::exit(1);
             }
         }
+        TaskCommands::InputDeliveries {
+            task_id,
+            delivery_id,
+            machine_id,
+            server_url,
+        } => {
+            let mut args = json!({"task_id": task_id});
+            insert_optional(&mut args, "delivery_id", delivery_id);
+            insert_optional(&mut args, "machine_id", machine_id);
+            run_catalog_task_tool("kanna_task_input_deliveries", &args, server_url.as_deref())
+                .await;
+        }
         TaskCommands::SendInput {
+            delivery_id,
             task_id,
             message,
             source,
@@ -900,13 +914,15 @@ pub(crate) async fn run(command: TaskCommands) {
         } => {
             if let Some(machine_id) = machine_id {
                 let mut args = json!({ "task_id": task_id, "input": message });
+                insert_optional(&mut args, "delivery_id", delivery_id);
                 insert_optional(&mut args, "source", source);
                 insert_optional(&mut args, "machine_id", Some(machine_id));
                 run_catalog_task_tool("kanna_send_task_input", &args, server_url.as_deref()).await;
                 return;
             }
             let base_url = resolve_server_base_url_from_env(server_url.as_deref());
-            let request = build_send_task_input_request(message, source);
+            let mut request = build_send_task_input_request(message, source);
+            request.delivery_id = delivery_id;
             let response = send_task_input_via_api(&base_url, &task_id, &request)
                 .await
                 .unwrap_or_else(|e| {

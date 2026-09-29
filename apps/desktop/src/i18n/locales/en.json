@@ -1,5 +1,6 @@
 {
   "tasks": {
+    "customTuiMode": "Custom TUI mode",
     "newTask": "New Task",
     "closeTask": "Close / Reject",
     "undoClose": "Undo Close",

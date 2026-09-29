@@ -22,6 +22,8 @@ pub(crate) const SESSION_INTERRUPTION_FEEDBACK: &str =
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct TaskInputRequest {
+    #[serde(default)]
+    delivery_id: Option<String>,
     input: String,
     /// Server-to-server merge handoffs require an acknowledged ledger write
     /// as well as the PTY acknowledgement. Ordinary caller input deliberately
@@ -155,25 +157,27 @@ pub(crate) enum TaskInputError {
     Uncertain(String),
 }
 
-/// Write one semantic logical message into a daemon session.
-///
-/// The daemon types the text and then writes its submission boundary as one
-/// fenced delivery. It does not consult the composer, so there is no held,
-/// parked, or refused answer to map here: the message reaches the PTY, the
-/// session is gone, or the round trip was lost.
+/// Submit a logical message. Native sessions acknowledge the PTY boundary;
+/// hosted sessions acknowledge durable queue acceptance. Provider confirmation
+/// is reconciled separately from the frontend receipt journal.
 async fn send_logical_session_input(
     daemon: &mut crate::daemon_client::DaemonClient,
     session_id: &str,
     expected_pid: Option<u32>,
     data: Vec<u8>,
+    run_id: Option<String>,
 ) -> Result<(), TaskInputError> {
     let command = match expected_pid {
         Some(expected_pid) => DaemonCommand::SubmitInputIfSession {
+            delivery_id: None,
+            run_id: run_id.clone(),
             session_id: session_id.to_string(),
             expected_pid,
             data,
         },
         None => DaemonCommand::SubmitInput {
+            delivery_id: None,
+            run_id: run_id.clone(),
             session_id: session_id.to_string(),
             data,
         },
@@ -183,7 +187,7 @@ async fn send_logical_session_input(
         .await
         .map_err(|e| TaskInputError::Uncertain(format!("daemon response lost: {e}")))?;
     match event {
-        DaemonEvent::Ok => Ok(()),
+        DaemonEvent::Ok | DaemonEvent::InputAccepted { .. } => Ok(()),
         DaemonEvent::Error {
             code: Some(kanna_daemon::protocol::ErrorCode::SessionNotFound),
             ..
@@ -207,6 +211,22 @@ async fn send_logical_session_input(
             other
         ))),
     }
+}
+
+pub(crate) async fn try_submit_task_input_for_run(
+    daemon: &mut crate::daemon_client::DaemonClient,
+    session_id: &str,
+    input: &str,
+    run_id: &str,
+) -> Result<(), TaskInputError> {
+    send_logical_session_input(
+        daemon,
+        session_id,
+        None,
+        task_input_message(input).as_bytes().to_vec(),
+        Some(run_id.into()),
+    )
+    .await
 }
 
 /// Submit input to a daemon session, reporting a typed error.
@@ -246,6 +266,7 @@ async fn try_submit_task_input_to_session(
         session_id,
         expected_pid,
         message.as_bytes().to_vec(),
+        None,
     )
     .await
 }
@@ -348,6 +369,7 @@ async fn deliver_server_task_input_with_recording(
         state,
         task_id,
         TaskInputRequest {
+            delivery_id: None,
             input,
             strict_recording: false,
             source: None,
@@ -472,14 +494,35 @@ pub(super) async fn send_engine_wake(
     subscription: &crate::db::EventSubscription,
     input: String,
 ) -> Result<bool, EngineWakeFailure> {
+    // One mailbox batch is one logical delivery across worker/server retries.
+    use sha2::{Digest, Sha256};
+    let hash = format!(
+        "{:x}",
+        Sha256::digest(
+            format!(
+                "{}:{}:{}",
+                subscription.run_id, subscription.id, subscription.batch_id
+            )
+            .as_bytes()
+        )
+    );
+    let delivery_id = format!(
+        "{}-{}-4{}-8{}-{}",
+        &hash[..8],
+        &hash[8..12],
+        &hash[13..16],
+        &hash[17..20],
+        &hash[20..32]
+    );
     let payload = TaskInputRequest {
+        delivery_id: Some(delivery_id),
         input,
         strict_recording: false,
         source: None,
         attachment: None,
         expected_stage_agent: None,
     };
-    deliver_task_input(
+    let response = deliver_task_input(
         state,
         subscription.task_id.clone(),
         payload,
@@ -489,11 +532,68 @@ pub(super) async fn send_engine_wake(
         false,
     )
     .await
-    .map(|response| response.status() == axum::http::StatusCode::ACCEPTED)
     .map_err(|(_, Json(failure))| EngineWakeFailure {
         retry: failure.retry,
         message: format!("{}: {}", failure.reason, failure.message),
-    })
+    })?;
+    if response.status() != axum::http::StatusCode::ACCEPTED {
+        return Ok(false);
+    }
+    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .map_err(|error| EngineWakeFailure {
+            retry: DeliveryRetry::Park,
+            message: error.to_string(),
+        })?;
+    let body: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|error| EngineWakeFailure {
+            retry: DeliveryRetry::Park,
+            message: error.to_string(),
+        })?;
+    hosted_wake_pending(&body)
+}
+
+fn hosted_wake_pending(body: &serde_json::Value) -> Result<bool, EngineWakeFailure> {
+    match body.get("state").and_then(serde_json::Value::as_str) {
+        Some("submitted") => Ok(false),
+        Some("failed" | "uncertain") => Err(EngineWakeFailure {
+            retry: DeliveryRetry::Park,
+            message: body
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("hosted wake acceptance is uncertain")
+                .into(),
+        }),
+        Some("queued" | "submitting") => Ok(true),
+        _ => Err(EngineWakeFailure {
+            retry: DeliveryRetry::Park,
+            message: "unrecognized hosted delivery receipt".into(),
+        }),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn hosted_wake_receipt_requires_correlated_submission_before_notification() {
+    for state in ["queued", "submitting"] {
+        assert!(matches!(
+            hosted_wake_pending(&serde_json::json!({"state":state})),
+            Ok(true)
+        ));
+    }
+    assert!(matches!(
+        hosted_wake_pending(&serde_json::json!({"state":"submitted"})),
+        Ok(false)
+    ));
+    for state in ["failed", "uncertain", "unknown"] {
+        assert!(matches!(
+            hosted_wake_pending(&serde_json::json!({"state":state})),
+            Err(EngineWakeFailure {
+                retry: DeliveryRetry::Park,
+                ..
+            })
+        ));
+    }
 }
 
 async fn deliver_task_input(
@@ -602,8 +702,14 @@ async fn deliver_task_input(
         // Read from the same List snapshot that yields the PID fence, so the
         // composer verdict below describes the very session these bytes would
         // have been written to.
-        .map(|session| (session.pid, session.composer_attestation));
-    let Some((live_session_pid, composer_attestation)) = live_session else {
+        .map(|session| {
+            (
+                session.pid,
+                session.composer_attestation,
+                session.hosted_frontend.clone(),
+            )
+        });
+    let Some((live_session_pid, composer_attestation, hosted_frontend)) = live_session else {
         let db_path = state.config.db_path.clone();
         let latest_run_task_id = task_id.clone();
         let latest_run =
@@ -681,7 +787,56 @@ async fn deliver_task_input(
     // itself goes to the blocking pool with the rest of the handler's
     // filesystem work — megabytes of decode and disk on a runtime worker would
     // stall every KSP terminal stream the same runtime carries.
-    let stored_attachment = match payload.attachment.clone() {
+    let request_fingerprint = {
+        use sha2::{Digest, Sha256};
+        let body = serde_json::to_vec(&(&payload.input, &payload.attachment)).map_err(|error| {
+            task_input_http_error(
+                axum::http::StatusCode::BAD_REQUEST,
+                "invalid_input",
+                error.to_string(),
+                None,
+            )
+        })?;
+        format!("{:x}", Sha256::digest(body))
+    };
+    let existing_attempt = match (&hosted_frontend, &payload.delivery_id) {
+        (Some(snapshot), Some(id)) => {
+            let db = Db::open(&state.config.db_path).map_err(|error| {
+                task_input_http_error(
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "delivery_record_failed",
+                    error.to_string(),
+                    None,
+                )
+            })?;
+            let existing = db.task_input_delivery(&task_id, id).map_err(|error| {
+                task_input_http_error(
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "delivery_record_failed",
+                    error.to_string(),
+                    None,
+                )
+            })?;
+            if existing.as_ref().is_some_and(|attempt| {
+                attempt.binding != snapshot.binding
+                    || attempt.request_fingerprint.as_deref() != Some(request_fingerprint.as_str())
+            }) {
+                return Err(task_input_http_error(
+                    axum::http::StatusCode::CONFLICT,
+                    "delivery_conflict",
+                    "delivery id was used with a different payload or session incarnation".into(),
+                    None,
+                ));
+            }
+            existing
+        }
+        _ => None,
+    };
+    let stored_attachment = match payload
+        .attachment
+        .clone()
+        .filter(|_| existing_attempt.is_none())
+    {
         Some(attachment) => {
             let db_path = state.config.db_path.clone();
             let attachment_task_id = task_id.clone();
@@ -709,10 +864,170 @@ async fn deliver_task_input(
     // path the agent reads — what the durable record must say. There is no
     // separate attachment column: the record's contract is the text that
     // entered the session, and that text names the path.
-    let delivered_input = match stored_attachment.as_ref() {
-        Some(path) => compose_input_with_attachment(&payload.input, &path.to_string_lossy()),
-        None => payload.input.clone(),
+    let delivered_input = if let Some(attempt) = existing_attempt {
+        attempt.message
+    } else {
+        match stored_attachment.as_ref() {
+            Some(path) => compose_input_with_attachment(&payload.input, &path.to_string_lossy()),
+            None => payload.input.clone(),
+        }
     };
+
+    if let Some(snapshot) = hosted_frontend {
+        let id = match payload.delivery_id.clone() {
+            Some(id) => id,
+            None => kanna_daemon::hosted_frontend::random_id().map_err(|error| {
+                task_input_http_error(
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "delivery_id_failed",
+                    error.to_string(),
+                    None,
+                )
+            })?,
+        };
+        if id.is_empty()
+            || id.len() > 128
+            || delivered_input.len() > kanna_agent_protocol::hosted_frontend::MAX_TEXT_BYTES
+        {
+            return Err(task_input_http_error(
+                axum::http::StatusCode::BAD_REQUEST,
+                "invalid_delivery",
+                "invalid delivery id or input size".into(),
+                None,
+            ));
+        }
+        let db = Db::open(&state.config.db_path).map_err(|error| {
+            task_input_http_error(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "delivery_record_failed",
+                error.to_string(),
+                None,
+            )
+        })?;
+        let attempt = db
+            .prepare_task_input_delivery(
+                &snapshot.binding,
+                &snapshot.active_run_id,
+                &id,
+                &delivered_input,
+                source.as_str(),
+                &channel,
+                false,
+                Some(request_fingerprint),
+            )
+            .map_err(|error| {
+                let (status, reason) = match &error {
+                    rusqlite::Error::InvalidParameterName(_) => {
+                        (axum::http::StatusCode::CONFLICT, "delivery_conflict")
+                    }
+                    _ => (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "delivery_record_failed",
+                    ),
+                };
+                task_input_http_error(status, reason, error.to_string(), None)
+            })?;
+        // The accepted record is on disk before contacting the frontend. A
+        // retry of a confirmed or uncertain attempt never starts another turn.
+        if matches!(
+            attempt.state,
+            kanna_agent_protocol::hosted_frontend::DeliveryState::Submitted
+                | kanna_agent_protocol::hosted_frontend::DeliveryState::Uncertain
+                | kanna_agent_protocol::hosted_frontend::DeliveryState::Failed
+        ) {
+            return Ok((axum::http::StatusCode::ACCEPTED, Json(attempt)).into_response());
+        }
+        drop(db);
+        // No readiness wait holds the task mutation lease. The exact PID and
+        // frontend incarnation fence the request after releasing it.
+        drop(_task_mutation);
+        let response = daemon
+            .send_command(&DaemonCommand::SubmitInputIfSession {
+                session_id: task_id.clone(),
+                expected_pid: live_session_pid,
+                data: delivered_input.as_bytes().to_vec(),
+                delivery_id: Some(id.clone()),
+                run_id: Some(attempt.run_id.clone()),
+            })
+            .await;
+        let db = Db::open(&state.config.db_path).map_err(|error| {
+            task_input_http_error(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "delivery_record_failed",
+                error.to_string(),
+                None,
+            )
+        })?;
+        match response {
+            Ok(DaemonEvent::InputAccepted {
+                binding, delivery, ..
+            }) if binding == snapshot.binding => {
+                db.reconcile_task_input_delivery(&binding, &delivery)
+                    .map_err(|error| {
+                        task_input_http_error(
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            "delivery_record_failed",
+                            error.to_string(),
+                            None,
+                        )
+                    })?;
+            }
+            Ok(DaemonEvent::Error {
+                code:
+                    Some(
+                        kanna_daemon::protocol::ErrorCode::HostedInputRejected
+                        | kanna_daemon::protocol::ErrorCode::SessionNotFound
+                        | kanna_daemon::protocol::ErrorCode::SessionIncarnationMismatch
+                        | kanna_daemon::protocol::ErrorCode::InputUnauthorized,
+                    ),
+                message,
+            }) => {
+                db.fail_task_input_delivery(&task_id, &id, false, &message)
+                    .map_err(|error| {
+                        task_input_http_error(
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            "delivery_record_failed",
+                            error.to_string(),
+                            None,
+                        )
+                    })?;
+                return Err(task_input_http_error(
+                    axum::http::StatusCode::CONFLICT,
+                    "input_not_accepted",
+                    format!("{message}; delivery {id}"),
+                    None,
+                ));
+            }
+            other => {
+                // A broken round trip cannot prove non-acceptance. Keep the
+                // attachment and id for reconciliation; never replay blindly.
+                db.fail_task_input_delivery(
+                    &task_id,
+                    &id,
+                    true,
+                    &format!("host acceptance unresolved: {other:?}"),
+                )
+                .map_err(|error| {
+                    task_input_http_error(
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "delivery_record_failed",
+                        error.to_string(),
+                        None,
+                    )
+                })?;
+            }
+        }
+        let attempt = db.task_input_delivery(&task_id, &id).map_err(|error| {
+            task_input_http_error(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "delivery_record_failed",
+                error.to_string(),
+                None,
+            )
+        })?;
+        state.publish_task_state_changed(&task_id);
+        return Ok((axum::http::StatusCode::ACCEPTED, Json(attempt)).into_response());
+    }
 
     let delivered =
         try_submit_task_input_if_session(&mut daemon, &task_id, live_session_pid, &delivered_input)

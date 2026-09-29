@@ -1,3 +1,4 @@
+load("@agent_tui_crates//:defs.bzl", all_crate_deps_for_agent_tui = "all_crate_deps")
 load("@daemon_crates//:defs.bzl", all_crate_deps_for_daemon = "all_crate_deps")
 load("@desktop_crates//:defs.bzl", "all_crate_deps")
 load("@kanna_server_crates//:defs.bzl", all_crate_deps_for_server = "all_crate_deps")
@@ -81,6 +82,23 @@ rust_library(
         package_name = "crates/claude-agent-sdk",
     ),
     proc_macro_deps = all_crate_deps_for_task_transfer(
+        proc_macro = True,
+        package_name = "crates/claude-agent-sdk",
+    ),
+)
+
+
+rust_library(
+    name = "claude_agent_sdk_for_agent_tui",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    crate_name = "claude_agent_sdk",
+    edition = "2021",
+    deps = all_crate_deps_for_agent_tui(
+        normal = True,
+        package_name = "crates/claude-agent-sdk",
+    ),
+    proc_macro_deps = all_crate_deps_for_agent_tui(
         proc_macro = True,
         package_name = "crates/claude-agent-sdk",
     ),

@@ -1,7 +1,9 @@
 ---
 name: app-design
 role: Designs a feature with the person in one live App Design session, through its live document, until they approve it for build
+description: Designs a feature with the person in one live App Design session, through its live document, until they approve it for build
 providers: claude, codex, copilot, opencode, antigravity
+agent_provider: claude, codex, copilot, opencode, antigravity
 ---
 
 ## Produces

@@ -1,0 +1,34 @@
+---
+source: tests/render.rs
+expression: d
+---
+ ›_  Harness Claude   Model claude-sonnet-4-6   Effort high (requested)                     ✓ Ready
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+
+
+
+
+   Ready when you are
+   What are we building?
+
+   Start a conversation in this project. Your agent can read files, make changes and run commands.
+
+   ✓ Connected · Claude · example
+
+
+  ╭ Commands ────────────────────────────────────────────────────────────────╮
+  │❯ /help  Keys and commands                                          local │
+  │  /status  Show session details                                     local │
+  │  /theme [skin]  Switch skin                                        local │
+  │  /stop  Stop the current turn                                      local │
+  │  /new  Start a new session                                         local │
+  │  /quit  Close the session and exit                                 local │
+  │  /compact <instructions>  Clear conversation history but keep a…  claude │
+  │  /context  Show current context usage                             claude │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ › /
+
+ Enter send   Ctrl+J newline   Ctrl+Q quit   / commands   Tab focus            ● Skin Graphite ▾ F2

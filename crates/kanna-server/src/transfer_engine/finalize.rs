@@ -1017,6 +1017,7 @@ mod tests {
                 DaemonCommand::List => DaemonEvent::SessionList {
                     sessions: listed
                         .map(|status| SessionInfo {
+                            hosted_frontend: None,
                             session_id: SESSION.to_string(),
                             pid: 4242,
                             cwd: "/tmp".to_string(),

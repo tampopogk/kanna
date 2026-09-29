@@ -308,3 +308,13 @@ it("parses the artifact store location and retention policy", () => {
     .toBeUndefined();
   expect(parseRepoConfig(JSON.stringify({ artifacts: ["a.git"] })).artifacts).toBeUndefined();
 });
+
+it("selects execution frontends without changing provider preferences", () => {
+  const config = parseRepoConfig(JSON.stringify({ agentFrontends: { claude: "agent-tui", codex: "native" }, agentProviders: { implement: "codex" } }));
+  expect(config.agentFrontends).toEqual({ claude: "agent-tui", codex: "native" });
+  expect(config.agentProviders?.implement.provider).toEqual(["codex"]);
+  expect(parseRepoConfig("{}").agentFrontends).toBeUndefined();
+  for (const agentFrontends of [{ copilot: "agent-tui" }, { codex: "shell command" }, [], null]) {
+    expect(() => parseRepoConfig(JSON.stringify({ agentFrontends }))).toThrow();
+  }
+});

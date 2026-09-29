@@ -363,6 +363,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/v1/tasks/{task_id}/inputs", get(get_task_inputs))
         .route(
+            "/v1/tasks/{task_id}/input-deliveries",
+            get(super::task_input_delivery::get_task_input_deliveries),
+        )
+        .route(
             "/v1/tasks/{task_id}/transfer-history",
             get(get_task_transfer_history),
         )

@@ -366,6 +366,7 @@ async fn spawn_listing_fake_daemon(
         assert!(matches!(command, kanna_daemon::protocol::Command::List));
         let event = kanna_daemon::protocol::Event::SessionList {
             sessions: vec![kanna_daemon::protocol::SessionInfo {
+                hosted_frontend: None,
                 session_id: "recovery-task".to_string(),
                 pid: 42,
                 cwd: "/tmp".to_string(),

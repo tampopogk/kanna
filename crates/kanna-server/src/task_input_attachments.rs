@@ -19,8 +19,8 @@
 //!
 //! **Lifecycle.** The task owns its attachments: they are removed when the
 //! task closes, next to the other per-task on-disk artifacts
-//! (`remove_completion_contexts`). Nothing else is retained — an attachment
-//! that outlived its task would be a file no consumer can name.
+//! (`remove_completion_contexts`). Queued or uncertain hosted deliveries retain
+//! their attachments for reconciliation even after task closure.
 
 use base64::Engine;
 use std::path::{Path, PathBuf};
@@ -263,6 +263,25 @@ pub(crate) fn discard_stored_attachment(path: &Path) {
 /// already committed by the time this runs, and a leftover directory is worth
 /// a log line, never a failed close.
 pub(crate) fn remove_task_attachments(db_path: &str, task_id: &str) {
+    // A queued or uncertain hosted message may still refer to these paths.
+    // Keep the evidence even when the task closes; an unreadable database
+    // cannot prove it is safe to discard it either.
+    match crate::db::Db::open(db_path).and_then(|db| db.task_input_deliveries(task_id)) {
+        Ok(attempts)
+            if attempts.iter().any(|attempt| {
+                attempt.state.pending()
+                    || attempt.state
+                        == kanna_agent_protocol::hosted_frontend::DeliveryState::Uncertain
+            }) =>
+        {
+            return
+        }
+        Err(error) => {
+            log::warn!("retaining attachments while hosted delivery state is unavailable: {error}");
+            return;
+        }
+        _ => {}
+    }
     let directory = task_attachments_dir(db_path, task_id);
     match std::fs::remove_dir_all(&directory) {
         Ok(()) => {}
@@ -418,6 +437,7 @@ mod tests {
         let root = tempfile::tempdir().expect("temp dir");
         let db_path = root.path().join("kanna-v2.db");
         let db_path = db_path.to_string_lossy().to_string();
+        crate::db::Db::open_for_tests(&db_path).unwrap();
 
         let path = store_task_input_attachment(
             &db_path,

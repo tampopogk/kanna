@@ -82,6 +82,7 @@ pub enum ErrorCode {
     PtyCloneFailed,
     HeadlessTerminalInitFailed,
     WriteFailed,
+    HostedInputRejected,
     UnknownSignal,
     AgentSpawnFailed,
     NotAgentSession,
@@ -179,6 +180,8 @@ fn unknown_archive_provenance() -> Option<String> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandoffSession {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosted_frontend_config: Option<String>,
     /// None explicitly attests complete retention. Older senders cannot attest it.
     #[serde(default = "unknown_archive_provenance")]
     pub archive_unavailable_reason: Option<String>,
@@ -501,11 +504,19 @@ pub enum Command {
     /// requested that mode, and writes Enter later after fixed compatibility
     /// pacing.
     SubmitInput {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delivery_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>,
         session_id: String,
         data: Vec<u8>,
     },
     /// Logical input fenced to the PTY process ID observed by `List`.
     SubmitInputIfSession {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delivery_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>,
         session_id: String,
         expected_pid: u32,
         data: Vec<u8>,
@@ -650,6 +661,8 @@ pub enum Command {
     },
     Handoff {
         version: u32,
+        #[serde(default)]
+        hosted_frontend_version: Option<u32>,
     },
     HandoffAdopted {
         version: u32,
@@ -685,6 +698,15 @@ pub enum Command {
 #[serde(tag = "type")]
 #[allow(clippy::enum_variant_names)]
 pub enum Event {
+    HostedFrontend {
+        session_id: String,
+        snapshot: kanna_agent_protocol::hosted_frontend::Snapshot,
+    },
+    InputAccepted {
+        session_id: String,
+        binding: kanna_agent_protocol::hosted_frontend::Binding,
+        delivery: kanna_agent_protocol::hosted_frontend::Delivery,
+    },
     AttemptArchive {
         archive: Option<TerminalAttemptArchive>,
     },
@@ -823,6 +845,8 @@ pub enum Event {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosted_frontend: Option<kanna_agent_protocol::hosted_frontend::Snapshot>,
     pub session_id: String,
     pub pid: u32,
     pub cwd: String,
@@ -1274,6 +1298,7 @@ mod tests {
     fn test_handoff_ready_roundtrip_without_snapshot() {
         let evt = Event::HandoffReady {
             sessions: vec![HandoffSession {
+                hosted_frontend_config: None,
                 archive_binding: None,
                 archive_unavailable_reason: None,
                 session_id: "sess-1".to_string(),
@@ -1418,6 +1443,7 @@ mod tests {
     #[test]
     fn test_session_info_roundtrip() {
         let info = SessionInfo {
+            hosted_frontend: None,
             session_id: "s1".to_string(),
             pid: 12345,
             cwd: "/home/user".to_string(),
@@ -1450,6 +1476,7 @@ mod tests {
     fn test_event_session_list_roundtrip() {
         let evt = Event::SessionList {
             sessions: vec![SessionInfo {
+                hosted_frontend: None,
                 session_id: "s1".to_string(),
                 pid: 999,
                 cwd: "/tmp".to_string(),

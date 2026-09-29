@@ -978,6 +978,20 @@ fn with_moved_inputs(projection: &Projection, moved: &BTreeMap<(String, i64), i6
         return projection;
     }
     for carried in &mut projection.carried {
+        if carried.table == "task_input_delivery" {
+            if let Some(encoded) = carried.row.get("attempt_json").and_then(Value::as_str) {
+                if let Ok(mut attempt) = serde_json::from_str::<Value>(encoded) {
+                    if let Some(old) = attempt.get("inputId").and_then(Value::as_i64) {
+                        if let Some(new) = moved.get(&(carried.task_id.clone(), old)) {
+                            attempt["inputId"] = Value::from(*new);
+                            carried
+                                .row
+                                .insert("attempt_json".into(), Value::String(attempt.to_string()));
+                        }
+                    }
+                }
+            }
+        }
         for (table, column) in INPUT_ID_REFERENCES {
             if carried.table != *table {
                 continue;

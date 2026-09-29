@@ -436,6 +436,16 @@ pub(crate) async fn run_daemon() {
                 .clone()
                 .or(headless_terminal.archive_unavailable_reason);
             pty_session.archive_binding = handoff.archive_binding.clone();
+            pty_session.hosted_frontend = handoff.hosted_frontend_config.as_deref().map(|path| {
+                kanna_daemon::hosted_frontend::Frontend::load(path).unwrap_or_else(|error| {
+                    kanna_daemon::hosted_frontend::Frontend::unavailable(
+                        path,
+                        &handoff.session_id,
+                        handoff.archive_binding.as_ref(),
+                        format!("hosted frontend adoption failed: {error}"),
+                    )
+                })
+            });
             let handle = Arc::new(SessionHandle::new(SessionRecord {
                 pty: pty_session,
                 headless_terminal,

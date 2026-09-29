@@ -279,6 +279,7 @@ export function useAppTaskCreation({
     agentType: "pty" | "agent" = "pty",
     blockerTaskIds?: string[],
     model?: string,
+    customTui?: boolean,
   ) {
     if (pendingNewTaskSubmit) return;
 
@@ -324,6 +325,7 @@ export function useAppTaskCreation({
         baseBranch,
         blockerTaskIds,
         ...(model ? { model } : {}),
+        ...(customTui === undefined ? {} : { agentFrontend: customTui ? "agent-tui" as const : "native" as const }),
       });
       try {
         await onAgentChoiceUsed?.({ provider: agentProvider, executionType: agentType });

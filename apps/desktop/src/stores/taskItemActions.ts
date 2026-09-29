@@ -126,6 +126,7 @@ export function createTaskItemActions(
         baseRef,
         agent: opts?.customTask?.agent,
         agentProvider: effectiveAgentProvider,
+        ...(opts?.agentFrontend === undefined ? {} : { agentFrontend: opts.agentFrontend }),
         agentType: effectiveAgentType,
         terminalCols: opts?.terminalCols,
         terminalRows: opts?.terminalRows,

@@ -1,4 +1,5 @@
 import { designRoute, designTaskPath, type DesignOperation } from "../api/design";
+import { taskInputResult } from "../api/taskInput";
 import {
   readServerFailureBody,
   readServerRefusal,
@@ -406,7 +407,7 @@ export function createLanTransport(
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(attachment ? { input, attachment } : { input })
         }
-      ).then((): TaskInputResult => ({ status: "delivered" })),
+      ).then(taskInputResult),
     // A LAN connection is pinned to one desktop, so that desktop's own status
     // is the answer. Read fresh rather than reusing the cached
     // `kspStreamVersion` probe: the desktop can be upgraded under a live app.

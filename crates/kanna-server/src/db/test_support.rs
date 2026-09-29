@@ -562,6 +562,7 @@ impl Db {
         super::copilot_wake::create_schema(&self.conn)?;
         super::serviced::create_schema(&self.conn)?;
         super::claude_channel::create_schema(&self.conn)?;
+        super::task_input_delivery::create_schema(&self.conn)?;
         self.conn.execute_batch(super::task_store::SCHEMA)?;
         self.conn
             .execute_batch(super::revisions::STAGE_BUDGET_SCHEMA)?;

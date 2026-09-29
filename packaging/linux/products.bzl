@@ -5,6 +5,7 @@ load("//tools/bazel:defs.bzl", "target_platform_transition")
 _EXECUTABLES = {
     "desktop": "kanna-desktop",
     "worker": "kanna-worker",
+    "agent_tui": "agent-tui",
     "daemon": "kanna-daemon",
     "cli": "kanna-cli",
     "mcp": "kanna-mcp",
@@ -50,6 +51,7 @@ def linux_product_targets():
                 platform = "//tools/bazel:linux_" + arch,
                 desktop = "//apps/desktop/src-tauri:kanna_desktop_{}bazel".format("staging_" if channel == "staging" else ""),
                 worker = "//crates/kanna-worker:kanna_worker",
+                agent_tui = "//crates/agent-tui:agent_tui",
                 daemon = "//crates/daemon:kanna_daemon",
                 cli = "//crates/kanna-cli:kanna_cli",
                 mcp = "//crates/kanna-mcp:kanna_mcp",
@@ -66,7 +68,7 @@ def _linux_deb_impl(ctx):
     manifest = ctx.actions.declare_file(ctx.label.name + ".inputs.json")
     products = {f.basename: f.path for f in ctx.files.products}
     if sorted(products) != sorted(_EXECUTABLES.values()):
-        fail("Linux package requires exactly the eight declared product executables")
+        fail("Linux package requires exactly the nine declared product executables")
     ctx.actions.write(manifest, json.encode({
         "buildRevision": ctx.var.get("KANNA_LINUX_BUILD_REVISION", ""),
         "buildTree": ctx.var.get("KANNA_LINUX_BUILD_TREE", ""),

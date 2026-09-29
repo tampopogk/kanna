@@ -1,0 +1,4 @@
+# Root-anchored workspace for the agent-tui Bazel crate universe.
+[workspace]
+members = ["crates/agent-tui", "crates/kanna-agent-protocol", "crates/claude-agent-sdk"]
+resolver = "2"

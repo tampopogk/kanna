@@ -519,6 +519,7 @@ export async function fetchDesktopTaskDetail(taskId: string, options?: { localOn
 }
 
 export interface CreateDesktopTaskRequest {
+  agentFrontend?: "native" | "agent-tui";
   requestedTaskId?: string;
   repoId: string;
   prompt: string;

@@ -568,6 +568,7 @@ async fn prepared_agent_task_spawn_includes_task_specific_kanna_context() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Exercise Kanna context".to_string(),
             display_name: None,
@@ -682,6 +683,7 @@ async fn prepared_claude_pty_task_spawn_passes_kanna_context_as_append_system_pr
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Use Claude PTY".to_string(),
             display_name: None,
@@ -773,6 +775,7 @@ async fn prepared_non_claude_pty_task_spawn_prepends_kanna_context_to_prompt() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Use Copilot PTY".to_string(),
             display_name: None,
@@ -886,6 +889,7 @@ async fn prepared_antigravity_pty_task_spawn_sets_up_worktree_alias() {
         &db,
         &config,
         CreateTaskRequest {
+            agent_frontend: None,
             repo_id: "repo-1".to_string(),
             prompt: "Use Antigravity PTY".to_string(),
             display_name: None,

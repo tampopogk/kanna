@@ -82,6 +82,7 @@ fn serve(daemon_dir: &str, script: Shared) -> tokio::task::JoinHandle<()> {
                                 sessions: script
                                     .session_present
                                     .then(|| SessionInfo {
+                                        hosted_frontend: None,
                                         session_id: "task-d".into(),
                                         pid: 7,
                                         cwd: "/tmp".into(),
@@ -551,9 +552,22 @@ fn items_name_their_thread_quote_and_kind() {
 /// daemon keeps its receipt.
 mod real_daemon {
     use super::*;
-    use crate::test_fixture_binaries::{fixture_binary_or_skip, KANNA_DAEMON};
     use std::process::{Child, Command as ProcessCommand};
     use std::time::Duration;
+
+    fn current_daemon_binary() -> std::path::PathBuf {
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("workspace root");
+        let status = ProcessCommand::new(env!("CARGO"))
+            .args(["build", "-p", "kanna-daemon"])
+            .current_dir(workspace)
+            .status()
+            .expect("build the real daemon fixture from this checkout");
+        assert!(status.success(), "the real daemon fixture must build");
+        workspace.join(".build/debug/kanna-daemon")
+    }
 
     struct OwnedDaemon(Child);
     impl Drop for OwnedDaemon {
@@ -594,7 +608,7 @@ mod real_daemon {
 
     #[tokio::test]
     async fn feedback_reaches_a_real_idle_session_exactly_once() {
-        let binary = fixture_binary_or_skip!(KANNA_DAEMON);
+        let binary = current_daemon_binary();
         let (state, daemon_dir) = super::state("real-daemon");
         let (_daemon, mut client) = start_daemon(&daemon_dir, &binary).await;
         let received = std::path::Path::new(&daemon_dir).join("received.txt");

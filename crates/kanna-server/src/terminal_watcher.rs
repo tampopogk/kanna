@@ -344,6 +344,7 @@ pub(crate) async fn terminal_state_watcher_once(
         .await
         .map_err(|e| format!("daemon control connection failed: {}", e))?;
     let mut live_session_pids = std::collections::HashMap::new();
+    let mut hosted_incarnations = std::collections::HashMap::new();
     match control
         .send_command(&DaemonCommand::List)
         .await
@@ -360,6 +361,12 @@ pub(crate) async fn terminal_state_watcher_once(
                     .map(|session| (session.session_id.clone(), session.pid)),
             );
             for session in sessions {
+                if let Some(snapshot) = &session.hosted_frontend {
+                    hosted_incarnations.insert(
+                        session.session_id.clone(),
+                        snapshot.binding.incarnation.clone(),
+                    );
+                }
                 let mut changed = match http_api::restore_task_run_for_live_session(
                     &config.db_path,
                     &session.session_id,
@@ -374,6 +381,13 @@ pub(crate) async fn terminal_state_watcher_once(
                         false
                     }
                 };
+                if let Some(snapshot) = &session.hosted_frontend {
+                    if let Err(error) = crate::db::Db::open(&config.db_path)
+                        .and_then(|db| db.reconcile_hosted_frontend(snapshot))
+                    {
+                        log::warn!("failed to reconcile hosted inputs after reconnect: {error}");
+                    }
+                }
                 if session.status_observed {
                     match apply_watcher_runtime_status(
                         state,
@@ -433,6 +447,11 @@ pub(crate) async fn terminal_state_watcher_once(
         other => return Err(format!("unexpected daemon list response: {:?}", other)),
     }
 
+    if let Err(error) = crate::db::Db::open(&config.db_path)
+        .and_then(|db| db.reconcile_missing_hosted_sessions(&hosted_incarnations))
+    {
+        log::warn!("failed to reconcile orphaned hosted inputs: {error}");
+    }
     loop {
         match daemon
             .read_event()
@@ -452,6 +471,14 @@ pub(crate) async fn terminal_state_watcher_once(
                         });
                         if let Some(session) = replacement {
                             live_session_pids.insert(session_id.clone(), session.pid);
+                            if let Some(snapshot) = &session.hosted_frontend {
+                                hosted_incarnations.insert(
+                                    session_id.clone(),
+                                    snapshot.binding.incarnation.clone(),
+                                );
+                            } else {
+                                hosted_incarnations.remove(&session_id);
+                            }
                         }
                         // A replacement deliberately reuses the task/session id, so the
                         // old task projection cannot be cleared by identity alone. Its
@@ -496,6 +523,30 @@ pub(crate) async fn terminal_state_watcher_once(
                     ),
                     Err(error) => {
                         log::warn!("failed to list daemon sessions after session creation: {error}")
+                    }
+                }
+            }
+            DaemonEvent::HostedFrontend {
+                session_id,
+                snapshot,
+            } => {
+                if snapshot.binding.session_id != session_id
+                    || hosted_incarnations.get(&session_id) != Some(&snapshot.binding.incarnation)
+                {
+                    continue;
+                }
+                match crate::db::Db::open(&config.db_path).and_then(|db| {
+                    db.reconcile_hosted_frontend(&snapshot)?;
+                    if snapshot.state
+                        == kanna_agent_protocol::hosted_frontend::RuntimeState::Unavailable
+                    {
+                        db.clear_unobserved_live_runtime_status(&session_id)?;
+                    }
+                    Ok(())
+                }) {
+                    Ok(()) => state.publish_task_state_changed(&snapshot.binding.task_id),
+                    Err(error) => {
+                        log::warn!("failed to reconcile hosted frontend {session_id}: {error}")
                     }
                 }
             }
@@ -1411,6 +1462,7 @@ mod tests {
         let mut subscriber = expect_subscribe_with_sessions(
             &listener,
             vec![SessionInfo {
+                hosted_frontend: None,
                 session_id: "task-child".to_string(),
                 pid: 42,
                 cwd: "/tmp".to_string(),
@@ -1496,6 +1548,7 @@ mod tests {
             let mut subscriber = expect_subscribe_with_sessions(
                 &listener,
                 vec![SessionInfo {
+                    hosted_frontend: None,
                     session_id: "task-child".to_string(),
                     pid: 42,
                     cwd: "/tmp".to_string(),
@@ -2207,6 +2260,7 @@ mod tests {
                 &mut write_half,
                 &DaemonEvent::SessionList {
                     sessions: vec![SessionInfo {
+                        hosted_frontend: None,
                         session_id: "task-child".to_string(),
                         pid: 42,
                         cwd: "/tmp".to_string(),
@@ -2301,6 +2355,7 @@ mod tests {
             let mut subscriber = expect_subscribe_with_sessions(
                 &listener,
                 vec![SessionInfo {
+                    hosted_frontend: None,
                     session_id: "task-child".to_string(),
                     pid: 42,
                     cwd: "/tmp".to_string(),
@@ -2382,6 +2437,7 @@ mod tests {
                 &mut control_write,
                 &DaemonEvent::SessionList {
                     sessions: vec![SessionInfo {
+                        hosted_frontend: None,
                         session_id: "task-child".to_string(),
                         pid: 42,
                         cwd: "/tmp".to_string(),

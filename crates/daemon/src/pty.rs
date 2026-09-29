@@ -243,6 +243,7 @@ impl PtyKillPlan {
 /// A PTY session backed by raw libc calls.
 /// Stores the master fd directly so it can be extracted for handoff.
 pub struct PtySession {
+    pub(crate) hosted_frontend: Option<kanna_daemon::hosted_frontend::Frontend>,
     pub(crate) archive_binding: Option<crate::protocol::TerminalAttemptBinding>,
     observed_exit_code: Option<i32>,
     master_fd: OwnedFd,
@@ -266,6 +267,10 @@ impl PtySession {
         rows: u16,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         validate_cwd(cwd)?;
+        let hosted_frontend = env
+            .get(kanna_agent_protocol::hosted_frontend::CONFIG_ENV)
+            .map(|path| kanna_daemon::hosted_frontend::Frontend::load(path))
+            .transpose()?;
         let stripped_env_keys = crate::subprocess_env::inherited_env_keys_to_strip();
         let stripped_env_keys_c: Vec<CString> = stripped_env_keys
             .iter()
@@ -467,6 +472,7 @@ impl PtySession {
         let master = unsafe { OwnedFd::from_raw_fd(master_fd) };
 
         Ok(PtySession {
+            hosted_frontend,
             archive_binding: env
                 .get("KANNA_STAGE_RUN_ID")
                 .zip(env.get("KANNA_TASK_ID"))
@@ -563,6 +569,7 @@ impl PtySession {
             }
         };
         PtySession {
+            hosted_frontend: None,
             archive_binding: None,
             observed_exit_code: None,
             master_fd,

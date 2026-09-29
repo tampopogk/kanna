@@ -148,6 +148,11 @@ pub(crate) fn transcript_ref(
                 .join(format!("{session_id}.jsonl"))
                 .to_string_lossy()
                 .to_string()
+        })
+        .or_else(|| {
+            (provider == "codex")
+                .then(|| super::resume::codex_transcript_path(cwd, &session_id))
+                .flatten()
         });
     Some(TranscriptRef {
         provider: provider.to_string(),

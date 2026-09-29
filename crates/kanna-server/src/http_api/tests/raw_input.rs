@@ -40,6 +40,7 @@ fn raw_input_test_config(unique: &str, daemon_dir: &Path) -> Config {
 
 fn live_session(task_id: &str, pid: u32) -> SessionInfo {
     SessionInfo {
+        hosted_frontend: None,
         session_id: task_id.to_string(),
         pid,
         cwd: "/tmp".to_string(),
@@ -953,6 +954,8 @@ async fn subscription_wakes_manager_through_fenced_input_once_per_pending_batch(
                         sessions: vec![live_session("manager", 42133)],
                     },
                     DaemonCommand::SubmitInputIfSession {
+                        delivery_id: None,
+                        run_id: _,
                         session_id,
                         expected_pid,
                         data,

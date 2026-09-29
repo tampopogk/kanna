@@ -806,6 +806,12 @@ describe("useAppTaskCreation", () => {
     expect(creation.availableAgentProviders.value).toEqual(["opencode"]);
   });
 
+  it.each([[true, "agent-tui"], [false, "native"]] as const)("passes custom TUI %s as frontend %s", async (checked, frontend) => {
+    const { creation, store } = createTaskCreationHarness();
+    await creation.handleNewTaskSubmit("Choose frontend", "codex", "default", "origin/main", "pty", [], undefined, checked);
+    expect(store.createItem).toHaveBeenCalledWith("repo-1", "/repo", "Choose frontend", "pty", expect.objectContaining({ agentFrontend: frontend }));
+  });
+
   it("passes the selected OpenCode model through to task creation", async () => {
     const { creation, store } = createTaskCreationHarness();
     await creation.handleNewTaskSubmit("Build locally", "opencode", "default", "origin/main", "pty", [], "local/Qwen-Coder");

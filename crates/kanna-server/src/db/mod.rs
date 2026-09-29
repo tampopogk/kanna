@@ -44,6 +44,7 @@ pub(crate) mod stage_edges;
 pub(crate) mod stage_run_prompt;
 pub(crate) mod stage_runs;
 pub(crate) mod subtask_joins;
+pub(crate) mod task_input_delivery;
 pub(crate) mod terminal_archives;
 pub(crate) mod transfer_task_state;
 pub use terminal_archives::AgentTerminalAttempt;
@@ -240,9 +241,10 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "102_transferred_task_state",
     "103_disk_state_records",
     "104_disk_divergence",
-    "105_app_design",
-    "106_app_design_mockups",
-    "107_app_design_pins",
+    "105_hosted_input_delivery",
+    "106_app_design",
+    "107_app_design_mockups",
+    "108_app_design_pins",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2765,17 +2767,22 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     run_migration(conn, "104_disk_divergence", |conn| {
         conn.execute_batch(disk_authority::DIVERGENCE_SCHEMA)
     })?;
+    run_migration(
+        conn,
+        "105_hosted_input_delivery",
+        task_input_delivery::create_schema,
+    )?;
     // App Design (docs/specs/app-design.md): design sessions, the live
     // document's updates, threads, the feedback outbox and approvals.
-    run_migration(conn, "105_app_design", |conn| {
+    run_migration(conn, "106_app_design", |conn| {
         conn.execute_batch(design::SCHEMA)
     })?;
     // The HTML mockup each design position shows.
-    run_migration(conn, "106_app_design_mockups", |conn| {
+    run_migration(conn, "107_app_design_mockups", |conn| {
         conn.execute_batch(design::MOCKUP_SCHEMA)
     })?;
     // Comments pinned on a mockup's elements.
-    run_migration(conn, "107_app_design_pins", |conn| {
+    run_migration(conn, "108_app_design_pins", |conn| {
         conn.execute_batch(design::PINS_SCHEMA)
     })?;
     task_state::sync_disk_state_triggers(conn)?;

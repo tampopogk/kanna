@@ -84,6 +84,7 @@ fn add_reserved_ports(occupied: &mut HashSet<i64>, repo_config: &RepoConfig) {
 }
 
 pub(super) fn build_spawn_env(
+    db: &Db,
     config: &Config,
     task_id: &str,
     port_env: &HashMap<String, String>,
@@ -126,6 +127,8 @@ pub(super) fn build_spawn_env(
     // checkout may customize its workspace, but it cannot redirect Kanna's
     // task identity or control-plane binaries and endpoints.
     for key in [
+        kanna_agent_protocol::hosted_frontend::CONFIG_ENV,
+        kanna_agent_protocol::hosted_frontend::FRONTENDS_ENV,
         "KANNA_WORKTREE",
         "KANNA_TASK_ID",
         "KANNA_SOCKET_PATH",
@@ -156,6 +159,29 @@ pub(super) fn build_spawn_env(
             task_dir.to_string_lossy().to_string(),
         );
     }
+    let mut frontends = repo_config.agent_frontends.clone();
+    if let Some(intent) = db
+        .get_pipeline_item_agent_spawn_options(task_id)
+        .map_err(|error| error.to_string())?
+    {
+        let request: serde_json::Value = serde_json::from_str(&intent)
+            .map_err(|error| format!("invalid stored task launch options: {error}"))?;
+        if let Some(value) = request
+            .get("agentFrontend")
+            .filter(|value| !value.is_null())
+        {
+            let frontend: kanna_agent_protocol::hosted_frontend::Frontend =
+                serde_json::from_value(value.clone())
+                    .map_err(|error| format!("invalid task frontend: {error}"))?;
+            for provider in ["claude", "codex"] {
+                frontends.insert(provider.into(), frontend);
+            }
+        }
+    }
+    env.insert(
+        kanna_agent_protocol::hosted_frontend::FRONTENDS_ENV.into(),
+        serde_json::to_string(&frontends).map_err(|error| error.to_string())?,
+    );
     env.insert("KANNA_WORKTREE".to_string(), "1".to_string());
     env.insert("KANNA_TASK_ID".to_string(), task_id.to_string());
     env.insert(
@@ -731,4 +757,12 @@ pub(super) fn write_copilot_wake_plugin(path: &str) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
     std::fs::rename(manifest, root.join("plugin.json")).map_err(|e| e.to_string())
+}
+
+/// Hosting must use the executable shipped with this Kanna installation.
+pub(super) fn resolve_frontend_sidecar() -> Result<String, String> {
+    sidecar_candidates("agent-tui").into_iter()
+        .find(|path| kanna_runtime_defaults::is_executable_file(path))
+        .map(|path| path.to_string_lossy().into_owned())
+        .ok_or_else(|| "agent-tui frontend sidecar is missing; rebuild Kanna sidecars with ./kd build sidecars or reinstall Kanna".into())
 }
