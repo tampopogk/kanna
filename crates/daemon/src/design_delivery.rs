@@ -106,6 +106,42 @@ pub(crate) fn settle(delivery_id: &str, outcome: DesignDeliveryOutcome) {
     with(|receipts| receipts.record(delivery_id, outcome));
 }
 
+pub(crate) fn reconcile_hosted(
+    delivery: &kanna_agent_protocol::hosted_frontend::Delivery,
+) -> DesignDeliveryOutcome {
+    use kanna_agent_protocol::hosted_frontend::DeliveryState;
+    let outcome = match delivery.state {
+        DeliveryState::Queued | DeliveryState::Submitting => DesignDeliveryOutcome::Accepted,
+        DeliveryState::Submitted => DesignDeliveryOutcome::Delivered,
+        DeliveryState::Failed | DeliveryState::Uncertain => DesignDeliveryOutcome::WriteFailed {
+            message: delivery
+                .error
+                .clone()
+                .unwrap_or_else(|| match delivery.state {
+                    DeliveryState::Failed => "hosted frontend rejected the input".into(),
+                    DeliveryState::Uncertain => {
+                        "hosted frontend could not confirm provider acceptance".into()
+                    }
+                    _ => unreachable!(),
+                }),
+        },
+    };
+    with(|receipts| {
+        if receipts.outcomes.contains_key(&delivery.delivery_id) {
+            receipts.record(&delivery.delivery_id, outcome.clone());
+        }
+    });
+    outcome
+}
+
+pub(crate) fn reconcile_hosted_snapshot(
+    snapshot: &kanna_agent_protocol::hosted_frontend::Snapshot,
+) {
+    for delivery in &snapshot.deliveries {
+        reconcile_hosted(delivery);
+    }
+}
+
 impl Receipts {
     fn record(&mut self, delivery_id: &str, outcome: DesignDeliveryOutcome) {
         if self

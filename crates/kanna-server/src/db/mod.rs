@@ -2783,7 +2783,12 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     })?;
     // Comments pinned on a mockup's elements.
     run_migration(conn, "108_app_design_pins", |conn| {
-        conn.execute_batch(design::PINS_SCHEMA)
+        add_column(
+            conn,
+            "design_thread",
+            design::PINS_COLUMN,
+            design::PINS_COLUMN_DEFINITION,
+        )
     })?;
     task_state::sync_disk_state_triggers(conn)?;
 

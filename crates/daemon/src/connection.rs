@@ -32,6 +32,30 @@ use crate::util::{error_event, recovery_snapshot_to_terminal_snapshot};
 use crate::{agent_runtime, headless_terminal, pty};
 use kanna_daemon::terminal_perf;
 
+async fn reconcile_hosted_design_delivery(
+    sessions: &Arc<Mutex<SessionManager>>,
+    delivery_id: &str,
+) -> protocol::DesignDeliveryOutcome {
+    let handles = sessions.lock().await.handles();
+    for (_, session) in handles {
+        let Some(frontend) = &session.hosted_frontend else {
+            continue;
+        };
+        let snapshot = match frontend.journal() {
+            Ok(snapshot) => snapshot,
+            Err(_) => continue,
+        };
+        if let Some(delivery) = snapshot
+            .deliveries
+            .iter()
+            .find(|delivery| delivery.delivery_id == delivery_id)
+        {
+            return crate::design_delivery::reconcile_hosted(delivery);
+        }
+    }
+    crate::design_delivery::outcome(delivery_id)
+}
+
 /// Native sessions acknowledge text plus Enter at the PTY boundary. Hosted
 /// sessions use the authenticated queue and return its durable receipt; raw
 /// keyboard input continues through the PTY.
@@ -180,7 +204,9 @@ async fn design_input_event(
     .await
     {
         Event::Ok => protocol::DesignDeliveryOutcome::Delivered,
-        Event::InputAccepted { .. } => protocol::DesignDeliveryOutcome::Delivered,
+        Event::InputAccepted { delivery, .. } => {
+            crate::design_delivery::reconcile_hosted(&delivery)
+        }
         Event::Error { message, .. } => protocol::DesignDeliveryOutcome::WriteFailed { message },
         other => protocol::DesignDeliveryOutcome::WriteFailed {
             message: format!("unexpected write outcome: {other:?}"),
@@ -1370,7 +1396,7 @@ pub(crate) async fn handle_command(
 
         Command::QueryDesignDelivery { delivery_id } => {
             let evt = Event::DesignDelivery {
-                outcome: crate::design_delivery::outcome(&delivery_id),
+                outcome: reconcile_hosted_design_delivery(&sessions, &delivery_id).await,
                 delivery_id,
                 known_instances: crate::design_delivery::known_instances(),
             };
@@ -2168,9 +2194,11 @@ pub(crate) async fn handle_command(
                     .as_ref()
                     .and_then(|session| session.hosted_frontend.as_ref())
                 {
+                    let snapshot = frontend.final_snapshot();
+                    crate::design_delivery::reconcile_hosted_snapshot(&snapshot);
                     let event = Event::HostedFrontend {
                         session_id: session_id.clone(),
-                        snapshot: frontend.final_snapshot(),
+                        snapshot,
                     };
                     if let Ok(json) = serde_json::to_string(&event) {
                         let _ = broadcast_tx.send(json);

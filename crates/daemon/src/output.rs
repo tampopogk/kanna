@@ -669,9 +669,11 @@ pub(crate) async fn stream_output(
     }
 
     if let Some(frontend) = &session.hosted_frontend {
+        let snapshot = frontend.final_snapshot();
+        crate::design_delivery::reconcile_hosted_snapshot(&snapshot);
         let event = Event::HostedFrontend {
             session_id: session_id.clone(),
-            snapshot: frontend.final_snapshot(),
+            snapshot,
         };
         if let Ok(json) = serde_json::to_string(&event) {
             let _ = broadcast_tx.send(json);

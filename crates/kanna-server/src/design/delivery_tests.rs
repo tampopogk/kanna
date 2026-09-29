@@ -552,21 +552,200 @@ fn items_name_their_thread_quote_and_kind() {
 /// daemon keeps its receipt.
 mod real_daemon {
     use super::*;
+    use kanna_agent_protocol::hosted_frontend::{
+        Command as HostCommand, Config as HostConfig, Delivery, DeliveryState, Request, Response,
+        RuntimeState, Snapshot, VERSION,
+    };
+    use std::io::{BufRead, Write};
+    use std::os::unix::net::UnixListener as StdUnixListener;
     use std::process::{Child, Command as ProcessCommand};
+    use std::sync::{Arc as StdArc, Mutex as ProcessMutex};
     use std::time::Duration;
+
+    fn daemon_artifact_from_cargo_output(output: &[u8]) -> Option<std::path::PathBuf> {
+        String::from_utf8_lossy(output).lines().find_map(|line| {
+            let message: serde_json::Value = serde_json::from_str(line).ok()?;
+            if message["reason"] != "compiler-artifact"
+                || message["target"]["name"] != "kanna-daemon"
+                || !message["target"]["kind"]
+                    .as_array()?
+                    .iter()
+                    .any(|kind| kind == "bin")
+            {
+                return None;
+            }
+            message["executable"].as_str().map(std::path::PathBuf::from)
+        })
+    }
 
     fn current_daemon_binary() -> std::path::PathBuf {
         let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(std::path::Path::parent)
             .expect("workspace root");
-        let status = ProcessCommand::new(env!("CARGO"))
-            .args(["build", "-p", "kanna-daemon"])
+        let output = ProcessCommand::new(env!("CARGO"))
+            .args([
+                "build",
+                "-p",
+                "kanna-daemon",
+                "--message-format=json-render-diagnostics",
+            ])
             .current_dir(workspace)
-            .status()
+            .output()
             .expect("build the real daemon fixture from this checkout");
-        assert!(status.success(), "the real daemon fixture must build");
-        workspace.join(".build/debug/kanna-daemon")
+        assert!(
+            output.status.success(),
+            "the real daemon fixture must build:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let executable = daemon_artifact_from_cargo_output(&output.stdout)
+            .expect("cargo must report the current kanna-daemon executable artifact");
+        assert!(executable.is_file(), "reported daemon artifact must exist");
+        executable
+    }
+
+    #[test]
+    fn cargo_artifact_parser_uses_the_reported_target_directory() {
+        let output = br#"{"reason":"compiler-artifact","target":{"kind":["bin"],"name":"kanna-daemon"},"executable":"/redirected/target/debug/kanna-daemon"}
+"#;
+        assert_eq!(
+            daemon_artifact_from_cargo_output(output).unwrap(),
+            std::path::Path::new("/redirected/target/debug/kanna-daemon")
+        );
+    }
+
+    fn persist_host_snapshot(config: &HostConfig, snapshot: &Snapshot) {
+        std::fs::write(&config.journal_path, serde_json::to_vec(snapshot).unwrap()).unwrap();
+    }
+
+    /// A separate-process hosted frontend with a file-controlled provider
+    /// acknowledgement. The real daemon creates and authenticates its socket
+    /// capability; this fixture owns the durable journal and only marks a
+    /// delivery submitted after the test's controlled provider acknowledges.
+    #[test]
+    fn hosted_frontend_process_fixture() {
+        let Ok(control) = std::env::var("KANNA_TEST_HOSTED_CONTROL") else {
+            return;
+        };
+        let submissions = std::env::var("KANNA_TEST_HOSTED_SUBMISSIONS").unwrap();
+        let config_path = std::env::var(kanna_agent_protocol::hosted_frontend::CONFIG_ENV).unwrap();
+        let config: HostConfig =
+            serde_json::from_slice(&std::fs::read(config_path).unwrap()).unwrap();
+        let snapshot = StdArc::new(ProcessMutex::new(Snapshot {
+            notice: None,
+            version: VERSION,
+            binding: config.binding.clone(),
+            frontend_pid: std::process::id(),
+            active_run_id: config.binding.run_id.clone(),
+            sequence: 1,
+            provider_session_id: Some("controlled-provider".into()),
+            state: RuntimeState::Idle,
+            diagnostic: None,
+            composer_text: String::new(),
+            queued_count: 0,
+            deliveries: Vec::new(),
+            retired: false,
+        }));
+        persist_host_snapshot(&config, &snapshot.lock().unwrap());
+
+        let journal_config = config.clone();
+        let journal_snapshot = StdArc::clone(&snapshot);
+        std::thread::spawn(move || loop {
+            let instruction = std::fs::read_to_string(&control).unwrap_or_default();
+            let mut snapshot = journal_snapshot.lock().unwrap();
+            let mut changed = false;
+            for delivery in &mut snapshot.deliveries {
+                if !delivery.state.pending() {
+                    continue;
+                }
+                match instruction.trim() {
+                    "submitted" => {
+                        delivery.state = DeliveryState::Submitted;
+                        delivery.text = None;
+                        changed = true;
+                    }
+                    "failed" => {
+                        delivery.state = DeliveryState::Failed;
+                        delivery.error = Some("controlled provider rejected the input".into());
+                        changed = true;
+                    }
+                    _ => {}
+                }
+            }
+            if changed {
+                snapshot.sequence += 1;
+                snapshot.queued_count = snapshot
+                    .deliveries
+                    .iter()
+                    .filter(|delivery| delivery.state == DeliveryState::Queued)
+                    .count();
+                persist_host_snapshot(&journal_config, &snapshot);
+            }
+            drop(snapshot);
+            std::thread::sleep(Duration::from_millis(20));
+        });
+
+        let _ = std::fs::remove_file(&config.socket_path);
+        let listener = StdUnixListener::bind(&config.socket_path).unwrap();
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let request: Request = serde_json::from_str(line.trim()).unwrap();
+            assert_eq!(request.version, VERSION);
+            assert_eq!(request.binding, config.binding);
+            assert_eq!(request.capability, config.capability);
+            let response = match request.command {
+                HostCommand::Inspect => Response::Snapshot {
+                    snapshot: snapshot.lock().unwrap().clone(),
+                },
+                HostCommand::Submit {
+                    delivery_id,
+                    text,
+                    workflow_prompt,
+                    run_id,
+                } => {
+                    assert!(!workflow_prompt, "design feedback is ordinary input");
+                    assert_eq!(run_id, None, "the frontend selects its active run");
+                    let mut snapshot = snapshot.lock().unwrap();
+                    let delivery = if let Some(existing) = snapshot
+                        .deliveries
+                        .iter()
+                        .find(|delivery| delivery.delivery_id == delivery_id)
+                    {
+                        existing.clone()
+                    } else {
+                        let delivery = Delivery {
+                            run_id: snapshot.active_run_id.clone(),
+                            initial_prompt: false,
+                            delivery_id: delivery_id.clone(),
+                            sequence: snapshot.deliveries.len() as u64 + 1,
+                            payload_hash: format!("controlled:{}", text.len()),
+                            text: Some(text),
+                            state: DeliveryState::Queued,
+                            error: None,
+                        };
+                        snapshot.deliveries.push(delivery.clone());
+                        snapshot.queued_count += 1;
+                        snapshot.sequence += 1;
+                        persist_host_snapshot(&config, &snapshot);
+                        let mut file = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&submissions)
+                            .unwrap();
+                        writeln!(file, "{delivery_id}").unwrap();
+                        delivery
+                    };
+                    Response::Accepted { delivery }
+                }
+                HostCommand::Retire { reason } => Response::Rejected { reason },
+            };
+            serde_json::to_writer(&mut stream, &response).unwrap();
+            stream.write_all(b"\n").unwrap();
+        }
     }
 
     struct OwnedDaemon(Child);
@@ -692,5 +871,125 @@ mod real_daemon {
             }
             other => panic!("unexpected answer {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn hosted_feedback_waits_for_provider_receipts_and_never_submits_twice() {
+        let binary = current_daemon_binary();
+        let (state, daemon_dir) = super::state("real-hosted-daemon");
+        let (_daemon, mut client) = start_daemon(&daemon_dir, &binary).await;
+        let control = std::path::Path::new(&daemon_dir).join("provider-state");
+        let submissions = std::path::Path::new(&daemon_dir).join("provider-submissions");
+        std::fs::write(&control, "pending").unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let spawn = serde_json::from_value::<Command>(serde_json::json!({
+            "type": "Spawn",
+            "session_id": "task-d",
+            "executable": executable,
+            "args": ["--exact", "design::delivery::tests::real_daemon::hosted_frontend_process_fixture", "--nocapture"],
+            "cwd": daemon_dir,
+            "env": {
+                "KANNA_TASK_ID": "task-d",
+                "KANNA_STAGE_RUN_ID": "run-design",
+                "KANNA_AGENT_FRONTENDS": "{\"codex\":\"agent-tui\"}",
+                "KANNA_TEST_HOSTED_CONTROL": control,
+                "KANNA_TEST_HOSTED_SUBMISSIONS": submissions,
+            },
+            "cols": 100,
+            "rows": 30,
+            "agent_provider": "codex",
+        }))
+        .unwrap();
+        match client.send_command(&spawn).await.unwrap() {
+            Event::SessionCreated { .. } => {}
+            other => panic!("unexpected spawn answer {other:?}"),
+        }
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                if matches!(
+                    session_readiness(&state, "task-d").await,
+                    Readiness::Free { .. }
+                ) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("hosted frontend becomes idle");
+        let pid = match client.send_command(&Command::List).await.unwrap() {
+            Event::SessionList { sessions } => {
+                sessions
+                    .into_iter()
+                    .find(|session| session.session_id == "task-d")
+                    .expect("hosted session remains present")
+                    .pid
+            }
+            other => panic!("unexpected list answer {other:?}"),
+        };
+
+        message(&state, "hosted-ack", "wait for provider acknowledgement");
+        deliver_task(&state, "task-d").await.unwrap();
+        assert_eq!(states(&state), vec!["delivering"]);
+        let attempt = with_db(&state, |db| {
+            db.design_deliveries("task-d").unwrap()[0]
+                .attempt_id
+                .clone()
+                .unwrap()
+        });
+        assert!(matches!(
+            client
+                .send_command(&Command::QueryDesignDelivery {
+                    delivery_id: attempt.clone()
+                })
+                .await
+                .unwrap(),
+            Event::DesignDelivery {
+                outcome: DesignDeliveryOutcome::Accepted,
+                ..
+            }
+        ));
+        let repeat = Command::SubmitDesignInput {
+            session_id: "task-d".into(),
+            expected_pid: pid,
+            delivery_id: attempt.clone(),
+            data: b"ignored duplicate payload".to_vec(),
+        };
+        assert!(matches!(
+            client.send_command(&repeat).await.unwrap(),
+            Event::DesignDelivery {
+                outcome: DesignDeliveryOutcome::Accepted,
+                ..
+            }
+        ));
+        assert_eq!(
+            std::fs::read_to_string(&submissions)
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+
+        std::fs::write(&control, "submitted").unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        settle_in_flight(&state, false).await;
+        assert_eq!(states(&state), vec!["delivered"]);
+
+        state.design.delivery.lock().unwrap().fences.clear();
+        std::fs::write(&control, "pending").unwrap();
+        message(&state, "hosted-fail", "provider will reject this");
+        deliver_task(&state, "task-d").await.unwrap();
+        assert_eq!(states(&state), vec!["delivered", "delivering"]);
+        std::fs::write(&control, "failed").unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        settle_in_flight(&state, false).await;
+        assert_eq!(states(&state), vec!["delivered", "uncertain"]);
+        assert_eq!(
+            std::fs::read_to_string(&submissions)
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
     }
 }

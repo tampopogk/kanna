@@ -13,7 +13,7 @@ use rusqlite::{params, OptionalExtension, Row};
 use serde::Serialize;
 use serde_json::Value;
 
-/// Schema of migration `105_app_design`.
+/// Schema of migration `106_app_design`.
 pub(super) const SCHEMA: &str = r#"
     CREATE TABLE IF NOT EXISTS design_session (
         task_id TEXT PRIMARY KEY REFERENCES pipeline_item(id) ON DELETE CASCADE,
@@ -135,16 +135,19 @@ pub(super) const SCHEMA: &str = r#"
     CREATE INDEX IF NOT EXISTS idx_design_approval_task ON design_approval(task_id, epoch);
 "#;
 
-/// Schema of migration `107_app_design_pins`: a comment may be pinned on an
+/// Column added by migration `108_app_design_pins`: a comment may be pinned on an
 /// element of a position's HTML mockup instead of on document text. The
 /// anchor is JSON: the mockup (position, artifact id, page) and the element
 /// as the person's click described it (selector, tag, id, classes,
 /// container, visible text, HTML excerpt).
+pub(super) const PINS_COLUMN: &str = "anchor_element";
+pub(super) const PINS_COLUMN_DEFINITION: &str = "TEXT";
+#[cfg(test)]
 pub(super) const PINS_SCHEMA: &str = r#"
     ALTER TABLE design_thread ADD COLUMN anchor_element TEXT;
 "#;
 
-/// Schema of migration `106_app_design_mockups`: the HTML mockup each design
+/// Schema of migration `107_app_design_mockups`: the HTML mockup each design
 /// position currently shows, as a version in the repository's artifact store.
 pub(super) const MOCKUP_SCHEMA: &str = r#"
     CREATE TABLE IF NOT EXISTS design_mockup (
