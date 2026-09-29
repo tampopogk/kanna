@@ -511,6 +511,52 @@ fn a_live_design_session_guards_its_stage_whatever_the_workflow_says() {
     );
 }
 
+/// Review round 2: with no design session yet (the agent has made no design
+/// call), a workflow switch that keeps a same-named stage without its
+/// design is refused, and the stage cannot be advanced.
+#[test]
+fn a_design_stage_without_a_session_yet_is_guarded() {
+    let setup = setup("workflow-guard-no-session", "results-and-summary");
+    let db = setup.db();
+    assert!(db.design_session("task-d").unwrap().is_none());
+    let pinned = db
+        .get_pipeline_item("task-d")
+        .unwrap()
+        .unwrap()
+        .pipeline_def
+        .unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&pinned).unwrap();
+    value["stages"][0].as_object_mut().unwrap().remove("design");
+    let error = db
+        .update_pipeline_item_pipeline(
+            "task-d",
+            "design",
+            "app-design",
+            &value.to_string(),
+            0,
+            5,
+            &crate::mutation_provenance::ChannelIdentity::Unknown,
+        )
+        .expect_err("refused");
+    assert!(
+        error.to_string().contains("live App Design stage"),
+        "{error}"
+    );
+    let error =
+        crate::task_creator::prepare_advance_stage_for_api(&db, setup.state.config(), "task-d")
+            .err()
+            .expect("advance refused");
+    assert!(error.contains("Approve for build"), "{error}");
+    // Outside its design stage the task's workflow is its own to change.
+    db.execute_test_sql("UPDATE pipeline_item SET stage = 'plan' WHERE id = 'task-d'")
+        .unwrap();
+    assert_eq!(
+        db.design_workflow_change_refusal("task-d", Some(&pinned), &value.to_string())
+            .unwrap(),
+        None
+    );
+}
+
 #[test]
 fn policy_paths_stay_inside_the_repository() {
     for bad in ["../outside", "/abs/{task}", "~/home", "a/../../b"] {

@@ -454,6 +454,24 @@ impl DesignMockupRow {
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 
+/// A workflow definition's stage `name`: its `design` and `exit_commit`.
+fn design_stage_of(definition: Option<&str>, name: &str) -> Option<(Option<Value>, bool)> {
+    let definition: Value = serde_json::from_str(definition?).ok()?;
+    let stage = definition
+        .get("stages")?
+        .as_array()?
+        .iter()
+        .find(|stage| stage.get("name").and_then(Value::as_str) == Some(name))?
+        .clone();
+    Some((
+        stage.get("design").cloned(),
+        stage
+            .get("exit_commit")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    ))
+}
+
 impl Db {
     // -- session ------------------------------------------------------------
 
@@ -1139,47 +1157,48 @@ impl Db {
 
     /// Why a change of `task_id`'s pinned workflow from `before` to `after`
     /// must be refused, if it must (docs/specs/app-design.md §6). While the
-    /// task's design is live — its session not handed off — the design
-    /// stage's `design` and `exit_commit` are what make it leave only
-    /// through Approve for build and its verified commit: no replacement or
-    /// workflow switch may remove or alter them.
+    /// task's design is live, the design stage's `design` and `exit_commit`
+    /// are what make it leave only through Approve for build and its
+    /// verified commit: no replacement or workflow switch may remove or
+    /// alter them. See [`Db::live_design_stage`] for when a design is live.
     pub(crate) fn design_workflow_change_refusal(
         &self,
         task_id: &str,
         before: Option<&str>,
         after: &str,
     ) -> Result<Option<String>, rusqlite::Error> {
-        let Some(session) = self.design_session(task_id)? else {
+        let before_stage_has_design =
+            |name: &str| design_stage_of(before, name).is_some_and(|(design, _)| design.is_some());
+        let Some(stage) = self.live_design_stage(task_id, before_stage_has_design)? else {
             return Ok(None);
         };
-        if session.status == DesignSessionRow::HANDED_OFF {
-            return Ok(None);
-        }
-        let protected = |definition: Option<&str>| -> Option<(Option<Value>, bool)> {
-            let definition: Value = serde_json::from_str(definition?).ok()?;
-            let stage = definition
-                .get("stages")?
-                .as_array()?
-                .iter()
-                .find(|stage| stage.get("name").and_then(Value::as_str) == Some(&session.stage))?
-                .clone();
-            Some((
-                stage.get("design").cloned(),
-                stage
-                    .get("exit_commit")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-            ))
-        };
-        let before = protected(before);
-        if before.is_none() || before == protected(Some(after)) {
+        let before = design_stage_of(before, &stage);
+        if before.is_none() || before == design_stage_of(Some(after), &stage) {
             return Ok(None);
         }
         Ok(Some(format!(
-            "stage '{}' is this task's live App Design stage: its design and exit_commit cannot \
-             be removed or changed until the design is approved for build and handed off",
-            session.stage
+            "stage '{stage}' is this task's live App Design stage: its design and exit_commit \
+             cannot be removed or changed until the design is approved for build and handed off"
         )))
+    }
+
+    /// The task's live App Design stage, if it has one: the stage of its
+    /// design session while the session is not handed off; or, before the
+    /// session exists (it is created on the first design call), the task's
+    /// current stage when `is_design_stage` says the pinned workflow makes it
+    /// one. No session means no hand-off has ever completed, so a task that
+    /// has entered its design stage is designing from that moment, whether
+    /// or not its agent has called a design tool yet.
+    pub(crate) fn live_design_stage(
+        &self,
+        task_id: &str,
+        is_design_stage: impl Fn(&str) -> bool,
+    ) -> Result<Option<String>, rusqlite::Error> {
+        if let Some(session) = self.design_session(task_id)? {
+            return Ok((session.status != DesignSessionRow::HANDED_OFF).then_some(session.stage));
+        }
+        let current = self.get_pipeline_item(task_id)?.and_then(|item| item.stage);
+        Ok(current.filter(|stage| is_design_stage(stage)))
     }
 
     // -- mockups ------------------------------------------------------------

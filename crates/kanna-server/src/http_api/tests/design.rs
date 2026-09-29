@@ -310,24 +310,10 @@ async fn the_change_feed_answers_when_feedback_arrives() {
     assert!(changed["feedRevision"].as_u64().unwrap() > feed);
 }
 
-fn pinned_definition(state: &AppState) -> Value {
-    let db = Db::open(&state.config().db_path).unwrap();
-    serde_json::from_str(
-        &db.get_pipeline_item("task-d")
-            .unwrap()
-            .unwrap()
-            .pipeline_def
-            .unwrap(),
-    )
-    .unwrap()
-}
-
-/// Review round 1, finding 1: the agent cannot drop the design stage's
-/// `design` or `exit_commit` to walk past Approve for build.
-#[tokio::test]
-async fn a_live_design_stage_keeps_its_hand_off_through_any_workflow_change() {
-    // Replacement resolves the repository's definitions from its origin.
-    let repo = crate::test_paths::unique_test_path("design-http-workflow-guard-repo");
+/// A design task whose repository is a real git repository with an origin,
+/// which workflow replacement resolves the repository's definitions from.
+fn setup_with_repository(label: &str) -> (Arc<AppState>, axum::Router) {
+    let repo = crate::test_paths::unique_test_path(&format!("design-http-{label}-repo"));
     let _ = std::fs::remove_dir_all(&repo);
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::write(repo.join("README.md"), "app\n").unwrap();
@@ -360,7 +346,7 @@ async fn a_live_design_stage_keeps_its_hand_off_through_any_workflow_change() {
             .success());
     }
     let repo_path = repo.to_string_lossy().to_string();
-    let state = test_state_with_seed("design-http-workflow-guard", "Design", move |db| {
+    let state = test_state_with_seed(&format!("design-http-{label}"), "Design", move |db| {
         seed_design_task(db);
         db.execute_test_sql(&format!(
             "UPDATE repo SET path = '{repo_path}', default_branch = 'main' WHERE id = 'repo-1'"
@@ -368,6 +354,26 @@ async fn a_live_design_stage_keeps_its_hand_off_through_any_workflow_change() {
         .unwrap();
     });
     let app = router(Arc::clone(&state));
+    (state, app)
+}
+
+fn pinned_definition(state: &AppState) -> Value {
+    let db = Db::open(&state.config().db_path).unwrap();
+    serde_json::from_str(
+        &db.get_pipeline_item("task-d")
+            .unwrap()
+            .unwrap()
+            .pipeline_def
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+/// Review round 1, finding 1: the agent cannot drop the design stage's
+/// `design` or `exit_commit` to walk past Approve for build.
+#[tokio::test]
+async fn a_live_design_stage_keeps_its_hand_off_through_any_workflow_change() {
+    let (state, app) = setup_with_repository("workflow-guard");
     let (status, _) = send(&app, as_agent("GET", "/v1/tasks/task-d/design/agent", None)).await;
     assert_eq!(
         status,
@@ -433,4 +439,50 @@ async fn a_live_design_stage_keeps_its_hand_off_through_any_workflow_change() {
     .err()
     .expect("advance refused");
     assert!(error.contains("Approve for build"), "{error}");
+}
+
+/// Review round 2: before the agent has made any design call there is no
+/// design session yet, and the stage is still live: its design cannot be
+/// replaced away, the workflow cannot be switched, and it cannot be advanced.
+#[tokio::test]
+async fn a_design_stage_is_guarded_before_any_design_call() {
+    let (state, app) = setup_with_repository("workflow-guard-no-session");
+    let db = || Db::open(&state.config().db_path).unwrap();
+    assert!(db().design_session("task-d").unwrap().is_none());
+    let pinned = pinned_definition(&state);
+    let mut without_design = pinned.clone();
+    without_design["stages"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("design");
+    let (status, body) = send(
+        &app,
+        as_agent(
+            "POST",
+            "/v1/tasks/task-d/actions/replace-workflow",
+            Some(json!({ "workflowDefinition": without_design, "expectedDefinition": pinned, "source": "agent" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.to_string().contains("live App Design stage"), "{body}");
+    let (status, body) = send(
+        &app,
+        as_agent(
+            "POST",
+            "/v1/tasks/task-d/actions/set-workflow",
+            Some(json!({ "workflowName": "no-review" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(pinned_definition(&state), pinned, "nothing changed");
+    let error = crate::task_creator::prepare_advance_stage_for_api(&db(), state.config(), "task-d")
+        .err()
+        .expect("advance refused");
+    assert!(error.contains("Approve for build"), "{error}");
+    assert!(
+        db().design_session("task-d").unwrap().is_none(),
+        "nothing here needed a session"
+    );
 }
