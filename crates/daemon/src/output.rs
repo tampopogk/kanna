@@ -301,6 +301,16 @@ pub(crate) async fn stream_output(
                                 .expect("pending input disappeared before completion");
                             pending_offset = 0;
                             if completed.kind == PendingInputKind::LogicalBoundary {
+                                if let Some(generation) = completed.logical_submission_generation()
+                                {
+                                    if session.complete_logical_submission(generation).is_err() {
+                                        log::error!(
+                                            "[stream] logical submission accounting failed session={}",
+                                            session_id
+                                        );
+                                        break;
+                                    }
+                                }
                                 // The CLI needs a processing turn after the
                                 // submission boundary before another queued
                                 // message can safely own its composer.

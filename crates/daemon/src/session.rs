@@ -277,6 +277,10 @@ pub struct PendingInput {
     /// back when their PTY write completes, so attestation can tell a frame
     /// that post-dates the draft from one that merely predates it.
     declared_draft: bool,
+    /// Draft-write generation visible when this logical submission was
+    /// queued. Its boundary may clear the ledger only while this is still the
+    /// latest generation; a raw draft queued behind it must survive.
+    logical_submission_generation: Option<u64>,
     /// Fires once every byte of this input has reached the PTY. Dropping it
     /// instead reports a writer that ended mid-write.
     written: Option<oneshot::Sender<()>>,
@@ -289,6 +293,7 @@ impl PendingInput {
             kind: PendingInputKind::Raw,
             logical_boundary: None,
             declared_draft: false,
+            logical_submission_generation: None,
             written,
         }
     }
@@ -299,6 +304,7 @@ impl PendingInput {
             kind: PendingInputKind::Raw,
             logical_boundary: None,
             declared_draft: true,
+            logical_submission_generation: None,
             written,
         }
     }
@@ -309,6 +315,7 @@ impl PendingInput {
         data: Vec<u8>,
         written: Option<oneshot::Sender<()>>,
         bracketed_paste_mode: bool,
+        draft_generation: u64,
     ) -> Self {
         let empty = data.is_empty();
         let mut framed = if empty {
@@ -331,6 +338,7 @@ impl PendingInput {
             },
             logical_boundary: (!empty && !single_write).then_some(LOGICAL_SUBMISSION_BOUNDARY),
             declared_draft: false,
+            logical_submission_generation: Some(draft_generation),
             written,
         }
     }
@@ -354,6 +362,10 @@ impl PendingInput {
     /// Whether these bytes were declared a draft by their producer.
     pub fn is_declared_draft(&self) -> bool {
         self.declared_draft
+    }
+
+    pub fn logical_submission_generation(&self) -> Option<u64> {
+        self.logical_submission_generation
     }
 
     /// Tell the caller this write reached the PTY. Dropping the sender
@@ -536,6 +548,7 @@ impl SessionHandle {
                     pending.clone(),
                     None,
                     bracketed_paste_mode,
+                    input_coordination.declared_draft_writes_enqueued,
                 ))
                 .is_err()
             {
@@ -723,14 +736,45 @@ impl SessionHandle {
         data: Vec<u8>,
     ) -> Result<oneshot::Receiver<()>, InputQueueError> {
         let (written_tx, written) = oneshot::channel();
+        // Keep the coordination lock through the queue send, matching raw
+        // input enqueue. The generation must describe queue order, not merely
+        // whichever caller happened to sample the ledger first.
+        let state = self
+            .input_coordination
+            .lock()
+            .map_err(|_| InputQueueError::CoordinationUnavailable)?;
+        let draft_generation = state.declared_draft_writes_enqueued;
         self.input_tx
             .send(PendingInput::logical(
                 data,
                 Some(written_tx),
                 self.bracketed_paste_mode(),
+                draft_generation,
             ))
             .map_err(|_| InputQueueError::Closed)?;
+        drop(state);
         Ok(written)
+    }
+
+    /// Apply the submission boundary carried by a logical delivery.
+    ///
+    /// The boundary is just as real as a producer-declared Enter, but it is
+    /// recorded only after reaching the PTY. A draft queued later has a newer
+    /// generation and must not be cleared by this older boundary.
+    pub fn complete_logical_submission(
+        &self,
+        draft_generation: u64,
+    ) -> Result<(), InputQueueError> {
+        let mut state = self
+            .input_coordination
+            .lock()
+            .map_err(|_| InputQueueError::CoordinationUnavailable)?;
+        if state.declared_draft_writes_enqueued == draft_generation {
+            state.raw_input_draft_active = false;
+            state.raw_input_draft_state_known = true;
+            state.typed_draft_bytes = Some(0);
+        }
+        Ok(())
     }
 
     /// Record that one producer-declared draft write finished reaching the
@@ -2493,6 +2537,68 @@ mod tests {
             ComposerAttestation::Typed,
             "the delivery says nothing about what the human typed"
         );
+        handle.kill().await.unwrap();
+    }
+
+    /// The 2026-09-29 false positive: a logical owner/manager delivery had
+    /// already submitted the composer, but its daemon-synthesized Enter never
+    /// reached the attestation ledger. Codex can hide its composer while that
+    /// turn is busy, so no empty frame arrives to repair the stale `typed`
+    /// state. Completion of the boundary itself is sufficient evidence and
+    /// must not require another human dummy submission.
+    #[tokio::test]
+    async fn a_completed_logical_submission_clears_the_draft_it_submitted() {
+        let handle = spawn_test_handle(AgentProvider::Codex, SessionStatus::Busy).unwrap();
+        let mut input_rx = handle.take_input_rx().await.expect("input queue");
+
+        handle
+            .enqueue_raw_input(b"stale draft".to_vec(), RawInputKind::Draft)
+            .expect("enqueue the earlier draft");
+        let _draft = input_rx.recv().await.expect("draft");
+        handle
+            .enqueue_logical_input(b"ordinary message".to_vec())
+            .expect("enqueue logical delivery");
+        let mut delivery = input_rx.recv().await.expect("logical delivery");
+        assert!(delivery.advance_logical_message_to_boundary());
+
+        handle
+            .complete_logical_submission(
+                delivery
+                    .logical_submission_generation()
+                    .expect("logical boundary generation"),
+            )
+            .expect("record the completed boundary");
+
+        assert_eq!(handle.composer_attestation(), ComposerAttestation::NotTyped);
+        handle.kill().await.unwrap();
+    }
+
+    /// Ledger mutation happens when raw input is queued, before the writer
+    /// reaches it. Therefore an older logical boundary may complete while a
+    /// newly typed byte is waiting behind it; that byte must remain protected.
+    #[tokio::test]
+    async fn an_older_logical_boundary_does_not_clear_a_newer_queued_draft() {
+        let handle = spawn_test_handle(AgentProvider::Codex, SessionStatus::Busy).unwrap();
+        let mut input_rx = handle.take_input_rx().await.expect("input queue");
+
+        handle
+            .enqueue_logical_input(b"ordinary message".to_vec())
+            .expect("enqueue logical delivery");
+        let mut delivery = input_rx.recv().await.expect("logical delivery");
+        assert!(delivery.advance_logical_message_to_boundary());
+        let boundary_generation = delivery
+            .logical_submission_generation()
+            .expect("logical boundary generation");
+
+        handle
+            .enqueue_raw_input(b"new draft".to_vec(), RawInputKind::Draft)
+            .expect("queue a newer draft");
+        handle
+            .complete_logical_submission(boundary_generation)
+            .expect("record the older boundary");
+
+        assert_eq!(handle.composer_attestation(), ComposerAttestation::Typed);
+        assert_eq!(input_rx.recv().await.expect("new draft").data, b"new draft");
         handle.kill().await.unwrap();
     }
 
