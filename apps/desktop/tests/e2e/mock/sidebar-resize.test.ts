@@ -306,6 +306,25 @@ describe("sidebar resize", () => {
     await dragSidebarHandleToWidth(client, 50);
     await waitForSidebarWidth(client, 220);
     const narrow = await getTaskTitleLayout(client);
+    const actions = await client.executeSync<{
+      overflow: boolean; aligned: boolean; width: number; height: number; outsideList: boolean;
+    }>(`
+      const row = document.querySelector(".sidebar-actions");
+      const button = row.querySelector('[data-testid="sidebar-add-repo"]');
+      const rect = button.getBoundingClientRect();
+      const filters = Array.from(row.querySelectorAll(".attention-filters button"));
+      return {
+        overflow: row.scrollWidth > row.clientWidth,
+        aligned: filters.every(filter => {
+          const box = filter.getBoundingClientRect();
+          return Math.abs(box.top + box.height / 2 - rect.top - rect.height / 2) < 1;
+        }),
+        width: rect.width, height: rect.height,
+        outsideList: !button.closest(".sidebar-content"),
+      };
+    `);
+    expect(actions).toEqual({ overflow: false, aligned: true, width: 24, height: 24, outsideList: true });
+
 
     await dragSidebarHandleToWidth(client, 600);
     await waitForSidebarWidth(client, 420);

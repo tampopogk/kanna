@@ -405,11 +405,61 @@ describe("import repo", () => {
     expect(await visibleRepoNames(client)).not.toContain(INVALID_CREATE_REPO_NAME);
   });
 
-  it("imports a repo and shows it in the sidebar", async () => {
-    firstRepoId = await importTestRepo(client, firstRepoPath, FIRST_REPO_NAME);
+  it("opens Import from the sidebar and restores focus after each dismissal", async () => {
+    await client.click(await client.waitForElement(".modal-overlay .btn-cancel"));
+    const before = await repoRows(client);
+    for (const dismissal of ["cancel", "escape", "backdrop"]) {
+      await client.click(await client.waitForElement('[data-testid="sidebar-add-repo"]'));
+      await client.waitForText(".modal-overlay .tab.active", "Import");
+      const tabs = await client.findElements(".modal-overlay .tab");
+      await client.click(tabs[0]!);
+      await client.waitForText(".modal-overlay .tab.active", "Create New");
+      if (dismissal === "cancel") {
+        await client.click(await client.waitForElement(".modal-overlay .btn-cancel"));
+      } else if (dismissal === "escape") {
+        await client.pressKey("\uE00C");
+      } else {
+        // The driver's pointer actions emit only mouse-down/up, without click.
+        // Its element-click route reaches the production backdrop click handler.
+        await client.click(await client.waitForElement(".modal-overlay"));
+      }
+      await client.waitForNoElement(".modal-overlay");
+      expect(await client.executeSync<boolean>(
+        `return document.activeElement?.matches('[data-testid="sidebar-add-repo"]');`,
+      )).toBe(true);
+      expect(await repoRows(client)).toEqual(before);
+    }
+  });
 
-    // Repo should appear in sidebar
+  // tauri-plugin-webdriver 0.2.1 dispatches synthetic key events without native
+  // Tab navigation or button activation. Verify this case with real native input.
+  it.skip("opens Import using native Tab, Enter and Space", async () => {
+    // Start at the last filter; native Tab must reach the adjacent opener.
+    await client.executeSync(`document.querySelector(".attention-filters button:last-child").focus();`);
+    await client.pressKey("\uE004");
+    expect(await client.executeSync<boolean>(
+      `return document.activeElement?.matches('[data-testid="sidebar-add-repo"]');`,
+    )).toBe(true);
+    for (const key of ["\uE007", " "]) {
+      await client.pressKey(key);
+      await client.waitForText(".modal-overlay .tab.active", "Import");
+      await client.pressKey("\uE00C");
+      await client.waitForNoElement(".modal-overlay");
+      expect(await client.executeSync<boolean>(
+        `return document.activeElement?.matches('[data-testid="sidebar-add-repo"]');`,
+      )).toBe(true);
+    }
+  });
+
+  it("imports a repo and shows it in the sidebar", async () => {
+    await client.click(await client.waitForElement('[data-testid="sidebar-add-repo"]'));
+    await client.waitForText(".modal-overlay .tab.active", "Import");
+    await client.sendKeys(await client.waitForElement(".modal-overlay input.text-input"), firstRepoPath);
+    await client.click(await client.waitForElement(".modal-overlay .btn-primary:not(:disabled)", 5_000));
+    await client.waitForNoElement(".modal-overlay", 30_000);
+    // Repo should appear in sidebar after the production import completes.
     const el = await client.waitForText(".repo-header", FIRST_REPO_NAME);
+    firstRepoId = (await repoRows(client)).find(row => row.name === FIRST_REPO_NAME)!.id;
     expect(el).toBeTruthy();
     await pauseForSlowMode("first repo visible");
   });

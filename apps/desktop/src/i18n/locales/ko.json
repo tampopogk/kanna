@@ -198,6 +198,7 @@
     "transfer": "작업 전송 단축키"
   },
   "sidebar": {
+    "addRepo": "저장소 추가",
     "filterTasks": "작업 필터",
     "filterAll": "전체",
     "filterUnread": "읽지 않음",

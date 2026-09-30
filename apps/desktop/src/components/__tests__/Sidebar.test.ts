@@ -36,6 +36,7 @@ function translate(key: string, params?: Record<string, string>) {
     return `Awaiting ${params?.stage ?? ""} verdict`;
   }
   const sidebarFilters: Record<string, string> = {
+    "sidebar.addRepo": "Add repository",
     "sidebar.filterTasks": "Filter tasks",
     "sidebar.filterAll": "All",
     "sidebar.filterUnread": "Unread",
@@ -250,6 +251,38 @@ describe("Sidebar", () => {
     vi.clearAllMocks();
     getStageOrder.mockReset();
     getStageOrder.mockReturnValue(["merge", "pr", "review", "in progress"]);
+  });
+
+  it("focuses the accessible repository opener before emitting", async () => {
+    const wrapper = mountSidebarWithRepos([], [], null);
+    document.body.appendChild(wrapper.element);
+    const button = wrapper.get('[data-testid="sidebar-add-repo"]');
+    expect(button.attributes("type")).toBe("button");
+    expect(button.attributes("title")).toBe("Add repository");
+    expect(button.attributes("aria-label")).toBe("Add repository");
+    let focusedAtEmission = false;
+    wrapper.vm.$.vnode.props!.onAddRepo = () => {
+      focusedAtEmission = document.activeElement === button.element;
+    };
+    await button.trigger("click");
+    expect(focusedAtEmission).toBe(true);
+    expect(wrapper.emitted("add-repo")).toEqual([[]]);
+    expect(wrapper.find(".sidebar-content .btn-add-repo").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("keeps the opener available with collapsed repositories and active filters", async () => {
+    const wrapper = mountSidebar([item("task-1")]);
+    await wrapper.get(".collapse-btn").trigger("click");
+    await wrapper.get(".search-input").setValue("no match");
+    await wrapper.get('.attention-filters button:nth-child(3)').trigger("click");
+    const button = wrapper.get('[data-testid="sidebar-add-repo"]');
+    expect(button.isVisible()).toBe(true);
+    await button.trigger("click");
+    expect(wrapper.emitted("add-repo")).toEqual([[]]);
+    expect(wrapper.get(".search-input").element.value).toBe("no match");
+    expect(wrapper.get('.attention-filters button:nth-child(3)').attributes("aria-pressed")).toBe("true");
+    wrapper.unmount();
   });
 
   it("creates tasks only from the repository header", async () => {
