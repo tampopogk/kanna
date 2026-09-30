@@ -6200,6 +6200,53 @@ fn a_logical_message_lands_after_a_concurrent_raw_draft_without_interleaving() {
     recorder.assert_settled_at(&expected, Duration::from_millis(400));
 }
 
+/// Regression for the 2026-09-29 phantom draft: the logical delivery's real
+/// writer-owned Enter is a submission boundary even when no provider frame can
+/// subsequently prove the composer empty. This must exercise the PTY writer,
+/// not call the ledger completion hook directly, or removing the writer hook
+/// would leave this session attesting `typed` forever.
+#[test]
+fn a_written_logical_boundary_clears_the_draft_it_submitted_without_a_frame() {
+    let daemon = DaemonHandle::start();
+    let mut conn = daemon.connect();
+    let session_id = "logical-boundary-attestation";
+    let recorder = spawn_stdin_recorder(&daemon, &mut conn, session_id, false, 0.0);
+    negotiate_raw_input(&mut conn);
+    let pid = session_pid(&mut conn, session_id);
+
+    conn.send(&Cmd::RawInputIfSession {
+        session_id: session_id.to_string(),
+        expected_pid: pid,
+        data: b"stale draft".to_vec(),
+        class: RawInputClass::Draft,
+    });
+    expect_ok(&mut conn);
+    assert_eq!(
+        recorder.wait_for_bytes(b"stale draft".len(), Duration::from_secs(15)),
+        b"stale draft"
+    );
+    assert_eq!(composer_attestation(&mut conn, session_id), "typed");
+
+    conn.send(&Cmd::SubmitInput {
+        session_id: session_id.to_string(),
+        data: b"ordinary message".to_vec(),
+    });
+    expect_ok(&mut conn);
+
+    let expected = b"stale draftordinary message\r";
+    assert_eq!(
+        recorder.wait_for_bytes(expected.len(), Duration::from_secs(15)),
+        expected,
+        "the real PTY writer must deliver both the message and its boundary"
+    );
+    recorder.assert_settled_at(expected, Duration::from_millis(400));
+    assert_eq!(
+        composer_attestation(&mut conn, session_id),
+        "not-typed",
+        "the acknowledged logical boundary submitted the draft without a dummy raw submission or provider-empty frame"
+    );
+}
+
 /// The framing threshold itself, pinned from outside the crate.
 ///
 /// It is a real boundary in behaviour, not a tuning knob: below it a message is
