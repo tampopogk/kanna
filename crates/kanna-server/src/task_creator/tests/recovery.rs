@@ -176,6 +176,11 @@ async fn spawn_rejected_resume_fake_daemon(
                 continue;
             }
             let response = match &command {
+                kanna_daemon::protocol::Command::List => {
+                    kanna_daemon::protocol::Event::SessionList {
+                        sessions: Vec::new(),
+                    }
+                }
                 kanna_daemon::protocol::Command::Kill { .. } => {
                     kanna_daemon::protocol::Event::Error {
                         code: Some(kanna_daemon::protocol::ErrorCode::SessionNotFound),
@@ -311,6 +316,11 @@ async fn spawn_recovery_fake_daemon(
                 continue;
             }
             let response = match &command {
+                kanna_daemon::protocol::Command::List => {
+                    kanna_daemon::protocol::Event::SessionList {
+                        sessions: Vec::new(),
+                    }
+                }
                 kanna_daemon::protocol::Command::Kill { .. } => {
                     kanna_daemon::protocol::Event::Error {
                         code: Some(kanna_daemon::protocol::ErrorCode::SessionNotFound),
