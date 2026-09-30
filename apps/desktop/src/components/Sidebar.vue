@@ -40,6 +40,7 @@ const emit = defineEmits<{
   (e: "select-repo", id: string): void;
   (e: "select-item", id: string): void;
   (e: "new-task", repoId: string): void;
+  (e: "add-repo"): void;
   (e: "pin-item", itemId: string, position: number): void;
   (e: "unpin-item", itemId: string): void;
   (e: "reorder-pinned", repoId: string, orderedIds: string[]): void;
@@ -66,6 +67,12 @@ interface DraggableChange<T> {
     oldIndex: number;
     newIndex: number;
   };
+}
+
+function addRepo(event: MouseEvent): void {
+  // Sidebar mouse-down suppression keeps terminal focus; save this opener instead.
+  (event.currentTarget as HTMLButtonElement).focus();
+  emit("add-repo");
 }
 
 const collapsedRepos = ref<Set<string>>(new Set());
@@ -758,6 +765,14 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, visi
         <button :aria-pressed="attentionFilter === 'unread'" @click="attentionFilter = 'unread'" :title="$t('sidebar.filterUnreadTitle')">{{ $t('sidebar.filterUnread') }} {{ unreadCount }}</button>
         <button :aria-pressed="attentionFilter === 'needs-you'" @click="attentionFilter = 'needs-you'" :title="$t('sidebar.filterNeedsYouTitle')">{{ $t('sidebar.filterNeedsYou') }} {{ needsYouCount }}</button>
       </div>
+      <button
+        type="button"
+        class="btn-icon btn-add-repo"
+        :title="$t('sidebar.addRepo')"
+        :aria-label="$t('sidebar.addRepo')"
+        data-testid="sidebar-add-repo"
+        @click="addRepo"
+      >+</button>
     </div>
     <div ref="sidebarContentRef" class="sidebar-content">
       <div v-if="repos.length === 0" class="empty-state">
@@ -1170,9 +1185,9 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, visi
 
 <style scoped>
 .question-marker { color: var(--kn-accent); font-weight: 600; font-style: normal; }
-.sidebar-actions { padding: 8px; border-bottom: 1px solid var(--kn-border-default); }
-.sidebar-actions button { font: inherit; font-size: 11px; border: 1px solid var(--kn-border-default); border-radius: 4px; color: var(--kn-text-secondary); background: transparent; padding: 4px 6px; cursor: pointer; }
-.attention-filters { display: flex; gap: 4px; flex-wrap: wrap; }
+.sidebar-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; padding: 8px; border-bottom: 1px solid var(--kn-border-default); }
+.attention-filters button { font: inherit; font-size: 11px; border: 1px solid var(--kn-border-default); border-radius: 4px; color: var(--kn-text-secondary); background: transparent; padding: 4px 3px; white-space: nowrap; cursor: pointer; }
+.attention-filters { display: flex; gap: 2px; flex-wrap: nowrap; }
 .attention-filters button[aria-pressed="true"] { color: var(--kn-accent); background: var(--kn-bg-accent-subtle); }
 
 .task-attention-marker { color: var(--kn-accent); font-weight: 700; font-style: normal; }
@@ -1355,6 +1370,18 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, visi
 .btn-icon:hover {
   background: var(--kn-bg-hover);
   color: var(--kn-text-primary);
+}
+
+.btn-add-repo {
+  flex: 0 0 24px;
+  margin-left: auto;
+  font-size: 14px;
+  padding: 0 4px;
+}
+
+.btn-add-repo:focus-visible {
+  outline: 2px solid var(--kn-accent);
+  outline-offset: 2px;
 }
 
 .btn-add-task {

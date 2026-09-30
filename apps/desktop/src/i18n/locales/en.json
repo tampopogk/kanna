@@ -198,6 +198,7 @@
     "transfer": "Task Transfer Shortcuts"
   },
   "sidebar": {
+    "addRepo": "Add repository",
     "filterTasks": "Filter tasks",
     "filterAll": "All",
     "filterUnread": "Unread",

@@ -198,6 +198,7 @@
     "transfer": "タスク転送ショートカット"
   },
   "sidebar": {
+    "addRepo": "リポジトリを追加",
     "filterTasks": "タスクを絞り込む",
     "filterAll": "すべて",
     "filterUnread": "未読",

@@ -680,6 +680,7 @@ const modalLayerController = {
         :blocker-task-states="sidebarBlockerTaskStates"
         @select-repo="handleSelectRepo"
         @select-item="selectSidebarItemById"
+        @add-repo="keyboardActions.importRepo"
         @new-task="(repoId: string) => openNewTaskModal(repoId).catch((e) => console.error('[App] openNewTaskModal failed:', e))"
         @pin-item="pinSidebarTask"
         @unpin-item="unpinSidebarTask"
