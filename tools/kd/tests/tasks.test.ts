@@ -480,6 +480,7 @@ describe("task executors", () => {
     const repoRoot = await kdTestScratchDir("kanna-kd-dev-up-staging-creds-");
     const home = await kdTestScratchDir("kanna-kd-dev-up-staging-creds-home-");
     await mkdir(join(repoRoot, "apps", "desktop", "src-tauri"), { recursive: true });
+    await mkdir(join(repoRoot, "node_modules"), { recursive: true });
     await writeFile(
       join(repoRoot, "firebase.json"),
       JSON.stringify({ functions: { source: "services/firebase-functions" }, emulators: {} })
@@ -488,6 +489,7 @@ describe("task executors", () => {
     const calls: Array<{ command: string; args: string[]; env?: NodeJS.ProcessEnv; stdin?: string }> = [];
     const runner: CommandRunner = {
       async run(command, args, options) {
+        if (command === "zig") return { exitCode: 0, stdout: "0.16.0", stderr: "" };
         calls.push({ command, args, env: options?.env, stdin: options?.stdin });
         if (args.includes("list-windows")) {
           return { exitCode: 0, stdout: "desktop\n", stderr: "" };
@@ -561,6 +563,7 @@ describe("task executors", () => {
   it("reconciles a running worktree session when the desktop cloud profile changes", async () => {
     const repoRoot = await kdTestScratchDir("kanna-kd-dev-profile-switch-");
     await mkdir(join(repoRoot, "apps", "desktop", "src-tauri"), { recursive: true });
+    await mkdir(join(repoRoot, "node_modules"), { recursive: true });
     await writeFile(
       join(repoRoot, "firebase.json"),
       JSON.stringify({ functions: { source: "services/firebase-functions" }, emulators: {} })
@@ -571,6 +574,7 @@ describe("task executors", () => {
     let panePid = 100;
     const runner: CommandRunner = {
       async run(command, args, options) {
+        if (command === "zig") return { exitCode: 0, stdout: "0.16.0", stderr: "" };
         calls.push({ command, args, env: options?.env });
         if (args.includes("new-session")) {
           if (sessionExists) {
@@ -722,6 +726,7 @@ describe("task executors", () => {
     const repoRoot = await kdTestScratchDir("kanna-kd-dev-up-creds-");
     const home = await kdTestScratchDir("kanna-kd-dev-up-creds-home-");
     await mkdir(join(repoRoot, "apps", "desktop", "src-tauri"), { recursive: true });
+    await mkdir(join(repoRoot, "node_modules"), { recursive: true });
     await writeFile(
       join(repoRoot, "firebase.json"),
       JSON.stringify({ functions: { source: "services/firebase-functions" }, emulators: {} })
@@ -729,6 +734,7 @@ describe("task executors", () => {
     const calls: Array<{ command: string; args: string[]; env?: NodeJS.ProcessEnv; stdin?: string }> = [];
     const runner: CommandRunner = {
       async run(command, args, options) {
+        if (command === "zig") return { exitCode: 0, stdout: "0.16.0", stderr: "" };
         calls.push({ command, args, env: options?.env, stdin: options?.stdin });
         if (args.includes("list-windows")) {
           return { exitCode: 0, stdout: "desktop\n", stderr: "" };

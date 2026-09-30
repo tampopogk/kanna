@@ -13,6 +13,21 @@ export interface SetupResult {
   checks: SetupCheck[];
 }
 
+// The pinned Ghostty commit behind libghostty-vt-sys refuses to build on older Zig.
+export const MINIMUM_ZIG_VERSION = "0.16.0";
+
+function versionAtLeast(version: string, minimum: string): boolean {
+  const parse = (value: string) => value.match(/\d+(?:\.\d+)+/)?.[0].split(".").map(Number) ?? null;
+  const actual = parse(version);
+  const required = parse(minimum);
+  if (!actual || !required) return false;
+  for (let i = 0; i < Math.max(actual.length, required.length); i += 1) {
+    const difference = (actual[i] ?? 0) - (required[i] ?? 0);
+    if (difference !== 0) return difference > 0;
+  }
+  return true;
+}
+
 async function commandVersion(runner: CommandRunner, command: string, args: string[]): Promise<string | null> {
   const result = await runner.run(command, args);
   if (result.exitCode !== 0) return null;
@@ -63,12 +78,22 @@ export async function checkSetupPrerequisites(
     ["pnpm", "pnpm", ["--version"]],
     ["bazel", "bazel", ["version"]],
     ["git", "git", ["--version"]],
-    ["zig", "zig", ["version"]],
     ["tmux", "tmux", ["-V"]]
   ] as const) {
     const version = await commandVersion(runner, command, [...args]);
     checks.push({ name, ok: version !== null, message: version ?? `missing command: ${command}` });
   }
+
+  const zig = await commandVersion(runner, "zig", ["version"]);
+  checks.push({
+    name: "zig",
+    ok: zig !== null && versionAtLeast(zig, MINIMUM_ZIG_VERSION),
+    message: zig === null
+      ? "missing command: zig"
+      : versionAtLeast(zig, MINIMUM_ZIG_VERSION)
+        ? zig
+        : `zig ${zig} is older than the required ${MINIMUM_ZIG_VERSION} (libghostty-vt build); upgrade with: brew upgrade zig`
+  });
 
   checks.push({
     name: "node_modules",

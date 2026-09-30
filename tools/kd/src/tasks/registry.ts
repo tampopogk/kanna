@@ -710,6 +710,17 @@ export async function executeDevUpWithContext(input: DevUpInput, executor: Execu
     mobileServerUrl: resolveMobileServerUrl(env)
   });
 
+  if (!input.remote) {
+    const prerequisites = await checkSetupPrerequisites(executor.runner, executor.context.repoRoot);
+    if (!prerequisites.ok) {
+      const failed = prerequisites.checks.filter((check) => !check.ok);
+      throw new Error(
+        "dev up cannot build: missing or outdated prerequisites:\n" +
+        failed.map((check) => `  - ${check.name}: ${check.message}`).join("\n")
+      );
+    }
+  }
+
   await startTmuxSession(executor.runner, executor.context.tmux, plan.windows, {
     reconcileKey: `dev:${formatEnvironmentProfile(profile)}`
   });
