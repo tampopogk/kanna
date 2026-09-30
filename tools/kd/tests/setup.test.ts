@@ -7,7 +7,7 @@ function recordingRunner(results: Record<string, CommandResult>): { runner: Comm
   const runner: CommandRunner = {
     async run(command, args) {
       commands.push([command, ...args].join(" "));
-      return results[command] ?? { exitCode: 0, stdout: `${command} ok`, stderr: "" };
+      return results[command] ?? (command === "zig" ? { exitCode: 0, stdout: "0.16.0", stderr: "" } : { exitCode: 0, stdout: `${command} ok`, stderr: "" });
     }
   };
   return { runner, commands };
@@ -57,5 +57,21 @@ describe("checkSetupPrerequisites", () => {
         expect(names).toContain(shared);
       }
     }
+  });
+
+  it("rejects a Zig older than the libghostty-vt build requires", async () => {
+    const { runner } = recordingRunner({ zig: { exitCode: 0, stdout: "0.15.2\n", stderr: "" } });
+    const result = await checkSetupPrerequisites(runner, "/repo", "darwin");
+
+    const zig = result.checks.find((check) => check.name === "zig");
+    expect(result.ok).toBe(false);
+    expect(zig?.ok).toBe(false);
+    expect(zig?.message).toContain("0.16.0");
+  });
+
+  it("accepts a newer Zig", async () => {
+    const { runner } = recordingRunner({ zig: { exitCode: 0, stdout: "0.16.1\n", stderr: "" } });
+    const result = await checkSetupPrerequisites(runner, "/repo", "darwin");
+    expect(result.checks.find((check) => check.name === "zig")?.ok).toBe(true);
   });
 });
