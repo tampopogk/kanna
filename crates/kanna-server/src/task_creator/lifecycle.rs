@@ -2776,6 +2776,24 @@ pub(crate) async fn kill_session_replacing(
     replacements: &SessionReplacements,
     session_id: &str,
 ) -> Result<(), String> {
+    // Task lifecycle operations name the prewarmed shell. Also retire every
+    // additional shell in that worktree before it is replaced or removed.
+    if session_id.starts_with("shell-wt-") && !session_id.contains(':') {
+        let sessions = match daemon
+            .send_command_retrying_successor(&DaemonCommand::List)
+            .await
+        {
+            Ok(DaemonEvent::SessionList { sessions }) => sessions,
+            other => return Err(format!("failed to list worktree shells: {other:?}")),
+        };
+        let prefix = format!("{session_id}:");
+        for session in sessions {
+            if session.session_id.starts_with(&prefix) {
+                kill_session_replacing_for_run(daemon, replacements, &session.session_id, None)
+                    .await?;
+            }
+        }
+    }
     kill_session_replacing_for_run(daemon, replacements, session_id, None).await
 }
 
@@ -4299,6 +4317,69 @@ mod lifecycle_operation_tests {
             composer_attestation: Default::default(),
             attempt_id: None,
         }
+    }
+
+    #[tokio::test]
+    async fn worktree_shell_cleanup_kills_all_instances_but_not_other_tasks_or_repo_shells() {
+        let daemon_dir = crate::test_paths::unique_test_path("multi-shell-cleanup");
+        std::fs::create_dir_all(&daemon_dir).unwrap();
+        let listener =
+            UnixListener::bind(kanna_runtime_defaults::socket_path(&daemon_dir)).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            let mut reader = BufReader::new(read);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            assert!(matches!(
+                serde_json::from_str::<Command>(&line).unwrap(),
+                Command::List
+            ));
+            let response = Event::SessionList {
+                sessions: [
+                    "shell-wt-task-1",
+                    "shell-wt-task-1:first",
+                    "shell-wt-task-1:second",
+                    "shell-wt-task-10:other",
+                    "shell-repo-repo-1:other",
+                ]
+                .map(|id| live_session(id, "/repo"))
+                .to_vec(),
+            };
+            write
+                .write_all(format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes())
+                .await
+                .unwrap();
+            for expected in [
+                "shell-wt-task-1:first",
+                "shell-wt-task-1:second",
+                "shell-wt-task-1",
+            ] {
+                line.clear();
+                reader.read_line(&mut line).await.unwrap();
+                assert!(
+                    matches!(serde_json::from_str::<Command>(&line).unwrap(), Command::Kill { session_id } if session_id == expected)
+                );
+                write
+                    .write_all(
+                        format!("{}\n", serde_json::to_string(&Event::Ok).unwrap()).as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+        let mut daemon = DaemonClient::connect(daemon_dir.to_str().unwrap())
+            .await
+            .unwrap();
+        super::kill_session_replacing(
+            &mut daemon,
+            &crate::session_replacements::SessionReplacements::default(),
+            "shell-wt-task-1",
+        )
+        .await
+        .unwrap();
+        server.await.unwrap();
+        std::fs::remove_dir_all(daemon_dir).unwrap();
     }
 
     /// Answer the single `List` startup reconciliation asks for. This is the

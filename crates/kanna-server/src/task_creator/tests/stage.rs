@@ -4410,6 +4410,11 @@ async fn stage_spawn_opens_its_submitted_phase_at_the_daemon_boundary() {
             let command =
                 serde_json::from_str::<kanna_daemon::protocol::Command>(line.trim()).unwrap();
             let response = match &command {
+                kanna_daemon::protocol::Command::List => {
+                    kanna_daemon::protocol::Event::SessionList {
+                        sessions: Vec::new(),
+                    }
+                }
                 kanna_daemon::protocol::Command::Snapshot { session_id } => {
                     kanna_daemon::protocol::Event::Error {
                         code: Some(kanna_daemon::protocol::ErrorCode::SessionNotFound),

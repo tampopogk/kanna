@@ -395,6 +395,10 @@ function onTabClosed(tab: MainTab) {
   // The shell is how an operator installs an agent CLI before they have any
   // repositories, so closing it is the moment to look again.
   if (tab.kind === "preview") previewCache.value?.discard(tabKey(tab));
+  if (tab.kind === "shell" && tab.shellInstance) {
+    void invoke("kill_session", { sessionId: shellSessionId(tab) })
+      .catch(error => console.error("[shell] failed to close session:", error));
+  }
   if (tab.kind === "shell" && !props.hasRepos) void checkAllClis();
 }
 
@@ -501,11 +505,12 @@ function fileViewProps(tab: MainTab) {
 }
 
 function shellSessionId(tab: MainTab): string {
+  const suffix = tab.shellInstance ? `:${tab.shellInstance}` : "";
   if (tab.shellScope === "repo") {
     const repoId = scopeRepoId.value;
-    return repoId ? `shell-repo-${repoId}` : "shell-home";
+    return (repoId ? `shell-repo-${repoId}` : "shell-home") + suffix;
   }
-  return item.value ? `shell-wt-${item.value.id}` : "";
+  return item.value ? `shell-wt-${item.value.id}${suffix}` : "";
 }
 
 function shellCwd(tab: MainTab): string {

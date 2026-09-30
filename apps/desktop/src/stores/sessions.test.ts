@@ -481,11 +481,11 @@ describe("createSessionsApi", () => {
     expect(context.services.reloadSnapshot).toHaveBeenCalledOnce();
   });
 
-  it("passes task-scoped Kanna CLI env to worktree shell sessions", async () => {
+  it.each(["shell-wt-task-1", "shell-wt-task-1:extra-shell"])("passes task-scoped Kanna CLI env to %s", async (sessionId) => {
     const sessions = createSessionsApi(makeContext());
 
     await sessions.spawnShellSession(
-      "shell-wt-task-1",
+      sessionId,
       "/tmp/repo/.kanna-worktrees/task-1",
       JSON.stringify({ KANNA_DEV_PORT: "1421" }),
       true,
@@ -493,7 +493,7 @@ describe("createSessionsApi", () => {
     );
 
     expect(mocks.invokeMock).toHaveBeenCalledWith("spawn_session", expect.objectContaining({
-      sessionId: "shell-wt-task-1",
+      sessionId,
       cwd: "/tmp/repo/.kanna-worktrees/task-1",
       env: expect.objectContaining({
         COLORTERM: "truecolor",

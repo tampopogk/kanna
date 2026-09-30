@@ -62,6 +62,8 @@ export interface MainTabDescriptor {
   remoteContent?: string | null;
   /** `shell` tabs: which shell this is. Defaults to the task worktree. */
   shellScope?: ShellTabScope;
+  /** Additional shells keep a stable identity across tab moves and restarts. */
+  shellInstance?: string;
   /** `image` tabs: the URL of the image to show. */
   imageUrl?: string;
   /**
@@ -185,6 +187,7 @@ function persistedDescriptor(tab: MainTabDescriptor): MainTabDescriptor {
   if (tab.filePath !== undefined) descriptor.filePath = tab.filePath;
   if (tab.initialLine !== undefined) descriptor.initialLine = tab.initialLine;
   if (tab.shellScope !== undefined) descriptor.shellScope = tab.shellScope;
+  if (typeof tab.shellInstance === "string" && /^[a-zA-Z0-9-]+$/.test(tab.shellInstance)) descriptor.shellInstance = tab.shellInstance;
   if (tab.artifactRepoId !== undefined) descriptor.artifactRepoId = tab.artifactRepoId;
   if (tab.artifactId !== undefined) descriptor.artifactId = tab.artifactId;
   if (typeof tab.artifactShownId === "string" && tab.artifactShownId) descriptor.artifactShownId = tab.artifactShownId;
@@ -266,7 +269,8 @@ export function mainTabId(descriptor: MainTabDescriptor): string {
     case "editor":
       return `editor:${descriptor.editorSession?.sessionId ?? ""}`;
     case "shell":
-      return descriptor.shellScope === "repo" ? "shell:repo" : "shell";
+      return (descriptor.shellScope === "repo" ? "shell:repo" : "shell")
+        + (descriptor.shellInstance ? `:${descriptor.shellInstance}` : "");
     case "file":
       return `file:${descriptor.filePath ?? ""}`;
     case "preview":
@@ -575,7 +579,7 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     if (id !== AGENT_TAB_ID) state.referenceId = id;
   }
 
-  /** Opens the view, or focuses it when it is already open. Returns its id. */
+  /** Opens a new shell, or opens/focuses another view. Returns its id. */
   function openTab(descriptor: MainTabDescriptor, options?: { activate?: boolean }): string | null {
     const key = scopeKey.value;
     if (!key) return null;
@@ -595,6 +599,12 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
   ): string {
     const state = scopeState(key);
     const layout = ensureLayout(state);
+    // The first shell reuses the prewarmed session. Each subsequent open
+    // creates an independent terminal; explicit identities reattach on restore.
+    if (descriptor.kind === "shell" && !descriptor.shellInstance
+      && state.tabs.some(tab => tab.id === mainTabId(descriptor))) {
+      descriptor = { ...descriptor, shellInstance: crypto.randomUUID() };
+    }
     const id = mainTabId(descriptor);
     const existing = state.tabs.findIndex((tab) => tab.id === id);
     if (existing === -1) {
