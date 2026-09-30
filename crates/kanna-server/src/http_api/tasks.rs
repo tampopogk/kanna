@@ -1011,27 +1011,16 @@ pub(super) async fn create_task_with_requested_id(
     payload: crate::mobile_api::CreateTaskRequest,
     requested_task_id: Option<String>,
 ) -> Result<Json<crate::mobile_api::CreateTaskResponse>, (axum::http::StatusCode, String)> {
-    let task_id = match requested_task_id {
-        Some(id) => id,
-        None => crate::task_creator::generate_task_id()
-            .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error))?,
-    };
-    crate::creation_progress::begin(&task_id);
-    let result = create_task_with_requested_id_and_inputs(
+    create_task_with_requested_id_and_inputs(
         state,
         payload,
-        Some(task_id.clone()),
+        requested_task_id,
         Vec::new(),
         None,
         Vec::new(),
         None,
     )
-    .await;
-    crate::creation_progress::finish(
-        &task_id,
-        result.as_ref().err().map(|(_, error)| error.as_str()),
-    );
-    result
+    .await
 }
 
 fn persist_transferred_task_context(
@@ -1154,6 +1143,43 @@ fn record_carried_import(
 }
 
 async fn create_task_with_requested_id_and_inputs(
+    state: Arc<AppState>,
+    payload: crate::mobile_api::CreateTaskRequest,
+    requested_task_id: Option<String>,
+    imported_inputs: Vec<crate::db::ImportedTaskInput>,
+    transfer_payload: Option<crate::transfer_engine::payload::OutgoingTransferPayload>,
+    stage_edges: Vec<crate::db::NewStageEdge>,
+    carried_task_state: Option<crate::transfer_engine::task_state::ImportedTaskState>,
+) -> Result<Json<crate::mobile_api::CreateTaskResponse>, (axum::http::StatusCode, String)> {
+    let task_id = match requested_task_id {
+        Some(id) => {
+            validate_requested_task_id(&id)?;
+            id
+        }
+        None => crate::task_creator::generate_task_id()
+            .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error))?,
+    };
+    // Every creation entry point, including the desktop PUT route with stage
+    // dependencies, must own the progress lifetime around preparation/spawn.
+    crate::creation_progress::begin(&task_id);
+    let result = create_task_with_inputs_inner(
+        state,
+        payload,
+        Some(task_id.clone()),
+        imported_inputs,
+        transfer_payload,
+        stage_edges,
+        carried_task_state,
+    )
+    .await;
+    crate::creation_progress::finish(
+        &task_id,
+        result.as_ref().err().map(|(_, error)| error.as_str()),
+    );
+    result
+}
+
+async fn create_task_with_inputs_inner(
     state: Arc<AppState>,
     payload: crate::mobile_api::CreateTaskRequest,
     requested_task_id: Option<String>,

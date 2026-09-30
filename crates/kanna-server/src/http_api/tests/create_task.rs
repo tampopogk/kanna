@@ -176,6 +176,13 @@ async fn assert_created_task_overrides_reach_daemon_spawn(
         .await
         .unwrap();
     let created: CreateTaskResponse = from_slice(&body).unwrap();
+    let progress = crate::creation_progress::read(&created.task_id)
+        .expect("POST creation must retain its startup transcript");
+    assert_eq!(progress.status, "succeeded");
+    assert!(progress
+        .output
+        .contains("Creating workspace / git worktree"));
+    assert!(progress.output.contains("Starting agent"));
     let detail =
         crate::mobile_api::MobileApi::new(config.clone(), Db::open(&config.db_path).unwrap())
             .get_task(&created.task_id)
@@ -2598,4 +2605,83 @@ async fn create_task_route_persists_blocker_without_daemon_spawn() {
 
     let _ = std::fs::remove_dir_all(&daemon_dir);
     let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[tokio::test]
+async fn put_task_records_creation_progress_through_success_and_failure() {
+    for failed in [false, true] {
+        let task_id = if failed { "c9ea7102" } else { "c9ea7101" };
+        let app = super::test_router_with_task_creator(
+            "creation-progress-route",
+            "Studio Mac",
+            Arc::new(move |payload| {
+                let live = crate::creation_progress::read(task_id)
+                    .expect("desktop PUT must begin progress before preparing the task");
+                assert_eq!(live.status, "running");
+                crate::creation_progress::scoped(task_id, || {
+                    crate::creation_progress::phase("Running workspace setup");
+                    crate::creation_progress::output("SETUP_OUTPUT\n");
+                });
+                if failed {
+                    return Err("controlled setup failure".into());
+                }
+                Ok(CreateTaskResponse {
+                    task_id: task_id.into(),
+                    repo_id: payload.repo_id,
+                    title: payload.prompt.clone(),
+                    prompt: payload.prompt,
+                    stage: "in progress".into(),
+                    agent_type: "pty".into(),
+                    worktree_path: None,
+                })
+            }),
+        );
+        let response = app
+            .clone()
+            .oneshot(
+                Request::put(format!("/v1/tasks/{task_id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "repoId": "repo-1", "prompt": "Show startup steps"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            if failed {
+                StatusCode::INTERNAL_SERVER_ERROR
+            } else {
+                StatusCode::OK
+            }
+        );
+        let response = app
+            .oneshot(
+                Request::get(format!("/v1/tasks/{task_id}/creation-progress"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let progress: serde_json::Value = from_slice(&bytes).unwrap();
+        assert_eq!(
+            progress["status"],
+            if failed { "failed" } else { "succeeded" }
+        );
+        assert!(progress["output"]
+            .as_str()
+            .unwrap()
+            .contains("SETUP_OUTPUT"));
+        if failed {
+            assert_eq!(progress["error"], "controlled setup failure");
+        }
+    }
 }
