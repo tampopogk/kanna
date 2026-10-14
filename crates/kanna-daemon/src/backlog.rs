@@ -278,7 +278,7 @@ struct Agent {
 
 const AGENTS: &[Agent] = &[
     Agent { names: &["claude"], unprompted: Some("--dangerously-skip-permissions"), prompt: None, named: Some("--session-id"), resume: "--resume", latest: Some("--continue"), find: None, compact: None },
-    Agent { names: &["codex"], unprompted: Some("--yolo"), prompt: None, named: None, resume: "resume", latest: Some("resume --last"), find: None, compact: Some("-c model_auto_compact_token_limit=") },
+    Agent { names: &["codex"], unprompted: Some("--yolo"), prompt: None, named: None, resume: "resume", latest: Some("resume --last"), find: Some(codex_session), compact: Some("-c model_auto_compact_token_limit=") },
     Agent { names: &["copilot"], unprompted: Some("--yolo"), prompt: Some("-i"), named: Some("--session-id"), resume: "--session-id", latest: None, find: Some(copilot_session), compact: None },
     Agent { names: &["opencode"], unprompted: None, prompt: Some("--prompt"), named: None, resume: "--session", latest: None, find: Some(opencode_session), compact: None },
     Agent { names: &["agy", "antigravity"], unprompted: Some("--dangerously-skip-permissions"), prompt: Some("-i"), named: None, resume: "--conversation", latest: Some("--continue"), find: None, compact: None },
@@ -317,6 +317,44 @@ fn latest_copilot_session(state: &Path, folder: &Path) -> Option<String> {
         .collect();
     sessions.sort();
     sessions.pop().map(|(_, id)| id)
+}
+
+fn codex_session(folder: &Path) -> Option<String> {
+    let codex = std::env::var_os("CODEX_HOME").filter(|d| !d.is_empty()).map_or_else(|| home().join(".codex"), PathBuf::from);
+    latest_codex_session(&codex.join("sessions"), folder, fs::metadata(folder).and_then(|m| m.created()).ok())
+}
+
+fn latest_codex_session(sessions: &Path, folder: &Path, since: Option<SystemTime>) -> Option<String> {
+    let newest_first = |dir: &Path| {
+        let mut paths: Vec<PathBuf> = fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).collect();
+        paths.sort_by(|a, b| b.cmp(a));
+        paths
+    };
+    let days = newest_first(sessions).into_iter().flat_map(|year| newest_first(&year)).flat_map(|month| newest_first(&month)).filter(|day| day.is_dir());
+    let before = |path: &Path| since.zip(fs::metadata(path).and_then(|m| m.modified()).ok()).is_some_and(|(since, at)| at < since);
+    for day in days.take_while(|day| !before(day)) {
+        for rollout in newest_first(&day) {
+            let name = rollout.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if !(name.starts_with("rollout-") && name.ends_with(".jsonl")) || before(&rollout) {
+                continue;
+            }
+            let Some(meta) = first_line(&rollout).and_then(|line| serde_json::from_str::<Value>(&line).ok()) else { continue };
+            let Some(payload) = meta.get("payload").filter(|_| string(&meta, "type") == Some("session_meta")) else { continue };
+            if string(payload, "cwd").is_some_and(|cwd| same_folder(Path::new(cwd), folder)) {
+                if let Some(id) = string(payload, "id").filter(|id| !id.is_empty()) {
+                    return Some(id.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn first_line(file: &Path) -> Option<String> {
+    use std::io::{BufRead, Read};
+    let mut line = String::new();
+    std::io::BufReader::new(fs::File::open(file).ok()?.take(4 << 20)).read_line(&mut line).ok()?;
+    Some(line)
 }
 
 fn opencode_session(folder: &Path) -> Option<String> {
@@ -953,6 +991,27 @@ impl Backlog {
             } else {
                 turn.see(status, Instant::now());
             }
+        }
+        self.find_session(pane);
+    }
+
+    fn find_session(&self, pane: &str) {
+        let found = |entry: &Entry| Some(entry).filter(|e| e.session.is_none() && e.folder.is_some()).map(|e| e.clone().resumable()).filter(|e| e.session.is_some());
+        let running = self.running.borrow().iter().find(|r| r.pane == pane).map(|r| (r.entry.clone(), r.place));
+        let (entry, place) = match running {
+            Some((entry, place)) => (found(&entry), place),
+            None => (self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).and_then(found), Place::Backlog),
+        };
+        let Some(entry) = entry else { return };
+        let _ = self.store(&entry, place, Some(pane), Some(Change::new("session").by(Some("daemon")).with("session", opt(entry.session.as_deref()))));
+        if let Some(r) = self.running.borrow_mut().iter_mut().find(|r| r.pane == pane) {
+            r.entry.session = entry.session.clone();
+        }
+        if let Some(found) = self.entries.borrow_mut().iter_mut().find(|e| e.id == entry.id) {
+            found.session = entry.session.clone();
+        }
+        if let Some(core) = self.core.upgrade() {
+            core.set_command(pane, entry.command(None));
         }
     }
 
@@ -2465,13 +2524,32 @@ mod tests {
     }
 
     #[test]
-    fn a_codex_task_resumes_the_latest_session_in_its_worktree() {
+    fn a_codex_task_resumes_its_own_session_and_the_latest_only_until_it_s_found() {
         let mut entry = started("codex");
         assert_eq!(entry.command(Some("u")), format!("codex --yolo --no-daemon {}", told_task(Some("go"))), "codex can't be given a session ID");
         entry.folder = Some("/r/.kanna-worktrees/task-0000c0de".into());
         assert_eq!(entry.command(None), "codex --yolo --no-daemon resume --last");
-        entry.session = Some("019f".into());
-        assert_eq!(entry.command(None), "codex --yolo --no-daemon resume '019f'");
+        entry.session = Some("01a13ca7-c348-70f2-82e8-f27af07b17f5".into());
+        assert_eq!(entry.command(None), "codex --yolo --no-daemon resume '01a13ca7-c348-70f2-82e8-f27af07b17f5'");
+    }
+
+    #[test]
+    fn codex_sessions_are_found_by_worktree_newest_first() {
+        let dir = std::env::temp_dir().join(format!("kanna-codex-sessions-{}", std::process::id()));
+        let (here, there, sessions) = (dir.join("here"), dir.join("there"), dir.join("sessions"));
+        fs::create_dir_all(&here).unwrap();
+        for (day, at, id, cwd) in [("2026/09/30", "2026-09-30T23-00-00", "old", &here), ("2026/10/02", "2026-10-02T08-00-00", "new", &here), ("2026/10/02", "2026-10-02T09-00-00", "other", &there)] {
+            fs::create_dir_all(sessions.join(day)).unwrap();
+            let meta = json!({ "timestamp": at, "type": "session_meta", "payload": { "id": id, "cwd": cwd, "base_instructions": { "text": "x".repeat(50_000) } } });
+            fs::write(sessions.join(day).join(format!("rollout-{at}-{id}.jsonl")), format!("{meta}\n{{\"type\":\"event_msg\"}}\n")).unwrap();
+        }
+        fs::write(sessions.join("2026/10/02/notes.txt"), "").unwrap();
+        assert_eq!(latest_codex_session(&sessions, &here, None), Some("new".into()));
+        assert_eq!(latest_codex_session(&sessions, &there, None), Some("other".into()));
+        assert_eq!(latest_codex_session(&sessions, &dir.join("nowhere"), None), None);
+        let later = SystemTime::now() + Duration::from_secs(60);
+        assert_eq!(latest_codex_session(&sessions, &here, Some(later)), None, "a session older than the worktree isn't its");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
