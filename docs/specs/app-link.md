@@ -16,7 +16,7 @@ The app is a client of the daemon, like the CLI, but it stays connected: it show
 
 **The control protocol's wire.** One JSON object per line, both ways. A message with `cmd` is a request, `{"id", "cmd", "args"}`; with an `id` it wants a reply, `{"id", "ok": true, …}` or `{"id", "ok": false, "error": {"code", "message"}}`, and without one it's a notice that gets none. Each side numbers its own requests, and a reply goes to the side that asked. Terminal bytes are base64 in a `data` field.
 
-**Saying it's the app.** The app's first line is `{"id": 0, "cmd": "app.hello", "args": {"pid", "build"}}`. The daemon answers `{"id": 0, "ok": true, "daemon": {"pid", "build"}, "panes": [{"id", "name", "type"}, …], "layout": {…}}`, listing every pane and the layout as it is, and the connection is the app link from then on. One app at a time: a second gets `app_attached` and is closed. If the daemon goes away, the app keeps trying to connect, and on reconnecting says hello and attaches its terminals again.
+**Saying it's the app.** The app's first line is `{"id": 0, "cmd": "app.hello", "args": {"pid", "build", "keepsSocket": true}}`. The daemon answers `{"id": 0, "ok": true, "listener": true, "daemon": {"pid", "build"}, "panes": [{"id", "name", "type"}, …], "layout": {…}}`, listing every pane and the layout as it is, with a copy of its listening socket on the line (`SCM_RIGHTS`) when the app keeps it ([daemon socket](daemon-socket.md)), and the connection is the app link from then on. One app at a time: a second gets `app_attached` and is closed. If the daemon goes away, the app starts the next one on the socket it keeps, and on reconnecting says hello and attaches its terminals again.
 
 **The daemon follows the app's build.** `build` is the SHA-256 of the daemon binary. With no app attached, a hello of another build gets `other_build` and the daemon stops as on SIGTERM; the app then starts its own, which adopts every terminal. A hello without `build` is accepted. Detail: [daemon build](daemon-build.md).
 
@@ -49,7 +49,7 @@ sequenceDiagram
 
 | Message | From | What it says |
 |---|---|---|
-| `app.hello {pid, build}` | app | I'm the app, of this build; the reply accepts or refuses it (`app_attached`, `other_build`) and has the daemon's panes and layout |
+| `app.hello {pid, build, keepsSocket}` | app | I'm the app, of this build, and I keep the socket; the reply accepts or refuses it (`app_attached`, `other_build`), has the daemon's panes and layout, and carries the listener when accepted or refused for another build |
 | `layout {windows, …}` | daemon | the layout changed; this is the whole view to draw ([layout](layout.md)) |
 | `attach {terminal}` / `detach {terminal}` | app | I show (or no longer show) this terminal, by its terminal ID (`term-41`, [presentation layers](presentation-layers.md#3-ids)) |
 | `snapshot {terminal, data}` | daemon | the terminal's whole screen as a GHOSTSNP snapshot; sent on attach, before anything else for that terminal |
@@ -83,8 +83,9 @@ sequenceDiagram
 
 Kanna.app carries the daemon, the keeper and the `kanna` CLI in `Contents/Helpers`, and nothing else has to be run first.
 
-- **When:** at launch, as soon as nothing answers on the daemon socket; after losing a daemon it was attached to, once nothing has answered for 2 s (so a daemon being restarted on purpose gets there first). At most one start every 10 s. The daemon's lock makes a race harmless: a second daemon on the folder exits ([restarting](daemon-restart.md#1-files-on-disk)).
-- **How:** in its own session (`setsid`), so it outlives the app; signals back to their defaults; no descriptors of the app's; stdin from `/dev/null`, stdout and stderr appended to `daemon.log` in the state folder. It gets the app's environment without `KANNA_*` and `KMUX_*` (only `KANNA_STATE_DIR` and `KANNA_DEBUG` pass), plus `KANNA_SOCKET` and `KANNA_KEEPER` (the bundled keeper). The daemon then starts the keeper.
+- **The app keeps the daemon's socket** ([daemon socket](daemon-socket.md)): it binds `kanna.sock` itself when nothing answers, or takes a copy of the listener from the daemon's `hello` reply (`keepsSocket`), and hands it to each daemon it starts. While the app runs the socket always answers: a connection made while no daemon runs waits in its queue for the next one.
+- **When:** at launch, as soon as nothing answers on the daemon socket; after losing a daemon, at once. At most one start every 10 s, a later one made when it's due. The daemon's lock makes a race harmless: a second daemon on the folder exits ([restarting](daemon-restart.md#1-files-on-disk)).
+- **How:** in its own session (`setsid`), so it outlives the app; signals back to their defaults; no descriptors of the app's but the socket's listener, as fd 3; stdin from `/dev/null`, stdout and stderr appended to `daemon.log` in the state folder. It gets the app's environment without `KANNA_*` and `KMUX_*` (only `KANNA_STATE_DIR` and `KANNA_DEBUG` pass), plus `KANNA_SOCKET`, `KANNA_LISTEN_FD=3` and `KANNA_KEEPER` (the bundled keeper). The daemon then starts the keeper.
 - **Quitting the app** leaves the daemon and its terminals running; the next launch attaches to it if it's the same build, and replaces it if not.
 - **Why the app and not launchd:** the daemon is needed only when the app or the CLI is, and the app knows the socket and state folder it uses. A launch agent would add install steps and a second definition of both. On Linux, which has no app yet, the daemon is started by hand.
 - **The first terminal.** When the first attach after launch leaves the layout empty, the app opens a terminal, as kmux opens a window. Reopening the app from the Dock with nothing open does the same. `KANNA_NO_INITIAL_WINDOW=1` turns it off (the e2e scenarios set it).

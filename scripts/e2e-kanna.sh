@@ -3339,6 +3339,29 @@ done_leaves_no_window() {
   check wait_for 5 eval '[[ "$(leftovers)" == "0 0" ]]' || { echo "done_leaves_no_window: windows and panes left: $(leftovers)"; kanna workspace list --all; return 1; }
 }
 
+scenario restart_while_desk_opens M4
+restart_while_desk_opens() {
+  local repo="$KANNA_STATE_DIR/repo"
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "restart_while_desk_opens line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  "$app" --bg >>"$out/app.log" 2>&1 &
+  app_pid=$!
+  wait_for 15 app_attached || { echo "restart_while_desk_opens: the app did not start its daemon and attach"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$2\"}}" | field "$1"; }
+  local daemon opened w planner
+  daemon="$(cat "$KANNA_STATE_DIR/daemon.pid")"
+  opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "restart_while_desk_opens line $LINENO: $opened"; return 1; }
+  w="${BASH_REMATCH[1]}"
+  check wait_for 10 eval '[[ "$(desk lead "$w")" == term-* ]]' || { echo "restart_while_desk_opens: no planning terminal"; kanna workspace list --all; return 1; }
+  planner="$(desk lead "$w")"
+  kill "$daemon" || { echo "restart_while_desk_opens line $LINENO"; return 1; }
+  wait_for 5 eval "! kill -0 $daemon" || { echo "restart_while_desk_opens: the daemon didn't stop"; return 1; }
+  kanna workspace list --all >/dev/null || { echo "restart_while_desk_opens: a call made while no daemon ran wasn't answered"; return 1; }
+  check wait_for 15 eval '[[ "$(cat "$KANNA_STATE_DIR/daemon.pid")" != "$daemon" ]] && app_attached' || { echo "restart_while_desk_opens: the app didn't start the next daemon"; return 1; }
+  check wait_for 20 eval 'shows "$planner" "No agent Kanna knows is installed" || shows "$planner" "Choose an agent"' || { echo "restart_while_desk_opens: the planning terminal didn't get past agent setup"; kanna read "$planner"; return 1; }
+  ! shows "$planner" "nothing answers" || { echo "restart_while_desk_opens: the planning terminal ran while nothing answered"; kanna read "$planner"; return 1; }
+}
+
 for s in ${only[@]+"${only[@]}"}; do due "$s" >/dev/null || { echo "e2e-kanna: no scenario named $s (see --help)" >&2; exit 2; }; done
 if [[ ${#only[@]} -gt 0 ]]; then run=("${only[@]}"); else run=("${scenarios[@]%%:*}"); fi
 passed=0 failed=0

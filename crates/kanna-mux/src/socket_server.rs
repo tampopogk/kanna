@@ -1,7 +1,7 @@
 use crate::error::KmuxError;
 use crate::json::{encode, json, Value};
 use std::io::{BufRead, BufReader};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -34,6 +34,7 @@ const LIMITS: Limits = Limits { connections: 64, line: 16 << 20, idle: Duration:
 
 struct Running {
     identity: Option<(u64, u64)>,
+    listener: UnixListener,
     wake: UnixStream,
     thread: JoinHandle<()>,
 }
@@ -72,26 +73,52 @@ impl SocketServer {
             error
         };
         let _ = std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o600));
-        listener.set_nonblocking(true).map_err(|e| unbind(self.posix_error("fcntl", &e)))?;
-        let (wake, woken) = UnixStream::pair().map_err(|e| unbind(self.posix_error("socketpair", &e)))?;
+        *running = Some(self.serve(listener, identity).map_err(unbind)?);
+        Ok(())
+    }
 
+    pub fn start_with(&self, listener: UnixListener) -> Result<(), KmuxError> {
+        let mut running = self.running.lock().unwrap();
+        if running.is_some() {
+            return Err(KmuxError::new("bad_request", format!("already listening on {}", self.path)));
+        }
+        *running = Some(self.serve(listener, None)?);
+        Ok(())
+    }
+
+    fn serve(&self, listener: UnixListener, identity: Option<(u64, u64)>) -> Result<Running, KmuxError> {
+        listener.set_nonblocking(true).map_err(|e| self.posix_error("fcntl", &e))?;
+        let copy = listener.try_clone().map_err(|e| self.posix_error("dup", &e))?;
+        let (wake, woken) = UnixStream::pair().map_err(|e| self.posix_error("socketpair", &e))?;
         let handler = self.handler.clone();
         let takeover = self.takeover.clone();
         let limits = self.limits;
         let thread = std::thread::Builder::new()
             .name("kmux.socket".into())
             .spawn(move || accept_loop(listener, woken, handler, takeover, limits))
-            .map_err(|e| unbind(self.posix_error("thread", &e)))?;
-        *running = Some(Running { identity, wake, thread });
-        Ok(())
+            .map_err(|e| self.posix_error("thread", &e))?;
+        Ok(Running { identity, listener: copy, wake, thread })
+    }
+
+    pub fn listener(&self) -> Option<OwnedFd> {
+        let running = self.running.lock().unwrap();
+        running.as_ref()?.listener.try_clone().ok().map(OwnedFd::from)
     }
 
     pub fn stop(&self) {
+        self.shut(true);
+    }
+
+    pub fn stop_leaving_path(&self) {
+        self.shut(false);
+    }
+
+    fn shut(&self, unlink: bool) {
         let Some(running) = self.running.lock().unwrap().take() else { return };
         let _ = running.wake.shutdown(Shutdown::Both);
         drop(running.wake);
         let _ = running.thread.join();
-        if running.identity.is_some() && identity_of(&self.path) == running.identity {
+        if unlink && running.identity.is_some() && identity_of(&self.path) == running.identity {
             let _ = std::fs::remove_file(&self.path);
         }
     }
@@ -374,5 +401,22 @@ mod tests {
         drop(first);
         third.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         assert!(read_reply(&third).unwrap().contains("\"id\":3"));
+    }
+
+    #[test]
+    fn a_connection_made_between_two_servers_on_one_listener_is_answered_by_the_second() {
+        let (first, path) = server("handover", limits());
+        first.start().unwrap();
+        let kept = UnixListener::from(first.listener().unwrap());
+        first.stop_leaving_path();
+        assert!(Path::new(&path).exists());
+        let mut waiting = UnixStream::connect(&path).unwrap();
+        waiting.write_all(b"{\"id\":7}\n").unwrap();
+        let (second, _) = server("handover-next", limits());
+        second.start_with(kept).unwrap();
+        waiting.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        assert!(read_reply(&waiting).unwrap().contains("\"id\":7"));
+        second.stop();
+        assert!(Path::new(&path).exists());
     }
 }

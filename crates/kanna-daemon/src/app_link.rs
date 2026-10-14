@@ -11,6 +11,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
 use std::net::Shutdown;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -108,6 +109,17 @@ struct Connection {
     stream: UnixStream,
     behind: Cell<bool>,
     cut: Cell<bool>,
+    keeps: bool,
+}
+
+fn write_with(stream: &UnixStream, reply: &Value, listener: Option<&OwnedFd>) -> bool {
+    let mut line = encode(reply).into_bytes();
+    line.push(b'\n');
+    let Some(listener) = listener else { return write_all(stream, &line) };
+    match kanna_keeper::fdpass::send(stream.as_raw_fd(), &line, &[listener.as_raw_fd()], false) {
+        Ok(sent) => write_all(stream, &line[sent..]),
+        Err(_) => false,
+    }
 }
 
 pub struct AppLink {
@@ -123,12 +135,16 @@ pub struct AppLink {
     unsent: RefCell<HashMap<String, Instant>>,
     backlog: RefCell<Option<Weak<crate::backlog::Backlog>>>,
     build: Option<String>,
+    listener: Option<OwnedFd>,
+    handed: Cell<bool>,
 }
 
 impl AppLink {
-    pub fn new(core: WeakCore, terminals: Rc<Terminals>, diffs: Rc<Diffs>, layout: Rc<DaemonLayout>, timeout: Duration, build: Option<String>) -> AppLink {
+    pub fn new(core: WeakCore, terminals: Rc<Terminals>, diffs: Rc<Diffs>, layout: Rc<DaemonLayout>, timeout: Duration, build: Option<String>, listener: Option<OwnedFd>) -> AppLink {
         AppLink {
             build,
+            listener,
+            handed: Cell::new(false),
             core,
             terminals,
             diffs,
@@ -197,14 +213,14 @@ impl AppLink {
             let _ = stream.shutdown(Shutdown::Read);
             return false;
         }
+        let keeps = hello.get("args").and_then(|a| a.get("keepsSocket")) == Some(&Value::Bool(true));
+        let listener = self.listener.as_ref().filter(|_| keeps);
         let app_build = hello.get("args").and_then(|a| a.get("build")).and_then(Value::as_str);
         if let (Some(app_build), Some(build)) = (app_build, self.build.as_deref()) {
             if app_build != build {
                 eprintln!("kanna-daemon: the app is from another build ({app_build}, this daemon is {build}); stopping so it starts its own");
-                let reply = json!({ "id": id, "ok": false, "error": { "code": "other_build", "message": format!("this daemon is from another build ({build}); it is stopping so the app can start its own") } });
-                let mut line = encode(&reply).into_bytes();
-                line.push(b'\n');
-                write_all(&stream, &line);
+                let reply = json!({ "id": id, "ok": false, "listener": listener.is_some(), "error": { "code": "other_build", "message": format!("this daemon is from another build ({build}); it is stopping so the app can start its own") } });
+                self.handed.set(write_with(&stream, &reply, listener) && listener.is_some());
                 let _ = stream.shutdown(Shutdown::Both);
                 return true;
             }
@@ -213,8 +229,16 @@ impl AppLink {
         eprintln!("kanna-daemon: the app attached (pid {pid})");
         self.layout.flush();
         let panes = self.core.upgrade().map_or(Value::Array(vec![]), |core| core.with_panes(pane_table));
-        answer(json!({ "id": id, "ok": true, "daemon": { "pid": std::process::id(), "build": self.build }, "panes": panes, "layout": self.layout.view() }));
-        *self.app.borrow_mut() = Some(Connection { id: conn, out, stream, behind: Cell::new(false), cut: Cell::new(false) });
+        let reply = json!({ "id": id, "ok": true, "listener": listener.is_some(), "daemon": { "pid": std::process::id(), "build": self.build }, "panes": panes, "layout": self.layout.view() });
+        if listener.is_some() {
+            if !write_with(&stream, &reply, listener) {
+                let _ = stream.shutdown(Shutdown::Both);
+                return false;
+            }
+        } else {
+            answer(reply);
+        }
+        *self.app.borrow_mut() = Some(Connection { id: conn, out, stream, behind: Cell::new(false), cut: Cell::new(false), keeps: listener.is_some() });
         let statuses: Vec<(String, String)> = self.core.upgrade().map_or(vec![], |core| {
             core.with_panes(|panes| panes.iter().filter_map(|p| p.status().map(|s| (p.id.clone(), s.to_string()))).collect())
         });
@@ -257,6 +281,10 @@ impl AppLink {
 
     pub fn attached(&self) -> bool {
         self.app.borrow().is_some()
+    }
+
+    pub fn holds_socket(&self) -> bool {
+        self.handed.get() || self.app.borrow().as_ref().is_some_and(|app| app.keeps)
     }
 
     pub fn gone(&self, conn: u64) {

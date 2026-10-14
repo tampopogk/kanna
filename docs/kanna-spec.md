@@ -58,6 +58,7 @@ flowchart TB
 | [Daemon build](specs/daemon-build.md) | A relaunched app of another build replaces the daemon |
 | [Restarting the daemon](specs/daemon-restart.md) | Terminals on disk, adopting the keeper's ptys |
 | [Pane sizes](specs/pane-sizes.md) | A program sees its view's size across a relaunch and a restart, and on the Shelf and in the backlog |
+| [The daemon's socket](specs/daemon-socket.md) | The app keeps `kanna.sock`'s listener, so it answers through a daemon restart |
 | [The layout](specs/layout.md) | One layout model in the app; layout steps; saving, restoring; working with the app closed |
 | [Windows, tabs and splits](specs/windows.md) · [menus](specs/menus.md) · [zoom](specs/zoom.md) · [docked pane](specs/docked-pane.md) | The windows, their actions and debug commands |
 | [Web, markdown and iOS panes](specs/app-panes.md) · [markdown keys](specs/markdown-keys.md) | The app's panes, lent to the daemon |

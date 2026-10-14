@@ -75,7 +75,7 @@ sequenceDiagram
 - **Exit codes** come from the keeper, the process's parent, so an exit while no daemon runs keeps its code (`exit 7` → `exitCode: 7` after the restart). On macOS a program can't finish exiting while its last output is unread; the new daemon reads it, and the exit arrives then. That holds for `sh` and `bash`; zsh exits without waiting, so output a zsh program wrote just before exiting while no daemon ran is lost (its exit code is not).
 - **Sizes:** the pty keeps the size the last daemon set; the new daemon sizes each screen to it and sets it again, and the app resizes once it attaches. A terminal started again after the restart (`restart`, a task resumed) starts at the size in its record, even if its screen's file is gone ([pane sizes](pane-sizes.md)).
 - **Upgrades:** a relaunched app of another build makes the daemon stop as on SIGTERM and starts its own, which takes everything back as above; a rebuild that didn't change the daemon keeps it running ([daemon build](daemon-build.md)).
-- **The app** sees its link close, keeps trying to reconnect, and on reconnecting says hello and attaches again ([app link](app-link.md)); the hello reply lists the same IDs, so its layout still matches and nothing moves ([layout](layout.md#3-saving-and-restoring)).
+- **The app** sees its link close, starts the next daemon on the socket it keeps ([daemon socket](daemon-socket.md)), so a client that connects meanwhile waits rather than failing, and on reconnecting says hello and attaches again ([app link](app-link.md)); the hello reply lists the same IDs, so its layout still matches and nothing moves ([layout](layout.md#3-saving-and-restoring)).
 
 ## 5. Checked by
 
