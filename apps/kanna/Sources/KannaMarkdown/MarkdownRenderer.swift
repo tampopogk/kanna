@@ -42,6 +42,7 @@ final class DiagramCache {
 
 struct ImageStamp: Equatable {
     var path: String?
+    var regular = false
     var inode: UInt64 = 0
     var size: Int64 = 0
     var seconds = 0
@@ -51,6 +52,7 @@ struct ImageStamp: Equatable {
         path = MarkdownRenderer.localImagePath(source, folder: folder)
         var info = stat()
         guard let path, stat(path, &info) == 0 else { return }
+        regular = info.st_mode & S_IFMT == S_IFREG
         inode = info.st_ino
         size = info.st_size
         seconds = info.st_mtimespec.tv_sec
@@ -357,7 +359,7 @@ struct MarkdownRenderer {
         guard let source else { return nil }
         let stamp = ImageStamp(source, folder: folder)
         images[source] = stamp
-        guard let path = stamp.path, let data = FileManager.default.contents(atPath: path),
+        guard stamp.regular, let path = stamp.path, let data = FileManager.default.contents(atPath: path),
               let image = NSImage(data: data) else { return nil }
         let attachment = NSTextAttachment()
         attachment.attachmentCell = ImageCell(image: image)
