@@ -80,7 +80,7 @@ With no task on the Desk, the window's planning terminal, where you run your pla
 | `kanna task pull ID` | Put a task on the app's front Desk (relayed to the app) |
 | `kanna task park [ID]` | Move a task (default: the one on the front Desk) to the Shelf (relayed to the app) |
 | `kanna task done ID` | End a task: close its panes |
-| `kanna task new`, `start`, `stop`, `shelve`, `defer`, `name` | Make, run, stop, move and name tasks: [tasks](tasks.md#6-cli) |
+| `kanna task new`, `start`, `stop`, `shelve`, `defer`, `name` | Make, run, stop, move and name tasks: [tasks](tasks.md#7-cli) |
 
 A task's workspace has an ID of its own (ws-3), and commands take it, the task's ID or the task's docked pane. Run from a task's terminal, `park` and `done` mean that task, and `kanna open` without a placement opens a new tab in the task's workspace, on its Desk or, while it's parked or in the backlog, among its hidden tabs; with `--tab`, `--split` or `--size` it opens there too, never in the front window, and `--window new` opens a window of the task's ([presenting](presenting.md#3-how-its-built), [workspaces](workspaces.md#3-commands-target-and-reply)). `done` leaves its Desk empty.
 

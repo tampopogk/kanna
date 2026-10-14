@@ -189,12 +189,13 @@ pub fn task(request: &Value, reply: &Value) -> String {
                 (_, Some(status)) if status != "exited" => status.to_string(),
                 _ => "running".to_string(),
             };
-            let rows: Vec<[String; 5]> = tasks
+            let agent = |t: &Value| t["agent"].as_str().and_then(|a| a.split_whitespace().next()).map_or(String::new(), |a| a.rsplit('/').next().unwrap_or(a).to_string());
+            let rows: Vec<[String; 6]> = tasks
                 .iter()
                 .map(|t| {
                     let place = "Shelf".to_string();
                     let parked = t["parkedAt"].as_f64().map_or(String::new(), |at| format!("parked {}", ago(now - at)));
-                    [t["task"].as_str().or(t["id"].as_str()).unwrap_or("?").into(), t["name"].as_str().unwrap_or("").into(), place, state(t), parked]
+                    [t["task"].as_str().or(t["id"].as_str()).unwrap_or("?").into(), t["name"].as_str().unwrap_or("").into(), place, state(t), agent(t), parked]
                 })
                 .chain(waiting.iter().map(|t| {
                     let made = t["madeAt"].as_f64().map_or(String::new(), |at| format!("made {} · {}", ago(now - at), tilde(t["repo"].as_str().unwrap_or(""))));
@@ -203,13 +204,13 @@ pub fn task(request: &Value, reply: &Value) -> String {
                         (Some(false), false) => ("blocked".to_string(), format!("{made} · waits for {waits}")),
                         _ => (state(t), made),
                     };
-                    [t["id"].as_str().unwrap_or("?").into(), t["name"].as_str().unwrap_or("").into(), "Backlog".into(), state, made]
+                    [t["id"].as_str().unwrap_or("?").into(), t["name"].as_str().unwrap_or("").into(), "Backlog".into(), state, agent(t), made]
                 }))
                 .collect();
-            let head = ["TASK", "NAME", "WHERE", "STATE", ""];
+            let head = ["TASK", "NAME", "WHERE", "STATE", "AGENT", ""];
             let width = |i: usize| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0).max(head[i].len());
-            let line = |r: [&str; 5]| format!("{:w0$}  {:w1$}  {:w2$}  {:w3$}  {}", r[0], r[1], r[2], r[3], r[4], w0 = width(0), w1 = width(1), w2 = width(2), w3 = width(3)).trim_end().to_string();
-            std::iter::once(line(head)).chain(rows.iter().map(|r| line([&r[0], &r[1], &r[2], &r[3], &r[4]]))).collect::<Vec<_>>().join("\n")
+            let line = |r: [&str; 6]| format!("{:w0$}  {:w1$}  {:w2$}  {:w3$}  {:w4$}  {}", r[0], r[1], r[2], r[3], r[4], r[5], w0 = width(0), w1 = width(1), w2 = width(2), w3 = width(3), w4 = width(4)).trim_end().to_string();
+            std::iter::once(line(head)).chain(rows.iter().map(|r| line([&r[0], &r[1], &r[2], &r[3], &r[4], &r[5]]))).collect::<Vec<_>>().join("\n")
         }
         Some("park") if reply["parked"] == Value::Bool(true) => format!("parked {id}; {} is an empty Desk", reply["desk"].as_str().unwrap_or("its Desk")),
         Some("park") => format!("{id} is already on the Shelf"),

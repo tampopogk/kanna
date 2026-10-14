@@ -13,10 +13,11 @@ A **task** is one agent's work in one repo. Agents make tasks: they add them to 
 3. [The backlog](#3-the-backlog)
 4. [Naming](#4-naming)
 5. [Stop, Done, or back to the backlog](#5-stop-done-or-back-to-the-backlog)
-6. [CLI](#6-cli)
-7. [How it's built](#7-how-its-built)
-8. [Open questions](#8-open-questions)
-9. [Glossary](#9-glossary)
+6. [Choosing the agent](#6-choosing-the-agent)
+7. [CLI](#7-cli)
+8. [How it's built](#8-how-its-built)
+9. [Open questions](#9-open-questions)
+10. [Glossary](#10-glossary)
 
 ## 1. What a task is
 
@@ -102,17 +103,29 @@ An agent not in the table starts again with its first message, its conversation 
 
 - **Done on a backlog task that's still running** ends its agent and tabs too.
 
-## 6. CLI
+## 6. Choosing the agent
+
+![The Shelf's and the backlog's rows start with each task's agent: claude or codex](task-agent.png)
+
+- **A task runs the agent it was made with,** kept with it from `kanna task new` to Done: its rows on the Shelf and in the backlog, and `kanna task list` (an AGENT column; `agent` in `--json`), say which.
+- **By default, the `tasks.agent` setting** ([settings](settings.md#3-keys)): `claude` unless you set it. In your `~/.kanna-v4/config.json` it may be any command (`"codex"`, `"claude --model opus"`); a repo's `.kanna/config.json` may only name an agent Kanna knows (`claude`, `codex`, `copilot`, `opencode`, `agy`), so a repo you clone can't make Kanna run a command of its choosing.
+- **For one task, `--agent`:** `kanna task new NAME MSG --agent codex`. The planning agent and a task's agent add it when you ask for an agent ("do this one in codex"), as the `kanna-planning` and `kanna-tasks` skills say; otherwise they leave it to the setting.
+- **Every agent gets the same:** the first message as it starts, the [skills](agent-setup.md) (Codex reads them from `~/.agents/skills`), [status](agent-status.md) from its screen, `kanna send`, and [resume](#which-agents-resume).
+- **Codex asks once per repo whether to trust it,** before its first message, even with `--yolo`: the task shows needs you until you answer, and codex saves the answer. Kanna doesn't answer for you (codex reads trust only from its saved settings, not from `-c`); a repo you plan in with codex is trusted already.
+
+**Tested** by e2e `codex_task`: a codex-like mock agent (`tools/mock-agent` named `codex`) set as `tasks.agent` starts from the backlog with its first message, renames its branch, goes working, idle and needs you, answers `kanna send`, shows its agent in `kanna task list` and the app's rows, and ends with Done; a repo's `tasks.agent` naming a command is ignored. A real codex task was run once by hand (October 2026): it read `kanna-tasks`, renamed its branch, committed, was stopped by the backlog runner and resumed on the Shelf.
+
+## 7. CLI
 
 | Command | Does |
 |---|---|
-| `kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,…]` | Add a task to this repo's backlog (the agent defaults to `$KANNA_AGENT`, else `claude`, and starts without asking permission); `--after` makes it wait for others ([blocked tasks](task-dependencies.md)) |
+| `kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,…]` | Add a task to this repo's backlog (the agent defaults to the `tasks.agent` setting, else `claude`, and starts without asking permission; [6](#6-choosing-the-agent)); `--after` makes it wait for others ([blocked tasks](task-dependencies.md)) |
 | `kanna task edit TASK --after TASK,…\|none` | Change what a backlog task waits for |
 | `kanna task start TASK` | Run a task where it is: a backlog task gets its worktree, agent and first message and stays in the backlog; a stopped task's agent comes back, resuming its conversation |
 | `kanna task stop [TASK]` | End a task's agent and hang up its terminals, leaving it where it is with its tabs as they are (default: the one you're in) |
 | `kanna task shelve TASK` | Move a backlog task to the Shelf of the CLI's instance's app, starting it if it's stopped; refused when that Shelf holds three of its project's |
 | `kanna task name [TASK] NAME` | Rename a task (default: the one you're in), running or in the backlog (`task-3f9a`); a backlog task starts with the new name |
-| `kanna task list [QUERY]` | Every task: ID, name, where (a Desk, the Shelf, the backlog), state (working, idle, needs you, or stopped), repo; with QUERY, only those whose name or first message has every word ([backlog search](backlog-search.md#cli)) |
+| `kanna task list [QUERY]` | Every task: ID, name, where (a Desk, the Shelf, the backlog), state (working, idle, needs you, or stopped), agent, repo; with QUERY, only those whose name or first message has every word ([backlog search](backlog-search.md#cli)) |
 | `kanna task defer [TASK]` | Move a task back to the backlog as it is, running or stopped (default: the one you're in) |
 | `kanna task send TASK\|planner TEXT` | Leave a task's agent or the repo's planner a message, typed in when its turn is over ([agent messaging](agent-messaging.md)) |
 | `kanna task messages [TASK]` | A task's messages, or every message |
@@ -124,7 +137,7 @@ An agent not in the table starts again with its first message, its conversation 
 
 `park` and `pull` are the [Desk's](desk.md#5-cli).
 
-## 7. How it's built
+## 8. How it's built
 
 ```mermaid
 flowchart TB
@@ -145,15 +158,17 @@ flowchart TB
 - **One table per agent** in the daemon (`AGENTS` in `backlog.rs`) says how to start it without asking permission, how to pass the first message, how to name a new session, how to resume one, how to resume the folder's latest, and where to find its sessions by folder. The lookup runs when a task starts again, not before: while the agent runs, its session may not be written yet.
 - **An ID is never handed out twice.** A new task's ID is saved as it's made, so a restart can't reuse one, and a task keeps it from made to done. IDs name tasks only; worktrees and branches get their own random names, so a lost `kanna.db` or another Kanna on the same repo can't collide with them.
 - **A task's agent doesn't ask permission.** Starting one adds the agent's own flag for that (`claude --dangerously-skip-permissions`, `codex --yolo`, `copilot --yolo`, `agy --dangerously-skip-permissions`; opencode has none) unless its command already says how to ask (`--permission-mode`, `--ask-for-approval`/`-a`, `--allow-all`/`--allow-all-tools`, `--mode`). The planning agent and the quiz agent start the same way. The task works in its own worktree, and you watch it on the Desk. The backlog keeps the command as written.
+- **The agent's name on the rows** is its command's program (`/opt/bin/codex --yolo` is `codex`): from the backlog entry's command, and for a task on a Desk or the Shelf from its pane's command (`agent` in the layout's workspaces and in `task list`).
+- **`$KANNA_AGENT` is gone:** the daemon read it as the default agent, but it was the daemon's environment, not yours, and only the e2e tests set it; they set `tasks.agent` in their own settings now.
 - **A Codex task runs attached to an app-server of its own** ([Codex's app-server](codex-app-server.md)), started from the task's terminal, not in Codex's shared background server, which runs every session's commands and hooks with the environment of whatever started it. Codex's commands and hooks get the task's `$KANNA_TERMINAL` and `$KANNA_SOCKET`, as Claude's do, and Kanna can hand it messages.
 
-## 8. Open questions
+## 9. Open questions
 
 1. **Task IDs that travel:** IDs ([task IDs](task-ids.md)) are random 32 bits, checked only on this machine; sending tasks elsewhere may want longer ones.
 2. **Codex, opencode and antigravity take no session ID up front:** they resume the folder's latest session, which is the task's while each task has its own worktree. If one starts to take an ID, it moves to the ID like claude and copilot.
 3. **Codex saves its last reply a moment after showing it:** it writes the reply to its session about a second after it appears, and a stop within that second (SIGHUP, then SIGKILL a second later) loses the reply: started again, it shows the question and "Conversation interrupted". [Backlog runners](backlog-runners.md) wait for the turn to end and quit codex with its own keys; `kanna task stop` still hangs up; `real_agent_tasks` waits for the reply to be saved.
 
-## 9. Glossary
+## 10. Glossary
 
 | Term | Meaning |
 |---|---|

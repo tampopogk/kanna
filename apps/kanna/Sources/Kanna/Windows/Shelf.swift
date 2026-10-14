@@ -6,6 +6,7 @@ struct ShelfTask: Equatable {
     let parkedAt: Double?
     let status: String?
     let detail: String
+    var agent: String?
 
     var meta: String { status == "needs-you" ? "needs you" : "parked " + Self.ago(parkedAt) }
 
@@ -32,10 +33,16 @@ struct BacklogTask: Equatable {
     let from: String?
     let madeAt: Double?
     var waits: [String] = []
+    var agent: String?
+
+    static func program(_ command: String?) -> String? {
+        guard let first = command?.split(whereSeparator: \.isWhitespace).first else { return nil }
+        return first.split(separator: "/").last.map(String.init)
+    }
 
     var blocked: Bool { !waits.isEmpty }
 
-    var sub: String { [waits.isEmpty ? nil : "waits for " + waits.joined(separator: ", "), message, after].compactMap { $0 }.joined(separator: " · ") }
+    var sub: String { [waits.isEmpty ? nil : "waits for " + waits.joined(separator: ", "), agent, message, after].compactMap { $0 }.joined(separator: " · ") }
 
     var after: String {
         let made = "made " + ShelfTask.ago(madeAt).replacingOccurrences(of: "now", with: "just now")
@@ -552,6 +559,7 @@ private final class BacklogRow: NSView {
         name.frame = NSRect(x: 30, y: 8, width: width - 160, height: 18)
         let small = NSFont.systemFont(ofSize: 12)
         let detail = NSMutableAttributedString(string: task.waits.isEmpty ? "" : "waits for " + task.waits.joined(separator: ", ") + " · ", attributes: [.font: small, .foregroundColor: NSColor.systemOrange])
+        detail.append(NSAttributedString(string: task.agent.map { $0 + " · " } ?? "", attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
         detail.append(BacklogTask.marked(task.message.map { $0 + " · " } ?? "", query, font: small, color: .secondaryLabelColor))
         detail.append(NSAttributedString(string: task.after, attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
         let sub = NSTextField(labelWithAttributedString: detail)
@@ -622,7 +630,7 @@ private final class ShelfRow: NSView {
         name.lineBreakMode = .byTruncatingTail
         name.frame = NSRect(x: 30, y: 8, width: width - 140, height: 18)
         let status = task.status.map { $0 == "needs-you" ? "needs you" : $0 }
-        let sub = NSTextField(labelWithString: [status, task.detail.isEmpty ? nil : task.detail, "parked " + ShelfTask.ago(task.parkedAt)].compactMap { $0 }.joined(separator: " · "))
+        let sub = NSTextField(labelWithString: [task.agent, status, task.detail.isEmpty ? nil : task.detail, "parked " + ShelfTask.ago(task.parkedAt)].compactMap { $0 }.joined(separator: " · "))
         sub.font = .systemFont(ofSize: 12)
         sub.textColor = .secondaryLabelColor
         sub.lineBreakMode = .byTruncatingTail

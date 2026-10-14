@@ -162,6 +162,11 @@ impl Pane {
         }
     }
 
+    pub fn program(&self) -> Option<&str> {
+        let first = self.command.as_deref()?.split_whitespace().next()?;
+        Some(first.rsplit('/').next().unwrap_or(first)).filter(|p| !p.is_empty())
+    }
+
     pub fn label(&self) -> String {
         match &self.name {
             Some(name) => format!("{name} ({})", self.id),

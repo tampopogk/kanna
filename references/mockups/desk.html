@@ -264,7 +264,7 @@ const initial = () => {
         tabs: ["docs/kanna-spec.md", "tests"], active: "tests", focus: "docs", zoom: false, log: [] },
       { id: "p8", repo: "~/work/kanna-v4", backlog: true, title: "agent_status e2e is flaky", by: "p1", madeAt: now - 40 * MIN,
         prompt: "agent_status waits 5s for 'working' after answering the mock agent, but work(1) lasts a second; make the wait follow the status, and run it 20 times" },
-      { id: "p9", repo: "~/work/kanna-v4", backlog: true, title: "kanna open infers the pane type", by: "p4", madeAt: now - 25 * MIN,
+      { id: "p9", repo: "~/work/kanna-v4", backlog: true, title: "kanna open infers the pane type", by: "p4", agent: "codex", madeAt: now - 25 * MIN,
         prompt: "kanna open FILE should pick md or web from the file's extension, so TYPE is optional" },
       { id: "p11", repo: "~/work/kanna-v4", backlog: true, title: "Rename a task from the Shelf", by: "p1", madeAt: now - 5 * MIN,
         prompt: "Double-click a Shelf item to rename its task, as tabs rename" },
@@ -403,7 +403,7 @@ function agentTerm(t) {
     ``,
     `<span class="m">●</span> ${t.status === "needs" ? "I need you to choose: keep the old colours as a fallback, or drop them?" : t.id === "p4" ? "Done. chrome_and_drops passes; screenshots in light and dark attached." : "Found it: the query answers before the theme loads."}`,
   ];
-  const ph = t.planner && t.ask ? (t.ask === "project" ? (t.recent && t.recent.length ? `${t.recent.map((_, i) => i + 1).join(" · ")} · ` : "") + "~/work/kmux · github.com/you/app · you/app · recipe-box" : t.ask === "choose" ? s.installed.map((_, i) => i + 1).join(" · ") : t.ask === "save" ? "y · n" : "y · n") : t.planner && !t.agent ? (t.repo === "~" ? `cd work/kanna-v4 · claude '${ROLE}'` : `claude · codex '${ROLE}' · cd kmux`) : t.planner ? "split the login work into three tasks · what's waiting? · start the first one · /exit" : t.agent ? `kanna task new &quot;Fix the page_comments pinch&quot; &quot;the mark drifts…&quot; · kanna task list · kanna task park` : "claude · codex · or any shell command";
+  const ph = t.planner && t.ask ? (t.ask === "project" ? (t.recent && t.recent.length ? `${t.recent.map((_, i) => i + 1).join(" · ")} · ` : "") + "~/work/kmux · github.com/you/app · you/app · recipe-box" : t.ask === "choose" ? s.installed.map((_, i) => i + 1).join(" · ") : t.ask === "save" ? "y · n" : "y · n") : t.planner && !t.agent ? (t.repo === "~" ? `cd work/kanna-v4 · claude '${ROLE}'` : `claude · codex '${ROLE}' · cd kmux`) : t.planner ? "split the login work into three tasks · fix the pinch with codex · what's waiting? · start the first one · /exit" : t.agent ? `kanna task new &quot;Fix the page_comments pinch&quot; &quot;the mark drifts…&quot; · kanna task list · kanna task park` : "claude · codex · or any shell command";
   const lead = t.planner && t.ask ? esc(question(t)) : t.planner && !t.agent ? `<span class="c">${esc(short(t.repo))}</span>&nbsp;<span class="p">❯</span>` : `<span class="p">&gt;</span>`;
   return (t.planner ? plannerHead(t) : head).concat(t.log).join("\n") + `<div class="cmd">${lead}<input data-cmd="${t.id}" placeholder="${esc(ph).replace(/&amp;quot;/g, "&quot;")}" spellcheck="false" autocomplete="off"></div>`;
 }
@@ -617,7 +617,7 @@ function shelfPageHTML(w) {
     <div class="group"><div class="gh"><span><b>Shelf</b> · ${esc(repo)}</span><span>${count} of ${LIMIT} tasks</span></div>
       ${list.map((t, i) => `<div class="row" data-pull="${t.id}"><span class="dot ${t.status}"></span><div class="t"><div class="n">${titleOf(t)}</div><div class="s">${t.agent} · ${statusText[t.status]} · parked ${ago(t)} · ${esc(t.branch)}</div></div><span class="go">⌘${i + 1} · Pull →</span></div>`).join("") || `<div class="s" style="color:var(--muted)">Nothing on the Shelf.</div>`}</div>
     <div class="group"><div class="gh"><span><b>Backlog</b></span>${waiting.length ? `<label class="find"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><input data-find="${w.id}" value="${esc(q)}" placeholder="Search the backlog" spellcheck="false" autocomplete="off">${q ? `<span class="clear" data-clear="${w.id}" title="Clear">✕</span>` : `<kbd>⌘F</kbd>`}</label>` : ""}<span class="count"><span>${q ? `${found.length} of ${waiting.length}` : `${waiting.length} waiting`}</span><span>${waiting.length} waiting</span><span>${waiting.length} of ${waiting.length}</span></span></div>
-      ${found.map((t, i) => `<div class="row waiting ${q && i === sel ? "sel" : ""}" data-promote="${t.id}"><span class="dot"></span><div class="t"><div class="n">${t.title ? marked(t.title, q) : titleOf(t)}</div><div class="s">${marked(t.prompt, q)} · from ${esc(makerOf(t))}, ${ago({ parkedAt: t.madeAt })} ago</div></div><span class="go ${full ? "off" : ""}">${full ? "Shelf full" : q && i === sel ? "↩ Move to Shelf" : "Move to Shelf →"}</span></div>`).join("") || (q ? `<div class="nohit">No backlog task matches “${esc(q)}”.</div>` : `<div class="s" style="color:var(--muted)">Empty. Ask the planning agent for tasks.</div>`)}
+      ${found.map((t, i) => `<div class="row waiting ${q && i === sel ? "sel" : ""}" data-promote="${t.id}"><span class="dot"></span><div class="t"><div class="n">${t.title ? marked(t.title, q) : titleOf(t)}</div><div class="s">${t.agent || "claude"} · ${marked(t.prompt, q)} · from ${esc(makerOf(t))}, ${ago({ parkedAt: t.madeAt })} ago</div></div><span class="go ${full ? "off" : ""}">${full ? "Shelf full" : q && i === sel ? "↩ Move to Shelf" : "Move to Shelf →"}</span></div>`).join("") || (q ? `<div class="nohit">No backlog task matches “${esc(q)}”.</div>` : `<div class="s" style="color:var(--muted)">Empty. Ask the planning agent for tasks.</div>`)}
       <p class="note">${esc(s.note)}</p></div></div>`;
 }
 
@@ -788,9 +788,10 @@ function run(t, line) {
     const m = ask.match(/^start (?:the )?(.+?)(?: one| task)?$/);
     const pick = m && backlog(t.repo).find(x => x.title.toLowerCase().includes(m[1]));
     if (pick) { t.log.push(`<span class="m">●</span> kanna task start ${pick.id}`); promote(pick.id); return; }
-    const name = nameFrom(line);
-    t.log.push(`<span class="m">●</span> kanna task new "${esc(name)}" "${esc(line.trim())} …"`);
-    const made = { id: "p" + s.nextPane++, repo: t.repo, backlog: true, title: name, prompt: line.trim(), by: t.id, madeAt: Date.now(), worktree: true };
+    const name = nameFrom(line.replace(/\b(?:with|in|using) (codex|claude)\b/i, ""));
+    const chosen = (line.match(/\b(?:with|in|using) (codex|claude)\b/i) || [])[1];
+    t.log.push(`<span class="m">●</span> kanna task new "${esc(name)}" "${esc(line.trim())} …"${chosen ? " --agent " + chosen.toLowerCase() : ""}`);
+    const made = { id: "p" + s.nextPane++, repo: t.repo, backlog: true, title: name, prompt: line.trim(), by: t.id, madeAt: Date.now(), worktree: true, agent: chosen && chosen.toLowerCase() };
     s.tasks.push(made);
     t.log.push(`<span class="out">added ${made.id} "${esc(name)}" to the backlog of ${esc(t.repo)}</span>`);
     return render();
@@ -799,10 +800,11 @@ function run(t, line) {
   const [, cmd, sub, arg, more] = words;
   if (cmd === "task" && sub === "new") {
     const quoted = [...line.matchAll(/"([^"]*)"/g)].map(m => m[1]);
-    if (!quoted.length) { say(`kanna: task new "NAME" ["FIRST MESSAGE"] [--no-worktree] [--repo PATH]`); return render(); }
+    if (!quoted.length) { say(`kanna: task new "NAME" ["FIRST MESSAGE"] [--agent CMD] [--no-worktree] [--repo PATH]`); return render(); }
     const repoAt = words.indexOf("--repo");
     const repo = repoAt > 0 ? words[repoAt + 1] : t.repo;
-    const made = { id: "p" + s.nextPane++, repo, backlog: true, title: quoted[0], prompt: quoted[1] || quoted[0], by: t.id, madeAt: Date.now(), worktree: !words.includes("--no-worktree") };
+    const agentAt = words.indexOf("--agent");
+    const made = { id: "p" + s.nextPane++, repo, backlog: true, title: quoted[0], prompt: quoted[1] || quoted[0], by: t.id, madeAt: Date.now(), worktree: !words.includes("--no-worktree"), agent: agentAt > 0 ? words[agentAt + 1] : undefined };
     s.tasks.push(made);
     if (!s.repos.includes(repo)) s.repos.push(repo);
     say(`added ${made.id} "${made.title}" to ${repo}'s backlog (${backlog(repo).length} waiting)`);

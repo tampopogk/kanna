@@ -236,7 +236,7 @@ def main():
         tty.setraw(fd, termios.TCSANOW)
         atexit.register(lambda: termios.tcsetattr(fd, termios.TCSANOW, saved))
     id, resumed = session(sys.argv[1:])
-    out("\x1b]0;mock-agent\x07mock-agent: type turn, work N, run SCRIPT, ask, report STATUS or exit\r\n")
+    out("\x1b]0;mock-agent\x07mock-agent: type turn, work N, run COMMAND, ask, report STATUS or exit\r\n")
     if sys.argv[1:]:
         out("args: " + " ".join(sys.argv[1:]) + "\r\n")
     out(f"{'resumed' if resumed else 'session'} {id}\r\n")
@@ -305,10 +305,13 @@ def answer(line):
         out("WORK_DONE\r\n")
     elif words[:1] == ["run"] and len(words) > 1:
         out("\x1b]9;4;3\x07")
-        done = subprocess.run(words[1:2], stdin=subprocess.DEVNULL, capture_output=True, text=True)
-        out((done.stdout + done.stderr).replace("\n", "\r\n"))
+        command = line.strip().split(None, 1)[1]
+        ran = subprocess.run(command, shell=True, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        out(f"• Ran {command}\r\n")
+        for text in (ran.stdout + ran.stderr).splitlines():
+            out(f"  {text}\r\n")
         work(1)
-        out(f"RUN_DONE {done.returncode}\r\n")
+        out(f"RUN_DONE {ran.returncode}\r\n")
     elif words[:1] in (["turn"], ["ask"]):
         if words[:1] == ["turn"]:
             work(2)
