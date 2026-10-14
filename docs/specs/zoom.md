@@ -48,7 +48,7 @@ flowchart LR
 - **Moving around keeps it on.** Next and Previous Pane, Next and Previous Tab, and `kanna focus` move focus as they do with zoom off, and the pane they land on fills the window. Next Pane goes through the docked pane and the shown tab's panes, as it does with zoom off.
 - **Only ⇧⌘↩ turns it off** (or `kanna zoom`), showing the layout again with focus where it ended up.
 - **Opening, closing or moving panes keeps it on.** A pane opened into the window is focused, so it's the one shown; when the focused pane closes or moves away, the pane focused after it is shown.
-- **A task carries its zoom.** Parking a task takes its zoom with it and pulling brings it back, focused where it was; a task new to the Desk comes unzoomed. The Shelf view's zoom stays with the window.
+- **A task carries its zoom.** Parking a task takes its zoom with it and pulling brings it back, focused where it was. **A task starts zoomed on its agent:** the first time it's on a Desk (shelved from the backlog, made on a Desk, or started there), its agent fills the window, since reading the agent is the first thing you do; ⇧⌘↩ shows its tabs, and from then on it keeps whatever zoom you leave it in. The Shelf view's zoom stays with the window.
 - **Saved** in the saved layout with the window, so it's on after a relaunch: the task's, parked or on the Desk, and the Shelf view's.
 
 **The same in kmux.** kmux gets the mode, and Kanna's whole-window fill: a zoomed tab pane covers the docked pane there too, where today it fills only the tabs' side.
