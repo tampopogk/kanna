@@ -675,6 +675,13 @@ windows_tabs_ui() {
   sleep 1
   check drawn "$(snap win-2 windows_tabs_ui-second-window)" 1 || return 1
   key 'cmd+`'; check test "$(win win-1 key)" == True || return 1
+  minimized() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"win-2\"${1:-}}}" | field minimized; }
+  minimized ',"minimize":true' >/dev/null; check wait_for 5 eval '[[ "$(minimized)" == True ]]' || return 1
+  key 'cmd+`'; check test "$(minimized)" == True || return 1
+  check test "$(win win-1 key)" == True || return 1
+  key 'cmd+shift+`'; check test "$(minimized)" == True || return 1
+  check test "$(win win-1 key)" == True || return 1
+  minimized ',"minimize":false' >/dev/null; check wait_for 5 eval '[[ "$(minimized)" == False ]]' || return 1
   key cmd+w; check test "$(win win-1 tabs | count)" == 1 || return 1
   key cmd+shift+w; check test "$(state | field windows | count)" == 1 || return 1
   local menus

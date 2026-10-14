@@ -119,6 +119,9 @@ extension AppController {
                 controller.window.setContentSize(NSSize(width: width, height: height))
             }
             if let y = args["scroll"]?.number { controller.shelfPage.scroll(toY: CGFloat(y)) }
+            if let minimize = args["minimize"]?.bool {
+                if minimize { controller.window.miniaturize(nil) } else { controller.window.deminiaturize(nil) }
+            }
             let page = controller.shelfPage
             let scrolled: JSON = ["top": .number(Double(page.scrollTop)), "height": .number(Double(page.contentHeight)),
                                   "visible": .number(Double(page.visibleHeight)), "backlog": .array(page.visibleBacklog.map { .string($0) }), "blocked": .array(page.blockedBacklog)]
@@ -128,6 +131,7 @@ extension AppController {
             let tasks = controller.shelf.map { task -> JSON in ["task": .string(task.id), "title": .string(task.title), "status": task.status.map { .string($0) } ?? .null] }
             return ["desk": .bool(controller.desk), "empty": .bool(controller.emptyDesk), "shelf": .array(tasks),
                     "strip": .bool(!controller.shelfStrip.isHidden), "page": .bool(!controller.shelfPage.isHidden), "title": .string(controller.window.title),
+                    "minimized": .bool(controller.window.isMiniaturized),
                     "header": controller.agentHeader.isHidden ? .null : .string(controller.agentHeader.text),
                     "backlog": .array(controller.backlog.map { .string($0.id) }), "running": .number(Double(controller.running)),
                     "waiting": .string(controller.shelfStrip.waitingText), "stripLayout": controller.shelfStrip.geometry, "note": .string(controller.note), "cheer": .string(controller.cheer),
