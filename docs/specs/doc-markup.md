@@ -42,7 +42,7 @@ Every doc works the same way; only what you can point at differs.
 
 - **Two kinds of doc.** A markdown file and an HTML page, opened for comments with `kanna markup FILE.md` or `kanna markup FILE.html`.
 - **Comments are opt-in.** `kanna open md` and `kanna open web` show the doc alone: no thread list, no marks, ⌘ gestures do nothing. Comments come on or go off in a pane that's already open with `kanna markup PANE` (`--off`) or **Pane ▸ Comments**; turning them off keeps its threads for next time.
-- **Preview only.** The pane shows the file and reloads when it changes; you don't edit in it. Comments are the only thing you add.
+- **Preview only.** The pane shows the file and reloads when it, or a local image it shows, changes on disk (within a second, at the same reading position and zoom); you don't edit in it. Comments are the only thing you add.
 - **Commenting.** Select text and press ⌘↵, in either kind. ⌘ adds what the kind offers:
 
 | You | In a markdown file | In a page |

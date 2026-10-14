@@ -10,7 +10,7 @@ Every command, option, output and error is kmux's CLI's, except where [the CLI's
 |---|---|---|
 | Panes | `kanna open [term] [--cmd CMD] [--cwd DIR]` | Open a terminal pane (the default type, as in kmux). |
 | | `kanna open web URL [--history]` | Open a web pane; `--history` gives it back/forward. |
-| | `kanna open md FILE` | Show a markdown file, rendered natively with mermaid diagrams; it reloads when the file changes. |
+| | `kanna open md FILE` | Show a markdown file, rendered natively with mermaid diagrams; it reloads when the file or a local image it shows changes. |
 | | `kanna open ios --app APP [--device NAME]` | Launch an iOS app in a simulator pane. |
 | | `kanna close PANE` / `--tab TAB` / `--window WINDOW` | Close a pane, or a tab or window with everything in it. |
 | | `kanna focus PANE` / `--tab TAB` / `--window WINDOW` | Bring a pane, tab or window to the front. |

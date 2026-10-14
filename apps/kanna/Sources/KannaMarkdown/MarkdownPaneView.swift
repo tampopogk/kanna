@@ -25,6 +25,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     private let diagrams = DiagramCache()
     private var document = Document(parsing: "")
     private var stamp: (Date, Int)?
+    private var imageStamps: [String: ImageStamp] = [:]
     private var poll: Timer?
     private var magnifyObserver: NSObjectProtocol?
     let bar = DocBar()
@@ -160,8 +161,16 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         reloadThreadsIfChanged()
         refreshPanel()
         guard pending == nil, let now = fileStamp() else { return }
-        if let stamp, stamp == now { return }
+        if let stamp, stamp == now {
+            if imagesChanged() { render() }
+            return
+        }
         load()
+    }
+
+    private func imagesChanged() -> Bool {
+        let folder = URL(fileURLWithPath: path).deletingLastPathComponent()
+        return imageStamps.contains { ImageStamp($0.key, folder: folder) != $0.value }
     }
 
     private func load() {
@@ -180,6 +189,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         var renderer = MarkdownRenderer(folder: URL(fileURLWithPath: path).deletingLastPathComponent(), diagrams: diagrams)
         let text = renderer.render(document)
         diagrams.keep(only: Set(renderer.diagramSources))
+        imageStamps = renderer.images
         updateInset()
         textView.textStorage?.setAttributedString(text)
         if let position { restoreReadingPosition(position) }
@@ -300,6 +310,15 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         var out: [(String, [String])] = []
         storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
             if let cell = (value as? NSTextAttachment)?.attachmentCell as? DiagramCell { out.append((cell.diagramType, cell.scene.texts)) }
+        }
+        return out
+    }
+
+    public var drawnImages: [NSSize] {
+        guard let storage = textView.textStorage else { return [] }
+        var out: [NSSize] = []
+        storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
+            if let cell = (value as? NSTextAttachment)?.attachmentCell as? ImageCell { out.append(cell.picture.size) }
         }
         return out
     }
