@@ -11,11 +11,18 @@ struct ShelfTask: Equatable {
     var place: String?
     var offline = false
 
-    var meta: String { offline ? "offline" : status == "needs-you" ? "needs you" : "parked " + Self.ago(parkedAt) }
+    @MainActor var meta: String { offline ? "offline" : status == "needs-you" ? "needs you" : "parked " + Self.ago(parkedAt) }
 
-    static func ago(_ at: Double?) -> String {
+    @MainActor var sub: String {
+        let status = status.map { $0 == "needs-you" ? "needs you" : $0 }.map { offline ? "last known: \($0)" : $0 }
+        return [status, detail.isEmpty ? nil : detail, offline ? "offline" : "parked " + Self.ago(parkedAt)].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    @MainActor static var skew: Double = 0
+
+    @MainActor static func ago(_ at: Double?) -> String {
         guard let at else { return "now" }
-        let minutes = Int(max(0, Date().timeIntervalSince1970 - at) / 60)
+        let minutes = Int(max(0, Date().timeIntervalSince1970 + skew - at) / 60)
         return minutes < 1 ? "now" : minutes < 60 ? "\(minutes)m ago" : minutes < 60 * 24 ? "\(minutes / 60)h ago" : "\(minutes / 60 / 24)d ago"
     }
 
@@ -57,7 +64,7 @@ struct BacklogTask: Equatable {
 
     var blocked: Bool { !waits.isEmpty }
 
-    var after: String {
+    @MainActor var after: String {
         let made = "made " + ShelfTask.ago(madeAt).replacingOccurrences(of: "now", with: "just now")
         return [from.map { "from \($0)" }, made].compactMap { $0 }.joined(separator: " · ")
     }
@@ -167,7 +174,7 @@ final class ShelfStrip: NSView {
         relayout()
     }
 
-    private func tick() {
+    func tick() {
         shelfItems.forEach { $0.refresh() }
         relayout()
     }
@@ -311,6 +318,7 @@ final class ShelfPage: NSView, NSSearchFieldDelegate {
     private(set) var query = ""
     private(set) var selected = 0
     private var started: String?
+    private var ticker: Timer?
 
     override var isFlipped: Bool { true }
 
@@ -450,6 +458,26 @@ final class ShelfPage: NSView, NSSearchFieldDelegate {
         return field
     }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        ticker?.invalidate()
+        ticker = window == nil ? nil : Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tick() }
+        }
+    }
+
+    func tick() {
+        document.subviews.forEach { ($0 as? ShelfRow)?.refresh() ?? ($0 as? BacklogRow)?.refresh() }
+    }
+
+    var times: JSON {
+        .array(document.subviews.compactMap { view -> JSON? in
+            if let row = view as? ShelfRow { return ["task": .string(row.task.id), "sub": .string(row.subText)] }
+            if let row = view as? BacklogRow { return ["task": .string(row.task.id), "sub": .string(row.subText)] }
+            return nil
+        })
+    }
+
     func show(_ page: DeskPage) {
         if page == shown { return }
         shown = page
@@ -557,7 +585,9 @@ private final class BacklogRow: NSView {
     let selected: Bool
     var onPress: (() -> Void)?
     private let go: NSTextField
+    private let sub = NSTextField(labelWithString: "")
     private let full: Bool
+    private let query: String
 
     override var isFlipped: Bool { true }
 
@@ -565,6 +595,7 @@ private final class BacklogRow: NSView {
         self.task = task
         self.full = full
         self.selected = selected
+        self.query = query
         go = NSTextField(labelWithString: task.blocked ? "Blocked" : full ? "Shelf full" : selected ? "↩ Move to Shelf" : "Move to Shelf →")
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: 52))
         wantsLayer = true
@@ -572,11 +603,7 @@ private final class BacklogRow: NSView {
         let name = NSTextField(labelWithAttributedString: BacklogTask.marked(task.name, query, font: .systemFont(ofSize: 13, weight: .medium), color: .labelColor))
         name.lineBreakMode = .byTruncatingTail
         name.frame = NSRect(x: 30, y: 8, width: width - 160, height: 18)
-        let small = NSFont.systemFont(ofSize: 12)
-        let detail = NSMutableAttributedString(string: task.waits.isEmpty ? "" : "waits for " + task.waits.joined(separator: ", ") + " · ", attributes: [.font: small, .foregroundColor: NSColor.systemOrange])
-        detail.append(BacklogTask.marked(task.message.map { $0 + " · " } ?? "", query, font: small, color: .secondaryLabelColor))
-        detail.append(NSAttributedString(string: task.after, attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
-        let sub = NSTextField(labelWithAttributedString: detail)
+        refresh()
         sub.lineBreakMode = .byTruncatingTail
         sub.frame = NSRect(x: 30, y: 27, width: width - 160, height: 17)
         go.font = .systemFont(ofSize: 12)
@@ -589,6 +616,16 @@ private final class BacklogRow: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     var label: String { go.stringValue }
+
+    var subText: String { sub.stringValue }
+
+    func refresh() {
+        let small = NSFont.systemFont(ofSize: 12)
+        let detail = NSMutableAttributedString(string: task.waits.isEmpty ? "" : "waits for " + task.waits.joined(separator: ", ") + " · ", attributes: [.font: small, .foregroundColor: NSColor.systemOrange])
+        detail.append(BacklogTask.marked(task.message.map { $0 + " · " } ?? "", query, font: small, color: .secondaryLabelColor))
+        detail.append(NSAttributedString(string: task.after, attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
+        sub.attributedStringValue = detail
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         NSColor.tertiaryLabelColor.setStroke()
@@ -630,6 +667,7 @@ private final class ShelfRow: NSView {
     let task: ShelfTask
     var onPress: (() -> Void)?
     private let go: NSTextField
+    private let sub = NSTextField(labelWithString: "")
 
     override var isFlipped: Bool { true }
 
@@ -643,8 +681,7 @@ private final class ShelfRow: NSView {
         name.font = .systemFont(ofSize: 13, weight: .semibold)
         name.lineBreakMode = .byTruncatingTail
         name.frame = NSRect(x: 30, y: 8, width: width - 140, height: 18)
-        let status = task.status.map { $0 == "needs-you" ? "needs you" : $0 }.map { task.offline ? "last known: \($0)" : $0 }
-        let sub = NSTextField(labelWithString: [status, task.detail.isEmpty ? nil : task.detail, task.offline ? "offline" : "parked " + ShelfTask.ago(task.parkedAt)].compactMap { $0 }.joined(separator: " · "))
+        refresh()
         sub.font = .systemFont(ofSize: 12)
         sub.textColor = .secondaryLabelColor
         sub.lineBreakMode = .byTruncatingTail
@@ -660,6 +697,10 @@ private final class ShelfRow: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    var subText: String { sub.stringValue }
+
+    func refresh() { sub.stringValue = task.sub }
 
     override func draw(_ dirtyRect: NSRect) {
         ShelfTask.dot(task, in: NSRect(x: 10, y: bounds.midY - 4, width: 8, height: 8))
