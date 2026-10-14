@@ -159,8 +159,9 @@ final class ShelfStrip: NSView {
         let metas = items.map(\.metaWidth)
         let titles = items.map(\.titleWidth)
         var room = bounds.width - 8 - gaps - chrome - metas.reduce(0, +)
+        let titleFloors = titles.map { min($0, Self.titleFloor) }.reduce(0, +)
         count.isHidden = waiting == 0
-        if !count.isHidden, room - count.frame.width - 20 < titles.map { min($0, Self.titleFloor) }.reduce(0, +) {
+        if !count.isHidden, room - count.frame.width - 20 < titleFloors {
             count.isHidden = true
         }
         if !count.isHidden { room -= count.frame.width + 20 }
