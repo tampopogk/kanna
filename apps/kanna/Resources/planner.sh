@@ -34,9 +34,55 @@ tilde() {
   esac
 }
 
+edit='
+bindkey -e
+bindkey "^[[1;3D" backward-word
+bindkey "^[[1;3C" forward-word
+bindkey "^[^[[D" backward-word
+bindkey "^[^[[C" forward-word
+WORDCHARS=${WORDCHARS//\/}
+HISTSIZE=1000
+for line in ${(f)3}; do print -s -r -- $line; done
+if [[ $2 == folders ]]; then
+  folders() {
+    local word=$LBUFFER folder=$LBUFFER common f
+    [[ $word == "~" ]] && { LBUFFER="~/"; return; }
+    [[ $word == "~/"* ]] && folder=$HOME${word#"~"}
+    local found=( $folder*(N-/) )
+    (( $#found )) || { zle beep; return; }
+    [[ $folder == $word ]] || found=( "~"${^found#$HOME} )
+    if (( $#found == 1 )); then
+      LBUFFER=$found[1]/
+      return
+    fi
+    common=$found[1]
+    for f in $found; do
+      while [[ $f != $common* ]]; do common=${common%?}; done
+    done
+    LBUFFER=$common
+    zle -M "${(F)found:t}"
+  }
+  zle -N folders
+  bindkey "^I" folders
+else
+  bindkey "^I" beep
+fi
+line=
+vared -e -h -p ${1//\%/%%} line || exit 1
+print -rn -- $line >&3
+'
+asked=
+
 ask() {
-  printf '%s ' "$1" | tr -d '\000-\010\013-\037\177'
-  read -r answer || { echo; shell; }
+  prompt=$(printf '%s ' "$1" | tr -d '\000-\010\013-\037\177')
+  if [ -t 0 ] && [ -x /bin/zsh ]; then
+    { answer=$(/bin/zsh -f -c "$edit" zsh "$prompt" "$2" "$asked" 3>&1 1>&4) || { echo; shell; }; } 4>&1
+    [ -z "$answer" ] || asked="$asked$answer
+"
+  else
+    printf '%s' "$prompt"
+    read -r answer || { echo; shell; }
+  fi
 }
 
 moved() {
@@ -94,7 +140,7 @@ where() {
     question="Folder, repo, name or number [1]:"
   fi
   while :; do
-    ask "$question"
+    ask "$question" folders
     if [ "$recents" -gt 0 ]; then
       case $answer in
         '') answer=1 ;;

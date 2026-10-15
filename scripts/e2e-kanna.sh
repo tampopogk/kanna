@@ -2802,7 +2802,12 @@ planner_choice() {
   check wait_for 10 eval '[[ "$(desk lead d3)" == term-* ]]' || { echo "planner_choice: ⌘N opened no Desk"; kanna workspace list --all; return 1; }
   planner="$(desk lead d3)"
   check wait_for 10 shows "$planner" "Folder, repo, name or number \[1\]:" || { echo "planner_choice: a Desk in ~ didn't ask where"; kanna read "$planner"; return 1; }
-  kanna send "$planner" "$repo" >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
+  local typo="${repo%?}q${repo: -1}" keys=() i
+  for ((i = 0; i < ${#typo}; i++)); do keys+=("${typo:i:1}"); done
+  kanna send-key "$planner" "${keys[@]}" left backspace >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
+  check wait_for 5 eval '[[ "$(kanna read "$planner" | tr -d "\n")" == *"Folder, repo, name or number [1]: $repo" ]]' || { echo "planner_choice: ← and Backspace didn't fix the answer"; kanna read "$planner"; return 1; }
+  ! kanna read "$planner" | tr -d '\n' | grep -qF '^[[' || { echo "planner_choice: the prompt printed raw escapes"; kanna read "$planner"; return 1; }
+  kanna send-key "$planner" return >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
   check wait_for 10 eval '[[ "$(desk header d3)" == "Planning · "*"${repo#/private} · main" ]]' || { echo "planner_choice: the Desk didn't follow to the folder"; desk header d3; return 1; }
   check wait_for 10 spaceless "$planner" "args: -c model_auto_compact_token_limit=300000 You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: the Desk didn't start the folder's planner"; kanna read "$planner"; return 1; }
 }
