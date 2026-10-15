@@ -10,6 +10,7 @@ Rules for every agent working here, the planning agent and task agents alike.
 ## Design
 
 - Take the technically better architecture over the expedient one. Offer a stopgap only as a step towards it, and say what the better design costs.
+- Guide agents, don't guard against them. When agents could misuse a Kanna command (a task opening tabs in another window with `--window`, say), the fix is guidance in the skill or this file, not code that refuses it.
 
 ## Commits and PRs
 
