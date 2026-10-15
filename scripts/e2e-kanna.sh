@@ -2248,6 +2248,10 @@ backlog_search() {
   check test "$(search found)" == '["'"$(tid 2)"'"]' || { echo "backlog_search: no match on a first message, ignoring case"; desk search; return 1; }
   type " nothing"
   check test "$(search found)" == '[]' || { desk search; return 1; }
+  key escape; type "$(sid 12 | tr a-z A-Z)"
+  check test "$(search found)" == '["'"$(tid 12)"'"]' || { echo "backlog_search: ⌘F didn't find a task by its ID"; desk search; return 1; }
+  type " hello"
+  check test "$(search found)" == '["'"$(tid 12)"'"]' || { echo "backlog_search: ⌘F didn't find a task by its ID and a word"; desk search; return 1; }
   key escape; type shelf
   raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.3; snap d1 backlog_search-light >/dev/null
   raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null; sleep 0.3; snap d1 backlog_search-dark >/dev/null
@@ -2263,6 +2267,12 @@ backlog_search() {
   local listed; listed="$(cd "$repo" && kanna task list shelf)"
   check test "$(wc -l <<<"$listed" | tr -d ' ')" == 3 || { echo "$listed"; return 1; }
   [[ "$listed" == *"Start tasks past the Shelf"*"Shelf"* && "$listed" == *"$(sid 3)"*"Backlog"* ]] || { echo "backlog_search: kanna task list QUERY"; echo "$listed"; return 1; }
+  listed="$(cd "$repo" && kanna task list "$(sid 12)")"
+  [[ "$(wc -l <<<"$listed" | tr -d ' ')" == 2 && "$listed" == *"$(sid 12)"*"Task 12"*"Backlog"* ]] || { echo "backlog_search: kanna task list TASK"; echo "$listed"; return 1; }
+  local done; done="$(sid 11)"
+  (cd "$repo" && kanna task done "$done") >/dev/null || { echo "backlog_search line $LINENO"; return 1; }
+  listed="$(cd "$repo" && kanna task list "$done")"
+  [[ "$listed" == "$done \"Task 11\" is done (just now)" ]] || { echo "backlog_search: kanna task list on a done task's ID"; echo "$listed"; return 1; }
 }
 
 scenario task_start_stop M4

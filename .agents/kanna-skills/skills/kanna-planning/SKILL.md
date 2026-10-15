@@ -70,7 +70,7 @@ Run the `kanna` on your PATH, from this terminal, as it is: its `KANNA_*` variab
 
 | Command | Does |
 |---|---|
-| `kanna task list [QUERY]` | Every task: ID, name, where it is, its state (working, idle, needs you, stopped, or blocked, with what it waits for), its agent, repo; QUERY keeps those whose name or first message has every word |
+| `kanna task list [QUERY]` | Every task: ID, name, where it is, its state (working, idle, needs you, stopped, or blocked, with what it waits for), its agent, repo; QUERY keeps those where every word starts the task's ID or is its agent's pane ID, or is in its name, first message or branch; a done task's ID says it's done, and when |
 | `kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...]` | Add a task to this repo's backlog; `--agent`: run this agent (`codex`, …) instead of `tasks.agent`; `--after`: blocked until those tasks are done |
 | `kanna task edit TASK --after TASK,...\|none` | Change what a backlog task waits for; `none` unblocks it |
 | `kanna task name TASK NAME` | Rename a task, running or waiting in the backlog; a backlog task starts with the new name |

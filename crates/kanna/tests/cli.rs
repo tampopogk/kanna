@@ -251,6 +251,62 @@ fn every_command_works_through_the_daemon_and_the_app() {
 }
 
 #[test]
+fn task_list_finds_a_task_by_its_id_pane_or_branch_and_says_when_one_is_done() {
+    let daemon = Daemon::start();
+    let _app = daemon.app();
+    let repo = daemon.dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |dir: &std::path::Path, args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap().status.success(), "git {args:?}");
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["-c", "user.email=e@e", "-c", "user.name=e", "commit", "-q", "--allow-empty", "-m", "first"]);
+    std::fs::create_dir_all(repo.join(".kanna")).unwrap();
+    std::fs::write(repo.join(".kanna/config.json"), r#"{ "backlog": { "runners": 0 } }"#).unwrap();
+    let socket = daemon.socket();
+    let kanna = |args: &[&str]| kanna_at(&repo, Some(&socket), args);
+    let agent = "sh -c 'sleep 600'";
+    let new = |name: &str, message: &str| kanna(&["--json", "task", "new", name, message, "--agent", agent]).json()["task"]["id"].as_str().unwrap().to_string();
+    let first = new("Planner save prompt defaults to yes", "Make the planner's save prompt default to yes");
+    let second = new("Fix flaky status test", "Wait for working");
+    let third = new("Rename tasks", "Let the user rename a backlog task");
+    let short = |id: &str| id[..9].to_string();
+    let shelved = kanna(&["--json", "task", "shelve", &first]).json();
+    let (pane, folder) = (shelved["pane"].as_str().unwrap().to_string(), std::path::PathBuf::from(shelved["folder"].as_str().unwrap()));
+    git(&folder, &["branch", "-m", "planner-save-default-yes"]);
+
+    let only_first = |query: &[&str]| {
+        let listed = kanna(&[&["task", "list"], query].concat()).ok();
+        let row = listed.lines().nth(1).unwrap_or("");
+        assert!(listed.lines().count() == 2 && row.starts_with(&short(&first)) && row.contains("Planner save prompt defaults to yes  Shelf"), "kanna task list {query:?}:\n{listed}");
+    };
+    only_first(&[&first]);
+    only_first(&[&short(&first)]);
+    only_first(&[&short(&first).to_uppercase()]);
+    only_first(&[&first[5..9]]);
+    only_first(&[&pane]);
+    only_first(&["save-default"]);
+    only_first(&[&short(&first), "planner"]);
+    let listed = kanna(&["task", "list", &short(&third), "RENAME"]).ok();
+    assert!(listed.lines().count() == 2 && listed.lines().nth(1).unwrap().starts_with(&short(&third)) && listed.contains("Rename tasks  Backlog"), "{listed}");
+    let mixed = format!("{} flaky", short(&third));
+    assert_eq!(kanna(&["task", "list", &short(&third), "flaky"]).ok(), format!("no task matches \"{mixed}\""));
+    let json = kanna(&["--json", "task", "list", "default-yes"]).json();
+    assert_eq!((json["tasks"][0]["task"].clone(), json["tasks"][0]["branch"].clone(), json["backlog"].clone()), (json!(first), json!("planner-save-default-yes"), json!([])));
+
+    kanna(&["task", "done", &second]).ok();
+    assert_eq!(kanna(&["task", "list", &short(&second)]).ok(), format!("{} \"Fix flaky status test\" is done (just now)", short(&second)));
+    assert_eq!(kanna(&["task", "list", &second]).ok(), format!("{} \"Fix flaky status test\" is done (just now)", short(&second)));
+    kanna(&["task", "done", &pane]).ok();
+    wait_for("the first task done", || kanna(&["task", "list", &first]).ok().contains("is done"));
+    assert_eq!(kanna(&["task", "list", &first]).ok(), format!("{} \"Planner save prompt defaults to yes\" is done (just now); its branch planner-save-default-yes is still there", short(&first)));
+    assert_eq!(kanna(&["--json", "task", "list", &first]).json()["done"]["place"], json!("done"));
+    git(&repo, &["worktree", "remove", "--force", folder.to_str().unwrap()]);
+    git(&repo, &["branch", "-D", "planner-save-default-yes"]);
+    assert_eq!(kanna(&["task", "list", &first]).ok(), format!("{} \"Planner save prompt defaults to yes\" is done (just now)", short(&first)));
+    let never = (0..16).map(|d| format!("task-{d:x}0000000")).find(|id| ![&first, &second, &third].iter().any(|t| t[..6] == id[..6])).unwrap();
+    assert_eq!(kanna(&["task", "list", &never]).ok(), format!("no task matches \"{never}\""));
+}
+
+#[test]
 fn errors_exit_as_kmux_says() {
     let daemon = Daemon::start();
     let _app = daemon.app();

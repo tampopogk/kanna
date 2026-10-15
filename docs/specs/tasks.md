@@ -60,7 +60,7 @@ stateDiagram-v2
 - **Move to Shelf** puts a task on the Shelf, starting it if it's stopped: it makes the worktree and starts the agent with the first message. When the Shelf holds three, it's refused until one goes back to the backlog or is Done.
 - **`kanna task start` runs a task where it is**: a backlog task gets its worktree and agent and stays in the backlog, running, so you can start several and move them to the Shelf later. `kanna task list` shows each one's state: working, idle, needs you, or stopped.
 - **Oldest first.** A Desk's Shelf strip shows how many wait.
-- **Search it** with ⌘F on an empty Desk, by name or first message: [backlog search](backlog-search.md).
+- **Search it** with ⌘F on an empty Desk, by name, first message, branch or ID: [backlog search](backlog-search.md).
 - **A task can wait for others:** blocked, it can't start until they're Done ([blocked tasks](task-dependencies.md)).
 - **Backlog tasks run by themselves,** a few at a time, and Kanna stops each when its agent's turn ends ([backlog runners](backlog-runners.md)).
 
@@ -125,7 +125,7 @@ An agent not in the table starts again with its first message, its conversation 
 | `kanna task stop [TASK]` | End a task's agent and hang up its terminals, leaving it where it is with its tabs as they are (default: the one you're in) |
 | `kanna task shelve TASK` | Move a backlog task to the Shelf of the CLI's instance's app, starting it if it's stopped; refused when that Shelf holds three of its project's |
 | `kanna task name [TASK] NAME` | Rename a task (default: the one you're in), running or in the backlog (`task-3f9a`); a backlog task starts with the new name |
-| `kanna task list [QUERY]` | Every task: ID, name, where (a Desk, the Shelf, the backlog), state (working, idle, needs you, or stopped), agent, repo; with QUERY, only those whose name or first message has every word ([backlog search](backlog-search.md#cli)) |
+| `kanna task list [QUERY]` | Every task: ID, name, where (a Desk, the Shelf, the backlog), state (working, idle, needs you, or stopped), agent, repo; with QUERY, only those where every word starts the task's ID or is its agent's pane ID, or is in its name, first message or branch, and a done task's ID says when it was done ([backlog search](backlog-search.md#cli)) |
 | `kanna task defer [TASK]` | Move a task back to the backlog as it is, running or stopped (default: the one you're in) |
 | `kanna task send TASK\|planner TEXT` | Leave a task's agent or the repo's planner a message, typed in when its turn is over ([agent messaging](agent-messaging.md)) |
 | `kanna task messages [TASK]` | A task's messages, or every message |
