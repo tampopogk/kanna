@@ -581,6 +581,7 @@ version = "0.1.0"
 dependencies = [
  "kanna-build",
  "kanna-client",
+ "kanna-merman",
  "kanna-mux",
  "kanna-threads",
  "libc",
@@ -682,6 +683,7 @@ name = "kanna-merman"
 version = "0.1.0"
 dependencies = [
  "merman",
+ "pulldown-cmark",
  "serde_json",
 ]
 

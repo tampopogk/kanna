@@ -2406,6 +2406,22 @@ r = json.loads(sys.argv[1]); assert r["pane"] == "file-1" and r["window"] == "wi
   check test "$caller" == win-1
 }
 
+scenario diagram_check M4
+diagram_check() {
+  start_daemon && start_app || return 1
+  local doc="$KANNA_STATE_DIR/diagram_check.md" said err
+  printf '# diagram_check\n\n```mermaid\nflowchart LR\n    A --> B\n```\n\n```mermaid\nerDiagram\n    A ||--o{ B : has\n```\n' >"$doc"
+  said="$(kanna open md "$doc" --name doc --tab 2>"$KANNA_STATE_DIR/open.err")" || { echo "diagram_check: open md failed"; cat "$KANNA_STATE_DIR/open.err"; return 1; }
+  err="$(cat "$KANNA_STATE_DIR/open.err")"
+  [[ "$said" == "opened p1 (doc) in window w1"* ]] || { echo "diagram_check: open said $said"; return 1; }
+  [[ "$err" == "$doc:8: unsupported diagram type: er (Kanna draws "* ]] || { echo "diagram_check: open md reported \"$err\""; return 1; }
+  check test "$(printf '%s\n' "$err" | wc -l | tr -d ' ')" == 1 || return 1
+  check test "$(kanna open md "$doc" --json 2>/dev/null | field diagrams.0.line)" == 8 || return 1
+  check wait_for 5 doc_text doc "Unsupported diagram type: er" || return 1
+  check test "$(raw '{"id":1,"cmd":"debug.md","args":{"pane":"doc"}}' | python3 -c 'import json, sys; print([d["type"] for d in json.load(sys.stdin)["diagrams"]])')" == "['flowchart-v2']" || return 1
+  kanna diagrams check "$doc" >/dev/null 2>&1; check test $? -eq 1 || return 1
+}
+
 scenario bash_completion M4
 bash_completion() {
   SHELL=/bin/bash PATH="$bin:$PATH" start_daemon && start_app || return 1
