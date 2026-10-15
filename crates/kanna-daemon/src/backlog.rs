@@ -2581,7 +2581,7 @@ mod tests {
         let p = planner("ask", &["claude", "codex"]);
         let repo = p.repo("app");
         let out = p.run(&repo, "2\ny\n");
-        assert!(out.contains("Choose an agent for planning and task creation\n\n  1  claude\n  2  codex\n\nChoose [1]: Make codex the planning agent for app? [y/N] codex plans app from now on (planning.agent in .kanna/config.json).\n"), "{out}");
+        assert!(out.contains("Choose an agent for planning and task creation\n\n  1  claude\n  2  codex\n\nChoose [1]: Make codex the planning agent for app? [Y/n] codex plans app from now on (planning.agent in .kanna/config.json).\n"), "{out}");
         assert!(out.contains("codex in ROOT/app: --yolo --no-daemon You are the Kanna planning agent.\n"), "{out}");
         assert!(out.contains("The planning agent quit. Start it again: codex --yolo --no-daemon 'You are the Kanna planning agent.'\nshell in ROOT/app\n"), "{out}");
         let config: Value = serde_json::from_str(&fs::read_to_string(repo.join(".kanna/config.json")).unwrap()).unwrap();
@@ -2596,6 +2596,17 @@ mod tests {
         let out = p.run(&other, "\nn\n");
         assert!(out.contains("claude in ROOT/other: --dangerously-skip-permissions You are the Kanna planning agent."), "Return takes the first: {out}");
         assert!(!other.join(".kanna").exists(), "no saves nothing");
+
+        let enter = p.repo("enter");
+        let out = p.run(&enter, "2\n\n");
+        assert!(out.contains("Make codex the planning agent for enter? [Y/n] codex plans enter from now on"), "Return saves: {out}");
+        let config: Value = serde_json::from_str(&fs::read_to_string(enter.join(".kanna/config.json")).unwrap()).unwrap();
+        assert_eq!(config, json!({ "version": 1, "planning": { "agent": "codex" } }));
+
+        let declined = p.repo("declined");
+        let out = p.run(&declined, "2\nN\n");
+        assert!(out.contains("codex in ROOT/declined: --yolo") && !out.contains("codex plans declined"), "N declines: {out}");
+        assert!(!declined.join(".kanna").exists(), "N saves nothing");
     }
 
     #[test]
@@ -2695,7 +2706,7 @@ mod tests {
         let url = format!("file://{}", bare.display());
         let out = p.run(&p.home, &format!("{url}\n2\nn\n"));
         assert!(out.contains("Cloning file://ROOT/remote/kojo.git into ~/.kanna-v4/repos/kojo…"), "{out}");
-        assert!(out.contains("Make codex the planning agent for kojo? [y/N]"), "a clone is a repo: {out}");
+        assert!(out.contains("Make codex the planning agent for kojo? [Y/n]"), "a clone is a repo: {out}");
         assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/kojo: --yolo --no-daemon"), "{out}");
         let out = p.run(&p.home, &format!("{url}\n2\nn\n"));
         assert!(out.contains("Opened ~/.kanna-v4/repos/kojo (already cloned)"), "{out}");
