@@ -30,6 +30,7 @@ kanna comment .kanna/tmp/backlog.md:3 "The daemon owns the backlog; the app only
 
 - **A diagram, not prose:** a mermaid `classDiagram` for a hierarchy, a `flowchart` for who calls whom, a `sequenceDiagram` for a flow, a `stateDiagram-v2` for states, a `gitGraph` for branches and merges, a layer diagram for a stack (the `layer-diagrams` skill), a table for a set of parallel things. A heading and the diagram; at most a line of text under it.
 - **Only those diagram types draw in Kanna.** Any other (`erDiagram`, `gantt`, `pie`, …) shows as "Unsupported diagram type" and its source.
+- **In a `sequenceDiagram`, no `;` or `#` in text:** mermaid reads `;` as the end of a statement (the diagram fails) and `#` as the start of a comment (the rest of the line goes). Write them as `#59;` and `#35;`, or reword.
 - **Big picture first,** then the code it points to.
 
 ## Not code: a doc in a tab

@@ -14,6 +14,7 @@ let package = Package(
         .systemLibrary(name: "KannaMerman", path: "Sources/KannaMerman"),
         .systemLibrary(name: "KannaSyntaxC", path: "Sources/KannaSyntaxC"),
         .target(name: "KannaDiagram", dependencies: ["KannaMerman"], linkerSettings: [kannaFFI] + ["AppKit", "CoreText"].map { .linkedFramework($0) }),
+        .testTarget(name: "KannaDiagramTests", dependencies: ["KannaDiagram"]),
         .target(name: "KannaDocs", linkerSettings: ["AppKit", "WebKit"].map { .linkedFramework($0) }),
         .testTarget(name: "KannaDocsTests", dependencies: ["KannaDocs"]),
         .target(name: "KannaMarkdown", dependencies: ["KannaDocs", "KannaDiagram", .product(name: "Markdown", package: "swift-markdown")],
