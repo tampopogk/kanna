@@ -1753,6 +1753,7 @@ desk_by_path() {
 scenario move_to_backlog M4
 move_to_backlog() {
   start_daemon && start_app || { echo "move_to_backlog line $LINENO"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"${2:-d1}\"}}" | field "$1"; }
   local repo="$KANNA_STATE_DIR/repo" agent="$repo_root/tools/mock-agent/mock-agent"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "move_to_backlog line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
@@ -1761,10 +1762,16 @@ move_to_backlog() {
   [[ "$started" =~ " in "([^ ]+)" (" ]] && wt="${BASH_REMATCH[1]/#\~/$HOME}" || { echo "move_to_backlog line $LINENO: $started"; return 1; }
   check wait_for 5 eval '[[ "$(pane Later id)" == term-1 ]]' || { echo "move_to_backlog line $LINENO"; return 1; }
   touch "$wt/work-in-progress"
+  (cd "$repo" && kanna task new "Newer" "say hi" --agent "$agent") >/dev/null || { echo "move_to_backlog line $LINENO"; return 1; }
   local pid; pid="$(pane Later pid)"
   expected="moved term-1 to the backlog as $(sid 1), still running: shelve it to bring it back"; says kanna task defer Later || { echo "move_to_backlog line $LINENO"; return 1; }
   check test "$(ws $(tid 1) where)" == backlog || { echo "move_to_backlog: $(sid 1)'s workspace isn't in the backlog"; state; return 1; }
   check test "$(pane Later pid)" == "$pid" || { echo "move_to_backlog: the deferred agent stopped"; kanna workspace list --all; return 1; }
+  check test "$( (cd "$repo" && kanna task list) | grep -oE '^task-[0-9a-f]+' | tr '\n' ' ')" == "$(sid 1) $(sid 2) " || { echo "move_to_backlog: the deferred task isn't listed first, though it's the oldest"; (cd "$repo" && kanna task list); return 1; }
+  local opened w; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^(opened|brought\ forward)\ (d[0-9]+) ]] || { echo "move_to_backlog line $LINENO: $opened"; return 1; }
+  w="${BASH_REMATCH[2]}"
+  check wait_for 5 eval '[[ "$(desk empty "$w")" == True && "$(desk backlog "$w")" == "[\"$(tid 1)\", \"$(tid 2)\"]" ]]' || { echo "move_to_backlog: the empty Desk doesn't list the oldest first"; desk backlog "$w"; return 1; }
+  (cd "$repo" && kanna task done $(tid 2)) >/dev/null || { echo "move_to_backlog line $LINENO"; return 1; }
   (cd "$repo" && kanna task list) | grep -qE '^'"$(sid 1)"' +Later +Backlog' || { (cd "$repo" && kanna task list); return 1; }
   (cd "$repo" && kanna task list) | grep -qE '^'"$(sid 1)"' .* Shelf ' && { echo "move_to_backlog: the deferred task is still on the Shelf"; (cd "$repo" && kanna task list); return 1; }
   check test -f "$wt/work-in-progress" || { echo "move_to_backlog line $LINENO"; return 1; }
@@ -1775,8 +1782,8 @@ move_to_backlog() {
   check test "$(ls "$repo/.kanna-worktrees" | wc -l | tr -d ' ')" == 1 || { echo "move_to_backlog line $LINENO"; return 1; }
   kanna open --name mine --dock --cwd "$repo" --cmd "exec $agent" >/dev/null || { echo "move_to_backlog line $LINENO"; return 1; }
   local mine deferred; mine="$(pane mine id)"; deferred="$(kanna task defer mine 2>&1)"
-  [[ "$deferred" == "moved $mine to the backlog as $(sid 2), still running: shelve it to bring it back" ]] || { echo "move_to_backlog line $LINENO: $deferred"; return 1; }
-  (cd "$repo" && kanna task done $(tid 2)) >/dev/null || { echo "move_to_backlog line $LINENO"; return 1; }
+  [[ "$deferred" == "moved $mine to the backlog as $(sid 3), still running: shelve it to bring it back" ]] || { echo "move_to_backlog line $LINENO: $deferred"; return 1; }
+  (cd "$repo" && kanna task done $(tid 3)) >/dev/null || { echo "move_to_backlog line $LINENO"; return 1; }
   check wait_for 5 eval '! kanna workspace list --all --json | grep -q "\"mine\""' || { echo "move_to_backlog: Done left the backlog task's agent running"; kanna workspace list --all; return 1; }
   [[ "$(kanna task defer nothing 2>&1)" == *'no running task "nothing"'* ]] || { echo "move_to_backlog line $LINENO"; return 1; }
 }
