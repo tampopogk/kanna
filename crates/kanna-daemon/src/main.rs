@@ -13,6 +13,7 @@ mod status;
 mod status_command;
 mod diffs;
 mod store;
+mod task_scripts;
 mod terminals;
 
 use app_link::{AppLayout, AppLink, Outbox, APP_ASK, APP_PREFIX, HELLO};
@@ -58,6 +59,7 @@ pub enum Event {
     Status { pane: String, serial: u64, status: Option<&'static str>, ended: bool },
     RulesUpdated { token: u64, report: kanna_detect::Report },
     Worktree { token: u64, result: Result<(String, String), String> },
+    Finished { task: String, changes: Vec<db::Change> },
     Diff { pane: String, diff: Value },
     DiffUpdating { pane: String },
     KeeperReadable,
@@ -346,6 +348,7 @@ fn run() -> Result<(), String> {
             }
             Event::RulesUpdated { token, report } => status_commands.updated(token, report),
             Event::Worktree { token, result } => backlog.worktree_made(token, result),
+            Event::Finished { task, changes } => backlog.finished(&task, changes),
             Event::Diff { pane, diff } => diffs.loaded(&pane, diff),
             Event::DiffUpdating { pane } => diffs.updating(&pane),
             Event::KeeperReadable | Event::KeeperExits => {

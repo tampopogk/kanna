@@ -64,6 +64,30 @@
         }
       },
       "additionalProperties": false
+    },
+    "tasks": {
+      "description": "What a repo's tasks run as their worktree is made and when they're Done (docs/specs/task-scripts.md). Each command runs with your login shell in the task's worktree, with KANNA_TASK, KANNA_TASK_NAME, KANNA_REPO, KANNA_WORKTREE, KANNA_BRANCH and KANNA_BASE set.",
+      "type": "object",
+      "properties": {
+        "setup": {
+          "description": "A shell command (or a script path from the repo's root, such as .kanna/setup.sh) run in a new task's worktree, in its agent's terminal, before the agent starts; once per worktree. If it fails, the task stops, and `kanna task start` starts the agent anyway or `kanna task setup` runs it again.",
+          "type": "string",
+          "minLength": 1
+        },
+        "teardown": {
+          "description": "A shell command run in a task's worktree when it's Done, before Kanna removes anything. If it succeeds, and the branch is merged and the worktree has no changes, Kanna removes the worktree (and the folder its target/ links to) and deletes the branch.",
+          "type": "string",
+          "minLength": 1
+        },
+        "timeout": {
+          "description": "Seconds setup and teardown each get before Kanna stops them.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400,
+          "default": 600
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

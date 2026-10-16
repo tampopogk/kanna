@@ -339,14 +339,14 @@ pub static COMMANDS: &[Command] = &[
     Command {
         name: "task",
         group: "Tabs and windows",
-        summary: "Make, edit, list, start, stop, shelve, park, pull, defer, name or end tasks: an agent docked in a Desk window with its tabs, or a task in its repo's backlog.",
-        usage: "kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...]\n       kanna task edit TASK --after TASK,...|none\n       kanna task start TASK\n       kanna task stop [TASK]\n       kanna task shelve TASK [--window WINDOW]\n       kanna task list [QUERY]\n       kanna task park [TASK] [--window WINDOW]\n       kanna task pull TASK [--window WINDOW|new]\n       kanna task defer [TASK]\n       kanna task name [TASK] NAME\n       kanna task done [TASK]",
+        summary: "Make, edit, list, start, stop, set up, shelve, park, pull, defer, name or end tasks: an agent docked in a Desk window with its tabs, or a task in its repo's backlog.",
+        usage: "kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...]\n       kanna task edit TASK --after TASK,...|none\n       kanna task start TASK\n       kanna task stop [TASK]\n       kanna task setup [TASK]\n       kanna task shelve TASK [--window WINDOW]\n       kanna task list [QUERY]\n       kanna task park [TASK] [--window WINDOW]\n       kanna task pull TASK [--window WINDOW|new]\n       kanna task defer [TASK]\n       kanna task name [TASK] NAME\n       kanna task done [TASK]",
         options: &[
             ("--window WINDOW|new", "park: the Desk to clear (default: the task's, or the key window's). pull: the Desk to put it on (default: the key window if it's a Desk, else a new one). shelve: the Desk to put it on (default: the Shelf)."),
             ("--agent CMD", "new: the agent to start (default: claude)."),
             ("--after TASK,...|none", "new, edit: the tasks it waits for; it can't start until they're all done. edit: replaces the list, and none clears it."),
         ],
-        notes: "A task is a window's docked pane (usually an agent) and its tabs. TASK is its ID as kanna task list shows it (task-1dfb: the first 4 of its 8 hex digits, more if another task starts the same way), any start of the ID that only one task has, with or without task- (1dfb), the full ID, or its agent's pane name or ID; its worktree and first branch are named after its full ID. Parking moves the task's agent and tabs to the Shelf, still running, and leaves the Desk empty; pulling puts it back on a Desk as it was, parking whatever that Desk held. Pulling a task that's on another Desk brings that window forward instead. Done closes the task's panes, ending its agent and terminals; its Desk stays, empty. Whether a task runs and where it is are separate. Start runs a task where it is: a backlog task gets its worktree, branch and agent and stays in the backlog, running, and any number can run there; a stopped task's agent comes back, and a claude agent resumes its conversation. Stop ends a task's agent and hangs up its terminals, and leaves it where it is, its tabs, focus and zoom as they were and its worktree and branch kept; starting it again reruns the terminals that were running. Shelve (Move to Shelf) moves a backlog task to the Shelf, starting it if it's stopped; the Shelf holds three tasks per repo, counting the Desk's. Defer (Move to Backlog) moves a task back to the backlog as it is, running or stopped, freeing its place on the Shelf. A backlog task can wait for other tasks (--after): it's blocked, and starting or shelving it is refused until they're all done; `task edit` changes what it waits for until it starts, and `task done` names the tasks it frees. A task's name is its docked pane's name, and a backlog task's own until it starts; `task name` sets either, and a backlog task keeps its new name when it starts. A backlog task's first message never changes: to change it, make a new task and take the old one off with `task done`. Run from a task's terminal, `task park`, `task name` and `task done` mean that task, and `kanna open` with no placement opens a tab on its Desk; from a task kept off-screen (the backlog, the Shelf), `kanna open`, `kanna comment`, `kanna focus` and `kanna zoom` act in its own window, for the user to see when they pull it.",
+        notes: "A task is a window's docked pane (usually an agent) and its tabs. TASK is its ID as kanna task list shows it (task-1dfb: the first 4 of its 8 hex digits, more if another task starts the same way), any start of the ID that only one task has, with or without task- (1dfb), the full ID, or its agent's pane name or ID; its worktree and first branch are named after its full ID. Parking moves the task's agent and tabs to the Shelf, still running, and leaves the Desk empty; pulling puts it back on a Desk as it was, parking whatever that Desk held. Pulling a task that's on another Desk brings that window forward instead. Done closes the task's panes, ending its agent and terminals; its Desk stays, empty. Whether a task runs and where it is are separate. Start runs a task where it is: a backlog task gets its worktree, branch and agent and stays in the backlog, running, and any number can run there; a stopped task's agent comes back, and a claude agent resumes its conversation. Stop ends a task's agent and hangs up its terminals, and leaves it where it is, its tabs, focus and zoom as they were and its worktree and branch kept; starting it again reruns the terminals that were running. Shelve (Move to Shelf) moves a backlog task to the Shelf, starting it if it's stopped; the Shelf holds three tasks per repo, counting the Desk's. Defer (Move to Backlog) moves a task back to the backlog as it is, running or stopped, freeing its place on the Shelf. A backlog task can wait for other tasks (--after): it's blocked, and starting or shelving it is refused until they're all done; `task edit` changes what it waits for until it starts, and `task done` names the tasks it frees. A repo's tasks.setup (`kanna config schema`) runs in a new worktree's agent terminal before the agent starts, once per worktree; if it fails the task stops, `task start` starts the agent anyway, and `task setup` runs it again (in a Setup tab of a running task). Done runs tasks.teardown, then removes a merged task's worktree and branch, keeping an unmerged one. A task's name is its docked pane's name, and a backlog task's own until it starts; `task name` sets either, and a backlog task keeps its new name when it starts. A backlog task's first message never changes: to change it, make a new task and take the old one off with `task done`. Run from a task's terminal, `task park`, `task name` and `task done` mean that task, and `kanna open` with no placement opens a tab on its Desk; from a task kept off-screen (the backlog, the Shelf), `kanna open`, `kanna comment`, `kanna focus` and `kanna zoom` act in its own window, for the user to see when they pull it.",
         examples: &[
             ("kanna task new \"Fix the page_comments pinch\" \"The mark drifts when you pinch; find out why and add a test\"", "Add a task to this repo's backlog."),
             ("kanna task new \"Release notes\" \"Write the 0.9 notes\" --after 1dfb,c0ff", "Add a task that can't start until task-1dfb and task-c0ff are done."),
@@ -354,6 +354,7 @@ pub static COMMANDS: &[Command] = &[
             ("kanna task start 3f9a", "Start a backlog task where it is: its own worktree and branch, and its agent with the first message."),
             ("kanna task shelve 3f9a", "Move a backlog task to the Shelf, starting it if it's stopped."),
             ("kanna task stop 3f9a", "End a task's agent and hang up its terminals, leaving it and its tabs where they are; start it again to resume its conversation and rerun its terminals."),
+            ("kanna task setup 3f9a", "Run the repo's tasks.setup in task-3f9a's worktree again: then its agent, if it's stopped."),
             ("kanna task list", "Every task, where it is (a Desk window, the Shelf or the backlog) and whether it runs."),
             ("kanna task list resume agent", "Only the tasks with both words in their name or first message."),
             ("kanna task park", "Park this task (run from its terminal), or the key window's."),
@@ -364,7 +365,7 @@ pub static COMMANDS: &[Command] = &[
             ("kanna task done agent", "End the task docked as agent: close its agent and tabs."),
         ],
         parse: |args| {
-            let action = args.positional().ok_or_else(|| usage("task", "say what: new, edit, start, stop, shelve, list, park, pull, defer, name or done"))?;
+            let action = args.positional().ok_or_else(|| usage("task", "say what: new, edit, start, stop, setup, shelve, list, park, pull, defer, name or done"))?;
             let window = args.option("--window")?;
             let agent = args.option("--agent")?;
             if agent.is_some() && action != "new" {
@@ -416,6 +417,13 @@ pub static COMMANDS: &[Command] = &[
                     let task = args.positional().or_else(|| std::env::var("KANNA_PANE").ok().filter(|p| !p.is_empty()));
                     out["task"] = json!(task.ok_or_else(|| usage("task", "stop needs a TASK, or run it from the task's terminal"))?);
                 }
+                "setup" => {
+                    if window.is_some() {
+                        return Err(usage("task", "setup takes a TASK, not --window"));
+                    }
+                    let task = args.positional().or_else(|| std::env::var("KANNA_PANE").ok().filter(|p| !p.is_empty()));
+                    out["task"] = json!(task.ok_or_else(|| usage("task", "setup needs a TASK, or run it from the task's terminal"))?);
+                }
                 "park" => {
                     let task = args.positional().or_else(|| if window.is_none() { std::env::var("KANNA_PANE").ok().filter(|p| !p.is_empty()) } else { None });
                     if let Some(task) = task {
@@ -443,12 +451,12 @@ pub static COMMANDS: &[Command] = &[
                     let task = args.positional().or_else(|| std::env::var("KANNA_PANE").ok().filter(|p| !p.is_empty()));
                     out["task"] = json!(task.ok_or_else(|| usage("task", "done needs a TASK (see `kanna task list`)"))?);
                 }
-                other => return Err(usage("task", &format!("unknown action \"{other}\" (new, edit, start, stop, shelve, list, park, pull, defer, name or done)"))),
+                other => return Err(usage("task", &format!("unknown action \"{other}\" (new, edit, start, stop, setup, shelve, list, park, pull, defer, name or done)"))),
             }
             if let Some(window) = window {
                 out["window"] = json!(window);
             }
-            if ["edit", "start", "stop", "shelve", "defer", "done", "park", "pull"].contains(&action.as_str()) || (action == "name" && out.get("task").is_some()) {
+            if ["edit", "start", "stop", "setup", "shelve", "defer", "done", "park", "pull"].contains(&action.as_str()) || (action == "name" && out.get("task").is_some()) {
                 if let Some(by) = std::env::var("KANNA_PANE").ok().filter(|p| !p.is_empty()) {
                     out["by"] = json!(by);
                 }
