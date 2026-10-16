@@ -1,6 +1,6 @@
 # Code Tour
 
-**Status:** built · **Mockup:** [`references/mockups/code-tour.html`](../../references/mockups/code-tour.html) · **Builds on:** the [code viewer](code-viewer.md)
+**Status:** built · **Mockup:** [`references/mockups/code-tour.html`](../../references/mockups/code-tour.html) · **Builds on:** the [code viewer](code-viewer.md) · **Next:** [stepping through a queued tour](code-tour-steps.md)
 
 A **code tour** is the agent commenting on code while it explains it, so you keep a mental model of how it works, whether you're a vibe coder, an engineer or not technical at all. As it talks, the agent comments on the part it's talking about: the file opens in a code tab, those lines are tinted and the rest dimmed, and the comment shows just above them. You ask questions as it goes; it comments on whatever answers them.
 
