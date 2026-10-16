@@ -1,17 +1,18 @@
 # Agent messaging: how the user, the planner and tasks message each other
 
-> 2026-10-15. Research for a build task; nothing is built. Checked against Claude Code 2.1.300 (installed, and the newest in its changelog) and Codex 0.162.1 (newest release, 2026-10-09; not installed here, so from its docs and source only). Copilot CLI, opencode and Antigravity are from their docs only.
+> 2026-10-16. Research for a build task; nothing is built. Checked against the installed binaries, Claude Code 2.1.301 and Codex 0.163.0 (their `--help` and the strings in them), and against Anthropic's docs (code.claude.com/docs) and OpenAI's (developers.openai.com/codex, which now redirects to learn.chatgpt.com/docs) and `openai/codex` source. Copilot CLI, opencode and Antigravity are from their own docs only, not run.
 
-Today the only way to tell a running agent something is to type into its terminal (`kanna send`, then often `kanna send-key return`). Typed text can land mid-turn, and it's lost if the agent isn't running. Agents can't message each other at all. **Recommendation:** an inbox per task in the daemon, delivered by typing the message into the agent's terminal **when its turn ends**. It works for every agent Kanna runs, needs no hooks, and keeps every message visible in the task's terminal.
+Today the only way to tell a running agent something is to type into its terminal (`kanna send`, then often `kanna send-key return`). Typed text can land mid-turn, and it's lost if the agent isn't running. Agents can't message each other at all. **Recommendation:** an inbox per task in the daemon, delivered by typing the message into the agent's terminal **when its turn ends**, as Kanna already detects it ([4](#4-the-end-of-a-turn)). It works for every agent Kanna runs, needs no hooks, and keeps every message visible in the task's terminal.
 
 ## Contents
 
 1. [Who messages whom](#1-who-messages-whom)
 2. [Candidates](#2-candidates)
 3. [Recommendation](#3-recommendation)
-4. [Stopped tasks](#4-stopped-tasks)
-5. [What the build task includes](#5-what-the-build-task-includes)
-6. [Glossary](#6-glossary)
+4. [The end of a turn](#4-the-end-of-a-turn)
+5. [Stopped tasks](#5-stopped-tasks)
+6. [What the build task includes](#6-what-the-build-task-includes)
+7. [Glossary](#7-glossary)
 
 ## 1. Who messages whom
 
@@ -38,15 +39,15 @@ A reply is just a message back. Nobody needs to block waiting for an answer: age
 | Candidate | While busy | While stopped | Agents | Visible to the user | Cost to build |
 |---|---|---|---|---|---|
 | **A. Type into the terminal** (`kanna send`, fixed by t52) | Lands mid-turn: queued or steered by the agent, or mangled by its input mode | Lost | all | yes, as a prompt | done |
-| **B. Inbox, typed when the turn ends** | Waits for the turn's end, then delivered as the next prompt | Queued; wakes a backlog task ([4](#4-stopped-tasks)) | all: needs only agent status and `kanna send` | yes, as a prompt | small |
-| **C. Inbox, delivered by hooks** (Stop `decision: block` + reason) | At the turn's end, as B | Queued, as B | claude, codex, copilot, antigravity; opencode by a JS plugin | partly: Claude folds it under "Stop hook feedback" | medium: hooks in the user's settings again (agent setup [took them out](../specs/agent-setup.md#1-what-it-does)); codex asks to trust each hook once (`/hooks`). **An idle agent runs no hook, so B is still needed.** |
-| **D. MCP server with send/receive tools** | Only if the agent thinks to call `receive` | Queued | all have MCP clients | as a tool call | medium. Plain MCP notifications can't start a turn in claude or codex, so nothing arrives unless the agent asks for it. |
-| **E. Claude channels** (an MCP server pushes `notifications/claude/channel`) | Queued to the next turn | not available | claude only | a `←` line | medium. Research preview: needs a claude.ai or API-key login, and a custom server needs `--dangerously-load-development-channels`. |
+| **B. Inbox, typed when the turn ends** | Waits for the turn's end, then delivered as the next prompt | Queued; wakes a backlog task ([5](#5-stopped-tasks)) | all: needs only the turn's end and `kanna send` | yes, as a prompt | small |
+| **C. Inbox, delivered by a Stop hook** (`decision: "block"` + `reason` continues the turn with it) | At the turn's end, as B | Queued, as B | claude, codex; copilot (`agentStop`), antigravity; opencode by a JS plugin | partly: Claude shows it as "Stop hook feedback" | medium: hooks back in the user's settings (agent setup [took them out](../specs/agent-setup.md#1-what-it-does)); codex runs a hook only once you've trusted it. **An idle agent runs no hook, so B is still needed.** |
+| **D. MCP server with send/receive tools** | Only if the agent thinks to call `receive` | Queued | all have MCP clients | as a tool call | medium. MCP notifications can't start a turn in claude or codex (codex only logs them), so nothing arrives unless the agent asks. |
+| **E. Claude channels** (an MCP server sends `notifications/claude/channel`) | Queued to the next turn | not available | claude only | a `←` line | medium. Research preview: claude.ai or Console API-key login only, and a server of Kanna's own needs `--dangerously-load-development-channels`. |
 | **F. The agents' own APIs** (codex `app-server` + `codex --remote`, `turn/start` and `turn/steer`; `opencode serve`; Claude's SDK) | Queued, or steered into the turn | `thread/resume` or `--resume` with the message | a different one for each agent; none for copilot or antigravity | only if the TUI attaches to the server (codex, opencode) | large: changes how Kanna runs each agent |
-| **G. Resume with the message as the prompt** (`claude --resume ID "msg"`, `codex resume ID "msg"`) | n/a | yes | claude, codex (with t98's resume by ID); others differ | yes | small, but covers stopped tasks only |
+| **G. Resume with the message as the prompt** (`claude --resume ID "msg"`, `codex resume ID "msg"`) | n/a | yes | claude; codex by ID (`codex resume [SESSION_ID] [PROMPT]`; Kanna resumes it with `--last` until t98) | yes | small, but covers stopped tasks only |
 
-- **B needs nothing from the agents** except what Kanna already relies on: their [status](../specs/agent-status.md) (working, needs you, idle) and the [turn's end](../specs/backlog-runners.md#2-how-its-built) the runners already detect.
-- **C and B deliver at the same moment.** A hook only saves the roughly 3s B waits to be sure the turn has ended, and it can't wake an idle agent. That doesn't justify hooks in five agents' settings.
+- **B needs nothing from the agents** except the turn's end, which Kanna already has for every agent ([4](#4-the-end-of-a-turn)).
+- **C delivers when B does,** and can't wake an idle agent. That doesn't justify hooks in five agents' settings.
 - **D and E** are where push may come from one day. Today only Claude's channels push, and only as a preview.
 - **F is the most capable and the most work:** codex's `turn/steer` could deliver mid-turn. Revisit it if mid-turn delivery is ever wanted. For now it isn't: a message that lands mid-turn is what goes wrong today.
 
@@ -62,7 +63,7 @@ sequenceDiagram
     S->>D: kanna task send t71 "Is your spec at docs/specs/x.md final?"
     D-->>S: queued (t71 is working)
     Note over T: t71's turn runs on
-    T-->>D: status working → idle, held 3s (Turn)
+    T-->>D: turn ends: OSC 7501 idle, or the rules' idle held 3s
     D->>T: types "[message from t52] Is your spec …" + Return (t52's send)
     D->>D: marks it delivered
     Note over T: a new turn: t71 reads it in its own terminal
@@ -76,7 +77,30 @@ sequenceDiagram
 - **Every message shows where it lands,** in the task's terminal as a prompt with its sender. `kanna task messages TASK` lists what's queued and what was delivered, for when the terminal has scrolled.
 - **The skills teach it:** kanna-tasks says how to message the planner or another task and to answer with `kanna task send`; kanna-planning says tasks may write to it.
 
-## 4. Stopped tasks
+## 4. The end of a turn
+
+Delivery (B), the [backlog runners](../specs/backlog-runners.md) and agent status all hang on one signal: the turn has ended, and did it end idle or asking you? Kanna has two ways to know today, and hooks would be a third.
+
+| Signal | claude | codex | copilot, opencode, antigravity | Tells needs you from idle | Setup | Delay |
+|---|---|---|---|---|---|---|
+| **Screen rules + 3s hold** (built) | yes | yes | yes | yes | none | 3s |
+| **OSC 7501** ([agent status §4](../specs/agent-status.md#4-the-agents-own-report-osc-7501), built) | 2.1.295+ | 0.163.0+ | no | yes (`blocked`) | none: Kanna answers the probe | none |
+| **Stop hook** | yes; not on Esc, and not while asking (that's `PermissionRequest` or `Notification`) | yes | per their docs: copilot `agentStop`, antigravity `Stop`, opencode a plugin on `session.idle` | only with a second hook | a hook in each agent's settings; codex makes you trust it | none |
+| **codex `notify`** (`agent-turn-complete`) | – | yes | – | no | `notify` in `~/.codex/config.toml` | none |
+
+```mermaid
+flowchart LR
+    R["OSC 7501 record<br/>(claude, codex)"] -->|"wins when there is one"| T["Turn ends"]
+    S["screen rules, held 3s<br/>(every agent)"] -->|"otherwise"| T
+    T --> DL["deliver a waiting message"]
+    T --> RU["or stop the backlog task"]
+```
+
+- **Hooks add nothing for claude and codex:** OSC 7501 already gives the turn's end at once, says needs you apart from idle in the same report, and needs no files in the user's home. The branch `program-status-osc7501` (merged) built it, including ending a backlog task's turn on working → idle or done.
+- **For copilot, opencode and antigravity** hooks could replace the 3s hold, but each needs its own hook format installed in its own settings, to save 3s on agents Kanna doesn't test end to end. Not worth it; they keep the rules.
+- **So the build task uses `Turn` as it is** and gets OSC 7501's speed for free wherever an agent reports.
+
+## 5. Stopped tasks
 
 ```mermaid
 flowchart TD
@@ -92,23 +116,24 @@ flowchart TD
 - **A task that's Done** refuses messages: `kanna task send` says so.
 - **At a turn's end, a waiting message comes before stopping:** a backlog task with a message waiting isn't stopped; it gets the message and runs another turn.
 
-## 5. What the build task includes
+## 6. What the build task includes
 
 1. **An inbox table** in `kanna.db`: id, to, from, text, made, delivered ([database](../specs/database.md)).
 2. **`kanna task send TASK|planner TEXT`** and **`kanna task messages [TASK]`**.
-3. **Delivery in the daemon:** on the turn's end (`Turn`, already used by the runners), or at once if the agent is idle; typed with t52's `kanna send`; skipped while it needs you or the user is typing.
+3. **Delivery in the daemon:** on the turn's end (`Turn`, already used by the runners, OSC 7501 or rules), or at once if the agent is idle; typed with t52's `kanna send`; skipped while it needs you or the user is typing.
 4. **Runners:** a waiting message makes a stopped backlog task next to start, and keeps a running one from being stopped.
 5. **Skills:** kanna-tasks and kanna-planning learn `kanna task send`.
 6. **A spec,** `docs/specs/agent-messaging.md`, and an e2e scenario with the mock agent: send to a working task, a stopped backlog task and the planner; each gets it once, in order, as a prompt.
 
 **Not included:** hooks, MCP, channels, app-server, mid-turn delivery, iOS (it calls the same command later).
 
-## 6. Glossary
+## 7. Glossary
 
 | Term | Meaning |
 |---|---|
-| **Turn** | An agent's work from a prompt until it waits for the next; its end is when status settles idle or needs you for 3s |
+| **Turn** | An agent's work from a prompt until it waits for the next |
 | **Inbox** | A task's waiting and delivered messages, kept by the daemon |
-| **Stop hook** | A command Claude, Codex and others run as a turn ends; it can return a reason that starts another turn |
+| **OSC 7501** | The Program Status Protocol: an agent tells its terminal it's working, blocked, idle or done |
+| **Stop hook** | A command an agent runs as its turn ends; it can return a reason that starts another turn |
 | **Channel** | Claude Code's preview feature: an MCP server that pushes messages into a session |
 | **app-server** | Codex's JSON-RPC server; its TUI can attach with `--remote`, and clients can start or steer turns |
