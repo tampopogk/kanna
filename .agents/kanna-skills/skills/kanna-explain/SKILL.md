@@ -32,6 +32,26 @@ kanna comment .kanna/tmp/backlog.md:3 "The daemon owns the backlog; the app only
 - **Only those diagram types draw in Kanna.** Any other (`erDiagram`, `gantt`, `pie`, …) shows as "Unsupported diagram type" and its source.
 - **Big picture first,** then the code it points to.
 
+## A change: the call stack first
+
+To walk the user through a change (yours, or a diff) that crosses more than one function or layer (CLI, daemon, app…), first write `.kanna/tmp/<topic>.md` with the call stack as a `sequenceDiagram` or `flowchart`: who calls whom, which process each step runs in, and `file:line` for each step. Comment on it, then go through the code one part at a time with `kanna comment`, in call order. A change in one function goes straight to `kanna comment`.
+
+````markdown
+# Rename a backlog task
+
+```mermaid
+sequenceDiagram
+    participant P as CLI: parse<br/>kanna commands.rs:404
+    participant W as CLI: wire()<br/>kanna lib.rs:208
+    participant C as daemon: rename_pane<br/>kanna-mux core.rs:1108
+    participant B as daemon: backlog<br/>backlog.rs:854
+    P->>W: task name TASK NAME
+    W->>C: rename-pane
+    C-->>B: pane's new name
+    B->>B: stores the task's name
+```
+````
+
 ## Not code: a doc in a tab
 
 To explain something that isn't this repo's code (how `git subtree` works, a protocol, a tradeoff), write the doc in `.kanna/tmp/` the same way and open it in a tab:
