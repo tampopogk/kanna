@@ -186,17 +186,17 @@ fn checkouts(repo: &Path) -> Vec<PathBuf> {
     listed.lines().filter_map(|l| l.strip_prefix("worktree ")).filter_map(|p| fs::canonicalize(p).ok()).collect()
 }
 
-fn link_target(worktree: &Path) -> Option<PathBuf> {
+fn link_target(repo: &Path, worktree: &Path, targets: Option<&Path>) -> Option<PathBuf> {
     let link = worktree.join("target");
     if !fs::symlink_metadata(&link).ok()?.file_type().is_symlink() {
         return None;
     }
     let to = fs::read_link(&link).ok()?;
     let to = fs::canonicalize(if to.is_absolute() { to } else { worktree.join(to) }).ok().filter(|t| t.is_dir())?;
-    let recorded = fs::read_to_string(git_dir(worktree)?.join(TARGET)).ok()?;
-    let recorded = fs::canonicalize(recorded.trim()).ok()?;
+    let recorded = git_dir(worktree).and_then(|dir| fs::read_to_string(dir.join(TARGET)).ok()).and_then(|r| fs::canonicalize(r.trim()).ok());
+    let built = targets.zip(repo.file_name()).zip(worktree.file_name()).and_then(|((root, repo), worktree)| fs::canonicalize(root.join(repo).join(worktree)).ok());
     let tracked = git(worktree, &["ls-files", "--error-unmatch", "target"]).is_ok();
-    (recorded == to && !tracked).then_some(to)
+    ((recorded.as_ref() == Some(&to) || built.as_ref() == Some(&to)) && !tracked).then_some(to)
 }
 
 fn removable(target: &Path, worktree: &Path, others: &[PathBuf]) -> bool {
@@ -206,7 +206,7 @@ fn removable(target: &Path, worktree: &Path, others: &[PathBuf]) -> bool {
     target.components().count() > 2 && !home.as_deref().is_some_and(|h| h.starts_with(target)) && !others.iter().filter(|o| Some(o.as_path()) != mine.as_deref()).any(|o| near(o))
 }
 
-pub fn clean_up(repo: &Path, worktree: &Path) -> Cleanup {
+pub fn clean_up(repo: &Path, worktree: &Path, targets: Option<&Path>) -> Cleanup {
     let kept = |why: String| Cleanup::Kept(why);
     if !worktree.is_dir() {
         return kept("its worktree is gone".into());
@@ -228,7 +228,7 @@ pub fn clean_up(repo: &Path, worktree: &Path) -> Cleanup {
         return kept(format!("{branch} isn't merged into {head}"));
     }
     let others = checkouts(repo);
-    let target = link_target(worktree).filter(|t| removable(t, worktree, &others));
+    let target = link_target(repo, worktree, targets).filter(|t| removable(t, worktree, &others));
     if let Err(error) = git(repo, &["worktree", "remove", &worktree.to_string_lossy()]) {
         return kept(format!("git worktree remove failed: {error}"));
     }
@@ -279,7 +279,7 @@ mod tests {
         symlink(&volume, worktree.join("target")).unwrap();
         fs::write(git_dir(&worktree).unwrap().join(TARGET), format!("{}\n", volume.display())).unwrap();
         let branch = git(&worktree, &["branch", "--show-current"]).unwrap();
-        match clean_up(&repo, &worktree) {
+        match clean_up(&repo, &worktree, None) {
             Cleanup::Removed { branch: gone, target } => {
                 assert_eq!(gone, branch);
                 assert_eq!(target, Some(fs::canonicalize(dir.join("volume/kanna-targets/repo")).unwrap().join(worktree.file_name().unwrap())));
@@ -302,9 +302,24 @@ mod tests {
         fs::create_dir_all(repo.join("target/.offline")).unwrap();
         symlink(repo.join("target"), worktree.join("target")).unwrap();
         fs::write(git_dir(&worktree).unwrap().join(TARGET), repo.join("target").to_string_lossy().as_bytes()).unwrap();
-        assert!(matches!(clean_up(&repo, &worktree), Cleanup::Removed { target: None, .. }));
+        assert!(matches!(clean_up(&repo, &worktree, None), Cleanup::Removed { target: None, .. }));
         assert!(!worktree.exists());
         assert!(repo.join("target/.offline").is_dir(), "the main checkout's target stays");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_worktree_s_folder_under_build_targets_goes_with_it() {
+        let (dir, worktree) = repo("targets");
+        let repo = dir.join("repo");
+        let root = dir.join("volume/kanna-targets");
+        let built = root.join("repo").join(worktree.file_name().unwrap());
+        fs::create_dir_all(built.join("release")).unwrap();
+        fs::create_dir_all(root.join("repo/_main/release")).unwrap();
+        symlink(&built, worktree.join("target")).unwrap();
+        assert!(matches!(clean_up(&repo, &worktree, Some(&root)), Cleanup::Removed { target: Some(_), .. }));
+        assert!(!built.exists());
+        assert!(root.join("repo/_main/release").is_dir(), "the main checkout's folders on the volume stay");
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -316,7 +331,7 @@ mod tests {
         fs::create_dir_all(&elsewhere).unwrap();
         fs::write(elsewhere.join("keep.txt"), "mine").unwrap();
         symlink(&elsewhere, worktree.join("target")).unwrap();
-        assert!(matches!(clean_up(&repo, &worktree), Cleanup::Removed { target: None, .. }));
+        assert!(matches!(clean_up(&repo, &worktree, None), Cleanup::Removed { target: None, .. }));
         assert_eq!(fs::read_to_string(elsewhere.join("keep.txt")).unwrap(), "mine");
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -326,15 +341,15 @@ mod tests {
         let (dir, worktree) = repo("kept");
         let repo = dir.join("repo");
         fs::write(worktree.join("notes.txt"), "work").unwrap();
-        assert_eq!(clean_up(&repo, &worktree), Cleanup::Kept("it has changes".into()));
+        assert_eq!(clean_up(&repo, &worktree, None), Cleanup::Kept("it has changes".into()));
         sh(&worktree, "git add notes.txt && git -c user.email=e@e -c user.name=e commit -q -m work");
         let branch = git(&worktree, &["branch", "--show-current"]).unwrap();
-        assert_eq!(clean_up(&repo, &worktree), Cleanup::Kept(format!("{branch} isn't merged into main")));
+        assert_eq!(clean_up(&repo, &worktree, None), Cleanup::Kept(format!("{branch} isn't merged into main")));
         assert!(worktree.join("notes.txt").is_file());
         sh(&repo, &format!("git merge -q --ff-only {branch}"));
-        assert!(matches!(clean_up(&repo, &worktree), Cleanup::Removed { .. }));
-        assert_eq!(clean_up(&repo, &worktree), Cleanup::Kept("its worktree is gone".into()));
-        assert_eq!(clean_up(&repo, &repo), Cleanup::Kept(format!("{} isn't a task's worktree", repo.display())), "the main checkout is never removed");
+        assert!(matches!(clean_up(&repo, &worktree, None), Cleanup::Removed { .. }));
+        assert_eq!(clean_up(&repo, &worktree, None), Cleanup::Kept("its worktree is gone".into()));
+        assert_eq!(clean_up(&repo, &repo, None), Cleanup::Kept(format!("{} isn't a task's worktree", repo.display())), "the main checkout is never removed");
         fs::remove_dir_all(&dir).unwrap();
     }
 

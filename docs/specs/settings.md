@@ -55,7 +55,7 @@ flowchart LR
 - **The daemon reads them** when it needs a setting, for a folder: the repo of that folder's `.kanna/config.json`, then `~/.kanna-v4/config.json` (each at most 64 KB; `~` is `$KANNA_AGENTS_HOME` when it's set, as for agent setup, so tests keep their own).
 - **`planning.agent`** is read as the daemon builds a planning terminal's command, for the folder it opens in, and passed to `planner.sh`, which writes it to the repo's file when you say yes.
 - **`backlog.runners`** is read for each repo with backlog tasks every 2s, and as a task's turn ends, so a change applies within seconds.
-- **`build.targets`** isn't read by the daemon: `kanna_targets` in `scripts/env.sh` reads it from your file with `plutil` each time a build script runs.
+- **`build.targets`** is read by `kanna_targets` in `scripts/env.sh` from your file with `plutil` each time a build script runs, and by the daemon as it cleans up a Done task, to find the task's build folder ([task scripts](task-scripts.md#3-teardown-and-cleanup)).
 - **`tasks.*`** are read as a task's worktree is set up and as it's Done, for its repo.
 - **`planning.context`** is read as the daemon builds a planning terminal's command, for the folder it opens in, and becomes an `export` in that command.
 

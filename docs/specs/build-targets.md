@@ -60,4 +60,4 @@ flowchart LR
 
 ## 3. Removing a task
 
-`git worktree remove` and `rm -rf target` remove only the link. Whatever removes a done task's build folders (the backlog task *Task setup and teardown scripts*) also removes the folder the link points to, skips it when its volume isn't mounted, and never touches the main checkout's `target/`, `_main/` or `.offline/`.
+`git worktree remove` and `rm -rf target` remove only the link. Cleaning up a Done task ([task scripts](task-scripts.md#3-teardown-and-cleanup)) also removes the folder the link points to, skips it when its volume isn't mounted, and never touches the main checkout's `target/`, `_main/` or `.offline/`.

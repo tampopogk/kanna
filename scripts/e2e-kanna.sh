@@ -1617,7 +1617,7 @@ task_backlog() {
   kanna close plain >/dev/null || { echo "task_backlog line $LINENO"; return 1; }
   kanna task done Fixed >/dev/null || { echo "task_backlog line $LINENO"; return 1; }
   kanna task shelve $(tid 5) >/dev/null || { echo "task_backlog line $LINENO"; return 1; }
-  check test -d "$wt" || { echo "task_backlog line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ ! -e "$wt" ]]' || { echo "task_backlog: the done task's worktree, merged and clean, was kept"; return 1; }
 }
 
 scenario desk_backlog M4
@@ -3006,7 +3006,7 @@ SETUP
   local volume="$KANNA_STATE_DIR/volume/kanna-targets/repo/${wt##*/}"
   mkdir -p "$repo/target/ghosttykit" "$repo/target/.offline" "$volume/debug" && echo main >"$repo/target/ghosttykit/lib" && echo built >"$volume/debug/kanna" || { echo "task_scripts line $LINENO"; return 1; }
   ln -s "$repo/target/ghosttykit" "$volume/ghosttykit" && ln -s "$volume" "$wt/target" || { echo "task_scripts line $LINENO"; return 1; }
-  echo "$volume" >"$(git -C "$wt" rev-parse --absolute-git-dir)/kanna-target"
+  printf '{"version": 1, "backlog": {"runners": 0}, "build": {"targets": "%s"}}\n' "$KANNA_STATE_DIR/volume/kanna-targets" >"$KANNA_AGENTS_HOME/.kanna-v4/config.json"
   kanna task done "$p1" >/dev/null || { echo "task_scripts line $LINENO"; return 1; }
   check wait_for 10 eval '[[ ! -e "$wt" ]]' || { echo "task_scripts: the merged task's worktree wasn't removed"; raw '{"id":1,"cmd":"backlog","args":{"action":"events","task":"t1"}}'; return 1; }
   check test "$(cat "$KANNA_STATE_DIR/torn")" == KANNA_TASK=t1 || { echo "task_scripts: teardown didn't run on Done"; return 1; }

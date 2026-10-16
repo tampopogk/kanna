@@ -172,6 +172,11 @@ pub fn runners(files: &[PathBuf]) -> usize {
     configured(files, "backlog", "runners", read, "a number of tasks from 0 to 10").unwrap_or(RUNNERS)
 }
 
+pub fn build_targets() -> Option<PathBuf> {
+    let mine = [crate::agents::home().join(".kanna-v4/config.json")];
+    configured(&mine, "build", "targets", |value| value.as_str().filter(|p| p.starts_with('/')).map(PathBuf::from), "an absolute folder")
+}
+
 pub fn scripts(files: &[PathBuf]) -> Scripts {
     let command = |value: &Value| value.as_str().map(str::trim).filter(|c| !c.is_empty()).map(String::from);
     let timeout = |value: &Value| value.as_u64().filter(|t| (1..=task_scripts::TIMEOUT_MAX).contains(t));
@@ -1501,7 +1506,7 @@ impl Backlog {
                     return;
                 }
             }
-            match task_scripts::clean_up(&task.repo, &folder) {
+            match task_scripts::clean_up(&task.repo, &folder, build_targets().as_deref()) {
                 Cleanup::Removed { branch, target } => {
                     let built = target.as_ref().map_or(String::new(), |t| format!(" and its build folder {}", t.display()));
                     eprintln!("kanna-daemon: {id} is merged, so its worktree {}{built} and branch {branch} are removed", folder.display());
