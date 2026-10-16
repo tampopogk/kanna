@@ -15,6 +15,8 @@ const BASE: &str = "kanna-base";
 
 const RECORD: &str = "kanna-setup";
 
+pub const TARGET: &str = "kanna-target";
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Scripts {
     pub setup: Option<String>,
@@ -190,8 +192,11 @@ fn link_target(worktree: &Path) -> Option<PathBuf> {
         return None;
     }
     let to = fs::read_link(&link).ok()?;
-    let to = if to.is_absolute() { to } else { worktree.join(to) };
-    fs::canonicalize(to).ok().filter(|t| t.is_dir())
+    let to = fs::canonicalize(if to.is_absolute() { to } else { worktree.join(to) }).ok().filter(|t| t.is_dir())?;
+    let recorded = fs::read_to_string(git_dir(worktree)?.join(TARGET)).ok()?;
+    let recorded = fs::canonicalize(recorded.trim()).ok()?;
+    let tracked = git(worktree, &["ls-files", "--error-unmatch", "target"]).is_ok();
+    (recorded == to && !tracked).then_some(to)
 }
 
 fn removable(target: &Path, worktree: &Path, others: &[PathBuf]) -> bool {
@@ -272,6 +277,7 @@ mod tests {
         fs::write(volume.join("debug/kanna"), "built").unwrap();
         symlink(&main_build, volume.join("ghosttykit")).unwrap();
         symlink(&volume, worktree.join("target")).unwrap();
+        fs::write(git_dir(&worktree).unwrap().join(TARGET), format!("{}\n", volume.display())).unwrap();
         let branch = git(&worktree, &["branch", "--show-current"]).unwrap();
         match clean_up(&repo, &worktree) {
             Cleanup::Removed { branch: gone, target } => {
@@ -295,9 +301,23 @@ mod tests {
         let repo = dir.join("repo");
         fs::create_dir_all(repo.join("target/.offline")).unwrap();
         symlink(repo.join("target"), worktree.join("target")).unwrap();
+        fs::write(git_dir(&worktree).unwrap().join(TARGET), repo.join("target").to_string_lossy().as_bytes()).unwrap();
         assert!(matches!(clean_up(&repo, &worktree), Cleanup::Removed { target: None, .. }));
         assert!(!worktree.exists());
         assert!(repo.join("target/.offline").is_dir(), "the main checkout's target stays");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_target_link_kanna_didnt_record_goes_as_a_link_only() {
+        let (dir, worktree) = repo("unrecorded");
+        let repo = dir.join("repo");
+        let elsewhere = dir.join("documents");
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::write(elsewhere.join("keep.txt"), "mine").unwrap();
+        symlink(&elsewhere, worktree.join("target")).unwrap();
+        assert!(matches!(clean_up(&repo, &worktree), Cleanup::Removed { target: None, .. }));
+        assert_eq!(fs::read_to_string(elsewhere.join("keep.txt")).unwrap(), "mine");
         fs::remove_dir_all(&dir).unwrap();
     }
 
