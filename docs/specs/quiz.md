@@ -101,7 +101,7 @@ sequenceDiagram
 
 - `git log main --since=1.day`. With nothing new, say nothing.
 - Otherwise offer once, in a line: what landed, and "Quiz on today's changes? Five questions, about two minutes."
-- On yes: `kanna quiz open`, with the agent you are (`--agent codex`; Claude by default).
+- On yes: `kanna quiz open`, with the agent you are (`--agent codex`; Claude by default). Kanna adds the agent's flag for skipping permission prompts only when `agents.prompts` is `skip` in `~/.kanna-v4/config.json`, as for a task's agent ([settings](settings.md#agent-prompts)).
 
 **Asking** starts from that first message ([agent setup](agent-setup.md#2-how-an-agent-knows-its-in-kanna)), which says it's the quiz agent, on main, so the agent doesn't take itself for a task's (and rename main).
 

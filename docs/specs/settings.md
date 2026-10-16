@@ -2,16 +2,17 @@
 
 **Status:** built · **Builds on:** [planning terminal](planning-agent.md) · **Tests:** `crates/kanna-daemon/src/backlog.rs` (unit), `scripts/e2e-kanna.sh` `desk_backlog`, `desk_by_path`, `planner_choice`, `backlog_runners`, `task_scripts`
 
-Kanna's own settings, in two JSON files: yours, and a repo's override. They're defined by a versioned JSON Schema, [`schemas/config.schema.json`](../../schemas/config.schema.json), that agents read with `kanna config schema`. For now: which agent plans, how big a planning agent's context gets, how many backlog tasks run at once, where task worktrees build, and what a task runs as it's set up and torn down.
+Kanna's own settings, in two JSON files: yours, and a repo's override. They're defined by a versioned JSON Schema, [`schemas/config.schema.json`](../../schemas/config.schema.json), that agents read with `kanna config schema`. For now: which agent plans, how big a planning agent's context gets, how many backlog tasks run at once, where task worktrees build, what a task runs as it's set up and torn down, and whether Kanna's agents skip their permission prompts.
 
 ## Contents
 
 1. [Where they live](#1-where-they-live)
 2. [Schema and version](#2-schema-and-version)
 3. [Keys](#3-keys)
-4. [How it's built](#4-how-its-built)
-5. [Rejected](#5-rejected)
-6. [Glossary](#6-glossary)
+4. [Agent prompts](#agent-prompts)
+5. [How it's built](#5-how-its-built)
+6. [Rejected](#6-rejected)
+7. [Glossary](#7-glossary)
 
 ## 1. Where they live
 
@@ -22,7 +23,7 @@ flowchart LR
 ```
 
 - **Yours:** `~/.kanna-v4/config.json`.
-- **A repo's:** `.kanna/config.json` at the repo's root, beside its other Kanna files. It wins over yours, key by key: a key it doesn't set comes from yours, then from Kanna's default.
+- **A repo's:** `.kanna/config.json` at the repo's root, beside its other Kanna files. It wins over yours, key by key: a key it doesn't set comes from yours, then from Kanna's default. The exceptions are `agents.prompts` ([4](#agent-prompts)) and `build.targets`, which only yours sets.
 - **Read when they're used,** not watched: a change applies to the next thing that reads it (for `planning.context`, the next planning terminal).
 - **A bad value is ignored** for the next file down, and the daemon's log says which file and key.
 
@@ -44,13 +45,33 @@ flowchart LR
 | `version` | `1` | The settings format the file is written for |
 | `planning.agent` | none: asked | The agent a new Desk's planning terminal starts as a [planning agent](planning-agent.md#2-what-it-is), a name from the agents Kanna knows (`claude`, `codex`, …). Unset, each [new Desk](new-desk.md) asks (unless one agent is installed) and offers to write your answer to the repo's file. |
 | `backlog.runners` | `3` | How many of a repo's backlog tasks run at once, from 0 to 10: they start by themselves, oldest first, and Kanna stops each when its agent's turn ends ([backlog runners](backlog-runners.md)). `0` turns it off. |
+| `agents.prompts` | `"ask"` | Whether the agents Kanna starts (task agents, the quiz agent, planning agents) ask permission before they run commands and edit files (`"ask"`), or skip their permission prompts (`"skip"`). Only `~/.kanna-v4/config.json` sets it ([4](#agent-prompts)). Unset, agents ask, and the next planning terminal asks you once. |
 | `planning.context` | `300000` | Tokens a claude agent's context grows to in a [planning terminal](planning-agent.md) before it compacts, from 100000 to 1000000, or `"auto"` for claude's own. A long-lived agent works better kept small (context rot). The terminal sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, unless your environment already does. Other agents keep their own limit (codex's is already shorter); each gets this setting as Kanna supports it. |
 | `build.targets` | none: in the worktree | A folder where build outputs live, so builds stay off the internal disk: each task worktree's `target/` links to `ROOT/REPO/WORKTREE`, and most folders in the main checkout's `target/` link to `ROOT/REPO/_main/`, keeping the app, built Ghostty and a copy of its dependencies internal. Only yours: a repo's file can't set it. Read by `scripts/build.sh`; while the folder's volume isn't mounted, checkouts build on the internal disk and move over on the next build with it ([build targets](build-targets.md)). |
 | `tasks.setup` | none | A shell command run in a new task's worktree before its agent starts, once per worktree ([task scripts](task-scripts.md#2-setup)) |
 | `tasks.teardown` | none | A shell command run in a task's agent pane, in its worktree, when it's Done: the task is Done once it succeeds, and Kanna cleans it up ([task scripts](task-scripts.md#3-teardown-and-cleanup)) |
 | `tasks.timeout` | `600` | Seconds `tasks.setup` and `tasks.teardown` each get, from 1 to 86400, before Kanna stops them |
 
-## 4. How it's built
+<a id="agent-prompts"></a>
+## 4. Agent prompts
+
+`agents.prompts` decides whether the agents Kanna starts skip their permission prompts: `claude --dangerously-skip-permissions`, `codex --yolo`, `copilot --yolo`, `agy --dangerously-skip-permissions` (opencode has no flag). With prompts off, an agent runs commands and edits files without asking, so it's your choice, asked once.
+
+```mermaid
+flowchart LR
+    R["the repo's .kanna/config.json"] -. "sets agents.prompts?<br/>ignored, and logged" .-> X(( ))
+    U["~/.kanna-v4/config.json"] -->|"ask / skip"| A["agents Kanna starts"]
+    U -->|"unset"| Q["the next planning terminal asks:<br/>[y/N], written to yours"]
+    Q --> A
+```
+
+- **Only yours sets it.** A repo's `.kanna/config.json` comes with the repo: a repo you clone could otherwise turn your prompts off, and its agents would then run whatever its files talk them into. A repo's file that sets it is ignored, and the daemon's log names the file.
+- **Unset means `"ask"`:** agents keep their prompts until you say otherwise. A bad value, or a file for a newer Kanna, is unset too.
+- **Asked once,** by the planning terminal of a [new Desk](new-desk.md#2-its-planning-terminal), after the agent is chosen and before it starts: `Let Kanna's agents work without permission prompts? They'll run commands and edit files without asking. [y/N]`. Yes writes `"skip"`, anything else `"ask"`, to `~/.kanna-v4/config.json`, keeping the file's other keys; then that planning agent starts to match. It's never asked again while the key is set; change it by editing the file.
+- **An agent command that picks its own mode keeps it** (`claude --permission-mode plan`, `codex -a untrusted`, `copilot --allow-all-tools`, `agy --mode plan`, or one that already has the skipping flag), whatever the setting.
+- **Why `agents.prompts`:** it's about every agent Kanna starts, so it's in its own `agents` section rather than `planning` or `backlog`; it names what you see, the permission prompts, and its values read as what they do (`ask`, `skip`). A word rather than a boolean leaves no doubt which way `true` goes, and none of the agents' own names for it (`yolo`, `dangerously-skip-permissions`) fits them all.
+
+## 5. How it's built
 
 - **The daemon reads them** when it needs a setting, for a folder: the repo of that folder's `.kanna/config.json`, then `~/.kanna-v4/config.json` (each at most 64 KB; `~` is `$KANNA_AGENTS_HOME` when it's set, as for agent setup, so tests keep their own).
 - **`planning.agent`** is read as the daemon builds a planning terminal's command, for the folder it opens in, and passed to `planner.sh`, which writes it to the repo's file when you say yes.
@@ -58,18 +79,23 @@ flowchart LR
 - **`build.targets`** isn't read by the daemon: `kanna_targets` in `scripts/env.sh` reads it from your file with `plutil` each time a build script runs.
 - **`tasks.*`** are read as a task's worktree is set up and as it's Done, for its repo.
 - **`planning.context`** is read as the daemon builds a planning terminal's command, for the folder it opens in, and becomes an `export` in that command.
+- **`agents.prompts`** is read (`prompts` in `backlog.rs`) from the last of a folder's settings files, yours; the repo's file is only checked so its setting can be logged as ignored. A task's agent reads it each time its command is built: as it starts, starts again, or moves back from the backlog. The daemon builds a planning terminal's command before you're asked, so it passes `planner.sh` each agent as a name, the command that asks and the command that skips, and the script picks one once it knows. It reads `~/.kanna-v4/config.json` (with `plutil`) and writes it as it writes a repo's `planning.agent`: refusing a symlinked `~/.kanna-v4` or `config.json`, and a file for a newer Kanna (then the answer holds for that agent, and the next terminal asks again). The quiz agent is opened by the planning agent, which the `kanna-quiz` skill has read the same file.
 
-## 5. Rejected
+## 6. Rejected
 
 - **`~/.config/kanna/`:** `~/.kanna-v4/` and a repo's `.kanna/` keep Kanna's files together, with a repo override beside the repo's other Kanna files.
 - **One file per feature** (`planning.json`): one `config.json` with a section per feature has room for the settings to come.
 - **Settings without a schema** (documented only in this spec): an agent in another repo can't read this spec, but it can run `kanna config schema`.
 - **Passing claude `--autocompact`:** an environment variable in the planning terminal also reaches a claude you start there yourself.
+- **Agents always skipping prompts** (as Kanna did from 5d721dcb): with prompts off an agent in a cloned repo runs commands and edits files unasked, so it has to be your choice.
+- **A repo setting `agents.prompts`,** like every other key: the repo would decide how much its own agents may do on your machine.
+- **Asking in each new Desk until answered,** or per repo: the answer is about you, not a project, so it's asked once and kept in your file.
 
-## 6. Glossary
+## 7. Glossary
 
 | Term | Meaning |
 |---|---|
 | **JSON Schema** | A standard JSON description of what a JSON file may contain, read by editors and agents |
 | **Compact** | An agent summarising its conversation to shrink its context, keeping what matters |
+| **Permission prompt** | An agent stopping to ask before it runs a command or edits a file |
 | **Context rot** | A long conversation's older turns crowding out what matters, so the agent works worse |

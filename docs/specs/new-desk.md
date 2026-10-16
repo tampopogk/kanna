@@ -35,8 +35,10 @@ flowchart LR
     S["agent setup<br/>(asks once per launch)"] --> W{"in ~?"}
     W -->|"yes"| J["folder, repo or name?<br/>cd there (a repo: clone it,<br/>a name: make it, in ~/.kanna-v4/repos)"] --> P
     W -->|"no"| P{"planning.agent set,<br/>or one agent installed?"}
-    P -->|"yes"| A["the agent, first message:<br/>You are the Kanna planning agent."]
-    P -->|"no"| Q["which agent plans?"] --> O["make it the project's?<br/>(in a git repo)"] --> A
+    P -->|"yes"| Y{"agents.prompts set<br/>in yours?"}
+    P -->|"no"| Q["which agent plans?"] --> O["make it the project's?<br/>(in a git repo)"] --> Y
+    Y -->|"yes"| A["the agent, first message:<br/>You are the Kanna planning agent."]
+    Y -->|"no"| K["skip permission prompts? [y/N]<br/>(written to ~/.kanna-v4/config.json)"] --> A
     A -->|"you quit it"| SH["your shell"]
 ```
 
@@ -56,7 +58,8 @@ flowchart LR
 - **The agents to choose from** are the agents Kanna knows that your shell finds, in the `AGENTS` table's order; Return takes the first.
 - **No question** when the folder's `planning.agent` is set ([settings](settings.md)) or only one agent is installed. With none, it says so and you're in your shell.
 - **Make it the project's:** yes writes `planning.agent` to the repo's `.kanna/config.json`, part of the repo, so every new Desk on the project, yours or anyone's, starts that agent. Not offered outside a git repo (`~`). No saves nothing, and the next Desk asks again.
-- **The agent starts as you'd start it,** in the terminal's folder, with `You are the Kanna planning agent.` as its first message, so it answers at once with what's running and waiting (in `~`, which new project). It doesn't ask permission, as a task's agent doesn't. Codex runs with `--no-daemon` ([tasks](tasks.md#7-how-its-built)).
+- **Permission prompts are asked about once,** after the agent is chosen and before it starts, while your `~/.kanna-v4/config.json` doesn't set `agents.prompts`: `Let Kanna's agents work without permission prompts? They'll run commands and edit files without asking. [y/N]`. The answer goes in your file, never the repo's, and the agent starts to match ([settings](settings.md#agent-prompts)).
+- **The agent starts as you'd start it,** in the terminal's folder, with `You are the Kanna planning agent.` as its first message, so it answers at once with what's running and waiting (in `~`, which new project). It asks permission or not as a task's agent does ([`agents.prompts`](settings.md#agent-prompts)). Codex runs with `--no-daemon` ([tasks](tasks.md#7-how-its-built)).
 - **Quit it and you're in your shell,** with a line giving the command that starts it again as the planner. Anything you start there is yours.
 
 ## 3. How it's built
@@ -64,7 +67,7 @@ flowchart LR
 - **`task desk` finds the project's Desk first,** in the layout (`desk_on` in `kanna-mux/src/desk.rs`), which has every window and its panes' live folders: PATH's project root (the main repo for a worktree, symlinks resolved; `project()` in `kanna-mux/src/core.rs`) against each Desk's, which is its docked task's folder, else its planning terminal's, else the folder it was opened on, as the Shelf decides. Of several, the key one, else the one used last. A plain terminal window isn't a Desk. It replies with the window and `new`; the found one becomes key, so the app brings it to the front. New Desk (⌘N) passes `new` to always open one.
 - **The app asks for a planning terminal** (`backlog` `plan`) with the window's folder and the bundle's `planner.sh`; `task desk` makes the window, with a folder or none (started from Finder).
 - **`planner.sh`, in `Kanna.app/Contents/Resources`,** copied there by `scripts/build-kanna-app.sh`. It replaces `getting-started.md`.
-- **The daemon passes it what it needs** (`planner_command` in `backlog.rs`): the `kanna` beside the daemon, the repos folder, and each agent Kanna knows as a name, the program the script looks for, and the command that starts it with the planner's first message, built from the `AGENTS` table as a task's agent is (its flag for not asking permission, its first-message flag, [its app-server](codex-app-server.md) for Codex; no session). The script knows no agent itself.
+- **The daemon passes it what it needs** (`planner_command` in `backlog.rs`): the `kanna` beside the daemon, the repos folder, and each agent Kanna knows as a name, the program the script looks for, and two commands that start it with the planner's first message, one asking permission and one with its flag for not asking, built from the `AGENTS` table as a task's agent is (its first-message flag, [its app-server](codex-app-server.md) for Codex; no session). The script picks one once it knows `agents.prompts`, and knows no agent itself.
 - **The script reads `planning.agent` itself,** once it's in the folder (the repo's `.kanna/config.json`, then yours, with `plutil`), since in `~` the folder isn't known until you answer.
 - **The terminal's command** is the [settings](settings.md) exports, then `planner.sh …`, which ends by starting your login shell (with Kanna's zsh integration put back) in the folder it chose. Moving reports the new folder as the shell would (OSC 7), so the window follows before any prompt. It runs in your interactive login shell like any command ([command shell](command-shell.md)), so `command -v` finds what your `.zshrc` sets up (nvm's codex).
 - **Writing the setting** uses `plutil` on the repo's `.kanna/config.json` (making it with `"version": 1` if it's missing), keeping its other keys (`plutil` sorts them). It won't write through a symlink, and text from a repo or your answers is printed without control characters, so a cloned repo can't redirect the write or drive the terminal.
@@ -74,7 +77,7 @@ flowchart LR
 ## 4. Tests
 
 - **Unit (`backlog.rs`):** the planning terminal's command for each agent; `planner.sh` run with stand-in agents: asks where only in `~`, moves to a folder, clones a URL (a local bare repo) and `owner/repo` (a stand-in `gh`), makes a named project, all under a stand-in `~/.kanna-v4/repos`, refuses a missing folder, asks which agent with two, not with one or with `planning.agent` set, writes the setting on yes and keeps the file's other keys, says so with none.
-- **e2e (`scripts/e2e-kanna.sh`):** `planner_choice`: a new Desk asks, yes makes the agent the project's, the next new Desk starts it straight away, quitting leaves the shell, and a ⌘N Desk in `~` moves to a folder and starts it there. `real_agent_planners`: the real claude and codex against the mock model (`tools/agent-harness`) each receive `You are the Kanna planning agent.` as their first message. `desk_backlog`, `desk_by_path`, `new_desk`: setup, then where, in `~`. `path_reuses_desk`: `kanna PATH` twice gives one window, a subfolder and a folder in a worktree find it, another project opens another, and the found Desk is key.
+- **e2e (`scripts/e2e-kanna.sh`):** `planner_choice`: a new Desk asks, yes makes the agent the project's, it asks once about permission prompts and saves yes in your settings, the next new Desk starts it straight away, quitting leaves the shell, and a ⌘N Desk in `~` moves to a folder and starts it there. `real_agent_planners`: the real claude and codex against the mock model (`tools/agent-harness`) each receive `You are the Kanna planning agent.` as their first message. `desk_backlog`, `desk_by_path`, `new_desk`: setup, then where, in `~`. `path_reuses_desk`: `kanna PATH` twice gives one window, a subfolder and a folder in a worktree find it, another project opens another, and the found Desk is key.
 - **Unit (`kanna-mux/src/owner.rs`):** a Desk on a project already open is brought forward: by its folder, planning terminal or docked task; not a plain window; the key one, else the one used last; `new` always opens.
 
 ## 5. Rejected

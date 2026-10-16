@@ -98,7 +98,11 @@ impl Entry {
     }
 
     fn command(&self, session: Option<&str>) -> String {
-        let command = in_its_terminal(&unprompted(&self.agent));
+        self.command_with(session, prompts(&config_files(Path::new(&self.repo))))
+    }
+
+    fn command_with(&self, session: Option<&str>, prompts: Prompts) -> String {
+        let command = in_its_terminal(&asking(&self.agent, prompts));
         let agent = agent(&self.agent);
         let told = told_task(self.message.as_deref());
         let first = |command: String| match agent.and_then(|a| a.prompt) {
@@ -164,6 +168,27 @@ pub fn planning_context(files: &[PathBuf]) -> Option<u64> {
     configured(files, "planning", "context", read, "a number of tokens from 100000 to 1000000, or \"auto\"").unwrap_or(Some(PLANNING_CONTEXT))
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Prompts {
+    Ask,
+    Skip,
+}
+
+pub fn prompts(files: &[PathBuf]) -> Prompts {
+    let Some((mine, repos)) = files.split_last() else { return Prompts::Ask };
+    for file in repos {
+        if configured(std::slice::from_ref(file), "agents", "prompts", |_| Some(()), "").is_some() {
+            eprintln!("kanna-daemon: {}: agents.prompts is ignored here: only ~/.kanna-v4/config.json sets it", file.display());
+        }
+    }
+    let read = |value: &Value| match value.as_str() {
+        Some("ask") => Some(Prompts::Ask),
+        Some("skip") => Some(Prompts::Skip),
+        _ => None,
+    };
+    configured(std::slice::from_ref(mine), "agents", "prompts", read, "\"ask\" or \"skip\"").unwrap_or(Prompts::Ask)
+}
+
 pub const RUNNERS: usize = 3;
 
 const RUNNERS_MAX: usize = 10;
@@ -198,22 +223,22 @@ fn told_task(message: Option<&str>) -> String {
 pub const QUIZ_ROLE: &str = "You are the Kanna quiz agent, on main: quiz me on what landed on main.";
 
 /// How an agent Kanna starts in a role starts: as you'd start it yourself, with its first message saying its role.
-pub fn started_as(program: &str, role: &str) -> String {
-    let command = in_its_terminal(&unprompted(program));
+pub fn started_as(program: &str, role: &str, prompts: Prompts) -> String {
+    let command = in_its_terminal(&asking(program, prompts));
     match agent(program).and_then(|a| a.prompt) {
         Some(flag) => format!("{command} {flag} {}", quote(role)),
         None => format!("{command} {}", quote(role)),
     }
 }
 
-/// The agents a planning terminal may start, each a name, the program to find, and the command that starts it as the planner:
-/// every agent Kanna knows, or for tests the programs in `KANNA_PLANNING_AGENTS`.
-pub fn planner_agents() -> Vec<(String, String, String)> {
+/// The agents a planning terminal may start, each a name, the program to find, and the commands that start it as the
+/// planner, asking permission and not: every agent Kanna knows, or for tests the programs in `KANNA_PLANNING_AGENTS`.
+pub fn planner_agents() -> Vec<(String, String, String, String)> {
     let programs: Vec<String> = match std::env::var("KANNA_PLANNING_AGENTS") {
         Ok(list) => list.split_whitespace().map(String::from).collect(),
         Err(_) => AGENTS.iter().map(|a| a.names[0].to_string()).collect(),
     };
-    programs.iter().map(|p| (program(p).to_string(), p.split_whitespace().next().unwrap_or(p).to_string(), started_as(p, PLANNER_ROLE))).collect()
+    programs.iter().map(|p| (program(p).to_string(), p.split_whitespace().next().unwrap_or(p).to_string(), started_as(p, PLANNER_ROLE, Prompts::Ask), started_as(p, PLANNER_ROLE, Prompts::Skip))).collect()
 }
 
 /// The planning terminal's command line: it keeps a claude agent's context to `context` tokens, then runs the planner
@@ -221,7 +246,7 @@ pub fn planner_agents() -> Vec<(String, String, String)> {
 /// Without the script, it asks about agent setup and hands over to your shell.
 /// Kanna's zsh integration (`zsh`, its folder) hands ZDOTDIR back to yours while the command runs, so the shell it
 /// hands over to gets it again, as every Kanna terminal's does.
-pub fn planner_command(script: Option<&str>, context: Option<u64>, zsh: Option<&str>, cli: Option<&str>, repos: &Path, agents: &[(String, String, String)]) -> String {
+pub fn planner_command(script: Option<&str>, context: Option<u64>, zsh: Option<&str>, cli: Option<&str>, repos: &Path, agents: &[(String, String, String, String)]) -> String {
     let limit = context.map_or(String::new(), |tokens| format!("[ -n \"$CLAUDE_CODE_AUTO_COMPACT_WINDOW\" ] || export CLAUDE_CODE_AUTO_COMPACT_WINDOW={tokens}; "));
     if let Some(script) = script {
         let mut command = format!("{limit}exec {}", quote(script));
@@ -232,8 +257,8 @@ pub fn planner_command(script: Option<&str>, context: Option<u64>, zsh: Option<&
             command += &format!(" --zsh {}", quote(zsh));
         }
         command += &format!(" --repos {} --", quote(&repos.to_string_lossy()));
-        for (name, program, start) in agents {
-            command += &format!(" {} {} {}", quote(name), quote(program), quote(start));
+        for (name, program, ask, skip) in agents {
+            command += &format!(" {} {} {} {}", quote(name), quote(program), quote(ask), quote(skip));
         }
         return command;
     }
@@ -321,11 +346,11 @@ fn latest_opencode_session(db: &Path, folder: &Path) -> Option<String> {
 
 const ASKING: &[&str] = &["--dangerously-skip-permissions", "--yolo", "--permission-mode", "--ask-for-approval", "-a", "--allow-all", "--allow-all-tools", "--mode"];
 
-fn unprompted(agent: &str) -> String {
+fn asking(agent: &str, prompts: Prompts) -> String {
     let agent = agent.trim();
     let chooses = agent.split_whitespace().skip(1).any(|w| ASKING.contains(&w.split('=').next().unwrap_or(w)));
     match self::agent(agent).and_then(|a| a.unprompted) {
-        Some(flag) if !chooses => format!("{agent} {flag}"),
+        Some(flag) if prompts == Prompts::Skip && !chooses => format!("{agent} {flag}"),
         _ => agent.to_string(),
     }
 }
@@ -2359,10 +2384,10 @@ mod tests {
     #[test]
     fn a_task_s_agent_is_told_it_s_a_task_s_agent_ahead_of_its_first_message() {
         let mut entry = Entry { id: "task-1dfb12c2".into(), name: None, message: Some("don't stop".into()), repo: "/r".into(), by: None, made_at: 0.0, agent: "codex".into(), folder: None, session: None, held: None, ..Default::default() };
-        let command = entry.command(None);
+        let command = entry.command_with(None, Prompts::Skip);
         assert_eq!(said(command.strip_prefix("codex --yolo --no-daemon ").unwrap()), "You're a task's agent in Kanna (terminal term-9), in your task's worktree. Your task: don't stop");
         entry.message = None;
-        let command = entry.command(None);
+        let command = entry.command_with(None, Prompts::Skip);
         assert_eq!(said(command.strip_prefix("codex --yolo --no-daemon ").unwrap()), "You're a task's agent in Kanna (terminal term-9), in your task's worktree.");
     }
 
@@ -2371,11 +2396,11 @@ mod tests {
         let mut entry = Entry { id: "task-1dfb12c2".into(), name: None, message: Some("go".into()), repo: "/r".into(), by: None, made_at: 0.0, agent: "/bin/claude".into(), folder: None, session: None, held: None, ..Default::default() };
         let id = uuid().unwrap();
         assert!(id.len() == 36 && id.chars().nth(14) == Some('4'), "{id}");
-        assert_eq!(entry.command(Some(&id)), format!("/bin/claude --dangerously-skip-permissions --session-id {id} {}", told_task(Some("go"))));
+        assert_eq!(entry.command_with(Some(&id), Prompts::Skip), format!("/bin/claude --dangerously-skip-permissions --session-id {id} {}", told_task(Some("go"))));
         entry.folder = Some("/r/.kanna-worktrees/task-0000c0de".into());
-        assert_eq!(entry.command(None), "/bin/claude --dangerously-skip-permissions --continue", "a task Kanna didn't start resumes the folder's latest session");
+        assert_eq!(entry.command_with(None, Prompts::Skip), "/bin/claude --dangerously-skip-permissions --continue", "a task Kanna didn't start resumes the folder's latest session");
         entry.session = Some(id.clone());
-        assert_eq!(entry.command(None), format!("/bin/claude --dangerously-skip-permissions --resume '{id}'"));
+        assert_eq!(entry.command_with(None, Prompts::Skip), format!("/bin/claude --dangerously-skip-permissions --resume '{id}'"));
     }
 
     fn started(agent: &str) -> Entry {
@@ -2385,49 +2410,60 @@ mod tests {
     #[test]
     fn a_codex_task_resumes_the_latest_session_in_its_worktree() {
         let mut entry = started("codex");
-        assert_eq!(entry.command(Some("u")), format!("codex --yolo --no-daemon {}", told_task(Some("go"))), "codex can't be given a session ID");
+        assert_eq!(entry.command_with(Some("u"), Prompts::Skip), format!("codex --yolo --no-daemon {}", told_task(Some("go"))), "codex can't be given a session ID");
         entry.folder = Some("/r/.kanna-worktrees/task-0000c0de".into());
-        assert_eq!(entry.command(None), "codex --yolo --no-daemon resume --last");
+        assert_eq!(entry.command_with(None, Prompts::Skip), "codex --yolo --no-daemon resume --last");
         entry.session = Some("019f".into());
-        assert_eq!(entry.command(None), "codex --yolo --no-daemon resume '019f'");
+        assert_eq!(entry.command_with(None, Prompts::Skip), "codex --yolo --no-daemon resume '019f'");
     }
 
     #[test]
     fn a_copilot_task_gets_a_session_and_resumes_it() {
         let mut entry = started("copilot");
         let id = uuid().unwrap();
-        assert_eq!(entry.command(Some(&id)), format!("copilot --yolo --session-id {id} -i {}", told_task(Some("go"))));
+        assert_eq!(entry.command_with(Some(&id), Prompts::Skip), format!("copilot --yolo --session-id {id} -i {}", told_task(Some("go"))));
         entry.folder = Some("/r/.kanna-worktrees/task-0000c0de".into());
-        assert_eq!(entry.command(None), format!("copilot --yolo -i {}", told_task(Some("go"))), "copilot's --continue isn't the folder's: without a session it starts again");
+        assert_eq!(entry.command_with(None, Prompts::Skip), format!("copilot --yolo -i {}", told_task(Some("go"))), "copilot's --continue isn't the folder's: without a session it starts again");
         entry.session = Some(id.clone());
-        assert_eq!(entry.command(None), format!("copilot --yolo --session-id '{id}'"));
+        assert_eq!(entry.command_with(None, Prompts::Skip), format!("copilot --yolo --session-id '{id}'"));
     }
 
     #[test]
     fn an_opencode_task_resumes_the_session_found_for_its_worktree() {
         let mut entry = started("opencode");
-        assert_eq!(entry.command(Some("u")), format!("opencode --prompt {}", told_task(Some("go"))));
+        assert_eq!(entry.command_with(Some("u"), Prompts::Skip), format!("opencode --prompt {}", told_task(Some("go"))));
         entry.folder = Some("/r/.kanna-worktrees/task-0000c0de".into());
-        assert_eq!(entry.command(None), format!("opencode --prompt {}", told_task(Some("go"))));
+        assert_eq!(entry.command_with(None, Prompts::Skip), format!("opencode --prompt {}", told_task(Some("go"))));
         entry.session = Some("ses_1".into());
-        assert_eq!(entry.command(None), "opencode --session 'ses_1'");
+        assert_eq!(entry.command_with(None, Prompts::Skip), "opencode --session 'ses_1'");
     }
 
     #[test]
     fn an_antigravity_task_continues_its_worktree_s_conversation() {
         let mut entry = started("/usr/local/bin/agy");
-        assert_eq!(entry.command(Some("u")), format!("/usr/local/bin/agy --dangerously-skip-permissions -i {}", told_task(Some("go"))));
+        assert_eq!(entry.command_with(Some("u"), Prompts::Skip), format!("/usr/local/bin/agy --dangerously-skip-permissions -i {}", told_task(Some("go"))));
         entry.folder = Some("/r/.kanna-worktrees/task-0000c0de".into());
-        assert_eq!(entry.command(None), "/usr/local/bin/agy --dangerously-skip-permissions --continue");
+        assert_eq!(entry.command_with(None, Prompts::Skip), "/usr/local/bin/agy --dangerously-skip-permissions --continue");
         entry.session = Some("c1".into());
-        assert_eq!(entry.command(None), "/usr/local/bin/agy --dangerously-skip-permissions --conversation 'c1'");
+        assert_eq!(entry.command_with(None, Prompts::Skip), "/usr/local/bin/agy --dangerously-skip-permissions --conversation 'c1'");
     }
 
     #[test]
     fn an_agent_kanna_doesn_t_know_starts_again_with_its_first_message() {
         let mut entry = started("aider");
         entry.folder = Some("/r/.kanna-worktrees/task-0000c0de".into());
-        assert_eq!(entry.command(Some("u")), format!("aider {}", told_task(Some("go"))));
+        assert_eq!(entry.command_with(Some("u"), Prompts::Skip), format!("aider {}", told_task(Some("go"))));
+    }
+
+    #[test]
+    fn a_task_s_agent_asks_permission_unless_you_said_to_skip_it() {
+        let mut entry = started("/bin/claude");
+        assert_eq!(entry.command_with(Some("u"), Prompts::Ask), format!("/bin/claude --session-id u {}", told_task(Some("go"))));
+        assert_eq!(entry.command_with(Some("u"), Prompts::Skip), format!("/bin/claude --dangerously-skip-permissions --session-id u {}", told_task(Some("go"))));
+        entry.agent = "codex".into();
+        assert_eq!(entry.command_with(None, Prompts::Ask), format!("codex --no-daemon {}", told_task(Some("go"))));
+        entry.agent = "claude --permission-mode plan".into();
+        assert_eq!(entry.command_with(None, Prompts::Skip), format!("claude --permission-mode plan {}", told_task(Some("go"))), "a command that picks its own mode keeps it");
     }
 
     #[test]
@@ -2457,23 +2493,27 @@ mod tests {
     #[test]
     fn each_agent_starts_as_the_planner_as_you_d_start_it_with_its_first_message() {
         let agents = planner_agents();
-        let names: Vec<&str> = agents.iter().map(|(n, _, _)| n.as_str()).collect();
+        let names: Vec<&str> = agents.iter().map(|(n, _, _, _)| n.as_str()).collect();
         assert_eq!(names, ["claude", "codex", "copilot", "opencode", "agy"]);
-        let start = |name: &str| agents.iter().find(|(n, _, _)| n == name).unwrap().2.clone();
-        assert_eq!(start("claude"), "claude --dangerously-skip-permissions 'You are the Kanna planning agent.'", "no session; no permission prompts, as a task's agent");
+        let asking = |name: &str| agents.iter().find(|(n, _, _, _)| n == name).unwrap().2.clone();
+        assert_eq!(asking("claude"), "claude 'You are the Kanna planning agent.'", "no session");
+        assert_eq!(asking("codex"), "codex --no-daemon 'You are the Kanna planning agent.'");
+        assert_eq!(asking("copilot"), "copilot -i 'You are the Kanna planning agent.'");
+        let start = |name: &str| agents.iter().find(|(n, _, _, _)| n == name).unwrap().3.clone();
+        assert_eq!(start("claude"), "claude --dangerously-skip-permissions 'You are the Kanna planning agent.'", "no permission prompts, as a task's agent");
         assert_eq!(start("codex"), "codex --yolo --no-daemon 'You are the Kanna planning agent.'");
         assert_eq!(start("copilot"), "copilot --yolo -i 'You are the Kanna planning agent.'");
         assert_eq!(start("opencode"), "opencode --prompt 'You are the Kanna planning agent.'");
         assert_eq!(start("agy"), "agy --dangerously-skip-permissions -i 'You are the Kanna planning agent.'");
-        assert_eq!(started_as("/opt/bin/codex", PLANNER_ROLE), "/opt/bin/codex --yolo --no-daemon 'You are the Kanna planning agent.'");
-        assert_eq!(started_as("/x/mock-agent", PLANNER_ROLE), "/x/mock-agent 'You are the Kanna planning agent.'");
+        assert_eq!(started_as("/opt/bin/codex", PLANNER_ROLE, Prompts::Skip), "/opt/bin/codex --yolo --no-daemon 'You are the Kanna planning agent.'");
+        assert_eq!(started_as("/x/mock-agent", PLANNER_ROLE, Prompts::Skip), "/x/mock-agent 'You are the Kanna planning agent.'");
     }
 
     #[test]
     fn the_planning_terminal_keeps_claude_to_its_context_and_runs_the_planner_script() {
-        let agents = [("claude".to_string(), "claude".to_string(), "claude 'You are the Kanna planning agent.'".to_string())];
+        let agents = [("claude".to_string(), "claude".to_string(), "claude 'You are the Kanna planning agent.'".to_string(), "claude --dangerously-skip-permissions 'You are the Kanna planning agent.'".to_string())];
         let command = planner_command(Some("/K/planner.sh"), Some(300_000), Some("/S/shell/zsh"), Some("/A/kanna"), Path::new("/H/.kanna-v4/repos"), &agents);
-        assert_eq!(command, r#"[ -n "$CLAUDE_CODE_AUTO_COMPACT_WINDOW" ] || export CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000; exec '/K/planner.sh' --kanna '/A/kanna' --zsh '/S/shell/zsh' --repos '/H/.kanna-v4/repos' -- 'claude' 'claude' 'claude '\''You are the Kanna planning agent.'\'''"#);
+        assert_eq!(command, r#"[ -n "$CLAUDE_CODE_AUTO_COMPACT_WINDOW" ] || export CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000; exec '/K/planner.sh' --kanna '/A/kanna' --zsh '/S/shell/zsh' --repos '/H/.kanna-v4/repos' -- 'claude' 'claude' 'claude '\''You are the Kanna planning agent.'\''' 'claude --dangerously-skip-permissions '\''You are the Kanna planning agent.'\'''"#);
         assert!(!command.contains("KANNA_PLANNER"));
         assert_eq!(planner_command(None, None, None, None, Path::new("/r"), &agents), "exec \"${SHELL:-/bin/sh}\" -l");
         assert_eq!(planner_command(None, None, None, Some("/A/kanna"), Path::new("/r"), &agents), "'/A/kanna' agents setup --ask; '/A/kanna' agents update --ask; exec \"${SHELL:-/bin/sh}\" -l");
@@ -2515,6 +2555,8 @@ mod tests {
             stub(&bin.join(agent), "echo \"$(basename \"$0\") in $(pwd -P): $*\"");
         }
         stub(&bin.join("shell"), "echo \"shell in $(pwd -P)\"");
+        fs::create_dir_all(home.join(".kanna-v4")).unwrap();
+        fs::write(home.join(".kanna-v4/config.json"), r#"{"agents": {"prompts": "skip"}}"#).unwrap();
         let root = root.canonicalize().unwrap();
         Planner { home: root.join("home"), bin: root.join("bin"), root }
     }
@@ -2541,7 +2583,8 @@ mod tests {
             for agent in ["claude", "codex", "copilot"] {
                 args.push(agent.to_string());
                 args.push(agent.to_string());
-                args.push(started_as(agent, PLANNER_ROLE));
+                args.push(started_as(agent, PLANNER_ROLE, Prompts::Ask));
+                args.push(started_as(agent, PLANNER_ROLE, Prompts::Skip));
             }
             let mut child = Command::new(&script)
                 .args(&args)
@@ -2581,6 +2624,46 @@ mod tests {
         let out = p.run(&other, "\nn\n");
         assert!(out.contains("claude in ROOT/other: --dangerously-skip-permissions You are the Kanna planning agent."), "Return takes the first: {out}");
         assert!(!other.join(".kanna").exists(), "no saves nothing");
+    }
+
+    #[test]
+    fn the_planner_script_asks_once_whether_agents_skip_permission_prompts() {
+        let p = planner("prompts", &["claude", "codex"]);
+        let mine = p.home.join(".kanna-v4/config.json");
+        fs::remove_dir_all(p.home.join(".kanna-v4")).unwrap();
+        let repo = p.repo("app");
+        let question = "Let Kanna's agents work without permission prompts? They'll run commands and edit files without asking. [y/N]";
+        let out = p.run(&repo, "1\nn\n\n");
+        assert!(out.contains(&format!("Make claude the planning agent for app? [y/N] \n{question} Kanna's agents ask permission from now on (agents.prompts in ~/.kanna-v4/config.json).\n")), "after the agent is chosen: {out}");
+        assert!(out.contains("claude in ROOT/app: You are the Kanna planning agent.\n"), "{out}");
+        let config: Value = serde_json::from_str(&fs::read_to_string(&mine).unwrap()).unwrap();
+        assert_eq!(config, json!({ "version": 1, "agents": { "prompts": "ask" } }));
+        assert_eq!(prompts(&[mine.clone()]), Prompts::Ask);
+
+        let out = p.run(&repo, "2\nn\n");
+        assert!(!out.contains("permission prompts?"), "asked once: {out}");
+        assert!(out.contains("codex in ROOT/app: --no-daemon You are the Kanna planning agent.\n"), "{out}");
+
+        fs::write(&mine, r#"{"$schema": "x", "version": 1, "planning": {"context": 400000}}"#).unwrap();
+        let out = p.run(&repo, "2\nn\ny\n");
+        assert!(out.contains("Kanna's agents work without permission prompts from now on (agents.prompts in ~/.kanna-v4/config.json)."), "{out}");
+        assert!(out.contains("codex in ROOT/app: --yolo --no-daemon You are the Kanna planning agent.\n"), "{out}");
+        let config: Value = serde_json::from_str(&fs::read_to_string(&mine).unwrap()).unwrap();
+        assert_eq!(config, json!({ "$schema": "x", "version": 1, "planning": { "context": 400000 }, "agents": { "prompts": "skip" } }), "the file's other keys stay");
+        assert_eq!(prompts(&[mine.clone()]), Prompts::Skip);
+
+        let cloned = p.repo("cloned");
+        fs::create_dir_all(cloned.join(".kanna")).unwrap();
+        fs::write(cloned.join(".kanna/config.json"), r#"{"planning": {"agent": "claude"}, "agents": {"prompts": "ask"}}"#).unwrap();
+        fs::write(&mine, r#"{"version": 1}"#).unwrap();
+        let out = p.run(&cloned, "y\n");
+        assert!(out.contains(question) && out.contains("claude in ROOT/cloned: --dangerously-skip-permissions You are"), "a repo's file doesn't answer for you: {out}");
+
+        fs::remove_file(&mine).unwrap();
+        std::os::unix::fs::symlink(p.home.join("elsewhere"), &mine).unwrap();
+        let out = p.run(&cloned, "y\n");
+        assert!(out.contains("Couldn't write ~/.kanna-v4/config.json.") && out.contains("claude in ROOT/cloned: --dangerously-skip-permissions You are"), "a symlink isn't followed, and the answer still holds: {out}");
+        assert!(!p.home.join("elsewhere").exists());
     }
 
     #[test]
@@ -2715,6 +2798,12 @@ mod tests {
         assert_eq!((tasks["timeout"]["default"].clone(), tasks["timeout"]["minimum"].clone(), tasks["timeout"]["maximum"].clone()), (json!(task_scripts::TIMEOUT), json!(1), json!(task_scripts::TIMEOUT_MAX)));
         let keys: Vec<&String> = tasks.as_object().unwrap().keys().collect();
         assert_eq!(keys, ["setup", "teardown", "timeout"]);
+        let prompts = &schema["properties"]["agents"]["properties"]["prompts"];
+        assert_eq!((prompts["enum"].clone(), prompts["default"].clone()), (json!(["ask", "skip"]), json!("ask")));
+        let keys: Vec<&String> = schema["properties"]["agents"]["properties"].as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["prompts"]);
+        let sections: Vec<&String> = schema["properties"].as_object().unwrap().keys().collect();
+        assert_eq!(sections, ["$schema", "version", "planning", "backlog", "build", "tasks", "agents"]);
     }
 
     #[test]
@@ -2783,18 +2872,45 @@ mod tests {
     }
 
     #[test]
-    fn agents_start_without_asking_for_permission_unless_told_how_to_ask() {
-        assert_eq!(unprompted("codex"), "codex --yolo");
-        assert_eq!(unprompted("/opt/bin/claude --model opus"), "/opt/bin/claude --model opus --dangerously-skip-permissions");
-        assert_eq!(unprompted("claude --dangerously-skip-permissions"), "claude --dangerously-skip-permissions");
-        assert_eq!(unprompted("claude --permission-mode plan"), "claude --permission-mode plan");
-        assert_eq!(unprompted("codex --ask-for-approval=untrusted"), "codex --ask-for-approval=untrusted");
-        assert_eq!(unprompted("codex -a untrusted"), "codex -a untrusted");
-        assert_eq!(unprompted("copilot"), "copilot --yolo");
-        assert_eq!(unprompted("copilot --allow-all-tools"), "copilot --allow-all-tools");
-        assert_eq!(unprompted("agy"), "agy --dangerously-skip-permissions");
-        assert_eq!(unprompted("agy --mode plan"), "agy --mode plan");
-        assert_eq!(unprompted("opencode"), "opencode");
+    fn agents_skip_permission_prompts_only_when_your_own_settings_say_so() {
+        let dir = std::env::temp_dir().join(format!("kanna-prompts-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (repo, mine) = (dir.join("repo.json"), dir.join("mine.json"));
+        let files = [repo.clone(), mine.clone()];
+        assert_eq!(prompts(&files), Prompts::Ask, "unset asks");
+        assert_eq!(prompts(&[]), Prompts::Ask);
+        fs::write(&mine, r#"{"agents": {"prompts": "skip"}}"#).unwrap();
+        assert_eq!(prompts(&files), Prompts::Skip);
+        fs::write(&mine, r#"{"agents": {"prompts": "ask"}}"#).unwrap();
+        assert_eq!(prompts(&files), Prompts::Ask);
+        fs::write(&repo, r#"{"agents": {"prompts": "skip"}}"#).unwrap();
+        assert_eq!(prompts(&files), Prompts::Ask, "a repo's file can't turn your prompts off");
+        fs::remove_file(&mine).unwrap();
+        assert_eq!(prompts(&files), Prompts::Ask, "nor set it when yours doesn't");
+        for text in [r#"{"agents": {"prompts": true}}"#, r#"{"agents": {"prompts": "yolo"}}"#, r#"{"version": 2, "agents": {"prompts": "skip"}}"#] {
+            fs::write(&mine, text).unwrap();
+            assert_eq!(prompts(&files), Prompts::Ask, "{text}");
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn agents_skip_permission_prompts_only_when_you_said_to_and_their_command_doesn_t_pick_a_mode() {
+        assert_eq!(asking("codex", Prompts::Ask), "codex");
+        assert_eq!(asking("claude --model opus", Prompts::Ask), "claude --model opus");
+        assert_eq!(asking("codex --yolo", Prompts::Ask), "codex --yolo");
+        assert_eq!(asking("codex", Prompts::Skip), "codex --yolo");
+        assert_eq!(asking("/opt/bin/claude --model opus", Prompts::Skip), "/opt/bin/claude --model opus --dangerously-skip-permissions");
+        assert_eq!(asking("claude --dangerously-skip-permissions", Prompts::Skip), "claude --dangerously-skip-permissions");
+        assert_eq!(asking("claude --permission-mode plan", Prompts::Skip), "claude --permission-mode plan");
+        assert_eq!(asking("codex --ask-for-approval=untrusted", Prompts::Skip), "codex --ask-for-approval=untrusted");
+        assert_eq!(asking("codex -a untrusted", Prompts::Skip), "codex -a untrusted");
+        assert_eq!(asking("copilot", Prompts::Skip), "copilot --yolo");
+        assert_eq!(asking("copilot --allow-all-tools", Prompts::Skip), "copilot --allow-all-tools");
+        assert_eq!(asking("agy", Prompts::Skip), "agy --dangerously-skip-permissions");
+        assert_eq!(asking("agy --mode plan", Prompts::Skip), "agy --mode plan");
+        assert_eq!(asking("opencode", Prompts::Skip), "opencode");
     }
 
     #[test]
