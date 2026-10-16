@@ -29,11 +29,12 @@ Every command, option, output and error is kmux's CLI's, except where [the CLI's
 | | `kanna window assign WINDOW TASK` / `kanna window free WINDOW` | Make a window one of a task's, shown and hidden with it, or free it ([workspaces](workspaces.md)). |
 | | `kanna workspace list [--all]` | Your workspace (from `$KANNA_TERMINAL`): its dock, tabs and panes, the shown tab, focus and zoom, also off screen; `--all`: every window, workspace and pane ([workspace list](workspace-list.md)). |
 | Information | `kanna capabilities` | Show what the running mux supports (and, for Kanna, whether the app is attached). |
+| | `kanna schedule add RULE TARGET PROMPT… [--name NAME] [--repo DIR]`, `schedule list`, `schedule remove NAME\|ID` | Leave a task or the planner a message at set times ([scheduler](scheduler.md)). Kanna's. |
 | More | `kanna help [COMMAND\|instances\|raw]`, `kanna commands [--json]`, `kanna raw REQUEST` | Help; every command, for scripts; one control-protocol request as JSON. |
 | | `kanna instances [--json]`, `kanna instances prune` | For developing Kanna: list the running instances of every channel, or delete the folders of dev instances whose worktree is gone ([instances](instances.md)). |
 | Planned | `kanna up [FILE]` | Open a whole setup from a file, `kanna.yaml` by default ([layout files](arranging-panes.md#3-layout-files)). |
 
-Kanna's own commands beyond these (`markup`, `rename-pane`, `task`, `status`, `completions`, `kanna PATH`), and how its `window` differs from kmux's, which assigns to a kmux workspace (of kmux's `workspace` command Kanna has only `list`): [the CLI's differences](cli.md#2-where-kanna-differs-from-kmux).
+Kanna's own commands beyond these (`markup`, `rename-pane`, `task`, `status`, `schedule`, `completions`, `kanna PATH`), and how its `window` differs from kmux's, which assigns to a kmux workspace (of kmux's `workspace` command Kanna has only `list`): [the CLI's differences](cli.md#2-where-kanna-differs-from-kmux).
 
 ## 2. Options
 

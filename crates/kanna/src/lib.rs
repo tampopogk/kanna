@@ -808,4 +808,31 @@ mod tests {
         assert_eq!(output::quiz(&json!({ "action": "open" }), &json!({ "pane": "p9", "window": "win-4", "opened": true })), "opened p9 in win-4");
         assert_eq!(output::quiz(&json!({ "action": "open" }), &json!({ "pane": "p9", "window": "win-4", "opened": false })), "brought forward p9 in win-4");
     }
+    #[test]
+    fn a_schedule_takes_a_two_word_rule_quoted_or_not_a_target_and_the_rest_as_its_prompt() {
+        let git = |args: &[&str]| String::from_utf8(std::process::Command::new("git").args(args).output().unwrap().stdout).unwrap().trim().to_string();
+        let repo = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]).trim_end_matches("/.git").to_string();
+        let want = json!({ "action": "add", "repo": repo, "rule": "weekdays 17:30", "target": "planner", "prompt": "Summarise what landed today.", "name": "evening" });
+        assert_eq!(parse("kanna schedule add 'weekdays 17:30' planner \"Summarise what landed today.\" --name evening").unwrap().1, want);
+        assert_eq!(parse("kanna schedule add weekdays 17:30 planner Summarise what landed today. --name evening").unwrap().1, want);
+        assert_eq!(parse("kanna schedule remove s3 --repo /tmp").unwrap().1, json!({ "action": "remove", "repo": "/tmp", "schedule": "s3" }));
+        assert_eq!(parse("kanna schedule list").unwrap().1, json!({ "action": "list", "repo": repo }));
+        let refused = |line: &str| parse(line).err().unwrap_or_else(|| panic!("{line} parsed")).message;
+        assert!(refused("kanna schedule add daily 09:00 planner").contains("needs a RULE, a TARGET and a PROMPT"));
+        assert!(refused("kanna schedule remove").contains("NAME or ID"));
+        assert!(refused("kanna schedule list --name x").contains("--name is for schedule add"));
+        assert!(refused("kanna schedule pause x").contains("unknown action"));
+    }
+
+    #[test]
+    fn schedules_list_as_columns_with_what_s_waiting() {
+        let reply = json!({ "schedules": [
+            { "schedule": "s1", "name": "quiz", "repo": "/Users/x/work/kanna-v4", "rule": "daily 09:00", "target": "planner", "nextText": "Sat 17 Oct 09:00", "waiting": true, "prompt": "Morning quiz check." },
+            { "schedule": "s12", "name": null, "repo": null, "rule": "every 2h", "target": "71af", "nextText": "Fri 16 Oct 14:00", "waiting": false, "prompt": "Run the tests." },
+        ]});
+        assert_eq!(output::schedule(&json!({ "action": "list" }), &reply), "s1   quiz  kanna-v4  daily 09:00  planner  next Sat 17 Oct 09:00  waiting Morning quiz check.\ns12  -     -         every 2h     71af     next Fri 16 Oct 14:00          Run the tests.");
+        assert_eq!(output::schedule(&json!({ "action": "list" }), &json!({ "schedules": [] })), "no schedules");
+        assert_eq!(output::schedule(&json!({ "action": "add" }), &reply["schedules"][0]), "s1 quiz: daily 09:00 → planner, next Sat 17 Oct 09:00");
+        assert_eq!(output::schedule(&json!({ "action": "remove" }), &json!({ "schedule": "s12", "name": null })), "removed s12");
+    }
 }

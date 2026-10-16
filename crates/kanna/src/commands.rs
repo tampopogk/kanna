@@ -581,6 +581,25 @@ pub static COMMANDS: &[Command] = &[
         show: output::projects,
     },
     Command {
+        name: "schedule",
+        group: "Information",
+        summary: "Prompt an agent at set times: a schedule leaves a task or the planning agent a message, which it gets when its turn is over.",
+        usage: "kanna schedule add RULE TARGET PROMPT... [--name NAME] [--repo DIR]\n       kanna schedule list [--repo DIR]\n       kanna schedule remove NAME|ID [--repo DIR]",
+        options: &[
+            ("--name NAME", "add: a name to remove it by, one word, unique in its repo. Default: none; it's known by its ID (s3)."),
+            ("--repo DIR", "The repo the schedule belongs to, and whose planning agent planner means. Default: the repo you're in."),
+        ],
+        notes: "RULE is two words in local time, quoted or not: daily 09:00, weekdays 18:00, weekends 10:00, mon,thu 10:30, every 30m or every 2h. TARGET is a task (any form kanna task list takes) or planner, the repo's planning agent. At each time, the daemon leaves the target a message, as kanna task send does, from \"schedule NAME\": the agent gets it as [message from schedule NAME] PROMPT when its turn is over, never mid-turn, and a stopped backlog task runs for it. One message waits at a time: a time that comes while the last is still waiting leaves no second. A time missed while the Mac slept or Kanna wasn't running fires once when it's back. Every repo has a schedule named quiz (daily 09:00, planner) that prompts the planning agent to offer a quiz if anything landed on main; remove it like any other. A NAME is looked up in this repo first.",
+        examples: &[
+            ("kanna schedule add 'weekdays 17:30' planner \"Summarise what landed today.\" --name evening", "Prompt this repo's planning agent every weekday at 17:30."),
+            ("kanna schedule add every 2h 71af \"Pull main and run the tests.\"", "Prompt task 71af every two hours."),
+            ("kanna schedule list", "Every schedule, when it next fires, and whether its message is waiting."),
+            ("kanna schedule remove evening", "Remove the schedule named evening."),
+        ],
+        parse: parse_schedule,
+        show: output::schedule,
+    },
+    Command {
         name: "agents",
         group: "Information",
         summary: "Set up your agents for Kanna: Kanna's skills for Claude and Codex, a hook that tells them they're in Kanna, and Claude's sandbox letting them reach Kanna.",
@@ -784,6 +803,38 @@ fn parse_quiz(args: &mut Argv) -> Result<Value, Failure> {
     }
     if let Some(doc) = doc {
         out["doc"] = doc;
+    }
+    Ok(out)
+}
+
+fn parse_schedule(args: &mut Argv) -> Result<Value, Failure> {
+    let name = args.option("--name")?;
+    let repo = args.option("--repo")?;
+    let action = args.positional().ok_or_else(|| usage("schedule", "say what: add, list or remove"))?;
+    let mut out = json!({ "action": action });
+    if let Some(repo) = repo.map(|r| absolute(&r)).or_else(|| repo_here().ok()) {
+        out["repo"] = json!(repo);
+    }
+    if action != "add" && name.is_some() {
+        return Err(usage("schedule", "--name is for schedule add"));
+    }
+    match action.as_str() {
+        "add" => {
+            let missing = || usage("schedule", "add needs a RULE, a TARGET and a PROMPT: kanna schedule add 'daily 09:00' planner \"Offer a quiz.\"");
+            let first = args.positional().ok_or_else(missing)?;
+            out["rule"] = json!(if first.contains(char::is_whitespace) { first } else { format!("{first} {}", args.positional().ok_or_else(missing)?) });
+            out["target"] = json!(args.positional().ok_or_else(missing)?);
+            out["prompt"] = json!(args.rest().ok_or_else(missing)?);
+            if let Some(name) = name {
+                out["name"] = json!(name);
+            }
+            if let Some(by) = std::env::var("KANNA_TERMINAL").ok().filter(|p| !p.is_empty()) {
+                out["by"] = json!(by);
+            }
+        }
+        "list" => {}
+        "remove" => out["schedule"] = json!(args.positional().ok_or_else(|| usage("schedule", "remove needs a schedule's NAME or ID (s3)"))?),
+        other => return Err(usage("schedule", &format!("unknown action \"{other}\" (add, list or remove)"))),
     }
     Ok(out)
 }

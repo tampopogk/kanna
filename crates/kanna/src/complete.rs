@@ -14,6 +14,8 @@ pub enum Want {
     Commands,
     Devices,
     Threads,
+    Schedules,
+    Tasks,
 }
 
 const MARKDOWN: &[&str] = &["md", "markdown", "mdown"];
@@ -43,6 +45,20 @@ const MORE: &[(&str, &str)] = &[
 const KEYS: &[&str] = &[
     "return", "esc", "tab", "shift+tab", "space", "backspace", "forward-delete", "up", "down", "left", "right", "home", "end", "pageup", "pagedown", "insert",
     "ctrl+c", "ctrl+d", "ctrl+z", "ctrl+l", "ctrl+r", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
+];
+
+const RULES: &[(&str, &str)] = &[
+    ("daily", "Every day at a time, e.g. daily 09:00."),
+    ("weekdays", "Monday to Friday, e.g. weekdays 18:00."),
+    ("weekends", "Saturday and Sunday, e.g. weekends 10:00."),
+    ("every", "Every so often, e.g. every 2h or every 30m."),
+    ("mon", "Days, comma-separated, e.g. mon,thu 10:30."),
+    ("tue", ""),
+    ("wed", ""),
+    ("thu", ""),
+    ("fri", ""),
+    ("sat", ""),
+    ("sun", ""),
 ];
 
 const TYPES: &[(&str, &str)] = &[
@@ -217,6 +233,9 @@ fn placeholder(name: &str) -> Vec<Want> {
         "CMD" => vec![Want::Commands],
         "DEVICE" => vec![Want::Devices],
         "THREAD" => vec![Want::Threads],
+        "SCHEDULE" => vec![Want::Schedules],
+        "RULE" => vec![Want::Words(RULES.iter().map(|(w, d)| (w.to_string(), d.to_string())).collect())],
+        "TARGET" => vec![Want::Words(vec![("planner".into(), "The repo's planning agent.".into())]), Want::Tasks],
         "AGENT" => words(AGENTS),
         "KEY" => words(KEYS),
         "TYPE" => vec![Want::Words(TYPES.iter().map(|(w, d)| (w.to_string(), d.to_string())).collect())],
@@ -243,9 +262,19 @@ fn positional_wants(state: &State) -> Vec<Want> {
             _ => vec![],
         };
     };
+    let mut typed = state.positionals.clone();
+    if command.name == "schedule" && typed.first().is_some_and(|a| a == "add") {
+        if let Some(rule) = typed.get(1).filter(|r| !r.contains(char::is_whitespace)).cloned() {
+            if typed.len() == 2 {
+                let after: &[&str] = if rule == "every" { &["30m", "1h", "2h", "4h"] } else { &["09:00", "12:00", "17:30", "18:00"] };
+                return vec![Want::Words(after.iter().map(|w| (w.to_string(), String::new())).collect())];
+            }
+            typed.remove(2);
+        }
+    }
     let mut out: Vec<Want> = Vec::new();
     for form in forms(command) {
-        if let Some(next) = next_slot(&form, &state.positionals) {
+        if let Some(next) = next_slot(&form, &typed) {
             for want in slot(refine(&form, next)) {
                 merge(&mut out, want);
             }
@@ -311,6 +340,7 @@ fn refine(form: &[&'static str], slot: &'static str) -> &'static str {
     match (form.first().copied(), slot) {
         (Some("md"), "FILE") => "FILE.md",
         (Some("web"), "URL") => "FILE.html",
+        (Some("remove"), "NAME|ID") => "SCHEDULE",
         (_, slot) if slot.starts_with("FILE[") => "FILE",
         _ => slot,
     }
@@ -345,6 +375,8 @@ pub fn lines(wants: &[Want], words: &[String], env: Env) -> Vec<String> {
             Want::Commands => out.push(":commands".into()),
             Want::Devices => out.extend(devices()),
             Want::Threads => out.extend(crate::threads::open_threads(words.iter().any(|w| w == "reopen")).into_iter().map(|(id, what)| line(&id, &what))),
+            Want::Schedules => out.extend(schedules(&scheduled(words, env).unwrap_or(json!({})))),
+            Want::Tasks => out.extend(tasks(&backlog(words, env).unwrap_or(json!({})))),
         }
     }
     out
@@ -369,6 +401,45 @@ fn target(words: &[String], env: Env) -> Option<Target> {
 
 fn live(words: &[String], env: Env) -> Option<Value> {
     target(words, env)?.try_connect()?.call("list", json!({})).ok()
+}
+
+fn scheduled(words: &[String], env: Env) -> Option<Value> {
+    target(words, env)?.try_connect()?.call("schedule", json!({ "action": "list" })).ok()
+}
+
+fn backlog(words: &[String], env: Env) -> Option<Value> {
+    target(words, env)?.try_connect()?.call("backlog", json!({ "action": "list" })).ok()
+}
+
+pub fn tasks(list: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for task in list["tasks"].as_array().into_iter().flatten().chain(list["out"].as_array().into_iter().flatten()) {
+        let Some(short) = task["short"].as_str() else { continue };
+        if out.iter().any(|line| line.split('\t').next() == Some(short)) {
+            continue;
+        }
+        out.push(match task["name"].as_str() {
+            Some(name) => format!("{short}\t{name}"),
+            None => short.to_string(),
+        });
+    }
+    out
+}
+
+pub fn schedules(list: &Value) -> Vec<String> {
+    list["schedules"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|s| {
+            let id = s["schedule"].as_str().unwrap_or_default();
+            let about = format!("{} → {}", s["rule"].as_str().unwrap_or_default(), s["target"].as_str().unwrap_or_default());
+            match s["name"].as_str() {
+                Some(name) => format!("{name}\t{id} · {about}"),
+                None => format!("{id}\t{about}"),
+            }
+        })
+        .collect()
 }
 
 pub fn panes(list: &Value, current: &str) -> Vec<String> {
@@ -571,6 +642,25 @@ mod tests {
         assert!(words(&at("help ")).contains(&"move-tab".into()));
         assert!(words(&at("help ")).contains(&"completions".into()));
         assert_eq!(words(&at("completions ")), ["zsh", "bash"]);
+    }
+
+    #[test]
+    fn schedule_completes_its_actions_the_rule_its_target_and_what_to_remove() {
+        assert_eq!(words(&at("schedule ")), ["add", "list", "remove"]);
+        assert!(words(&at("schedule add ")).starts_with(&["daily".into(), "weekdays".into(), "weekends".into(), "every".into()]));
+        assert_eq!(words(&at("schedule add daily ")), ["09:00", "12:00", "17:30", "18:00"]);
+        assert_eq!(words(&at("schedule add every ")), ["30m", "1h", "2h", "4h"]);
+        let target = at("schedule add daily 09:00 ");
+        assert_eq!((words(&target), target.contains(&Want::Tasks)), (vec!["planner".to_string()], true));
+        let backlog = json!({ "tasks": [{ "id": "task-71af0000", "short": "71af", "name": "Send spec" }], "out": [{ "id": "task-5e2c0000", "short": "5e2c" }, { "id": "task-71af0000", "short": "71af" }] });
+        assert_eq!(tasks(&backlog), ["71af\tSend spec", "5e2c"]);
+        assert_eq!(at("schedule add 'daily 09:00' planner "), []);
+        assert_eq!(at("schedule add daily 09:00 planner "), []);
+        assert_eq!(at("schedule remove "), [Want::Schedules]);
+        assert_eq!(at("schedule list --repo "), [Want::Dirs]);
+        assert!(words(&at("schedule add daily 09:00 planner hi -")).contains(&"--name".into()));
+        let list = json!({ "schedules": [{ "schedule": "s1", "name": "quiz", "rule": "daily 09:00", "target": "planner" }, { "schedule": "s2", "name": null, "rule": "every 2h", "target": "agent" }] });
+        assert_eq!(schedules(&list), ["quiz\ts1 · daily 09:00 → planner", "s2\tevery 2h → agent"]);
     }
 
     #[test]

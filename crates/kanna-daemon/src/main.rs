@@ -12,6 +12,7 @@ mod messages;
 mod projects;
 mod quiz;
 mod reader;
+mod schedule;
 mod settings;
 mod shell;
 mod status;
@@ -219,8 +220,10 @@ fn run() -> Result<(), String> {
     *backlog.permissions.borrow_mut() = Some(Box::new(move |pane| messages::permissions(&argvs.upgrade()?.argv(pane))));
     let projects = Rc::new(projects::Projects::new(db.clone(), std::env::var_os("HOME").map(std::path::PathBuf::from), [".kanna-v4/repos", ".kanna/repos"].map(|r| agents::home().join(r)).to_vec()));
     projects.install(&core);
-    let quiz = Rc::new(quiz::Quiz::new(db, Some(core.weak())));
+    let quiz = Rc::new(quiz::Quiz::new(db.clone(), Some(core.weak())));
     quiz.install(&core);
+    let scheduler = Rc::new(schedule::Scheduler::new(db, backlog.clone()));
+    scheduler.install(&core, std::env::var("KANNA_DEBUG").is_ok_and(|v| v == "1"));
     let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone());
     agents.refresh();
     agents.install(&core);
@@ -358,7 +361,7 @@ fn run() -> Result<(), String> {
         terminals.save_if_changed();
         backlog.sweep();
         layout.flush();
-        let deadline = [core.poll(), app.next_deadline(), backlog.tick(), layout.next_deadline()].into_iter().flatten().min();
+        let deadline = [core.poll(), app.next_deadline(), backlog.tick(), layout.next_deadline(), scheduler.tick()].into_iter().flatten().min();
         let event = match deadline {
             Some(at) => inbox.recv_timeout(at.saturating_duration_since(Instant::now())),
             None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),

@@ -94,6 +94,20 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         at real not null,
         seq integer not null
     );
+"), Step::Sql("
+    create table schedules (
+        id integer primary key,
+        repo text,
+        name text,
+        target text not null,
+        rule text not null,
+        prompt text not null,
+        next real not null,
+        message integer references messages (id),
+        made_at real not null,
+        doc text not null default '{}' check (json_valid(doc))
+    );
+    create unique index schedules_by_name on schedules (coalesce(repo, ''), name) where name is not null;
 ")];
 
 pub const RECENT: usize = 10;
@@ -208,6 +222,20 @@ pub struct Answer {
     pub file: String,
     pub right: bool,
     pub again: Option<i64>,
+    pub doc: Value,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Schedule {
+    pub id: i64,
+    pub repo: Option<String>,
+    pub name: Option<String>,
+    pub target: String,
+    pub rule: String,
+    pub prompt: String,
+    pub next: f64,
+    pub message: Option<i64>,
+    pub made_at: f64,
     pub doc: Value,
 }
 
@@ -589,6 +617,49 @@ impl Db {
 
 const MESSAGE: &str = "id, recipient, repo, sender, at, delivered, text, mode";
 
+impl Db {
+    pub fn add_schedule(&self, schedule: &Schedule) -> rusqlite::Result<i64> {
+        insert_schedule(&self.conn, schedule)
+    }
+
+    pub fn schedules(&self) -> rusqlite::Result<Vec<Schedule>> {
+        let mut statement = self.conn.prepare("select id, repo, name, target, rule, prompt, next, message, made_at, doc from schedules order by id")?;
+        let rows = statement.query_map([], |r| {
+            Ok(Schedule { id: r.get(0)?, repo: r.get(1)?, name: r.get(2)?, target: r.get(3)?, rule: r.get(4)?, prompt: r.get(5)?, next: r.get(6)?, message: r.get(7)?, made_at: r.get(8)?, doc: doc_of(r.get(9)?) })
+        })?;
+        rows.collect()
+    }
+
+    pub fn remove_schedule(&self, id: i64) -> rusqlite::Result<bool> {
+        Ok(self.conn.execute("delete from schedules where id = ?1", [id])? == 1)
+    }
+
+    pub fn schedule_fired(&self, id: i64, next: f64, message: Option<i64>) -> rusqlite::Result<()> {
+        self.conn.execute("update schedules set next = ?2, message = coalesce(?3, message) where id = ?1", params![id, next, message])?;
+        Ok(())
+    }
+
+    pub fn seed_once(&self, key: &str, schedule: &Schedule) -> rusqlite::Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        if tx.query_row("select 1 from meta where key = ?1", [key], |_| Ok(())).optional()?.is_some() {
+            return Ok(false);
+        }
+        tx.execute("insert into meta (key, value) values (?1, '1')", [key])?;
+        let taken = tx.query_row("select 1 from schedules where coalesce(repo, '') = coalesce(?1, '') and name = ?2", params![schedule.repo, schedule.name], |_| Ok(())).optional()?.is_some();
+        if !taken {
+            insert_schedule(&tx, schedule)?;
+        }
+        tx.commit()?;
+        Ok(!taken)
+    }
+
+    pub fn repos(&self) -> rusqlite::Result<Vec<String>> {
+        let mut statement = self.conn.prepare("select repo from tasks union select path from projects order by 1")?;
+        let rows = statement.query_map([], |r| r.get(0))?;
+        rows.collect()
+    }
+}
+
 const ANSWER: &str = "a.id, a.round, a.at, a.kind, a.file, a.right, a.again, a.doc";
 
 fn doc_of(text: String) -> Value {
@@ -601,6 +672,14 @@ fn round_row(r: &rusqlite::Row) -> rusqlite::Result<Round> {
 
 fn answer_row(r: &rusqlite::Row) -> rusqlite::Result<Answer> {
     Ok(Answer { id: r.get(0)?, round: r.get(1)?, at: r.get(2)?, kind: r.get(3)?, file: r.get(4)?, right: r.get(5)?, again: r.get(6)?, doc: doc_of(r.get(7)?) })
+}
+
+fn insert_schedule(conn: &Connection, schedule: &Schedule) -> rusqlite::Result<i64> {
+    conn.execute(
+        "insert into schedules (repo, name, target, rule, prompt, next, message, made_at, doc) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, json_patch('{}', ?9))",
+        params![schedule.repo, schedule.name, schedule.target, schedule.rule, schedule.prompt, schedule.next, schedule.message, schedule.made_at, schedule.doc.to_string()],
+    )?;
+    Ok(conn.last_insert_rowid())
 }
 
 fn log(conn: &Connection, task: &str, change: &Change) -> rusqlite::Result<()> {

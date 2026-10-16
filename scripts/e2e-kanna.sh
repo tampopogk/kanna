@@ -2716,6 +2716,38 @@ quiz_window() {
   check wait_for 5 eval '! kanna workspace list --all --json | grep -q "\"$quiz\""' || { echo "quiz_window: closing the window left its quiz agent running"; kanna workspace list --all; return 1; }
 }
 
+scenario scheduler M4
+scheduler() {
+  local repo="$KANNA_STATE_DIR/repo" fake="$KANNA_STATE_DIR/agents"
+  mkdir -p "$repo/.kanna" "$fake" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "scheduler line $LINENO"; return 1; }
+  ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/codex"
+  repo="$(cd "$repo" && pwd -P)"
+  printf '{"version": 1, "backlog": {"runners": 1}}\n' >"$repo/.kanna/config.json"
+  start_daemon && start_app || { echo "scheduler line $LINENO"; return 1; }
+  schedule() { (cd "$repo" && kanna schedule "$@"); }
+  schedule list | grep -qE '^s1 +quiz +repo +daily 09:00 +planner +next ' || { echo "scheduler: the repo has no quiz schedule"; schedule list; return 1; }
+  local refused; refused="$(schedule add dialy 09:00 planner hi 2>&1)"; [[ "$refused" == *'try "daily 09:00"'* ]] || { echo "scheduler: a bad rule wasn't refused with an example: $refused"; return 1; }
+  task_state() { raw '{"id":1,"cmd":"backlog","args":{"action":"list"}}' | python3 -c 'import json, sys
+t = [t for t in json.load(sys.stdin)["tasks"] if t["id"] == sys.argv[1]][0]
+print("running" if t.get("running") else "stopped" if t.get("folder") else "waiting", t.get("held") or "-")' "$1"; }
+  (cd "$repo" && kanna task new "Busy" "work 12" --agent "$fake/codex") >/dev/null || { echo "scheduler line $LINENO"; return 1; }
+  local busy term; busy="$(tid 1)"
+  check wait_for 10 eval '[[ "$(task_state $busy)" == running* ]]' || { echo "scheduler: the task didn't run"; return 1; }
+  term="$(task_state $busy | cut -d' ' -f2)"
+  check wait_for 10 is "$term" status working || { echo "scheduler: the task never showed as working"; return 1; }
+  local at added; at="$(date -v+2M +%H:%M)"
+  added="$(schedule add daily "$at" "$(sid 1)" hello from the scheduler --name hello)" || { echo "scheduler line $LINENO"; return 1; }
+  [[ "$added" == "s2 hello: daily $at → $(sid 1), next "*" $at" ]] || { echo "scheduler: add said \"$added\""; return 1; }
+  raw '{"id":1,"cmd":"debug.clock","args":{"advance":180}}' | grep -q '"ok":true' || { echo "scheduler: the daemon has no test clock"; return 1; }
+  check wait_for 5 eval '(cd "$repo" && kanna task messages "$busy") | grep -q "schedule hello"' || { echo "scheduler: the schedule left no message on the moved clock"; schedule list; return 1; }
+  shows "$term" "hello from the scheduler" && { echo "scheduler: the message went in mid-turn"; kanna read "$term"; return 1; }
+  check wait_for 20 shows "$term" "peer: \[message from schedule hello\] hello from the scheduler" || { echo "scheduler: the message didn't arrive at the turn's end"; kanna read "$term"; (cd "$repo" && kanna task messages); return 1; }
+  sleep 2
+  check test "$(kanna read "$term" | grep -c 'message from schedule hello')" -eq 1 || { echo "scheduler: the message came more than once"; kanna read "$term"; return 1; }
+  schedule list | grep -E '^s2 ' | grep -q waiting && { echo "scheduler: still waiting after it was delivered"; schedule list; return 1; }
+  [[ "$(schedule remove hello)" == "removed s2 hello" ]] || { echo "scheduler line $LINENO"; return 1; }
+}
+
 scenario daemon_upgrade M4
 daemon_upgrade() {
   local old="$KANNA_STATE_DIR/old"
