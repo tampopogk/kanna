@@ -2541,7 +2541,7 @@ codex_task() {
   check wait_for 10 eval '[[ "$(desk agents)" == "[\"codex\"]" ]]' || { echo "codex_task: the backlog row doesn't say the agent"; desk agents; return 1; }
   kanna task start $(tid 1) >/dev/null || { echo "codex_task: the task didn't start"; return 1; }
   check wait_for 10 shows "Codex task" "RUN_DONE 0" || { echo "codex_task: the first message didn't run"; kanna read "Codex task"; return 1; }
-  unwrapped "Codex task" "args: --yolo --no-daemon You're a task's agent in Kanna (pane $(pane "Codex task" id)), in your task's worktree. Your task: run git branch -m codex-mock-work" || { echo "codex_task: codex wasn't started as a task's agent"; kanna read "Codex task"; return 1; }
+  [[ "$(kanna read "Codex task" | tr -d ' \r\n')" == *"$(tr -d ' ' <<<"args: --yolo --no-daemon You're a task's agent in Kanna (pane $(pane "Codex task" id)), in your task's worktree. Your task: run git branch -m codex-mock-work")"* ]] || { echo "codex_task: codex wasn't started as a task's agent"; kanna read "Codex task"; return 1; }
   folder="$(pane "Codex task" cwd)"
   check test "$(git -C "$folder" branch --show-current)" == codex-mock-work || { echo "codex_task: the branch wasn't renamed"; git -C "$folder" branch; return 1; }
   check wait_for 10 is "Codex task" status idle || { echo "codex_task: not idle after its turn"; pane "Codex task" status; return 1; }
