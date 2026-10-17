@@ -1,6 +1,6 @@
 # Task scripts
 
-**Status:** built · **Tested:** e2e `task_scripts`, `cargo test -p kanna-daemon` (settings, scripts, cleanup) · **Builds on:** [tasks](tasks.md), [settings](settings.md), [backlog runners](backlog-runners.md)
+**Status:** built · **Tested:** e2e `task_scripts`, `cargo test -p kanna-daemon` (settings, scripts, cleanup) · **Mockup:** [`references/mockups/task-scripts.html`](../../references/mockups/task-scripts.html) (`#setupFailed`, `#teardownFailed`, …) · **Builds on:** [tasks](tasks.md), [settings](settings.md), [backlog runners](backlog-runners.md)
 
 A repo says what a task needs before its agent starts (**setup**: install dependencies, copy `.env` files, borrow builds) and what to do once it's Done (**teardown**). Kanna runs them, so agents stop doing setup by hand, and a merged task's worktree and branch go away on Done instead of piling up.
 
@@ -46,6 +46,8 @@ stateDiagram-v2
     failed --> setting_up: kanna task setup
 ```
 
+![Setup failed in the agent's pane: the task stops, and its pane shows why](task-scripts-setup-failed.png)
+
 - **It runs in the agent's own terminal, before the agent,** so on the Desk you watch its output where the agent will be. When it succeeds, the agent starts there with its first message.
 - **Once per worktree.** A resumed, restarted or stopped-and-started task doesn't run it again; a task that gets a new worktree does.
 - **On failure the terminal says `setup failed (exit N)`** (or `setup timed out after Ns`) and exits, which stops the task, and `kanna task list` shows `setup failed (exit N)` until it runs again. `kanna task start` then starts the agent anyway, and `kanna task setup TASK` runs setup again: on a stopped task, then the agent; on a running one, in a terminal tab of the task named Setup.
@@ -65,6 +67,8 @@ stateDiagram-v2
     cleanup --> removed: merged and clean
     cleanup --> kept: otherwise
 ```
+
+![Teardown failed in the agent's pane: its tabs are closed, and the task isn't Done](task-scripts-teardown-failed.png)
 
 - **Done runs teardown in the agent's own pane:** the task's tabs close, its agent ends, and teardown runs where the agent was, so you watch it as you watched setup. `kanna task list` shows `tearing down`. Stop and Move to Backlog don't run it.
 - **When it succeeds, the pane closes and the task is Done.** When it fails, the task isn't Done: it stays where it is, its pane showing the output and `teardown failed (exit N)` (or `teardown timed out after Ns`), and `kanna task list` says so. `kanna task done` runs it again; `kanna task done --keep` ends the task without it, keeping its worktree and branch; `kanna task start` brings the agent back.
