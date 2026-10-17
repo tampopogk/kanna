@@ -68,7 +68,7 @@ sequenceDiagram
 | `kanna tour` | lists the stops, marking the current one |
 | `kanna tour end` | ends the tour, as Done does, without telling the agent |
 
-Each TEXT is one argument (quote it). Placement options are `comment`'s, for files that aren't open yet. `kanna list` shows a code pane's comment with `tour: {at, of}` while it's the current stop; `debug.code` and `debug.md` report the footer.
+Each TEXT is one argument (quote it). Placement options are `comment`'s, for files that aren't open yet. `kanna workspace list --all --json` shows a code pane's comment with `tour: {at, of}` while it's the current stop; `debug.code` and `debug.md` report the footer.
 
 ## 4. The skill
 
