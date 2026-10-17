@@ -18,9 +18,9 @@ Today the only way to tell a running agent something is to type into its termina
 
 ```mermaid
 flowchart LR
-    U["user<br/>(Desk, iOS later)"] -->|"a correction, more work"| T["task t52"]
-    P["planning agent"] -->|"'reuse t71's spec'"| T
-    T -->|"'see my spec'"| T2["task t71"]
+    U["user<br/>(Desk, iOS later)"] -->|"a correction, more work"| T["task task-5e2c"]
+    P["planning agent"] -->|"'reuse task-71af's spec'"| T
+    T -->|"'see my spec'"| T2["task task-71af"]
     T -->|"a question, 'I'm done'"| P
     P -.->|"relays when it must"| U
 ```
@@ -38,13 +38,13 @@ A reply is just a message back. Nobody needs to block waiting for an answer: age
 
 | Candidate | While busy | While stopped | Agents | Visible to the user | Cost to build |
 |---|---|---|---|---|---|
-| **A. Type into the terminal** (`kanna send`, fixed by t52) | Lands mid-turn: queued or steered by the agent, or mangled by its input mode | Lost | all | yes, as a prompt | done |
+| **A. Type into the terminal** (`kanna send`, which now [presses Return itself](../specs/kanna-send.md)) | Lands mid-turn: queued or steered by the agent, or mangled by its input mode | Lost | all | yes, as a prompt | done |
 | **B. Inbox, typed when the turn ends** | Waits for the turn's end, then delivered as the next prompt | Queued; wakes a backlog task ([5](#5-stopped-tasks)) | all: needs only the turn's end and `kanna send` | yes, as a prompt | small |
 | **C. Inbox, delivered by a Stop hook** (`decision: "block"` + `reason` continues the turn with it) | At the turn's end, as B | Queued, as B | claude, codex; copilot (`agentStop`), antigravity; opencode by a JS plugin | partly: Claude shows it as "Stop hook feedback" | medium: hooks back in the user's settings (agent setup [took them out](../specs/agent-setup.md#1-what-it-does)); codex runs a hook only once you've trusted it. **An idle agent runs no hook, so B is still needed.** |
 | **D. MCP server with send/receive tools** | Only if the agent thinks to call `receive` | Queued | all have MCP clients | as a tool call | medium. MCP notifications can't start a turn in claude or codex (codex only logs them), so nothing arrives unless the agent asks. |
 | **E. Claude channels** (an MCP server sends `notifications/claude/channel`) | Queued to the next turn | not available | claude only | a `←` line | medium. Research preview: claude.ai or Console API-key login only, and a server of Kanna's own needs `--dangerously-load-development-channels`. |
 | **F. The agents' own APIs** (codex `app-server` + `codex --remote`, `turn/start` and `turn/steer`; `opencode serve`; Claude's SDK) | Queued, or steered into the turn | `thread/resume` or `--resume` with the message | a different one for each agent; none for copilot or antigravity | only if the TUI attaches to the server (codex, opencode) | large: changes how Kanna runs each agent |
-| **G. Resume with the message as the prompt** (`claude --resume ID "msg"`, `codex resume ID "msg"`) | n/a | yes | claude; codex by ID (`codex resume [SESSION_ID] [PROMPT]`; Kanna resumes it with `--last` until t98) | yes | small, but covers stopped tasks only |
+| **G. Resume with the message as the prompt** (`claude --resume ID "msg"`, `codex resume ID "msg"`) | n/a | yes | claude; codex by ID (`codex resume [SESSION_ID] [PROMPT]`; Kanna resumes it with `--last` until task-0f94) | yes | small, but covers stopped tasks only |
 
 - **B needs nothing from the agents** except the turn's end, which Kanna already has for every agent ([4](#4-the-end-of-a-turn)).
 - **C delivers when B does,** and can't wake an idle agent. That doesn't justify hooks in five agents' settings.
@@ -57,18 +57,18 @@ A reply is just a message back. Nobody needs to block waiting for an answer: age
 
 ```mermaid
 sequenceDiagram
-    participant S as sender (t52's agent, the planner, the user)
+    participant S as sender (task-5e2c's agent, the planner, the user)
     participant D as daemon (inbox in kanna.db)
-    participant T as t71's terminal
-    S->>D: kanna task send t71 "Is your spec at docs/specs/x.md final?"
-    D-->>S: queued (t71 is working)
-    Note over T: t71's turn runs on
+    participant T as task-71af's terminal
+    S->>D: kanna task send task-71af "Is your spec at docs/specs/x.md final?"
+    D-->>S: queued (task-71af is working)
+    Note over T: task-71af's turn runs on
     T-->>D: turn ends: OSC 7501 idle, or the rules' idle held 3s
-    D->>T: types "[message from t52] Is your spec …" + Return (t52's send)
+    D->>T: types "[message from task-5e2c] Is your spec …" + Return (kanna send)
     D->>D: marks it delivered
-    Note over T: a new turn: t71 reads it in its own terminal
-    T->>D: kanna task send t52 "Yes, final."
-    Note over D: t52 gets it at its next turn's end
+    Note over T: a new turn: task-71af reads it in its own terminal
+    T->>D: kanna task send task-5e2c "Yes, final."
+    Note over D: task-5e2c gets it at its next turn's end
 ```
 
 - **Address by task ID or `planner`** (the planning agent of the Desk that shows the repo). `--from` is the sender's own task, found from `KANNA_PANE`, or `user`.
@@ -120,7 +120,7 @@ flowchart TD
 
 1. **An inbox table** in `kanna.db`: id, to, from, text, made, delivered ([database](../specs/database.md)).
 2. **`kanna task send TASK|planner TEXT`** and **`kanna task messages [TASK]`**.
-3. **Delivery in the daemon:** on the turn's end (`Turn`, already used by the runners, OSC 7501 or rules), or at once if the agent is idle; typed with t52's `kanna send`; skipped while it needs you or the user is typing.
+3. **Delivery in the daemon:** on the turn's end (`Turn`, already used by the runners, OSC 7501 or rules), or at once if the agent is idle; typed with `kanna send`; skipped while it needs you or the user is typing.
 4. **Runners:** a waiting message makes a stopped backlog task next to start, and keeps a running one from being stopped.
 5. **Skills:** kanna-tasks and kanna-planning learn `kanna task send`.
 6. **A spec,** `docs/specs/agent-messaging.md`, and an e2e scenario with the mock agent: send to a working task, a stopped backlog task and the planner; each gets it once, in order, as a prompt.
