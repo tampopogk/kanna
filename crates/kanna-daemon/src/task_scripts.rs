@@ -15,7 +15,7 @@ const BASE: &str = "kanna-base";
 
 const RECORD: &str = "kanna-setup";
 
-pub const TARGET: &str = "kanna-target";
+const TORN: &str = "kanna-teardown";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Scripts {
@@ -39,12 +39,10 @@ pub enum Setup {
     Skipped(i32),
 }
 
-impl Setup {
-    pub fn said(code: i32, timeout: u64) -> String {
-        match code {
-            TIMED_OUT => format!("setup timed out after {timeout}s"),
-            code => format!("setup failed (exit {code})"),
-        }
+pub fn said(what: &str, code: i32, timeout: u64) -> String {
+    match code {
+        TIMED_OUT => format!("{what} timed out after {timeout}s"),
+        code => format!("{what} failed (exit {code})"),
     }
 }
 
@@ -106,6 +104,20 @@ pub fn forget_setup(worktree: &Path) {
     }
 }
 
+pub fn teardown_record(worktree: &Path) -> Option<PathBuf> {
+    git_dir(worktree).map(|dir| dir.join(TORN))
+}
+
+pub fn torn_down(worktree: &Path) -> Option<i32> {
+    fs::read_to_string(teardown_record(worktree)?).ok()?.trim().parse().ok()
+}
+
+pub fn forget_teardown(worktree: &Path) {
+    if let Some(record) = teardown_record(worktree) {
+        let _ = fs::remove_file(record);
+    }
+}
+
 pub fn needs_setup(worktree: &Path) -> bool {
     base(worktree).is_some() && setup(worktree).is_none()
 }
@@ -128,20 +140,26 @@ impl Task {
     }
 
     pub fn setup_command(&self, setup: &str, timeout: u64, then: Option<&str>) -> Option<String> {
-        let record = setup_record(&self.worktree)?;
+        let command = self.terminal_command("setup", "Setting up", setup, &setup_record(&self.worktree)?, timeout);
+        Some(match then {
+            Some(then) => format!("{command}; printf '\\n'; {then}"),
+            None => command,
+        })
+    }
+
+    pub fn teardown_command(&self, teardown: &str, timeout: u64) -> Option<String> {
+        Some(self.terminal_command("teardown", "Tearing down", teardown, &teardown_record(&self.worktree)?, timeout))
+    }
+
+    fn terminal_command(&self, what: &str, doing: &str, script: &str, record: &Path, timeout: u64) -> String {
         let vars: Vec<String> = self.vars(&self.branch()).into_iter().map(|(k, v)| format!("{k}={}", quote(&v))).collect();
-        let failed = format!("if [ \"$kanna_setup\" -eq {TIMED_OUT} ]; then printf '\\nsetup timed out after {timeout}s\\n'; else printf '\\nsetup failed (exit %s)\\n' \"$kanna_setup\"; fi; exit \"$kanna_setup\"");
-        let mut command = format!(
-            "printf 'Setting up: %s\\n\\n' {shown}; {vars} perl -e 'alarm shift; exec @ARGV' {timeout} \"${{SHELL:-/bin/zsh}}\" -lc {setup}; kanna_setup=$?; printf '%s\\n' \"$kanna_setup\" > {record}; if [ \"$kanna_setup\" -ne 0 ]; then {failed}; fi",
-            shown = quote(setup),
+        let failed = format!("if [ \"$kanna_run\" -eq {TIMED_OUT} ]; then printf '\\n{what} timed out after {timeout}s\\n'; else printf '\\n{what} failed (exit %s)\\n' \"$kanna_run\"; fi; exit \"$kanna_run\"");
+        format!(
+            "printf '{doing}: %s\\n\\n' {shown}; {vars} perl -e 'alarm shift; exec @ARGV' {timeout} \"${{SHELL:-/bin/zsh}}\" -lc {shown}; kanna_run=$?; printf '%s\\n' \"$kanna_run\" > {record}; if [ \"$kanna_run\" -ne 0 ]; then {failed}; fi",
+            shown = quote(script),
             vars = vars.join(" "),
-            setup = quote(setup),
             record = quote(&record.to_string_lossy()),
-        );
-        if let Some(then) = then {
-            command = format!("{command}; printf '\\n'; {then}");
-        }
-        Some(command)
+        )
     }
 }
 
@@ -177,36 +195,11 @@ pub fn run(command: &str, cwd: &Path, vars: &[(&str, String)], timeout: Duration
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cleanup {
-    Removed { branch: String, target: Option<PathBuf> },
+    Removed { branch: String },
     Kept(String),
 }
 
-fn checkouts(repo: &Path) -> Vec<PathBuf> {
-    let listed = git(repo, &["worktree", "list", "--porcelain"]).unwrap_or_default();
-    listed.lines().filter_map(|l| l.strip_prefix("worktree ")).filter_map(|p| fs::canonicalize(p).ok()).collect()
-}
-
-fn link_target(repo: &Path, worktree: &Path, targets: Option<&Path>) -> Option<PathBuf> {
-    let link = worktree.join("target");
-    if !fs::symlink_metadata(&link).ok()?.file_type().is_symlink() {
-        return None;
-    }
-    let to = fs::read_link(&link).ok()?;
-    let to = fs::canonicalize(if to.is_absolute() { to } else { worktree.join(to) }).ok().filter(|t| t.is_dir())?;
-    let recorded = git_dir(worktree).and_then(|dir| fs::read_to_string(dir.join(TARGET)).ok()).and_then(|r| fs::canonicalize(r.trim()).ok());
-    let built = targets.zip(repo.file_name()).zip(worktree.file_name()).and_then(|((root, repo), worktree)| fs::canonicalize(root.join(repo).join(worktree)).ok());
-    let tracked = git(worktree, &["ls-files", "--error-unmatch", "target"]).is_ok();
-    ((recorded.as_ref() == Some(&to) || built.as_ref() == Some(&to)) && !tracked).then_some(to)
-}
-
-fn removable(target: &Path, worktree: &Path, others: &[PathBuf]) -> bool {
-    let home = fs::canonicalize(crate::agents::home()).ok();
-    let mine = fs::canonicalize(worktree).ok();
-    let near = |p: &Path| target.starts_with(p) || p.starts_with(target);
-    target.components().count() > 2 && !home.as_deref().is_some_and(|h| h.starts_with(target)) && !others.iter().filter(|o| Some(o.as_path()) != mine.as_deref()).any(|o| near(o))
-}
-
-pub fn clean_up(repo: &Path, worktree: &Path, targets: Option<&Path>) -> Cleanup {
+pub fn clean_up(repo: &Path, worktree: &Path) -> Cleanup {
     let kept = |why: String| Cleanup::Kept(why);
     if !worktree.is_dir() {
         return kept("its worktree is gone".into());
@@ -227,20 +220,13 @@ pub fn clean_up(repo: &Path, worktree: &Path, targets: Option<&Path>) -> Cleanup
     if git(repo, &["merge-base", "--is-ancestor", &format!("refs/heads/{branch}"), "HEAD"]).is_err() {
         return kept(format!("{branch} isn't merged into {head}"));
     }
-    let others = checkouts(repo);
-    let target = link_target(repo, worktree, targets).filter(|t| removable(t, worktree, &others));
     if let Err(error) = git(repo, &["worktree", "remove", &worktree.to_string_lossy()]) {
         return kept(format!("git worktree remove failed: {error}"));
-    }
-    if let Some(target) = &target {
-        if let Err(error) = fs::remove_dir_all(target) {
-            eprintln!("kanna-daemon: couldn't remove {}, {}'s build folder: {error}", target.display(), worktree.display());
-        }
     }
     if let Err(error) = git(repo, &["branch", "-d", &branch]) {
         return kept(format!("removed the worktree, but git branch -d {branch} failed: {error}"));
     }
-    Cleanup::Removed { branch, target }
+    Cleanup::Removed { branch }
 }
 
 #[cfg(test)]
@@ -265,74 +251,18 @@ mod tests {
     }
 
     #[test]
-    fn a_merged_worktree_goes_with_the_folder_its_target_links_to_but_nothing_that_folder_links_to() {
+    fn a_merged_worktree_goes_with_its_branch_and_a_target_link_goes_as_a_link_only() {
         let (dir, worktree) = repo("linked");
         let repo = dir.join("repo");
-        let main_build = repo.join("target/ghosttykit");
-        fs::create_dir_all(main_build.join("lib")).unwrap();
-        fs::write(main_build.join("lib/libghostty.a"), "main's").unwrap();
-        fs::create_dir_all(repo.join("target/.offline")).unwrap();
-        let volume = dir.join("volume/kanna-targets/repo").join(worktree.file_name().unwrap());
-        fs::create_dir_all(volume.join("debug")).unwrap();
-        fs::write(volume.join("debug/kanna"), "built").unwrap();
-        symlink(&main_build, volume.join("ghosttykit")).unwrap();
-        symlink(&volume, worktree.join("target")).unwrap();
-        fs::write(git_dir(&worktree).unwrap().join(TARGET), format!("{}\n", volume.display())).unwrap();
-        let branch = git(&worktree, &["branch", "--show-current"]).unwrap();
-        match clean_up(&repo, &worktree, None) {
-            Cleanup::Removed { branch: gone, target } => {
-                assert_eq!(gone, branch);
-                assert_eq!(target, Some(fs::canonicalize(dir.join("volume/kanna-targets/repo")).unwrap().join(worktree.file_name().unwrap())));
-            }
-            kept => panic!("{kept:?}"),
-        }
-        assert!(!worktree.exists(), "the worktree is removed");
-        assert!(!volume.exists(), "the folder its target links to is removed");
-        assert!(dir.join("volume/kanna-targets/repo").is_dir(), "only that folder");
-        assert_eq!(fs::read_to_string(main_build.join("lib/libghostty.a")).unwrap(), "main's", "a link inside it isn't followed");
-        assert!(repo.join("target/.offline").is_dir());
-        assert!(git(&repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_err(), "the branch is deleted");
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn a_target_linking_into_the_main_checkout_goes_as_a_link_only() {
-        let (dir, worktree) = repo("borrowed");
-        let repo = dir.join("repo");
-        fs::create_dir_all(repo.join("target/.offline")).unwrap();
-        symlink(repo.join("target"), worktree.join("target")).unwrap();
-        fs::write(git_dir(&worktree).unwrap().join(TARGET), repo.join("target").to_string_lossy().as_bytes()).unwrap();
-        assert!(matches!(clean_up(&repo, &worktree, None), Cleanup::Removed { target: None, .. }));
-        assert!(!worktree.exists());
-        assert!(repo.join("target/.offline").is_dir(), "the main checkout's target stays");
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn a_worktree_s_folder_under_build_targets_goes_with_it() {
-        let (dir, worktree) = repo("targets");
-        let repo = dir.join("repo");
-        let root = dir.join("volume/kanna-targets");
-        let built = root.join("repo").join(worktree.file_name().unwrap());
-        fs::create_dir_all(built.join("release")).unwrap();
-        fs::create_dir_all(root.join("repo/_main/release")).unwrap();
-        symlink(&built, worktree.join("target")).unwrap();
-        assert!(matches!(clean_up(&repo, &worktree, Some(&root)), Cleanup::Removed { target: Some(_), .. }));
-        assert!(!built.exists());
-        assert!(root.join("repo/_main/release").is_dir(), "the main checkout's folders on the volume stay");
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn a_target_link_kanna_didnt_record_goes_as_a_link_only() {
-        let (dir, worktree) = repo("unrecorded");
-        let repo = dir.join("repo");
-        let elsewhere = dir.join("documents");
+        let elsewhere = dir.join("volume/builds");
         fs::create_dir_all(&elsewhere).unwrap();
-        fs::write(elsewhere.join("keep.txt"), "mine").unwrap();
+        fs::write(elsewhere.join("kanna"), "built").unwrap();
         symlink(&elsewhere, worktree.join("target")).unwrap();
-        assert!(matches!(clean_up(&repo, &worktree, None), Cleanup::Removed { target: None, .. }));
-        assert_eq!(fs::read_to_string(elsewhere.join("keep.txt")).unwrap(), "mine");
+        let branch = git(&worktree, &["branch", "--show-current"]).unwrap();
+        assert_eq!(clean_up(&repo, &worktree), Cleanup::Removed { branch: branch.clone() });
+        assert!(!worktree.exists(), "the worktree is removed");
+        assert_eq!(fs::read_to_string(elsewhere.join("kanna")).unwrap(), "built", "what its target links to is the repo's teardown's to remove");
+        assert!(git(&repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_err(), "the branch is deleted");
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -341,15 +271,15 @@ mod tests {
         let (dir, worktree) = repo("kept");
         let repo = dir.join("repo");
         fs::write(worktree.join("notes.txt"), "work").unwrap();
-        assert_eq!(clean_up(&repo, &worktree, None), Cleanup::Kept("it has changes".into()));
+        assert_eq!(clean_up(&repo, &worktree), Cleanup::Kept("it has changes".into()));
         sh(&worktree, "git add notes.txt && git -c user.email=e@e -c user.name=e commit -q -m work");
         let branch = git(&worktree, &["branch", "--show-current"]).unwrap();
-        assert_eq!(clean_up(&repo, &worktree, None), Cleanup::Kept(format!("{branch} isn't merged into main")));
+        assert_eq!(clean_up(&repo, &worktree), Cleanup::Kept(format!("{branch} isn't merged into main")));
         assert!(worktree.join("notes.txt").is_file());
         sh(&repo, &format!("git merge -q --ff-only {branch}"));
-        assert!(matches!(clean_up(&repo, &worktree, None), Cleanup::Removed { .. }));
-        assert_eq!(clean_up(&repo, &worktree, None), Cleanup::Kept("its worktree is gone".into()));
-        assert_eq!(clean_up(&repo, &repo, None), Cleanup::Kept(format!("{} isn't a task's worktree", repo.display())), "the main checkout is never removed");
+        assert!(matches!(clean_up(&repo, &worktree), Cleanup::Removed { .. }));
+        assert_eq!(clean_up(&repo, &worktree), Cleanup::Kept("its worktree is gone".into()));
+        assert_eq!(clean_up(&repo, &repo), Cleanup::Kept(format!("{} isn't a task's worktree", repo.display())), "the main checkout is never removed");
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -379,6 +309,14 @@ mod tests {
         let command = task.setup_command("sleep 5", 1, None).unwrap();
         let out = Command::new("sh").arg("-c").arg(&command).current_dir(&worktree).env("SHELL", "/bin/sh").output().unwrap();
         assert!(String::from_utf8_lossy(&out.stdout).contains("setup timed out after 1s"), "{out:?}");
+        let command = task.teardown_command("echo \"$KANNA_TASK\" > torn; exit 2", 5).unwrap();
+        let out = Command::new("sh").arg("-c").arg(&command).current_dir(&worktree).env("SHELL", "/bin/sh").output().unwrap();
+        assert_eq!(out.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&out.stdout).contains("teardown failed (exit 2)"), "{out:?}");
+        assert_eq!(fs::read_to_string(worktree.join("torn")).unwrap(), "t7\n");
+        assert_eq!(torn_down(&worktree), Some(2));
+        forget_teardown(&worktree);
+        assert_eq!(torn_down(&worktree), None);
         assert_eq!(run("echo hi; exit 4", &worktree, &[], Duration::from_secs(5)), Ok(4));
         assert_eq!(run("sleep 5", &worktree, &[], Duration::from_millis(300)), Ok(TIMED_OUT));
         fs::remove_dir_all(&dir).unwrap();

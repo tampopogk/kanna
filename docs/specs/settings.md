@@ -47,7 +47,7 @@ flowchart LR
 | `planning.context` | `300000` | Tokens a claude agent's context grows to in a [planning terminal](planning-agent.md) before it compacts, from 100000 to 1000000, or `"auto"` for claude's own. A long-lived agent works better kept small (context rot). The terminal sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, unless your environment already does. Other agents keep their own limit (codex's is already shorter); each gets this setting as Kanna supports it. |
 | `build.targets` | none: in the worktree | A folder where build outputs live, so builds stay off the internal disk: each task worktree's `target/` links to `ROOT/REPO/WORKTREE`, and most folders in the main checkout's `target/` link to `ROOT/REPO/_main/`, keeping the app, built Ghostty and a copy of its dependencies internal. Only yours: a repo's file can't set it. Read by `scripts/build.sh`; while the folder's volume isn't mounted, checkouts build on the internal disk and move over on the next build with it ([build targets](build-targets.md)). |
 | `tasks.setup` | none | A shell command run in a new task's worktree before its agent starts, once per worktree ([task scripts](task-scripts.md#2-setup)) |
-| `tasks.teardown` | none | A shell command run in a task's worktree when it's Done, before Kanna cleans it up ([task scripts](task-scripts.md#3-teardown-and-cleanup)) |
+| `tasks.teardown` | none | A shell command run in a task's agent pane, in its worktree, when it's Done: the task is Done once it succeeds, and Kanna cleans it up ([task scripts](task-scripts.md#3-teardown-and-cleanup)) |
 | `tasks.timeout` | `600` | Seconds `tasks.setup` and `tasks.teardown` each get, from 1 to 86400, before Kanna stops them |
 
 ## 4. How it's built
@@ -55,7 +55,7 @@ flowchart LR
 - **The daemon reads them** when it needs a setting, for a folder: the repo of that folder's `.kanna/config.json`, then `~/.kanna-v4/config.json` (each at most 64 KB; `~` is `$KANNA_AGENTS_HOME` when it's set, as for agent setup, so tests keep their own).
 - **`planning.agent`** is read as the daemon builds a planning terminal's command, for the folder it opens in, and passed to `planner.sh`, which writes it to the repo's file when you say yes.
 - **`backlog.runners`** is read for each repo with backlog tasks every 2s, and as a task's turn ends, so a change applies within seconds.
-- **`build.targets`** is read by `kanna_targets` in `scripts/env.sh` from your file with `plutil` each time a build script runs, and by the daemon as it cleans up a Done task, to find the task's build folder ([task scripts](task-scripts.md#3-teardown-and-cleanup)).
+- **`build.targets`** isn't read by the daemon: `kanna_targets` in `scripts/env.sh` reads it from your file with `plutil` each time a build script runs.
 - **`tasks.*`** are read as a task's worktree is set up and as it's Done, for its repo.
 - **`planning.context`** is read as the daemon builds a planning terminal's command, for the folder it opens in, and becomes an `export` in that command.
 

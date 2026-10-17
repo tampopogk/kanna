@@ -168,7 +168,7 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
             output::name_out(&mut reply, &backlog["out"]);
             shorts.extend(output::shorts(&backlog));
             listed = true;
-            reply["setup"] = backlog["setup"].clone();
+            reply["script"] = backlog["script"].clone();
         }
         if let Some(query) = request["query"].as_str() {
             output::keep_matching(&mut reply, query);
@@ -259,8 +259,7 @@ fn wire(command: &Command, request: &Value) -> &'static str {
     match command.name {
         "markup" if request.get("type").is_some() => "open",
         "task" if ["new", "edit", "start", "stop", "setup", "shelve", "defer"].contains(&request["action"].as_str().unwrap_or("")) => "backlog",
-        "task" if request["action"] == "done" && request["task"].as_str().is_some_and(commands::is_task_id) => "backlog",
-        "task" if request["action"] == "done" => "close",
+        "task" if request["action"] == "done" => "backlog",
         "task" if request["action"] == "name" && request.get("task").is_some() => "backlog",
         "task" if request["action"] == "name" => "rename-pane",
         "workspace" => "list",

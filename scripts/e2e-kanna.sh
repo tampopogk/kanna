@@ -2984,12 +2984,19 @@ env | grep '^KANNA_' | grep -v '^KANNA_PANE\|^KANNA_SOCKET\|^KANNA_STATE' | sort
 [ "\$KANNA_TASK_NAME" = Fails ] && { echo broken; exit 3; }
 echo set up
 SETUP
-  chmod +x "$repo/.kanna/setup.sh"
-  printf '{"version": 1, "tasks": {"setup": ".kanna/setup.sh", "teardown": "env | grep ^KANNA_TASK= > %s/torn", "timeout": 30}}\n' "$KANNA_STATE_DIR" >"$repo/.kanna/config.json"
+  cat >"$repo/.kanna/teardown.sh" <<TEARDOWN
+#!/bin/sh
+env | grep '^KANNA_TASK=' >"$KANNA_STATE_DIR/torn"
+echo tearing down here
+[ -e "$KANNA_STATE_DIR/teardown-fails" ] && { echo broken; exit 2; }
+exit 0
+TEARDOWN
+  chmod +x "$repo/.kanna/setup.sh" "$repo/.kanna/teardown.sh"
+  printf '{"version": 1, "tasks": {"setup": ".kanna/setup.sh", "teardown": ".kanna/teardown.sh", "timeout": 30}}\n' >"$repo/.kanna/config.json"
   git -C "$repo" add -A && git -C "$repo" -c user.email=e@e -c user.name=e commit -q -m first || { echo "task_scripts line $LINENO"; return 1; }
   printf '#!/bin/sh\necho "agent sees: $(tr "\\n" " " <made-by-setup 2>/dev/null)"\nexec sleep 600\n' >"$agent" && chmod +x "$agent"
   in_repo() { (cd "$repo" && kanna "$@"); }
-  in_repo task new "Sets up" "go" --agent "$agent" >/dev/null && in_repo task new "Fails" "go" --agent "$agent" >/dev/null || { echo "task_scripts line $LINENO"; return 1; }
+  in_repo task new "Sets up" "go" --agent "$agent" >/dev/null && in_repo task new "Fails" "go" --agent "$agent" >/dev/null && in_repo task new "Kept" "go" --agent "$agent" >/dev/null || { echo "task_scripts line $LINENO"; return 1; }
   local started wt p1; started="$(kanna task shelve $(tid 1))" || { echo "task_scripts line $LINENO"; return 1; }
   [[ "$started" =~ ^"moved $(sid 1) to the Shelf: "(p[0-9]+)" in "([^ ]+)" (" ]] || { echo "task_scripts line $LINENO: $started"; return 1; }
   p1="${BASH_REMATCH[1]}" wt="${BASH_REMATCH[2]}"
@@ -3003,15 +3010,25 @@ SETUP
   kanna task stop "$p1" >/dev/null && kanna task start "$p1" >/dev/null || { echo "task_scripts line $LINENO"; return 1; }
   check wait_for 10 is "$p1" state running && sleep 1 || { echo "task_scripts line $LINENO"; return 1; }
   check test "$(cat "$KANNA_STATE_DIR/setups" | xargs)" == "$(tid 1)" || { echo "task_scripts: setup ran again on a restart: $(cat "$KANNA_STATE_DIR/setups" | xargs)"; return 1; }
-  local volume="$KANNA_STATE_DIR/volume/kanna-targets/repo/${wt##*/}"
-  mkdir -p "$repo/target/ghosttykit" "$repo/target/.offline" "$volume/debug" && echo main >"$repo/target/ghosttykit/lib" && echo built >"$volume/debug/kanna" || { echo "task_scripts line $LINENO"; return 1; }
-  ln -s "$repo/target/ghosttykit" "$volume/ghosttykit" && ln -s "$volume" "$wt/target" || { echo "task_scripts line $LINENO"; return 1; }
-  printf '{"version": 1, "backlog": {"runners": 0}, "build": {"targets": "%s"}}\n' "$KANNA_STATE_DIR/volume/kanna-targets" >"$KANNA_AGENTS_HOME/.kanna-v4/config.json"
+  local tab; tab="$(kanna task setup "$p1")" || { echo "task_scripts line $LINENO"; return 1; }
+  [[ "$tab" =~ " runs again in "(p[0-9]+)" (a Setup tab)"$ ]] || { echo "task_scripts line $LINENO: $tab"; return 1; }
+  tab="${BASH_REMATCH[1]}"
+  check wait_for 10 eval '[[ "$(cat "$KANNA_STATE_DIR/setups" | xargs)" == "$(tid 1) $(tid 1)" ]]' || { echo "task_scripts: the Setup tab didn't run setup"; return 1; }
+  local elsewhere="$KANNA_STATE_DIR/volume/builds"
+  mkdir -p "$elsewhere" && echo built >"$elsewhere/kanna" && ln -s "$elsewhere" "$wt/target" || { echo "task_scripts line $LINENO"; return 1; }
+  touch "$KANNA_STATE_DIR/teardown-fails"
+  [[ "$(kanna task done "$p1")" == "$(sid 1)'s teardown runs in $p1: "* ]] || { echo "task_scripts: done didn't say teardown runs in the agent's pane"; return 1; }
+  check wait_for 10 shows "$p1" "teardown failed (exit 2)" || { echo "task_scripts: the agent's pane doesn't show the failed teardown"; kanna read "$p1"; return 1; }
+  shows "$p1" "tearing down here" || { echo "task_scripts: teardown's output isn't in the agent's pane"; kanna read "$p1"; return 1; }
+  kanna read "$tab" >/dev/null 2>&1 && { echo "task_scripts: the task's tabs weren't closed for teardown"; return 1; }
+  check test -d "$wt" || { echo "task_scripts: a failed teardown removed the worktree"; return 1; }
+  check wait_for 5 eval 'in_repo task list | grep -qE "^$(sid 1) +Sets up +Shelf +teardown failed \(exit 2\)"' || { echo "task_scripts: task list doesn't say teardown failed"; in_repo task list; return 1; }
+  rm -f "$KANNA_STATE_DIR/teardown-fails" "$KANNA_STATE_DIR/torn"
   kanna task done "$p1" >/dev/null || { echo "task_scripts line $LINENO"; return 1; }
-  check wait_for 10 eval '[[ ! -e "$wt" ]]' || { echo "task_scripts: the merged task's worktree wasn't removed"; raw '{"id":1,"cmd":"backlog","args":{"action":"events","task":"'"$(tid 1)"'"}}'; return 1; }
-  check test "$(cat "$KANNA_STATE_DIR/torn")" == "KANNA_TASK=$(tid 1)" || { echo "task_scripts: teardown didn't run on Done"; return 1; }
-  check test ! -e "$volume" || { echo "task_scripts: the folder target/ linked to is left"; return 1; }
-  check test "$(cat "$repo/target/ghosttykit/lib")" == main && check test -d "$repo/target/.offline" || { echo "task_scripts: cleanup followed a link inside target/"; return 1; }
+  check wait_for 10 eval '[[ ! -e "$wt" ]]' || { echo "task_scripts: the merged task's worktree wasn't removed"; kanna read "$p1"; raw '{"id":1,"cmd":"backlog","args":{"action":"events","task":"'"$(tid 1)"'"}}'; return 1; }
+  check test "$(cat "$KANNA_STATE_DIR/torn")" == "KANNA_TASK=$(tid 1)" || { echo "task_scripts: teardown didn't run again on Done"; return 1; }
+  kanna read "$p1" >/dev/null 2>&1 && { echo "task_scripts: the agent's pane stayed after teardown succeeded"; return 1; }
+  check test "$(cat "$elsewhere/kanna")" == built || { echo "task_scripts: cleanup removed what target/ links to"; return 1; }
   git -C "$repo" rev-parse --verify --quiet "refs/heads/${wt##*/}" >/dev/null && { echo "task_scripts: the merged branch is left"; return 1; }
   raw '{"id":1,"cmd":"backlog","args":{"action":"events","task":"'"$(tid 1)"'"}}' | grep -q '"cleaned up"' || { echo "task_scripts: cleanup isn't in the first task's events"; return 1; }
   rm -f "$KANNA_STATE_DIR/torn"
@@ -3027,12 +3044,20 @@ SETUP
   check wait_for 10 shows "$p2" "agent sees:" || { echo "task_scripts: start didn't start the agent anyway"; kanna read "$p2"; return 1; }
   in_repo task list | grep -qE "^$(sid 2) +Fails +Shelf +setup failed" && { echo "task_scripts: a task started anyway still says setup failed"; return 1; }
   [[ "$(kanna task setup "$p2")" == "$(sid 2)'s setup runs again in "*"(a Setup tab)" ]] || { echo "task_scripts: task setup didn't open a Setup tab"; return 1; }
-  check wait_for 10 eval '[[ "$(cat "$KANNA_STATE_DIR/setups" | xargs)" == "$(tid 1) $(tid 2) $(tid 2)" ]]' || { echo "task_scripts: task setup didn't run it again: $(cat "$KANNA_STATE_DIR/setups" | xargs)"; return 1; }
+  check wait_for 10 eval '[[ "$(cat "$KANNA_STATE_DIR/setups" | xargs)" == "$(tid 1) $(tid 1) $(tid 2) $(tid 2)" ]]' || { echo "task_scripts: task setup didn't run it again: $(cat "$KANNA_STATE_DIR/setups" | xargs)"; return 1; }
   echo work >"$wt2/work.txt" && git -C "$wt2" add work.txt && git -C "$wt2" -c user.email=e@e -c user.name=e commit -q -m work || { echo "task_scripts line $LINENO"; return 1; }
   kanna task done "$p2" >/dev/null || { echo "task_scripts line $LINENO"; return 1; }
   check wait_for 10 eval 'raw "{\"id\":1,\"cmd\":\"backlog\",\"args\":{\"action\":\"events\",\"task\":\"$(tid 2)\"}}" | grep -q "isn.t merged into main"' || { echo "task_scripts: an unmerged task wasn't kept, saying why"; raw '{"id":1,"cmd":"backlog","args":{"action":"events","task":"'"$(tid 2)"'"}}'; return 1; }
   check test "$(cat "$KANNA_STATE_DIR/torn")" == "KANNA_TASK=$(tid 2)" || { echo "task_scripts: teardown didn't run on t2's Done"; return 1; }
   check test -f "$wt2/work.txt" && git -C "$repo" rev-parse --verify --quiet "refs/heads/${wt2##*/}" >/dev/null || { echo "task_scripts: the unmerged worktree or branch went"; return 1; }
+  rm -f "$KANNA_STATE_DIR/torn"
+  started="$(kanna task shelve $(tid 3))" || { echo "task_scripts line $LINENO"; return 1; }
+  [[ "$started" =~ ^"moved $(sid 3) to the Shelf: "(p[0-9]+)" in "([^ ]+)" (" ]] || { echo "task_scripts line $LINENO: $started"; return 1; }
+  local p3="${BASH_REMATCH[1]}" wt3="${BASH_REMATCH[2]}"
+  check wait_for 15 shows "$p3" "agent sees:" || { echo "task_scripts line $LINENO"; kanna read "$p3"; return 1; }
+  [[ "$(kanna task done "$p3" --keep)" == "$(sid 3) is done: closed "* ]] || { echo "task_scripts: done --keep didn't end the task"; return 1; }
+  check wait_for 10 eval 'raw "{\"id\":1,\"cmd\":\"backlog\",\"args\":{\"action\":\"events\",\"task\":\"$(tid 3)\"}}" | grep -q "kanna task done --keep"' || { echo "task_scripts: done --keep isn't in the task's events"; return 1; }
+  check test ! -e "$KANNA_STATE_DIR/torn" && check test -d "$wt3" || { echo "task_scripts: done --keep ran teardown or removed the worktree"; return 1; }
 }
 
 scenario pane_sizes M4

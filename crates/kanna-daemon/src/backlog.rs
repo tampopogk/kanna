@@ -172,11 +172,6 @@ pub fn runners(files: &[PathBuf]) -> usize {
     configured(files, "backlog", "runners", read, "a number of tasks from 0 to 10").unwrap_or(RUNNERS)
 }
 
-pub fn build_targets() -> Option<PathBuf> {
-    let mine = [crate::agents::home().join(".kanna-v4/config.json")];
-    configured(&mine, "build", "targets", |value| value.as_str().filter(|p| p.starts_with('/')).map(PathBuf::from), "an absolute folder")
-}
-
 pub fn scripts(files: &[PathBuf]) -> Scripts {
     let command = |value: &Value| value.as_str().map(str::trim).filter(|c| !c.is_empty()).map(String::from);
     let timeout = |value: &Value| value.as_u64().filter(|t| (1..=task_scripts::TIMEOUT_MAX).contains(t));
@@ -474,6 +469,15 @@ struct SettingUp {
     timeout: u64,
 }
 
+#[derive(Clone, Debug)]
+struct TearingDown {
+    entry: Entry,
+    worktree: PathBuf,
+    timeout: u64,
+    backlog: bool,
+    by: Option<String>,
+}
+
 const SETUP_EVERY: Duration = Duration::from_secs(1);
 
 const QUIT_WAIT: Duration = Duration::from_secs(5);
@@ -511,6 +515,8 @@ pub struct Backlog {
     launching: RefCell<HashSet<String>>,
     failed: RefCell<HashSet<String>>,
     setting_up: RefCell<HashMap<String, SettingUp>>,
+    tearing_down: RefCell<HashMap<String, TearingDown>>,
+    keeping: RefCell<HashSet<String>>,
     fill_at: Cell<Option<Instant>>,
     pub on_change: RefCell<Option<Box<dyn Fn(Value)>>>,
 }
@@ -570,6 +576,8 @@ impl Backlog {
             launching: RefCell::default(),
             failed: RefCell::default(),
             setting_up: RefCell::default(),
+            tearing_down: RefCell::default(),
+            keeping: RefCell::default(),
             fill_at: Cell::new(Some(Instant::now())),
             on_change: RefCell::default(),
         }
@@ -706,7 +714,7 @@ impl Backlog {
         value["short"] = json!(self.short(&entry.id));
         let running = entry.held.as_deref().zip(self.core.upgrade()).is_some_and(|(pane, core)| alive(&core, pane));
         value["running"] = json!(running);
-        value["setup"] = opt(self.setup_said(entry, entry.held.as_deref(), running).as_deref());
+        value["script"] = opt(self.script_said(entry, entry.held.as_deref(), running).as_deref());
         let waits = self.waits(entry).iter().map(|id| json!({ "id": id, "name": opt(self.known(id).and_then(|e| e.name).as_deref()), "pane": opt(self.pane_of(id).as_deref()) })).collect();
         value["waits"] = Value::Array(waits);
         value
@@ -841,6 +849,10 @@ impl Backlog {
         let setting = self.setting_up.borrow_mut().remove(pane);
         if let Some(setting) = setting {
             self.set_up(pane, &setting);
+        }
+        let tearing = self.tearing_down.borrow_mut().remove(pane);
+        if let Some(tearing) = tearing {
+            return self.torn_down(pane, tearing, code);
         }
         self.turns.borrow_mut().remove(pane);
         let quitting = self.quitting.borrow_mut().remove(pane);
@@ -1015,6 +1027,7 @@ impl Backlog {
             self.running.borrow_mut().retain(|x| x.pane != r.pane);
             let _ = self.store(&r.entry, Place::Done, None, Some(Change::new("done").moved(r.place, Place::Done).by(Some("daemon")).with("pane", json!(r.pane))));
             self.setting_up.borrow_mut().remove(&r.pane);
+            self.tearing_down.borrow_mut().remove(&r.pane);
             self.finish(&r.entry);
         }
         let renamed: Vec<(Running, Option<String>)> = self
@@ -1108,7 +1121,7 @@ impl Backlog {
                     Some("edit") => responder.reply(this.edit(&args)),
                     Some("name") => this.name(&args, responder),
                     Some("list") => responder.reply(Ok(this.list(&args))),
-                    Some("done") => this.remove(&args, responder),
+                    Some("done") => this.done(&args, responder),
                     Some("start") => this.start(&args, responder),
                     Some("stop") => this.stop(&args, responder),
                     Some("setup") => this.setup(&args, responder),
@@ -1203,10 +1216,10 @@ impl Backlog {
             .filter(|r| repo.is_none_or(|repo| r.entry.repo == repo))
             .filter_map(|r| {
                 let running = core.as_ref().is_some_and(|core| alive(core, &r.pane));
-                self.setup_said(&r.entry, Some(&r.pane), running).map(|said| (r.pane.clone(), json!(said)))
+                self.script_said(&r.entry, Some(&r.pane), running).map(|said| (r.pane.clone(), json!(said)))
             })
             .collect();
-        Map::from_iter([("tasks".to_string(), Value::Array(tasks)), ("out".to_string(), Value::Array(out)), ("setup".to_string(), Value::Object(shelf))])
+        Map::from_iter([("tasks".to_string(), Value::Array(tasks)), ("out".to_string(), Value::Array(out)), ("script".to_string(), Value::Object(shelf))])
 
     }
 
@@ -1216,15 +1229,51 @@ impl Backlog {
         Some(entries.remove(at))
     }
 
+    /// Ends a task: runs its repo's teardown in its agent's pane first, and it's Done once that succeeds.
+    fn done(self: &Rc<Self>, args: &Value, responder: Responder) {
+        let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
+        let Some(reference) = string(args, "task") else { return responder.reply(Err(bad("say which task"))) };
+        let by = who(args).map(String::from);
+        let waiting = self.entries.borrow().iter().find(|e| e.id == reference).cloned();
+        let (entry, pane) = match &waiting {
+            Some(entry) => (Some(entry.clone()), entry.held.clone().filter(|pane| core.pane(pane).is_some())),
+            None => {
+                let Some(pane) = core.pane(&self.pane_or(reference)).map(|p| p.id) else { return responder.reply(Err(not_found(reference))) };
+                (self.running.borrow().iter().find(|r| r.pane == pane).map(|r| r.entry.clone()), Some(pane))
+            }
+        };
+        if let Some(entry) = &entry {
+            if pane.as_ref().is_some_and(|pane| self.tearing_down.borrow().contains_key(pane)) {
+                return responder.reply(Err(KmuxError::new("tearing_down", format!("{}'s teardown is running: it's done when that succeeds", self.short(&entry.id)))));
+            }
+            if args.get("keep").and_then(Value::as_bool) == Some(true) {
+                self.keeping.borrow_mut().insert(entry.id.clone());
+            } else if let Some(pane) = &pane {
+                if let Some(tearing) = self.teardown_of(entry, waiting.is_some(), by.clone()) {
+                    return self.tear_down(pane, tearing, responder);
+                }
+            }
+        }
+        match (waiting, pane) {
+            (Some(entry), _) => self.take_off(entry, by, Answer::To(responder)),
+            (None, Some(pane)) => core.handle(json!({ "cmd": "close", "args": { "task": pane } }), move |reply| match failed(&reply) {
+                Some(error) => responder.reply(Err(error)),
+                None => responder.reply(Ok(reply.as_object().cloned().map(|mut r| {
+                    r.remove("ok");
+                    r
+                }).unwrap_or_default())),
+            }),
+            (None, None) => responder.reply(Err(not_found(reference))),
+        }
+    }
+
     /// Takes a task off the backlog, ending its agent and tabs if it was moved there still running.
-    fn remove(self: &Rc<Self>, args: &Value, responder: Responder) {
-        let Some(id) = string(args, "task") else { return responder.reply(Err(bad("say which task"))) };
-        let Some(entry) = self.entries.borrow().iter().find(|e| e.id == id).cloned() else { return responder.reply(Err(not_found(id))) };
-        if let Err(error) = self.store(&entry, Place::Done, None, Some(Change::new("done").moved(Place::Backlog, Place::Done).by(who(args)))) {
+    fn take_off(self: &Rc<Self>, entry: Entry, by: Option<String>, responder: Answer) {
+        if let Err(error) = self.store(&entry, Place::Done, None, Some(Change::new("done").moved(Place::Backlog, Place::Done).by(by.as_deref()))) {
             return responder.reply(Err(error));
         }
         let short = self.short(&entry.id);
-        self.take(id);
+        self.take(&entry.id);
         if let Some(pane) = &entry.held {
             self.turns.borrow_mut().remove(pane);
             self.quitting.borrow_mut().remove(pane);
@@ -1250,6 +1299,73 @@ impl Backlog {
                 responder.reply(Ok(value))
             }
         }
+    }
+
+    fn teardown_of(&self, entry: &Entry, backlog: bool, by: Option<String>) -> Option<TearingDown> {
+        let worktree = entry.folder.clone().map(PathBuf::from).filter(|f| f.is_dir() && task_scripts::is_linked(f))?;
+        let scripts = scripts(&config_files(Path::new(&entry.repo)));
+        scripts.teardown.as_ref()?;
+        Some(TearingDown { entry: entry.clone(), worktree, timeout: scripts.timeout, backlog, by })
+    }
+
+    fn tear_down(self: &Rc<Self>, pane: &str, tearing: TearingDown, responder: Responder) {
+        let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
+        let scripts = scripts(&config_files(Path::new(&tearing.entry.repo)));
+        let task = Self::script_task(&tearing.entry, &tearing.worktree);
+        let Some(command) = scripts.teardown.as_deref().and_then(|teardown| task.teardown_command(teardown, scripts.timeout)) else {
+            return responder.reply(Err(bad(format!("{} isn't a worktree", tearing.worktree.display()))));
+        };
+        task_scripts::forget_teardown(&tearing.worktree);
+        let id = self.short(&tearing.entry.id);
+        eprintln!("kanna-daemon: {} is done, so its teardown runs in {pane}: {}", tearing.entry.id, scripts.teardown.as_deref().unwrap_or(""));
+        self.note(pane, Change::new("tearing down").by(tearing.by.as_deref()));
+        responder.reply(Ok(Map::from_iter([("task".to_string(), json!(id)), ("pane".to_string(), json!(pane)), ("teardown".to_string(), json!(true))])));
+        self.turns.borrow_mut().remove(pane);
+        self.quitting.borrow_mut().remove(pane);
+        self.setting_up.borrow_mut().remove(pane);
+        self.stopping.borrow_mut().insert(pane.to_string());
+        let (this, weak, pane) = (Rc::downgrade(self), core.weak(), pane.to_string());
+        core.handle(json!({ "cmd": "close", "args": { "task": pane, "tabs": true } }), move |_| {
+            let Some(core) = weak.upgrade() else { return };
+            let again = core.weak();
+            core.end(&pane.clone(), move |_| {
+                let (Some(this), Some(core)) = (this.upgrade(), again.upgrade()) else { return };
+                this.stopping.borrow_mut().remove(&pane);
+                this.tearing_down.borrow_mut().insert(pane.clone(), tearing);
+                this.changed();
+                core.set_command(&pane, command);
+                let after = Rc::downgrade(&this);
+                core.handle(json!({ "cmd": "restart", "args": { "pane": pane } }), move |reply| {
+                    let (Some(error), Some(this)) = (failed(&reply), after.upgrade()) else { return };
+                    eprintln!("kanna-daemon: couldn't run {pane}'s teardown: {}", error.message);
+                    let tearing = this.tearing_down.borrow_mut().remove(&pane);
+                    if let Some(tearing) = tearing {
+                        this.torn_down(&pane, tearing, 127);
+                    }
+                });
+            });
+        });
+    }
+
+    fn torn_down(self: &Rc<Self>, pane: &str, tearing: TearingDown, code: i32) {
+        let code = task_scripts::torn_down(&tearing.worktree).unwrap_or(code);
+        let id = tearing.entry.id.clone();
+        eprintln!("kanna-daemon: {id}'s teardown exited {code}");
+        self.note(pane, Change::new("torn down").by(Some("daemon")).with("code", json!(code)));
+        self.changed();
+        let Some(core) = self.core.upgrade() else { return };
+        if code != 0 {
+            let said = task_scripts::said("teardown", code, tearing.timeout);
+            eprintln!("kanna-daemon: {id}'s {said}, so it isn't done: its pane shows why");
+            self.note(pane, Change::new("teardown failed").by(Some("daemon")).with("code", json!(code)).with("why", json!(said)));
+            core.set_command(pane, tearing.entry.clone().resumable().command(None));
+            return;
+        }
+        if !tearing.backlog {
+            return core.handle(json!({ "cmd": "close", "args": { "task": pane } }), |_| {});
+        }
+        let Some(entry) = self.entries.borrow().iter().find(|e| e.id == id).cloned() else { return };
+        self.take_off(entry, tearing.by, Answer::Then(Box::new(|_| {})));
     }
 
     /// Opens a window's planning terminal, in its folder (else the home folder), outside the backlog and the task limit.
@@ -1441,6 +1557,9 @@ impl Backlog {
 
     fn again(&self, entry: &Entry) -> String {
         let folder = entry.folder.as_deref().map(Path::new);
+        if let Some(folder) = folder {
+            task_scripts::forget_teardown(folder);
+        }
         match folder.and_then(task_scripts::setup) {
             Some(Setup::Failed(code)) => {
                 task_scripts::started_anyway(folder.unwrap_or(Path::new("")), code);
@@ -1459,7 +1578,7 @@ impl Backlog {
                 self.note(pane, Change::new("set up").by(Some("daemon")).with("code", json!(0)));
             }
             Some(Setup::Failed(code)) => {
-                let said = Setup::said(code, setting.timeout);
+                let said = task_scripts::said("setup", code, setting.timeout);
                 eprintln!("kanna-daemon: {task}'s {said}, so it stops");
                 self.note(pane, Change::new("setup failed").by(Some("daemon")).with("code", json!(code)).with("why", json!(said)));
             }
@@ -1468,30 +1587,51 @@ impl Backlog {
         self.changed();
     }
 
-    fn setup_said(&self, entry: &Entry, pane: Option<&str>, running: bool) -> Option<String> {
+    fn script_said(&self, entry: &Entry, pane: Option<&str>, running: bool) -> Option<String> {
         if pane.is_some_and(|pane| self.setting_up.borrow().contains_key(pane)) {
             return Some("setting up".into());
         }
-        let folder = entry.folder.as_deref().filter(|_| !running)?;
-        match task_scripts::setup(Path::new(folder))? {
-            Setup::Failed(code) => Some(Setup::said(code, scripts(&config_files(Path::new(&entry.repo))).timeout)),
+        if pane.is_some_and(|pane| self.tearing_down.borrow().contains_key(pane)) {
+            return Some("tearing down".into());
+        }
+        let folder = Path::new(entry.folder.as_deref().filter(|_| !running)?);
+        let timeout = || scripts(&config_files(Path::new(&entry.repo))).timeout;
+        if let Some(code) = task_scripts::torn_down(folder).filter(|code| *code != 0) {
+            return Some(task_scripts::said("teardown", code, timeout()));
+        }
+        match task_scripts::setup(folder)? {
+            Setup::Failed(code) => Some(task_scripts::said("setup", code, timeout())),
             _ => None,
         }
     }
 
     fn finish(&self, entry: &Entry) {
+        let keep = self.keeping.borrow_mut().remove(&entry.id);
         let Some(folder) = entry.folder.clone().map(PathBuf::from).filter(|f| f.is_dir()) else { return };
         if !task_scripts::is_linked(&folder) {
             return;
         }
+        let id = entry.id.clone();
+        let kept = |why: String| {
+            eprintln!("kanna-daemon: kept {id}'s worktree {} and its branch: {why}", folder.display());
+            Change::new("kept").by(Some("daemon")).with("why", json!(why))
+        };
+        if keep {
+            return self.finished(&id, vec![kept("kanna task done --keep".into())]);
+        }
         let scripts = scripts(&config_files(Path::new(&entry.repo)));
+        let teardown = match task_scripts::torn_down(&folder) {
+            Some(0) => None,
+            Some(code) => return self.finished(&id, vec![kept(task_scripts::said("teardown", code, scripts.timeout))]),
+            None => scripts.teardown.clone(),
+        };
         let task = Self::script_task(entry, &folder);
         let events = self.events.clone();
         std::thread::spawn(move || {
             let id = task.id.clone();
             let mut changes = vec![];
-            if let Some(teardown) = &scripts.teardown {
-                eprintln!("kanna-daemon: {id} is done, so its teardown runs in {}: {teardown}", folder.display());
+            if let Some(teardown) = &teardown {
+                eprintln!("kanna-daemon: {id} is done with no pane to tear down in, so its teardown runs in {}: {teardown}", folder.display());
                 let code = task_scripts::run(teardown, &folder, &task.vars(&task.branch()), Duration::from_secs(scripts.timeout)).unwrap_or_else(|error| {
                     eprintln!("kanna-daemon: {id}'s teardown: {error}");
                     127
@@ -1499,19 +1639,17 @@ impl Backlog {
                 eprintln!("kanna-daemon: {id}'s teardown exited {code}");
                 changes.push(Change::new("torn down").by(Some("daemon")).with("code", json!(code)));
                 if code != 0 {
-                    let why = format!("teardown failed (exit {code})");
+                    let why = task_scripts::said("teardown", code, scripts.timeout);
                     eprintln!("kanna-daemon: kept {id}'s worktree {} and its branch: {why}", folder.display());
                     changes.push(Change::new("kept").by(Some("daemon")).with("why", json!(why)));
                     let _ = events.send(Event::Finished { task: id, changes });
                     return;
                 }
             }
-            match task_scripts::clean_up(&task.repo, &folder, build_targets().as_deref()) {
-                Cleanup::Removed { branch, target } => {
-                    let built = target.as_ref().map_or(String::new(), |t| format!(" and its build folder {}", t.display()));
-                    eprintln!("kanna-daemon: {id} is merged, so its worktree {}{built} and branch {branch} are removed", folder.display());
-                    let change = Change::new("cleaned up").by(Some("daemon")).with("worktree", json!(folder.to_string_lossy())).with("branch", json!(branch));
-                    changes.push(change.with("target", opt(target.as_deref().and_then(Path::to_str))));
+            match task_scripts::clean_up(&task.repo, &folder) {
+                Cleanup::Removed { branch } => {
+                    eprintln!("kanna-daemon: {id} is merged, so its worktree {} and branch {branch} are removed", folder.display());
+                    changes.push(Change::new("cleaned up").by(Some("daemon")).with("worktree", json!(folder.to_string_lossy())).with("branch", json!(branch)));
                 }
                 Cleanup::Kept(why) => {
                     eprintln!("kanna-daemon: kept {id}'s worktree {} and its branch: {why}", folder.display());

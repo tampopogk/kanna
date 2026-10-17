@@ -1,6 +1,6 @@
 # Task scripts
 
-**Status:** built · **Tested:** e2e `task_scripts`, `cargo test -p kanna-daemon` (settings, cleanup) · **Builds on:** [tasks](tasks.md), [settings](settings.md), [backlog runners](backlog-runners.md)
+**Status:** built · **Tested:** e2e `task_scripts`, `cargo test -p kanna-daemon` (settings, scripts, cleanup) · **Builds on:** [tasks](tasks.md), [settings](settings.md), [backlog runners](backlog-runners.md)
 
 A repo says what a task needs before its agent starts (**setup**: install dependencies, copy `.env` files, borrow builds) and what to do once it's Done (**teardown**). Kanna runs them, so agents stop doing setup by hand, and a merged task's worktree and branch go away on Done instead of piling up.
 
@@ -54,33 +54,39 @@ stateDiagram-v2
 ## 3. Teardown and cleanup
 
 ```mermaid
-flowchart LR
-    D["Done"] --> T{"tasks.teardown?"}
-    T -->|"set"| R["run it in the worktree"]
-    T -->|"unset"| M
-    R -->|"exit 0"| M{"merged and clean?"}
-    R -->|"failed"| K["keep worktree and branch"]
-    M -->|"yes"| X["remove its target/ link's folder,<br/>the worktree and the branch"]
-    M -->|"no"| K
+stateDiagram-v2
+    direction LR
+    [*] --> tearing_down: Done (tasks.teardown is set)
+    [*] --> cleanup: Done (no teardown)
+    tearing_down --> cleanup: exit 0 (the pane closes)
+    tearing_down --> failed: exit ≠ 0, or the timeout
+    failed --> tearing_down: kanna task done
+    failed --> kept: kanna task done --keep
+    cleanup --> removed: merged and clean
+    cleanup --> kept: otherwise
 ```
 
-- **Done runs teardown,** after the agent and tabs close, before Kanna removes anything. Its output goes to the daemon's log. Stop and Move to Backlog don't run it.
-- **Then Kanna cleans up a finished task:** when teardown succeeded (or there's none), the worktree has no changes (`git status` is empty: ignored files such as builds don't count), and its branch is merged into the repo's checked-out branch, Kanna removes the worktree (`git worktree remove`) and deletes the branch (`git branch -d`).
-- **Otherwise both stay,** and the task's events and the daemon's log say why (`has changes`, `isn't merged into main`, `teardown failed (exit 2)`), so nothing unmerged is lost.
-- **A worktree's `target/` can be a link** to a folder elsewhere, such as an external volume. Cleanup removes that folder as well as the link, so nothing is left behind there. It removes only what the top-level `target` link points to, and never follows links inside it: worktrees borrow from the main checkout (clones of its `target/<triple>/release`, links to its `target/ghosttykit` and `target/ghostty-vt`), and the main checkout's `target/`, including `target/.offline/`, is never touched. Only the task's own build folder is removed, with the link still pointing there and `target` not tracked by git: `ROOT/REPO/WORKTREE` under your `build.targets` ([build targets](build-targets.md)), or a folder whose path is in `kanna-target` in the worktree's git folder, written by whatever else made the link (such as the repo's setup). While its volume isn't mounted, only the link goes. Any other link, including one a branch commits, one into the repo's main checkout or another worktree, or one at a folder that holds one, is removed as a link only.
+- **Done runs teardown in the agent's own pane:** the task's tabs close, its agent ends, and teardown runs where the agent was, so you watch it as you watched setup. `kanna task list` shows `tearing down`. Stop and Move to Backlog don't run it.
+- **When it succeeds, the pane closes and the task is Done.** When it fails, the task isn't Done: it stays where it is, its pane showing the output and `teardown failed (exit N)` (or `teardown timed out after Ns`), and `kanna task list` says so. `kanna task done` runs it again; `kanna task done --keep` ends the task without it, keeping its worktree and branch; `kanna task start` brings the agent back.
+- **With no pane to run in** (the agent's pane was closed by hand), teardown runs in the background as the task goes, its output in the daemon's log.
+- **Then Kanna cleans up a finished task:** when the worktree has no changes (`git status` is empty: ignored files such as builds don't count) and its branch is merged into the repo's checked-out branch, Kanna removes the worktree (`git worktree remove`) and deletes the branch (`git branch -d`).
+- **Otherwise both stay,** and the task's events and the daemon's log say why (`has changes`, `isn't merged into main`), so nothing unmerged is lost.
+- **Only the worktree and branch.** Whatever the repo's setup made elsewhere is its teardown's to remove: `git worktree remove` removes a link in the worktree, not what it links to.
 
 ## 4. How it's built
 
 - **Setup is part of the agent's command.** When the daemon starts a task in a worktree with no setup record and `tasks.setup` is set, it opens the agent's terminal with the setup run (under `perl -e 'alarm …'` for the timeout) before the agent's command. The run writes its exit code to `kanna-setup` in the worktree's git folder (`.git/worktrees/<name>/`), the record that it ran, and the terminal's command becomes the agent's resuming one, so a restart doesn't run setup again.
-- **The base** is written to `kanna-base` in the same folder as the worktree is made, beside `kanna-setup` and `kanna-target`. They all go when the worktree does.
-- **Teardown and cleanup run on a thread of the daemon** when a task is Done: when its agent's terminal closes (`kanna task done` on a running task) or it's taken off the backlog with a worktree. The result is a task event: `torn down` (with the exit code), then `cleaned up` or `kept` (with why).
-- **The `target/` link's folder is removed with `remove_dir_all` on the link's own target,** which unlinks the links inside it rather than following them.
+- **Teardown replaces the agent's command.** On Done the daemon closes the task's tabs, ends the agent, and restarts its pane with the teardown run, which writes its exit code to `kanna-teardown` beside `kanna-setup`. When the pane exits, the daemon reads it: 0 closes the task, which makes it Done; anything else gives the pane back the agent's resuming command, for `kanna task start`.
+- **The base** is written to `kanna-base` in the same folder as the worktree is made. The records all go when the worktree does.
+- **Cleanup runs on a thread of the daemon** once the task is Done. The result is a task event: `torn down` (with the exit code), then `cleaned up` or `kept` (with why).
 
 ## 5. Rejected
 
 - **Fixed files (`.kanna/setup`, `.kanna/teardown`) without settings:** a setting can be yours for repos you can't add files to, and can be a one-line command.
 - **Setup in a separate tab before the agent opens:** a task has no tabs until its agent's terminal is open, and the agent's terminal is where you look on the Desk.
 - **Removing an unmerged worktree on Done:** its commits would live only in the branch, and its uncommitted work nowhere.
+- **Teardown in the background:** when it broke, nothing showed it; in the agent's pane you watch it, and a failure keeps the task open.
+- **Removing what a worktree's `target/` links to:** where a repo keeps builds is the repo's business, and its teardown knows it.
 
 ## 6. Glossary
 
@@ -88,5 +94,5 @@ flowchart LR
 |---|---|
 | **Setup** | A repo's command that prepares a new worktree before the agent starts |
 | **Teardown** | A repo's command run on Done, before cleanup |
-| **Cleanup** | Removing a finished, merged task's worktree, branch and build folder |
+| **Cleanup** | Removing a finished, merged task's worktree and branch |
 | **Git folder** | A worktree's own folder in the repo's `.git` (`.git/worktrees/<name>/`) |

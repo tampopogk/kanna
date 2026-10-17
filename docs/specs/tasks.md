@@ -77,7 +77,7 @@ stateDiagram-v2
 - **A task presents its work:** before its turn ends, its agent sets up its tabs to show what it changed and why, and that's what you see when you pull it ([presenting](presenting.md)).
 
 - **Done ends the task:** its agent and tabs close, or it leaves the backlog.
-- **Done runs the repo's teardown, then cleans up a merged task:** its worktree and branch go when its branch is merged and the worktree has no changes; otherwise they stay, and its events say why ([task scripts](task-scripts.md#3-teardown-and-cleanup)).
+- **Done runs the repo's teardown in the agent's pane, then cleans up a merged task:** the task is Done once teardown succeeds (if it fails, the task stays, its pane saying why); its worktree and branch go when its branch is merged and the worktree has no changes; otherwise they stay, and its events say why ([task scripts](task-scripts.md#3-teardown-and-cleanup)).
 - **Move to Backlog puts a task back** (Task menu, or `kanna task defer`), freeing its place on the Shelf: it leaves its Desk or the Shelf and waits in the backlog again, under its old ID if Kanna started it.
 - **It stays as it is there,** running or stopped. A running agent carries on with whatever it was doing, and its tabs stay as they were.
 - **Moving it to the Shelf again brings it back as it is:** the same agent and tabs, with no restart (a stopped one starts).
