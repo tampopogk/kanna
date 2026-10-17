@@ -939,6 +939,7 @@ impl Backlog {
         for (pane, why) in over {
             let Some((_, entry)) = running.iter().find(|(p, _)| *p == pane) else { continue };
             if runners(&config_files(Path::new(&entry.repo))) == 0 {
+                self.turns.borrow_mut().insert(pane, Turn::default());
                 continue;
             }
             self.quit(&pane, entry, why);
@@ -2578,6 +2579,35 @@ mod tests {
         assert_eq!(of("task-1dfb"), Some(Err(("not_started".into(), "task-1dfb hasn't started, so it has no workspace yet".into()))));
         let again = Backlog::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
         assert_eq!(again.task_in("ws-3"), Some(("task-c0ffee00".into(), Some("Out".into()))), "the task's workspace survives a restart");
+        fs::remove_dir_all(&state).unwrap();
+    }
+
+    #[test]
+    fn with_runners_0_an_ended_turn_is_left_alone_until_its_agent_works_again() {
+        let state = std::env::temp_dir().join(format!("kanna-runners-0-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(state.join(".kanna")).unwrap();
+        assert!(Command::new("git").arg("-C").arg(&state).args(["init", "-q"]).status().unwrap().success());
+        fs::write(state.join(".kanna/config.json"), r#"{"backlog": {"runners": 0}}"#).unwrap();
+        let core = kanna_mux::Core::default();
+        let mut agent = Pane::new("term-7", None, kanna_mux::PaneType::Term);
+        agent.state = PaneState::Running;
+        agent.status = Some("idle".into());
+        core.install_panes(vec![agent], 0, 7);
+        let backlog = Rc::new(Backlog::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0));
+        let entry = Entry { id: "task-1dfb12c2".into(), repo: state.to_str().unwrap().into(), agent: "claude".into(), held: Some("term-7".into()), ..Default::default() };
+        backlog.entries.borrow_mut().push(entry);
+        backlog.turns.borrow_mut().insert("term-7".into(), Turn::underway());
+        backlog.status("term-7", Some("idle"), true);
+        for _ in 0..2 {
+            let due = backlog.tick();
+            assert!(due.is_some_and(|at| at > Instant::now()), "nothing is overdue, so the daemon sleeps");
+            assert_eq!(backlog.turns.borrow()["term-7"].ended(Instant::now() + TURN_SETTLE, TURN_SETTLE), None, "the ended turn came back");
+            assert!(backlog.quitting.borrow().is_empty(), "runners 0 stops none");
+        }
+        backlog.status("term-7", Some("working"), false);
+        backlog.status("term-7", Some("idle"), true);
+        assert!(backlog.turns.borrow()["term-7"].ended(Instant::now(), TURN_SETTLE).is_some(), "its next turn is tracked again");
         fs::remove_dir_all(&state).unwrap();
     }
 
