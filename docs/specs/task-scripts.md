@@ -25,7 +25,7 @@ A repo says what a task needs before its agent starts (**setup**: install depend
 
 | Variable | Is |
 |---|---|
-| `KANNA_TASK` | The task's ID (`t12`) |
+| `KANNA_TASK` | The task's ID (`task-1dfb12c2`) |
 | `KANNA_TASK_NAME` | Its name |
 | `KANNA_REPO` | The repo's main checkout |
 | `KANNA_WORKTREE` | The task's worktree, where it runs |

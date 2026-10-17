@@ -1540,14 +1540,14 @@ impl Backlog {
                 (entry, pane)
             }
             None => {
-                let Some(pane) = core.pane(reference).map(|p| p.id) else { return responder.reply(Err(not_found(reference))) };
+                let Some(pane) = core.pane(&self.pane_or(reference)).map(|p| p.id) else { return responder.reply(Err(not_found(reference))) };
                 let Some(entry) = self.running.borrow().iter().find(|r| r.pane == pane).map(|r| r.entry.clone()) else {
                     return responder.reply(Err(KmuxError::new("not_a_task", format!("{reference} isn't a task Kanna started"))));
                 };
                 (entry, Some(pane))
             }
         };
-        let id = entry.id.clone();
+        let id = self.short(&entry.id);
         let Some(folder) = entry.folder.clone().map(PathBuf::from).filter(|f| f.is_dir()) else {
             return responder.reply(Err(bad(format!("{id} has no worktree yet: `kanna task start {id}` makes one and sets it up"))));
         };
