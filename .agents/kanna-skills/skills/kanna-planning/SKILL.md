@@ -46,12 +46,14 @@ When the user asks you to show them something (a diff, a file, a doc, a page, a 
 
 | To show | Run |
 |---|---|
-| A diff, or a command's output | `kanna open --tab --name diff --cmd 'git -c color.ui=always diff main...HEAD \| less -R'` |
+| A task's changes | `kanna open diff --merge-base main --cwd WORKTREE --tab` |
+| A command's output | `kanna open --tab --name NAME --cmd 'CMD \| less -R'` |
 | A markdown doc | `kanna open md FILE --tab` |
 | A source file | `kanna open code FILE[:LINE] --tab` |
 | A page | `kanna open web URL --tab` |
 
 - **Run it from your own terminal, without `--window`:** the tab opens in your own window, not the front one.
+- **WORKTREE is the task's worktree** (`.kanna-worktrees/task-…`): a diff pane runs `git diff` there and follows it as the agent works.
 - **A tab, not a split or a new window,** so your pane keeps its size.
 - In the chat, a line saying what the tab shows.
 
