@@ -374,7 +374,7 @@ extension AppController {
         guard let window = keyWindow, case .array(let tabs)? = window["tabs"], !tabs.isEmpty else { return }
         let at = tabs.firstIndex { $0["id"] == window["tab"] } ?? 0
         guard let tab = tabs[((at + step) % tabs.count + tabs.count) % tabs.count]["id"]?.string else { return }
-        layoutCommand("focus", ["tab": .string(tab)])
+        layoutCommand("focus", ["tab": .string(tab), "keep": "dock"])
     }
 
     @objc func newWindow() {
