@@ -13,7 +13,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var signalSources: [DispatchSourceSignal] = []
     let background = CommandLine.arguments.contains("--bg") || ProcessInfo.processInfo.environment["KANNA_BG"] == "1"
     private let echo = ProcessInfo.processInfo.environment["KANNA_ECHO"] == "1"
-    let debugCommands = ProcessInfo.processInfo.environment["KANNA_DEBUG"] == "1"
+    static let debugging = ProcessInfo.processInfo.environment["KANNA_DEBUG"] == "1"
+    let debugCommands = AppController.debugging
     private var wantsFirstTerminal = ProcessInfo.processInfo.environment["KANNA_NO_INITIAL_WINDOW"] == nil
     var appLayout: AppLayout?
     private var saveTimer: Timer?

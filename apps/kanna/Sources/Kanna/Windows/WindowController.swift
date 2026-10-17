@@ -49,6 +49,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         window.tabbingMode = .disallowed
         window.title = "Kanna"
         window.delegate = self
+        if AppController.debugging { window.addTitlebarAccessoryViewController(Self.debugLabel()) }
         stage.wantsLayer = true
         let size = window.contentLayoutRect.size
         content.frame = NSRect(origin: .zero, size: size)
@@ -71,6 +72,20 @@ final class WindowController: NSObject, NSWindowDelegate {
         } else {
             window.center()
         }
+    }
+
+    private static func debugLabel() -> NSTitlebarAccessoryViewController {
+        let label = NSTextField(labelWithString: "Debug")
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
+        label.textColor = .secondaryLabelColor
+        label.sizeToFit()
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: label.frame.width + 16, height: 28))
+        label.frame.origin = NSPoint(x: 8, y: (view.frame.height - label.frame.height) / 2)
+        view.addSubview(label)
+        let accessory = NSTitlebarAccessoryViewController()
+        accessory.view = view
+        accessory.layoutAttribute = .trailing
+        return accessory
     }
 
     func render(_ state: JSON, _ panes: PaneViews) {

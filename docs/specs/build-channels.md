@@ -63,11 +63,13 @@ So in production's terminals every `kanna` talks to production; to reach the wor
 | Command | Does |
 |---|---|
 | `scripts/build.sh [production\|staging\|dev]` | builds everything as that channel (default `dev`); `scripts/build-kanna-app.sh` takes the same argument. Dev builds the Swift app in debug, the others in release; a worktree starts from the main checkout's builds ([build speed](build-speed.md)) |
-| `scripts/run-kanna.sh` | opens this checkout's `target/Kanna.app` without the caller's `KANNA_*` and `KMUX_*` variables, so a `KANNA_DEBUG=1` left in a shell can't start it on its private debug clipboard ([terminal](terminal.md)) |
+| `scripts/run-kanna.sh` | opens this checkout's `target/Kanna.app` |
 | `scripts/run-kanna.sh COMMAND …` | runs this checkout's CLI against this checkout's Kanna (starting it if needed), from anywhere, a production terminal included |
 | `kanna instances` | the running instances of every channel: name, channel, windows and panes, and the worktree a dev build came from (`(gone)` once it's removed) |
 | `kanna instances prune` | deletes the folders of instances whose worktree is gone, keeping any that still answer or whose keeper still runs |
 | `kanna --version` | the CLI's version and which app it is, e.g. `kanna 0.1.0 (Kanna Dev task-3f9a1c2e)` |
+
+Any build can run with `KANNA_DEBUG=1` (the planner's dev Kanna does): it answers `debug.*` and shows **Debug** in its title bars, and is otherwise the same, its clipboard included ([terminal](terminal.md#5-debug-mode)).
 
 Production is the build that goes in /Applications (`ditto target/Kanna.app /Applications/Kanna.app`); its folder starts empty. To carry the main checkout's dev Kanna over (layout, backlog, terminals), quit it, stop its keeper (`kill $(cat ~/Library/Application\ Support/kanna-dev/keeper.pid)`, which ends its terminals) and move `kanna-dev` to `kanna-prod`.
 

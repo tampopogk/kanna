@@ -15,13 +15,11 @@ The Kanna built here (scripts/build.sh) runs as its own app beside any other:
 a dev build in a worktree is "Kanna Dev <worktree>", with its own instance.
 KANNA_SOCKET, KANNA_INSTANCE and KANNA_PANE are cleared first, so from a terminal
 inside another Kanna this still reaches this checkout's Kanna, not that one.
-The app is opened without any KANNA_* or KMUX_* variable of the caller's, so a
-KANNA_DEBUG=1 left in a shell can't start it with its private debug clipboard.
 USAGE
     exit 0 ;;
 esac
 [[ -x "$kanna" && -d "$app" ]] || { echo "run-kanna: build first: scripts/build.sh" >&2; exit 1; }
 if [[ $# -eq 0 ]]; then
-  exec env $(compgen -e | grep -E '^(KANNA|KMUX)_' | sed 's/^/-u /') /usr/bin/open "$app"
+  exec /usr/bin/open "$app"
 fi
 exec env -u KANNA_SOCKET -u KANNA_INSTANCE -u KANNA_PANE -u KANNA_MUX "$kanna" "$@"
