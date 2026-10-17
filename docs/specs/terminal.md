@@ -98,7 +98,7 @@ sequenceDiagram
 
 ## 5. Debug mode
 
-`KANNA_DEBUG=1` acts on nothing outside the app: the clipboard is a private pasteboard (`dev.kanna.debug.<pid>`), and links, bells and notifications are recorded, not opened, rung or posted; confirmation sheets are answered no. `debug.terminal {pane, clipboard?, action?, zoom?, click?, appearance?}` sets them up and reports the surface: grid and cell size, title, hovered link, selection, background colour, clipboard, links with their decisions, what was opened, bells, notifications, progress, settings and focus.
+`KANNA_DEBUG=1` acts on nothing outside the app: the clipboard is a private pasteboard (`dev.kanna.debug.<pid>`), and links, bells and notifications are recorded, not opened, rung or posted; confirmation sheets are answered no. So a Kanna someone uses must not start with it: ⌘V there pastes nothing; `scripts/run-kanna.sh` opens the app without the caller's `KANNA_*` variables. `debug.terminal {pane, clipboard?, action?, zoom?, click?, appearance?}` sets them up and reports the surface: grid and cell size, title, hovered link, selection, background colour, clipboard, links with their decisions, what was opened, bells, notifications, progress, settings and focus.
 
 ## 6. Decided
 
@@ -116,7 +116,7 @@ sequenceDiagram
 
 **Not done:** OSC 5522 (kitty's clipboard protocol) gets only part of its replies; kitty graphics aren't in a snapshot, so images go when the app relaunches; an empty OSC 7 is ignored; a title isn't shown again after a relaunch until the program sets it.
 
-**Checked by** `crates/kanna-vt/tests/terminal.rs` (colour answers, scheme reports, cursor defaults, title and cwd changes, snapshots after widening), `crates/kanna-daemon/tests/terminal_behaviour.rs` (colour queries from the app's theme, also after a restart; scheme reports; the shell's folder in `list`), `apps/kanna/Tests/KannaLinksTests` (every link rule), `apps/kanna/Tests/KannaDropTests` (escaping dropped paths), and of `scripts/e2e-kanna.sh`: `terminal_colours` (theme and light/dark, with screenshots), `cwd_title`, `clipboard` (paste, OSC 52, selection), `mouse_keys_focus` (kitty keys, mouse and focus reports after a relaunch), `font_size_scrollback`, `links_bell_notify` (links, bell, notifications, progress), `chrome_and_drops` (dropped files and images).
+**Checked by** `crates/kanna-vt/tests/terminal.rs` (colour answers, scheme reports, cursor defaults, title and cwd changes, snapshots after widening), `crates/kanna-daemon/tests/terminal_behaviour.rs` (colour queries from the app's theme, also after a restart; scheme reports; the shell's folder in `list`), `apps/kanna/Tests/KannaLinksTests` (every link rule), `apps/kanna/Tests/KannaDropTests` (escaping dropped paths), and of `scripts/e2e-kanna.sh`: `terminal_colours` (theme and light/dark, with screenshots), `cwd_title`, `clipboard` (⌘V in a pane and in a docked one, OSC 52, selection), `mouse_keys_focus` (kitty keys, mouse and focus reports after a relaunch), `font_size_scrollback`, `links_bell_notify` (links, bell, notifications, progress), `chrome_and_drops` (dropped files and images).
 
 ## 8. Glossary
 

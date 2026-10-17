@@ -898,7 +898,12 @@ clipboard() {
   stop_app; term_app || return 1
   terminal clipboard '{"pane":"clipboard","clipboard":"AFTER"}' >/dev/null || return 1
   raw '{"id":1,"cmd":"debug.key","args":{"pane":"clipboard","key":"cmd+v"}}' >/dev/null
-  check wait_for 5 eval 'kanna read clipboard | tr -d "\\n" | sed "s/IN //g" | grep -q "\\^\\[200~AFTER\\^\\[201~"'
+  check wait_for 5 eval 'kanna read clipboard | tr -d "\\n" | sed "s/IN //g" | grep -q "\\^\\[200~AFTER\\^\\[201~"' || return 1
+  kanna open --name clipboardd --dock --window new --cmd "$(probe '\033[?2004h' x 0)" >/dev/null || return 1
+  check wait_for 5 shows clipboardd READY || return 1
+  terminal clipboard '{"pane":"clipboardd","clipboard":"clipboard DOCKED"}' >/dev/null || return 1
+  raw '{"id":1,"cmd":"debug.key","args":{"pane":"clipboardd","key":"cmd+v"}}' >/dev/null
+  check wait_for 5 eval 'kanna read clipboardd | tr -d "\\n" | sed "s/IN //g" | grep -q "\\^\\[200~clipboard DOCKED\\^\\[201~"' || { kanna read clipboardd; return 1; }
 }
 
 scenario mouse_keys_focus M4

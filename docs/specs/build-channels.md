@@ -63,7 +63,7 @@ So in production's terminals every `kanna` talks to production; to reach the wor
 | Command | Does |
 |---|---|
 | `scripts/build.sh [production\|staging\|dev]` | builds everything as that channel (default `dev`); `scripts/build-kanna-app.sh` takes the same argument. Dev builds the Swift app in debug, the others in release; a worktree starts from the main checkout's builds ([build speed](build-speed.md)) |
-| `scripts/run-kanna.sh` | opens this checkout's `target/Kanna.app` |
+| `scripts/run-kanna.sh` | opens this checkout's `target/Kanna.app` without the caller's `KANNA_*` and `KMUX_*` variables, so a `KANNA_DEBUG=1` left in a shell can't start it on its private debug clipboard ([terminal](terminal.md)) |
 | `scripts/run-kanna.sh COMMAND …` | runs this checkout's CLI against this checkout's Kanna (starting it if needed), from anywhere, a production terminal included |
 | `kanna instances` | the running instances of every channel: name, channel, windows and panes, and the worktree a dev build came from (`(gone)` once it's removed) |
 | `kanna instances prune` | deletes the folders of instances whose worktree is gone, keeping any that still answer or whose keeper still runs |
