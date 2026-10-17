@@ -168,12 +168,15 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
         reply["freed"] = serde_json::Value::Array(output::freed(&waiting, done));
     }
     if command.name == "task" && request["action"] == "list" {
-        if let Ok(backlog) = mux.call("backlog", serde_json::json!({ "action": "list" })) {
+        if let Ok(backlog) = mux.call("backlog", serde_json::json!({ "action": "list", "done": request["done"] == true })) {
             reply["backlog"] = backlog["tasks"].clone();
             output::name_out(&mut reply, &backlog["out"]);
             shorts.extend(output::shorts(&backlog));
             listed = true;
             reply["script"] = backlog["script"].clone();
+            if request["done"] == true {
+                reply["done"] = backlog["done"].clone();
+            }
         }
         if let Some(query) = request["query"].as_str() {
             output::keep_matching(&mut reply, query);

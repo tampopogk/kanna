@@ -1597,8 +1597,25 @@ impl Backlog {
                 self.script_said(&r.entry, Some(&r.pane), running).map(|said| (r.pane.clone(), json!(said)))
             })
             .collect();
-        Map::from_iter([("tasks".to_string(), Value::Array(tasks)), ("out".to_string(), Value::Array(out)), ("script".to_string(), Value::Object(shelf))])
-
+        let mut reply = Map::from_iter([("tasks".to_string(), Value::Array(tasks)), ("out".to_string(), Value::Array(out)), ("script".to_string(), Value::Object(shelf))]);
+        if args.get("done").and_then(Value::as_bool) == Some(true) {
+            let done = self.db.done_tasks().unwrap_or_else(|error| {
+                eprintln!("kanna-daemon: can't read the done tasks in {}: {error}", db::FILE);
+                vec![]
+            });
+            let open = self.open_tasks();
+            let ids: Vec<&str> = open.iter().map(|e| e.id.as_str()).chain(done.iter().map(|(row, _)| row.id.as_str())).collect();
+            let done = done
+                .iter()
+                .filter(|(row, _)| repo.is_none_or(|r| row.repo == r))
+                .map(|(row, at)| {
+                    let entry = Entry::from_row(row);
+                    json!({ "id": entry.id, "short": db::short_id(&entry.id, ids.iter().copied()), "name": opt(entry.name.as_deref()), "message": opt(entry.message.as_deref()), "repo": entry.repo, "madeAt": num(entry.made_at), "doneAt": num(*at) })
+                })
+                .collect();
+            reply.insert("done".to_string(), Value::Array(done));
+        }
+        reply
     }
 
     fn take(&self, id: &str) -> Option<Entry> {

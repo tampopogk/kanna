@@ -251,6 +251,40 @@ fn every_command_works_through_the_daemon_and_the_app() {
 }
 
 #[test]
+fn task_list_done_also_lists_done_tasks_and_searches_them() {
+    let daemon = Daemon::start();
+    let _app = daemon.app();
+    let repo = daemon.dir.join("repo");
+    std::fs::create_dir_all(repo.join(".kanna")).unwrap();
+    std::fs::write(repo.join(".kanna/config.json"), r#"{ "backlog": { "runners": 0 } }"#).unwrap();
+    assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(&repo).status().unwrap().success());
+    let socket = daemon.socket();
+    let kanna = |args: &[&str]| kanna_at(&repo, Some(&socket), args);
+    let made = |name: &str, message: &str| kanna(&["--json", "task", "new", name, message]).json()["task"]["id"].as_str().unwrap().to_string();
+    let send = made("Send presses Enter", "kanna send submits in codex");
+    let rate = made("Rate limiting", "limit the login endpoint");
+    made("Diff viewer", "show a diff");
+    kanna(&["task", "done", &send]).ok();
+    kanna(&["task", "done", &rate]).ok();
+    let open = kanna(&["task", "list"]).ok();
+    assert!(open.contains("Diff viewer") && !open.contains("Send presses") && !open.contains("Done"), "{open}");
+    let all = kanna(&["task", "list", "--done"]).ok();
+    let lines: Vec<&str> = all.lines().collect();
+    assert_eq!(lines.len(), 4, "{all}");
+    assert!(lines[1].contains("Diff viewer") && lines[1].contains("Backlog"), "{all}");
+    assert!(lines[2].contains("Rate limiting") && lines[2].contains("Done") && lines[2].contains("done just now · "), "newest done first: {all}");
+    assert!(lines[3].contains("Send presses Enter") && lines[3].contains("Done"), "{all}");
+    let found = kanna(&["task", "list", "--done", "codex", "SEND"]).ok();
+    assert_eq!(found.lines().count(), 2, "{found}");
+    assert!(found.lines().nth(1).unwrap().contains("Send presses Enter"), "{found}");
+    assert_eq!(kanna(&["task", "list", "codex"]).ok(), "no task matches \"codex\"", "done tasks only with --done");
+    let json = kanna(&["--json", "task", "list", "--done", "login"]).json();
+    assert_eq!(json["done"].as_array().unwrap().iter().map(|t| t["name"].clone()).collect::<Vec<_>>(), [json!("Rate limiting")]);
+    assert!(json["done"][0]["doneAt"].is_number() && json["backlog"] == json!([]), "{json}");
+    assert!(kanna(&["--json", "task", "list"]).json().get("done").is_none(), "no done key without --done");
+}
+
+#[test]
 fn errors_exit_as_kmux_says() {
     let daemon = Daemon::start();
     let _app = daemon.app();

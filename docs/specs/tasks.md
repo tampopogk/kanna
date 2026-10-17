@@ -112,7 +112,7 @@ An agent not in the table starts again with its first message, its conversation 
 | `kanna task stop [TASK]` | End a task's agent and hang up its terminals, leaving it where it is with its tabs as they are (default: the one you're in) |
 | `kanna task shelve TASK` | Move a backlog task to the Shelf of the CLI's instance's app, starting it if it's stopped; refused when that Shelf holds three of its project's |
 | `kanna task name [TASK] NAME` | Rename a task (default: the one you're in), running or in the backlog (`task-3f9a`); a backlog task starts with the new name |
-| `kanna task list [QUERY]` | Every task: ID, name, where (a Desk, the Shelf, the backlog), state (working, idle, needs you, or stopped), repo; with QUERY, only those whose name or first message has every word ([backlog search](backlog-search.md#cli)) |
+| `kanna task list [QUERY] [--done]` | Every task that isn't done: ID, name, where (a Desk, the Shelf, the backlog), state (working, idle, needs you, or stopped), repo; with QUERY, only those whose name or first message has every word ([backlog search](backlog-search.md#cli)); `--done` adds the done tasks from [`kanna.db`](database.md), newest first, each one line with WHERE `Done` and `done 3d ago · REPO`, and QUERY searches them too |
 | `kanna task defer [TASK]` | Move a task back to the backlog as it is, running or stopped (default: the one you're in) |
 | `kanna task send TASK\|planner TEXT` | Leave a task's agent or the repo's planner a message, typed in when its turn is over ([agent messaging](agent-messaging.md)) |
 | `kanna task messages [TASK]` | A task's messages, or every message |

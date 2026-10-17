@@ -174,10 +174,11 @@ pub fn task(request: &Value, reply: &Value) -> String {
         Some("list") => {
             let tasks = reply["tasks"].as_array().cloned().unwrap_or_default();
             let waiting = reply["backlog"].as_array().cloned().unwrap_or_default();
-            if let (true, Some(query)) = (tasks.is_empty() && waiting.is_empty(), request["query"].as_str()) {
+            let done = reply["done"].as_array().cloned().unwrap_or_default();
+            if let (true, Some(query)) = (tasks.is_empty() && waiting.is_empty() && done.is_empty(), request["query"].as_str()) {
                 return format!("no task matches \"{query}\"");
             }
-            if tasks.is_empty() && waiting.is_empty() {
+            if tasks.is_empty() && waiting.is_empty() && done.is_empty() {
                 return "no tasks: add one with `kanna task new NAME \"FIRST MESSAGE\"`, or dock an agent with `kanna open --dock --cmd claude`".into();
             }
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
@@ -204,6 +205,10 @@ pub fn task(request: &Value, reply: &Value) -> String {
                         _ => (state(t), made),
                     };
                     [t["id"].as_str().unwrap_or("?").into(), t["name"].as_str().unwrap_or("").into(), "Backlog".into(), state, made]
+                }))
+                .chain(done.iter().map(|t| {
+                    let when = t["doneAt"].as_f64().map_or(String::new(), |at| format!("done {} · {}", ago(now - at), tilde(t["repo"].as_str().unwrap_or(""))));
+                    [t["id"].as_str().unwrap_or("?").into(), t["name"].as_str().unwrap_or("").into(), "Done".into(), String::new(), when]
                 }))
                 .collect();
             let head = ["TASK", "NAME", "WHERE", "STATE", ""];
@@ -373,7 +378,7 @@ pub fn keep_matching(reply: &mut Value, query: &str) {
         let text = [&task["name"], &task["message"]].iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("\n").to_lowercase();
         words.iter().all(|word| text.contains(word.as_str()))
     };
-    for list in ["tasks", "backlog"] {
+    for list in ["tasks", "backlog", "done"] {
         if let Some(tasks) = reply[list].as_array_mut() {
             tasks.retain(matches);
         }

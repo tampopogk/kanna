@@ -37,6 +37,7 @@ When you and the user plan work, or you find work that belongs in its own task, 
 kanna task new "Add rate limiting" "Add rate limiting to the login endpoint: ..."
 ```
 
+- **Search first.** Before you make a task, look for one that already covers the work: `kanna task list WORDS` with two or three words for it, then again in other words ("send enter", then "submit codex"), and `kanna task list --done WORDS` to see whether it was done already. If a task covers it, tell the user and add to that one instead of making another: tell a running one with `kanna task send TASK "..."`; a backlog task that hasn't started can't have its first message edited, so make a new one with both and end the old one (`kanna task done TASK`). If one overlaps, say so in both, or make the new one wait for it (`--after`).
 - **The first message stands alone.** The agent that gets it starts fresh in its own worktree and hasn't seen this conversation: say what to do, why, where (files, functions), and how to know it's done.
 - **Its first message can't change.** Only a backlog task's name can (`kanna task name TASK NAME`). To change what it says, make a new task and take the old one off with `kanna task done TASK`.
 - **It starts by itself.** Backlog tasks run unattended, a few at a time (`backlog.runners`, 3 by default), oldest first, so write a first message an agent can do in one go: settle the open decisions with the user before you make it, name the files and how to test it, and say what to do when stuck. When it needs the user, it asks and ends its turn: Kanna stops it there, and the user resumes it on the Shelf.
@@ -90,7 +91,7 @@ If you stop to ask the user something, set up what the question is about the sam
 | `kanna task name [TASK] NAME` | Rename a task, running or waiting in the backlog (only when the user asks) |
 | `kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...]` | Add a task to this repo's backlog; `--after`: it can't start until those tasks are done |
 | `kanna task edit TASK --after TASK,...\|none` | Change what a backlog task waits for (only when the user asks to unblock it) |
-| `kanna task list [QUERY]` | Every task: ID, name, where (a Desk, the Shelf, the backlog), state (working, idle, needs you, stopped, or blocked, with what it waits for), repo; QUERY keeps those whose name or first message has every word |
+| `kanna task list [QUERY] [--done]` | Every task that isn't done: ID, name, where (a Desk, the Shelf, the backlog), state (working, idle, needs you, stopped, or blocked, with what it waits for), repo; QUERY keeps those whose name or first message has every word; `--done` adds the done ones, newest first |
 | `kanna task start TASK` | Run a task where it is: a backlog task gets its worktree, branch and agent with the first message, and stays in the backlog; a stopped task resumes its conversation |
 | `kanna task stop [TASK]` | End a task's agent and hang up its terminals, leaving it where it is with its tabs as they are (only when the user asks) |
 | `kanna task shelve TASK` | Move a backlog task to the Shelf, starting it if it's stopped (three per project) |
