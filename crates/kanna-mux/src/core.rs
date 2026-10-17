@@ -958,10 +958,10 @@ impl CoreHandle {
                 Scope::Task(task) if is_true(args, "tabs") => Some(task.clone()),
                 _ => None,
             };
-            let s = self.state();
-            ids.iter().filter_map(Value::as_str).filter(|id| s.panes.get(id).is_some() && kept.as_deref() != Some(*id)).map(String::from).collect()
+            ids.iter().filter_map(Value::as_str).filter(|id| kept.as_deref() != Some(*id)).map(String::from).collect()
         };
-        for id in &victims {
+        let known: Vec<&String> = victims.iter().filter(|id| self.state().panes.get(id).is_some()).collect();
+        for id in known {
             self.forget_pane(id);
         }
         if let Err(error) = self.layout(json!({ "op": "remove", "ids": victims, "tidy": true })).await {

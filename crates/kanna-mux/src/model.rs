@@ -576,6 +576,12 @@ impl Model {
         }
         if let Some(h) = self.locate(id).map(|l| l.holder) {
             self.tabs_mut(h).remove(id);
+            return;
+        }
+        for (tabs, _) in &mut self.orphans {
+            if tabs.remove(id) {
+                return;
+            }
         }
     }
 
