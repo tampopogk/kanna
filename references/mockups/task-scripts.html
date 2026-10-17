@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task Scripts</title>
+<style>
+:root {
+  --bg: #14161a; --panel: #1b1e24; --panel2: #22262d; --line: #2c313a; --text: #e6e8eb; --muted: #8b93a0;
+  --accent: #7aa2ff; --ok: #5fcf93; --warn: #f0b35a; --bad: #ff7b72; --machine: #b48cff; --term: #16181c;
+  --page: #0d0e10; --shadow: 0 20px 50px rgba(0,0,0,.5);
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --panel: #f4f5f7; --panel2: #eaecf0; --line: #d8dce2; --text: #1d2026; --muted: #6b7280;
+  --accent: #2f63d8; --ok: #1f9d5c; --warn: #b7791f; --bad: #c93c37; --machine: #7c4dcc; --term: #fbfbfc;
+  --page: #dfe2e7; --shadow: 0 20px 50px rgba(0,0,0,.18);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1340px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro { display: none; }
+.intro h1 { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--muted); margin: 0 0 12px; max-width: 920px; }
+.intro code { font: 12px var(--mono); }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+button { font: 12px var(--sans); color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover, button.on { border-color: var(--accent); }
+.window { border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: var(--shadow); background: var(--bg); height: 620px; display: flex; flex-direction: column; }
+body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 100vh; }
+.bar { height: 36px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 12px; border-bottom: 1px solid var(--line); }
+.lights { display: flex; gap: 6px; }
+.lights i { width: 11px; height: 11px; border-radius: 50%; background: var(--line); display: block; }
+.bar .branch { color: var(--muted); }
+.content { flex: 1; display: flex; min-height: 0; }
+.agent { flex: 0 0 46%; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--term); }
+.head { height: 32px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 12px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+.head .state { margin-left: auto; }
+.head .state.bad { color: var(--bad); }
+.head .state.busy { color: var(--accent); }
+.term { flex: 1; overflow: auto; padding: 10px 12px; font: 12px/1.6 var(--mono); white-space: pre-wrap; }
+.term .p { color: var(--warn); }
+.term .c { color: var(--accent); }
+.term .m { color: var(--machine); }
+.term .out { color: var(--muted); }
+.term .bad { color: var(--bad); }
+.term .ok { color: var(--ok); }
+.tabs { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.tabbar { height: 32px; flex: none; display: flex; align-items: stretch; border-bottom: 1px solid var(--line); background: var(--panel); }
+.tab { display: flex; align-items: center; padding: 0 14px; color: var(--muted); font-size: 12px; border-right: 1px solid var(--line); }
+.tab.on { color: var(--text); background: var(--bg); }
+.view { flex: 1; overflow: auto; padding: 12px 16px; font: 12px/1.6 var(--mono); white-space: pre; }
+.view .add { color: var(--ok); }
+.view .del { color: var(--bad); }
+.view .hunk { color: var(--machine); }
+.empty { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+.shelf { height: 30px; flex: none; display: flex; align-items: center; gap: 4px; padding: 0 8px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.shelf .item { display: flex; align-items: center; gap: 7px; padding: 3px 8px; border-radius: 6px; white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.dot.working { background: var(--accent); }
+.dot.idle { background: var(--ok); }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1>Task scripts: setup runs before the agent, teardown on Done, both in the agent's pane</h1>
+    <p>A task on the Desk, its agent docked on the left. The repo's <code>tasks.setup</code> runs there before the agent; if it fails the task stops, and <code>kanna task start</code> starts the agent anyway. On Done, the task's tabs close, its agent ends and <code>tasks.teardown</code> runs where the agent was: when it succeeds the pane closes and the task is Done; when it fails the task stays, and <code>kanna task done</code> runs it again.</p>
+    <div class="controls" id="controls"></div>
+  </div>
+  <div class="window">
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><b>Search the backlog</b><span class="branch">task-3f9a1c2e · backlog-search</span></div>
+    <div class="content">
+      <div class="agent">
+        <div class="head"><span>claude · ~/work/kanna-v4/.kanna-worktrees/task-3f9a1c2e</span></div>
+        <div class="term" id="term"></div>
+      </div>
+      <div class="tabs" id="tabs"></div>
+    </div>
+    <div class="shelf">
+      <span class="item"><span class="dot idle"></span><span>Tab bar follows light mode</span><span>· idle</span></span>
+      <span class="item"><span class="dot working"></span><span>Screenshot command</span><span>· working</span></span>
+    </div>
+  </div>
+</main>
+<script>
+const SETUP = [
+  `Setting up: .kanna/setup.sh`, ``,
+  `linked target/ to the build volume`,
+  `npm ci`,
+  `<span class="out">added 412 packages in 6s</span>`,
+  `copied .env from the main checkout`,
+];
+const AGENT = [
+  ``, `<span class="m">✻</span> Welcome to Claude Code`, ``,
+  `<span class="p">&gt;</span> You're a task's agent in Kanna. Your task: search the backlog by name and first message`,
+  `<span class="m">●</span> I'll add a filter to the backlog's list and a search field above it.`,
+  `<span class="m">●</span> Edit crates/kanna-daemon/src/backlog.rs`,
+  `<span class="m">●</span> Bash cargo test -p kanna-daemon`,
+  `  <span class="out">test result: ok. 79 passed; 0 failed</span>`,
+  `<span class="m">●</span> Done: the branch is merged into main.`,
+];
+const DONE = [``, `<span class="p">&gt;</span> merged, it's done`, `<span class="m">●</span> kanna task done`];
+const TEARDOWN = [
+  `Tearing down: .kanna/teardown.sh`, ``,
+  `removing the build folder on the volume`,
+  `docker compose down`,
+];
+const STATES = {
+  setting: { label: "Setting up", state: "setting up", cls: "busy", lines: [...SETUP, `npm run build:wasm`], tabs: false },
+  setupFailed: { label: "Setup failed", state: "setup failed (exit 3)", cls: "bad", lines: [...SETUP.slice(0, 3), `npm ci`, `<span class="bad">npm error code ENOTFOUND registry.npmjs.org</span>`, ``, `setup failed (exit 3)`], tabs: false },
+  working: { label: "Agent working", state: "working", cls: "", lines: [...SETUP, ``, ...AGENT], tabs: true },
+  tearing: { label: "Tearing down", state: "tearing down", cls: "busy", lines: TEARDOWN, tabs: false },
+  teardownFailed: { label: "Teardown failed", state: "teardown failed (exit 2)", cls: "bad", lines: [...TEARDOWN, `<span class="bad">Cannot connect to the Docker daemon. Is the docker daemon running?</span>`, ``, `teardown failed (exit 2)`], tabs: false },
+};
+const DIFF = `<span class="hunk">@@ -1183,6 +1183,9 @@ fn list(&self, args: &Value) -> Map</span>
+     let repo = string(args, "repo");
+<span class="add">+    let query = string(args, "query").map(str::to_lowercase);</span>
+     let entries = self.entries.borrow().clone();
+<span class="del">-    let tasks = entries.iter()</span>
+<span class="add">+    let tasks = entries.iter().filter(|e| matches(e, query.as_deref()))</span>`;
+let shown = "working";
+function render() {
+  const s = STATES[shown];
+  document.getElementById("controls").innerHTML = Object.entries(STATES).map(([k, v]) => `<button data-k="${k}" class="${k === shown ? "on" : ""}">${v.label}</button>`).join("") + `<button id="theme">Light / dark</button>`;
+  document.getElementById("term").innerHTML = (shown === "tearing" || shown === "teardownFailed" ? s.lines : shown === "working" ? [...s.lines, ...DONE.slice(0, 2)] : s.lines).join("\n");
+  document.getElementById("tabs").innerHTML = s.tabs
+    ? `<div class="tabbar"><span class="tab on">diff --merge-base main</span><span class="tab">backlog-search.md</span><span class="tab">cargo test</span></div><div class="view">${DIFF}</div>`
+    : `<div class="empty"></div>`;
+}
+document.addEventListener("click", e => {
+  if (e.target.id === "theme") { const r = document.documentElement; r.dataset.theme = r.dataset.theme === "light" ? "" : "light"; return; }
+  const k = e.target.dataset && e.target.dataset.k;
+  if (k) { shown = k; render(); }
+});
+const hash = location.hash.slice(1).split(",");
+if (hash.includes("picture")) document.body.classList.add("picture");
+if (hash.includes("light")) document.documentElement.dataset.theme = "light";
+shown = hash.find(h => STATES[h]) || shown;
+render();
+</script>
+</body>
+</html>

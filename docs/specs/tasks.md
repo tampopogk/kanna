@@ -39,6 +39,7 @@ stateDiagram-v2
 - **Running and place are separate.** A task is in one place (the backlog, the Shelf, a Desk) and either **running** (its agent alive) or **stopped** (no agent; a new backlog task, or one stopped, its worktree, branch, conversation and tabs kept). `kanna task start` and `kanna task stop` change only whether it runs; Move to Shelf, Move to Backlog and pull change only where it is, except that Move to Shelf starts a stopped task.
 - **Started, it runs in its own worktree `<repo>/.kanna-worktrees/<NAME>` on branch `<NAME>`, made from the repo's checked-out commit, and an agent there that gets the first message. NAME is the task's ID (`task-3f9a1c2e`, [task IDs](task-ids.md)), made with the task and checked against the repo's worktrees and branches; the agent renames the branch once it knows the work ([4](#4-naming)). The repo's `info/exclude` keeps `.kanna-worktrees/` and each worktree's `.kanna/tmp/` (an agent's scratch files, such as [code tour](code-tour.md) docs) out of git.
 - **Every task works in a worktree.** All development happens in one, never in the repo's own checkout.
+- **A new worktree runs the repo's setup** (`tasks.setup`) in the agent's terminal before the agent starts, once per worktree ([task scripts](task-scripts.md#2-setup)).
 - **Kanna is git-based: a task needs a git repo.** In a folder that isn't one, making a task is refused; Kanna never runs `git init` itself. An agent sets the repo up with you (in a new, empty project, the planning agent does), and a repo with no commits yet works: its first task's branch starts empty (`git worktree add --orphan`), so the task's first commit is the project's. Kanna never commits for you.
 - **The Shelf holds three per repo**: the one on the Desk and two on the Shelf, running or stopped. Any number run in the backlog.
 
@@ -76,7 +77,7 @@ stateDiagram-v2
 - **A task presents its work:** before its turn ends, its agent sets up its tabs to show what it changed and why, and that's what you see when you pull it ([presenting](presenting.md)).
 
 - **Done ends the task:** its agent and tabs close, or it leaves the backlog.
-- **The worktree and branch stay.** Cleaning them up is yours for now.
+- **Done runs the repo's teardown in the agent's pane, then cleans up a merged task:** the task is Done once teardown succeeds (if it fails, the task stays, its pane saying why); its worktree and branch go when its branch is merged and the worktree has no changes; otherwise they stay, and its events say why ([task scripts](task-scripts.md#3-teardown-and-cleanup)).
 - **Move to Backlog puts a task back** (Task menu, or `kanna task defer`), freeing its place on the Shelf: it leaves its Desk or the Shelf and waits in the backlog again, under its old ID if Kanna started it.
 - **It stays as it is there,** running or stopped. A running agent carries on with whatever it was doing, and its tabs stay as they were.
 - **Moving it to the Shelf again brings it back as it is:** the same agent and tabs, with no restart (a stopped one starts).
