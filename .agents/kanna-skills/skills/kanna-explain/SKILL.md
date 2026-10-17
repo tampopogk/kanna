@@ -41,10 +41,10 @@ To walk the user through a change (yours, or a diff) that crosses more than one 
 
 ```mermaid
 sequenceDiagram
-    participant P as CLI: parse<br/>kanna commands.rs:404
-    participant W as CLI: wire()<br/>kanna lib.rs:208
-    participant C as daemon: rename_pane<br/>kanna-mux core.rs:1108
-    participant B as daemon: backlog<br/>backlog.rs:854
+    participant P as CLI: parse<br/>kanna commands.rs:431
+    participant W as CLI: wire()<br/>kanna lib.rs:264
+    participant C as daemon: rename_pane<br/>kanna-mux core.rs:1184
+    participant B as daemon: backlog<br/>backlog.rs:979
     P->>W: task name TASK NAME
     W->>C: rename-pane
     C-->>B: pane's new name
