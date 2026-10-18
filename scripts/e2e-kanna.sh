@@ -68,6 +68,7 @@ new_state_dir() {
 new_state_dir
 export KANNA_IGNORE_OCCLUSION=1
 export KANNA_DEBUG=1
+export KANNA_TEST_EFFECTS=1
 export KANNA_NO_INITIAL_WINDOW=1
 export KANNA_AGENT_RULES_URL=none
 export KANNA_AGENT="$repo_root/tools/mock-agent/mock-agent"
@@ -898,7 +899,27 @@ clipboard() {
   stop_app; term_app || return 1
   terminal clipboard '{"pane":"clipboard","clipboard":"AFTER"}' >/dev/null || return 1
   raw '{"id":1,"cmd":"debug.key","args":{"pane":"clipboard","key":"cmd+v"}}' >/dev/null
-  check wait_for 5 eval 'kanna read clipboard | tr -d "\\n" | sed "s/IN //g" | grep -q "\\^\\[200~AFTER\\^\\[201~"'
+  check wait_for 5 eval 'kanna read clipboard | tr -d "\\n" | sed "s/IN //g" | grep -q "\\^\\[200~AFTER\\^\\[201~"' || return 1
+  kanna open --name clipboardd --dock --window new --cmd "$(probe '\033[?2004h' x 0)" >/dev/null || return 1
+  check wait_for 5 shows clipboardd READY || return 1
+  terminal clipboard '{"pane":"clipboardd","clipboard":"clipboard DOCKED"}' >/dev/null || return 1
+  raw '{"id":1,"cmd":"debug.key","args":{"pane":"clipboardd","key":"cmd+v"}}' >/dev/null
+  check wait_for 5 eval 'kanna read clipboardd | tr -d "\\n" | sed "s/IN //g" | grep -q "\\^\\[200~clipboard DOCKED\\^\\[201~"' || { kanna read clipboardd; return 1; }
+}
+
+scenario system_clipboard M4
+system_clipboard() {
+  start_daemon && need "$app" || return 1
+  env -u KANNA_TEST_EFFECTS "$app" --bg >>"$out/app.log" 2>&1 &
+  app_pid=$!
+  check wait_for 10 app_attached || return 1
+  kanna open --name sysclip --cmd "$(probe '\033[?2004h' x 0)" >/dev/null || return 1
+  check wait_for 5 shows sysclip READY || return 1
+  local text; text="$(pbpaste)"
+  check test "$(terminal clipboard '{"pane":"sysclip"}')" == "${text:-None}" || return 1
+  [[ -n "$text" ]] || return 0
+  raw '{"id":1,"cmd":"debug.key","args":{"pane":"sysclip","key":"cmd+v"}}' >/dev/null
+  check wait_for 5 eval 'kanna read sysclip | tr -d "\\n" | grep -q "\\^\\[201~"'
 }
 
 scenario mouse_keys_focus M4

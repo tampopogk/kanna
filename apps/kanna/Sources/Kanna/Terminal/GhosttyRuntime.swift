@@ -18,7 +18,7 @@ final class GhosttyRuntime {
     var onProgress: ((TerminalSurfaceView, ghostty_action_progress_report_s) -> Void)?
     var onClose: ((TerminalSurfaceView) -> Void)?
 
-    init(recording: Bool = ProcessInfo.processInfo.environment["KANNA_DEBUG"] == "1") throws {
+    init(recording: Bool = ProcessInfo.processInfo.environment["KANNA_TEST_EFFECTS"] == "1") throws {
         guard let cfg = Self.loadConfig() else { throw Self.error("ghostty_config_new failed") }
 
         var runtime = ghostty_runtime_config_s()

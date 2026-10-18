@@ -69,6 +69,8 @@ So in production's terminals every `kanna` talks to production; to reach the wor
 | `kanna instances prune` | deletes the folders of instances whose worktree is gone, keeping any that still answer or whose keeper still runs |
 | `kanna --version` | the CLI's version and which app it is, e.g. `kanna 0.1.0 (Kanna Dev task-3f9a1c2e)` |
 
+Any build can run with `KANNA_DEBUG=1` (the planner's dev Kanna does): it answers `debug.*` and shows **Debug** in its title bars, and is otherwise the same, its clipboard included ([terminal](terminal.md#5-debug-mode)).
+
 Production is the build that goes in /Applications (`ditto target/Kanna.app /Applications/Kanna.app`); its folder starts empty. To carry the main checkout's dev Kanna over (layout, backlog, terminals), quit it, stop its keeper (`kill $(cat ~/Library/Application\ Support/kanna-dev/keeper.pid)`, which ends its terminals) and move `kanna-dev` to `kanna-prod`.
 
 ## 5. Open questions
