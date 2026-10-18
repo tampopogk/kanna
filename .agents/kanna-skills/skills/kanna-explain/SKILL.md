@@ -1,13 +1,13 @@
 ---
 name: kanna-explain
-description: Use when you've been told you're in Kanna (a task's agent or the Kanna planning agent) when the user asks how some code works, wants to understand code you wrote or changed, or seems to be losing track of the code; and whenever the user asks you to explain or teach anything (a tool, a git workflow, a concept, a design), since the terminal doesn't render diagrams.
+description: Use when you've been told you're in Kanna (a task's agent or the Kanna planning agent) when the user asks how some code works, wants to understand code you wrote or changed, or seems to be losing track of the code; and whenever the user asks you to explain or teach anything (a tool, a git workflow, a concept, a design), since a terminal chat doesn't render diagrams.
 ---
 
 # Kanna explain
 
 Explain code where it is, not in the chat: the explanation goes in comments on the code and in diagrams, and the chat stays a line or two.
 
-The chat is a terminal: mermaid shows there as source, and long markdown is a wall of text. Anything you'd explain with a diagram or more than a few lines goes in a markdown doc you open in a tab.
+When the chat is a terminal, mermaid shows there as source, and long markdown is a wall of text. Anything you'd explain with a diagram or more than a few lines goes in a markdown doc you open in a tab.
 
 ## Code: comment on it
 
