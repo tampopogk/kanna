@@ -75,6 +75,18 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
     alter table tasks rename column pane to terminal;
 "), Step::Sql("
     update tasks set place = 'shelf' where place = 'desk';
+"), Step::Sql("
+    create table messages (
+        id integer primary key,
+        recipient text not null,
+        repo text not null,
+        sender text not null,
+        at real not null,
+        delivered real,
+        text text not null
+    );
+    create index messages_waiting on messages (delivered, recipient);
+    create index messages_by_recipient on messages (recipient, at);
 ")];
 
 pub fn version() -> i64 {
@@ -155,6 +167,17 @@ pub struct Logged {
     pub to: Option<Place>,
     pub by: Option<String>,
     pub doc: Value,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Message {
+    pub id: i64,
+    pub recipient: String,
+    pub repo: String,
+    pub sender: String,
+    pub at: f64,
+    pub delivered: Option<f64>,
+    pub text: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -460,6 +483,38 @@ impl Db {
         rows.collect()
     }
 
+    pub fn put_message(&self, recipient: &str, repo: &str, sender: &str, text: &str) -> rusqlite::Result<Message> {
+        let at = now();
+        self.conn.execute("insert into messages (recipient, repo, sender, at, text) values (?1, ?2, ?3, ?4, ?5)", params![recipient, repo, sender, at, text])?;
+        Ok(Message { id: self.conn.last_insert_rowid(), recipient: recipient.into(), repo: repo.into(), sender: sender.into(), at, delivered: None, text: text.into() })
+    }
+
+    pub fn waiting_messages(&self) -> rusqlite::Result<Vec<Message>> {
+        self.select_messages(&format!("select {MESSAGE} from messages where delivered is null order by at, id"), [])
+    }
+
+    pub fn messages(&self, recipient: Option<&str>) -> rusqlite::Result<Vec<Message>> {
+        match recipient {
+            Some(to) => self.select_messages(&format!("select {MESSAGE} from messages where recipient = ?1 or sender = ?1 order by at, id"), [to]),
+            None => self.select_messages(&format!("select {MESSAGE} from messages order by at, id"), []),
+        }
+    }
+
+    pub fn delivered(&self, ids: &[i64]) -> rusqlite::Result<()> {
+        let at = now();
+        let tx = self.conn.unchecked_transaction()?;
+        for id in ids {
+            tx.execute("update messages set delivered = ?2 where id = ?1", params![id, at])?;
+        }
+        tx.commit()
+    }
+
+    fn select_messages<P: rusqlite::Params>(&self, sql: &str, params: P) -> rusqlite::Result<Vec<Message>> {
+        let mut statement = self.conn.prepare(sql)?;
+        let rows = statement.query_map(params, |r| Ok(Message { id: r.get(0)?, recipient: r.get(1)?, repo: r.get(2)?, sender: r.get(3)?, at: r.get(4)?, delivered: r.get(5)?, text: r.get(6)? }))?;
+        rows.collect()
+    }
+
     pub fn start_round(&self, repo: &str, head: &str, doc: &Value) -> rusqlite::Result<i64> {
         self.conn.execute("insert into quiz_rounds (repo, at, head, doc) values (?1, ?2, ?3, json_patch('{}', ?4))", params![repo, now(), head, doc.to_string()])?;
         Ok(self.conn.last_insert_rowid())
@@ -496,6 +551,8 @@ impl Db {
         rows.collect()
     }
 }
+
+const MESSAGE: &str = "id, recipient, repo, sender, at, delivered, text";
 
 const ANSWER: &str = "a.id, a.round, a.at, a.kind, a.file, a.right, a.again, a.doc";
 
@@ -928,6 +985,23 @@ mod tests {
         assert_eq!(db.answers("/r", false).unwrap().len(), 5);
         assert_eq!(db.find_answer(missed).unwrap().map(|(a, repo)| (a.file, repo)), Some(("src/a.rs".into(), "/r".into())));
         assert!(db.answer(404, "why", "x", true, None, &json!({})).is_err(), "an answer needs its round");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_message_waits_until_it_is_delivered_and_stays_in_both_tasks_history() {
+        let dir = folder("messages");
+        let db = Db::open(&dir);
+        let first = db.put_message("task-71af0000", "/r", "task-5e2c0000", "Is your spec final?").unwrap();
+        let second = db.put_message("planner", "/r", "task-71af0000", "I'm done").unwrap();
+        assert_eq!(db.waiting_messages().unwrap().iter().map(|m| m.id).collect::<Vec<_>>(), [first.id, second.id]);
+        db.delivered(&[first.id]).unwrap();
+        assert_eq!(db.waiting_messages().unwrap().iter().map(|m| m.id).collect::<Vec<_>>(), [second.id]);
+        let history = db.messages(Some("task-71af0000")).unwrap();
+        assert_eq!(history.iter().map(|m| (m.id, m.delivered.is_some())).collect::<Vec<_>>(), [(first.id, true), (second.id, false)], "what it got and what it sent");
+        assert_eq!(db.messages(Some("task-5e2c0000")).unwrap()[0].text, "Is your spec final?");
+        drop(db);
+        assert_eq!(Db::open(&dir).waiting_messages().unwrap().len(), 1, "a waiting message outlives the daemon");
         fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -1,6 +1,6 @@
 # Agent messaging: how the user, the planner and tasks message each other
 
-> 2026-10-16. Research for a build task; nothing is built. Checked against the installed binaries, Claude Code 2.1.301 and Codex 0.163.0 (their `--help` and the strings in them), and against Anthropic's docs (code.claude.com/docs) and OpenAI's (developers.openai.com/codex, which now redirects to learn.chatgpt.com/docs) and `openai/codex` source. Copilot CLI, opencode and Antigravity are from their own docs only, not run.
+> 2026-10-16. Research; **B was built:** [agent messaging](../specs/agent-messaging.md). Checked against the installed binaries, Claude Code 2.1.301 and Codex 0.163.0 (their `--help` and the strings in them), and against Anthropic's docs (code.claude.com/docs) and OpenAI's (developers.openai.com/codex, which now redirects to learn.chatgpt.com/docs) and `openai/codex` source. Copilot CLI, opencode and Antigravity are from their own docs only, not run.
 
 Today the only way to tell a running agent something is to type into its terminal (`kanna send`, then often `kanna send-key return`). Typed text can land mid-turn, and it's lost if the agent isn't running. Agents can't message each other at all. **Recommendation:** an inbox per task in the daemon, delivered by typing the message into the agent's terminal **when its turn ends**, as Kanna already detects it ([4](#4-the-end-of-a-turn)). It works for every agent Kanna runs, needs no hooks, and keeps every message visible in the task's terminal.
 

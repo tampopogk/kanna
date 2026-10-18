@@ -7,6 +7,7 @@ mod keeper;
 mod content_ids;
 mod layout;
 mod pty;
+mod messages;
 mod quiz;
 mod reader;
 mod settings;
@@ -185,6 +186,13 @@ fn run() -> Result<(), String> {
     status_commands.install(&core);
     let backlog = Rc::new(backlog::Backlog::open(db.clone(), &state_dir, core.weak(), events.clone()));
     backlog.install(&core);
+    let planners = Rc::downgrade(&layout);
+    *backlog.planners.borrow_mut() = Some(Box::new(move || {
+        let Some(layout) = planners.upgrade() else { return vec![] };
+        let view = layout.view();
+        let workspaces = view["workspaces"].as_array().cloned().unwrap_or_default();
+        workspaces.iter().filter(|w| w["where"].get("planner").is_some()).filter_map(|w| w["dock"]["pane"].as_str().map(String::from)).collect()
+    }));
     let quiz = Rc::new(quiz::Quiz::new(db, Some(core.weak())));
     quiz.install(&core);
     let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone());

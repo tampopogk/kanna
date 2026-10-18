@@ -114,6 +114,8 @@ An agent not in the table starts again with its first message, its conversation 
 | `kanna task name [TASK] NAME` | Rename a task (default: the one you're in), running or in the backlog (`task-3f9a`); a backlog task starts with the new name |
 | `kanna task list [QUERY]` | Every task: ID, name, where (a Desk, the Shelf, the backlog), state (working, idle, needs you, or stopped), repo; with QUERY, only those whose name or first message has every word ([backlog search](backlog-search.md#cli)) |
 | `kanna task defer [TASK]` | Move a task back to the backlog as it is, running or stopped (default: the one you're in) |
+| `kanna task send TASK\|planner TEXT` | Leave a task's agent or the repo's planner a message, typed in when its turn is over ([agent messaging](agent-messaging.md)) |
+| `kanna task messages [TASK]` | A task's messages, or every message |
 | `kanna task done [TASK]` | End a task, or take it off the backlog |
 | `kanna agents [status]` | Whether your agents are set up for Kanna, and whether this Kanna has newer skills ([agent setup](agent-setup.md)) |
 | `kanna agents setup [--ask]` | Install Kanna's skills and Claude's sandbox entry (`--ask`: say what and ask first) |

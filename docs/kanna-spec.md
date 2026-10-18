@@ -84,7 +84,7 @@ flowchart TB
 | Spec | What it covers |
 |---|---|
 | [Desk](specs/desk.md) · [new Desk](specs/new-desk.md) · [planning terminal](specs/planning-agent.md) | A window showing one task, with the Shelf |
-| [Tasks](specs/tasks.md) · [backlog runners](specs/backlog-runners.md) · [backlog search](specs/backlog-search.md) · [blocked tasks](specs/task-dependencies.md) · [task IDs](specs/task-ids.md) · [task scripts](specs/task-scripts.md) | One agent in one worktree; the backlog |
+| [Tasks](specs/tasks.md) · [backlog runners](specs/backlog-runners.md) · [backlog search](specs/backlog-search.md) · [blocked tasks](specs/task-dependencies.md) · [task IDs](specs/task-ids.md) · [task scripts](specs/task-scripts.md) · [agent messaging](specs/agent-messaging.md) | One agent in one worktree; the backlog |
 | [Agent status](specs/agent-status.md) | Working, needs you, idle, exited |
 | [Agent setup](specs/agent-setup.md) | Kanna's skills where agents find them |
 | [Quiz](specs/quiz.md) | Questions on what landed on main |

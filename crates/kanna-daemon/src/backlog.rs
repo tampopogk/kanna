@@ -1,4 +1,5 @@
-use crate::db::{self, Change, Db, Place, Row};
+use crate::db::{self, Change, Db, Message, Place, Row};
+use crate::messages::{self, Ready, PLANNER, TYPED_HOLD, USER};
 use crate::task_scripts::{self, Cleanup, Scripts, Setup};
 use crate::Event;
 use kanna_mux::json::{json, num, opt, string, Map, Value};
@@ -522,6 +523,11 @@ pub struct Backlog {
     tearing_down: RefCell<HashMap<String, TearingDown>>,
     keeping: RefCell<HashSet<String>>,
     fill_at: Cell<Option<Instant>>,
+    waiting: RefCell<Vec<Message>>,
+    ready: RefCell<HashMap<String, Ready>>,
+    typed: RefCell<HashMap<String, Instant>>,
+    pub planners: RefCell<Option<Box<dyn Fn() -> Vec<String>>>>,
+    delivering: RefCell<HashSet<String>>,
     pub on_change: RefCell<Option<Box<dyn Fn(Value)>>>,
 }
 
@@ -564,6 +570,10 @@ impl Backlog {
                 _ => entries.push(Entry::from_row(row)),
             }
         }
+        let waiting = db.waiting_messages().unwrap_or_else(|error| {
+            eprintln!("kanna-daemon: can't read the waiting messages in {}: {error}", state_dir.join(db::FILE).display());
+            vec![]
+        });
         Backlog {
             state: state_dir.to_path_buf(),
             db,
@@ -583,6 +593,11 @@ impl Backlog {
             tearing_down: RefCell::default(),
             keeping: RefCell::default(),
             fill_at: Cell::new(Some(Instant::now())),
+            waiting: RefCell::new(waiting),
+            ready: RefCell::default(),
+            typed: RefCell::default(),
+            planners: RefCell::default(),
+            delivering: RefCell::default(),
             on_change: RefCell::default(),
         }
     }
@@ -872,6 +887,8 @@ impl Backlog {
             return self.torn_down(pane, tearing, code);
         }
         self.turns.borrow_mut().remove(pane);
+        self.ready.borrow_mut().remove(pane);
+        self.typed.borrow_mut().remove(pane);
         let quitting = self.quitting.borrow_mut().remove(pane);
         if let Some(quitting) = quitting {
             return self.quitted(pane, quitting);
@@ -883,6 +900,8 @@ impl Backlog {
     }
 
     pub fn status(&self, pane: &str, status: Option<&str>, ended: bool) {
+        let now = Instant::now();
+        self.ready.borrow_mut().entry(pane.to_string()).or_insert_with(|| Ready::new(now)).see(status.and_then(Status::parse), ended, now);
         if let Some(turn) = self.turns.borrow_mut().get_mut(pane) {
             let status = status.and_then(Status::parse);
             if ended {
@@ -891,6 +910,10 @@ impl Backlog {
                 turn.see(status, Instant::now());
             }
         }
+    }
+
+    pub fn typed(&self, pane: &str) {
+        self.typed.borrow_mut().insert(pane.to_string(), Instant::now());
     }
 
     fn refill(&self) {
@@ -935,7 +958,8 @@ impl Backlog {
             self.setting_up.borrow_mut().remove(&pane);
             self.set_up(&pane, &setting);
         }
-        let over: Vec<(String, Status)> = self.turns.borrow().iter().filter(|(pane, _)| !self.setting_up.borrow().contains_key(*pane)).filter_map(|(pane, turn)| turn.ended(now, TURN_SETTLE).map(|why| (pane.clone(), why))).collect();
+        let mail = self.deliver(&core, now);
+        let over: Vec<(String, Status)> = self.turns.borrow().iter().filter(|(pane, _)| !self.has_mail(pane)).filter(|(pane, _)| !self.setting_up.borrow().contains_key(*pane)).filter_map(|(pane, turn)| turn.ended(now, TURN_SETTLE).map(|why| (pane.clone(), why))).collect();
         for (pane, why) in over {
             let Some((_, entry)) = running.iter().find(|(p, _)| *p == pane) else { continue };
             if runners(&config_files(Path::new(&entry.repo))) == 0 {
@@ -951,7 +975,7 @@ impl Backlog {
         let turns = self.turns.borrow().values().filter_map(|t| t.due(TURN_SETTLE)).min();
         let quits = self.quitting.borrow().values().filter(|q| !q.hung_up).flat_map(|q| [Some(q.by), q.next]).flatten().min();
         let setups = (!self.setting_up.borrow().is_empty()).then(|| now + SETUP_EVERY);
-        [turns, quits, setups, self.fill_at.get()].into_iter().flatten().min()
+        [turns, quits, setups, self.fill_at.get(), mail].into_iter().flatten().min()
     }
 
     fn quit(self: &Rc<Self>, pane: &str, entry: &Entry, why: Status) {
@@ -1070,8 +1094,19 @@ impl Backlog {
             }
             let mine: Vec<&Entry> = entries.iter().filter(|e| e.repo == repo).collect();
             let mut busy = mine.iter().filter(|e| starting.contains(&e.id) || e.held.as_deref().is_some_and(|pane| alive(core, pane))).count();
+            let mail: HashSet<String> = self.waiting.borrow().iter().map(|m| m.recipient.clone()).collect();
+            let mut woken: Vec<&&Entry> = mine.iter().filter(|e| mail.contains(&e.id) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane))).collect();
+            woken.sort_by(|a, b| a.made_at.total_cmp(&b.made_at));
+            for entry in woken {
+                if busy >= slots {
+                    break;
+                }
+                busy += 1;
+                eprintln!("kanna-daemon: {} has a message, so it runs in the backlog ({busy} of {slots} in {repo})", entry.id);
+                self.wake(core, (*entry).clone());
+            }
             let mut waiting: Vec<&&Entry> = mine.iter().filter(|e| e.folder.is_none() && e.held.is_none() && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && self.waits(e).is_empty()).collect();
-            waiting.sort_by(|a, b| a.made_at.total_cmp(&b.made_at));
+            waiting.sort_by(|a, b| mail.contains(&b.id).cmp(&mail.contains(&a.id)).then(a.made_at.total_cmp(&b.made_at)));
             for entry in waiting {
                 if busy >= slots {
                     break;
@@ -1086,6 +1121,39 @@ impl Backlog {
                     }
                 })));
             }
+        }
+    }
+
+    fn wake(self: &Rc<Self>, core: &CoreHandle, entry: Entry) {
+        let id = entry.id.clone();
+        let this = Rc::downgrade(self);
+        let failed = move |error: KmuxError| {
+            eprintln!("kanna-daemon: {id} couldn't run for its message: {}", error.message);
+            if let Some(this) = this.upgrade() {
+                this.failed.borrow_mut().insert(id);
+            }
+        };
+        match entry.held.clone().filter(|pane| core.pane(pane).is_some()) {
+            Some(pane) => {
+                self.launching.borrow_mut().insert(entry.id.clone());
+                let (this, id) = (Rc::downgrade(self), entry.id.clone());
+                self.revive(&pane, Some(self.again(&entry)), move |result| {
+                    let Some(this) = this.upgrade() else { return };
+                    this.launching.borrow_mut().remove(&id);
+                    match result {
+                        Ok(pane) => {
+                            this.restarted(&pane);
+                            this.note(&pane, Change::new("started").by(Some("daemon")).with("why", json!("message")));
+                        }
+                        Err(error) => failed(error),
+                    }
+                });
+            }
+            None => self.prepare(Entry { held: None, ..entry }, None, Some("daemon".into()), Answer::Then(Box::new(move |result| {
+                if let Err(error) = result {
+                    failed(error);
+                }
+            }))),
         }
     }
 
@@ -1212,7 +1280,9 @@ impl Backlog {
                     Some("defer") => this.defer(&args, responder),
                     Some("plan") => this.plan(&args, responder),
                     Some("events") => responder.reply(this.events(&args)),
-                    _ => responder.reply(Err(bad("backlog needs an action: new, edit, name, list, resolve, done, start, stop, setup, shelve, defer, plan or events"))),
+                    Some("send") => responder.reply(this.send(&args)),
+                    Some("messages") => responder.reply(this.messages(&args)),
+                    _ => responder.reply(Err(bad("backlog needs an action: new, edit, name, list, resolve, done, start, stop, setup, shelve, defer, plan, events, send or messages"))),
                 }
             }),
         );
@@ -1235,6 +1305,137 @@ impl Backlog {
             .map(|e| json!({ "at": num(e.at), "what": e.what, "from": opt(e.from.map(Place::as_str)), "to": opt(e.to.map(Place::as_str)), "by": opt(e.by.as_deref()), "doc": e.doc }))
             .collect();
         Ok(Map::from_iter([("task".to_string(), json!(id)), ("events".to_string(), Value::Array(events))]))
+    }
+
+    fn sender(&self, args: &Value) -> (String, Option<String>) {
+        let Some(pane) = who(args) else { return (USER.into(), None) };
+        if let Some(id) = self.task_of(pane) {
+            let repo = self.known(&id).map(|e| e.repo);
+            return (id, repo);
+        }
+        if self.planners().iter().any(|p| p == pane) {
+            let repo = self.core.upgrade().and_then(|core| core.pane(pane)).and_then(|p| project(p.cwd.as_deref())).map(|r| r.to_string_lossy().into_owned());
+            return (PLANNER.into(), repo);
+        }
+        (USER.into(), None)
+    }
+
+    fn send(&self, args: &Value) -> Result<Map, KmuxError> {
+        let to = string(args, "to").ok_or_else(|| bad("say who to: a task, or planner"))?;
+        let text = string(args, "text").map(str::trim).filter(|t| !t.is_empty()).ok_or_else(|| bad("say what: kanna task send TASK TEXT"))?;
+        let (from, here) = self.sender(args);
+        let here = here.or_else(|| string(args, "repo").map(String::from));
+        let (recipient, repo) = if to == PLANNER {
+            let repo = here.ok_or_else(|| bad("which repo's planner? run it in the repo"))?;
+            (PLANNER.to_string(), repo)
+        } else {
+            let id = self.resolve(to)?.ok_or_else(|| not_found(to))?;
+            let entry = self.known(&id).ok_or_else(|| not_found(to))?;
+            if !self.is_open(&id) {
+                return Err(KmuxError::new("done", format!("{} is done, so it takes no messages", self.short(&id))));
+            }
+            (id, entry.repo)
+        };
+        let message = self.db.put_message(&recipient, &repo, &from, text).map_err(|error| KmuxError::new("failed", format!("couldn't save the message in {}: {error}", db::FILE)))?;
+        eprintln!("kanna-daemon: a message from {from} waits for {recipient}");
+        self.waiting.borrow_mut().push(message.clone());
+        self.refill();
+        let state = match self.recipient_pane(&message) {
+            Some(pane) => self.core.upgrade().and_then(|core| core.pane(&pane)).and_then(|p| p.status).unwrap_or_else(|| "running".into()),
+            None if recipient == PLANNER => "no-planner".into(),
+            None => "stopped".into(),
+        };
+        let to = if recipient == PLANNER { json!(PLANNER) } else { json!({ "id": recipient, "short": self.short(&recipient) }) };
+        Ok(Map::from_iter([("message".to_string(), json!(message.id)), ("to".to_string(), to), ("state".to_string(), json!(state))]))
+    }
+
+    fn messages(&self, args: &Value) -> Result<Map, KmuxError> {
+        let task = match string(args, "task") {
+            Some(reference) => Some(self.task_of(reference).or(self.resolve(reference)?).ok_or_else(|| not_found(reference))?),
+            None => None,
+        };
+        let list = self.db.messages(task.as_deref()).map_err(|error| KmuxError::new("failed", format!("couldn't read the messages: {error}")))?;
+        let named = |who: &str| if db::is_task_id(who) { json!({ "id": who, "short": self.short(who) }) } else { json!(who) };
+        let list = list
+            .iter()
+            .map(|m| json!({ "id": m.id, "at": num(m.at), "from": named(&m.sender), "to": named(&m.recipient), "repo": m.repo, "delivered": m.delivered.map(num), "text": m.text }))
+            .collect();
+        Ok(Map::from_iter([("task".to_string(), opt(task.as_deref())), ("messages".to_string(), Value::Array(list))]))
+    }
+
+    fn recipient_pane(&self, message: &Message) -> Option<String> {
+        let core = self.core.upgrade()?;
+        if message.recipient != PLANNER {
+            return self.pane_of(&message.recipient).filter(|pane| alive(&core, pane));
+        }
+        let repo = Path::new(&message.repo);
+        self.planners().into_iter().find(|pane| alive(&core, pane) && core.pane(pane).and_then(|p| project(p.cwd.as_deref())).is_some_and(|r| same_folder(&r, repo)))
+    }
+
+    fn planners(&self) -> Vec<String> {
+        self.planners.borrow().as_ref().map_or(vec![], |planners| planners())
+    }
+
+    fn has_mail(&self, pane: &str) -> bool {
+        self.task_of(pane).is_some_and(|id| self.waiting.borrow().iter().any(|m| m.recipient == id))
+    }
+
+    fn deliver(self: &Rc<Self>, core: &CoreHandle, now: Instant) -> Option<Instant> {
+        let waiting = self.waiting.borrow().clone();
+        let mut by_pane: Vec<(String, Vec<Message>)> = vec![];
+        for message in waiting {
+            let Some(pane) = self.recipient_pane(&message) else { continue };
+            match by_pane.iter_mut().find(|(p, _)| *p == pane) {
+                Some((_, list)) => list.push(message),
+                None => by_pane.push((pane, vec![message])),
+            }
+        }
+        let mut next = None;
+        for (pane, list) in by_pane {
+            if self.delivering.borrow().contains(&pane) || self.quitting.borrow().contains_key(&pane) || self.setting_up.borrow().contains_key(&pane) {
+                continue;
+            }
+            let held = self.typed.borrow().get(&pane).map(|at| *at + TYPED_HOLD).filter(|until| *until > now);
+            let at = self.ready.borrow().get(&pane).and_then(|r| r.at(TURN_SETTLE)).map(|at| held.map_or(at, |h| h.max(at)));
+            match at {
+                Some(at) if at <= now => self.hand_over(core, pane, list),
+                Some(at) => next = Some(next.map_or(at, |n: Instant| n.min(at))),
+                None => {}
+            }
+        }
+        next
+    }
+
+    fn hand_over(self: &Rc<Self>, core: &CoreHandle, pane: String, list: Vec<Message>) {
+        let named = |who: &str| if db::is_task_id(who) { self.label(who) } else { who.to_string() };
+        let text = messages::prompt(&list.iter().map(|m| (named(&m.sender), m.text.clone())).collect::<Vec<_>>());
+        let ids: Vec<i64> = list.iter().map(|m| m.id).collect();
+        self.delivering.borrow_mut().insert(pane.clone());
+        let this = Rc::downgrade(self);
+        core.handle(json!({ "cmd": "send", "args": { "pane": pane, "text": text } }), move |sent| {
+            let Some(this) = this.upgrade() else { return };
+            this.delivering.borrow_mut().remove(&pane);
+            if let Some(error) = failed(&sent) {
+                return eprintln!("kanna-daemon: couldn't give {pane} its messages ({}); they wait", error.message);
+            }
+            if let Err(error) = this.db.delivered(&ids) {
+                eprintln!("kanna-daemon: couldn't mark {pane}'s messages delivered in {}: {error}", db::FILE);
+            }
+            this.waiting.borrow_mut().retain(|m| !ids.contains(&m.id));
+            let now = Instant::now();
+            if let Some(ready) = this.ready.borrow_mut().get_mut(&pane) {
+                ready.sent(now);
+            }
+            if let Some(turn) = this.turns.borrow_mut().get_mut(&pane) {
+                let status = this.core.upgrade().and_then(|core| core.pane(&pane)).and_then(|p| p.status);
+                *turn = Turn::underway();
+                turn.see(status.as_deref().and_then(Status::parse), now);
+            }
+            for m in &list {
+                this.note(&pane, Change::new("messaged").by(Some(&m.sender)).with("message", json!(m.id)));
+            }
+            eprintln!("kanna-daemon: gave {pane} {} message(s)", ids.len());
+        });
     }
 
     fn mint(&self, args: &Value, name: Option<String>, message: Option<String>) -> Result<Entry, KmuxError> {

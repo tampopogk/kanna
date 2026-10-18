@@ -59,6 +59,15 @@ When the user asks you to show them something (a diff, a file, a doc, a page, a 
 - **A tab, not a split or a new window,** so your pane keeps its size.
 - In the chat, a line saying what the tab shows.
 
+## Message the planner or another task
+
+`kanna task send TASK TEXT` leaves a message for another task's agent, and `kanna task send planner TEXT` for this repo's planning agent. Kanna types it into their terminal once their turn is over, as `[message from YOUR-TASK "Name"] TEXT`, so it never lands mid-turn, and a stopped backlog task runs for it.
+
+- **Ask another task directly** when you need something only it knows (is its spec final, which branch has the change), instead of asking the user to relay it. Find it with `kanna task list QUERY`.
+- **Tell the planner** when you're blocked on a decision it should take to the user, or when you're done and there's something to merge.
+- **A message you get** starts with `[message from SENDER]`: answer with `kanna task send SENDER "..."` (or `planner`), not in your chat, which the sender can't see. A message from `user` came from the user: answer in the chat as usual.
+- **Keep it to what they need,** in one message: they read it in the middle of their own work.
+
 ## Present your work
 
 When the work is done, before you end your turn, set up your window to show the user what you changed and why. You may have run unattended in the backlog: whatever you leave open, focused and zoomed is what the user sees when they pull the task, maybe hours later. Kanna keeps it through the stop.
@@ -87,6 +96,8 @@ If you stop to ask the user something, set up what the question is about the sam
 | `kanna task pull TASK` | Bring a task onto the Desk, parking the one there (only when the user asks) |
 | `kanna task park [TASK]` | Move the Desk's task to the Shelf (only when the user asks) |
 | `kanna task defer [TASK]` | Move a task back to the backlog as it is, running or stopped (only when the user asks) |
+| `kanna task send TASK\|planner TEXT` | Leave a message for another task's agent or this repo's planning agent; it gets it when its turn is over |
+| `kanna task messages [TASK]` | A task's messages, sent and received, and whether each was delivered |
 | `kanna task done [TASK]` | End a task, or take it off the backlog; says which blocked tasks can start now |
 
 Run them from your own terminal, in the repo: a new task belongs to the repo you're in.

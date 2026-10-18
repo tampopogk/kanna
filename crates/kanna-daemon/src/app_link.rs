@@ -340,6 +340,9 @@ impl AppLink {
             "input" => {
                 if let Some(bytes) = string(&args, "data").and_then(|d| BASE64.decode(d).ok()) {
                     self.terminals.write(&terminal, bytes);
+                    if let (Some(pane), Some(backlog)) = (self.terminals.pane_of(&terminal), self.backlog.borrow().as_ref().and_then(Weak::upgrade)) {
+                        backlog.typed(&pane);
+                    }
                 }
             }
             "resize" => {

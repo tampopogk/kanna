@@ -34,6 +34,7 @@ stateDiagram-v2
 - **A runner frees when a turn ends:** the agent's [status](agent-status.md) goes from working to needs you or idle and stays there 3s, or, for an agent that [reports its own status](agent-status.md#4-the-agents-own-report-osc-7501), its report goes from working to idle or done, which ends the turn at once. Kanna quits the agent, keeps its session, and starts the next.
 - **Nothing shows it:** backlog rows and `kanna task list` look as they do for any backlog task, and the Shelf isn't re-sorted. Why a task stopped (needs you, finished) is kept in its events only (`backlog events`).
 - **Moved to the backlog running, a task counts as a runner,** and Kanna stops it when its turn ends, at once if it arrives idle. That can leave more running than `backlog.runners` for a while: Kanna stops none to make room, and starts no more until fewer run.
+- **A message wakes a stopped task:** it runs for it as a runner, ahead of tasks that haven't started, and a running one with a message waiting gets it instead of being stopped ([agent messaging](agent-messaging.md#3-stopped-tasks)).
 - **Resume on the Shelf:** Move to Shelf (or `kanna task start`) resumes a stopped task's session where it stopped.
 
 ## 2. How it's built

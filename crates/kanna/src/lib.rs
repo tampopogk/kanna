@@ -263,7 +263,7 @@ fn explain(command: &Command, mut failure: Failure, mux: &mut Session, target: &
 fn wire(command: &Command, request: &Value) -> &'static str {
     match command.name {
         "markup" if request.get("type").is_some() => "open",
-        "task" if ["new", "edit", "start", "stop", "setup", "shelve", "defer"].contains(&request["action"].as_str().unwrap_or("")) => "backlog",
+        "task" if ["new", "edit", "start", "stop", "setup", "shelve", "defer", "send", "messages"].contains(&request["action"].as_str().unwrap_or("")) => "backlog",
         "task" if request["action"] == "done" => "backlog",
         "task" if request["action"] == "name" && request.get("task").is_some() => "backlog",
         "task" if request["action"] == "name" => "rename-pane",
