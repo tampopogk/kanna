@@ -25,7 +25,7 @@
 
 ## Architecture
 
-The app draws; the daemon keeps the terminals; the keeper holds the ptys, so quitting the app or restarting the daemon loses nothing. Layers in detail: [architecture](specs/architecture.md).
+Apps draw; the headless daemon keeps tasks, their content and workspaces; the keeper holds the ptys, so quitting the app or restarting the daemon loses nothing. Layers in detail: [architecture](specs/architecture.md).
 
 ```mermaid
 flowchart TB
@@ -50,7 +50,8 @@ flowchart TB
 
 | Spec | What it covers |
 |---|---|
-| [Architecture](specs/architecture.md) | The layers and processes; what the daemon keeps and what the app keeps; languages and platforms |
+| [Architecture](specs/architecture.md) | The layers and processes; what the daemon keeps and what the apps keep; languages and platforms |
+| [Presentation layers](specs/presentation-layers.md) | Work, logical and physical presentation: what lives in the headless daemon and what in each app, and the IDs |
 | [kmux is the reference](specs/kmux-reference.md) · [kmux subtree](specs/kmux-subtree.md) | kmux as the model Kanna is checked against; its source in `references/kmux` |
 | [The keeper](keeper.md) · [upgrading it](specs/keeper-upgrade.md) | The process that creates and holds the ptys |
 | [The app link](specs/app-link.md) | The app's connection to the daemon: messages, snapshots, the app starting the daemon |
