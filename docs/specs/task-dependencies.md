@@ -13,7 +13,7 @@ stateDiagram-v2
     direction LR
     [*] --> blocked: kanna task new --after 1dfb
     blocked --> startable: its last blocker is Done
-    startable --> blocked: kanna task edit --after t9
+    startable --> blocked: kanna task edit --after task-1dfb
     blocked --> startable: kanna task edit --after none
     startable --> started: start or Move to Shelf
 ```

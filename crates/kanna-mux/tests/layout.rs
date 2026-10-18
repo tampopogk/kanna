@@ -48,12 +48,12 @@ fn move_docks_only_a_task_and_moves_its_agent_to_the_other_edge_of_its_workspace
     let refused = send(&core, json!({ "cmd": "move", "args": { "pane": "a", "dock": "left" } }));
     assert_eq!(refused["error"]["code"], "not_a_task", "{refused}");
     assert_eq!(refused["error"]["message"], "a isn't a task, and only a task's agent docks: start one with `kanna task new` and `kanna task start`");
-    let windowed = send(&core, json!({ "cmd": "open", "args": { "type": "term", "name": "other", "dock": "left", "window": "w1" } }));
+    let windowed = send(&core, json!({ "cmd": "open", "args": { "type": "term", "name": "other", "dock": "left", "window": "win-1" } }));
     assert_eq!(windowed["error"]["code"], "bad_request", "{windowed}");
 
     let flipped = send(&core, json!({ "cmd": "move", "args": { "pane": "agent", "dock": "right" } }));
     assert_eq!(flipped["dock"], json!({ "pane": "agent", "edge": "right", "width": "2/5" }), "{flipped}");
-    let elsewhere = send(&core, json!({ "cmd": "move", "args": { "pane": "agent", "dock": "left", "window": "w1" } }));
+    let elsewhere = send(&core, json!({ "cmd": "move", "args": { "pane": "agent", "dock": "left", "window": "win-1" } }));
     assert_eq!(elsewhere["error"]["code"], "bad_request", "a task's agent stays in its workspace: {elsewhere}");
 }
 
@@ -83,17 +83,17 @@ fn dead_pane_in_a_window() -> Core {
     let (core, _, app) = make_remote_core();
     assert_eq!(send(&core, json!({ "cmd": "open", "args": { "type": "term", "name": "live" } }))["ok"], true);
     let placed = app.owner.borrow_mut().handle(&json!({ "call": "serve", "request": { "op": "place", "pane": { "id": "p9", "type": "diff" }, "at": { "window": "new" } } }));
-    assert_eq!(placed["window"], "w2", "{placed}");
+    assert_eq!(placed["window"], "win-2", "{placed}");
     core
 }
 
 #[test]
 fn closing_a_window_of_panes_the_daemon_doesnt_know_removes_the_window() {
     let core = dead_pane_in_a_window();
-    let closed = send(&core, json!({ "cmd": "close", "args": { "window": "w2" } }));
+    let closed = send(&core, json!({ "cmd": "close", "args": { "window": "win-2" } }));
     assert_eq!(closed["closed"], json!(["p9"]), "{closed}");
     let list = everything(&core);
-    assert_eq!(list["windows"].as_array().unwrap().iter().map(|w| w["id"].clone()).collect::<Vec<_>>(), vec![json!("w1")], "{list}");
+    assert_eq!(list["windows"].as_array().unwrap().iter().map(|w| w["id"].clone()).collect::<Vec<_>>(), vec![json!("win-1")], "{list}");
 }
 
 #[test]

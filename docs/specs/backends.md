@@ -77,9 +77,9 @@ sequenceDiagram
     K->>K: pick backend → kmux
     K->>A: open(type=ios, split=down, size=1/3)
     A->>M: control protocol request
-    M-->>A: { pane: "p3", state: "running" }
+    M-->>A: { pane: "ios-3", state: "running" }
     A-->>K: result
-    K-->>Dev: phone (p3)
+    K-->>Dev: phone (ios-3)
 ```
 
 ## 5. Open questions

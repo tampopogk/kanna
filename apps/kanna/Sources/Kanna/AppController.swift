@@ -169,7 +169,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         installMenu()
         if !background { NSApp.activate() }
         if echo {
-            render(["key": "w1", "windows": [["id": "w1", "tabs": [["id": "t1", "title": "Tab 1", "panes": ["term-1"]]], "tab": "t1", "title": "Tab 1",
+            render(["key": "win-1", "windows": [["id": "win-1", "tabs": [["id": "tab-1", "title": "Tab 1", "panes": ["term-1"]]], "tab": "tab-1", "title": "Tab 1",
                                                "focused": "term-1", "root": ["pane": "term-1", "type": "term"]]]])
         }
         daemon?.start()

@@ -6,11 +6,11 @@ A tab is named after what it shows instead of `Tab N`.
 
 **Before:** every tab numbered, as in kmux.
 
-![Four tabs named Tab 1 to Tab 4, and the window titled Tab 4 — w1](tab-names-before.png)
+![Four tabs named Tab 1 to Tab 4, and the window titled Tab 4 — win-1](tab-names-before.png)
 
 **After:** the same four tabs, opened by ⌘T, `kanna open code store.rs --tab`, `kanna open md presenting.md --tab` and `kanna open web … --tab`.
 
-![The same tabs named Tab 1, store.rs, presenting.md and Kanna docs, and the window titled Kanna docs — w1](tab-names-after.png)
+![The same tabs named Tab 1, store.rs, presenting.md and Kanna docs, and the window titled Kanna docs — win-1](tab-names-after.png)
 
 ## Contents
 

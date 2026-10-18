@@ -26,7 +26,7 @@ pub static COMMANDS: &[Command] = &[
         options: &[
             ("--cmd CMD", "Shell command line to run in your login shell, e.g. \"npm run dev\". Put it in single quotes if it uses $VARS or ;, so your own shell leaves it alone. Default: an interactive shell."),
             ("--cwd DIR", "Working directory."),
-            ("--name NAME", "Optional. A name to refer to the pane by in later commands; without one, use the ID that open prints (e.g. p3)."),
+            ("--name NAME", "Optional. A name to refer to the pane by in later commands; without one, use the ID that open prints (e.g. term-3)."),
             ("--split right|down|auto", "Where the new pane goes relative to the focused pane. auto (default) splits along the longer side."),
             ("--size FRACTION", "Share of the focused pane's space the new pane takes: 1/3, 25% or 0.25. Default 1/2."),
             ("--tab", "Open in a new tab instead of splitting."),
@@ -59,9 +59,9 @@ pub static COMMANDS: &[Command] = &[
         group: "Panes",
         summary: "Close a pane, or a whole tab or window with everything in it.",
         usage: "kanna close PANE\n       kanna close --tab TAB\n       kanna close --window WINDOW",
-        options: &[("--tab TAB", "Close a tab, e.g. t2."), ("--window WINDOW", "Close a window, e.g. w2.")],
+        options: &[("--tab TAB", "Close a tab, e.g. tab-2."), ("--window WINDOW", "Close a window, e.g. win-2.")],
         notes: "Closing a tab's last pane closes the tab; closing a window's last tab closes the window, unless it has a docked pane. A docked pane closes only with its window (`kanna close --window`); undock it first with `kanna move PANE --tab` to close it alone.",
-        examples: &[("kanna close logs", "Close the pane named logs."), ("kanna close --tab t2", "Close tab t2 and its panes.")],
+        examples: &[("kanna close logs", "Close the pane named logs."), ("kanna close --tab tab-2", "Close tab-2 and its panes.")],
         parse: |args| target(args, "close"),
         show: output::closed,
     },
@@ -72,7 +72,7 @@ pub static COMMANDS: &[Command] = &[
         usage: "kanna focus PANE\n       kanna focus --tab TAB\n       kanna focus --window WINDOW",
         options: &[("--tab TAB", "Focus a tab."), ("--window WINDOW", "Focus a window.")],
         notes: "Focusing a pane in another tab or window switches to it. Focusing another pane cancels zoom.",
-        examples: &[("kanna focus server", "Focus the pane named server."), ("kanna focus --tab t1", "Switch to tab t1.")],
+        examples: &[("kanna focus server", "Focus the pane named server."), ("kanna focus --tab tab-1", "Switch to tab-1.")],
         parse: |args| target(args, "focus"),
         show: output::focused,
     },
@@ -104,7 +104,7 @@ pub static COMMANDS: &[Command] = &[
         summary: "Type a line of text into a terminal pane and press Return.",
         usage: "kanna send PANE TEXT...",
         options: &[],
-        notes: "Everything after PANE is the text. Quote it to keep your shell from interpreting it.\n-- ends the options: `kanna send p1 -- --json` types --json.\nReturn is pressed on its own after the text (pasted, if the program asked for bracketed paste), so an agent like Claude Code submits it.",
+        notes: "Everything after PANE is the text. Quote it to keep your shell from interpreting it.\n-- ends the options: `kanna send term-1 -- --json` types --json.\nReturn is pressed on its own after the text (pasted, if the program asked for bracketed paste), so an agent like Claude Code submits it.",
         examples: &[("kanna send server \"npm test\"", "Run npm test in the server pane.")],
         parse: |args| {
             let pane = pane(args, "send")?;
@@ -162,7 +162,7 @@ pub static COMMANDS: &[Command] = &[
         summary: "Save a PNG of a pane or a window as it is drawn now, and print its path.",
         usage: "kanna screenshot [PANE | --window WINDOW] [-o|--out FILE] [--force]",
         options: &[
-            ("--window WINDOW", "The whole window, e.g. w2: its tab bar, every pane showing and the space between them."),
+            ("--window WINDOW", "The whole window, e.g. win-2: its tab bar, every pane showing and the space between them."),
             ("--out FILE", "Where to save it, relative to this folder. It must not exist yet, unless you add --force. Default: a new file in $TMPDIR."),
             ("-o FILE", "Same as --out."),
             ("--force", "Replace FILE if it exists."),
@@ -171,7 +171,7 @@ pub static COMMANDS: &[Command] = &[
         examples: &[
             ("kanna screenshot", "Save this window and print where."),
             ("kanna screenshot diff -o diff.png", "Save the pane named diff to diff.png."),
-            ("kanna screenshot --window w2 --out shots/w2.png --force", "Save window w2, replacing shots/w2.png."),
+            ("kanna screenshot --window win-2 --out shots/win-2.png --force", "Save win-2, replacing shots/win-2.png."),
         ],
         parse: parse_screenshot,
         show: |_, reply| reply["path"].as_str().unwrap_or_default().to_string(),
@@ -264,10 +264,10 @@ pub static COMMANDS: &[Command] = &[
         summary: "Rename a tab. (In the app: double-click the tab.)",
         usage: "kanna rename-tab TAB TITLE...",
         options: &[],
-        notes: "TAB is a tab ID such as t1 (see `kanna workspace list --all`). Everything after TAB is the title.",
-        examples: &[("kanna rename-tab t1 servers", "Call tab t1 \"servers\".")],
+        notes: "TAB is a tab ID such as tab-1 (see `kanna workspace list --all`). Everything after TAB is the title.",
+        examples: &[("kanna rename-tab tab-1 servers", "Call tab-1 \"servers\".")],
         parse: |args| {
-            let tab = args.positional().ok_or_else(|| usage("rename-tab", "missing TAB (an ID like t1; see `kanna workspace list --all`)"))?;
+            let tab = args.positional().ok_or_else(|| usage("rename-tab", "missing TAB (an ID like tab-1; see `kanna workspace list --all`)"))?;
             let title = args.rest().ok_or_else(|| usage("rename-tab", "missing TITLE"))?;
             Ok(json!({ "tab": tab, "title": title }))
         },
@@ -280,7 +280,7 @@ pub static COMMANDS: &[Command] = &[
         usage: "kanna move-tab TAB [--window WINDOW|new] [--index N]",
         options: &[("--window WINDOW|new", "Destination window. Default: the tab's own window."), ("--index N", "Position in the tab bar, from 0. Default: last.")],
         notes: "",
-        examples: &[("kanna move-tab t2 --window new", "Move tab t2 into a new window."), ("kanna move-tab t3 --index 0", "Make t3 the first tab.")],
+        examples: &[("kanna move-tab tab-2 --window new", "Move tab-2 into a new window."), ("kanna move-tab tab-3 --index 0", "Make tab-3 the first tab.")],
         parse: |args| {
             let tab = args.positional().ok_or_else(|| usage("move-tab", "missing TAB"))?;
             let mut out = json!({ "tab": tab });
@@ -316,8 +316,8 @@ pub static COMMANDS: &[Command] = &[
         summary: "Make a window one of a task's, so it shows and hides with the task, or free it.",
         usage: "kanna window assign WINDOW TASK\n       kanna window free WINDOW",
         options: &[],
-        notes: "A task's windows are on screen while the task is on a Desk; on the Shelf or in the backlog they close, their panes still running, and they open again at their frames when it's pulled. A window opened from a task's pane (`kanna open --window new`) or torn off its tabs is the task's already; one made anywhere else is free. TASK is a task's ID (t135) or its agent's pane. A Desk, a window with a lead (the Quiz window) and a task that hasn't started are refused. In the app: Window → Assign Window to Task and Free Window.",
-        examples: &[("kanna window assign w4 task-1dfb", "Make w4 one of task-1dfb's windows."), ("kanna window free w4", "Take w4 out of its task; it stays open.")],
+        notes: "A task's windows are on screen while the task is on a Desk; on the Shelf or in the backlog they close, their panes still running, and they open again at their frames when it's pulled. A window opened from a task's pane (`kanna open --window new`) or torn off its tabs is the task's already; one made anywhere else is free. TASK is a task's ID (task-1dfb) or its agent's pane. A Desk, a window with a lead (the Quiz window) and a task that hasn't started are refused. In the app: Window → Assign Window to Task and Free Window.",
+        examples: &[("kanna window assign win-4 task-1dfb", "Make win-4 one of task-1dfb's windows."), ("kanna window free win-4", "Take win-4 out of its task; it stays open.")],
         parse: parse_window,
         show: output::window,
     },
@@ -328,7 +328,7 @@ pub static COMMANDS: &[Command] = &[
         usage: "kanna rename-pane PANE NAME",
         options: &[],
         notes: "PANE is the pane's current name or its ID (see `kanna workspace list --all`). An empty NAME (\"\") clears the name, so the pane goes by its ID. No two panes share a name, and a name can't be another pane's ID.",
-        examples: &[("kanna rename-pane p3 server", "Call pane p3 \"server\"."), ("kanna rename-pane server \"\"", "Clear the name; refer to it as p3 again.")],
+        examples: &[("kanna rename-pane term-3 server", "Call term-3 \"server\"."), ("kanna rename-pane server \"\"", "Clear the name; refer to it as term-3 again.")],
         parse: |args| {
             let pane = args.positional().ok_or_else(|| usage("rename-pane", "missing PANE"))?;
             let name = args.positional().ok_or_else(|| usage("rename-pane", "missing NAME (\"\" to clear it)"))?;
@@ -515,7 +515,7 @@ pub static COMMANDS: &[Command] = &[
         ],
         notes: "An agent pane's status (working, needs-you, idle, exited) is in `kanna task list`, and in `kanna workspace list --all --json`. explain shows the agent and its version, where its status came from (the agent's own OSC 7501 report, with the record, which wins when there is one, or the rules), the rules file and where it came from, the rule that matched and the text it matched.\nRules: bundled in Kanna, from the rules site (checked every 30 minutes), or your own in ~/.config/kanna/agent-rules/<agent>.json, which always wins and reloads when you save it.",
         examples: &[
-            ("kanna status explain p3", "Why p3's agent shows the status it does."),
+            ("kanna status explain term-3", "Why term-3's agent shows the status it does."),
             ("kanna status explain --file screen.txt --agent claude", "How Claude's rules judge a saved screen."),
             ("kanna status update", "Fetch new rules from the rules site now."),
         ],
@@ -822,7 +822,7 @@ fn parse_workspace(args: &mut Argv) -> Result<Value, Failure> {
 
 fn parse_window(args: &mut Argv) -> Result<Value, Failure> {
     let action = args.positional().ok_or_else(|| usage("window", "say assign or free"))?;
-    let window = args.positional().ok_or_else(|| usage("window", "missing WINDOW (an ID like w4; see `kanna workspace list --all`)"))?;
+    let window = args.positional().ok_or_else(|| usage("window", "missing WINDOW (an ID like win-4; see `kanna workspace list --all`)"))?;
     match action.as_str() {
         "assign" => {
             let task = args.positional().ok_or_else(|| usage("window", "missing TASK (an ID like task-1dfb; see `kanna task list`)"))?;
@@ -972,7 +972,7 @@ pub fn usage(command: &str, problem: &str) -> Failure {
 }
 
 fn pane(args: &mut Argv, command: &str) -> Result<String, Failure> {
-    args.positional().ok_or_else(|| usage(command, "missing PANE (a pane name, or an ID like p1; see `kanna workspace list --all`)"))
+    args.positional().ok_or_else(|| usage(command, "missing PANE (a pane name, or an ID like term-1; see `kanna workspace list --all`)"))
 }
 
 fn parse_screenshot(args: &mut Argv) -> Result<Value, Failure> {

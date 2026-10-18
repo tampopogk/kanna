@@ -24,7 +24,8 @@ final class Physical {
         if case .object(let list)? = saved["frames"] {
             for (id, frame) in list {
                 guard let x = frame["x"]?.number, let y = frame["y"]?.number, let w = frame["w"]?.number, let h = frame["h"]?.number, w > 0, h > 0 else { continue }
-                frames[id] = NSRect(x: x, y: y, width: w, height: h)
+                let legacy = id.first == "w" && id.count > 1 && id.dropFirst().allSatisfy(\.isNumber)
+                frames[legacy ? "win-\(id.dropFirst())" : id] = NSRect(x: x, y: y, width: w, height: h)
             }
         }
         if case .object(let list)? = saved["docks"] {

@@ -2,7 +2,7 @@
 
 **Status:** built, except `kanna up` and the layout expression ([arranging panes](arranging-panes.md)) · **Part of:** [the kanna CLI](cli.md)
 
-Every command, option, output and error is kmux's CLI's, except where [the CLI's differences](cli.md#2-where-kanna-differs-from-kmux) say otherwise. `kanna help`, `kanna help COMMAND` or `kanna COMMAND --help` print them. `PANE` can be a name (`site`) or an ID (`p2`).
+Every command, option, output and error is kmux's CLI's, except where [the CLI's differences](cli.md#2-where-kanna-differs-from-kmux) say otherwise. `kanna help`, `kanna help COMMAND` or `kanna COMMAND --help` print them. `PANE` can be a name (`site`) or an ID (`term-2`).
 
 ## 1. The commands
 
@@ -27,7 +27,7 @@ Every command, option, output and error is kmux's CLI's, except where [the CLI's
 | | `kanna rename-tab TAB TITLE` | Rename a tab; it keeps that name instead of following its pane's ([tab names](tab-names.md)). |
 | | `kanna move-tab TAB [--window WINDOW\|new] [--index N]` | Reorder a tab, or move it to another window. |
 | | `kanna window assign WINDOW TASK` / `kanna window free WINDOW` | Make a window one of a task's, shown and hidden with it, or free it ([workspaces](workspaces.md)). |
-| | `kanna workspace list [--all]` | Your workspace (from `$KANNA_PANE`): its dock, tabs and panes, the shown tab, focus and zoom, also off screen; `--all`: every window, workspace and pane ([workspace list](workspace-list.md)). |
+| | `kanna workspace list [--all]` | Your workspace (from `$KANNA_TERMINAL`): its dock, tabs and panes, the shown tab, focus and zoom, also off screen; `--all`: every window, workspace and pane ([workspace list](workspace-list.md)). |
 | Information | `kanna capabilities` | Show what the running mux supports (and, for Kanna, whether the app is attached). |
 | More | `kanna help [COMMAND\|instances\|raw]`, `kanna commands [--json]`, `kanna raw REQUEST` | Help; every command, for scripts; one control-protocol request as JSON. |
 | | `kanna instances [--json]`, `kanna instances prune` | For developing Kanna: list the running instances of every channel, or delete the folders of dev instances whose worktree is gone ([instances](instances.md)). |
@@ -46,7 +46,7 @@ Kanna's own commands beyond these (`markup`, `rename-pane`, `task`, `status`, `c
 | `--window ID\|new` | Open in that window, or a new one. |
 | `--no-wait` | Return as soon as the pane is created, without waiting until it's running. |
 
-Global options, as kmux's: `--json` (the reply as one line of JSON), `--help`/`-h`, `--version`, `--instance NAME`, `--bg` (`KANNA_BG=1`), `--fresh` (`KANNA_FRESH=1`); and Kanna's `--mux kanna|kmux` (`KANNA_MUX`; `kanna-dev` is another name for `kanna`) and `--`, which ends the options: everything after it is text, so `kanna send p1 -- --json` types `--json` (kmux's CLI strips `--json` from anywhere in the arguments). Exit codes: [CLI](cli.md#5-output-errors-and-exit-codes).
+Global options, as kmux's: `--json` (the reply as one line of JSON), `--help`/`-h`, `--version`, `--instance NAME`, `--bg` (`KANNA_BG=1`), `--fresh` (`KANNA_FRESH=1`); and Kanna's `--mux kanna|kmux` (`KANNA_MUX`; `kanna-dev` is another name for `kanna`) and `--`, which ends the options: everything after it is text, so `kanna send term-1 -- --json` types `--json` (kmux's CLI strips `--json` from anywhere in the arguments). Exit codes: [CLI](cli.md#5-output-errors-and-exit-codes).
 
 ## 3. send-key
 

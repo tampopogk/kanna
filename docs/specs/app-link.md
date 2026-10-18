@@ -26,9 +26,9 @@ sequenceDiagram
     participant D as Kanna daemon
     participant C as kanna CLI
     A->>D: app.hello
-    D->>A: ok, panes p1 p2, the layout
+    D->>A: ok, panes term-1 term-2, the layout
     Note over A: draw the layout's windows
-    A->>D: attach term-1 (p1's terminal)
+    A->>D: attach term-1
     D->>A: snapshot term-1 (the screen, GHOSTSNP)
     D->>A: grid term-1 80×24
     A->>D: resize term-1 to fit the view
@@ -37,10 +37,10 @@ sequenceDiagram
     A->>D: input term-1 (keystrokes)
     D->>A: output term-1 (what the program wrote)
     C->>D: open --split right
-    D->>C: ok, p3 in w1
-    D->>A: layout (w1 now splits p1 | p3)
+    D->>C: ok, term-3 in win-1
+    D->>A: layout (win-1 now splits term-1 | term-3)
     C->>D: debug.type pane s1
-    D->>A: debug.type pane p1 (names resolved to IDs)
+    D->>A: debug.type term-1 (names resolved to IDs)
     A->>D: ok
     D->>C: ok
 ```

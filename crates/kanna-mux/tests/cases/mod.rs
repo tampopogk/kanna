@@ -75,12 +75,40 @@ fn learn(expected: &Value, actual: &Value, ids: &mut Vec<(String, String)>) {
     }
 }
 
+const LAYOUT_IDS: [(&str, &str); 2] = [("t", "tab-"), ("w", "win-")];
+
+fn layout_id(text: &str, to_ours: bool) -> Option<String> {
+    LAYOUT_IDS.iter().find_map(|(kmux, ours)| {
+        let (from, to) = if to_ours { (kmux, ours) } else { (ours, kmux) };
+        text.strip_prefix(from).filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())).map(|n| format!("{to}{n}"))
+    })
+}
+
+fn kmux_words(text: &str) -> String {
+    let mut out = String::new();
+    let mut word = String::new();
+    for c in text.chars().chain(std::iter::once('\0')) {
+        if c.is_ascii_alphanumeric() || c == '-' {
+            word.push(c);
+            continue;
+        }
+        out.push_str(&layout_id(&word, false).unwrap_or_else(|| word.clone()));
+        word.clear();
+        if c != '\0' {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn translate(value: &Value, ids: &[(String, String)], to_ours: bool) -> Value {
     match value {
         Value::String(text) => ids
             .iter()
             .find(|(kmux, ours)| if to_ours { kmux == text } else { ours == text })
-            .map_or_else(|| value.clone(), |(kmux, ours)| Value::String(if to_ours { ours.clone() } else { kmux.clone() })),
+            .map(|(kmux, ours)| Value::String(if to_ours { ours.clone() } else { kmux.clone() }))
+            .or_else(|| layout_id(text, to_ours).map(Value::String))
+            .unwrap_or_else(|| if to_ours { value.clone() } else { Value::String(kmux_words(text)) }),
         Value::Array(items) => Value::Array(items.iter().map(|item| translate(item, ids, to_ours)).collect()),
         Value::Object(fields) => Value::Object(fields.iter().map(|(key, item)| (key.clone(), translate(item, ids, to_ours))).collect()),
         _ => value.clone(),

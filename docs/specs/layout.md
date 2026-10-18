@@ -76,16 +76,16 @@ sequenceDiagram
     participant C as kanna CLI
     Note over A: closed
     C->>D: open --name logs
-    D->>C: ok, p3 in window w1, tab t1
+    D->>C: ok, term-3 in win-1, tab-1
     C->>D: open diff --split right
-    D->>C: ok, p4 in window w1, tab t1
-    C->>D: screenshot w1
+    D->>C: ok, term-4 in win-1, tab-1
+    C->>D: screenshot win-1
     D->>C: no_app
     C->>A: start (open -a $KANNA_APP)
     A->>D: app.hello
     D->>A: ok, panes and the layout
-    Note over A: w1 with p3 | p4
-    C->>D: screenshot w1 (again)
+    Note over A: win-1 with term-3 | term-4
+    C->>D: screenshot win-1 (again)
 ```
 
 ## 5. The CLI starts the app

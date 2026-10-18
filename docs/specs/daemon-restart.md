@@ -56,8 +56,8 @@ sequenceDiagram
     D2->>K: ack exits that happened meanwhile (after saving them)
     A->>D2: app.hello
     D2->>A: ok, panes (the same IDs: the saved layout still matches)
-    A->>D2: attach p1
-    D2->>A: snapshot p1, grid p1, then output
+    A->>D2: attach term-1
+    D2->>A: snapshot term-1, grid term-1, then output
 ```
 
 | The keeper has the pty | `terminals.json` has it | The daemon |

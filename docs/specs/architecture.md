@@ -85,10 +85,10 @@ flowchart LR
         WS -. "by ID" .-> T1 & T2 & T3
     end
     subgraph A["Kanna app: physical"]
-        DESK["its Desk: shows ws-3"]
-        P1["p5 → term-41"]
-        P2["p6 → diff-2"]
-        P3["p7 → page-3"]
+        DESK["its Desk d1: shows ws-3"]
+        P1["a view of term-41"]
+        P2["a view of diff-2"]
+        P3["a view of page-3"]
         DESK --- P1 & P2 & P3
     end
     DESK -. "subscribes" .-> WS
@@ -104,8 +104,8 @@ flowchart LR
 | | What it is | Kept by | After an app restarts |
 |---|---|---|---|
 | **Work** | tasks; content: terminals (pty, screen, scrollback, cwd, exit code), diffs, files, pages, iOS devices | the daemon | exactly as it was, still running |
-| **Logical presentation** | workspaces, their tabs and arrangement, what each tab shows, the shown tab and front, the Shelf | the daemon | as it was, changed meanwhile by tasks and the CLI |
-| **Physical presentation** | windows, the app's Desk, panes, sizes, magnification, font, focus, the dock's width | each app | reopened from the app's own file |
+| **Logical presentation** | workspaces, their logical windows, tabs and arrangement, what each tab shows, the shown tab, focus and zoom, which app has each task out or whether it's in the backlog | the daemon | as it was, changed meanwhile by tasks and the CLI |
+| **Physical presentation** | window frames, the app's Desks (d1, d2, …) and its Shelf, sizes, magnification, font, the dock's width | each app | reopened from the app's own file |
 
 Every command works with no app: content commands (`send`, `send-key`, `read`, `restart`, taking content IDs) and layout commands (`open`, `close`, `focus`, tab changes), which change the daemon's workspaces. Only commands about an app itself (`debug.*`, `screenshot`) need one.
 

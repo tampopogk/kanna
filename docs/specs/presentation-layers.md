@@ -89,7 +89,7 @@ flowchart LR
     WS -->|"tabs"| TB["tab-9 · tab-10"]
     WS -->|"windows"| LW["win-2: tab-12"]
     TB -->|"shows"| C["term-44 · diff-2 · file-7 · page-3"]
-    P["p5, w4 (app-local)"] -.->|"a view of"| C
+    P["d1 (a Desk)"] -.->|"shows"| WS
     classDef d fill:#2f6f4f,stroke:#6fcf97,color:#ffffff
     classDef a fill:#2f4f8f,stroke:#7fa7ff,color:#ffffff
     class T,WS,A,TB,LW,C d
@@ -100,10 +100,10 @@ flowchart LR
 |---|---|---|---|
 | `task-3f9a1c2e` | a task | daemon ([task IDs](task-ids.md)) | everyone |
 | `ws-3` | a workspace | daemon | everyone |
-| `win-2` | a workspace's extra window | daemon | everyone |
+| `win-2` | a logical window: one of a workspace's, or free; each app gives it a frame | daemon | everyone |
 | `tab-9` | a tab in a workspace | daemon | everyone |
 | `term-41`, `diff-2`, `file-7`, `page-3`, `ios-1` | content | daemon; never reused | everyone |
-| `p5`, `w4` | a pane, a window on screen | each app | that app only |
+| `d1` | one of an app's Desks | each app | that app, and its CLI replies |
 
 - **A restart makes a new terminal with a new ID.** `restart term-41` (or a task starting again) ends it and answers `term-48`; the workspace's tab now shows `term-48`, and an app sees a new content ID, so it makes a new view instead of reusing the exited one.
 - **A task keys on its agent's terminal ID and its workspace ID,** both in its record; neither is a pane. Starting a task again gives its agent a new terminal, and the task's record, its workspace's dock and the markup routed to it follow the new ID.
@@ -131,7 +131,7 @@ flowchart LR
 3. **Each app has its own Desk and Shelf;** the backlog is shared, and a task on an app's Shelf is claimed by that app ([each app's Desk and Shelf](app-desk.md)).
 4. **Terminals:** a restart makes a new terminal with a new ID; `KANNA_TERMINAL` replaces `KANNA_PANE`.
 5. **Diffs:** one watcher per folder + git args, shared, stopped when the last subscriber leaves.
-6. **CLI:** content commands take content IDs, layout commands act on logical presentation with no app; pane and window IDs never reach the CLI.
+6. **CLI:** content commands take content IDs, layout commands act on logical presentation with no app and take its IDs (`ws-3`, `win-2`, `tab-9`); the only app ID the CLI sees is a Desk's (`d1`), in replies about it.
 7. **Stop and Start** hang up and rerun a task's tab terminals from its workspace; **Done** closes it.
 8. **Ruled out:** the app as the only owner of layout (a task could then open tabs only by starting the app); the daemon storing workspaces as an opaque app blob (something still has to understand a layout to change it); a grace period for diff watchers.
 9. **`kanna task pull` and `park`** act on the CLI's instance's app, starting it if none runs.

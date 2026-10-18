@@ -155,7 +155,7 @@ impl Reader<'_> {
         let mut tabs = Tabs::default();
         for entry in saved {
             let tab_id = string(entry, "id").filter(|_| entry.is_object());
-            let tn = tab_id.and_then(|id| number_in(id, "t"));
+            let tn = tab_id.and_then(|id| number_in(id, "tab-"));
             let (Some(tab_id), Some(tn)) = (tab_id, tn) else { return Err(bad(&format!("tab {}", quoted(entry.get("id"))))) };
             if !self.tab_ids.insert(tab_id.to_string()) {
                 return Err(bad(&format!("tab {}", quoted(entry.get("id")))));
@@ -198,7 +198,7 @@ impl Reader<'_> {
 
     fn window(&mut self, item: &Value) -> Result<(Window, Option<Dock>, bool), KmuxError> {
         let id = string(item, "id").filter(|_| item.is_object());
-        let n = id.and_then(|id| number_in(id, "w"));
+        let n = id.and_then(|id| number_in(id, "win-"));
         let (Some(id), Some(n)) = (id, n) else { return Err(bad(&format!("window {}", quoted(item.get("id"))))) };
         if !self.window_ids.insert(id.to_string()) {
             return Err(bad(&format!("window {}", quoted(item.get("id")))));
@@ -225,6 +225,18 @@ fn settle(tabs: &mut Tabs, item: &Value, side: Option<&String>) {
     }
 }
 
+fn renamed(value: &Value, key: Option<&str>) -> Value {
+    match value {
+        Value::String(id) if matches!(key, Some("id" | "active" | "key" | "windows")) => {
+            let legacy = |prefix: &str, to: &str| number_in(id, prefix).map(|n| Value::String(format!("{to}{n}")));
+            legacy("t", "tab-").or_else(|| legacy("w", "win-")).unwrap_or_else(|| value.clone())
+        }
+        Value::Array(items) => Value::Array(items.iter().map(|item| renamed(item, key)).collect()),
+        Value::Object(fields) => Value::Object(fields.iter().map(|(k, item)| (k.clone(), renamed(item, Some(k)))).collect()),
+        _ => value.clone(),
+    }
+}
+
 fn read_workspace(id: &str, item: &Value, dock: Dock, tabs: Tabs, place: Where) -> Workspace {
     let mut ws = Workspace::new(id.into(), dock, place);
     ws.parked_at = item.get("parkedAt").and_then(Value::as_f64);
@@ -235,6 +247,7 @@ fn read_workspace(id: &str, item: &Value, dock: Dock, tabs: Tabs, place: Where) 
 }
 
 pub fn read(state: &Value, panes: &HashSet<String>) -> Result<SavedLayout, KmuxError> {
+    let state = &renamed(state, None);
     let saved = state.get("counters").cloned().unwrap_or(Value::Object(Map::new()));
     let mut reader = Reader { panes, placed: HashSet::new(), tab_ids: HashSet::new(), window_ids: HashSet::new(), counters: (whole(saved.get("tab")).unwrap_or(0), whole(saved.get("window")).unwrap_or(0), whole(saved.get("workspace")).unwrap_or(0)) };
     let saved_windows = state.get("windows").and_then(Value::as_array).ok_or_else(|| bad("needs panes and windows"))?;

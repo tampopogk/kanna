@@ -38,12 +38,12 @@ An agent picks a skill by its description, from what's in its context, so it has
 | Agent | Its first message |
 |---|---|
 | The [planning agent](planning-agent.md) | You are the Kanna planning agent. |
-| A task's agent | You're a task's agent in Kanna (pane p9), in your task's worktree. Your task: *the task's first message* |
+| A task's agent | You're a task's agent in Kanna (term-9), in your task's worktree. Your task: *the task's first message* |
 | The [quiz](quiz.md)'s agent | You are the Kanna quiz agent, on main: quiz me on what landed on main. |
 
 - **A task's agent gets its task as before,** with that line ahead of it; resuming sends nothing, since the conversation already has it.
-- **Every agent Kanna starts has Kanna's environment** (`KANNA_PANE`, `KANNA_SOCKET`), so `kanna` works from it; Codex runs with `--no-daemon`, so its commands get it too.
-- **The environment says where, not who.** `KANNA_SOCKET` is which Kanna, `KANNA_PANE` which pane a command runs in (for "the task I'm in", "open beside me"), as `TMUX_PANE` is tmux's. Neither tells an agent its role, and there's no `KANNA_PLANNER` or `KANNA_QUIZ`. A command can't find its pane another way: a sandboxed agent's commands have no terminal and can't list processes.
+- **Every agent Kanna starts has Kanna's environment** (`KANNA_TERMINAL`, `KANNA_SOCKET`), so `kanna` works from it; Codex runs with `--no-daemon`, so its commands get it too.
+- **The environment says where, not who.** `KANNA_SOCKET` is which Kanna, `KANNA_TERMINAL` which pane a command runs in (for "the task I'm in", "open beside me"), as `TMUX_PANE` is tmux's. Neither tells an agent its role, and there's no `KANNA_PLANNER` or `KANNA_QUIZ`. A command can't find its pane another way: a sandboxed agent's commands have no terminal and can't list processes.
 - **An agent you start yourself** in a Kanna terminal is told nothing and uses no Kanna skill unless you ask.
 - **The skills key on what they're told,** not on environment variables an agent can't see: kanna-planning on being the Kanna planning agent, kanna-tasks on being a task's agent, kanna-quiz on being the quiz agent.
 

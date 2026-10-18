@@ -249,7 +249,7 @@ fn lookup(name: &str) -> Result<&'static Command, Failure> {
 
 fn explain(command: &Command, mut failure: Failure, mux: &mut Session, target: &Target) -> Failure {
     match failure.code {
-        exit::NOT_FOUND => failure.message += "\nRun `kanna workspace list --all` to see pane names and IDs, tabs (t1, …) and windows (w1, …).",
+        exit::NOT_FOUND => failure.message += "\nRun `kanna workspace list --all` to see pane names and IDs (term-1, file-1, …), tabs (tab-1, …) and windows (win-1, …).",
         exit::UNSUPPORTED => {
             let supported = mux.call("capabilities", json!({})).map(|c| output::join(&c["commands"])).unwrap_or_default();
             failure.message = format!("the running {} doesn't support `{}` yet. It supports: {supported}", target.name(), command.name);
@@ -513,13 +513,13 @@ pub fn describe(supported: Option<&[String]>) -> Value {
             { "flag": "--bg", "description": "If Kanna.app has to be started, keep it behind your other windows (also KANNA_BG=1)." },
             { "flag": "--fresh", "description": "If Kanna's daemon has to be started, start it without the layout it saved (also KANNA_FRESH=1)." },
             { "flag": "--json", "description": "Print the reply as JSON." },
-            { "flag": "--", "description": "End the options: what follows is text, e.g. kanna send p1 -- --json." }
+            { "flag": "--", "description": "End the options: what follows is text, e.g. kanna send term-1 -- --json." }
         ],
         "running": supported.is_some(),
         "refs": {
-            "PANE": "a pane name (open --name) or ID like p1",
-            "TAB": "a tab ID like t1",
-            "WINDOW": "a window ID like w1",
+            "PANE": "a pane name (open --name) or ID like term-1, file-2 or page-3",
+            "TAB": "a tab ID like tab-1",
+            "WINDOW": "a window ID like win-1",
             "FRACTION": "1/3, 25% or 0.25"
         },
         "exitCodes": {
@@ -650,11 +650,11 @@ mod tests {
             ("kanna open web localhost:3000 --split down", json!({ "type": "web", "url": "localhost:3000", "split": "down" })),
             ("kanna open --tab --no-wait", json!({ "type": "term", "tab": true, "wait": false })),
             ("kanna close logs", json!({ "pane": "logs" })),
-            ("kanna close --window w2", json!({ "window": "w2" })),
-            ("kanna rename-tab t1 my servers", json!({ "tab": "t1", "title": "my servers" })),
+            ("kanna close --window win-2", json!({ "window": "win-2" })),
+            ("kanna rename-tab tab-1 my servers", json!({ "tab": "tab-1", "title": "my servers" })),
             ("kanna send server npm test", json!({ "pane": "server", "text": "npm test" })),
             ("kanna move logs --to server --side bottom", json!({ "pane": "logs", "to": "server", "side": "bottom" })),
-            ("kanna move-tab t2 --index 0", json!({ "tab": "t2", "index": 0 })),
+            ("kanna move-tab tab-2 --index 0", json!({ "tab": "tab-2", "index": 0 })),
             ("kanna open web a.test --history", json!({ "type": "web", "url": "a.test", "history": true })),
             ("kanna navigate site --back", json!({ "pane": "site", "back": true })),
             ("kanna open md /tmp/a.md", json!({ "type": "md", "path": "/tmp/a.md" })),
@@ -672,10 +672,10 @@ mod tests {
             ("kanna open --dock md /tmp/a.md", json!({ "type": "md", "dock": "left", "path": "/tmp/a.md" })),
             ("kanna open web a.test --dock=right --window new", json!({ "type": "web", "url": "a.test", "dock": "right", "window": "new" })),
             ("kanna move agent --dock", json!({ "pane": "agent", "dock": "left" })),
-            ("kanna move agent --dock right --window w2", json!({ "pane": "agent", "dock": "right", "window": "w2" })),
+            ("kanna move agent --dock right --window win-2", json!({ "pane": "agent", "dock": "right", "window": "win-2" })),
             ("kanna move agent --tab", json!({ "pane": "agent", "tab": "new" })),
-            ("kanna move agent --tab t3", json!({ "pane": "agent", "tab": "t3" })),
-            ("kanna move agent --tab --window w2", json!({ "pane": "agent", "tab": "new", "window": "w2" })),
+            ("kanna move agent --tab tab-3", json!({ "pane": "agent", "tab": "tab-3" })),
+            ("kanna move agent --tab --window win-2", json!({ "pane": "agent", "tab": "new", "window": "win-2" })),
             ("kanna open code /tmp/a.rs:42", json!({ "type": "code", "path": "/tmp/a.rs", "line": 42 })),
             ("kanna open code /tmp/a.rs", json!({ "type": "code", "path": "/tmp/a.rs" })),
             ("kanna open code /tmp/a.rs:x", json!({ "type": "code", "path": "/tmp/a.rs:x" })),
@@ -703,7 +703,7 @@ mod tests {
             ("kanna open notes.md", "kanna open md notes.md"),
             ("kanna navigate site --back x", "one of URL"),
             ("kanna workspce list", "Did you mean: workspace"),
-            ("kanna rename t1 x", "Did you mean: rename-tab"),
+            ("kanna rename tab-1 x", "Did you mean: rename-tab"),
             ("kanna read", "missing PANE"),
             ("kanna send-key", "missing PANE"),
             ("kanna send-key p1", "missing KEY"),
@@ -743,11 +743,11 @@ mod tests {
         let reply = json!({
             "windows": [],
             "workspaces": [{ "id": "ws-1", "where": { "shelf": "mac" }, "dock": { "pane": "agent", "id": "p1", "edge": "left", "width": "2/5", "frozen": true }, "focused": "agent",
-                             "tabs": [{ "id": "t1", "title": "Tab 1", "active": true, "layout": { "pane": "p2" } }], "windows": [], "panes": ["p2", "p1"] }],
+                             "tabs": [{ "id": "tab-1", "title": "Tab 1", "active": true, "layout": { "pane": "p2" } }], "windows": [], "panes": ["p2", "p1"] }],
             "panes": [{ "id": "p1", "name": "agent", "type": "term", "state": "running", "cmd": "claude" }, { "id": "p2", "name": null, "type": "term", "state": "running" }]
         });
         let text = output::workspace(&all, &reply);
-        assert!(text.contains("\nws-1, on the Shelf\n  dock: p1 (agent)  left 2/5  frozen\n  focus: agent\n  *t1 \"Tab 1\"  p2"), "{text}");
+        assert!(text.contains("\nws-1, on the Shelf\n  dock: p1 (agent)  left 2/5  frozen\n  focus: agent\n  *tab-1 \"Tab 1\"  p2"), "{text}");
         let opened = json!({ "pane": { "id": "p1", "name": "agent", "state": "running" }, "window": null, "tab": null, "dock": "left", "workspace": { "id": "ws-1", "where": { "shelf": "mac" } } });
         assert_eq!(output::opened(&json!({}), &opened), "opened p1 (agent) docked left in ws-1 (on the Shelf): running");
         assert_eq!(output::opened(&json!({ "frozen": true }), &opened), "opened p1 (agent) docked left, frozen, in ws-1 (on the Shelf): running");
@@ -805,7 +805,7 @@ mod tests {
         assert!(!text.contains("of"), "{text}");
         assert_eq!(output::quiz(&json!({ "action": "history" }), &json!({ "misses": true, "rounds": [] })), "no misses to bring back");
         assert_eq!(output::quiz(&json!({ "action": "start" }), &json!({ "round": "r3" })), "r3");
-        assert_eq!(output::quiz(&json!({ "action": "open" }), &json!({ "pane": "p9", "window": "w4", "opened": true })), "opened p9 in w4");
-        assert_eq!(output::quiz(&json!({ "action": "open" }), &json!({ "pane": "p9", "window": "w4", "opened": false })), "brought forward p9 in w4");
+        assert_eq!(output::quiz(&json!({ "action": "open" }), &json!({ "pane": "p9", "window": "win-4", "opened": true })), "opened p9 in win-4");
+        assert_eq!(output::quiz(&json!({ "action": "open" }), &json!({ "pane": "p9", "window": "win-4", "opened": false })), "brought forward p9 in win-4");
     }
 }

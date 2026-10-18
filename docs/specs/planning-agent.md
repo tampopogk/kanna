@@ -37,7 +37,7 @@ stateDiagram-v2
 ## 2. What it is
 
 - **Kanna starts the planning agent** when a [new Desk](new-desk.md#2-its-planning-terminal) opens: it asks which agent plans (or uses the project's), starts it with `You are the Kanna planning agent.` as its first message, and leaves you in your shell when you quit it.
-- **It has Kanna's environment** (`KANNA_PANE`, `KANNA_SOCKET`) and the [settings](settings.md) for its agent.
+- **It has Kanna's environment** (`KANNA_TERMINAL`, `KANNA_SOCKET`) and the [settings](settings.md) for its agent.
 - **One per window.** A Desk window gets its own the first time it shows no task, and keeps it while tasks come and go. Every window is an independent Desk; there's no shared or cross-window planning terminal. Closing the window ends it.
 - **Not a task.** It isn't on the Shelf, the strip or in `kanna task list`, doesn't take one of the repo's three running slots, can't be parked, pulled, moved or docked elsewhere, and has no Park button. Its header says **Planning**, the terminal's folder and branch.
 - **In the window's folder, the repo's main checkout,** not a worktree.

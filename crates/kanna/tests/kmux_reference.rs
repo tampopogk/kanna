@@ -37,11 +37,48 @@ const OPTIONS_DIFFER: &[(&str, &str)] = &[("move", "--window WINDOW|new")];
 const CODE_PANES: &[(&str, &str)] = &[("open", "summary"), ("navigate", "summary")];
 
 fn from_kmux(text: &str) -> String {
-    text.replace("kmux", "kanna")
+    kanna_ids(&text.replace("kmux", "kanna"))
 }
 
 fn from_kanna(text: &str) -> String {
-    text.replace("Kanna.app", "kanna").replace("Kanna", "kanna")
+    kanna_ids(&text.replace("Kanna.app", "kanna").replace("Kanna", "kanna"))
+}
+
+fn kanna_ids(text: &str) -> String {
+    let id = |word: &str| {
+        [("p", "term-"), ("t", "tab-"), ("w", "win-")].iter().find_map(|(kmux, kanna)| {
+            word.strip_prefix(kmux).filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())).map(|n| format!("{kanna}{n}"))
+        })
+    };
+    let mut out = String::new();
+    let mut word = String::new();
+    for c in text.chars().chain(std::iter::once('\0')) {
+        if c.is_ascii_alphanumeric() || c == '-' {
+            word.push(c);
+            continue;
+        }
+        out.push_str(&id(&word).unwrap_or_else(|| word.clone()));
+        word.clear();
+        if c != '\0' {
+            out.push(c);
+        }
+    }
+    let mut named = out;
+    for (noun, prefix) in [("window ", "win-"), ("tab ", "tab-"), ("pane ", "term-")] {
+        let mut kept = String::new();
+        let mut rest = named.as_str();
+        while let Some(at) = rest.find(&format!("{noun}{prefix}")) {
+            let flag = rest[..at].ends_with('-');
+            kept.push_str(&rest[..at]);
+            if flag {
+                kept.push_str(noun);
+            }
+            rest = &rest[at + noun.len()..];
+        }
+        kept.push_str(rest);
+        named = kept;
+    }
+    named
 }
 
 fn without_code_panes(text: &str) -> String {
@@ -94,7 +131,7 @@ fn kmux_parse(line: &str) -> Result<Value, (u8, String)> {
 }
 
 fn kanna_parse(line: &str) -> Result<Value, (u8, String)> {
-    let words = words(&from_kmux(line));
+    let words = words(&line.replace("kmux", "kanna"));
     let mut args = Argv::new(words[1..].to_vec());
     args.flag("--json");
     let name = args.positional().unwrap();

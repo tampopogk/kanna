@@ -55,12 +55,12 @@ fn whose_text(reply: &Value) -> Option<String> {
 }
 
 pub fn opened(request: &Value, reply: &Value) -> String {
-    let place = whose_text(reply).unwrap_or_else(|| format!("window {}", reply["window"].as_str().unwrap_or("?")));
+    let place = whose_text(reply).unwrap_or_else(|| reply["window"].as_str().unwrap_or("?").to_string());
     if let Some(edge) = reply["dock"].as_str() {
         let frozen = if request["frozen"] == true { ", frozen," } else { "" };
         return format!("opened {} docked {edge}{frozen} in {place}: {}", label(&reply["pane"]), state(&reply["pane"]));
     }
-    format!("opened {} in {place}, tab {}: {}", label(&reply["pane"]), reply["tab"].as_str().unwrap_or("?"), state(&reply["pane"]))
+    format!("opened {} in {place}, {}: {}", label(&reply["pane"]), reply["tab"].as_str().unwrap_or("?"), state(&reply["pane"]))
 }
 
 pub fn commented(args: &Value, reply: &Value) -> String {
@@ -104,8 +104,8 @@ pub fn moved(reply: &Value) -> String {
 pub fn closed(args: &Value, reply: &Value) -> String {
     let panes = join(&reply["closed"]);
     match (args["window"].as_str(), args["tab"].as_str()) {
-        (Some(window), _) => format!("closed window {window} (panes {panes})"),
-        (_, Some(tab)) => format!("closed tab {tab} (panes {panes})"),
+        (Some(window), _) => format!("closed {window} (panes {panes})"),
+        (_, Some(tab)) => format!("closed {tab} (panes {panes})"),
         _ => format!("closed {panes}"),
     }
 }
@@ -588,7 +588,7 @@ fn workspace_block(ws: &Value, reply: &Value) -> Vec<String> {
     out.extend(tab_lines(&ws["tabs"], "  "));
     for own in ws["windows"].as_array().unwrap_or(&empty).iter().filter_map(Value::as_str) {
         let window = reply["windows"].as_array().and_then(|l| l.iter().find(|w| w["id"] == own)).cloned();
-        out.push(format!("  window {own}"));
+        out.push(format!("  {own}"));
         if let Some(window) = window {
             out.extend(focus_line(&window, "    "));
             out.extend(tab_lines(&window["tabs"], "    "));
@@ -815,17 +815,17 @@ mod workspace_tests {
     fn reply() -> Value {
         json!({
             "windows": [
-                { "id": "w19", "key": false, "focused": "p157", "zoomed": null, "lead": { "pane": "p157", "width": "46%" }, "workspace": null, "tabs": [] },
-                { "id": "w40", "key": false, "focused": "p9", "zoomed": null, "workspace": "ws-3", "tabs": [{ "id": "t30", "title": "Tab 1", "active": true, "layout": { "pane": "p9" } }] },
-                { "id": "w45", "key": true, "focused": "notes", "zoomed": null, "workspace": null, "tabs": [{ "id": "t247", "title": "notes", "active": true, "layout": { "pane": "notes" } }] }
+                { "id": "win-19", "key": false, "focused": "p157", "zoomed": null, "lead": { "pane": "p157", "width": "46%" }, "workspace": null, "tabs": [] },
+                { "id": "win-40", "key": false, "focused": "p9", "zoomed": null, "workspace": "ws-3", "tabs": [{ "id": "tab-30", "title": "Tab 1", "active": true, "layout": { "pane": "p9" } }] },
+                { "id": "win-45", "key": true, "focused": "notes", "zoomed": null, "workspace": null, "tabs": [{ "id": "tab-247", "title": "notes", "active": true, "layout": { "pane": "notes" } }] }
             ],
             "hiddenWindows": [],
             "workspaces": [
                 { "id": "ws-3", "task": "task-22a4", "name": "Skills show diffs", "where": { "shelf": "mac" }, "dock": { "pane": "Skills show diffs", "id": "p401", "edge": "left", "width": "2/5", "frozen": true },
-                  "focused": "p406", "zoomed": null, "tabs": [{ "id": "t246", "title": "diff --merge-base main", "active": true, "layout": { "pane": "p406" }, "panes": ["p406"] }], "windows": ["w40"], "panes": ["p406", "p9", "p401"] },
+                  "focused": "p406", "zoomed": null, "tabs": [{ "id": "tab-246", "title": "diff --merge-base main", "active": true, "layout": { "pane": "p406" }, "panes": ["p406"] }], "windows": ["win-40"], "panes": ["p406", "p9", "p401"] },
                 { "id": "ws-1", "task": "task-1dfb", "name": "Fix login", "where": { "shelf": "mac" }, "dock": { "pane": "Fix login", "id": "p407", "edge": "left", "width": "2/5", "frozen": true },
                   "focused": "diff", "zoomed": "diff",
-                  "tabs": [{ "id": "t211", "title": "diff", "active": true, "layout": { "pane": "diff" }, "panes": ["diff"] }, { "id": "t212", "title": "login.md", "active": false, "layout": { "split": "row", "children": [{ "pane": "p5", "size": "1/2" }, { "pane": "p6", "size": "1/2" }] }, "panes": ["p5", "p6"] }],
+                  "tabs": [{ "id": "tab-211", "title": "diff", "active": true, "layout": { "pane": "diff" }, "panes": ["diff"] }, { "id": "tab-212", "title": "login.md", "active": false, "layout": { "split": "row", "children": [{ "pane": "p5", "size": "1/2" }, { "pane": "p6", "size": "1/2" }] }, "panes": ["p5", "p6"] }],
                   "windows": [], "panes": ["p400", "p5", "p6", "p407"] },
                 { "id": "ws-4", "where": "backlog", "dock": { "pane": "p185", "id": "p185", "edge": "left", "width": "2/5" }, "focused": "p185", "zoomed": null, "tabs": [], "windows": [], "panes": ["p185"] },
                 { "id": "ws-5", "where": { "planner": "mac" }, "dock": { "pane": "p280", "id": "p280", "edge": "left", "width": "2/5" }, "focused": "p280", "zoomed": null, "tabs": [], "windows": [], "panes": ["p280"] }
@@ -847,12 +847,12 @@ mod workspace_tests {
     fn your_workspace_is_shown_as_it_will_be_seen() {
         assert_eq!(
             mine("p6"),
-            "ws-1 (task-1dfb, Fix login), on the Shelf\n  dock: p407 (Fix login)  left 2/5  frozen\n  focus: diff, zoomed\n  *t211 \"diff\"  diff\n   t212 \"login.md\"  p5:1/2 | p6:1/2"
+            "ws-1 (task-1dfb, Fix login), on the Shelf\n  dock: p407 (Fix login)  left 2/5  frozen\n  focus: diff, zoomed\n  *tab-211 \"diff\"  diff\n   tab-212 \"login.md\"  p5:1/2 | p6:1/2"
         );
         assert_eq!(mine("Fix login"), mine("p6"), "its agent sees the same");
         assert_eq!(
             mine("p9"),
-            "ws-3 (task-22a4, Skills show diffs), on the Shelf\n  dock: p401 (Skills show diffs)  left 2/5  frozen\n  focus: p406\n  *t246 \"diff --merge-base main\"  p406\n  window w40\n    focus: p9\n    *t30 \"Tab 1\"  p9"
+            "ws-3 (task-22a4, Skills show diffs), on the Shelf\n  dock: p401 (Skills show diffs)  left 2/5  frozen\n  focus: p406\n  *tab-246 \"diff --merge-base main\"  p406\n  win-40\n    focus: p9\n    *tab-30 \"Tab 1\"  p9"
         );
         assert_eq!(mine("p185"), "ws-4, in the backlog\n  dock: p185  left 2/5\n  focus: p185", "a workspace with no task");
         assert_eq!(mine("p280"), "ws-5, a Desk's planner\n  dock: p280  left 2/5\n  focus: p280");
@@ -860,8 +860,8 @@ mod workspace_tests {
 
     #[test]
     fn from_a_window_that_is_no_workspaces_it_is_that_window() {
-        assert_eq!(mine("notes"), "*w45  free\n  focus: notes\n  *t247 \"notes\"  notes");
-        assert_eq!(mine("p157"), " w19  free, led by p157\n  focus: p157");
+        assert_eq!(mine("notes"), "*win-45  free\n  focus: notes\n  *tab-247 \"notes\"  notes");
+        assert_eq!(mine("p157"), " win-19  free, led by p157\n  focus: p157");
         assert_eq!(mine("p500"), "p500 (logs) isn't in a window or a workspace");
         assert!(scoped(&reply(), "p999").is_none());
     }
@@ -871,28 +871,28 @@ mod workspace_tests {
         let ws = scoped(&reply(), "p9").unwrap();
         assert_eq!((ws["pane"].clone(), ws["at"].clone()), (json!("p9"), json!("workspace")));
         assert_eq!(ws["workspaces"].as_array().map(|w| w.iter().map(|w| w["id"].clone()).collect::<Vec<_>>()), Some(vec![json!("ws-3")]));
-        assert_eq!(ws["windows"].as_array().map(|w| w.iter().map(|w| w["id"].clone()).collect::<Vec<_>>()), Some(vec![json!("w40")]));
+        assert_eq!(ws["windows"].as_array().map(|w| w.iter().map(|w| w["id"].clone()).collect::<Vec<_>>()), Some(vec![json!("win-40")]));
         assert_eq!(ws["panes"].as_array().map(|p| p.iter().map(|p| p["id"].clone()).collect::<Vec<_>>()), Some(vec![json!("p401"), json!("p406"), json!("p9")]));
     }
 
     #[test]
     fn all_is_every_window_then_every_workspace_then_free_windows_and_panes_in_none() {
         let text = workspace(&json!({ "action": "list", "all": true }), &reply());
-        assert!(text.starts_with("Windows\n w19  free, led by p157\n w40  ws-3 (task-22a4, Skills show diffs)'s window\n*w45  free\n\nWorkspaces\nws-3 (task-22a4, Skills show diffs), on the Shelf\n"), "{text}");
+        assert!(text.starts_with("Windows\n win-19  free, led by p157\n win-40  ws-3 (task-22a4, Skills show diffs)'s window\n*win-45  free\n\nWorkspaces\nws-3 (task-22a4, Skills show diffs), on the Shelf\n"), "{text}");
         assert!(text.contains("\nws-1 (task-1dfb, Fix login), on the Shelf\n"), "{text}");
-        assert!(text.contains("\nws-4, in the backlog\n  dock: p185  left 2/5\n  focus: p185\nws-5, a Desk's planner\n  dock: p280  left 2/5\n  focus: p280\n\nFree windows\nw45\n  focus: notes\n  *t247 \"notes\"  notes\n\nUnplaced panes\np500 (logs)"), "{text}");
+        assert!(text.contains("\nws-4, in the backlog\n  dock: p185  left 2/5\n  focus: p185\nws-5, a Desk's planner\n  dock: p280  left 2/5\n  focus: p280\n\nFree windows\nwin-45\n  focus: notes\n  *tab-247 \"notes\"  notes\n\nUnplaced panes\np500 (logs)"), "{text}");
     }
 
     #[test]
     fn replies_name_the_workspace_then_its_task_and_where_it_is() {
-        let windowless = json!({ "pane": { "id": "p5", "state": "running" }, "window": null, "tab": "t9", "workspace": { "id": "ws-3", "task": "task-1dfb", "where": { "shelf": "mac" } } });
-        assert_eq!(opened(&json!({}), &windowless), "opened p5 in ws-3 (task-1dfb, on the Shelf), tab t9: running");
-        let windowed = json!({ "pane": { "id": "p5", "state": "running" }, "window": "w31", "tab": "t9", "workspace": { "id": "ws-3", "task": "task-1dfb", "where": { "shelf": "mac" } } });
-        assert_eq!(opened(&json!({}), &windowed), "opened p5 in ws-3's w31 (task-1dfb, on the Shelf), tab t9: running");
-        assert_eq!(focused(&json!({ "pane": "spec" }), &windowed), "focused spec in ws-3's w31 (task-1dfb, on the Shelf, key window)");
+        let windowless = json!({ "pane": { "id": "p5", "state": "running" }, "window": null, "tab": "tab-9", "workspace": { "id": "ws-3", "task": "task-1dfb", "where": { "shelf": "mac" } } });
+        assert_eq!(opened(&json!({}), &windowless), "opened p5 in ws-3 (task-1dfb, on the Shelf), tab-9: running");
+        let windowed = json!({ "pane": { "id": "p5", "state": "running" }, "window": "win-31", "tab": "tab-9", "workspace": { "id": "ws-3", "task": "task-1dfb", "where": { "shelf": "mac" } } });
+        assert_eq!(opened(&json!({}), &windowed), "opened p5 in ws-3's win-31 (task-1dfb, on the Shelf), tab-9: running");
+        assert_eq!(focused(&json!({ "pane": "spec" }), &windowed), "focused spec in ws-3's win-31 (task-1dfb, on the Shelf, key window)");
         assert_eq!(zoomed(&json!({ "pane": "spec" }), &json!({ "zoomed": true, "workspace": windowless["workspace"] })), "spec is zoomed in ws-3 (task-1dfb, on the Shelf; run again to unzoom)");
-        let free = json!({ "pane": { "id": "p5", "state": "running" }, "window": "w4", "tab": "t9", "workspace": null });
-        assert_eq!(opened(&json!({}), &free), "opened p5 in window w4, tab t9: running");
-        assert_eq!(window(&json!({ "action": "assign", "window": "w41" }), &json!({ "window": "w41", "workspace": windowless["workspace"] })), "assigned w41 to ws-3 (task-1dfb, on the Shelf)");
+        let free = json!({ "pane": { "id": "p5", "state": "running" }, "window": "win-4", "tab": "tab-9", "workspace": null });
+        assert_eq!(opened(&json!({}), &free), "opened p5 in win-4, tab-9: running");
+        assert_eq!(window(&json!({ "action": "assign", "window": "win-41" }), &json!({ "window": "win-41", "workspace": windowless["workspace"] })), "assigned win-41 to ws-3 (task-1dfb, on the Shelf)");
     }
 }

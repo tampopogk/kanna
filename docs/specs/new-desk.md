@@ -68,7 +68,7 @@ flowchart LR
 - **The terminal's command** is the [settings](settings.md) exports, then `planner.sh …`, which ends by starting your login shell (with Kanna's zsh integration put back) in the folder it chose. Moving reports the new folder as the shell would (OSC 7), so the window follows before any prompt. It runs in your interactive login shell like any command ([command shell](command-shell.md)), so `command -v` finds what your `.zshrc` sets up (nvm's codex).
 - **Writing the setting** uses `plutil` on the repo's `.kanna/config.json` (making it with `"version": 1` if it's missing), keeping its other keys (`plutil` sorts them). It won't write through a symlink, and text from a repo or your answers is printed without control characters, so a cloned repo can't redirect the write or drive the terminal.
 - **For tests only:** `KANNA_PLANNING_AGENTS` (programs, space-separated) replaces the agents a planning terminal offers, so e2e never starts your own claude or codex unless a scenario gives them; the repos folder follows `KANNA_AGENTS_HOME`.
-- **No marker variable:** the planning terminal has `KANNA_PANE` and `KANNA_SOCKET` like every Kanna terminal, and no `KANNA_PLANNER`; the daemon knows which pane is a window's planner.
+- **No marker variable:** the planning terminal has `KANNA_TERMINAL` and `KANNA_SOCKET` like every Kanna terminal, and no `KANNA_PLANNER`; the daemon knows which pane is a window's planner.
 
 ## 4. Tests
 

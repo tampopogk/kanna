@@ -56,7 +56,7 @@ flowchart TB
     I -->|no| W["this build's default instance<br/>(the worktree's, in a worktree)"]
 ```
 
-So in production's terminals every `kanna` talks to production; to reach the worktree's own Kanna from there, use `scripts/run-kanna.sh`, which clears `KANNA_SOCKET`, `KANNA_INSTANCE` and `KANNA_PANE`.
+So in production's terminals every `kanna` talks to production; to reach the worktree's own Kanna from there, use `scripts/run-kanna.sh`, which clears `KANNA_SOCKET`, `KANNA_INSTANCE` and `KANNA_TERMINAL`.
 
 ## 4. Running and cleaning up
 

@@ -34,7 +34,7 @@ sequenceDiagram
     You->>A: a question
     A->>D: kanna comment client.rs:244 "…"
     You->>A: thanks, close those
-    A->>D: kanna close p86 …
+    A->>D: kanna close file-86 …
 ```
 
 ## 2. Rules
@@ -60,9 +60,9 @@ sequenceDiagram
 
 | Command | Does |
 |---|---|
-| `kanna comment FILE:LINE[-LAST] TEXT... [placement]` | comments on those lines; placement options as `open`, for a file that isn't open yet. Answers `opened p87 · fdpass.rs:20–48`, without `opened` when it used a tab already open; on a markdown file, `c3 · how-it-works.md:12 in p6` |
+| `kanna comment FILE:LINE[-LAST] TEXT... [placement]` | comments on those lines; placement options as `open`, for a file that isn't open yet. Answers `opened file-87 · fdpass.rs:20–48`, without `opened` when it used a tab already open; on a markdown file, `c3 · how-it-works.md:12 in file-6` |
 | `kanna workspace list --all --json` | shows a code pane's comment (`path`, `first`, `last`, `text`) |
-| `kanna raw '{"cmd":"debug.code","args":{"pane":"p86"}}'` | for tests: also the comment, and which lines are tinted and dimmed |
+| `kanna raw '{"cmd":"debug.code","args":{"pane":"file-86"}}'` | for tests: also the comment, and which lines are tinted and dimmed |
 
 ## 4. The skill
 

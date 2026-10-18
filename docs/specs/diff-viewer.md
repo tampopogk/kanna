@@ -25,14 +25,14 @@ sequenceDiagram
     participant App as Kanna.app
     A->>D: kanna open diff --merge-base main
     D->>App: start {type: diff, path: worktree, args}
-    App->>D: diff.subscribe {view: p231, path, args}
+    App->>D: diff.subscribe {view: diff-231, path, args}
     D-->>App: ok {content: diff-3f9a1c2e} (a new watcher, or the one already running)
     D->>G: git diff --numstat, git diff, git ls-files --others
     G-->>D: files, patch, untracked files
     D->>App: diff {content, serial, files and hunks}
     App->>App: lay out, highlight, draw
     App->>D: update {state: running}
-    D-->>A: opened p231
+    D-->>A: opened diff-231
     Note over D,G: the worktree changes (FSEvents)
     D->>G: git diff again
     D->>App: diff {content, serial, the new files and hunks}
@@ -103,7 +103,7 @@ sequenceDiagram
 | `kanna workspace list --all --json` | shows a diff pane's folder and arguments |
 | `kanna capabilities` | lists `diff` among the pane types |
 | `kanna raw '{"cmd":"diffs"}'` | the diffs the daemon watches: each one's content ID, folder, arguments, serial and the views subscribed to it |
-| `kanna raw '{"cmd":"debug.diff","args":{"pane":"p231"}}'` | for tests, from the app: the command, the files (path, status, counts, folded), the rows (kind, old and new line, text), the current line, the mode, whether it's updating; `keys: "nn"` presses keys |
+| `kanna raw '{"cmd":"debug.diff","args":{"pane":"diff-231"}}'` | for tests, from the app: the command, the files (path, status, counts, folded), the rows (kind, old and new line, text), the current line, the mode, whether it's updating; `keys: "nn"` presses keys |
 
 The pane's record in the saved layout is `{type: "diff", path, args, view}`: `path` is the folder git runs in, `args` git's arguments, `view` `unified` or `split`. It comes back after a relaunch where it was.
 

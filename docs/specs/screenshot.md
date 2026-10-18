@@ -4,7 +4,7 @@
 
 `kanna screenshot` saves a PNG of a pane or a whole window as it's drawn now, at the screen's resolution, and prints its path. It's an ordinary command: it works without `KANNA_DEBUG`, for every pane type.
 
-| `kanna screenshot --window w1` | `kanna screenshot agent` |
+| `kanna screenshot --window win-1` | `kanna screenshot agent` |
 |---|---|
 | ![A window: title bar, tab bar, a terminal and a markdown pane side by side](screenshot-window.png) | ![The terminal pane alone, cut from the same window](screenshot-pane.png) |
 
@@ -18,9 +18,9 @@ Both pictures were taken by the command, of a window in the background (`--bg`).
 
 ## 1. Rules
 
-- **A pane** is that pane alone, cut from its window's capture by its frame. It must be showing, else `not_shown` ("pane p4 is in tab t2, which isn't showing"): the command never changes what's on screen.
+- **A pane** is that pane alone, cut from its window's capture by its frame. It must be showing, else `not_shown` ("term-4 is in tab-2, which isn't showing"): the command never changes what's on screen.
 - **A window** (`--window`) is all of it: title bar, tab bar, every pane showing and the gaps between them.
-- **No target:** the window of the terminal it's run in (`$KANNA_PANE`), else the key window.
+- **No target:** the window of the terminal it's run in (`$KANNA_TERMINAL`), else the key window.
 - **`--out FILE`** (`-o`) is made absolute against the folder kanna runs in. An existing file is refused (`exists`) unless `--force`.
 - **No `--out`:** a new file in the caller's `$TMPDIR`, named for the pane or window and the time, `kanna-w1-20261012-142301.png`, with `-2`, `-3` … if taken.
 - **Readable only by you** (mode 0600), since a terminal can show anything.
@@ -51,9 +51,9 @@ sequenceDiagram
     participant A as Kanna.app
     C->>D: screenshot {pane: diff, path: /work/diff.png}
     Note over C: --out made absolute where kanna runs, else {dir: $TMPDIR}
-    D->>A: screenshot {pane: p4, path, force?}
+    D->>A: screenshot {pane: term-4, path, force?}
     Note over A: show hidden terminals to Ghostty, wait for their frames<br/>capture the window, cut out the pane, write the PNG
-    A->>D: {path, window: w1, pane: p4, width, height}
+    A->>D: {path, window: win-1, pane: term-4, width, height}
     D->>C: reply
     Note over C: prints the path (--json: the reply)
 ```

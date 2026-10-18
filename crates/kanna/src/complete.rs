@@ -611,10 +611,10 @@ mod tests {
 
     #[test]
     fn tabs_and_windows_say_where_they_are() {
-        let list = json!({ "windows": [{ "id": "w1", "key": true, "tabs": [
-            { "id": "t1", "title": "Tab 1", "active": true }, { "id": "t2", "title": "build", "active": false }
+        let list = json!({ "windows": [{ "id": "win-1", "key": true, "tabs": [
+            { "id": "tab-1", "title": "Tab 1", "active": true }, { "id": "tab-2", "title": "build", "active": false }
         ] }] });
-        assert_eq!(tabs(&list), ["t1\t\"Tab 1\" in w1, shown", "t2\t\"build\" in w1"]);
-        assert_eq!(windows(&list), ["w1\tfront, 2 tabs"]);
+        assert_eq!(tabs(&list), ["tab-1\t\"Tab 1\" in win-1, shown", "tab-2\t\"build\" in win-1"]);
+        assert_eq!(windows(&list), ["win-1\tfront, 2 tabs"]);
     }
 }

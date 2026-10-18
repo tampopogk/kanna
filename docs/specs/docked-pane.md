@@ -63,7 +63,7 @@ The right side needs nothing new: the window's own tabs already are a group of t
 | `kanna move PANE --dock [left\|right]` | Move a task's agent to the other edge of its workspace; any other pane is refused, as a docked pane is a running [task](tasks.md)'s agent, in its own workspace, never a window's ([each app's Desk and Shelf](app-desk.md)) |
 | `kanna move PANE --tab` | Undock it into a new tab (kmux's own `move`, now also accepting the docked pane) |
 | `kanna resize PANE …` | On the docked pane, sets its width |
-| `kanna workspace list` | Shows the workspace's docked pane on its own line: `dock: p1 (agent)  left 2/5`, with `frozen` after a frozen one |
+| `kanna workspace list` | Shows the workspace's docked pane on its own line: `dock: term-1 (agent)  left 2/5`, with `frozen` after a frozen one |
 
 `kanna arrange` arranges the shown tab, as now; the docked pane isn't part of the expression.
 

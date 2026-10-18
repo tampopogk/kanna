@@ -55,7 +55,7 @@ When the user asks you to show them something (a diff, a file, a doc, a page, a 
 | A source file | `kanna open code FILE[:LINE] --tab` |
 | A page | `kanna open web URL --tab` |
 
-- **Run it from your own terminal, without `--window`:** the tab opens in your task's workspace, even while it's hidden in the backlog or on the Shelf, and the reply names your task and where it is (`opened p5 in t135 (on the Shelf), tab t9: running`). `--window new` opens a window of your task's, shown and hidden with it.
+- **Run it from your own terminal, without `--window`:** the tab opens in your task's workspace, even while it's hidden in the backlog or on the Shelf, and the reply names your task and where it is (`opened term-5 in ws-3 (task-1dfb, on the Shelf), tab-9: running`). `--window new` opens a window of your task's, shown and hidden with it.
 - **A tab, not a split or a new window,** so your pane keeps its size.
 - In the chat, a line saying what the tab shows.
 
@@ -69,7 +69,7 @@ When the work is done, before you end your turn, set up your window to show the 
 4. **Check it with `kanna workspace list`:** your workspace's tabs and panes, the shown tab, what's focused and zoomed, as the user will see it.
 5. **End your turn with a short summary in the chat:** what changed, why, what's in the tabs, and what's left for the user (merge, a decision, a check).
 
-**Nothing worth a tab** (a small fix, a question in words)? Close your tabs and zoom your own pane (`kanna zoom $KANNA_PANE`), so your summary is what the user sees.
+**Nothing worth a tab** (a small fix, a question in words)? Close your tabs and zoom your own pane (`kanna zoom $KANNA_TERMINAL`), so your summary is what the user sees.
 
 If you stop to ask the user something, set up what the question is about the same way first. Terminals you leave running are stopped with you and run again when the task starts; what they were in the middle of is lost.
 

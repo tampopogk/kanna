@@ -47,7 +47,7 @@ kanna open md .kanna/tmp/git-subtree.md --tab --name explain
 ## One part at a time
 
 1. Comment on one part (code or doc).
-2. Focus the pane `kanna comment` printed: `kanna focus p129`.
+2. Focus the pane `kanna comment` printed: `kanna focus term-129`.
 3. In the chat, one or two lines at most: where you are and "tell me when to go on". Don't repeat the comment, don't explain in the chat.
 4. Stop and wait. Never comment on several parts in one turn.
 

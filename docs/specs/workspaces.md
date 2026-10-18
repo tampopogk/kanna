@@ -25,8 +25,8 @@ flowchart LR
     T["Task task-1dfb12c2<br/>(in kanna.db)"]
     WS["Workspace ws-3<br/>dock · tabs<br/>focus · zoom · where"]
     PW["Planner ws-7<br/>a Desk's planning terminal"]
-    OW["its windows (w40, …)<br/>tabs · focus · zoom"]
-    FW["free window (w4)<br/>tabs · focus · zoom"]
+    OW["its windows (win-40, …)<br/>tabs · focus · zoom"]
+    FW["free window (win-4)<br/>tabs · focus · zoom"]
     T -->|"has a"| WS
     DW -->|"shows (one)"| WS
     DW -->|"has"| PW
@@ -70,34 +70,34 @@ A pane belongs to the workspace it's in. Moving it to another workspace's window
 
 ## 3. Commands: target and reply
 
-**The caller** is the CLI's `$KANNA_PANE`. A command that names a pane or tab acts where *that* pane or tab is. One that names nothing acts where the caller is: its workspace's Desk part, one of its windows, or a free window. `--window W` aims at W, whoever's it is; a task's pane may do that, though it rarely needs to, and the reply names W's workspace so the agent sees where its pane went.
+**The caller** is the CLI's `$KANNA_TERMINAL`. A command that names a pane or tab acts where *that* pane or tab is. One that names nothing acts where the caller is: its workspace's Desk part, one of its windows, or a free window. `--window W` aims at W, whoever's it is; a task's pane may do that, though it rarely needs to, and the reply names W's workspace so the agent sees where its pane went.
 
-| Command | From a task's pane (task-1dfb) | From a pane in a free window (w4) |
+| Command | From a task's pane (task-1dfb) | From a pane in a free window (win-4) |
 |---|---|---|
-| `open` | beside the caller: as asked when on screen; a new tab when hidden | into w4, as kmux |
+| `open` | beside the caller: as asked when on screen; a new tab when hidden | into win-4, as kmux |
 | `open --window new` | a new window of task-1dfb | a new free window |
 | `focus PANE` / `--tab` | that pane's or tab's shown tab and focus; its window becomes key only if on screen | as kmux |
 | `focus --window W` | makes W key; for a hidden window, an error saying where it is | as kmux |
 | `zoom PANE` | that pane's zoom, on screen or not | as kmux |
-| `comment` | the markdown pane it opens or finds is beside the caller | in w4 |
+| `comment` | the markdown pane it opens or finds is beside the caller | in win-4 |
 | `move PANE --window W` | into W | as kmux |
 | `window assign W TASK\|WORKSPACE` / `window free W` | puts W in that workspace, or frees it ([4](#4-kinds-of-window-and-the-planning-terminal)) | the same |
 | `close` | a pane, a tab, or `--window W` (and its panes) | as kmux |
-| `workspace list` | its workspace: dock, tabs, panes, shown tab, focus and zoom, and its windows ([workspace list](workspace-list.md)) | w4 |
+| `workspace list` | its workspace: dock, tabs, panes, shown tab, focus and zoom, and its windows ([workspace list](workspace-list.md)) | win-4 |
 
 Replies say which workspace and where it is. A window is named when the pane is in one:
 
 | Case | Reply |
 |---|---|
-| open, ws-3 on the Shelf | `opened p5 in ws-3 (task-1dfb, on the Shelf), tab t9: running` |
-| open, ws-3 in the backlog | `opened p5 in ws-3 (task-1dfb, in the backlog), tab t9: running` |
-| open in ws-3's window w40 | `opened p5 in ws-3's w40 (task-1dfb, on the Shelf), tab t9: running` |
-| open in a free window | `opened p5 in window w4, tab t9: running` |
+| open, ws-3 on the Shelf | `opened term-5 in ws-3 (task-1dfb, on the Shelf), tab-9: running` |
+| open, ws-3 in the backlog | `opened term-5 in ws-3 (task-1dfb, in the backlog), tab-9: running` |
+| open in ws-3's win-40 | `opened term-5 in ws-3's win-40 (task-1dfb, on the Shelf), tab-9: running` |
+| open in a free window | `opened term-5 in win-4, tab-9: running` |
 | focus, in no window | `focused spec in ws-3 (task-1dfb, in the backlog)` |
-| focus, in ws-3's w40 | `focused spec in ws-3's w40 (task-1dfb, on the Shelf, key window)` |
+| focus, in ws-3's win-40 | `focused spec in ws-3's win-40 (task-1dfb, on the Shelf, key window)` |
 | zoom, in no window | `spec is zoomed in ws-3 (task-1dfb, on the Shelf; run again to unzoom)` |
-| assign | `assigned w41 to ws-3 (task-1dfb, on the Shelf)` |
-| free | `w41 is free (out of ws-3)` |
+| assign | `assigned win-41 to ws-3 (task-1dfb, on the Shelf)` |
+| free | `win-41 is free (out of ws-3)` |
 
 Layout replies carry `workspace: {id, where}`, or null in a free window, beside `window` and `tab`. `window` is null for a pane in a workspace's Desk part. The daemon adds `task` and `name` to a workspace that's a task's, in every reply. `kanna workspace list --all --json` has `workspaces`, each with its dock, tabs, shown tab, focus, zoom and windows.
 
@@ -115,16 +115,16 @@ Layout replies carry `workspace: {id, where}`, or null in a free window, beside 
 The saved layout (in `kanna.db`, [database](database.md)) is `version: 3`: `windows` holds free windows, and every workspace is in one list with its own windows. The app's Desks are in its `app-state.json` ([each app's Desk and Shelf](app-desk.md)).
 
 ```json
-{ "kmux": "state", "version": 3, "key": "w4", "counters": { "tab": 12, "window": 41, "workspace": 7 },
+{ "kmux": "state", "version": 3, "key": "win-4", "counters": { "tab": 12, "window": 41, "workspace": 7 },
   "windows": [
-    { "id": "w4", "tabs": [], "active": "t3", "focused": "p7", "zoomed": null }],
+    { "id": "win-4", "tabs": [], "active": "tab-3", "focused": "term-7", "zoomed": null }],
   "workspaces": [
     { "id": "ws-1", "where": { "shelf": "mac" }, "parkedAt": 1792183838,
-      "dock": { "pane": "p12", "edge": "left", "width": 0.4, "frozen": true },
-      "tabs": [], "active": "t9", "focused": "p13", "zoomed": null,
-      "windows": [{ "id": "w41", "tabs": [], "active": "t12", "focused": "p20", "zoomed": null }] },
+      "dock": { "pane": "term-12", "edge": "left", "width": 0.4, "frozen": true },
+      "tabs": [], "active": "tab-9", "focused": "term-13", "zoomed": null,
+      "windows": [{ "id": "win-41", "tabs": [], "active": "tab-12", "focused": "term-20", "zoomed": null }] },
     { "id": "ws-5", "where": "backlog", "dock": {}, "tabs": [], "windows": [] },
-    { "id": "ws-7", "where": { "planner": "mac" }, "dock": { "pane": "p2", "edge": "left", "width": 0.4 }, "tabs": [], "windows": [] }] }
+    { "id": "ws-7", "where": { "planner": "mac" }, "dock": { "pane": "term-2", "edge": "left", "width": 0.4 }, "tabs": [], "windows": [] }] }
 ```
 
 - **Older files load.** Version 1's windows with a dock, and version 2's workspaces on a Desk or the Shelf, become workspaces on `mac`'s Shelf; a Desk's lead becomes a planner; version 2's task-named workspaces get `ws-N` IDs, their windows following. The app makes its Desks from the planners it hasn't seen. The next save writes version 3.
@@ -203,5 +203,5 @@ flowchart LR
 | **Planner** | A Desk's workspace with no task: its planning terminal |
 | **Free window** | A window in no workspace, as kmux's |
 | **Where** | A workspace's place: on an app's Shelf, in the backlog, or a Desk's planner |
-| **Caller** | The pane a CLI command runs in (`$KANNA_PANE`); where it is is the default target |
+| **Caller** | The pane a CLI command runs in (`$KANNA_TERMINAL`); where it is is the default target |
 | **Lead** | A Quiz window's own agent, never a task |

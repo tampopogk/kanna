@@ -36,7 +36,7 @@ fn the_largest_ids_still_restore_and_count_on() {
     assert_eq!(reply["ok"], true, "{reply}");
     let opened = send(&core, json!({ "cmd": "open", "args": { "type": "term", "tab": true } }));
     assert_eq!(opened["pane"]["id"], "p1000000000", "{opened}");
-    assert_eq!(opened["tab"], "t1000000000", "{opened}");
+    assert_eq!(opened["tab"], "tab-1000000000", "{opened}");
 }
 
 #[derive(Default)]

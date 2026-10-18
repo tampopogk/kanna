@@ -32,7 +32,7 @@ As kmux, the first of:
 flowchart TD
     A["kanna command"] --> B{"--instance NAME?"}
     B -- yes --> Z["that instance"]
-    B -- no --> C{"KANNA_SOCKET set?<br/>(Kanna's terminals set it,<br/>with KANNA_INSTANCE, KANNA_PANE)"}
+    B -- no --> C{"KANNA_SOCKET set?<br/>(Kanna's terminals set it,<br/>with KANNA_INSTANCE, KANNA_TERMINAL)"}
     C -- yes --> S["that socket"]
     C -- no --> D{"KANNA_INSTANCE set?"}
     D -- yes --> Z

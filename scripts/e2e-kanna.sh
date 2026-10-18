@@ -232,11 +232,11 @@ layout_restored() {
   kanna task pull agent >/dev/null || return 1
   local before agent
   before="$(layout)" agent="$(pane agent id)"
-  check test "$(ws agent windows)" == '["w2"]' || return 1
+  check test "$(ws agent windows)" == '["win-2"]' || return 1
   check wait_for 5 eval '[[ "$(dwin d1 dock.pane)" == "$agent" ]]' || return 1
   stop_app; start_app || return 1
   check test "$(layout)" == "$before" || return 1
-  check wait_for 5 eval '[[ "$(ws agent windows)" == "[\"w2\"]" && "$(ws agent where)" == "{\"shelf\": \"mac\"}" && "$(dwin d1 dock.pane)" == "$agent" ]]'
+  check wait_for 5 eval '[[ "$(ws agent windows)" == "[\"win-2\"]" && "$(ws agent where)" == "{\"shelf\": \"mac\"}" && "$(dwin d1 dock.pane)" == "$agent" ]]'
 }
 
 scenario daemon_restart M2
@@ -388,26 +388,26 @@ cli_commands() {
   start_daemon && start_app || return 1
   local dir="$KANNA_STATE_DIR" expected
   cd "$dir" || return 1
-  expected="opened term-1 (cli_commands) in window w1, tab t1: running"; says kanna open --name cli_commands --cmd 'printf "cli_commands READY\n"; exec cat' || return 1
-  expected="opened term-2 (e2e) in window w1, tab t1: running"; says kanna open --name e2e --split right --size 1/3 || return 1
+  expected="opened term-1 (cli_commands) in win-1, tab-1: running"; says kanna open --name cli_commands --cmd 'printf "cli_commands READY\n"; exec cat' || return 1
+  expected="opened term-2 (e2e) in win-1, tab-1: running"; says kanna open --name e2e --split right --size 1/3 || return 1
   check test "$(layout)" == '{"children": [{"pane": "cli_commands", "size": "2/3"}, {"pane": "e2e", "size": "1/3"}], "split": "row"}' || return 1
   check wait_for 5 app_text cli_commands "cli_commands READY" || return 1
-  [[ "$(kanna workspace list --all)" == *$'Free windows\nw1\n  focus: e2e\n  *t1 "cli_commands"  cli_commands:2/3 | e2e:1/3'* ]] || { echo "workspace list --all should show the free window: $(kanna workspace list --all)"; return 1; }
-  expected="focused cli_commands (key window w1)"; says kanna focus cli_commands || return 1
+  [[ "$(kanna workspace list --all)" == *$'Free windows\nwin-1\n  focus: e2e\n  *tab-1 "cli_commands"  cli_commands:2/3 | e2e:1/3'* ]] || { echo "workspace list --all should show the free window: $(kanna workspace list --all)"; return 1; }
+  expected="focused cli_commands (key window win-1)"; says kanna focus cli_commands || return 1
   expected="e2e is zoomed (run again to unzoom)"; says kanna zoom e2e || return 1
   check test "$(kanna workspace list --all --json | field windows.0.zoomed)" == e2e || return 1
   expected="e2e is no longer zoomed"; says kanna zoom e2e || return 1
   expected="cli_commands:3/4 | e2e:1/4"; says kanna resize e2e 1/4 || return 1
   expected="cli_commands:1/2 / e2e:1/2"; says kanna move e2e --to cli_commands --side bottom || return 1
   expected="e2e:1/4 | cli_commands:3/4"; says kanna arrange '{"split":"row","children":[{"pane":"e2e","size":"1/4"},{"pane":"cli_commands"}]}' || return 1
-  expected="opened term-3 (t) in window w1, tab t2: running"; says kanna open --tab --name t || return 1
-  expected='t2 is now "shells"'; says kanna rename-tab t2 shells || return 1
-  expected="w1: t2, t1"; says kanna move-tab t2 --index 0 || return 1
-  expected="switched to t1 (key window w1)"; says kanna focus --tab t1 || return 1
+  expected="opened term-3 (t) in win-1, tab-2: running"; says kanna open --tab --name t || return 1
+  expected='tab-2 is now "shells"'; says kanna rename-tab tab-2 shells || return 1
+  expected="win-1: tab-2, tab-1"; says kanna move-tab tab-2 --index 0 || return 1
+  expected="switched to tab-1 (key window win-1)"; says kanna focus --tab tab-1 || return 1
   expected="t"; says kanna move t --window new || return 1
   check test "$(kanna workspace list --all --json | field windows.1.tabs.0.layout)" == '{"pane": "t"}' || return 1
-  expected="key window is now w1"; says kanna focus --window w1 || return 1
-  expected="closed window w2 (panes term-3)"; says kanna close --window w2 || return 1
+  expected="key window is now win-1"; says kanna focus --window win-1 || return 1
+  expected="closed win-2 (panes term-3)"; says kanna close --window win-2 || return 1
   kanna send e2e 'echo cli_commands-$((40+2))' || return 1
   check wait_for 5 shows e2e cli_commands-42 || return 1
   check wait_for 5 app_text e2e cli_commands-42 || return 1
@@ -416,7 +416,7 @@ cli_commands() {
   expected="term-4 (cli_commands) (printf \"cli_commands READY\\n\"; exec cat) is running"; says kanna restart cli_commands || return 1
   printf '<title>cli_commands</title><p>cli_commands PAGE</p>\n' >"$dir/a.html"
   printf '<title>cli_commands B</title><p>cli_commands OTHER</p>\n' >"$dir/b.html"
-  expected="opened page-1 (site) in window w1, tab t1: running"; says kanna open web "file://$dir/a.html" --name site --history --split down || return 1
+  expected="opened page-1 (site) in win-1, tab-1: running"; says kanna open web "file://$dir/a.html" --name site --history --split down || return 1
   check wait_for 5 page_text site "cli_commands PAGE" || return 1
   expected="page-1 (site) (file://$dir/b.html) is running"; says kanna navigate site "file://$dir/b.html" || return 1
   check wait_for 5 page_text site "cli_commands OTHER" || return 1
@@ -445,7 +445,7 @@ cli_commands() {
   exits 2 kanna zoom || return 1
   exits 5 kanna raw '{"cmd":"nope"}' || return 1
   exits 0 kanna raw '{"cmd":"debug.app"}' || return 1
-  kanna close --window w1 >/dev/null || return 1
+  kanna close --window win-1 >/dev/null || return 1
   check test "$(kanna workspace list --all --json | field windows)" == "[]" || return 1
   expected="no windows (open one with \`kanna open\`)"; says kanna workspace list --all
 }
@@ -454,7 +454,7 @@ scenario cli_without_app M4
 cli_without_app() {
   start_daemon || return 1
   local expected
-  expected="opened term-1 (cli_without_app) in window w1, tab t1: running"; says kanna open --name cli_without_app --cmd 'echo cli_without_app READY; exec cat' || return 1
+  expected="opened term-1 (cli_without_app) in win-1, tab-1: running"; says kanna open --name cli_without_app --cmd 'echo cli_without_app READY; exec cat' || return 1
   check wait_for 5 shows cli_without_app "cli_without_app READY" || return 1
   kanna send cli_without_app cli_without_app-SENT || return 1
   check wait_for 5 shows cli_without_app cli_without_app-SENT || return 1
@@ -470,18 +470,18 @@ close gone
 open --name doc --split right md $KANNA_STATE_DIR/cli_without_app.md
 resize cli_without_app 2/3
 open --tab --name other
-rename-tab t1 kept
-focus --tab t1
+rename-tab tab-1 kept
+focus --tab tab-1
 NEEDS
   exits 6 kanna raw '{"cmd":"debug.app"}' || return 1
   check grep -q "KANNA_SOCKET is set, so kanna doesn't start Kanna.app" <(kanna raw '{"cmd":"debug.app"}' 2>&1) || return 1
   start_app || return 1
   check test "$(layout)" == '{"children": [{"pane": "cli_without_app", "size": "2/3"}, {"pane": "doc", "size": "1/3"}], "split": "row"}' || return 1
-  check test "$(win w1 tabs.0.title)" == kept || return 1
+  check test "$(win win-1 tabs.0.title)" == kept || return 1
   check wait_for 5 doc_text doc "cli_without_app DOC" || return 1
-  expected="focused cli_without_app (key window w1)"; says kanna focus cli_without_app || return 1
+  expected="focused cli_without_app (key window win-1)"; says kanna focus cli_without_app || return 1
   stop_app
-  check test "$(kanna workspace list --all --json | field windows.0.id)" == w1
+  check test "$(kanna workspace list --all --json | field windows.0.id)" == win-1
 }
 
 scenario instances M4
@@ -604,33 +604,33 @@ windows_tabs_ui() {
   start_daemon && start_app || return 1
   kanna open --name k1 >/dev/null || return 1
   key cmd+d; key cmd+shift+d
-  check test "$(win w1 tabs.0.layout)" == '{"children": [{"pane": "k1", "size": "1/2"}, {"children": [{"pane": "term-2", "size": "1/2"}, {"pane": "term-3", "size": "1/2"}], "size": "1/2", "split": "column"}], "split": "row"}' || return 1
-  check test "$(win w1 focused)" == term-3 || return 1
-  key "cmd+]"; check test "$(win w1 focused)" == k1 || return 1
-  key "cmd+["; check test "$(win w1 focused)" == term-3 || return 1
-  key cmd+shift+return; check test "$(win w1 zoomed)" == term-3 || return 1
-  key cmd+t; check wait_for 5 eval '[[ "$(win w1 tabs.1.layout)" == *term-4* ]]' || return 1
-  check test "$(win w1 zoomed)" == term-4 || return 1
-  key "cmd+shift+["; check test "$(win w1 zoomed)" == term-3 || return 1
+  check test "$(win win-1 tabs.0.layout)" == '{"children": [{"pane": "k1", "size": "1/2"}, {"children": [{"pane": "term-2", "size": "1/2"}, {"pane": "term-3", "size": "1/2"}], "size": "1/2", "split": "column"}], "split": "row"}' || return 1
+  check test "$(win win-1 focused)" == term-3 || return 1
+  key "cmd+]"; check test "$(win win-1 focused)" == k1 || return 1
+  key "cmd+["; check test "$(win win-1 focused)" == term-3 || return 1
+  key cmd+shift+return; check test "$(win win-1 zoomed)" == term-3 || return 1
+  key cmd+t; check wait_for 5 eval '[[ "$(win win-1 tabs.1.layout)" == *term-4* ]]' || return 1
+  check test "$(win win-1 zoomed)" == term-4 || return 1
+  key "cmd+shift+["; check test "$(win win-1 zoomed)" == term-3 || return 1
   kanna close term-4 >/dev/null || return 1
-  check test "$(win w1 zoomed)" == term-3 || return 1
-  key "cmd+["; check test "$(win w1 zoomed)" == term-2 || return 1
-  check test "$(win w1 focused)" == term-2 || return 1
-  key "cmd+]"; check test "$(win w1 zoomed)" == term-3 || return 1
-  check drawn "$(snap w1 windows_tabs_ui-zoom-term-3)" 1 || return 1
-  key "cmd+]"; check test "$(win w1 zoomed)" == k1 || return 1
-  check drawn "$(snap w1 windows_tabs_ui-zoom-k1)" 1 || return 1
-  key cmd+shift+return; check test "$(win w1 zoomed)" == None || return 1
-  key "cmd+["; check test "$(win w1 focused)" == term-3 || return 1
+  check test "$(win win-1 zoomed)" == term-3 || return 1
+  key "cmd+["; check test "$(win win-1 zoomed)" == term-2 || return 1
+  check test "$(win win-1 focused)" == term-2 || return 1
+  key "cmd+]"; check test "$(win win-1 zoomed)" == term-3 || return 1
+  check drawn "$(snap win-1 windows_tabs_ui-zoom-term-3)" 1 || return 1
+  key "cmd+]"; check test "$(win win-1 zoomed)" == k1 || return 1
+  check drawn "$(snap win-1 windows_tabs_ui-zoom-k1)" 1 || return 1
+  key cmd+shift+return; check test "$(win win-1 zoomed)" == None || return 1
+  key "cmd+["; check test "$(win win-1 focused)" == term-3 || return 1
   raw '{"id":1,"cmd":"debug.click","args":{"pane":"k1"}}' >/dev/null; sleep 0.3
-  check test "$(win w1 focused)" == k1 || return 1
+  check test "$(win win-1 focused)" == k1 || return 1
   sleep 1
-  check drawn "$(snap w1 windows_tabs_ui-splits)" 3 || return 1
+  check drawn "$(snap win-1 windows_tabs_ui-splits)" 3 || return 1
   printf '# windows_tabs_ui DOC\n\nclick me\n' >"$KANNA_STATE_DIR/windows_tabs_ui.md"
   kanna open md --name doc --split right "$KANNA_STATE_DIR/windows_tabs_ui.md" >/dev/null || return 1
-  key "cmd+["; check test "$(win w1 focused)" != doc || return 1
+  key "cmd+["; check test "$(win win-1 focused)" != doc || return 1
   raw '{"id":1,"cmd":"debug.click","args":{"pane":"doc","at":[4,200]}}' >/dev/null; sleep 0.3
-  check test "$(win w1 focused)" == doc || return 1
+  check test "$(win win-1 focused)" == doc || return 1
   mdzoom() { raw '{"id":1,"cmd":"debug.md","args":{"pane":"doc"}}' | field zoom; }
   local width_before; width_before="$(raw '{"id":1,"cmd":"debug.md","args":{"pane":"doc"}}' | field layout_width)"
   key cmd+shift+=; check python3 -c 'import sys; assert float(sys.argv[1]) > 1' "$(mdzoom)" || return 1
@@ -646,7 +646,7 @@ windows_tabs_ui() {
   webzoom() { raw '{"id":1,"cmd":"debug.web","args":{"pane":"page"}}' | field "$1"; }
   check wait_for 5 eval 'webzoom text | grep -q "windows_tabs_ui WEB"' || return 1
   raw '{"id":1,"cmd":"debug.click","args":{"pane":"page","at":[4,200]}}' >/dev/null; sleep 0.3
-  check test "$(win w1 focused)" == page || return 1
+  check test "$(win win-1 focused)" == page || return 1
   key cmd+shift+=; check python3 -c 'import sys; assert float(sys.argv[1]) > 1' "$(webzoom zoom)" || return 1
   key cmd+-; check python3 -c 'import sys; assert float(sys.argv[1]) == 1' "$(webzoom zoom)" || return 1
   pinched="$(raw '{"id":1,"cmd":"debug.pinch","args":{"pane":"page"}}')"
@@ -655,27 +655,27 @@ windows_tabs_ui() {
   key cmd+-; check python3 -c 'import sys; assert float(sys.argv[1]) < 1' "$(webzoom zoom)" || return 1
   key cmd+0
   kanna close page >/dev/null || return 1
-  key cmd+t; check test "$(win w1 tabs | count)" == 2 || return 1
-  key "cmd+shift+["; check test "$(win w1 tabs.0.active)" == True || return 1
-  key "cmd+shift+]"; check test "$(win w1 tabs.1.active)" == True || return 1
+  key cmd+t; check test "$(win win-1 tabs | count)" == 2 || return 1
+  key "cmd+shift+["; check test "$(win win-1 tabs.0.active)" == True || return 1
+  key "cmd+shift+]"; check test "$(win win-1 tabs.1.active)" == True || return 1
   local tab2
-  tab2="$(win w1 tabs.1.id)"
+  tab2="$(win win-1 tabs.1.id)"
   click_tab "$tab2" 2
   for k in w e b return; do key "$k"; done
-  check test "$(win w1 tabs.1.title)" == web || return 1
+  check test "$(win win-1 tabs.1.title)" == web || return 1
   click_tab "$tab2" 2
   for k in x escape; do key "$k"; done
-  check test "$(win w1 tabs.1.title)" == web || return 1
-  click_tab "$(win w1 tabs.0.id)"; check test "$(win w1 tabs.0.active)" == True || return 1
+  check test "$(win win-1 tabs.1.title)" == web || return 1
+  click_tab "$(win win-1 tabs.0.id)"; check test "$(win win-1 tabs.0.active)" == True || return 1
   click_tab "$tab2"
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"New Window"}}' >/dev/null; sleep 0.3
   check test "$(state | field windows | count)" == 2 || return 1
-  check test "$(raw '{"id":1,"cmd":"debug.desk","args":{"window":"w2"}}' | field desk)" == False || return 1
-  check test "$(win w2 key)" == True || return 1
+  check test "$(raw '{"id":1,"cmd":"debug.desk","args":{"window":"win-2"}}' | field desk)" == False || return 1
+  check test "$(win win-2 key)" == True || return 1
   sleep 1
-  check drawn "$(snap w2 windows_tabs_ui-second-window)" 1 || return 1
-  key 'cmd+`'; check test "$(win w1 key)" == True || return 1
-  key cmd+w; check test "$(win w1 tabs | count)" == 1 || return 1
+  check drawn "$(snap win-2 windows_tabs_ui-second-window)" 1 || return 1
+  key 'cmd+`'; check test "$(win win-1 key)" == True || return 1
+  key cmd+w; check test "$(win win-1 tabs | count)" == 1 || return 1
   key cmd+shift+w; check test "$(state | field windows | count)" == 1 || return 1
   local menus
   menus="$(raw '{"id":1,"cmd":"debug.menu"}')"
@@ -699,24 +699,24 @@ tab_names() {
   printf '<title>tab_names PAGE</title><p>tab_names</p>\n' >"$dir/tab_names.html"
   printf '<title>tab_names NEXT</title><p>next</p>\n' >"$dir/tab_names_next.html"
   kanna open >/dev/null || return 1
-  check test "$(win w1 tabs.0.title)" == "Tab 1" || return 1
+  check test "$(win win-1 tabs.0.title)" == "Tab 1" || return 1
   kanna open code "$dir/tab_names.rs" --tab >/dev/null || return 1
-  check test "$(win w1 tabs.1.title)" == tab_names.rs || return 1
+  check test "$(win win-1 tabs.1.title)" == tab_names.rs || return 1
   [[ "$(kanna workspace list --all)" == *'"tab_names.rs"'* ]] || { echo "workspace list doesn't show the tab as tab_names.rs"; kanna workspace list --all; return 1; }
   kanna open web --name page "file://$dir/tab_names.html" --tab >/dev/null || return 1
-  check test "$(win w1 tabs.2.title)" == page || return 1
+  check test "$(win win-1 tabs.2.title)" == page || return 1
   kanna rename-pane page "" >/dev/null || return 1
-  check wait_for 5 eval '[[ "$(win w1 tabs.2.title)" == "tab_names PAGE" ]]' || { win w1 tabs; return 1; }
+  check wait_for 5 eval '[[ "$(win win-1 tabs.2.title)" == "tab_names PAGE" ]]' || { win win-1 tabs; return 1; }
   kanna navigate page-1 "file://$dir/tab_names_next.html" >/dev/null || return 1
-  check wait_for 5 eval '[[ "$(win w1 tabs.2.title)" == "tab_names NEXT" ]]' || { win w1 tabs; return 1; }
-  shown_tabs() { raw '{"id":1,"cmd":"debug.snapshot","args":{"window":"w1"}}' | field tabs; }
+  check wait_for 5 eval '[[ "$(win win-1 tabs.2.title)" == "tab_names NEXT" ]]' || { win win-1 tabs; return 1; }
+  shown_tabs() { raw '{"id":1,"cmd":"debug.snapshot","args":{"window":"win-1"}}' | field tabs; }
   check test "$(shown_tabs)" == '["Tab 1", "tab_names.rs", "tab_names NEXT"]' || { shown_tabs; return 1; }
-  kanna rename-tab "$(win w1 tabs.2.id)" mine >/dev/null || return 1
+  kanna rename-tab "$(win win-1 tabs.2.id)" mine >/dev/null || return 1
   kanna navigate page-1 "file://$dir/tab_names.html" >/dev/null || return 1
   sleep 1
-  check test "$(win w1 tabs.2.title)" == mine || return 1
+  check test "$(win win-1 tabs.2.title)" == mine || return 1
   stop_app; start_app || return 1
-  check wait_for 5 eval '[[ "$(win w1 tabs.2.title)" == mine && "$(win w1 tabs.1.title)" == tab_names.rs ]]' || { win w1 tabs; return 1; }
+  check wait_for 5 eval '[[ "$(win win-1 tabs.2.title)" == mine && "$(win win-1 tabs.1.title)" == tab_names.rs ]]' || { win win-1 tabs; return 1; }
 }
 
 scenario resize_arrange M4
@@ -724,20 +724,20 @@ resize_arrange() {
   start_daemon && start_app || return 1
   kanna open --name da >/dev/null && kanna open --name db --split right >/dev/null || return 1
   drag '{"divider":"da","at":0.26}'
-  check test "$(win w1 tabs.0.layout)" == '{"children": [{"pane": "da", "size": "1/4"}, {"pane": "db", "size": "3/4"}], "split": "row"}' || { echo "$last_drag"; return 1; }
+  check test "$(win win-1 tabs.0.layout)" == '{"children": [{"pane": "da", "size": "1/4"}, {"pane": "db", "size": "3/4"}], "split": "row"}' || { echo "$last_drag"; return 1; }
   drag '{"divider":"da","at":0.6}'
-  check test "$(win w1 tabs.0.layout)" == '{"children": [{"pane": "da", "size": "3/5"}, {"pane": "db", "size": "2/5"}], "split": "row"}' || return 1
+  check test "$(win win-1 tabs.0.layout)" == '{"children": [{"pane": "da", "size": "3/5"}, {"pane": "db", "size": "2/5"}], "split": "row"}' || return 1
   drag '{"divider":"da","at":0.01}'
   local share
-  share="$(win w1 tabs.0.layout.children.0.size)"
+  share="$(win win-1 tabs.0.layout.children.0.size)"
   check python3 -c 'import sys; s = float(sys.argv[1].rstrip("%")); assert 5 < s < 12, s' "$share" || return 1
   drag '{"divider":"da","at":0.25}'
   kanna open --name wide >/dev/null || return 1
-  check test "$(win w1 tabs.0.layout)" == '{"children": [{"pane": "da", "size": "1/4"}, {"pane": "db", "size": "3/8"}, {"pane": "wide", "size": "3/8"}], "split": "row"}' || return 1
+  check test "$(win win-1 tabs.0.layout)" == '{"children": [{"pane": "da", "size": "1/4"}, {"pane": "db", "size": "3/8"}, {"pane": "wide", "size": "3/8"}], "split": "row"}' || return 1
   kanna focus da >/dev/null && kanna open --name tall >/dev/null || return 1
-  check test "$(win w1 tabs.0.layout)" == '{"children": [{"children": [{"pane": "da", "size": "1/2"}, {"pane": "tall", "size": "1/2"}], "size": "1/4", "split": "column"}, {"pane": "db", "size": "3/8"}, {"pane": "wide", "size": "3/8"}], "split": "row"}' || return 1
-  key cmd+alt+right; check test "$(win w1 focused)" == db || return 1
-  key cmd+alt+left; check test "$(win w1 focused)" == tall || return 1
+  check test "$(win win-1 tabs.0.layout)" == '{"children": [{"children": [{"pane": "da", "size": "1/2"}, {"pane": "tall", "size": "1/2"}], "size": "1/4", "split": "column"}, {"pane": "db", "size": "3/8"}, {"pane": "wide", "size": "3/8"}], "split": "row"}' || return 1
+  key cmd+alt+right; check test "$(win win-1 focused)" == db || return 1
+  key cmd+alt+left; check test "$(win win-1 focused)" == tall || return 1
   local before after
   size() { raw "{\"id\":1,\"cmd\":\"debug.text\",\"args\":{\"pane\":\"$1\"}}" | field columns; }
   before="$(size db)"
@@ -748,11 +748,11 @@ resize_arrange() {
   key cmd+0
   check test "$(size db)" == "$before" || return 1
   sleep 1
-  check drawn "$(snap w1 resize_arrange-resized)" 4 || return 1
+  check drawn "$(snap win-1 resize_arrange-resized)" 4 || return 1
   kanna open --name ended --cmd 'exit 3' --tab >/dev/null || return 1
   check wait_for 5 is ended state exited || return 1
   sleep 0.5
-  check test "$(snap w1 resize_arrange-exited | field panes.0.notice)" == "exited (3)" || return 1
+  check test "$(snap win-1 resize_arrange-exited | field panes.0.notice)" == "exited (3)" || return 1
   kanna close ended >/dev/null || return 1
   drag "{\"pane\":\"wide\",\"to\":{\"outside\":true}}"
   check test "$(state | field windows | count)" == 2 || { echo "$last_drag"; return 1; }
@@ -784,17 +784,17 @@ move_to_window() {
   start_daemon && start_app || return 1
   kanna open --name doc >/dev/null && kanna open --name mine --split right >/dev/null || return 1
   kanna open --name user --window new >/dev/null && kanna open --name open --split right >/dev/null || return 1
-  kanna move mine --window w2 >/dev/null || return 1
-  check test "$(win w2 tabs.0.layout)" == '{"children": [{"pane": "user", "size": "1/2"}, {"pane": "open", "size": "1/2"}], "split": "row"}' || return 1
-  check test "$(win w2 tabs.1.layout)" == '{"pane": "mine"}' || return 1
-  check test "$(win w2 tabs.1.active)" == True || return 1
-  check test "$(win w2 focused)" == mine || return 1
-  check test "$(win w1 tabs.0.layout)" == '{"pane": "doc"}' || return 1
-  kanna move mine --window w2 >/dev/null || return 1
-  check test "$(win w2 tabs | count)" == 2 || return 1
-  kanna move open --window w2 >/dev/null || return 1
-  check test "$(win w2 tabs.0.layout)" == '{"pane": "user"}' || return 1
-  check test "$(win w2 tabs.2.layout)" == '{"pane": "open"}'
+  kanna move mine --window win-2 >/dev/null || return 1
+  check test "$(win win-2 tabs.0.layout)" == '{"children": [{"pane": "user", "size": "1/2"}, {"pane": "open", "size": "1/2"}], "split": "row"}' || return 1
+  check test "$(win win-2 tabs.1.layout)" == '{"pane": "mine"}' || return 1
+  check test "$(win win-2 tabs.1.active)" == True || return 1
+  check test "$(win win-2 focused)" == mine || return 1
+  check test "$(win win-1 tabs.0.layout)" == '{"pane": "doc"}' || return 1
+  kanna move mine --window win-2 >/dev/null || return 1
+  check test "$(win win-2 tabs | count)" == 2 || return 1
+  kanna move open --window win-2 >/dev/null || return 1
+  check test "$(win win-2 tabs.0.layout)" == '{"pane": "user"}' || return 1
+  check test "$(win win-2 tabs.2.layout)" == '{"pane": "open"}'
 }
 
 scenario drag_panes_tabs M4
@@ -802,22 +802,22 @@ drag_panes_tabs() {
   start_daemon && start_app || return 1
   kanna open --name da >/dev/null && kanna open --name db --split right >/dev/null || return 1
   drag '{"pane":"da","to":{"pane":"db","x":0.5,"y":0.95}}'
-  check test "$(win w1 tabs.0.layout)" == '{"children": [{"pane": "db", "size": "1/2"}, {"pane": "da", "size": "1/2"}], "split": "column"}' || { echo "$last_drag"; return 1; }
+  check test "$(win win-1 tabs.0.layout)" == '{"children": [{"pane": "db", "size": "1/2"}, {"pane": "da", "size": "1/2"}], "split": "column"}' || { echo "$last_drag"; return 1; }
   drag '{"pane":"da","to":{"pane":"db","x":0.5,"y":0.5}}'
-  check test "$(win w1 tabs.0.layout)" == '{"children": [{"pane": "da", "size": "1/2"}, {"pane": "db", "size": "1/2"}], "split": "column"}' || return 1
+  check test "$(win win-1 tabs.0.layout)" == '{"children": [{"pane": "da", "size": "1/2"}, {"pane": "db", "size": "1/2"}], "split": "column"}' || return 1
   drag '{"pane":"db","to":{"pane":"da","x":0.02,"y":0.5}}'
-  check test "$(win w1 tabs.0.layout)" == '{"children": [{"pane": "db", "size": "1/2"}, {"pane": "da", "size": "1/2"}], "split": "row"}' || return 1
-  drag '{"pane":"da","to":{"plus":"w1"}}'
-  check test "$(win w1 tabs.1.layout)" == '{"pane": "da"}' || { echo "$(win w1 tabs) $last_drag"; return 1; }
+  check test "$(win win-1 tabs.0.layout)" == '{"children": [{"pane": "db", "size": "1/2"}, {"pane": "da", "size": "1/2"}], "split": "row"}' || return 1
+  drag '{"pane":"da","to":{"plus":"win-1"}}'
+  check test "$(win win-1 tabs.1.layout)" == '{"pane": "da"}' || { echo "$(win win-1 tabs) $last_drag"; return 1; }
   local first second
-  first="$(win w1 tabs.0.id)" second="$(win w1 tabs.1.id)"
+  first="$(win win-1 tabs.0.id)" second="$(win win-1 tabs.1.id)"
   drag "{\"pane\":\"da\",\"to\":{\"tab\":\"$first\"}}"
-  check test "$(win w1 tabs | count)" == 1 || return 1
-  check test "$(win w1 tabs.0.layout)" == '{"children": [{"pane": "db", "size": "1/2"}, {"pane": "da", "size": "1/2"}], "split": "row"}' || return 1
+  check test "$(win win-1 tabs | count)" == 1 || return 1
+  check test "$(win win-1 tabs.0.layout)" == '{"children": [{"pane": "db", "size": "1/2"}, {"pane": "da", "size": "1/2"}], "split": "row"}' || return 1
   kanna open --name dc --tab >/dev/null || return 1
-  first="$(win w1 tabs.0.id)" second="$(win w1 tabs.1.id)"
+  first="$(win win-1 tabs.0.id)" second="$(win win-1 tabs.1.id)"
   drag "{\"tab\":\"$second\",\"to\":{\"tab\":\"$first\"}}"
-  check test "$(win w1 tabs.0.id)" == "$second" || { echo "$(win w1 tabs) $last_drag"; return 1; }
+  check test "$(win win-1 tabs.0.id)" == "$second" || { echo "$(win win-1 tabs) $last_drag"; return 1; }
   drag "{\"tab\":\"$second\",\"to\":{\"outside\":true}}"
   check test "$(state | field windows | count)" == 2 || { echo "$last_drag"; return 1; }
   drag '{"pane":"dc","to":{"outside":true}}'
@@ -825,7 +825,7 @@ drag_panes_tabs() {
   drag '{"pane":"da","to":{"outside":true}}'
   check test "$(state | field windows | count)" == 3 || return 1
   local menu
-  menu="$(raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"tab\":\"$(win w1 tabs.0.id)\",\"button\":1}}")"
+  menu="$(raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"tab\":\"$(win win-1 tabs.0.id)\",\"button\":1}}")"
   check test "$(field menu <<<"$menu")" == '["Move Tab to New Window", "Close Tab"]' || return 1
   menu="$(raw '{"id":1,"cmd":"debug.click","args":{"pane":"db","button":1}}')"
   for item in "Split Right" "Close Pane" "Move Pane to New Window" "Reload"; do
@@ -1483,7 +1483,7 @@ zsh_completion() {
   check zsh_completion_tab "kanna open " 2 '^md +-- A markdown file' || return 1
   check test "$(printf "%s\n" "$zsh_completion_screen" | grep -oE '^(term|web|md|ios) ' | tr -d ' \n')" == termwebmdios || return 1
   check zsh_completion_tab "kanna close " 2 'zsh_completion-web +-- page-[0-9]+ · web · alpha\.html' zsh_completion-panes || return 1
-  check zsh_completion_tab "kanna focus --tab " 2 't[0-9]+ +-- "' || return 1
+  check zsh_completion_tab "kanna focus --tab " 2 'tab-[0-9]+ +-- "' || return 1
   check zsh_completion_tab "kanna open --split " 2 'right' || return 1
   check zsh_completion_tab "kanna open md alpha-notes.md --sp" "" '--split *$' || return 1
   kanna open --name zsh_completion-login --tab --cwd "$dir" >/dev/null || return 1
@@ -1568,11 +1568,11 @@ desk_shelf() {
   check wait_for 5 eval '[[ "$(dwin d1 tabs.2.panes.0)" == "$(pane later id)" ]]' || return 1
   local own loose task; task="$(ws agent id)"
   own="$(KANNA_TERMINAL=term-1 kanna open --name own --window new)" || return 1
-  [[ "$own" =~ ^"opened "term-[0-9]+" (own) in $task's "(w[0-9]+)" (on the Shelf), tab " ]] || { echo "desk_shelf: a task's open --window new: $own"; return 1; }
+  [[ "$own" =~ ^"opened "term-[0-9]+" (own) in $task's "(win-[0-9]+)" (on the Shelf), tab-" ]] || { echo "desk_shelf: a task's open --window new: $own"; return 1; }
   own="${BASH_REMATCH[1]}"
   check test "$(win "$own" workspace)" == "$task" || return 1
   loose="$(kanna open --name loose --window new)" || return 1
-  [[ "$loose" =~ " in window "(w[0-9]+)", tab " ]] || { echo "desk_shelf: $loose"; return 1; }
+  [[ "$loose" =~ " in "(win-[0-9]+)", tab-" ]] || { echo "desk_shelf: $loose"; return 1; }
   loose="${BASH_REMATCH[1]}"
   expected="assigned $loose to $task (on the Shelf)"; says kanna window assign "$loose" agent || return 1
   check wait_for 5 eval '[[ " $(app_windows) " == *" $own "* && " $(app_windows) " == *" $loose "* ]]' || { echo "desk_shelf: a task's windows didn't show with it on a Desk"; app_windows; return 1; }
@@ -1580,7 +1580,7 @@ desk_shelf() {
   check wait_for 5 eval '[[ " $(app_windows) " != *" $own "* && " $(app_windows) " != *" $loose "* ]]' || { echo "desk_shelf: a parked task's windows didn't close"; app_windows; return 1; }
   check test "$(ws "$task" windows)" == "[\"$own\", \"$loose\"]" || return 1
   check is own state running || return 1
-  [[ "$(kanna open --name hidden --window "$own" --tab)" == "opened "*" (hidden) in $task's $own (on the Shelf), tab "* ]] || { echo "desk_shelf: an open into a hidden window"; return 1; }
+  [[ "$(kanna open --name hidden --window "$own" --tab)" == "opened "*" (hidden) in $task's $own (on the Shelf), tab-"* ]] || { echo "desk_shelf: an open into a hidden window"; return 1; }
   kanna task pull agent >/dev/null || return 1
   check wait_for 5 eval '[[ " $(app_windows) " == *" $own "* && " $(app_windows) " == *" $loose "* ]]' || { echo "desk_shelf: a pulled task's windows didn't open"; app_windows; return 1; }
   check test "$(win "$own" tabs.1.layout.pane)" == hidden || return 1
@@ -2063,7 +2063,7 @@ new_desk() {
   repo="$(cd "$repo" && pwd -P)"
   start_daemon && start_app || return 1
   kanna open --name plain >/dev/null || { echo "new_desk line $LINENO"; return 1; }
-  check wait_for 5 eval '[[ "$(win w1 key)" == True ]]' || { echo "new_desk line $LINENO"; return 1; }
+  check wait_for 5 eval '[[ "$(win win-1 key)" == True ]]' || { echo "new_desk line $LINENO"; return 1; }
   desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$2\"}}" | field "$1"; }
   key cmd+n
   check wait_for 5 eval '[[ "$(app_view | field windows | count)" == 2 && "$(dwin d1 key)" == True ]]' || { echo "new_desk: ⌘N opened no window"; kanna workspace list --all; return 1; }
@@ -2129,17 +2129,17 @@ screenshot() {
   check wait_for 5 is doc state running || return 1
   raw '{"id":1,"cmd":"debug.app"}' | grep -q '"unknown command' || { echo "screenshot: the app answers debug commands"; return 1; }
   local window pane doc
-  window="$(cd "$shots" && kanna screenshot --window w1 -o w1.png)" || { echo "screenshot line $LINENO"; return 1; }
-  check test "$window" == "$shots/w1.png" || return 1
+  window="$(cd "$shots" && kanna screenshot --window win-1 -o win-1.png)" || { echo "screenshot line $LINENO"; return 1; }
+  check test "$window" == "$shots/win-1.png" || return 1
   pane="$(cd "$shots" && kanna screenshot screenshot --out screenshot.png)" || { echo "screenshot line $LINENO"; return 1; }
   doc="$(kanna screenshot doc --json)" || { echo "screenshot line $LINENO"; return 1; }
   cp "$shots"/*.png "$out/" 2>/dev/null
-  local ww wh pw ph; IFS=x read -r ww wh <<<"$(png_size "$shots/w1.png")"; IFS=x read -r pw ph <<<"$(png_size "$shots/screenshot.png")"
+  local ww wh pw ph; IFS=x read -r ww wh <<<"$(png_size "$shots/win-1.png")"; IFS=x read -r pw ph <<<"$(png_size "$shots/screenshot.png")"
   check test "$ww" -ge 800 -a "$wh" -ge 400 || return 1
   check test $((pw * 2 - ww)) -ge -4 -a $((pw * 2 - ww)) -le 4 || { echo "screenshot: pane $pw wide in a window $ww wide"; return 1; }
   check test "$ph" -lt "$wh" -a "$ph" -gt $((wh / 2)) || return 1
   check python3 -c 'import json, sys
-r = json.loads(sys.argv[1]); assert r["pane"] == "file-1" and r["window"] == "w1" and r["path"].endswith(".png") and r["width"] > 0, r' "$doc" || return 1
+r = json.loads(sys.argv[1]); assert r["pane"] == "file-1" and r["window"] == "win-1" and r["path"].endswith(".png") and r["width"] > 0, r' "$doc" || return 1
   check test "$(png_size "$(echo "$doc" | field path)")" == "$(echo "$doc" | field width)x$(echo "$doc" | field height)" || return 1
   local ink; ink="$(png_ink "$shots/screenshot.png")"
   check python3 -c 'import sys; assert 0.01 < float(sys.argv[1]) < 0.5, sys.argv[1]' "$ink" || { echo "screenshot: the terminal pane isn't legible (ink $ink)"; return 1; }
@@ -2147,9 +2147,9 @@ r = json.loads(sys.argv[1]); assert r["pane"] == "file-1" and r["window"] == "w1
   (cd "$shots" && kanna screenshot screenshot -o screenshot.png --force) >/dev/null || { echo "screenshot line $LINENO"; return 1; }
   kanna open --tab --name other >/dev/null || return 1
   local hidden; hidden="$(kanna screenshot screenshot 2>&1)" && { echo "screenshot: shot a pane that isn't showing"; return 1; }
-  [[ "$hidden" == *"is in tab t1, which isn't showing"* ]] || { echo "screenshot: $hidden"; return 1; }
+  [[ "$hidden" == *"is in tab tab-1, which isn't showing"* ]] || { echo "screenshot: $hidden"; return 1; }
   local caller; caller="$(KANNA_TERMINAL="$(pane other id)" kanna screenshot --json | field window)" || return 1
-  check test "$caller" == w1
+  check test "$caller" == win-1
 }
 
 scenario bash_completion M4
@@ -2648,7 +2648,7 @@ quiz_window() {
   d="${BASH_REMATCH[1]}"
   check wait_for 10 eval '[[ "$(desk lead "$d")" == term-* ]]' || { echo "quiz_window: the Desk has no planning terminal"; kanna workspace list --all; return 1; }
   local planner; planner="$(desk lead "$d")"
-  opened="$(cd "$repo/src" && KANNA_TERMINAL="$planner" kanna quiz open --agent "$agent")" && [[ "$opened" =~ ^opened\ (term-[0-9]+)\ in\ (w[0-9]+)$ ]] || { echo "quiz_window: kanna quiz open said \"$opened\""; return 1; }
+  opened="$(cd "$repo/src" && KANNA_TERMINAL="$planner" kanna quiz open --agent "$agent")" && [[ "$opened" =~ ^opened\ (term-[0-9]+)\ in\ (win-[0-9]+)$ ]] || { echo "quiz_window: kanna quiz open said \"$opened\""; return 1; }
   local quiz="${BASH_REMATCH[1]}" w="${BASH_REMATCH[2]}"
   [[ "$w" != "$d" ]] || { echo "quiz_window: the quiz opened on the Desk"; return 1; }
   check wait_for 5 eval '[[ "$(desk window.lead.pane "$w")" == "$quiz" ]]' || { echo "quiz_window: the quiz agent isn't its window's lead"; kanna workspace list --all --json; return 1; }
@@ -3022,7 +3022,7 @@ PRESENT
   local presenter md long short; presenter="$(of $(tid 8) 3)"
   read -r md long short <"$KANNA_STATE_DIR/presented" || { echo "backlog_runners: the agent didn't present"; kanna read "$presenter"; cat "$KANNA_STATE_DIR/present.log"; return 1; }
   check is "$md" type md || { echo "backlog_runners: stopping closed the markdown tab"; kanna workspace list --all; return 1; }
-  [[ "$(cat "$KANNA_STATE_DIR/opened")" =~ ^"opened $md in ws-"[0-9]+" ($(sid 8), in the backlog), tab t"[0-9]+": "[a-z]+$ ]] || { echo "backlog_runners: a held task's open said: $(cat "$KANNA_STATE_DIR/opened")"; return 1; }
+  [[ "$(cat "$KANNA_STATE_DIR/opened")" =~ ^"opened $md in ws-"[0-9]+" ($(sid 8), in the backlog), tab-"[0-9]+": "[a-z]+$ ]] || { echo "backlog_runners: a held task's open said: $(cat "$KANNA_STATE_DIR/opened")"; return 1; }
   [[ "$(cat "$KANNA_STATE_DIR/focused")" =~ ^"focused $md in ws-"[0-9]+" ($(sid 8), in the backlog)"$ ]] || { echo "backlog_runners: a held task's focus said: $(cat "$KANNA_STATE_DIR/focused")"; return 1; }
   check is "$long" state exited || { echo "backlog_runners: stopping didn't hang up the running terminal"; kanna workspace list --all; return 1; }
   check is "$short" state exited || { echo "backlog_runners line $LINENO"; return 1; }
@@ -3046,7 +3046,7 @@ print(len(w["tabs"]), w.get("focused"), w.get("zoomed"))' "$presenter"; }
   kanna task pull $(tid 2) >/dev/null || { echo "backlog_runners line $LINENO"; return 1; }
   check wait_for 5 eval '[[ "$(dwin "$desk8" dock.pane)" == "$(pane Asks id)" ]]' || { echo "backlog_runners: $(sid 2) didn't take $(sid 8)'s place on the Desk"; app_view; return 1; }
   [[ "$(ws $(tid 8) panes)" == *"\"$md\""* && "$(ws $(tid 2) panes)" != *"\"$md\""* ]] || { echo "backlog_runners: $(sid 8)'s tabs aren't in its workspace"; state; return 1; }
-  [[ "$(KANNA_TERMINAL="$presenter" kanna open --name after --tab --no-wait)" == "opened "*" (after) in ws-"*" ($(sid 8), on the Shelf), tab "* ]] || { echo "backlog_runners: $(sid 8)'s open went elsewhere"; state; return 1; }
+  [[ "$(KANNA_TERMINAL="$presenter" kanna open --name after --tab --no-wait)" == "opened "*" (after) in ws-"*" ($(sid 8), on the Shelf), tab-"* ]] || { echo "backlog_runners: $(sid 8)'s open went elsewhere"; state; return 1; }
 }
 
 scenario task_scripts M4

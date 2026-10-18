@@ -221,7 +221,7 @@ pub(crate) fn reply<const N: usize>(fields: [(&str, Value); N]) -> Map {
 }
 
 fn number(id: &str) -> usize {
-    id.strip_prefix('w').and_then(|n| n.parse().ok()).unwrap_or(usize::MAX)
+    id.strip_prefix("win-").and_then(|n| n.parse().ok()).unwrap_or(usize::MAX)
 }
 
 impl Model {
@@ -403,7 +403,7 @@ impl Model {
 
     pub(crate) fn make_window(&mut self) -> usize {
         self.counters.1 += 1;
-        let window = Window::new(format!("w{}", self.counters.1));
+        let window = Window::new(format!("win-{}", self.counters.1));
         let key = window.id.clone();
         self.set_key(Some(key));
         self.windows.push(window);
@@ -419,7 +419,7 @@ impl Model {
 
     pub(crate) fn make_tab(&mut self, h: Holder, activate: bool) -> usize {
         self.counters.0 += 1;
-        let id = format!("t{}", self.counters.0);
+        let id = format!("tab-{}", self.counters.0);
         let tabs = self.tabs_mut(h);
         tabs.count += 1;
         let tab = Tab::new(id, tabs.count);
