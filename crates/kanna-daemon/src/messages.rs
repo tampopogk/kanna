@@ -7,6 +7,10 @@ pub const USER: &str = "user";
 
 pub const TYPED_HOLD: Duration = Duration::from_secs(5);
 
+pub const DRAFT_HOLD: Duration = Duration::from_secs(120);
+
+pub const PICKUP: Duration = Duration::from_secs(5);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ready {
     status: Option<Status>,

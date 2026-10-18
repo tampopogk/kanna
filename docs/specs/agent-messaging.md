@@ -46,9 +46,9 @@ sequenceDiagram
 ```
 
 - **Only at its prompt:** a message waits while the agent is working, and while it needs you (typed text would answer the question). It goes when the agent is idle: at once when it reports its turn over ([OSC 7501](agent-status.md#4-the-agents-own-report-osc-7501)), otherwise once idle has held 3s, the [turn's end](backlog-runners.md#2-how-its-built) the runners use.
-- **Not over your typing:** a pane you typed into in the last 5s waits until you've stopped.
+- **Not over your typing:** a pane you typed into waits 5s after your last key; while what you typed sits in its prompt unsent (your last key wasn't Return or ⌃C), it waits up to 2 minutes for you to send or clear it.
 - **Typed as `kanna send` types it,** a bracketed paste and then Return, so a long message submits whole ([kanna send](kanna-send.md)).
-- **Once:** marked delivered when the send succeeds; one that fails waits for the next turn's end. A waiting message outlives a restart of the daemon.
+- **Once:** marked delivered when the send succeeds; one that fails is tried again once the agent has been idle another 3s. A waiting message outlives a restart of the daemon.
 - **The planner:** the planning terminal of a Desk whose folder is the sender's repo (the first, if several are). With none open, the message waits until one is.
 
 ## 3. Stopped tasks
@@ -66,7 +66,7 @@ flowchart TD
 ```
 
 - **A stopped backlog task runs for a message,** resuming its session, as a [runner](backlog-runners.md): it waits for a free one, but goes before tasks that haven't started. With `backlog.runners` 0 it waits.
-- **A running backlog task with a message waiting isn't stopped** at its turn's end: it gets the message, and the turn that starts ends it as usual.
+- **A running backlog task with a message waiting isn't stopped** at its turn's end: it gets the message, and the turn that starts ends it as usual (Kanna gives the agent 5s to start on it). One whose turn ends asking you is stopped as before, and runs again for the message.
 - **A task stopped on the Shelf stays stopped:** you stopped it. It gets its messages when you start it.
 
 ## 4. CLI
