@@ -938,6 +938,7 @@ impl CoreHandle {
 
     async fn close(&self, args: &Value) -> Result<Map, KmuxError> {
         let _turn = self.0.turns.take().await;
+        let mut workspace = None;
         let victims: Vec<String> = if let Some(reference) = string(args, "pane") {
             let id = self.need_pane(Some(reference))?.id;
             self.refuse_docked(&id).await?;
@@ -956,15 +957,19 @@ impl CoreHandle {
             let ids = found.get("panes").and_then(Value::as_array).cloned().unwrap_or_default();
             let kept = match &scope {
                 Scope::Task(task) if is_true(args, "tabs") => Some(task.clone()),
+                Scope::Task(task) => {
+                    workspace = Some(task.clone());
+                    None
+                }
                 _ => None,
             };
-            let s = self.state();
-            ids.iter().filter_map(Value::as_str).filter(|id| s.panes.get(id).is_some() && kept.as_deref() != Some(*id)).map(String::from).collect()
+            ids.iter().filter_map(Value::as_str).filter(|id| kept.as_deref() != Some(*id)).map(String::from).collect()
         };
-        for id in &victims {
+        let known: Vec<&String> = victims.iter().filter(|id| self.state().panes.get(id).is_some()).collect();
+        for id in known {
             self.forget_pane(id);
         }
-        if let Err(error) = self.layout(json!({ "op": "remove", "ids": victims, "tidy": true })).await {
+        if let Err(error) = self.layout(json!({ "op": "remove", "ids": victims, "task": workspace, "tidy": true })).await {
             eprintln!("kanna-mux: closed {} but the layout kept them: {error}", victims.join(", "));
         }
         self.changed();

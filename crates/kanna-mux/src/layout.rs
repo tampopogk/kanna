@@ -93,6 +93,8 @@ pub trait LayoutHost {
 
     fn remove(&mut self, pane: &str);
 
+    fn close_task(&mut self, task: &str);
+
     fn tidy(&mut self);
 
     fn command(&mut self, cmd: &str, args: &Value, panes: &Panes) -> Result<Map, KmuxError>;
@@ -294,6 +296,9 @@ fn step(host: &mut dyn LayoutHost, request: &Value, panes: &Panes) -> Result<Map
             reply.insert("panes".into(), host.panes_in(&scope)?.into());
         }
         "remove" => {
+            if let Some(task) = string(request, "task") {
+                host.close_task(task);
+            }
             for pane in ids(request.get("ids"))? {
                 host.remove(&pane);
             }

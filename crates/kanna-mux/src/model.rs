@@ -576,6 +576,12 @@ impl Model {
         }
         if let Some(h) = self.locate(id).map(|l| l.holder) {
             self.tabs_mut(h).remove(id);
+            return;
+        }
+        for (tabs, _) in &mut self.orphans {
+            if tabs.remove(id) {
+                return;
+            }
         }
     }
 
@@ -1259,6 +1265,10 @@ impl LayoutHost for Model {
 
     fn remove(&mut self, pane: &str) {
         self.detach(pane);
+    }
+
+    fn close_task(&mut self, task: &str) {
+        Model::close_task(self, task);
     }
 
     fn tidy(&mut self) {

@@ -2,7 +2,7 @@ mod support;
 
 use kanna_mux::json::{json, Value};
 use kanna_mux::Core;
-use support::{make_core, send};
+use support::{make_core, make_remote_core, send};
 
 fn two_panes() -> Core {
     let (core, _) = make_core();
@@ -60,4 +60,64 @@ fn move_docks_only_a_task_and_moves_the_docked_pane_to_the_other_edge_or_another
     assert_eq!(send(&core, json!({ "cmd": "move", "args": { "pane": "other", "tab": "new" } }))["ok"], true);
     let again = send(&core, json!({ "cmd": "move", "args": { "pane": "other", "dock": "left" } }));
     assert_eq!(again["error"]["code"], "not_a_task", "{again}");
+}
+
+fn shelved_task_with_a_tab() -> Core {
+    let (core, _) = make_core();
+    let task = send(&core, json!({ "cmd": "open", "args": { "type": "term", "name": "agent", "dock": "left", "shelf": true } }));
+    assert_eq!(task["ok"], true, "{task}");
+    let tab = send(&core, json!({ "cmd": "open", "args": { "type": "term", "name": "side", "tab": true, "from": "agent" } }));
+    assert_eq!(tab["ok"], true, "{tab}");
+    core
+}
+
+fn everything(core: &Core) -> Value {
+    send(core, json!({ "cmd": "list", "args": { "all": true } }))
+}
+
+#[test]
+fn closing_a_shelved_task_closes_its_tabs_and_leaves_no_window() {
+    let core = shelved_task_with_a_tab();
+    let closed = send(&core, json!({ "cmd": "close", "args": { "task": "agent" } }));
+    assert_eq!(closed["closed"], json!(["p1", "p2"]), "{closed}");
+    let list = everything(&core);
+    assert_eq!((list["windows"].clone(), list["hiddenWindows"].clone(), list["workspaces"].clone()), (json!([]), json!([]), json!([])), "{list}");
+}
+
+fn dead_pane_in_a_window() -> Core {
+    let (core, _, app) = make_remote_core();
+    assert_eq!(send(&core, json!({ "cmd": "open", "args": { "type": "term", "name": "live" } }))["ok"], true);
+    let placed = app.owner.borrow_mut().handle(&json!({ "call": "serve", "request": { "op": "place", "pane": { "id": "p9", "type": "diff" }, "at": { "window": "new" } } }));
+    assert_eq!(placed["window"], "w2", "{placed}");
+    core
+}
+
+#[test]
+fn closing_a_window_of_panes_the_daemon_doesnt_know_removes_the_window() {
+    let core = dead_pane_in_a_window();
+    let closed = send(&core, json!({ "cmd": "close", "args": { "window": "w2" } }));
+    assert_eq!(closed["closed"], json!(["p9"]), "{closed}");
+    let list = everything(&core);
+    assert_eq!(list["windows"].as_array().unwrap().iter().map(|w| w["id"].clone()).collect::<Vec<_>>(), vec![json!("w1")], "{list}");
+}
+
+#[test]
+fn closing_a_tab_of_panes_the_daemon_doesnt_know_removes_the_tab() {
+    let core = dead_pane_in_a_window();
+    let list = everything(&core);
+    let tab = list["windows"][1]["tabs"][0]["id"].clone();
+    let closed = send(&core, json!({ "cmd": "close", "args": { "tab": tab } }));
+    assert_eq!(closed["closed"], json!(["p9"]), "{closed}");
+    assert_eq!(everything(&core)["windows"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn closing_a_task_closes_its_workspace_and_its_windows() {
+    let core = shelved_task_with_a_tab();
+    let window = send(&core, json!({ "cmd": "open", "args": { "type": "term", "name": "own", "window": "new", "from": "agent" } }));
+    assert_eq!(window["ok"], true, "{window}");
+    let closed = send(&core, json!({ "cmd": "close", "args": { "task": "agent" } }));
+    assert_eq!(closed["ok"], true, "{closed}");
+    let list = everything(&core);
+    assert_eq!((list["windows"].clone(), list["hiddenWindows"].clone(), list["workspaces"].clone(), list["panes"].clone()), (json!([]), json!([]), json!([]), json!([])), "{list}");
 }
