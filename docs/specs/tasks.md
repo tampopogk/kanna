@@ -74,7 +74,7 @@ stateDiagram-v2
 ## 5. Stop, Done, or back to the backlog
 
 - **Stop ends a task's agent and terminals and leaves it where it is** (`kanna task stop`): on the Shelf, a Desk or in the backlog. Nothing closes: its agent's pane and terminals stay, exited, its other tabs stay with their comments, and the shown tab, focus and zoom stay, as do its worktree and branch. Starting it again (`kanna task start`, or Move to Shelf) runs its agent in that pane, resuming its conversation ([which agents resume](#which-agents-resume)), and reruns the terminals that were running when it stopped. A stopped task still takes its place on the Shelf.
-- **Its agent quits as you'd quit it:** Stop, Done and a [backlog runner](backlog-runners.md#2-how-its-built) type its quit keys and keep the session it says as it exits; it's hung up only if it has no keys or doesn't quit in 5s.
+- **Its agent quits as you'd quit it:** Stop, Done and a [backlog runner](backlog-runners.md#2-how-its-built) type its quit keys, and keep the session it says as it exits when the task has none of its own; it's hung up only if it has no keys or doesn't quit in 5s.
 - **A task presents its work:** before its turn ends, its agent sets up its tabs to show what it changed and why, and that's what you see when you pull it ([presenting](presenting.md)).
 
 - **Done ends the task:** its agent and tabs close, or it leaves the backlog.
@@ -90,13 +90,13 @@ Kanna gives an agent a session ID of its own when it starts, if the agent takes 
 
 | Agent | Started with | Resumed with | A task Kanna didn't start |
 |---|---|---|---|
-| claude | `claude --session-id UUID 'FIRST'` | `claude --resume UUID`, the one it said as it quit, else Kanna's | `claude --continue` (the folder's latest) |
+| claude | `claude --session-id UUID 'FIRST'` | `claude --resume UUID` | `claude --continue` (the folder's latest), until a stop finds the ID it says |
 | codex | `codex --yolo --no-daemon 'FIRST'` (it takes no ID) | `codex --yolo --no-daemon resume ID`, the one it said as it quit, else `resume --last` (the folder's latest: codex filters by folder) | the same |
 | copilot | `copilot --yolo --session-id UUID -i 'FIRST'` | `copilot --yolo --session-id UUID` | the latest session in `~/.copilot/session-state/*/workspace.yaml` whose `cwd` is the folder (`copilot --continue` isn't the folder's) |
 | opencode | `opencode --prompt 'FIRST'` (it takes no ID) | `opencode --session ID`, the latest top-level session in `~/.local/share/opencode/opencode.db` whose `directory` is the folder (`--continue` is the repo's, shared by its worktrees) | the same |
 | antigravity | `agy --dangerously-skip-permissions -i 'FIRST'` (it takes no ID) | `agy --dangerously-skip-permissions --conversation ID`, the one it said as it quit, else `--continue` (the folder's last conversation) | the same |
 
-**Tested** by e2e `real_agent_tasks` for claude and codex: the real agents run as tasks against a local mock model (`tools/agent-harness`), come back to their conversation after `kanna restart` on their first start, and after Move to Backlog, Stop (by their quit keys, keeping the ID they said) and Start, the mock sees their next message carry the first, with no second start. Copilot and antigravity only talk to their own services, and opencode (which could use the mock as a provider) isn't covered yet, so only their command lines are tested (`backlog.rs`).
+**Tested** by e2e `real_agent_tasks` for claude and codex: the real agents run as tasks against a local mock model (`tools/agent-harness`), come back to their conversation after `kanna restart` on their first start, and after Move to Backlog, Stop (by their quit keys) and Start, the mock sees their next message carry the first, with no second start. Copilot and antigravity only talk to their own services, and opencode (which could use the mock as a provider) isn't covered yet, so only their command lines are tested (`backlog.rs`).
 
 An agent not in the table starts again with its first message, its conversation lost; so do copilot and opencode when no session of theirs is found for the folder. Copilot, opencode and antigravity take the first message as a flag (`-i`, `--prompt`), not an argument.
 

@@ -1015,12 +1015,12 @@ impl Backlog {
     fn keep_session(&self, pane: &str, session: Option<String>) {
         let Some(session) = session else { return };
         let waiting = self.entries.borrow_mut().iter_mut().find(|e| e.held.as_deref() == Some(pane)).map(|e| {
-            e.session = Some(session.clone());
+            e.session.get_or_insert_with(|| session.clone());
             (e.clone(), Place::Backlog)
         });
         let found = waiting.or_else(|| {
             self.running.borrow_mut().iter_mut().find(|r| r.pane == pane).map(|r| {
-                r.entry.session = Some(session.clone());
+                r.entry.session.get_or_insert_with(|| session.clone());
                 (r.entry.clone(), r.place)
             })
         });
@@ -1032,8 +1032,8 @@ impl Backlog {
     fn stopped_by_itself(&self, pane: &str, why: &str, session: Option<String>) {
         let Some(mut entry) = self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).cloned() else { return };
         entry.stopped = Some(why.to_string());
-        if session.is_some() {
-            entry.session = session.clone();
+        if entry.session.is_none() {
+            entry.session = session;
         }
         let change = Change::new("stopped").by(Some("daemon")).with("why", json!(why)).with("session", opt(entry.session.as_deref()));
         let _ = self.store(&entry, Place::Backlog, Some(pane), Some(change));
@@ -2714,10 +2714,14 @@ mod tests {
         }
 
         fn agent(&self, agent: &str, place: Place) -> (String, Entry) {
+            self.agent_with(agent, place, Some("given"))
+        }
+
+        fn agent_with(&self, agent: &str, place: Place, session: Option<&str>) -> (String, Entry) {
             let opened = self.core.handle_blocking(json!({ "cmd": "open", "args": { "type": "term", "cmd": agent, "dock": "left", "window": "new" } }));
             let pane = opened["pane"]["id"].as_str().unwrap_or_else(|| panic!("{opened}")).to_string();
             self.settle(|| alive(&self.core, &pane));
-            let entry = Entry { id: "task-1dfb12c2".into(), repo: "/r".into(), agent: agent.into(), session: Some("given".into()), folder: Some("/r".into()), ..Default::default() };
+            let entry = Entry { id: "task-1dfb12c2".into(), repo: "/r".into(), agent: agent.into(), session: session.map(String::from), folder: Some("/r".into()), ..Default::default() };
             match place {
                 Place::Backlog => self.backlog.entries.borrow_mut().push(Entry { held: Some(pane.clone()), ..entry.clone() }),
                 place => self.backlog.running.borrow_mut().push(Running { pane: pane.clone(), entry: entry.clone(), place }),
@@ -2768,19 +2772,19 @@ mod tests {
         assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: ctrl+c"), format!("{pane}: ctrl+c")], "claude asks for a second ctrl+c");
         assert!(t.agents.hung_up.borrow().is_empty(), "claude quit, so it isn't hung up");
         assert_eq!(t.backlog.pane_entry(&pane).and_then(|e| e.stopped).as_deref(), Some("needs-you"));
-        assert_eq!(t.session(&pane).as_deref(), Some(SAID), "the session claude said as it quit replaces the one Kanna gave it");
+        assert_eq!(t.session(&pane).as_deref(), Some("given"), "the session Kanna gave claude stays its own");
     }
 
     #[test]
     fn kanna_task_stop_quits_the_agent_with_its_keys_and_keeps_the_session_it_says() {
         let t = Stopping::new("stop");
-        let (pane, entry) = t.agent("codex", Place::Shelf);
+        let (pane, entry) = t.agent_with("codex", Place::Shelf, None);
         let stopped = t.answer(|backlog, responder| backlog.stop(&json!({ "task": entry.id }), responder)).unwrap();
         assert_eq!(stopped["place"], "shelf");
         assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: ctrl+c")], "codex quit on the first, so it isn't typed the second");
         assert!(t.agents.hung_up.borrow().is_empty(), "codex quit, so it isn't hung up");
         assert!(!alive(&t.core, &pane));
-        assert_eq!(t.session(&pane).as_deref(), Some(SAID));
+        assert_eq!(t.session(&pane).as_deref(), Some(SAID), "codex takes no ID, so the one it said is kept");
         assert_eq!(Backlog::open(t.backlog.db.clone(), &t.state, t.core.weak(), std::sync::mpsc::channel().0).running.borrow()[0].entry.session.as_deref(), Some(SAID), "the session is saved");
     }
 
