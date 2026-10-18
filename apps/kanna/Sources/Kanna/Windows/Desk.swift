@@ -228,18 +228,24 @@ extension AppController {
     }
 
     func newDesk() {
-        layoutCommand("task", ["action": "desk", "project": .string(NSHomeDirectory()), "new": true])
+        _ = openDesk(project: NSHomeDirectory(), fresh: true)
     }
 
     func openPlanner(in window: String) {
         guard !starting.contains(window), let controller = controllers[window] else { return }
         starting.insert(window)
-        var args: [String: JSON] = ["action": "plan", "window": .string(window)]
+        var args: [String: JSON] = ["action": "plan", "app": .string(Self.app)]
         if let folder = self.window(window)?["project"]?.string ?? controller.projectRoot { args["folder"] = .string(folder) }
         if let script = Bundle.main.url(forResource: "planner", withExtension: "sh") { args["script"] = .string(script.path) }
         request("backlog", args) { [weak self] reply in
             guard let self else { return }
-            if reply["ok"]?.bool == true { starting.remove(window) }
+            if reply["ok"]?.bool == true, let planner = reply["workspace"]?.string, var desk = physical.desk(window) {
+                if published["workspaces"]?.array?.contains(where: { $0["id"]?.string == planner }) != true { givenPlanners.insert(planner) }
+                desk.planner = planner
+                physical.setDesk(desk)
+                restate()
+            }
+            starting.remove(window)
             noted(window, reply)
         }
     }

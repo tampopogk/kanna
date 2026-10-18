@@ -2,7 +2,8 @@ use crate::error::KmuxError;
 use crate::exec::{sleep, Executor, Signal, Turns, Wakeup};
 use crate::instance::{Instance, DEFAULT_NAME};
 use crate::json::{is_true, json, num, string, Map, Value};
-use crate::layout::{place_request, scope_request, Edge, LayoutHost, LayoutLink, LocalLayout, Scope, SplitSide};
+use crate::layout::{place_request, scope_request, Edge, LayoutHost, LayoutLink, LocalLayout, Placement, Scope, SplitSide};
+use crate::workspace::MAC_APP;
 use crate::model::{fraction, Model};
 use crate::pane::{read_diff_args, read_view, Comment, Pane, PaneState, PaneType, Panes};
 use crate::state;
@@ -738,14 +739,29 @@ impl CoreHandle {
             return Err(bad_request("only a docked pane is frozen"));
         }
         let backlog = is_true(args, "backlog");
-        let shelf = is_true(args, "shelf") || backlog;
-        if shelf && (dock.is_none() || args.get("window").is_some()) {
-            return Err(bad_request("shelf and backlog are for a docked pane, without a window"));
+        let claimed = string(args, "claim").map(String::from);
+        let planner = is_true(args, "planner");
+        if dock.is_some() && args.get("window").is_some() {
+            return Err(bad_request("a docked pane is a task's agent, in its own workspace, not in a window"));
+        }
+        if backlog && dock.is_none() || claimed.is_some() && dock.is_none() && !planner {
+            return Err(bad_request("claim is for a docked pane or a planner, and backlog for a docked pane"));
+        }
+        if backlog && claimed.is_some() {
+            return Err(bad_request("a task is in the backlog or on an app's Shelf, not both"));
         }
         let lead = is_true(args, "lead");
         if lead && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || string(args, "window").is_none()) {
             return Err(bad_request("a window's lead is a terminal in a window, with no dock, split, size or tab"));
         }
+        if planner && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || args.get("window").is_some()) {
+            return Err(bad_request("a planner is a terminal of its own, with no dock, split, size, tab or window"));
+        }
+        let app = match (dock, backlog) {
+            (Some(_), false) => Some(claimed.unwrap_or_else(|| MAC_APP.into())),
+            _ if planner => Some(claimed.unwrap_or_else(|| MAC_APP.into())),
+            _ => None,
+        };
 
         if kind == PaneType::Code && name.is_none() && !new_tab && dock.is_none() && split.is_none() && size.is_none() && args.get("window").is_none() {
             if let Some(opened) = self.open_again(string(args, "path").unwrap_or_default(), line, string(args, "from")).await? {
@@ -754,19 +770,34 @@ impl CoreHandle {
         }
         let turn = self.0.turns.take().await;
         taken(self)?;
-        if dock.is_some() && !backlog {
-            self.room_for_task(string(args, "cwd")).await?;
+        if let (Some(_), Some(app)) = (dock, app.as_deref()) {
+            self.room_for_task(string(args, "cwd"), app).await?;
         }
         let id = self.state().panes.next_id(kind);
-        let placeless = !new_tab && !lead && dock.is_none() && split.is_none() && size.is_none() && args.get("window").is_none();
-        let opener = string(args, "from").filter(|_| !lead && dock.is_none()).and_then(|from| self.state().panes.pane(from).map(|p| p.id.clone()));
+        let placeless = !new_tab && !lead && !planner && dock.is_none() && split.is_none() && size.is_none() && args.get("window").is_none() && args.get("workspace").is_none();
+        let opener = string(args, "from").filter(|_| !lead && !planner && dock.is_none()).and_then(|from| self.state().panes.pane(from).map(|p| p.id.clone()));
         let from = opener.clone().filter(|_| placeless);
         let cwd = match string(args, "cwd") {
             Some(cwd) => Some(cwd.to_string()),
-            None if kind == PaneType::Term && dock.is_none() && !lead => self.task_folder(opener.as_deref(), string(args, "window")).await,
+            None if kind == PaneType::Term && dock.is_none() && !lead && !planner => self.task_folder(opener.as_deref(), string(args, "window"), string(args, "workspace")).await,
             None => None,
         };
-        let placed = self.layout(place_request(&Pane::new(&id, name.clone(), kind), string(args, "window"), split, size, new_tab, dock, frozen, from.as_deref(), opener.as_deref(), shelf, backlog, lead)).await?;
+        let at = Placement {
+            window: string(args, "window").map(String::from),
+            workspace: string(args, "workspace").map(String::from),
+            split: split.unwrap_or(SplitSide::Auto),
+            size: size.unwrap_or(0.5),
+            new_tab,
+            dock,
+            frozen,
+            from,
+            opener,
+            app,
+            backlog,
+            lead,
+            planner,
+        };
+        let placed = self.layout(place_request(&Pane::new(&id, name.clone(), kind), &at)).await?;
         let placed = Value::Object(placed);
         {
             let mut s = self.state();
@@ -921,16 +952,23 @@ impl CoreHandle {
         answer.await
     }
 
-    async fn task_folder(&self, from: Option<&str>, window: Option<&str>) -> Option<String> {
+    async fn task_folder(&self, from: Option<&str>, window: Option<&str>, workspace: Option<&str>) -> Option<String> {
         let task = match from {
             Some(from) => from.to_string(),
             None => {
-                let windows = self.layout(json!({ "op": "windows" })).await.ok()?.remove("windows")?;
-                let window = windows.as_array()?.iter().find(|w| match window {
-                    Some(id) => w["id"] == id,
-                    None => w["key"] == true,
+                let mut listed = self.layout(json!({ "op": "windows" })).await.ok()?;
+                let window = match window {
+                    Some(id) => Some(Value::String(id.into())),
+                    None if workspace.is_none() => listed.get("windows")?.as_array()?.iter().find(|w| w["key"] == true).map(|w| w["id"].clone()),
+                    None => None,
+                };
+                let workspaces = listed.remove("workspaces")?;
+                let ws = workspaces.as_array()?.iter().find(|ws| match (&window, workspace) {
+                    (_, Some(id)) => ws["id"] == id,
+                    (Some(window), None) => ws["windows"].as_array().is_some_and(|ws| ws.iter().any(|w| w == window || &w["id"] == window)),
+                    (None, None) => false,
                 })?;
-                string(&window["dock"], "pane")?.to_string()
+                string(&ws["dock"], "pane")?.to_string()
             }
         };
         self.state().panes.pane(&task)?.opened_in.clone()
@@ -1004,8 +1042,8 @@ impl CoreHandle {
         }
     }
 
-    async fn room_for_task(&self, cwd: Option<&str>) -> Result<(), KmuxError> {
-        let Ok(listed) = self.layout(json!({ "op": "command", "cmd": "task", "args": { "action": "list" } })).await else { return Ok(()) };
+    pub async fn room_for_task(&self, cwd: Option<&str>, app: &str) -> Result<(), KmuxError> {
+        let Ok(listed) = self.layout(json!({ "op": "command", "cmd": "task", "args": { "action": "list", "app": app } })).await else { return Ok(()) };
         let here = project(cwd);
         let same: Vec<String> = {
             let s = self.state();

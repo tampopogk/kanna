@@ -321,7 +321,6 @@ fn replies_print_as_kmux_prints_them() {
         ("capabilities", json!({}), json!({ "mux": "kmux", "paneTypes": ["term", "web"], "commands": ["capabilities", "list"] })),
         ("window", json!({ "action": "free", "window": "w2" }), json!({ "window": "w2", "was": null, "shown": true })),
         ("window", json!({ "action": "free", "window": "w2" }), json!({ "window": "w2", "was": { "id": "s1", "hidden": false }, "shown": true })),
-        ("window", json!({ "action": "free", "window": "w2" }), json!({ "window": "w2", "was": { "id": "s1", "hidden": true }, "shown": true })),
     ];
     for (name, args, reply) in cases {
         let kmux = (commands::find(name).unwrap().show)(&args, &reply);

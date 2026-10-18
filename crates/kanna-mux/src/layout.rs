@@ -48,6 +48,7 @@ impl Edge {
 #[derive(Clone, Debug)]
 pub struct Placement {
     pub window: Option<String>,
+    pub workspace: Option<String>,
     pub split: SplitSide,
     pub size: f64,
     pub new_tab: bool,
@@ -55,9 +56,16 @@ pub struct Placement {
     pub frozen: bool,
     pub from: Option<String>,
     pub opener: Option<String>,
-    pub shelf: bool,
+    pub app: Option<String>,
     pub backlog: bool,
     pub lead: bool,
+    pub planner: bool,
+}
+
+impl Default for Placement {
+    fn default() -> Placement {
+        Placement { window: None, workspace: None, split: SplitSide::Auto, size: 0.5, new_tab: false, dock: None, frozen: false, from: None, opener: None, app: None, backlog: false, lead: false, planner: false }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -157,42 +165,48 @@ impl LayoutLink for LocalLayout {
     }
 }
 
-pub fn place_request(pane: &Pane, window: Option<&str>, split: Option<SplitSide>, size: Option<f64>, new_tab: bool, dock: Option<Edge>, frozen: bool, from: Option<&str>, opener: Option<&str>, shelf: bool, backlog: bool, lead: bool) -> Value {
-    let mut at = Map::new();
-    if frozen {
-        at.insert("frozen".into(), Value::Bool(true));
+pub fn place_request(pane: &Pane, at: &Placement) -> Value {
+    let mut out = Map::new();
+    if at.frozen {
+        out.insert("frozen".into(), Value::Bool(true));
     }
-    if backlog {
-        at.insert("backlog".into(), Value::Bool(true));
+    if at.backlog {
+        out.insert("backlog".into(), Value::Bool(true));
     }
-    if lead {
-        at.insert("lead".into(), Value::Bool(true));
+    if at.lead {
+        out.insert("lead".into(), Value::Bool(true));
     }
-    if shelf {
-        at.insert("shelf".into(), Value::Bool(true));
+    if at.planner {
+        out.insert("planner".into(), Value::Bool(true));
     }
-    if let Some(from) = from {
-        at.insert("from".into(), from.into());
+    if let Some(app) = &at.app {
+        out.insert("app".into(), app.clone().into());
     }
-    if let Some(opener) = opener {
-        at.insert("opener".into(), opener.into());
+    if let Some(from) = &at.from {
+        out.insert("from".into(), from.clone().into());
     }
-    if let Some(dock) = dock {
-        at.insert("dock".into(), dock.as_str().into());
+    if let Some(opener) = &at.opener {
+        out.insert("opener".into(), opener.clone().into());
     }
-    if let Some(window) = window {
-        at.insert("window".into(), window.into());
+    if let Some(dock) = at.dock {
+        out.insert("dock".into(), dock.as_str().into());
     }
-    if let Some(split) = split {
-        at.insert("split".into(), split_name(split).into());
+    if let Some(window) = &at.window {
+        out.insert("window".into(), window.clone().into());
     }
-    if let Some(size) = size {
-        at.insert("size".into(), num(size));
+    if let Some(workspace) = &at.workspace {
+        out.insert("workspace".into(), workspace.clone().into());
     }
-    if new_tab {
-        at.insert("tab".into(), Value::Bool(true));
+    if at.split != SplitSide::Auto {
+        out.insert("split".into(), split_name(at.split).into());
     }
-    json!({ "op": "place", "pane": pane_entry(pane), "at": at })
+    if at.size != 0.5 {
+        out.insert("size".into(), num(at.size));
+    }
+    if at.new_tab {
+        out.insert("tab".into(), Value::Bool(true));
+    }
+    json!({ "op": "place", "pane": pane_entry(pane), "at": out })
 }
 
 pub fn scope_request(scope: &Scope) -> Value {
@@ -257,7 +271,7 @@ pub fn placement(at: &Value) -> Result<Placement, KmuxError> {
         Some(size) => size.as_f64().filter(|s| *s > 0.0 && *s < 1.0).ok_or_else(|| bad("size must be a fraction between 0 and 1"))?,
     };
     let dock = Edge::read(at.get("dock")).map_err(|_| bad("dock must be left or right"))?;
-    Ok(Placement { window: string(at, "window").map(String::from), split, size, new_tab: at.get("tab") == Some(&Value::Bool(true)), dock, frozen: at.get("frozen") == Some(&Value::Bool(true)), from: string(at, "from").map(String::from), opener: string(at, "opener").map(String::from), shelf: at.get("shelf") == Some(&Value::Bool(true)), backlog: at.get("backlog") == Some(&Value::Bool(true)), lead: at.get("lead") == Some(&Value::Bool(true)) })
+    Ok(Placement { window: string(at, "window").map(String::from), workspace: string(at, "workspace").map(String::from), split, size, new_tab: at.get("tab") == Some(&Value::Bool(true)), dock, frozen: at.get("frozen") == Some(&Value::Bool(true)), from: string(at, "from").map(String::from), opener: string(at, "opener").map(String::from), app: string(at, "app").map(String::from), backlog: at.get("backlog") == Some(&Value::Bool(true)), lead: at.get("lead") == Some(&Value::Bool(true)), planner: at.get("planner") == Some(&Value::Bool(true)) })
 }
 
 fn spot(reply: &mut Map, spot: Option<Spot>, window: Option<String>) {

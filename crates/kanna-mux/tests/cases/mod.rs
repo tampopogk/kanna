@@ -6,10 +6,21 @@ use std::path::PathBuf;
 
 pub type Send = Box<dyn FnMut(Value) -> Value>;
 
-const KANNA_DIFFERS: [(&str, &str); 3] = [
-    ("dock.json: move docks a pane, moves the docked pane to the other edge, and undocks it into a tab", "only a task's agent docks"),
-    ("dock.json: docking where a pane is docked sends that one to a new tab, not shown", "only a task's agent docks"),
-    ("dock.json: moving the docked pane to another window or beside a pane undocks it; dropping on it swaps", "only a task's agent docks, and move --window makes a new tab"),
+const KANNA_DIFFERS: [(&str, &str); 14] = [
+    ("dock.json: move docks a pane, moves the docked pane to the other edge, and undocks it into a tab", "a docked pane is a task's agent, in its own workspace, not a window's"),
+    ("dock.json: docking where a pane is docked sends that one to a new tab, not shown", "a docked pane is a task's agent, in its own workspace, not a window's"),
+    ("dock.json: moving the docked pane to another window or beside a pane undocks it; dropping on it swaps", "a docked pane is a task's agent, in its own workspace, not a window's"),
+    ("dock.json: open with dock makes the window's docked pane, outside its tabs, 2/5 wide on the left", "a docked pane is a task's agent, in its own workspace, not a window's"),
+    ("dock.json: switching tabs leaves the docked pane; focus goes to the shown tab and back", "a docked pane is a task's agent, in its own workspace, not a window's"),
+    ("dock.json: the docked pane closes only with its window; a window keeps it when its last tab closes", "a docked pane is a task's agent, in its own workspace, not a window's"),
+    ("dock.json: moving a tab to another window leaves the docked pane where it is", "a docked pane is a task's agent, in its own workspace, not a window's"),
+    ("dock.json: a frozen docked pane doesn't move and nothing drops on it; it still resizes, is saved frozen and comes back frozen", "a docked pane is a task's agent, in its own workspace, not a window's"),
+    ("dock.json: zoom on a tab's pane leaves the docked pane; zoom on the docked pane fills the window; the zoom follows focus between them", "a docked pane is a task's agent, in its own workspace, not a window's"),
+    ("dock.json: zoom on the docked pane of a window with no tabs fills the window, and stays on through a new tab pane and switching tabs", "a docked pane is a task's agent, in its own workspace, not a window's"),
+    ("dock.json: arrange arranges the shown tab; the docked pane is not part of a layout", "a docked pane is a task's agent, in its own workspace, not a window's"),
+    ("dock.json: the docked pane is saved with its window and comes back; a window with only a docked pane too", "a docked pane is a task's agent, in its own workspace, not a window's"),
+    ("dock.json: restoring a dock repairs its edge and width, and refuses an unknown or twice-placed pane", "a docked pane is a task's agent, in its own workspace, not a window's"),
+    ("workspaces.json: a free window stays free: freeing it changes nothing, and assign needs a window and a workspace that are there", "whether a window shows is each app's, so replies don't say shown"),
 ];
 
 pub fn cases_directory() -> PathBuf {

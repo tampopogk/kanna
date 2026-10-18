@@ -11,5 +11,5 @@ fn kmux_cases_pass_through_the_daemon_and_the_app_link() {
         instance.app().answering();
         Box::new(move |request| common::request(&instance.socket(), request))
     });
-    assert_eq!(passed, 44);
+    assert_eq!(passed, 33);
 }

@@ -257,12 +257,28 @@ fn run() -> Result<(), String> {
         }
     }));
     let link = Rc::downgrade(&app);
+    let screenshot = link.clone();
     core.add_command(
         "screenshot",
         Rc::new(move |args, responder| {
-            if let Some(link) = link.upgrade() {
+            if let Some(link) = screenshot.upgrade() {
                 link.forward("screenshot", args, responder);
             }
+        }),
+    );
+    let resolving = Rc::downgrade(&backlog);
+    core.add_command(
+        "desk",
+        Rc::new(move |mut args, responder| {
+            let (Some(app), Some(backlog)) = (link.upgrade(), resolving.upgrade()) else { return };
+            let Some(task) = args.get("task").and_then(Value::as_str).map(String::from) else { return app.forward("desk", args, responder) };
+            backlog.agent(&task, move |found| match found {
+                Ok(pane) => {
+                    args["task"] = Value::String(pane);
+                    app.forward("desk", args, responder);
+                }
+                Err(error) => responder.reply(Err(error)),
+            });
         }),
     );
     for prefix in [APP_PREFIX, APP_ASK] {
@@ -331,7 +347,7 @@ fn run() -> Result<(), String> {
                         reply(answer)
                     })
                 }
-                () => serve(&core, &backlog, request, reply),
+                () => core.handle(request, reply),
             },
             Event::Wake => {}
             Event::Output { terminal, serial } => {
@@ -394,7 +410,7 @@ fn run() -> Result<(), String> {
             Event::AppMessage { conn, message } => {
                 if let Some(request) = app.message(conn, message) {
                     let link = Rc::downgrade(&app);
-                    serve(&core, &backlog, request, move |reply| {
+                    core.handle(request, move |reply| {
                         if let Some(link) = link.upgrade() {
                             link.answer_app(conn, reply);
                         }
@@ -492,13 +508,3 @@ mod tests {
     }
 }
 
-fn serve(core: &kanna_mux::CoreHandle, backlog: &Rc<backlog::Backlog>, request: Value, reply: impl FnOnce(Value) + 'static) {
-    let by = request.get("args").and_then(|a| a.get("by")).and_then(Value::as_str).unwrap_or("user").to_string();
-    let tasks = Rc::downgrade(backlog);
-    core.handle(request, move |answer| {
-        if let Some(backlog) = tasks.upgrade().filter(|_| answer.get("moves").and_then(Value::as_array).is_some_and(|m| !m.is_empty())) {
-            backlog.moved(&answer, Some(&by));
-        }
-        reply(answer)
-    })
-}

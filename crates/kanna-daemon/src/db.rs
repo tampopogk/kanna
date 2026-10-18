@@ -73,6 +73,8 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
     );
 "), Step::Sql("
     alter table tasks rename column pane to terminal;
+"), Step::Sql("
+    update tasks set place = 'shelf' where place = 'desk';
 ")];
 
 pub fn version() -> i64 {
@@ -83,7 +85,6 @@ pub fn version() -> i64 {
 pub enum Place {
     Backlog,
     Shelf,
-    Desk,
     Done,
 }
 
@@ -92,13 +93,15 @@ impl Place {
         match self {
             Place::Backlog => "backlog",
             Place::Shelf => "shelf",
-            Place::Desk => "desk",
             Place::Done => "done",
         }
     }
 
     pub fn parse(text: &str) -> Option<Place> {
-        [Place::Backlog, Place::Shelf, Place::Desk, Place::Done].into_iter().find(|p| p.as_str() == text)
+        match text {
+            "desk" => Some(Place::Shelf),
+            text => [Place::Backlog, Place::Shelf, Place::Done].into_iter().find(|p| p.as_str() == text),
+        }
     }
 }
 

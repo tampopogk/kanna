@@ -70,10 +70,11 @@ sequenceDiagram
 | Window frames | by window ID; a window goes back to its frame if that is still on a screen, and a new one cascades from the frontmost | `frame` |
 | The docked pane's width, when dragged | by workspace (a lead's by its window), with the layout's width it was dragged from, so it outlives the agent's terminal starting again | `dock.width`, `lead.width`, a Shelf agent's `width`, while the layout's width is still the one it was dragged from |
 | Text size | by pane, for markdown, code and diff panes (1 isn't kept) | the pane's view opens at it |
+| Its Desks and Shelf | each Desk's ID (`d1`, …), project, the workspace it shows and its planner; the Shelf's order and parked times; the next Desk number ([each app's Desk and Shelf](app-desk.md)) | the app composes a Desk window from them |
 
 `app-state.json` is in the daemon's state folder (`$KANNA_STATE_DIR`, or the socket's folder), saved half a second after a change and on quit, written atomically with mode 0600; `--fresh` starts without it and `KANNA_NO_STATE=1` neither reads nor writes it. Entries for panes, workspaces and windows the daemon no longer has are dropped when the app attaches.
 
-The `layout` view is `{key, windows: [{id, title, tab, tabs: [{id, title, panes}], focused, zoomed, root, dock, lead, desk, workspace, shows}], shelf, held, workspaces}`: every window on screen, its tabs and their panes, the tree on screen (the zoomed pane alone when zoomed; nothing when the docked pane is) with each split's shares and pane types, its docked pane (`{pane, type, edge, width}`, or null), and the IDs of every workspace. It's what to draw, not what a client sees (`list` shows names and fractions).
+The `layout` view is `{key, windows: [{id, title, tab, tabs: [{id, title, panes}], focused, zoomed, root, lead, workspace}], workspaces: [{id, where, dock, parkedAt, windows, panes, title, tab, tabs, focused, zoomed, root}]}`: every window and every workspace, their tabs and panes, the tree to draw (the zoomed pane alone when zoomed; nothing when the docked pane is) with each split's shares and pane types, and a workspace's docked pane (`{pane, type, edge, width, name}`). The app adds its Desks, as windows with `desk`, `dock`, `shows`, `planner` and `project`, and the Shelf strip, from its own records. It's what to draw, not what a client sees (`list` shows names and fractions).
 
 ## 3. Windows, tabs, panes
 

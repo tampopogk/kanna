@@ -94,7 +94,7 @@ extension AppController {
         case .tab(let tab): args["tab"] = .string(tab)
         case .newTab(let window):
             args["tab"] = "new"
-            args["window"] = .string(window)
+            args.merge(address(window)) { _, new in new }
         case .newWindow: args["window"] = "new"
         case .index, nil: return false
         }
@@ -111,7 +111,7 @@ extension AppController {
         hint.hide()
         switch drop {
         case .index(let window, let index):
-            perform("move-tab", ["tab": .string(id), "window": .string(window), "index": .number(Double(index))], tornOff: nil, size: size)
+            perform("move-tab", address(window).merging(["tab": .string(id), "index": .number(Double(index))]) { _, new in new }, tornOff: nil, size: size)
         case .newWindow:
             perform("move-tab", ["tab": .string(id), "window": "new"], tornOff: drop, size: size)
         default: return false

@@ -1,7 +1,17 @@
 import AppKit
 
+struct DeskRecord: Equatable {
+    var id: String
+    var project: String?
+    var shows: String?
+    var planner: String?
+}
+
 @MainActor
 final class Physical {
+    private(set) var desks: [DeskRecord] = []
+    private(set) var shelf: [(workspace: String, parkedAt: Double)] = []
+    private var deskCount = 0
     private var frames: [String: NSRect] = [:]
     private var docks: [String: (width: Double, over: Double)] = [:]
     private var textSizes: [String: Double] = [:]
@@ -21,6 +31,53 @@ final class Physical {
             docks = list.compactMapValues { dock in dock["width"]?.number.flatMap { width in dock["over"]?.number.map { (width, $0) } } }
         }
         if case .object(let list)? = saved["textSizes"] { textSizes = list.compactMapValues(\.number) }
+        desks = (saved["desks"]?.array ?? []).compactMap { desk in
+            desk["id"]?.string.map { DeskRecord(id: $0, project: desk["project"]?.string, shows: desk["shows"]?.string, planner: desk["planner"]?.string) }
+        }
+        shelf = (saved["shelf"]?.array ?? []).compactMap { entry in entry["workspace"]?.string.map { ($0, entry["parkedAt"]?.number ?? 0) } }
+        deskCount = max(Int(saved["deskCount"]?.number ?? 0), desks.compactMap { Int($0.id.dropFirst()) }.max() ?? 0)
+    }
+
+    func newDesk(project: String?) -> DeskRecord {
+        deskCount += 1
+        let desk = DeskRecord(id: "d\(deskCount)", project: project)
+        desks.append(desk)
+        changed()
+        return desk
+    }
+
+    func desk(_ id: String) -> DeskRecord? { desks.first { $0.id == id } }
+
+    func setDesk(_ desk: DeskRecord) {
+        guard let at = desks.firstIndex(where: { $0.id == desk.id }), desks[at] != desk else { return }
+        desks[at] = desk
+        changed()
+    }
+
+    func closeDesk(_ id: String) {
+        desks.removeAll { $0.id == id }
+        changed()
+    }
+
+    func park(_ workspace: String) {
+        shelf.removeAll { $0.workspace == workspace }
+        shelf.insert((workspace, Date().timeIntervalSince1970.rounded(.down)), at: 0)
+        changed()
+    }
+
+    func keep(shelf claimed: [(workspace: String, parkedAt: Double?)], planners: Set<String>) {
+        let ids = Set(claimed.map(\.workspace))
+        var kept = shelf.filter { ids.contains($0.workspace) }
+        for entry in claimed where !kept.contains(where: { $0.workspace == entry.workspace }) {
+            kept.insert((entry.workspace, entry.parkedAt ?? Date().timeIntervalSince1970.rounded(.down)), at: 0)
+        }
+        let desksKept = desks.map { desk in
+            DeskRecord(id: desk.id, project: desk.project, shows: desk.shows.flatMap { ids.contains($0) ? $0 : nil }, planner: desk.planner.flatMap { planners.contains($0) ? $0 : nil })
+        }
+        guard kept.map(\.workspace) != shelf.map(\.workspace) || desksKept != desks else { return }
+        shelf = kept
+        desks = desksKept
+        changed()
     }
 
     func frame(_ window: String) -> NSRect? { frames[window] }
@@ -53,8 +110,9 @@ final class Physical {
 
     func keep(panes: Set<String>, in view: JSON) {
         let before = (docks.count, textSizes.count)
-        var owners = Set((view["workspaces"]?.array ?? []).compactMap(\.string))
+        var owners = Set((view["workspaces"]?.array ?? []).compactMap { $0["id"]?.string })
         owners.formUnion((view["windows"]?.array ?? []).compactMap { $0["id"]?.string })
+        owners.formUnion(desks.map(\.id))
         docks = docks.filter { owners.contains($0.key) }
         textSizes = textSizes.filter { panes.contains($0.key) }
         if (docks.count, textSizes.count) != before { changed() }
@@ -69,6 +127,11 @@ final class Physical {
             "frames": .object(frames.mapValues { ["x": .number($0.minX), "y": .number($0.minY), "w": .number($0.width), "h": .number($0.height)] }),
             "docks": .object(docks.mapValues { ["width": .number($0.width), "over": .number($0.over)] }),
             "textSizes": .object(textSizes.mapValues { .number($0) }),
+            "desks": .array(desks.map { desk in
+                ["id": .string(desk.id), "project": desk.project.map { .string($0) } ?? .null, "shows": desk.shows.map { .string($0) } ?? .null, "planner": desk.planner.map { .string($0) } ?? .null]
+            }),
+            "shelf": .array(shelf.map { ["workspace": .string($0.workspace), "parkedAt": .number($0.parkedAt)] }),
+            "deskCount": .number(Double(deskCount)),
         ]
         let temporary = path + ".new"
         guard FileManager.default.createFile(atPath: temporary, contents: saved.encoded(), attributes: [.posixPermissions: 0o600]) else { return }

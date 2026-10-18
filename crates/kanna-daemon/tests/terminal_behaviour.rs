@@ -75,8 +75,9 @@ fn a_new_terminal_in_a_task_window_starts_in_the_tasks_folder() {
     let opened = instance.call("open", json!({"type": "term", "name": "task", "dock": "left", "cwd": folder, "cmd": "cd sub; printf '\\033]7;file://localhost/usr\\007'; exec cat"}));
     assert_eq!(opened["ok"], true, "{opened}");
     wait_for("the printed folder", || instance.pane("task")["cwd"] == "/usr");
-    let window = opened["window"].clone();
-    for at in [json!({"split": "right", "window": window}), json!({"tab": true, "window": window}), json!({})] {
+    let workspace = opened["workspace"]["id"].clone();
+    let window = instance.call("open", json!({"type": "term", "window": "new", "from": opened["pane"]["id"], "cmd": "exec cat"}))["window"].clone();
+    for at in [json!({"split": "right", "workspace": workspace}), json!({"tab": true, "workspace": workspace}), json!({"tab": true, "window": window})] {
         let mut args = json!({"type": "term", "cmd": "pwd; exec cat"});
         args.as_object_mut().unwrap().extend(at.as_object().unwrap().clone());
         let beside = instance.call("open", args);

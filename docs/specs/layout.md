@@ -2,7 +2,7 @@
 
 **Status:** built · **Builds on:** [the app link](app-link.md) · **Reference:** [kmux](kmux-reference.md)
 
-The daemon owns the layout (windows, tabs, splits, focus, zoom, the docked pane, Desk and Shelf) and saves it, beside the terminals. Apps subscribe to it and draw it ([presentation layers](presentation-layers.md)). It works with no app attached.
+The daemon owns the layout (windows, tabs, splits, focus, zoom, each task's workspace and which app has it out) and saves it, beside the terminals. Apps subscribe to it and draw it ([presentation layers](presentation-layers.md)). It works with no app attached.
 
 Each task has a [workspace](workspaces.md): its Desk part (agent and tabs) and windows of its own, which a Desk shows; replies name the workspace a pane is in.
 

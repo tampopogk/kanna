@@ -3,7 +3,7 @@ use crate::json::{num, opt, string, trim, Map, Value};
 use crate::layout::{Edge, SavedLayout};
 use crate::model::{normalize, pane_ids, reply, Axis, Child, Dock, Model, Node, Split, Tab, Tabs, Window, DOCK_WIDTH};
 use crate::state::{bad, number_in, quoted, whole};
-use crate::workspace::{Where, Workspace};
+use crate::workspace::{Where, Workspace, MAC_APP};
 use std::collections::HashSet;
 
 pub const LAYOUT_VERSION: u32 = 3;
@@ -11,7 +11,7 @@ pub const LAYOUT_VERSION: u32 = 3;
 struct Restored {
     windows: Vec<Window>,
     workspaces: Vec<Workspace>,
-    orphans: Vec<(Option<String>, Tabs)>,
+    orphans: Vec<Tabs>,
     key: Option<String>,
     counters: (usize, usize, usize),
 }
@@ -52,12 +52,6 @@ fn dock_json(dock: &Dock) -> Value {
 fn window_json(window: &Window, tabs: &Tabs) -> Map {
     let mut out = reply([("id", window.id.clone().into())]);
     put_tabs(&mut out, tabs);
-    if window.desk {
-        out.insert("desk".into(), Value::Bool(true));
-    }
-    if let Some(project) = &window.project {
-        out.insert("project".into(), project.clone().into());
-    }
     if let Some(lead) = &window.lead {
         out.insert("lead".into(), Value::Object(reply([("pane", lead.pane.clone().into()), ("width", num(lead.width))])));
     }
@@ -80,18 +74,8 @@ impl Model {
         let windows = self
             .windows
             .iter()
-            .enumerate()
-            .map(|(w, window)| {
-                let shows = self.shows(w);
-                let mut out = window_json(window, shows.map_or(&window.tabs, |s| &s.tabs));
-                if let Some(ws) = shows {
-                    put_workspace(&mut out, ws);
-                    out.insert("shows".into(), ws.id.clone().into());
-                    out.remove("parkedAt");
-                    if window.tabs.zoom {
-                        out.insert("shelfZoom".into(), Value::Bool(true));
-                    }
-                }
+            .map(|window| {
+                let mut out = window_json(window, &window.tabs);
                 if let Some(ws) = &window.workspace {
                     out.insert("workspace".into(), ws.clone().into());
                 }
@@ -101,14 +85,10 @@ impl Model {
         let parked: Vec<Value> = self
             .workspaces
             .iter()
-            .filter(|s| !s.shown())
             .map(|ws| {
-                let mut out = reply([("id", ws.dock.pane.clone().into()), ("workspace", ws.id.clone().into()), ("desk", Value::Bool(true))]);
+                let mut out = reply([("id", ws.dock.pane.clone().into()), ("workspace", ws.id.clone().into()), ("where", ws.place.to_json())]);
                 put_tabs(&mut out, &ws.tabs);
                 put_workspace(&mut out, ws);
-                if ws.place == Where::Backlog {
-                    out.insert("backlog".into(), Value::Bool(true));
-                }
                 Value::Object(out)
             })
             .collect();
@@ -123,15 +103,8 @@ impl Model {
         let windows = self
             .windows
             .iter()
-            .enumerate()
-            .filter(|(_, window)| window.workspace.is_none())
-            .map(|(w, window)| {
-                let mut out = window_json(window, &window.tabs);
-                if let Some(ws) = self.shows(w) {
-                    out.insert("shows".into(), ws.id.clone().into());
-                }
-                Value::Object(out)
-            })
+            .filter(|window| window.workspace.is_none())
+            .map(|window| Value::Object(window_json(window, &window.tabs)))
             .collect();
         let workspaces = self
             .workspaces
@@ -223,7 +196,7 @@ impl Reader<'_> {
         Ok(Some(Dock { pane: pane.into(), edge, width, frozen: saved.get("frozen") == Some(&Value::Bool(true)) }))
     }
 
-    fn window(&mut self, item: &Value) -> Result<(Window, Option<Dock>), KmuxError> {
+    fn window(&mut self, item: &Value) -> Result<(Window, Option<Dock>, bool), KmuxError> {
         let id = string(item, "id").filter(|_| item.is_object());
         let n = id.and_then(|id| number_in(id, "w"));
         let (Some(id), Some(n)) = (id, n) else { return Err(bad(&format!("window {}", quoted(item.get("id"))))) };
@@ -236,9 +209,8 @@ impl Reader<'_> {
         let dock = self.side(item, "dock", id, "docks")?;
         let lead_key = if item.get("lead").is_some() { "lead" } else { "planner" };
         window.lead = self.side(item, lead_key, id, "is led by")?.map(|lead| Dock { edge: Edge::Left, frozen: false, ..lead });
-        window.desk = item.get("desk").and_then(Value::as_bool).unwrap_or(false);
-        window.project = string(item, "project").map(String::from);
-        Ok((window, dock))
+        let desk = dock.is_some() || item.get("desk").and_then(Value::as_bool).unwrap_or(false);
+        Ok((window, dock, desk))
     }
 }
 
@@ -269,24 +241,26 @@ pub fn read(state: &Value, panes: &HashSet<String>) -> Result<SavedLayout, KmuxE
     let (mut windows, mut workspaces, mut orphans) = (vec![], vec![], vec![]);
     let mut ws_ids = HashSet::new();
     let mut claim = |id: &str| if ws_ids.insert(id.to_string()) { Ok(()) } else { Err(bad(&format!("workspace {id} is saved twice"))) };
+    let mut planners = vec![];
     for item in saved_windows {
-        let (mut window, dock) = reader.window(item)?;
+        let (mut window, dock, desk) = reader.window(item)?;
+        if desk {
+            if let Some(lead) = window.lead.take() {
+                planners.push((format!("{}-planner", window.id), lead, item.get("shelfZoom") == Some(&Value::Bool(true))));
+            }
+        }
         let lead = window.lead.as_ref().map(|l| l.pane.clone());
         match dock {
             Some(dock) => {
                 let id = string(item, "shows").unwrap_or(&dock.pane).to_string();
                 claim(&id)?;
                 let tabs = std::mem::take(&mut window.tabs);
-                window.desk = true;
-                window.tabs.zoom = item.get("shelfZoom") == Some(&Value::Bool(true));
-                window.tabs.focused = lead;
-                let mut ws = read_workspace(&id, item, dock, tabs, Where::Desk(window.id.clone()));
-                ws.parked_at = None;
+                let mut ws = read_workspace(&id, item, dock, tabs, Where::Shelf(MAC_APP.into()));
+                ws.parked_at.get_or_insert(0.0);
                 workspaces.push(ws);
             }
             None => {
                 settle(&mut window.tabs, item, lead.as_ref());
-                window.tabs.zoom |= window.desk && item.get("shelfZoom") == Some(&Value::Bool(true));
                 window.workspace = string(item, "workspace").map(String::from);
             }
         }
@@ -295,7 +269,11 @@ pub fn read(state: &Value, panes: &HashSet<String>) -> Result<SavedLayout, KmuxE
     for item in state.get("parked").or_else(|| state.get("shelf")).and_then(Value::as_array).into_iter().flatten() {
         let id = string(item, "id").filter(|_| item.is_object()).ok_or_else(|| bad(&format!("window {}", quoted(item.get("id")))))?;
         let tabs = reader.tabs(item)?;
-        let place = if item.get("backlog").and_then(Value::as_bool) == Some(true) { Where::Backlog } else { Where::Shelf };
+        let place = match Where::read(item.get("where")) {
+            Some(place) => place,
+            None if item.get("backlog").and_then(Value::as_bool) == Some(true) => Where::Backlog,
+            None => Where::Shelf(MAC_APP.into()),
+        };
         let ws_id = string(item, "workspace").unwrap_or(id);
         match reader.side(item, "dock", id, "docks")? {
             Some(dock) => {
@@ -304,13 +282,13 @@ pub fn read(state: &Value, panes: &HashSet<String>) -> Result<SavedLayout, KmuxE
                 ws.parked_at = Some(ws.parked_at.unwrap_or(0.0));
                 workspaces.push(ws);
             }
-            None => orphans.push((None, tabs)),
+            None => orphans.push(tabs),
         }
     }
     for item in state.get("workspaces").and_then(Value::as_array).into_iter().flatten() {
         let id = string(item, "id").filter(|id| item.is_object() && !id.is_empty()).ok_or_else(|| bad(&format!("workspace {}", quoted(item.get("id")))))?;
         let tabs = reader.tabs(item)?;
-        let place = Where::read(item.get("where")).unwrap_or(Where::Shelf);
+        let place = Where::read(item.get("where")).unwrap_or_else(|| Where::Shelf(MAC_APP.into()));
         let dock = reader.side(item, "dock", id, "docks")?;
         let gone = dock.is_none();
         match dock {
@@ -318,27 +296,21 @@ pub fn read(state: &Value, panes: &HashSet<String>) -> Result<SavedLayout, KmuxE
                 claim(id)?;
                 workspaces.push(read_workspace(id, item, dock, tabs, place));
             }
-            None => orphans.push((place.desk().map(String::from), tabs)),
+            None => orphans.push(tabs),
         }
         for saved in item.get("windows").and_then(Value::as_array).into_iter().flatten() {
-            let (mut window, _) = reader.window(saved)?;
+            let (mut window, _, _) = reader.window(saved)?;
             settle(&mut window.tabs, saved, None);
             window.lead = None;
-            window.desk = false;
             window.workspace = (!gone).then(|| id.to_string());
             windows.push(window);
         }
     }
-    let mut shown = HashSet::new();
-    for ws in &mut workspaces {
-        let desk = ws.place.desk().map(String::from);
-        if let Some(desk) = desk {
-            let fits = windows.iter().any(|w| w.id == desk && w.desk && w.workspace.is_none());
-            if !fits || !shown.insert(desk) {
-                ws.place = Where::Shelf;
-                ws.parked_at.get_or_insert(0.0);
-            }
-        }
+    for (id, lead, zoom) in planners {
+        let mut ws = Workspace::new(id, lead, Where::Planner(MAC_APP.into()));
+        ws.tabs.zoom = zoom;
+        ws.tabs.focused = Some(ws.dock.pane.clone());
+        workspaces.push(ws);
     }
     let ids: HashSet<String> = workspaces.iter().map(|s| s.id.clone()).collect();
     for window in &mut windows {
@@ -356,7 +328,7 @@ pub fn read(state: &Value, panes: &HashSet<String>) -> Result<SavedLayout, KmuxE
         ws.id = id;
     }
     reader.counters.2 = next;
-    windows.retain(|w: &Window| !w.tabs.tabs.is_empty() || w.desk || w.lead.is_some());
+    windows.retain(|w: &Window| !w.tabs.tabs.is_empty() || w.lead.is_some());
     let key = string(state, "key").filter(|k| windows.iter().any(|w| w.id == *k)).map(String::from).or_else(|| windows.last().map(|w| w.id.clone()));
     let counters = reader.counters;
     Ok(SavedLayout { placed: reader.placed, layout: Box::new(Restored { windows, workspaces, orphans, key, counters }) })
@@ -367,11 +339,8 @@ pub fn install(model: &mut Model, saved: SavedLayout) {
     model.windows = restored.windows;
     model.workspaces = restored.workspaces;
     model.counters = (model.counters.0.max(restored.counters.0), model.counters.1.max(restored.counters.1), model.counters.2.max(restored.counters.2));
-    for (desk, tabs) in restored.orphans {
-        match desk.and_then(|id| model.window_index(&id)).filter(|&w| model.windows[w].lead.is_none() && model.showing(w).is_none()) {
-            Some(w) => model.windows[w].tabs = tabs,
-            None => model.orphans.push((tabs, false)),
-        }
+    for tabs in restored.orphans {
+        model.orphans.push((tabs, false));
     }
     model.set_key(restored.key);
     model.drop_empty();

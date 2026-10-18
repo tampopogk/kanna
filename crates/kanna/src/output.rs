@@ -26,17 +26,20 @@ fn whose(reply: &Value) -> Option<(String, Vec<String>)> {
     let id = workspace["id"].as_str().unwrap_or("?");
     let place = &workspace["where"];
     let mut tags: Vec<String> = workspace["task"].as_str().map(String::from).into_iter().collect();
-    match place.as_str() {
-        Some("backlog") => tags.push("in the backlog".into()),
-        Some(_) => tags.push("on the Shelf".into()),
-        None => {}
-    }
-    let name = match (reply["window"].as_str(), place["desk"].as_str()) {
-        (Some(window), Some(desk)) if window == desk => format!("{id} on {window}"),
-        (Some(window), _) => format!("{id}'s {window}"),
-        (None, _) => id.to_string(),
+    tags.push(place_of(place).into());
+    let name = match reply["window"].as_str() {
+        Some(window) => format!("{id}'s {window}"),
+        None => id.to_string(),
     };
     Some((name, tags))
+}
+
+fn place_of(place: &Value) -> &'static str {
+    match place {
+        Value::String(place) if place == "backlog" => "in the backlog",
+        place if place.get("planner").is_some() => "a Desk's planner",
+        _ => "on the Shelf",
+    }
 }
 
 fn tagged(name: &str, tags: &[String]) -> String {
@@ -44,7 +47,7 @@ fn tagged(name: &str, tags: &[String]) -> String {
 }
 
 fn hidden(reply: &Value) -> bool {
-    reply["workspace"]["where"].is_string()
+    reply["window"].is_null()
 }
 
 fn whose_text(reply: &Value) -> Option<String> {
@@ -91,7 +94,7 @@ pub fn moved(reply: &Value) -> String {
             "{} is docked {} in {} (width {})",
             dock["pane"].as_str().unwrap_or("?"),
             dock["edge"].as_str().unwrap_or("?"),
-            reply["window"].as_str().unwrap_or("?"),
+            reply["workspace"]["id"].as_str().or(reply["window"].as_str()).unwrap_or("?"),
             dock["width"].as_str().unwrap_or("?")
         );
     }
@@ -142,16 +145,10 @@ pub fn window(args: &Value, reply: &Value) -> String {
     match (args["action"].as_str(), whose(reply)) {
         (Some("assign"), Some(_)) => {
             let ws = &reply["workspace"];
-            let place = match ws["where"].as_str() {
-                Some("backlog") => "in the backlog: hidden until it's pulled".to_string(),
-                Some(_) => "on the Shelf: hidden until it's pulled".to_string(),
-                None => format!("on {}", ws["where"]["desk"].as_str().unwrap_or("?")),
-            };
-            let tags: Vec<String> = ws["task"].as_str().map(String::from).into_iter().chain([place]).collect();
+            let tags: Vec<String> = ws["task"].as_str().map(String::from).into_iter().chain([place_of(&ws["where"]).to_string()]).collect();
             format!("assigned {window} to {}", tagged(ws["id"].as_str().unwrap_or("?"), &tags))
         }
         _ => match reply["was"]["id"].as_str() {
-            Some(_) if reply["was"]["hidden"] == true => format!("{window} is free (out of {}, and open again)", named(&reply["was"])),
             Some(_) => format!("{window} is free (out of {})", named(&reply["was"])),
             None => format!("{window} is free"),
         },
@@ -195,7 +192,7 @@ pub fn task(request: &Value, reply: &Value) -> String {
             let rows: Vec<[String; 5]> = tasks
                 .iter()
                 .map(|t| {
-                    let place = t["window"].as_str().map_or("Shelf".to_string(), |w| format!("Desk {w}"));
+                    let place = "Shelf".to_string();
                     let parked = t["parkedAt"].as_f64().map_or(String::new(), |at| format!("parked {}", ago(now - at)));
                     [t["task"].as_str().or(t["id"].as_str()).unwrap_or("?").into(), t["name"].as_str().unwrap_or("").into(), place, state(t), parked]
                 })
@@ -214,10 +211,10 @@ pub fn task(request: &Value, reply: &Value) -> String {
             let line = |r: [&str; 5]| format!("{:w0$}  {:w1$}  {:w2$}  {:w3$}  {}", r[0], r[1], r[2], r[3], r[4], w0 = width(0), w1 = width(1), w2 = width(2), w3 = width(3)).trim_end().to_string();
             std::iter::once(line(head)).chain(rows.iter().map(|r| line([&r[0], &r[1], &r[2], &r[3], &r[4]]))).collect::<Vec<_>>().join("\n")
         }
-        Some("park") if reply["parked"] == Value::Bool(true) => format!("parked {id}; {} is an empty Desk", reply["window"].as_str().unwrap_or("?")),
+        Some("park") if reply["parked"] == Value::Bool(true) => format!("parked {id}; {} is an empty Desk", reply["desk"].as_str().unwrap_or("its Desk")),
         Some("park") => format!("{id} is already on the Shelf"),
-        Some("pull") if reply["moved"] == Value::Bool(true) => format!("pulled {id} onto {}", reply["window"].as_str().unwrap_or("?")),
-        Some("pull") => format!("{id} is on {}; brought it forward", reply["window"].as_str().unwrap_or("?")),
+        Some("pull") if reply["moved"] == Value::Bool(true) => format!("pulled {id} onto {}", reply["desk"].as_str().unwrap_or("the Desk")),
+        Some("pull") => format!("{id} is on {}; brought it forward", reply["desk"].as_str().unwrap_or("a Desk")),
         Some("new") => format!(
             "added {} \"{}\" to the backlog of {}{}",
             reply["task"]["id"].as_str().unwrap_or("?"),
@@ -241,21 +238,15 @@ pub fn task(request: &Value, reply: &Value) -> String {
         Some("setup") => format!("{id}'s setup runs again in {}, then its agent", reply["pane"].as_str().unwrap_or("?")),
         Some("stop") => format!("stopped {}{}; `kanna task start {}` starts it again", reply["task"].as_str().unwrap_or("?"), place(reply), reply["task"].as_str().unwrap_or("?")),
         Some("shelve") => format!(
-            "moved {} to the {}: {} in {}{}",
+            "moved {} to the Shelf: {} in {}{}",
             reply["task"].as_str().unwrap_or("?"),
-            reply["window"].as_str().map_or("Shelf".to_string(), |w| format!("Desk {w}")),
             reply["pane"].as_str().unwrap_or("?"),
             tilde(reply["folder"].as_str().unwrap_or("?")),
             reply["branch"].as_str().map_or(String::new(), |b| format!(" ({b})"))
         ),
         Some("done") if reply["teardown"] == Value::Bool(true) => format!("{}'s teardown runs in {}: it's done when that succeeds, and kanna task list says if it fails", reply["task"].as_str().unwrap_or("?"), reply["pane"].as_str().unwrap_or("?")),
         Some("done") if reply.get("closed").is_none() => format!("took {} off the backlog{}", reply["task"]["id"].as_str().unwrap_or("?"), freed_lines(reply)),
-        Some("desk") => format!(
-            "{} {} on {}",
-            if reply["new"] == Value::Bool(false) { "brought forward" } else { "opened" },
-            reply["window"].as_str().unwrap_or("?"),
-            tilde(reply["project"].as_str().unwrap_or("?"))
-        ),
+        Some("desk") => format!("{} {} on {}", if reply["new"] == Value::Bool(false) { "brought forward" } else { "opened" }, reply["desk"].as_str().unwrap_or("the Desk"), tilde(reply["project"].as_str().unwrap_or("?"))),
         Some("defer") => format!(
             "moved {} to the backlog as {}, {}: shelve it to bring it back",
             reply["pane"].as_str().unwrap_or("?"),
@@ -435,7 +426,7 @@ pub fn scoped(reply: &Value, pane: &str) -> Option<Value> {
     let has = |list: &Value, p: &str| list.as_array().is_some_and(|l| l.iter().any(|x| x == p));
     let mut out = json!({ "pane": id, "at": null, "windows": [], "hiddenWindows": [], "workspaces": [], "panes": [row] });
     if let Some(ws) = workspaces.iter().find(|w| has(&w["panes"], &id)) {
-        let ours = |w: &&Value| w["shows"] == ws["id"] || w["workspace"] == ws["id"];
+        let ours = |w: &&Value| w["workspace"] == ws["id"];
         out["at"] = json!("workspace");
         out["workspaces"] = json!([ws]);
         out["windows"] = Value::Array(windows.iter().filter(ours).cloned().collect());
@@ -511,10 +502,10 @@ fn everything(reply: &Value) -> String {
         sections.push(std::iter::once("Windows".to_string()).chain(windows.iter().map(|w| window_line(w, reply))).collect::<Vec<_>>().join("\n"));
     }
     let mut workspaces: Vec<&Value> = reply["workspaces"].as_array().unwrap_or(&empty).iter().collect();
-    workspaces.sort_by_key(|w| match w["where"].as_str() {
-        None => 0,
-        Some("shelf") => 1,
-        Some(_) => 2,
+    workspaces.sort_by_key(|w| match place_of(&w["where"]) {
+        "on the Shelf" => 0,
+        "in the backlog" => 1,
+        _ => 2,
     });
     if !workspaces.is_empty() {
         let blocks: Vec<String> = workspaces.iter().map(|ws| workspace_block(ws, reply).join("\n")).collect();
@@ -522,7 +513,7 @@ fn everything(reply: &Value) -> String {
     }
     let free: Vec<String> = windows
         .iter()
-        .filter(|w| w["shows"].is_null() && w["workspace"].is_null() && w["tabs"].as_array().is_some_and(|t| !t.is_empty()))
+        .filter(|w| w["workspace"].is_null() && w["tabs"].as_array().is_some_and(|t| !t.is_empty()))
         .map(|w| std::iter::once(w["id"].as_str().unwrap_or("?").to_string()).chain(focus_line(w, "  ")).chain(tab_lines(&w["tabs"], "  ")).collect::<Vec<_>>().join("\n"))
         .collect();
     if !free.is_empty() {
@@ -558,14 +549,9 @@ fn window_line(window: &Value, reply: &Value) -> String {
     let workspaces = reply["workspaces"].as_array().unwrap_or(&empty);
     let ws = |id: &Value| workspaces.iter().find(|w| w["id"] == *id).map_or_else(|| id.as_str().unwrap_or("?").to_string(), workspace_name);
     let mut line = format!("{}{}", if window["key"] == true { "*" } else { " " }, window["id"].as_str().unwrap_or("?"));
-    let lead = window["lead"]["pane"].as_str().map(|p| format!("planning terminal {}", named_pane(reply, p)));
-    let what = match (window["shows"].is_string(), window["workspace"].is_string(), window["desk"] == true || lead.is_some()) {
-        (true, _, _) => Some(format!("Desk, showing {}", ws(&window["shows"]))),
-        (false, true, _) => Some(format!("{}'s window", ws(&window["workspace"]))),
-        (false, false, true) => Some("Desk".to_string()),
-        _ => Some("free".to_string()),
-    };
-    let parts: Vec<String> = what.into_iter().chain(lead).collect();
+    let lead = window["lead"]["pane"].as_str().map(|p| format!("led by {}", named_pane(reply, p)));
+    let what = if window["workspace"].is_string() { format!("{}'s window", ws(&window["workspace"])) } else { "free".to_string() };
+    let parts: Vec<String> = std::iter::once(what).chain(lead).collect();
     line += &format!("  {}", parts.join(", "));
     line
 }
@@ -586,12 +572,7 @@ fn tab_lines(tabs: &Value, indent: &str) -> Vec<String> {
 
 fn workspace_block(ws: &Value, reply: &Value) -> Vec<String> {
     let empty = vec![];
-    let place = match (ws["where"].as_str(), ws["where"]["desk"].as_str()) {
-        (Some("backlog"), _) => "in the backlog".to_string(),
-        (Some(_), _) => "on the Shelf".to_string(),
-        (None, Some(desk)) => format!("on Desk {desk}"),
-        (None, None) => "on a Desk".to_string(),
-    };
+    let place = place_of(&ws["where"]);
     let mut out = vec![format!("{}, {place}", workspace_name(ws))];
     let dock = &ws["dock"];
     if let Some(pane) = dock["id"].as_str().or(dock["pane"].as_str()) {
@@ -606,12 +587,8 @@ fn workspace_block(ws: &Value, reply: &Value) -> Vec<String> {
     out.extend(focus_line(ws, "  "));
     out.extend(tab_lines(&ws["tabs"], "  "));
     for own in ws["windows"].as_array().unwrap_or(&empty).iter().filter_map(Value::as_str) {
-        let find = |key: &str| reply[key].as_array().and_then(|l| l.iter().find(|w| w["id"] == own)).cloned();
-        let (window, hidden) = match (find("windows"), find("hiddenWindows")) {
-            (Some(w), _) => (Some(w), false),
-            (None, w) => (w, true),
-        };
-        out.push(format!("  window {own}{}", if hidden { ", hidden with it" } else { "" }));
+        let window = reply["windows"].as_array().and_then(|l| l.iter().find(|w| w["id"] == own)).cloned();
+        out.push(format!("  window {own}"));
         if let Some(window) = window {
             out.extend(focus_line(&window, "    "));
             out.extend(tab_lines(&window["tabs"], "    "));
@@ -838,21 +815,20 @@ mod workspace_tests {
     fn reply() -> Value {
         json!({
             "windows": [
-                { "id": "w31", "key": true, "desk": true, "focused": "diff", "zoomed": "diff", "shows": "ws-1", "lead": { "pane": "p280", "width": "2/5" },
-                  "dock": { "pane": "Fix login", "edge": "left", "width": "2/5", "frozen": true },
-                  "tabs": [{ "id": "t211", "title": "diff", "active": true, "layout": { "pane": "diff" } }, { "id": "t212", "title": "login.md", "active": false, "layout": { "split": "row", "children": [{ "pane": "p5", "size": "1/2" }, { "pane": "p6", "size": "1/2" }] } }] },
-                { "id": "w19", "key": false, "desk": true, "focused": "p157", "zoomed": null, "lead": { "pane": "p157", "width": "46%" }, "tabs": [] },
-                { "id": "w45", "key": false, "focused": "notes", "zoomed": null, "tabs": [{ "id": "t247", "title": "notes", "active": true, "layout": { "pane": "notes" } }] }
+                { "id": "w19", "key": false, "focused": "p157", "zoomed": null, "lead": { "pane": "p157", "width": "46%" }, "workspace": null, "tabs": [] },
+                { "id": "w40", "key": false, "focused": "p9", "zoomed": null, "workspace": "ws-3", "tabs": [{ "id": "t30", "title": "Tab 1", "active": true, "layout": { "pane": "p9" } }] },
+                { "id": "w45", "key": true, "focused": "notes", "zoomed": null, "workspace": null, "tabs": [{ "id": "t247", "title": "notes", "active": true, "layout": { "pane": "notes" } }] }
             ],
-            "hiddenWindows": [{ "id": "w40", "key": false, "focused": "p9", "zoomed": null, "workspace": "ws-3", "tabs": [{ "id": "t30", "title": "Tab 1", "active": true, "layout": { "pane": "p9" } }] }],
+            "hiddenWindows": [],
             "workspaces": [
-                { "id": "ws-3", "task": "task-22a4", "name": "Skills show diffs", "where": "shelf", "hidden": true, "dock": { "pane": "Skills show diffs", "id": "p401", "edge": "left", "width": "2/5", "frozen": true },
+                { "id": "ws-3", "task": "task-22a4", "name": "Skills show diffs", "where": { "shelf": "mac" }, "dock": { "pane": "Skills show diffs", "id": "p401", "edge": "left", "width": "2/5", "frozen": true },
                   "focused": "p406", "zoomed": null, "tabs": [{ "id": "t246", "title": "diff --merge-base main", "active": true, "layout": { "pane": "p406" }, "panes": ["p406"] }], "windows": ["w40"], "panes": ["p406", "p9", "p401"] },
-                { "id": "ws-1", "task": "task-1dfb", "name": "Fix login", "where": { "desk": "w31" }, "hidden": false, "dock": { "pane": "Fix login", "id": "p407", "edge": "left", "width": "2/5", "frozen": true },
+                { "id": "ws-1", "task": "task-1dfb", "name": "Fix login", "where": { "shelf": "mac" }, "dock": { "pane": "Fix login", "id": "p407", "edge": "left", "width": "2/5", "frozen": true },
                   "focused": "diff", "zoomed": "diff",
                   "tabs": [{ "id": "t211", "title": "diff", "active": true, "layout": { "pane": "diff" }, "panes": ["diff"] }, { "id": "t212", "title": "login.md", "active": false, "layout": { "split": "row", "children": [{ "pane": "p5", "size": "1/2" }, { "pane": "p6", "size": "1/2" }] }, "panes": ["p5", "p6"] }],
                   "windows": [], "panes": ["p400", "p5", "p6", "p407"] },
-                { "id": "ws-4", "where": "backlog", "hidden": true, "dock": { "pane": "p185", "id": "p185", "edge": "left", "width": "2/5" }, "focused": "p185", "zoomed": null, "tabs": [], "windows": [], "panes": ["p185"] }
+                { "id": "ws-4", "where": "backlog", "dock": { "pane": "p185", "id": "p185", "edge": "left", "width": "2/5" }, "focused": "p185", "zoomed": null, "tabs": [], "windows": [], "panes": ["p185"] },
+                { "id": "ws-5", "where": { "planner": "mac" }, "dock": { "pane": "p280", "id": "p280", "edge": "left", "width": "2/5" }, "focused": "p280", "zoomed": null, "tabs": [], "windows": [], "panes": ["p280"] }
             ],
             "panes": [
                 { "id": "p157", "name": null, "type": "term" }, { "id": "p185", "name": null, "type": "term" }, { "id": "p280", "name": null, "type": "term" },
@@ -871,22 +847,21 @@ mod workspace_tests {
     fn your_workspace_is_shown_as_it_will_be_seen() {
         assert_eq!(
             mine("p6"),
-            "ws-1 (task-1dfb, Fix login), on Desk w31\n  dock: p407 (Fix login)  left 2/5  frozen\n  focus: diff, zoomed\n  *t211 \"diff\"  diff\n   t212 \"login.md\"  p5:1/2 | p6:1/2"
+            "ws-1 (task-1dfb, Fix login), on the Shelf\n  dock: p407 (Fix login)  left 2/5  frozen\n  focus: diff, zoomed\n  *t211 \"diff\"  diff\n   t212 \"login.md\"  p5:1/2 | p6:1/2"
         );
         assert_eq!(mine("Fix login"), mine("p6"), "its agent sees the same");
         assert_eq!(
-            mine("p401"),
-            "ws-3 (task-22a4, Skills show diffs), on the Shelf\n  dock: p401 (Skills show diffs)  left 2/5  frozen\n  focus: p406\n  *t246 \"diff --merge-base main\"  p406\n  window w40, hidden with it\n    focus: p9\n    *t30 \"Tab 1\"  p9"
+            mine("p9"),
+            "ws-3 (task-22a4, Skills show diffs), on the Shelf\n  dock: p401 (Skills show diffs)  left 2/5  frozen\n  focus: p406\n  *t246 \"diff --merge-base main\"  p406\n  window w40\n    focus: p9\n    *t30 \"Tab 1\"  p9"
         );
         assert_eq!(mine("p185"), "ws-4, in the backlog\n  dock: p185  left 2/5\n  focus: p185", "a workspace with no task");
+        assert_eq!(mine("p280"), "ws-5, a Desk's planner\n  dock: p280  left 2/5\n  focus: p280");
     }
 
     #[test]
     fn from_a_window_that_is_no_workspaces_it_is_that_window() {
-        assert_eq!(mine("notes"), " w45  free\n  focus: notes\n  *t247 \"notes\"  notes");
-        assert_eq!(mine("p157"), " w19  Desk, planning terminal p157\n  focus: p157");
-        assert!(mine("p280").starts_with("*w31  Desk, showing ws-1 (task-1dfb, Fix login), planning terminal p280\n  focus: diff, zoomed\n"), "{}", mine("p280"));
-        assert!(mine("p280").ends_with("\n\nws-1 (task-1dfb, Fix login), on Desk w31\n  dock: p407 (Fix login)  left 2/5  frozen\n  focus: diff, zoomed\n  *t211 \"diff\"  diff\n   t212 \"login.md\"  p5:1/2 | p6:1/2"), "the planner sees the workspace its Desk shows");
+        assert_eq!(mine("notes"), "*w45  free\n  focus: notes\n  *t247 \"notes\"  notes");
+        assert_eq!(mine("p157"), " w19  free, led by p157\n  focus: p157");
         assert_eq!(mine("p500"), "p500 (logs) isn't in a window or a workspace");
         assert!(scoped(&reply(), "p999").is_none());
     }
@@ -896,28 +871,28 @@ mod workspace_tests {
         let ws = scoped(&reply(), "p9").unwrap();
         assert_eq!((ws["pane"].clone(), ws["at"].clone()), (json!("p9"), json!("workspace")));
         assert_eq!(ws["workspaces"].as_array().map(|w| w.iter().map(|w| w["id"].clone()).collect::<Vec<_>>()), Some(vec![json!("ws-3")]));
-        assert_eq!((ws["windows"].clone(), ws["hiddenWindows"][0]["id"].clone()), (json!([]), json!("w40")));
+        assert_eq!(ws["windows"].as_array().map(|w| w.iter().map(|w| w["id"].clone()).collect::<Vec<_>>()), Some(vec![json!("w40")]));
         assert_eq!(ws["panes"].as_array().map(|p| p.iter().map(|p| p["id"].clone()).collect::<Vec<_>>()), Some(vec![json!("p401"), json!("p406"), json!("p9")]));
     }
 
     #[test]
     fn all_is_every_window_then_every_workspace_then_free_windows_and_panes_in_none() {
         let text = workspace(&json!({ "action": "list", "all": true }), &reply());
-        assert!(text.starts_with("Windows\n*w31  Desk, showing ws-1 (task-1dfb, Fix login), planning terminal p280\n w19  Desk, planning terminal p157\n w45  free\n\nWorkspaces\nws-1 (task-1dfb, Fix login), on Desk w31\n"), "{text}");
-        assert!(text.contains("\nws-3 (task-22a4, Skills show diffs), on the Shelf\n"), "{text}");
-        assert!(text.contains("\nws-4, in the backlog\n  dock: p185  left 2/5\n  focus: p185\n\nFree windows\nw45\n  focus: notes\n  *t247 \"notes\"  notes\n\nUnplaced panes\np500 (logs)"), "{text}");
+        assert!(text.starts_with("Windows\n w19  free, led by p157\n w40  ws-3 (task-22a4, Skills show diffs)'s window\n*w45  free\n\nWorkspaces\nws-3 (task-22a4, Skills show diffs), on the Shelf\n"), "{text}");
+        assert!(text.contains("\nws-1 (task-1dfb, Fix login), on the Shelf\n"), "{text}");
+        assert!(text.contains("\nws-4, in the backlog\n  dock: p185  left 2/5\n  focus: p185\nws-5, a Desk's planner\n  dock: p280  left 2/5\n  focus: p280\n\nFree windows\nw45\n  focus: notes\n  *t247 \"notes\"  notes\n\nUnplaced panes\np500 (logs)"), "{text}");
     }
 
     #[test]
     fn replies_name_the_workspace_then_its_task_and_where_it_is() {
-        let hidden = json!({ "pane": { "id": "p5", "state": "running" }, "window": null, "tab": "t9", "workspace": { "id": "ws-3", "task": "task-1dfb", "where": "shelf", "hidden": true } });
-        assert_eq!(opened(&json!({}), &hidden), "opened p5 in ws-3 (task-1dfb, on the Shelf), tab t9: running");
-        let shown = json!({ "pane": { "id": "p5", "state": "running" }, "window": "w31", "tab": "t9", "workspace": { "id": "ws-3", "task": "task-1dfb", "where": { "desk": "w31" }, "hidden": false } });
-        assert_eq!(opened(&json!({}), &shown), "opened p5 in ws-3 on w31 (task-1dfb), tab t9: running");
-        assert_eq!(focused(&json!({ "pane": "spec" }), &shown), "focused spec in ws-3 on w31 (task-1dfb, key window)");
-        assert_eq!(zoomed(&json!({ "pane": "spec" }), &json!({ "zoomed": true, "workspace": hidden["workspace"] })), "spec is zoomed in ws-3 (task-1dfb, on the Shelf; run again to unzoom)");
+        let windowless = json!({ "pane": { "id": "p5", "state": "running" }, "window": null, "tab": "t9", "workspace": { "id": "ws-3", "task": "task-1dfb", "where": { "shelf": "mac" } } });
+        assert_eq!(opened(&json!({}), &windowless), "opened p5 in ws-3 (task-1dfb, on the Shelf), tab t9: running");
+        let windowed = json!({ "pane": { "id": "p5", "state": "running" }, "window": "w31", "tab": "t9", "workspace": { "id": "ws-3", "task": "task-1dfb", "where": { "shelf": "mac" } } });
+        assert_eq!(opened(&json!({}), &windowed), "opened p5 in ws-3's w31 (task-1dfb, on the Shelf), tab t9: running");
+        assert_eq!(focused(&json!({ "pane": "spec" }), &windowed), "focused spec in ws-3's w31 (task-1dfb, on the Shelf, key window)");
+        assert_eq!(zoomed(&json!({ "pane": "spec" }), &json!({ "zoomed": true, "workspace": windowless["workspace"] })), "spec is zoomed in ws-3 (task-1dfb, on the Shelf; run again to unzoom)");
         let free = json!({ "pane": { "id": "p5", "state": "running" }, "window": "w4", "tab": "t9", "workspace": null });
         assert_eq!(opened(&json!({}), &free), "opened p5 in window w4, tab t9: running");
-        assert_eq!(window(&json!({ "action": "assign", "window": "w41" }), &json!({ "window": "w41", "workspace": hidden["workspace"] })), "assigned w41 to ws-3 (task-1dfb, on the Shelf: hidden until it's pulled)");
+        assert_eq!(window(&json!({ "action": "assign", "window": "w41" }), &json!({ "window": "w41", "workspace": windowless["workspace"] })), "assigned w41 to ws-3 (task-1dfb, on the Shelf)");
     }
 }

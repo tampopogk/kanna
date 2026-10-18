@@ -165,6 +165,7 @@ impl App {
         let thread = std::thread::spawn(move || {
             let mut owner = kanna_mux::LayoutOwner::new();
             let mut ready = Some(ready);
+            let mut desks: Vec<Value> = vec![];
             for line in reader.lines().map_while(Result::ok) {
                 let message: Value = serde_json::from_str(&line).unwrap();
                 if message["id"] == 0 && message.get("ok").is_some() {
@@ -190,6 +191,16 @@ impl App {
                     let mut reply = owner.handle(&json!({"call": "serve", "request": message["args"]}));
                     reply["id"] = message["id"].clone();
                     let _ = writeln!(writer, "{reply}");
+                }
+                if message["cmd"] == "desk" && message["args"]["action"] != "desk" {
+                    let done = if message["args"]["action"] == "pull" { "moved" } else { "parked" };
+                    let _ = writeln!(writer, "{}", json!({"id": message["id"], "ok": true, "task": message["args"]["task"], done: true, "desk": "d1"}));
+                }
+                if message["cmd"] == "desk" && message["args"]["action"] == "desk" {
+                    let project = message["args"]["project"].clone();
+                    let new = !desks.contains(&project);
+                    desks.push(project.clone());
+                    let _ = writeln!(writer, "{}", json!({"id": message["id"], "ok": true, "desk": "d1", "project": project, "new": new}));
                 }
                 if message["cmd"].as_str().is_some_and(|c| c.starts_with("debug.") || c == "screenshot") {
                     let reply = json!({"id": message["id"], "ok": true, "cmd": message["cmd"], "args": message["args"]});

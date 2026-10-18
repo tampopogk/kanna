@@ -2,35 +2,40 @@ use crate::json::{json, Value};
 use crate::model::Dock;
 use crate::tabs::Tabs;
 
+pub const MAC_APP: &str = "mac";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Where {
-    Desk(String),
-    Shelf,
+    Shelf(String),
     Backlog,
+    Planner(String),
 }
 
 impl Where {
     pub fn to_json(&self) -> Value {
         match self {
-            Where::Desk(window) => json!({ "desk": window }),
-            Where::Shelf => "shelf".into(),
+            Where::Shelf(app) => json!({ "shelf": app }),
             Where::Backlog => "backlog".into(),
+            Where::Planner(app) => json!({ "planner": app }),
         }
     }
 
     pub fn read(value: Option<&Value>) -> Option<Where> {
         match value? {
-            Value::String(place) if place == "shelf" => Some(Where::Shelf),
+            Value::String(place) if place == "shelf" => Some(Where::Shelf(MAC_APP.into())),
             Value::String(place) if place == "backlog" => Some(Where::Backlog),
-            Value::Object(place) => place.get("desk").and_then(Value::as_str).map(|w| Where::Desk(w.into())),
+            Value::Object(place) => {
+                let app = |key: &str| place.get(key).and_then(Value::as_str).map(String::from);
+                app("shelf").map(Where::Shelf).or_else(|| app("planner").map(Where::Planner)).or_else(|| place.contains_key("desk").then(|| Where::Shelf(MAC_APP.into())))
+            }
             _ => None,
         }
     }
 
-    pub fn desk(&self) -> Option<&str> {
+    pub fn app(&self) -> Option<&str> {
         match self {
-            Where::Desk(window) => Some(window),
-            _ => None,
+            Where::Shelf(app) | Where::Planner(app) => Some(app),
+            Where::Backlog => None,
         }
     }
 }
@@ -49,11 +54,11 @@ impl Workspace {
         Workspace { id, dock, tabs: Tabs::default(), place, parked_at: None }
     }
 
-    pub fn shown(&self) -> bool {
-        matches!(self.place, Where::Desk(_))
+    pub fn is_task(&self) -> bool {
+        !matches!(self.place, Where::Planner(_))
     }
 
     pub fn summary(&self) -> Value {
-        json!({ "id": self.id, "where": self.place.to_json(), "hidden": !matches!(self.place, Where::Desk(_)) })
+        json!({ "id": self.id, "where": self.place.to_json() })
     }
 }

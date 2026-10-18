@@ -26,7 +26,7 @@ pub use layout::{pane_entry, pane_table, placement, read_pane_table, serve, Edge
 pub use model::Model;
 pub use owner::{prune_state, LayoutOwner};
 pub use saved::LAYOUT_VERSION;
-pub use workspace::{Where, Workspace};
+pub use workspace::{Where, Workspace, MAC_APP};
 pub use pane::{content_prefix, terminal_number, Comment, History, Pane, PaneState, PaneType, Panes};
 pub use socket_server::{write_all, Handler, SocketServer, Takeover};
 pub use state::{pane_record, STATE_VERSION};

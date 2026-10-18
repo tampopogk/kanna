@@ -20,7 +20,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var panes: PaneViews!
     var controllers: [String: WindowController] = [:]
     private(set) var state: JSON = ["key": nil, "windows": []]
-    private var published: JSON = ["key": nil, "windows": []]
+    private(set) var published: JSON = ["key": nil, "windows": []]
+    private var plain: JSON = ["key": nil, "windows": []]
+    var localKey: String?
+    var closingPlanners: Set<String> = []
+    var givenPlanners: Set<String> = []
     let physical = Physical(path: AppController.physicalPath, fresh: AppController.fresh)
     private var focusing: String?
     private var focusCalls = 0
@@ -104,6 +108,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             daemon.onAttach = { [weak self] in self?.attached($0) }
             daemon.onView = { [weak self] view in
                 guard let self else { return }
+                if view["key"] != published["key"], view["key"]?.string != nil { localKey = nil }
                 published = view
                 restate()
                 layoutChanged()
@@ -153,6 +158,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         installCommands()
         installScreenshot()
         installAgentStatus()
+        installDesk()
         for signal in [SIGTERM, SIGINT, SIGHUP] {
             Darwin.signal(signal, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: signal, queue: .main)
@@ -191,7 +197,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             published = view
             restate()
         }
-        if case .array(let list) = panes { physical.keep(panes: Set(list.compactMap { $0["id"]?.string }), in: published) }
+        if case .array(let list) = panes { physical.keep(panes: Set(list.compactMap { $0["id"]?.string }), in: plain) }
         if case .array(let list) = panes {
             for pane in list where pane["type"]?.string != "term" {
                 guard let id = pane["id"]?.string else { continue }
@@ -273,10 +279,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return "New task"
     }
 
-    func pullTask(_ task: String, into window: String) {
-        layoutCommand("task", ["action": "pull", "task": .string(task), "window": .string(window)])
-    }
-
     private var placed: Set<String> {
         var ids = Set(runningBacklog(in: nil).compactMap { $0["task"]?.string })
         if case .array(let held)? = state["held"] { ids.formUnion(held.compactMap(\.string)) }
@@ -298,9 +300,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func openTerminalIfEmpty() {
         guard windows.isEmpty, daemon?.attached == true else { return }
-        var args: [String: JSON] = ["action": "desk"]
-        if let folder = Self.startFolder { args["project"] = .string(folder) }
-        layoutCommand("task", args)
+        _ = openDesk(project: Self.startFolder, fresh: Self.startFolder == nil)
     }
 
     private func startContent(_ pane: JSON) {
@@ -357,8 +357,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func restate() {
-        state = physical.applied(focusing.map { Self.view(published, focusing: $0) } ?? published)
+    func restate() {
+        let view = composed(published)
+        plain = focusing.map { Self.view(view, focusing: $0) } ?? view
+        state = physical.applied(plain)
     }
 
     func redraw(_ controller: WindowController) {
@@ -454,7 +456,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         controller.onDockWidth = { [weak self] pane, width in
             guard let self else { return }
-            physical.setDock(pane, width: width, in: published)
+            physical.setDock(pane, width: width, in: plain)
             restate()
             refresh()
         }
@@ -470,7 +472,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.tabBar.onRename = { [weak self] tab, title in self?.layoutCommand("rename-tab", ["tab": .string(tab), "title": .string(title)]) }
         controller.onCloseRequest = { [weak self] in self?.close(window: id) }
         controller.shelfStrip.onPull = { [weak self] task in self?.pullTask(task, into: id) }
-        controller.agentHeader.onPark = { [weak self] in self?.layoutCommand("task", ["action": "park", "window": .string(id)]) }
+        controller.agentHeader.onPark = { [weak self] in self?.park(desk: id) }
         controller.shelfPage.onPull = { [weak self] task in self?.pullTask(task, into: id) }
         controller.shelfPage.onStart = { [weak self] task in self?.startTask(task, from: id) }
         controller.shelfPage.onLeaveSearch = { [weak self, weak controller] in
@@ -480,7 +482,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.onBecomeKey = { [weak self, weak controller] in
             guard let self, let controller else { return }
             if controller.window.isKeyWindow, state["key"]?.string != id {
-                layoutCommand("focus", ["window": .string(id)])
+                if isDesk(id) {
+                    localKey = id
+                    restate()
+                } else {
+                    localKey = nil
+                    layoutCommand("focus", ["window": .string(id)])
+                }
             }
             if let window = window(id) { controller.render(window, panes) }
         }

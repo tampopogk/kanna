@@ -55,8 +55,8 @@ A Desk with nothing in it starts here: where it opens and how its planning termi
 
 ## 5. How it's built
 
-- **The layout keeps it as the window's `lead`**: the window's own agent, a pane beside the window's dock (with its width), shown on the left only while the dock is empty, saved with the window (a `layout.json` from before reads its `planner` as the lead). Parking and pulling move the dock and tabs and leave it in place. `move` refuses it, and nothing drops on it (`lead`); nothing docks in a plain window that has one (`led`), and what its lead opens goes in a new tab of that window. A Desk's lead is its planning terminal; a plain window's is the [Quiz window](quiz.md#2-rules)'s agent, which isn't a task either.
-- **The layout keeps the Shelf free of tabs:** placing a pane in a Desk with no task puts it in a new window instead, and tidying moves any tabs left on one to a window of their own (or makes a Desk with no planning terminal a plain window).
+- **The layout keeps it as a planner:** a workspace with no task (`where: {"planner": app}`), its terminal docked with its width and no tabs, saved in `kanna.db`; the app's Desk record names it ([each app's Desk and Shelf](app-desk.md)). An older layout's Desk `lead` (or `planner`) loads as one. Parking and pulling change which workspace the Desk shows and leave it in place. `move` and `move --dock` refuse it. The [Quiz window](quiz.md#2-rules)'s agent is a window's `lead`, which isn't a task either.
+- **The Shelf holds no tabs:** a pane opened from a planner or onto a Desk with no task goes in a new window.
 - **The app asks for one** (`backlog` `plan`) when a Desk shows no task and has none, passing the window's folder; it follows the terminal's folder as it reports it, as for a task's agent.
 - **The daemon builds the terminal's command:** the [settings](settings.md), the [planner script](new-desk.md#3-how-its-built), then your login shell, with Kanna's zsh integration put back for it. It opens it with the `lead` placement, outside the task limit.
 

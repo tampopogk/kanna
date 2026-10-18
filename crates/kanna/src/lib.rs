@@ -267,6 +267,7 @@ fn wire(command: &Command, request: &Value) -> &'static str {
         "task" if request["action"] == "done" => "backlog",
         "task" if request["action"] == "name" && request.get("task").is_some() => "backlog",
         "task" if request["action"] == "name" => "rename-pane",
+        "task" if ["park", "pull", "desk"].contains(&request["action"].as_str().unwrap_or("")) => "desk",
         "workspace" => "list",
         name => name,
     }
@@ -740,18 +741,18 @@ mod tests {
     fn docked_panes_print_on_their_own_line() {
         let all = json!({ "action": "list", "all": true });
         let reply = json!({
-            "windows": [{ "id": "w1", "key": true, "desk": true, "focused": "agent", "shows": "ws-1", "tabs": [{ "id": "t1", "title": "Tab 1", "active": true, "layout": { "pane": "p2" } }] }],
-            "workspaces": [{ "id": "ws-1", "where": { "desk": "w1" }, "dock": { "pane": "agent", "id": "p1", "edge": "left", "width": "2/5", "frozen": true }, "focused": "agent",
+            "windows": [],
+            "workspaces": [{ "id": "ws-1", "where": { "shelf": "mac" }, "dock": { "pane": "agent", "id": "p1", "edge": "left", "width": "2/5", "frozen": true }, "focused": "agent",
                              "tabs": [{ "id": "t1", "title": "Tab 1", "active": true, "layout": { "pane": "p2" } }], "windows": [], "panes": ["p2", "p1"] }],
             "panes": [{ "id": "p1", "name": "agent", "type": "term", "state": "running", "cmd": "claude" }, { "id": "p2", "name": null, "type": "term", "state": "running" }]
         });
         let text = output::workspace(&all, &reply);
-        assert!(text.contains("\nws-1, on Desk w1\n  dock: p1 (agent)  left 2/5  frozen\n  focus: agent\n  *t1 \"Tab 1\"  p2"), "{text}");
-        let opened = json!({ "pane": { "id": "p1", "name": "agent", "state": "running" }, "window": "w1", "tab": null, "dock": "left" });
-        assert_eq!(output::opened(&json!({}), &opened), "opened p1 (agent) docked left in window w1: running");
-        assert_eq!(output::opened(&json!({ "frozen": true }), &opened), "opened p1 (agent) docked left, frozen, in window w1: running");
-        let moved = json!({ "window": "w1", "dock": { "pane": "agent", "edge": "right", "width": "1/3" } });
-        assert_eq!(output::moved(&moved), "agent is docked right in w1 (width 1/3)");
+        assert!(text.contains("\nws-1, on the Shelf\n  dock: p1 (agent)  left 2/5  frozen\n  focus: agent\n  *t1 \"Tab 1\"  p2"), "{text}");
+        let opened = json!({ "pane": { "id": "p1", "name": "agent", "state": "running" }, "window": null, "tab": null, "dock": "left", "workspace": { "id": "ws-1", "where": { "shelf": "mac" } } });
+        assert_eq!(output::opened(&json!({}), &opened), "opened p1 (agent) docked left in ws-1 (on the Shelf): running");
+        assert_eq!(output::opened(&json!({ "frozen": true }), &opened), "opened p1 (agent) docked left, frozen, in ws-1 (on the Shelf): running");
+        let moved = json!({ "window": null, "workspace": { "id": "ws-1" }, "dock": { "pane": "agent", "edge": "right", "width": "1/3" } });
+        assert_eq!(output::moved(&moved), "agent is docked right in ws-1 (width 1/3)");
     }
 
     #[test]

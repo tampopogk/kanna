@@ -193,10 +193,10 @@ extension AppController {
         case "ios": ["type": "ios", "app": "com.apple.Preferences", "wait": false]
         default: ["type": "term"]
         }
-        if let window = keyWindow?["id"] {
-            args["window"] = window
+        if let window = keyWindow?["id"]?.string {
+            args.merge(address(window)) { _, new in new }
             args["split"] = .string(direction)
-            if type == "term" { args["cwd"] = repo(of: window.string) }
+            if type == "term" { args["cwd"] = repo(of: window) }
         }
         request("open", args) { [weak self] reply in
             guard type == "web", let id = reply["pane"]?["id"]?.string else { return }
@@ -212,8 +212,8 @@ extension AppController {
         panel.message = "Choose a markdown file to show"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         var args: [String: JSON] = ["type": "md", "path": .string(url.path)]
-        if let window = keyWindow?["id"] {
-            args["window"] = window
+        if let window = keyWindow?["id"]?.string {
+            args.merge(address(window)) { _, new in new }
             args["split"] = .string(direction)
         }
         request("open", args)
@@ -344,7 +344,7 @@ extension AppController {
 
     func newTab(in window: String?) {
         var args: [String: JSON] = ["type": "term", "tab": true]
-        if let window { args["window"] = .string(window) }
+        if let window { args.merge(address(window)) { _, new in new } }
         args["cwd"] = repo(of: window)
         request("open", args)
     }
@@ -376,18 +376,20 @@ extension AppController {
     }
 
     func close(window id: String) {
-        if window(id)?["desk"]?.bool == true {
-            if let lead = window(id)?["lead"]?["pane"]?.string { request("close", ["pane": .string(lead)]) }
-            layoutCommand("task", ["action": "park", "window": .string(id), "close": true])
+        if isDesk(id) {
+            closeDesk(id)
         } else {
             request("close", ["window": .string(id)])
         }
     }
 
     @objc func parkTask() {
-        if let (task, window) = lastParked { return pullTask(task, into: window) }
+        if let (task, window) = lastParked {
+            pullTask(task, into: window)
+            return
+        }
         guard let window = keyWindow?["id"]?.string else { return }
-        layoutCommand("task", ["action": "park", "window": .string(window)])
+        park(desk: window)
     }
 
     private var lastParked: (task: String, window: String)? {
@@ -439,7 +441,8 @@ extension AppController {
         let ids = windows.compactMap { $0["id"]?.string }
         guard !ids.isEmpty else { return }
         let at = ids.firstIndex { $0 == state["key"]?.string } ?? 0
-        layoutCommand("focus", ["window": .string(ids[((at + step) % ids.count + ids.count) % ids.count])])
+        let next = ids[((at + step) % ids.count + ids.count) % ids.count]
+        if isDesk(next) { show(desk: next) } else { layoutCommand("focus", ["window": .string(next)]) }
     }
 
     func ghosttyAction(_ pane: String, _ action: ghostty_action_s) -> Bool {
