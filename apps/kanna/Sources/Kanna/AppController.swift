@@ -108,6 +108,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             daemon.onPane = { [weak self] pane in self?.learn(pane) }
             daemon.onExited = { [weak self] pane, code in self?.panes.exited(pane, code: code) }
             daemon.onSnapshot = { [weak self] pane in self?.panes.restarted(pane) }
+            daemon.onRestart = { [weak self] pane in self?.panes.renew(pane) ?? false }
             contents.onUpdate = { [weak self, weak daemon] pane, fields in
                 if fields["state"] != nil { self?.panes.report(pane, state: fields["state"]?.string, error: fields["error"]?.string) }
                 daemon?.update(pane, fields)

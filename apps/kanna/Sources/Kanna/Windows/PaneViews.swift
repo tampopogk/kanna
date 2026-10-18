@@ -21,28 +21,43 @@ final class PaneViews {
 
     func view(_ id: String, type: String) -> PaneView? {
         if let view = views[id] { return view }
-        let content: NSView
-        if type == "term" {
-            let terminal = TerminalSurfaceView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
-            terminal.focused = { [weak self] in self?.onFocus?(id) }
-            terminal.contextMenu = { [weak self] in self?.contextMenu?() }
-            content = terminal
-        } else {
-            content = contents.slot(id)
-        }
+        let content = type == "term" ? terminal(for: id) : contents.slot(id)
         let view = PaneView(id: id, type: type, content: content)
         view.grip.onDrag = { [weak self] _ in self?.onDrag?(id) }
         views[id] = view
         return view
     }
 
+    private func terminal(for id: String) -> TerminalSurfaceView {
+        let terminal = TerminalSurfaceView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        terminal.focused = { [weak self] in self?.onFocus?(id) }
+        terminal.contextMenu = { [weak self] in self?.contextMenu?() }
+        return terminal
+    }
+
     func started(_ id: String) {
         guard !running.contains(id), let view = views[id] else { return }
         running.insert(id)
         guard let terminal = view.terminal else { return }
-        if !terminals.start(terminal, pane: Pane(id: id)) {
+        start(terminal, in: view)
+    }
+
+    func renew(_ id: String) -> Bool {
+        guard running.contains(id), let view = views[id], let old = view.terminal else { return false }
+        let keyboard = old.window?.firstResponder === old
+        terminals.stop(old)
+        let terminal = terminal(for: id)
+        view.replace(terminal)
+        view.message = nil
+        start(terminal, in: view)
+        if keyboard { view.window?.makeFirstResponder(terminal) }
+        return true
+    }
+
+    private func start(_ terminal: TerminalSurfaceView, in view: PaneView) {
+        if !terminals.start(terminal, pane: Pane(id: view.id)) {
             view.message = "failed: the terminal surface could not be created"
-            FileHandle.standardError.write(Data("kanna: the terminal surface for \(id) could not be created\n".utf8))
+            FileHandle.standardError.write(Data("kanna: the terminal surface for \(view.id) could not be created\n".utf8))
         }
     }
 
