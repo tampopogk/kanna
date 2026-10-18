@@ -36,6 +36,12 @@ impl Model {
         Ok(ids)
     }
 
+    pub(crate) fn close_task(&mut self, task: &str) {
+        let Some(s) = self.dock_ws(task).or_else(|| self.ws_index(task)) else { return };
+        let ws = self.workspaces.remove(s);
+        self.windows.retain(|w| w.workspace.as_deref() != Some(ws.id.as_str()));
+    }
+
     pub(crate) fn lead(&mut self, pane: &str, window: Option<&str>) -> Result<String, KmuxError> {
         let reference = window.ok_or_else(|| bad_request("a window's lead needs its window"))?;
         let w = self.target_window(Some(reference))?;

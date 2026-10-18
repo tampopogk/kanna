@@ -1267,6 +1267,10 @@ impl LayoutHost for Model {
         self.detach(pane);
     }
 
+    fn close_task(&mut self, task: &str) {
+        Model::close_task(self, task);
+    }
+
     fn tidy(&mut self) {
         self.drop_empty();
     }

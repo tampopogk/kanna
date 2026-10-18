@@ -110,3 +110,14 @@ fn closing_a_tab_of_panes_the_daemon_doesnt_know_removes_the_tab() {
     assert_eq!(closed["closed"], json!(["p9"]), "{closed}");
     assert_eq!(everything(&core)["windows"].as_array().unwrap().len(), 1);
 }
+
+#[test]
+fn closing_a_task_closes_its_workspace_and_its_windows() {
+    let core = shelved_task_with_a_tab();
+    let window = send(&core, json!({ "cmd": "open", "args": { "type": "term", "name": "own", "window": "new", "from": "agent" } }));
+    assert_eq!(window["ok"], true, "{window}");
+    let closed = send(&core, json!({ "cmd": "close", "args": { "task": "agent" } }));
+    assert_eq!(closed["ok"], true, "{closed}");
+    let list = everything(&core);
+    assert_eq!((list["windows"].clone(), list["hiddenWindows"].clone(), list["workspaces"].clone(), list["panes"].clone()), (json!([]), json!([]), json!([]), json!([])), "{list}");
+}
