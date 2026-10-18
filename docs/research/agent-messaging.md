@@ -44,7 +44,7 @@ A reply is just a message back. Nobody needs to block waiting for an answer: age
 | **D. MCP server with send/receive tools** | Only if the agent thinks to call `receive` | Queued | all have MCP clients | as a tool call | medium. MCP notifications can't start a turn in claude or codex (codex only logs them), so nothing arrives unless the agent asks. |
 | **E. Claude channels** (an MCP server sends `notifications/claude/channel`) | Queued to the next turn | not available | claude only | a `←` line | medium. Research preview: claude.ai or Console API-key login only, and a server of Kanna's own needs `--dangerously-load-development-channels`. |
 | **F. The agents' own APIs** (codex `app-server` + `codex --remote`, `turn/start` and `turn/steer`; `opencode serve`; Claude's SDK) | Queued, or steered into the turn | `thread/resume` or `--resume` with the message | a different one for each agent; none for copilot or antigravity | only if the TUI attaches to the server (codex, opencode) | large: changes how Kanna runs each agent |
-| **G. Resume with the message as the prompt** (`claude --resume ID "msg"`, `codex resume ID "msg"`) | n/a | yes | claude; codex by ID (`codex resume [SESSION_ID] [PROMPT]`; Kanna resumes it with `--last` until task-0f94) | yes | small, but covers stopped tasks only |
+| **G. Resume with the message as the prompt** (`claude --resume ID "msg"`, `codex resume ID "msg"`) | n/a | yes | claude, codex (both by the session ID Kanna keeps: `codex resume [SESSION_ID] [PROMPT]`); others differ | yes | small, but covers stopped tasks only |
 
 - **B needs nothing from the agents** except the turn's end, which Kanna already has for every agent ([4](#4-the-end-of-a-turn)).
 - **C delivers when B does,** and can't wake an idle agent. That doesn't justify hooks in five agents' settings.
@@ -71,7 +71,7 @@ sequenceDiagram
     Note over D: task-5e2c gets it at its next turn's end
 ```
 
-- **Address by task ID or `planner`** (the planning agent of the Desk that shows the repo). `--from` is the sender's own task, found from `KANNA_PANE`, or `user`.
+- **Address by task ID or `planner`:** a [planner workspace](../specs/presentation-layers.md) of the task's repo: the Desk's of the app that has the sender out (its claim), else the repo's only one; with several and no claim, it asks which. `--from` is the sender's own task, found from `KANNA_TERMINAL`, or `user`.
 - **Deliver when it's idle, never when it needs you:** text typed while a question or approval is on screen would answer it. Several waiting messages go in one prompt, oldest first.
 - **Don't type over the user:** hold delivery while the user has typed into that pane in the last few seconds.
 - **Every message shows where it lands,** in the task's terminal as a prompt with its sender. `kanna task messages TASK` lists what's queued and what was delivered, for when the terminal has scrolled.
@@ -118,7 +118,7 @@ flowchart TD
 
 ## 6. What the build task includes
 
-1. **An inbox table** in `kanna.db`: id, to, from, text, made, delivered ([database](../specs/database.md)).
+1. **An inbox table** in `kanna.db`: id, to, from, text, made, delivered ([database](../specs/database.md)), keyed by task, not terminal, since a restart gives the agent a new `term-N`.
 2. **`kanna task send TASK|planner TEXT`** and **`kanna task messages [TASK]`**.
 3. **Delivery in the daemon:** on the turn's end (`Turn`, already used by the runners, OSC 7501 or rules), or at once if the agent is idle; typed with `kanna send`; skipped while it needs you or the user is typing.
 4. **Runners:** a waiting message makes a stopped backlog task next to start, and keeps a running one from being stopped.
