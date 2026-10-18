@@ -3,6 +3,7 @@ use kanna_mux::{pane_table, read_pane_table, KmuxError, LayoutCall, LayoutHost, 
 use crate::db::Db;
 use kanna_mux::Contents;
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::future::ready;
 use std::path::Path;
 use std::rc::Rc;
@@ -52,6 +53,10 @@ impl DaemonLayout {
 
     pub fn connect(&self, core: WeakCore) {
         *self.core.borrow_mut() = Some(core);
+    }
+
+    pub fn content_numbers(&self) -> HashMap<String, usize> {
+        self.owner.borrow().content_numbers()
     }
 
     pub fn saved_panes(&self) -> Vec<kanna_mux::Pane> {
@@ -145,7 +150,7 @@ impl LayoutLink for DaemonLayout {
     }
 }
 
-fn saved(db: &Db, state_dir: &Path) -> Option<Value> {
+pub fn saved(db: &Db, state_dir: &Path) -> Option<Value> {
     match db.layout() {
         Ok(Some(state)) => return Some(state),
         Ok(None) => {}

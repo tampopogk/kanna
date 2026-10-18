@@ -126,6 +126,13 @@ impl Terminals {
         Spec { id: terminal.to_string(), command, cwd: pane.cwd.clone(), env, cols, rows }
     }
 
+    pub fn renamed(&self, from: &str, to: &str) {
+        let size = self.sizes.borrow_mut().remove(from);
+        if let Some(size) = size {
+            self.sizes.borrow_mut().insert(to.into(), size);
+        }
+    }
+
     pub fn unshown(&self, pane: &Pane) {
         self.report(&pane.id, PaneState::Running, None, None);
     }

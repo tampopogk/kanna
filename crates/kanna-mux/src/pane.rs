@@ -265,6 +265,27 @@ pub struct Panes {
     order: Vec<String>,
     counter: usize,
     terminals: usize,
+    content: bool,
+    numbers: HashMap<&'static str, usize>,
+}
+
+pub const CONTENT_PREFIXES: [&str; 5] = ["term", "file", "page", "ios", "diff"];
+
+pub fn content_prefix(kind: PaneType) -> &'static str {
+    match kind {
+        PaneType::Term => "term",
+        PaneType::Md | PaneType::Code => "file",
+        PaneType::Web => "page",
+        PaneType::Ios => "ios",
+        PaneType::Diff => "diff",
+    }
+}
+
+fn content_number(id: &str) -> Option<(&'static str, usize)> {
+    let (prefix, n) = id.split_once('-')?;
+    let prefix = CONTENT_PREFIXES.into_iter().find(|p| *p == prefix)?;
+    let n: usize = n.parse().ok()?;
+    (n > 0 && format!("{prefix}-{n}") == id).then_some((prefix, n))
 }
 
 pub fn terminal_number(id: &str) -> Option<usize> {
@@ -306,13 +327,30 @@ impl Panes {
         self.order.is_empty()
     }
 
-    pub fn next_id(&self) -> String {
-        format!("p{}", self.counter + 1)
+    pub fn use_content_ids(&mut self) {
+        self.content = true;
+    }
+
+    pub fn content_ids(&self) -> bool {
+        self.content
+    }
+
+    pub fn next_id(&self, kind: PaneType) -> String {
+        match (self.content, kind) {
+            (false, _) => format!("p{}", self.counter + 1),
+            (true, PaneType::Term) => format!("term-{}", self.terminals + 1),
+            (true, kind) => format!("{}-{}", content_prefix(kind), self.numbers.get(content_prefix(kind)).copied().unwrap_or(0) + 1),
+        }
     }
 
     pub fn make(&mut self, kind: PaneType, name: Option<String>) -> &mut Pane {
-        self.counter += 1;
-        let pane = Pane::new(&format!("p{}", self.counter), name, kind);
+        let id = self.next_id(kind);
+        match (self.content, kind) {
+            (false, _) => self.counter += 1,
+            (true, PaneType::Term) => self.terminals += 1,
+            (true, kind) => *self.numbers.entry(content_prefix(kind)).or_insert(0) += 1,
+        }
+        let pane = Pane::new(&id, name, kind);
         let id = pane.id.clone();
         self.order.push(id.clone());
         self.panes.entry(id).or_insert(pane)
@@ -331,15 +369,68 @@ impl Panes {
         self.terminals
     }
 
+    pub fn numbers(&self) -> HashMap<String, usize> {
+        self.numbers.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+    }
+
     pub fn new_terminal(&mut self, id: &str) -> Option<String> {
+        let content = self.content;
         let pane = self.panes.get_mut(id).filter(|p| p.kind == PaneType::Term)?;
+        if content && pane.terminal.is_none() {
+            pane.terminal = Some(id.into());
+            return Some(id.into());
+        }
         self.terminals += 1;
         let terminal = format!("term-{}", self.terminals);
         pane.terminal = Some(terminal.clone());
         Some(terminal)
     }
 
+    pub fn renew_terminal(&mut self, id: &str) -> Option<String> {
+        self.panes.get(id).filter(|p| self.content && p.kind == PaneType::Term && p.terminal.is_some())?;
+        self.terminals += 1;
+        let to = format!("term-{}", self.terminals);
+        self.rekey(id, &to);
+        if let Some(pane) = self.panes.get_mut(&to) {
+            pane.terminal = None;
+        }
+        Some(to)
+    }
+
+    pub fn rekey(&mut self, from: &str, to: &str) -> bool {
+        let Some(mut pane) = self.panes.remove(from) else { return false };
+        pane.id = to.into();
+        self.panes.insert(to.into(), pane);
+        for id in self.order.iter_mut().filter(|id| *id == from) {
+            *id = to.into();
+        }
+        for pane in self.panes.values_mut() {
+            if pane.agent.as_deref() == Some(from) {
+                pane.agent = Some(to.into());
+            }
+        }
+        true
+    }
+
+    pub fn note_numbers(&mut self, numbers: &HashMap<String, usize>) {
+        for (prefix, n) in numbers {
+            if let Some(prefix) = ["file", "page", "ios", "diff"].into_iter().find(|p| p == prefix) {
+                let at = self.numbers.entry(prefix).or_insert(0);
+                *at = (*at).max(*n);
+            }
+        }
+    }
+
     pub fn install(&mut self, panes: Vec<Pane>, counter: usize, terminals: usize) {
+        for (prefix, n) in panes.iter().filter_map(|p| content_number(&p.id)) {
+            match prefix {
+                "term" => self.terminals = self.terminals.max(n),
+                prefix => {
+                    let at = self.numbers.entry(prefix).or_insert(0);
+                    *at = (*at).max(n);
+                }
+            }
+        }
         let used = panes.iter().filter_map(|p| p.terminal.as_deref().and_then(terminal_number)).max().unwrap_or(0);
         self.order = panes.iter().map(|p| p.id.clone()).collect();
         self.panes = panes.into_iter().map(|p| (p.id.clone(), p)).collect();

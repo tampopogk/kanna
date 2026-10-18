@@ -27,6 +27,11 @@ enum JSON: Sendable, Equatable {
         if case .number(let value) = self { return value }
         return nil
     }
+
+    var array: [JSON]? {
+        if case .array(let value) = self { return value }
+        return nil
+    }
 }
 
 extension JSON: ExpressibleByStringLiteral, ExpressibleByBooleanLiteral, ExpressibleByIntegerLiteral,

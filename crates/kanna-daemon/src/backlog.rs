@@ -61,7 +61,7 @@ impl Entry {
             id: self.id.clone(),
             repo: self.repo.clone(),
             place,
-            pane: pane.map(String::from),
+            terminal: pane.map(String::from),
             made_at: self.made_at,
             doc: json!({
                 "name": opt(self.name.as_deref()),
@@ -89,7 +89,7 @@ impl Entry {
             agent: text("agent").unwrap_or_else(default_agent),
             folder: text("folder"),
             session: text("session"),
-            held: row.pane.clone().filter(|_| row.place == Place::Backlog),
+            held: row.terminal.clone().filter(|_| row.place == Place::Backlog),
             after: row.doc.get("after").and_then(Value::as_array).map_or(vec![], |ids| ids.iter().filter_map(Value::as_str).map(String::from).collect()),
             stopped: text("stopped").filter(|_| row.place == Place::Backlog),
             workspace: text("workspace"),
@@ -552,7 +552,7 @@ impl Backlog {
         });
         let (mut entries, mut running) = (vec![], vec![]);
         for row in &rows {
-            match (row.place, &row.pane) {
+            match (row.place, &row.terminal) {
                 (Place::Shelf | Place::Desk, Some(pane)) => running.push(Running { pane: pane.clone(), entry: Entry::from_row(row), place: row.place }),
                 (Place::Shelf | Place::Desk, None) => {
                     let entry = Entry::from_row(row);
@@ -1161,7 +1161,47 @@ impl Backlog {
         Ok(Entry { folder: Some(folder), ..self.mint(&args, pane.name.clone(), None)? })
     }
 
+    fn renamed(&self, from: &str, to: &str) {
+        fn rekey<T>(map: &RefCell<HashMap<String, T>>, from: &str, to: &str) {
+            let moved = map.borrow_mut().remove(from);
+            if let Some(value) = moved {
+                map.borrow_mut().insert(to.into(), value);
+            }
+        }
+        rekey(&self.turns, from, to);
+        rekey(&self.quitting, from, to);
+        rekey(&self.setting_up, from, to);
+        rekey(&self.tearing_down, from, to);
+        if self.stopping.borrow_mut().remove(from) {
+            self.stopping.borrow_mut().insert(to.into());
+        }
+        let moved: Vec<(Entry, Place)> = self.running.borrow_mut().iter_mut().filter(|r| r.pane == from).map(|r| {
+            r.pane = to.into();
+            (r.entry.clone(), r.place)
+        }).collect();
+        for (entry, place) in moved {
+            if let Err(error) = self.db.put(&entry.row(place, Some(to)), None) {
+                eprintln!("kanna-daemon: couldn't save {}'s new terminal {to}: {error}", entry.id);
+            }
+        }
+        let held: Vec<Entry> = self.entries.borrow_mut().iter_mut().filter(|e| e.held.as_deref() == Some(from)).map(|e| {
+            e.held = Some(to.into());
+            e.clone()
+        }).collect();
+        for entry in held {
+            if let Err(error) = self.db.put(&entry.row(Place::Backlog, Some(to)), None) {
+                eprintln!("kanna-daemon: couldn't save {}'s new terminal {to}: {error}", entry.id);
+            }
+        }
+    }
+
     pub fn install(self: &Rc<Self>, core: &CoreHandle) {
+        let this = Rc::downgrade(self);
+        core.on_renamed(Rc::new(move |from, to| {
+            if let Some(this) = this.upgrade() {
+                this.renamed(from, to);
+            }
+        }));
         core.set_tasks(Rc::new(Book(Rc::downgrade(self))));
         let this = Rc::downgrade(self);
         core.add_command(
@@ -1391,29 +1431,35 @@ impl Backlog {
         let id = self.short(&tearing.entry.id);
         eprintln!("kanna-daemon: {} is done, so its teardown runs in {pane}: {}", tearing.entry.id, scripts.teardown.as_deref().unwrap_or(""));
         self.note(pane, Change::new("tearing down").by(tearing.by.as_deref()));
-        responder.reply(Ok(Map::from_iter([("task".to_string(), json!(id)), ("pane".to_string(), json!(pane)), ("teardown".to_string(), json!(true))])));
         self.turns.borrow_mut().remove(pane);
         self.quitting.borrow_mut().remove(pane);
         self.setting_up.borrow_mut().remove(pane);
         self.stopping.borrow_mut().insert(pane.to_string());
         let (this, weak, pane) = (Rc::downgrade(self), core.weak(), pane.to_string());
         core.handle(json!({ "cmd": "close", "args": { "task": pane, "tabs": true } }), move |_| {
-            let Some(core) = weak.upgrade() else { return };
+            let Some(core) = weak.upgrade() else { return responder.reply(Err(gone())) };
             let again = core.weak();
             core.end(&pane.clone(), move |_| {
-                let (Some(this), Some(core)) = (this.upgrade(), again.upgrade()) else { return };
+                let (Some(this), Some(core)) = (this.upgrade(), again.upgrade()) else { return responder.reply(Err(gone())) };
                 this.stopping.borrow_mut().remove(&pane);
+                let task = tearing.entry.id.clone();
                 this.tearing_down.borrow_mut().insert(pane.clone(), tearing);
                 this.changed();
                 core.set_command(&pane, command);
                 let after = Rc::downgrade(&this);
                 core.handle(json!({ "cmd": "restart", "args": { "pane": pane } }), move |reply| {
-                    let (Some(error), Some(this)) = (failed(&reply), after.upgrade()) else { return };
-                    eprintln!("kanna-daemon: couldn't run {pane}'s teardown: {}", error.message);
-                    let tearing = this.tearing_down.borrow_mut().remove(&pane);
-                    if let Some(tearing) = tearing {
-                        this.torn_down(&pane, tearing, 127);
+                    let Some(error) = failed(&reply) else {
+                        let pane = reply.get("pane").and_then(|p| string(p, "id")).unwrap_or(&pane);
+                        return responder.reply(Ok(Map::from_iter([("task".to_string(), json!(id)), ("pane".to_string(), json!(pane)), ("teardown".to_string(), json!(true))])));
+                    };
+                    eprintln!("kanna-daemon: couldn't run {task}'s teardown: {}", error.message);
+                    if let Some(this) = after.upgrade() {
+                        let held = this.tearing_down.borrow().iter().find(|(_, t)| t.entry.id == task).map(|(pane, _)| pane.clone());
+                        if let Some(tearing) = held.as_ref().and_then(|held| this.tearing_down.borrow_mut().remove(held)) {
+                            this.torn_down(held.as_deref().unwrap_or(&pane), tearing, 127);
+                        }
                     }
+                    responder.reply(Err(error));
                 });
             });
         });
@@ -1485,12 +1531,12 @@ impl Backlog {
             let this = Rc::downgrade(self);
             return match entry.held.clone().filter(|pane| core.pane(pane).is_some()) {
                 Some(pane) if alive(&core, &pane) => responder.reply(Err(running(&id))),
-                Some(pane) => self.revive(&pane.clone(), Some(self.again(&entry)), move |result| {
-                    if let (Ok(()), Some(this)) = (&result, this.upgrade()) {
-                        this.restarted(&pane);
-                        this.note(&pane, Change::new("started").by(by.as_deref()));
+                Some(pane) => self.revive(&pane, Some(self.again(&entry)), move |result| {
+                    if let (Ok(pane), Some(this)) = (&result, this.upgrade()) {
+                        this.restarted(pane);
+                        this.note(pane, Change::new("started").by(by.as_deref()));
                     }
-                    responder.reply(result.map(|_| started_here(&id, &pane, "backlog")))
+                    responder.reply(result.map(|pane| started_here(&id, &pane, "backlog")))
                 }),
                 None => self.prepare(Entry { held: None, ..entry }, None, true, by, Answer::To(responder)),
             };
@@ -1510,10 +1556,10 @@ impl Backlog {
             let again = Rc::downgrade(&this);
             let command = entry.map(|e| this.again(&e));
             this.revive(&pane.clone(), command, move |result| {
-                if let (Ok(()), Some(this)) = (&result, again.upgrade()) {
-                    this.note(&pane, Change::new("started").by(by.as_deref()));
+                if let (Ok(pane), Some(this)) = (&result, again.upgrade()) {
+                    this.note(pane, Change::new("started").by(by.as_deref()));
                 }
-                responder.reply(result.map(|_| started_here(&id, &pane, "shelf")))
+                responder.reply(result.map(|pane| started_here(&id, &pane, "shelf")))
             });
         });
     }
@@ -1580,22 +1626,23 @@ impl Backlog {
         });
     }
 
-    fn revive(&self, pane: &str, command: Option<String>, done: impl FnOnce(Result<(), KmuxError>) + 'static) {
+    fn revive(&self, pane: &str, command: Option<String>, done: impl FnOnce(Result<String, KmuxError>) + 'static) {
         let Some(core) = self.core.upgrade() else { return done(Err(gone())) };
         if let Some(command) = command {
             core.set_command(pane, command);
         }
-        let (weak, task) = (core.weak(), pane.to_string());
+        let (weak, old) = (core.weak(), pane.to_string());
         core.handle(json!({ "cmd": "restart", "args": { "pane": pane } }), move |reply| {
             if let Some(error) = failed(&reply) {
                 return done(Err(error));
             }
-            let Some(core) = weak.upgrade() else { return done(Ok(())) };
+            let task = reply.get("pane").and_then(|p| string(p, "id")).map_or(old, str::to_string);
+            let Some(core) = weak.upgrade() else { return done(Ok(task)) };
             core.wake(&task.clone(), move |woken| {
                 if let Err(error) = woken {
                     eprintln!("kanna-daemon: couldn't start {task}'s terminals again: {}", error.message);
                 }
-                done(Ok(()))
+                done(Ok(task))
             });
         });
     }
@@ -1793,18 +1840,18 @@ impl Backlog {
         self.revive(&pane.clone(), Some(command), move |result| {
             if let Some(this) = this.upgrade() {
                 match &result {
-                    Ok(()) => {
+                    Ok(pane) => {
                         if this.entries.borrow().iter().any(|e| e.held.as_deref() == Some(pane.as_str())) {
-                            this.restarted(&pane);
+                            this.restarted(pane);
                         }
-                        this.note(&pane, Change::new("started").by(by.as_deref()).with("setup", json!(true)));
+                        this.note(pane, Change::new("started").by(by.as_deref()).with("setup", json!(true)));
                     }
                     Err(_) => {
                         this.setting_up.borrow_mut().remove(&pane);
                     }
                 }
             }
-            responder.reply(result.map(|_| Map::from_iter([("task".to_string(), json!(id)), ("pane".to_string(), json!(pane))])))
+            responder.reply(result.map(|pane| Map::from_iter([("task".to_string(), json!(id)), ("pane".to_string(), json!(pane))])))
         });
     }
 
@@ -1977,7 +2024,7 @@ impl Backlog {
             this.revive(&pane.clone(), Some(command), move |result| {
                 let Some(this) = again.upgrade() else { return };
                 match result {
-                    Ok(()) => this.started(pane, entry, branch, window, by, &weak, responder),
+                    Ok(pane) => this.started(pane, entry, branch, window, by, &weak, responder),
                     Err(error) => responder.reply(Err(error)),
                 }
             });

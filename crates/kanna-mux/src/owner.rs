@@ -6,7 +6,7 @@ use crate::pane::{Pane, PaneType, Panes};
 use crate::saved::LAYOUT_VERSION;
 use crate::state::{self, number_in};
 use crate::state_file::{Contents, StateFile};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub struct LayoutOwner {
     model: Model,
@@ -35,6 +35,7 @@ impl LayoutOwner {
             Contents::Refused(why) => Some(why),
             Contents::State(state) => match state::import_versions(&state, &[1, 2, LAYOUT_VERSION], "Kanna reads") {
                 Ok(_) => {
+                    owner.panes.note_numbers(&content_counters(&state));
                     owner.saved = Some(state);
                     None
                 }
@@ -47,7 +48,14 @@ impl LayoutOwner {
 
     pub fn restoring(state: Value) -> Result<LayoutOwner, KmuxError> {
         state::import_versions(&state, &[1, 2, LAYOUT_VERSION], "Kanna reads")?;
-        Ok(LayoutOwner { saved: Some(state), ..LayoutOwner::default() })
+        let mut owner = LayoutOwner::default();
+        owner.panes.note_numbers(&content_counters(&state));
+        owner.saved = Some(state);
+        Ok(owner)
+    }
+
+    pub fn content_numbers(&self) -> HashMap<String, usize> {
+        self.panes.numbers()
     }
 
     pub fn changed_state(&mut self) -> Option<Value> {
@@ -244,6 +252,7 @@ impl LayoutOwner {
         let mut view = Map::new();
         view.insert("shelf".into(), Value::Array(shelf));
         view.insert("held".into(), held.into());
+        view.insert("workspaces".into(), model.workspaces().iter().map(|ws| ws.id.clone()).collect::<Vec<_>>().into());
         view.insert("key".into(), model.key_window().map_or(Value::Null, |w| w.id.clone().into()));
         view.insert("windows".into(), Value::Array(windows));
         view
@@ -278,6 +287,9 @@ impl LayoutOwner {
         panes.install(self.panes.iter().filter(|p| placed.contains(&p.id)).cloned().collect(), 0, 0);
         let counter = panes.iter().filter_map(|p| number_in(&p.id, "p")).max().unwrap_or(0);
         counters.insert("pane".into(), num(counter as f64));
+        for (prefix, n) in self.panes.numbers().into_iter().filter(|(_, n)| *n > 0) {
+            counters.insert(prefix, num(n as f64));
+        }
         out.insert("kmux".into(), "state".into());
         out.insert("version".into(), num(LAYOUT_VERSION as f64));
         out.insert("counters".into(), Value::Object(counters));
@@ -294,6 +306,11 @@ impl LayoutOwner {
         }
         Ok(true)
     }
+}
+
+fn content_counters(state: &Value) -> HashMap<String, usize> {
+    let counters = state.get("counters");
+    ["file", "page", "ios", "diff"].into_iter().filter_map(|prefix| Some((prefix.to_string(), counters?.get(prefix)?.as_f64().filter(|n| *n >= 0.0)? as usize))).collect()
 }
 
 fn changed(changed: bool) -> Map {
@@ -521,7 +538,7 @@ mod tests {
         let view = again.view();
         assert_eq!(
             Value::Object(view),
-            json!({ "key": "w1", "shelf": [], "held": [], "windows": [{ "id": "w1", "desk": false, "project": null, "lead": null, "tabs": [{ "id": "t1", "title": "Tab 1", "panes": ["p1", "p3", "p4"] }], "tab": "t1", "title": "Tab 1",
+            json!({ "key": "w1", "shelf": [], "held": [], "workspaces": [], "windows": [{ "id": "w1", "desk": false, "project": null, "lead": null, "tabs": [{ "id": "t1", "title": "Tab 1", "panes": ["p1", "p3", "p4"] }], "tab": "t1", "title": "Tab 1",
                 "focused": "p4", "zoomed": null, "workspace": null, "shows": null, "root": { "split": "row", "children": [
                 { "pane": "p1", "type": "term", "size": 0.75 },
                 { "split": "column", "size": 0.25, "children": [{ "pane": "p3", "type": "term", "size": 0.5 }, { "pane": "p4", "type": "term", "size": 0.5 }] }

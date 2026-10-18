@@ -51,6 +51,29 @@ pub struct Tabs {
 }
 
 impl Tabs {
+    pub(crate) fn rename(&mut self, from: &str, to: &str) {
+        fn walk(node: &mut Node, from: &str, to: &str) {
+            match node {
+                Node::Pane(id) if id == from => *id = to.into(),
+                Node::Pane(_) => {}
+                Node::Split(split) => split.kids.iter_mut().for_each(|kid| walk(&mut kid.node, from, to)),
+            }
+        }
+        let rename = |id: &mut Option<String>| {
+            if id.as_deref() == Some(from) {
+                *id = Some(to.into());
+            }
+        };
+        rename(&mut self.focused);
+        for tab in &mut self.tabs {
+            if let Some(root) = &mut tab.root {
+                walk(root, from, to);
+            }
+            rename(&mut tab.last_focus);
+            rename(&mut tab.namer);
+        }
+    }
+
     pub(crate) fn active_index(&self) -> Option<usize> {
         self.tabs.iter().position(|t| Some(&t.id) == self.active.as_ref()).or(if self.tabs.is_empty() { None } else { Some(0) })
     }

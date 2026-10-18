@@ -1,6 +1,6 @@
 use crate::error::KmuxError;
 use crate::json::{encode, is_true, num, opt, string, Map, Value};
-use crate::pane::{diff_args, read_diff_args, read_view, Comment, History, Pane, PaneType, Panes};
+use crate::pane::{content_prefix, diff_args, read_diff_args, read_view, Comment, History, Pane, PaneType, Panes};
 use std::collections::HashSet;
 
 pub const STATE_VERSION: u32 = 1;
@@ -154,15 +154,18 @@ pub(crate) fn import_versions(state: &Value, versions: &[u32], reader: &str) -> 
     let mut ids = HashSet::new();
     let mut names = HashSet::new();
     for item in saved_panes {
-        let id = string(item, "id").filter(|_| item.is_object());
-        let n = id.and_then(|id| number_in(id, "p"));
-        let (Some(id), Some(n)) = (id, n) else { return Err(bad(&format!("pane {}", quoted(item.get("id"))))) };
-        if !ids.insert(id.to_string()) {
-            return Err(bad(&format!("pane {}", quoted(item.get("id")))));
-        }
+        let Some(id) = string(item, "id").filter(|_| item.is_object()) else { return Err(bad(&format!("pane {}", quoted(item.get("id"))))) };
         let Some(kind) = string(item, "type").and_then(PaneType::parse) else {
             return Err(bad(&format!("pane {id} has unknown type {}", quoted(item.get("type")))));
         };
+        let n = match number_in(id, "p") {
+            Some(n) => n,
+            None if number_in(id, &format!("{}-", content_prefix(kind))).is_some() => 0,
+            None => return Err(bad(&format!("pane {}", quoted(item.get("id"))))),
+        };
+        if !ids.insert(id.to_string()) {
+            return Err(bad(&format!("pane {}", quoted(item.get("id")))));
+        }
         let name = string(item, "name").map(String::from);
         if let Some(name) = &name {
             if name.is_empty() || !names.insert(name.clone()) {

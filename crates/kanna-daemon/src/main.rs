@@ -4,6 +4,7 @@ mod backlog;
 mod db;
 mod host;
 mod keeper;
+mod content_ids;
 mod layout;
 mod pty;
 mod quiz;
@@ -125,9 +126,11 @@ fn run() -> Result<(), String> {
 
     let (events, inbox) = mpsc::channel::<Event>();
     let db = Rc::new(db::Db::open(&state_dir));
+    content_ids::migrate(&state_dir, &db);
     let layout = layout::DaemonLayout::open(db.clone(), &state_dir);
     let core = Core::with_link(layout.clone());
     layout.connect(core.weak());
+    core.use_content_ids();
     let instance = instance_name(&socket);
     core.set_instance(Instance::with_socket(&instance, Some(socket_path.clone())));
     let wake = events.clone();
@@ -168,6 +171,12 @@ fn run() -> Result<(), String> {
     env.extend(shell::env(&state_dir, &kanna_keeper::login_shell(), std::env::var("ZDOTDIR").ok()));
     let terminals = Rc::new(Terminals::new(keeper.clone(), store, events.clone(), env));
     *terminals.core.borrow_mut() = Some(core.weak());
+    let renaming = Rc::downgrade(&terminals);
+    core.on_renamed(Rc::new(move |from, to| {
+        if let Some(terminals) = renaming.upgrade() {
+            terminals.renamed(from, to);
+        }
+    }));
     let rules = kanna_detect::Store::new(status_command::rules_config(&state_dir));
     let _rules_updater = rules.start();
     let detector = Rc::new(status::Detector::start(rules, events.clone()));
@@ -216,6 +225,7 @@ fn run() -> Result<(), String> {
             restored.dropped
         );
     }
+    core.note_numbers(&layout.content_numbers());
     core.install_panes(layout.saved_panes(), 0, 0);
     layout.restore(&core.with_panes(kanna_mux::pane_table));
     if let Err(error) = keeper.watch() {

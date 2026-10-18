@@ -812,7 +812,7 @@ fn repo_here() -> Result<String, Failure> {
 }
 
 pub fn caller() -> Option<String> {
-    ["KANNA_TERMINAL", "KANNA_PANE"].into_iter().find_map(|key| std::env::var(key).ok().filter(|id| !id.is_empty()))
+    std::env::var("KANNA_TERMINAL").ok().filter(|id| !id.is_empty())
 }
 
 fn from_caller(out: &mut Map<String, Value>) {

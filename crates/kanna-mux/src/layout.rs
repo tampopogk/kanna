@@ -93,6 +93,10 @@ pub trait LayoutHost {
 
     fn remove(&mut self, pane: &str);
 
+    fn rename(&mut self, from: &str, to: &str) {
+        let _ = (from, to);
+    }
+
     fn close_task(&mut self, task: &str);
 
     fn tidy(&mut self);
@@ -305,6 +309,10 @@ fn step(host: &mut dyn LayoutHost, request: &Value, panes: &Panes) -> Result<Map
             if request.get("tidy") == Some(&Value::Bool(true)) {
                 host.tidy();
             }
+        }
+        "rename" => {
+            let (Some(from), Some(to)) = (string(request, "from"), string(request, "to")) else { return Err(bad("rename needs from and to")) };
+            host.rename(from, to);
         }
         "command" => {
             let cmd = string(request, "cmd").unwrap_or("");

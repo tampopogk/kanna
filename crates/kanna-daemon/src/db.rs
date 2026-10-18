@@ -71,6 +71,8 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         id integer primary key check (id = 1),
         doc text not null check (json_valid(doc))
     );
+"), Step::Sql("
+    alter table tasks rename column pane to terminal;
 ")];
 
 pub fn version() -> i64 {
@@ -105,7 +107,7 @@ pub struct Row {
     pub id: String,
     pub repo: String,
     pub place: Place,
-    pub pane: Option<String>,
+    pub terminal: Option<String>,
     pub made_at: f64,
     pub doc: Value,
 }
@@ -355,8 +357,8 @@ impl Db {
                 continue;
             }
             let added = tx.execute(
-                "insert or ignore into tasks (id, repo, place, pane, made_at, doc) values (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![row.id, row.repo, row.place.as_str(), row.pane, row.made_at, row.doc.to_string()],
+                "insert or ignore into tasks (id, repo, place, terminal, made_at, doc) values (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![row.id, row.repo, row.place.as_str(), row.terminal, row.made_at, row.doc.to_string()],
             )?;
             if added == 1 {
                 let made = Change { at: Some(row.made_at), by: row.doc.get("by").and_then(Value::as_str).map(String::from), to: Some(Place::Backlog), ..Change::new("made") };
@@ -373,21 +375,21 @@ impl Db {
     }
 
     pub fn tasks(&self) -> rusqlite::Result<Vec<Row>> {
-        let mut statement = self.conn.prepare("select id, repo, place, pane, made_at, doc from tasks where place != 'done' order by made_at, rowid")?;
+        let mut statement = self.conn.prepare("select id, repo, place, terminal, made_at, doc from tasks where place != 'done' order by made_at, rowid")?;
         let rows = statement.query_map([], |r| {
             let place: String = r.get(2)?;
             let doc: String = r.get(5)?;
-            Ok(Row { id: r.get(0)?, repo: r.get(1)?, place: Place::parse(&place).unwrap_or(Place::Backlog), pane: r.get(3)?, made_at: r.get(4)?, doc: serde_json::from_str(&doc).unwrap_or(Value::Null) })
+            Ok(Row { id: r.get(0)?, repo: r.get(1)?, place: Place::parse(&place).unwrap_or(Place::Backlog), terminal: r.get(3)?, made_at: r.get(4)?, doc: serde_json::from_str(&doc).unwrap_or(Value::Null) })
         })?;
         rows.collect()
     }
 
     pub fn task(&self, id: &str) -> rusqlite::Result<Option<Row>> {
         self.conn
-            .query_row("select id, repo, place, pane, made_at, doc from tasks where id = ?1", [id], |r| {
+            .query_row("select id, repo, place, terminal, made_at, doc from tasks where id = ?1", [id], |r| {
                 let place: String = r.get(2)?;
                 let doc: String = r.get(5)?;
-                Ok(Row { id: r.get(0)?, repo: r.get(1)?, place: Place::parse(&place).unwrap_or(Place::Backlog), pane: r.get(3)?, made_at: r.get(4)?, doc: serde_json::from_str(&doc).unwrap_or(Value::Null) })
+                Ok(Row { id: r.get(0)?, repo: r.get(1)?, place: Place::parse(&place).unwrap_or(Place::Backlog), terminal: r.get(3)?, made_at: r.get(4)?, doc: serde_json::from_str(&doc).unwrap_or(Value::Null) })
             })
             .optional()
     }
@@ -405,9 +407,9 @@ impl Db {
     pub fn put(&self, row: &Row, change: Option<&Change>) -> rusqlite::Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
-            "insert into tasks (id, repo, place, pane, made_at, doc) values (?1, ?2, ?3, ?4, ?5, json_patch('{}', ?6))
-             on conflict (id) do update set repo = excluded.repo, place = excluded.place, pane = excluded.pane, made_at = excluded.made_at, doc = json_patch(tasks.doc, ?6)",
-            params![row.id, row.repo, row.place.as_str(), row.pane, row.made_at, row.doc.to_string()],
+            "insert into tasks (id, repo, place, terminal, made_at, doc) values (?1, ?2, ?3, ?4, ?5, json_patch('{}', ?6))
+             on conflict (id) do update set repo = excluded.repo, place = excluded.place, terminal = excluded.terminal, made_at = excluded.made_at, doc = json_patch(tasks.doc, ?6)",
+            params![row.id, row.repo, row.place.as_str(), row.terminal, row.made_at, row.doc.to_string()],
         )?;
         if let Some(change) = change {
             log(&tx, &row.id, change)?;
@@ -427,6 +429,14 @@ impl Db {
     pub fn layout(&self) -> rusqlite::Result<Option<Value>> {
         let doc: Option<String> = self.conn.query_row("select doc from layout where id = 1", [], |row| row.get(0)).optional()?;
         Ok(doc.and_then(|doc| serde_json::from_str(&doc).ok()))
+    }
+
+    pub fn rename_terminals(&self, renamed: &HashMap<String, String>) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for (from, to) in renamed {
+            tx.execute("update tasks set terminal = ?2 where terminal = ?1", params![from, to])?;
+        }
+        tx.commit()
     }
 
     pub fn put_layout(&self, doc: &Value) -> rusqlite::Result<()> {
@@ -603,7 +613,7 @@ fn row_from_saved(task: &Value, place: Place, pane: Option<&str>) -> Option<Row>
             doc.insert(key.into(), Value::String(value));
         }
     }
-    Some(Row { id, repo, place, pane: pane.filter(|p| !p.is_empty()).map(String::from), made_at: task.get("madeAt").and_then(Value::as_f64).unwrap_or(0.0), doc: Value::Object(doc) })
+    Some(Row { id, repo, place, terminal: pane.filter(|p| !p.is_empty()).map(String::from), made_at: task.get("madeAt").and_then(Value::as_f64).unwrap_or(0.0), doc: Value::Object(doc) })
 }
 
 #[cfg(test)]
@@ -656,9 +666,9 @@ mod tests {
         }
         for task in running {
             let row = rows.iter().find(|r| r.id == new[task["id"].as_str().unwrap()]).unwrap();
-            assert_eq!((row.place, row.pane.as_deref()), (Place::Shelf, task["pane"].as_str()));
+            assert_eq!((row.place, row.terminal.as_deref()), (Place::Shelf, task["pane"].as_str()));
         }
-        assert!(rows.iter().filter(|r| r.place == Place::Backlog).all(|r| r.pane.is_none()));
+        assert!(rows.iter().filter(|r| r.place == Place::Backlog).all(|r| r.terminal.is_none()));
         drop(db);
         let again = Db::open(&dir);
         assert_eq!(again.tasks().unwrap().len(), rows.len(), "nothing is imported twice");
@@ -687,7 +697,7 @@ mod tests {
         fs::write(dir.join(BACKLOG), saved.to_string()).unwrap();
         let rows = Db::open(&dir).tasks().unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!((rows[0].place, rows[0].pane.as_deref()), (Place::Backlog, Some("p9")));
+        assert_eq!((rows[0].place, rows[0].terminal.as_deref()), (Place::Backlog, Some("p9")));
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -697,15 +707,15 @@ mod tests {
         let db = Db::open(&dir);
         let id = db.new_id(|_| true).unwrap();
         assert!(is_task_id(&id), "{id}");
-        let mut row = Row { id: id.clone(), repo: "/r".into(), place: Place::Backlog, pane: None, made_at: 1.0, doc: json!({ "name": "A", "later": "kept" }) };
+        let mut row = Row { id: id.clone(), repo: "/r".into(), place: Place::Backlog, terminal: None, made_at: 1.0, doc: json!({ "name": "A", "later": "kept" }) };
         db.put(&row, Some(&Change::new("made").by(Some("p1")))).unwrap();
         row.place = Place::Shelf;
-        row.pane = Some("p7".into());
+        row.terminal = Some("term-7".into());
         row.doc = json!({ "name": "B", "session": null });
         db.put(&row, Some(&Change::new("shelved").moved(Place::Backlog, Place::Shelf).with("window", json!("w2")))).unwrap();
         let stored = db.tasks().unwrap().remove(0);
         assert_eq!(stored.doc, json!({ "name": "B", "later": "kept" }));
-        assert_eq!((stored.place, stored.pane.as_deref()), (Place::Shelf, Some("p7")));
+        assert_eq!((stored.place, stored.terminal.as_deref()), (Place::Shelf, Some("term-7")));
         let events = db.events(&id).unwrap();
         assert_eq!(events.iter().map(|e| e.what.as_str()).collect::<Vec<_>>(), ["made", "shelved"]);
         assert_eq!((events[1].from, events[1].to, events[1].doc["window"].as_str()), (Some(Place::Backlog), Some(Place::Shelf), Some("w2")));
@@ -720,7 +730,7 @@ mod tests {
         let db = Db::open(&dir);
         assert_eq!(db.layout().unwrap(), None);
         db.saves_layout_with_done(|| Some(json!({ "workspaces": [] })));
-        let mut row = Row { id: db.new_id(|_| true).unwrap(), repo: "/r".into(), place: Place::Shelf, pane: Some("p1".into()), made_at: 1.0, doc: json!({}) };
+        let mut row = Row { id: db.new_id(|_| true).unwrap(), repo: "/r".into(), place: Place::Shelf, terminal: Some("term-1".into()), made_at: 1.0, doc: json!({}) };
         db.put(&row, None).unwrap();
         assert_eq!(db.layout().unwrap(), None, "only a done task writes the layout");
         row.place = Place::Done;
@@ -821,7 +831,7 @@ mod tests {
         assert_eq!(db.events(&new["t2"]).unwrap()[1].doc["after"], json!([new["t1"], new["t3"]]));
         assert_eq!(events(&new["t3"]), ["made", "done", "renumbered"]);
         let shelf = db.task(&new["t1"]).unwrap().unwrap();
-        assert_eq!((shelf.place, shelf.pane.as_deref()), (Place::Shelf, Some("p4")));
+        assert_eq!((shelf.place, shelf.terminal.as_deref()), (Place::Shelf, Some("p4")));
         let next: Option<String> = db.conn.query_row("select value from meta where key = 'next_task'", [], |r| r.get(0)).optional().unwrap();
         assert_eq!(next, None);
         let dangling: i64 = db.conn.query_row("select count(*) from task_events where task not in (select id from tasks)", [], |r| r.get(0)).unwrap();
@@ -849,7 +859,7 @@ mod tests {
         for (id, repo, place, pane, made_at, doc, count) in &old {
             let row = db.task(&new[id]).unwrap().unwrap_or_else(|| panic!("{id} lost"));
             let doc: Value = serde_json::from_str(doc).unwrap();
-            assert_eq!((&row.repo, row.place.as_str(), &row.pane, row.made_at), (repo, place.as_str(), pane, *made_at), "{id}");
+            assert_eq!((&row.repo, row.place.as_str(), &row.terminal, row.made_at), (repo, place.as_str(), pane, *made_at), "{id}");
             for key in ["name", "message", "by", "agent", "folder", "session", "stopped"] {
                 assert_eq!(row.doc.get(key), doc.get(key), "{id} {key}");
             }

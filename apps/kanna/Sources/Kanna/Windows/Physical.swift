@@ -39,21 +39,23 @@ final class Physical {
     }
 
     func setDock(_ pane: String, width: Double, in view: JSON) {
-        guard let over = Self.width(of: pane, in: view) else { return }
-        docks[pane] = (width, over)
+        guard let (key, over) = Self.dock(of: pane, in: view) else { return }
+        docks[key] = (width, over)
         changed()
     }
 
     func applied(_ view: JSON) -> JSON {
         guard case .object(var fields) = view else { return view }
         if case .array(let windows)? = fields["windows"] { fields["windows"] = .array(windows.map(apply)) }
-        if case .array(let shelf)? = fields["shelf"] { fields["shelf"] = .array(shelf.map(widened)) }
+        if case .array(let shelf)? = fields["shelf"] { fields["shelf"] = .array(shelf.map { widened($0, $0["workspace"]?.string) }) }
         return .object(fields)
     }
 
-    func keep(panes: Set<String>) {
+    func keep(panes: Set<String>, in view: JSON) {
         let before = (docks.count, textSizes.count)
-        docks = docks.filter { panes.contains($0.key) }
+        var owners = Set((view["workspaces"]?.array ?? []).compactMap(\.string))
+        owners.formUnion((view["windows"]?.array ?? []).compactMap { $0["id"]?.string })
+        docks = docks.filter { owners.contains($0.key) }
         textSizes = textSizes.filter { panes.contains($0.key) }
         if (docks.count, textSizes.count) != before { changed() }
     }
@@ -83,27 +85,30 @@ final class Physical {
     private func apply(_ window: JSON) -> JSON {
         guard case .object(var fields) = window, let id = fields["id"]?.string else { return window }
         if let frame = frames[id] { fields["frame"] = ["x": .number(frame.minX), "y": .number(frame.minY), "w": .number(frame.width), "h": .number(frame.height)] }
-        if let dock = fields["dock"] { fields["dock"] = widened(dock) }
-        if let lead = fields["lead"] { fields["lead"] = widened(lead) }
+        if let dock = fields["dock"] { fields["dock"] = widened(dock, Self.owner(ofDockIn: window)) }
+        if let lead = fields["lead"] { fields["lead"] = widened(lead, id) }
         return .object(fields)
     }
 
-    private func widened(_ dock: JSON) -> JSON {
-        guard case .object(var fields) = dock, let pane = fields["pane"]?.string ?? fields["task"]?.string, let saved = docks[pane],
+    private func widened(_ dock: JSON, _ owner: String?) -> JSON {
+        guard case .object(var fields) = dock, let owner, let saved = docks[owner],
               let width = fields["width"]?.number, abs(width - saved.over) < 1e-9 else { return dock }
         fields["width"] = .number(saved.width)
         return .object(fields)
     }
 
-    private static func width(of pane: String, in view: JSON) -> Double? {
-        switch view {
-        case .object(let fields):
-            if fields["pane"]?.string ?? fields["task"]?.string == pane, let width = fields["width"]?.number { return width }
-            return fields.values.lazy.compactMap { width(of: pane, in: $0) }.first
-        case .array(let list):
-            return list.lazy.compactMap { width(of: pane, in: $0) }.first
-        default:
-            return nil
+    private static func owner(ofDockIn window: JSON) -> String? {
+        window["shows"]?.string ?? window["workspace"]?.string
+    }
+
+    private static func dock(of pane: String, in view: JSON) -> (String, Double)? {
+        for window in view["windows"]?.array ?? [] {
+            if window["dock"]?["pane"]?.string == pane, let owner = owner(ofDockIn: window), let width = window["dock"]?["width"]?.number { return (owner, width) }
+            if window["lead"]?["pane"]?.string == pane, let id = window["id"]?.string, let width = window["lead"]?["width"]?.number { return (id, width) }
         }
+        for entry in view["shelf"]?.array ?? [] where entry["task"]?.string == pane {
+            if let owner = entry["workspace"]?.string, let width = entry["width"]?.number { return (owner, width) }
+        }
+        return nil
     }
 }

@@ -39,6 +39,43 @@ pub fn mismatch(expected: &Value, actual: Option<&Value>, path: &str) -> Option<
     }
 }
 
+fn kmux_id(text: &str) -> bool {
+    text.strip_prefix('p').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+fn content_id(text: &str) -> bool {
+    text.split_once('-').is_some_and(|(prefix, n)| ["term", "file", "page", "ios", "diff"].contains(&prefix) && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+fn learn(expected: &Value, actual: &Value, ids: &mut Vec<(String, String)>) {
+    match (expected, actual) {
+        (Value::String(kmux), Value::String(ours)) if kmux_id(kmux) && content_id(ours) => {
+            if !ids.iter().any(|(k, o)| k == kmux || o == ours) {
+                ids.push((kmux.clone(), ours.clone()));
+            }
+        }
+        (Value::Array(want), Value::Array(got)) => want.iter().zip(got).for_each(|(w, g)| learn(w, g, ids)),
+        (Value::Object(want), Value::Object(got)) => want.iter().for_each(|(key, w)| {
+            if let Some(g) = got.get(key) {
+                learn(w, g, ids);
+            }
+        }),
+        _ => {}
+    }
+}
+
+fn translate(value: &Value, ids: &[(String, String)], to_ours: bool) -> Value {
+    match value {
+        Value::String(text) => ids
+            .iter()
+            .find(|(kmux, ours)| if to_ours { kmux == text } else { ours == text })
+            .map_or_else(|| value.clone(), |(kmux, ours)| Value::String(if to_ours { ours.clone() } else { kmux.clone() })),
+        Value::Array(items) => Value::Array(items.iter().map(|item| translate(item, ids, to_ours)).collect()),
+        Value::Object(fields) => Value::Object(fields.iter().map(|(key, item)| (key.clone(), translate(item, ids, to_ours))).collect()),
+        _ => value.clone(),
+    }
+}
+
 fn is_tab(path: &str) -> bool {
     path.rsplit_once("tabs[").is_some_and(|(_, index)| index.strip_suffix(']').is_some_and(|i| i.parse::<usize>().is_ok()))
 }
@@ -95,11 +132,19 @@ pub fn run_cases(label: &str, make: &dyn Fn() -> Send) -> usize {
             }
             let mut send = make();
             let mut problem = None;
+            let mut ids: Vec<(String, String)> = vec![];
             for (index, step) in steps.iter().enumerate() {
-                let Value::Object(mut request) = step["send"].clone() else { continue };
+                let Value::Object(mut request) = translate(&step["send"], &ids, true) else { continue };
                 request.insert("id".into(), num((index + 1) as f64));
                 let reply = send(Value::Object(request));
-                let expected = step.get("expect").cloned().unwrap_or(serde_json::json!({ "ok": true }));
+                let mut expected = step.get("expect").cloned().unwrap_or(serde_json::json!({ "ok": true }));
+                learn(&expected, &reply, &mut ids);
+                if !ids.is_empty() {
+                    if let Some(counters) = expected.get_mut("state").and_then(|s| s.get_mut("counters")).and_then(Value::as_object_mut) {
+                        counters.remove("pane");
+                    }
+                }
+                let reply = translate(&reply, &ids, false);
                 if let Some(why) = mismatch(&expected, Some(&reply), "") {
                     problem = Some(format!("{title}\n  step {}: {why}\n  reply: {}", index + 1, encode(&reply)));
                     break;

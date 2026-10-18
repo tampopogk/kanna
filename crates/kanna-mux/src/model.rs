@@ -400,6 +400,24 @@ impl Model {
         self.windows.iter().filter(|w| w.workspace.as_deref() == Some(id)).collect()
     }
 
+    pub fn rename_pane(&mut self, from: &str, to: &str) {
+        for window in &mut self.windows {
+            window.tabs.rename(from, to);
+            if let Some(lead) = window.lead.as_mut().filter(|lead| lead.pane == from) {
+                lead.pane = to.into();
+            }
+        }
+        for ws in &mut self.workspaces {
+            ws.tabs.rename(from, to);
+            if ws.dock.pane == from {
+                ws.dock.pane = to.into();
+            }
+        }
+        for (tabs, _) in &mut self.orphans {
+            tabs.rename(from, to);
+        }
+    }
+
     fn wide(&self, h: Holder, t: usize, pane: &str) -> bool {
         fn find(node: &Node, pane: &str, w: f64, h: f64) -> Option<(f64, f64)> {
             match node {
@@ -1134,6 +1152,10 @@ impl LayoutHost for Model {
 
     fn features(&self) -> &'static [&'static str] {
         &["windows", "tabs", "fractionalSizing", "zoom", "dock"]
+    }
+
+    fn rename(&mut self, from: &str, to: &str) {
+        self.rename_pane(from, to);
     }
 
     fn place(&mut self, pane: &str, at: &Placement, panes: &Panes) -> Result<Option<String>, KmuxError> {

@@ -110,27 +110,30 @@ fn a_crashed_daemon_loses_nothing_it_had_saved() {
 }
 
 #[test]
-fn pane_and_terminal_ids_never_repeat_across_restarts() {
+fn terminal_ids_never_repeat_across_restarts() {
     let mut instance = Instance::start();
     let first = instance.open("one", Some("exec sleep 600"));
     let second = instance.open("two", Some("exec sleep 600"));
     instance.call("close", json!({"pane": second}));
-    assert_eq!(saved(&instance)["counters"]["pane"], 2);
     assert_eq!(saved(&instance)["counters"]["terminal"], 2);
 
     instance.restart(libc::SIGKILL);
     let third = instance.open("three", Some("exec sleep 600"));
     assert_eq!((first.as_str(), second.as_str(), third.as_str()), ("term-1", "term-2", "term-3"));
-    assert_eq!(instance.pane("three")["id"], "p3");
+    assert_eq!(instance.pane("three")["id"], "term-3");
 
     instance.call("close", json!({"pane": first}));
     instance.call("close", json!({"pane": third}));
     instance.restart(libc::SIGTERM);
     assert!(instance.call("list", json!({}))["panes"].as_array().unwrap().is_empty());
     assert_eq!(instance.open("four", None), "term-4");
-    assert_eq!(instance.pane("four")["id"], "p4");
-    instance.call("restart", json!({"pane": "four"}));
-    assert_eq!(instance.pane("four")["terminal"], "term-5");
+    assert_eq!(instance.pane("four")["id"], "term-4");
+    let restarted = instance.call("restart", json!({"pane": "four"}));
+    assert_eq!(restarted["pane"]["id"], "term-5", "a restart is a new terminal: {restarted}");
+    assert_eq!((instance.pane("four")["id"].clone(), instance.pane("four")["terminal"].clone()), (json!("term-5"), json!("term-5")));
+    let list = instance.call("list", json!({}));
+    assert_eq!(list["windows"][0]["tabs"][0]["layout"], json!({"pane": "four"}), "the layout shows the new terminal: {list}");
+    assert_eq!(list["panes"].as_array().map(Vec::len), Some(1), "{list}");
 }
 
 #[test]

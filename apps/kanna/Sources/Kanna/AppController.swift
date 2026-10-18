@@ -163,8 +163,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         installMenu()
         if !background { NSApp.activate() }
         if echo {
-            render(["key": "w1", "windows": [["id": "w1", "tabs": [["id": "t1", "title": "Tab 1", "panes": ["p1"]]], "tab": "t1", "title": "Tab 1",
-                                               "focused": "p1", "root": ["pane": "p1", "type": "term"]]]])
+            render(["key": "w1", "windows": [["id": "w1", "tabs": [["id": "t1", "title": "Tab 1", "panes": ["term-1"]]], "tab": "t1", "title": "Tab 1",
+                                               "focused": "term-1", "root": ["pane": "term-1", "type": "term"]]]])
         }
         daemon?.start()
     }
@@ -191,7 +191,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             published = view
             restate()
         }
-        if case .array(let list) = panes { physical.keep(panes: Set(list.compactMap { $0["id"]?.string })) }
+        if case .array(let list) = panes { physical.keep(panes: Set(list.compactMap { $0["id"]?.string }), in: published) }
         if case .array(let list) = panes {
             for pane in list where pane["type"]?.string != "term" {
                 guard let id = pane["id"]?.string else { continue }

@@ -372,7 +372,7 @@ fn live(words: &[String], env: Env) -> Option<Value> {
 }
 
 pub fn panes(list: &Value, current: &str) -> Vec<String> {
-    let by_id = current.len() >= 2 && current.starts_with('p') && current[1..].chars().all(|c| c.is_ascii_digit());
+    let by_id = ["term", "file", "page", "ios", "diff"].iter().any(|prefix| current.strip_prefix(prefix).and_then(|rest| rest.strip_prefix('-')).is_some_and(|n| n.chars().all(|c| c.is_ascii_digit())));
     let mut out = Vec::new();
     for pane in list["panes"].as_array().into_iter().flatten() {
         let id = pane["id"].as_str().unwrap_or_default();
@@ -594,19 +594,19 @@ mod tests {
     #[test]
     fn panes_are_offered_by_name_with_what_they_show() {
         let list = json!({ "panes": [
-            { "id": "p1", "name": null, "type": "term", "cmd": null, "state": "running", "status": "working" },
-            { "id": "p2", "name": "spec", "type": "md", "path": "/r/docs/specs/desk.md", "state": "running" },
-            { "id": "p3", "name": null, "type": "web", "url": "file:///r/desk.html", "markup": true, "state": "running" },
-            { "id": "p4", "name": "srv", "type": "term", "cmd": "npm run dev", "state": "exited" }
+            { "id": "term-1", "name": null, "type": "term", "cmd": null, "state": "running", "status": "working" },
+            { "id": "file-1", "name": "spec", "type": "md", "path": "/r/docs/specs/desk.md", "state": "running" },
+            { "id": "page-1", "name": null, "type": "web", "url": "file:///r/desk.html", "markup": true, "state": "running" },
+            { "id": "term-2", "name": "srv", "type": "term", "cmd": "npm run dev", "state": "exited" }
         ] });
         assert_eq!(panes(&list, ""), [
-            "p1\tterm · shell · working",
-            "spec\tp2 · md · desk.md",
-            "p3\tweb · desk.html · markup",
-            "srv\tp4 · term · npm run dev · exited",
+            "term-1\tterm · shell · working",
+            "spec\tfile-1 · md · desk.md",
+            "page-1\tweb · desk.html · markup",
+            "srv\tterm-2 · term · npm run dev · exited",
         ]);
-        assert_eq!(panes(&list, "p")[1], "spec\tp2 · md · desk.md");
-        assert_eq!(panes(&list, "p2")[1], "p2\tmd · desk.md");
+        assert_eq!(panes(&list, "t")[1], "spec\tfile-1 · md · desk.md");
+        assert_eq!(panes(&list, "file-1")[1], "file-1\tmd · desk.md");
     }
 
     #[test]

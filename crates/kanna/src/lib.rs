@@ -572,7 +572,6 @@ mod tests {
 
     fn parse(line: &str) -> Result<(String, Value), Failure> {
         // Run from a Kanna terminal, a command would name its pane as the caller.
-        std::env::remove_var("KANNA_PANE");
         std::env::remove_var("KANNA_TERMINAL");
         let words = shell_words(line);
         assert_eq!(words[0], "kanna");

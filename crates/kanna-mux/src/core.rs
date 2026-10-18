@@ -92,6 +92,7 @@ struct Inner {
     prefixes: RefCell<Vec<(String, PrefixHandler)>>,
     tasks: RefCell<Option<Rc<dyn TaskBook>>>,
     waiters: RefCell<HashMap<String, Vec<Rc<Signal>>>>,
+    renamed: RefCell<Vec<Rc<dyn Fn(&str, &str)>>>,
 }
 
 pub struct Core(CoreHandle);
@@ -138,6 +139,7 @@ impl Core {
             prefixes: RefCell::new(vec![]),
             tasks: RefCell::new(None),
             waiters: RefCell::new(HashMap::new()),
+            renamed: RefCell::new(vec![]),
         })))
     }
 }
@@ -184,6 +186,14 @@ impl CoreHandle {
 
     pub fn set_on_change(&self, on_change: Option<Rc<dyn Fn()>>) {
         *self.0.on_change.borrow_mut() = on_change;
+    }
+
+    pub fn use_content_ids(&self) {
+        self.state().panes.use_content_ids();
+    }
+
+    pub fn on_renamed(&self, renamed: Rc<dyn Fn(&str, &str)>) {
+        self.0.renamed.borrow_mut().push(renamed);
     }
 
     pub fn set_wakeup(&self, wakeup: Option<Wakeup>) {
@@ -367,13 +377,15 @@ impl CoreHandle {
 
     async fn woken(&self, task: &str) -> Result<Vec<String>, KmuxError> {
         let held = self.terminals_of(task, |p| p.hung_up && !matches!(p.state, PaneState::Starting | PaneState::Running)).await?;
+        let mut woken = vec![];
         for id in &held {
             let snapshot = self.reload(id, true).await;
-            if let Err(error) = self.check_started(id, &snapshot) {
+            if let Err(error) = self.check_started(&snapshot.id, &snapshot) {
                 eprintln!("kanna-mux: {} didn't start again: {}", snapshot.label(), error.message);
             }
+            woken.push(snapshot.id);
         }
-        Ok(held)
+        Ok(woken)
     }
 
     async fn ended(&self, id: &str) -> Result<(), KmuxError> {
@@ -422,6 +434,10 @@ impl CoreHandle {
         }
         self.changed();
         self.0.exec.run();
+    }
+
+    pub fn note_numbers(&self, numbers: &HashMap<String, usize>) {
+        self.state().panes.note_numbers(numbers);
     }
 
     pub fn install_panes(&self, panes: Vec<Pane>, counter: usize, terminals: usize) {
@@ -741,7 +757,7 @@ impl CoreHandle {
         if dock.is_some() && !backlog {
             self.room_for_task(string(args, "cwd")).await?;
         }
-        let id = self.state().panes.next_id();
+        let id = self.state().panes.next_id(kind);
         let placeless = !new_tab && !lead && dock.is_none() && split.is_none() && size.is_none() && args.get("window").is_none();
         let opener = string(args, "from").filter(|_| !lead && dock.is_none()).and_then(|from| self.state().panes.pane(from).map(|p| p.id.clone()));
         let from = opener.clone().filter(|_| placeless);
@@ -1016,6 +1032,18 @@ impl CoreHandle {
         if let Some(host) = self.host() {
             host.stop(&pane);
         }
+        let renamed = self.state().panes.renew_terminal(id);
+        let id = match &renamed {
+            Some(to) => {
+                let _ = self.layout(json!({ "op": "rename", "from": id, "to": to })).await;
+                let hooks: Vec<Rc<dyn Fn(&str, &str)>> = self.0.renamed.borrow().clone();
+                for hook in hooks {
+                    hook(id, to);
+                }
+                to.as_str()
+            }
+            None => id,
+        };
         if let Some(pane) = self.state().panes.get_mut(id) {
             pane.state = PaneState::Starting;
             pane.pid = None;
@@ -1035,8 +1063,8 @@ impl CoreHandle {
     async fn restart(&self, args: &Value) -> Result<Map, KmuxError> {
         let id = self.need_pane(string(args, "pane"))?.id;
         let snapshot = self.reload(&id, true).await;
-        self.check_started(&id, &snapshot)?;
-        Ok(reply([("pane", self.summary(&id, &snapshot))]))
+        self.check_started(&snapshot.id, &snapshot)?;
+        Ok(reply([("pane", self.summary(&snapshot.id, &snapshot))]))
     }
 
     async fn send(&self, args: &Value) -> Result<Map, KmuxError> {

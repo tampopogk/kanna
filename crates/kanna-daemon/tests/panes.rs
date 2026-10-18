@@ -26,7 +26,7 @@ fn with_no_app_every_pane_type_opens_and_an_app_shows_it_later() {
     let back = instance.call("navigate", json!({"pane": "site", "back": true}));
     assert_eq!(back["pane"]["url"], "http://localhost:1", "{back}");
     let marked = instance.call("markup", json!({"pane": "doc", "agent": "sh"}));
-    assert_eq!((marked["pane"]["markup"].clone(), marked["pane"]["agent"].clone()), (json!(true), json!("p1")), "{marked}");
+    assert_eq!((marked["pane"]["markup"].clone(), marked["pane"]["agent"].clone()), (json!(true), json!("term-1")), "{marked}");
     let nowhere = instance.call("markup", json!({"pane": "doc", "agent": "nobody"}));
     assert_eq!(nowhere["error"]["code"], "not_found", "{nowhere}");
     let plain = instance.call("markup", json!({"pane": "doc", "off": true}));
@@ -47,10 +47,10 @@ fn with_no_app_every_pane_type_opens_and_an_app_shows_it_later() {
     assert_eq!(capabilities["paneTypes"], json!(["term", "web", "ios", "md", "code", "diff"]), "{capabilities}");
 
     let mut app = App::connect(&instance.socket());
-    assert!(app.view.to_string().contains("\"p2\""), "{}", app.view);
+    assert!(app.view.to_string().contains("\"page-1\""), "{}", app.view);
     assert_eq!(instance.call("close", json!({"pane": "site"}))["ok"], true);
     let stop = app.until("stop", |m| m["cmd"] == "stop");
-    assert_eq!(stop["args"]["pane"], "p2", "{stop}");
+    assert_eq!(stop["args"]["pane"], "page-1", "{stop}");
 }
 
 #[test]
@@ -58,27 +58,27 @@ fn updates_from_the_app_change_the_record_and_come_back_to_it() {
     let instance = Instance::start();
     instance.call("open", json!({"type": "web", "name": "site", "url": "http://a.test/", "history": true}));
     let mut app = App::connect(&instance.socket());
-    app.tell("update", json!({"pane": "p1", "url": "http://b.test/"}));
+    app.tell("update", json!({"pane": "page-1", "url": "http://b.test/"}));
     let echoed = app.until("the record", |m| m["cmd"] == "pane");
     assert_eq!(echoed["args"]["pane"]["url"], "http://b.test/", "{echoed}");
-    app.tell("update", json!({"pane": "p1", "title": "Page B"}));
+    app.tell("update", json!({"pane": "page-1", "title": "Page B"}));
     let titled = app.until("the titled record", |m| m["cmd"] == "pane");
     assert_eq!((titled["args"]["pane"]["url"].clone(), titled["args"]["pane"]["title"].clone()), (json!("http://b.test/"), json!("Page B")), "{titled}");
-    app.tell("update", json!({"pane": "p1", "title": "\u{1b}[31mRed\u{7}"}));
+    app.tell("update", json!({"pane": "page-1", "title": "\u{1b}[31mRed\u{7}"}));
     let cleaned = app.until("the cleaned record", |m| m["cmd"] == "pane");
     assert_eq!(cleaned["args"]["pane"]["title"], "[31mRed", "{cleaned}");
-    app.tell("update", json!({"pane": "p1", "title": ""}));
+    app.tell("update", json!({"pane": "page-1", "title": ""}));
     let untitled = app.until("the untitled record", |m| m["cmd"] == "pane");
     assert!(untitled["args"]["pane"]["title"].is_null(), "{untitled}");
     app.send(json!({"id": 5, "cmd": "navigate", "args": {"pane": "site", "back": true}}));
     let stop = app.until("stop", |m| m["cmd"] == "stop");
-    assert_eq!(stop["args"]["pane"], "p1");
+    assert_eq!(stop["args"]["pane"], "page-1");
     let start = app.until("start", |m| m["cmd"] == "start");
     assert_eq!(start["args"]["pane"]["url"], "http://a.test/", "{start}");
     let reply = app.until("the reply", |m| m["id"] == 5);
     assert_eq!(reply["pane"]["url"], "http://a.test/", "{reply}");
     assert_eq!(reply["pane"]["state"], "running", "{reply}");
-    app.tell("update", json!({"pane": "p1", "state": "failed", "error": "gone"}));
+    app.tell("update", json!({"pane": "page-1", "state": "failed", "error": "gone"}));
     app.until("the record", |m| m["cmd"] == "pane");
     let _answering = app.answering();
     let site = instance.pane("site");

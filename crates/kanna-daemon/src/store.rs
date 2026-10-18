@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 const RECORDS: &str = "terminals.json";
 
@@ -81,11 +81,16 @@ impl Record {
         if string(value, "type") != Some("term") {
             return None;
         }
-        let (id, pane) = if version == 1 {
-            let pane = text("id")?;
-            (format!("term-{}", pane_number(&pane)?), pane)
-        } else {
-            (text("id").filter(|id| terminal_number(id).is_some())?, text("pane").filter(|pane| pane_number(pane).is_some())?)
+        let (id, pane) = match version {
+            1 => {
+                let pane = text("id")?;
+                (format!("term-{}", pane_number(&pane)?), pane)
+            }
+            2 => (text("id").filter(|id| terminal_number(id).is_some())?, text("pane").filter(|pane| pane_number(pane).is_some())?),
+            _ => {
+                let id = text("id").filter(|id| terminal_number(id).is_some())?;
+                (id.clone(), id)
+            }
         };
         Some(Record {
             keeper: text("keeper").unwrap_or_else(|| pane.clone()),
@@ -149,6 +154,35 @@ impl Store {
         self.dir.join(RECORDS)
     }
 
+    pub fn content_ids(state_dir: &Path) -> HashMap<String, String> {
+        let dir = state_dir.join("terminals");
+        let path = dir.join(RECORDS);
+        let Some(mut value) = fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok()) else { return HashMap::new() };
+        let version = value.get("version").and_then(Value::as_f64).unwrap_or(0.0) as u32;
+        if !(version == 1 || version == 2) || string(&value, "kanna") != Some("terminals") {
+            return HashMap::new();
+        }
+        let mut renamed = HashMap::new();
+        if let Some(Value::Array(items)) = value.get_mut("terminals") {
+            for item in items.iter_mut() {
+                let Some(record) = Record::from_value(item, version) else { continue };
+                if version == 1 {
+                    let _ = fs::rename(snapshot_path(&dir, &record.pane), snapshot_path(&dir, &record.id));
+                }
+                renamed.insert(record.pane.clone(), record.id.clone());
+                item["id"] = Value::String(record.id.clone());
+                item["pane"] = Value::String(record.id);
+            }
+        }
+        value["version"] = num(VERSION as f64);
+        let mut text = serde_json::to_string_pretty(&value).unwrap_or_default();
+        text.push('\n');
+        if let Err(error) = write_atomic(&path, text.as_bytes()) {
+            eprintln!("kanna-daemon: couldn't rewrite {} with terminal IDs: {error}", path.display());
+        }
+        renamed
+    }
+
     pub fn load(&self) -> Saved {
         let path = self.records_path();
         let Ok(file) = fs::File::open(&path) else { return Saved::default() };
@@ -156,7 +190,7 @@ impl Store {
         let read = io::Read::read_to_string(&mut io::Read::take(file, MAX_RECORDS + 1), &mut text);
         let parsed = read.ok().filter(|n| (*n as u64) <= MAX_RECORDS).and_then(|_| serde_json::from_str::<Value>(&text).ok());
         let saved = parsed.as_ref().and_then(|value| {
-            let version = value.get("version").and_then(Value::as_f64).filter(|v| *v == 1.0 || *v == VERSION as f64)? as u32;
+            let version = value.get("version").and_then(Value::as_f64).filter(|v| [1.0, 2.0, VERSION as f64].contains(v))? as u32;
             if string(value, "kanna") != Some("terminals") {
                 return None;
             }
@@ -372,7 +406,7 @@ mod tests {
     fn record(pane: &str, name: Option<&str>) -> Record {
         Record {
             id: format!("term-{}", pane_number(pane).unwrap()),
-            pane: pane.into(),
+            pane: format!("term-{}", pane_number(pane).unwrap()),
             name: name.map(String::from),
             cmd: Some("top".into()),
             cwd: Some("/tmp".into()),
@@ -402,15 +436,15 @@ mod tests {
     }
 
     #[test]
-    fn a_version_1_file_gives_each_pane_a_terminal_and_moves_its_screen() {
+    fn a_version_1_file_becomes_terminal_ids_and_its_screen_moves() {
         let dir = folder("version1");
         let store = Store::open(&dir).unwrap();
         let old = json!({ "kanna": "terminals", "version": 1, "counters": { "pane": 4 }, "terminals": [
             { "id": "p4", "name": "logs", "type": "term", "cmd": "top", "cwd": "/tmp", "state": "running", "exitCode": null, "pid": 42, "keeper": "p4", "cols": 120, "rows": 40 }] });
         fs::write(store.dir().join(RECORDS), old.to_string()).unwrap();
         fs::write(store.dir().join("p4.snap"), b"screen").unwrap();
+        assert_eq!(Store::content_ids(&dir), HashMap::from([("p4".to_string(), "term-4".to_string())]));
         let loaded = store.load();
-        assert_eq!(loaded.counter, 4);
         assert_eq!(loaded.records, vec![record("p4", Some("logs"))]);
         assert_eq!(store.snapshot("term-4"), Some(b"screen".to_vec()));
         assert!(!store.dir().join("p4.snap").exists());

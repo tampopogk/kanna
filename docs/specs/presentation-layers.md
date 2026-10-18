@@ -1,6 +1,6 @@
 # Presentation Layers
 
-**Status:** approved, being built (diffs, terminal IDs, the daemon-owned layout saved in kanna.db, and frames, dock widths and text size in the app are built; each app's own Desk is next) · **Changes:** [architecture](architecture.md#2-what-the-daemon-keeps-what-the-apps-keep), [layout](layout.md), [app link](app-link.md), [workspaces](workspaces.md) · **Related:** [tasks](tasks.md), [diff viewer](diff-viewer.md), [restarting the daemon](daemon-restart.md)
+**Status:** approved, being built (diffs, terminal IDs, the daemon-owned layout saved in kanna.db, frames, dock widths and text size in the app, and content IDs in place of pane IDs are built; each app's own Desk is next) · **Changes:** [architecture](architecture.md#2-what-the-daemon-keeps-what-the-apps-keep), [layout](layout.md), [app link](app-link.md), [workspaces](workspaces.md) · **Related:** [tasks](tasks.md), [diff viewer](diff-viewer.md), [restarting the daemon](daemon-restart.md)
 
 Kanna's daemon runs headless, and any number of apps (the Mac app now, others such as iOS later) connect to it to view tasks and their workspaces. So what a task *is* and how it's *presented* are split into three layers: the **work** and the **logical presentation** live in the daemon and work with no app; the **physical presentation** lives in each app. Today the layers are mixed, and that's caused real bugs: diff panes go blank after a daemon restart, a restarted task's terminal couldn't be typed into, and Done left ghost windows.
 
@@ -105,7 +105,8 @@ flowchart LR
 | `p5`, `w4` | a pane, a window on screen | each app | that app only |
 
 - **A restart makes a new terminal with a new ID.** `restart term-41` (or a task starting again) ends it and answers `term-48`; the workspace's tab now shows `term-48`, and an app sees a new content ID, so it makes a new view instead of reusing the exited one.
-- **A task keys on its agent's terminal ID and its workspace ID,** both in its record; neither is a pane.
+- **A task keys on its agent's terminal ID and its workspace ID,** both in its record; neither is a pane. Starting a task again gives its agent a new terminal, and the task's record, its workspace's dock and the markup routed to it follow the new ID.
+- **Upgrading:** the first daemon with content IDs renames the old `pN` once, at start: a terminal's pane takes its terminal's ID (`term-N`), and other content takes the next ID of its kind (`file-1`, `page-1`, …), in `terminals.json`, the saved layout and the tasks' `terminal` column alike.
 - **`KANNA_TERMINAL`** replaces `KANNA_PANE` in a terminal's environment: the caller a command acts for. `kanna` finds the caller's task and workspace from it.
 - **Content commands take content IDs:** `send`, `read`, `send-key` and `restart` take a terminal ID (or its name); pane IDs are no longer accepted. **Layout commands** (`open`, `close`, `focus`, `rename-tab`, `move`, `move-tab`) act on logical presentation and take workspace, tab and content IDs.
 
