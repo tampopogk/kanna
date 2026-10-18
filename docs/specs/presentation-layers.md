@@ -12,7 +12,7 @@ Kanna's daemon runs headless, and any number of apps (the Mac app now, others su
 4. [Content](#4-content)
 5. [Where today's code mixes the layers](#5-where-todays-code-mixes-the-layers)
 6. [Decisions](#6-decisions)
-7. [Open questions](#7-open-questions)
+7. [kmux](#7-kmux)
 8. [Glossary](#8-glossary)
 
 ## 1. The three layers
@@ -22,11 +22,11 @@ flowchart TB
     CLI["kanna CLI, agents"]
     subgraph D["daemon (headless)"]
         W["1 · Work<br/>tasks: worktree, branch, agent, turns,<br/>runners, scripts, history<br/>content: terminals · diffs · files · pages"]
-        L["2 · Logical presentation<br/>workspaces · tabs · arrangement<br/>shown tab · front · Shelf<br/>planner workspace per project"]
+        L["2 · Logical presentation<br/>workspaces · tabs · arrangement<br/>shown tab · focus · zoom · Shelf<br/>planner workspace per project"]
         L -->|"by content ID"| W
     end
     subgraph M["Mac app"]
-        PM["3 · Physical presentation<br/>windows · its Desk · panes<br/>sizes · zoom · font · focus · dock width"]
+        PM["3 · Physical presentation<br/>windows · its Desk · panes<br/>sizes · text size · font · focus · dock width"]
     end
     subgraph I["iOS app (later)"]
         PI["3 · Physical presentation"]
@@ -45,8 +45,8 @@ flowchart TB
 | Layer | Lives in | What's in it |
 |---|---|---|
 | **1 · Work** | daemon | **Tasks** as units of work: worktree, branch, agent, turns, runners, scripts, history, and whether it's queued, running, stopped or done. **Content**, each with an ID of its own: terminals, diffs, files, pages ([4](#4-content)). |
-| **2 · Logical presentation** | daemon | Each task's **workspace**: its docked agent and its tabs; what each tab shows, by content ID; the arrangement as structure (this beside that, a ratio only as a hint); what the task is presenting (the shown tab, the content in **front**); the **Shelf** and its three-per-repo limit; a **planner workspace** per project for content that's no task's. |
-| **3 · Physical presentation** | each app | **Windows**; the app's own **Desk** (which Shelf task it shows); **panes** as views of content; sizes, magnification, font, focus and first responder, the dock's width. |
+| **2 · Logical presentation** | daemon | Each task's **workspace**: its docked agent and its tabs; what each tab shows, by content ID; the arrangement as structure (this beside that, a ratio only as a hint); what the task is presenting: the shown tab, the focused content, and the **zoomed** content (`kanna zoom`: one content fills its tab); the **Shelf** and its three-per-repo limit; a **planner workspace** per project for content that's no task's. |
+| **3 · Physical presentation** | each app | **Windows**; the app's own **Desk** (which Shelf task it shows); **panes** as views of content; sizes, **text size** (⌘+ and ⌘−, a page's or a terminal's scale), font, first responder, the dock's width. |
 
 - **The daemon publishes every change** to layers 1 and 2. An app connects, subscribes, and renders; on every (re)connect it subscribes again and gets the current state, so nothing depends on what the daemon was told before it restarted.
 - **Every layer-2 command works with no app.** A task opens a tab, shows a diff, focuses its spec, all in the daemon; an app that opens later shows the workspace as the task left it.
@@ -58,8 +58,9 @@ flowchart TB
 | Change | Made by | How |
 |---|---|---|
 | Start, stop, done, a turn, a runner, a script | the daemon, on a command from the CLI, an agent or an app | layer 1 |
-| Open a tab, close it, rename it, move it to another workspace, focus or bring content to the front, shelve or defer a task | any client: the CLI, an agent, or an app (a drag, ⌘W) | a command on layer 2, the same one the CLI sends |
-| Window frames, splits' sizes, magnification, which Shelf task the Desk shows, first responder | the app alone | local; saved by the app |
+| Open a tab, close it, rename it, move it to another workspace, focus or zoom content, shelve or defer a task | any client: the CLI, an agent, or an app (a drag, ⌘W) | a command on layer 2, the same one the CLI sends |
+| Window frames, splits' sizes, text size, which Shelf task the Desk shows, first responder | the app alone | local; saved by the app |
+| Pull a task onto the Desk, park it | the user in an app, or `kanna task pull` and `park` | layer 3 of one app: the CLI's instance's app (`KANNA_INSTANCE`), started if none is running, as the CLI starts Kanna.app today |
 | A terminal's grid size | the app that last resized it (as tmux's `latest`) | `resize`, layer 1; with no app it keeps its size |
 
 - **An app is a client like any other** on layers 1 and 2: dragging a tab to another workspace sends the `move` the CLI would, and the app redraws when the change comes back.
@@ -106,14 +107,14 @@ flowchart LR
 | iOS | a simulator device and app; only a Mac app can show it | — | closed |
 
 - **Diffs:** an app subscribes to `diff-2` and gets the diff and every change; the daemon runs one watcher per folder + git args and stops it when the last subscriber leaves. An app subscribes again on every (re)connect, so a restarted daemon starts the watcher again. A failed diff answers an error that the pane shows, never a blank page.
-- **Content in a workspace** appears once per workspace: opening content the workspace already shows brings its tab to the front.
+- **Content in a workspace** appears once per workspace: opening content the workspace already shows shows its tab and focuses it.
 
 ## 5. Where today's code mixes the layers
 
 | Today | Mixes | Moves to |
 |---|---|---|
-| `Pane` (`crates/kanna-mux/src/pane.rs:94`) holds the program (`command`, `cwd`, `pid`, `state`, `exit_code`, `session`, `status`, `agent`, `hung_up`), the page (`url`, `title`, `history`), the file (`path`, `markup`, `comment`), the diff (`diff`), the device (`device`, `app`), and how it's shown (`zoom`, `view`, `line`, `name`) | 1, 2, 3 | content records per kind (layer 1); `name` → the tab (2); `line`, `comment` → hints on open (2); `zoom`, `view` → the app (3) |
-| `app_link.rs` `updated` (`:362`): the app writes `url`, `title`, `device`, `zoom`, `view`, `state` into the daemon's panes | 1, 3 | a page reports its URL and title as a content command; `zoom` and `view` stay in the app |
+| `Pane` (`crates/kanna-mux/src/pane.rs:94`) holds the program (`command`, `cwd`, `pid`, `state`, `exit_code`, `session`, `status`, `agent`, `hung_up`), the page (`url`, `title`, `history`), the file (`path`, `markup`, `comment`), the diff (`diff`), the device (`device`, `app`), and how it's shown (`zoom`, `view`, `line`, `name`) | 1, 2, 3 | content records per kind (layer 1); `name` → the tab (2); `line`, `comment` → hints on open (2); `zoom` (the text size) and `view` → the app (3) |
+| `app_link.rs` `updated` (`:362`): the app writes `url`, `title`, `device`, `zoom`, `view`, `state` into the daemon's panes | 1, 3 | a page reports its URL and title as a content command; the text size and `view` stay in the app |
 | `app_link.rs` `lend` (`:254`): the app hands its non-terminal panes back on hello, and `gone` (`:288`) drops them when it leaves | 1, 3 | content lives in the daemon whether or not an app is attached; nothing is handed back |
 | `app_link.rs` `hello` (`:186`): one app at a time (`app_attached`) | — | any number of apps |
 | `AppLayout` (`app_link.rs:532`) and `Core::layout` forward every layout step to the app, and `offline` fails them with `no_app` | 2, 3 | the workspace model runs in the daemon; no layout step goes to an app |
@@ -138,20 +139,21 @@ flowchart LR
 6. **CLI:** content commands take content IDs, layout commands act on layer 2 with no app; pane and window IDs never reach the CLI.
 7. **Stop and Start** hang up and rerun a task's tab terminals from its workspace; **Done** closes it.
 8. **Ruled out:** the app as the only owner of layout (a task could then open tabs only by starting the app); the daemon storing workspaces as an opaque app blob (something still has to understand a layout to change it); a grace period for diff watchers.
-9. **Logical state is saved in `kanna.db`** with the tasks, so Done closes a task and its workspace in one transaction.
-10. **A workspace's own windows become detached tabs:** a hint on the tab; each app decides which window shows it.
+9. **`kanna task pull` and `park`** act on the CLI's instance's app, starting it if none runs.
+10. **kmux gets the same layers** ([7](#7-kmux)).
+11. **Logical state is saved in `kanna.db`** with the tasks, so Done closes a task and its workspace in one transaction.
 
-## 7. Open questions
+## 7. kmux
 
-1. **`kanna task pull` and `park` from the CLI,** with a Desk per app: act on the app that was used last, on every app, or only from an app's own menu? *Recommended:* the app used last; with no app, `no_app`.
-2. **kmux conformance:** kmux's protocol and CLI address panes (`p1`) for `send`, `read` and layout. Kanna then departs from kmux there. *Recommended:* the protocol-case runner skips those cases by name, as it does for decided differences, and kmux stays the reference for the views.
+kmux gets the same split, through [the kmux subtree](kmux-subtree.md) as a kmux PR: its server keeps the content and the logical presentation, with content IDs in its protocol and CLI, and its app keeps windows and panes. kmux stays the reference model ([kmux is the reference](kmux-reference.md)), so its protocol cases change with it and Kanna passes the new ones.
 
 ## 8. Glossary
 
 | Term | Meaning |
 |---|---|
 | **Content** | Something a tab shows that has an ID of its own in the daemon: a terminal, a diff, a file, a page, an iOS device. |
-| **Front** | The content a workspace presents first: its shown tab's focused, or zoomed, content. |
+| **Zoomed** | Logical: one content fills its tab (`kanna zoom`), as the task presents it; every app shows it so. |
+| **Text size** | Physical: how large one app draws a page or a terminal (⌘+, ⌘−); local to that app. |
 | **Pane** | One app's view of content; local to that app. |
 | **Planner workspace** | A project's workspace for content that's no task's: the planning terminal and what's opened from it. |
 | **Subscribe** | An app asks the daemon for something's current state and every later change. |
