@@ -1215,13 +1215,13 @@ docked_pane() {
   kanna resize back 1/4 >/dev/null || return 1
   lone="$(kanna open --name lone --dock --window new --json | field window)" || return 1
   sleep 1.5
-  check python3 -c 'import json, sys
-saved = json.load(open(sys.argv[1]))
+  check python3 -c 'import json, sqlite3, sys
+saved = json.loads(sqlite3.connect(sys.argv[1]).execute("select doc from layout").fetchone()[0])
 spaces = {s["id"]: s for s in saved["workspaces"]}
 windows = {w["id"]: spaces[w["shows"]] if "shows" in w else w for w in saved["windows"]}
 main, lone = windows[sys.argv[2]], windows[sys.argv[3]]
 assert main["dock"]["edge"] == "right" and main["dock"]["width"] == 0.25, main
-assert lone["dock"]["edge"] == "left" and lone["tabs"] == [], lone' "$KANNA_STATE_DIR/layout.json" "$main" "$lone" || return 1
+assert lone["dock"]["edge"] == "left" and lone["tabs"] == [], lone' "$KANNA_STATE_DIR/kanna.db" "$main" "$lone" || return 1
   before="$(state | field windows)"
   stop_app; start_app || return 1
   sleep 1

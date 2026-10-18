@@ -124,7 +124,8 @@ fn run() -> Result<(), String> {
     unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &stop_signals, std::ptr::null_mut()) };
 
     let (events, inbox) = mpsc::channel::<Event>();
-    let layout = Rc::new(layout::DaemonLayout::open(&state_dir));
+    let db = Rc::new(db::Db::open(&state_dir));
+    let layout = layout::DaemonLayout::open(db.clone(), &state_dir);
     let core = Core::with_link(layout.clone());
     layout.connect(core.weak());
     let instance = instance_name(&socket);
@@ -173,7 +174,6 @@ fn run() -> Result<(), String> {
     *terminals.detector.borrow_mut() = Some(detector.clone());
     let status_commands = Rc::new(status_command::StatusCommand::new(detector.clone(), events.clone()));
     status_commands.install(&core);
-    let db = Rc::new(db::Db::open(&state_dir));
     let backlog = Rc::new(backlog::Backlog::open(db.clone(), &state_dir, core.weak(), events.clone()));
     backlog.install(&core);
     let quiz = Rc::new(quiz::Quiz::new(db, Some(core.weak())));

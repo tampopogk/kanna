@@ -138,7 +138,7 @@ Layout replies carry `workspace: {id, where, hidden}` (`where`: `{desk}`, `"shel
 
 ## 5. Saved state
 
-`layout.json` is `version: 3`: `windows` holds Desks and free windows, and every workspace is in one list with its own windows.
+The saved layout (in `kanna.db`, [database](database.md)) is `version: 3`: `windows` holds Desks and free windows, and every workspace is in one list with its own windows.
 
 ```json
 { "kmux": "state", "version": 3, "key": "w31", "counters": { "tab": 12, "window": 41, "workspace": 5 },
@@ -169,7 +169,7 @@ flowchart TB
     D["desk.rs<br/>park · pull · hold · release · desk<br/>change where and shows"]
     M["model.rs<br/>Desks, free windows, workspaces;<br/>commands find the Tabs a pane is in"]
     O["owner.rs view<br/>visible windows · shelf · held"]
-    S["saved.rs<br/>layout.json v3 · kmux's v1"]
+    S["saved.rs<br/>saved layout v3 · kmux's v1"]
     M --> D & WS & T & S
     WS --> T
     O --> M

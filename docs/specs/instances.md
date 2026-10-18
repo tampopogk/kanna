@@ -14,8 +14,8 @@ In the application support folder (`$XDG_DATA_HOME` or `~/.local/share` on Linux
 │   ├── kanna.sock        its daemon (socket, daemon.lock, daemon.pid, daemon.log)
 │   ├── keeper.sock …     its keeper
 │   ├── terminals/        its terminals (daemon-restart.md)
-│   ├── layout.json       its app's layout (layout.md)
-│   ├── kanna.db          its tasks and their history (database.md), with kanna.db.bak
+│   ├── kanna.db          its tasks, their history and the layout (database.md), with kanna.db.bak
+│   ├── app-state.json    its app's windows and text sizes (windows.md)
 │   └── instance.json     the build its daemon is: channel, app, checkout, worktree
 ├── kanna-dev-work/       the instance named work, the same inside
 ├── kanna-dev-task-3f9a1c2e/  the default instance of the dev build in worktree task-3f9a1c2e

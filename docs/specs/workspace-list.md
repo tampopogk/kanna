@@ -80,7 +80,7 @@ w45
 
 | Where | Change |
 |---|---|
-| kanna-mux | workspaces get `ws-N` IDs and lose `task`; the list reply gives each workspace its shown tab, focused and zoomed pane, and its hidden windows' tabs (`hiddenWindows`); layout.json version 3 (version 1 and 2 layouts load, their task-named workspaces given `ws-N` IDs, their windows following) |
+| kanna-mux | workspaces get `ws-N` IDs and lose `task`; the list reply gives each workspace its shown tab, focused and zoomed pane, and its hidden windows' tabs (`hiddenWindows`); the saved layout is version 3 (version 1 and 2 layouts load, their task-named workspaces given `ws-N` IDs, their windows following) |
 | daemon | a task's `doc` names its workspace, set when it starts and from each listing; replies add the task and its name |
 | CLI | `workspace list [--all] [--json]`; `list` goes |
 | Skills | kanna-tasks "Present your work" ends with `kanna workspace list`; kanna-quiz finds its window with it |

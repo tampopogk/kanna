@@ -105,7 +105,7 @@ sequenceDiagram
 | `kanna raw '{"cmd":"diffs"}'` | the diffs the daemon watches: each one's content ID, folder, arguments, serial and the views subscribed to it |
 | `kanna raw '{"cmd":"debug.diff","args":{"pane":"p231"}}'` | for tests, from the app: the command, the files (path, status, counts, folded), the rows (kind, old and new line, text), the current line, the mode, whether it's updating; `keys: "nn"` presses keys |
 
-The pane's record in `layout.json` is `{type: "diff", path, args, view, zoom}`: `path` is the folder git runs in, `args` git's arguments, `view` `unified` or `split`. It comes back after a relaunch where it was.
+The pane's record in the saved layout is `{type: "diff", path, args, view}`: `path` is the folder git runs in, `args` git's arguments, `view` `unified` or `split`. It comes back after a relaunch where it was.
 
 ## 5. How it's built
 

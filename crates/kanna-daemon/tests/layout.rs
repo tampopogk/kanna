@@ -44,3 +44,16 @@ fn an_app_that_attaches_later_gets_the_layout_as_it_was_left_and_every_change() 
     let list = instance.call("list", json!({}));
     assert_eq!(list["windows"][0]["tabs"][0]["layout"], json!({"pane": "early"}), "{list}");
 }
+
+#[test]
+fn the_layout_is_kept_in_kanna_db_across_a_daemon_restart() {
+    let mut instance = Instance::start();
+    instance.open("left", Some("cat"));
+    assert_eq!(instance.call("open", json!({"type": "term", "name": "right", "cmd": "cat", "split": "right", "size": "1/3"}))["ok"], true);
+    assert_eq!(instance.call("rename-tab", json!({"tab": "t1", "title": "kept"}))["ok"], true);
+    let before = instance.call("list", json!({}))["windows"].clone();
+    instance.restart(libc::SIGTERM);
+    common::wait_for("the layout back", || instance.call("list", json!({}))["windows"] == before);
+    let state = instance.dir.join("state");
+    assert!(state.join("kanna.db").exists() && !state.join("layout.json").exists());
+}

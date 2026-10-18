@@ -49,7 +49,7 @@ flowchart LR
 - **Only ⇧⌘↩ turns it off** (or `kanna zoom`), showing the layout again with focus where it ended up.
 - **Opening, closing or moving panes keeps it on.** A pane opened into the window is focused, so it's the one shown; when the focused pane closes or moves away, the pane focused after it is shown.
 - **A task carries its zoom.** Parking a task takes its zoom with it and pulling brings it back, focused where it was; a task new to the Desk comes unzoomed. The Shelf view's zoom stays with the window.
-- **Saved** in `layout.json` with the window, so it's on after a relaunch: the task's, parked or on the Desk, and the Shelf view's.
+- **Saved** in the saved layout with the window, so it's on after a relaunch: the task's, parked or on the Desk, and the Shelf view's.
 
 **The same in kmux.** kmux gets the mode, and Kanna's whole-window fill: a zoomed tab pane covers the docked pane there too, where today it fills only the tabs' side.
 
@@ -67,7 +67,7 @@ flowchart LR
 
 - **The core** (kmux's `Window.zoom`, then `crates/kanna-mux/src/tabs.rs`'s) keeps one flag per set of tabs (`Tabs`: a free window's, a workspace's Desk part, each of its windows). The zoomed pane is its focused pane while it's on (`Tabs::zoomed()`), so nothing moves a zoom from pane to pane or clears it when panes come and go.
 - **A Desk's own flag.** A Desk's own `Tabs` hold no tabs, only the Shelf view's focus (its planning terminal) and zoom; a Desk showing a task draws the task's workspace, whose zoom is its own. Parking and pulling change which workspace a Desk shows and copy nothing (`crates/kanna-mux/src/desk.rs`). kmux has no Desk, so its windows keep the one flag.
-- **The protocol and state file** keep their `zoomed` field: `list` and `layout.json` show the focused pane while zoom is on, and a saved `zoomed` turns zoom on, focused there, after a relaunch. Each workspace saves its own `zoomed`, and a Desk the Shelf view's (as `shelfZoom` in kmux's version 1).
+- **The protocol and state file** keep their `zoomed` field: `list` and the saved layout show the focused pane while zoom is on, and a saved `zoomed` turns zoom on, focused there, after a relaunch. Each workspace saves its own `zoomed`, and a Desk the Shelf view's (as `shelfZoom` in kmux's version 1).
 - **The view** the app draws has the focused pane as the window's whole tree (`root`), or no tree when it's the docked pane or a Desk's planning terminal, which then fills the window ([layout](layout.md)).
 - **kmux first.** The mode and the whole-window fill went into kmux (its core, reference model, protocol cases, app, e2e and spec), then into Kanna with a subtree pull.
 - **Checked by** kmux's protocol cases (`focus.json`, `dock.json`), run in kmux, its reference model and `kanna-mux`; the `kanna-mux` owner test for the mode across tabs, a new pane and a relaunch; and e2e `windows_tabs_ui` (⌘] ⌘[ and ⇧⌘] ⇧⌘[ with zoom on, a new tab's pane shown) `docked_pane` (the docked pane with and without tabs, ⌘] from it into the tabs), and `shelf_zoom` (a Desk's two zooms through park and pull, and after a relaunch); the `kanna-mux` owner test for a task's zoom and the Shelf's. `docked_pane`'s and `shelf_zoom`'s snapshots are this spec's pictures.

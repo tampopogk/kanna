@@ -55,7 +55,7 @@ sequenceDiagram
     D2->>S: reads what waited in the buffer into the screen, then carries on
     D2->>K: ack exits that happened meanwhile (after saving them)
     A->>D2: app.hello
-    D2->>A: ok, panes (the same IDs: layout.json still matches)
+    D2->>A: ok, panes (the same IDs: the saved layout still matches)
     A->>D2: attach p1
     D2->>A: snapshot p1, grid p1, then output
 ```

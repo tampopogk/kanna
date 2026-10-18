@@ -112,7 +112,7 @@ flowchart TB
 | Snap | `apps/kanna/Sources/Kanna` | `AppCommands.swift`: answers the daemon's `app.snap` (path, line, last) with the snapped lines, from `kanna-syntax`'s scopes; the daemon sends any `app.` command to the app, as it does `debug.` ones |
 | Contents | `apps/kanna/Sources/Kanna/Panes` | passes a code pane its comment |
 
-- **The comment lives on the code pane's record**, `comment: {path, first, last, text}`, so `layout.json` keeps it and it goes when the pane closes. A pane shows it while it shows that file.
+- **The comment lives on the code pane's record**, `comment: {path, first, last, text}`, so the saved layout keeps it and it goes when the pane closes. A pane shows it while it shows that file.
 - **Snapping is the app's**, since tree-sitter is compiled into the app only (it costs about 18 MB, so the daemon doesn't link it too): the daemon asks the app over the app link, as it already asks it for the layout, and stores the lines it answers.
 - **A new comment restarts the pane**, as `navigate` does, at the comment's first line.
 - **The box** is a view laid into the text view's space above the comment's first line (as a gap in the line layout), so the code below it moves down and the line numbers stay with their lines. The box is placed from the laid-out gap whenever the layout manager finishes laying out past it (a highlight, a reload, a zoom, a resize). The code pane lays its text out contiguously: with non-contiguous layout the lines below the top are estimated, the gap is drawn where the estimate puts it, and a box placed from the full layout lands dozens of lines away.

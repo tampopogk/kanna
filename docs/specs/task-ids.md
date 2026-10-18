@@ -8,7 +8,7 @@
 flowchart LR
     NEW["kanna task new"] --> ID["task-1dfb12c2<br/>(kanna.db: tasks.id)"]
     ID --> WT[".kanna-worktrees/task-1dfb12c2<br/>branch task-1dfb12c2"]
-    ID --> WS["its workspace<br/>(layout.json)"]
+    ID --> WS["its workspace<br/>(kanna.db)"]
     ID --> LIST["shown short: task-1dfb<br/>kanna task list, replies, notes"]
     REF["1dfb · task-1dfb · task-1dfb12c2<br/>p353 · its agent's name"] -->|"the daemon looks it up"| ID
 ```
@@ -60,5 +60,5 @@ flowchart TD
 
 - **Blockers** that pointed at a task that no longer exists are dropped; foreign keys are checked at commit.
 - **The `renumbered` event** keeps the old ID (`doc.from`). It's the only place it survives, and how a `backlog.json` from an older Kanna, imported later, skips the tasks the db already has; imported tasks are renumbered the same way.
-- **Saved workspaces follow by themselves.** When the app attaches, the daemon's hello names each task's agent pane with its task ID ([workspaces](workspaces.md#5-saved-state)); a workspace whose task ID differs takes the new one, and its windows go with it. So `layout.json` needs no migration of its own: the first attach after the upgrade renames `t134`'s workspace to its new ID.
+- **Saved workspaces follow by themselves.** When the app attaches, the daemon's hello names each task's agent pane with its task ID ([workspaces](workspaces.md#5-saved-state)); a workspace whose task ID differs takes the new one, and its windows go with it. So the saved layout needs no migration of its own: the first attach after the upgrade renames `t134`'s workspace to its new ID.
 - **Tested** on a copy of a real `kanna.db` (92 tasks, 605 events, 5 tasks' blockers: all carried over, 84 named after their worktree) and its `layout.json` (43 workspaces renamed, tabs unchanged): `KANNA_REAL_DB=… cargo test -p kanna-daemon a_real_db -- --ignored` and `KANNA_REAL_LAYOUT=… KANNA_REAL_TASKS=… cargo test -p kanna-mux a_real_layout -- --ignored`.

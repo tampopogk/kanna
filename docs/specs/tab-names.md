@@ -37,7 +37,7 @@ A tab is named after the pane it was made with (`kanna open --tab`, Desk tabs, â
 
 ## 2. How it's built
 
-The layout model decides, in Rust; the app only draws `tab.title`. Each tab keeps its number, the pane it's named after and whether it was renamed (all saved in `layout.json`), and `Tab::retitle` runs after every layout step and pane update. A web pane's title comes from its view:
+The layout model decides, in Rust; the app only draws `tab.title`. Each tab keeps its number, the pane it's named after and whether it was renamed (all saved in the saved layout), and `Tab::retitle` runs after every layout step and pane update. A web pane's title comes from its view:
 
 ```mermaid
 sequenceDiagram

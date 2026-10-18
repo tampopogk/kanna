@@ -1,5 +1,6 @@
 use kanna_mux::json::Value;
 use rusqlite::{params, Connection, OptionalExtension};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -65,7 +66,12 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
     );
     create index quiz_answers_by_round on quiz_answers (round);
     create index quiz_answers_by_again on quiz_answers (again);
-"), Step::Run(renumber)];
+"), Step::Run(renumber), Step::Sql("
+    create table layout (
+        id integer primary key check (id = 1),
+        doc text not null check (json_valid(doc))
+    );
+")];
 
 pub fn version() -> i64 {
     MIGRATIONS.len() as i64
@@ -169,6 +175,7 @@ pub struct Answer {
 
 pub struct Db {
     conn: Connection,
+    layout: RefCell<Option<Box<dyn Fn() -> Option<Value>>>>,
 }
 
 fn now() -> f64 {
@@ -229,7 +236,7 @@ fn open_checked(path: &Path) -> Opened {
     if found > version() {
         return Opened::Newer(found);
     }
-    let mut db = Db { conn };
+    let mut db = Db { conn, layout: RefCell::default() };
     match db.migrate(found) {
         Ok(()) => Opened::Good(db),
         Err(error) => Opened::Bad(format!("migrating from version {found}: {error}")),
@@ -288,10 +295,10 @@ impl Db {
 
     fn fresh(path: &Path, state_dir: &Path, lost: bool) -> Db {
         let mut db = match connect(path) {
-            Ok(conn) => Db { conn },
+            Ok(conn) => Db { conn, layout: RefCell::default() },
             Err(error) => {
                 say(format!("can't make {} ({error}); keeping tasks in memory only until the daemon restarts", path.display()));
-                Db { conn: Connection::open_in_memory().expect("an in-memory database") }
+                Db { conn: Connection::open_in_memory().expect("an in-memory database"), layout: RefCell::default() }
             }
         };
         db.migrate(0).expect("a new database takes the schema");
@@ -405,7 +412,25 @@ impl Db {
         if let Some(change) = change {
             log(&tx, &row.id, change)?;
         }
+        if row.place == Place::Done {
+            if let Some(layout) = self.layout.borrow().as_ref().and_then(|now| now()) {
+                put_layout(&tx, &layout)?;
+            }
+        }
         tx.commit()
+    }
+
+    pub fn saves_layout_with_done(&self, now: impl Fn() -> Option<Value> + 'static) {
+        *self.layout.borrow_mut() = Some(Box::new(now));
+    }
+
+    pub fn layout(&self) -> rusqlite::Result<Option<Value>> {
+        let doc: Option<String> = self.conn.query_row("select doc from layout where id = 1", [], |row| row.get(0)).optional()?;
+        Ok(doc.and_then(|doc| serde_json::from_str(&doc).ok()))
+    }
+
+    pub fn put_layout(&self, doc: &Value) -> rusqlite::Result<()> {
+        put_layout(&self.conn, doc)
     }
 
     pub fn log(&self, task: &str, change: &Change) -> rusqlite::Result<()> {
@@ -482,6 +507,11 @@ fn log(conn: &Connection, task: &str, change: &Change) -> rusqlite::Result<()> {
 }
 
 pub const TASK: &str = "task-";
+
+fn put_layout(conn: &Connection, doc: &Value) -> rusqlite::Result<()> {
+    conn.execute("insert into layout (id, doc) values (1, ?1) on conflict (id) do update set doc = excluded.doc", params![doc.to_string()])?;
+    Ok(())
+}
 
 pub fn is_task_id(id: &str) -> bool {
     id.strip_prefix(TASK).is_some_and(|hex| hex.len() == 8 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
@@ -681,6 +711,23 @@ mod tests {
         assert_eq!((events[1].from, events[1].to, events[1].doc["window"].as_str()), (Some(Place::Backlog), Some(Place::Shelf), Some("w2")));
         assert_eq!(events[0].by.as_deref(), Some("p1"));
         assert!(db.log("task-00000404", &Change::new("made")).is_err(), "an event needs its task");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_task_marked_done_writes_the_layout_in_the_same_transaction() {
+        let dir = folder("done-layout");
+        let db = Db::open(&dir);
+        assert_eq!(db.layout().unwrap(), None);
+        db.saves_layout_with_done(|| Some(json!({ "workspaces": [] })));
+        let mut row = Row { id: db.new_id(|_| true).unwrap(), repo: "/r".into(), place: Place::Shelf, pane: Some("p1".into()), made_at: 1.0, doc: json!({}) };
+        db.put(&row, None).unwrap();
+        assert_eq!(db.layout().unwrap(), None, "only a done task writes the layout");
+        row.place = Place::Done;
+        db.put(&row, None).unwrap();
+        assert_eq!(db.layout().unwrap(), Some(json!({ "workspaces": [] })));
+        db.put_layout(&json!({ "workspaces": [{ "id": "ws-1" }] })).unwrap();
+        assert_eq!(Db::open(&dir).layout().unwrap(), Some(json!({ "workspaces": [{ "id": "ws-1" }] })));
         fs::remove_dir_all(&dir).unwrap();
     }
 

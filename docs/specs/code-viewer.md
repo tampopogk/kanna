@@ -84,7 +84,7 @@ sequenceDiagram
 | `kanna workspace list --all --json` | shows a code pane's file and line |
 | `kanna raw '{"cmd":"debug.code","args":{"pane":"p86"}}'` | for tests: the text, the top line, the pinned scopes with each one's marks (selection, find matches, current, comment, dimmed, changed, flashing), and each line's highlight spans by capture name; `select: [line, column, length]` selects text |
 
-The pane's record in `layout.json` is `{type: "code", path, line, zoom}`, so it comes back after a relaunch where it was.
+The pane's record in the saved layout is `{type: "code", path, line}` (its text size is the app's, [windows](windows.md#2-what-the-app-keeps)), so it comes back after a relaunch where it was.
 
 ## 5. How it's built
 

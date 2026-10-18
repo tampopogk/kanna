@@ -45,6 +45,28 @@ impl LayoutOwner {
         (owner, problem)
     }
 
+    pub fn restoring(state: Value) -> Result<LayoutOwner, KmuxError> {
+        state::import_versions(&state, &[1, 2, LAYOUT_VERSION], "Kanna reads")?;
+        Ok(LayoutOwner { saved: Some(state), ..LayoutOwner::default() })
+    }
+
+    pub fn changed_state(&mut self) -> Option<Value> {
+        if self.saved.is_some() {
+            return None;
+        }
+        let state = self.export();
+        let encoded = encode(&state);
+        if self.last_saved.as_ref() == Some(&encoded) {
+            return None;
+        }
+        self.last_saved = Some(encoded);
+        Some(state)
+    }
+
+    pub fn forget_saved(&mut self) {
+        self.last_saved = None;
+    }
+
     pub fn handle(&mut self, request: &Value) -> Value {
         let result = match string(request, "call").unwrap_or("") {
             "serve" => self.serve(request.get("request").unwrap_or(&Value::Null)),
@@ -264,17 +286,12 @@ impl LayoutOwner {
     }
 
     pub fn save(&mut self) -> Result<bool, KmuxError> {
-        let Some(file) = &self.file else { return Ok(false) };
-        if self.saved.is_some() {
-            return Ok(false);
+        let Some(file) = self.file.clone() else { return Ok(false) };
+        let Some(state) = self.changed_state() else { return Ok(false) };
+        if let Err(error) = file.write(&state) {
+            self.last_saved = None;
+            return Err(error);
         }
-        let state = self.export();
-        let encoded = encode(&state);
-        if self.last_saved.as_ref() == Some(&encoded) {
-            return Ok(false);
-        }
-        file.write(&state)?;
-        self.last_saved = Some(encoded);
         Ok(true)
     }
 }
