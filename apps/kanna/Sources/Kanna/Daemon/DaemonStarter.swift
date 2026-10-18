@@ -10,7 +10,7 @@ final class DaemonStarter: @unchecked Sendable {
 
     private static let graceAfterLoss: TimeInterval = 2
     private static let startInterval: TimeInterval = 10
-    private static let passedThrough: Set<String> = ["KANNA_STATE_DIR", "KANNA_DEBUG", "KANNA_AGENTS_HOME"]
+    private static let passedThrough: Set<String> = ["KANNA_STATE_DIR", "KANNA_DEBUG", "KANNA_AGENTS_HOME", "KANNA_NO_STATE", "KANNA_FRESH"]
 
     init(socketPath: String) {
         self.socketPath = socketPath
@@ -65,6 +65,7 @@ final class DaemonStarter: @unchecked Sendable {
         }
         environment["KANNA_SOCKET"] = socketPath
         environment["KANNA_KEEPER"] = keeper
+        if CommandLine.arguments.contains("--fresh") { environment["KANNA_FRESH"] = "1" }
         let log = (stateDir as NSString).appendingPathComponent("daemon.log")
         switch spawn(daemon, environment: environment, log: log) {
         case .success(let pid):

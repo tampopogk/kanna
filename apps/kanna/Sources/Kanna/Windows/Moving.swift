@@ -120,10 +120,12 @@ extension AppController {
     }
 
     private func perform(_ cmd: String, _ args: [String: JSON], tornOff drop: Drop?, size: NSSize) {
-        let reply = layoutCommand(cmd, args)
-        guard reply["ok"]?.bool == true else { return }
-        if case .newWindow(let point)? = drop, let id = reply["window"]?.string, let controller = controllers[id] {
-            controller.window.setFrame(newWindowFrame(at: point, size: size), display: true)
+        layoutCommand(cmd, args) { [weak self] reply in
+            guard let self, reply["ok"]?.bool == true, case .newWindow(let point)? = drop, let id = reply["window"]?.string else { return }
+            let frame = newWindowFrame(at: point, size: size)
+            let rect: JSON = ["x": .number(frame.minX), "y": .number(frame.minY), "w": .number(frame.width), "h": .number(frame.height)]
+            layoutCall("frame", ["window": .string(id), "frame": rect])
+            controllers[id]?.window.setFrame(frame, display: true)
         }
     }
 
@@ -146,7 +148,7 @@ extension AppController {
                 let to = try screen(content, handle.position(CGFloat(args["at"]?.number ?? 0.5)))
                 scriptedDrag = [to, to]
                 handle.drag(in: content)
-                if let window = window(controller.id) { controller.render(window, panes) }
+                redraw(controller)
                 return [:]
             }
             guard let (controller, handle) = controllers.values.lazy.compactMap({ c in c.dividers.first { $0.after == pane }.map { (c, $0) } }).first,
@@ -154,7 +156,7 @@ extension AppController {
             let to = try screen(stage, handle.position(CGFloat(args["at"]?.number ?? 0.5)))
             scriptedDrag = [to, to]
             handle.drag(in: stage)
-            if let window = window(controller.id) { controller.render(window, panes) }
+            redraw(controller)
             return [:]
         }
         let to: NSPoint
@@ -198,7 +200,7 @@ extension AppController {
 
     func resolve(_ reference: String) throws -> String {
         if panes[reference] != nil { return reference }
-        guard let id = appLayout?.resolve(reference) else { throw KannaError("not_found", "no pane \"\(reference)\"") }
+        guard let id = paneID(named: reference) else { throw KannaError("not_found", "no pane \"\(reference)\"") }
         return id
     }
 }

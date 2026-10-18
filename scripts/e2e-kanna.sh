@@ -168,7 +168,7 @@ s.sendall(sys.argv[2].encode() + b"\n"); print(s.makefile().readline().strip())'
 }
 field() { python3 -c 'import json, sys; v = json.load(sys.stdin)
 for k in sys.argv[1].split("."): v = v[int(k)] if k.isdigit() else v[k]
-print(json.dumps(v) if isinstance(v, (dict, list)) else v)' "$1"; }
+print(json.dumps(v, sort_keys=True) if isinstance(v, (dict, list)) else v)' "$1"; }
 pane() {
   kanna workspace list --all --json | python3 -c 'import json, sys
 p = [p for p in json.load(sys.stdin)["panes"] if sys.argv[1] in (p.get("name"), p.get("id"))][0]
@@ -286,13 +286,13 @@ web_md_ios_panes() {
   check wait_for 5 page_shows web "web_md_ios_panes WEB" || return 1
   before="$(layout)"
   stop_app
-  check test "$(kanna workspace list --all --json | field panes)" == "[]" || return 1
-  kanna navigate web "file://$dir/web_md_ios_panesb.html" 2>/dev/null
-  check test $? -eq 6 || return 1
+  check is doc path "$dir/web_md_ios_panes.md" || return 1
+  kanna navigate web "file://$dir/web_md_ios_panesb.html" >/dev/null || return 1
   start_app || return 1
   check test "$(layout)" == "$before" || return 1
-  check is web url "file://$dir/web_md_ios_panes.html" || return 1
-  check is doc path "$dir/web_md_ios_panes.md" || return 1
+  check is web url "file://$dir/web_md_ios_panesb.html" || return 1
+  check wait_for 5 page_shows web "web_md_ios_panes NEXT" || return 1
+  kanna navigate web --back >/dev/null || return 1
   check wait_for 5 page_shows web "web_md_ios_panes WEB" || return 1
   check wait_for 5 doc_shows doc "web_md_ios_panes TEXT" || return 1
   stop_daemon; start_daemon || return 1
@@ -310,8 +310,9 @@ web_md_ios_panes() {
   check is sim state running || return 1
   check test "$(raw '{"id":1,"cmd":"debug.ios","args":{"pane":"sim"}}' | field ok)" == True || return 1
   stop_app; start_app || return 1
-  check wait_for 60 is sim state running || return 1
-  check test "$(raw '{"id":1,"cmd":"debug.ios","args":{"pane":"sim"}}' | field ok)" == True
+  ios_shown() { [[ "$(raw '{"id":1,"cmd":"debug.ios","args":{"pane":"sim"}}' | field ok)" == True ]]; }
+  check wait_for 60 ios_shown || return 1
+  check is sim state running
 }
 
 scenario cli_starts_app M1
@@ -325,10 +326,11 @@ cli_starts_app() {
   KANNA_SOCKET="$socket" start_daemon || return 1
   dev() { env -u KANNA_SOCKET HOME="$home" KANNA_MUX=kanna-dev KANNA_APP="$repo_root/target/Kanna.app" KANNA_BG=1 "$bin/kanna" "$@"; }
   dev open --name left >/dev/null || return 1
-  KANNA_SOCKET="$socket" "$bin/kanna" open --name pinned --split right 2>"$KANNA_STATE_DIR/pinned.err"
+  KANNA_SOCKET="$socket" "$bin/kanna" open --name right --split right >/dev/null || return 1
+  KANNA_SOCKET="$socket" "$bin/kanna" raw '{"cmd":"debug.app"}' >/dev/null 2>"$KANNA_STATE_DIR/pinned.err"
   check test $? -eq 6 || return 1
   check grep -q "doesn't start Kanna.app" "$KANNA_STATE_DIR/pinned.err" || return 1
-  dev open --name right --split right >/dev/null
+  dev raw '{"cmd":"debug.app"}' >/dev/null
   local status=$?
   app_pid="$(sed -n 's/.*the app attached (pid \([0-9]*\)).*/\1/p' "$out/daemon.log" | tail -1)"
   check test "$status" -eq 0 || return 1
@@ -447,43 +449,34 @@ scenario cli_without_app M4
 cli_without_app() {
   start_daemon || return 1
   local expected
-  expected="opened p1 (cli_without_app), unplaced until Kanna.app opens: running"; says kanna open --name cli_without_app --cmd 'echo cli_without_app READY; exec cat' || return 1
-  check test "$(kanna workspace list --all | head -1)" == "no windows: Kanna.app isn't open (these terminals keep running)" || return 1
+  expected="opened p1 (cli_without_app) in window w1, tab t1: running"; says kanna open --name cli_without_app --cmd 'echo cli_without_app READY; exec cat' || return 1
   check wait_for 5 shows cli_without_app "cli_without_app READY" || return 1
   kanna send cli_without_app cli_without_app-SENT || return 1
   check wait_for 5 shows cli_without_app cli_without_app-SENT || return 1
   expected="p1 (cli_without_app) (echo cli_without_app READY; exec cat) is running"; says kanna restart cli_without_app || return 1
   check grep -q "Kanna.app: not attached" <(kanna capabilities) || return 1
-  kanna open --name gone >/dev/null || return 1
-  expected="closed p2"; says kanna close gone || return 1
+  printf '# cli_without_app DOC\n' >"$KANNA_STATE_DIR/cli_without_app.md"
   local args
   while IFS= read -r args; do
-    eval "exits 6 kanna $args" || return 1
-  done <<'NEEDS'
-open --split right
-open --tab
-open --window new
-open web http://localhost:1
-open md /tmp/x.md
-focus cli_without_app
+    eval "kanna $args" >/dev/null || { echo "failed without the app: kanna $args"; return 1; }
+  done <<NEEDS
+open --name gone --split right
+close gone
+open --name doc --split right md $KANNA_STATE_DIR/cli_without_app.md
+resize cli_without_app 2/3
+open --tab --name other
+rename-tab t1 kept
 focus --tab t1
-zoom cli_without_app
-resize cli_without_app 1/2
-move cli_without_app --window new
-arrange '{"split":"row","children":[{"pane":"cli_without_app"}]}'
-rename-tab t1 x
-move-tab t1 --index 0
-close --tab t1
-close --window w1
-navigate site http://localhost:1
-raw '{"cmd":"debug.app"}'
 NEEDS
-  check grep -q "KANNA_SOCKET is set, so kanna doesn't start Kanna.app" <(kanna focus cli_without_app 2>&1) || return 1
+  exits 6 kanna raw '{"cmd":"debug.app"}' || return 1
+  check grep -q "KANNA_SOCKET is set, so kanna doesn't start Kanna.app" <(kanna raw '{"cmd":"debug.app"}' 2>&1) || return 1
   start_app || return 1
-  check test "$(layout)" == '{"pane": "cli_without_app"}' || return 1
+  check test "$(layout)" == '{"children": [{"pane": "cli_without_app", "size": "2/3"}, {"pane": "doc", "size": "1/3"}], "split": "row"}' || return 1
+  check test "$(win w1 tabs.0.title)" == kept || return 1
+  check wait_for 5 doc_text doc "cli_without_app DOC" || return 1
   expected="focused cli_without_app (key window w1)"; says kanna focus cli_without_app || return 1
   stop_app
-  check test "$(kanna workspace list --all --json | field windows)" == "[]"
+  check test "$(kanna workspace list --all --json | field windows.0.id)" == w1
 }
 
 scenario instances M4

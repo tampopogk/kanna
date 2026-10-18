@@ -119,7 +119,6 @@ Replies say which workspace and where it is. A window is named when it's on scre
 | open in ws-3's window w40, ws-3 on the Shelf | `opened p5 in ws-3's w40 (task-1dfb, on the Shelf), tab t9: running` |
 | open `--window w31` from task-1dfb, w31 shows ws-1 | `opened p5 in ws-1 on w31 (task-6fe7), tab t9: running` |
 | open in a free window | `opened p5 in window w4, tab t9: running` |
-| open, no app | `opened p5, unplaced until Kanna.app opens: running` |
 | focus, ws-3 in the backlog | `focused spec in ws-3 (task-1dfb, in the backlog)` |
 | focus, ws-3 on a Desk | `focused spec in ws-3 on w31 (task-1dfb, key window)` |
 | zoom, hidden | `spec is zoomed in ws-3 (task-1dfb, on the Shelf) (run again to unzoom)` |
@@ -127,7 +126,7 @@ Replies say which workspace and where it is. A window is named when it's on scre
 | assign to a task on the Shelf | `assigned w41 to ws-3 (task-1dfb, on the Shelf: hidden until it's pulled)` |
 | free | `w41 is free` |
 
-Layout replies carry `workspace: {id, where, hidden}` (`where`: `{desk}`, `"shelf"` or `"backlog"`; `hidden` unless it's on a Desk, as kmux's), or null in a free window, beside `window` and `tab`. `window` is the window's ID, or null for a hidden Desk part. The daemon adds `task` and `name` to a workspace that's a task's, in every reply. The CLI writes "unplaced until Kanna.app opens" only when there's neither (the app wasn't there). `kanna workspace list --all --json` has `workspaces`, each with its dock, tabs, shown tab, focus and zoom, and `hiddenWindows`, the windows of workspaces off screen.
+Layout replies carry `workspace: {id, where, hidden}` (`where`: `{desk}`, `"shelf"` or `"backlog"`; `hidden` unless it's on a Desk, as kmux's), or null in a free window, beside `window` and `tab`. `window` is the window's ID, or null for a hidden Desk part. The daemon adds `task` and `name` to a workspace that's a task's, in every reply. `kanna workspace list --all --json` has `workspaces`, each with its dock, tabs, shown tab, focus and zoom, and `hiddenWindows`, the windows of workspaces off screen.
 
 ## 4. Kinds of window, and the planning terminal
 

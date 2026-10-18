@@ -61,10 +61,10 @@ Decided; everything else is kmux's.
 | Tab titles (`list`, `rename-tab`) | `Tab 1`, `Tab 2`, … | named after the pane each tab was made with (its name, file or page title) until renamed; `Tab N` only for an unnamed terminal ([tab names](tab-names.md)) | agents open most tabs, and a numbered tab says nothing about what it shows |
 | `move PANE --window WINDOW` | splits the pane into the window's active tab | a new tab at the end of the window, focused (`--tab new --window`); to its own window, a pane alone in its tab stays and one in a split leaves it for a new tab; its `--window` help says so, and the protocol case that expects the split is skipped by name | moving a pane to a window shouldn't halve the doc the user has open there |
 | `completions zsh\|bash`, `__complete` | — | tab completion from the command table, with live pane, tab and window names ([tab completion](tab-completion.md)) | the CLI is how you drive Kanna from a terminal |
-| Exit 6 | — | the command needs Kanna.app, which isn't attached and wasn't started | terminals work without the app; layout commands don't ([layout](layout.md#4-with-the-app-closed)) |
+| Exit 6 | — | the command needs Kanna.app, which isn't attached and wasn't started | terminals and the layout work without the app; screenshots and `debug.*` don't ([layout](layout.md#4-with-the-app-closed)) |
 | Starting | starts the kmux app | starts this build's Kanna.app, which starts the daemon; never with `KANNA_SOCKET` set ([layout](layout.md#5-the-cli-starts-the-app)) | the app starts the daemon ([app link](app-link.md#4-the-app-starts-the-daemon)) |
 | `workspace list [--all]` | the caller's window, or its workspace's; `--all` every window, workspace and pane | the same, with each workspace's task, dock, shown tab, focus and zoom, also off screen; `--all` is under headings (Windows, Workspaces, Free windows, Unplaced panes) ([workspace list](workspace-list.md)) | an agent presenting its work needs to see its own workspace, as the user will |
-| The app closed | (the app is kmux) | `open` prints "opened p3 (logs), unplaced until Kanna.app opens"; `workspace list --all` lists the terminals under "no windows: Kanna.app isn't open" | the terminals still run |
+| The app closed | (the app is kmux) | every command but `screenshot`, `comment` and `debug.*` works; the app opens on the layout as it was left | the daemon keeps the layout ([presentation layers](presentation-layers.md)) |
 | An instance | an app with its own socket, `kmux-NAME.sock` | a folder, `kanna-dev-NAME`, in the build's channel ([instances](instances.md)) | a daemon needs a folder of its own |
 | Channels | one app | production, staging and dev builds are separate apps (Kanna, Kanna Staging, Kanna Dev), and a dev build in a worktree is one of its own whose default instance is the worktree's ([build channels](build-channels.md)) | Kanna is developed inside Kanna |
 | `instances` | the running instances | the running instances of every channel, with each one's channel and the worktree a dev build came from; `instances prune` deletes those whose worktree is gone | many dev builds come and go |
@@ -104,7 +104,7 @@ sequenceDiagram
 
 | Works | Needs the app (`no_app`: started, or exit 6 with `KANNA_SOCKET`) |
 |---|---|
-| `list` (terminals, no windows), `send`, `send-key`, `read`, `close PANE`, `restart`, `open` (a terminal, unplaced), `capabilities`, `raw` of these | `open` with `--split`, `--size`, `--tab` or `--window`; `open web\|md\|ios`; `focus`, `zoom`, `resize`, `move`, `arrange`, `rename-tab`, `move-tab`; `close --tab\|--window`; `navigate`; `screenshot`; every `debug.*` |
+| every other command: `open` of any pane anywhere, `list`, `send`, `read`, `close`, `restart`, `focus`, `zoom`, `resize`, `move`, `arrange`, `rename-tab`, `move-tab`, `navigate`, `task`, … | `screenshot`; `comment` (the app snaps its lines); every `debug.*` |
 
 ## 5. Output, errors and exit codes
 
@@ -130,7 +130,7 @@ sequenceDiagram
 | Pane too small after rounding (tmux) | The size is raised to the backend's minimum and a warning is printed. |
 | Two panes given the same name | The second `open` exits 1. |
 | `KANNA_SOCKET` is set and nothing answers there | Exits 3. kanna never starts an app for a socket it was pointed at. |
-| A layout command and Kanna.app isn't attached | kanna starts Kanna.app and retries; with `KANNA_SOCKET` set, exits 6 (`no_app`). |
+| A command that needs Kanna.app and it isn't attached | kanna starts Kanna.app and retries; with `KANNA_SOCKET` set, exits 6 (`no_app`). |
 
 ## 6. Checked by
 

@@ -2,7 +2,7 @@
 
 **Status:** built · **Builds on:** [architecture](architecture.md) · **Related:** [the daemon follows the app's build](daemon-build.md), [layout](layout.md), [app panes](app-panes.md)
 
-The app is a client of the daemon, like the CLI, but it stays connected: it shows the daemon's terminals, types into them, and answers the requests only the app can (the layout, its web, markdown and iOS panes, `debug.*`). The **app link** is that one connection, on the daemon's own socket (`$KANNA_SOCKET`).
+The app is a client of the daemon, like the CLI, but it stays connected: it shows the daemon's terminals, types into them, draws the layout the daemon publishes, and answers the requests only the app can (its web, markdown and iOS panes, `debug.*`). The **app link** is that one connection, on the daemon's own socket (`$KANNA_SOCKET`).
 
 ## Contents
 
@@ -16,7 +16,7 @@ The app is a client of the daemon, like the CLI, but it stays connected: it show
 
 **The control protocol's wire.** One JSON object per line, both ways. A message with `cmd` is a request, `{"id", "cmd", "args"}`; with an `id` it wants a reply, `{"id", "ok": true, …}` or `{"id", "ok": false, "error": {"code", "message"}}`, and without one it's a notice that gets none. Each side numbers its own requests, and a reply goes to the side that asked. Terminal bytes are base64 in a `data` field.
 
-**Saying it's the app.** The app's first line is `{"id": 0, "cmd": "app.hello", "args": {"pid", "build"}}`. The daemon answers `{"id": 0, "ok": true, "daemon": {"pid", "build"}, "panes": [{"id", "name", "type"}, …]}`, listing every terminal, and the connection is the app link from then on. One app at a time: a second gets `app_attached` and is closed. If the daemon goes away, the app keeps trying to connect, and on reconnecting says hello and attaches its terminals again.
+**Saying it's the app.** The app's first line is `{"id": 0, "cmd": "app.hello", "args": {"pid", "build"}}`. The daemon answers `{"id": 0, "ok": true, "daemon": {"pid", "build"}, "panes": [{"id", "name", "type"}, …], "layout": {…}}`, listing every pane and the layout as it is, and the connection is the app link from then on. One app at a time: a second gets `app_attached` and is closed. If the daemon goes away, the app keeps trying to connect, and on reconnecting says hello and attaches its terminals again.
 
 **The daemon follows the app's build.** `build` is the SHA-256 of the daemon binary. With no app attached, a hello of another build gets `other_build` and the daemon stops as on SIGTERM; the app then starts its own, which adopts every terminal. A hello without `build` is accepted. Detail: [daemon build](daemon-build.md).
 
@@ -26,8 +26,8 @@ sequenceDiagram
     participant D as Kanna daemon
     participant C as kanna CLI
     A->>D: app.hello
-    D->>A: ok, panes p1 p2
-    Note over A: restore layout.json, drop panes that are gone, place the new ones
+    D->>A: ok, panes p1 p2, the layout
+    Note over A: draw the layout's windows
     A->>D: attach term-1 (p1's terminal)
     D->>A: snapshot term-1 (the screen, GHOSTSNP)
     D->>A: grid term-1 80×24
@@ -37,9 +37,8 @@ sequenceDiagram
     A->>D: input term-1 (keystrokes)
     D->>A: output term-1 (what the program wrote)
     C->>D: open --split right
-    D->>A: layout {op: place, pane p3, at: right}
-    A->>D: ok {window w1, tab t1}
     D->>C: ok, p3 in w1
+    D->>A: layout (w1 now splits p1 | p3)
     C->>D: debug.type pane s1
     D->>A: debug.type pane p1 (names resolved to IDs)
     A->>D: ok
@@ -50,8 +49,9 @@ sequenceDiagram
 
 | Message | From | What it says |
 |---|---|---|
-| `app.hello {pid, build}` | app | I'm the app, of this build; the reply accepts or refuses it (`app_attached`, `other_build`) and lists the daemon's terminals |
-| `layout {op, …, panes}` (with an `id`) | daemon | one step of a command on the layout ([layout](layout.md#2-layout-steps)); the app's reply is the step's answer |
+| `app.hello {pid, build}` | app | I'm the app, of this build; the reply accepts or refuses it (`app_attached`, `other_build`) and has the daemon's panes and layout |
+| `layout {windows, …}` | daemon | the layout changed; this is the whole view to draw ([layout](layout.md)) |
+| `layout.call {call, …}` (with an `id`) | app | the user focused a pane, dragged a divider or moved a window, or the app needs the view or a name resolved ([layout](layout.md#2-layout-steps)) |
 | `attach {terminal}` / `detach {terminal}` | app | I show (or no longer show) this terminal, by its terminal ID (`term-41`, [presentation layers](presentation-layers.md#3-ids)) |
 | `snapshot {terminal, data}` | daemon | the terminal's whole screen as a GHOSTSNP snapshot; sent on attach, before anything else for that terminal |
 | `grid {terminal, cols, rows}` | daemon | the terminal's size, after a snapshot or a resize |
@@ -68,13 +68,13 @@ sequenceDiagram
 
 ## 3. Rules
 
-- **Requests from the daemon are answered in order.** The app answers `layout` on its main thread as it arrives, before anything after it; `debug.*` may answer later.
+- **Messages from the daemon are handled in order** on the app's main thread; `debug.*` may answer later.
 - **The daemon decides a terminal's size.** The view asks with `resize`, only for the size it has (a request Ghostty makes for another, such as its 800×600 before the view sizes it, is dropped); the daemon sets the pty's size, and the view takes the size `grid` gives it, in order with the output ([pane sizes](pane-sizes.md)). A resize beyond 1000 cells a side is refused.
 - **Requests for the app** (every `debug.*` the core doesn't answer itself, which is all but `debug.saveState` and `debug.restoreState`) can come from any client. The daemon turns a top-level pane name into its ID, passes the request on and returns the app's reply, so a debug command the app adds needs no change in the daemon. With no app attached they fail with `no_app`; if the app goes away first, `app_gone`; with no answer within 10 s, `timeout`. The app answers one it doesn't know with kmux's `unknown command`. The app's debug commands: [windows](windows.md#5-debug-commands), [terminal](terminal.md#5-debug-mode).
 - **`screenshot` is passed on the same way**, but isn't a debug command, so the app always answers it ([screenshot](screenshot.md)).
 - **Debug commands are off by default.** The app answers `debug.*` only when started with `KANNA_DEBUG=1` (the test scripts set it). `debug.snapshot` takes a plain file name and writes a new file in `$KANNA_STATE_DIR` (or `$TMPDIR`); it never overwrites one.
 - **Limits:** a line over 16 MiB drops the app; an app that falls 16 MiB behind on output stops getting it and starts its terminals over (snapshot, grid) once it has caught up, and one 64 MiB behind is dropped.
-- **The layout is the app's:** the daemon keeps none and asks the app for every layout step ([layout](layout.md)).
+- **The layout is the daemon's:** it applies every command, from the app as from the CLI, and sends the app the new view ([layout](layout.md)).
 - **Screens:** the daemon keeps each terminal's screen with libghostty-vt (`crates/kanna-vt`), fed from the pty, with up to 10 MB of scrollback. `read` answers from it, so it works with the app closed.
 - **Queries are answered once, by the daemon.** Cursor position, device status and attributes, modes, size reports and XTVERSION are answered by the daemon's screen, written back to the pty as they're parsed, whether or not the app is attached. The app's surfaces parse the same output but drop their replies, so the program never gets two. Colour queries and scheme reports are answered from the app's `settings` ([terminal](terminal.md)).
 - **Attaching:** the daemon takes the snapshot on its main loop under the lock the pty reader feeds the screen and the outbox with, and empties the outbox as it does: what the snapshot has isn't sent again, and every later byte follows as `output`. The app loads the snapshot (`ghostty_surface_load_snapshot`), then applies the `grid` that follows; both go through the same queue as output, in order. A terminal started again (`restart`, a task started again) is a new terminal with a new ID: the daemon tells the app with `pane`, and the app stops the old surface and attaches a new one to the new ID ([terminal](terminal.md#4-the-apps-terminal-views)).

@@ -4,6 +4,7 @@ mod backlog;
 mod db;
 mod host;
 mod keeper;
+mod layout;
 mod pty;
 mod quiz;
 mod reader;
@@ -16,7 +17,7 @@ mod store;
 mod task_scripts;
 mod terminals;
 
-use app_link::{AppLayout, AppLink, Outbox, APP_ASK, APP_PREFIX, HELLO};
+use app_link::{AppLink, Outbox, APP_ASK, APP_PREFIX, HELLO};
 use kanna_mux::json::Value;
 use host::Host;
 use kanna_build::Build;
@@ -123,8 +124,9 @@ fn run() -> Result<(), String> {
     unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &stop_signals, std::ptr::null_mut()) };
 
     let (events, inbox) = mpsc::channel::<Event>();
-    let layout = Rc::new(AppLayout::default());
+    let layout = Rc::new(layout::DaemonLayout::open(&state_dir));
     let core = Core::with_link(layout.clone());
+    layout.connect(core.weak());
     let instance = instance_name(&socket);
     core.set_instance(Instance::with_socket(&instance, Some(socket_path.clone())));
     let wake = events.clone();
@@ -185,9 +187,13 @@ fn run() -> Result<(), String> {
     core.set_host(Some(host.clone()));
     let on_change = Rc::downgrade(&terminals);
     let tasks_changed = Rc::downgrade(&backlog);
+    let layout_changed = Rc::downgrade(&layout);
     core.set_on_change(Some(Rc::new(move || {
         if let Some(terminals) = on_change.upgrade() {
             terminals.mark_changed();
+        }
+        if let Some(layout) = layout_changed.upgrade() {
+            layout.panes_changed();
         }
         if let Some(backlog) = tasks_changed.upgrade() {
             backlog.mark_changed();
@@ -210,6 +216,8 @@ fn run() -> Result<(), String> {
             restored.dropped
         );
     }
+    core.install_panes(layout.saved_panes(), 0, 0);
+    layout.restore(&core.with_panes(kanna_mux::pane_table));
     if let Err(error) = keeper.watch() {
         server.stop();
         terminals.shutdown();
@@ -217,8 +225,13 @@ fn run() -> Result<(), String> {
     }
 
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
-    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), app_timeout, build_id.clone()));
-    layout.connect(&app);
+    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), layout.clone(), app_timeout, build_id.clone()));
+    let view_link = Rc::downgrade(&app);
+    *layout.on_view.borrow_mut() = Some(Box::new(move |view| {
+        if let Some(app) = view_link.upgrade() {
+            app.layout(view);
+        }
+    }));
     app.connect_backlog(&backlog);
     host.connect(&app);
     let diff_link = Rc::downgrade(&app);
@@ -284,7 +297,8 @@ fn run() -> Result<(), String> {
         app.expire(Instant::now());
         terminals.save_if_changed();
         backlog.sweep();
-        let deadline = [core.poll(), app.next_deadline(), backlog.tick()].into_iter().flatten().min();
+        layout.flush();
+        let deadline = [core.poll(), app.next_deadline(), backlog.tick(), layout.next_deadline()].into_iter().flatten().min();
         let event = match deadline {
             Some(at) => inbox.recv_timeout(at.saturating_duration_since(Instant::now())),
             None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
@@ -295,9 +309,8 @@ fn run() -> Result<(), String> {
             Err(RecvTimeoutError::Disconnected) => break,
         };
         match event {
-            Event::Request(request, reply) => match app.unreachable(&request) {
-                Some(error) => reply(json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": false, "error": { "code": error.code, "message": error.message } })),
-                None if request.get("cmd").and_then(Value::as_str) == Some("capabilities") => {
+            Event::Request(request, reply) => match () {
+                () if request.get("cmd").and_then(Value::as_str) == Some("capabilities") => {
                     let attached = app.attached();
                     let build = build_id.clone();
                     core.handle(request, move |mut answer| {
@@ -308,17 +321,7 @@ fn run() -> Result<(), String> {
                         reply(answer)
                     })
                 }
-                None if moves_tasks(&request) => {
-                    let by = request.get("args").and_then(|a| a.get("by")).and_then(Value::as_str).unwrap_or("user").to_string();
-                    let tasks = Rc::downgrade(&backlog);
-                    core.handle(request, move |answer| {
-                        if let Some(backlog) = tasks.upgrade() {
-                            backlog.moved(&answer, Some(&by));
-                        }
-                        reply(answer)
-                    })
-                }
-                None => core.handle(request, reply),
+                () => serve(&core, &backlog, request, reply),
             },
             Event::Wake => {}
             Event::Output { terminal, serial } => {
@@ -381,7 +384,7 @@ fn run() -> Result<(), String> {
             Event::AppMessage { conn, message } => {
                 if let Some(request) = app.message(conn, message) {
                     let link = Rc::downgrade(&app);
-                    core.handle(request, move |reply| {
+                    serve(&core, &backlog, request, move |reply| {
                         if let Some(link) = link.upgrade() {
                             link.answer_app(conn, reply);
                         }
@@ -396,6 +399,8 @@ fn run() -> Result<(), String> {
 
     server.stop();
     app.close();
+    layout.flush();
+    layout.save_now();
     terminals.shutdown();
     let _ = std::fs::remove_file(&pid_file);
     match failure {
@@ -477,6 +482,13 @@ mod tests {
     }
 }
 
-fn moves_tasks(request: &Value) -> bool {
-    request.get("cmd").and_then(Value::as_str) == Some("task") && matches!(request.get("args").and_then(|a| a.get("action")).and_then(Value::as_str), Some("park" | "pull"))
+fn serve(core: &kanna_mux::CoreHandle, backlog: &Rc<backlog::Backlog>, request: Value, reply: impl FnOnce(Value) + 'static) {
+    let by = request.get("args").and_then(|a| a.get("by")).and_then(Value::as_str).unwrap_or("user").to_string();
+    let tasks = Rc::downgrade(backlog);
+    core.handle(request, move |answer| {
+        if let Some(backlog) = tasks.upgrade().filter(|_| answer.get("moves").and_then(Value::as_array).is_some_and(|m| !m.is_empty())) {
+            backlog.moved(&answer, Some(&by));
+        }
+        reply(answer)
+    })
 }

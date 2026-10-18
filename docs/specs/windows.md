@@ -2,11 +2,11 @@
 
 **Status:** built ([plan](../plans/mux-build.md) M4, track A) · **Builds on:** [layout](layout.md) · **Reference:** [kmux's spec](https://github.com/tampopogk/kmux/blob/main/docs/kmux-spec.md) §3–§6 · **Related:** [menus](menus.md), [docked pane](docked-pane.md), [zoom](zoom.md)
 
-Kanna.app's windows behave as kmux's: any number of windows, each with a tab bar and the active tab's splits; menus, shortcuts, clicks and drags as kmux's. The views are ported from kmux's app (`WindowController`, `TabBar`, `PaneView`, `Dragging`, `Shortcuts`); what changes is where they get the layout from and where their actions go.
+Kanna.app's windows behave as kmux's: any number of windows, each with a tab bar and the active tab's splits; menus, shortcuts, clicks and drags as kmux's. The views are ported from kmux's app (`WindowController`, `TabBar`, `PaneView`, `Dragging`, `Shortcuts`); what changes is that the layout comes from the daemon and their actions go to it.
 
 ## Contents
 
-1. [Views draw the model; actions go where their state lives](#1-views-draw-the-model-actions-go-where-their-state-lives)
+1. [Views draw the daemon's layout; actions go to it](#1-views-draw-the-daemons-layout-actions-go-to-it)
 2. [The model's app-only calls](#2-the-models-app-only-calls)
 3. [Windows, tabs, panes](#3-windows-tabs-panes)
 4. [Terminal views](#4-terminal-views)
@@ -14,32 +14,28 @@ Kanna.app's windows behave as kmux's: any number of windows, each with a tab bar
 6. [Checked by](#6-checked-by)
 7. [Glossary](#7-glossary)
 
-## 1. Views draw the model; actions go where their state lives
+## 1. Views draw the daemon's layout; actions go to it
 
-The views never keep a copy of the layout. After every change the app asks the model for a `view` of every window and draws it. A user action is one of three kinds:
+The views never keep a copy of the layout. The daemon sends a `view` of every window after every change ([layout](layout.md)), and the app draws it. A user action is one of two kinds:
 
 | Kind | Examples | Goes to |
 |---|---|---|
-| **Layout only** | select, rename, reorder or tear off a tab; focus, zoom, next or previous pane, tab or window; move a pane | the app's own layout model, as the same `command` step the daemon would send (`focus`, `zoom`, `rename-tab`, `move`, `move-tab`) |
-| **A pane starts or ends** | Split Right / Down, New Tab, New Window, new web, markdown and iOS panes, Close Pane, × on a tab, Close Window, the red button | the daemon, as a client's request (`open`, `close`), which then sends its layout steps back |
-| **What only the app knows** | a click focusing a pane, a divider dragged, a window moved, which panes are wide | the model's app-only calls ([2](#2-the-models-app-only-calls)) |
+| **A command** | select, rename, reorder or tear off a tab; focus, zoom, next or previous pane, tab or window; move a pane; Split Right / Down, New Tab, New Window, new web, markdown and iOS panes, Close Pane, × on a tab, Close Window, the red button | the daemon, as a client's request (`focus`, `zoom`, `rename-tab`, `move`, `move-tab`, `open`, `close`), the same as the CLI's |
+| **What only the app knows** | a click focusing a pane, a divider dragged, a window moved, which panes are wide | the model's app-only calls, as `layout.call` ([2](#2-the-models-app-only-calls)) |
 
-Layout-only actions skip the daemon because the app is the layout's only writer; a round trip would make every tab click wait on the daemon (and fail while it restarts) for the same answer. Opening and closing go through it because panes are the daemon's: its core gives the IDs, starts and stops terminals, and places the pane through the same steps as a CLI `open`.
+Every action goes through the daemon because the layout is a task's, not an app's: a task arranges its tabs with the app closed, and every client sees the same layout ([presentation layers](presentation-layers.md)).
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph A["Kanna app"]
         UI["windows, tab bars, panes<br/>(Swift, from kmux)"]
-        OWNER["LayoutOwner<br/>(kanna-layout)"]
-        UI -->|"focus, zoom, rename-tab,<br/>move, move-tab"| OWNER
-        UI -->|"focused, divider,<br/>frame, shapes"| OWNER
-        OWNER -->|"view: every window"| UI
     end
     subgraph D["daemon"]
-        CORE["kanna-mux core"]
+        CORE["kanna-mux core"] --> OWNER["LayoutOwner"]
     end
-    UI -->|"open, close"| CORE
-    CORE -->|"layout steps"| OWNER
+    UI -->|"open, close, focus, zoom,<br/>rename-tab, move, move-tab"| CORE
+    UI -->|"layout.call: focused,<br/>divider, frame, shapes"| OWNER
+    OWNER -->|"layout: every window"| UI
     classDef kanna fill:#2f6f4f,stroke:#6fcf97,color:#ffffff
     classDef kmux fill:#2f4f8f,stroke:#7fa7ff,color:#ffffff
     class UI kanna
@@ -50,33 +46,32 @@ flowchart LR
 sequenceDiagram
     participant U as user
     participant W as window
-    participant O as LayoutOwner
     participant D as daemon
     U->>W: ⌘D
     W->>D: open {type: term, split: right, window: w1}
-    D->>O: layout {op: place, pane p4, at: right}
-    Note over O: shapes first (auto only)
-    O->>D: ok {window w1, tab t1}
-    Note over W: view → draw w1; p4 attached
+    D->>W: layout (the view)
+    Note over W: draw w1; p4 attached
     U->>W: ⌘] (next pane)
-    W->>O: command focus {pane p1}
-    Note over W: view → draw, p1 first responder
+    W->>D: focus {pane p1}
+    D->>W: layout (the view)
+    Note over W: draw, p1 first responder
     U->>W: drag the divider
-    W->>O: divider {tab t1, path [], index 0, share 1/3}
-    Note over W: view → draw, saved ½ s later
+    W->>D: layout.call divider {tab t1, path [], index 0, share 1/3}
+    D->>W: layout (the view)
+    Note over D: saved ½ s later
 ```
 
 ## 2. The model's app-only calls
 
-Through `kanna_layout_call`, besides `serve`, `attach`, `save` and the rest of [layout](layout.md):
+As `layout.call {call, …}` on the app link:
 
 | Call | Does | Why it isn't a protocol command |
 |---|---|---|
-| `view` | `{key, windows: [{id, frame, title, tab, tabs: [{id, title, panes}], focused, zoomed, root, dock}]}`: every window, its tabs and their panes, the tree on screen (the zoomed pane alone when zoomed; nothing when the docked pane is), with exact sizes and pane types, and its docked pane (`{pane, type, edge, width}`, or null) | it's what to draw, not what a client sees (`list` shows names and fractions) |
-| `focused {pane}` | a click: the pane's window remembers it as focused (and its tab as last focused), without making the window key or unzooming; answers whether it changed | kmux's app does the same outside its core; `focus` would also make the window key |
+| `view` | `{key, windows: [{id, frame, title, tab, tabs: [{id, title, panes}], focused, zoomed, root, dock}]}`: every window, its tabs and their panes, the tree on screen (the zoomed pane alone when zoomed; nothing when the docked pane is), with exact sizes and pane types, and its docked pane (`{pane, type, edge, width}`, or null); also sent as `layout` after every change | it's what to draw, not what a client sees (`list` shows names and fractions) |
+| `focused {pane}` | a click: the pane's window remembers it as focused (and its tab as last focused), without making the window key or unzooming | kmux's app does the same outside its core; `focus` would also make the window key |
 | `divider {tab, path, index, share}` | a dragged divider: the two panes either side share what they had, the first getting `share` | `resize` gives one pane a fraction and rescales all its siblings; a divider moves only its two neighbours |
-| `frame {window, frame}` | a window moved or was resized; saved with the window | frames are the app's |
-| `shapes {panes: {id: wide}}` | which panes on screen are at least as wide as tall; sent before every `place` and `attach` | `auto` splits a wide pane sideways and a tall one down, and only the app knows sizes |
+| `frame {window, frame}` | a window moved or was resized; saved with the window | frames are the app's (they move to it next, [presentation layers](presentation-layers.md#5-decisions)) |
+| `shapes {panes: {id: wide}}` | which panes on screen are at least as wide as tall; sent after every change | `auto` splits a wide pane sideways and a tall one down, and only the app knows sizes |
 | `resolve {pane}` | a pane name to its ID, for the debug commands | — |
 
 ## 3. Windows, tabs, panes

@@ -1,11 +1,12 @@
 use crate::diffs::Diffs;
+use crate::layout::DaemonLayout;
 use crate::settings::Settings;
 use crate::terminals::Terminals;
 use crate::Event;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use kanna_mux::json::{encode, json, string, Map, Value};
-use kanna_mux::{pane_record, pane_table, read_pane_table, responder, write_all, KmuxError, LayoutCall, LayoutHost, LayoutLink, Model, Pane, PaneState, PaneType, Panes, Responder, Takeover, WeakCore};
+use kanna_mux::{pane_record, pane_table, write_all, KmuxError, Pane, PaneState, PaneType, Responder, Takeover, WeakCore};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
@@ -53,8 +54,6 @@ const SNAPSHOT_RETRY: Duration = Duration::from_millis(100);
 pub const APP_PREFIX: &str = "debug.";
 
 pub const APP_ASK: &str = "app.";
-
-const TERMINAL_ONLY: [&str; 5] = ["send", "send-key", "read", "list", "capabilities"];
 
 pub fn takeover(events: Sender<Event>) -> Takeover {
     let counter = Arc::new(AtomicU64::new(0));
@@ -115,6 +114,7 @@ pub struct AppLink {
     core: WeakCore,
     terminals: Rc<Terminals>,
     diffs: Rc<Diffs>,
+    layout: Rc<DaemonLayout>,
     app: RefCell<Option<Connection>>,
     pending: RefCell<HashMap<u64, (Instant, Responder)>>,
     timeout: Duration,
@@ -126,12 +126,13 @@ pub struct AppLink {
 }
 
 impl AppLink {
-    pub fn new(core: WeakCore, terminals: Rc<Terminals>, diffs: Rc<Diffs>, timeout: Duration, build: Option<String>) -> AppLink {
+    pub fn new(core: WeakCore, terminals: Rc<Terminals>, diffs: Rc<Diffs>, layout: Rc<DaemonLayout>, timeout: Duration, build: Option<String>) -> AppLink {
         AppLink {
             build,
             core,
             terminals,
             diffs,
+            layout,
             app: RefCell::new(None),
             pending: RefCell::default(),
             backlog: RefCell::default(),
@@ -210,9 +211,9 @@ impl AppLink {
         }
         let pid = hello.get("args").and_then(|a| a.get("pid")).cloned().unwrap_or(Value::Null);
         eprintln!("kanna-daemon: the app attached (pid {pid})");
-        self.lend(hello.get("args").and_then(|a| a.get("panes")));
+        self.layout.flush();
         let panes = self.core.upgrade().map_or(Value::Array(vec![]), |core| core.with_panes(pane_table));
-        answer(json!({ "id": id, "ok": true, "daemon": { "pid": std::process::id(), "build": self.build }, "panes": panes }));
+        answer(json!({ "id": id, "ok": true, "daemon": { "pid": std::process::id(), "build": self.build }, "panes": panes, "layout": self.layout.view() }));
         *self.app.borrow_mut() = Some(Connection { id: conn, out, stream, behind: Cell::new(false), cut: Cell::new(false) });
         let statuses: Vec<(String, String)> = self.core.upgrade().map_or(vec![], |core| {
             core.with_panes(|panes| panes.iter().filter_map(|p| p.status().map(|s| (p.id.clone(), s.to_string()))).collect())
@@ -254,36 +255,6 @@ impl AppLink {
         self.notify("status", json!({ "pane": pane, "status": status }));
     }
 
-    fn lend(&self, panes: Option<&Value>) {
-        let Some(core) = self.core.upgrade() else { return };
-        let panes = match panes.map(read_pane_table) {
-            None => vec![],
-            Some(Ok(panes)) => panes,
-            Some(Err(error)) => {
-                eprintln!("kanna-daemon: the app's panes can't be read ({}); ignoring them", error.message);
-                vec![]
-            }
-        };
-        let mut taken: Vec<Pane> = vec![];
-        let mut counter = 0;
-        for pane in panes {
-            let number = pane.id.strip_prefix('p').and_then(|n| n.parse::<usize>().ok()).filter(|n| format!("p{n}") == pane.id);
-            let clash = core.pane(&pane.id).is_some()
-                || taken.iter().any(|p| p.id == pane.id)
-                || pane.name.as_ref().is_some_and(|name| core.pane(name).is_some() || taken.iter().any(|p| p.name.as_ref() == Some(name)));
-            match number {
-                Some(number) if pane.kind != PaneType::Term && !clash => {
-                    counter = counter.max(number);
-                    taken.push(pane);
-                }
-                _ => eprintln!("kanna-daemon: not taking the app's pane {} ({}): its ID or name is in use", pane.label(), pane.kind.as_str()),
-            }
-        }
-        if !taken.is_empty() {
-            core.install_panes(taken, counter, 0);
-        }
-    }
-
     pub fn attached(&self) -> bool {
         self.app.borrow().is_some()
     }
@@ -302,9 +273,10 @@ impl AppLink {
         for responder in pending {
             responder.reply(Err(KmuxError::new("app_gone", "Kanna.app went away before answering")));
         }
-        if let Some(core) = self.core.upgrade() {
-            let lent: Vec<String> = core.with_panes(|panes| panes.iter().filter(|p| p.kind != PaneType::Term).map(|p| p.id.clone()).collect());
-            core.drop_panes(&lent, "Kanna.app went away");
+        let Some(core) = self.core.upgrade() else { return };
+        let starting: Vec<Pane> = core.with_panes(|panes| panes.iter().filter(|p| p.kind != PaneType::Term && p.state == PaneState::Starting).cloned().collect());
+        for pane in starting {
+            self.terminals.unshown(&pane);
         }
     }
 
@@ -342,6 +314,18 @@ impl AppLink {
             }
             ("diff.show", Some(view)) => {
                 self.diffs.show(&view, args.get("show").unwrap_or(&Value::Null));
+                return None;
+            }
+            ("layout.call", _) if message.get("id").is_some() => {
+                let call = string(&args, "call").unwrap_or_default();
+                let reply = if ["focused", "divider", "frame", "shapes", "resolve", "view"].contains(&call) {
+                    self.layout.call(&args)
+                } else {
+                    json!({ "ok": false, "error": { "code": "bad_request", "message": format!("the app can't make the layout call \"{call}\"") } })
+                };
+                let mut reply = reply;
+                reply["id"] = message.get("id").cloned().unwrap_or(Value::Null);
+                self.send(reply);
                 return None;
             }
             ("diff.unsubscribe", Some(view)) => {
@@ -432,23 +416,12 @@ impl AppLink {
         }
     }
 
-    pub fn hide(&self, pane: &str) {
-        self.notify("stop", json!({ "pane": pane }));
+    pub fn layout(&self, view: &Value) {
+        self.notify("layout", view.clone());
     }
 
-    pub fn unreachable(&self, request: &Value) -> Option<KmuxError> {
-        if self.attached() {
-            return None;
-        }
-        let cmd = string(request, "cmd").unwrap_or_default();
-        if TERMINAL_ONLY.contains(&cmd) || cmd == "open" {
-            return None;
-        }
-        let reference = request.get("args").and_then(|args| string(args, "pane"))?;
-        let core = self.core.upgrade()?;
-        core.pane(reference).is_none().then(|| {
-            KmuxError::new("no_app", format!("there's no terminal \"{reference}\", and other panes need Kanna.app, which isn't attached to this daemon"))
-        })
+    pub fn hide(&self, pane: &str) {
+        self.notify("stop", json!({ "pane": pane }));
     }
 
     fn attach(&self, pane: &str) {
@@ -563,58 +536,4 @@ fn view_prefix(conn: u64) -> String {
 
 fn no_app(what: &str) -> KmuxError {
     KmuxError::new("no_app", format!("{what} needs Kanna.app, and none is attached to this daemon"))
-}
-
-#[derive(Default)]
-pub struct AppLayout {
-    app: RefCell<Weak<AppLink>>,
-}
-
-impl AppLayout {
-    pub fn connect(&self, app: &Rc<AppLink>) {
-        *self.app.borrow_mut() = Rc::downgrade(app);
-    }
-}
-
-pub fn offline(request: &Value) -> Result<Map, KmuxError> {
-    let op = string(request, "op").unwrap_or_default();
-    let empty = |keys: &[&str]| -> Map { keys.iter().map(|k| (k.to_string(), Value::Null)).collect() };
-    match op {
-        "place" if string(&request["pane"], "type").is_some_and(|kind| kind != "term") => {
-            Err(no_app(&format!("opening a {} pane", string(&request["pane"], "type").unwrap_or_default())))
-        }
-        "place" if request["at"].as_object().is_none_or(Map::is_empty) => Ok(empty(&["window", "tab"])),
-        "place" => Err(no_app("opening a pane with --split, --size, --tab, --window or --dock")),
-        "location" => Ok(empty(&["window", "tab"])),
-        "remove" => Ok(Map::new()),
-        "windows" => Ok([("windows".to_string(), Value::Array(vec![]))].into_iter().collect()),
-        "command" => Err(no_app(string(request, "cmd").unwrap_or("this command"))),
-        "panes-in" => Err(no_app("closing a tab or a window")),
-        _ => Err(no_app("the layout")),
-    }
-}
-
-impl LayoutLink for AppLayout {
-    fn commands(&self) -> &'static [&'static str] {
-        Model::new().commands()
-    }
-
-    fn features(&self) -> &'static [&'static str] {
-        Model::new().features()
-    }
-
-    fn call(&self, mut request: Value, panes: &Panes) -> LayoutCall {
-        let Some(app) = self.app.borrow().upgrade().filter(|app| app.attached()) else {
-            return Box::pin(std::future::ready(offline(&request)));
-        };
-        request["panes"] = pane_table(panes);
-        let (answer, reply) = responder();
-        app.ask("layout", request.clone(), answer);
-        Box::pin(async move {
-            match reply.await {
-                Err(error) if error.code == "app_gone" => offline(&request),
-                other => other,
-            }
-        })
-    }
 }

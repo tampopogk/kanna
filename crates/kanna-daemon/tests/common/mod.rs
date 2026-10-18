@@ -155,7 +155,7 @@ fn spawn_daemon(dir: &Path, env: &[(String, String)]) -> Child {
 pub struct App {
     pub stream: UnixStream,
     reader: BufReader<UnixStream>,
-    pub owner: kanna_mux::LayoutOwner,
+    pub view: Value,
     pub shows: bool,
 }
 
@@ -182,7 +182,7 @@ impl App {
         let stream = UnixStream::connect(socket).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let reader = BufReader::new(stream.try_clone().unwrap());
-        App { stream, reader, owner: kanna_mux::LayoutOwner::new(), shows: true }
+        App { stream, reader, view: Value::Null, shows: true }
     }
 
     pub fn answering(self) -> std::thread::JoinHandle<()> {
@@ -209,10 +209,10 @@ impl App {
                 Ok(_) => serde_json::from_str(&line).unwrap(),
             };
             if message["id"] == 0 && message["ok"] == true {
-                self.owner.handle(&json!({"call": "attach", "panes": message["panes"]}));
+                self.view = message["layout"].clone();
             }
-            if message["cmd"] == "start" || message["cmd"] == "pane" {
-                self.owner.handle(&json!({"call": "pane", "pane": message["args"]["pane"]}));
+            if message["cmd"] == "layout" {
+                self.view = message["args"].clone();
             }
             if message["cmd"] == "start" && self.shows {
                 let pane = message["args"]["pane"]["id"].clone();
@@ -224,12 +224,7 @@ impl App {
                 self.send(json!({"id": message["id"], "ok": true, "first": line, "last": last}));
                 continue;
             }
-            if message["cmd"] != "layout" {
-                return Some(message);
-            }
-            let mut reply = self.owner.handle(&json!({"call": "serve", "request": message["args"]}));
-            reply["id"] = message["id"].clone();
-            self.send(reply);
+            return Some(message);
         }
     }
 

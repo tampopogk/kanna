@@ -126,6 +126,10 @@ impl Terminals {
         Spec { id: terminal.to_string(), command, cwd: pane.cwd.clone(), env, cols, rows }
     }
 
+    pub fn unshown(&self, pane: &Pane) {
+        self.report(&pane.id, PaneState::Running, None, None);
+    }
+
     pub fn pane_of(&self, terminal: &str) -> Option<String> {
         self.live.borrow().get(terminal).map(|t| t.pane.clone())
     }

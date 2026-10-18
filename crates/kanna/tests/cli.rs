@@ -301,39 +301,26 @@ fn send_key_presses_keys_as_the_program_expects_them_without_the_app() {
 }
 
 #[test]
-fn without_the_app_terminals_work_and_the_rest_needs_it() {
+fn without_the_app_terminals_and_the_layout_work_and_debug_needs_it() {
     let daemon = Daemon::start();
-    assert_eq!(daemon.kanna(&["open", "--name", "a"]).ok(), "opened p1 (a), unplaced until Kanna.app opens: running");
-    assert_eq!(daemon.kanna(&["workspace", "list", "--all"]).ok(), "no windows: Kanna.app isn't open (these terminals keep running)\n\nUnplaced panes\np1 (a)");
-    assert_eq!(daemon.kanna_as("a", &["workspace", "list"]).ok(), "p1 (a) isn't in a window or a workspace");
+    assert_eq!(daemon.kanna(&["open", "--name", "a"]).ok(), "opened p1 (a) in window w1, tab t1: running");
+    assert_eq!(daemon.kanna(&["workspace", "list", "--all"]).ok(), "Windows\n*w1  free\n\nFree windows\nw1\n  focus: a\n  *t1 \"a\"  a");
     daemon.kanna(&["send", "a", "echo", "ALONE"]).ok();
     wait_for("the sent line", || daemon.kanna(&["read", "a"]).ok().contains("ALONE"));
     assert_eq!(daemon.kanna(&["restart", "a"]).ok(), "p1 (a) is running");
-    assert!(daemon.kanna(&["capabilities"]).ok().ends_with("Kanna.app: not attached (terminals work without it; the CLI starts it for commands that need it)"));
-    assert_eq!(daemon.kanna(&["raw", r#"{"cmd":"list"}"#]).json()["windows"], json!([]));
-    daemon.kanna(&["open", "--name", "b"]).ok();
+    assert!(daemon.kanna(&["capabilities"]).ok().ends_with("Kanna.app: not attached (terminals and the layout work without it; the CLI starts it for commands that need it)"));
+    daemon.kanna(&["open", "--name", "b", "--split", "right"]).ok();
     for args in [
-        &["open", "--split", "right"][..],
-        &["open", "--tab"],
-        &["open", "--window", "new"],
-        &["open", "--size", "1/3"],
-        &["open", "web", "http://x.test"],
+        &["open", "--tab"][..],
         &["open", "md", "/tmp/x.md"],
-        &["open", "ios", "--app", "com.apple.Preferences"],
         &["focus", "a"],
-        &["focus", "--tab", "t1"],
-        &["focus", "--window", "w1"],
-        &["zoom", "a"],
-        &["resize", "a", "1/2"],
-        &["move", "a", "--to", "b"],
-        &["arrange", r#"{"split":"row","children":[{"pane":"a"},{"pane":"b"}]}"#],
+        &["resize", "a", "1/3"],
         &["rename-tab", "t1", "x"],
-        &["move-tab", "t1", "--index", "0"],
-        &["close", "--tab", "t1"],
-        &["close", "--window", "w1"],
-        &["navigate", "site", "http://x.test"],
-        &["raw", r#"{"cmd":"debug.app"}"#],
+        &["close", "--tab", "t2"],
     ] {
+        daemon.kanna(args).ok();
+    }
+    for args in [&["raw", r#"{"cmd":"debug.app"}"#][..], &["screenshot", "w1"]] {
         daemon.kanna(args).fails(6, "[no_app] (KANNA_SOCKET is set, so kanna doesn't start Kanna.app for it)");
     }
     daemon.kanna(&["send", "nope", "x"]).fails(4, "not_found");

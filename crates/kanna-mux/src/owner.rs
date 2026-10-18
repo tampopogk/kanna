@@ -92,6 +92,12 @@ impl LayoutOwner {
         serve(&mut self.model, request, &self.panes)
     }
 
+    pub fn sync(&mut self, table: &Value) -> Result<bool, KmuxError> {
+        let panes = read_pane_table(table)?;
+        self.panes.install(panes, 0, 0);
+        Ok(self.model.retitle(&self.panes))
+    }
+
     pub fn hello(&self) -> Value {
         let panes = match &self.saved {
             Some(saved) => state::import_versions(saved, &[1, 2, LAYOUT_VERSION], "Kanna reads").map(|(panes, _)| panes).unwrap_or_default(),

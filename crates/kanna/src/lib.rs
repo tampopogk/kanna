@@ -466,10 +466,10 @@ fn overview(target: &Target) -> String {
          \n\
          {running}\n\
          --json prints the reply from Kanna as JSON; -- ends the options (kanna send p1 -- --json types --json).\n\
-         Terminals live in Kanna's daemon and keep running with Kanna.app closed: list, send, send-key, read, close,\n\
-         restart and open (unplaced) work without the app. Commands that need it start it if it isn't running (in front,\n\
-         or behind your other windows with --bg or KANNA_BG=1), as does any command when nothing answers. A started\n\
-         Kanna.app brings back the layout it saved; --fresh (or KANNA_FRESH=1) opens a new window instead.\n\
+         Terminals and the layout live in Kanna's daemon and keep going with Kanna.app closed: every command but\n\
+         screenshot and debug.* works without the app. Those start it if it isn't running (in front, or behind your\n\
+         other windows with --bg or KANNA_BG=1), as does any command when nothing answers. A started Kanna.app shows\n\
+         the layout as it was left; a daemon started with --fresh (or KANNA_FRESH=1) forgets the saved layout.\n\
          With KANNA_SOCKET set, kanna never starts the app.\n\
          {backend}\
          Instance: {} of {} at {} (for developing Kanna, --instance NAME picks another; kanna help instances).\n\
@@ -510,7 +510,7 @@ pub fn describe(supported: Option<&[String]>) -> Value {
             { "flag": "--mux kanna|kmux", "description": "Talk to Kanna (default; also KANNA_MUX) or to a kmux you run." },
             { "flag": "--instance NAME", "description": "For developing and testing Kanna: talk to the instance NAME (default: $KANNA_SOCKET, else $KANNA_INSTANCE, else default). See kanna help instances." },
             { "flag": "--bg", "description": "If Kanna.app has to be started, keep it behind your other windows (also KANNA_BG=1)." },
-            { "flag": "--fresh", "description": "If Kanna.app has to be started, open a new window instead of the layout it saved (also KANNA_FRESH=1)." },
+            { "flag": "--fresh", "description": "If Kanna's daemon has to be started, start it without the layout it saved (also KANNA_FRESH=1)." },
             { "flag": "--json", "description": "Print the reply as JSON." },
             { "flag": "--", "description": "End the options: what follows is text, e.g. kanna send p1 -- --json." }
         ],
@@ -756,12 +756,10 @@ mod tests {
     }
 
     #[test]
-    fn with_the_app_closed_open_and_workspace_list_say_so() {
-        let opened = output::opened(&json!({}), &json!({ "pane": { "id": "p3", "name": "logs", "state": "running" }, "window": null, "tab": null }));
-        assert_eq!(opened, "opened p3 (logs), unplaced until Kanna.app opens: running");
+    fn workspace_list_lists_unplaced_panes_and_says_when_there_is_nothing() {
         let all = json!({ "action": "list", "all": true });
         let list = output::workspace(&all, &json!({ "windows": [], "panes": [{ "id": "p1", "type": "term", "state": "running" }] }));
-        assert_eq!(list, "no windows: Kanna.app isn't open (these terminals keep running)\n\nUnplaced panes\np1");
+        assert_eq!(list, "Unplaced panes\np1");
         assert_eq!(output::workspace(&all, &json!({ "windows": [], "panes": [] })), "no windows (open one with `kanna open`)");
         let alone = output::scoped(&json!({ "windows": [], "panes": [{ "id": "p1", "name": "logs", "type": "term" }] }), "p1").unwrap();
         assert_eq!(output::workspace(&json!({ "action": "list", "pane": "p1" }), &alone), "p1 (logs) isn't in a window or a workspace");

@@ -3,8 +3,7 @@ name = "kanna-layout"
 version.workspace = true
 edition.workspace = true
 license = "FSL-1.1-MIT"
-description = "Kanna.app's layout: kanna-mux's layout model, kept and saved by the app, behind a small C interface that takes and returns JSON."
+description = "kanna-mux's layout helpers for Kanna.app, behind a small C interface: split sizes shown as kmux shows them."
 
 [dependencies]
 kanna-mux = { path = "../kanna-mux" }
-serde_json = "1"

@@ -465,7 +465,7 @@ extension AppController {
         default: perform = nil
         }
         guard let perform else { return false }
-        if appLayout?.focused(pane) == true { refresh() }
+        userFocused(pane)
         perform()
         return true
     }

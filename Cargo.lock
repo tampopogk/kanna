@@ -673,7 +673,6 @@ name = "kanna-layout"
 version = "0.1.0"
 dependencies = [
  "kanna-mux",
- "serde_json",
 ]
 
 [[package]]

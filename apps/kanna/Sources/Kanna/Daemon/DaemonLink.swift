@@ -8,8 +8,7 @@ final class DaemonLink: TerminalLink {
     private var sizes: [String: JSON] = [:]
     private(set) var attached = false
     var onAttach: ((JSON) -> Void)?
-    var onLayout: ((JSON) -> JSON)?
-    var helloPanes: (() -> JSON)?
+    var onView: ((JSON) -> Void)?
     var onStart: ((JSON) -> Void)?
     var onStop: ((String) -> Void)?
     var onPane: ((JSON) -> Void)?
@@ -31,7 +30,7 @@ final class DaemonLink: TerminalLink {
         connection = DaemonConnection(
             path: socketPath,
             hello: { [weak self] in
-                var args: [String: JSON] = ["pid": .number(Double(ProcessInfo.processInfo.processIdentifier)), "panes": self?.helloPanes?() ?? []]
+                var args: [String: JSON] = ["pid": .number(Double(ProcessInfo.processInfo.processIdentifier))]
                 if let build = KannaBuild.daemonBuild { args["build"] = .string(build) }
                 return ["id": 0, "cmd": "app.hello", "args": .object(args)]
             },
@@ -78,7 +77,7 @@ final class DaemonLink: TerminalLink {
             attached = ok
             if ok {
                 connection.accepted()
-                onAttach?(message["panes"] ?? [])
+                onAttach?(message)
             } else if message["error"]?["code"]?.string == "other_build" {
                 connection.accepted()
                 starter?.replacing()
@@ -90,15 +89,6 @@ final class DaemonLink: TerminalLink {
             return
         }
         guard let cmd = message["cmd"]?.string else { return }
-        if cmd == "layout", let id = message["id"] {
-            var reply = onLayout?(message["args"] ?? [:]) ?? ["ok": false, "error": ["code": "no_layout", "message": "this app keeps no layout"]]
-            if case .object(var fields) = reply {
-                fields["id"] = id
-                reply = .object(fields)
-            }
-            connection.send(reply, generation: delivery.generation)
-            return
-        }
         if message["id"] != nil {
             Task { [commands] in connection.send(await commands.handle(message), generation: delivery.generation) }
             return
@@ -134,6 +124,8 @@ final class DaemonLink: TerminalLink {
             }
         case "status":
             if let pane = args["pane"]?.string { onStatus?(pane, args["status"]?.string) }
+        case "layout":
+            onView?(args)
         case "diff":
             if let content = args["content"]?.string { onDiff?(content, args) }
         case "backlog":

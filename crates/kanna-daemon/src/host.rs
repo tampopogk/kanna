@@ -27,11 +27,10 @@ impl PaneHost for Host {
     fn start(&self, pane: &Pane) {
         match pane.kind {
             PaneType::Term => self.terminals.start(pane),
-            _ => {
-                if let Some(app) = self.app() {
-                    app.show(pane);
-                }
-            }
+            _ => match self.app().filter(|app| app.attached()) {
+                Some(app) => app.show(pane),
+                None => self.terminals.unshown(pane),
+            },
         }
     }
 

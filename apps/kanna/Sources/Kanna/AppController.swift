@@ -16,17 +16,20 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     static let debugging = ProcessInfo.processInfo.environment["KANNA_DEBUG"] == "1"
     let debugCommands = AppController.debugging
     private var wantsFirstTerminal = ProcessInfo.processInfo.environment["KANNA_NO_INITIAL_WINDOW"] == nil
-    var appLayout: AppLayout?
-    private var saveTimer: Timer?
     let contents = Contents()
     var panes: PaneViews!
     var controllers: [String: WindowController] = [:]
     private(set) var state: JSON = ["key": nil, "windows": []]
+    private var focusing: String?
+    private var focusCalls = 0
+    private var rendering = false
     var paneMenu: NSMenu?
     var testingDrag = false
     var agentStatuses = AgentStatuses()
     var folders: [String: String] = [:]
     private var terminalIDs: [String: String] = [:]
+    private var names: [String: String] = [:]
+    private var sentShapes: [String: JSON] = [:]
     var backlog: [JSON] = []
     var starting: Set<String> = []
 
@@ -35,21 +38,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return instanceSocket(KannaBuild.defaultInstance)
     }
 
-    static var statePath: String? {
-        let environment = ProcessInfo.processInfo.environment
-        if environment["KANNA_NO_STATE"] == "1" { return nil }
-        let folder = environment["KANNA_STATE_DIR"].flatMap { $0.isEmpty ? nil : $0 } ?? (daemonSocketPath as NSString).deletingLastPathComponent
-        return (folder as NSString).appendingPathComponent("layout.json")
-    }
-
     static var startFolder: String? {
         guard let folder = ProcessInfo.processInfo.environment["KANNA_START_DIR"], folder.hasPrefix("/") else { return nil }
         var isFolder: ObjCBool = false
         return FileManager.default.fileExists(atPath: folder, isDirectory: &isFolder) && isFolder.boolValue ? folder : nil
-    }
-
-    static var fresh: Bool {
-        CommandLine.arguments.contains("--fresh") || ProcessInfo.processInfo.environment["KANNA_FRESH"] == "1"
     }
 
     static var instanceName: String {
@@ -97,12 +89,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             if Self.isAppSocket(Self.daemonSocketPath) { fatal("kanna: \(Self.daemonSocketPath) belongs to Kanna.app; use another KANNA_SOCKET") }
             let daemon = DaemonLink(socketPath: Self.daemonSocketPath, commands: commands, starter: DaemonStarter(socketPath: Self.daemonSocketPath))
-            let layout = AppLayout(statePath: Self.statePath, fresh: Self.fresh)
-            layout.shapes = { [weak self] in self?.shapes() ?? [:] }
-            appLayout = layout
             daemon.onAttach = { [weak self] in self?.attached($0) }
-            daemon.onLayout = { [weak self] in self?.layoutRequest($0) ?? ["ok": false, "error": ["code": "app_gone", "message": "Kanna.app is closing"]] }
-            daemon.helloPanes = { [weak self] in self?.helloPanes() ?? [] }
+            daemon.onView = { [weak self] view in
+                guard let self else { return }
+                state = focusing.map { Self.view(view, focusing: $0) } ?? view
+                layoutChanged()
+            }
             daemon.onStart = { [weak self] pane in self?.startContent(pane) }
             daemon.onStop = { [weak self] pane in self?.contents.stop(pane) }
             daemon.onDiff = { [weak self] content, message in self?.contents.received(diff: message, content: content) }
@@ -163,9 +155,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        saveTimer?.invalidate()
         for id in controllers.keys { recordFrame(id) }
-        appLayout?.save()
         panes?.stopAll()
         daemon?.stop()
         server?.stop()
@@ -178,18 +168,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return true
     }
 
-    private func attached(_ panes: JSON) {
-        if case .array(let list) = panes { learnTerminals(list) }
-        guard let appLayout else { return }
-        let reply = appLayout.attach(panes)
-        if let problem = reply["problem"]?.string { FileHandle.standardError.write(Data("kanna: \(problem)\n".utf8)) }
-        if reply["ok"]?.bool != true {
-            FileHandle.standardError.write(Data("kanna: the daemon's panes could not be placed: \(reply["error"]?["message"]?.string ?? "")\n".utf8))
-        }
+    private func attached(_ hello: JSON) {
+        let panes = hello["panes"] ?? []
+        if case .array(let list) = panes { learn(records: list) }
+        if let view = hello["layout"] { state = view }
         if case .array(let list) = panes {
             for pane in list where pane["type"]?.string != "term" {
                 guard let id = pane["id"]?.string else { continue }
-                if !contents.shows(id) { contents.start(pane, restoring: true) }
+                if contents.shows(id) { contents.resend(id) } else { contents.start(pane, restoring: true) }
             }
         }
         contents.subscribeDiffs()
@@ -297,60 +283,41 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         layoutCommand("task", args)
     }
 
-    private func helloPanes() -> JSON {
-        guard let appLayout, case .array(let panes)? = appLayout.call(["call": "hello"])["panes"] else { return [] }
-        return .array(panes.map { pane in
-            guard case .object(var fields) = pane, let id = pane["id"]?.string else { return pane }
-            fields["state"] = .string(contents.shows(id) ? contents.states[id] ?? "starting" : "starting")
-            return .object(fields)
-        })
-    }
-
     private func startContent(_ pane: JSON) {
         learn(pane)
         if let id = pane["id"]?.string { panes.restarted(id) }
         contents.start(pane)
-        layoutChanged()
+        refresh()
     }
 
     private func learn(_ pane: JSON) {
-        let renewed = learnTerminals([pane])
-        let reply = appLayout?.call(["call": "pane", "pane": pane])
-        if renewed || reply?["changed"]?.bool == true { refresh() }
-        scheduleSave()
+        if learn(records: [pane]) { refresh() }
     }
 
     @discardableResult
-    private func learnTerminals(_ panes: [JSON]) -> Bool {
+    private func learn(records: [JSON]) -> Bool {
         var changed = false
-        for pane in panes where pane["type"]?.string == "term" {
-            guard let id = pane["id"]?.string, let terminal = pane["terminal"]?.string, terminalIDs[id] != terminal else { continue }
+        for pane in records {
+            guard let id = pane["id"]?.string else { continue }
+            names = names.filter { $0.value != id }
+            if let name = pane["name"]?.string { names[name] = id }
+            guard pane["type"]?.string == "term", let terminal = pane["terminal"]?.string, terminalIDs[id] != terminal else { continue }
             terminalIDs[id] = terminal
             changed = true
         }
         return changed
     }
 
-    private func layoutRequest(_ request: JSON) -> JSON {
-        if case .array(let list)? = request["panes"] { learnTerminals(list) }
-        guard let appLayout else { return ["ok": false, "error": ["code": "no_layout", "message": "this app keeps no layout"]] }
-        let reply = appLayout.serve(request)
-        layoutChanged()
-        return reply
+    func layoutCommand(_ cmd: String, _ args: [String: JSON], reply: ((JSON) -> Void)? = nil) {
+        request(cmd, args, reply: reply)
     }
 
-    @discardableResult
-    func layoutCommand(_ cmd: String, _ args: [String: JSON]) -> JSON {
-        guard let appLayout else { return ["ok": false, "error": ["code": "no_layout", "message": "this app keeps no layout"]] }
-        let reply = appLayout.command(cmd, args)
-        if reply["ok"]?.bool != true {
-            FileHandle.standardError.write(Data("kanna: \(cmd): \(reply["error"]?["message"]?.string ?? "failed")\n".utf8))
-        }
-        if let moves = reply["moves"], case .array(let list) = moves, !list.isEmpty {
-            request("backlog", ["action": "moved", "moves": moves, "by": "user"])
-        }
-        layoutChanged()
-        return reply
+    func paneID(named name: String) -> String? { names[name] }
+
+    func layoutCall(_ call: String, _ args: [String: JSON] = [:]) {
+        var args = args
+        args["call"] = .string(call)
+        request("layout.call", args)
     }
 
     func request(_ cmd: String, _ args: [String: JSON], reply: ((JSON) -> Void)? = nil) {
@@ -363,24 +330,50 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func userFocused(_ pane: String) {
-        guard let appLayout, appLayout.focused(pane) else { return }
+    func userFocused(_ pane: String) {
+        guard !rendering else { return }
+        focusing = pane
+        focusCalls += 1
+        state = Self.view(state, focusing: pane)
         refresh()
-        scheduleSave()
+        request("layout.call", ["call": "focused", "pane": .string(pane)]) { [weak self] _ in
+            guard let self else { return }
+            focusCalls -= 1
+            if focusCalls == 0 { focusing = nil }
+        }
+    }
+
+    func redraw(_ controller: WindowController) {
+        guard let window = window(controller.id) else { return }
+        rendering = true
+        controller.render(window, panes)
+        rendering = false
+    }
+
+    private static func view(_ view: JSON, focusing pane: String) -> JSON {
+        guard case .object(var fields) = view, case .array(let windows)? = fields["windows"] else { return view }
+        fields["windows"] = .array(windows.map { window in
+            guard case .object(var shown) = window, WindowController.shownPanes(window).contains(pane) else { return window }
+            shown["focused"] = .string(pane)
+            return .object(shown)
+        })
+        return .object(fields)
     }
 
     func layoutChanged() {
-        guard appLayout != nil else { return }
+        guard daemon != nil else { return }
         refresh()
         let known = placed
         for id in contents.ids where !known.contains(id) { contents.forget(id) }
         agentStatuses.keep(known)
-        scheduleSave()
+        sendShapes()
     }
 
     func refresh() {
-        guard let appLayout else { return }
-        render(appLayout.view)
+        guard daemon != nil else { return }
+        rendering = true
+        render(state)
+        rendering = false
     }
 
     private func render(_ view: JSON) {
@@ -434,17 +427,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         controller.onFrameChange = { [weak self] in
             self?.recordFrame(id)
-            self?.scheduleSave()
         }
         controller.relayout = { [weak self, weak controller] in
-            guard let self, let controller, let window = window(id) else { return }
-            controller.render(window, panes)
+            guard let self, let controller else { return }
+            redraw(controller)
         }
         controller.onDivider = { [weak self] divider, share in
-            guard let self, let appLayout else { return }
-            _ = appLayout.divider(tab: divider.tab, path: divider.path, index: divider.index, share: share)
-            refresh()
-            scheduleSave()
+            self?.layoutCall("divider", ["tab": .string(divider.tab), "path": .array(divider.path.map { .number(Double($0)) }), "index": .number(Double(divider.index)), "share": .number(share)])
         }
         controller.onDockWidth = { [weak self] pane, width in self?.layoutCommand("resize", ["pane": .string(pane), "size": .number(width)]) }
         controller.tabBar.onSelect = { [weak self] tab in self?.layoutCommand("focus", ["tab": .string(tab)]) }
@@ -453,8 +442,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.tabBar.onDrag = { [weak self] tab in self?.dragTab(tab) }
         controller.tabBar.onMoveToNewWindow = { [weak self] tab in self?.layoutCommand("move-tab", ["tab": .string(tab), "window": "new"]) }
         controller.tabBar.onEditEnded = { [weak self, weak controller] in
-            guard let self, let controller, let window = window(id) else { return }
-            controller.render(window, panes)
+            guard let self, let controller else { return }
+            redraw(controller)
         }
         controller.tabBar.onRename = { [weak self] tab, title in self?.layoutCommand("rename-tab", ["tab": .string(tab), "title": .string(title)]) }
         controller.onCloseRequest = { [weak self] in self?.close(window: id) }
@@ -467,11 +456,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             controller.window.makeFirstResponder(view)
         }
         controller.onBecomeKey = { [weak self, weak controller] in
-            guard let self, let controller, let appLayout else { return }
+            guard let self, let controller else { return }
             if controller.window.isKeyWindow, state["key"]?.string != id {
-                _ = appLayout.command("focus", ["window": .string(id)])
-                state = appLayout.view
-                scheduleSave()
+                layoutCommand("focus", ["window": .string(id)])
             }
             if let window = window(id) { controller.render(window, panes) }
         }
@@ -482,23 +469,19 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func recordFrame(_ id: String) {
-        guard let appLayout, let controller = controllers[id] else { return }
-        _ = appLayout.frame(id, controller.window.frame)
+        guard let rect = controllers[id]?.window.frame else { return }
+        let frame: JSON = ["x": .number(rect.minX), "y": .number(rect.minY), "w": .number(rect.width), "h": .number(rect.height)]
+        layoutCall("frame", ["window": .string(id), "frame": frame])
     }
 
-    private func shapes() -> [String: JSON] {
+    private func sendShapes() {
         var shapes: [String: JSON] = [:]
         for view in panes.all where view.superview != nil && view.bounds.height > 0 {
             shapes[view.id] = .bool(view.bounds.width >= view.bounds.height)
         }
-        return shapes
-    }
-
-    func scheduleSave() {
-        guard appLayout != nil, saveTimer?.isValid != true else { return }
-        saveTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated { self?.appLayout?.save() }
-        }
+        guard shapes != sentShapes else { return }
+        sentShapes = shapes
+        layoutCall("shapes", ["panes": .object(shapes)])
     }
 
     func present(_ window: NSWindow) {

@@ -52,9 +52,6 @@ fn whose_text(reply: &Value) -> Option<String> {
 }
 
 pub fn opened(request: &Value, reply: &Value) -> String {
-    if reply["window"].is_null() && reply.get("window").is_some() && whose(reply).is_none() {
-        return format!("opened {}, unplaced until Kanna.app opens: {}", label(&reply["pane"]), state(&reply["pane"]));
-    }
     let place = whose_text(reply).unwrap_or_else(|| format!("window {}", reply["window"].as_str().unwrap_or("?")));
     if let Some(edge) = reply["dock"].as_str() {
         let frozen = if request["frozen"] == true { ", frozen," } else { "" };
@@ -379,7 +376,7 @@ pub fn capabilities(reply: &Value) -> String {
         out += if app {
             "\nKanna.app: attached"
         } else {
-            "\nKanna.app: not attached (terminals work without it; the CLI starts it for commands that need it)"
+            "\nKanna.app: not attached (terminals and the layout work without it; the CLI starts it for commands that need it)"
         };
     }
     out
@@ -510,9 +507,7 @@ fn everything(reply: &Value) -> String {
         return "no windows (open one with `kanna open`)".into();
     }
     let mut sections: Vec<String> = Vec::new();
-    if windows.is_empty() {
-        sections.push("no windows: Kanna.app isn't open (these terminals keep running)".into());
-    } else {
+    if !windows.is_empty() {
         sections.push(std::iter::once("Windows".to_string()).chain(windows.iter().map(|w| window_line(w, reply))).collect::<Vec<_>>().join("\n"));
     }
     let mut workspaces: Vec<&Value> = reply["workspaces"].as_array().unwrap_or(&empty).iter().collect();

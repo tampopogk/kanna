@@ -36,6 +36,7 @@ final class PaneSlot: NSView {
 final class Contents {
     private var slots: [String: PaneSlot] = [:]
     private(set) var states: [String: String] = [:]
+    private var errors: [String: String] = [:]
     var onUpdate: ((String, [String: JSON]) -> Void)?
     var onRequest: ((String, [String: JSON]) -> Void)?
     var onNotice: ((String, [String: JSON]) -> Void)?
@@ -83,8 +84,18 @@ final class Contents {
         }
     }
 
+    func resend(_ id: String) {
+        guard let state = states[id] else { return }
+        var fields: [String: JSON] = ["state": .string(state)]
+        if let error = errors[id] { fields["error"] = .string(error) }
+        onUpdate?(id, fields)
+    }
+
     private func report(_ id: String, _ fields: [String: JSON]) {
-        if let state = fields["state"]?.string { states[id] = state }
+        if let state = fields["state"]?.string {
+            states[id] = state
+            errors[id] = fields["error"]?.string
+        }
         onUpdate?(id, fields)
     }
 
@@ -231,6 +242,7 @@ final class Contents {
         }
         slot.content = nil
         states.removeValue(forKey: id)
+        errors.removeValue(forKey: id)
     }
 
     func forget(_ id: String) {
