@@ -2286,6 +2286,32 @@ task_start_stop() {
   check wait_for 5 is side4 state running || { echo "task_start_stop: a hung-up terminal didn't run again after a restart"; kanna workspace list --all; return 1; }
 }
 
+scenario task_restart_typing M4
+task_restart_typing() {
+  start_daemon && start_app || { echo "task_restart_typing line $LINENO"; return 1; }
+  local repo="$KANNA_STATE_DIR/repo" agent="$KANNA_STATE_DIR/bin/claude"
+  mkdir -p "$repo" "${agent%/*}" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$agent" || { echo "task_restart_typing line $LINENO"; return 1; }
+  git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "task_restart_typing line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new Typed "say hi" --agent "$agent") >/dev/null || { echo "task_restart_typing line $LINENO"; return 1; }
+  kanna task shelve "$(tid 1)" >/dev/null && kanna task pull "$(tid 1)" >/dev/null || { echo "task_restart_typing line $LINENO"; return 1; }
+  check wait_for 10 shows Typed "say hi" || { kanna read Typed; return 1; }
+  local responder
+  raw "{\"id\":1,\"cmd\":\"debug.type\",\"args\":{\"pane\":\"$(pane Typed id)\",\"text\":\"before\\r\"}}" >/dev/null
+  check wait_for 5 shows Typed "echo: before" || { kanna read Typed; return 1; }
+  kanna task stop Typed >/dev/null && check wait_for 5 is Typed state exited || { echo "task_restart_typing: Typed didn't stop"; return 1; }
+  kanna task start Typed >/dev/null && check wait_for 5 shows Typed "--resume" || { echo "task_restart_typing: Typed didn't start again"; kanna read Typed; return 1; }
+  responder="$(raw '{"id":1,"cmd":"debug.type","args":{"focused":true,"text":"after\r"}}' | field responder)"
+  [[ "$responder" == TerminalSurfaceView ]] || { echo "task_restart_typing: the keyboard went to $responder, not the agent's terminal"; return 1; }
+  check wait_for 5 shows Typed "echo: after" || { echo "task_restart_typing: keys typed after a restart didn't reach the agent"; kanna read Typed; return 1; }
+  [[ "$(kanna read Typed | grep -c "echo: after")" == 1 ]] || { echo "task_restart_typing: the keys reached the agent twice"; kanna read Typed; return 1; }
+  kanna task stop Typed >/dev/null && check wait_for 5 is Typed state exited || { echo "task_restart_typing: Typed didn't stop again"; return 1; }
+  stop_daemon; start_daemon && check wait_for 10 app_attached || { echo "task_restart_typing line $LINENO"; return 1; }
+  kanna task start Typed >/dev/null && check wait_for 5 eval '! shows Typed "echo: after" && shows Typed --resume' || { echo "task_restart_typing: Typed didn't start again after a daemon restart"; kanna read Typed; return 1; }
+  responder="$(raw '{"id":1,"cmd":"debug.type","args":{"focused":true,"text":"again\r"}}' | field responder)"
+  [[ "$responder" == TerminalSurfaceView ]] || { echo "task_restart_typing: after a daemon restart the keyboard went to $responder"; return 1; }
+  check wait_for 5 shows Typed "echo: again" || { echo "task_restart_typing: keys typed after a daemon restart didn't reach the agent"; kanna read Typed; return 1; }
+}
+
 scenario code_pinned_line M4
 code_pinned_line() {
   start_daemon && start_app || return 1

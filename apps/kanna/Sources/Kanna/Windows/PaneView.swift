@@ -4,7 +4,7 @@ import AppKit
 final class PaneView: NSView {
     let id: String
     let type: String
-    let content: NSView
+    private(set) var content: NSView
     private let notice = NSTextField(labelWithString: "")
     private let outline = Outline()
     let grip = PaneGrip(frame: NSRect(origin: .zero, size: PaneGrip.size))
@@ -37,6 +37,13 @@ final class PaneView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     var terminal: TerminalSurfaceView? { content as? TerminalSurfaceView }
+
+    func replace(_ content: NSView) {
+        self.content.removeFromSuperview()
+        self.content = content
+        content.frame = bounds
+        addSubview(content, positioned: .below, relativeTo: notice)
+    }
 
     var focused = false { didSet { outline.isHidden = !focused } }
 
