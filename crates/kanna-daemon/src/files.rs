@@ -225,8 +225,36 @@ pub fn read(path: &Path, kind: Kind) -> Read {
     Read::Text(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn anchor(path: &Path) -> Option<PathBuf> {
-    path.ancestors().skip(1).find(|dir| dir.is_dir()).map(Path::to_path_buf)
+struct Place {
+    dirs: Vec<PathBuf>,
+    names: Vec<PathBuf>,
+}
+
+impl Place {
+    fn of(path: &Path) -> Place {
+        let mut dirs = vec![];
+        let mut names = vec![path.to_path_buf()];
+        if let Some(anchor) = path.ancestors().skip(1).find(|dir| dir.is_dir()) {
+            let real = std::fs::canonicalize(anchor).unwrap_or_else(|_| anchor.to_path_buf());
+            if let Ok(rest) = path.strip_prefix(anchor) {
+                names.push(real.join(rest));
+            }
+            dirs.push(real);
+        }
+        if let Ok(real) = std::fs::canonicalize(path) {
+            if let Some(dir) = real.parent() {
+                dirs.push(dir.to_path_buf());
+            }
+            names.push(real);
+        }
+        dirs.sort();
+        dirs.dedup();
+        Place { dirs, names }
+    }
+
+    fn touched(&self, changed: &[PathBuf]) -> bool {
+        changed.iter().any(|p| self.names.iter().any(|name| name.starts_with(p)))
+    }
 }
 
 fn work(id: String, path: PathBuf, kind: Kind, inbox: Receiver<Control>, changes: Sender<Control>, events: Sender<Event>) {
@@ -236,11 +264,9 @@ fn work(id: String, path: PathBuf, kind: Kind, inbox: Receiver<Control>, changes
         }
     })
     .ok();
-    let mut watched = anchor(&path);
-    let mut real = std::fs::canonicalize(&path).ok();
-    let mut real_dir = real.as_deref().and_then(Path::parent).map(Path::to_path_buf);
+    let mut place = Place::of(&path);
     if let Some(watcher) = watcher.as_mut() {
-        for dir in watched.iter().chain(real_dir.iter()) {
+        for dir in &place.dirs {
             let _ = watcher.watch(dir, RecursiveMode::NonRecursive);
         }
     }
@@ -259,24 +285,19 @@ fn work(id: String, path: PathBuf, kind: Kind, inbox: Receiver<Control>, changes
                 Err(RecvTimeoutError::Timeout) => break,
             }
         }
-        let touches = |p: &PathBuf| path.starts_with(p) || real.as_ref().is_some_and(|r| r.starts_with(p) || p == r);
-        if !changed.iter().any(touches) {
+        if !place.touched(&changed) {
             continue;
         }
-        let now = anchor(&path);
-        let now_real = std::fs::canonicalize(&path).ok();
-        let now_real_dir = now_real.as_deref().and_then(Path::parent).map(Path::to_path_buf);
+        let now = Place::of(&path);
         if let Some(watcher) = watcher.as_mut() {
-            if now != watched || now_real_dir != real_dir {
-                for dir in watched.iter().chain(real_dir.iter()) {
-                    let _ = watcher.unwatch(dir);
-                }
-                for dir in now.iter().chain(now_real_dir.iter()) {
-                    let _ = watcher.watch(dir, RecursiveMode::NonRecursive);
-                }
+            for dir in place.dirs.iter().filter(|d| !now.dirs.contains(d)) {
+                let _ = watcher.unwatch(dir);
+            }
+            for dir in now.dirs.iter().filter(|d| !place.dirs.contains(d)) {
+                let _ = watcher.watch(dir, RecursiveMode::NonRecursive);
             }
         }
-        (watched, real, real_dir) = (now, now_real, now_real_dir);
+        place = now;
         let read = read(&path, kind);
         if read != last {
             last = read.clone();
@@ -366,6 +387,34 @@ mod tests {
         assert_eq!(sent.borrow().len(), 1);
         assert_eq!(sent.borrow()[0]["text"], "two");
         assert_eq!(sent.borrow()[0]["serial"], 2);
+    }
+
+    #[test]
+    fn the_watcher_follows_a_file_through_a_symlinked_folder_deleted_and_made_again() {
+        let (files, inbox) = files();
+        let dir = PathBuf::from(format!("/tmp/kanna-files-{}-watch", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.rs");
+        std::fs::write(&file, "one").unwrap();
+        files.subscribe("app1:v1", &json!({ "path": file, "kind": "code" })).unwrap();
+        let next = || loop {
+            match inbox.recv_timeout(Duration::from_secs(5)) {
+                Ok(Event::File { read, .. }) => return read,
+                Ok(_) => continue,
+                Err(_) => panic!("no file event"),
+            }
+        };
+        assert_eq!(next(), Read::Text("one".into()));
+        std::fs::write(&file, "two").unwrap();
+        assert_eq!(next(), Read::Text("two".into()));
+        std::fs::remove_file(&file).unwrap();
+        assert!(matches!(next(), Read::Failed { code: "missing", .. }));
+        std::thread::sleep(Duration::from_millis(300));
+        std::fs::write(&file, "three").unwrap();
+        assert_eq!(next(), Read::Text("three".into()));
+        files.unsubscribe("app1:v1");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

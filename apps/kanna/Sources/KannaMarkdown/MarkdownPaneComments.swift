@@ -268,6 +268,7 @@ extension MarkdownPaneView {
         box.removeFromSuperview()
         window?.makeFirstResponder(textView)
         if hadPending { refreshMarks() }
+        showHeld()
     }
 
     func post() {

@@ -84,7 +84,7 @@ flowchart LR
 | Header, reload, keys | `MarkdownPaneView.swift`, the header's chip in `KannaDocs/DocComments.swift` |
 
 - **Matching** is a longest common subsequence of the blocks (as `git diff` matches lines), then, between each pair of matches, the best pairing of same-kind blocks by shared words. Words are matched the same way. Past 4 million cells either step gives up pairing: the blocks show removed and added.
-- **The diff runs in the app,** which already reads the file; the daemon only keeps REF in the record. The app runs `git` (`/usr/bin/git`) in the file's folder.
+- **The diff runs in the app** on the text the daemon sends ([file panes](file-panes.md)); the daemon only keeps REF in the record. The app still runs `git` (`/usr/bin/git`) in the file's folder for the base and a range's versions, which is to move to the daemon ([file panes §5](file-panes.md#5-not-in-this-change)).
 - **Rendering:** the renderer walks the new doc with the diff's entries; a removed block is rendered from the old doc where it was, a changed one from both, merged word by word. Every changed block carries a `kanna.change` attribute (added, removed, changed); the bars and the count read it.
 - **Tests:** `MarkdownDiffTests` (added, removed and reworded paragraphs, list items, table rows, headings, a changed diagram, a new file, the word diff, a range's two versions); `markdown_diff` in `scripts/e2e-kanna.sh` (a doc changed on a branch, the count before and after an edit, `]c` `[c`, `HEAD`, a new file, outside a repo, a bad REF, a range: B's text, no reload, no comments, a doc new in B, one missing from B).
 

@@ -2127,6 +2127,45 @@ code_pane() {
   check test "$(code src font_size)" == 14.5 || { echo "font after relaunch $(code src font_size)"; return 1; }
 }
 
+scenario file_panes M4
+file_panes() {
+  start_daemon && start_app || return 1
+  local doc="$KANNA_STATE_DIR/file_panes.md" src="$KANNA_STATE_DIR/file_panes.rs"
+  printf '# file_panes DOC\n\nfile_panes ONE\n' >"$doc"
+  printf 'fn one() {}\n' >"$src"
+  doc_shows() { raw '{"id":1,"cmd":"debug.md","args":{"pane":"doc"}}' | field text | grep -q "$1"; }
+  src_shows() { raw '{"id":1,"cmd":"debug.code","args":{"pane":"src"}}' | field text | grep -q "$1"; }
+  watched() { kanna raw '{"cmd":"files"}' | python3 -c 'import json, sys; print(" ".join(sorted(f["kind"] + ":" + f["path"].rsplit("/", 1)[-1] for f in json.load(sys.stdin)["files"])))'; }
+  kanna open md --name doc "$doc" >/dev/null || return 1
+  kanna open code --name src --tab "$src" >/dev/null || return 1
+  check wait_for 5 doc_shows "file_panes ONE" || return 1
+  check wait_for 5 src_shows "fn one" || return 1
+  check test "$(watched)" == "code:file_panes.rs md:file_panes.md" || { echo "watched: $(watched)"; return 1; }
+  printf '# file_panes DOC\n\nfile_panes TWO\n' >"$doc"
+  check wait_for 5 doc_shows "file_panes TWO" || return 1
+  printf '# file_panes DOC\n\nfile_panes THREE\n' >"$doc.tmp" && mv "$doc.tmp" "$doc"
+  check wait_for 5 doc_shows "file_panes THREE" || return 1
+  printf 'fn one() {}\nfn two() {}\n' >"$src"
+  check wait_for 5 src_shows "fn two" || return 1
+  check wait_for 5 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"debug.code\",\"args\":{\"pane\":\"src\"}}" | field changed)" == 2 ]]' || return 1
+  rm "$src"; sleep 0.5
+  check src_shows "fn two" || return 1
+  printf 'fn three() {}\n' >"$src"
+  check wait_for 5 src_shows "fn three" || return 1
+  stop_daemon; start_daemon || return 1
+  check wait_for 10 app_attached || return 1
+  check wait_for 5 eval '[[ "$(watched)" == "code:file_panes.rs md:file_panes.md" ]]' || { echo "after a daemon restart: $(watched)"; return 1; }
+  printf '# file_panes DOC\n\nfile_panes FOUR\n' >"$doc"
+  check wait_for 5 doc_shows "file_panes FOUR" || return 1
+  stop_app; start_app || return 1
+  check wait_for 5 src_shows "fn three" || return 1
+  printf 'fn four() {}\n' >"$src"
+  check wait_for 5 src_shows "fn four" || return 1
+  kanna close src >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(watched)" == "md:file_panes.md" ]]' || { echo "after close: $(watched)"; return 1; }
+  [[ "$(kanna open md "$KANNA_STATE_DIR/file_panes-gone.md" 2>&1)" == *"No such file: $KANNA_STATE_DIR/file_panes-gone.md"* ]] || { echo "file_panes: a missing doc"; return 1; }
+}
+
 scenario diff_pane M4
 diff_pane() {
   start_daemon && start_app || return 1

@@ -1,10 +1,10 @@
 # File Panes Read by the Daemon
 
-**Status:** proposed · **Builds on:** [the app link](app-link.md), [app panes](app-panes.md) · **Related:** [code viewer](code-viewer.md), [diff viewer](diff-viewer.md)
+**Status:** built · **Builds on:** [presentation layers](presentation-layers.md#4-content), [the app link](app-link.md) · **Model:** [diff viewer](diff-viewer.md#5-how-its-built) (`crates/kanna-daemon/src/diffs.rs`) · **Related:** [code viewer](code-viewer.md), [app panes](app-panes.md)
 
-A markdown or code pane shows a file of the worktree. The **daemon** reads that file, watches it, and sends its text to the app; the app only draws it. The app no longer opens, stats or polls the file.
+A markdown or code pane shows a file. The **daemon** reads that file, watches it, and sends its text to every view subscribed to it; the app only draws. The app's views no longer open, stat or poll the file.
 
-**Why:** the daemon runs where the worktrees are; the app may not. A remote app (planned: Kanna.app on another machine than the daemon) can only show what comes over the app link. The diff pane settled the pattern: the daemon runs git and watches the worktree, the app draws. This applies it to markdown and code panes.
+**Why:** files are work, and work lives in the daemon, which runs headless where the worktrees are ([presentation layers](presentation-layers.md)). An app on another machine (planned) can only show what comes over its link. Diffs settled the pattern; files follow it.
 
 ## Contents
 
@@ -19,100 +19,95 @@ A markdown or code pane shows a file of the worktree. The **daemon** reads that 
 
 ```mermaid
 flowchart LR
-    subgraph BEFORE["Now"]
+    subgraph BEFORE["Before"]
         direction TB
-        A1["Kanna.app<br/>MarkdownPaneView · CodePaneView<br/>reads the file · polls its stamp every 0.5 s"]
-        F1[("worktree file")]
-        D1["daemon<br/>keeps the record"]
+        A1["Kanna.app<br/>MarkdownPaneView · CodePaneView<br/>read the file · poll its stamp every 0.5 s"]
+        F1[("file")]
         A1 -->|"read, stat"| F1
-        A1 <-->|"start, update"| D1
     end
     subgraph AFTER["After"]
         direction TB
-        A2["Kanna.app<br/>draws the text it's sent"]
-        D2["daemon<br/>keeps the record<br/>reads and watches the file"]
-        F2[("worktree file")]
-        A2 <-->|"start · attach · file · detach"| D2
+        A2["Kanna.app<br/>views draw the text they're sent"]
+        D2["daemon · Files<br/>one watcher per path + kind<br/>shared by its views"]
+        F2[("file")]
+        A2 <-->|"file.subscribe · file · file.unsubscribe"| D2
         D2 -->|"read, FSEvents"| F2
     end
 ```
 
 ```mermaid
 sequenceDiagram
-    participant C as kanna CLI
-    participant D as daemon
-    participant W as file thread (daemon)
-    participant A as Kanna.app
-    C->>D: open code src/main.rs
-    D->>A: start {pane: p7 record}
-    A->>A: makes the view, empty
-    A->>D: attach {pane: p7}
-    D->>W: watch p7, path, kind code
+    participant A as Kanna.app (view file-7)
+    participant D as daemon (Files)
+    participant W as watcher thread
+    A->>D: file.subscribe {view: file-7, path: ~/w/main.rs, kind: code}
+    D->>W: start (first view of this path + kind)
+    D-->>A: ok {content: file-3f9a1c2e, path: /Users/me/w/main.rs, serial: 0}
     W-->>D: read: text
-    D->>A: file {pane: p7, text}
-    A->>A: draws it
-    A->>D: update {pane: p7, state: running}
-    D-->>C: opened p7
+    D->>A: file {content, path, serial: 1, text}
+    A->>A: draws, reports running
     Note over W: the agent saves main.rs
-    W-->>D: FSEvents, 100 ms later read: new text
-    D->>A: file {pane: p7, text}
-    A->>A: redraws, keeps the place, marks changed lines
-    A->>D: detach {pane: p7} (the tab closed)
-    D->>W: unwatch p7
+    W-->>D: FSEvents, 100 ms quiet, read: new text
+    D->>A: file {content, path, serial: 2, text}
+    A->>A: redraws at the same place, marks changed lines
+    A->>D: file.unsubscribe {view: file-7} (the tab closed)
+    D->>W: stop (its last view left)
 ```
 
 ## 2. Messages
 
-Additions to the [app link](app-link.md#2-messages):
+On the [app link](app-link.md#2-messages), as diffs have:
 
 | Message | From | What it says |
 |---|---|---|
-| `attach {pane}` | app | as for a terminal: I show this pane. For a markdown or code pane, the daemon starts watching its file and sends `file` |
-| `detach {pane}` | app | I no longer show it; the daemon stops watching |
-| `file {pane, path, text}` | daemon | the file's whole text, after `attach` and whenever it changes |
-| `file {pane, path, error: {code, message}}` | daemon | it can't be shown: `missing`, `folder`, `binary` (code panes only), `too_big` |
+| `file.subscribe {view, path, kind}` (with an `id`) | app | show me this file: `path` as the pane's record has it, `kind` `md` or `code`. The reply has the file's `content` ID, its absolute `path` and the latest `serial`, with `text` or `error` once the file has been read |
+| `file.unsubscribe {view}` | app | that view is gone |
+| `file {content, path, serial, text}` | daemon | the file's whole text, to every app with a view subscribed, first and after every change |
+| `file {content, path, serial, error: {code, message}}` | daemon | it can't be shown: `missing`, `folder`, `binary` (code only), `too_big` |
+| `files` | any client | the watches: `id`, `path`, `kind`, `views`, `serial` (for tests and `kanna raw`) |
 
-- `path` is the record's path, made absolute by the daemon (`~` and relative paths, as the app did). A pane that moves to another file (`navigate`) gets a new `start`, so a new `attach`.
-- One watch per pane, even when two panes show the same file; each gets its own `file`.
+- **Keyed by the file, never the pane.** The content ID is made from the kind and the absolute path (`file-3f9a1c2e`), so every view of `main.rs` as code shares one watcher, however many tabs or apps show it; the same path as markdown is another. `view` is only the app's handle for unsubscribing; the daemon prefixes it with the app's connection.
+- **The daemon resolves the path:** `~` and a relative path are against the daemon's home, as the app did before.
 
 ## 3. Rules
 
-- **Starting.** The app makes the view on `start` (or from `layout.json` after a relaunch) and attaches it. The first `file` decides the state: text → `running`, an error → `failed` with its message ("No such file: PATH", "PATH is a folder, not a file", "PATH isn't a text file"). `open` waits for that, as now.
-- **Following the file, without polling.** The daemon watches the file's folder with FSEvents, so an editor that saves by writing a new file and renaming it over the old one is seen. Events are gathered for 100 ms, then the file is read; `file` is sent only when the text differs from what that pane was last sent.
-- **A deleted file** keeps its last text in the pane, as now; when it's back, its text is sent. A file missing at `attach` fails the pane, and its text is sent if it appears later (a code pane then shows it, as now).
-- **The app's side is unchanged:** a code pane keeps its scroll and marks the lines that changed; a markdown pane keeps its reading position and holds the newest text while a comment is being written, applying it when the box closes.
-- **Size.** A file over 8 MiB fails with `too_big` ("PATH is too big to show, over 8 MiB"), so a message stays well under the app link's 16 MiB line limit. **[New]** Today the app reads any size.
-- **Text** is read as UTF-8, invalid bytes replaced, as the app does now. A code pane's file with a NUL in its first 8 KiB is `binary`.
-- **The app reconnects** (a daemon restart): it says hello and attaches its markdown and code panes again, as its terminals, and gets each file's text afresh. While it's disconnected the views keep what they show.
-- **The app goes away:** its panes leave the daemon's table and their watches end.
+- **Starting.** The app makes the view on `start` (or after a relaunch) and subscribes. The first `text` makes the pane `running`; an `error` makes it `failed` with the message ("No such file: PATH", "PATH is a folder, not a markdown file" or "…not a file", "PATH isn't a text file"). `open` waits for that, as before. Text arriving later for a failed pane makes it `running`.
+- **Following the file, without polling.** The watcher watches the file's folder (the real one, symlinks resolved) with FSEvents, so an editor that saves by writing a new file and renaming it over the old one is seen. Changes are gathered for 100 ms, then the file is read; `file` goes out only when the read differs from the last one.
+- **A deleted file** keeps its last text in every view; when it's back, its text is sent. A file missing at subscribe fails the pane, and its text is sent once it appears (even in a folder made after).
+- **The views' side is as before:** a code pane keeps its scroll and marks the lines that changed; a markdown pane keeps its reading position and holds the newest text while a comment is being written, applying it when the box closes.
+- **Size.** A file over 8 MiB fails with `too_big` ("PATH is too big to show, over 8 MiB"), well under the app link's 16 MiB line. Before, the app read any size.
+- **Text** is UTF-8, invalid bytes replaced. A code file with a NUL in its first 8 KiB is `binary`; a markdown file is shown anyway.
+- **Headless, like diffs.** The daemon keeps the latest read for as long as anyone is subscribed, and stops the watcher when the last view leaves, or its app does; no grace period. An app subscribes again on every (re)connect, so a restarted daemon reads and watches again at once. While disconnected the views keep what they show.
 
 ## 4. How it's built
 
-| Piece | Where | What's new |
+| Piece | Where | What it does |
 |---|---|---|
-| File thread | `crates/kanna-daemon/src/files.rs` (new) | owns a `notify` watcher (FSEvents on macOS) and does the reads off the main loop; takes `watch {pane, path, kind}` and `unwatch {pane}`, sends `Event::File {pane, result}` |
-| App link | `crates/kanna-daemon/src/app_link.rs` | `attach`/`detach` of a markdown or code pane watch and unwatch; `Event::File` becomes a `file` message; watches end with the pane or the app |
-| App | `apps/kanna/Sources/Kanna/Daemon/DaemonLink.swift`, `Panes/Contents.swift` | attaches markdown and code panes, hands `file` to the view, reports `running`/`failed` from the first one |
-| Views | `MarkdownPaneView`, `CodePaneView` | `show(text:)` and `show(failure:)` instead of reading; no timer, no `FileManager`; `CodeFile.read` goes |
+| Files | `crates/kanna-daemon/src/files.rs` | the watches by content ID, the views of each, the latest read and its serial; `subscribe`, `unsubscribe`, `leave` (an app gone), `loaded`; the `files` command |
+| Watcher | the same file, a thread per watch | reads off the main loop, FSEvents through `notify`, re-watches as folders appear or the file's real folder moves; sends `Event::File` |
+| App link | `crates/kanna-daemon/src/app_link.rs` | `file.subscribe` and `file.unsubscribe` beside `diff.*`; `file` to the app with a view of it |
+| App | `apps/kanna/Sources/Kanna/Panes/Contents.swift`, `Daemon/DaemonLink.swift` | subscribes markdown and code panes, keeps the newest `file` per content, hands it to the views, reports `running` or `failed` |
+| Views | `MarkdownPaneView.show(text:)`, `CodePaneView.show(text:)`, `show(failure:)` | draw what they're given; no timer on the file, no `FileManager` for it |
 
-- **Why `attach`, not a new request:** it's what the app already says for a view it shows, with the same lifetime (a relaunch, a reconnect, a closed tab); the daemon already keeps the set of attached panes.
-- **Why the whole text, not a patch:** files are small, the app diffs lines itself for the change marks, and a lost message can't leave the app out of step.
-- **Why `notify`:** the same crate the [diff pane](diff-viewer.md) uses for the worktree; FSEvents on macOS, inotify on Linux, where the daemon runs too.
-- **Checks:** `crates/kanna-daemon/tests/panes.rs`: attach sends the text; a write, a rename over the file, a delete and a recreate; detach stops; errors. e2e `file_panes` in `scripts/e2e-kanna.sh`: opens a markdown and a code pane, edits both files (in place and by renaming over), sees the change, deletes and recreates, survives a daemon restart and a relaunch; a missing file fails `open`.
+- **Why whole text, not a patch:** files are small, the code pane diffs lines itself for its marks, and a lost message can't leave a view out of step.
+- **Checks:** `files.rs` tests (shared watchers, kinds, errors, a deleted file, a real watcher through `/tmp`'s symlink, deleted and made again); `crates/kanna/tests/cli.rs` (a fake app subscribes: written in place, renamed over, deleted, made again, a second view, a file that appears in a new folder, a refusal, the watchers gone with the app); e2e `file_panes` (a markdown and a code pane follow edits, renames over, a delete and a recreate, a daemon restart and a relaunch; closing a pane stops its watcher; a missing file fails `open`), with `code_pane`, `web_md_ios_panes`, `md_comments`, `code_tour` and `docked_pane` unchanged.
 
 ## 5. Not in this change
 
-The panes touch the filesystem in other places too. Each is its own backlog task, done the same way:
+The markdown pane still touches the filesystem in a few places; each moves to the daemon the same way, in Fleet 4 (task-4053):
 
 - **Images** in a markdown pane (`MarkdownRenderer.imageAttachment`).
 - **Following a link** to another file (`MarkdownPaneView.action` checks the target's type).
-- **Comments' store** next to a doc (`DocStore`, [doc markup](doc-markup.md)).
-- **Markdown diff mode** (branch `markdown-diff-mode`) running git in the app.
+- **Comments' store** next to a doc (`DocStore`, [doc markup](doc-markup.md)), still polled by the markdown pane.
+- **`app.snap`** (`AppCommands.swift`), which reads a file to snap a comment to its scope.
+- **Page comments** (`PageMarkup`, [doc markup](doc-markup.md)), which read a local page's HTML and stamp.
+- **A doc's diff** ([markdown diff](markdown-diff.md)): the pane runs `git merge-base` and `git show` in the file's folder for the base, every 2 s, and a range's two versions.
 
 ## 6. Glossary
 
 | Term | Meaning |
 |---|---|
-| **remote app** | Kanna.app on another machine than the daemon and the worktrees, linked over the network (planned) |
+| **watch** | the daemon's record of one file it watches: its path and kind, its views, its latest read |
+| **view** | one app's subscription to a file, for one of its panes |
+| **serial** | a watch's count of reads that differed; an app keeps the highest it has seen |
 | **FSEvents** | macOS's file-change notices for a folder, which the `notify` crate wraps |
-| **file thread** | the daemon's thread that watches and reads files, so the main loop never waits on the disk |

@@ -32,7 +32,8 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     private var entries: [DiffEntry]?
     private var baseCommit: String?
     private var ticks = 0
-    private var stamp: (Date, Int)?
+    private var disk: String?
+    private var held: String?
     private var poll: Timer?
     private var magnifyObserver: NSObjectProtocol?
     let bar = DocBar()
@@ -104,9 +105,8 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         magnifyObserver = NotificationCenter.default.addObserver(forName: NSScrollView.didEndLiveMagnifyNotification, object: scrollView, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.onZoom?() }
         }
-        load()
         poll = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.reloadIfChanged() }
+            MainActor.assumeIsolated { self?.check() }
         }
     }
 
@@ -128,6 +128,10 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         textView.selectedTextAttributes = [.backgroundColor: NSColor.selectedTextBackgroundColor]
         textView.usesFindBar = true
         textView.isIncrementalSearchingEnabled = true
+    }
+
+    func showHeld() {
+        if let held { show(text: held) }
     }
 
     public func stop() {
@@ -177,31 +181,31 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         if textView.frame.width != width { textView.frame.size.width = width }
     }
 
-    private func fileStamp() -> (Date, Int)? {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path) else { return nil }
-        return ((attributes[.modificationDate] as? Date) ?? .distantPast, (attributes[.size] as? Int) ?? 0)
+    public func show(text: String) {
+        guard pending == nil else { return held = text }
+        held = nil
+        guard text != disk, diffRange == nil || disk == nil else { return }
+        disk = text
+        load(text)
     }
 
-    private func reloadIfChanged() {
+    private func check() {
         let span = Perf.begin(.markdown, "markdown.check")
         defer { Perf.end(span) }
         reloadThreadsIfChanged()
         refreshPanel()
-        guard pending == nil, diffRange == nil, let now = fileStamp() else { return }
+        guard pending == nil, diffRange == nil, let diffBase, let disk else { return }
         ticks += 1
-        if let diffBase, ticks % 4 == 0, let commit = baseCommit,
+        if ticks % 4 == 0, let commit = baseCommit,
            MarkdownDiff.mergeBase(URL(fileURLWithPath: path).resolvingSymlinksInPath().deletingLastPathComponent().path, diffBase) != commit {
-            return load()
+            load(disk)
         }
-        if let stamp, stamp == now { return }
-        load()
     }
 
-    private func load() {
+    private func load(_ disk: String) {
         let span = Perf.begin(.markdown, "markdown.load")
         defer { Perf.end(span) }
-        stamp = fileStamp()
-        var text = FileManager.default.contents(atPath: path).map { String(decoding: $0, as: UTF8.self) } ?? ""
+        var text = disk
         var old: String??
         if let range = diffRange {
             switch MarkdownDiff.versions(of: path, from: range.from, to: range.to) {

@@ -31,7 +31,7 @@ Each interval is an `OSSignposter` interval (subsystem `dev.kanna.app`, a catego
 | `refresh`, `render` | render | `AppController.refresh` and its `render` of every window |
 | `WindowController.render` | render | one window's render |
 | `ShelfPage.lay` | shelf | rebuilding the Shelf page; its detail is the row count (`42 rows`) |
-| `markdown.check`, `markdown.load` | markdown | a markdown pane's file check (every 0.5s) and its reload |
+| `markdown.check`, `markdown.load` | markdown | a markdown pane's comments check (every 0.5s) and drawing the text the daemon sent ([file panes](file-panes.md)) |
 | `hang` (event) | hang | a main-thread hang, with what was open |
 
 A click's times start at the mouse event's own timestamp, so time the event spent queued behind a busy main thread counts (that is `wait`). A `debug.click` makes its event inside its own command, so its `wait` is always 0. "Drawn" is the main run loop's next `beforeWaiting` after the change, past Core Animation's commit.
