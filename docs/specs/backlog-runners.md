@@ -45,14 +45,20 @@ stateDiagram-v2
 
 | Agent | Quit with | Its session |
 |---|---|---|
+| claude | `ctrl+c ctrl+c` | `claude --resume ID`, printed as it exits |
 | codex | `ctrl+c ctrl+c` | `codex resume ID`, printed as it exits |
-| claude | its terminal hung up | Kanna's, given at start (`--session-id`) |
+| copilot | `ctrl+c ctrl+c` | `copilot --resume=ID`, printed as it exits |
+| antigravity | `ctrl+c ctrl+c` | `agy --conversation=ID`, printed as it exits (read from its binary: a run needs a sign-in) |
+| opencode | `ctrl+c ctrl+c` (from its docs: it isn't installed here to try) | found in its database, as it [resumes](tasks.md#which-agents-resume) |
 | any other | its terminal hung up | as it [resumes](tasks.md#which-agents-resume) |
 
 - **Stopped means quit, not paused:** the agent's process exits; nothing is kept in memory. Its conversation is in the agent's own session files, and resuming starts a new process in the same pane with the agent's resume flag (`claude --resume UUID`, `codex resume ID`), as [Stop and Start](tasks.md#5-stop-done-or-back-to-the-backlog) do.
-- **Stopping one:** Kanna hangs up the task's terminals and closes nothing, so the layout its agent set up to [present its work](presenting.md) is what you see when you pull it; then it types the agent's quit keys into its terminal, as you would (codex's ctrl+c reaches it as a key press: it runs its terminal raw, so the terminal doesn't turn it into SIGINT). An agent with no keys, or one still running 5s later, is hung up: SIGHUP to its process group, SIGKILL a second later if it's still there. Kanna then reads the session from its screen and saves the task stopped, with why (`stopped` and `why` in its events).
+- **One way to end an agent** (`Backlog::end_agent`), for a turn's end, `kanna task stop` and Done: Kanna types its quit keys into its terminal, as you would, one at a time, 0.5s apart, the next only while it still runs. An idle codex quits on the first ctrl+c; a second, reaching it after it left raw mode, would be SIGINT and kill it before it says its session. At a prompt, or with text typed, it takes both. Keys reach an agent as key presses: it runs its terminal raw, so the terminal doesn't turn them into SIGINT.
+- **Hanging up is the fallback:** an agent with no keys, or one still running 5s later, gets SIGHUP to its process group, SIGKILL a second later if it's still there, and the daemon log says so and which agent (`claude in p4 didn't quit in 5s, so it's hung up`).
+- **The session it says is kept:** Kanna reads it from the screen once the agent exits, and it replaces the one the task had, even claude's from `--session-id`: what the agent says last is where its conversation is now. With none found, the task keeps its own, or resumes the folder's latest (`codex resume --last`, `claude --continue`).
+- **Stopping one:** Kanna ends the agent, then hangs up the task's other terminals and closes nothing, so the layout its agent set up to [present its work](presenting.md) is what you see when you pull it, and saves the task stopped, with why (`stopped` and `why` in its events).
 - **The quit files are bundled only:** the rules site and your overrides can't change which keys Kanna types into an agent.
-- **Tested** by e2e `backlog_runners` with the mock agent as codex: with runners 0 nothing runs; with 3, five tasks run three at a time in order, skipping a blocked one until its blocker is Done; one that asks is stopped as needs you (in its events), its session read from what it said as it quit; Move to Shelf resumes it there; moved back to the backlog idle, it's stopped as finished; one that presents its work keeps its tabs, focus and zoom through the stop ([presenting](presenting.md#3-how-its-built)).
+- **Tested** by `backlog.rs` tests of each way, with a fake agent: the keys typed, the session kept, a hang-up only for no keys or a timeout; by e2e `task_start_stop` (`kanna task stop` quits the mock as claude by its keys) and `real_agent_tasks` (real claude and codex quit by keys and resume the ID they said); and by e2e `backlog_runners` with the mock agent as codex: with runners 0 nothing runs; with 3, five tasks run three at a time in order, skipping a blocked one until its blocker is Done; one that asks is stopped as needs you (in its events), its session read from what it said as it quit; Move to Shelf resumes it there; moved back to the backlog idle, it's stopped as finished; one that presents its work keeps its tabs, focus and zoom through the stop ([presenting](presenting.md#3-how-its-built)).
 
 ## 3. Glossary
 

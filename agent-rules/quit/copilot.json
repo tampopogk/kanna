@@ -1,0 +1,5 @@
+{
+  "agent": "copilot",
+  "keys": ["ctrl+c", "ctrl+c"],
+  "session": "copilot --resume=([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+}
