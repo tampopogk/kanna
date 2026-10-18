@@ -254,6 +254,6 @@ mod tests {
         assert!(kanna.instance_socket(DEFAULT_INSTANCE).ends_with("Application Support/kanna/kanna.sock"));
         assert!(kanna.instance_socket("work").ends_with("Application Support/kanna/kanna-work.sock"));
         assert_eq!(kanna.variable("SOCKET"), "KANNA_SOCKET");
-        assert_eq!(Brand::KMUX.variable("PANE"), "KMUX_PANE");
+        assert_eq!(Brand::KMUX.variable("TERMINAL"), "KMUX_TERMINAL");
     }
 }

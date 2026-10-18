@@ -46,7 +46,7 @@ print(json.dumps(v) if isinstance(v, (dict, list)) else v)' "$1"; }
 # 1. A command in a new pane, a third of the window wide.
 [[ "$("$cli" open --name e2e --split right --size 1/3 --cmd "printf 'KMUX E2E OK\n'; exec sleep 600")" == *"(e2e)"* ]] || fail "open did not print the pane name"
 list="$("$cli" workspace list --all --json)"
-[[ "$(field windows.0.tabs.0.layout <<<"$list")" == '{"children": [{"pane": "p1", "size": "2/3"}, {"pane": "e2e", "size": "1/3"}], "split": "row"}' ]] \
+[[ "$(field windows.0.tabs.0.layout <<<"$list")" == '{"children": [{"pane": "term-1", "size": "2/3"}, {"pane": "e2e", "size": "1/3"}], "split": "row"}' ]] \
   || fail "layout: $(field windows.0.tabs.0.layout <<<"$list")"
 sleep 1.5
 [[ "$(field panes.1.state <<<"$("$cli" workspace list --all --json)")" == running ]] || fail "e2e is not running"
@@ -70,8 +70,8 @@ set -e
 # 5. Closing panes redistributes space; closing the last closes the window.
 "$cli" close done >/dev/null
 "$cli" close e2e >/dev/null
-[[ "$(field windows.0.tabs.0.layout <<<"$("$cli" workspace list --all --json)")" == '{"pane": "p1"}' ]] || fail "p1 should fill the window"
-"$cli" close p1 >/dev/null
+[[ "$(field windows.0.tabs.0.layout <<<"$("$cli" workspace list --all --json)")" == '{"pane": "term-1"}' ]] || fail "term-1 should fill the window"
+"$cli" close term-1 >/dev/null
 [[ "$(field windows <<<"$("$cli" workspace list --all --json)")" == '[]' ]] || fail "the window should close with its last pane"
 
 # 5b. send types a line into a terminal.
@@ -116,7 +116,7 @@ for _ in $(seq 20); do [[ "$(field text <<<"$(hist)")" == *"PAGE TWO"* ]] && bre
   || fail "arrange: $(field windows.0.tabs.0.layout <<<"$("$cli" workspace list --all --json)")"
 "$cli" resize site 1/2 >/dev/null
 drawn arranged "*"
-"$cli" close --window w2 >/dev/null
+"$cli" close --window win-2 >/dev/null
 
 # 6. Keyboard shortcuts, pressed through AppKit's key-event path.
 key() { raw "{\"id\":1,\"cmd\":\"debug.key\",\"args\":{\"key\":\"$1\"}}" >/dev/null; sleep 0.4; }
@@ -125,14 +125,14 @@ state() { "$cli" workspace list --all --json; }
 key "cmd+d"
 key "cmd+shift+d"
 layout="$(field windows.0.tabs.0.layout <<<"$(state)")"
-[[ "$layout" == '{"children": [{"pane": "k1", "size": "1/2"}, {"children": [{"pane": "p8", "size": "1/2"}, {"pane": "p9", "size": "1/2"}], "size": "1/2", "split": "column"}], "split": "row"}' ]] \
+[[ "$layout" == '{"children": [{"pane": "k1", "size": "1/2"}, {"children": [{"pane": "term-6", "size": "1/2"}, {"pane": "term-7", "size": "1/2"}], "size": "1/2", "split": "column"}], "split": "row"}' ]] \
   || fail "cmd+d / cmd+shift+d layout: $layout"
-[[ "$(field windows.0.focused <<<"$(state)")" == p9 ]] || fail "the new pane should take focus"
+[[ "$(field windows.0.focused <<<"$(state)")" == term-7 ]] || fail "the new pane should take focus"
 key "cmd+]"; [[ "$(field windows.0.focused <<<"$(state)")" == k1 ]] || fail "cmd+] should wrap to k1"
-key "cmd+["; [[ "$(field windows.0.focused <<<"$(state)")" == p9 ]] || fail "cmd+[ should wrap back to p9"
-key "cmd+shift+return"; [[ "$(field windows.0.zoomed <<<"$(state)")" == p9 ]] || fail "cmd+shift+return should zoom"
-key "cmd+["; [[ "$(field windows.0.zoomed <<<"$(state)")" == p8 ]] || fail "cmd+[ should keep zoom on, on p8"
-key "cmd+]"; [[ "$(field windows.0.zoomed <<<"$(state)")" == p9 ]] || fail "cmd+] should keep zoom on, on p9"
+key "cmd+["; [[ "$(field windows.0.focused <<<"$(state)")" == term-7 ]] || fail "cmd+[ should wrap back to term-7"
+key "cmd+shift+return"; [[ "$(field windows.0.zoomed <<<"$(state)")" == term-7 ]] || fail "cmd+shift+return should zoom"
+key "cmd+["; [[ "$(field windows.0.zoomed <<<"$(state)")" == term-6 ]] || fail "cmd+[ should keep zoom on, on term-6"
+key "cmd+]"; [[ "$(field windows.0.zoomed <<<"$(state)")" == term-7 ]] || fail "cmd+] should keep zoom on, on term-7"
 key "cmd+shift+return"; [[ "$(field windows.0.zoomed <<<"$(state)")" == None ]] || fail "cmd+shift+return should turn zoom off"
 sleep 1
 drawn three-panes "*" 3
@@ -214,9 +214,9 @@ drawn dragged "*"
 dkw="$(field window <<<"$("$cli" open --window new --name dt1 --cmd "printf 'DOCK TAB ONE\n'; exec sleep 600" --json)")"
 "$cli" open --window "$dkw" --name dt2 --tab --cmd "printf 'DOCK TAB TWO\n'; exec sleep 600" >/dev/null
 opened="$("$cli" open --window "$dkw" --name agent --dock --cmd "printf 'DOCK AGENT\n'; exec sleep 600")"
-[[ "$opened" == *"(agent) docked left in window $dkw: running" ]] || fail "open --dock should say where it docked: $opened"
+[[ "$opened" == *"(agent) docked left in $dkw: running" ]] || fail "open --dock should say where it docked: $opened"
 [[ "$(win "$dkw" dock)" == '{"edge": "left", "pane": "agent", "width": "2/5"}' ]] || fail "open --dock: $(win "$dkw" dock)"
-[[ "$("$cli" list)" == *"dock: p"*" (agent)  left 2/5"* ]] || fail "list should show the dock on its own line: $("$cli" list)"
+[[ "$("$cli" list)" == *"dock: term-"*" (agent)  left 2/5"* ]] || fail "list should show the dock on its own line: $("$cli" list)"
 sleep 1
 drawn docked "DOCK AGENT"
 drawn docked-tab "DOCK TAB TWO"
@@ -263,7 +263,7 @@ dt1tab="$(win "$dkw" tabs.0.id | tr -d '"')"
 # 7c. A frozen docked pane doesn't move, and nothing drops on it.
 fzw="$(field window <<<"$("$cli" open --window new --name ft --cmd "printf 'FROZEN TAB\n'; exec sleep 600" --json)")"
 opened="$("$cli" open --window "$fzw" --name fagent --dock --frozen --cmd "printf 'FROZEN AGENT\n'; exec sleep 600")"
-[[ "$opened" == *"(fagent) docked left, frozen, in window $fzw: running" ]] || fail "open --dock --frozen should say it's frozen: $opened"
+[[ "$opened" == *"(fagent) docked left, frozen, in $fzw: running" ]] || fail "open --dock --frozen should say it's frozen: $opened"
 [[ "$("$cli" list)" == *"(fagent)  left 2/5  frozen"* ]] || fail "list should show the dock frozen: $("$cli" list)"
 refused="$("$cli" move fagent --dock right 2>&1)" && fail "moving a frozen docked pane should fail"
 [[ "$refused" == *"frozen: fagent ("*") is frozen in its dock and doesn't move"* ]] || fail "moving a frozen docked pane should say why: $refused"
@@ -465,7 +465,7 @@ before="$(p_layout)"
 python3 - "$p_state" <<'PY' || fail "the debounced save should hold the whole layout: $(cat "$p_state")"
 import json, sys
 s = json.load(open(sys.argv[1]))
-assert s["version"] == 1 and len(s["windows"]) == 2, s
+assert s["version"] == 2 and len(s["windows"]) == 2, s
 assert [t["title"] for t in s["windows"][0]["tabs"]] == ["Tab 1", "shells"], s
 assert {p["name"]: p.get("cwd") for p in s["panes"]}["sh2"] == "/usr/bin", s
 assert all(w.get("frame") for w in s["windows"]), s
@@ -485,7 +485,7 @@ for _ in $(seq 20); do [[ "$(field text <<<"$(p_raw '{"id":1,"cmd":"debug.text",
 for _ in $(seq 20); do [[ "$(field text <<<"$(p_raw '{"id":1,"cmd":"debug.web","args":{"pane":"site"}}')")" == *"KMUX WEB OK"* ]] && break; sleep 0.25; done
 [[ "$(field text <<<"$(p_raw '{"id":1,"cmd":"debug.web","args":{"pane":"site"}}')")" == *"KMUX WEB OK"* ]] || fail "site should load its URL again"
 [[ "$(p_frames)" == "$frames" ]] || fail "windows should come back where they were: $frames → $(p_frames)"
-[[ "$(field pane.id <<<"$(p_cli open --name new --json)")" == p8 ]] || fail "pane IDs should carry on after the restored ones"
+[[ "$(field pane.id <<<"$(p_cli open --name new --json)")" == term-4 ]] || fail "terminal IDs should carry on after the restored ones"
 p_stop
 # A file kmux can't read is set aside, and kmux starts fresh; so does --fresh.
 echo '{ "version": 1, "windows": [' >"$p_state"
@@ -525,7 +525,7 @@ before: $before
 after:  $after"
 for _ in $(seq 20); do [[ "$(field text <<<"$(p_raw '{"id":1,"cmd":"debug.text","args":{"pane":"agent"}}')")" == *"DOCK BACK"* ]] && break; sleep 0.25; done
 [[ "$(field text <<<"$(p_raw '{"id":1,"cmd":"debug.text","args":{"pane":"agent"}}')")" == *"DOCK BACK"* ]] || fail "the docked terminal should run its command again"
-p_raw "{\"id\":1,\"cmd\":\"debug.snapshot\",\"args\":{\"window\":\"w1\",\"path\":\"$out/docked-restored.png\"}}" >/dev/null
+p_raw "{\"id\":1,\"cmd\":\"debug.snapshot\",\"args\":{\"window\":\"win-1\",\"path\":\"$out/docked-restored.png\"}}" >/dev/null
 p_stop
 rm -f "$p_state" "$p_state.bad"
 
@@ -534,7 +534,7 @@ rm -f "$p_state" "$p_state.bad"
 wrapper="$out/wrapper.sh"; wrap_log="$out/wrapper.log"; rm -f "$wrap_log"
 cat >"$wrapper" <<'SH'
 #!/bin/sh
-printf '%s restored=%s args=%s\n' "$KMUX_PANE" "${KMUX_RESTORED:-0}" "$*" >>"$WRAP_LOG"
+printf '%s restored=%s args=%s\n' "$KMUX_TERMINAL" "${KMUX_RESTORED:-0}" "$*" >>"$WRAP_LOG"
 [ "$1" = "--" ] && shift
 [ $# -gt 0 ] && exec "$@"
 exec /bin/sh
@@ -557,10 +557,10 @@ import sys
 lines = open(sys.argv[1]).read().splitlines()
 assert len(lines) == 4, lines
 first, cmd = sorted(lines[:2]); again, cmd_again = sorted(lines[2:])
-assert first == "p1 restored=0 args=", first
-assert cmd.startswith("p2 restored=0 args=-- ") and "-c echo WRAPPED" in cmd, cmd
-assert again == "p1 restored=1 args=", again
-assert cmd_again.startswith("p2 restored=1 args=-- ") and "-c echo WRAPPED" in cmd_again, cmd_again
+assert first == "term-1 restored=0 args=", first
+assert cmd.startswith("term-2 restored=0 args=-- ") and "-c echo WRAPPED" in cmd, cmd
+assert again == "term-1 restored=1 args=", again
+assert cmd_again.startswith("term-2 restored=1 args=-- ") and "-c echo WRAPPED" in cmd_again, cmd_again
 PY
 rm -f "$p_state" "$p_state.bad"
 

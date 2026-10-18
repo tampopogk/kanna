@@ -9,8 +9,9 @@ import KmuxMarkdown
 final class ContentHost: PaneHost {
     let runtime: GhosttyRuntime
     weak var core: Core?
-    /// Terminals get `KMUX_INSTANCE`, `KMUX_SOCKET` and `KMUX_PANE` (`KANNA_…` in Kanna), so
-    /// `kmux` run inside a pane talks to the kmux that owns it.
+    /// Terminals get `KMUX_INSTANCE`, `KMUX_SOCKET` and `KMUX_TERMINAL`, their
+    /// own content ID (`KANNA_…` in Kanna), so `kmux` run inside a pane talks
+    /// to the kmux that owns it.
     var instance = Instance(name: Instance.defaultName)
     /// Panes started now come back from the saved layout: their terminals
     /// get `KMUX_RESTORED=1`, so a terminal wrapper can reattach a session.
@@ -97,7 +98,7 @@ final class ContentHost: PaneHost {
             terminal.onFocus = { [weak self] in self?.onFocus?(id) }
             terminal.contextMenu = { [weak self] in self?.contextMenu?() }
             let brand = Brand.current
-            var environment = [(brand.variable("INSTANCE"), instance.name), (brand.variable("SOCKET"), instance.socketPath), (brand.variable("PANE"), id)]
+            var environment = [(brand.variable("INSTANCE"), instance.name), (brand.variable("SOCKET"), instance.socketPath), (brand.variable("TERMINAL"), id)]
             if restoring { environment.append((brand.variable("RESTORED"), "1")) }
             started = runtime.attach(terminal, command: pane.command, cwd: pane.cwd, environment: environment, wrapper: brand.terminalWrapper)
             content = terminal

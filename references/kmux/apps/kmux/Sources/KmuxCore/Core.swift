@@ -324,6 +324,10 @@ public final class Core {
     private func restart(_ args: JSON) async throws -> [String: JSON] {
         let pane = try needPane(args["pane"]?.string)
         host?.stop(pane)
+        if pane.type == .term {
+            waiters.removeValue(forKey: pane.id)?.forEach { $0.resume() }
+            model.rename(pane, to: model.nextContentID(.term))
+        }
         pane.state = .starting
         pane.exitCode = nil
         pane.error = nil

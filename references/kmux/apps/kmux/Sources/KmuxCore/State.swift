@@ -5,8 +5,11 @@ import Foundation
 /// importState). Panes keep their IDs. Restoring starts every pane again:
 /// terminals as new terminals in their cwd with their command, web panes at
 /// their URL, md panes on their file, iOS panes relaunching their app.
+/// Version 1 named panes p1, p2, … tabs t1, windows w1 and workspaces s1; it
+/// loads with each renamed (`upgrade`): a pane takes its content's kind (p3
+/// showing a web page is page-3), tabs tab-N, windows win-N and workspaces ws-N.
 ///
-///     { kmux: "state", version: 1, key, counters: { pane, tab, window, workspace },
+///     { kmux: "state", version: 2, key, counters: { term, page, file, ios, tab, window, workspace },
 ///       workspaces: [{ id, name, hidden }],
 ///       windows: [{ id, frame?, active, focused, zoomed, tabCount, dock?: { pane, edge, width, frozen? }, workspace?,
 ///                   tabs: [{ id, title, lastFocus, layout }] }],
@@ -14,7 +17,7 @@ import Foundation
 ///
 /// A layout is `{ pane: ID }` or `{ split: row|column, children: [{ …layout, size }] }`.
 extension Core {
-    public static let stateVersion = 1
+    public static let stateVersion = 2
 
     public func exportState() -> JSON {
         let model = self.model
@@ -57,8 +60,8 @@ extension Core {
         }
         return [
             "kmux": "state", "version": .number(Double(Self.stateVersion)), "key": Self.optional(model.key),
-            "counters": ["pane": .number(Double(counters.pane)), "tab": .number(Double(counters.tab)), "window": .number(Double(counters.window)),
-                         "workspace": .number(Double(counters.workspace))],
+            "counters": .object(Dictionary(uniqueKeysWithValues: PaneType.allCases.map { ($0.kind, JSON.number(Double(counters.content[$0.kind] ?? 0))) })
+                .merging(["tab": .number(Double(counters.tab)), "window": .number(Double(counters.window)), "workspace": .number(Double(counters.workspace))]) { $1 }),
             "workspaces": .array(model.workspaces.map(model.workspaceView)), "windows": .array(windows), "panes": .array(panes),
         ]
     }
@@ -92,8 +95,61 @@ extension Core {
     /// Checks a saved state and builds what it describes. Lenient where it can
     /// repair (dangling focus, empty tabs, sizes), strict about anything that
     /// would make the layout ambiguous.
-    static func importState(_ state: JSON) throws -> (panes: [Pane], windows: [Window], workspaces: [Workspace], key: String?,
-                                                      counters: (pane: Int, tab: Int, window: Int, workspace: Int)) {
+    /// A version-1 state as version 2: the same layout, its IDs renamed. What
+    /// isn't an ID of version 1 is left as it is, for `importState` to judge.
+    static func upgrade(_ state: JSON) -> JSON {
+        guard case .object(var out) = state else { return state }
+        var kinds: [String: String] = [:]
+        if case .array(let panes)? = state["panes"] {
+            for pane in panes {
+                if let id = pane["id"]?.string, let type = pane["type"]?.string.flatMap(PaneType.init(rawValue:)) { kinds[id] = type.kind }
+            }
+        }
+        func id(_ value: JSON?) -> JSON? {
+            guard let text = value?.string, let match = text.wholeMatch(of: /([ptws])([1-9][0-9]*)/) else { return value }
+            switch match.1 {
+            case "p": return kinds[text].map { .string("\($0)-\(match.2)") } ?? value
+            case "t": return .string("tab-\(match.2)")
+            case "w": return .string("win-\(match.2)")
+            default: return .string("ws-\(match.2)")
+            }
+        }
+        func renaming(_ value: JSON?, _ keys: [String]) -> JSON? {
+            guard case .object(var fields)? = value else { return value }
+            for key in keys where fields[key] != nil { fields[key] = id(fields[key]) }
+            return .object(fields)
+        }
+        func node(_ value: JSON) -> JSON {
+            guard case .object(var fields)? = renaming(value, ["pane"]) else { return value }
+            if case .array(let children)? = fields["children"] { fields["children"] = .array(children.map(node)) }
+            return .object(fields)
+        }
+        func each(_ value: JSON?, _ transform: (JSON) -> JSON) -> JSON? {
+            guard case .array(let items)? = value else { return value }
+            return .array(items.map(transform))
+        }
+        let counters = state["counters"] ?? [:]
+        let pane = counters["pane"] ?? .null
+        out["version"] = .number(Double(stateVersion))
+        out["key"] = id(state["key"])
+        out["counters"] = ["term": pane, "page": pane, "file": pane, "ios": pane, "tab": counters["tab"] ?? .null,
+                           "window": counters["window"] ?? .null, "workspace": counters["workspace"] ?? .null]
+        out["workspaces"] = each(state["workspaces"]) { renaming($0, ["id"]) ?? $0 }
+        out["panes"] = each(state["panes"]) { renaming($0, ["id"]) ?? $0 }
+        out["windows"] = each(state["windows"]) { window in
+            guard case .object(var fields)? = renaming(window, ["id", "active", "focused", "zoomed", "workspace"]) else { return window }
+            if let dock = fields["dock"] { fields["dock"] = renaming(dock, ["pane"]) }
+            fields["tabs"] = each(fields["tabs"]) { tab in
+                guard case .object(var fields)? = renaming(tab, ["id", "lastFocus"]) else { return tab }
+                if let layout = fields["layout"] { fields["layout"] = node(layout) }
+                return .object(fields)
+            }
+            return .object(fields)
+        }
+        return .object(out)
+    }
+
+    static func importState(_ state: JSON) throws -> (panes: [Pane], windows: [Window], workspaces: [Workspace], key: String?, counters: Counters) {
         func bad(_ message: String) -> KmuxError { KmuxError("bad_request", "bad state: \(message)") }
         func quoted(_ value: JSON?) -> String { String(decoding: (value ?? .null).encoded(), as: UTF8.self) }
         func number(_ id: String, _ prefix: String) -> Int? {
@@ -105,18 +161,20 @@ extension Core {
             return Int(n)
         }
         guard case .object = state else { throw bad("not an object") }
+        let state = state["version"] == 1 ? upgrade(state) : state
         guard state["version"] == .number(Double(stateVersion)) else {
-            throw KmuxError("bad_request", "unsupported state version \(quoted(state["version"])) (this kmux reads \(stateVersion))")
+            throw KmuxError("bad_request", "unsupported state version \(quoted(state["version"])) (this kmux reads 1 and \(stateVersion))")
         }
         guard case .array(let savedPanes)? = state["panes"], case .array(let savedWindows)? = state["windows"] else { throw bad("needs panes and windows") }
         let saved = state["counters"] ?? [:]
-        var counters = (pane: whole(saved["pane"]) ?? 0, tab: whole(saved["tab"]) ?? 0, window: whole(saved["window"]) ?? 0, workspace: whole(saved["workspace"]) ?? 0)
+        var counters = Counters(content: Dictionary(uniqueKeysWithValues: PaneType.allCases.map { ($0.kind, whole(saved[$0.kind]) ?? 0) }),
+                                tab: whole(saved["tab"]) ?? 0, window: whole(saved["window"]) ?? 0, workspace: whole(saved["workspace"]) ?? 0)
 
         var workspaces: [Workspace] = []
         if let saved = state["workspaces"], saved != .null {
             guard case .array(let items) = saved else { throw bad("workspaces is not a list") }
             for item in items {
-                guard case .object = item, let id = item["id"]?.string, let n = number(id, "ws-") ?? number(id, "s"), !workspaces.contains(where: { $0.id == id }) else {
+                guard case .object = item, let id = item["id"]?.string, let n = number(id, "ws-"), !workspaces.contains(where: { $0.id == id }) else {
                     throw bad("workspace \(quoted(item["id"]))")
                 }
                 let name = item["name"]?.string?.trimmingCharacters(in: .whitespaces)
@@ -131,8 +189,11 @@ extension Core {
 
         var panes: [Pane] = [], byID: [String: Pane] = [:], names: Set<String> = []
         for item in savedPanes {
-            guard case .object = item, let id = item["id"]?.string, let n = number(id, "p"), byID[id] == nil else { throw bad("pane \(quoted(item["id"]))") }
+            guard case .object = item, let id = item["id"]?.string, id.wholeMatch(of: /[a-z]+-[1-9][0-9]*/) != nil, byID[id] == nil else {
+                throw bad("pane \(quoted(item["id"]))")
+            }
             guard let type = item["type"]?.string.flatMap(PaneType.init(rawValue:)) else { throw bad("pane \(id) has unknown type \(quoted(item["type"]))") }
+            guard let n = number(id, "\(type.kind)-") else { throw bad("pane \(id) is a \(type.rawValue) pane, so its ID is \(type.kind)-N") }
             let name = item["name"]?.string
             if let name {
                 guard !name.isEmpty, !names.contains(name) else { throw bad("pane name \(quoted(.string(name))) is used twice") }
@@ -158,7 +219,7 @@ extension Core {
             if type != .term { pane.command = nil; pane.cwd = nil; pane.session = nil }
             panes.append(pane)
             byID[id] = pane
-            counters.pane = max(counters.pane, n)
+            counters.content[type.kind] = max(counters.content[type.kind] ?? 0, n)
         }
 
         var placed: Set<String> = [], tabIDs: Set<String> = [], windowIDs: Set<String> = []
@@ -183,7 +244,7 @@ extension Core {
 
         var windows: [Window] = []
         for item in savedWindows {
-            guard case .object = item, let id = item["id"]?.string, let n = number(id, "w"), !windowIDs.contains(id), case .array(let savedTabs)? = item["tabs"] else {
+            guard case .object = item, let id = item["id"]?.string, let n = number(id, "win-"), !windowIDs.contains(id), case .array(let savedTabs)? = item["tabs"] else {
                 throw bad("window \(quoted(item["id"]))")
             }
             windowIDs.insert(id)
@@ -194,7 +255,7 @@ extension Core {
                 window.frame = Frame(x: x, y: y, w: w, h: h)
             }
             for entry in savedTabs {
-                guard case .object = entry, let tabID = entry["id"]?.string, let tn = number(tabID, "t"), !tabIDs.contains(tabID) else {
+                guard case .object = entry, let tabID = entry["id"]?.string, let tn = number(tabID, "tab-"), !tabIDs.contains(tabID) else {
                     throw bad("tab \(quoted(entry["id"]))")
                 }
                 tabIDs.insert(tabID)

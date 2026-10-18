@@ -81,15 +81,15 @@ import Testing
         guard case .state(let saved) = state.load() else { Issue.record("the state should load"); return }
         let (restored, _) = makeCore()
         try restored.restoreState(saved)
-        #expect(restored.model.windows.first?.dock == Dock(pane: "p2", edge: .right, width: 0.3))
-        #expect(restored.model.windows.first?.focused == "p2")
+        #expect(restored.model.windows.first?.dock == Dock(pane: "term-2", edge: .right, width: 0.3))
+        #expect(restored.model.windows.first?.focused == "term-2")
         #expect(restored.exportState() == core.exportState())
     }
 
     @Test func oldOrBrokenStatesDoNotRestore() async throws {
         let (core, _) = makeCore()
         _ = await core.handle(["cmd": "open", "args": ["type": "term", "name": "keep"]])
-        for bad: JSON in [["version": 0, "windows": [], "panes": []], ["version": 2, "windows": [], "panes": []], ["version": 1], "x"] {
+        for bad: JSON in [["version": 0, "windows": [], "panes": []], ["version": 3, "windows": [], "panes": []], ["version": 1], ["version": 2], "x"] {
             #expect(throws: KmuxError.self) { try core.restoreState(bad) }
         }
         #expect(core.model.pane("keep") != nil)

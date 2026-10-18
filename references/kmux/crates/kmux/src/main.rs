@@ -134,7 +134,7 @@ fn lookup(name: &str) -> Result<&'static Command, Failure> {
 /// Adds the next step to an error from kmux.
 fn explain(command: &Command, mut failure: Failure, mux: &mut Kmux) -> Failure {
     match failure.code {
-        exit::NOT_FOUND => failure.message += "\nRun `kmux workspace list --all` to see pane names and IDs, tabs (t1, …) and windows (w1, …).",
+        exit::NOT_FOUND => failure.message += "\nRun `kmux workspace list --all` to see pane names and IDs (term-1, file-1, …), tabs (tab-1, …) and windows (win-1, …).",
         exit::UNSUPPORTED => {
             let supported = mux.call("capabilities", json!({})).map(|c| output::join(&c["commands"])).unwrap_or_default();
             failure.message = format!("the running kmux doesn't support `{}` yet. It supports: {supported}", command.name);
@@ -170,7 +170,7 @@ instance listens on kmux.sock; one named work listens on kmux-work.sock beside i
 \n\
 Commands go to:\n  \
   1. the instance named by --instance NAME, if given;\n  \
-  2. else $KMUX_SOCKET (kmux sets it, with $KMUX_INSTANCE and $KMUX_PANE, in its\n     \
+  2. else $KMUX_SOCKET (kmux sets it, with $KMUX_INSTANCE and $KMUX_TERMINAL, in its\n     \
      terminals, so kmux run inside a pane controls that pane's kmux);\n  \
   3. else the instance named by $KMUX_INSTANCE;\n  \
   4. else the default instance.\n\
@@ -241,8 +241,8 @@ fn overview(target: &Target) -> String {
     );
     out += &format!(
         "\nReferring to things:\n  \
-         PANE    a pane's name (set with `open --name`) or its ID, e.g. p1\n  \
-         TAB     a tab ID, e.g. t1;  WINDOW  a window ID, e.g. w1  (all shown by `kmux workspace list --all`)\n  \
+         PANE    a pane's name (set with `open --name`) or its ID, e.g. term-1\n  \
+         TAB     a tab ID, e.g. tab-1;  WINDOW  a window ID, e.g. win-1  (all shown by `kmux workspace list --all`)\n  \
          FRACTION  1/3, 25% or 0.25\n\
          \n\
          Quick start:\n  \
@@ -301,9 +301,9 @@ fn describe(supported: Option<&[String]>) -> Value {
         ],
         "running": supported.is_some(),
         "refs": {
-            "PANE": "a pane name (open --name) or ID like p1",
-            "TAB": "a tab ID like t1",
-            "WINDOW": "a window ID like w1",
+            "PANE": "a pane name (open --name) or ID like term-1, file-2 or page-3",
+            "TAB": "a tab ID like tab-1",
+            "WINDOW": "a window ID like win-1",
             "FRACTION": "1/3, 25% or 0.25"
         },
         "exitCodes": { "0": "ok", "1": "failed", "2": "bad usage", "3": "kmux not reachable", "4": "not found", "5": "not supported by the running kmux" },
@@ -387,11 +387,11 @@ mod tests {
             ("kmux open web localhost:3000 --split down", json!({ "type": "web", "url": "localhost:3000", "split": "down" })),
             ("kmux open --tab --no-wait", json!({ "type": "term", "tab": true, "wait": false })),
             ("kmux close logs", json!({ "pane": "logs" })),
-            ("kmux close --window w2", json!({ "window": "w2" })),
-            ("kmux rename-tab t1 my servers", json!({ "tab": "t1", "title": "my servers" })),
+            ("kmux close --window win-2", json!({ "window": "win-2" })),
+            ("kmux rename-tab tab-1 my servers", json!({ "tab": "tab-1", "title": "my servers" })),
             ("kmux send server npm test", json!({ "pane": "server", "text": "npm test" })),
             ("kmux move logs --to server --side bottom", json!({ "pane": "logs", "to": "server", "side": "bottom" })),
-            ("kmux move-tab t2 --index 0", json!({ "tab": "t2", "index": 0 })),
+            ("kmux move-tab tab-2 --index 0", json!({ "tab": "tab-2", "index": 0 })),
             ("kmux open web a.test --history", json!({ "type": "web", "url": "a.test", "history": true })),
             ("kmux navigate site --back", json!({ "pane": "site", "back": true })),
             ("kmux open md /tmp/a.md", json!({ "type": "md", "path": "/tmp/a.md" })),
@@ -402,16 +402,16 @@ mod tests {
             ("kmux open web a.test --dock=right --window new", json!({ "type": "web", "url": "a.test", "dock": "right", "window": "new" })),
             ("kmux open --name agent --dock --frozen", json!({ "type": "term", "name": "agent", "dock": "left", "frozen": true })),
             ("kmux move agent --dock", json!({ "pane": "agent", "dock": "left" })),
-            ("kmux move agent --dock right --window w2", json!({ "pane": "agent", "dock": "right", "window": "w2" })),
+            ("kmux move agent --dock right --window win-2", json!({ "pane": "agent", "dock": "right", "window": "win-2" })),
             ("kmux move agent --tab", json!({ "pane": "agent", "tab": "new" })),
-            ("kmux move agent --tab t3", json!({ "pane": "agent", "tab": "t3" })),
-            ("kmux move agent --tab --window w2", json!({ "pane": "agent", "tab": "new", "window": "w2" })),
+            ("kmux move agent --tab tab-3", json!({ "pane": "agent", "tab": "tab-3" })),
+            ("kmux move agent --tab --window win-2", json!({ "pane": "agent", "tab": "new", "window": "win-2" })),
             ("kmux workspace new", json!({ "action": "new" })),
             ("kmux workspace new checkout", json!({ "action": "new", "name": "checkout" })),
             ("kmux workspace hide ws-1", json!({ "action": "hide", "workspace": "ws-1" })),
             ("kmux workspace close checkout", json!({ "action": "close", "workspace": "checkout" })),
-            ("kmux window assign w2 ws-1", json!({ "action": "assign", "window": "w2", "workspace": "ws-1" })),
-            ("kmux window free w2", json!({ "action": "free", "window": "w2" })),
+            ("kmux window assign win-2 ws-1", json!({ "action": "assign", "window": "win-2", "workspace": "ws-1" })),
+            ("kmux window free win-2", json!({ "action": "free", "window": "win-2" })),
             ("kmux workspace list --all", json!({ "action": "list", "all": true })),
         ];
         for (line, expected) in cases {
@@ -434,7 +434,7 @@ mod tests {
             ("kmux open notes.md", "kmux open md notes.md"),
             ("kmux navigate site --back x", "one of URL"),
             ("kmux workspce list", "Did you mean: workspace"),
-            ("kmux rename t1 x", "Did you mean: rename-tab"),
+            ("kmux rename tab-1 x", "Did you mean: rename-tab"),
             ("kmux open --dock --split right", "--dock goes on its own"),
             ("kmux open --dock --tab", "--dock goes on its own"),
             ("kmux move agent --dock --tab", "--dock goes on its own"),
@@ -443,7 +443,7 @@ mod tests {
             ("kmux workspace", "say new, hide, show, close or list"),
             ("kmux workspace hide", "missing WORKSPACE"),
             ("kmux workspace park ws-1", "unknown action \"park\""),
-            ("kmux window assign w2", "missing WORKSPACE"),
+            ("kmux window assign win-2", "missing WORKSPACE"),
             ("kmux window free", "missing WINDOW"),
         ] {
             let failure = parse(line).expect_err(line);
@@ -464,20 +464,20 @@ mod tests {
     #[test]
     fn docked_panes_print_on_their_own_line() {
         let reply = json!({
-            "windows": [{ "id": "w1", "key": true, "focused": "agent", "dock": { "pane": "agent", "edge": "left", "width": "2/5" },
-                          "tabs": [{ "id": "t1", "title": "Tab 1", "active": true, "layout": { "pane": "p2" } }] }],
-            "panes": [{ "id": "p1", "name": "agent", "type": "term", "state": "running", "cmd": "claude" }, { "id": "p2", "name": null, "type": "term", "state": "running" }]
+            "windows": [{ "id": "win-1", "key": true, "focused": "agent", "dock": { "pane": "agent", "edge": "left", "width": "2/5" },
+                          "tabs": [{ "id": "tab-1", "title": "Tab 1", "active": true, "layout": { "pane": "term-2" } }] }],
+            "panes": [{ "id": "term-1", "name": "agent", "type": "term", "state": "running", "cmd": "claude" }, { "id": "term-2", "name": null, "type": "term", "state": "running" }]
         });
         let text = output::list(&reply);
-        assert!(text.contains("\n  dock: p1 (agent)  left 2/5\n  *t1 \"Tab 1\"  p2"), "{text}");
-        let opened = json!({ "pane": { "id": "p1", "name": "agent", "state": "running" }, "window": "w1", "tab": null, "dock": "left" });
-        assert_eq!(output::opened(&json!({}), &opened), "opened p1 (agent) docked left in window w1: running");
-        assert_eq!(output::opened(&json!({ "frozen": true }), &opened), "opened p1 (agent) docked left, frozen, in window w1: running");
-        let frozen = json!({ "windows": [{ "id": "w1", "dock": { "pane": "agent", "edge": "left", "width": "2/5", "frozen": true }, "tabs": [] }],
-                             "panes": [{ "id": "p1", "name": "agent", "type": "term", "state": "running" }] });
-        assert!(output::list(&frozen).contains("\n  dock: p1 (agent)  left 2/5  frozen"), "{}", output::list(&frozen));
-        let moved = json!({ "window": "w1", "dock": { "pane": "agent", "edge": "right", "width": "1/3" } });
-        assert_eq!(output::moved(&moved), "agent is docked right in w1 (width 1/3)");
+        assert!(text.contains("\n  dock: term-1 (agent)  left 2/5\n  *tab-1 \"Tab 1\"  term-2"), "{text}");
+        let opened = json!({ "pane": { "id": "term-1", "name": "agent", "state": "running" }, "window": "win-1", "tab": null, "dock": "left" });
+        assert_eq!(output::opened(&json!({}), &opened), "opened term-1 (agent) docked left in win-1: running");
+        assert_eq!(output::opened(&json!({ "frozen": true }), &opened), "opened term-1 (agent) docked left, frozen, in win-1: running");
+        let frozen = json!({ "windows": [{ "id": "win-1", "dock": { "pane": "agent", "edge": "left", "width": "2/5", "frozen": true }, "tabs": [] }],
+                             "panes": [{ "id": "term-1", "name": "agent", "type": "term", "state": "running" }] });
+        assert!(output::list(&frozen).contains("\n  dock: term-1 (agent)  left 2/5  frozen"), "{}", output::list(&frozen));
+        let moved = json!({ "window": "win-1", "dock": { "pane": "agent", "edge": "right", "width": "1/3" } });
+        assert_eq!(output::moved(&moved), "agent is docked right in win-1 (width 1/3)");
     }
 
     #[test]
@@ -485,32 +485,32 @@ mod tests {
         let tab = |id: &str, pane: &str| json!([{ "id": id, "title": "Tab 1", "active": true, "layout": { "pane": pane } }]);
         let reply = json!({
             "windows": [
-                { "id": "w1", "key": true, "tabs": tab("t1", "a") },
-                { "id": "w2", "key": false, "workspace": "ws-1", "hidden": true, "tabs": tab("t2", "b") },
-                { "id": "w3", "key": false, "tabs": tab("t3", "c") }
+                { "id": "win-1", "key": true, "tabs": tab("tab-1", "a") },
+                { "id": "win-2", "key": false, "workspace": "ws-1", "hidden": true, "tabs": tab("tab-2", "b") },
+                { "id": "win-3", "key": false, "tabs": tab("tab-3", "c") }
             ],
             "workspaces": [
-                { "id": "ws-1", "name": "checkout", "hidden": true, "windows": ["w2"] },
+                { "id": "ws-1", "name": "checkout", "hidden": true, "windows": ["win-2"] },
                 { "id": "ws-2", "name": null, "hidden": false, "windows": [] }
             ],
             "panes": []
         });
         let text = output::list(&reply);
-        assert!(text.starts_with("*w1\n  *t1 \"Tab 1\"  a\n w3\n  *t3 \"Tab 1\"  c\nworkspace ws-1 (checkout)  hidden\n w2\n  *t2 \"Tab 1\"  b\nworkspace ws-2  no windows\n"), "{text}");
-        let pane = json!({ "id": "p5", "name": null, "state": "running" });
-        let hidden = json!({ "pane": pane, "window": "w2", "tab": "t9", "workspace": { "id": "ws-1", "name": "checkout", "hidden": true } });
-        assert_eq!(output::opened(&json!({}), &hidden), "opened p5 in ws-1's w2 (hidden), tab t9: running");
-        let shown = json!({ "pane": pane, "window": "w2", "tab": "t9", "workspace": { "id": "ws-1", "name": "checkout", "hidden": false } });
-        assert_eq!(output::opened(&json!({}), &shown), "opened p5 in ws-1's w2, tab t9: running");
+        assert!(text.starts_with("*win-1\n  *tab-1 \"Tab 1\"  a\n win-3\n  *tab-3 \"Tab 1\"  c\nworkspace ws-1 (checkout)  hidden\n win-2\n  *tab-2 \"Tab 1\"  b\nworkspace ws-2  no windows\n"), "{text}");
+        let pane = json!({ "id": "term-5", "name": null, "state": "running" });
+        let hidden = json!({ "pane": pane, "window": "win-2", "tab": "tab-9", "workspace": { "id": "ws-1", "name": "checkout", "hidden": true } });
+        assert_eq!(output::opened(&json!({}), &hidden), "opened term-5 in ws-1's win-2 (hidden), tab-9: running");
+        let shown = json!({ "pane": pane, "window": "win-2", "tab": "tab-9", "workspace": { "id": "ws-1", "name": "checkout", "hidden": false } });
+        assert_eq!(output::opened(&json!({}), &shown), "opened term-5 in ws-1's win-2, tab-9: running");
         let assign = json!({ "action": "assign" });
-        assert_eq!(output::window(&assign, &json!({ "window": "w2", "workspace": { "id": "ws-1", "hidden": true }, "shown": false })),
-                   "assigned w2 to ws-1 (hidden: it opens again when ws-1 is shown)");
-        assert_eq!(output::window(&json!({ "action": "free" }), &json!({ "window": "w2", "was": { "id": "ws-1", "hidden": true }, "shown": true })),
-                   "w2 is free (out of ws-1, and open again)");
-        assert_eq!(output::workspace(&json!({ "action": "hide" }), &json!({ "workspace": { "id": "ws-1", "name": "checkout", "hidden": true }, "windows": ["w2"] })),
-                   "hid ws-1 (checkout): w2 off screen, their panes still running");
+        assert_eq!(output::window(&assign, &json!({ "window": "win-2", "workspace": { "id": "ws-1", "hidden": true }, "shown": false })),
+                   "assigned win-2 to ws-1 (hidden: it opens again when ws-1 is shown)");
+        assert_eq!(output::window(&json!({ "action": "free" }), &json!({ "window": "win-2", "was": { "id": "ws-1", "hidden": true }, "shown": true })),
+                   "win-2 is free (out of ws-1, and open again)");
+        assert_eq!(output::workspace(&json!({ "action": "hide" }), &json!({ "workspace": { "id": "ws-1", "name": "checkout", "hidden": true }, "windows": ["win-2"] })),
+                   "hid ws-1 (checkout): win-2 off screen, their panes still running");
         assert_eq!(output::workspace(&json!({ "action": "close" }), &json!({ "workspace": "ws-1", "closed": [] })), "closed ws-1 (it had no panes)");
-        assert_eq!(output::workspace(&json!({ "action": "close" }), &json!({ "workspace": "ws-1", "closed": ["p2", "p3"] })), "closed ws-1 (panes p2, p3)");
+        assert_eq!(output::workspace(&json!({ "action": "close" }), &json!({ "workspace": "ws-1", "closed": ["term-2", "term-3"] })), "closed ws-1 (panes term-2, term-3)");
     }
 
     #[test]
@@ -518,22 +518,22 @@ mod tests {
         let tab = |id: &str, pane: &str| json!([{ "id": id, "title": "Tab 1", "active": true, "layout": { "pane": pane } }]);
         let reply = json!({
             "windows": [
-                { "id": "w1", "key": true, "tabs": tab("t1", "a") },
-                { "id": "w2", "key": false, "workspace": "ws-1", "hidden": true, "tabs": tab("t2", "b") },
-                { "id": "w3", "key": false, "workspace": "ws-1", "hidden": true, "tabs": tab("t3", "p3") }
+                { "id": "win-1", "key": true, "tabs": tab("tab-1", "a") },
+                { "id": "win-2", "key": false, "workspace": "ws-1", "hidden": true, "tabs": tab("tab-2", "b") },
+                { "id": "win-3", "key": false, "workspace": "ws-1", "hidden": true, "tabs": tab("tab-3", "term-3") }
             ],
-            "workspaces": [{ "id": "ws-1", "name": "checkout", "hidden": true, "windows": ["w2", "w3"] }],
-            "panes": [{ "id": "p1", "name": "a", "type": "term", "state": "running" }, { "id": "p2", "name": "b", "type": "term", "state": "running", "workspace": "ws-1" },
-                      { "id": "p3", "name": null, "type": "term", "state": "running", "workspace": "ws-1" }, { "id": "p4", "name": null, "type": "term", "state": "running" }]
+            "workspaces": [{ "id": "ws-1", "name": "checkout", "hidden": true, "windows": ["win-2", "win-3"] }],
+            "panes": [{ "id": "term-1", "name": "a", "type": "term", "state": "running" }, { "id": "term-2", "name": "b", "type": "term", "state": "running", "workspace": "ws-1" },
+                      { "id": "term-3", "name": null, "type": "term", "state": "running", "workspace": "ws-1" }, { "id": "term-4", "name": null, "type": "term", "state": "running" }]
         });
         let list = json!({ "action": "list" });
-        let mine = output::workspace(&list, &output::scoped(&reply, "p3").unwrap());
-        assert!(mine.starts_with("workspace ws-1 (checkout)  hidden\n w2\n  *t2 \"Tab 1\"  b\n w3\n  *t3 \"Tab 1\"  p3\n\nPANE"), "{mine}");
-        assert!(!mine.contains("p1    a"), "{mine}");
+        let mine = output::workspace(&list, &output::scoped(&reply, "term-3").unwrap());
+        assert!(mine.starts_with("workspace ws-1 (checkout)  hidden\n win-2\n  *tab-2 \"Tab 1\"  b\n win-3\n  *tab-3 \"Tab 1\"  term-3\n\nPANE"), "{mine}");
+        assert!(!mine.contains("term-1  a"), "{mine}");
         let free = output::workspace(&list, &output::scoped(&reply, "a").unwrap());
-        assert!(free.starts_with("*w1\n  *t1 \"Tab 1\"  a\n\nPANE"), "{free}");
-        assert_eq!(output::workspace(&list, &output::scoped(&reply, "p4").unwrap()), "p4 isn't in a window");
-        assert!(output::scoped(&reply, "p9").is_none());
+        assert!(free.starts_with("*win-1\n  *tab-1 \"Tab 1\"  a\n\nPANE"), "{free}");
+        assert_eq!(output::workspace(&list, &output::scoped(&reply, "term-4").unwrap()), "term-4 isn't in a window");
+        assert!(output::scoped(&reply, "term-9").is_none());
         assert_eq!(output::workspace(&json!({ "action": "list", "all": true }), &reply), output::list(&reply));
     }
 }

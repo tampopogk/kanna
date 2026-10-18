@@ -124,8 +124,8 @@ flowchart LR
 - **Names:** the default instance is called `default`. Other names use letters, digits, `-` and `_` (up to 32).
 - **Sockets:** all in `~/Library/Application Support/kmux/`. The default instance listens on `kmux.sock`, and one named `work` on `kmux-work.sock`.
 - **Starting one:** `kmux --instance work …` starts `work` if it isn't running. In the app, **kmux → New Instance** starts one named `2`, `3`, ….
-- **Telling them apart:** a named instance shows its name in its window titles (`Tab 1 — w1 · work`) and at the top of the kmux menu. `capabilities` reports the instance name.
-- **Inside a pane:** terminals get `KMUX_INSTANCE`, `KMUX_SOCKET` and `KMUX_PANE`, so `kmux` run in a pane controls the instance that owns it. A terminal brought back by a restart ([3.6](#36-persistence)) also gets `KMUX_RESTORED=1`.
+- **Telling them apart:** a named instance shows its name in its window titles (`Tab 1 — win-1 · work`) and at the top of the kmux menu. `capabilities` reports the instance name.
+- **Inside a pane:** terminals get `KMUX_INSTANCE`, `KMUX_SOCKET` and `KMUX_TERMINAL` (the terminal's own ID, `term-3`), so `kmux` run in a pane controls the instance that owns it. A terminal brought back by a restart ([3.6](#36-persistence)) also gets `KMUX_RESTORED=1`.
 - **Quitting:** an instance removes its socket when it quits, including when it is sent SIGTERM, SIGINT or SIGHUP.
 
 ### 3.5 Staying in the background
@@ -137,7 +137,7 @@ kmux launches in front by default. With `--bg` (on the app or the CLI, or `KMUX_
 
 ### 3.6 Persistence
 
-When kmux starts again, its layout comes back: windows where they were, their tabs (titles, order, the active tab), the splits and their sizes, focus and zoom, pane names, and what each pane shows. Panes keep their IDs.
+When kmux starts again, its layout comes back: windows where they were, their tabs (titles, order, the active tab), the splits and their sizes, focus and zoom, pane names, and what each pane shows. Panes, tabs and windows keep their IDs.
 
 | Pane | Saved | When kmux starts again |
 |------|-------|------------------------|
@@ -159,7 +159,8 @@ flowchart LR
 - **Products that keep terminals alive:** kmux itself never keeps a process across a restart. A product built on kmux can: its build names a **terminal wrapper** (`KMUX_TERMINAL_WRAPPER` in `scripts/build-kmux.sh`, a program inside the app). kmux then runs every terminal through it, `WRAPPER` for a shell or `WRAPPER -- $SHELL -c CMD` for a command, and a restored terminal gets `KMUX_RESTORED=1` (`KANNA_RESTORED` in Kanna), so the wrapper can reattach a session that outlived the app instead of starting a new one. kmux knows nothing else about it. Kanna's keeper works this way.
 - **Where:** one file per instance, next to its socket: `~/Library/Application Support/kmux/state-default.json` (`state-work.json` for an instance named `work`). A kmux on a socket elsewhere (`$KMUX_SOCKET`, as tests use) keeps it beside that socket: `/tmp/x.sock` → `/tmp/x.state.json`. Other brands use their own folder (Kanna: `…/kanna/`).
 - **When:** half a second after a change, and when kmux quits (⌘Q, SIGTERM, SIGINT or SIGHUP). Writes are atomic: a temporary file, flushed, then renamed over the old one.
-- **Format:** JSON with a `version` (now 1): the workspaces (`{ id, name, hidden }`), the windows (with frames, a `dock` `{ pane, edge, width, frozen? }` when they have one, and a `workspace` when they're in one), their tabs and layout trees (pane IDs, exact sizes), focus and zoom, and the panes. A file without `dock`, `workspaces` or `workspace` loads as before. A terminal also has a `session`, reserved for re-attaching hosted terminals later and unused for now.
+- **Format:** JSON with a `version` (now 2): the workspaces (`{ id, name, hidden }`), the windows (with frames, a `dock` `{ pane, edge, width, frozen? }` when they have one, and a `workspace` when they're in one), their tabs and layout trees (pane IDs, exact sizes), focus and zoom, and the panes. A file without `dock`, `workspaces` or `workspace` loads as before. A terminal also has a `session`, reserved for re-attaching hosted terminals later and unused for now.
+- **Older files:** a version 1 file (panes `p1`, tabs `t1`, windows `w1`, workspaces `s1`) loads with its IDs renamed: each pane takes its content's kind and keeps its number (`p3` showing a web page is `page-3`), tabs become `tab-N`, windows `win-N` and workspaces `ws-N`.
 - **Only kmux's own file:** restoring runs terminal commands again, so kmux restores a file only if it is a regular file (not a link), owned by the user, readable and writable by no one else (mode 0600), in a folder no other user can write to. kmux never restores from a path a client gives it.
 - **Never in the way:** a file that fails these checks, isn't valid, or has another version is moved aside to `….json.bad`, and kmux starts with a new window. So does a file with no windows left.
 - **Starting fresh:** `--fresh` (on the app or the CLI, or `KMUX_FRESH=1`) opens a new window instead; the saved layout is replaced at the next save. `KMUX_NO_STATE=1` turns saving and restoring off (for tests on shared sockets).
@@ -199,9 +200,9 @@ There are no Dock or Undock menu items: docking is done from the CLI or by a cli
 
 ```text
 $ kmux open --name agent --cmd claude --dock
-opened p4 (agent) docked left in window w1: running
+opened term-4 (agent) docked left in win-1: running
 $ kmux move agent --dock right
-agent is docked right in w1 (width 2/5)
+agent is docked right in win-1 (width 2/5)
 $ kmux move agent --tab
 ```
 
@@ -211,41 +212,41 @@ A **workspace** is a named group of windows, shown or hidden together. A window 
 
 ```mermaid
 flowchart LR
-    APP["kmux"] --> F["w1<br/>free"]
+    APP["kmux"] --> F["win-1<br/>free"]
     APP --> S1["ws-1 checkout<br/>shown"]
     APP --> S2["ws-2<br/>hidden"]
-    S1 --> W2["w2"]
-    S1 --> W3["w3"]
-    S2 --> W4["w4<br/>off screen, panes running"]
+    S1 --> W2["win-2"]
+    S1 --> W3["win-3"]
+    S2 --> W4["win-4<br/>off screen, panes running"]
 ```
 
 | Rule | |
 |------|---|
-| IDs | `ws-1`, `ws-2`, … never reused, with an optional name (unique, and not like an ID). A workspace is referred to by either. A state saved with the older `s1` IDs still loads, keeping them. |
+| IDs | `ws-1`, `ws-2`, … never reused, with an optional name (unique, and not like an ID). A workspace is referred to by either. |
 | Making one | `workspace new [NAME]` makes an empty workspace; `window assign W S` puts a window in it, and `window free W` takes it out (Window → Assign Window to Workspace and Free Window). A window made by `open --window new`, `move --window new` or `move-tab --window new` is free. |
 | Hidden | A hidden workspace's windows never take the keyboard: none is the key window (hiding the key window's workspace makes another window key), and `focus` on one of them, a tab or a pane in it is refused (`hidden`). `open`, `move` and `move-tab` with `window` still reach a hidden window, without showing it. A window assigned to a hidden workspace hides; freed, it's on screen again. |
 | Shown | `workspace show` opens its windows where they were, and makes its last window key. |
 | Closing | `workspace close` closes its windows and everything in them, and the workspace. A workspace whose windows all close stays until it's closed. |
-| Replies | A window in a workspace is named with it: `open` adds `workspace: { id, name, hidden }`, the CLI says `opened p5 in ws-1's w2 (hidden), tab t9: running`. `list` adds each window's `workspace` (and `hidden: true`), each pane's `workspace`, and the `workspaces` with their windows. |
-| Listing | `kmux workspace list` shows your own: the window your terminal (`$KMUX_PANE`) is in, or its workspace with all its windows, and their panes. `--all` shows free windows first, then each workspace with its own; `--json` prints the `list` reply, cut to yours without `--all`. There's no `kmux list`. |
+| Replies | A window in a workspace is named with it: `open` adds `workspace: { id, name, hidden }`, the CLI says `opened term-5 in ws-1's win-2 (hidden), tab-9: running`. `list` adds each window's `workspace` (and `hidden: true`), each pane's `workspace`, and the `workspaces` with their windows. |
+| Listing | `kmux workspace list` shows your own: the window your terminal (`$KMUX_TERMINAL`) is in, or its workspace with all its windows, and their panes. `--all` shows free windows first, then each workspace with its own; `--json` prints the `list` reply, cut to yours without `--all`. There's no `kmux list`. |
 
 ```text
 $ kmux workspace new checkout
 made ws-1 (checkout): put windows in it with `kmux window assign WINDOW ws-1`
-$ kmux window assign w2 checkout
-assigned w2 to ws-1
+$ kmux window assign win-2 checkout
+assigned win-2 to ws-1
 $ kmux workspace hide checkout
-hid ws-1 (checkout): w2 off screen, their panes still running
-$ kmux open --window w2 --tab
-opened p6 in ws-1's w2 (hidden), tab t5: running
+hid ws-1 (checkout): win-2 off screen, their panes still running
+$ kmux open --window win-2 --tab
+opened term-6 in ws-1's win-2 (hidden), tab-5: running
 $ kmux workspace show checkout
-showed ws-1 (checkout): w2
+showed ws-1 (checkout): win-2
 $ kmux workspace list --all
-*w1
-  *t1 "Tab 1"  p1
+*win-1
+  *tab-1 "Tab 1"  term-1
 workspace ws-1 (checkout)
- w2
-  *t5 "Tab 1"  p6
+ win-2
+  *tab-5 "Tab 1"  term-6
 …
 ```
 
@@ -380,7 +381,8 @@ When a move leaves a tab or window empty, it closes ([3.1](#31-structure)).
 
 Each request is `{ id, cmd, args }`. Each reply is `{ id, ok: true, … }` or `{ id, ok: false, error: { code, message } }`.
 
-- A pane can be referred to by its ID (`p2`) or its name (`site`). Tabs (`t1`) and windows (`w1`) are referred to by ID.
+- A pane is referred to by its content's ID or its name (`site`). A content ID says what the pane shows: `term-1` a terminal, `page-1` a web page, `file-1` a markdown file, `ios-1` an iOS app; each kind is numbered on its own. Tabs (`tab-1`) and windows (`win-1`) are referred to by ID.
+- A terminal's ID is one program run: `restart` starts a new terminal in its place, with a new ID (`term-1` → `term-4`), and its name goes with it. Web, markdown and iOS panes keep their IDs through `restart` and `navigate`.
 - IDs are never reused while kmux is running. Panes, tabs and windows keep their IDs when the layout is restored ([3.6](#36-persistence)).
 - Wherever `window` appears, it can be a window ID or `new`. Leaving it out means the key window.
 
@@ -401,7 +403,7 @@ Each request is `{ id, cmd, args }`. Each reply is `{ id, ok: true, … }` or `{
 | `focus` | one of `pane`, `tab`, `window` | Brings it to the front and makes its window key. With zoom on, the pane it focuses is the one shown. A hidden window, or a tab or pane in one, is refused (`hidden`). |
 | `zoom` | `pane` | Focuses the pane and turns its window's zoom on, or off if that pane is already the one zoomed. |
 | `close` | one of `pane`, `tab`, `window` | Closes it and everything inside it. A window's docked pane closes only with the window. |
-| `restart` | `pane` | |
+| `restart` | `pane` | A terminal starts again as a new terminal with a new ID, in the same place and with the same name; the reply's `pane` has it. |
 | `send` | `pane`, `text` | `term` panes only. Runs `text` as a typed line. |
 | `navigate` | `pane`, plus `url`, `back: true` or `forward: true` (web), or `path` (md) | `web` and `md` panes. `back` and `forward` work in md panes (always) and in web panes opened with `history`; with nothing to go back or forward to, `bad_request`. An md pane's relative `path` is resolved against the file it shows. |
 
@@ -428,7 +430,7 @@ A size can be written as a fraction (`"1/3"`), a percentage (`"25%"`) or a decim
 | `start_failed` | The pane went to **failed**. The message says why. |
 | `docked` | `close` on a docked pane (`docked: it closes with its window`), `arrange` naming one, or `move` beside one. |
 | `frozen` | `move` on a frozen docked pane, or a `move` or `open` that would land on it or in its dock. |
-| `hidden` | `focus` on a hidden workspace's window, or a tab or pane in it (`w2 is ws-1's, hidden: show checkout to see it`). |
+| `hidden` | `focus` on a hidden workspace's window, or a tab or pane in it (`win-2 is ws-1's, hidden: show checkout to see it`). |
 
 ### 7.4 The `kmux` CLI
 
@@ -443,7 +445,7 @@ A size can be written as a fraction (`"1/3"`), a percentage (`"25%"`) or a decim
 
 ```text
 $ kmux open --name logs --split right --size 1/3 --cmd "tail -f app.log"
-opened p3 (logs) in window w1, tab t1: running
+opened term-3 (logs) in win-1, tab-1: running
 $ kmux instances
 * default  1 window, 3 panes
   work     2 windows, 4 panes

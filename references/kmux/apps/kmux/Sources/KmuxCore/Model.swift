@@ -1,12 +1,27 @@
 import Foundation
 
-public enum PaneType: String, Sendable { case term, web, ios, md }
+public enum PaneType: String, Sendable, CaseIterable {
+    case term, web, ios, md
+
+    /// The kind of content a pane of this type shows, which its content ID
+    /// starts with: term-1, page-1 (web), file-1 (md), ios-1.
+    public var kind: String {
+        switch self {
+        case .term: "term"
+        case .web: "page"
+        case .md: "file"
+        case .ios: "ios"
+        }
+    }
+}
 public enum PaneState: String, Sendable { case starting, running, exited, failed }
 public enum Axis: String, Sendable { case row, column }
 public enum Edge: String, Sendable { case left, right }
 
+/// A pane's content, by its content ID. A terminal is one program run, so
+/// restarting it gives it a new ID; a page, a file or an iOS app keeps its ID.
 public final class Pane {
-    public let id: String
+    public internal(set) var id: String
     public var name: String?
     public let type: PaneType
     public var state: PaneState = .starting
@@ -157,7 +172,7 @@ public final class Model {
     public private(set) var windows: [Window] = []
     public private(set) var workspaces: [Workspace] = []
     public var key: String?
-    private var counters = (pane: 0, tab: 0, window: 0, workspace: 0)
+    private var counters = Counters()
 
     public init() {}
 
@@ -200,7 +215,7 @@ public final class Model {
 
     func makeWindow() -> Window {
         counters.window += 1
-        let window = Window(id: "w\(counters.window)")
+        let window = Window(id: "win-\(counters.window)")
         windows.append(window)
         key = window.id
         return window
@@ -210,33 +225,64 @@ public final class Model {
     func makeTab(in window: Window, activate: Bool = true) -> Tab {
         counters.tab += 1
         window.tabCount += 1
-        let tab = Tab(id: "t\(counters.tab)", title: "Tab \(window.tabCount)")
+        let tab = Tab(id: "tab-\(counters.tab)", title: "Tab \(window.tabCount)")
         window.tabs.append(tab)
         if activate || window.active == nil { window.active = tab.id }
         return tab
     }
 
     func makePane(type: PaneType, name: String?) -> Pane {
-        counters.pane += 1
-        let pane = Pane(id: "p\(counters.pane)", name: name, type: type)
+        let pane = Pane(id: nextContentID(type), name: name, type: type)
         panes[pane.id] = pane
         paneOrder.append(pane.id)
         return pane
     }
 
+    func nextContentID(_ type: PaneType) -> String {
+        counters.content[type.kind, default: 0] += 1
+        return "\(type.kind)-\(counters.content[type.kind]!)"
+    }
+
+    /// Gives a pane's content a new ID where it is shown: in its tab's tree or
+    /// its window's dock, as the focus and a tab's last focus. It keeps its
+    /// place in the list and its name.
+    func rename(_ pane: Pane, to id: String) {
+        let from = pane.id
+        panes[from] = nil
+        pane.id = id
+        panes[id] = pane
+        paneOrder = paneOrder.map { $0 == from ? id : $0 }
+        func renamed(_ node: Node?) -> Node? {
+            switch node {
+            case nil: return nil
+            case .pane(let leaf): return .pane(leaf == from ? id : leaf)
+            case .split(let split):
+                for i in split.kids.indices { split.kids[i].node = renamed(split.kids[i].node)! }
+                return node
+            }
+        }
+        for window in windows {
+            if window.dock?.pane == from { window.dock?.pane = id }
+            if window.focused == from { window.focused = id }
+            for tab in window.tabs {
+                if tab.lastFocus == from { tab.lastFocus = id }
+                tab.root = renamed(tab.root)
+            }
+        }
+    }
+
     /// Replaces everything with a restored layout. IDs are never reused while
     /// kmux runs, so the counters only move forward.
-    func install(panes: [Pane], windows: [Window], workspaces: [Workspace], key: String?, counters: (pane: Int, tab: Int, window: Int, workspace: Int)) {
+    func install(panes: [Pane], windows: [Window], workspaces: [Workspace], key: String?, counters: Counters) {
         self.panes = Dictionary(uniqueKeysWithValues: panes.map { ($0.id, $0) })
         paneOrder = panes.map(\.id)
         self.windows = windows
         self.workspaces = workspaces
         self.key = key
-        self.counters = (max(self.counters.pane, counters.pane), max(self.counters.tab, counters.tab), max(self.counters.window, counters.window),
-                         max(self.counters.workspace, counters.workspace))
+        self.counters = self.counters.max(counters)
     }
 
-    var savedCounters: (pane: Int, tab: Int, window: Int, workspace: Int) { counters }
+    var savedCounters: Counters { counters }
 
     func forget(_ pane: Pane) {
         panes[pane.id] = nil
@@ -422,6 +468,17 @@ public final class Model {
         if let code = pane.exitCode { out["exitCode"] = .number(Double(code)) }
         if let error = pane.error { out["error"] = .string(error) }
         return .object(out)
+    }
+}
+
+/// The last number given to each kind of content, tab, window and workspace.
+struct Counters {
+    var content: [String: Int] = [:]
+    var tab = 0, window = 0, workspace = 0
+
+    func max(_ other: Counters) -> Counters {
+        Counters(content: content.merging(other.content, uniquingKeysWith: Swift.max), tab: Swift.max(tab, other.tab),
+                 window: Swift.max(window, other.window), workspace: Swift.max(workspace, other.workspace))
     }
 }
 

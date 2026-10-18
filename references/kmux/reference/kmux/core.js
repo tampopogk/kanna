@@ -12,9 +12,13 @@ const hooks = {
 
 // ---------------------------------------------------------------------------
 // State
+// The server (content and logical presentation) and, on windows, the page's own
+// physical presentation: where each window is (x, y, w, h, z), never saved with
+// the server's state or seen by clients.
 // window := { id, tabs, active, focused, zoom, dock, workspace, x, y, w, h, z }   (workspace: its workspace's ID, or null: a free window)
 // workspace := { id, name, hidden }   (a named group of windows, shown or hidden together; a hidden one's windows are off screen)
 // tab    := { id, root, title, lastFocus }   (title: "Tab 1", "Tab 2"… per window until renamed)
+// content := a pane's content, by its content ID: term-N, page-N (web), file-N (md), ios-N; each kind counts on its own
 // node   := { t: 'pane', id } | { t: 'split', dir: 'row'|'column', kids: [{ node, size }] }
 // dock   := null | { pane, edge: 'left'|'right', width, frozen? }   (the window's docked pane, outside its tabs;
 //           a frozen one doesn't move and nothing drops on it)
@@ -36,7 +40,7 @@ const FILES = {
 let S;
 
 function freshState() {
-  return { panes: {}, windows: [], workspaces: [], key: null, urlEdit: null, servers: {}, n: { pane: 0, tab: 0, win: 0, ws: 0, req: 0, z: 0 } };
+  return { panes: {}, windows: [], workspaces: [], key: null, urlEdit: null, servers: {}, n: { term: 0, page: 0, file: 0, ios: 0, tab: 0, win: 0, ws: 0, req: 0, z: 0 } };
 }
 
 class KErr extends Error { constructor(code, message) { super(message); this.code = code; } }
@@ -94,13 +98,13 @@ function makeWindow() {
   const k = keyWin();
   let geo = k ? { x: k.x + 32, y: k.y + 32, w: k.w, h: k.h } : { x: 24, y: 18, w: W - 48, h: H - 36 };
   if (geo.x + geo.w > W || geo.y + geo.h > H) geo = { x: 24, y: 18, w: Math.min(geo.w, W - 48), h: Math.min(geo.h, H - 36) };
-  const w = { id: 'w' + (++S.n.win), tabs: [], tabCount: 0, active: null, focused: null, zoom: false, dock: null, workspace: null, ...geo, z: ++S.n.z };
+  const w = { id: 'win-' + (++S.n.win), tabs: [], tabCount: 0, active: null, focused: null, zoom: false, dock: null, workspace: null, ...geo, z: ++S.n.z };
   S.windows.push(w);
   S.key = w.id;
   return w;
 }
 function makeTab(w, activate = true) {
-  const t = { id: 't' + (++S.n.tab), root: null, title: `Tab ${++w.tabCount}`, lastFocus: null };
+  const t = { id: 'tab-' + (++S.n.tab), root: null, title: `Tab ${++w.tabCount}`, lastFocus: null };
   w.tabs.push(t);
   if (activate || !w.active) w.active = t.id;
   return t;
@@ -247,9 +251,14 @@ function refuseFrozen(w) {
 // ---------------------------------------------------------------------------
 // Panes and lifecycle: starting -> running | failed; running -> exited; * -> closed
 // ---------------------------------------------------------------------------
+// A content ID names one piece of content: a terminal is one program run, so
+// restarting it makes a new one with a new ID; a page, a file or an iOS app
+// keeps its ID through navigate and restart.
+const KIND = { term: 'term', web: 'page', md: 'file', ios: 'ios' };
+const contentId = type => `${KIND[type]}-${++S.n[KIND[type]]}`;
 function createPane(type, a) {
   const p = {
-    id: 'p' + (++S.n.pane), name: a.name || null, type, state: 'starting', error: null, gen: 0, waiters: [],
+    id: contentId(type), name: a.name || null, type, state: 'starting', error: null, gen: 0, waiters: [],
     cmd: a.cmd || null, cwd: a.cwd || '~', url: a.url ? normUrl(a.url) : null,
     // Web panes keep back/forward history only when opened with history: true;
     // markdown panes always do (of paths).
@@ -285,6 +294,22 @@ function start(p) {
       later(p, 600, () => setState(p, 'failed', { error: `Unknown device "${p.device}".\nAvailable: ${DEVICES.join(', ')}` }));
     } else {
       later(p, 1800, () => setState(p, 'running'));
+    }
+  }
+}
+// Gives content a new ID where it is shown: in its tab's tree or its window's
+// dock, as the focus and a tab's last focus. It keeps its place in the list.
+function renameContent(p, to) {
+  const from = p.id;
+  S.panes = Object.fromEntries(Object.entries(S.panes).map(([id, x]) => id === from ? [to, x] : [id, x]));
+  p.id = to;
+  const leaves = node => !node ? [] : node.t === 'pane' ? [node] : node.kids.flatMap(k => leaves(k.node));
+  for (const w of S.windows) {
+    if (w.dock?.pane === from) w.dock.pane = to;
+    if (w.focused === from) w.focused = to;
+    for (const t of w.tabs) {
+      if (t.lastFocus === from) t.lastFocus = to;
+      leaves(t.root).forEach(n => { if (n.id === from) n.id = to; });
     }
   }
 }
@@ -371,14 +396,17 @@ function summary(p) {
 // saves it as the layout changes and on quit, and restores it on launch.
 // Panes keep their IDs; terminals come back as new terminals (cwd, cmd), web
 // panes reload their URL, md panes their file, iOS panes relaunch their app.
-// state := { kmux: 'state', version, key, counters: { pane, tab, window, workspace },
+// Version 1 named panes p1, p2, … tabs t1, windows w1 and workspaces s1; it
+// loads with each renamed: a pane takes its content's kind (p3 showing a web
+// page is page-3), tabs tab-N, windows win-N and workspaces ws-N.
+// state := { kmux: 'state', version, key, counters: { term, page, file, ios, tab, window, workspace },
 //            workspaces: [{ id, name, hidden }],
 //            windows: [{ id, frame?, active, focused, zoomed, tabCount, dock?: { pane, edge, width, frozen? }, workspace?,
 //                        tabs: [{ id, title, lastFocus, layout }] }],
 //            panes: [{ id, name, type, …what it shows }] }
 // layout := { pane: ID } | { split: 'row'|'column', children: [{ …layout, size }] }
 // ---------------------------------------------------------------------------
-const STATE_VERSION = 1;
+const STATE_VERSION = 2;
 let savedState = null;
 const PANE_FIELDS = { term: ['cmd', 'cwd', 'session'], web: ['url'], md: ['path'], ios: ['app', 'device'] };
 
@@ -396,7 +424,7 @@ function exportPane(p) {
 function exportState() {
   return {
     kmux: 'state', version: STATE_VERSION, key: S.key,
-    counters: { pane: S.n.pane, tab: S.n.tab, window: S.n.win, workspace: S.n.ws },
+    counters: { term: S.n.term, page: S.n.page, file: S.n.file, ios: S.n.ios, tab: S.n.tab, window: S.n.win, workspace: S.n.ws },
     workspaces: S.workspaces.map(wsView),
     windows: S.windows.map(w => ({
       id: w.id, frame: { x: w.x, y: w.y, w: w.w, h: w.h }, active: w.active, focused: w.focused, zoomed: zoomedOf(w), tabCount: w.tabCount,
@@ -404,6 +432,33 @@ function exportState() {
       tabs: w.tabs.map(t => ({ id: t.id, title: t.title, lastFocus: t.lastFocus, layout: exportNode(t.root) })),
     })),
     panes: Object.values(S.panes).map(exportPane),
+  };
+}
+
+/// A version-1 state as version 2: the same layout, its IDs renamed. What
+/// isn't an ID of version 1 is left as it is, for importState to judge.
+function upgradeState(st) {
+  const isObj = v => v && typeof v === 'object' && !Array.isArray(v);
+  const panes = Array.isArray(st.panes) ? st.panes : [];
+  const kinds = Object.fromEntries(panes.filter(p => isObj(p) && KIND[p.type]).map(p => [p.id, KIND[p.type]]));
+  const id = v => {
+    const m = typeof v === 'string' && /^([ptws])([1-9]\d*)$/.exec(v);
+    if (!m) return v;
+    if (m[1] === 'p') return kinds[v] ? `${kinds[v]}-${m[2]}` : v;
+    return { t: 'tab-', w: 'win-', s: 'ws-' }[m[1]] + m[2];
+  };
+  const node = n => !isObj(n) ? n : { ...n, ...(n.pane != null ? { pane: id(n.pane) } : {}), ...(Array.isArray(n.children) ? { children: n.children.map(node) } : {}) };
+  const c = isObj(st.counters) ? st.counters : {};
+  return {
+    ...st, version: 2, key: id(st.key),
+    counters: { term: c.pane, page: c.pane, file: c.pane, ios: c.pane, tab: c.tab, window: c.window, workspace: c.workspace },
+    workspaces: Array.isArray(st.workspaces) ? st.workspaces.map(s => isObj(s) ? { ...s, id: id(s.id) } : s) : st.workspaces,
+    windows: Array.isArray(st.windows) ? st.windows.map(w => !isObj(w) ? w : {
+      ...w, id: id(w.id), active: id(w.active), focused: id(w.focused), zoomed: id(w.zoomed), workspace: id(w.workspace),
+      ...(isObj(w.dock) ? { dock: { ...w.dock, pane: id(w.dock.pane) } } : {}),
+      tabs: Array.isArray(w.tabs) ? w.tabs.map(t => isObj(t) ? { ...t, id: id(t.id), lastFocus: id(t.lastFocus), layout: node(t.layout) } : t) : w.tabs,
+    }) : st.windows,
+    panes: panes.map(p => isObj(p) ? { ...p, id: id(p.id) } : p),
   };
 }
 
@@ -416,26 +471,28 @@ function importState(st) {
   const str = v => typeof v === 'string' ? v : null;
   const num = (id, prefix) => Number(id.slice(prefix.length));
   if (!isObj(st)) throw bad('not an object');
-  if (st.version !== STATE_VERSION) throw kerr('bad_request', `unsupported state version ${JSON.stringify(st.version ?? null)} (this kmux reads ${STATE_VERSION})`);
+  if (st.version === 1) st = upgradeState(st);
+  if (st.version !== STATE_VERSION) throw kerr('bad_request', `unsupported state version ${JSON.stringify(st.version ?? null)} (this kmux reads 1 and ${STATE_VERSION})`);
   if (!Array.isArray(st.panes) || !Array.isArray(st.windows)) throw bad('needs panes and windows');
   const N = freshState();
   const saved = isObj(st.counters) ? st.counters : {};
-  N.n.pane = Number.isInteger(saved.pane) ? saved.pane : 0;
+  for (const kind of Object.values(KIND)) N.n[kind] = Number.isInteger(saved[kind]) ? saved[kind] : 0;
   N.n.tab = Number.isInteger(saved.tab) ? saved.tab : 0;
   N.n.win = Number.isInteger(saved.window) ? saved.window : 0;
   N.n.ws = Number.isInteger(saved.workspace) ? saved.workspace : 0;
   if (st.workspaces != null && !Array.isArray(st.workspaces)) throw bad('workspaces is not a list');
   for (const ss of st.workspaces ?? []) {
-    if (!isObj(ss) || !/^s[1-9]\d*$/.test(ss.id ?? '') || N.workspaces.some(s => s.id === ss.id)) throw bad(`workspace ${JSON.stringify(ss?.id ?? null)}`);
+    if (!isObj(ss) || !/^ws-[1-9]\d*$/.test(ss.id ?? '') || N.workspaces.some(s => s.id === ss.id)) throw bad(`workspace ${JSON.stringify(ss?.id ?? null)}`);
     const name = str(ss.name)?.trim() || null;
     if (name != null && N.workspaces.some(s => s.name === name)) throw bad(`workspace name ${JSON.stringify(name)} is used twice`);
     N.workspaces.push({ id: ss.id, name, hidden: ss.hidden === true });
-    N.n.ws = Math.max(N.n.ws, num(ss.id, 's'));
+    N.n.ws = Math.max(N.n.ws, num(ss.id, 'ws-'));
   }
   const names = new Set();
   for (const sp of st.panes) {
-    if (!isObj(sp) || !/^p[1-9]\d*$/.test(sp.id ?? '') || N.panes[sp.id]) throw bad(`pane ${JSON.stringify(sp?.id ?? null)}`);
+    if (!isObj(sp) || !/^[a-z]+-[1-9]\d*$/.test(sp.id ?? '') || N.panes[sp.id]) throw bad(`pane ${JSON.stringify(sp?.id ?? null)}`);
     if (!PANE_FIELDS[sp.type]) throw bad(`pane ${sp.id} has unknown type ${JSON.stringify(sp.type ?? null)}`);
+    if (!sp.id.startsWith(`${KIND[sp.type]}-`)) throw bad(`pane ${sp.id} is a ${sp.type} pane, so its ID is ${KIND[sp.type]}-N`);
     const name = str(sp.name);
     if (name != null && (names.has(name) || !name)) throw bad(`pane name ${JSON.stringify(name)} is used twice`);
     if (name) names.add(name);
@@ -450,7 +507,7 @@ function importState(st) {
       lines: [], draft: '', busy: false, server: null, exitCode: null,
     };
     N.panes[p.id] = p;
-    N.n.pane = Math.max(N.n.pane, num(p.id, 'p'));
+    N.n[KIND[p.type]] = Math.max(N.n[KIND[p.type]], num(p.id, `${KIND[p.type]}-`));
   }
   const placed = new Set(), tabIds = new Set(), winIds = new Set();
   const build = n => {
@@ -467,20 +524,20 @@ function importState(st) {
     return { t: 'split', dir: n.split, kids: n.children.map((c, i) => ({ node: build(c), size: sizes[i] / total })) };
   };
   for (const sw of st.windows) {
-    if (!isObj(sw) || !/^w[1-9]\d*$/.test(sw.id ?? '') || winIds.has(sw.id) || !Array.isArray(sw.tabs)) throw bad(`window ${JSON.stringify(sw?.id ?? null)}`);
+    if (!isObj(sw) || !/^win-[1-9]\d*$/.test(sw.id ?? '') || winIds.has(sw.id) || !Array.isArray(sw.tabs)) throw bad(`window ${JSON.stringify(sw?.id ?? null)}`);
     winIds.add(sw.id);
     const f = isObj(sw.frame) ? sw.frame : {};
     const geo = ['x', 'y', 'w', 'h'].every(k => Number.isFinite(f[k])) && f.w > 0 && f.h > 0 ? { x: f.x, y: f.y, w: f.w, h: f.h } : { x: 24, y: 18, w: 600, h: 400 };
     const workspace = N.workspaces.some(s => s.id === sw.workspace) ? sw.workspace : null;
     const w = { id: sw.id, tabs: [], tabCount: 0, active: str(sw.active), focused: str(sw.focused), zoom: false, dock: null, workspace, ...geo, z: ++N.n.z };
     for (const stab of sw.tabs) {
-      if (!isObj(stab) || !/^t[1-9]\d*$/.test(stab.id ?? '') || tabIds.has(stab.id)) throw bad(`tab ${JSON.stringify(stab?.id ?? null)}`);
+      if (!isObj(stab) || !/^tab-[1-9]\d*$/.test(stab.id ?? '') || tabIds.has(stab.id)) throw bad(`tab ${JSON.stringify(stab?.id ?? null)}`);
       tabIds.add(stab.id);
       const root = stab.layout == null ? null : normalize(build(stab.layout));
       const ids = paneIds(root);
       const title = str(stab.title)?.trim() || `Tab ${w.tabs.length + 1}`;
       w.tabs.push({ id: stab.id, root, title, lastFocus: ids.includes(stab.lastFocus) ? stab.lastFocus : null });
-      N.n.tab = Math.max(N.n.tab, num(stab.id, 't'));
+      N.n.tab = Math.max(N.n.tab, num(stab.id, 'tab-'));
     }
     if (sw.dock != null) {
       const d = sw.dock;
@@ -497,7 +554,7 @@ function importState(st) {
     if (shown.includes(str(sw.zoomed))) { w.zoom = true; w.focused = str(sw.zoomed); }
     w.tabCount = Math.max(Number.isInteger(sw.tabCount) ? sw.tabCount : 0, w.tabs.length);
     N.windows.push(w);
-    N.n.win = Math.max(N.n.win, num(w.id, 'w'));
+    N.n.win = Math.max(N.n.win, num(w.id, 'win-'));
   }
   // Panes no tab shows are not restored.
   for (const id of Object.keys(N.panes)) if (!placed.has(id)) delete N.panes[id];
@@ -511,7 +568,7 @@ function restoreState(st) {
   const N = importState(st);
   Object.values(S.panes).forEach(kill);
   // IDs are never reused while kmux runs, even across a restore.
-  N.n = { ...N.n, pane: Math.max(N.n.pane, S.n.pane), tab: Math.max(N.n.tab, S.n.tab), win: Math.max(N.n.win, S.n.win), ws: Math.max(N.n.ws, S.n.ws) };
+  for (const k of [...Object.values(KIND), 'tab', 'win', 'ws']) N.n[k] = Math.max(N.n[k], S.n[k]);
   S = N;
   dropEmpty();
   Object.values(S.panes).forEach(start);
@@ -780,6 +837,7 @@ async function handle(req) {
 
       case 'restart': {
         const p = need(args.pane);
+        if (p.type === 'term') renameContent(p, contentId('term'));
         start(p);
         await settled(p);
         if (p.state === 'failed') throw kerr('start_failed', p.error);
@@ -838,8 +896,8 @@ async function handle(req) {
         if (action === 'new') {
           const name = args.name == null ? null : String(args.name).trim();
           if (name === '') throw kerr('bad_request', 'a workspace name cannot be empty');
-          if (name != null && (wsById(name) || /^s[1-9]\d*$/.test(name))) throw kerr('name_taken', `a workspace named "${name}" already exists`);
-          const s = { id: 's' + (++S.n.ws), name, hidden: false };
+          if (name != null && (wsById(name) || /^(ws-|s)[1-9]\d*$/.test(name))) throw kerr('name_taken', `a workspace named "${name}" already exists`);
+          const s = { id: 'ws-' + (++S.n.ws), name, hidden: false };
           S.workspaces.push(s);
           hooks.render();
           return ok({ workspace: wsView(s), windows: [] });

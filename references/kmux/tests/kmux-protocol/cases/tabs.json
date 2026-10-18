@@ -3,10 +3,10 @@
     "name": "rename-tab sets a tab's title",
     "steps": [
       { "send": { "cmd": "open", "args": { "type": "term", "name": "a" } } },
-      { "send": { "cmd": "rename-tab", "args": { "tab": "t1", "title": "  servers " } }, "expect": { "ok": true, "tab": "t1", "title": "servers" } },
+      { "send": { "cmd": "rename-tab", "args": { "tab": "tab-1", "title": "  servers " } }, "expect": { "ok": true, "tab": "tab-1", "title": "servers" } },
       { "send": { "cmd": "list" }, "expect": { "windows": [ { "tabs": [ { "title": "servers" } ] } ] } },
-      { "send": { "cmd": "rename-tab", "args": { "tab": "t1", "title": " " } }, "expect": { "ok": false, "error": { "code": "bad_request" } } },
-      { "send": { "cmd": "rename-tab", "args": { "tab": "t9", "title": "x" } }, "expect": { "ok": false, "error": { "code": "not_found" } } }
+      { "send": { "cmd": "rename-tab", "args": { "tab": "tab-1", "title": " " } }, "expect": { "ok": false, "error": { "code": "bad_request" } } },
+      { "send": { "cmd": "rename-tab", "args": { "tab": "tab-9", "title": "x" } }, "expect": { "ok": false, "error": { "code": "not_found" } } }
     ]
   }
 ]
