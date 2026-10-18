@@ -63,6 +63,8 @@ sequenceDiagram
 | `settings {foreground, background, cursor, palette, scheme, cursorStyle, cursorBlink, graphemes}` | app | the terminal settings from the app's Ghostty config, sent before any attach and again when the config or appearance changes ([terminal](terminal.md#2-the-config)) |
 | `debug.*` (with an `id`) | daemon | a request from a client, passed on; the app's reply is the client's |
 | `start`, `stop`, `pane`; `update`; the app's own requests | both | web, markdown and iOS panes ([app panes](app-panes.md)) |
+| `diff.subscribe {view, path, args}` (with an `id`), `diff.show {view, show}`, `diff.unsubscribe {view}` | app | this view shows the diff of that folder and git arguments; the reply has its content ID and latest diff ([diff viewer](diff-viewer.md#5-how-its-built)) |
+| `diff {content, serial, diff, updating}` | daemon | a subscribed diff changed |
 
 ## 3. Rules
 

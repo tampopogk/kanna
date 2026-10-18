@@ -60,8 +60,8 @@ pub enum Event {
     RulesUpdated { token: u64, report: kanna_detect::Report },
     Worktree { token: u64, result: Result<(String, String), String> },
     Finished { task: String, changes: Vec<db::Change> },
-    Diff { pane: String, diff: Value },
-    DiffUpdating { pane: String },
+    Diff { id: String, diff: Value },
+    DiffUpdating { id: String },
     KeeperReadable,
     KeeperExits,
     KeeperLost(String),
@@ -181,7 +181,7 @@ fn run() -> Result<(), String> {
     agents.install(&core);
     let diffs = Rc::new(diffs::Diffs::new(events.clone()));
     diffs.install(&core);
-    let host = Rc::new(Host::new(terminals.clone(), diffs.clone()));
+    let host = Rc::new(Host::new(terminals.clone()));
     core.set_host(Some(host.clone()));
     let on_change = Rc::downgrade(&terminals);
     let tasks_changed = Rc::downgrade(&backlog);
@@ -217,14 +217,14 @@ fn run() -> Result<(), String> {
     }
 
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
-    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), app_timeout, build_id.clone()));
+    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), app_timeout, build_id.clone()));
     layout.connect(&app);
     app.connect_backlog(&backlog);
     host.connect(&app);
     let diff_link = Rc::downgrade(&app);
-    *diffs.on_diff.borrow_mut() = Some(Box::new(move |_, payload| {
+    *diffs.on_diff.borrow_mut() = Some(Box::new(move |views, payload| {
         if let Some(app) = diff_link.upgrade() {
-            app.diff(payload);
+            app.diff(views, payload);
         }
     }));
     let on_start = Rc::downgrade(&app);
@@ -349,8 +349,8 @@ fn run() -> Result<(), String> {
             Event::RulesUpdated { token, report } => status_commands.updated(token, report),
             Event::Worktree { token, result } => backlog.worktree_made(token, result),
             Event::Finished { task, changes } => backlog.finished(&task, changes),
-            Event::Diff { pane, diff } => diffs.loaded(&pane, diff),
-            Event::DiffUpdating { pane } => diffs.updating(&pane),
+            Event::Diff { id, diff } => diffs.loaded(&id, diff),
+            Event::DiffUpdating { id } => diffs.updating(&id),
             Event::KeeperReadable | Event::KeeperExits => {
                 let exits = keeper.take_exits();
                 if matches!(event, Event::KeeperReadable) {

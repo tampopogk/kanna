@@ -104,7 +104,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             daemon.helloPanes = { [weak self] in self?.helloPanes() ?? [] }
             daemon.onStart = { [weak self] pane in self?.startContent(pane) }
             daemon.onStop = { [weak self] pane in self?.contents.stop(pane) }
-            daemon.onDiff = { [weak self] pane, message in self?.contents.received(diff: message, for: pane) }
+            daemon.onDiff = { [weak self] content, message in self?.contents.received(diff: message, content: content) }
             daemon.onPane = { [weak self] pane in self?.learn(pane) }
             daemon.onExited = { [weak self] pane, code in self?.panes.exited(pane, code: code) }
             daemon.onSnapshot = { [weak self] pane in self?.panes.restarted(pane) }
@@ -114,6 +114,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 daemon?.update(pane, fields)
             }
             contents.onRequest = { [weak daemon] cmd, args in daemon?.request(cmd, args) }
+            contents.onNotice = { [weak daemon] cmd, args in daemon?.notice(cmd, args) }
             contents.onCall = { [weak daemon] cmd, args, reply in
                 guard let daemon else { return reply(["ok": false, "error": ["message": "not connected to the daemon"]]) }
                 daemon.request(cmd, args) { answer in DispatchQueue.main.async { reply(answer) } }
@@ -185,6 +186,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if !contents.shows(id) { contents.start(pane, restoring: true) }
             }
         }
+        contents.subscribeDiffs()
         layoutChanged()
         if wantsFirstTerminal {
             wantsFirstTerminal = false

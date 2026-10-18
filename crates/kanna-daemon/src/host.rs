@@ -1,5 +1,4 @@
 use crate::app_link::AppLink;
-use crate::diffs::Diffs;
 use crate::terminals::Terminals;
 use kanna_mux::{KmuxError, Pane, PaneHost, PaneType, Responder};
 use std::cell::RefCell;
@@ -7,13 +6,12 @@ use std::rc::{Rc, Weak};
 
 pub struct Host {
     terminals: Rc<Terminals>,
-    diffs: Rc<Diffs>,
     app: RefCell<Weak<AppLink>>,
 }
 
 impl Host {
-    pub fn new(terminals: Rc<Terminals>, diffs: Rc<Diffs>) -> Host {
-        Host { terminals, diffs, app: RefCell::new(Weak::new()) }
+    pub fn new(terminals: Rc<Terminals>) -> Host {
+        Host { terminals, app: RefCell::new(Weak::new()) }
     }
 
     pub fn connect(&self, app: &Rc<AppLink>) {
@@ -30,9 +28,6 @@ impl PaneHost for Host {
         match pane.kind {
             PaneType::Term => self.terminals.start(pane),
             _ => {
-                if pane.kind == PaneType::Diff {
-                    self.diffs.watch(pane);
-                }
                 if let Some(app) = self.app() {
                     app.show(pane);
                 }
@@ -44,9 +39,6 @@ impl PaneHost for Host {
         match pane.kind {
             PaneType::Term => self.terminals.stop(pane),
             _ => {
-                if pane.kind == PaneType::Diff {
-                    self.diffs.stop(&pane.id);
-                }
                 if let Some(app) = self.app() {
                     app.hide(&pane.id);
                 }
@@ -55,9 +47,6 @@ impl PaneHost for Host {
     }
 
     fn end(&self, pane: &Pane) {
-        if pane.kind == PaneType::Diff {
-            self.diffs.stop(&pane.id);
-        }
         if pane.kind == PaneType::Term {
             self.terminals.end(pane);
         }

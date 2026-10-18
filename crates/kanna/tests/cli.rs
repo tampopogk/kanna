@@ -79,9 +79,9 @@ fn a_diff_pane_runs_git_diff_with_the_arguments_it_was_given_in_the_folder_it_wa
 }
 
 #[test]
-fn the_daemon_diffs_a_diff_panes_folder_and_diffs_again_when_the_worktree_changes() {
+fn the_daemon_diffs_a_subscribed_folder_and_diffs_again_when_the_worktree_changes() {
     let daemon = Daemon::start();
-    let _app = daemon.app();
+    let app = daemon.app();
     let repo = daemon.dir.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     let git = |args: &[&str]| {
@@ -98,11 +98,12 @@ fn the_daemon_diffs_a_diff_panes_folder_and_diffs_again_when_the_worktree_change
     git(&["add", "."]);
     git(&["commit", "-qm", "first"]);
     std::fs::write(repo.join("a.txt"), "one\n2\n").unwrap();
-    daemon.kanna(&["open", "--name", "a", "--cmd", "exec /bin/sh"]).ok();
-    daemon.kanna(&["open", "diff", "--cwd", &repo.to_string_lossy(), "--name", "changes", "--tab"]).ok();
-    let read = || daemon.kanna(&["raw", r#"{"cmd":"diff","args":{"pane":"changes"}}"#]).json();
+    let folder = repo.to_string_lossy().to_string();
+    app.send(json!({"id": 1, "cmd": "diff.subscribe", "args": {"view": "p2", "path": folder, "args": []}}));
+    let read = || app.diffs.lock().unwrap().iter().rev().find(|m| !m["diff"].is_null()).cloned().unwrap_or(json!({}));
     wait_for("the first diff", || read()["serial"] == 1);
     let first = read();
+    assert_eq!(first["content"].as_str().map(|id| id.starts_with("diff-")), Some(true));
     assert_eq!(first["diff"]["command"], "git diff");
     assert_eq!(first["diff"]["files"][0]["path"], "a.txt");
     assert_eq!(first["diff"]["files"][0]["hunks"][0]["lines"], json!([[" ", "one", 1, 1], ["-", "two", 2, null], ["+", "2", null, 2]]));
@@ -116,11 +117,22 @@ fn the_daemon_diffs_a_diff_panes_folder_and_diffs_again_when_the_worktree_change
     std::fs::write(repo.join("target/out"), "built\n").unwrap();
     std::thread::sleep(std::time::Duration::from_millis(600));
     assert_eq!(read()["serial"], serial);
-    daemon.kanna(&["navigate", "changes", "diff", "--staged"]).ok();
+
+    app.send(json!({"id": 2, "cmd": "diff.subscribe", "args": {"view": "p3", "path": folder, "args": []}}));
+    let views = || daemon.kanna(&["raw", r#"{"cmd":"diffs"}"#]).json()["diffs"].clone();
+    wait_for("a second view of the diff", || views()[0]["views"].as_array().is_some_and(|v| v.len() == 2));
+    assert_eq!(views().as_array().map(Vec::len), Some(1));
+    app.send(json!({"cmd": "diff.unsubscribe", "args": {"view": "p3"}}));
+    wait_for("the second view gone", || views()[0]["views"].as_array().is_some_and(|v| v.len() == 1));
+
+    app.send(json!({"id": 3, "cmd": "diff.subscribe", "args": {"view": "p2", "path": folder, "args": ["--staged"]}}));
     wait_for("the staged diff", || read()["diff"]["command"] == "git diff --staged");
     assert_eq!(read()["diff"]["files"], json!([]));
-    daemon.kanna(&["close", "changes"]).ok();
-    daemon.kanna(&["raw", r#"{"cmd":"diff","args":{"pane":"changes"}}"#]).fails(4, "no pane \"changes\"");
+    assert_eq!(views()[0]["args"], json!(["--staged"]));
+    app.send(json!({"id": 4, "cmd": "diff.subscribe", "args": {"view": "p4", "args": []}}));
+    wait_for("the refusal", || app.diffs.lock().unwrap().iter().any(|m| m["id"] == 4 && m["error"]["message"] == "a diff needs the folder it's in (path)"));
+    app.quit();
+    wait_for("the watcher stopped with its app", || views() == json!([]));
 }
 
 #[test]
@@ -190,7 +202,7 @@ fn every_command_works_through_the_daemon_and_the_app() {
     assert_eq!(daemon.kanna(&["markup", "doc", "--off"]).ok(), "comments off in p6 (doc)");
 
     let capabilities = daemon.kanna(&["capabilities"]).ok();
-    assert!(capabilities.starts_with("pane types: term, web, ios, md, code, diff\ncommands: agents, arrange, backlog, capabilities, close, comment, diff, focus, list, markup, move, move-tab, navigate, open, quiz, read, rename-pane, rename-tab, resize, restart, screenshot, send, send-key, status, task, window, zoom"), "{capabilities}");
+    assert!(capabilities.starts_with("pane types: term, web, ios, md, code, diff\ncommands: agents, arrange, backlog, capabilities, close, comment, diffs, focus, list, markup, move, move-tab, navigate, open, quiz, read, rename-pane, rename-tab, resize, restart, screenshot, send, send-key, status, task, window, zoom"), "{capabilities}");
     assert!(capabilities.ends_with("Kanna.app: attached"), "{capabilities}");
     let raw = daemon.kanna(&["raw", r#"{"cmd":"debug.anything","args":{"pane":"a"}}"#]).json();
     assert_eq!(raw, json!({ "cmd": "debug.anything", "args": { "pane": "p1" } }));

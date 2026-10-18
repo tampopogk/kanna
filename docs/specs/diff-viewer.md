@@ -25,15 +25,17 @@ sequenceDiagram
     participant App as Kanna.app
     A->>D: kanna open diff --merge-base main
     D->>App: start {type: diff, path: worktree, args}
+    App->>D: diff.subscribe {view: p231, path, args}
+    D-->>App: ok {content: diff-3f9a1c2e} (a new watcher, or the one already running)
     D->>G: git diff --numstat, git diff, git ls-files --others
     G-->>D: files, patch, untracked files
-    D->>App: diff {pane, files and hunks}
+    D->>App: diff {content, serial, files and hunks}
     App->>App: lay out, highlight, draw
     App->>D: update {state: running}
     D-->>A: opened p231
     Note over D,G: the worktree changes (FSEvents)
     D->>G: git diff again
-    D->>App: diff {pane, the new files and hunks}
+    D->>App: diff {content, serial, the new files and hunks}
     App->>App: redraw at the same place, mark what's new
 ```
 
@@ -100,7 +102,7 @@ sequenceDiagram
 | `kanna navigate PANE diff [GIT-DIFF-ARGS]` | shows another diff in the same pane |
 | `kanna workspace list --all --json` | shows a diff pane's folder and arguments |
 | `kanna capabilities` | lists `diff` among the pane types |
-| `kanna raw '{"cmd":"diff","args":{"pane":"p231"}}'` | the pane's latest diff, as the daemon has it: the command, its files and hunks, a serial that counts changes, and whether it's updating |
+| `kanna raw '{"cmd":"diffs"}'` | the diffs the daemon watches: each one's content ID, folder, arguments, serial and the views subscribed to it |
 | `kanna raw '{"cmd":"debug.diff","args":{"pane":"p231"}}'` | for tests, from the app: the command, the files (path, status, counts, folded), the rows (kind, old and new line, text), the current line, the mode, whether it's updating; `keys: "nn"` presses keys |
 
 The pane's record in `layout.json` is `{type: "diff", path, args, view, zoom}`: `path` is the folder git runs in, `args` git's arguments, `view` `unified` or `split`. It comes back after a relaunch where it was.
@@ -121,7 +123,7 @@ flowchart TB
     end
     subgraph DAEMON["Kanna daemon process"]
         L4["4 · kanna-mux (as kmux)<br/>+ diff pane records"]
-        L4D["4 · diffs: a worker per diff pane<br/>watches the worktree · diff command"]
+        L4D["4 · diffs: a worker per folder + args<br/>shared by its subscribers"]
         L4K["kanna-diff (Rust)<br/>runs git · parses · untracked · folds"]
         L4 --> L4D
         L4D --> L4K
@@ -151,7 +153,7 @@ flowchart TB
 | CLI | `crates/kanna` | the `diff` kind of `open`, git's arguments passed through, `navigate` with arguments |
 | Pane records | `crates/kanna-mux` | `PaneType::Diff` with `path`, `args`, `view`, `zoom`; `debug.diff` passed to the app |
 | Model | `crates/kanna-diff` (new crate) | runs git, parses its patch, adds untracked files, decides what folds |
-| Diffs | `crates/kanna-daemon/src/diffs.rs` | a worker per diff pane: diffs, watches the worktree, diffs again; the `diff` command; tells the app |
+| Diffs | `crates/kanna-daemon/src/diffs.rs` | a worker per folder + git arguments, shared by every view subscribed to it: diffs, watches the worktree, diffs again, tells the subscribers; the `diffs` command |
 | Pane | `apps/kanna/Sources/KannaDiff` (new target) | lays out the rows (unified or split), the view, files list, keys |
 | Highlighting, theme, find | `KannaCode`, `kanna-syntax` | shared with the code pane, not copied |
 
@@ -166,14 +168,15 @@ flowchart TB
 | Cost per refresh | two processes, milliseconds | in-process | in-process |
 
   A library would be worth it for something git's command line can't answer cheaply, such as a diff per keystroke or blame; not here.
-- **The daemon runs git, not the app**: git runs where the files are, which is the daemon's machine, so an app on another machine (planned) can show a diff too. The daemon keeps each diff pane's latest diff, sends it to the app (`diff {pane, serial, diff}`) whenever it changes, and answers `kanna raw '{"cmd":"diff","args":{"pane":"p231"}}'` with it (and `show: [PATH]` unfolds files), which is also how tests read it. The app only lays out and draws. (Markdown and code panes still read files in the app; moving them is backlog task "Panes read files through the daemon".)
+- **The daemon runs git, not the app**: git runs where the files are, which is the daemon's machine, so an app on another machine (planned) can show a diff too. The app only lays out and draws.
+- **Subscriptions, not panes** ([presentation layers](presentation-layers.md#4-content)). A diff is content keyed by its folder and git arguments, with an ID made from them (`diff-3f9a1c2e`). Each view the app shows subscribes (`diff.subscribe {view, path, args}` on the app link; the reply carries the content ID and the latest diff, or an error the pane shows instead of a blank page) and unsubscribes when it goes (`diff.unsubscribe {view}`); `diff.show {view, show: [PATH]}` unfolds files, and the worker unfolds every view's files together. One worker runs per diff, however many views show it, and stops when the last one leaves, or when its app does; there's no grace period. The app subscribes again on every (re)connect, so a restarted daemon diffs again at once. Every change goes to the subscribers as `diff {content, serial, diff}`. (Markdown and code panes still read files in the app; moving them is backlog task "Panes read files through the daemon".)
 - **Off the daemon's loop.** Each diff pane has a worker thread that runs git and parses; the daemon's loop only stores the result and passes it on. `git diff --numstat -z` decides the folds first, so a folded file's patch is never read (an `:(exclude)` pathspec). The app highlights off its main thread and swaps the rows in at the same place.
 - **Following the worktree, without polling:** FSEvents on the folder and on its git directory (for a worktree, its own `.git/worktrees/NAME` and the shared refs); git runs only when something there changes, at most once every 200 ms. Changes to files git ignores (a build's `target/`) are dropped (`git check-ignore`). git runs with `GIT_OPTIONAL_LOCKS=0`, so a diff never refreshes the index: its own run can't set off another, and it never holds the lock the agent's git needs.
 - **Parsing git's output**, only formats made for it: `--numstat -z` and `ls-files -z` are NUL-separated lists for scripts; the patch is the format `git apply` reads. The pane pins the format so the user's config can't change it: `--no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/` and `-c core.quotepath=false`.
 - **The line a change is in** (the "⋯ 17 unchanged lines `pub enum PaneType {`" row) is git's own hunk header context, as `git diff` prints it.
 - **Highlighting** is `kanna-syntax` on each side of each change (its context, removed and added lines, as old and new text), coloured by the code pane's theme. **[Assumption]** Highlighting a change's lines alone is close enough; if it colours wrongly, highlight the whole old and new file instead.
 - **Not in kmux**, as the code pane isn't: `open diff` is Kanna's.
-- **Checks:** `crates/kanna-diff` tests for the parser and folds, and against real scratch repos (untracked files, `--staged`, two commits, pathspecs, git's errors, ignored paths); `crates/kanna/tests/cli.rs` for passing git's arguments through, and for the daemon diffing a scratch repo and diffing again when a file changes but not when an ignored one does; `KannaDiffTests` for laying out rows; an e2e scenario (`diff_pane`) that opens a diff in a scratch repo, reads `debug.diff`, edits a file and adds an untracked one and sees both arrive, switches to Split and relaunches.
+- **Checks:** `crates/kanna-diff` tests for the parser and folds, and against real scratch repos (untracked files, `--staged`, two commits, pathspecs, git's errors, ignored paths); `crates/kanna/tests/cli.rs` for passing git's arguments through, and for the daemon diffing a subscribed scratch repo and diffing again when a file changes but not when an ignored one does, two views sharing one watcher, and the watcher stopping when its app goes; `KannaDiffTests` for laying out rows; an e2e scenario (`diff_pane`) that opens a diff in a scratch repo, reads `debug.diff`, edits a file and adds an untracked one and sees both arrive, switches to Split, opens a second view of the same diff (one watcher) and closes it, restarts the daemon (the pane still updates), relaunches the app, and navigates to a diff git refuses (the pane shows git's error).
 
 ## 6. Glossary
 

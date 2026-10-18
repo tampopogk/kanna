@@ -142,13 +142,18 @@ final class DaemonLink: TerminalLink {
         case "status":
             if let pane = args["pane"]?.string { onStatus?(pane, args["status"]?.string) }
         case "diff":
-            if let pane = args["pane"]?.string { onDiff?(pane, args) }
+            if let content = args["content"]?.string { onDiff?(content, args) }
         case "backlog":
             if case .array(let tasks)? = args["tasks"] { onBacklog?(tasks) }
         case "folder":
             if let pane = args["pane"]?.string, let cwd = args["cwd"]?.string { onFolder?(pane, cwd) }
         default: FileHandle.standardError.write(Data("kanna: unknown message from the daemon: \(cmd)\n".utf8))
         }
+    }
+
+    func notice(_ cmd: String, _ args: [String: JSON]) {
+        guard attached else { return }
+        send(cmd, args)
     }
 
     func update(_ pane: String, _ fields: [String: JSON]) {

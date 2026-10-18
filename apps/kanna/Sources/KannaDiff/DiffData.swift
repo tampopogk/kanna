@@ -63,4 +63,8 @@ public struct DiffResult: Sendable, Equatable, Decodable {
     public static func decode(_ data: Data) -> DiffResult? {
         try? JSONDecoder().decode(DiffResult.self, from: data)
     }
+
+    public static func failed(folder: String, args: [String], error: String) -> DiffResult {
+        DiffResult(folder: folder, args: args, command: (["git diff"] + args).joined(separator: " "), top: "", files: [], added: 0, removed: 0, error: error)
+    }
 }

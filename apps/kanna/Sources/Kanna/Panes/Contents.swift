@@ -38,6 +38,7 @@ final class Contents {
     private(set) var states: [String: String] = [:]
     var onUpdate: ((String, [String: JSON]) -> Void)?
     var onRequest: ((String, [String: JSON]) -> Void)?
+    var onNotice: ((String, [String: JSON]) -> Void)?
     var onCall: ((String, [String: JSON], @escaping (JSON) -> Void) -> Void)?
     var onFocus: ((String) -> Void)?
     var contextMenu: (() -> NSMenu?)?
@@ -46,6 +47,9 @@ final class Contents {
     private var markdownZoom: [String: CGFloat] = [:]
     private var codeZoom: [String: CGFloat] = [:]
     private var diffZoom: [String: CGFloat] = [:]
+    private var diffSources: [String: (path: String, args: [String])] = [:]
+    private var diffContents: [String: String] = [:]
+    private var diffLatest: [String: JSON] = [:]
 
     func slot(_ id: String) -> PaneSlot {
         if let slot = slots[id] { return slot }
@@ -145,13 +149,13 @@ final class Contents {
                 self?.onCall?("open", ["type": "code", "path": .string(path), "line": .number(Double(line)), "from": .string(id)]) { _ in }
             }
             diff.onShowFiles = { [weak self] paths in
-                self?.onCall?("diff", ["pane": .string(id), "show": .array(paths.map { .string($0) })]) { _ in }
+                self?.onNotice?("diff.show", ["view": .string(id), "show": .array(paths.map { .string($0) })])
             }
-            onCall?("diff", ["pane": .string(id)]) { [weak self, weak diff] answer in
-                guard let diff, self?.slots[id]?.content === diff else { return }
-                self?.received(diff: answer, for: id)
-            }
+            var diffArgs: [String] = []
+            if case .array(let list)? = pane["args"] { diffArgs = list.compactMap(\.string) }
+            diffSources[id] = (pane["path"]?.string ?? "", diffArgs)
             content = diff
+            subscribe(diff: diff, id)
         case "web":
             let web = WebPaneView(url: pane["url"]?.string ?? "about:blank", markup: pane["markup"]?.bool == true)
             web.onFocus = { [weak self] in self?.onFocus?(id) }
@@ -213,7 +217,13 @@ final class Contents {
         (content as? WebPaneView)?.stop()
         (content as? IosPaneView)?.stop()
         (content as? CodePaneView)?.stop()
-        (content as? DiffPaneView)?.stop()
+        if let diff = content as? DiffPaneView {
+            diff.stop()
+            diffSources.removeValue(forKey: id)
+            diffContents.removeValue(forKey: id)
+            diffLatest = diffLatest.filter { diffContents.values.contains($0.key) }
+            onNotice?("diff.unsubscribe", ["view": .string(id)])
+        }
         if let markdown = content as? MarkdownPaneView {
             markdown.stop()
             markdownZoom[id] = markdown.zoom
@@ -232,8 +242,36 @@ final class Contents {
         diffZoom.removeValue(forKey: id)
     }
 
-    func received(diff message: JSON, for id: String) {
-        guard let view = diff(id) else { return }
+    func subscribeDiffs() {
+        for id in ids {
+            if let view = diff(id) { subscribe(diff: view, id) }
+        }
+    }
+
+    private func subscribe(diff view: DiffPaneView, _ id: String) {
+        guard let source = diffSources[id] else { return }
+        let args: [String: JSON] = ["view": .string(id), "path": .string(source.path), "args": .array(source.args.map { .string($0) })]
+        guard let onCall else { return view.show(DiffResult.failed(folder: source.path, args: source.args, error: "Kanna.app isn't connected to its daemon"), serial: 0) }
+        onCall("diff.subscribe", args) { [weak self, weak view] answer in
+            guard let self, let view, slots[id]?.content === view else { return }
+            guard answer["ok"]?.bool == true, let content = answer["content"]?.string else {
+                let message = answer["error"]?["message"]?.string ?? "The daemon couldn't show this diff"
+                return view.show(DiffResult.failed(folder: source.path, args: source.args, error: message), serial: 0)
+            }
+            diffContents[id] = content
+            let latest = diffLatest[content]
+            show(diff: (latest?["serial"]?.number ?? -1) > (answer["serial"]?.number ?? 0) ? latest ?? answer : answer, in: view)
+        }
+    }
+
+    func received(diff message: JSON, content: String) {
+        if let found = message["diff"], found != .null { diffLatest[content] = message }
+        for (id, shown) in diffContents where shown == content {
+            if let view = diff(id) { show(diff: message, in: view) }
+        }
+    }
+
+    private func show(diff message: JSON, in view: DiffPaneView) {
         guard let found = message["diff"], found != .null else {
             if let updating = message["updating"]?.bool { view.setUpdating(updating) }
             return

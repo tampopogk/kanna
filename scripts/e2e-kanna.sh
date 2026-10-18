@@ -1944,10 +1944,24 @@ rows = json.loads(sys.argv[1])
 assert {"kind": "added", "text": "one\r", "new": 1, "left": "blank", "right": "added"} in rows, [r for r in rows if r.get("new") == 1]' "$(diffpane rows)" || return 1
   printf 'fn later() {}\n' >"$repo/c.rs"
   check wait_for 5 eval '[[ "$(diffpane files)" == *c.rs* ]]' || { echo "the untracked c.rs didn't arrive"; return 1; }
+  watchers() { raw '{"id":1,"cmd":"diffs"}' | python3 -c 'import json, sys; print(" ".join(json.dumps(d["args"]) + ":" + str(len(d["views"])) for d in json.load(sys.stdin)["diffs"]))'; }
+  check wait_for 5 eval '[[ "$(watchers)" == "[\"--merge-base\", \"main\"]:1" ]]' || { echo "watchers: $(watchers)"; return 1; }
+  (cd "$repo" && kanna open diff --merge-base main --name changes2 >/dev/null) || return 1
+  check wait_for 5 eval '[[ "$(watchers)" == "[\"--merge-base\", \"main\"]:2" ]]' || { echo "two views, watchers: $(watchers)"; return 1; }
+  kanna close changes2 >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(watchers)" == "[\"--merge-base\", \"main\"]:1" ]]' || { echo "after closing one view, watchers: $(watchers)"; return 1; }
+  stop_daemon; start_daemon || return 1
+  check wait_for 10 app_attached || return 1
+  check wait_for 5 eval '[[ "$(watchers)" == "[\"--merge-base\", \"main\"]:1" ]]' || { echo "after a daemon restart, watchers: $(watchers)"; return 1; }
+  printf 'fn restarted() {}\n' >"$repo/d.rs"
+  check wait_for 5 eval '[[ "$(diffpane files)" == *d.rs* ]]' || { echo "d.rs didn't arrive after a daemon restart: $(diffpane files)"; return 1; }
   stop_app; start_app || return 1
-  check wait_for 5 eval '[[ "$(diffpane view)" == split && "$(diffpane files)" == *c.rs* ]]' || { echo "after relaunch: $(diffpane view) $(diffpane files)"; return 1; }
+  check wait_for 5 eval '[[ "$(diffpane view)" == split && "$(diffpane files)" == *c.rs* ]]' || { echo "after relaunch: $(diffpane view) $(diffpane files) $(diffpane error) $(watchers)"; return 1; }
   kanna navigate changes diff --staged >/dev/null || return 1
   check wait_for 5 eval '[[ "$(diffpane command)" == "git diff --staged" && "$(diffpane files)" == "[]" ]]' || { echo "staged: $(diffpane command) $(diffpane files)"; return 1; }
+  check wait_for 5 eval '[[ "$(watchers)" == "[\"--staged\"]:1" ]]' || { echo "after navigating, watchers: $(watchers)"; return 1; }
+  kanna navigate changes diff --no-such-flag >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(diffpane error)" == *no-such-flag* ]]' || { echo "a failed diff shows no error: $(diffpane error)"; return 1; }
 }
 
 scenario code_tour M4

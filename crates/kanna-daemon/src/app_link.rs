@@ -1,3 +1,4 @@
+use crate::diffs::Diffs;
 use crate::settings::Settings;
 use crate::terminals::Terminals;
 use crate::Event;
@@ -113,6 +114,7 @@ struct Connection {
 pub struct AppLink {
     core: WeakCore,
     terminals: Rc<Terminals>,
+    diffs: Rc<Diffs>,
     app: RefCell<Option<Connection>>,
     pending: RefCell<HashMap<u64, (Instant, Responder)>>,
     timeout: Duration,
@@ -124,11 +126,12 @@ pub struct AppLink {
 }
 
 impl AppLink {
-    pub fn new(core: WeakCore, terminals: Rc<Terminals>, timeout: Duration, build: Option<String>) -> AppLink {
+    pub fn new(core: WeakCore, terminals: Rc<Terminals>, diffs: Rc<Diffs>, timeout: Duration, build: Option<String>) -> AppLink {
         AppLink {
             build,
             core,
             terminals,
+            diffs,
             app: RefCell::new(None),
             pending: RefCell::default(),
             backlog: RefCell::default(),
@@ -293,6 +296,8 @@ impl AppLink {
         self.app.borrow_mut().take();
         self.attached.borrow_mut().clear();
         self.unsent.borrow_mut().clear();
+        let prefix = view_prefix(conn);
+        self.diffs.leave(|view| view.starts_with(&prefix));
         let pending: Vec<Responder> = self.pending.borrow_mut().drain().map(|(_, (_, r))| r).collect();
         for responder in pending {
             responder.reply(Err(KmuxError::new("app_gone", "Kanna.app went away before answering")));
@@ -320,10 +325,34 @@ impl AppLink {
             }
             return None;
         }
+        let args = message.get("args").cloned().unwrap_or_else(|| json!({}));
+        let view = string(&args, "view").map(|view| format!("{}{view}", view_prefix(conn)));
+        match (string(&message, "cmd").unwrap_or_default(), view) {
+            ("diff.subscribe", Some(view)) => {
+                let reply = match self.diffs.subscribe(&view, &args) {
+                    Ok(mut fields) => {
+                        fields.insert("id".into(), message.get("id").cloned().unwrap_or(Value::Null));
+                        fields.insert("ok".into(), Value::Bool(true));
+                        Value::Object(fields)
+                    }
+                    Err(error) => json!({ "id": message.get("id").cloned().unwrap_or(Value::Null), "ok": false, "error": { "code": error.code, "message": error.message } }),
+                };
+                self.send(reply);
+                return None;
+            }
+            ("diff.show", Some(view)) => {
+                self.diffs.show(&view, args.get("show").unwrap_or(&Value::Null));
+                return None;
+            }
+            ("diff.unsubscribe", Some(view)) => {
+                self.diffs.unsubscribe(&view);
+                return None;
+            }
+            _ => {}
+        }
         if message.get("id").is_some() {
             return Some(message);
         }
-        let args = message.get("args").cloned().unwrap_or_else(|| json!({}));
         let pane = string(&args, "pane").unwrap_or_default().to_string();
         match string(&message, "cmd").unwrap_or_default() {
             "attach" => {
@@ -394,8 +423,12 @@ impl AppLink {
         self.notify("start", json!({ "pane": Value::Object(pane_record(pane)) }));
     }
 
-    pub fn diff(&self, payload: &Value) {
-        self.notify("diff", payload.clone());
+    pub fn diff(&self, views: &[String], payload: &Value) {
+        let Some(conn) = self.app.borrow().as_ref().map(|a| a.id) else { return };
+        let prefix = view_prefix(conn);
+        if views.iter().any(|view| view.starts_with(&prefix)) {
+            self.notify("diff", payload.clone());
+        }
     }
 
     pub fn hide(&self, pane: &str) {
@@ -522,6 +555,10 @@ fn answer(message: Value) -> Result<Map, KmuxError> {
     fields.remove("id");
     fields.remove("ok");
     Ok(fields)
+}
+
+fn view_prefix(conn: u64) -> String {
+    format!("app{conn}:")
 }
 
 fn no_app(what: &str) -> KmuxError {

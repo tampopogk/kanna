@@ -150,6 +150,7 @@ impl Run {
 pub struct App {
     pub thread: std::thread::JoinHandle<()>,
     stream: UnixStream,
+    pub diffs: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
 }
 
 impl App {
@@ -159,6 +160,8 @@ impl App {
         let reader = BufReader::new(stream.try_clone().unwrap());
         writeln!(writer, "{}", json!({"id": 0, "cmd": "app.hello", "args": {"pid": std::process::id(), "panes": []}})).unwrap();
         let (ready, hello) = std::sync::mpsc::channel();
+        let diffs = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+        let heard = diffs.clone();
         let thread = std::thread::spawn(move || {
             let mut owner = kanna_mux::LayoutOwner::new();
             let mut ready = Some(ready);
@@ -170,6 +173,11 @@ impl App {
                         let _ = ready.send(message["ok"] == true);
                     }
                     continue;
+                }
+                if message["cmd"] == "diff" {
+                    heard.lock().unwrap().push(message["args"].clone());
+                } else if message.get("content").is_some() || (message.get("ok").is_some() && message["id"] != 0) {
+                    heard.lock().unwrap().push(message.clone());
                 }
                 if message["cmd"] == "start" || message["cmd"] == "pane" {
                     owner.handle(&json!({"call": "pane", "pane": message["args"]["pane"]}));
@@ -190,7 +198,11 @@ impl App {
             }
         });
         assert_eq!(hello.recv_timeout(Duration::from_secs(10)), Ok(true), "the app wasn't accepted");
-        App { thread, stream }
+        App { thread, stream, diffs }
+    }
+
+    pub fn send(&self, message: Value) {
+        writeln!(&self.stream, "{message}").unwrap();
     }
 
     pub fn quit(self) {
