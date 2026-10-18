@@ -7,6 +7,7 @@ or anything that speaks its control protocol.
 | Path | What |
 |------|------|
 | `docs/kmux-spec.md` | The spec, illustrated from the reference model. |
+| `docs/presentation-layers.md` | What the core keeps (content, logical layout) and what the app keeps (windows, pixels). |
 | `reference/kmux/` | The reference model: an interactive mockup (`index.html`) over a DOM-free core (`core.js`). |
 | `tests/kmux-protocol/` | Protocol cases shared by the model and the app. |
 | `apps/kmux/` | The app (Swift, AppKit, upstream Ghostty). |

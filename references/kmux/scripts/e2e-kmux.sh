@@ -427,6 +427,7 @@ fi
 # is stopped with SIGTERM (saving on quit) and started again on the same file.
 p_socket="/tmp/kmux-e2e-$$-p.sock"
 p_state="/tmp/kmux-e2e-$$-p.state.json"
+p_app="/tmp/kmux-e2e-$$-p.app.json" # where its windows are: the app's own, not the layout's
 p_start() { KMUX_SOCKET="$p_socket" "$repo_root/target/kmux.app/Contents/MacOS/kmux" --bg "$@" >>"$out/kmux-persist.log" 2>&1 &
   p_pid=$!
   for _ in $(seq 50); do [[ -S "$p_socket" ]] && break; sleep 0.1; done
@@ -434,15 +435,15 @@ p_start() { KMUX_SOCKET="$p_socket" "$repo_root/target/kmux.app/Contents/MacOS/k
 p_stop() { kill -TERM "$p_pid"; wait "$p_pid" 2>/dev/null || true; [[ ! -e "$p_socket" ]] || fail "kmux should remove its socket when it quits"; }
 p_cli() { KMUX_SOCKET="$p_socket" "$cli" "$@"; }
 p_raw() { KMUX_SOCKET="$p_socket" raw "$1"; }
-trap 'kill $kmux_pid $server_pid ${p_pid:-} 2>/dev/null || true; rm -f "$KMUX_SOCKET" "$state_file" "$p_socket" "$p_state" "$p_state.bad"' EXIT
-rm -f "$p_state" "$p_state.bad"
+trap 'kill $kmux_pid $server_pid ${p_pid:-} 2>/dev/null || true; rm -f "$KMUX_SOCKET" "$state_file" "$p_socket" "$p_state" "$p_state.bad" "$p_app"' EXIT
+rm -f "$p_state" "$p_state.bad" "$p_app"
 # What a restore must bring back: everything in `list` except whether panes have started yet.
 p_layout() { p_cli workspace list --all --json | python3 -c 'import json, sys
 d = json.load(sys.stdin)
 for p in d["panes"]:
     for k in ("state", "exitCode", "error"): p.pop(k, None)
 print(json.dumps(d, sort_keys=True))'; }
-p_frames() { python3 -c 'import json, sys; print(json.dumps([w.get("frame") for w in json.load(open(sys.argv[1]))["windows"]]))' "$p_state"; }
+p_frames() { python3 -c 'import json, sys; print(json.dumps(json.load(open(sys.argv[1]))["frames"], sort_keys=True))' "$p_app"; }
 mkdir -p "$out/persist"
 p_start
 p_cli open --name srv --cwd "$out/persist" --cmd "printf 'PERSIST %s\n' \"\$(pwd)\"; exec sleep 600" >/dev/null
@@ -468,7 +469,13 @@ s = json.load(open(sys.argv[1]))
 assert s["version"] == 2 and len(s["windows"]) == 2, s
 assert [t["title"] for t in s["windows"][0]["tabs"]] == ["Tab 1", "shells"], s
 assert {p["name"]: p.get("cwd") for p in s["panes"]}["sh2"] == "/usr/bin", s
-assert all(w.get("frame") for w in s["windows"]), s
+assert not any("frame" in w for w in s["windows"]) and not any("zoom" in p for p in s["panes"]), s
+PY
+python3 - "$p_app" <<'PY' || fail "the app should save where its windows are, and doc's zoom, in its own file: $(cat "$p_app")"
+import json, os, sys
+a = json.load(open(sys.argv[1]))
+assert os.stat(sys.argv[1]).st_mode & 0o777 == 0o600, a
+assert a["kmux"] == "app" and sorted(a["frames"]) == ["win-1", "win-2"] and [round(z, 3) for z in a["zoom"].values()] == [1.1], a
 PY
 frames="$(p_frames)"
 p_stop

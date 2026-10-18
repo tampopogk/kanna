@@ -145,5 +145,24 @@
       } },
       { "send": { "cmd": "workspace", "args": { "action": "new" } }, "expect": { "ok": true, "workspace": { "id": "ws-3" } } }
     ]
+  },
+  {
+    "name": "a version-1 state's workspaces s1, s2, … load as ws-1, ws-2, …, with their windows, and new ones count on",
+    "steps": [
+      { "send": { "cmd": "debug.restoreState", "args": { "state": {
+        "kmux": "state", "version": 1, "key": "w1", "counters": { "pane": 2, "tab": 2, "window": 2, "workspace": 2 },
+        "workspaces": [ { "id": "s1", "name": "checkout", "hidden": false }, { "id": "s2", "name": null, "hidden": true } ],
+        "windows": [
+          { "id": "w1", "workspace": "s1", "tabs": [ { "id": "t1", "layout": { "pane": "p1" } } ] },
+          { "id": "w2", "workspace": "s2", "tabs": [ { "id": "t2", "layout": { "pane": "p2" } } ] }
+        ],
+        "panes": [ { "id": "p1", "type": "term" }, { "id": "p2", "type": "term" } ]
+      } } }, "expect": { "ok": true, "windows": ["win-1", "win-2"], "panes": ["term-1", "term-2"] } },
+      { "send": { "cmd": "list" }, "expect": {
+        "windows": [ { "id": "win-1", "workspace": "ws-1", "hidden": null }, { "id": "win-2", "workspace": "ws-2", "hidden": true } ],
+        "workspaces": [ { "id": "ws-1", "name": "checkout", "hidden": false, "windows": ["win-1"] }, { "id": "ws-2", "name": null, "hidden": true, "windows": ["win-2"] } ]
+      } },
+      { "send": { "cmd": "workspace", "args": { "action": "new" } }, "expect": { "ok": true, "workspace": { "id": "ws-3" } } }
+    ]
   }
 ]

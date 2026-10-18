@@ -11,7 +11,7 @@ import Foundation
 ///
 ///     { kmux: "state", version: 2, key, counters: { term, page, file, ios, tab, window, workspace },
 ///       workspaces: [{ id, name, hidden }],
-///       windows: [{ id, frame?, active, focused, zoomed, tabCount, dock?: { pane, edge, width, frozen? }, workspace?,
+///       windows: [{ id, active, focused, zoomed, tabCount, dock?: { pane, edge, width, frozen? }, workspace?,
 ///                   tabs: [{ id, title, lastFocus, layout }] }],
 ///       panes: [{ id, name, type, …what it shows }] }
 ///
@@ -30,7 +30,6 @@ extension Core {
                     ["id": .string(tab.id), "title": .string(tab.title), "lastFocus": Self.optional(tab.lastFocus), "layout": tab.root.map(Self.exportNode) ?? .null]
                 }),
             ]
-            if let frame = window.frame { out["frame"] = ["x": .number(frame.x), "y": .number(frame.y), "w": .number(frame.w), "h": .number(frame.h)] }
             if let dock = window.dock {
                 var saved: [String: JSON] = ["pane": .string(dock.pane), "edge": .string(dock.edge.rawValue), "width": .number(dock.width)]
                 if dock.frozen { saved["frozen"] = true }
@@ -51,7 +50,6 @@ extension Core {
                 out["history"] = .bool(pane.history != nil)
             case .md:
                 out["path"] = Self.optional(pane.path)
-                out["zoom"] = .number(pane.zoom ?? 1)
             case .ios:
                 out["app"] = Self.optional(pane.app)
                 out["device"] = Self.optional(pane.device)
@@ -97,7 +95,7 @@ extension Core {
     /// would make the layout ambiguous.
     /// A version-1 state as version 2: the same layout, its IDs renamed. What
     /// isn't an ID of version 1 is left as it is, for `importState` to judge.
-    static func upgrade(_ state: JSON) -> JSON {
+    public static func upgrade(_ state: JSON) -> JSON {
         guard case .object(var out) = state else { return state }
         var kinds: [String: String] = [:]
         if case .array(let panes)? = state["panes"] {
@@ -214,7 +212,6 @@ extension Core {
             pane.path = item["path"]?.string
             pane.app = item["app"]?.string
             pane.device = item["device"]?.string
-            if type == .md, let zoom = item["zoom"]?.number, zoom > 0 { pane.zoom = zoom }
             if (type == .web && item["history"] == true) || type == .md { pane.history = History() }
             if type != .term { pane.command = nil; pane.cwd = nil; pane.session = nil }
             panes.append(pane)
@@ -250,10 +247,6 @@ extension Core {
             windowIDs.insert(id)
             let window = Window(id: id)
             window.workspace = item["workspace"]?.string.flatMap { ref in workspaces.contains { $0.id == ref } ? ref : nil }
-            if let f = item["frame"], let x = f["x"]?.number, let y = f["y"]?.number, let w = f["w"]?.number, let h = f["h"]?.number,
-               [x, y, w, h].allSatisfy(\.isFinite), w > 0, h > 0 {
-                window.frame = Frame(x: x, y: y, w: w, h: h)
-            }
             for entry in savedTabs {
                 guard case .object = entry, let tabID = entry["id"]?.string, let tn = number(tabID, "tab-"), !tabIDs.contains(tabID) else {
                     throw bad("tab \(quoted(entry["id"]))")

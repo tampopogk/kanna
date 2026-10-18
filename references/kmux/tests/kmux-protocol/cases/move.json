@@ -68,5 +68,26 @@
         "expect": { "layout": { "split": "row", "children": [ { "pane": "a", "size": "3/4" }, { "pane": "b", "size": "1/8" }, { "pane": "c", "size": "1/8" } ] } } },
       { "send": { "cmd": "resize", "args": { "pane": "a", "size": "1" } }, "expect": { "ok": false, "error": { "code": "bad_request" } } }
     ]
+  },
+  {
+    "name": "a divider dragged in a client is resize with tab, path and index: the panes either side share what they had, the first getting share",
+    "steps": [
+      { "send": { "cmd": "open", "args": { "type": "term", "name": "a" } } },
+      { "send": { "cmd": "open", "args": { "type": "term", "name": "b", "split": "right" } } },
+      { "send": { "cmd": "open", "args": { "type": "term", "name": "c", "split": "down" } } },
+      { "send": { "cmd": "open", "args": { "type": "term", "name": "d", "split": "down" } } },
+      { "send": { "cmd": "resize", "args": { "tab": "tab-1", "path": [], "index": 0, "share": 0.25 } },
+        "expect": { "ok": true, "tab": "tab-1", "layout": { "split": "row", "children": [ { "pane": "a", "size": "1/4" }, { "split": "column", "size": "3/4" } ] } } },
+      { "send": { "cmd": "resize", "args": { "tab": "tab-1", "path": [1], "index": 1, "share": 0.375 } },
+        "expect": { "ok": true, "tab": "tab-1" } },
+      { "send": { "cmd": "list" }, "expect": { "windows": [ { "tabs": [ { "layout": { "split": "row", "children": [
+        { "pane": "a", "size": "1/4" },
+        { "split": "column", "size": "3/4", "children": [ { "pane": "b", "size": "1/2" }, { "pane": "c", "size": "3/8" }, { "pane": "d", "size": "1/8" } ] }
+      ] } } ] } ] } },
+      { "send": { "cmd": "resize", "args": { "tab": "tab-1", "path": [1], "index": 1, "share": 0.5 } }, "expect": { "ok": false, "error": { "code": "bad_request", "message": "the share must leave both panes some space" } } },
+      { "send": { "cmd": "resize", "args": { "tab": "tab-1", "path": [1], "index": 2, "share": 0.1 } }, "expect": { "ok": false, "error": { "code": "bad_request", "message": "no divider at that index" } } },
+      { "send": { "cmd": "resize", "args": { "tab": "tab-1", "path": [0], "index": 0, "share": 0.1 } }, "expect": { "ok": false, "error": { "code": "bad_request", "message": "no split at that path" } } },
+      { "send": { "cmd": "resize", "args": { "tab": "tab-9", "path": [], "index": 0, "share": 0.1 } }, "expect": { "ok": false, "error": { "code": "not_found" } } }
+    ]
   }
 ]

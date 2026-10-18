@@ -1,21 +1,21 @@
-// kmux reference core: the model's state and its control-protocol handler
-// (docs/kmux-spec.md §7). No DOM: index.html renders it, and
-// tests/kmux-protocol runs the shared protocol cases against it in Node.
+// kmux reference core: kmux's server, the model's state and its
+// control-protocol handler (docs/kmux-spec.md §7). It keeps the content and
+// the logical presentation; the page (index.html), like kmux's app, keeps
+// where windows are and how large a markdown pane is drawn, and changes this
+// state only through requests. No DOM: tests/kmux-protocol runs the shared
+// protocol cases against it in Node.
 //
 // The page (or a test) supplies these hooks:
 const hooks = {
   render() {},
   /** Whether a pane is wider than tall, for `split: auto`. */
   paneIsWide(id) { return true; },
-  desktopSize() { return { W: 1000, H: 600 }; },
 };
 
 // ---------------------------------------------------------------------------
 // State
-// The server (content and logical presentation) and, on windows, the page's own
-// physical presentation: where each window is (x, y, w, h, z), never saved with
-// the server's state or seen by clients.
-// window := { id, tabs, active, focused, zoom, dock, workspace, x, y, w, h, z }   (workspace: its workspace's ID, or null: a free window)
+// window := { id, tabs, active, focused, zoom, dock, workspace, z }   (workspace: its workspace's ID, or null: a free window;
+//           z: how recently it was raised, so closing the key window makes the last one key)
 // workspace := { id, name, hidden }   (a named group of windows, shown or hidden together; a hidden one's windows are off screen)
 // tab    := { id, root, title, lastFocus }   (title: "Tab 1", "Tab 2"… per window until renamed)
 // content := a pane's content, by its content ID: term-N, page-N (web), file-N (md), ios-N; each kind counts on its own
@@ -94,11 +94,7 @@ const winOfTab = t => S.windows.find(w => w.tabs.includes(t));
 const activeTabOf = w => w && (w.tabs.find(t => t.id === w.active) || w.tabs[0]);
 
 function makeWindow() {
-  const { W, H } = hooks.desktopSize();
-  const k = keyWin();
-  let geo = k ? { x: k.x + 32, y: k.y + 32, w: k.w, h: k.h } : { x: 24, y: 18, w: W - 48, h: H - 36 };
-  if (geo.x + geo.w > W || geo.y + geo.h > H) geo = { x: 24, y: 18, w: Math.min(geo.w, W - 48), h: Math.min(geo.h, H - 36) };
-  const w = { id: 'win-' + (++S.n.win), tabs: [], tabCount: 0, active: null, focused: null, zoom: false, dock: null, workspace: null, ...geo, z: ++S.n.z };
+  const w = { id: 'win-' + (++S.n.win), tabs: [], tabCount: 0, active: null, focused: null, zoom: false, dock: null, workspace: null, z: ++S.n.z };
   S.windows.push(w);
   S.key = w.id;
   return w;
@@ -401,7 +397,7 @@ function summary(p) {
 // page is page-3), tabs tab-N, windows win-N and workspaces ws-N.
 // state := { kmux: 'state', version, key, counters: { term, page, file, ios, tab, window, workspace },
 //            workspaces: [{ id, name, hidden }],
-//            windows: [{ id, frame?, active, focused, zoomed, tabCount, dock?: { pane, edge, width, frozen? }, workspace?,
+//            windows: [{ id, active, focused, zoomed, tabCount, dock?: { pane, edge, width, frozen? }, workspace?,
 //                        tabs: [{ id, title, lastFocus, layout }] }],
 //            panes: [{ id, name, type, …what it shows }] }
 // layout := { pane: ID } | { split: 'row'|'column', children: [{ …layout, size }] }
@@ -418,7 +414,6 @@ function exportPane(p) {
   const out = { id: p.id, name: p.name, type: p.type };
   for (const f of PANE_FIELDS[p.type]) out[f] = p[f] ?? null;
   if (p.type === 'web') out.history = !!p.history;
-  if (p.type === 'md') out.zoom = p.zoom ?? 1;
   return out;
 }
 function exportState() {
@@ -427,7 +422,7 @@ function exportState() {
     counters: { term: S.n.term, page: S.n.page, file: S.n.file, ios: S.n.ios, tab: S.n.tab, window: S.n.win, workspace: S.n.ws },
     workspaces: S.workspaces.map(wsView),
     windows: S.windows.map(w => ({
-      id: w.id, frame: { x: w.x, y: w.y, w: w.w, h: w.h }, active: w.active, focused: w.focused, zoomed: zoomedOf(w), tabCount: w.tabCount,
+      id: w.id, active: w.active, focused: w.focused, zoomed: zoomedOf(w), tabCount: w.tabCount,
       ...(w.dock ? { dock: { ...w.dock } } : {}), ...(w.workspace ? { workspace: w.workspace } : {}),
       tabs: w.tabs.map(t => ({ id: t.id, title: t.title, lastFocus: t.lastFocus, layout: exportNode(t.root) })),
     })),
@@ -503,7 +498,6 @@ function importState(st) {
       cmd: str(sp.cmd), cwd: str(sp.cwd) ?? (sp.type === 'term' ? '~' : null), url: str(sp.url), session: str(sp.session),
       history: (sp.type === 'web' && sp.history === true) || sp.type === 'md' ? { back: [], forward: [] } : null,
       app: str(sp.app), device: str(sp.device) ?? 'iPhone 16', path: str(sp.path),
-      zoom: sp.type === 'md' && typeof sp.zoom === 'number' && sp.zoom > 0 ? sp.zoom : null,
       lines: [], draft: '', busy: false, server: null, exitCode: null,
     };
     N.panes[p.id] = p;
@@ -526,10 +520,8 @@ function importState(st) {
   for (const sw of st.windows) {
     if (!isObj(sw) || !/^win-[1-9]\d*$/.test(sw.id ?? '') || winIds.has(sw.id) || !Array.isArray(sw.tabs)) throw bad(`window ${JSON.stringify(sw?.id ?? null)}`);
     winIds.add(sw.id);
-    const f = isObj(sw.frame) ? sw.frame : {};
-    const geo = ['x', 'y', 'w', 'h'].every(k => Number.isFinite(f[k])) && f.w > 0 && f.h > 0 ? { x: f.x, y: f.y, w: f.w, h: f.h } : { x: 24, y: 18, w: 600, h: 400 };
     const workspace = N.workspaces.some(s => s.id === sw.workspace) ? sw.workspace : null;
-    const w = { id: sw.id, tabs: [], tabCount: 0, active: str(sw.active), focused: str(sw.focused), zoom: false, dock: null, workspace, ...geo, z: ++N.n.z };
+    const w = { id: sw.id, tabs: [], tabCount: 0, active: str(sw.active), focused: str(sw.focused), zoom: false, dock: null, workspace, z: ++N.n.z };
     for (const stab of sw.tabs) {
       if (!isObj(stab) || !/^tab-[1-9]\d*$/.test(stab.id ?? '') || tabIds.has(stab.id)) throw bad(`tab ${JSON.stringify(stab?.id ?? null)}`);
       tabIds.add(stab.id);
@@ -759,6 +751,23 @@ async function handle(req) {
       }
 
       case 'resize': {
+        if (args.tab != null) {
+          // A divider dragged in a client: the panes either side of it share
+          // what they had, the first getting `share`.
+          const t = needTab(args.tab);
+          let node = t.root;
+          for (const i of Array.isArray(args.path) ? args.path : []) node = node?.t === 'split' ? node.kids[i]?.node : null;
+          if (node?.t !== 'split') throw kerr('bad_request', 'no split at that path');
+          const i = args.index;
+          if (!Number.isInteger(i) || i < 0 || i + 1 >= node.kids.length) throw kerr('bad_request', 'no divider at that index');
+          const pair = node.kids[i].size + node.kids[i + 1].size;
+          const share = typeof args.share === 'number' ? args.share : frac(args.share);
+          if (!(share > 0 && share < pair)) throw kerr('bad_request', 'the share must leave both panes some space');
+          node.kids[i].size = share;
+          node.kids[i + 1].size = pair - share;
+          hooks.render();
+          return ok({ tab: t.id, layout: toTree(t.root) });
+        }
         const p = need(args.pane);
         const s = frac(args.size);
         if (!(s > 0 && s < 1)) throw kerr('bad_request', 'size must be a fraction between 0 and 1');

@@ -99,8 +99,6 @@ import Testing
         let (core, _) = makeCore()
         _ = await core.handle(["cmd": "open", "args": ["type": "term", "name": "a", "cwd": "/tmp", "cmd": "ls"]])
         _ = await core.handle(["cmd": "open", "args": ["type": "md", "name": "doc", "path": "/x.md", "split": "right", "size": "1/3"]])
-        core.model.windows[0].frame = Frame(x: 10, y: 20, w: 800, h: 500)
-        core.model.pane("doc")?.zoom = 1.25
         let state = file()
         try state.write(core.exportState())
         guard case .state(let saved) = state.load() else { Issue.record("no state"); return }
@@ -108,9 +106,36 @@ import Testing
         let (restored, host) = makeCore()
         try restored.restoreState(saved)
         #expect(restored.exportState() == core.exportState())
-        #expect(restored.model.windows[0].frame == Frame(x: 10, y: 20, w: 800, h: 500))
-        #expect(restored.model.pane("doc")?.zoom == 1.25)
         #expect(restored.model.pane("a")?.command == "ls")
         _ = host
+    }
+
+    /// Where windows were and markdown zoom are the app's, in a file of its
+    /// own; a version-1 state kept them, and its upgrade still has them, with
+    /// the new IDs, for the app to take.
+    @Test func whereWindowsAreIsTheAppsOwn() throws {
+        let instance = Instance(name: "work", socketPath: Instance.socketPath(for: "work"))
+        #expect(StateFile.appPath(for: instance).hasSuffix("/app-work.json"))
+        #expect(StateFile.appPath(for: Instance(name: "t", socketPath: "/tmp/x/k.sock")) == "/tmp/x/k.app.json")
+        let old: JSON = [
+            "kmux": "state", "version": 1, "key": "w1", "counters": ["pane": 1, "tab": 1, "window": 1],
+            "windows": [["id": "w1", "frame": ["x": 10, "y": 20, "w": 800, "h": 500], "active": "t1", "focused": "p1", "zoomed": nil, "tabCount": 1,
+                         "tabs": [["id": "t1", "title": "a", "lastFocus": "p1", "layout": ["pane": "p1"]]]]],
+            "panes": [["id": "p1", "name": "doc", "type": "md", "path": "/x.md", "zoom": 1.25]],
+        ]
+        func first(_ state: JSON, _ key: String) -> JSON? {
+            if case .array(let items)? = state[key] { return items.first }
+            return nil
+        }
+        let upgraded = Core.upgrade(old)
+        #expect(first(upgraded, "windows")?["id"] == "win-1")
+        #expect(first(upgraded, "windows")?["frame"]?["w"] == 800)
+        #expect(first(upgraded, "panes")?["id"] == "file-1")
+        #expect(first(upgraded, "panes")?["zoom"] == 1.25)
+        let (core, _) = makeCore()
+        try core.restoreState(old)
+        let saved = core.exportState()
+        #expect(first(saved, "windows")?["frame"] == nil)
+        #expect(first(saved, "panes")?["zoom"] == nil)
     }
 }
