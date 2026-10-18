@@ -316,18 +316,6 @@ impl AppLink {
                 self.diffs.show(&view, args.get("show").unwrap_or(&Value::Null));
                 return None;
             }
-            ("layout.call", _) if message.get("id").is_some() => {
-                let call = string(&args, "call").unwrap_or_default();
-                let reply = if ["focused", "divider", "frame", "shapes", "resolve", "view"].contains(&call) {
-                    self.layout.call(&args)
-                } else {
-                    json!({ "ok": false, "error": { "code": "bad_request", "message": format!("the app can't make the layout call \"{call}\"") } })
-                };
-                let mut reply = reply;
-                reply["id"] = message.get("id").cloned().unwrap_or(Value::Null);
-                self.send(reply);
-                return None;
-            }
             ("diff.unsubscribe", Some(view)) => {
                 self.diffs.unsubscribe(&view);
                 return None;
@@ -388,9 +376,6 @@ impl AppLink {
             }
             if let Some(device) = string(args, "device") {
                 pane.device = Some(device.into());
-            }
-            if let Some(zoom) = args.get("zoom").and_then(Value::as_f64).filter(|z| *z > 0.0) {
-                pane.zoom = Some(zoom);
             }
             if let Some(view) = string(args, "view").filter(|v| *v == "unified" || *v == "split") {
                 pane.view = Some(view.into());

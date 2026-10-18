@@ -88,6 +88,10 @@ extension AppController {
             }
             return reply
         }
+        commands["debug.view"] = { [weak self] _ in
+            guard let self, case .object(let view) = state else { return [:] }
+            return view
+        }
         commands["debug.snapshot"] = { [weak self] args in
             guard let self else { return [:] }
             let id = args["window"]?.string ?? state["key"]?.string ?? controllers.keys.sorted().first

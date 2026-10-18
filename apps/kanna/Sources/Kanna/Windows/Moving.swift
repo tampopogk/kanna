@@ -123,8 +123,7 @@ extension AppController {
         layoutCommand(cmd, args) { [weak self] reply in
             guard let self, reply["ok"]?.bool == true, case .newWindow(let point)? = drop, let id = reply["window"]?.string else { return }
             let frame = newWindowFrame(at: point, size: size)
-            let rect: JSON = ["x": .number(frame.minX), "y": .number(frame.minY), "w": .number(frame.width), "h": .number(frame.height)]
-            layoutCall("frame", ["window": .string(id), "frame": rect])
+            physical.setFrame(id, frame)
             controllers[id]?.window.setFrame(frame, display: true)
         }
     }

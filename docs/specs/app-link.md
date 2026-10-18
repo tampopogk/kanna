@@ -51,7 +51,6 @@ sequenceDiagram
 |---|---|---|
 | `app.hello {pid, build}` | app | I'm the app, of this build; the reply accepts or refuses it (`app_attached`, `other_build`) and has the daemon's panes and layout |
 | `layout {windows, …}` | daemon | the layout changed; this is the whole view to draw ([layout](layout.md)) |
-| `layout.call {call, …}` (with an `id`) | app | the user focused a pane, dragged a divider or moved a window, or the app needs the view or a name resolved ([layout](layout.md#2-layout-steps)) |
 | `attach {terminal}` / `detach {terminal}` | app | I show (or no longer show) this terminal, by its terminal ID (`term-41`, [presentation layers](presentation-layers.md#3-ids)) |
 | `snapshot {terminal, data}` | daemon | the terminal's whole screen as a GHOSTSNP snapshot; sent on attach, before anything else for that terminal |
 | `grid {terminal, cols, rows}` | daemon | the terminal's size, after a snapshot or a resize |

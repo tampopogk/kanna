@@ -7,7 +7,7 @@ Kanna.app's windows behave as kmux's: any number of windows, each with a tab bar
 ## Contents
 
 1. [Views draw the daemon's layout; actions go to it](#1-views-draw-the-daemons-layout-actions-go-to-it)
-2. [The model's app-only calls](#2-the-models-app-only-calls)
+2. [What the app keeps](#2-what-the-app-keeps)
 3. [Windows, tabs, panes](#3-windows-tabs-panes)
 4. [Terminal views](#4-terminal-views)
 5. [Debug commands](#5-debug-commands)
@@ -16,29 +16,30 @@ Kanna.app's windows behave as kmux's: any number of windows, each with a tab bar
 
 ## 1. Views draw the daemon's layout; actions go to it
 
-The views never keep a copy of the layout. The daemon sends a `view` of every window after every change ([layout](layout.md)), and the app draws it. A user action is one of two kinds:
+The views never keep a copy of the layout. The daemon sends the `layout` view of every window after every change ([layout](layout.md)), and the app draws it with its own physical state laid over it. A user action is one of two kinds:
 
 | Kind | Examples | Goes to |
 |---|---|---|
-| **A command** | select, rename, reorder or tear off a tab; focus, zoom, next or previous pane, tab or window; move a pane; Split Right / Down, New Tab, New Window, new web, markdown and iOS panes, Close Pane, × on a tab, Close Window, the red button | the daemon, as a client's request (`focus`, `zoom`, `rename-tab`, `move`, `move-tab`, `open`, `close`), the same as the CLI's |
-| **What only the app knows** | a click focusing a pane, a divider dragged, a window moved, which panes are wide | the model's app-only calls, as `layout.call` ([2](#2-the-models-app-only-calls)) |
+| **A command** | a click into a pane; select, rename, reorder or tear off a tab; focus, zoom, next or previous pane, tab or window; move a pane; drag a split's divider; Split Right / Down, New Tab, New Window, new web, markdown and iOS panes, Close Pane, × on a tab, Close Window, the red button | the daemon, as the CLI's commands (`focus`, `zoom`, `resize`, `rename-tab`, `move`, `move-tab`, `open`, `close`) |
+| **Physical** | a window moved or resized; the docked pane's divider dragged; ⌘+ and ⌘− in a markdown, code or diff pane | the app alone: kept in `app-state.json` ([2](#2-what-the-app-keeps)) |
 
-Every action goes through the daemon because the layout is a task's, not an app's: a task arranges its tabs with the app closed, and every client sees the same layout ([presentation layers](presentation-layers.md)).
+Commands go through the daemon because the layout is the task's, not an app's: a task arranges its tabs with the app closed, and every client sees the same layout ([presentation layers](presentation-layers.md)). While a click's `focus` is on its way, the app draws the clicked pane focused, so a view sent before the daemon had it doesn't move focus back.
 
 ```mermaid
 flowchart TB
     subgraph A["Kanna app"]
         UI["windows, tab bars, panes<br/>(Swift, from kmux)"]
+        PH[("app-state.json<br/>frames · dock widths<br/>text sizes")]
+        UI <-->|"reads, writes"| PH
     end
     subgraph D["daemon"]
         CORE["kanna-mux core"] --> OWNER["LayoutOwner"]
     end
-    UI -->|"open, close, focus, zoom,<br/>rename-tab, move, move-tab"| CORE
-    UI -->|"layout.call: focused,<br/>divider, frame, shapes"| OWNER
+    UI -->|"open, close, focus, zoom, resize,<br/>rename-tab, move, move-tab"| CORE
     OWNER -->|"layout: every window"| UI
     classDef kanna fill:#2f6f4f,stroke:#6fcf97,color:#ffffff
     classDef kmux fill:#2f4f8f,stroke:#7fa7ff,color:#ffffff
-    class UI kanna
+    class UI,PH kanna
     class OWNER,CORE kmux
 ```
 
@@ -56,23 +57,23 @@ sequenceDiagram
     D->>W: layout (the view)
     Note over W: draw, p1 first responder
     U->>W: drag the divider
-    W->>D: layout.call divider {tab t1, path [], index 0, share 1/3}
+    W->>D: resize {tab t1, path [], index 0, share 1/3}
     D->>W: layout (the view)
-    Note over D: saved ½ s later
+    U->>W: move the window
+    Note over W: frame kept in app-state.json
 ```
 
-## 2. The model's app-only calls
+## 2. What the app keeps
 
-As `layout.call {call, …}` on the app link:
-
-| Call | Does | Why it isn't a protocol command |
+| State | Kept | Laid over the view |
 |---|---|---|
-| `view` | `{key, windows: [{id, frame, title, tab, tabs: [{id, title, panes}], focused, zoomed, root, dock}]}`: every window, its tabs and their panes, the tree on screen (the zoomed pane alone when zoomed; nothing when the docked pane is), with exact sizes and pane types, and its docked pane (`{pane, type, edge, width}`, or null); also sent as `layout` after every change | it's what to draw, not what a client sees (`list` shows names and fractions) |
-| `focused {pane}` | a click: the pane's window remembers it as focused (and its tab as last focused), without making the window key or unzooming | kmux's app does the same outside its core; `focus` would also make the window key |
-| `divider {tab, path, index, share}` | a dragged divider: the two panes either side share what they had, the first getting `share` | `resize` gives one pane a fraction and rescales all its siblings; a divider moves only its two neighbours |
-| `frame {window, frame}` | a window moved or was resized; saved with the window | frames are the app's (they move to it next, [presentation layers](presentation-layers.md#5-decisions)) |
-| `shapes {panes: {id: wide}}` | which panes on screen are at least as wide as tall; sent after every change | `auto` splits a wide pane sideways and a tall one down, and only the app knows sizes |
-| `resolve {pane}` | a pane name to its ID, for the debug commands | — |
+| Window frames | by window ID; a window goes back to its frame if that is still on a screen, and a new one cascades from the frontmost | `frame` |
+| The docked pane's width, when dragged | by pane, with the layout's width it was dragged from | `dock.width`, `lead.width`, a Shelf agent's `width`, while the layout's width is still the one it was dragged from |
+| Text size | by pane, for markdown, code and diff panes (1 isn't kept) | the pane's view opens at it |
+
+`app-state.json` is in the daemon's state folder (`$KANNA_STATE_DIR`, or the socket's folder), saved half a second after a change and on quit, written atomically with mode 0600; `--fresh` starts without it and `KANNA_NO_STATE=1` neither reads nor writes it. Entries for panes the daemon no longer has are dropped when the app attaches.
+
+The `layout` view is `{key, windows: [{id, title, tab, tabs: [{id, title, panes}], focused, zoomed, root, dock, lead, desk, workspace, shows}], shelf, held}`: every window on screen, its tabs and their panes, the tree on screen (the zoomed pane alone when zoomed; nothing when the docked pane is) with each split's shares and pane types, and its docked pane (`{pane, type, edge, width}`, or null). It's what to draw, not what a client sees (`list` shows names and fractions).
 
 ## 3. Windows, tabs, panes
 
@@ -98,6 +99,7 @@ With `KANNA_DEBUG=1`; the daemon passes them to the app, turning a top-level `pa
 | `debug.click {tab, clicks?}`, `{pane, at?: [x, y]}`, `{…, button}` | clicks a tab (2 clicks: rename) or a point in a pane (from its top left). In a `--bg` app the click goes to the view under the point as it would in the key window. `button` 3 or 4 is the mouse's back or forward button; `button: 1` doesn't open the right-click menu (it would block) but answers its items: `{menu: [titles]}` |
 | `debug.drag {pane, to}`, `{tab, to}`, `{divider: pane, at}` | kmux's: a drag replayed along scripted points, with no hint shown; `to` is `{pane, x, y}` (fractions from the top left), `{tab}`, `{plus: window}` or `{outside: true}`; `divider` is the divider after that pane, moved to `at` of the pair |
 | `debug.menu` | every menu item: `{menu, item, shortcut}` |
+| `debug.view` | the view the app draws: the daemon's `layout` with the app's physical state laid over it ([2](#2-what-the-app-keeps)) |
 | `debug.pinch {pane, steps?}` | a trackpad pinch over a markdown pane; the zoom after each step |
 | `debug.drop {pane, files \| image \| text}` | a drop on a terminal: file paths, a PNG or TIFF file's data, or text, as a drag would bring them |
 | `debug.stats` | the app's pid and memory footprint |
@@ -106,7 +108,7 @@ With `KANNA_DEBUG=1`; the daemon passes them to the app, turning a top-level `pa
 
 ## 6. Checked by
 
-`crates/kanna-mux` owner tests (`view`, `focused`, `divider`, `frame`, `shapes`) and `windows_tabs_ui`, `resize_arrange`, `drag_panes_tabs`, `chrome_and_drops` of `scripts/e2e-kanna.sh`: menus and shortcuts split, tab, zoom, cycle and close; clicks select, rename and focus; dividers snap; `auto` follows the pane's shape; Ghostty's split navigation and font size; frames come back; the app outlives its last window; panes and tabs dragged everywhere; the tab and pane menus; every window drawn with its tab bar and dividers; the tab bar's colour in dark, light and dark again.
+`crates/kanna-mux` owner tests (`view`, a divider's `resize`, `auto` splits) and `windows_tabs_ui`, `resize_arrange`, `drag_panes_tabs`, `chrome_and_drops` of `scripts/e2e-kanna.sh`: menus and shortcuts split, tab, zoom, cycle and close; clicks select, rename and focus; dividers snap; `auto` follows the pane's shape; Ghostty's split navigation and font size; frames come back; the app outlives its last window; panes and tabs dragged everywhere; the tab and pane menus; every window drawn with its tab bar and dividers; the tab bar's colour in dark, light and dark again.
 
 ## 7. Glossary
 

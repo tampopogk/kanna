@@ -6,8 +6,6 @@ The daemon owns the layout (windows, tabs, splits, focus, zoom, the docked pane,
 
 Each task has a [workspace](workspaces.md): its Desk part (agent and tabs) and windows of its own, which a Desk shows; replies name the workspace a pane is in.
 
-Window frames, split sizes and text size are still in the daemon's model; they move to each app next ([presentation layers](presentation-layers.md#5-decisions)).
-
 ## Contents
 
 1. [One layout model, in Rust, run by the daemon](#1-one-layout-model-in-rust-run-by-the-daemon)
@@ -35,7 +33,7 @@ flowchart TB
         OWNER --> FILE[("layout.json")]
     end
     CLI -->|"open --split right"| CORE
-    VIEW -->|"layout.call, commands"| CORE
+    VIEW -->|"commands"| CORE
     OWNER -->|"layout (the view)"| VIEW
     classDef kanna fill:#2f6f4f,stroke:#6fcf97,color:#ffffff
     classDef kmux fill:#2f4f8f,stroke:#7fa7ff,color:#ffffff
@@ -55,18 +53,11 @@ Why one model in the daemon:
 
 `kanna-mux`'s core turns each command into steps on the layout (`place`, `location`, `command`, `panes-in`, `remove`, `windows`, `export`, `check`, `install`) and sends them through its `LayoutLink`; in the daemon they run on its `LayoutOwner` at once. A command's steps and its changes to the panes run one command at a time, so pane IDs and layout changes happen in kmux's order.
 
-What the app tells the layout goes as `layout.call` requests on the app link ([app link](app-link.md)):
+The app changes the layout only with the CLI's commands: a click is `focus`, a dragged divider is `resize {tab, path, index, share}` (the two panes either side share what they had, the first getting `share`; plain `resize PANE` rescales all its siblings), a new tab or split is `open`, and so on.
 
-| Call | When |
-|---|---|
-| `focused {pane}` | the user clicked into a pane |
-| `divider {…}` | the user dragged a split's divider |
-| `frame {window, frame}` | the user moved or resized a window |
-| `shapes {…}` | the views' sizes, for `auto` splits |
-| `resolve {…}` | the app needs a pane, tab or window resolved from a name |
-| `view` | the view now (it also comes in the hello reply) |
+**`auto` splits** go by the shape the pane has in the layout: its share of a window taken as 16:10, less the docked pane. A pane at least as wide as it is tall splits sideways, a taller one down. No app is asked.
 
-Everything else the app does (new tab, split, close, move, Desk and Shelf) it asks for with the same commands as the CLI.
+**What stays in the app** ([presentation layers](presentation-layers.md#1-the-three-layers)): window frames, the docked pane's width when the user drags it, and text size (⌘+ and ⌘− in a markdown, code or diff pane). The app saves them in `app-state.json` beside the daemon's files, and lays them over each view it draws. A dragged dock width holds until the layout's own width changes (`kanna resize agent 1/2`).
 
 ## 3. Saving and restoring
 

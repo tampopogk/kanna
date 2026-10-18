@@ -21,11 +21,11 @@ A task is a unit of work. Its **workspace** is how it's presented: its agent doc
 
 ```mermaid
 flowchart LR
-    DW["Desk window<br/>id · frame · project<br/>lead · Shelf zoom"]
+    DW["Desk window<br/>id · project<br/>lead · Shelf zoom"]
     T["Task task-1dfb12c2<br/>(in kanna.db)"]
     WS["Workspace ws-3<br/>dock · tabs<br/>focus · zoom · where"]
-    OW["its windows (w40, …)<br/>frame · tabs<br/>focus · zoom"]
-    FW["free window (w4)<br/>frame · tabs<br/>focus · zoom"]
+    OW["its windows (w40, …)<br/>tabs · focus · zoom"]
+    FW["free window (w4)<br/>tabs · focus · zoom"]
     T -->|"has a"| WS
     DW -->|"shows (one)"| WS
     WS -->|"has (any number)"| OW
@@ -36,10 +36,10 @@ flowchart LR
 ```
 
 - **A workspace has an ID of its own,** `ws-1`, `ws-2`, …, made by the layout, which knows nothing of tasks. **A task has a workspace:** the daemon's record of the task names it ([workspace list](workspace-list.md#a-task-has-a-workspace)). It keeps it from start to Done, wherever it goes. A workspace with no task (a pane docked by hand) is just a workspace.
-- **A workspace has a Desk part and windows of its own.** The Desk part (the docked agent and its tabs) is what a Desk window shows. Its own windows are ordinary windows with their own IDs and frames.
+- **A workspace has a Desk part and windows of its own.** The Desk part (the docked agent and its tabs) is what a Desk window shows. Its own windows are ordinary windows with their own IDs; each app keeps their frames ([windows](windows.md#2-what-the-app-keeps)).
 - **A window isn't a workspace.** It's a Desk, one of a workspace's windows, or free (in no workspace).
 - **`where`** is one of: on a Desk (which one), on the Shelf, or in the backlog. A workspace is in exactly one place.
-- **Only a workspace on a Desk is visible,** its windows included. On the Shelf or in the backlog, its Desk part and all its windows are hidden; their panes keep running, the Desk part at the Desk's size ([pane sizes](pane-sizes.md)) and each window at its frame.
+- **Only a workspace on a Desk is visible,** its windows included. On the Shelf or in the backlog, its Desk part and all its windows are hidden; their panes keep running, the Desk part at the Desk's size ([pane sizes](pane-sizes.md)) and each window at the size it last had.
 
 ```mermaid
 flowchart TB
@@ -78,7 +78,7 @@ Each one changes `where`, a Desk's `shows`, or which workspace a window or pane 
 |---|---|---|
 | `kanna task start` (backlog) | new `ws-N`, docked agent, in the backlog; the task records it | — |
 | Move to Shelf (`shelve`) | new, or the held one, onto the Shelf | — |
-| `pull` onto Desk W | Shelf → on W | W shows it and its windows open at their frames; the one W showed goes to the Shelf and its windows close |
+| `pull` onto Desk W | Shelf → on W | W shows it and its windows open where the app last had them; the one W showed goes to the Shelf and its windows close |
 | `park` | on a Desk → Shelf | the Desk shows its lead and the Shelf; the workspace's windows close |
 | Move to Backlog (`defer`, `hold`) | Desk or Shelf → backlog, as it is | as park |
 | `stop` | unchanged | unchanged |

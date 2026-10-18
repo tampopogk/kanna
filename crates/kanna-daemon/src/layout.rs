@@ -68,12 +68,6 @@ impl DaemonLayout {
         self.panes_changed.set(true);
     }
 
-    pub fn call(&self, request: &Value) -> Value {
-        let reply = self.owner.borrow_mut().handle(request);
-        self.touched.set(true);
-        reply
-    }
-
     pub fn view(&self) -> Value {
         Value::Object(self.owner.borrow().view())
     }

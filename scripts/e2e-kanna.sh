@@ -285,6 +285,8 @@ web_md_ios_panes() {
   check is web url "file://$dir/web_md_ios_panes.html" || return 1
   check wait_for 5 page_shows web "web_md_ios_panes WEB" || return 1
   before="$(layout)"
+  raw '{"id":1,"cmd":"debug.md","args":{"pane":"doc","zoom":2}}' >/dev/null
+  sleep 1
   stop_app
   check is doc path "$dir/web_md_ios_panes.md" || return 1
   kanna navigate web "file://$dir/web_md_ios_panesb.html" >/dev/null || return 1
@@ -292,6 +294,7 @@ web_md_ios_panes() {
   check test "$(layout)" == "$before" || return 1
   check is web url "file://$dir/web_md_ios_panesb.html" || return 1
   check wait_for 5 page_shows web "web_md_ios_panes NEXT" || return 1
+  check python3 -c 'import sys; assert float(sys.argv[1]) > 1, sys.argv[1]' "$(raw '{"id":1,"cmd":"debug.md","args":{"pane":"doc"}}' | field zoom)" || return 1
   kanna navigate web --back >/dev/null || return 1
   check wait_for 5 page_shows web "web_md_ios_panes WEB" || return 1
   check wait_for 5 doc_shows doc "web_md_ios_panes TEXT" || return 1
@@ -742,7 +745,7 @@ resize_arrange() {
   check test "$(state | field windows | count)" == 2 || { echo "$last_drag"; return 1; }
   sleep 1
   local frames
-  frames() { python3 -c 'import json, sys; print(json.dumps(sorted([w["id"], w["frame"]] for w in json.load(open(sys.argv[1]))["windows"])))' "$KANNA_STATE_DIR/layout.json"; }
+  frames() { python3 -c 'import json, sys; print(json.dumps(sorted([k, v] for k, v in json.load(open(sys.argv[1]))["frames"].items())))' "$KANNA_STATE_DIR/app-state.json"; }
   frames="$(frames)"
   check python3 -c 'import json, sys; f = json.loads(sys.argv[1]); assert len(f) == 2 and f[0][1] != f[1][1], f' "$frames" || return 1
   stop_app; start_app || return 1
@@ -1161,7 +1164,11 @@ docked_pane() {
   kanna move agent --dock right >/dev/null || return 1
   check test "$(win w1 dock)" == '{"edge": "right", "pane": "agent", "width": "2/5"}' || return 1
   drag '{"divider":"agent","at":0.34}'
-  check test "$(win w1 dock.width)" == 1/3 || { echo "$(win w1 dock) $last_drag"; return 1; }
+  check python3 -c 'import sys; assert abs(float(sys.argv[1]) - 1/3) < 0.001, sys.argv[1]' "$(raw '{"id":1,"cmd":"debug.view"}' | field windows.0.dock.width)" || { echo "$last_drag"; return 1; }
+  check test "$(win w1 dock.width)" == 2/5 || return 1
+  kanna resize agent 1/2 >/dev/null || return 1
+  check test "$(raw '{"id":1,"cmd":"debug.view"}' | field windows.0.dock.width)" == 0.5 || return 1
+  drag '{"divider":"agent","at":0.34}'
   sleep 0.5
   check drawn "$(snap w1 docked_pane-right)" 2 || return 1
   first="$(win w1 tabs.0.id)"

@@ -20,6 +20,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var panes: PaneViews!
     var controllers: [String: WindowController] = [:]
     private(set) var state: JSON = ["key": nil, "windows": []]
+    private var published: JSON = ["key": nil, "windows": []]
+    let physical = Physical(path: AppController.physicalPath, fresh: AppController.fresh)
     private var focusing: String?
     private var focusCalls = 0
     private var rendering = false
@@ -29,13 +31,23 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var folders: [String: String] = [:]
     private var terminalIDs: [String: String] = [:]
     private var names: [String: String] = [:]
-    private var sentShapes: [String: JSON] = [:]
     var backlog: [JSON] = []
     var starting: Set<String> = []
 
     static var daemonSocketPath: String {
         if let path = ProcessInfo.processInfo.environment["KANNA_SOCKET"], !path.isEmpty { return path }
         return instanceSocket(KannaBuild.defaultInstance)
+    }
+
+    static var physicalPath: String? {
+        let environment = ProcessInfo.processInfo.environment
+        if environment["KANNA_NO_STATE"] == "1" { return nil }
+        let folder = environment["KANNA_STATE_DIR"].flatMap { $0.isEmpty ? nil : $0 } ?? (daemonSocketPath as NSString).deletingLastPathComponent
+        return (folder as NSString).appendingPathComponent("app-state.json")
+    }
+
+    static var fresh: Bool {
+        CommandLine.arguments.contains("--fresh") || ProcessInfo.processInfo.environment["KANNA_FRESH"] == "1"
     }
 
     static var startFolder: String? {
@@ -92,7 +104,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             daemon.onAttach = { [weak self] in self?.attached($0) }
             daemon.onView = { [weak self] view in
                 guard let self else { return }
-                state = focusing.map { Self.view(view, focusing: $0) } ?? view
+                published = view
+                restate()
                 layoutChanged()
             }
             daemon.onStart = { [weak self] pane in self?.startContent(pane) }
@@ -124,6 +137,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panes.onDrag = { [weak self] pane in self?.dragPane(pane) }
         panes.contextMenu = { [weak self] in self?.paneMenu?.copy() as? NSMenu }
         contents.onFocus = { [weak self] pane in self?.userFocused(pane) }
+        contents.textSize = { [weak self] pane in self?.physical.textSize(pane) }
+        contents.onTextSize = { [weak self] pane, size in self?.physical.setTextSize(pane, size) }
         contents.agentStatus = { [weak self] pane in self?.agentStatuses.statuses[pane] }
         contents.contextMenu = { [weak self] in self?.paneMenu?.copy() as? NSMenu }
         runtime.onAction = { [weak self] view, action in
@@ -156,6 +171,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         for id in controllers.keys { recordFrame(id) }
+        physical.save()
         panes?.stopAll()
         daemon?.stop()
         server?.stop()
@@ -171,7 +187,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func attached(_ hello: JSON) {
         let panes = hello["panes"] ?? []
         if case .array(let list) = panes { learn(records: list) }
-        if let view = hello["layout"] { state = view }
+        if let view = hello["layout"] {
+            published = view
+            restate()
+        }
+        if case .array(let list) = panes { physical.keep(panes: Set(list.compactMap { $0["id"]?.string })) }
         if case .array(let list) = panes {
             for pane in list where pane["type"]?.string != "term" {
                 guard let id = pane["id"]?.string else { continue }
@@ -314,12 +334,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func paneID(named name: String) -> String? { names[name] }
 
-    func layoutCall(_ call: String, _ args: [String: JSON] = [:]) {
-        var args = args
-        args["call"] = .string(call)
-        request("layout.call", args)
-    }
-
     func request(_ cmd: String, _ args: [String: JSON], reply: ((JSON) -> Void)? = nil) {
         guard let daemon else { return }
         daemon.request(cmd, args) { answer in
@@ -334,13 +348,17 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !rendering else { return }
         focusing = pane
         focusCalls += 1
-        state = Self.view(state, focusing: pane)
+        restate()
         refresh()
-        request("layout.call", ["call": "focused", "pane": .string(pane)]) { [weak self] _ in
+        request("focus", ["pane": .string(pane)]) { [weak self] _ in
             guard let self else { return }
             focusCalls -= 1
             if focusCalls == 0 { focusing = nil }
         }
+    }
+
+    private func restate() {
+        state = physical.applied(focusing.map { Self.view(published, focusing: $0) } ?? published)
     }
 
     func redraw(_ controller: WindowController) {
@@ -366,7 +384,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let known = placed
         for id in contents.ids where !known.contains(id) { contents.forget(id) }
         agentStatuses.keep(known)
-        sendShapes()
     }
 
     func refresh() {
@@ -433,9 +450,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             redraw(controller)
         }
         controller.onDivider = { [weak self] divider, share in
-            self?.layoutCall("divider", ["tab": .string(divider.tab), "path": .array(divider.path.map { .number(Double($0)) }), "index": .number(Double(divider.index)), "share": .number(share)])
+            self?.layoutCommand("resize", ["tab": .string(divider.tab), "path": .array(divider.path.map { .number(Double($0)) }), "index": .number(Double(divider.index)), "share": .number(share)])
         }
-        controller.onDockWidth = { [weak self] pane, width in self?.layoutCommand("resize", ["pane": .string(pane), "size": .number(width)]) }
+        controller.onDockWidth = { [weak self] pane, width in
+            guard let self else { return }
+            physical.setDock(pane, width: width, in: published)
+            restate()
+            refresh()
+        }
         controller.tabBar.onSelect = { [weak self] tab in self?.layoutCommand("focus", ["tab": .string(tab)]) }
         controller.tabBar.onClose = { [weak self] tab in self?.closeTab(tab) }
         controller.tabBar.onNew = { [weak self] in self?.newTab(in: id) }
@@ -470,18 +492,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func recordFrame(_ id: String) {
         guard let rect = controllers[id]?.window.frame else { return }
-        let frame: JSON = ["x": .number(rect.minX), "y": .number(rect.minY), "w": .number(rect.width), "h": .number(rect.height)]
-        layoutCall("frame", ["window": .string(id), "frame": frame])
-    }
-
-    private func sendShapes() {
-        var shapes: [String: JSON] = [:]
-        for view in panes.all where view.superview != nil && view.bounds.height > 0 {
-            shapes[view.id] = .bool(view.bounds.width >= view.bounds.height)
-        }
-        guard shapes != sentShapes else { return }
-        sentShapes = shapes
-        layoutCall("shapes", ["panes": .object(shapes)])
+        physical.setFrame(id, rect)
     }
 
     func present(_ window: NSWindow) {

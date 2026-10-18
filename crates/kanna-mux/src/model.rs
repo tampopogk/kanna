@@ -48,15 +48,8 @@ pub enum Node {
     Split(Split),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Frame {
-    pub x: f64,
-    pub y: f64,
-    pub w: f64,
-    pub h: f64,
-}
-
 pub const DOCK_WIDTH: f64 = 2.0 / 5.0;
+const WINDOW_ASPECT: f64 = 1.6;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Dock {
@@ -70,7 +63,6 @@ pub struct Dock {
 pub struct Window {
     pub id: String,
     pub tabs: Tabs,
-    pub frame: Option<Frame>,
     pub desk: bool,
     /// The folder a Desk was opened on (`kanna PATH`), for its project until a task docks there.
     pub project: Option<String>,
@@ -81,7 +73,7 @@ pub struct Window {
 
 impl Window {
     pub(crate) fn new(id: String) -> Window {
-        Window { id, tabs: Tabs::default(), frame: None, desk: false, project: None, lead: None, workspace: None }
+        Window { id, tabs: Tabs::default(), desk: false, project: None, lead: None, workspace: None }
     }
 
     pub fn leads(&self, pane: &str) -> bool {
@@ -110,12 +102,11 @@ pub struct Model {
     pub(crate) used: Vec<String>,
     pub(crate) counters: (usize, usize, usize),
     pub(crate) orphans: Vec<(Tabs, bool)>,
-    pub pane_is_wide: Box<dyn Fn(&str) -> bool + Send>,
 }
 
 impl Default for Model {
     fn default() -> Model {
-        Model { windows: vec![], workspaces: vec![], key: None, used: vec![], counters: (0, 0, 0), orphans: vec![], pane_is_wide: Box::new(|_| true) }
+        Model { windows: vec![], workspaces: vec![], key: None, used: vec![], counters: (0, 0, 0), orphans: vec![] }
     }
 }
 
@@ -409,49 +400,18 @@ impl Model {
         self.windows.iter().filter(|w| w.workspace.as_deref() == Some(id)).collect()
     }
 
-    pub fn set_focused(&mut self, pane: &str) -> bool {
-        let Some(w) = (0..self.windows.len()).find(|&w| self.visible(w) && self.shown_panes(w).iter().any(|p| p == pane)) else { return false };
-        let h = self.shown_holder(w);
-        let docked = self.side(h).as_deref() == Some(pane);
-        let tabs = self.tabs_mut(h);
-        if tabs.focused.as_deref() == Some(pane) {
-            return false;
+    fn wide(&self, h: Holder, t: usize, pane: &str) -> bool {
+        fn find(node: &Node, pane: &str, w: f64, h: f64) -> Option<(f64, f64)> {
+            match node {
+                Node::Pane(id) => (id == pane).then_some((w, h)),
+                Node::Split(split) => split.kids.iter().find_map(|kid| match split.axis {
+                    Axis::Row => find(&kid.node, pane, w * kid.size, h),
+                    Axis::Column => find(&kid.node, pane, w, h * kid.size),
+                }),
+            }
         }
-        tabs.focused = Some(pane.into());
-        if let Some(t) = tabs.active_index().filter(|_| !docked) {
-            tabs.tabs[t].last_focus = Some(pane.into());
-        }
-        true
-    }
-
-    pub fn set_divider(&mut self, tab: &str, path: &[usize], index: usize, share: f64) -> Result<(), KmuxError> {
-        let (h, t) = self.tab_index(tab).ok_or_else(|| not_found(format!("no tab \"{tab}\"")))?;
-        let mut node = self.tabs_mut(h).tabs[t].root.as_mut().ok_or_else(|| not_found(format!("tab \"{tab}\" is empty")))?;
-        for &i in path {
-            node = match node {
-                Node::Split(split) if i < split.kids.len() => &mut split.kids[i].node,
-                _ => return Err(bad_request("no split at that path")),
-            };
-        }
-        let Node::Split(split) = node else { return Err(bad_request("no split at that path")) };
-        if index + 1 >= split.kids.len() {
-            return Err(bad_request("no divider at that index"));
-        }
-        let pair = split.kids[index].size + split.kids[index + 1].size;
-        if !(share > 0.0 && share < pair) {
-            return Err(bad_request("the share must leave both panes some space"));
-        }
-        split.kids[index].size = share;
-        split.kids[index + 1].size = pair - share;
-        Ok(())
-    }
-
-    pub fn set_frame(&mut self, window: &str, frame: Frame) -> bool {
-        let Some(w) = self.window_index(window) else { return false };
-        let window = &mut self.windows[w];
-        let changed = window.frame != Some(frame);
-        window.frame = Some(frame);
-        changed
+        let width = if self.side(h).is_some() { WINDOW_ASPECT * (1.0 - DOCK_WIDTH) } else { WINDOW_ASPECT };
+        self.tabs(h).tabs[t].root.as_ref().and_then(|root| find(root, pane, width, 1.0)).is_none_or(|(w, h)| w >= h)
     }
 
     pub(crate) fn set_key(&mut self, key: Option<String>) {
@@ -916,7 +876,36 @@ impl Model {
         Ok(out)
     }
 
+    fn set_divider(&mut self, tab: &str, path: &[usize], index: usize, share: f64) -> Result<(), KmuxError> {
+        let (h, t) = self.tab_index(tab).ok_or_else(|| not_found(format!("no tab \"{tab}\"")))?;
+        let mut node = self.tabs_mut(h).tabs[t].root.as_mut().ok_or_else(|| not_found(format!("tab \"{tab}\" is empty")))?;
+        for &i in path {
+            node = match node {
+                Node::Split(split) if i < split.kids.len() => &mut split.kids[i].node,
+                _ => return Err(bad_request("no split at that path")),
+            };
+        }
+        let Node::Split(split) = node else { return Err(bad_request("no split at that path")) };
+        if index + 1 >= split.kids.len() {
+            return Err(bad_request("no divider at that index"));
+        }
+        let pair = split.kids[index].size + split.kids[index + 1].size;
+        if !(share > 0.0 && share < pair) {
+            return Err(bad_request("the share must leave both panes some space"));
+        }
+        split.kids[index].size = share;
+        split.kids[index + 1].size = pair - share;
+        Ok(())
+    }
+
     fn resize(&mut self, args: &Value, panes: &Panes) -> Result<Map, KmuxError> {
+        if let Some(tab) = string(args, "tab") {
+            let path: Vec<usize> = args.get("path").and_then(Value::as_array).map_or(vec![], |p| p.iter().filter_map(Value::as_u64).map(|i| i as usize).collect());
+            let index = args.get("index").and_then(Value::as_u64).ok_or_else(|| bad_request("a divider needs its index"))? as usize;
+            let share = args.get("share").and_then(Value::as_f64).ok_or_else(|| bad_request("a divider needs a share"))?;
+            self.set_divider(tab, &path, index, share)?;
+            return Ok(reply([("tab", tab.into())]));
+        }
         let pane = panes.need(string(args, "pane"))?;
         let size = fraction(args.get("size").unwrap_or(&Value::Null))?;
         if !(size > 0.0 && size < 1.0) {
@@ -1208,7 +1197,7 @@ impl LayoutHost for Model {
         let axis = |model: &Model, target: &str| match at.split {
             SplitSide::Right => Axis::Row,
             SplitSide::Down => Axis::Column,
-            SplitSide::Auto if (model.pane_is_wide)(target) => Axis::Row,
+            SplitSide::Auto if model.wide(h, t, target) => Axis::Row,
             SplitSide::Auto => Axis::Column,
         };
         match wide {

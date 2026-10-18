@@ -1,7 +1,7 @@
 use crate::error::KmuxError;
 use crate::json::{num, opt, string, trim, Map, Value};
 use crate::layout::{Edge, SavedLayout};
-use crate::model::{normalize, pane_ids, reply, Axis, Child, Dock, Frame, Model, Node, Split, Tab, Tabs, Window, DOCK_WIDTH};
+use crate::model::{normalize, pane_ids, reply, Axis, Child, Dock, Model, Node, Split, Tab, Tabs, Window, DOCK_WIDTH};
 use crate::state::{bad, number_in, quoted, whole};
 use crate::workspace::{Where, Workspace};
 use std::collections::HashSet;
@@ -52,9 +52,6 @@ fn dock_json(dock: &Dock) -> Value {
 fn window_json(window: &Window, tabs: &Tabs) -> Map {
     let mut out = reply([("id", window.id.clone().into())]);
     put_tabs(&mut out, tabs);
-    if let Some(f) = window.frame {
-        out.insert("frame".into(), Value::Object(reply([("x", num(f.x)), ("y", num(f.y)), ("w", num(f.w)), ("h", num(f.h))])));
-    }
     if window.desk {
         out.insert("desk".into(), Value::Bool(true));
     }
@@ -235,14 +232,6 @@ impl Reader<'_> {
         }
         self.counters.1 = self.counters.1.max(n);
         let mut window = Window::new(id.into());
-        if let Some(f) = item.get("frame") {
-            let get = |k: &str| f.get(k).and_then(Value::as_f64);
-            if let (Some(x), Some(y), Some(w), Some(h)) = (get("x"), get("y"), get("w"), get("h")) {
-                if [x, y, w, h].iter().all(|v| v.is_finite()) && w > 0.0 && h > 0.0 {
-                    window.frame = Some(Frame { x, y, w, h });
-                }
-            }
-        }
         window.tabs = self.tabs(item)?;
         let dock = self.side(item, "dock", id, "docks")?;
         let lead_key = if item.get("lead").is_some() { "lead" } else { "planner" };

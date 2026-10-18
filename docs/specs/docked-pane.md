@@ -38,7 +38,7 @@ The right side needs nothing new: the window's own tabs already are a group of t
 
 - **One per window**, on the left edge (the default) or the right.
 - **Any pane kind:** terminal, web, markdown or iOS. It's an ordinary pane with its ID and name, so `send`, `read`, `navigate` and `restart` work on it unchanged.
-- **Width** is a fraction of the window, dragged at its divider and saved with the window. Default 2/5.
+- **Width** is a fraction of the window. Default 2/5. `resize` sets it in the layout; dragging its divider sets it in that app only, until the layout's width changes ([windows](windows.md#2-what-the-app-keeps)).
 - **Always shown:** switching tabs leaves it alone. The tab bar spans only the tabs' side.
 - **It closes only with its window.** Close Pane (⌘W) and `kanna close` don't close it: ⌘W in the docked pane does nothing, and `kanna close` on it fails with `docked: it closes with its window`. If its program exits, it stays on screen as `exited`, and `kanna restart` starts it again. Closing the window's last tab leaves the window with just its docked pane.
 - **Stays with its window:** moving or dragging a tab to another window leaves the docked pane where it is.
@@ -77,7 +77,7 @@ The right side needs nothing new: the window's own tabs already are a group of t
 |---|---|
 | `open --dock` | `place {pane, at: {dock, frozen?, window?}}`, answered `{window, tab: null, dock}` |
 | dock, change edge, undock (`move`) | `command move`, kmux's arguments |
-| set the width (`resize`, the divider) | `command resize` |
+| set the width (`resize`) | `command resize`; the divider is the app's own |
 | refuse `close` on it | `location {pane}` first, which answers `dock` for a docked pane |
 | close it with its window | `panes-in {window}` lists it |
 

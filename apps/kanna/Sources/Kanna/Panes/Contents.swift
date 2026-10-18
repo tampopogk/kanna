@@ -45,9 +45,8 @@ final class Contents {
     var contextMenu: (() -> NSMenu?)?
     var agentStatus: ((String) -> String?)?
     private var markdownSpots: [String: [String: (y: CGFloat, zoom: CGFloat)]] = [:]
-    private var markdownZoom: [String: CGFloat] = [:]
-    private var codeZoom: [String: CGFloat] = [:]
-    private var diffZoom: [String: CGFloat] = [:]
+    var textSize: ((String) -> CGFloat?)?
+    var onTextSize: ((String, CGFloat) -> Void)?
     private var diffSources: [String: (path: String, args: [String])] = [:]
     private var diffContents: [String: String] = [:]
     private var diffLatest: [String: JSON] = [:]
@@ -114,12 +113,12 @@ final class Contents {
                 failure = directory.boolValue ? "\(path) is a folder, not a markdown file" : "No such file: \(path)"
             } else {
                 let spot = markdownSpots[id]?[path]
-                let markdown = MarkdownPaneView(path: path, zoom: spot?.zoom ?? markdownZoom[id] ?? pane["zoom"]?.number.map { CGFloat($0) } ?? 1, markup: pane["markup"]?.bool == true)
+                let markdown = MarkdownPaneView(path: path, zoom: spot?.zoom ?? textSize?(id) ?? 1, markup: pane["markup"]?.bool == true)
                 markdown.startScrollY = spot?.y
                 markdown.onHistory = { [weak self] back in self?.onRequest?("navigate", ["pane": .string(id), back ? "back" : "forward": true]) }
                 markdown.onZoom = { [weak self, weak markdown] in
                     guard let markdown else { return }
-                    self?.onUpdate?(id, ["zoom": .number(Double(markdown.zoom))])
+                    self?.onTextSize?(id, markdown.zoom)
                 }
                 markdown.onFocus = { [weak self] in self?.onFocus?(id) }
                 markdown.agent = pane["agent"]?.string
@@ -135,11 +134,10 @@ final class Contents {
             let comment = note?["path"]?.string == path ? note.flatMap { note in
                 note["first"]?.number.map { CodeComment(first: Int($0), last: Int(note["last"]?.number ?? $0), text: note["text"]?.string ?? "") }
             } : nil
-            let code = CodePaneView(path: Self.absolute(path), line: pane["line"]?.number.map { Int($0) }, zoom: codeZoom[id] ?? pane["zoom"]?.number.map { CGFloat($0) } ?? 1, comment: comment)
+            let code = CodePaneView(path: Self.absolute(path), line: pane["line"]?.number.map { Int($0) }, zoom: textSize?(id) ?? 1, comment: comment)
             code.onZoom = { [weak self, weak code] in
                 guard let code else { return }
-                self?.codeZoom[id] = code.zoom
-                self?.onUpdate?(id, ["zoom": .number(Double(code.zoom))])
+                self?.onTextSize?(id, code.zoom)
             }
             code.onHistory = { [weak self] back in self?.onRequest?("navigate", ["pane": .string(id), back ? "back" : "forward": true]) }
             code.onFocus = { [weak self] in self?.onFocus?(id) }
@@ -147,13 +145,12 @@ final class Contents {
             failure = code.failure?.message
             content = code
         case "diff":
-            let diff = DiffPaneView(view: pane["view"]?.string, zoom: diffZoom[id] ?? pane["zoom"]?.number.map { CGFloat($0) } ?? 1)
+            let diff = DiffPaneView(view: pane["view"]?.string, zoom: textSize?(id) ?? 1)
             diff.onFocus = { [weak self] in self?.onFocus?(id) }
             diff.contextMenu = { [weak self] in self?.contextMenu?() }
             diff.onZoom = { [weak self, weak diff] in
                 guard let diff else { return }
-                self?.diffZoom[id] = diff.zoom
-                self?.onUpdate?(id, ["zoom": .number(Double(diff.zoom))])
+                self?.onTextSize?(id, diff.zoom)
             }
             diff.onView = { [weak self] view in self?.onUpdate?(id, ["view": .string(view)]) }
             diff.onOpen = { [weak self] path, line in
@@ -237,7 +234,6 @@ final class Contents {
         }
         if let markdown = content as? MarkdownPaneView {
             markdown.stop()
-            markdownZoom[id] = markdown.zoom
             markdownSpots[id, default: [:]][markdown.path] = (markdown.scrollTop, markdown.zoom)
         }
         slot.content = nil
@@ -249,9 +245,6 @@ final class Contents {
         stop(id)
         slots.removeValue(forKey: id)?.removeFromSuperview()
         markdownSpots.removeValue(forKey: id)
-        markdownZoom.removeValue(forKey: id)
-        codeZoom.removeValue(forKey: id)
-        diffZoom.removeValue(forKey: id)
     }
 
     func subscribeDiffs() {
