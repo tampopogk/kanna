@@ -6,4 +6,5 @@ license = "MIT"
 description = "Client for the kmux control protocol, used by the kanna CLI. From kmux's kmux-client (MIT)."
 
 [dependencies]
+libc = "0.2"
 serde_json = "1"

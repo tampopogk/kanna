@@ -6,6 +6,17 @@ use std::process::Command;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+#[cfg(target_vendor = "apple")]
+fn no_sigpipe(stream: &UnixStream) {
+    let on: libc::c_int = 1;
+    unsafe {
+        libc::setsockopt(std::os::fd::AsRawFd::as_raw_fd(stream), libc::SOL_SOCKET, libc::SO_NOSIGPIPE, &on as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+    }
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn no_sigpipe(_: &UnixStream) {}
+
 pub struct Kmux {
     reader: BufReader<UnixStream>,
     writer: UnixStream,
@@ -148,6 +159,7 @@ impl Kmux {
     }
 
     fn from_stream(stream: UnixStream) -> Result<Kmux, Error> {
+        no_sigpipe(&stream);
         let writer = stream.try_clone().map_err(|e| Error::Unreachable(e.to_string()))?;
         Ok(Kmux { reader: BufReader::new(stream), writer, next_id: 1 })
     }

@@ -144,3 +144,16 @@ fn with_nothing_running_kanna_starts_the_app_and_says_so_when_it_cant() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn output_into_a_closed_pipe_ends_quietly_as_a_unix_tool_does() {
+    use std::os::unix::process::ExitStatusExt;
+    let dir = folder("pipe");
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let output = kanna(&dir, &["help"]).stdout(writer).output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.signal(), Some(libc::SIGPIPE), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
