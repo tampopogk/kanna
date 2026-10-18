@@ -457,10 +457,13 @@ struct Starting {
 }
 
 struct Quitting {
-    why: &'static str,
+    agent: String,
     by: Instant,
     quit: Option<Quit>,
     hung_up: bool,
+    keys: Vec<String>,
+    next: Option<Instant>,
+    then: Vec<Box<dyn FnOnce(Option<String>)>>,
 }
 
 #[derive(Clone, Debug)]
@@ -481,6 +484,8 @@ struct TearingDown {
 const SETUP_EVERY: Duration = Duration::from_secs(1);
 
 const QUIT_WAIT: Duration = Duration::from_secs(5);
+
+const KEY_WAIT: Duration = Duration::from_millis(500);
 
 const FILL_EVERY: Duration = Duration::from_secs(2);
 
@@ -901,13 +906,17 @@ impl Backlog {
                 }
             }
         }
-        let late: Vec<String> = self.quitting.borrow_mut().iter_mut().filter(|(_, q)| q.by <= now && !q.hung_up).map(|(pane, q)| {
+        let late: Vec<(String, String)> = self.quitting.borrow_mut().iter_mut().filter(|(_, q)| q.by <= now && !q.hung_up).map(|(pane, q)| {
             q.hung_up = true;
-            pane.clone()
+            (pane.clone(), q.agent.clone())
         }).collect();
-        for pane in late {
-            eprintln!("kanna-daemon: {pane} didn't quit in {}s, so its terminal is hung up", QUIT_WAIT.as_secs());
+        for (pane, agent) in late {
+            eprintln!("kanna-daemon: {agent} in {pane} didn't quit in {}s, so it's hung up", QUIT_WAIT.as_secs());
             core.end(&pane, |_| {});
+        }
+        let pressing: Vec<String> = self.quitting.borrow().iter().filter(|(_, q)| !q.hung_up && q.next.is_some_and(|at| at <= now)).map(|(pane, _)| pane.clone()).collect();
+        for pane in pressing {
+            self.press(&pane);
         }
         let settled: Vec<(String, SettingUp)> = self.setting_up.borrow().iter().filter(|(_, s)| task_scripts::setup(&s.worktree).is_some()).map(|(p, s)| (p.clone(), s.clone())).collect();
         for (pane, setting) in settled {
@@ -927,52 +936,104 @@ impl Backlog {
             self.fill(&core);
         }
         let turns = self.turns.borrow().values().filter_map(|t| t.due(TURN_SETTLE)).min();
-        let quits = self.quitting.borrow().values().filter(|q| !q.hung_up).map(|q| q.by).min();
+        let quits = self.quitting.borrow().values().filter(|q| !q.hung_up).flat_map(|q| [Some(q.by), q.next]).flatten().min();
         let setups = (!self.setting_up.borrow().is_empty()).then(|| now + SETUP_EVERY);
         [turns, quits, setups, self.fill_at.get()].into_iter().flatten().min()
     }
 
     fn quit(self: &Rc<Self>, pane: &str, entry: &Entry, why: Status) {
-        self.turns.borrow_mut().remove(pane);
         let Some(core) = self.core.upgrade() else { return };
-        let quit = kanna_detect::program::known_agent(program(&entry.agent)).and_then(Quit::of);
         let why = if why == Status::NeedsYou { "needs-you" } else { "finished" };
         eprintln!("kanna-daemon: {}'s agent {pane} is {why}, so it stops", entry.id);
-        let keys = quit.as_ref().map_or(vec![], |q| q.keys.clone());
-        self.quitting.borrow_mut().insert(pane.to_string(), Quitting { why, by: Instant::now() + QUIT_WAIT, quit, hung_up: keys.is_empty() });
-        let (weak, pane) = (core.weak(), pane.to_string());
-        core.hang_up(&pane.clone(), move |_| {
-            let Some(core) = weak.upgrade() else { return };
-            if keys.is_empty() {
-                return core.end(&pane, |_| {});
+        let (this, id) = (Rc::downgrade(self), pane.to_string());
+        self.end_agent(pane, &entry.agent, move |session| {
+            if let Some(this) = this.upgrade() {
+                this.stopped_by_itself(&id, why, session);
             }
-            let again = core.weak();
-            core.handle(json!({ "cmd": "send-key", "args": { "pane": pane, "keys": keys } }), move |sent| {
-                if let (Some(error), Some(core)) = (failed(&sent), again.upgrade()) {
-                    eprintln!("kanna-daemon: couldn't quit {pane}'s agent ({}), so its terminal is hung up", error.message);
-                    core.end(&pane, |_| {});
-                }
-            });
+        });
+        core.hang_up(pane, |_| {});
+    }
+
+    fn end_agent(self: &Rc<Self>, pane: &str, agent: &str, then: impl FnOnce(Option<String>) + 'static) {
+        let Some(core) = self.core.upgrade().filter(|core| alive(core, pane)) else { return then(None) };
+        if let Some(quitting) = self.quitting.borrow_mut().get_mut(pane) {
+            return quitting.then.push(Box::new(then));
+        }
+        self.turns.borrow_mut().remove(pane);
+        let known = kanna_detect::program::known_agent(program(agent));
+        let quit = known.and_then(Quit::of);
+        let keys = quit.as_ref().map_or(vec![], |q| q.keys.clone());
+        let agent = known.unwrap_or(program(agent)).to_string();
+        let none = keys.is_empty();
+        self.quitting.borrow_mut().insert(pane.to_string(), Quitting { agent: agent.clone(), by: Instant::now() + QUIT_WAIT, quit, hung_up: none, keys, next: None, then: vec![Box::new(then)] });
+        if none {
+            eprintln!("kanna-daemon: {agent} in {pane} has no quit keys, so it's hung up");
+            return core.end(pane, |_| {});
+        }
+        self.press(pane);
+    }
+
+    fn press(&self, pane: &str) {
+        let Some(core) = self.core.upgrade() else { return };
+        let (key, agent) = {
+            let mut quitting = self.quitting.borrow_mut();
+            let Some(q) = quitting.get_mut(pane) else { return };
+            if q.keys.is_empty() {
+                q.next = None;
+                return;
+            }
+            let key = q.keys.remove(0);
+            q.next = (!q.keys.is_empty()).then(|| Instant::now() + KEY_WAIT);
+            (key, q.agent.clone())
+        };
+        let (weak, pane) = (core.weak(), pane.to_string());
+        core.handle(json!({ "cmd": "send-key", "args": { "pane": pane, "keys": [key] } }), move |sent| {
+            let (Some(error), Some(core)) = (failed(&sent), weak.upgrade()) else { return };
+            if alive(&core, &pane) {
+                eprintln!("kanna-daemon: couldn't type {agent}'s quit keys in {pane} ({}), so it's hung up", error.message);
+                core.end(&pane, |_| {});
+            }
         });
     }
 
     fn quitted(self: &Rc<Self>, pane: &str, quitting: Quitting) {
         let Some(core) = self.core.upgrade() else { return };
-        let this = Rc::downgrade(self);
-        let id = pane.to_string();
         core.handle(json!({ "cmd": "read", "args": { "pane": pane } }), move |reply| {
-            let Some(this) = this.upgrade() else { return };
             let text = string(&reply, "text").unwrap_or_default();
             let session = quitting.quit.as_ref().and_then(|q| q.session_in(text));
-            this.stopped_by_itself(&id, quitting.why, session);
+            for then in quitting.then {
+                then(session.clone());
+            }
         });
+    }
+
+    fn pane_entry(&self, pane: &str) -> Option<Entry> {
+        let waiting = self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).cloned();
+        waiting.or_else(|| self.running.borrow().iter().find(|r| r.pane == pane).map(|r| r.entry.clone()))
+    }
+
+    fn keep_session(&self, pane: &str, session: Option<String>) {
+        let Some(session) = session else { return };
+        let waiting = self.entries.borrow_mut().iter_mut().find(|e| e.held.as_deref() == Some(pane)).map(|e| {
+            e.session.get_or_insert_with(|| session.clone());
+            (e.clone(), Place::Backlog)
+        });
+        let found = waiting.or_else(|| {
+            self.running.borrow_mut().iter_mut().find(|r| r.pane == pane).map(|r| {
+                r.entry.session.get_or_insert_with(|| session.clone());
+                (r.entry.clone(), r.place)
+            })
+        });
+        if let Some((entry, place)) = found {
+            let _ = self.store(&entry, place, Some(pane), None);
+        }
     }
 
     fn stopped_by_itself(&self, pane: &str, why: &str, session: Option<String>) {
         let Some(mut entry) = self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).cloned() else { return };
         entry.stopped = Some(why.to_string());
-        if session.is_some() {
-            entry.session = session.clone();
+        if entry.session.is_none() {
+            entry.session = session;
         }
         let change = Change::new("stopped").by(Some("daemon")).with("why", json!(why)).with("session", opt(entry.session.as_deref()));
         let _ = self.store(&entry, Place::Backlog, Some(pane), Some(change));
@@ -1246,6 +1307,17 @@ impl Backlog {
             if pane.as_ref().is_some_and(|pane| self.tearing_down.borrow().contains_key(pane)) {
                 return responder.reply(Err(KmuxError::new("tearing_down", format!("{}'s teardown is running: it's done when that succeeds", self.short(&entry.id)))));
             }
+        }
+        if let Some(pane) = pane.clone().filter(|pane| alive(&core, pane)) {
+            let agent = entry.as_ref().map_or_else(|| core.pane(&pane).and_then(|p| p.command).unwrap_or_default(), |e| e.agent.clone());
+            let (this, args) = (Rc::downgrade(self), args.clone());
+            return self.end_agent(&pane.clone(), &agent, move |session| {
+                let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
+                this.keep_session(&pane, session);
+                this.done(&args, responder)
+            });
+        }
+        if let Some(entry) = &entry {
             if args.get("keep").and_then(Value::as_bool) == Some(true) {
                 self.keeping.borrow_mut().insert(entry.id.clone());
             } else if let Some(pane) = &pane {
@@ -1457,27 +1529,16 @@ impl Backlog {
             if !alive(&core, &pane) {
                 return responder.reply(Err(KmuxError::new("stopped", format!("{task} is stopped: start it with `kanna task start {task}`"))));
             }
-            let weak = core.weak();
-            let backlog = Rc::downgrade(&this);
-            this.turns.borrow_mut().remove(&pane);
-            this.stopping.borrow_mut().insert(pane.clone());
-            core.hang_up(&pane.clone(), move |hung_up| {
-                let forget = |backlog: &std::rc::Weak<Backlog>, pane: &str| backlog.upgrade().map(|b| b.stopping.borrow_mut().remove(pane));
-                if let Err(error) = hung_up {
-                    forget(&backlog, &pane);
-                    return responder.reply(Err(error));
-                }
-                let Some(core) = weak.upgrade() else { return responder.reply(Err(gone())) };
+            let (weak, backlog) = (core.weak(), Rc::downgrade(&this));
+            let agent = this.pane_entry(&pane).map_or_else(|| core.pane(&pane).and_then(|p| p.command).unwrap_or_default(), |e| e.agent);
+            this.end_agent(&pane.clone(), &agent, move |session| {
+                let (Some(backlog), Some(core)) = (backlog.upgrade(), weak.upgrade()) else { return responder.reply(Err(gone())) };
+                backlog.keep_session(&pane, session);
+                let session = backlog.pane_entry(&pane).and_then(|e| e.session);
+                backlog.note(&pane, Change::new("stopped").by(by.as_deref()).with("session", opt(session.as_deref())));
+                backlog.refill();
                 let out = Map::from_iter([("task".to_string(), json!(task)), ("pane".to_string(), json!(pane)), ("place".to_string(), json!(place))]);
-                core.end(&pane.clone(), move |ended| {
-                    match (&ended, backlog.upgrade()) {
-                        (Ok(_), Some(backlog)) => backlog.note(&pane, Change::new("stopped").by(by.as_deref())),
-                        _ => {
-                            forget(&backlog, &pane);
-                        }
-                    }
-                    responder.reply(ended.map(|_| out))
-                });
+                core.hang_up(&pane.clone(), move |hung_up| responder.reply(hung_up.map(|_| out)));
             });
         };
         if let Some(entry) = found {
@@ -2569,5 +2630,196 @@ mod tests {
         let (other, _) = make_worktree(&dir, "task-00c0ffee").unwrap();
         assert_ne!(other, folder);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[derive(Default)]
+    struct Agents {
+        core: RefCell<Option<WeakCore>>,
+        backlog: RefCell<Weak<Backlog>>,
+        deaf: Cell<bool>,
+        typed: RefCell<Vec<String>>,
+        hung_up: RefCell<Vec<String>>,
+        screens: RefCell<HashMap<String, String>>,
+    }
+
+    const SAID: &str = "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b";
+
+    impl Agents {
+        fn exit(&self, pane: &Pane) {
+            let (Some(core), backlog, id) = (self.core.borrow().as_ref().and_then(WeakCore::upgrade), self.backlog.borrow().clone(), pane.id.clone()) else { return };
+            core.clone().later(move || {
+                core.update(&id, PaneState::Exited, Some(0), None);
+                if let Some(backlog) = backlog.upgrade() {
+                    backlog.exited(&id, 0);
+                }
+            });
+        }
+    }
+
+    impl kanna_mux::PaneHost for Agents {
+        fn start(&self, pane: &Pane) {
+            let Some(core) = self.core.borrow().as_ref().and_then(WeakCore::upgrade) else { return };
+            let (id, reporter) = (pane.id.clone(), core.clone());
+            core.later(move || reporter.update(&id, PaneState::Running, None, None));
+        }
+        fn stop(&self, _: &Pane) {}
+        fn send(&self, _: &Pane, _: &str, done: Responder) {
+            done.reply(Ok(Map::new()));
+        }
+        fn send_keys(&self, pane: &Pane, keys: Vec<String>, done: Responder) {
+            self.typed.borrow_mut().push(format!("{}: {}", pane.id, keys.join(" ")));
+            done.reply(Ok(Map::new()));
+            let program = program(pane.command.as_deref().unwrap_or_default()).to_string();
+            let presses = self.typed.borrow().iter().filter(|k| k.starts_with(&format!("{}: ", pane.id))).count();
+            if !self.deaf.get() && presses == if program == "claude" { 2 } else { 1 } {
+                let line = if program == "claude" { format!("Resume this session with:\nclaude --resume {SAID}\n") } else { format!("To continue this session, run: {program} resume {SAID}\n") };
+                self.screens.borrow_mut().insert(pane.id.clone(), line);
+                self.exit(pane);
+            }
+        }
+        fn end(&self, pane: &Pane) {
+            self.hung_up.borrow_mut().push(pane.id.clone());
+            self.exit(pane);
+        }
+        fn read(&self, pane: &Pane, _: Option<usize>) -> Result<String, KmuxError> {
+            Ok(self.screens.borrow().get(&pane.id).cloned().unwrap_or_default())
+        }
+    }
+
+    struct Stopping {
+        state: PathBuf,
+        core: kanna_mux::Core,
+        agents: Rc<Agents>,
+        backlog: Rc<Backlog>,
+    }
+
+    impl Drop for Stopping {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.state);
+        }
+    }
+
+    impl Stopping {
+        fn new(name: &str) -> Stopping {
+            let state = std::env::temp_dir().join(format!("kanna-quit-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&state);
+            fs::create_dir_all(&state).unwrap();
+            let core = kanna_mux::Core::default();
+            let agents = Rc::new(Agents::default());
+            *agents.core.borrow_mut() = Some(core.weak());
+            core.set_host(Some(agents.clone()));
+            let backlog = Rc::new(Backlog::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0));
+            *agents.backlog.borrow_mut() = Rc::downgrade(&backlog);
+            Stopping { state, core, agents, backlog }
+        }
+
+        fn agent(&self, agent: &str, place: Place) -> (String, Entry) {
+            self.agent_with(agent, place, Some("given"))
+        }
+
+        fn agent_with(&self, agent: &str, place: Place, session: Option<&str>) -> (String, Entry) {
+            let opened = self.core.handle_blocking(json!({ "cmd": "open", "args": { "type": "term", "cmd": agent, "dock": "left", "window": "new" } }));
+            let pane = opened["pane"]["id"].as_str().unwrap_or_else(|| panic!("{opened}")).to_string();
+            self.settle(|| alive(&self.core, &pane));
+            let entry = Entry { id: "task-1dfb12c2".into(), repo: "/r".into(), agent: agent.into(), session: session.map(String::from), folder: Some("/r".into()), ..Default::default() };
+            match place {
+                Place::Backlog => self.backlog.entries.borrow_mut().push(Entry { held: Some(pane.clone()), ..entry.clone() }),
+                place => self.backlog.running.borrow_mut().push(Running { pane: pane.clone(), entry: entry.clone(), place }),
+            }
+            (pane, entry)
+        }
+
+        fn settle(&self, done: impl Fn() -> bool) {
+            let by = Instant::now() + Duration::from_secs(5);
+            while !done() {
+                assert!(Instant::now() < by, "it didn't happen");
+                self.core.poll();
+                self.backlog.tick();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        fn answer(&self, ask: impl FnOnce(&Rc<Backlog>, Responder)) -> Result<Map, KmuxError> {
+            let (responder, reply) = kanna_mux::responder();
+            ask(&self.backlog, responder);
+            let mut reply = Box::pin(reply);
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            let by = Instant::now() + Duration::from_secs(5);
+            loop {
+                if let std::task::Poll::Ready(answer) = reply.as_mut().poll(&mut cx) {
+                    return answer;
+                }
+                assert!(Instant::now() < by, "no answer");
+                self.core.poll();
+                self.backlog.tick();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        fn session(&self, pane: &str) -> Option<String> {
+            self.backlog.pane_entry(pane).and_then(|e| e.session)
+        }
+    }
+
+    use std::future::Future;
+
+    #[test]
+    fn a_turn_s_end_quits_the_agent_with_its_keys_and_keeps_the_session_it_says() {
+        let t = Stopping::new("turn");
+        let (pane, entry) = t.agent("claude", Place::Backlog);
+        t.backlog.quit(&pane, &entry, Status::NeedsYou);
+        t.settle(|| t.backlog.pane_entry(&pane).and_then(|e| e.stopped).is_some());
+        assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: ctrl+c"), format!("{pane}: ctrl+c")], "claude asks for a second ctrl+c");
+        assert!(t.agents.hung_up.borrow().is_empty(), "claude quit, so it isn't hung up");
+        assert_eq!(t.backlog.pane_entry(&pane).and_then(|e| e.stopped).as_deref(), Some("needs-you"));
+        assert_eq!(t.session(&pane).as_deref(), Some("given"), "the session Kanna gave claude stays its own");
+    }
+
+    #[test]
+    fn kanna_task_stop_quits_the_agent_with_its_keys_and_keeps_the_session_it_says() {
+        let t = Stopping::new("stop");
+        let (pane, entry) = t.agent_with("codex", Place::Shelf, None);
+        let stopped = t.answer(|backlog, responder| backlog.stop(&json!({ "task": entry.id }), responder)).unwrap();
+        assert_eq!(stopped["place"], "shelf");
+        assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: ctrl+c")], "codex quit on the first, so it isn't typed the second");
+        assert!(t.agents.hung_up.borrow().is_empty(), "codex quit, so it isn't hung up");
+        assert!(!alive(&t.core, &pane));
+        assert_eq!(t.session(&pane).as_deref(), Some(SAID), "codex takes no ID, so the one it said is kept");
+        assert_eq!(Backlog::open(t.backlog.db.clone(), &t.state, t.core.weak(), std::sync::mpsc::channel().0).running.borrow()[0].entry.session.as_deref(), Some(SAID), "the session is saved");
+    }
+
+    #[test]
+    fn done_quits_the_agent_with_its_keys_before_it_ends_the_task() {
+        let t = Stopping::new("done");
+        let (pane, entry) = t.agent("claude", Place::Backlog);
+        t.answer(|backlog, responder| backlog.done(&json!({ "task": entry.id }), responder)).unwrap();
+        assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: ctrl+c"), format!("{pane}: ctrl+c")], "claude asks for a second ctrl+c");
+        assert!(t.agents.hung_up.borrow().is_empty(), "claude quit, so it isn't hung up");
+        assert!(t.backlog.entries.borrow().is_empty(), "it's done");
+    }
+
+    #[test]
+    fn an_agent_without_quit_keys_is_hung_up() {
+        let t = Stopping::new("nokeys");
+        let (pane, entry) = t.agent("mock-agent", Place::Desk);
+        t.answer(|backlog, responder| backlog.stop(&json!({ "task": entry.id }), responder)).unwrap();
+        assert!(t.agents.typed.borrow().is_empty());
+        assert_eq!(*t.agents.hung_up.borrow(), [pane.as_str()]);
+        assert_eq!(t.session(&pane).as_deref(), Some("given"), "with nothing said, the session it had is kept");
+    }
+
+    #[test]
+    fn an_agent_still_running_after_its_quit_keys_is_hung_up() {
+        let t = Stopping::new("deaf");
+        t.agents.deaf.set(true);
+        let (pane, entry) = t.agent("claude", Place::Backlog);
+        t.backlog.quit(&pane, &entry, Status::Idle);
+        t.settle(|| t.agents.typed.borrow().len() == 2);
+        assert!(t.agents.hung_up.borrow().is_empty(), "it has 5s to quit");
+        t.backlog.quitting.borrow_mut().get_mut(&pane).unwrap().by = Instant::now();
+        t.backlog.tick();
+        t.settle(|| t.backlog.pane_entry(&pane).and_then(|e| e.stopped).is_some());
+        assert_eq!(*t.agents.hung_up.borrow(), [pane.as_str()]);
+        assert_eq!(t.session(&pane).as_deref(), Some("given"));
     }
 }
