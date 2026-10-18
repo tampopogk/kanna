@@ -6,6 +6,7 @@ final class DaemonLink: TerminalLink {
     private let commands: Commands
     private var terminals: [String: ExternalTerminal] = [:]
     private var sizes: [String: JSON] = [:]
+    private var exited: Set<String> = []
     private(set) var attached = false
     var onAttach: ((JSON) -> Void)?
     var onLayout: ((JSON) -> JSON)?
@@ -15,6 +16,7 @@ final class DaemonLink: TerminalLink {
     var onPane: ((JSON) -> Void)?
     var onExited: ((String, Int32) -> Void)?
     var onSnapshot: ((String) -> Void)?
+    var onRestart: ((String) -> Bool)?
     var onStatus: ((String, String?) -> Void)?
     var onFolder: ((String, String) -> Void)?
     var onBacklog: (([JSON]) -> Void)?
@@ -51,6 +53,7 @@ final class DaemonLink: TerminalLink {
     private func connected() {
         starter?.connected()
         if let settings = GhosttyRuntime.shared?.settings { send("settings", settings.objectFields) }
+        exited.removeAll()
         for pane in terminals.keys.sorted() {
             send("attach", ["pane": .string(pane)])
             if case .object(let size)? = sizes[pane] { send("resize", size) }
@@ -118,6 +121,7 @@ final class DaemonLink: TerminalLink {
                 terminal.output(data) { connection.consumed(delivery) }
             }
         case "snapshot":
+            if let pane = args["pane"]?.string, exited.remove(pane) != nil, onRestart?(pane) == true { return }
             if let pane = args["pane"]?.string { onSnapshot?(pane) }
             if let terminal, let data = args["data"]?.string.flatMap({ Data(base64Encoded: $0) }) {
                 consumed = false
@@ -130,7 +134,10 @@ final class DaemonLink: TerminalLink {
         case "exited":
             if let code = args["code"]?.number.flatMap({ Int32(exactly: $0) }) {
                 terminal?.exited(status: code)
-                if let pane = args["pane"]?.string { onExited?(pane, code) }
+                if let pane = args["pane"]?.string {
+                    if terminal != nil { exited.insert(pane) }
+                    onExited?(pane, code)
+                }
             }
         case "status":
             if let pane = args["pane"]?.string { onStatus?(pane, args["status"]?.string) }
@@ -184,6 +191,7 @@ final class DaemonLink: TerminalLink {
     func closed(_ terminal: ExternalTerminal) {
         terminals.removeValue(forKey: terminal.pane.id)
         sizes.removeValue(forKey: terminal.pane.id)
+        exited.remove(terminal.pane.id)
         send("detach", ["pane": .string(terminal.pane.id)])
     }
 }

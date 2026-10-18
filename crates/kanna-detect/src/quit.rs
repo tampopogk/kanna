@@ -61,8 +61,27 @@ mod tests {
         assert_eq!(codex.session_in("To continue this session, run:\ncodex resume 019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b").as_deref(), Some("019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b"));
         assert_eq!(codex.session_in("run: codex resume 019a2b3c-4d5e-7f60-8a9b-0c\n1d2e3f4a5b\n").as_deref(), Some("019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b"), "wrapped in a narrow pane");
         assert_eq!(codex.session_in("You can resume a previous conversation by running `codex resume`"), None);
-        assert!(Quit::of("claude").unwrap().session.is_none(), "claude's session is Kanna's from the start");
         assert!(Quit::of("aider").is_none());
         assert!(Quit::parse(r#"{"agent": "x", "keys": [], "session": "no group"}"#).is_err());
+    }
+
+    #[test]
+    fn every_agent_quits_with_its_keys_and_says_its_session() {
+        let id = "11111111-2222-4333-8444-555555555555";
+        let said = [
+            ("claude", format!("Press Ctrl-C again to exit\nResume this session with:\nclaude --resume {id}\n")),
+            ("copilot", format!(" ▔▔▔▔    Resume     copilot --resume={id}\n")),
+            ("antigravity", format!("Resume with -c (or command below):\nagy --conversation={id}\n")),
+        ];
+        for (agent, screen) in said {
+            let quit = Quit::of(agent).unwrap();
+            assert_eq!(quit.keys, ["ctrl+c", "ctrl+c"], "{agent}");
+            assert_eq!(quit.session_in(&screen).as_deref(), Some(id), "{agent}");
+            assert_eq!(quit.session_in("Press Ctrl-C again to exit"), None, "{agent}");
+        }
+        assert_eq!(Quit::of("codex").unwrap().keys, ["ctrl+c", "ctrl+c"]);
+        let opencode = Quit::of("opencode").unwrap();
+        assert_eq!(opencode.keys, ["ctrl+c", "ctrl+c"]);
+        assert!(opencode.session.is_none(), "opencode's session is found in its database");
     }
 }

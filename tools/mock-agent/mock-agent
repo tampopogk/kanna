@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import select
+import signal
 import subprocess
 import sys
 import termios
@@ -88,8 +89,9 @@ def ask():
 
 
 def session(args):
-    if "resume" in args[:-1]:
-        return args[args.index("resume") + 1], True
+    for flag, resumed in (("resume", True), ("--resume", True), ("--session-id", False)):
+        if flag in args[:-1]:
+            return args[args.index(flag) + 1], resumed
     return str(uuid.uuid4()), False
 
 
@@ -99,7 +101,11 @@ def first(args):
 
 
 def bye(id):
-    out(f"\r\nTo continue this session, run: {PROGRAM} resume {id}\r\n")
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    if PROGRAM == "claude":
+        out(f"\r\nResume this session with:\r\nclaude --resume {id}\r\n")
+    else:
+        out(f"\r\nTo continue this session, run: {PROGRAM} resume {id}\r\n")
 
 
 def main():

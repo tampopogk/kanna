@@ -13,7 +13,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var signalSources: [DispatchSourceSignal] = []
     let background = CommandLine.arguments.contains("--bg") || ProcessInfo.processInfo.environment["KANNA_BG"] == "1"
     private let echo = ProcessInfo.processInfo.environment["KANNA_ECHO"] == "1"
-    let debugCommands = ProcessInfo.processInfo.environment["KANNA_DEBUG"] == "1"
+    static let debugging = ProcessInfo.processInfo.environment["KANNA_DEBUG"] == "1"
+    let debugCommands = AppController.debugging
     private var wantsFirstTerminal = ProcessInfo.processInfo.environment["KANNA_NO_INITIAL_WINDOW"] == nil
     var appLayout: AppLayout?
     private var saveTimer: Timer?
@@ -107,6 +108,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             daemon.onPane = { [weak self] pane in self?.learn(pane) }
             daemon.onExited = { [weak self] pane, code in self?.panes.exited(pane, code: code) }
             daemon.onSnapshot = { [weak self] pane in self?.panes.restarted(pane) }
+            daemon.onRestart = { [weak self] pane in self?.panes.renew(pane) ?? false }
             contents.onUpdate = { [weak self, weak daemon] pane, fields in
                 if fields["state"] != nil { self?.panes.report(pane, state: fields["state"]?.string, error: fields["error"]?.string) }
                 daemon?.update(pane, fields)
