@@ -142,6 +142,16 @@ for arch in "${archs[@]}"; do
     lipo -archs "$binary" | grep -qx "$arch" || fail "$binary isn't $arch only: $(lipo -archs "$binary")"
   done
 
+  step "Strip $arch (dSYMs in ${dist#"$repo_root/"}/dSYMs/$arch)"
+  for binary in "$app/Contents/MacOS/Kanna" "$app"/Contents/Helpers/*; do
+    file -b "$binary" | grep -q Mach-O || continue
+    rel="${binary#"$app/Contents/"}"
+    mkdir -p "$dist/dSYMs/$arch/$(dirname "$rel")"
+    dsymutil "$binary" -o "$dist/dSYMs/$arch/$rel.dSYM"
+    strip -S "$binary" 2>/dev/null
+    [[ "$(dsymutil -s "$binary" | grep -c N_OSO)" == 0 ]] || fail "$binary still has a debug map after strip -S"
+  done
+
   step "Sign $arch"
   while IFS= read -r -d '' helper; do
     file -b "$helper" | grep -q Mach-O || continue

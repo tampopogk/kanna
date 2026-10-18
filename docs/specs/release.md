@@ -7,6 +7,7 @@
 - [The flow](#the-flow)
 - [Preflight](#preflight)
 - [Versions](#versions)
+- [Stripping](#stripping)
 - [Signing and the DMG](#signing-and-the-dmg)
 - [Publishing](#publishing)
 - [The staging channel](#the-staging-channel)
@@ -20,7 +21,8 @@ flowchart TB
     P["Preflight<br/>clean, HEAD on origin/main, Developer ID,<br/>notary credential, gh, claude"] --> V["Version<br/>last v* tag + bump, or VERSION"]
     V --> L{{"for arm64, x86_64"}}
     L --> B["scripts/build.sh production --arch A<br/>KANNA_VERSION=X.Y.Z"]
-    B --> S["Sign Helpers, then the app<br/>Developer ID, hardened runtime, timestamp"]
+    B --> Y["Strip each Mach-O (strip -S)<br/>its dSYM kept in dSYMs/A/"]
+    Y --> S["Sign Helpers, then the app<br/>Developer ID, hardened runtime, timestamp"]
     S --> D["Kanna-X.Y.Z-A.dmg<br/>sign, notarize, staple, verify"]
     D --> L
     D --> N["Release notes<br/>claude --print --model haiku"]
@@ -32,7 +34,7 @@ flowchart TB
 
 - **The build runs in this checkout:** `target/Kanna.app` and `target/x86_64-apple-darwin/Kanna.app` become the production (or staging) apps, replacing the dev builds there.
 - **Nothing is launched:** the script never opens the app it builds, and never touches `/Applications`.
-- **Its output** is `target/release-dmg/vX.Y.Z/`: the DMGs, `notes.md` and `verification.txt`.
+- **Its output** is `target/release-dmg/vX.Y.Z/`: the DMGs, `notes.md`, `verification.txt` and `dSYMs/`.
 
 ## Preflight
 
@@ -68,6 +70,18 @@ flowchart LR
 - **The build number** (`CFBundleVersion`) is `git rev-list --count HEAD`, in every build.
 - **Without `KANNA_VERSION`** a build is the workspace's version, 0.1.0, as before.
 - **Re-running after a failed publish:** if the tag is already on origin at HEAD, release.sh carries on with that tag's release; at another commit it stops.
+
+## Stripping
+
+The workspace's release profile keeps line tables (`debug = "line-tables-only"`, [build speed §3](build-speed.md#3-line-tables-in-release)), so a built binary carries a debug map: a list of the `.o` files under `target/` that hold them, with this Mac's paths. Before signing, the release copies each Mach-O's line tables into a dSYM, then strips the map:
+
+| Step | For each of `Contents/MacOS/Kanna` and `Contents/Helpers/*` |
+|---|---|
+| `dsymutil BINARY -o dSYMs/ARCH/<path in Contents>.dSYM` | file:line for that exact build, kept in `target/release-dmg/vX.Y.Z/`, not in the DMG |
+| `strip -S BINARY` | drops the debug map; the symbol table stays, so crash reports name functions as before |
+| `dsymutil -s` has no `N_OSO` | or the release stops |
+
+A user's crash report symbolicates to file:line with `atos -o dSYMs/ARCH/Helpers/kanna-daemon.dSYM -arch ARCH -l LOAD-ADDRESS ADDRESS`. Before line tables, cargo's release default (`strip = "debuginfo"` when there is no debug info) gave the Rust helpers no debug map and the release stripped nothing itself.
 
 ## Signing and the DMG
 
