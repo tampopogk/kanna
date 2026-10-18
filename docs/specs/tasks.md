@@ -73,7 +73,7 @@ stateDiagram-v2
 
 ## 5. Stop, Done, or back to the backlog
 
-- **Stop ends a task's agent and terminals and leaves it where it is** (`kanna task stop`): on the Shelf, a Desk or in the backlog. Nothing closes: its agent's pane and terminals stay, exited, its other tabs stay with their comments, and the shown tab, focus and zoom stay, as do its worktree and branch. Starting it again (`kanna task start`, or Move to Shelf) runs its agent in that pane, resuming its conversation ([which agents resume](#which-agents-resume)), and reruns the terminals that were running when it stopped. A stopped task still takes its place on the Shelf.
+- **Stop ends a task's agent and terminals and leaves it where it is** (`kanna task stop`): on the Shelf, a Desk or in the backlog. Nothing closes: its agent's pane and terminals stay, exited, its other tabs stay with their comments, and the shown tab, focus and zoom stay, as do its worktree and branch. While it's stopped, a pane keeps its last screen with the exited notice. Starting it again (`kanna task start`, or Move to Shelf) runs its agent in that pane on a new terminal, in the daemon and the app (the old run's scrollback goes, and so do the modes it left on), resuming its conversation ([which agents resume](#which-agents-resume)), and reruns the terminals that were running when it stopped. A stopped task still takes its place on the Shelf.
 - **A task presents its work:** before its turn ends, its agent sets up its tabs to show what it changed and why, and that's what you see when you pull it ([presenting](presenting.md)).
 
 - **Done ends the task:** its agent and tabs close, or it leaves the backlog.
