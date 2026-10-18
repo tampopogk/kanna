@@ -118,6 +118,7 @@ pub struct Pane {
     pub pid: Option<i64>,
     pub status: Option<String>,
     pub hung_up: bool,
+    pub terminal: Option<String>,
 }
 
 impl Pane {
@@ -149,6 +150,7 @@ impl Pane {
             pid: None,
             status: None,
             hung_up: false,
+            terminal: None,
         }
     }
 
@@ -186,6 +188,7 @@ impl Pane {
         out.insert("state".into(), self.state.as_str().into());
         match self.kind {
             PaneType::Term => {
+                out.insert("terminal".into(), opt(self.terminal.as_deref()));
                 out.insert("cmd".into(), opt(self.command.as_deref()));
                 out.insert("cwd".into(), opt(self.cwd.as_deref()));
                 if let Some(pid) = self.pid {
@@ -261,6 +264,12 @@ pub struct Panes {
     panes: HashMap<String, Pane>,
     order: Vec<String>,
     counter: usize,
+    terminals: usize,
+}
+
+pub fn terminal_number(id: &str) -> Option<usize> {
+    let n: usize = id.strip_prefix("term-")?.parse().ok()?;
+    (n > 0 && n < 1_000_000_000 && format!("term-{n}") == id).then_some(n)
 }
 
 impl Panes {
@@ -273,7 +282,7 @@ impl Panes {
     }
 
     pub fn pane(&self, reference: &str) -> Option<&Pane> {
-        self.panes.get(reference).or_else(|| self.iter().find(|p| p.name.as_deref() == Some(reference)))
+        self.panes.get(reference).or_else(|| self.iter().find(|p| p.name.as_deref() == Some(reference) || p.terminal.as_deref() == Some(reference)))
     }
 
     pub fn need(&self, reference: Option<&str>) -> Result<&Pane, KmuxError> {
@@ -318,10 +327,24 @@ impl Panes {
         self.counter
     }
 
-    pub fn install(&mut self, panes: Vec<Pane>, counter: usize) {
+    pub fn terminals(&self) -> usize {
+        self.terminals
+    }
+
+    pub fn new_terminal(&mut self, id: &str) -> Option<String> {
+        let pane = self.panes.get_mut(id).filter(|p| p.kind == PaneType::Term)?;
+        self.terminals += 1;
+        let terminal = format!("term-{}", self.terminals);
+        pane.terminal = Some(terminal.clone());
+        Some(terminal)
+    }
+
+    pub fn install(&mut self, panes: Vec<Pane>, counter: usize, terminals: usize) {
+        let used = panes.iter().filter_map(|p| p.terminal.as_deref().and_then(terminal_number)).max().unwrap_or(0);
         self.order = panes.iter().map(|p| p.id.clone()).collect();
         self.panes = panes.into_iter().map(|p| (p.id.clone(), p)).collect();
         self.counter = self.counter.max(counter);
+        self.terminals = self.terminals.max(terminals).max(used);
     }
 }
 

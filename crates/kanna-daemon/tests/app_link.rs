@@ -17,7 +17,7 @@ fn a_flood_is_held_back_at_the_pty() {
     assert!(alone < 150, "with no app the daemon grew to {alone} MB");
 
     let mut app = instance.app();
-    app.tell("attach", json!({"pane": pane}));
+    app.tell("attach", json!({"terminal": pane}));
     app.until("the view to start", |m| is(m, "snapshot", &pane));
     let deadline = Instant::now() + Duration::from_secs(60);
     while !instance.log().contains("the app is") {
@@ -43,14 +43,14 @@ fn a_resize_beyond_reason_is_refused() {
     let instance = Instance::start();
     let pane = instance.open("cat", Some("cat"));
     let mut app = instance.app();
-    app.tell("attach", json!({"pane": pane}));
+    app.tell("attach", json!({"terminal": pane}));
     app.until("the grid", |m| is(m, "grid", &pane));
 
-    app.tell("resize", json!({"pane": pane, "cols": 5000, "rows": 5000, "width": 0, "height": 0}));
+    app.tell("resize", json!({"terminal": pane, "cols": 5000, "rows": 5000, "width": 0, "height": 0}));
     let grid = app.until("the grid", |m| is(m, "grid", &pane));
     assert_eq!((grid["args"]["cols"].as_u64(), grid["args"]["rows"].as_u64()), (Some(80), Some(24)), "{grid}");
 
-    app.tell("resize", json!({"pane": pane, "cols": 1000, "rows": 1000, "width": 0, "height": 0}));
+    app.tell("resize", json!({"terminal": pane, "cols": 1000, "rows": 1000, "width": 0, "height": 0}));
     let grid = app.until("the grid", |m| is(m, "grid", &pane));
     assert_eq!((grid["args"]["cols"].as_u64(), grid["args"]["rows"].as_u64()), (Some(1000), Some(1000)), "{grid}");
 }
@@ -62,15 +62,15 @@ fn an_attach_sends_the_screen_then_its_grid() {
     wait_for("the output", || instance.screen(&pane).contains("hello"));
     for _ in 0..2 {
         let mut app = instance.app();
-        app.tell("attach", json!({"pane": pane}));
-        let first = app.until("the snapshot", |m| m["args"]["pane"] == pane.as_str());
+        app.tell("attach", json!({"terminal": pane}));
+        let first = app.until("the snapshot", |m| m["args"]["terminal"] == pane.as_str());
         assert_eq!(first["cmd"], "snapshot", "{first}");
         let replica = Terminal::from_snapshot(&data(&first)).unwrap();
         assert!(replica.text(Lines::Screen).starts_with("first\nhello"), "{}", replica.text(Lines::Screen));
-        let grid = app.until("the grid", |m| m["args"]["pane"] == pane.as_str());
+        let grid = app.until("the grid", |m| m["args"]["terminal"] == pane.as_str());
         assert_eq!(grid["cmd"], "grid", "{grid}");
         assert_eq!((grid["args"]["cols"].as_u64(), grid["args"]["rows"].as_u64()), (Some(80), Some(24)));
-        app.tell("input", json!({"pane": pane, "data": BASE64.encode("typed\r")}));
+        app.tell("input", json!({"terminal": pane, "data": BASE64.encode("typed\r")}));
         let echoed = app.until("the echo", |m| is(m, "output", &pane));
         assert!(String::from_utf8_lossy(&data(&echoed)).contains("typed"), "{echoed}");
     }
@@ -81,12 +81,12 @@ fn a_replica_misses_nothing_and_repeats_nothing() {
     let instance = Instance::start();
     let pane = instance.open("count", Some("sleep 0.2; seq 1 200000; printf 'DONE\\n'; exec cat"));
     let mut app = instance.app();
-    app.tell("attach", json!({"pane": pane}));
+    app.tell("attach", json!({"terminal": pane}));
     let snapshot = app.until("the snapshot", |m| is(m, "snapshot", &pane));
     let mut replica = Terminal::from_snapshot(&data(&snapshot)).unwrap();
     let mut done = replica.text(Lines::Screen).contains("DONE");
     while !done {
-        let message = app.until("more", |m| m["args"]["pane"] == pane.as_str());
+        let message = app.until("more", |m| m["args"]["terminal"] == pane.as_str());
         match message["cmd"].as_str() {
             Some("output") => replica.write(&data(&message)),
             Some("grid") => {
@@ -109,14 +109,14 @@ fn a_snapshot_mid_sequence_waits_for_more_output() {
     wait_for("the output", || instance.screen(&pane).contains("before"));
     std::thread::sleep(Duration::from_millis(200));
     let mut app = instance.app();
-    app.tell("attach", json!({"pane": pane}));
+    app.tell("attach", json!({"terminal": pane}));
     app.stream.set_read_timeout(Some(Duration::from_millis(700))).unwrap();
     while let Some(message) = app.next() {
         assert!(!is(&message, "snapshot", &pane) && !is(&message, "output", &pane), "sent mid-APC: {message}");
     }
     app.stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     instance.call("send", json!({"pane": pane, "text": "go"}));
-    let snapshot = app.until("the snapshot", |m| m["args"]["pane"] == pane.as_str());
+    let snapshot = app.until("the snapshot", |m| m["args"]["terminal"] == pane.as_str());
     assert_eq!(snapshot["cmd"], "snapshot", "{snapshot}");
     let replica = Terminal::from_snapshot(&data(&snapshot)).unwrap();
     assert!(replica.text(Lines::Screen).contains("after"), "{}", replica.text(Lines::Screen));
@@ -143,8 +143,8 @@ os.write(1,b"\r\ngot "+r.replace(b"\033",b"^")+b"\r\n")'; exec cat"#;
     let pane = instance.open("inband", Some(probe));
     wait_for("the probe", || instance.screen(&pane).contains("ready"));
     let mut app = instance.app();
-    app.tell("attach", json!({"pane": pane}));
-    app.tell("resize", json!({"pane": pane, "cols": 100, "rows": 30, "width": 1000, "height": 600}));
+    app.tell("attach", json!({"terminal": pane}));
+    app.tell("resize", json!({"terminal": pane, "cols": 100, "rows": 30, "width": 1000, "height": 600}));
     wait_for("the report", || instance.screen(&pane).contains("got "));
     let screen = instance.screen(&pane);
     assert!(screen.contains("got ^[48;24;80;0;0t^[48;30;100;600;1000t"), "{screen}");
@@ -157,7 +157,7 @@ fn exited_comes_after_the_last_output() {
         let name = format!("burst{round}");
         let pane = instance.open(&name, Some("sleep 0.3; head -c 2000000 /dev/zero | tr '\\0' x; printf END; (exit 7)"));
         let mut app = instance.app();
-        app.tell("attach", json!({"pane": pane}));
+        app.tell("attach", json!({"terminal": pane}));
         let mut seen = Vec::new();
         let exited = app.until("the exit", |m| {
             if is(m, "output", &pane) {
@@ -216,10 +216,10 @@ fn pixel_sizes_reach_the_pty() {
     let instance = Instance::start();
     let pane = instance.open("sh", None);
     let mut app = instance.app();
-    app.tell("attach", json!({"pane": pane}));
-    app.tell("resize", json!({"pane": pane, "cols": 90, "rows": 30, "width": 900, "height": 600}));
+    app.tell("attach", json!({"terminal": pane}));
+    app.tell("resize", json!({"terminal": pane, "cols": 90, "rows": 30, "width": 900, "height": 600}));
     app.until("the grid", |m| is(m, "grid", &pane) && m["args"]["cols"] == 90);
-    app.tell("resize", json!({"pane": pane, "cols": 90, "rows": 30, "width": 1800, "height": 1200}));
+    app.tell("resize", json!({"terminal": pane, "cols": 90, "rows": 30, "width": 1800, "height": 1200}));
     app.until("the grid", |m| is(m, "grid", &pane));
     let probe = "python3 -c 'import fcntl,termios,struct;print(\"size\",*struct.unpack(\"HHHH\",fcntl.ioctl(0,termios.TIOCGWINSZ,bytes(8))))'";
     instance.call("send", json!({"pane": pane, "text": probe}));
@@ -254,9 +254,9 @@ fn output_inside_an_open_sequence_leaves_the_daemon_responsive() {
     wait_for("the scrollback", || instance.screen(&pane).contains("0000000000"));
     std::thread::sleep(Duration::from_secs(3));
     let mut app = instance.app();
-    app.tell("attach", json!({"pane": pane}));
+    app.tell("attach", json!({"terminal": pane}));
     for _ in 0..20 {
-        app.tell("attach", json!({"pane": pane}));
+        app.tell("attach", json!({"terminal": pane}));
     }
     let _answering = app.answering();
     std::thread::sleep(Duration::from_millis(500));
@@ -272,7 +272,7 @@ fn output_inside_an_open_sequence_leaves_the_daemon_responsive() {
 fn an_attach_that_comes_before_the_terminal_starts_gets_its_output() {
     let instance = Instance::start();
     let mut app = instance.app();
-    app.tell("attach", json!({"pane": "p1"}));
+    app.tell("attach", json!({"terminal": "term-1"}));
     let socket = instance.socket();
     let opening = std::thread::spawn(move || common::call(&socket, "open", json!({"type": "term", "name": "early", "cmd": "sleep 0.5; echo EARLY-READY; exec cat"})));
     let mut seen = Vec::new();
@@ -280,7 +280,7 @@ fn an_attach_that_comes_before_the_terminal_starts_gets_its_output() {
         let Some(m) = app.next() else {
             panic!("no output; open answered {:?}; log:\n{}", opening.join().ok(), instance.log());
         };
-        if is(&m, "output", "p1") {
+        if is(&m, "output", "term-1") {
             seen.extend(data(&m));
         }
     }
@@ -290,7 +290,8 @@ fn an_attach_that_comes_before_the_terminal_starts_gets_its_output() {
 #[test]
 fn every_debug_command_goes_to_the_app_with_pane_names_resolved() {
     let instance = Instance::start();
-    let opened = instance.open("named", Some("exec sleep 60"));
+    instance.open("named", Some("exec sleep 60"));
+    let opened = instance.pane("named")["id"].clone();
     let reply = instance.call("debug.click", json!({"pane": "named"}));
     assert_eq!(reply["error"]["code"], "no_app", "{reply}");
     assert_eq!(instance.call("capabilities", json!({}))["app"], false);

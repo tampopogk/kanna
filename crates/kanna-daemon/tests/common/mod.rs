@@ -82,7 +82,7 @@ impl Instance {
             args["cmd"] = json!(cmd);
         }
         let opened = self.call("open", args);
-        opened["pane"]["id"].as_str().unwrap_or_else(|| panic!("no pane in {opened}")).to_string()
+        opened["pane"]["terminal"].as_str().unwrap_or_else(|| panic!("no terminal in {opened}")).to_string()
     }
 
     pub fn pane(&self, name: &str) -> Value {
@@ -262,7 +262,7 @@ pub fn request(socket: &Path, request: Value) -> Value {
 }
 
 pub fn is(message: &Value, cmd: &str, pane: &str) -> bool {
-    message["cmd"] == cmd && message["args"]["pane"] == pane
+    message["cmd"] == cmd && message["args"]["terminal"] == pane
 }
 
 pub fn data(message: &Value) -> Vec<u8> {

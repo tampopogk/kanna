@@ -18,8 +18,8 @@ In `$KANNA_STATE_DIR/terminals/` (0700; a symlink there is refused), each writte
 
 | File | What it holds | Written |
 |---|---|---|
-| `terminals.json` | `{kanna: "terminals", version: 1, counters: {pane}, terminals: [{id, name, type, cmd, cwd, state, exitCode, pid, keeper, cols, rows}]}`: each terminal's record (`state` is `running` or `exited`, `keeper` the id the keeper knows its pty by, `cols` and `rows` the size it last had) and the pane counter | on every change (open, close, restart, start, exit), from the daemon's main loop; an exit before the daemon acknowledges it to the keeper |
-| `<pane>.snap` | the terminal's screen as a GHOSTSNP snapshot, as `attach` sends it | by a saver thread, at most once a second per terminal and only after its screen changed; all of them on a clean stop |
+| `terminals.json` | `{kanna: "terminals", version: 2, counters: {pane, terminal}, terminals: [{id, pane, name, type, cmd, cwd, state, exitCode, pid, keeper, cols, rows}]}`: each terminal's record (`id` its terminal ID, `term-41`; `pane` the pane showing it; `state` `running` or `exited`; `keeper` the id the keeper knows its pty by; `cols` and `rows` the size it last had) and the pane and terminal counters. A version 1 file (records keyed by pane) loads: each record's terminal is `term-N` for pane `pN`, and its screen file is renamed to match | on every change (open, close, restart, start, exit), from the daemon's main loop; an exit before the daemon acknowledges it to the keeper |
+| `<terminal>.snap` | the terminal's screen as a GHOSTSNP snapshot, as `attach` sends it | by a saver thread, at most once a second per terminal and only after its screen changed; all of them on a clean stop |
 | `settings.json` | the app's last terminal `settings` ([terminal](terminal.md#2-the-config)) | when the app sends them |
 
 - **Snapshots** are taken under the lock the pty reader feeds the screen with, without touching what the app is sent. If one can't be encoded (as on [attach](app-link.md#3-rules)), or the write fails, the last good file stays and the saver tries again a second later.
@@ -50,7 +50,7 @@ sequenceDiagram
     D2->>K: adopt
     K->>D2: each pty: {id, pid, cmd, cwd, exit?} + master
     D2->>D2: read terminals.json: same IDs, names, cmd, cwd; counter continues
-    D2->>D2: each screen from <pane>.snap (if the pid matches), sized to the pty (TIOCGWINSZ)
+    D2->>D2: each screen from <terminal>.snap (if the pid matches), sized to the pty (TIOCGWINSZ)
     D2->>S: TIOCSWINSZ, then SIGWINCH to the pty's foreground group
     D2->>S: reads what waited in the buffer into the screen, then carries on
     D2->>K: ack exits that happened meanwhile (after saving them)
@@ -71,7 +71,7 @@ sequenceDiagram
 ## 4. Rules
 
 - **Unknown ptys are adopted, not closed:** a pty the keeper holds is a program the user started (perhaps an agent mid-task); closing it would lose work. It costs only a pane without a name, which the user can close.
-- **Pane IDs never repeat:** the counter continues from the larger of the saved counter and every ID on disk and in the keeper. Only losing `terminals.json` while the keeper has also lost the newest terminals can bring an old ID back.
+- **Pane and terminal IDs never repeat:** each counter continues from the larger of the saved counter and every ID on disk and in the keeper. A terminal started again gets a new terminal ID. Only losing `terminals.json` while the keeper has also lost the newest terminals can bring an old ID back.
 - **Exit codes** come from the keeper, the process's parent, so an exit while no daemon runs keeps its code (`exit 7` → `exitCode: 7` after the restart). On macOS a program can't finish exiting while its last output is unread; the new daemon reads it, and the exit arrives then. That holds for `sh` and `bash`; zsh exits without waiting, so output a zsh program wrote just before exiting while no daemon ran is lost (its exit code is not).
 - **Sizes:** the pty keeps the size the last daemon set; the new daemon sizes each screen to it and sets it again, and the app resizes once it attaches. A terminal started again after the restart (`restart`, a task resumed) starts at the size in its record, even if its screen's file is gone ([pane sizes](pane-sizes.md)).
 - **Upgrades:** a relaunched app of another build makes the daemon stop as on SIGTERM and starts its own, which takes everything back as above; a rebuild that didn't change the daemon keeps it running ([daemon build](daemon-build.md)).

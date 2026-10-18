@@ -12,7 +12,7 @@ protocol TerminalLink: AnyObject {
 
 @MainActor
 final class ExternalTerminal {
-    let pane: Pane
+    let id: String
     fileprivate weak var view: TerminalSurfaceView?
     var surface: ghostty_surface_t? { view?.surface }
 
@@ -22,8 +22,8 @@ final class ExternalTerminal {
     private var refusals = 0
     private static let refusalLimit = 250
 
-    fileprivate init(pane: Pane, view: TerminalSurfaceView) {
-        self.pane = pane
+    fileprivate init(id: String, view: TerminalSurfaceView) {
+        self.id = id
         self.view = view
     }
 
@@ -69,7 +69,7 @@ final class ExternalTerminal {
         guard case .snapshot = item else { return false }
         refusals += 1
         guard refusals >= Self.refusalLimit else { return false }
-        FileHandle.standardError.write(Data("kanna: \(pane.id)'s screen from the daemon was refused \(refusals) times; going on without it\n".utf8))
+        FileHandle.standardError.write(Data("kanna: \(id)'s screen from the daemon was refused \(refusals) times; going on without it\n".utf8))
         return true
     }
 
@@ -110,7 +110,7 @@ final class ExternalIOBackend: TerminalBackend {
         runtime.onSettings = { [weak link] settings in link?.settingsChanged(settings) }
     }
 
-    func start(_ view: TerminalSurfaceView, pane: Pane) -> Bool {
+    func start(_ view: TerminalSurfaceView, terminal id: String) -> Bool {
         var options = GhosttyRuntime.options(for: view)
         options.io_mode = GHOSTTY_IO_MODE_EXTERNAL
         options.io_write_cb = { userdata, bytes, count in
@@ -124,7 +124,7 @@ final class ExternalIOBackend: TerminalBackend {
                 backend.link.resizeRequested(terminal, cols: cols, rows: rows, width: width, height: height)
             }
         }
-        let terminal = ExternalTerminal(pane: pane, view: view)
+        let terminal = ExternalTerminal(id: id, view: view)
         terminals[view.surfaceID] = terminal
         guard runtime.attach(view, options: &options) else {
             terminals.removeValue(forKey: view.surfaceID)

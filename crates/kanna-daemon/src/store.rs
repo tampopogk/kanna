@@ -1,7 +1,7 @@
 use crate::reader::Feed;
 use crate::settings::Settings;
 use kanna_mux::json::{json, num, opt, string, Value};
-use kanna_mux::PaneState;
+use kanna_mux::{terminal_number, PaneState};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 const RECORDS: &str = "terminals.json";
 
@@ -35,6 +35,7 @@ const FLUSH_LIMIT: Duration = Duration::from_secs(5);
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record {
     pub id: String,
+    pub pane: String,
     pub name: Option<String>,
     pub cmd: Option<String>,
     pub cwd: Option<String>,
@@ -49,6 +50,7 @@ pub struct Record {
 #[derive(Debug, Default, PartialEq)]
 pub struct Saved {
     pub counter: usize,
+    pub terminals: usize,
     pub records: Vec<Record>,
 }
 
@@ -56,6 +58,7 @@ impl Record {
     fn to_value(&self) -> Value {
         let mut out = json!({
             "id": self.id,
+            "pane": self.pane,
             "name": opt(self.name.as_deref()),
             "type": "term",
             "cmd": opt(self.cmd.as_deref()),
@@ -73,15 +76,21 @@ impl Record {
         out
     }
 
-    fn from_value(value: &Value) -> Option<Record> {
+    fn from_value(value: &Value, version: u32) -> Option<Record> {
         let text = |key: &str| string(value, key).map(String::from);
         if string(value, "type") != Some("term") {
             return None;
         }
-        let id = text("id").filter(|id| pane_number(id).is_some())?;
+        let (id, pane) = if version == 1 {
+            let pane = text("id")?;
+            (format!("term-{}", pane_number(&pane)?), pane)
+        } else {
+            (text("id").filter(|id| terminal_number(id).is_some())?, text("pane").filter(|pane| pane_number(pane).is_some())?)
+        };
         Some(Record {
-            keeper: text("keeper").unwrap_or_else(|| id.clone()),
+            keeper: text("keeper").unwrap_or_else(|| pane.clone()),
             id,
+            pane,
             name: text("name").filter(|n| !n.is_empty()),
             cmd: text("cmd"),
             cwd: text("cwd"),
@@ -147,19 +156,25 @@ impl Store {
         let read = io::Read::read_to_string(&mut io::Read::take(file, MAX_RECORDS + 1), &mut text);
         let parsed = read.ok().filter(|n| (*n as u64) <= MAX_RECORDS).and_then(|_| serde_json::from_str::<Value>(&text).ok());
         let saved = parsed.as_ref().and_then(|value| {
-            if string(value, "kanna") != Some("terminals") || value.get("version").and_then(Value::as_f64) != Some(VERSION as f64) {
+            let version = value.get("version").and_then(Value::as_f64).filter(|v| *v == 1.0 || *v == VERSION as f64)? as u32;
+            if string(value, "kanna") != Some("terminals") {
                 return None;
             }
-            let counter = value.get("counters").and_then(|c| c.get("pane")).and_then(Value::as_f64).unwrap_or(0.0).max(0.0) as usize;
+            let count = |key: &str| value.get("counters").and_then(|c| c.get(key)).and_then(Value::as_f64).unwrap_or(0.0).max(0.0) as usize;
             let mut records: Vec<Record> = Vec::new();
             for item in value.get("terminals")?.as_array()? {
-                let record = Record::from_value(item)?;
-                if records.iter().any(|r| r.id == record.id || r.keeper == record.keeper || (r.name.is_some() && r.name == record.name)) {
+                let record = Record::from_value(item, version)?;
+                if records.iter().any(|r| r.id == record.id || r.pane == record.pane || r.keeper == record.keeper || (r.name.is_some() && r.name == record.name)) {
                     return None;
                 }
                 records.push(record);
             }
-            Some(Saved { counter, records })
+            if version == 1 {
+                for record in &records {
+                    let _ = fs::rename(snapshot_path(&self.dir, &record.pane), snapshot_path(&self.dir, &record.id));
+                }
+            }
+            Some(Saved { counter: count("pane"), terminals: count("terminal"), records })
         });
         match saved {
             Some(saved) => saved,
@@ -175,7 +190,7 @@ impl Store {
         let value = json!({
             "kanna": "terminals",
             "version": VERSION,
-            "counters": { "pane": num(saved.counter as f64) },
+            "counters": { "pane": num(saved.counter as f64), "terminal": num(saved.terminals as f64) },
             "terminals": Value::Array(saved.records.iter().map(Record::to_value).collect()),
         });
         let mut text = serde_json::to_string_pretty(&value).map_err(io::Error::other)?;
@@ -354,16 +369,17 @@ mod tests {
         dir
     }
 
-    fn record(id: &str, name: Option<&str>) -> Record {
+    fn record(pane: &str, name: Option<&str>) -> Record {
         Record {
-            id: id.into(),
+            id: format!("term-{}", pane_number(pane).unwrap()),
+            pane: pane.into(),
             name: name.map(String::from),
             cmd: Some("top".into()),
             cwd: Some("/tmp".into()),
             state: PaneState::Running,
             exit_code: None,
             pid: 42,
-            keeper: id.into(),
+            keeper: pane.into(),
             size: Some((120, 40)),
             hung_up: false,
         }
@@ -375,12 +391,29 @@ mod tests {
         let store = Store::open(&dir).unwrap();
         let mut exited = record("p3", None);
         (exited.state, exited.exit_code, exited.hung_up, exited.size) = (PaneState::Exited, Some(3), true, None);
-        let saved = Saved { counter: 7, records: vec![record("p1", Some("logs")), exited] };
+        let saved = Saved { counter: 7, terminals: 9, records: vec![record("p1", Some("logs")), exited] };
         store.save(&saved).unwrap();
         assert_eq!(store.load(), saved);
         let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(store.dir()), 0o700);
         assert_eq!(mode(&store.dir().join(RECORDS)), 0o600);
+        store.stop();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_version_1_file_gives_each_pane_a_terminal_and_moves_its_screen() {
+        let dir = folder("version1");
+        let store = Store::open(&dir).unwrap();
+        let old = json!({ "kanna": "terminals", "version": 1, "counters": { "pane": 4 }, "terminals": [
+            { "id": "p4", "name": "logs", "type": "term", "cmd": "top", "cwd": "/tmp", "state": "running", "exitCode": null, "pid": 42, "keeper": "p4", "cols": 120, "rows": 40 }] });
+        fs::write(store.dir().join(RECORDS), old.to_string()).unwrap();
+        fs::write(store.dir().join("p4.snap"), b"screen").unwrap();
+        let loaded = store.load();
+        assert_eq!(loaded.counter, 4);
+        assert_eq!(loaded.records, vec![record("p4", Some("logs"))]);
+        assert_eq!(store.snapshot("term-4"), Some(b"screen".to_vec()));
+        assert!(!store.dir().join("p4.snap").exists());
         store.stop();
         let _ = fs::remove_dir_all(&dir);
     }
@@ -407,7 +440,7 @@ mod tests {
     fn a_bad_file_is_moved_aside() {
         let dir = folder("bad");
         let store = Store::open(&dir).unwrap();
-        let twice = Saved { counter: 2, records: vec![record("p1", Some("a")), record("p2", Some("a"))] };
+        let twice = Saved { counter: 2, terminals: 2, records: vec![record("p1", Some("a")), record("p2", Some("a"))] };
         store.save(&twice).unwrap();
         assert_eq!(store.load(), Saved::default());
         assert!(store.dir().join(format!("{RECORDS}.bad")).exists());

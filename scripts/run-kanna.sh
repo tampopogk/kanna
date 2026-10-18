@@ -13,7 +13,7 @@ usage: scripts/run-kanna.sh                 open this checkout's Kanna (target/K
 
 The Kanna built here (scripts/build.sh) runs as its own app beside any other:
 a dev build in a worktree is "Kanna Dev <worktree>", with its own instance.
-KANNA_SOCKET, KANNA_INSTANCE and KANNA_PANE are cleared first, so from a terminal
+KANNA_SOCKET, KANNA_INSTANCE, KANNA_TERMINAL and KANNA_PANE are cleared first, so from a terminal
 inside another Kanna this still reaches this checkout's Kanna, not that one.
 USAGE
     exit 0 ;;
@@ -22,4 +22,4 @@ esac
 if [[ $# -eq 0 ]]; then
   exec /usr/bin/open "$app"
 fi
-exec env -u KANNA_SOCKET -u KANNA_INSTANCE -u KANNA_PANE -u KANNA_MUX "$kanna" "$@"
+exec env -u KANNA_SOCKET -u KANNA_INSTANCE -u KANNA_TERMINAL -u KANNA_PANE -u KANNA_MUX "$kanna" "$@"

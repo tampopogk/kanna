@@ -424,12 +424,12 @@ impl CoreHandle {
         self.0.exec.run();
     }
 
-    pub fn install_panes(&self, panes: Vec<Pane>, counter: usize) {
+    pub fn install_panes(&self, panes: Vec<Pane>, counter: usize, terminals: usize) {
         {
             let mut s = self.state();
             let mut all: Vec<Pane> = s.panes.iter().cloned().collect();
             all.extend(panes.into_iter().filter(|p| s.panes.get(&p.id).is_none()));
-            s.panes.install(all, counter);
+            s.panes.install(all, counter, terminals);
         }
         self.changed();
     }
@@ -622,6 +622,7 @@ impl CoreHandle {
     }
 
     fn start_pane(&self, id: &str) {
+        self.state().panes.new_terminal(id);
         let pane = self.state().panes.get(id).cloned();
         if let (Some(host), Some(pane)) = (self.host(), pane) {
             host.start(&pane);
@@ -1233,7 +1234,7 @@ impl CoreHandle {
             let mut s = self.state();
             let restored: Vec<Pane> = panes.into_iter().filter(|p| placed.contains(p.id.as_str())).collect();
             let ids = restored.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
-            s.panes.install(restored, counter);
+            s.panes.install(restored, counter, 0);
             ids
         };
         self.changed();

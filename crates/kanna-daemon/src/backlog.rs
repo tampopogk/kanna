@@ -185,13 +185,13 @@ pub fn scripts(files: &[PathBuf]) -> Scripts {
 /// The planning agent's first message, which tells it it's the planner.
 pub const PLANNER_ROLE: &str = "You are the Kanna planning agent.";
 
-/// A task's agent's first message, as a shell word: who it is (its pane from `$KANNA_PANE` as it starts), then its task.
+/// A task's agent's first message, as a shell word: who it is (its terminal from `$KANNA_TERMINAL` as it starts), then its task.
 fn told_task(message: Option<&str>) -> String {
     let after = match message {
         Some(message) => format!("), in your task's worktree. Your task: {message}"),
         None => "), in your task's worktree.".to_string(),
     };
-    format!("{}\"$KANNA_PANE\"{}", quote("You're a task's agent in Kanna (pane "), quote(&after))
+    format!("{}\"$KANNA_TERMINAL\"{}", quote("You're a task's agent in Kanna (terminal "), quote(&after))
 }
 
 pub const QUIZ_ROLE: &str = "You are the Kanna quiz agent, on main: quiz me on what landed on main.";
@@ -2037,7 +2037,7 @@ mod tests {
     use super::*;
 
     fn said(word: &str) -> String {
-        let out = Command::new("/bin/sh").arg("-c").arg(format!("printf %s {word}")).env("KANNA_PANE", "p9").output().unwrap();
+        let out = Command::new("/bin/sh").arg("-c").arg(format!("printf %s {word}")).env("KANNA_TERMINAL", "term-9").output().unwrap();
         String::from_utf8(out.stdout).unwrap()
     }
 
@@ -2045,10 +2045,10 @@ mod tests {
     fn a_task_s_agent_is_told_it_s_a_task_s_agent_ahead_of_its_first_message() {
         let mut entry = Entry { id: "task-1dfb12c2".into(), name: None, message: Some("don't stop".into()), repo: "/r".into(), by: None, made_at: 0.0, agent: "codex".into(), folder: None, session: None, held: None, ..Default::default() };
         let command = entry.command(None);
-        assert_eq!(said(command.strip_prefix("codex --yolo --no-daemon ").unwrap()), "You're a task's agent in Kanna (pane p9), in your task's worktree. Your task: don't stop");
+        assert_eq!(said(command.strip_prefix("codex --yolo --no-daemon ").unwrap()), "You're a task's agent in Kanna (terminal term-9), in your task's worktree. Your task: don't stop");
         entry.message = None;
         let command = entry.command(None);
-        assert_eq!(said(command.strip_prefix("codex --yolo --no-daemon ").unwrap()), "You're a task's agent in Kanna (pane p9), in your task's worktree.");
+        assert_eq!(said(command.strip_prefix("codex --yolo --no-daemon ").unwrap()), "You're a task's agent in Kanna (terminal term-9), in your task's worktree.");
     }
 
     #[test]

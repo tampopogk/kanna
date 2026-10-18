@@ -152,7 +152,7 @@ fn tick(shared: &Shared, now: Instant) -> (bool, Option<Instant>) {
     for (pane, watch) in watches.iter_mut() {
         let serial = watch.serial;
         let send = |status: Option<Status>, ended: bool| {
-            let _ = shared.events.send(Event::Status { pane: pane.clone(), serial, status: status.map(Status::as_str), ended });
+            let _ = shared.events.send(Event::Status { terminal: pane.clone(), serial, status: status.map(Status::as_str), ended });
         };
         let group = program::foreground_group(watch.master.as_raw_fd());
         if group != watch.group {

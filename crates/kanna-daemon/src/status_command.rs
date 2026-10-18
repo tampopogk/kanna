@@ -66,7 +66,7 @@ impl StatusCommand {
     fn explain(&self, core: &CoreHandle, args: &Value) -> Result<Map, KmuxError> {
         if let Some(reference) = args.get("pane").and_then(Value::as_str) {
             let pane = core.pane(reference).ok_or_else(|| KmuxError::new("not_found", format!("no pane \"{reference}\"")))?;
-            let explained = self.detector.explain(&pane.id).ok_or_else(|| bad(format!("{} isn't a running terminal", pane.label())))?;
+            let explained = pane.terminal.as_deref().and_then(|terminal| self.detector.explain(terminal)).ok_or_else(|| bad(format!("{} isn't a running terminal", pane.label())))?;
             let mut out = Map::new();
             out.insert("pane".into(), json!(pane.id));
             out.insert("agent".into(), json!(explained.agent));

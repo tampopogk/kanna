@@ -128,7 +128,12 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
         return Err(commands::usage(command.name, &format!("unexpected argument \"{extra}\"")));
     }
     if request.get("local").is_some() {
-        return threads::run(&request, json_output);
+        let mut callers: Vec<String> = commands::caller().into_iter().collect();
+        let terminal = callers.first().cloned();
+        let listed = terminal.as_ref().and_then(|_| Session::connect(&target, env).ok()?.call("list", json!({})).ok());
+        let pane = listed.as_ref().and_then(|l| l["panes"].as_array()?.iter().find(|p| p["terminal"].as_str() == terminal.as_deref())?["id"].as_str().map(String::from));
+        callers.extend(pane);
+        return threads::run(&request, json_output, &callers);
     }
     if command.name == "workspace" && request["all"] != true && request["pane"].is_null() {
         return Err(commands::usage("workspace", "outside a Kanna terminal there's no workspace of yours: add --all"));
@@ -311,7 +316,7 @@ its files in kanna-dev-task-3f9a1c2e.\n\
 \n\
 Commands go to an instance of this kanna's channel:\n  \
   1. the instance named by --instance NAME, if given;\n  \
-  2. else $KANNA_SOCKET (Kanna sets it, with $KANNA_INSTANCE and $KANNA_PANE, in its\n     \
+  2. else $KANNA_SOCKET (Kanna sets it, with $KANNA_INSTANCE and $KANNA_TERMINAL, in its\n     \
      terminals, so kanna run inside a pane controls that pane's Kanna, whatever its channel);\n  \
   3. else the instance named by $KANNA_INSTANCE;\n  \
   4. else this build's default instance (its worktree's, for a dev build in a worktree).\n\
@@ -568,6 +573,7 @@ mod tests {
     fn parse(line: &str) -> Result<(String, Value), Failure> {
         // Run from a Kanna terminal, a command would name its pane as the caller.
         std::env::remove_var("KANNA_PANE");
+        std::env::remove_var("KANNA_TERMINAL");
         let words = shell_words(line);
         assert_eq!(words[0], "kanna");
         let mut args = Argv::new(words[1..].to_vec());

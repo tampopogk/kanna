@@ -26,6 +26,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var testingDrag = false
     var agentStatuses = AgentStatuses()
     var folders: [String: String] = [:]
+    private var terminalIDs: [String: String] = [:]
     var backlog: [JSON] = []
     var starting: Set<String> = []
 
@@ -106,9 +107,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             daemon.onStop = { [weak self] pane in self?.contents.stop(pane) }
             daemon.onDiff = { [weak self] content, message in self?.contents.received(diff: message, content: content) }
             daemon.onPane = { [weak self] pane in self?.learn(pane) }
-            daemon.onExited = { [weak self] pane, code in self?.panes.exited(pane, code: code) }
-            daemon.onSnapshot = { [weak self] pane in self?.panes.restarted(pane) }
-            daemon.onRestart = { [weak self] pane in self?.panes.renew(pane) ?? false }
+            daemon.onExited = { [weak self] terminal, code in
+                if let pane = self?.panes.pane(showing: terminal) { self?.panes.exited(pane, code: code) }
+            }
+            daemon.onSnapshot = { [weak self] terminal in
+                if let pane = self?.panes.pane(showing: terminal) { self?.panes.restarted(pane) }
+            }
             contents.onUpdate = { [weak self, weak daemon] pane, fields in
                 if fields["state"] != nil { self?.panes.report(pane, state: fields["state"]?.string, error: fields["error"]?.string) }
                 daemon?.update(pane, fields)
@@ -123,6 +127,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.daemon = daemon
         }
         panes = PaneViews(contents: contents, terminals: terminals)
+        panes.terminalOf = { [weak self] pane in self?.terminalIDs[pane] }
         panes.onFocus = { [weak self] pane in self?.userFocused(pane) }
         panes.onDrag = { [weak self] pane in self?.dragPane(pane) }
         panes.contextMenu = { [weak self] in self?.paneMenu?.copy() as? NSMenu }
@@ -174,6 +179,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func attached(_ panes: JSON) {
+        if case .array(let list) = panes { learnTerminals(list) }
         guard let appLayout else { return }
         let reply = appLayout.attach(panes)
         if let problem = reply["problem"]?.string { FileHandle.standardError.write(Data("kanna: \(problem)\n".utf8)) }
@@ -308,12 +314,25 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func learn(_ pane: JSON) {
+        let renewed = learnTerminals([pane])
         let reply = appLayout?.call(["call": "pane", "pane": pane])
-        if reply?["changed"]?.bool == true { refresh() }
+        if renewed || reply?["changed"]?.bool == true { refresh() }
         scheduleSave()
     }
 
+    @discardableResult
+    private func learnTerminals(_ panes: [JSON]) -> Bool {
+        var changed = false
+        for pane in panes where pane["type"]?.string == "term" {
+            guard let id = pane["id"]?.string, let terminal = pane["terminal"]?.string, terminalIDs[id] != terminal else { continue }
+            terminalIDs[id] = terminal
+            changed = true
+        }
+        return changed
+    }
+
     private func layoutRequest(_ request: JSON) -> JSON {
+        if case .array(let list)? = request["panes"] { learnTerminals(list) }
         guard let appLayout else { return ["ok": false, "error": ["code": "no_layout", "message": "this app keeps no layout"]] }
         let reply = appLayout.serve(request)
         layoutChanged()

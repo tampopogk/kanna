@@ -5,7 +5,7 @@ use crate::status::Detector;
 use crate::store::{pane_number, Record, Saved, Store};
 use crate::Event;
 use kanna_mux::json::Map;
-use kanna_mux::{KmuxError, Pane, PaneHost, PaneState, PaneType, Responder, WeakCore};
+use kanna_mux::{terminal_number, KmuxError, Pane, PaneHost, PaneState, PaneType, Responder, WeakCore};
 use kanna_vt::{Key, KeyError};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -42,6 +42,7 @@ struct Pty {
 }
 
 struct Terminal {
+    pane: String,
     serial: u64,
     pid: i32,
     keeper: String,
@@ -116,13 +117,21 @@ impl Terminals {
         });
     }
 
-    fn spec(&self, pane: &Pane) -> Spec {
-        let mut env: Vec<(String, Option<String>)> = vec![("KANNA_INSTANCE".into(), None)];
+    fn spec(&self, pane: &Pane, terminal: &str) -> Spec {
+        let mut env: Vec<(String, Option<String>)> = vec![("KANNA_INSTANCE".into(), None), ("KANNA_PANE".into(), None)];
         env.extend(self.env.iter().map(|(k, v)| (k.clone(), Some(v.clone()))));
-        env.push(("KANNA_PANE".into(), Some(pane.id.clone())));
+        env.push(("KANNA_TERMINAL".into(), Some(terminal.to_string())));
         let (cols, rows) = self.sizes.borrow().get(&pane.id).copied().unwrap_or((COLS, ROWS));
         let command = pane.command.clone().filter(|c| !c.is_empty());
-        Spec { id: pane.id.clone(), command, cwd: pane.cwd.clone(), env, cols, rows }
+        Spec { id: terminal.to_string(), command, cwd: pane.cwd.clone(), env, cols, rows }
+    }
+
+    pub fn pane_of(&self, terminal: &str) -> Option<String> {
+        self.live.borrow().get(terminal).map(|t| t.pane.clone())
+    }
+
+    fn of<'a>(pane: &'a Pane) -> &'a str {
+        pane.terminal.as_deref().unwrap_or_default()
     }
 
     fn next_serial(&self) -> u64 {
@@ -158,7 +167,8 @@ impl Terminals {
 
     fn moved(&self, id: &str, cwd: String) {
         let Some(core) = self.core.borrow().as_ref().and_then(WeakCore::upgrade) else { return };
-        core.with_pane_mut(id, |pane| pane.cwd = Some(cwd));
+        let Some(pane) = self.pane_of(id) else { return };
+        core.with_pane_mut(&pane, |pane| pane.cwd = Some(cwd));
         self.changed.set(true);
     }
 
@@ -216,14 +226,14 @@ impl Terminals {
     }
 
     fn report_exit(&self, id: &str) -> Option<i32> {
-        let code = {
+        let (code, pane) = {
             let mut live = self.live.borrow_mut();
             let terminal = live.get_mut(id).filter(|t| t.drained && !t.exit_reported)?;
             let code = terminal.exit_code?;
             terminal.exit_reported = true;
-            code
+            (code, terminal.pane.clone())
         };
-        self.report(id, PaneState::Exited, Some(code as i64), None);
+        self.report(&pane, PaneState::Exited, Some(code as i64), None);
         Some(code)
     }
 
@@ -247,7 +257,7 @@ impl Terminals {
                 pty::set_size(&pty.master, cols, rows, width, height);
             }
             terminal.pixels = (width, height);
-            self.sizes.borrow_mut().insert(id.into(), (cols, rows));
+            self.sizes.borrow_mut().insert(terminal.pane.clone(), (cols, rows));
             let replies = feed.resize(id, cols, rows, width, height);
             if let (false, Some(pty)) = (replies.is_empty(), terminal.running()) {
                 let _ = pty.input.send(replies);
@@ -284,17 +294,20 @@ impl Terminals {
         let sizes = self.sizes.borrow();
         Some(core.with_panes(|panes| Saved {
             counter: panes.counter(),
+            terminals: panes.terminals(),
             records: panes
                 .iter()
                 .filter(|pane| pane.kind == PaneType::Term)
                 .filter_map(|pane| {
-                    let terminal = live.get(&pane.id)?;
+                    let id = pane.terminal.clone()?;
+                    let terminal = live.get(&id)?;
                     let (state, exit_code) = match terminal.exit_code {
                         Some(code) => (PaneState::Exited, Some(code as i64)),
                         None => (PaneState::Running, None),
                     };
                     Some(Record {
-                        id: pane.id.clone(),
+                        id,
+                        pane: pane.id.clone(),
                         name: pane.name.clone(),
                         cmd: pane.command.clone(),
                         cwd: pane.cwd.clone(),
@@ -327,17 +340,19 @@ impl Terminals {
 
     pub fn restore(&self, adopted: Vec<Adopted>) -> Restored {
         let saved = self.store.load();
-        let mut counter = saved.counter;
-        for id in saved.records.iter().flat_map(|r| [&r.id, &r.keeper]).chain(adopted.iter().map(|a| &a.id)) {
+        let (mut counter, mut terminals) = (saved.counter, saved.terminals);
+        for id in saved.records.iter().flat_map(|r| [&r.id, &r.pane, &r.keeper]).chain(adopted.iter().map(|a| &a.id)) {
             counter = counter.max(pane_number(id).unwrap_or(0));
+            terminals = terminals.max(terminal_number(id).unwrap_or(0));
         }
         let mut ptys: HashMap<String, Adopted> = adopted.into_iter().map(|pty| (pty.id.clone(), pty)).collect();
         let mut restored = Restored::default();
         let mut panes = Vec::new();
         let mut exits = Vec::new();
         for record in saved.records {
-            let mut pane = Pane::new(&record.id, record.name.clone(), PaneType::Term);
+            let mut pane = Pane::new(&record.pane, record.name.clone(), PaneType::Term);
             (pane.command, pane.cwd, pane.pid, pane.hung_up) = (record.cmd.clone(), record.cwd.clone(), Some(record.pid), record.hung_up);
+            pane.terminal = Some(record.id.clone());
             let terminal = match ptys.remove(&record.keeper) {
                 Some(pty) => {
                     let snapshot = (i64::from(pty.pid) == record.pid).then(|| self.store.snapshot(&record.id)).flatten();
@@ -346,7 +361,7 @@ impl Terminals {
                     pane.state = PaneState::Running;
                     exits.extend(pty.exit.map(|code| (record.keeper.clone(), pty.pid, code)));
                     restored.adopted += 1;
-                    self.adopt(&record.id, &record.keeper, pty, snapshot)
+                    self.adopt(&record.id, &record.pane, &record.keeper, pty, snapshot)
                 }
                 None if record.state == PaneState::Exited => {
                     pane.state = PaneState::Exited;
@@ -369,16 +384,24 @@ impl Terminals {
             }
         }
         let mut unknown: Vec<Adopted> = ptys.into_values().collect();
-        unknown.sort_by_key(|pty| (pane_number(&pty.id).unwrap_or(usize::MAX), pty.id.clone()));
+        unknown.sort_by_key(|pty| (terminal_number(&pty.id).or(pane_number(&pty.id)).unwrap_or(usize::MAX), pty.id.clone()));
         for pty in unknown {
-            let id = match pane_number(&pty.id) {
+            let id = match terminal_number(&pty.id) {
                 Some(_) if !self.live.borrow().contains_key(&pty.id) => pty.id.clone(),
+                _ => {
+                    terminals += 1;
+                    format!("term-{terminals}")
+                }
+            };
+            let pane_id = match pane_number(&pty.id) {
+                Some(_) if !panes.iter().any(|p: &Pane| p.id == pty.id) => pty.id.clone(),
                 _ => {
                     counter += 1;
                     format!("p{counter}")
                 }
             };
-            let mut pane = Pane::new(&id, None, PaneType::Term);
+            let mut pane = Pane::new(&pane_id, None, PaneType::Term);
+            pane.terminal = Some(id.clone());
             pane.command = match pty.cmd.as_slice() {
                 [_, flags @ .., c, command] if c == "-c" && flags.first().is_some_and(|l| l == "-l") && flags.iter().all(|f| ["-l", "-i", "+m"].contains(&f.as_str())) => Some(command.clone()),
                 [sh, c, command] if sh == "/bin/sh" && c == "-c" => Some(command.clone()),
@@ -390,9 +413,9 @@ impl Terminals {
             pane.state = PaneState::Running;
             let keeper = pty.id.clone();
             exits.extend(pty.exit.map(|code| (keeper.clone(), pty.pid, code)));
-            match self.adopt(&id, &keeper, pty, None) {
+            match self.adopt(&id, &pane_id, &keeper, pty, None) {
                 Ok(terminal) => {
-                    eprintln!("kanna-daemon: took back {id}, which the keeper had and the disk didn't know");
+                    eprintln!("kanna-daemon: took back {id} as {pane_id}, which the keeper had and the disk didn't know");
                     self.live.borrow_mut().insert(id, terminal);
                     panes.push(pane);
                     restored.unknown += 1;
@@ -404,21 +427,21 @@ impl Terminals {
             }
         }
         if let Some(core) = self.core.borrow().as_ref().and_then(WeakCore::upgrade) {
-            core.install_panes(panes, counter);
+            core.install_panes(panes, counter, terminals);
         }
         let keep: Vec<String> = self.live.borrow().keys().cloned().collect();
         self.store.prune(&keep);
         self.changed.set(true);
         self.save_if_changed();
         for (keeper, pid, code) in exits {
-            if let Some((pane, _)) = self.exited(&keeper, pid, code) {
-                eprintln!("kanna-daemon: {pane} exited ({code}) while no daemon was running");
+            if let Some((terminal, _)) = self.exited(&keeper, pid, code) {
+                eprintln!("kanna-daemon: {terminal} exited ({code}) while no daemon was running");
             }
         }
         restored
     }
 
-    fn adopt(&self, id: &str, keeper: &str, pty: Adopted, snapshot: Option<Vec<u8>>) -> std::io::Result<Terminal> {
+    fn adopt(&self, id: &str, pane: &str, keeper: &str, pty: Adopted, snapshot: Option<Vec<u8>>) -> std::io::Result<Terminal> {
         let settings = self.settings();
         let restored = snapshot.and_then(|snapshot| match Feed::restore(&snapshot, &settings) {
             Ok(feed) => Some(feed),
@@ -443,9 +466,9 @@ impl Terminals {
             (cols, rows)
         };
         pty::set_size(&pty.master, cols, rows, 0, 0);
-        self.sizes.borrow_mut().insert(id.into(), (cols, rows));
+        self.sizes.borrow_mut().insert(pane.into(), (cols, rows));
         let serial = self.next_serial();
-        let terminal = self.run(id, keeper, serial, Spawned { pid: pty.pid, master: pty.master }, feed)?;
+        let terminal = self.run(id, pane, keeper, serial, Spawned { pid: pty.pid, master: pty.master }, feed)?;
         if let (None, Some(running)) = (pty.exit, &terminal.pty) {
             pty::redraw(&running.master);
         }
@@ -465,9 +488,10 @@ impl Terminals {
             let screen = Feed::lock(&feed);
             (screen.cols, screen.rows)
         };
-        self.sizes.borrow_mut().insert(record.id.clone(), (cols, rows));
+        self.sizes.borrow_mut().insert(record.pane.clone(), (cols, rows));
         self.store.track(&record.id, feed.clone());
         Ok(Terminal {
+            pane: record.pane.clone(),
             serial: self.next_serial(),
             pid: record.pid as i32,
             keeper: record.keeper.clone(),
@@ -483,20 +507,23 @@ impl Terminals {
 
 impl PaneHost for Terminals {
     fn start(&self, pane: &Pane) {
+        let Some(id) = pane.terminal.clone() else {
+            return self.report(&pane.id, PaneState::Failed, None, Some("no terminal ID to start".into()));
+        };
         let serial = self.next_serial();
-        let spec = self.spec(pane);
+        let spec = self.spec(pane, &id);
         self.set_status(&pane.id, None);
         let started = self.spawner.spawn(&spec).and_then(|spawned| {
             let feed = Feed::new(spec.cols, spec.rows, &self.settings())?;
-            self.run(&pane.id, &pane.id, serial, spawned, feed)
+            self.run(&id, &pane.id, &id, serial, spawned, feed)
         });
         match started {
             Ok(terminal) => {
                 let pid = terminal.pid;
-                self.live.borrow_mut().insert(pane.id.clone(), terminal);
+                self.live.borrow_mut().insert(id.clone(), terminal);
                 self.changed.set(true);
                 if let Some(on_start) = self.on_start.borrow().as_ref() {
-                    on_start(&pane.id);
+                    on_start(&id);
                 }
                 self.report_running(&pane.id, pid);
             }
@@ -508,15 +535,16 @@ impl PaneHost for Terminals {
     }
 
     fn stop(&self, pane: &Pane) {
-        let removed = self.live.borrow_mut().remove(&pane.id);
+        let id = Self::of(pane);
+        let removed = self.live.borrow_mut().remove(id);
         if let (Some(terminal), Some(detector)) = (&removed, self.detector.borrow().as_ref()) {
-            detector.forget(&pane.id, terminal.serial);
+            detector.forget(id, terminal.serial);
         }
         if let Some(terminal) = removed {
             if terminal.running().is_some() {
                 self.spawner.close(&terminal.keeper);
             }
-            self.store.forget(&pane.id);
+            self.store.forget(id);
             self.changed.set(true);
         }
         let restarting = self.core.borrow().as_ref().and_then(WeakCore::upgrade).is_some_and(|core| core.pane(&pane.id).is_some());
@@ -526,7 +554,7 @@ impl PaneHost for Terminals {
     }
 
     fn end(&self, pane: &Pane) {
-        let pid = self.live.borrow().get(&pane.id).filter(|t| t.exit_code.is_none()).map(|t| t.pid);
+        let pid = self.live.borrow().get(Self::of(pane)).filter(|t| t.exit_code.is_none()).map(|t| t.pid);
         if let Some(pid) = pid.filter(|pid| *pid > 0) {
             unsafe {
                 libc::kill(-pid, libc::SIGHUP);
@@ -538,7 +566,7 @@ impl PaneHost for Terminals {
     fn send(&self, pane: &Pane, text: &str, done: Responder) {
         let line = {
             let live = self.live.borrow();
-            live.get(&pane.id).and_then(|terminal| {
+            live.get(Self::of(pane)).and_then(|terminal| {
                 let pty = terminal.running()?;
                 let feed = Feed::lock(&terminal.feed);
                 Some(Line { label: pane.label(), text: feed.paste(text), enter: feed.enter(), input: pty.input.clone() })
@@ -565,7 +593,7 @@ impl PaneHost for Terminals {
 
     fn read(&self, pane: &Pane, lines: Option<usize>) -> Result<String, KmuxError> {
         let live = self.live.borrow();
-        let terminal = live.get(&pane.id).ok_or_else(|| KmuxError::new("bad_request", format!("{} has no terminal", pane.label())))?;
+        let terminal = live.get(Self::of(pane)).ok_or_else(|| KmuxError::new("bad_request", format!("{} has no terminal", pane.label())))?;
         let text = Feed::lock(&terminal.feed).text(lines);
         Ok(text)
     }
@@ -624,7 +652,7 @@ impl Terminals {
             KmuxError::new("bad_request", message)
         })?;
         let live = self.live.borrow();
-        let terminal = live.get(&pane.id).ok_or_else(|| KmuxError::new("bad_request", format!("{} has no terminal", pane.label())))?;
+        let terminal = live.get(Self::of(pane)).ok_or_else(|| KmuxError::new("bad_request", format!("{} has no terminal", pane.label())))?;
         let pty = terminal.running().ok_or_else(|| KmuxError::new("bad_request", format!("{} has exited", pane.label())))?;
         {
             let feed = Feed::lock(&terminal.feed);
@@ -638,7 +666,7 @@ impl Terminals {
         Ok(Presses { label: pane.label(), keys, feed: terminal.feed.clone(), input: pty.input.clone() })
     }
 
-    fn run(&self, id: &str, keeper: &str, serial: u64, spawned: Spawned, feed: Arc<Mutex<Feed>>) -> std::io::Result<Terminal> {
+    fn run(&self, id: &str, pane: &str, keeper: &str, serial: u64, spawned: Spawned, feed: Arc<Mutex<Feed>>) -> std::io::Result<Terminal> {
         let Spawned { pid, master } = spawned;
         let (input, inputs) = mpsc::channel::<Vec<u8>>();
         let reader = Reader::start(id, serial, master.try_clone()?, feed.clone(), input.clone(), self.events.clone())?;
@@ -655,6 +683,7 @@ impl Terminals {
             detector.watch(id, serial, feed.clone(), master.try_clone()?);
         }
         Ok(Terminal {
+            pane: pane.into(),
             serial,
             pid,
             keeper: keeper.into(),

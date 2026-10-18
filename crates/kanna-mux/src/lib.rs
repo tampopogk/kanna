@@ -27,7 +27,7 @@ pub use model::Model;
 pub use owner::{prune_state, LayoutOwner};
 pub use saved::LAYOUT_VERSION;
 pub use workspace::{Where, Workspace};
-pub use pane::{Comment, History, Pane, PaneState, PaneType, Panes};
+pub use pane::{terminal_number, Comment, History, Pane, PaneState, PaneType, Panes};
 pub use socket_server::{write_all, Handler, SocketServer, Takeover};
 pub use state::{pane_record, STATE_VERSION};
 pub use state_file::{Contents, StateFile};

@@ -1,9 +1,5 @@
-struct Pane: Hashable, Sendable {
-    let id: String
-}
-
 @MainActor
 protocol TerminalBackend: AnyObject {
-    func start(_ view: TerminalSurfaceView, pane: Pane) -> Bool
+    func start(_ view: TerminalSurfaceView, terminal: String) -> Bool
     func stop(_ view: TerminalSurfaceView)
 }

@@ -54,9 +54,9 @@ const LOCK_WAIT: Duration = Duration::from_secs(5);
 pub enum Event {
     Request(Value, Box<dyn FnOnce(Value) + Send>),
     Wake,
-    Output { pane: String, serial: u64 },
-    Drained { pane: String, serial: u64 },
-    Status { pane: String, serial: u64, status: Option<&'static str>, ended: bool },
+    Output { terminal: String, serial: u64 },
+    Drained { terminal: String, serial: u64 },
+    Status { terminal: String, serial: u64, status: Option<&'static str>, ended: bool },
     RulesUpdated { token: u64, report: kanna_detect::Report },
     Worktree { token: u64, result: Result<(String, String), String> },
     Finished { task: String, changes: Vec<db::Change> },
@@ -321,26 +321,24 @@ fn run() -> Result<(), String> {
                 None => core.handle(request, reply),
             },
             Event::Wake => {}
-            Event::Output { pane, serial } => {
-                let (taken, cwd) = terminals.output(&pane, serial);
-                if let Some(cwd) = cwd {
+            Event::Output { terminal, serial } => {
+                let (taken, cwd) = terminals.output(&terminal, serial);
+                if let (Some(cwd), Some(pane)) = (cwd, terminals.pane_of(&terminal)) {
                     app.folder(&pane, &cwd);
                 }
                 match taken {
-                    Some(Taken::Bytes(bytes)) => app.output(&pane, &bytes),
-                    Some(Taken::Overflowed) => app.resync(&pane),
+                    Some(Taken::Bytes(bytes)) => app.output(&terminal, &bytes),
+                    Some(Taken::Overflowed) => app.resync(&terminal),
                     None => {}
                 }
             }
-            Event::Drained { pane, serial } => {
-                if let Some(code) = terminals.drained(&pane, serial) {
-                    backlog.exited(&pane, code);
-                    app.exited(&pane, code);
-                    app.status(&pane, Some("exited"));
+            Event::Drained { terminal, serial } => {
+                if let Some(code) = terminals.drained(&terminal, serial) {
+                    ended(&terminals, &backlog, &app, &terminal, code);
                 }
             }
-            Event::Status { pane, serial, status, ended } => {
-                if terminals.current(&pane, serial) {
+            Event::Status { terminal, serial, status, ended } => {
+                if let Some(pane) = terminals.pane_of(&terminal).filter(|_| terminals.current(&terminal, serial)) {
                     core.with_pane_mut(&pane, |p| p.status = status.map(String::from));
                     app.status(&pane, status);
                     backlog.status(&pane, status, ended);
@@ -360,10 +358,8 @@ fn run() -> Result<(), String> {
                     Ok(exits) => {
                         for exit in exits {
                             let code = exit.status.shell_status();
-                            if let Some((pane, code)) = terminals.exited(&exit.id, exit.pid, code) {
-                                backlog.exited(&pane, code);
-                                app.exited(&pane, code);
-                                app.status(&pane, Some("exited"));
+                            if let Some((terminal, code)) = terminals.exited(&exit.id, exit.pid, code) {
+                                ended(&terminals, &backlog, &app, &terminal, code);
                             }
                         }
                     }
@@ -405,6 +401,14 @@ fn run() -> Result<(), String> {
     match failure {
         Some(reason) => Err(format!("{reason}; stopping")),
         None => Ok(()),
+    }
+}
+
+fn ended(terminals: &Terminals, backlog: &Rc<backlog::Backlog>, app: &AppLink, terminal: &str, code: i32) {
+    app.exited(terminal, code);
+    if let Some(pane) = terminals.pane_of(terminal) {
+        backlog.exited(&pane, code);
+        app.status(&pane, Some("exited"));
     }
 }
 

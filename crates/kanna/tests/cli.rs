@@ -478,8 +478,8 @@ fn the_daemon_names_its_instance_and_tells_its_terminals() {
     assert_eq!(capabilities["instance"], "default");
     assert_eq!(capabilities["mux"], "kmux");
     assert_eq!(capabilities["app"], false);
-    daemon.kanna(&["open", "--name", "env", "--cmd", "echo \"I=$KANNA_INSTANCE P=$KANNA_PANE S=$KANNA_SOCKET\"; exec sleep 60"]).ok();
-    let expected = "I=default P=p1 S=/";
+    daemon.kanna(&["open", "--name", "env", "--cmd", "echo \"I=$KANNA_INSTANCE T=$KANNA_TERMINAL P=${KANNA_PANE-none} S=$KANNA_SOCKET\"; exec sleep 60"]).ok();
+    let expected = "I=default T=term-1 P=none S=/";
     std::thread::sleep(std::time::Duration::from_secs(2));
     let screen = daemon.kanna(&["read", "env"]).ok();
     assert!(screen.contains(expected), "{screen}");

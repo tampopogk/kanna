@@ -280,7 +280,7 @@ impl AppLink {
             }
         }
         if !taken.is_empty() {
-            core.install_panes(taken, counter);
+            core.install_panes(taken, counter, 0);
         }
     }
 
@@ -354,25 +354,26 @@ impl AppLink {
             return Some(message);
         }
         let pane = string(&args, "pane").unwrap_or_default().to_string();
+        let terminal = string(&args, "terminal").unwrap_or_default().to_string();
         match string(&message, "cmd").unwrap_or_default() {
             "attach" => {
-                if !self.attached.borrow().contains(&pane) {
-                    self.attach(&pane);
+                if !self.attached.borrow().contains(&terminal) {
+                    self.attach(&terminal);
                 }
             }
             "detach" => {
-                self.attached.borrow_mut().remove(&pane);
-                self.unsent.borrow_mut().remove(&pane);
+                self.attached.borrow_mut().remove(&terminal);
+                self.unsent.borrow_mut().remove(&terminal);
             }
             "input" => {
                 if let Some(bytes) = string(&args, "data").and_then(|d| BASE64.decode(d).ok()) {
-                    self.terminals.write(&pane, bytes);
+                    self.terminals.write(&terminal, bytes);
                 }
             }
             "resize" => {
                 let field = |key: &str| args.get(key).and_then(Value::as_u64).unwrap_or(0).min(u16::MAX as u64) as u16;
-                if let Some((cols, rows)) = self.terminals.resize(&pane, field("cols"), field("rows"), field("width"), field("height")) {
-                    self.notify("grid", json!({ "pane": pane, "cols": cols, "rows": rows }));
+                if let Some((cols, rows)) = self.terminals.resize(&terminal, field("cols"), field("rows"), field("width"), field("height")) {
+                    self.notify("grid", json!({ "terminal": terminal, "cols": cols, "rows": rows }));
                 }
             }
             "update" => self.updated(&pane, &args),
@@ -465,8 +466,8 @@ impl AppLink {
         };
         self.unsent.borrow_mut().remove(pane);
         if self.shows(pane) {
-            self.notify("snapshot", json!({ "pane": pane, "data": BASE64.encode(&snapshot) }));
-            self.notify("grid", json!({ "pane": pane, "cols": attach.cols, "rows": attach.rows }));
+            self.notify("snapshot", json!({ "terminal": pane, "data": BASE64.encode(&snapshot) }));
+            self.notify("grid", json!({ "terminal": pane, "cols": attach.cols, "rows": attach.rows }));
         }
         if let Some(code) = attach.exit_code {
             self.exited(pane, code);
@@ -480,7 +481,7 @@ impl AppLink {
         if self.unsent.borrow().contains_key(pane) {
             return;
         }
-        self.notify("output", json!({ "pane": pane, "data": BASE64.encode(bytes) }));
+        self.notify("output", json!({ "terminal": pane, "data": BASE64.encode(bytes) }));
     }
 
     pub fn exited(&self, pane: &str, code: i32) {
@@ -490,15 +491,14 @@ impl AppLink {
         if self.unsent.borrow().contains_key(pane) {
             return;
         }
-        self.notify("exited", json!({ "pane": pane, "code": code }));
+        self.notify("exited", json!({ "terminal": pane, "code": code }));
     }
 
-    pub fn started(&self, pane: &str) {
-        if self.shows(pane) {
-            self.attach(pane);
-        }
-        if let Some(cwd) = self.core.upgrade().and_then(|core| core.pane(pane)).and_then(|p| p.cwd) {
-            self.folder(pane, &cwd);
+    pub fn started(&self, terminal: &str) {
+        let Some(pane) = self.core.upgrade().and_then(|core| core.pane(terminal)) else { return };
+        self.notify("pane", json!({ "pane": Value::Object(pane_record(&pane)) }));
+        if let Some(cwd) = &pane.cwd {
+            self.folder(&pane.id, cwd);
         }
     }
 

@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 
 pub const ACTIONS: &[&str] = &["comments", "show", "reply", "resolve", "reopen"];
 
-pub fn run(request: &Value, json_output: bool) -> Result<(), Failure> {
+pub fn run(request: &Value, json_output: bool, callers: &[String]) -> Result<(), Failure> {
     let action = request["local"].as_str().unwrap_or_default();
     let id = request["id"].as_str();
-    let file = find(request["doc"].as_str(), id)?;
+    let file = find(request["doc"].as_str(), id, callers)?;
     match action {
         "comments" => {
             let doc = with_lines(read(&file));
@@ -145,14 +145,13 @@ fn docs_in(root: &Path) -> Vec<Value> {
     found.into_iter().map(|(_, doc)| doc).collect()
 }
 
-pub fn find(doc: Option<&str>, id: Option<&str>) -> Result<PathBuf, Failure> {
+pub fn find(doc: Option<&str>, id: Option<&str>, callers: &[String]) -> Result<PathBuf, Failure> {
     if let Some(doc) = doc {
         return Ok(PathBuf::from(crate::commands::absolute(doc)));
     }
     let here = std::env::current_dir().unwrap_or_default();
     let docs = docs_in(&repo_root(&here.join(".")));
-    let pane = std::env::var("KANNA_PANE").ok().filter(|p| !p.is_empty());
-    let mine: Vec<&Value> = docs.iter().filter(|d| pane.is_some() && d["agent"].as_str() == pane.as_deref()).collect();
+    let mine: Vec<&Value> = docs.iter().filter(|d| d["agent"].as_str().is_some_and(|agent| callers.iter().any(|c| c == agent))).collect();
     for group in [mine, docs.iter().collect()] {
         for doc in group {
             if id.is_none_or(|id| threads(doc).iter().any(|t| t["id"] == id)) {
@@ -168,7 +167,7 @@ pub fn find(doc: Option<&str>, id: Option<&str>) -> Result<PathBuf, Failure> {
 
 pub fn open_threads(all: bool) -> Vec<(String, String)> {
     let here = std::env::current_dir().unwrap_or_default();
-    let pane = std::env::var("KANNA_PANE").ok().filter(|p| !p.is_empty());
+    let pane = crate::commands::caller();
     let docs = docs_in(&repo_root(&here.join(".")));
     let mine: Vec<&Value> = docs.iter().filter(|d| pane.is_some() && d["agent"].as_str() == pane.as_deref()).collect();
     let chosen = if mine.is_empty() { docs.iter().collect() } else { mine };
@@ -353,8 +352,8 @@ mod tests {
               "messages": [{ "who": "you", "text": "Why?", "at": "2026-10-11T09:00:00" }] }
         ] });
         std::fs::write(store_path(&file), saved.to_string()).unwrap();
-        run(&json!({ "local": "reply", "id": "c1", "text": "Because.", "doc": file }), false).unwrap();
-        run(&json!({ "local": "resolve", "id": "c1", "doc": file }), false).unwrap();
+        run(&json!({ "local": "reply", "id": "c1", "text": "Because.", "doc": file }), false, &[]).unwrap();
+        run(&json!({ "local": "resolve", "id": "c1", "doc": file }), false, &[]).unwrap();
         let doc = read(&file);
         let thread = &doc["threads"][0];
         assert_eq!((doc["custom"].clone(), thread["extra"].clone()), (json!(7), json!(true)));
@@ -364,7 +363,7 @@ mod tests {
         let shown = with_lines(read(&file));
         assert_eq!(shown["threads"][0]["line"], 3);
         assert!(show(&shown["threads"][0], "docs/specs/desk.md").starts_with("c1 · docs/specs/desk.md:3 · resolved\n> The Shelf holds\nyou: Why?\nagent: Because."));
-        assert!(run(&json!({ "local": "reply", "id": "c9", "text": "x", "doc": file }), false).is_err());
+        assert!(run(&json!({ "local": "reply", "id": "c9", "text": "x", "doc": file }), false, &[]).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -385,7 +384,7 @@ mod tests {
         std::os::unix::fs::symlink(&target, linked.join(".kanna")).unwrap();
         let doc = linked.join("docs/specs/desk.md");
         std::fs::write(&doc, "# Desk\n").unwrap();
-        assert!(run(&json!({ "local": "resolve", "id": "c1", "doc": doc }), false).is_err() || !target.join("docs").exists());
+        assert!(run(&json!({ "local": "resolve", "id": "c1", "doc": doc }), false, &[]).is_err() || !target.join("docs").exists());
         assert!(!target.join("docs").exists());
         assert_eq!(printable("ok\u{1b}]52;c;x\u{7}\nnext\u{9b}2J"), "ok]52;c;x\nnext2J");
         std::fs::remove_dir_all(&dir).unwrap();

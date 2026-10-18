@@ -29,7 +29,8 @@ fn an_agent_goes_working_needs_you_idle_and_exited_in_list_and_on_the_app_link()
             }
         }
     });
-    let pane = instance.open("agent", Some(&mock_agent()));
+    instance.open("agent", Some(&mock_agent()));
+    let pane = instance.pane("agent")["id"].as_str().unwrap().to_string();
     becomes(&instance, "agent", "idle");
     instance.call("send", json!({"pane": "agent", "text": "turn"}));
     becomes(&instance, "agent", "working");

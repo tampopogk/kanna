@@ -301,7 +301,7 @@ pub static COMMANDS: &[Command] = &[
         summary: "Show your workspace as it will be seen: its dock, tabs and panes, which tab is shown, the focus and the zoom.",
         usage: "kanna workspace list [--all]",
         options: &[("--all", "Every window, workspace and pane, not just your own.")],
-        notes: "Your workspace is the one your terminal ($KANNA_PANE) is in, on a Desk, on the Shelf or in the backlog: its ID (ws-3), its task, where it is, its docked pane, the focused pane (and whether it's zoomed), its tabs with `*` on the shown one, and its own windows. From a pane in a window that's no workspace's, it's that window. Layouts are written as `a:2/3 | b` (side by side) and `a / b` (stacked).\nWith --all: every window and what it shows, every workspace, free windows' tabs, and panes in no window. With Kanna.app closed there are no windows, and the terminals, which keep running, are listed alone. --json prints the reply: your own windows, workspace and panes, or with --all all of them.",
+        notes: "Your workspace is the one your terminal ($KANNA_TERMINAL) is in, on a Desk, on the Shelf or in the backlog: its ID (ws-3), its task, where it is, its docked pane, the focused pane (and whether it's zoomed), its tabs with `*` on the shown one, and its own windows. From a pane in a window that's no workspace's, it's that window. Layouts are written as `a:2/3 | b` (side by side) and `a / b` (stacked).\nWith --all: every window and what it shows, every workspace, free windows' tabs, and panes in no window. With Kanna.app closed there are no windows, and the terminals, which keep running, are listed alone. --json prints the reply: your own windows, workspace and panes, or with --all all of them.",
         examples: &[
             ("kanna workspace list", "See your workspace as the user will when they pull your task."),
             ("kanna workspace list --all", "See every window, workspace and pane."),
@@ -397,7 +397,7 @@ pub static COMMANDS: &[Command] = &[
                     if let Some(after) = after {
                         out["after"] = json!(after);
                     }
-                    if let Some(by) = std::env::var("KANNA_PANE").ok().filter(|p| !p.is_empty()) {
+                    if let Some(by) = caller() {
                         out["by"] = json!(by);
                     }
                 }
@@ -416,32 +416,32 @@ pub static COMMANDS: &[Command] = &[
                     if window.is_some() {
                         return Err(usage("task", "stop takes a TASK, not --window"));
                     }
-                    let task = args.positional().or_else(|| std::env::var("KANNA_PANE").ok().filter(|p| !p.is_empty()));
+                    let task = args.positional().or_else(|| caller());
                     out["task"] = json!(task.ok_or_else(|| usage("task", "stop needs a TASK, or run it from the task's terminal"))?);
                 }
                 "setup" => {
                     if window.is_some() {
                         return Err(usage("task", "setup takes a TASK, not --window"));
                     }
-                    let task = args.positional().or_else(|| std::env::var("KANNA_PANE").ok().filter(|p| !p.is_empty()));
+                    let task = args.positional().or_else(|| caller());
                     out["task"] = json!(task.ok_or_else(|| usage("task", "setup needs a TASK, or run it from the task's terminal"))?);
                 }
                 "park" => {
-                    let task = args.positional().or_else(|| if window.is_none() { std::env::var("KANNA_PANE").ok().filter(|p| !p.is_empty()) } else { None });
+                    let task = args.positional().or_else(|| if window.is_none() { caller() } else { None });
                     if let Some(task) = task {
                         out["task"] = json!(task);
                     }
                 }
                 "pull" => out["task"] = json!(args.positional().ok_or_else(|| usage("task", "pull needs a TASK (see `kanna task list`)"))?),
                 "defer" => {
-                    let task = args.positional().or_else(|| std::env::var("KANNA_PANE").ok().filter(|p| !p.is_empty()));
+                    let task = args.positional().or_else(|| caller());
                     out["task"] = json!(task.ok_or_else(|| usage("task", "defer needs a TASK, or run it from the task's terminal"))?);
                 }
                 "name" => {
                     let first = args.positional().ok_or_else(|| usage("task", "name needs a NAME: kanna task name [TASK] NAME"))?;
                     let (task, name) = match args.positional() {
                         Some(name) => (first, name),
-                        None => (std::env::var("KANNA_PANE").ok().filter(|p| !p.is_empty()).ok_or_else(|| usage("task", "say which task: kanna task name TASK NAME"))?, first),
+                        None => (caller().ok_or_else(|| usage("task", "say which task: kanna task name TASK NAME"))?, first),
                     };
                     out["task"] = json!(task);
                     out["name"] = json!(name);
@@ -453,7 +453,7 @@ pub static COMMANDS: &[Command] = &[
                     if args.flag("--keep") {
                         out["keep"] = json!(true);
                     }
-                    let task = args.positional().or_else(|| std::env::var("KANNA_PANE").ok().filter(|p| !p.is_empty()));
+                    let task = args.positional().or_else(|| caller());
                     out["task"] = json!(task.ok_or_else(|| usage("task", "done needs a TASK (see `kanna task list`)"))?);
                 }
                 other => return Err(usage("task", &format!("unknown action \"{other}\" (new, edit, start, stop, setup, shelve, list, park, pull, defer, name or done)"))),
@@ -462,7 +462,7 @@ pub static COMMANDS: &[Command] = &[
                 out["window"] = json!(window);
             }
             if ["edit", "start", "stop", "setup", "shelve", "defer", "done", "park", "pull"].contains(&action.as_str()) || (action == "name" && out.get("task").is_some()) {
-                if let Some(by) = std::env::var("KANNA_PANE").ok().filter(|p| !p.is_empty()) {
+                if let Some(by) = caller() {
                     out["by"] = json!(by);
                 }
             }
@@ -667,7 +667,7 @@ fn parse_markup(args: &mut Argv) -> Result<Value, Failure> {
     }
     let target = args.positional().ok_or_else(|| usage("markup", "say what: kanna markup FILE.md, kanna markup FILE.html or kanna markup PANE"))?;
     let lower = target.to_lowercase();
-    let agent = to.or_else(|| std::env::var("KANNA_PANE").ok().filter(|pane| !pane.is_empty()));
+    let agent = to.or_else(|| caller());
     let page = lower.ends_with(".html") || lower.ends_with(".htm");
     if !is_markdown(&target) && !page {
         if !out.is_empty() {
@@ -736,7 +736,7 @@ fn parse_quiz(args: &mut Argv) -> Result<Value, Failure> {
         }
         "start" => {
             out["head"] = json!(main_commit(&repo)?);
-            if let Some(by) = std::env::var("KANNA_PANE").ok().filter(|p| !p.is_empty()) {
+            if let Some(by) = caller() {
                 out["by"] = json!(by);
             }
         }
@@ -811,11 +811,15 @@ fn repo_here() -> Result<String, Failure> {
     }
 }
 
+pub fn caller() -> Option<String> {
+    ["KANNA_TERMINAL", "KANNA_PANE"].into_iter().find_map(|key| std::env::var(key).ok().filter(|id| !id.is_empty()))
+}
+
 fn from_caller(out: &mut Map<String, Value>) {
     if out.contains_key("dock") {
         return;
     }
-    if let Some(pane) = std::env::var("KANNA_PANE").ok().filter(|pane| !pane.is_empty()) {
+    if let Some(pane) = caller() {
         out.insert("from".into(), json!(pane));
     }
 }
@@ -828,7 +832,7 @@ fn parse_workspace(args: &mut Argv) -> Result<Value, Failure> {
     if args.flag("--all") {
         return Ok(json!({ "action": "list", "all": true }));
     }
-    Ok(match std::env::var("KANNA_PANE").ok().filter(|p| !p.is_empty()) {
+    Ok(match caller() {
         Some(pane) => json!({ "action": "list", "pane": pane }),
         None => json!({ "action": "list" }),
     })
@@ -898,7 +902,7 @@ fn parse_comment(args: &mut Argv) -> Result<Value, Failure> {
             return Err(usage("comment", "a comment on a markdown file is on the block at one line: FILE.md:LINE"));
         }
         out.insert("doc".into(), json!(true));
-        if let Some(agent) = std::env::var("KANNA_PANE").ok().filter(|pane| !pane.is_empty()) {
+        if let Some(agent) = caller() {
             out.insert("agent".into(), json!(agent));
         }
     }

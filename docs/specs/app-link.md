@@ -28,14 +28,14 @@ sequenceDiagram
     A->>D: app.hello
     D->>A: ok, panes p1 p2
     Note over A: restore layout.json, drop panes that are gone, place the new ones
-    A->>D: attach p1
-    D->>A: snapshot p1 (the screen, GHOSTSNP)
-    D->>A: grid p1 80×24
-    A->>D: resize p1 to fit the view
-    D->>A: grid p1 (the size it now has)
+    A->>D: attach term-1 (p1's terminal)
+    D->>A: snapshot term-1 (the screen, GHOSTSNP)
+    D->>A: grid term-1 80×24
+    A->>D: resize term-1 to fit the view
+    D->>A: grid term-1 (the size it now has)
     Note over A,D: from now on, both ways
-    A->>D: input p1 (keystrokes)
-    D->>A: output p1 (what the program wrote)
+    A->>D: input term-1 (keystrokes)
+    D->>A: output term-1 (what the program wrote)
     C->>D: open --split right
     D->>A: layout {op: place, pane p3, at: right}
     A->>D: ok {window w1, tab t1}
@@ -52,17 +52,17 @@ sequenceDiagram
 |---|---|---|
 | `app.hello {pid, build}` | app | I'm the app, of this build; the reply accepts or refuses it (`app_attached`, `other_build`) and lists the daemon's terminals |
 | `layout {op, …, panes}` (with an `id`) | daemon | one step of a command on the layout ([layout](layout.md#2-layout-steps)); the app's reply is the step's answer |
-| `attach {pane}` / `detach {pane}` | app | I show (or no longer show) this terminal |
-| `snapshot {pane, data}` | daemon | the terminal's whole screen as a GHOSTSNP snapshot; sent on attach, before anything else for that pane |
-| `grid {pane, cols, rows}` | daemon | the terminal's size, after a snapshot or a resize |
-| `output {pane, data}` | daemon | bytes the program wrote since the snapshot |
-| `exited {pane, code}` | daemon | the program ended |
+| `attach {terminal}` / `detach {terminal}` | app | I show (or no longer show) this terminal, by its terminal ID (`term-41`, [presentation layers](presentation-layers.md#3-ids)) |
+| `snapshot {terminal, data}` | daemon | the terminal's whole screen as a GHOSTSNP snapshot; sent on attach, before anything else for that terminal |
+| `grid {terminal, cols, rows}` | daemon | the terminal's size, after a snapshot or a resize |
+| `output {terminal, data}` | daemon | bytes the program wrote since the snapshot |
+| `exited {terminal, code}` | daemon | the program ended |
 | `status {pane, status}` | daemon | an agent pane's status changed (`working`, `needs-you`, `idle`), a terminal ended (`exited`), or `null` when it's no longer an agent; for every terminal, shown or not, and once per pane after `app.hello` ([agent status](agent-status.md)) |
-| `input {pane, data}` | app | bytes the view wrote: keys, paste, mouse and focus reports |
-| `resize {pane, cols, rows, width, height}` | app | the view now fits this many cells (and pixels) |
+| `input {terminal, data}` | app | bytes the view wrote: keys, paste, mouse and focus reports |
+| `resize {terminal, cols, rows, width, height}` | app | the view now fits this many cells (and pixels) |
 | `settings {foreground, background, cursor, palette, scheme, cursorStyle, cursorBlink, graphemes}` | app | the terminal settings from the app's Ghostty config, sent before any attach and again when the config or appearance changes ([terminal](terminal.md#2-the-config)) |
 | `debug.*` (with an `id`) | daemon | a request from a client, passed on; the app's reply is the client's |
-| `start`, `stop`, `pane`; `update`; the app's own requests | both | web, markdown and iOS panes ([app panes](app-panes.md)) |
+| `start`, `stop`, `pane`; `update`; the app's own requests | both | web, markdown and iOS panes ([app panes](app-panes.md)); `pane` also tells the app a terminal pane's new `terminal` when it starts again, and the app makes a new view for it |
 | `diff.subscribe {view, path, args}` (with an `id`), `diff.show {view, show}`, `diff.unsubscribe {view}` | app | this view shows the diff of that folder and git arguments; the reply has its content ID and latest diff ([diff viewer](diff-viewer.md#5-how-its-built)) |
 | `diff {content, serial, diff, updating}` | daemon | a subscribed diff changed |
 
@@ -77,7 +77,7 @@ sequenceDiagram
 - **The layout is the app's:** the daemon keeps none and asks the app for every layout step ([layout](layout.md)).
 - **Screens:** the daemon keeps each terminal's screen with libghostty-vt (`crates/kanna-vt`), fed from the pty, with up to 10 MB of scrollback. `read` answers from it, so it works with the app closed.
 - **Queries are answered once, by the daemon.** Cursor position, device status and attributes, modes, size reports and XTVERSION are answered by the daemon's screen, written back to the pty as they're parsed, whether or not the app is attached. The app's surfaces parse the same output but drop their replies, so the program never gets two. Colour queries and scheme reports are answered from the app's `settings` ([terminal](terminal.md)).
-- **Attaching:** the daemon takes the snapshot on its main loop under the lock the pty reader feeds the screen and the outbox with, and empties the outbox as it does: what the snapshot has isn't sent again, and every later byte follows as `output`. The app loads the snapshot (`ghostty_surface_load_snapshot`), then applies the `grid` that follows; both go through the same queue as output, in order. A restarted terminal is attached the same way, and the app, having had `exited` for it, attaches a new surface instead of loading the snapshot into the exited one ([terminal](terminal.md#4-the-apps-terminal-views)).
+- **Attaching:** the daemon takes the snapshot on its main loop under the lock the pty reader feeds the screen and the outbox with, and empties the outbox as it does: what the snapshot has isn't sent again, and every later byte follows as `output`. The app loads the snapshot (`ghostty_surface_load_snapshot`), then applies the `grid` that follows; both go through the same queue as output, in order. A terminal started again (`restart`, a task started again) is a new terminal with a new ID: the daemon tells the app with `pane`, and the app stops the old surface and attaches a new one to the new ID ([terminal](terminal.md#4-the-apps-terminal-views)).
 - **When a snapshot fails:** inside some unfinished sequences (an APC holding a C1 byte) libghostty-vt can't encode one. The daemon then sends nothing for that pane and tries again after the terminal's next output, or when it exits. If the app's surface refuses a snapshot (a full mailbox), it retries every 2 ms; after 250 refusals it goes on with the live output.
 
 ## 4. The app starts the daemon

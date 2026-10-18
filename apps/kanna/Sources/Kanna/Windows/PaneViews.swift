@@ -3,13 +3,14 @@ import AppKit
 @MainActor
 final class PaneViews {
     private var views: [String: PaneView] = [:]
-    private var running: Set<String> = []
+    private var running: [String: String] = [:]
     private let contents: Contents
     private let terminals: TerminalBackend
     var onFocus: ((String) -> Void)?
     var onDrag: ((String) -> Void)?
     var onClose: ((String) -> Void)?
     var contextMenu: (() -> NSMenu?)?
+    var terminalOf: ((String) -> String?)?
 
     init(contents: Contents, terminals: TerminalBackend) {
         self.contents = contents
@@ -36,26 +37,31 @@ final class PaneViews {
     }
 
     func started(_ id: String) {
-        guard !running.contains(id), let view = views[id] else { return }
-        running.insert(id)
-        guard let terminal = view.terminal else { return }
-        start(terminal, in: view)
+        guard let view = views[id], let surface = view.terminal else { return }
+        guard let wanted = terminalOf?(id) else { return }
+        switch running[id] {
+        case wanted: return
+        case nil: start(surface, wanted, in: view)
+        default: renew(id, wanted, in: view)
+        }
     }
 
-    func renew(_ id: String) -> Bool {
-        guard running.contains(id), let view = views[id], let old = view.terminal else { return false }
+    private func renew(_ id: String, _ wanted: String, in view: PaneView) {
+        guard let old = view.terminal else { return }
         let keyboard = old.window?.firstResponder === old
         terminals.stop(old)
         let terminal = terminal(for: id)
         view.replace(terminal)
         view.message = nil
-        start(terminal, in: view)
+        start(terminal, wanted, in: view)
         if keyboard { view.window?.makeFirstResponder(terminal) }
-        return true
     }
 
-    private func start(_ terminal: TerminalSurfaceView, in view: PaneView) {
-        if !terminals.start(terminal, pane: Pane(id: view.id)) {
+    func pane(showing terminal: String) -> String? { running.first { $0.value == terminal }?.key }
+
+    private func start(_ terminal: TerminalSurfaceView, _ id: String, in view: PaneView) {
+        running[view.id] = id
+        if !terminals.start(terminal, terminal: id) {
             view.message = "failed: the terminal surface could not be created"
             FileHandle.standardError.write(Data("kanna: the terminal surface for \(view.id) could not be created\n".utf8))
         }
@@ -63,16 +69,16 @@ final class PaneViews {
 
     func keep(_ ids: Set<String>) {
         for (id, view) in views where !ids.contains(id) {
-            if let terminal = view.terminal, running.contains(id) { terminals.stop(terminal) }
+            if let terminal = view.terminal, running[id] != nil { terminals.stop(terminal) }
             if view.terminal == nil { contents.forget(id) }
             view.removeFromSuperview()
             views.removeValue(forKey: id)
-            running.remove(id)
+            running.removeValue(forKey: id)
         }
     }
 
     func stopAll() {
-        for (id, view) in views where running.contains(id) {
+        for (id, view) in views where running[id] != nil {
             if let terminal = view.terminal { terminals.stop(terminal) }
         }
         running.removeAll()

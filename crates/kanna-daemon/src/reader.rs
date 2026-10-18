@@ -281,7 +281,7 @@ struct Pty {
 
 impl Pty {
     fn drained(&self) -> bool {
-        self.events.send(Event::Drained { pane: self.pane.clone(), serial: self.serial }).is_ok()
+        self.events.send(Event::Drained { terminal: self.pane.clone(), serial: self.serial }).is_ok()
     }
 }
 
@@ -340,7 +340,7 @@ fn read(mut pty: Pty) {
         if !replies.is_empty() {
             let _ = pty.replies.send(replies);
         }
-        if post && pty.events.send(Event::Output { pane: pty.pane.clone(), serial: pty.serial }).is_err() {
+        if post && pty.events.send(Event::Output { terminal: pty.pane.clone(), serial: pty.serial }).is_err() {
             return;
         }
     }

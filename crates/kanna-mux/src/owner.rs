@@ -82,7 +82,7 @@ impl LayoutOwner {
     pub fn serve(&mut self, request: &Value) -> Result<Map, KmuxError> {
         if let Some(table) = request.get("panes") {
             let panes = read_pane_table(table)?;
-            self.panes.install(panes, 0);
+            self.panes.install(panes, 0, 0);
         }
         if string(request, "op") == Some("place") {
             if let [pane] = read_pane_table(&Value::Array(vec![request.get("pane").cloned().unwrap_or(Value::Null)]))?.as_slice() {
@@ -141,13 +141,13 @@ impl LayoutOwner {
     fn learn(&mut self, pane: Pane) {
         let mut panes: Vec<Pane> = self.panes.iter().filter(|p| p.id != pane.id).cloned().collect();
         panes.push(pane);
-        self.panes.install(panes, 0);
+        self.panes.install(panes, 0, 0);
     }
 
     pub fn attach(&mut self, live: &Value) -> Result<Map, KmuxError> {
         let live = read_pane_table(live)?;
         let ids: HashSet<String> = live.iter().map(|p| p.id.clone()).collect();
-        self.panes.install(live.clone(), 0);
+        self.panes.install(live.clone(), 0, 0);
         let mut problem = None;
         if let Some(saved) = self.saved.take() {
             let pruned = prune_state(&saved, &ids);
@@ -287,7 +287,7 @@ impl LayoutOwner {
         };
         let placed: HashSet<String> = self.placed().into_iter().collect();
         let mut panes = Panes::default();
-        panes.install(self.panes.iter().filter(|p| placed.contains(&p.id)).cloned().collect(), 0);
+        panes.install(self.panes.iter().filter(|p| placed.contains(&p.id)).cloned().collect(), 0, 0);
         let counter = panes.iter().filter_map(|p| number_in(&p.id, "p")).max().unwrap_or(0);
         counters.insert("pane".into(), num(counter as f64));
         out.insert("kmux".into(), "state".into());

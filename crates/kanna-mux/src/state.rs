@@ -30,6 +30,7 @@ pub fn pane_record(pane: &Pane) -> Map {
     out.insert("type".into(), pane.kind.as_str().into());
     match pane.kind {
         PaneType::Term => {
+            out.insert("terminal".into(), opt(pane.terminal.as_deref()));
             out.insert("cmd".into(), opt(pane.command.as_deref()));
             out.insert("cwd".into(), opt(pane.cwd.as_deref()));
             out.insert("session".into(), opt(pane.session.as_deref()));
@@ -93,6 +94,7 @@ pub fn read_record(item: &Value, id: &str, kind: PaneType) -> Pane {
             pane.command = field("cmd");
             pane.cwd = field("cwd");
             pane.session = field("session");
+            pane.terminal = field("terminal");
         }
         PaneType::Web => {
             pane.url = field("url");

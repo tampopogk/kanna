@@ -6,7 +6,6 @@ final class DaemonLink: TerminalLink {
     private let commands: Commands
     private var terminals: [String: ExternalTerminal] = [:]
     private var sizes: [String: JSON] = [:]
-    private var exited: Set<String> = []
     private(set) var attached = false
     var onAttach: ((JSON) -> Void)?
     var onLayout: ((JSON) -> JSON)?
@@ -16,7 +15,6 @@ final class DaemonLink: TerminalLink {
     var onPane: ((JSON) -> Void)?
     var onExited: ((String, Int32) -> Void)?
     var onSnapshot: ((String) -> Void)?
-    var onRestart: ((String) -> Bool)?
     var onStatus: ((String, String?) -> Void)?
     var onFolder: ((String, String) -> Void)?
     var onBacklog: (([JSON]) -> Void)?
@@ -53,10 +51,9 @@ final class DaemonLink: TerminalLink {
     private func connected() {
         starter?.connected()
         if let settings = GhosttyRuntime.shared?.settings { send("settings", settings.objectFields) }
-        exited.removeAll()
-        for pane in terminals.keys.sorted() {
-            send("attach", ["pane": .string(pane)])
-            if case .object(let size)? = sizes[pane] { send("resize", size) }
+        for terminal in terminals.keys.sorted() {
+            send("attach", ["terminal": .string(terminal)])
+            if case .object(let size)? = sizes[terminal] { send("resize", size) }
         }
     }
 
@@ -107,7 +104,7 @@ final class DaemonLink: TerminalLink {
             return
         }
         let args = message["args"] ?? [:]
-        let terminal = args["pane"]?.string.flatMap { terminals[$0] }
+        let terminal = args["terminal"]?.string.flatMap { terminals[$0] }
         switch cmd {
         case "start":
             if let pane = args["pane"] { onStart?(pane) }
@@ -121,8 +118,7 @@ final class DaemonLink: TerminalLink {
                 terminal.output(data) { connection.consumed(delivery) }
             }
         case "snapshot":
-            if let pane = args["pane"]?.string, exited.remove(pane) != nil, onRestart?(pane) == true { return }
-            if let pane = args["pane"]?.string { onSnapshot?(pane) }
+            if let id = args["terminal"]?.string { onSnapshot?(id) }
             if let terminal, let data = args["data"]?.string.flatMap({ Data(base64Encoded: $0) }) {
                 consumed = false
                 terminal.loadSnapshot(data) { connection.consumed(delivery) }
@@ -134,10 +130,7 @@ final class DaemonLink: TerminalLink {
         case "exited":
             if let code = args["code"]?.number.flatMap({ Int32(exactly: $0) }) {
                 terminal?.exited(status: code)
-                if let pane = args["pane"]?.string {
-                    if terminal != nil { exited.insert(pane) }
-                    onExited?(pane, code)
-                }
+                if let id = args["terminal"]?.string { onExited?(id, code) }
             }
         case "status":
             if let pane = args["pane"]?.string { onStatus?(pane, args["status"]?.string) }
@@ -174,18 +167,18 @@ final class DaemonLink: TerminalLink {
     }
 
     func opened(_ terminal: ExternalTerminal) {
-        terminals[terminal.pane.id] = terminal
-        send("attach", ["pane": .string(terminal.pane.id)])
+        terminals[terminal.id] = terminal
+        send("attach", ["terminal": .string(terminal.id)])
     }
 
     func input(_ bytes: Data, from terminal: ExternalTerminal) {
-        send("input", ["pane": .string(terminal.pane.id), "data": .string(bytes.base64EncodedString())])
+        send("input", ["terminal": .string(terminal.id), "data": .string(bytes.base64EncodedString())])
     }
 
     func resizeRequested(_ terminal: ExternalTerminal, cols: UInt16, rows: UInt16, width: UInt32, height: UInt32) {
-        let size: [String: JSON] = ["pane": .string(terminal.pane.id), "cols": .number(Double(cols)), "rows": .number(Double(rows)),
+        let size: [String: JSON] = ["terminal": .string(terminal.id), "cols": .number(Double(cols)), "rows": .number(Double(rows)),
                                     "width": .number(Double(width)), "height": .number(Double(height))]
-        sizes[terminal.pane.id] = .object(size)
+        sizes[terminal.id] = .object(size)
         send("resize", size)
     }
 
@@ -194,9 +187,8 @@ final class DaemonLink: TerminalLink {
     }
 
     func closed(_ terminal: ExternalTerminal) {
-        terminals.removeValue(forKey: terminal.pane.id)
-        sizes.removeValue(forKey: terminal.pane.id)
-        exited.remove(terminal.pane.id)
-        send("detach", ["pane": .string(terminal.pane.id)])
+        terminals.removeValue(forKey: terminal.id)
+        sizes.removeValue(forKey: terminal.id)
+        send("detach", ["terminal": .string(terminal.id)])
     }
 }

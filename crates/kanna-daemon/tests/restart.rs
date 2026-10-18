@@ -31,14 +31,14 @@ fn a_restart_keeps_a_running_shell_its_screen_and_what_it_wrote_meanwhile() {
     instance.start_again();
 
     let shell = instance.pane("shell");
-    assert_eq!((shell["id"].as_str(), shell["pid"].as_i64(), shell["state"].as_str()), (Some(pane.as_str()), Some(pid), Some("running")), "{shell}");
+    assert_eq!((shell["terminal"].as_str(), shell["pid"].as_i64(), shell["state"].as_str()), (Some(pane.as_str()), Some(pid), Some("running")), "{shell}");
     assert!(shows(&instance, &pane, "before-42"), "{}", instance.screen(&pane));
     wait_for("what the shell wrote while the daemon was down", || shows(&instance, &pane, "during-42"));
     instance.call("send", json!({"pane": "shell", "text": "echo after-$((6*7))"}));
     wait_for("the shell to answer again", || shows(&instance, &pane, "after-42"));
 
     let mut app = instance.app();
-    app.tell("attach", json!({"pane": pane}));
+    app.tell("attach", json!({"terminal": pane}));
     let snapshot = app.until("the snapshot", |m| is(m, "snapshot", &pane));
     let replica = Terminal::from_snapshot(&data(&snapshot)).unwrap().text(Lines::Screen);
     assert!(replica.contains("before-42") && replica.contains("during-42") && replica.contains("after-42"), "{replica}");
@@ -80,7 +80,7 @@ fn an_exit_while_the_daemon_is_down_is_reported_after_it_comes_back() {
     assert!(shows(&instance, &early, "early-out"), "{}", instance.screen(&early));
 
     let mut app = instance.app();
-    app.tell("attach", json!({"pane": late}));
+    app.tell("attach", json!({"terminal": late}));
     let exited = app.until("late's exit", |m| is(m, "exited", &late));
     assert_eq!(exited["args"]["code"], 7, "{exited}");
 
@@ -103,29 +103,34 @@ fn a_crashed_daemon_loses_nothing_it_had_saved() {
 
     instance.restart(libc::SIGKILL);
     let shell = instance.pane("shell");
-    assert_eq!((shell["id"].as_str(), shell["pid"].as_i64()), (Some(pane.as_str()), Some(pid)), "{shell}");
+    assert_eq!((shell["terminal"].as_str(), shell["pid"].as_i64()), (Some(pane.as_str()), Some(pid)), "{shell}");
     assert!(shows(&instance, &pane, "saved-42"), "{}", instance.screen(&pane));
     instance.call("send", json!({"pane": "shell", "text": "echo again-$((6*7))"}));
     wait_for("the shell to answer", || shows(&instance, &pane, "again-42"));
 }
 
 #[test]
-fn pane_ids_never_repeat_across_restarts() {
+fn pane_and_terminal_ids_never_repeat_across_restarts() {
     let mut instance = Instance::start();
     let first = instance.open("one", Some("exec sleep 600"));
     let second = instance.open("two", Some("exec sleep 600"));
     instance.call("close", json!({"pane": second}));
     assert_eq!(saved(&instance)["counters"]["pane"], 2);
+    assert_eq!(saved(&instance)["counters"]["terminal"], 2);
 
     instance.restart(libc::SIGKILL);
     let third = instance.open("three", Some("exec sleep 600"));
-    assert_eq!((first.as_str(), second.as_str(), third.as_str()), ("p1", "p2", "p3"));
+    assert_eq!((first.as_str(), second.as_str(), third.as_str()), ("term-1", "term-2", "term-3"));
+    assert_eq!(instance.pane("three")["id"], "p3");
 
     instance.call("close", json!({"pane": first}));
     instance.call("close", json!({"pane": third}));
     instance.restart(libc::SIGTERM);
     assert!(instance.call("list", json!({}))["panes"].as_array().unwrap().is_empty());
-    assert_eq!(instance.open("four", None), "p4");
+    assert_eq!(instance.open("four", None), "term-4");
+    assert_eq!(instance.pane("four")["id"], "p4");
+    instance.call("restart", json!({"pane": "four"}));
+    assert_eq!(instance.pane("four")["terminal"], "term-5");
 }
 
 #[test]
@@ -145,7 +150,7 @@ fn what_the_keeper_has_and_the_disk_does_not_is_taken_back_and_the_reverse_dropp
     let panes = instance.call("list", json!({}))["panes"].clone();
     let panes = panes.as_array().unwrap();
     assert_eq!(panes.len(), 1, "{panes:?}");
-    assert_eq!((panes[0]["id"].as_str(), panes[0]["pid"].as_i64(), panes[0]["cmd"].as_str()), (Some(kept.as_str()), Some(kept_pid), Some("echo kept; exec sleep 600")));
+    assert_eq!((panes[0]["terminal"].as_str(), panes[0]["pid"].as_i64(), panes[0]["cmd"].as_str()), (Some(kept.as_str()), Some(kept_pid), Some("echo kept; exec sleep 600")));
     assert!(panes[0]["name"].is_null());
     let new = instance.open("new", None);
     assert_ne!(new, kept);
@@ -231,7 +236,7 @@ fn an_app_from_another_build_stops_the_daemon_and_the_next_keeps_its_terminals()
 
     instance.start_again();
     let shell = instance.pane("shell");
-    assert_eq!((shell["id"].as_str(), shell["pid"].as_i64()), (Some(pane.as_str()), Some(pid)), "{shell}");
+    assert_eq!((shell["terminal"].as_str(), shell["pid"].as_i64()), (Some(pane.as_str()), Some(pid)), "{shell}");
 }
 
 #[test]
@@ -239,8 +244,8 @@ fn a_terminal_started_again_after_a_restart_keeps_its_size_even_without_its_scre
     let mut instance = Instance::start();
     let pane = instance.open("sized", Some("read line; stty size"));
     let mut app = instance.app();
-    app.tell("attach", json!({"pane": pane}));
-    app.tell("resize", json!({"pane": pane, "cols": 101, "rows": 31, "width": 0, "height": 0}));
+    app.tell("attach", json!({"terminal": pane}));
+    app.tell("resize", json!({"terminal": pane, "cols": 101, "rows": 31, "width": 0, "height": 0}));
     app.until("the new grid", |m| is(m, "grid", &pane) && m["args"]["cols"] == 101);
     instance.call("send", json!({"pane": "sized", "text": ""}));
     wait_for("the size", || shows(&instance, &pane, "31 101"));
@@ -255,5 +260,5 @@ fn a_terminal_started_again_after_a_restart_keeps_its_size_even_without_its_scre
     instance.call("restart", json!({"pane": "sized"}));
     wait_for("the program again", || instance.pane("sized")["state"] == "running");
     instance.call("send", json!({"pane": "sized", "text": ""}));
-    wait_for("the size again", || shows(&instance, &pane, "31 101"));
+    wait_for("the size again", || shows(&instance, "sized", "31 101"));
 }

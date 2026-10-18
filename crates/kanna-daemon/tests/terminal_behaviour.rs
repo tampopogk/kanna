@@ -56,7 +56,7 @@ fn the_shells_folder_is_the_panes_cwd() {
     let instance = Instance::start();
     let pane = instance.open("cwd", Some("printf '\\033]7;file://localhost/private/tmp\\007'; exec cat"));
     let mut app = instance.app();
-    app.tell("attach", json!({"pane": pane}));
+    app.tell("attach", json!({"terminal": pane}));
     app.until("the screen", |m| is(m, "snapshot", &pane));
     let _answering = app.answering();
     wait_for("the cwd", || instance.pane("cwd")["cwd"] == "/private/tmp");
