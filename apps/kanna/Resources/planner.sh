@@ -77,8 +77,39 @@ clone() {
 where() {
   say "Open a folder, clone a repo (a URL or owner/repo), or name a new project. Clones and new projects go in $(tilde "$repos")."
   echo
+  recent=
+  [ -n "$kanna" ] && recent=$("$kanna" projects 2>/dev/null)
+  recents=$(printf '%s' "$recent" | grep -c .)
+  question="Folder, repo or name:"
+  if [ "$recents" -gt 0 ]; then
+    echo "Recent:"
+    n=0
+    printf '%s\n' "$recent" | while IFS= read -r project; do
+      n=$((n + 1))
+      say "  $n  $(tilde "$project")"
+    done
+    echo
+    question="Folder, repo, name or number [1]:"
+  fi
   while :; do
-    ask "Folder, repo or name:"
+    ask "$question"
+    if [ "$recents" -gt 0 ]; then
+      case $answer in
+        '') answer=1 ;;
+      esac
+      case $answer in
+        *[!0-9]*) ;;
+        *)
+          if [ "$answer" -ge 1 ] && [ "$answer" -le "$recents" ]; then
+            folder=$(printf '%s\n' "$recent" | sed -n "${answer}p")
+            cd "$folder" 2>/dev/null && break
+            say "No folder $(tilde "$folder")."
+          else
+            say "Choose 1 to $recents, or a folder, repo or name."
+          fi
+          continue ;;
+      esac
+    fi
     case $answer in
       '') continue ;;
       https://*|http://*|ssh://*|git://*|file://*|git@*)

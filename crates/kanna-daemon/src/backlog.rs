@@ -2528,8 +2528,16 @@ mod tests {
         }
 
         fn run(&self, folder: &Path, input: &str) -> String {
+            self.run_with(folder, input, None)
+        }
+
+        fn run_with(&self, folder: &Path, input: &str, kanna: Option<&Path>) -> String {
             let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/kanna/Resources/planner.sh");
-            let mut args = vec!["--repos".to_string(), self.home.join(".kanna-v4/repos").to_string_lossy().into_owned(), "--".to_string()];
+            let mut args = vec!["--repos".to_string(), self.home.join(".kanna-v4/repos").to_string_lossy().into_owned()];
+            if let Some(kanna) = kanna {
+                args.extend(["--kanna".to_string(), kanna.to_string_lossy().into_owned()]);
+            }
+            args.push("--".to_string());
             for agent in ["claude", "codex", "copilot"] {
                 args.push(agent.to_string());
                 args.push(agent.to_string());
@@ -2629,6 +2637,36 @@ mod tests {
         assert!(out.contains("claude in ROOT/work/app: --dangerously-skip-permissions You are"), "{out}");
         let out = p.run(&repo, "1\nn\n");
         assert!(!out.contains("Folder, repo or name"), "only in ~: {out}");
+    }
+
+    #[test]
+    fn in_home_the_planner_script_numbers_the_recent_projects_and_return_takes_the_latest() {
+        let p = planner("recent", &["claude"]);
+        let (app, tool) = (p.repo("work/app"), p.repo("work/tool"));
+        let gone = p.root.join("work/gone");
+        let kanna = p.bin.join("kanna");
+        let list = p.root.join("projects");
+        stub(&kanna, &format!("[ \"$1\" = projects ] && cat '{}'; exit 0", list.display()));
+        fs::write(&list, format!("{}\n{}\n{}\n", app.display(), tool.display(), gone.display())).unwrap();
+        let home = p.home.to_string_lossy().to_string();
+        let out = p.run_with(&p.home, "\n", Some(&kanna));
+        assert!(out.contains("Recent:\n  1  ROOT/work/app\n  2  ROOT/work/tool\n  3  ROOT/work/gone\n\nFolder, repo, name or number [1]: "), "{out}");
+        assert!(out.contains("claude in ROOT/work/app: --dangerously-skip-permissions You are"), "Return takes 1: {out}");
+        assert!(out.contains("\u{1b}]7;file://localhostROOT/work/app\u{1b}\\"), "the window follows: {out}");
+        let out = p.run_with(&p.home, "4\n0\n3\n2\n", Some(&kanna));
+        assert!(out.contains("Choose 1 to 3, or a folder, repo or name.") && out.contains("No folder ROOT/work/gone."), "{out}");
+        assert!(out.contains("claude in ROOT/work/tool: --dangerously-skip-permissions You are"), "{out}");
+        let out = p.run_with(&p.home, "recipe-box\n", Some(&kanna));
+        assert!(out.contains("Made ~/.kanna-v4/repos/recipe-box") && out.contains("claude in ROOT/home/.kanna-v4/repos/recipe-box"), "a name still works: {out}");
+        fs::write(&list, format!("{home}/work\n")).unwrap();
+        fs::create_dir_all(p.home.join("work")).unwrap();
+        let out = p.run_with(&p.home, "\n", Some(&kanna));
+        assert!(out.contains("  1  ~/work\n"), "shown from ~: {out}");
+        fs::write(&list, "").unwrap();
+        let out = p.run_with(&p.home, "\nrecipe-box\n", Some(&kanna));
+        assert!(!out.contains("Recent:") && out.contains("Folder, repo or name: Folder, repo or name: Opened ~/.kanna-v4/repos/recipe-box"), "with none it asks as before: {out}");
+        let out = p.run_with(&app, "", Some(&kanna));
+        assert!(!out.contains("Recent:"), "only in ~: {out}");
     }
 
     #[test]
