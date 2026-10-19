@@ -25,6 +25,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var localKey: String?
     var closingPlanners: Set<String> = []
     var givenPlanners: Set<String> = []
+    var recentProjects: [RecentProject] = []
+    var recentMenu: NSMenu?
     let physical = Physical(path: AppController.physicalPath, fresh: AppController.fresh)
     private var focusing: String?
     private var focusCalls = 0
@@ -205,6 +207,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         contents.subscribeDiffs()
+        loadRecent()
         layoutChanged()
         if wantsFirstTerminal {
             wantsFirstTerminal = false
@@ -416,6 +419,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } else if controller.projectRoot == nil, let folder = window["project"]?.string {
                 controller.projectRoot = canonical(GitPlace.of(folder)?.main ?? folder)
             }
+            if window["desk"]?.bool == true, let root = controller.projectRoot { deskMoved(id, to: root) }
             let mine = controller.projectRoot.map { root in tasks.filter { projectRoot($0.id) == root } } ?? tasks
             controller.shelf = mine
             let ours = Set(mine.map(\.id))

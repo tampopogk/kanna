@@ -9,6 +9,7 @@ mod layout;
 mod pty;
 mod codex_remote;
 mod messages;
+mod projects;
 mod quiz;
 mod reader;
 mod settings;
@@ -216,6 +217,8 @@ fn run() -> Result<(), String> {
     *backlog.line_mode.borrow_mut() = Some(Box::new(move |pane| modes.upgrade().is_some_and(|detector| detector.line_mode(pane))));
     let argvs = Rc::downgrade(&detector);
     *backlog.permissions.borrow_mut() = Some(Box::new(move |pane| messages::permissions(&argvs.upgrade()?.argv(pane))));
+    let projects = Rc::new(projects::Projects::new(db.clone(), std::env::var_os("HOME").map(std::path::PathBuf::from), [".kanna-v4/repos", ".kanna/repos"].map(|r| agents::home().join(r)).to_vec()));
+    projects.install(&core);
     let quiz = Rc::new(quiz::Quiz::new(db, Some(core.weak())));
     quiz.install(&core);
     let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone());

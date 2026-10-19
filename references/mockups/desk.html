@@ -189,16 +189,32 @@ body.picture .cmd input::placeholder { color: transparent; }
 .row.sel { background: var(--panel); }
 .row.waiting.sel .go:not(.off) { color: var(--accent); }
 .nohit { color: var(--muted); padding: 8px 0; }
+.menubar { position: relative; z-index: 5; height: 26px; display: flex; align-items: center; gap: 2px; padding: 0 10px; margin: 0 0 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
+body.picture .menubar { display: none; margin: 0; border-radius: 0; border-width: 0 0 1px; }
+body.picture.menu .menubar { display: flex; }
+.menubar .m { position: relative; padding: 2px 9px; border-radius: 4px; cursor: default; }
+.menubar .m.app { font-weight: 700; }
+.menubar .m.open { background: var(--accent); color: #fff; }
+.drop { position: absolute; top: calc(100% + 3px); left: 0; min-width: 230px; padding: 5px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); color: var(--text); }
+.drop .i { display: flex; align-items: center; gap: 18px; padding: 3px 10px; border-radius: 4px; white-space: nowrap; }
+.drop .i .k { margin-left: auto; color: var(--muted); }
+.drop .i:hover, .drop .i.hot { background: var(--accent); color: #fff; }
+.drop .i:hover .k, .drop .i.hot .k { color: #fff; }
+.drop .i.off { color: var(--muted); }
+.drop .i.off:hover { background: transparent; color: var(--muted); }
+.drop hr { border: 0; border-top: 1px solid var(--line); margin: 5px 4px; }
+.drop .sub { position: relative; }
+.drop .sub > .drop { display: none; top: -5px; left: calc(100% + 2px); }
+.drop .sub:hover > .drop, .drop .sub.hot > .drop { display: block; }
 </style>
 </head>
 <body>
 <main>
   <div class="intro">
     <h1>Desk: one task per window, the rest on the Shelf</h1>
-    <p>A task is what a Desk holds: its agent, docked on the left, and its tabs. The Desk shows one; the Shelf below holds the project's other tasks, their agents still running. With no task on it, the Desk shows its planning terminal on the left, beside the full Shelf. A new Desk's planning terminal runs Kanna's planner script: it asks which agent plans (and offers to make that the project's), then starts it with <code>You are the Kanna planning agent.</code>; quit it (<code>/exit</code>) and it's your shell, where you <code>cd</code> elsewhere (the Shelf follows) or start an agent yourself. Tell the planning agent what you want ("split the login work into three tasks") and it adds tasks to the backlog. Tasks are made only by an agent or by hand with <code>kanna task new "NAME" "FIRST MESSAGE"</code> (type it in an agent's pane), then started from the backlog. ⌘N (File › New Desk) opens another Desk window, its planning terminal in <code>~</code>: <code>cd</code> it into a project. Click a Shelf item to swap, Park to clear the Desk, drag the line between the agent and the tabs, or type a <code>kanna</code> command in the agent's pane as the agent would.</p>
+    <p>A task is what a Desk holds: its agent, docked on the left, and its tabs. The Desk shows one; the Shelf below holds the project's other tasks, their agents still running. With no task on it, the Desk shows its planning terminal on the left, beside the full Shelf. A new Desk's planning terminal runs Kanna's planner script: it asks which agent plans (and offers to make that the project's), then starts it with <code>You are the Kanna planning agent.</code>; quit it (<code>/exit</code>) and it's your shell, where you <code>cd</code> elsewhere (the Shelf follows) or start an agent yourself. Tell the planning agent what you want ("split the login work into three tasks") and it adds tasks to the backlog. Tasks are made only by an agent or by hand with <code>kanna task new "NAME" "FIRST MESSAGE"</code> (type it in an agent's pane), then started from the backlog. ⌘N (File › New Desk) opens another Desk window, its planning terminal in <code>~</code>, asking where: Return takes your latest project, a number another recent one. File › Open Recent opens a recent project's Desk straight away, or brings it forward if it's open. Click a Shelf item to swap, Park to clear the Desk, drag the line between the agent and the tabs, or type a <code>kanna</code> command in the agent's pane as the agent would.</p>
     <div class="controls">
       <button id="theme">Light / dark</button>
-      <button id="newwin">File › New Desk ⌘N</button>
       <button id="ring" title="A parked task's agent stops to ask you something: it moves to the front of the Shelf, needs you">Simulate: a parked agent needs you</button>
       <button id="long" title="An empty Desk with a dozen tasks in the backlog: search it">Simulate: a long backlog</button>
       <button id="fresh" title="A window with nothing in it: its planning terminal runs the planner script">Simulate: no tasks</button>
@@ -217,6 +233,7 @@ body.picture .cmd input::placeholder { color: transparent; }
       <span><kbd>⌘F</kbd> search the backlog (empty Desk): <kbd>↑</kbd> <kbd>↓</kbd> pick, <kbd>↩</kbd> Move to Shelf, <kbd>esc</kbd> clear</span>
     </div>
   </div>
+  <div class="menubar" id="menubar"></div>
   <div class="stage" id="stage"></div>
 </main>
 <script>
@@ -225,7 +242,9 @@ const LIMIT = 3;
 const initial = () => {
   const now = Date.now();
   return {
-    repos: ["~/work/kanna-v4", "~/work/kmux"],
+    repos: ["~/work/kanna-v4", "~/work/kmux", "~/.kanna-v4/repos/recipe-box"],
+    recent: ["~/work/kanna-v4", "~/work/kmux", "~/.kanna-v4/repos/recipe-box"],
+    menu: null,
     key: "w1",
     windows: [{ id: "w1", desk: "p1", repo: "~/work/kanna-v4" }],
     note: "",
@@ -304,6 +323,35 @@ function render() {
   const again = document.getElementById("again");
   if (again) again.onclick = newWindow;
   fitShelves();
+  menubar();
+}
+
+const recentLabel = r => /^~\/\.kanna(-v4)?\/repos\/[^/]+$/.test(r) ? r.split("/").pop() : r;
+function touch(repo) {
+  if (!repo || repo === "~") return;
+  s.recent = [repo].concat(s.recent.filter(r => r !== repo)).slice(0, 10);
+}
+function menubar() {
+  const recent = s.recent.map((r, i) => `<div class="i" data-recent="${i}" title="${esc(r)}">${esc(recentLabel(r))}</div>`).join("");
+  const file = `<div class="drop">
+      <div class="i" data-menu="newdesk">New Desk<span class="k">⌘N</span></div>
+      <div class="i sub ${s.menu === "recent" ? "hot" : ""}">Open Recent<span class="k">▸</span>
+        <div class="drop">${recent}${recent ? "<hr>" : ""}<div class="i ${recent ? "" : "off"}" data-menu="clear">Clear Menu</div></div>
+      </div>
+    </div>`;
+  document.getElementById("menubar").innerHTML = ["Kanna", "File", "Edit", "Pane", "View", "Window"].map(m =>
+    `<span class="m ${m === "Kanna" ? "app" : ""} ${m === "File" && s.menu ? "open" : ""}" data-top="${m}">${m}${m === "File" && s.menu ? file : ""}</span>`).join("");
+}
+function openRecent(repo) {
+  s.menu = null;
+  touch(repo);
+  const there = s.windows.find(w => repoOf(w) === repo);
+  if (there) return bringForward(there);
+  const id = "w" + s.nextWindow++;
+  s.windows.push({ id, desk: null, repo });
+  s.key = id;
+  render();
+  document.getElementById(id).scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 function fitShelves() {
@@ -355,8 +403,8 @@ function agentTerm(t) {
     ``,
     `<span class="m">●</span> ${t.status === "needs" ? "I need you to choose: keep the old colours as a fallback, or drop them?" : t.id === "p4" ? "Done. chrome_and_drops passes; screenshots in light and dark attached." : "Found it: the query answers before the theme loads."}`,
   ];
-  const ph = t.planner && t.ask ? (t.ask === "project" ? "~/work/kmux · github.com/you/app · you/app · recipe-box" : t.ask === "choose" ? s.installed.map((_, i) => i + 1).join(" · ") : t.ask === "save" ? "y · n" : "y · n") : t.planner && !t.agent ? (t.repo === "~" ? `cd work/kanna-v4 · claude '${ROLE}'` : `claude · codex '${ROLE}' · cd kmux`) : t.planner ? "split the login work into three tasks · what's waiting? · start the first one · /exit" : t.agent ? `kanna task new &quot;Fix the page_comments pinch&quot; &quot;the mark drifts…&quot; · kanna task list · kanna task park` : "claude · codex · or any shell command";
-  const lead = t.planner && t.ask ? esc(t.ask === "save" ? saveQuestion(t) : questions[t.ask]) : t.planner && !t.agent ? `<span class="c">${esc(short(t.repo))}</span>&nbsp;<span class="p">❯</span>` : `<span class="p">&gt;</span>`;
+  const ph = t.planner && t.ask ? (t.ask === "project" ? (t.recent && t.recent.length ? `${t.recent.map((_, i) => i + 1).join(" · ")} · ` : "") + "~/work/kmux · github.com/you/app · you/app · recipe-box" : t.ask === "choose" ? s.installed.map((_, i) => i + 1).join(" · ") : t.ask === "save" ? "y · n" : "y · n") : t.planner && !t.agent ? (t.repo === "~" ? `cd work/kanna-v4 · claude '${ROLE}'` : `claude · codex '${ROLE}' · cd kmux`) : t.planner ? "split the login work into three tasks · what's waiting? · start the first one · /exit" : t.agent ? `kanna task new &quot;Fix the page_comments pinch&quot; &quot;the mark drifts…&quot; · kanna task list · kanna task park` : "claude · codex · or any shell command";
+  const lead = t.planner && t.ask ? esc(question(t)) : t.planner && !t.agent ? `<span class="c">${esc(short(t.repo))}</span>&nbsp;<span class="p">❯</span>` : `<span class="p">&gt;</span>`;
   return (t.planner ? plannerHead(t) : head).concat(t.log).join("\n") + `<div class="cmd">${lead}<input data-cmd="${t.id}" placeholder="${esc(ph).replace(/&amp;quot;/g, "&quot;")}" spellcheck="false" autocomplete="off"></div>`;
 }
 
@@ -392,13 +440,18 @@ const REPOS = "~/.kanna-v4/repos";
 function plannerWhere(t) {
   if (t.repo !== "~") return plannerChoose(t);
   t.log.push(`Open a folder, clone a repo (a URL or owner/repo), or name a new project. Clones and new projects go in ${REPOS}.`, ``);
+  t.recent = s.recent.slice();
+  if (t.recent.length) t.log.push(`Recent:`, ...t.recent.map((r, i) => `  ${i + 1}  ${esc(recentLabel(r))}`), ``);
   t.ask = "project";
 }
+const projectQuestion = t => t.recent && t.recent.length ? "Folder, repo, name or number [1]:" : questions.project;
+const question = t => t.ask === "save" ? saveQuestion(t) : t.ask === "project" ? projectQuestion(t) : questions[t.ask];
 function plannerMove(t, repo) {
   const w = s.windows.find(w => w.planner === t);
   t.repo = repo;
   if (!s.repos.includes(repo)) s.repos.push(repo);
   if (w) w.repo = repo;
+  touch(repo);
 }
 function plannerChoose(t) {
   const set = s.config[t.repo], got = s.installed;
@@ -424,7 +477,16 @@ function plannerAnswer(t, line) {
     return plannerWhere(t);
   }
   if (t.ask === "project") {
-    t.log.push(`${esc(questions.project)} ${esc(a)}`);
+    t.log.push(`${esc(projectQuestion(t))} ${esc(a)}`);
+    const many = t.recent ? t.recent.length : 0;
+    if (many && (a === "" || /^[0-9]+$/.test(a))) {
+      const n = a === "" ? 1 : Number(a);
+      if (n < 1 || n > many) { t.log.push(out(`Choose 1 to ${many}, or a folder, repo or name.`)); return; }
+      t.log.push(``);
+      t.ask = null;
+      plannerMove(t, t.recent[n - 1]);
+      return plannerChoose(t);
+    }
     if (!a) return;
     const url = a.match(/^(?:https?:\/\/|git@)[^\s]+?([A-Za-z0-9._-]+?)(?:\.git)?\/?$/) || (!/^[~.]/.test(a) && !s.repos.includes(a) && !a.startsWith("work/") && a.match(/^[A-Za-z0-9._-]+\/([A-Za-z0-9._-]+)$/));
     if (url) {
@@ -486,6 +548,7 @@ function plannerShell(t, line) {
     t.repo = words[1].startsWith("~") ? words[1] : words[1].startsWith("work/") ? "~/" + words[1] : "~/work/" + words[1];
     if (!s.repos.includes(t.repo)) s.repos.push(t.repo);
     if (w) w.repo = t.repo;
+    touch(t.repo);
     t.log.push(prompt);
   } else {
     t.log.push(prompt, out(`(ran in the shell)`));
@@ -614,6 +677,7 @@ function pull(id, into) {
   if (t.status === "needs") t.status = "idle";
   w.desk = id;
   w.repo = t.repo;
+  touch(t.repo);
   w.query = "";
   w.sel = 0;
   if (s.finding === w.id) s.finding = null;
@@ -869,7 +933,20 @@ document.addEventListener("mousemove", e => {
 });
 document.addEventListener("mouseup", () => { if (drag) { drag.grip.classList.remove("drag"); drag = null; } });
 
-document.getElementById("newwin").onclick = newWindow;
+document.addEventListener("click", e => {
+  const top = e.target.closest("[data-top]"), item = e.target.closest("[data-menu],[data-recent]");
+  if (item) {
+    e.stopPropagation();
+    const r = item.dataset.recent, m = item.dataset.menu;
+    if (r !== undefined) return openRecent(s.recent[Number(r)]);
+    if (m === "clear") { if (!s.recent.length) return; s.recent = []; }
+    s.menu = null;
+    if (m === "newdesk") return newWindow();
+    return render();
+  }
+  if (top && top.dataset.top === "File" && !e.target.closest(".drop")) { s.menu = s.menu ? null : "file"; return menubar(); }
+  if (s.menu && !e.target.closest(".drop")) { s.menu = null; menubar(); }
+});
 document.getElementById("ring").onclick = () => {
   const t = shelf().filter(t => t.status !== "needs").pop();
   if (t) { t.status = "needs"; t.needsAt = Date.now(); render(); }
@@ -903,6 +980,8 @@ document.getElementById("first").onclick = () => { s.skills = false; fresh(); re
 document.getElementById("onlyone").onclick = e => { s.installed = s.installed.length > 1 ? ["claude"] : ["claude", "codex"]; e.target.textContent = "Installed: " + s.installed.join(", "); };
 document.getElementById("forget").onclick = () => { s.config = {}; s.note = "planning.agent unset: the next Desk on this project asks"; render(); };
 if (location.hash.includes("picture")) document.body.classList.add("picture");
+if (location.hash.includes("menu")) { document.body.classList.add("menu"); s.menu = "recent"; }
+if (location.hash.includes("norecent")) s.recent = [];
 if (location.hash.includes("light")) document.documentElement.dataset.theme = "light";
 if (location.hash.includes("long")) long();
 if (location.hash.includes("empty")) {

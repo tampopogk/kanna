@@ -115,6 +115,7 @@ extension AppController {
 
     func openDesk(project: String?, fresh: Bool) -> (desk: String, project: String?, new: Bool) {
         let root = project.map { canonical(GitPlace.of($0)?.main ?? $0) }
+        if !fresh, let root { touchProject(root) }
         if !fresh, let root, let found = physical.desks.first(where: { controllers[$0.id]?.projectRoot == root || $0.project.map { canonical(GitPlace.of($0)?.main ?? $0) } == root }) {
             show(desk: found.id)
             return (found.id, found.project ?? root, false)

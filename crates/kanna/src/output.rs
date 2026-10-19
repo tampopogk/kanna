@@ -688,6 +688,13 @@ pub fn changed_skills(reply: &Value) -> Option<String> {
     }).collect::<Vec<_>>().join("\n"))
 }
 
+pub fn projects(request: &Value, reply: &Value) -> String {
+    if request["action"] == "clear" {
+        return "cleared the recent projects".into();
+    }
+    reply["projects"].as_array().map_or(vec![], |list| list.iter().filter_map(|p| p["path"].as_str()).collect::<Vec<_>>()).join("\n")
+}
+
 pub fn quiz(request: &Value, reply: &Value) -> String {
     match request["action"].as_str() {
         Some("open") => format!("{} {} in {}", if reply["opened"] == true { "opened" } else { "brought forward" }, reply["pane"].as_str().unwrap_or("?"), reply["window"].as_str().unwrap_or("?")),

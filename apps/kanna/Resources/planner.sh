@@ -77,8 +77,41 @@ clone() {
 where() {
   say "Open a folder, clone a repo (a URL or owner/repo), or name a new project. Clones and new projects go in $(tilde "$repos")."
   echo
+  recent= recents=0
+  listed=$([ -n "$kanna" ] && "$kanna" projects --json 2>/dev/null)
+  count=$(printf '%s' "$listed" | plutil -extract projects raw -o - - 2>/dev/null) || count=0
+  question="Folder, repo or name:"
+  if [ "$count" -gt 0 ] 2>/dev/null; then
+    echo "Recent:"
+    while [ "$recents" -lt "$count" ]; do
+      project=$(printf '%s' "$listed" | plutil -extract "projects.$recents.path" raw -o - - 2>/dev/null) || break
+      label=$(printf '%s' "$listed" | plutil -extract "projects.$recents.label" raw -o - - 2>/dev/null) || label=$(tilde "$project")
+      recents=$((recents + 1))
+      recent="$recent$project$nl"
+      say "  $recents  $label"
+    done
+    echo
+    question="Folder, repo, name or number [1]:"
+  fi
   while :; do
-    ask "Folder, repo or name:"
+    ask "$question"
+    if [ "$recents" -gt 0 ]; then
+      case $answer in
+        '') answer=1 ;;
+      esac
+      case $answer in
+        *[!0-9]*) ;;
+        *)
+          if [ "$answer" -ge 1 ] && [ "$answer" -le "$recents" ]; then
+            folder=$(printf '%s\n' "$recent" | sed -n "${answer}p")
+            cd "$folder" 2>/dev/null && break
+            say "No folder $(tilde "$folder")."
+          else
+            say "Choose 1 to $recents, or a folder, repo or name."
+          fi
+          continue ;;
+      esac
+    fi
     case $answer in
       '') continue ;;
       https://*|http://*|ssh://*|git://*|file://*|git@*)

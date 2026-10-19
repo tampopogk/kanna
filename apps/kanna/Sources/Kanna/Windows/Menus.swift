@@ -29,7 +29,8 @@ extension AppController {
             app.addItem(.separator())
         }
         app.addItem(withTitle: "Quit \(KannaBuild.name)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        _ = menu("File", [("New Desk", #selector(newDeskWindow), nil, .cmd("n"))])
+        let file = menu("File", [("New Desk", #selector(newDeskWindow), nil, .cmd("n"))])
+        file.addItem(recentMenuItem())
         let edit = NSMenu(title: "Edit")
         let editItems: [(String, String, String?, Shortcut)?] = [
             ("Undo", "undo:", nil, .cmd("z")), ("Redo", "redo:", nil, .shiftCmd("z")), nil,
@@ -124,6 +125,10 @@ extension AppController {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === recentMenu {
+            fillRecent(menu)
+            return loadRecent()
+        }
         menu.removeAllItems()
         let window = keyWindow
         let reason: String? = window == nil ? "No window" : window?["desk"]?.bool == true ? "A Desk isn't a task's" : window?["lead"]?["pane"]?.string != nil ? "This window has its own agent" : nil
@@ -156,8 +161,8 @@ extension AppController {
     }
 
     func choose(menuItem title: String) throws {
-        for top in NSApp.mainMenu?.items ?? [] {
-            guard let menu = top.submenu, let at = menu.items.firstIndex(where: { $0.title == title }) else { continue }
+        for menu in allMenus {
+            guard let at = menu.items.firstIndex(where: { $0.title == title }) else { continue }
             menu.update()
             guard menu.items[at].isEnabled else { throw KannaError("disabled", "\(title) is disabled") }
             menu.performActionForItem(at: at)
@@ -166,11 +171,19 @@ extension AppController {
         throw KannaError("not_found", "no menu item \"\(title)\"")
     }
 
+    private var allMenus: [NSMenu] {
+        func within(_ menu: NSMenu) -> [NSMenu] {
+            menu.delegate?.menuNeedsUpdate?(menu)
+            return [menu] + menu.items.compactMap(\.submenu).flatMap(within)
+        }
+        return (NSApp.mainMenu?.items ?? []).compactMap(\.submenu).flatMap(within)
+    }
+
     var menuItems: [JSON] {
-        (NSApp.mainMenu?.items ?? []).flatMap { top in
-            (top.submenu?.items ?? []).filter { !$0.isSeparatorItem }.map { item -> JSON in
+        allMenus.flatMap { menu in
+            menu.items.filter { !$0.isSeparatorItem }.map { item -> JSON in
                 let shortcut = Shortcut(key: item.keyEquivalent, modifiers: item.keyEquivalentModifierMask)
-                return ["menu": .string(top.submenu?.title ?? ""), "item": .string(item.title), "shortcut": .string(item.keyEquivalent.isEmpty ? "" : shortcut.label)]
+                return ["menu": .string(menu.title), "item": .string(item.title), "shortcut": .string(item.keyEquivalent.isEmpty ? "" : shortcut.label)]
             }
         }
     }

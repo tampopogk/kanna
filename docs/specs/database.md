@@ -131,6 +131,20 @@ sequenceDiagram
 - **`history`** answers this repo's rounds, newest first, each with its commit, doc and answers (with `--misses`, only rounds with misses); the newest round's `head` is where the next round's "what's new" starts.
 - **Still no score:** the end of a round says what you knew of these changes; `history` is for the agent picking questions, not a total shown to you.
 
+## Recent projects
+
+**Built.** The projects File → Open Recent and a new Desk's planning terminal list ([recent projects](recent-projects.md)).
+
+**projects**: one row per project, at most 10.
+
+| Column | Type | Holds |
+|---|---|---|
+| `path` | text, key | the project's folder (the main repo for a worktree) |
+| `at` | real | when a Desk last opened on it or moved to it |
+| `seq` | integer | the order, highest first |
+
+- **The app writes them** (`projects touch`, through `projects.rs`) whenever one of its Desks' project changes; the eleventh drops the oldest. Listing forgets a folder that's gone; `projects clear` empties the table.
+
 **Later candidates,** not built: agent session IDs per task over time; agent status history (how long a task waited on you); build timings.
 
 **Checked by** `db.rs`'s tests (a real `backlog.json` imported with every task and the counter; a held task; a change and its event together; unknown doc keys kept; a corrupt, missing or newer db; a `backlog.json` beside the db; a version 1 db taking the quiz tables with its tasks kept; a miss kept until it's asked again), `quiz.rs`'s tests (a round and its answers read back; a bad answer refused), the CLI's tests (`kanna quiz` requests, the history's text), the layout owner's tests (park and pull, a swap, report their moves), e2e `task_history` (import, every event of a task's life with who did it, the app's park, a corrupt db at restart) and e2e `quiz_results` (a round recorded, read back after a restart, a miss asked again).

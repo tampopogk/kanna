@@ -2766,7 +2766,7 @@ planner_choice() {
   key cmd+n
   check wait_for 10 eval '[[ "$(desk lead d3)" == term-* ]]' || { echo "planner_choice: ⌘N opened no Desk"; kanna workspace list --all; return 1; }
   planner="$(desk lead d3)"
-  check wait_for 10 shows "$planner" "Folder, repo or name:" || { echo "planner_choice: a Desk in ~ didn't ask where"; kanna read "$planner"; return 1; }
+  check wait_for 10 shows "$planner" "Folder, repo, name or number \[1\]:" || { echo "planner_choice: a Desk in ~ didn't ask where"; kanna read "$planner"; return 1; }
   kanna send "$planner" "$repo" >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
   check wait_for 10 eval '[[ "$(desk header d3)" == "Planning · "*"${repo#/private} · main" ]]' || { echo "planner_choice: the Desk didn't follow to the folder"; desk header d3; return 1; }
   check wait_for 10 unwrapped "$planner" "args: You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: the Desk didn't start the folder's planner"; kanna read "$planner"; return 1; }
@@ -2830,6 +2830,36 @@ path_reuses_desk() {
   expected="brought forward d1 on $repo"; says kanna "$repo" || return 1
   check wait_for 5 eval '[[ "$(dwin d1 key)" == True ]]' || { echo "path_reuses_desk: the project's Desk isn't the key window"; app_view; return 1; }
   check test "$(app_view | field windows | count)" == 2 || { kanna workspace list --all; return 1; }
+}
+
+scenario recent_projects M4
+recent_projects() {
+  start_daemon && start_app || { echo "recent_projects line $LINENO"; return 1; }
+  local repo="$KANNA_STATE_DIR/repo" other="$KANNA_STATE_DIR/other"
+  for dir in "$repo" "$other"; do mkdir -p "$dir" && git -C "$dir" init -q -b main && git -C "$dir" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "recent_projects line $LINENO"; return 1; }; done
+  repo="$(cd "$repo" && pwd -P)"; other="$(cd "$other" && pwd -P)"
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$2\"}}" | field "$1"; }
+  check test -z "$(kanna projects)" || { echo "recent_projects: a new Kanna has recent projects"; kanna projects; return 1; }
+  local opened; opened="$(cd / && kanna "$repo")" && [[ "$opened" == "opened d1 on $repo" ]] || { echo "recent_projects line $LINENO: $opened"; return 1; }
+  check wait_for 5 eval '[[ "$(kanna projects)" == "$repo" ]]' || { echo "recent_projects: kanna PATH didn't make a recent project"; kanna projects; return 1; }
+  close_desk d1 || { echo "recent_projects line $LINENO"; return 1; }
+  raw '{"id":1,"cmd":"debug.menu","args":{"item":"New Desk"}}' | grep -q '"ok":true' || { echo "recent_projects: New Desk didn't run"; return 1; }
+  check wait_for 10 eval '[[ "$(desk lead d2)" == term-* ]]' || { echo "recent_projects: ⌘N opened no Desk"; kanna workspace list --all; return 1; }
+  local planner; planner="$(desk lead d2)"
+  check wait_for 10 shows "$planner" "Folder, repo, name or number \[1\]:" || { echo "recent_projects: a Desk in ~ didn't offer the recent projects"; kanna read "$planner"; return 1; }
+  check shows "$planner" "1  ${repo/#$HOME/~}" || { kanna read "$planner"; return 1; }
+  kanna send-key "$planner" return || { echo "recent_projects line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(desk header d2)" == "Planning · "*"${repo#/private} · main" ]]' || { echo "recent_projects: Return didn't open the latest project"; desk header d2; kanna read "$planner"; return 1; }
+  expected="opened d3 on $other"; says kanna "$other" || return 1
+  check wait_for 5 eval '[[ "$(kanna projects | head -1)" == "$other" && "$(kanna projects | sed -n 2p)" == "$repo" ]]' || { echo "recent_projects: the latest isn't first"; kanna projects; return 1; }
+  check wait_for 5 eval '[[ "$(dwin d3 key)" == True ]]' || { app_view; return 1; }
+  check wait_for 5 eval 'raw "{\"id\":1,\"cmd\":\"debug.menu\"}" | grep -q "\"item\":\"${repo/#$HOME/~}\",\"menu\":\"Open Recent\""' || { echo "recent_projects: Open Recent doesn't list the project"; raw '{"id":1,"cmd":"debug.menu"}'; return 1; }
+  raw "{\"id\":1,\"cmd\":\"debug.menu\",\"args\":{\"item\":\"${repo/#$HOME/~}\"}}" | grep -q '"ok":true' || { echo "recent_projects: Open Recent's item didn't run"; return 1; }
+  check wait_for 5 eval '[[ "$(dwin d2 key)" == True ]]' || { echo "recent_projects: Open Recent didn't bring the project's Desk forward"; app_view; return 1; }
+  check test "$(app_view | field windows | count)" == 2 || { echo "recent_projects: Open Recent opened another Desk"; kanna workspace list --all; return 1; }
+  check wait_for 5 eval '[[ "$(kanna projects | head -1)" == "$repo" ]]' || { echo "recent_projects: Open Recent didn't move it to the top"; kanna projects; return 1; }
+  raw '{"id":1,"cmd":"debug.menu","args":{"item":"Clear Menu"}}' | grep -q '"ok":true' || { echo "recent_projects: Clear Menu didn't run"; return 1; }
+  check wait_for 5 eval '[[ -z "$(kanna projects)" ]]' || { echo "recent_projects: Clear Menu left projects"; kanna projects; return 1; }
 }
 
 scenario blocked_tasks M4

@@ -106,6 +106,20 @@ flowchart LR
 | **Work** | tasks; content: terminals (pty, screen, scrollback, cwd, exit code), diffs, files, pages, iOS devices | the daemon | exactly as it was, still running |
 | **Logical presentation** | workspaces, their logical windows, tabs and arrangement, what each tab shows, the shown tab, focus and zoom, which app has each task out or whether it's in the backlog | the daemon | as it was, changed meanwhile by tasks and the CLI |
 | **Physical presentation** | window frames, the app's Desks (d1, d2, …) and its Shelf, sizes, magnification, font, the dock's width | each app | reopened from the app's own file |
+| **History** | the recent projects, newest first (File → Open Recent, a new Desk's where prompt) | the daemon, in `kanna.db` | as it was, shared by every app |
+
+**Recent projects are the daemon's, though only an app knows a Desk's project** ([recent projects](recent-projects.md)). A Desk is physical, so the app that has it says when a Desk opens on a project or moves to one (`projects touch FOLDER`); the daemon keeps the list in `kanna.db`, makes each folder its project (the main repo for a worktree, as `project()` does), and answers anyone who asks (`projects`): each app's Open Recent menu and a planning terminal's script, so every app and every new Desk shows the same list.
+
+```mermaid
+flowchart LR
+    APP["Kanna app<br/>its Desks"] -->|"projects touch FOLDER<br/>(a Desk's project changed)"| D["daemon<br/>kanna.db: projects"]
+    APP -->|"projects (Open Recent)<br/>projects clear (Clear Menu)"| D
+    P["planner.sh<br/>(a new Desk in ~)"] -->|"kanna projects"| D
+    classDef kanna fill:#2f6f4f,stroke:#6fcf97,color:#ffffff
+    classDef kmux fill:#2f4f8f,stroke:#7fa7ff,color:#ffffff
+    class D,P kanna
+    class APP kmux
+```
 
 Every command works with no app: content commands (`send`, `send-key`, `read`, `restart`, taking content IDs) and layout commands (`open`, `close`, `focus`, tab changes), which change the daemon's workspaces. Only commands about an app itself (`debug.*`, `screenshot`) need one.
 
