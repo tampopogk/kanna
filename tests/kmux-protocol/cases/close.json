@@ -5,7 +5,7 @@
       { "send": { "cmd": "open", "args": { "type": "term", "name": "a" } } },
       { "send": { "cmd": "open", "args": { "type": "term", "name": "b", "split": "right" } } },
       { "send": { "cmd": "open", "args": { "type": "term", "name": "c", "split": "right" } } },
-      { "send": { "cmd": "close", "args": { "pane": "a" } }, "expect": { "closed": [ "p1" ] } },
+      { "send": { "cmd": "close", "args": { "pane": "a" } }, "expect": { "closed": [ "term-1" ] } },
       { "send": { "cmd": "list" },
         "expect": { "windows": [ { "focused": "c", "tabs": [ { "layout": { "split": "row", "children": [
           { "pane": "b", "size": "1/2" }, { "pane": "c", "size": "1/2" } ] } } ] } ] } }
@@ -26,10 +26,10 @@
       { "send": { "cmd": "open", "args": { "type": "term", "name": "a" } } },
       { "send": { "cmd": "open", "args": { "type": "term", "name": "b", "tab": true } } },
       { "send": { "cmd": "open", "args": { "type": "term", "name": "c", "window": "new" } } },
-      { "send": { "cmd": "close", "args": { "window": "w2" } }, "expect": { "closed": [ "p3" ] } },
-      { "send": { "cmd": "close", "args": { "tab": "t2" } }, "expect": { "closed": [ "p2" ] } },
+      { "send": { "cmd": "close", "args": { "window": "win-2" } }, "expect": { "closed": [ "term-3" ] } },
+      { "send": { "cmd": "close", "args": { "tab": "tab-2" } }, "expect": { "closed": [ "term-2" ] } },
       { "send": { "cmd": "list" },
-        "expect": { "windows": [ { "id": "w1", "key": true, "tabs": [ { "id": "t1", "active": true } ] } ], "panes": [ { "name": "a" } ] } },
+        "expect": { "windows": [ { "id": "win-1", "key": true, "tabs": [ { "id": "tab-1", "active": true } ] } ], "panes": [ { "name": "a" } ] } },
       { "send": { "cmd": "close", "args": { "pane": "a" } } },
       { "send": { "cmd": "list" }, "expect": { "windows": [], "panes": [] } }
     ]

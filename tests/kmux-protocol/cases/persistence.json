@@ -1,110 +1,110 @@
 [
   {
-    "name": "a saved layout comes back: windows, tabs, splits, sizes, names, focus, zoom and what each pane shows",
+    "name": "a saved layout comes back: windows, tabs, splits, sizes, names, focus, zoom and what each pane shows; where windows are and how large panes are drawn are the app's, not saved here",
     "steps": [
       { "send": { "cmd": "open", "args": { "type": "term", "name": "server", "cmd": "npm run dev", "cwd": "~/app" } } },
       { "send": { "cmd": "open", "args": { "type": "web", "url": "localhost:3000", "name": "site", "split": "right", "size": "1/3", "history": true } } },
       { "send": { "cmd": "open", "args": { "type": "md", "path": "docs/spec.md", "name": "doc", "split": "down", "size": "1/4" } } },
       { "send": { "cmd": "open", "args": { "type": "ios", "app": "com.example.App", "device": "iPhone 16", "name": "phone", "tab": true, "wait": false } } },
-      { "send": { "cmd": "rename-tab", "args": { "tab": "t2", "title": "phone" } } },
+      { "send": { "cmd": "rename-tab", "args": { "tab": "tab-2", "title": "phone" } } },
       { "send": { "cmd": "open", "args": { "type": "term", "name": "logs", "window": "new" } } },
       { "send": { "cmd": "open", "args": { "type": "web", "url": "http://example.com/", "split": "down" } } },
       { "send": { "cmd": "focus", "args": { "pane": "site" } } },
       { "send": { "cmd": "zoom", "args": { "pane": "site" } } },
       { "send": { "cmd": "debug.saveState" }, "expect": { "ok": true, "state": {
-        "kmux": "state", "version": 1, "key": "w1", "counters": { "pane": 6, "tab": 3, "window": 2 },
+        "kmux": "state", "version": 2, "key": "win-1", "counters": { "term": 2, "page": 2, "file": 1, "ios": 1, "tab": 3, "window": 2 },
         "windows": [
-          { "id": "w1", "active": "t1", "focused": "p2", "zoomed": "p2", "tabCount": 2, "tabs": [
-            { "id": "t1", "title": "Tab 1", "lastFocus": "p2", "layout": { "split": "row", "children": [
-              { "pane": "p1", "size": 0.6666666666666667 },
-              { "split": "column", "size": 0.3333333333333333, "children": [ { "pane": "p2", "size": 0.75 }, { "pane": "p3", "size": 0.25 } ] }
+          { "id": "win-1", "frame": null, "active": "tab-1", "focused": "page-1", "zoomed": "page-1", "tabCount": 2, "tabs": [
+            { "id": "tab-1", "title": "Tab 1", "lastFocus": "page-1", "layout": { "split": "row", "children": [
+              { "pane": "term-1", "size": 0.6666666666666667 },
+              { "split": "column", "size": 0.3333333333333333, "children": [ { "pane": "page-1", "size": 0.75 }, { "pane": "file-1", "size": 0.25 } ] }
             ] } },
-            { "id": "t2", "title": "phone", "layout": { "pane": "p4" } }
+            { "id": "tab-2", "title": "phone", "layout": { "pane": "ios-1" } }
           ] },
-          { "id": "w2", "active": "t3", "focused": "p6", "zoomed": null, "tabs": [
-            { "id": "t3", "title": "Tab 1", "layout": { "split": "column", "children": [ { "pane": "p5", "size": 0.5 }, { "pane": "p6", "size": 0.5 } ] } }
+          { "id": "win-2", "active": "tab-3", "focused": "page-2", "zoomed": null, "tabs": [
+            { "id": "tab-3", "title": "Tab 1", "layout": { "split": "column", "children": [ { "pane": "term-2", "size": 0.5 }, { "pane": "page-2", "size": 0.5 } ] } }
           ] }
         ],
         "panes": [
-          { "id": "p1", "name": "server", "type": "term", "cmd": "npm run dev", "cwd": "~/app", "session": null },
-          { "id": "p2", "name": "site", "type": "web", "url": "http://localhost:3000", "history": true },
-          { "id": "p3", "name": "doc", "type": "md", "path": "docs/spec.md", "zoom": 1 },
-          { "id": "p4", "name": "phone", "type": "ios", "app": "com.example.App", "device": "iPhone 16" },
-          { "id": "p5", "name": "logs", "type": "term", "cmd": null },
-          { "id": "p6", "name": null, "type": "web", "url": "http://example.com/", "history": false }
+          { "id": "term-1", "name": "server", "type": "term", "cmd": "npm run dev", "cwd": "~/app", "session": null },
+          { "id": "page-1", "name": "site", "type": "web", "url": "http://localhost:3000", "history": true },
+          { "id": "file-1", "name": "doc", "type": "md", "path": "docs/spec.md", "zoom": null },
+          { "id": "ios-1", "name": "phone", "type": "ios", "app": "com.example.App", "device": "iPhone 16" },
+          { "id": "term-2", "name": "logs", "type": "term", "cmd": null },
+          { "id": "page-2", "name": null, "type": "web", "url": "http://example.com/", "history": false }
         ]
       } } },
-      { "send": { "cmd": "close", "args": { "window": "w2" } } },
+      { "send": { "cmd": "close", "args": { "window": "win-2" } } },
       { "send": { "cmd": "close", "args": { "pane": "server" } } },
-      { "send": { "cmd": "rename-tab", "args": { "tab": "t2", "title": "changed" } } },
-      { "send": { "cmd": "debug.restoreState" }, "expect": { "ok": true, "windows": ["w1", "w2"], "panes": ["p1", "p2", "p3", "p4", "p5", "p6"] } },
+      { "send": { "cmd": "rename-tab", "args": { "tab": "tab-2", "title": "changed" } } },
+      { "send": { "cmd": "debug.restoreState" }, "expect": { "ok": true, "windows": ["win-1", "win-2"], "panes": ["term-1", "page-1", "file-1", "ios-1", "term-2", "page-2"] } },
       { "send": { "cmd": "list" }, "expect": {
         "windows": [
-          { "id": "w1", "key": true, "focused": "site", "zoomed": "site", "tabs": [
-            { "id": "t1", "title": "Tab 1", "active": true, "layout": { "split": "row", "children": [
+          { "id": "win-1", "key": true, "focused": "site", "zoomed": "site", "tabs": [
+            { "id": "tab-1", "title": "Tab 1", "active": true, "layout": { "split": "row", "children": [
               { "pane": "server", "size": "2/3" },
               { "split": "column", "size": "1/3", "children": [ { "pane": "site", "size": "3/4" }, { "pane": "doc", "size": "1/4" } ] }
             ] } },
-            { "id": "t2", "title": "phone", "active": false, "layout": { "pane": "phone" } }
+            { "id": "tab-2", "title": "phone", "active": false, "layout": { "pane": "phone" } }
           ] },
-          { "id": "w2", "key": false, "focused": "p6", "zoomed": null, "tabs": [
-            { "id": "t3", "title": "Tab 1", "active": true, "layout": { "split": "column", "children": [ { "pane": "logs", "size": "1/2" }, { "pane": "p6", "size": "1/2" } ] } }
+          { "id": "win-2", "key": false, "focused": "page-2", "zoomed": null, "tabs": [
+            { "id": "tab-3", "title": "Tab 1", "active": true, "layout": { "split": "column", "children": [ { "pane": "logs", "size": "1/2" }, { "pane": "page-2", "size": "1/2" } ] } }
           ] }
         ],
         "panes": [
-          { "id": "p1", "name": "server", "type": "term", "cmd": "npm run dev", "cwd": "~/app" },
-          { "id": "p2", "name": "site", "type": "web", "url": "http://localhost:3000", "history": true },
-          { "id": "p3", "name": "doc", "type": "md", "path": "docs/spec.md" },
-          { "id": "p4", "name": "phone", "type": "ios", "app": "com.example.App", "device": "iPhone 16" },
-          { "id": "p5", "name": "logs", "type": "term", "cmd": null },
-          { "id": "p6", "name": null, "type": "web", "url": "http://example.com/", "history": false }
+          { "id": "term-1", "name": "server", "type": "term", "cmd": "npm run dev", "cwd": "~/app" },
+          { "id": "page-1", "name": "site", "type": "web", "url": "http://localhost:3000", "history": true },
+          { "id": "file-1", "name": "doc", "type": "md", "path": "docs/spec.md" },
+          { "id": "ios-1", "name": "phone", "type": "ios", "app": "com.example.App", "device": "iPhone 16" },
+          { "id": "term-2", "name": "logs", "type": "term", "cmd": null },
+          { "id": "page-2", "name": null, "type": "web", "url": "http://example.com/", "history": false }
         ]
       } },
-      { "send": { "cmd": "open", "args": { "type": "term", "tab": true } }, "expect": { "ok": true, "pane": { "id": "p7" }, "tab": "t4" } },
+      { "send": { "cmd": "open", "args": { "type": "term", "tab": true } }, "expect": { "ok": true, "pane": { "id": "term-3" }, "tab": "tab-4" } },
       { "send": { "cmd": "open", "args": { "type": "term", "name": "site" } }, "expect": { "ok": false, "error": { "code": "name_taken" } } },
-      { "send": { "cmd": "open", "args": { "type": "term", "window": "new" } }, "expect": { "ok": true, "window": "w3" } }
+      { "send": { "cmd": "open", "args": { "type": "term", "window": "new" } }, "expect": { "ok": true, "window": "win-3" } }
     ]
   },
   {
     "name": "restoring repairs what it safely can: sizes, lone splits, dangling focus, empty tabs, unplaced panes, counters",
     "steps": [
       { "send": { "cmd": "debug.restoreState", "args": { "state": {
-        "kmux": "state", "version": 1, "key": "w9",
+        "kmux": "state", "version": 2, "key": "win-9",
         "windows": [
-          { "id": "w4", "active": "t9", "focused": "p99", "zoomed": "p99", "tabs": [
-            { "id": "t5", "title": "  ", "layout": { "split": "row", "children": [
-              { "pane": "p3", "size": 1 },
-              { "split": "column", "size": 0.5, "children": [ { "pane": "p7" } ] },
-              { "pane": "p8", "size": 0.5 }
+          { "id": "win-4", "active": "tab-9", "focused": "term-99", "zoomed": "term-99", "tabs": [
+            { "id": "tab-5", "title": "  ", "layout": { "split": "row", "children": [
+              { "pane": "term-3", "size": 1 },
+              { "split": "column", "size": 0.5, "children": [ { "pane": "page-7" } ] },
+              { "pane": "file-8", "size": 0.5 }
             ] } },
-            { "id": "t6", "title": "empty", "layout": null }
+            { "id": "tab-6", "title": "empty", "layout": null }
           ] },
-          { "id": "w5", "tabs": [] }
+          { "id": "win-5", "tabs": [] }
         ],
         "panes": [
-          { "id": "p3", "name": "a", "type": "term", "cwd": "/tmp" },
-          { "id": "p7", "name": "b", "type": "web", "url": "http://localhost:1234/", "history": false },
-          { "id": "p8", "type": "md", "path": "README.md", "zoom": 1.5 },
-          { "id": "p9", "name": "lost", "type": "term" }
+          { "id": "term-3", "name": "a", "type": "term", "cwd": "/tmp" },
+          { "id": "page-7", "name": "b", "type": "web", "url": "http://localhost:1234/", "history": false },
+          { "id": "file-8", "type": "md", "path": "README.md", "zoom": 1.5 },
+          { "id": "term-9", "name": "lost", "type": "term" }
         ]
-      } } }, "expect": { "ok": true, "windows": ["w4"], "panes": ["p3", "p7", "p8"] } },
+      } } }, "expect": { "ok": true, "windows": ["win-4"], "panes": ["term-3", "page-7", "file-8"] } },
       { "send": { "cmd": "list" }, "expect": {
         "windows": [
-          { "id": "w4", "key": true, "focused": "a", "zoomed": null, "tabs": [
-            { "id": "t5", "title": "Tab 1", "active": true, "layout": { "split": "row", "children": [
-              { "pane": "a", "size": "1/2" }, { "pane": "b", "size": "1/4" }, { "pane": "p8", "size": "1/4" }
+          { "id": "win-4", "key": true, "focused": "a", "zoomed": null, "tabs": [
+            { "id": "tab-5", "title": "Tab 1", "active": true, "layout": { "split": "row", "children": [
+              { "pane": "a", "size": "1/2" }, { "pane": "b", "size": "1/4" }, { "pane": "file-8", "size": "1/4" }
             ] } }
           ] }
         ],
         "panes": [
-          { "id": "p3", "name": "a", "type": "term", "cwd": "/tmp" },
-          { "id": "p7", "name": "b", "type": "web", "url": "http://localhost:1234/" },
-          { "id": "p8", "name": null, "type": "md", "path": "README.md" }
+          { "id": "term-3", "name": "a", "type": "term", "cwd": "/tmp" },
+          { "id": "page-7", "name": "b", "type": "web", "url": "http://localhost:1234/" },
+          { "id": "file-8", "name": null, "type": "md", "path": "README.md" }
         ]
       } },
-      { "send": { "cmd": "debug.saveState" }, "expect": { "ok": true, "state": { "panes": [ {}, {}, { "id": "p8", "zoom": 1.5 } ] } } },
-      { "send": { "cmd": "open", "args": { "type": "term", "name": "lost", "tab": true } }, "expect": { "ok": true, "pane": { "id": "p10" }, "window": "w4", "tab": "t7" } },
-      { "send": { "cmd": "open", "args": { "type": "term", "window": "new" } }, "expect": { "ok": true, "window": "w6" } }
+      { "send": { "cmd": "debug.saveState" }, "expect": { "ok": true, "state": { "panes": [ {}, {}, { "id": "file-8", "zoom": null } ] } } },
+      { "send": { "cmd": "open", "args": { "type": "term", "name": "lost", "tab": true } }, "expect": { "ok": true, "pane": { "id": "term-10" }, "window": "win-4", "tab": "tab-7" } },
+      { "send": { "cmd": "open", "args": { "type": "term", "window": "new" } }, "expect": { "ok": true, "window": "win-6" } }
     ]
   },
   {
@@ -112,7 +112,7 @@
     "steps": [
       { "send": { "cmd": "debug.restoreState" }, "expect": { "ok": false, "error": { "code": "bad_request" } } },
       { "send": { "cmd": "open", "args": { "type": "term", "name": "keep" } } },
-      { "send": { "cmd": "debug.restoreState", "args": { "state": { "version": 99, "windows": [], "panes": [] } } }, "expect": { "ok": false, "error": { "code": "bad_request", "message": "unsupported state version 99 (this kmux reads 1)" } } },
+      { "send": { "cmd": "debug.restoreState", "args": { "state": { "version": 99, "windows": [], "panes": [] } } }, "expect": { "ok": false, "error": { "code": "bad_request", "message": "unsupported state version 99 (this kmux reads 1 and 2)" } } },
       { "send": { "cmd": "debug.restoreState", "args": { "state": "nope" } }, "expect": { "ok": false, "error": { "code": "bad_request" } } },
       { "send": { "cmd": "debug.restoreState", "args": { "state": { "version": 1, "panes": [] } } }, "expect": { "ok": false, "error": { "code": "bad_request" } } },
       { "send": { "cmd": "debug.restoreState", "args": { "state": { "version": 1, "panes": [ { "id": "p1", "type": "term" } ],
@@ -129,7 +129,42 @@
         "expect": { "ok": false, "error": { "code": "bad_request" } } },
       { "send": { "cmd": "debug.restoreState", "args": { "state": { "version": 1, "panes": [ { "id": "../p1", "type": "term" } ], "windows": [] } } },
         "expect": { "ok": false, "error": { "code": "bad_request" } } },
-      { "send": { "cmd": "list" }, "expect": { "windows": [ { "id": "w1", "tabs": [ { "layout": { "pane": "keep" } } ] } ], "panes": [ { "id": "p1", "name": "keep" } ] } }
+      { "send": { "cmd": "debug.restoreState", "args": { "state": { "version": 2, "panes": [ { "id": "p1", "type": "term" } ], "windows": [] } } },
+        "expect": { "ok": false, "error": { "code": "bad_request" } } },
+      { "send": { "cmd": "debug.restoreState", "args": { "state": { "version": 2, "panes": [ { "id": "page-1", "type": "term" } ], "windows": [] } } },
+        "expect": { "ok": false, "error": { "code": "bad_request", "message": "bad state: pane page-1 is a term pane, so its ID is term-N" } } },
+      { "send": { "cmd": "list" }, "expect": { "windows": [ { "id": "win-1", "tabs": [ { "layout": { "pane": "keep" } } ] } ], "panes": [ { "id": "term-1", "name": "keep" } ] } }
+    ]
+  },
+  {
+    "name": "a version-1 state loads with its IDs renamed: a pane takes its content's kind and keeps its number, tabs are tab-N and windows win-N",
+    "steps": [
+      { "send": { "cmd": "debug.restoreState", "args": { "state": {
+        "kmux": "state", "version": 1, "key": "w2", "counters": { "pane": 6, "tab": 3, "window": 2 },
+        "windows": [
+          { "id": "w1", "active": "t1", "focused": "p2", "zoomed": "p2", "tabs": [
+            { "id": "t1", "lastFocus": "p2", "layout": { "split": "row", "children": [ { "pane": "p1", "size": 0.5 }, { "pane": "p2", "size": 0.25 }, { "pane": "p3", "size": 0.25 } ] } }
+          ] },
+          { "id": "w2", "active": "t3", "focused": "p4", "tabs": [ { "id": "t3", "lastFocus": "p4", "layout": { "pane": "p4" } } ] }
+        ],
+        "panes": [
+          { "id": "p1", "name": "agent", "type": "term", "cmd": "claude" },
+          { "id": "p2", "type": "web", "url": "http://localhost:3000/" },
+          { "id": "p3", "type": "md", "path": "README.md" },
+          { "id": "p4", "type": "ios", "app": "com.example.App" }
+        ]
+      } } }, "expect": { "ok": true, "windows": ["win-1", "win-2"], "panes": ["term-1", "page-2", "file-3", "ios-4"] } },
+      { "send": { "cmd": "list" }, "expect": {
+        "windows": [
+          { "id": "win-1", "key": false, "focused": "page-2", "zoomed": "page-2", "tabs": [
+            { "id": "tab-1", "layout": { "split": "row", "children": [ { "pane": "agent", "size": "1/2" }, { "pane": "page-2", "size": "1/4" }, { "pane": "file-3", "size": "1/4" } ] } }
+          ] },
+          { "id": "win-2", "key": true, "focused": "ios-4", "tabs": [ { "id": "tab-3", "layout": { "pane": "ios-4" } } ] }
+        ]
+      } },
+      { "send": { "cmd": "debug.saveState" }, "expect": { "ok": true, "state": { "version": 2, "counters": { "term": 6, "page": 6, "file": 6, "ios": 6, "tab": 3, "window": 2 } } } },
+      { "send": { "cmd": "open", "args": { "type": "term", "tab": true, "window": "win-1" } }, "expect": { "ok": true, "pane": { "id": "term-7" }, "tab": "tab-4" } },
+      { "send": { "cmd": "open", "args": { "type": "web", "url": "a.test", "window": "new" } }, "expect": { "ok": true, "pane": { "id": "page-7" }, "window": "win-3" } }
     ]
   }
 ]
