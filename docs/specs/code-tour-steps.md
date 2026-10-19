@@ -1,6 +1,6 @@
 # Code Tour Steps
 
-**Status:** decided · **Mockup:** [`references/mockups/code-tour-steps.html`](../../references/mockups/code-tour-steps.html) · **Builds on:** the [code tour](code-tour.md)
+**Status:** built · **Tested:** e2e `code_tour_steps`, `cargo test -p kanna-daemon --test panes` (tours), `-p kanna-threads` · **Mockup:** [`references/mockups/code-tour-steps.html`](../../references/mockups/code-tour-steps.html) · **Builds on:** the [code tour](code-tour.md)
 
 The agent queues a whole tour at once, over code and markdown, and you step through it at your own pace: each comment has **Back**, where you are (**2 of 5**) and **Next**. The agent fills the pipeline and stepping doesn't involve it, so there's no round trip between stops. Only a question brings it back: it looks up where you are and answers with a stop of its own, right after the one you're on.
 
@@ -62,13 +62,13 @@ sequenceDiagram
 
 | Command | Does |
 |---|---|
-| `kanna tour FILE:LINE[-LAST] TEXT [FILE:LINE TEXT …]` | a new tour, replacing yours; shows stop 1. Answers `tour of 5 · 1 of 5 · p86 · server.rs:92–103` |
-| `kanna tour add [--next] FILE:LINE TEXT …` | adds stops at the end, or with `--next` right after the current one and shows the first of them |
+| `kanna tour FILE:LINE[-LAST] TEXT [FILE:LINE TEXT …]` | a new tour, replacing yours; shows stop 1. Answers `tour of 5 · 1 of 5 · opened file-3 · keeper-fds.md:5 · c1` (a doc's stop names its thread) |
+| `kanna tour add [--next] FILE:LINE TEXT …` | adds stops at the end (`added 1 · at 3 of 6`), or with `--next` right after the current one and shows the first of them (`added 1 · 4 of 6 · file-2 · client.rs:242–259`) |
 | `kanna tour go next\|back\|N` | shows that stop, as Next and Back do (the app's buttons call it) |
 | `kanna tour` | lists the stops, marking the current one: `at 3 of 5 · server.rs:105–125`, or `no tour` |
 | `kanna tour end` | ends the tour, as Done does |
 
-Each TEXT is one argument (quote it). Placement options are `comment`'s, for files that aren't open yet. `kanna workspace list --all --json` shows a code pane's comment with `tour: {at, of}` while it's the current stop; `debug.code` and `debug.md` report the footer.
+Each TEXT is one argument (quote it). Placement options are `comment`'s, for files that aren't open yet. `kanna workspace list --all --json` shows the pane on the current stop with `tour: {owner, at, of}` (and `thread` on a doc), and the agent's pane with `tour: {at, of}`. `debug.code` and `debug.md` report the footer (`tour`) and press its buttons (`"tour": "next"` or `"back"`).
 
 ## 4. The skill
 
@@ -87,9 +87,10 @@ Each TEXT is one argument (quote it). Placement options are `comment`'s, for fil
 | CLI | `crates/kanna` | `tour`, its pairs of `FILE:LINE TEXT`; markdown stops go to the daemon too |
 | Thread files | `crates/kanna-threads` (new) | the doc thread file (where it lives, reading and writing it safely, `block_at`, adding the agent's thread), moved out of the CLI's `threads.rs` so the daemon writes a markdown stop's thread with the same code |
 | Tour | `crates/kanna-mux` (`tour.rs`) | `tour` keeps `{stops, at}` on the agent's pane record; showing a stop reuses `comment` for code and `markup` plus a written thread for markdown |
-| Code pane | `apps/kanna/Sources/KannaCode` | the comment box's footer: Back, N of M, Next or Done, calling `tour go` |
-| Markdown pane | `apps/kanna/Sources/KannaMarkdown` | the same footer on the card of the thread the pane's record names as the tour's |
+| Code pane | `apps/kanna/Sources/KannaCode` | `CodeComment.swift`: the comment box's footer (Back, N of M, Next or Done), calling `tour go` |
+| Markdown pane | `apps/kanna/Sources/KannaDocs`, `KannaMarkdown` | `DocComments.swift`: the same footer on the card of the thread the pane's record names; the pane selects that thread when its stop shows |
 | Contents | `apps/kanna/Sources/Kanna/Panes` | passes each pane its stop's `tour: {owner, at, of}` and sends `tour go` for the buttons |
 
-- **The stop's place is on the record of the pane that shows it:** a code pane's `comment` gets `tour: {owner, at, of}`; a markdown pane gets `tour: {owner, thread, at, of}`. Only the current stop has it, so moving on clears the last one's.
+- **The stop's place is on the record of the pane that shows it,** `tour: {owner, at, of}` (and `thread` on a markdown pane), beside the code pane's `comment`. Only the current stop has it: moving on clears the last one's and restarts that pane, as a new comment does.
+- **The tour is on the agent's pane record,** `tour: {stops, at}`. Term panes come back from the keeper on a daemon restart, so the daemon takes the tour from the saved layout's record of the same pane.
 - **Checks:** `crates/kanna-daemon/tests/panes.rs` for `tour` (queueing, a bad stop refusing the lot, next, back, add --next, done, nothing sent to the agent, a relaunch, the agent's pane closing); `crates/kanna` unit tests for parsing the pairs; e2e `code_tour_steps`: a tour of a doc and two code files, Next and Back pressed through `debug.code`/`debug.md`, which tab is selected and the footer's N of M, the agent's terminal left untouched by stepping, `kanna tour` reporting the current stop, `add --next`, Done.

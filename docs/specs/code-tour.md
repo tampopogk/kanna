@@ -71,7 +71,7 @@ sequenceDiagram
 - **When:** the user asks how something works, wants to understand code the agent wrote or changed, or seems to be losing track of the code.
 - **The explanation is in the comments, not the chat.** A comment on the code (`kanna comment FILE:LINE`) says what that part does and the one thing to remember about it; the chat gets a line or two at most.
 - **The big picture in a temporary markdown doc:** object hierarchies, class or layer stacks, call and data flows, as a diagram (mermaid class or sequence diagram, layer diagram, table) in a short doc in the worktree's `.kanna/tmp/`, commented on the same way (`kanna comment DOC.md:LINE`); the doc first, the code after.
-- **One comment at a time.** Comment on one part, focus its pane, say where you are in a line, and stop: ask the user to tell you when to go on. Never comment on several parts in one turn.
+- **A tour, queued at once.** The agent queues every stop with `kanna tour` and the user steps through with Next and Back, without the agent: see [code tour steps](code-tour-steps.md).
 - **Follow the questions.** Answer by commenting on the code that answers it.
 - **Small parts.** A function or a block; `FILE:FIRST-LAST` for a few lines inside a long one.
 - **At the end, offer to leave the tabs open or close them** (`kanna close`), and do what the user picks. The docs stay: Kanna keeps `.kanna/tmp/` out of git (the repo's `info/exclude`, beside `.kanna-worktrees/`), and they go with the worktree.

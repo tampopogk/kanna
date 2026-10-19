@@ -44,15 +44,29 @@ kanna open md .kanna/tmp/git-subtree.md --tab
 - **Use the user's own case** for the examples (this repo's names, commits and commands), not generic ones.
 - In the chat, a line saying the tab is open, then wait. Answer follow-ups by editing the doc (the tab reloads) or with `kanna comment` on it.
 
-## One part at a time
+## A tour: queue the stops, the user steps through
 
-1. Comment on one part (code or doc).
-2. Focus the pane `kanna comment` printed: `kanna focus term-129`.
-3. In the chat, one or two lines at most: where you are and "tell me when to go on". Don't repeat the comment, don't explain in the chat.
-4. Stop and wait. Never comment on several parts in one turn.
+Plan the route, then queue it in one command: the big-picture doc first, then the code, a small part per stop. Each stop is `FILE:LINE` (or `FILE:FIRST-LAST`) and its comment, quoted as one argument.
 
-When the user asks a question, answer it with a comment on the code or doc that answers it, and a line in the chat.
+```sh
+kanna tour .kanna/tmp/keeper-fds.md:5 "The whole trip: queue, send, take." \
+  src/server.rs:92 "Queues the message with the terminals that go with it." \
+  src/fdpass.rs:20 "Sends them across in one message." \
+  src/fdpass.rs:50 "The daemon's side: takes whatever terminals came with it."
+```
+
+Kanna shows the first stop. Each comment has Back, where the user is (2 of 4) and Next, which opens or selects the next stop's file and scrolls to it. Nothing reaches you as they step: the comments are the explanation, so there's no round trip between stops.
+
+1. In the chat, one line: how many stops, and "Next on the comment; ask here any time". Then stop.
+2. More stops come to mind while they read? `kanna tour add FILE:LINE "…"` adds them at the end.
+3. **A question during the tour:** run `kanna tour` to see which stop they're on, then answer with a stop right after it, shown at once, and a line in the chat. Next carries on with the tour.
+
+   ```sh
+   kanna tour add --next src/client.rs:244 "Each line says how many terminals are its, and takes that many."
+   ```
+
+A question outside a tour, or a single part, still gets a plain `kanna comment`.
 
 ## At the end
 
-Offer to leave the tabs open or close them, and do what the user picks (`kanna close PANE` for each tab `kanna comment` opened).
+When the user says they're done (Done on the last stop ends the tour without telling you), offer to leave the tabs open or close them, and do what they pick (`kanna close PANE` for each tab the tour or `kanna comment` opened).
