@@ -113,7 +113,7 @@ function raise({ title, detail, task, pane, key }) {
 
 function render() {
   document.getElementById("stack").innerHTML = s.toasts.map(t => {
-    const where = t.task ? `${esc(s.tasks[t.task].name)} · ${t.task === s.desk ? "on the Desk" : "on the Shelf"}` : "";
+    const where = t.task ? esc(s.tasks[t.task].name) : "";
     return `<div class="toast ${t.task ? "about" : ""} ${t.fresh === false ? "" : "new"} ${t.left <= FADE ? "fading" : ""}" data-id="${t.id}">${ICON}
       <div class="body"><div class="title">${esc(t.title)}</div><div class="detail">${esc(t.detail)}</div>${where ? `<div class="where">${where}</div>` : ""}</div>
       <button class="x" data-close="${t.id}" title="Close">×</button></div>`;

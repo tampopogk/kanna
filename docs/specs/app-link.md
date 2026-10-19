@@ -64,6 +64,7 @@ sequenceDiagram
 | `start`, `stop`, `pane`; `update`; the app's own requests | both | web, markdown and iOS panes ([app panes](app-panes.md)); `pane` also tells the app a terminal pane's new `terminal` when it starts again, and the app makes a new view for it |
 | `diff.subscribe {view, path, args}` (with an `id`), `diff.show {view, show}`, `diff.unsubscribe {view}` | app | this view shows the diff of that folder and git arguments; the reply has its content ID and latest diff ([diff viewer](diff-viewer.md#5-how-its-built)) |
 | `diff {content, serial, diff, updating}` | daemon | a subscribed diff changed |
+| `toast {id, title, detail, pane, task, about}` | daemon | show a toast; also each one held while no app was attached, after `app.hello` ([toasts](toasts.md)) |
 
 ## 3. Rules
 
