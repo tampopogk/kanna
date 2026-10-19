@@ -37,7 +37,7 @@ kanna comment .kanna/tmp/backlog.md:3 "The daemon owns the backlog; the app only
 To explain something that isn't this repo's code (how `git subtree` works, a protocol, a tradeoff), write the doc in `.kanna/tmp/` the same way and open it in a tab:
 
 ```sh
-kanna open md .kanna/tmp/git-subtree.md --tab --name explain
+kanna open md .kanna/tmp/git-subtree.md --tab
 ```
 
 - **Diagrams first, then a short section per idea,** each with its command or example. A table where things compare.

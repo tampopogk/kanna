@@ -50,7 +50,7 @@ When the user asks you to show them something (a diff, a file, a doc, a page, a 
 | To show | Run |
 |---|---|
 | A task's changes | `kanna open diff --merge-base main --cwd WORKTREE --tab` |
-| A command's output | `kanna open --tab --name NAME --cmd 'CMD \| less -R'` |
+| A command's output | `kanna open --tab --cmd 'CMD \| less -R'` |
 | A markdown doc | `kanna open md FILE --tab` |
 | A source file | `kanna open code FILE[:LINE] --tab` |
 | A page | `kanna open web URL --tab` |
