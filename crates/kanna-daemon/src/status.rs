@@ -89,6 +89,22 @@ impl Detector {
         }
     }
 
+    pub fn program(&self, pane: &str) -> Option<Program> {
+        lock(&self.shared.watches).get(pane)?.program.clone()
+    }
+
+    pub fn line_mode(&self, pane: &str) -> bool {
+        let watches = lock(&self.shared.watches);
+        let Some(watch) = watches.get(pane) else { return false };
+        let mut termios = unsafe { std::mem::zeroed::<libc::termios>() };
+        unsafe { libc::tcgetattr(watch.master.as_raw_fd(), &mut termios) == 0 && termios.c_lflag & libc::ICANON != 0 }
+    }
+
+    pub fn argv(&self, pane: &str) -> Vec<Vec<String>> {
+        let group = lock(&self.shared.watches).get(pane).and_then(|watch| program::foreground_group(watch.master.as_raw_fd()));
+        group.map(program::group_argv).unwrap_or_default()
+    }
+
     pub fn explain(&self, pane: &str) -> Option<Explained> {
         let watches = lock(&self.shared.watches);
         let watch = watches.get(pane)?;

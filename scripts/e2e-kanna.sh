@@ -2435,8 +2435,8 @@ print(sum(1 for l in lines if l.get("turn") and sys.argv[2] in l["prompt"] and (
     [[ "$(kanna task defer "$task")" == *"to the backlog as $id"* ]] || { echo "real_agent_tasks: $agent's task didn't move back to the backlog as $id"; return 1; }
     [[ "$(kanna task stop "$id")" == "stopped $id in the backlog; "* ]] || { echo "real_agent_tasks: $agent's task didn't stop"; return 1; }
     check is "$agent task" state exited || { echo "real_agent_tasks: $agent is still running"; return 1; }
-    said="$(kanna read "$agent task" | tr -d '\r\n' | grep -oE "$agent (--)?resume [0-9a-f-]{36}" | tail -1 | grep -oE '[0-9a-f-]{36}$')"
-    [[ -n "$said" ]] || { echo "real_agent_tasks: $agent wasn't quit with its keys, so it didn't say its session"; kanna read "$agent task"; return 1; }
+    said="$(kanna read "$agent task" | tr -d '\r\n' | grep -oE "$agent (--remote [^ ]+ )?(--)?resume [0-9a-f-]{36}" | tail -1 | grep -oE '[0-9a-f-]{36}$')"
+    [[ -n "$said" ]] || { echo "real_agent_tasks: $agent wasn't quit with its keys, so it didn't say its session"; kanna read "$agent task" --lines 60; return 1; }
     ! tail -n +"$((logged + 1))" "$out/daemon.log" | grep -E "in $task (has no quit keys|didn't quit)|quit keys in $task " || { echo "real_agent_tasks: $agent was hung up"; return 1; }
     [[ "$(raw '{"id":1,"cmd":"backlog","args":{"action":"list"}}' | python3 -c 'import json, sys; print(next(t for t in json.load(sys.stdin)["tasks"] if t["id"].startswith(sys.argv[1])).get("session"))' "$id")" == "$said" ]] || { echo "real_agent_tasks: the session $agent said ($said) wasn't kept"; return 1; }
     [[ "$(kanna task start "$id")" == "started $id again in the backlog: "* ]] || { echo "real_agent_tasks: $agent's task didn't start again"; return 1; }
@@ -2446,6 +2446,9 @@ print(sum(1 for l in lines if l.get("turn") and sys.argv[2] in l["prompt"] and (
     [[ "$(asked "$first")" == 1 ]] || { echo "real_agent_tasks: $agent started again with its first message instead of resuming"; return 1; }
     kanna send "$agent task" "$second" || { echo "real_agent_tasks line $LINENO"; return 1; }
     check wait_for 60 eval '[[ "$(asked "$second" "$first")" -ge 1 ]]' || { echo "real_agent_tasks: $agent's next message didn't carry its conversation"; kanna read "$agent task"; tail -3 "$agents/mock.jsonl" | cut -c1-300; return 1; }
+    said="$(cd "$repo" && kanna task send "$id" "MESSAGE_PROBE $agent")" || { echo "real_agent_tasks line $LINENO"; return 1; }
+    [[ "$said" != *warning* ]] || { echo "real_agent_tasks: $agent can't take a message: $said"; return 1; }
+    check wait_for 60 eval '[[ "$(asked "] MESSAGE_PROBE $agent" "$first")" -ge 1 ]]' || { echo "real_agent_tasks: the message to $agent didn't reach it"; kanna read "$agent task"; grep -o 'MESSAGE_PROBE.\{0,200\}' "$agents/mock.jsonl" | tail -3; tail -2 "$agents/mock.jsonl" | cut -c1-600; kanna task messages "$id"; tail -n +"$((logged + 1))" "$out/daemon.log" | grep -i message | tail -5; return 1; }
   done
   stop_agents
 }
@@ -2748,7 +2751,7 @@ planner_choice() {
   check wait_for 5 shows "$planner" "Make codex the planning agent for repo? \[y/N\]" || { kanna read "$planner"; return 1; }
   kanna send "$planner" y >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
   check wait_for 5 shows "$planner" "codex plans repo from now on" || { kanna read "$planner"; return 1; }
-  check wait_for 10 shows "$planner" "args: --yolo --no-daemon You are the Kanna" || { echo "planner_choice: codex didn't start as the planner"; kanna read "$planner"; return 1; }
+  check wait_for 10 unwrapped "$planner" "args: You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: codex didn't start as the planner"; kanna read "$planner"; return 1; }
   check grep -Eq '"agent" ?: "codex"' "$repo/.kanna/config.json" || { cat "$repo/.kanna/config.json"; return 1; }
   kanna send "$planner" exit >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
   check wait_for 5 shows "$planner" "The planning agent quit. Start it again:" || { kanna read "$planner"; return 1; }
@@ -2758,7 +2761,7 @@ planner_choice() {
   w="${BASH_REMATCH[1]}"
   check wait_for 10 eval '[[ "$(desk lead "$w")" == term-* ]]' || { echo "planner_choice: the next Desk has no planning terminal"; return 1; }
   planner="$(desk lead "$w")"
-  check wait_for 10 shows "$planner" "args: --yolo --no-daemon You are the Kanna" || { echo "planner_choice: the next Desk didn't start the project's planner"; kanna read "$planner"; return 1; }
+  check wait_for 10 unwrapped "$planner" "args: You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: the next Desk didn't start the project's planner"; kanna read "$planner"; return 1; }
   ! shows "$planner" "Choose an agent" || { echo "planner_choice: the next Desk asked again"; return 1; }
   key cmd+n
   check wait_for 10 eval '[[ "$(desk lead d3)" == term-* ]]' || { echo "planner_choice: ⌘N opened no Desk"; kanna workspace list --all; return 1; }
@@ -2766,7 +2769,7 @@ planner_choice() {
   check wait_for 10 shows "$planner" "Folder, repo or name:" || { echo "planner_choice: a Desk in ~ didn't ask where"; kanna read "$planner"; return 1; }
   kanna send "$planner" "$repo" >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
   check wait_for 10 eval '[[ "$(desk header d3)" == "Planning · "*"${repo#/private} · main" ]]' || { echo "planner_choice: the Desk didn't follow to the folder"; desk header d3; return 1; }
-  check wait_for 10 shows "$planner" "args: --yolo --no-daemon You are the Kanna" || { echo "planner_choice: the Desk didn't start the folder's planner"; kanna read "$planner"; return 1; }
+  check wait_for 10 unwrapped "$planner" "args: You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: the Desk didn't start the folder's planner"; kanna read "$planner"; return 1; }
 }
 
 scenario real_agent_planners M4
@@ -2992,7 +2995,7 @@ for t in tasks: print(t["id"], "running" if t.get("running") else "stopped:" + (
   [[ "$(kanna task shelve $(tid 2))" == "moved $(sid 2) to the Shelf: "* ]] || { echo "backlog_runners: the stopped task didn't move to the Shelf"; return 1; }
   check wait_for 5 eval '[[ "$(pane Asks id)" != "$asks" ]]' && asks="$(pane Asks id)" || { echo "backlog_runners: the started task kept its old terminal"; return 1; }
   check wait_for 10 shows "$asks" "resumed $sid" || { echo "backlog_runners: the stopped task didn't resume its session on the Shelf"; kanna read "$asks"; return 1; }
-  unwrapped "$asks" "args: --yolo --no-daemon resume $sid" || { kanna read "$asks"; return 1; }
+  unwrapped "$asks" "args: resume $sid --remote unix://" || { kanna read "$asks"; return 1; }
   sleep 6
   check is "$asks" state running || { echo "backlog_runners: a task on the Shelf was stopped"; return 1; }
   [[ "$(kanna task defer "$asks")" == *"to the backlog as $(sid 2)"* ]] || { echo "backlog_runners: the resumed task didn't move back to the backlog"; return 1; }
@@ -3047,6 +3050,80 @@ print(len(w["tabs"]), w.get("focused"), w.get("zoomed"))' "$presenter"; }
   check wait_for 5 eval '[[ "$(dwin "$desk8" dock.pane)" == "$(pane Asks id)" ]]' || { echo "backlog_runners: $(sid 2) didn't take $(sid 8)'s place on the Desk"; app_view; return 1; }
   [[ "$(ws $(tid 8) panes)" == *"\"$md\""* && "$(ws $(tid 2) panes)" != *"\"$md\""* ]] || { echo "backlog_runners: $(sid 8)'s tabs aren't in its workspace"; state; return 1; }
   [[ "$(KANNA_TERMINAL="$presenter" kanna open --name after --tab --no-wait)" == "opened "*" (after) in ws-"*" ($(sid 8), on the Shelf), tab-"* ]] || { echo "backlog_runners: $(sid 8)'s open went elsewhere"; state; return 1; }
+}
+
+scenario agent_messaging M4
+agent_messaging() {
+  start_daemon && start_app || { echo "agent_messaging line $LINENO"; return 1; }
+  local repo="$KANNA_STATE_DIR/repo" fake="$KANNA_STATE_DIR/agents"
+  mkdir -p "$repo/.kanna" "$fake" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "agent_messaging line $LINENO"; return 1; }
+  ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/codex"
+  repo="$(cd "$repo" && pwd -P)"
+  in_repo() { (cd "$repo" && kanna "$@"); }
+  printf '{"version": 1, "backlog": {"runners": 1}}\n' >"$repo/.kanna/config.json"
+  task_state() { raw '{"id":1,"cmd":"backlog","args":{"action":"list"}}' | python3 -c 'import json, sys
+t = [t for t in json.load(sys.stdin)["tasks"] if t["id"] == sys.argv[1]][0]
+print("running" if t.get("running") else "stopped" if t.get("folder") else "waiting", t.get("held") or "-")' "$1"; }
+  times() { kanna read "$1" | grep -c -- "$2"; }
+  in_repo task new "Busy" "work 4" --agent "$fake/codex" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
+  local busy; busy="$(tid 1)"
+  check wait_for 10 eval '[[ "$(task_state $busy)" == running* ]]' || { echo "agent_messaging: the task didn't run"; return 1; }
+  local term; term="$(task_state $busy | cut -d' ' -f2)"
+  check wait_for 10 is "$term" status working || { echo "agent_messaging: the task never showed as working"; kanna status explain "$term"; return 1; }
+  local said; said="$(in_repo task send "$busy" "hello while busy")"
+  [[ "$said" == "queued for $(sid 1): it's working, so it gets it when its turn is over" ]] || { echo "agent_messaging: send said: $said"; return 1; }
+  sleep 1
+  check test "$(times "$term" "hello while busy")" -eq 0 || { echo "agent_messaging: the message was typed mid-turn"; kanna read "$term"; return 1; }
+  check wait_for 15 shows "$term" "peer: \[message from user\] hello while busy" || { echo "agent_messaging: the busy task didn't get its message at its turn's end"; kanna read "$term"; return 1; }
+  check wait_for 15 eval '[[ "$(task_state $busy)" == stopped* ]]' || { echo "agent_messaging: the task wasn't stopped after the turn its message started"; task_state "$busy"; return 1; }
+  check test "$(times "$term" "peer: \[message from user\] hello while busy")" -eq 1 || { echo "agent_messaging: the message came more than once"; kanna read "$term"; return 1; }
+  [[ "$(in_repo task send "$busy" "wake up")" == *"it's stopped"* ]] || { echo "agent_messaging line $LINENO"; return 1; }
+  check wait_for 15 eval '[[ "$(task_state $busy)" == running* ]]' || { echo "agent_messaging: a message didn't wake the stopped backlog task"; task_state "$busy"; return 1; }
+  term="$(task_state $busy | cut -d' ' -f2)"
+  check wait_for 15 shows "$term" "peer: \[message from user\] wake up" || { echo "agent_messaging: the woken task didn't get its message"; kanna read "$term"; return 1; }
+  shows "$term" "^resumed " || { echo "agent_messaging: the woken task didn't resume its session"; kanna read "$term"; return 1; }
+  check wait_for 15 eval '[[ "$(task_state $busy)" == stopped* ]]' || { echo "agent_messaging: the woken task wasn't stopped again"; return 1; }
+  in_repo task new "Other" "work 1" --agent "$fake/codex" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
+  local other; other="$(tid 2)"
+  check wait_for 15 eval '[[ "$(task_state $other)" == stopped* ]]' || { echo "agent_messaging: the second task didn't run and stop"; task_state "$other"; return 1; }
+  (cd "$repo" && KANNA_TERMINAL="$term" kanna task send "$other" "from one task to another") >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
+  check wait_for 15 eval '[[ "$(task_state $other)" == running* ]]' || { echo "agent_messaging line $LINENO"; return 1; }
+  local oterm; oterm="$(task_state $other | cut -d' ' -f2)"
+  check wait_for 15 shows "$oterm" "peer: \[message from $(sid 1) \"Busy\"\] from one task to another" || { echo "agent_messaging: a task's message didn't name it"; kanna read "$oterm"; return 1; }
+  check wait_for 15 eval '[[ "$(task_state $other)" == stopped* ]]' || { echo "agent_messaging line $LINENO"; return 1; }
+  local opened planner; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "agent_messaging line $LINENO: $opened"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"${BASH_REMATCH[1]}\"}}" | field "$1"; }
+  check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { desk lead; return 1; }
+  planner="$(desk lead)"
+  wait_for 10 shows "$planner" "Install Kanna's skills? \[Y/n\]" && kanna send "$planner" "n" >/dev/null
+  check wait_for 10 shows "$planner" "No agent Kanna knows is installed" || { kanna read "$planner"; return 1; }
+  kanna send "$planner" "$bin/kanna-daemon --codex-remote $KANNA_STATE_DIR $fake/codex" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
+  check wait_for 10 shows "$planner" "mock-agent:" || { kanna read "$planner"; return 1; }
+  (cd "$repo" && KANNA_TERMINAL="$oterm" kanna task send planner "I'm done") >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
+  check wait_for 15 shows "$planner" "peer: \[message from $(sid 2) \"Other\"\] I'm done" || { echo "agent_messaging: the planner didn't get the task's message"; kanna read "$planner"; in_repo task messages; return 1; }
+  (cd "$repo" && KANNA_TERMINAL="$planner" kanna task send "$busy" "from the planner") >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
+  term="$(task_state $busy | cut -d' ' -f2)"
+  check wait_for 20 eval 'term="$(task_state $busy | cut -d" " -f2)"; shows "$term" "peer: \[message from planner\] from the planner"' || { echo "agent_messaging: the task didn't get the planner's message"; kanna read "$term"; return 1; }
+  local list; list="$(in_repo task messages "$busy")"
+  [[ "$(grep -c delivered <<<"$list")" == 4 && "$list" == *"user"*"hello while busy"* ]] || { echo "agent_messaging: task messages shows: $list"; return 1; }
+  in_repo task done "$other" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
+  said="$(in_repo task send "$other" "too late" 2>&1)" && { echo "agent_messaging: a done task took a message"; return 1; }
+  [[ "$said" == *"is done, so it takes no messages"* ]] || { echo "agent_messaging: send to a done task said: $said"; return 1; }
+  mkdir -p "$fake/bin" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/bin/claude"
+  printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$fake/bin/claude" >"$fake/claude" && chmod +x "$fake/claude"
+  in_repo task new "Claude" "work 4" --agent "$fake/claude" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
+  local claude; claude="$(tid 3)"
+  check wait_for 15 eval '[[ "$(task_state $claude)" == running* ]]' || { echo "agent_messaging: the claude task didn't run"; task_state "$claude"; return 1; }
+  local cterm; cterm="$(task_state $claude | cut -d' ' -f2)"
+  in_repo task send "$claude" "over the socket" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
+  check wait_for 15 shows "$cterm" "peer: \[message from user\] over the socket" || { echo "agent_messaging: the claude task didn't get its message on its socket"; kanna read "$cterm"; tail -5 "$out/daemon.log"; return 1; }
+  check test "$(times "$cterm" "over the socket")" -eq 1 || { echo "agent_messaging: the claude task's message was typed too"; kanna read "$cterm"; return 1; }
+  check wait_for 15 eval '[[ "$(task_state $claude)" == stopped* ]]' || { echo "agent_messaging: the claude task wasn't stopped after the turn its message started"; task_state "$claude"; return 1; }
+  ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/copilot"
+  in_repo task new "Copilot" "work 1" --agent "$fake/copilot" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
+  said="$(in_repo task send "$(tid 4)" "can you hear me")"
+  [[ "$said" == *$'\n'"warning: it waits: copilot can't take messages: only claude and codex can" ]] || { echo "agent_messaging: send to a copilot task said: $said"; return 1; }
+  check wait_for 15 eval '[[ "$(in_repo task messages "$(tid 4)")" == *"held for $(sid 4): copilot can'"'"'t take messages"* ]]' || { echo "agent_messaging: task messages shows: $(in_repo task messages "$(tid 4)")"; return 1; }
 }
 
 scenario task_scripts M4

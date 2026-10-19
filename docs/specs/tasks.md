@@ -91,7 +91,7 @@ Kanna gives an agent a session ID of its own when it starts, if the agent takes 
 | Agent | Started with | Resumed with | A task Kanna didn't start |
 |---|---|---|---|
 | claude | `claude --session-id UUID 'FIRST'` | `claude --resume UUID` | `claude --continue` (the folder's latest), until a stop finds the ID it says |
-| codex | `codex --yolo --no-daemon 'FIRST'` (it takes no ID) | `codex --yolo --no-daemon resume ID`, the one it said as it quit, else `resume --last` (the folder's latest: codex filters by folder) | the same |
+| codex | `codex --yolo 'FIRST'` (it takes no ID), through [its app-server](codex-app-server.md) | `codex --yolo resume ID`, the one it said as it quit, else `resume --last` (the folder's latest: codex filters by folder) | the same |
 | copilot | `copilot --yolo --session-id UUID -i 'FIRST'` | `copilot --yolo --session-id UUID` | the latest session in `~/.copilot/session-state/*/workspace.yaml` whose `cwd` is the folder (`copilot --continue` isn't the folder's) |
 | opencode | `opencode --prompt 'FIRST'` (it takes no ID) | `opencode --session ID`, the latest top-level session in `~/.local/share/opencode/opencode.db` whose `directory` is the folder (`--continue` is the repo's, shared by its worktrees) | the same |
 | antigravity | `agy --dangerously-skip-permissions -i 'FIRST'` (it takes no ID) | `agy --dangerously-skip-permissions --conversation ID`, the one it said as it quit, else `--continue` (the folder's last conversation) | the same |
@@ -114,6 +114,8 @@ An agent not in the table starts again with its first message, its conversation 
 | `kanna task name [TASK] NAME` | Rename a task (default: the one you're in), running or in the backlog (`task-3f9a`); a backlog task starts with the new name |
 | `kanna task list [QUERY]` | Every task: ID, name, where (a Desk, the Shelf, the backlog), state (working, idle, needs you, or stopped), repo; with QUERY, only those whose name or first message has every word ([backlog search](backlog-search.md#cli)) |
 | `kanna task defer [TASK]` | Move a task back to the backlog as it is, running or stopped (default: the one you're in) |
+| `kanna task send TASK\|planner TEXT` | Leave a task's agent or the repo's planner a message, typed in when its turn is over ([agent messaging](agent-messaging.md)) |
+| `kanna task messages [TASK]` | A task's messages, or every message |
 | `kanna task done [TASK]` | End a task, or take it off the backlog |
 | `kanna agents [status]` | Whether your agents are set up for Kanna, and whether this Kanna has newer skills ([agent setup](agent-setup.md)) |
 | `kanna agents setup [--ask]` | Install Kanna's skills and Claude's sandbox entry (`--ask`: say what and ask first) |
@@ -143,13 +145,13 @@ flowchart TB
 - **One table per agent** in the daemon (`AGENTS` in `backlog.rs`) says how to start it without asking permission, how to pass the first message, how to name a new session, how to resume one, how to resume the folder's latest, and where to find its sessions by folder. The lookup runs when a task starts again, not before: while the agent runs, its session may not be written yet.
 - **An ID is never handed out twice.** A new task's ID is saved as it's made, so a restart can't reuse one, and a task keeps it from made to done. IDs name tasks only; worktrees and branches get their own random names, so a lost `kanna.db` or another Kanna on the same repo can't collide with them.
 - **A task's agent doesn't ask permission.** Starting one adds the agent's own flag for that (`claude --dangerously-skip-permissions`, `codex --yolo`, `copilot --yolo`, `agy --dangerously-skip-permissions`; opencode has none) unless its command already says how to ask (`--permission-mode`, `--ask-for-approval`/`-a`, `--allow-all`/`--allow-all-tools`, `--mode`). The planning agent and the quiz agent start the same way. The task works in its own worktree, and you watch it on the Desk. The backlog keeps the command as written.
-- **A Codex task runs in its own terminal:** starting one adds `--no-daemon`, so Codex runs its session itself rather than in its shared background server, which runs every session's commands and hooks with the environment of whichever terminal started it. With the flag, Codex's commands and hooks get the task's `$KANNA_TERMINAL` and `$KANNA_SOCKET`, as Claude's do.
+- **A Codex task runs attached to an app-server of its own** ([Codex's app-server](codex-app-server.md)), started from the task's terminal, not in Codex's shared background server, which runs every session's commands and hooks with the environment of whatever started it. Codex's commands and hooks get the task's `$KANNA_TERMINAL` and `$KANNA_SOCKET`, as Claude's do, and Kanna can hand it messages.
 
 ## 8. Open questions
 
 1. **Task IDs that travel:** IDs ([task IDs](task-ids.md)) are random 32 bits, checked only on this machine; sending tasks elsewhere may want longer ones.
 2. **Codex, opencode and antigravity take no session ID up front:** they resume the folder's latest session, which is the task's while each task has its own worktree. If one starts to take an ID, it moves to the ID like claude and copilot.
-3. **Codex saves its last reply a moment after showing it:** in its own terminal (`--no-daemon`) it writes the reply to its session about a second after it appears, and a stop within that second (SIGHUP, then SIGKILL a second later) loses the reply: started again, it shows the question and "Conversation interrupted". [Backlog runners](backlog-runners.md) wait for the turn to end and quit codex with its own keys; `kanna task stop` still hangs up; `real_agent_tasks` waits for the reply to be saved.
+3. **Codex saves its last reply a moment after showing it:** it writes the reply to its session about a second after it appears, and a stop within that second (SIGHUP, then SIGKILL a second later) loses the reply: started again, it shows the question and "Conversation interrupted". [Backlog runners](backlog-runners.md) wait for the turn to end and quit codex with its own keys; `kanna task stop` still hangs up; `real_agent_tasks` waits for the reply to be saved.
 
 ## 9. Glossary
 

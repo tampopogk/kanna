@@ -60,6 +60,7 @@ mod tests {
         assert_eq!(codex.session_in(screen).as_deref(), Some("019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b"));
         assert_eq!(codex.session_in("To continue this session, run:\ncodex resume 019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b").as_deref(), Some("019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b"));
         assert_eq!(codex.session_in("run: codex resume 019a2b3c-4d5e-7f60-8a9b-0c\n1d2e3f4a5b\n").as_deref(), Some("019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b"), "wrapped in a narrow pane");
+        assert_eq!(codex.session_in("To reconnect, run:\n  codex --remote unix:///tmp/k/codex/codex-7.sock resume 01a1\n51f7-7e84-76e1-a224-e75afb524fa2\n").as_deref(), Some("01a151f7-7e84-76e1-a224-e75afb524fa2"), "attached to its app-server");
         assert_eq!(codex.session_in("You can resume a previous conversation by running `codex resume`"), None);
         assert!(Quit::of("aider").is_none());
         assert!(Quit::parse(r#"{"agent": "x", "keys": [], "session": "no group"}"#).is_err());

@@ -44,10 +44,22 @@ flowchart LR
 | `id` | integer, key | |
 | `task` | text → `tasks.id` | |
 | `at` | real | when |
-| `what` | text | `made`, `started`, `stopped`, `exited`, `shelved`, `deferred`, `renamed`, `done`, `imported` (older rows may say `parked` or `pulled`) |
+| `what` | text | `made`, `started`, `stopped`, `exited`, `shelved`, `deferred`, `renamed`, `messaged`, `done`, `imported` (older rows may say `parked` or `pulled`) |
 | `from_place`, `to_place` | text | where it was and went, for a move |
 | `by` | text | a pane, `user`, or `daemon` |
 | `doc` | JSON | window, exit code, old name, … |
+
+**messages**: one row per message between the user, the planner and tasks ([agent messaging](agent-messaging.md)).
+
+| Column | Type | Holds |
+|---|---|---|
+| `id` | integer, key | |
+| `recipient` | text | a task's ID, or `planner` |
+| `repo` | text | the repo, which picks the planner |
+| `sender` | text | a task's ID, `planner` or `user` |
+| `at` | real | when it was sent |
+| `delivered` | real | when it was typed into the recipient's terminal; empty while it waits |
+| `text` | text | the message |
 
 **layout**: one row (`id` 1), `doc`: the layout in kmux's state file format, Kanna's version 3 ([workspaces](workspaces.md#5-saved-state)). The daemon writes it half a second after a change and when it stops, and with a task's row when the task is done, in the same transaction, so a done task's workspace doesn't come back. On first run it imports `layout.json` and renames it `layout.json.imported`.
 

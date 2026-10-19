@@ -51,6 +51,15 @@ pub fn identify(group: i32, rules: &RuleSet) -> Option<Program> {
     rules.agent(&found.agent).is_some().then_some(found)
 }
 
+pub fn group_argv(group: i32) -> Vec<Vec<String>> {
+    group_members(group).into_iter().filter_map(process).map(|p| p.argv).collect()
+}
+
+pub fn environment(pid: i32, name: &str) -> Option<String> {
+    let prefix = format!("{name}=");
+    environ(pid).into_iter().find_map(|entry| entry.strip_prefix(&prefix).map(str::to_string))
+}
+
 pub fn agent_of(executable: &Path) -> Option<&'static str> {
     let name = |p: &Path| p.file_name().and_then(|n| n.to_str()).map(str::to_owned);
     if let Some(agent) = name(executable).as_deref().and_then(known_agent) {
@@ -175,11 +184,11 @@ pub fn probe(executable: &Path, timeout: Duration) -> Option<String> {
 #[cfg(target_os = "macos")]
 fn group_members(group: i32) -> Vec<i32> {
     let mut pids = vec![0i32; 256];
-    let bytes = unsafe { libc::proc_listpgrppids(group, pids.as_mut_ptr().cast(), (pids.len() * std::mem::size_of::<i32>()) as libc::c_int) };
-    if bytes <= 0 {
+    let count = unsafe { libc::proc_listpgrppids(group, pids.as_mut_ptr().cast(), (pids.len() * std::mem::size_of::<i32>()) as libc::c_int) };
+    if count <= 0 {
         return vec![group];
     }
-    pids.truncate(bytes as usize / std::mem::size_of::<i32>());
+    pids.truncate(count as usize);
     pids.retain(|pid| *pid > 0);
     if !pids.contains(&group) {
         pids.push(group);
@@ -192,23 +201,34 @@ fn process(pid: i32) -> Option<Process> {
     let mut path = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
     let n = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
     let executable = (n > 0).then(|| PathBuf::from(String::from_utf8_lossy(&path[..n as usize]).into_owned()));
-    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
-    let mut size: libc::size_t = 0;
-    let mut argv = vec![];
-    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0) } == 0 && size > 4 {
-        let mut buffer = vec![0u8; size];
-        if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, buffer.as_mut_ptr().cast(), &mut size, std::ptr::null_mut(), 0) } == 0 {
-            buffer.truncate(size);
-            argv = procargs(&buffer);
-        }
-    }
+    let (argv, _) = procargs(&procargs2(pid));
     (executable.is_some() || !argv.is_empty()).then_some(Process { pid, executable, argv })
 }
 
 #[cfg(target_os = "macos")]
-fn procargs(buffer: &[u8]) -> Vec<String> {
-    if buffer.len() < 4 {
+fn environ(pid: i32) -> Vec<String> {
+    procargs(&procargs2(pid)).1
+}
+
+#[cfg(target_os = "macos")]
+fn procargs2(pid: i32) -> Vec<u8> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+    let mut size: libc::size_t = 0;
+    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0) } != 0 || size <= 4 {
         return vec![];
+    }
+    let mut buffer = vec![0u8; size];
+    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, buffer.as_mut_ptr().cast(), &mut size, std::ptr::null_mut(), 0) } != 0 {
+        return vec![];
+    }
+    buffer.truncate(size);
+    buffer
+}
+
+#[cfg(target_os = "macos")]
+fn procargs(buffer: &[u8]) -> (Vec<String>, Vec<String>) {
+    if buffer.len() < 4 {
+        return (vec![], vec![]);
     }
     let argc = i32::from_ne_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]).max(0) as usize;
     let mut rest = &buffer[4..];
@@ -216,7 +236,10 @@ fn procargs(buffer: &[u8]) -> Vec<String> {
     rest = &rest[path_end..];
     let start = rest.iter().position(|b| *b != 0).unwrap_or(rest.len());
     rest = &rest[start..];
-    rest.split(|b| *b == 0).take(argc).map(|a| String::from_utf8_lossy(a).into_owned()).collect()
+    let mut strings = rest.split(|b| *b == 0).map(|a| String::from_utf8_lossy(a).into_owned());
+    let argv: Vec<String> = strings.by_ref().take(argc).collect();
+    let env = strings.take_while(|entry| !entry.is_empty()).collect();
+    (argv, env)
 }
 
 #[cfg(target_os = "linux")]
@@ -251,6 +274,18 @@ fn process(pid: i32) -> Option<Process> {
     (executable.is_some() || !argv.is_empty()).then_some(Process { pid, executable, argv })
 }
 
+#[cfg(target_os = "linux")]
+fn environ(pid: i32) -> Vec<String> {
+    std::fs::read(format!("/proc/{pid}/environ"))
+        .map(|raw| raw.split(|b| *b == 0).filter(|e| !e.is_empty()).map(|e| String::from_utf8_lossy(e).into_owned()).collect())
+        .unwrap_or_default()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn environ(_pid: i32) -> Vec<String> {
+    vec![]
+}
+
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn group_members(group: i32) -> Vec<i32> {
     vec![group]
@@ -283,6 +318,31 @@ mod tests {
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
+    }
+
+    #[test]
+    fn a_small_process_group_lists_every_member_not_just_its_leader() {
+        use std::os::unix::process::CommandExt;
+        let mut child = Command::new("/bin/sh").args(["-c", "sleep 5 & sleep 5"]).process_group(0).spawn().unwrap();
+        let group = child.id() as i32;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut members = group_members(group);
+        while members.len() < 3 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            members = group_members(group);
+        }
+        let _ = unsafe { libc::killpg(group, libc::SIGTERM) };
+        let _ = child.wait();
+        assert_eq!(members.len(), 3, "the shell and its two sleeps: {members:?}");
+    }
+
+    #[test]
+    fn a_process_environment_is_read_after_its_arguments() {
+        let mut buffer = 2i32.to_ne_bytes().to_vec();
+        buffer.extend_from_slice(b"/bin/x\0\0\0/bin/x\0-y\0HOME=/h\0CLAUDE_CONFIG_DIR=/a/b c\0\0ptr_munge=1\0");
+        assert_eq!(procargs(&buffer), (vec!["/bin/x".to_string(), "-y".to_string()], vec!["HOME=/h".to_string(), "CLAUDE_CONFIG_DIR=/a/b c".to_string()]));
+        assert_eq!(environment(std::process::id() as i32, "PATH"), std::env::var("PATH").ok());
+        assert_eq!(environment(std::process::id() as i32, "KANNA_DETECT_ABSENT"), None);
     }
 
     #[test]

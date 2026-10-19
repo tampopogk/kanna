@@ -7,6 +7,8 @@ mod keeper;
 mod content_ids;
 mod layout;
 mod pty;
+mod codex_remote;
+mod messages;
 mod quiz;
 mod reader;
 mod settings;
@@ -61,6 +63,7 @@ pub enum Event {
     Status { terminal: String, serial: u64, status: Option<&'static str>, ended: bool },
     RulesUpdated { token: u64, report: kanna_detect::Report },
     Worktree { token: u64, result: Result<(String, String), String> },
+    Posted { token: u64, result: Result<(), String> },
     Finished { task: String, changes: Vec<db::Change> },
     Diff { id: String, diff: Value },
     DiffUpdating { id: String },
@@ -79,6 +82,7 @@ fn main() {
     match args.first().map(String::as_str) {
         None => {}
         Some("--uses-keeper") => std::process::exit(0),
+        Some(codex_remote::FLAG) if args.len() >= 3 => std::process::exit(codex_remote::run(Path::new(&args[1]), &args[2], &args[3..])),
         Some("-h" | "--help") => return println!("{USAGE}"),
         Some(other) => {
             eprintln!("kanna-daemon: unknown argument {other}\n{USAGE}");
@@ -116,6 +120,9 @@ fn run() -> Result<(), String> {
         return Err(format!("{} belongs to Kanna.app; use another KANNA_SOCKET", socket.display()));
     }
     let state_dir = env_path("KANNA_STATE_DIR").unwrap_or_else(|| socket.parent().map(Path::to_path_buf).unwrap_or_default());
+    if let Ok(helper) = std::env::current_exe() {
+        backlog::serve_codex_remotely(&helper, &state_dir);
+    }
     std::fs::create_dir_all(&state_dir).map_err(|e| format!("can't make {}: {e}", state_dir.display()))?;
     let socket_path = socket.to_string_lossy().into_owned();
     let _lock = lock(&state_dir)?;
@@ -185,6 +192,30 @@ fn run() -> Result<(), String> {
     status_commands.install(&core);
     let backlog = Rc::new(backlog::Backlog::open(db.clone(), &state_dir, core.weak(), events.clone()));
     backlog.install(&core);
+    let planners = Rc::downgrade(&layout);
+    *backlog.planners.borrow_mut() = Some(Box::new(move || {
+        let Some(layout) = planners.upgrade() else { return vec![] };
+        let view = layout.view();
+        let workspaces = view["workspaces"].as_array().cloned().unwrap_or_default();
+        workspaces.iter().filter(|w| w["where"].get("planner").is_some()).filter_map(|w| w["dock"]["pane"].as_str().map(String::from)).collect()
+    }));
+    let programs = Rc::downgrade(&detector);
+    *backlog.channel.borrow_mut() = Some(Box::new(move |pane| {
+        let detector = programs.upgrade()?;
+        let program = detector.program(pane)?;
+        Some(match program.agent.as_str() {
+            "claude" => {
+                let config = kanna_detect::program::environment(program.pid, "CLAUDE_CONFIG_DIR").filter(|dir| !dir.is_empty()).map(PathBuf::from).unwrap_or_else(|| agents::home().join(".claude"));
+                messages::Channel::Claude(messages::inbox(&config, program.pid))
+            }
+            "codex" => messages::Channel::Codex(messages::codex_socket(&detector.argv(pane))),
+            other => messages::Channel::Other(other.to_string()),
+        })
+    }));
+    let modes = Rc::downgrade(&detector);
+    *backlog.line_mode.borrow_mut() = Some(Box::new(move |pane| modes.upgrade().is_some_and(|detector| detector.line_mode(pane))));
+    let argvs = Rc::downgrade(&detector);
+    *backlog.permissions.borrow_mut() = Some(Box::new(move |pane| messages::permissions(&argvs.upgrade()?.argv(pane))));
     let quiz = Rc::new(quiz::Quiz::new(db, Some(core.weak())));
     quiz.install(&core);
     let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone());
@@ -375,6 +406,7 @@ fn run() -> Result<(), String> {
             }
             Event::RulesUpdated { token, report } => status_commands.updated(token, report),
             Event::Worktree { token, result } => backlog.worktree_made(token, result),
+            Event::Posted { token, result } => backlog.posted(token, result),
             Event::Finished { task, changes } => backlog.finished(&task, changes),
             Event::Diff { id, diff } => diffs.loaded(&id, diff),
             Event::DiffUpdating { id } => diffs.updating(&id),
