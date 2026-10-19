@@ -225,7 +225,7 @@ fn every_command_works_through_the_daemon_and_the_app() {
     let notes = daemon.kanna_as("term-6", &["open", "--name", "notes", "--no-wait"]).ok();
     assert!(notes.starts_with("opened term-7 (notes) in ws-1 (on the Shelf), tab-"), "{notes}");
     let listed = daemon.kanna(&["task", "list"]).ok();
-    assert_eq!(listed, "TASK    NAME   WHERE  STATE\nterm-6  agent  Shelf  running  parked just now", "{listed}");
+    assert_eq!(listed, "TASK    NAME   WHERE  STATE    AGENT\nterm-6  agent  Shelf  running         parked just now", "{listed}");
     assert_eq!(daemon.kanna(&["task", "list", "AGE"]).ok(), listed);
     assert_eq!(daemon.kanna(&["task", "list", "agent", "notes"]).ok(), "no task matches \"agent notes\"");
     assert_eq!(daemon.kanna(&["--json", "task", "list", "nothing"]).json()["tasks"], json!([]));

@@ -56,6 +56,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 unset KANNA_PANE KANNA_TERMINAL KANNA_INSTANCE
+mock_agent="$repo_root/tools/mock-agent/mock-agent"
 new_state_dir() {
   KANNA_STATE_DIR="$(mktemp -d /tmp/kanna-e2e.XXXXXX)" || exit 1
   export KANNA_AGENT_RULES_DIR="$KANNA_STATE_DIR/agent-rules-override"
@@ -63,7 +64,7 @@ new_state_dir() {
   [[ -n "$KANNA_STATE_DIR" && -d "$KANNA_STATE_DIR" ]] || { echo "e2e-kanna: mktemp gave no folder" >&2; exit 1; }
   export KANNA_STATE_DIR KANNA_SOCKET="$KANNA_STATE_DIR/kanna.sock"
   mkdir -p "$KANNA_AGENTS_HOME/.kanna-v4" && echo '{"version": 2, "setup": false}' >"$KANNA_AGENTS_HOME/.kanna-v4/agents.json"
-  echo '{"version": 1, "backlog": {"runners": 0}}' >"$KANNA_AGENTS_HOME/.kanna-v4/config.json"
+  printf '{"version": 1, "backlog": {"runners": 0}, "tasks": {"agent": "%s"}}\n' "$mock_agent" >"$KANNA_AGENTS_HOME/.kanna-v4/config.json"
 }
 new_state_dir
 export KANNA_IGNORE_OCCLUSION=1
@@ -71,7 +72,6 @@ export KANNA_DEBUG=1
 export KANNA_TEST_EFFECTS=1
 export KANNA_NO_INITIAL_WINDOW=1
 export KANNA_AGENT_RULES_URL=none
-export KANNA_AGENT="$repo_root/tools/mock-agent/mock-agent"
 export KANNA_PLANNING_AGENTS=none
 export KANNA_AGENT_SKILLS="${app%/MacOS/Kanna}/Resources/kanna-skills"
 daemon_pid="" app_pid=""
@@ -176,6 +176,7 @@ print(json.dumps(p.get(sys.argv[2])) if isinstance(p.get(sys.argv[2]), (dict, li
 }
 shows() { local screen; screen="$(kanna read "$1")" && grep -q -- "$2" <<<"$screen"; }
 unwrapped() { kanna read "$1" | tr -d '\r\n' | grep -qF -- "$2"; }
+spaceless() { kanna read "$1" | tr -d ' \r\n' | grep -qF -- "$(tr -d ' ' <<<"$2")"; }
 is() { [[ "$(pane "$1" "$2")" == "$3" ]]; }
 check() { "$@" || { echo "failed: $*"; return 1; }; }
 layout() { kanna workspace list --all --json | field windows.0.tabs.0.layout; }
@@ -1615,7 +1616,7 @@ task_backlog() {
   [[ "$added" =~ ^"added "(task-[0-9a-f]{4,8})" \"Fix it\" to the backlog of $repo"$ && "${BASH_REMATCH[1]}" == "$(sid 1)" ]] || { echo "task_backlog line $LINENO: $added"; return 1; }
   in_repo task new "Plain" >/dev/null || { echo "task_backlog line $LINENO"; return 1; }
   [[ "$(cd "$KANNA_STATE_DIR" && kanna task new "Nowhere" 2>&1)" == *"belongs to a git repo"* ]] || { echo "task_backlog line $LINENO"; return 1; }
-  in_repo task list | grep -qE '^'"$(sid 1)"' +Fix it +Backlog +stopped +made' || { in_repo task list; return 1; }
+  in_repo task list | grep -qE '^'"$(sid 1)"' +Fix it +Backlog +stopped +mock-agent +made' || { in_repo task list; return 1; }
   expected="took $(sid 2) off the backlog"; says kanna task done $(tid 2) || { echo "task_backlog line $LINENO"; return 1; }
   stop_app; stop_daemon; start_daemon && start_app || { echo "task_backlog line $LINENO"; return 1; }
   in_repo task list | grep -qE '^'"$(sid 1)"' +Fix it +Backlog' || { echo "the backlog didn't survive a restart"; in_repo task list; return 1; }
@@ -2378,7 +2379,7 @@ send_key() {
   check wait_for 5 shows bytes READY || return 1
   kanna send-key bytes up ctrl+c return esc shift+tab || return 1
   check wait_for 5 shows bytes "1b 5b 41 03 0d 1b 1b 5b 5a" || { kanna read bytes; return 1; }
-  kanna open --name agent --cmd "$KANNA_AGENT" >/dev/null || return 1
+  kanna open --name agent --cmd "$mock_agent" >/dev/null || return 1
   check wait_for 5 shows agent "type turn" || return 1
   kanna send agent ask || return 1
   check wait_for 5 shows agent "proceed?" || return 1
@@ -2521,6 +2522,40 @@ print(sum(1 for l in map(json.loads, open(sys.argv[1])) if l.get("turn") and any
     done
   done
   stop_agents
+}
+
+scenario codex_task M4
+codex_task() {
+  start_daemon && start_app || { echo "codex_task line $LINENO"; return 1; }
+  local repo="$KANNA_STATE_DIR/repo" fake="$KANNA_STATE_DIR/agents" w folder
+  mkdir -p "$repo/.kanna" "$fake" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "codex_task line $LINENO"; return 1; }
+  ln -s "$mock_agent" "$fake/codex"
+  repo="$(cd "$repo" && pwd -P)"
+  in_repo() { (cd "$repo" && kanna "$@"); }
+  printf '{"version": 1, "backlog": {"runners": 0}, "tasks": {"agent": "%s"}}\n' "$fake/codex" >"$KANNA_AGENTS_HOME/.kanna-v4/config.json"
+  printf '{"tasks": {"agent": "touch %s/owned; claude"}}\n' "$KANNA_STATE_DIR" >"$repo/.kanna/config.json"
+  in_repo task new "Codex task" "run git branch -m codex-mock-work" >/dev/null || { echo "codex_task line $LINENO"; return 1; }
+  check test "$(in_repo --json task list | field backlog.0.agent)" == "$fake/codex" || { echo "codex_task: tasks.agent in your config wasn't the task's agent, or the repo's command was taken"; in_repo --json task list; return 1; }
+  in_repo task list | grep -qE '^'"$(sid 1)"' +Codex task +Backlog +stopped +codex +made ' || { echo "codex_task: task list doesn't say the agent"; in_repo task list; return 1; }
+  w="$(cd / && kanna "$repo")" && [[ "$w" =~ ^opened\ (d[0-9]+) ]] && w="${BASH_REMATCH[1]}" || { echo "codex_task line $LINENO: $w"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$w\"}}" | field "$1"; }
+  check wait_for 10 eval '[[ "$(desk agents)" == "[\"codex\"]" ]]' || { echo "codex_task: the backlog row doesn't say the agent"; desk agents; return 1; }
+  kanna task start $(tid 1) >/dev/null || { echo "codex_task: the task didn't start"; return 1; }
+  check wait_for 10 shows "Codex task" "RUN_DONE 0" || { echo "codex_task: the first message didn't run"; kanna read "Codex task"; return 1; }
+  spaceless "Codex task" "args: You're a task's agent in Kanna (terminal $(pane "Codex task" id)), in your task's worktree. Your task: run git branch -m codex-mock-work --remote unix://" || { echo "codex_task: codex wasn't started as a task's agent"; kanna read "Codex task"; return 1; }
+  folder="$(pane "Codex task" cwd)"
+  check test "$(git -C "$folder" branch --show-current)" == codex-mock-work || { echo "codex_task: the branch wasn't renamed"; git -C "$folder" branch; return 1; }
+  check wait_for 10 is "Codex task" status idle || { echo "codex_task: not idle after its turn"; pane "Codex task" status; return 1; }
+  kanna send "Codex task" "work 3" && check wait_for 5 is "Codex task" status working || { echo "codex_task: not working on kanna send"; return 1; }
+  check wait_for 10 is "Codex task" status idle && shows "Codex task" WORK_DONE || { echo "codex_task: not idle after kanna send's turn"; return 1; }
+  kanna send "Codex task" ask && check wait_for 5 is "Codex task" status needs-you || { echo "codex_task: not needs you at codex's question"; kanna read "Codex task"; return 1; }
+  kanna send-key "Codex task" return && check wait_for 10 shows "Codex task" TURN_DONE && check wait_for 10 is "Codex task" status idle || { echo "codex_task: the answer didn't go through"; return 1; }
+  [[ "$(kanna task shelve $(tid 1))" == "moved $(sid 1) to the Shelf: "* ]] || { echo "codex_task: the task didn't move to the Shelf"; return 1; }
+  check wait_for 10 eval '[[ "$(desk shelf.0.agent)" == codex ]]' || { echo "codex_task: the Shelf row doesn't say the agent"; desk shelf; return 1; }
+  in_repo task list | grep -qE "^[^ ]+ +Codex task +Shelf +idle +codex +parked " || { echo "codex_task: task list doesn't say the Shelf task's agent"; in_repo task list; return 1; }
+  kanna task done $(tid 1) >/dev/null || { echo "codex_task: done failed"; return 1; }
+  check wait_for 10 eval '! kanna workspace list --all --json | grep -q "\"Codex task\""' || { echo "codex_task: the agent outlived done"; return 1; }
+  check test ! -e "$KANNA_STATE_DIR/owned" || { echo "codex_task: a repo's tasks.agent ran a command"; return 1; }
 }
 
 scenario shelf_zoom M4
@@ -2751,7 +2786,7 @@ planner_choice() {
   check wait_for 5 shows "$planner" "Make codex the planning agent for repo? \[y/N\]" || { kanna read "$planner"; return 1; }
   kanna send "$planner" y >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
   check wait_for 5 shows "$planner" "codex plans repo from now on" || { kanna read "$planner"; return 1; }
-  check wait_for 10 unwrapped "$planner" "args: You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: codex didn't start as the planner"; kanna read "$planner"; return 1; }
+  check wait_for 10 spaceless "$planner" "args: -c model_auto_compact_token_limit=300000 You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: codex didn't start as the planner"; kanna read "$planner"; return 1; }
   check grep -Eq '"agent" ?: "codex"' "$repo/.kanna/config.json" || { cat "$repo/.kanna/config.json"; return 1; }
   kanna send "$planner" exit >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
   check wait_for 5 shows "$planner" "The planning agent quit. Start it again:" || { kanna read "$planner"; return 1; }
@@ -2761,7 +2796,7 @@ planner_choice() {
   w="${BASH_REMATCH[1]}"
   check wait_for 10 eval '[[ "$(desk lead "$w")" == term-* ]]' || { echo "planner_choice: the next Desk has no planning terminal"; return 1; }
   planner="$(desk lead "$w")"
-  check wait_for 10 unwrapped "$planner" "args: You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: the next Desk didn't start the project's planner"; kanna read "$planner"; return 1; }
+  check wait_for 10 spaceless "$planner" "args: -c model_auto_compact_token_limit=300000 You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: the next Desk didn't start the project's planner"; kanna read "$planner"; return 1; }
   ! shows "$planner" "Choose an agent" || { echo "planner_choice: the next Desk asked again"; return 1; }
   key cmd+n
   check wait_for 10 eval '[[ "$(desk lead d3)" == term-* ]]' || { echo "planner_choice: ⌘N opened no Desk"; kanna workspace list --all; return 1; }
@@ -2769,7 +2804,7 @@ planner_choice() {
   check wait_for 10 shows "$planner" "Folder, repo, name or number \[1\]:" || { echo "planner_choice: a Desk in ~ didn't ask where"; kanna read "$planner"; return 1; }
   kanna send "$planner" "$repo" >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
   check wait_for 10 eval '[[ "$(desk header d3)" == "Planning · "*"${repo#/private} · main" ]]' || { echo "planner_choice: the Desk didn't follow to the folder"; desk header d3; return 1; }
-  check wait_for 10 unwrapped "$planner" "args: You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: the Desk didn't start the folder's planner"; kanna read "$planner"; return 1; }
+  check wait_for 10 spaceless "$planner" "args: -c model_auto_compact_token_limit=300000 You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: the Desk didn't start the folder's planner"; kanna read "$planner"; return 1; }
 }
 
 scenario real_agent_planners M4
@@ -2876,12 +2911,12 @@ blocked_tasks() {
   [[ "$added" == "added $(sid 4) \"Release notes\" to the backlog of $repo; it waits for $(sid 1), $(sid 2)" ]] || { echo "blocked_tasks line $LINENO: $added"; return 1; }
   [[ "$(in_repo task new "Nowhere" --after t9 2>&1)" == *'no task "t9"'* ]] || { echo "blocked_tasks: a blocker that isn't a task was taken"; return 1; }
   [[ "$(in_repo task edit $(tid 1) --after $(tid 3) 2>&1)" == *"$(sid 3) waits for $(sid 1): they'd wait for each other"* ]] || { echo "blocked_tasks: a task was let wait for itself"; return 1; }
-  in_repo task list | grep -qE '^'"$(sid 3)"' +Diff viewer +Backlog +blocked +made .* · waits for '"$(sid 1)"'$' || { in_repo task list; return 1; }
+  in_repo task list | grep -qE '^'"$(sid 3)"' +Diff viewer +Backlog +blocked +mock-agent +made .* · waits for '"$(sid 1)"'$' || { in_repo task list; return 1; }
   [[ "$(in_repo task start $(tid 3) 2>&1)" == *''"$(sid 3)"' waits for '"$(sid 1)"' "Screenshot command": it can start once it'"'"'s done'* ]] || { echo "blocked_tasks: a blocked task started"; in_repo task list; return 1; }
   in_repo task shelve $(tid 3) >/dev/null 2>&1 && { echo "blocked_tasks: a blocked task moved to the Shelf"; return 1; }
   check test ! -e "$repo/.kanna-worktrees" || { echo "blocked_tasks: a blocked task got a worktree"; ls "$repo/.kanna-worktrees"; return 1; }
   stop_app; stop_daemon; start_daemon && start_app || { echo "blocked_tasks line $LINENO"; return 1; }
-  in_repo task list | grep -qE '^'"$(sid 4)"' +Release notes +Backlog +blocked +made .* · waits for '"$(sid 1)"', '"$(sid 2)"'$' || { echo "blocked_tasks: blockers didn't survive a restart"; in_repo task list; return 1; }
+  in_repo task list | grep -qE '^'"$(sid 4)"' +Release notes +Backlog +blocked +mock-agent +made .* · waits for '"$(sid 1)"', '"$(sid 2)"'$' || { echo "blocked_tasks: blockers didn't survive a restart"; in_repo task list; return 1; }
   local opened w; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "blocked_tasks line $LINENO: $opened"; return 1; }
   w="${BASH_REMATCH[1]}"
   desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$w\"}}" | field "$1"; }
@@ -2899,7 +2934,7 @@ blocked_tasks() {
   local done; done="$(kanna task done "$pane")" || { echo "blocked_tasks line $LINENO"; return 1; }
   [[ "$done" == *$'\n'"$(sid 3)"' "Diff viewer" can start now: nothing it waits for is left' && "$done" != *$(sid 4)* ]] || { echo "blocked_tasks: done didn't name what it freed: $done"; return 1; }
   check wait_for 10 eval '[[ "$(desk scroll.blocked.0.task)" == $(tid 4) && "$(desk scroll.blocked.0.waits)" == "[\"Status fix\"]" ]]' || { echo "blocked_tasks: the freed row is still blocked"; desk scroll.blocked; return 1; }
-  in_repo task list | grep -qE '^'"$(sid 3)"' +Diff viewer +Backlog +stopped +made [^·]*· [^·]*$' || { in_repo task list; return 1; }
+  in_repo task list | grep -qE '^'"$(sid 3)"' +Diff viewer +Backlog +stopped +mock-agent +made [^·]*· [^·]*$' || { in_repo task list; return 1; }
   raw '{"id":1,"cmd":"debug.click","args":{"backlog":"'"$(tid 3)"'","window":"'"$w"'"}}' >/dev/null
   check wait_for 10 eval '[[ "$(desk running)" == 1 && "$(desk backlog)" == "[\"$(tid 2)\", \"$(tid 4)\"]" ]]' || { echo "blocked_tasks: the freed task didn't start"; desk backlog; desk note; return 1; }
   expected="$(sid 4) waits for nothing: it can start"; says in_repo task edit $(tid 4) --after none || { echo "blocked_tasks line $LINENO"; return 1; }
@@ -3014,7 +3049,7 @@ for t in tasks: print(t["id"], "running" if t.get("running") else "stopped:" + (
   sid="$(of $(tid 2) 4)"
   [[ "$sid" =~ ^[0-9a-f-]{36}$ ]] && unwrapped "$asks" "To continue this session, run: codex resume $sid" || { echo "backlog_runners: the session codex said as it quit wasn't recorded ($sid)"; backlog; kanna read "$asks"; return 1; }
   check is "$asks" state exited || { echo "backlog_runners: the stopped agent still runs"; return 1; }
-  in_repo task list | grep -qE '^'"$(sid 2)"' +Asks +Backlog +stopped +made ' || { echo "backlog_runners: task list shows how far a backlog task got"; in_repo task list; return 1; }
+  in_repo task list | grep -qE '^'"$(sid 2)"' +Asks +Backlog +stopped +codex +made ' || { echo "backlog_runners: task list shows how far a backlog task got"; in_repo task list; return 1; }
   raw '{"id":1,"cmd":"backlog","args":{"action":"events","task":"'"$(tid 2)"'"}}' | grep -q '"why": *"needs-you"' || { echo "backlog_runners: why $(sid 2) stopped isn't in its events"; return 1; }
   local opened w; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "backlog_runners line $LINENO: $opened"; return 1; }
   w="${BASH_REMATCH[1]}"

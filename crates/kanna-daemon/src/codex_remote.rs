@@ -47,6 +47,9 @@ pub fn server_args(args: &[String], listen: &str) -> Vec<String> {
     if args.iter().any(|a| UNPROMPTED.contains(&a.as_str())) {
         server.extend(["-c", "approval_policy=\"never\"", "-c", "sandbox_mode=\"danger-full-access\""].map(String::from));
     }
+    for pair in args.windows(2).filter(|pair| pair[0] == "-c" || pair[0] == "--config") {
+        server.extend(["-c".to_string(), pair[1].clone()]);
+    }
     server.extend(["--listen".to_string(), listen.to_string()]);
     server
 }
@@ -120,6 +123,7 @@ mod tests {
         assert_eq!(server_args(&args("--yolo resume 019f"), listen), args("app-server -c approval_policy=\"never\" -c sandbox_mode=\"danger-full-access\" --listen unix:///s/codex-7.sock"));
         assert_eq!(tui_args(&args("--yolo resume 019f"), listen), args("resume 019f --remote unix:///s/codex-7.sock"), "a remote resume refuses permission flags");
         assert_eq!(server_args(&args("-a on-request"), listen), args("app-server --listen unix:///s/codex-7.sock"), "a codex that asks keeps asking");
+        assert_eq!(server_args(&args("--yolo -c model_auto_compact_token_limit=300000 hi"), listen), args("app-server -c approval_policy=\"never\" -c sandbox_mode=\"danger-full-access\" -c model_auto_compact_token_limit=300000 --listen unix:///s/codex-7.sock"), "the app-server compacts, so it gets the settings");
         assert_eq!(tui_args(&args("-a on-request --no-daemon"), listen), args("-a on-request --remote unix:///s/codex-7.sock"));
     }
 

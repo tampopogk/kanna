@@ -269,7 +269,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var shelfTasks: [ShelfTask] {
         let tasks = shelfEntries.compactMap { entry -> ShelfTask? in
             guard let id = entry["task"]?.string else { return nil }
-            return ShelfTask(id: id, title: taskTitle(id, name: entry["name"]?.string), parkedAt: entry["parkedAt"]?.number, status: agentStatuses.statuses[id], detail: taskDetail(id))
+            return ShelfTask(id: id, title: taskTitle(id, name: entry["name"]?.string), parkedAt: entry["parkedAt"]?.number, status: agentStatuses.statuses[id], detail: taskDetail(id), agent: entry["agent"]?.string)
         }
         let waiting: [ShelfTask] = tasks.filter { $0.status == "needs-you" }
         let rest: [ShelfTask] = tasks.filter { $0.status != "needs-you" }

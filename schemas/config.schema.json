@@ -66,9 +66,16 @@
       "additionalProperties": false
     },
     "tasks": {
-      "description": "What a repo's tasks run as their worktree is made and when they're Done (docs/specs/task-scripts.md). Each command runs with your login shell in the task's worktree, with KANNA_TASK, KANNA_TASK_NAME, KANNA_REPO, KANNA_WORKTREE, KANNA_BRANCH and KANNA_BASE set.",
+      "description": "A repo's tasks: the agent each runs, and what they run as their worktree is made and when they're Done (docs/specs/task-scripts.md). Each command runs with your login shell in the task's worktree, with KANNA_TASK, KANNA_TASK_NAME, KANNA_REPO, KANNA_WORKTREE, KANNA_BRANCH and KANNA_BASE set.",
       "type": "object",
       "properties": {
+        "agent": {
+          "description": "The agent a new task runs when kanna task new has no --agent: an agent Kanna knows (claude, codex, copilot, opencode, agy), or in your ~/.kanna-v4/config.json any command that starts one (\"claude --model opus\"). A repo's .kanna/config.json may only name an agent, so a repo you clone can't make Kanna run a command of its choosing. Read when a task is made; the task keeps it.",
+          "type": "string",
+          "minLength": 1,
+          "default": "claude",
+          "examples": ["claude", "codex", "copilot", "opencode", "agy"]
+        },
         "setup": {
           "description": "A shell command (or a script path from the repo's root, such as .kanna/setup.sh) run in a new task's worktree, in its agent's terminal, before the agent starts; once per worktree. If it fails, the task stops, and `kanna task start` starts the agent anyway or `kanna task setup` runs it again.",
           "type": "string",
