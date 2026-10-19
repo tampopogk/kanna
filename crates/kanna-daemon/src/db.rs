@@ -225,7 +225,7 @@ fn stamp() -> String {
 }
 
 fn say(message: String) {
-    eprintln!("kanna-daemon: {message}");
+    log!("kanna-daemon: {message}");
 }
 
 fn aside(path: &Path, suffix: &str) -> PathBuf {
