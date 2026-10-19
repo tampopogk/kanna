@@ -77,7 +77,7 @@ pub enum Event {
     Diff { id: String, diff: Value },
     DiffUpdating { id: String },
     KeeperReadable,
-    KeeperExits,
+    KeeperHeard,
     KeeperLost(String),
     AppHello { conn: u64, hello: Value, out: Outbox, stream: UnixStream },
     AppCaughtUp { conn: u64 },
@@ -443,18 +443,15 @@ fn run() -> Result<(), String> {
             Event::Finished { task, changes } => backlog.finished(&task, changes),
             Event::Diff { id, diff } => diffs.loaded(&id, diff),
             Event::DiffUpdating { id } => diffs.updating(&id),
-            Event::KeeperReadable | Event::KeeperExits => {
-                let exits = keeper.take_exits();
+            Event::KeeperReadable | Event::KeeperHeard => {
+                let heard = keeper.take();
                 if matches!(event, Event::KeeperReadable) {
                     keeper.resume_watch();
                 }
-                match exits {
-                    Ok(exits) => {
-                        for exit in exits {
-                            let code = exit.status.shell_status();
-                            if let Some((terminal, code)) = terminals.exited(&exit.id, exit.pid, code) {
-                                ended(&terminals, &backlog, &app, &terminal, code);
-                            }
+                match heard {
+                    Ok(heard) => {
+                        for (terminal, code) in terminals.heard(heard) {
+                            ended(&terminals, &backlog, &app, &terminal, code);
                         }
                     }
                     Err(reason) => {

@@ -25,8 +25,8 @@ sequenceDiagram
     D->>D: off the backlog, on the Shelf (kanna.db)
     D-->>A: backlog and layout notices: the card is on the Shelf
     Note over A: the card is clickable; a pulled pane shows a spinner
-    D->>K: next turn: restart the agent, then its tabs
-    K-->>D: running
+    D-)K: next turn: spawn the agent, then its tabs (not waited on)
+    K-->>D: replies, read as keeper events: running
     D-->>A: folder of the agent's new terminal, then its output
     D->>G: git branch --show-current
     G-->>D: branch
@@ -49,6 +49,7 @@ sequenceDiagram
 - **Branch lookups** go to a thread and come back as `Event::Branch`; the reply waits on them, the Shelf doesn't.
 - **A restarted terminal's folder:** a restart gives the agent a new terminal ID ([IDs](presentation-layers.md#3-ids)), and the app files Shelf cards by their terminal's folder. The daemon sends the app the new ID's folder as the ID changes, not once the terminal has started, so the card is filed under its project at once.
 - **The spinner:** a terminal pane the app has no started terminal for yet (`PaneView.waiting`) shows a small spinner, gone once its terminal attaches or the pane shows a message.
+- **Keeper spawns don't wait:** the restart sends its spawns and the loop goes on; each terminal starts when the keeper's reply comes back, so a busy or paused keeper doesn't hold up the Shelf or anything else ([spawns without waiting](async-spawns.md)).
 - **daemon.log lines have a time** (`2026-10-19 16:33:53.542 kanna-daemon: …`, local time to the millisecond): the daemon's `log!` stamps each line, and a panic's first line is stamped too. A shelve logs `TASK is on mac's Shelf, and its agent and tabs start`, then `TASK's agent and tabs started`.
 
 ## 4. Tested
@@ -56,9 +57,9 @@ sequenceDiagram
 - **Daemon** (`backlog.rs`, `a_stopped_task_is_on_the_shelf_before_its_agent_has_started_again`): a stopped task held in the backlog is shelved while its agent's terminal is kept starting; it's off the backlog, on the Shelf and claimed by the app, while the agent is still starting and the reply is still waiting, which comes once the agent runs.
 - **e2e `shelve_at_once`:** a stopped task with two terminal tabs, clicked in the app's backlog, is on the app's Shelf within 200ms (about 50ms here). Its card, pulled at once, puts it on the Desk with its agent resuming and both tabs running, and no note. daemon.log's lines carry the time.
 - With the mock agent, restarting an agent and two tabs takes about 8ms on a quiet machine, so the e2e also passes on the old order. The daemon test is what pins the order.
+- **e2e `shelve_keeper_paused`:** the same with the run's own keeper paused (`SIGSTOP`): on the Shelf within 200ms, and `kanna task list` answers meanwhile ([spawns without waiting](async-spawns.md#4-tested)).
 
 ## 5. Not yet
 
-- **Keeper spawns are synchronous:** every terminal start is a request to the keeper that the daemon's main thread waits on. It's normally a few milliseconds, and it now comes after the Shelf change. Making spawns asynchronous is its own task.
 - **A task with no worktree yet** reaches the Shelf once `git worktree add` (on a thread) is done, since its agent needs its folder to start in.
 - **Other crates' log lines** (`kanna-mux:`, `kanna-detect:`) aren't stamped: they print with `eprintln!` from their own crates.
