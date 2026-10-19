@@ -5,8 +5,11 @@ use crate::json::{is_true, json, num, string, Map, Value};
 use crate::layout::{place_request, scope_request, Edge, LayoutHost, LayoutLink, LocalLayout, Placement, Scope, SplitSide};
 use crate::workspace::MAC_APP;
 use crate::model::{fraction, Model};
-use crate::pane::{read_diff_args, read_view, Comment, Pane, PaneState, PaneType, Panes};
+use crate::pane::{read_diff_args, read_view, Comment, Pane, PaneState, PaneType, Panes, StopMark};
 use crate::state;
+
+#[path = "tour.rs"]
+mod tour;
 use std::cell::{RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
 use std::future::{poll_fn, Future};
@@ -66,7 +69,7 @@ pub fn project(cwd: Option<&str>) -> Option<std::path::PathBuf> {
     Some(main.unwrap_or_else(|| root.to_path_buf()))
 }
 
-pub const CORE_COMMANDS: [&str; 12] = ["capabilities", "open", "list", "close", "restart", "send", "send-key", "navigate", "read", "markup", "comment", "rename-pane"];
+pub const CORE_COMMANDS: [&str; 13] = ["capabilities", "open", "list", "close", "restart", "send", "send-key", "navigate", "read", "markup", "comment", "tour", "rename-pane"];
 
 pub const DEBUG_COMMANDS: [&str; 2] = ["debug.saveState", "debug.restoreState"];
 
@@ -445,6 +448,9 @@ impl CoreHandle {
         {
             let mut s = self.state();
             let mut all: Vec<Pane> = s.panes.iter().cloned().collect();
+            for known in all.iter_mut().filter(|p| p.tour.is_none()) {
+                known.tour = panes.iter().find(|p| p.id == known.id).and_then(|p| p.tour.clone());
+            }
             all.extend(panes.into_iter().filter(|p| s.panes.get(&p.id).is_none()));
             s.panes.install(all, counter, terminals);
         }
@@ -553,6 +559,7 @@ impl CoreHandle {
             "navigate" => self.navigate(&args).await,
             "markup" => self.markup(&args).await,
             "comment" => self.comment(&args).await,
+            "tour" => self.tour(&args).await,
             "rename-pane" => self.rename_pane(&args).await,
             "debug.saveState" => {
                 let state = self.export_state().await?;
@@ -816,6 +823,9 @@ impl CoreHandle {
             if kind == PaneType::Code {
                 pane.comment = args.get("comment").and_then(Comment::from_json);
             }
+            if matches!(kind, PaneType::Code | PaneType::Md) {
+                pane.stop = args.get("tour").and_then(StopMark::from_json);
+            }
             if kind == PaneType::Diff {
                 pane.diff = Some(diff.unwrap_or_default());
                 pane.view = view;
@@ -901,7 +911,11 @@ impl CoreHandle {
         })?;
         let first = snapped.get("first").and_then(Value::as_u64).unwrap_or(line);
         let last = snapped.get("last").and_then(Value::as_u64).unwrap_or(first).max(first);
-        let comment = Comment { path: path.clone(), first, last, text };
+        self.place_comment(Comment { path, first, last, text }, args, None).await
+    }
+
+    async fn place_comment(&self, comment: Comment, args: &Value, stop: Option<StopMark>) -> Result<Map, KmuxError> {
+        let (path, first, last) = (comment.path.clone(), comment.first, comment.last);
         let placeless = ["name", "tab", "dock", "split", "size", "window"].iter().all(|key| args.get(*key).is_none());
         let from = string(args, "from");
         let found = if placeless { self.showing(&path, from).await? } else { None };
@@ -914,6 +928,7 @@ impl CoreHandle {
                 if let Some(pane) = self.state().panes.get_mut(&id) {
                     pane.line = Some(first);
                     pane.comment = Some(comment.clone());
+                    pane.stop = stop.clone();
                 }
                 let snapshot = self.reload(&id, false).await;
                 self.check_started(&id, &snapshot)?;
@@ -927,6 +942,9 @@ impl CoreHandle {
                 open["type"] = json!("code");
                 open["line"] = json!(first);
                 open["comment"] = comment.to_json();
+                if let Some(stop) = &stop {
+                    open["tour"] = stop.to_json();
+                }
                 let mut reply = self.open(&open).await?;
                 let id = reply.get("pane").and_then(|p| string(p, "id")).unwrap_or_default().to_string();
                 let location = json!({ "window": reply.remove("window").unwrap_or(Value::Null), "tab": reply.remove("tab").unwrap_or(Value::Null), "workspace": reply.remove("workspace").unwrap_or(Value::Null) });
@@ -1058,6 +1076,7 @@ impl CoreHandle {
     }
 
     fn forget_pane(&self, id: &str) {
+        self.forget_tour_of(id);
         let pane = self.state().panes.forget(id);
         if let (Some(host), Some(pane)) = (self.host(), &pane) {
             host.stop(pane);

@@ -1,5 +1,5 @@
 use kanna_mux::json::{Map, Value};
-use kanna_mux::{pane_table, read_pane_table, KmuxError, LayoutCall, LayoutHost, LayoutLink, LayoutOwner, Model, PaneState, PaneType, Panes, StateFile, WeakCore};
+use kanna_mux::{pane_table, KmuxError, LayoutCall, LayoutHost, LayoutLink, LayoutOwner, Model, PaneState, PaneType, Panes, StateFile, WeakCore};
 use crate::db::Db;
 use kanna_mux::Contents;
 use std::cell::{Cell, RefCell};
@@ -60,11 +60,7 @@ impl DaemonLayout {
     }
 
     pub fn saved_panes(&self) -> Vec<kanna_mux::Pane> {
-        let records = self.owner.borrow().hello();
-        let mut panes = read_pane_table(&records).unwrap_or_else(|error| {
-            eprintln!("kanna-daemon: the saved layout's panes can't be read ({}); leaving them out", error.message);
-            vec![]
-        });
+        let mut panes = self.owner.borrow().records();
         for pane in panes.iter_mut().filter(|p| p.kind != PaneType::Term && p.state == PaneState::Starting) {
             pane.state = PaneState::Running;
         }
