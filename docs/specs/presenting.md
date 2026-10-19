@@ -2,7 +2,7 @@
 
 **Status:** built · **Tested:** e2e `backlog_runners`, `cargo test -p kanna-mux` (held windows) · **Builds on:** [tasks](tasks.md), [backlog runners](backlog-runners.md), [code tour](code-tour.md), [doc markup](doc-markup.md), [zoom](zoom.md)
 
-Every task presents its work. When it's done, before its turn ends, its agent sets up its Desk to show you what it changed and why: the spec, the mockup, a diff, comments on the key code. Kanna keeps that layout through a stop, so a task that ran unattended in the backlog shows it when you pull it hours later.
+Every task presents its work. When it's done, before its turn ends, its agent sets up its Desk to show you what it changed and why: the spec (its changes marked, [markdown diff](markdown-diff.md)), the mockup, a diff, comments on the key code. Kanna keeps that layout through a stop, so a task that ran unattended in the backlog shows it when you pull it hours later.
 
 The layout is **latent**: the agent sets it while nobody's looking, and it's what you see when the task is shown.
 

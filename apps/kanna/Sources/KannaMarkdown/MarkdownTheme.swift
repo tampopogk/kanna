@@ -9,6 +9,10 @@ enum MarkdownTheme {
     static let muted = color(dark: 0x8b93a0, light: 0x6b7280)
     static let accent = color(dark: 0x7aa2ff, light: 0x2f63d8)
     static let bad = color(dark: 0xef6b6b, light: 0xcf3f3f)
+    static let addedTint = color(dark: 0x1d4428, light: 0xccf2d4)
+    static let addedBar = color(dark: 0x3fb950, light: 0x1a7f37)
+    static let removedText = color(dark: 0xf47067, light: 0xcf222e)
+    static let changedBar = color(dark: 0xd29922, light: 0xbf8700)
 
     static let bodySize: CGFloat = 14
     static let monoSize: CGFloat = 12.5

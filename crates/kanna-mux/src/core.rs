@@ -709,6 +709,9 @@ impl CoreHandle {
         if args.get("markup").is_some() && !matches!(kind, PaneType::Md | PaneType::Web) {
             return Err(bad_request("markup is only for markdown and web panes"));
         }
+        if args.get("diff").is_some() && (kind != PaneType::Md || string(args, "diff").is_none_or(str::is_empty)) {
+            return Err(bad_request("diff is only for markdown panes, and names a commit or branch"));
+        }
         let agent = match string(args, "agent") {
             Some(agent) => Some(self.need_pane(Some(agent))?.id),
             None => None,
@@ -820,6 +823,7 @@ impl CoreHandle {
             pane.line = line;
             pane.agent = agent.clone();
             pane.markup = is_true(args, "markup");
+            pane.diff_base = field("diff");
             if kind == PaneType::Code {
                 pane.comment = args.get("comment").and_then(Comment::from_json);
             }

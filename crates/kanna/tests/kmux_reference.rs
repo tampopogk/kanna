@@ -47,6 +47,7 @@ fn from_kanna(text: &str) -> String {
 fn without_code_panes(text: &str) -> String {
     text.replace("\n       kanna open code FILE[:LINE] [same placement options]", "")
         .replace("\n       kanna open diff [GIT-DIFF-ARGS] [same placement options]", "")
+        .replace("\n       kanna open md FILE --diff [REF] [same placement options]", "")
         .replace("\n       kanna navigate PANE FILE[:LINE]", "")
         .replace("\n       kanna navigate PANE diff [GIT-DIFF-ARGS]", "")
 }

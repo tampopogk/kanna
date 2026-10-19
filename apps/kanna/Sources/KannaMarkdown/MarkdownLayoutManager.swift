@@ -81,6 +81,28 @@ final class MarkdownLayoutManager: NSLayoutManager {
         }
     }
 
+    func drawChangeBars(in rect: NSRect, origin: NSPoint) {
+        guard let storage = textStorage, let container = textContainers.first, storage.length > 0 else { return }
+        let glyphs = glyphRange(forBoundingRect: rect.offsetBy(dx: -origin.x, dy: -origin.y), in: container)
+        let shown = characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+        let whole = NSRange(location: 0, length: storage.length)
+        let x = origin.x + container.lineFragmentPadding - 16
+        var location = shown.location
+        while location < NSMaxRange(shown) {
+            var range = NSRange()
+            let value = storage.attribute(.kannaChange, at: location, longestEffectiveRange: &range, in: whole)
+            location = max(location + 1, NSMaxRange(range))
+            guard let kind = (value as? String).flatMap(ChangeKind.init) else { continue }
+            let used = usedRect(for: range)
+            switch kind {
+            case .added: MarkdownTheme.addedBar.setFill()
+            case .removed: MarkdownTheme.removedText.setFill()
+            case .changed: MarkdownTheme.changedBar.setFill()
+            }
+            NSRect(x: x, y: origin.y + used.minY, width: 3, height: used.height).fill()
+        }
+    }
+
     private func usedRect(for range: NSRange) -> NSRect {
         let glyphs = glyphRange(forCharacterRange: range, actualCharacterRange: nil)
         var rect = NSRect.null

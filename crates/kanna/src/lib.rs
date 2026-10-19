@@ -719,6 +719,22 @@ mod tests {
     }
 
     #[test]
+    fn a_markdown_pane_marks_changes_since_a_ref_and_a_bare_diff_means_main() {
+        assert_eq!(parse("kanna open md /tmp/notes.md --diff HEAD").unwrap().1["diff"], json!("HEAD"));
+        let (_, request) = parse("kanna open md --diff abc123 /tmp/notes.md --tab").unwrap();
+        assert_eq!((request["path"].clone(), request["diff"].clone()), (json!("/tmp/notes.md"), json!("abc123")));
+        assert_eq!(parse("kanna open md /tmp/notes.md --diff=origin/main").unwrap().1["diff"], json!("origin/main"));
+        let here = env!("CARGO_MANIFEST_DIR");
+        let main = ["main", "master"].into_iter().find(|b| std::process::Command::new("git").args(["-C", here, "rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")]).output().is_ok_and(|o| o.status.success()));
+        if let Some(main) = main {
+            assert_eq!(parse(&format!("kanna open md {here}/README.md --diff")).unwrap().1["diff"], json!(main));
+        }
+        assert!(parse("kanna open md /no-repo-here/notes.md --diff").is_err());
+        assert!(parse("kanna open web a.test --diff main").is_err());
+        assert!(parse("kanna open md /tmp/notes.md").unwrap().1.get("diff").is_none());
+    }
+
+    #[test]
     fn requests() {
         let cases = [
             ("kanna open", json!({ "type": "term" })),
