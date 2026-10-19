@@ -29,7 +29,8 @@ extension AppController {
             app.addItem(.separator())
         }
         app.addItem(withTitle: "Quit \(KannaBuild.name)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        _ = menu("File", [("New Desk", #selector(newDeskWindow), nil, .cmd("n"))])
+        let file = menu("File", [("New Desk", #selector(newDeskWindow), nil, .cmd("n"))])
+        file.addItem(recentMenuItem())
         let edit = NSMenu(title: "Edit")
         let editItems: [(String, String, String?, Shortcut)?] = [
             ("Undo", "undo:", nil, .cmd("z")), ("Redo", "redo:", nil, .shiftCmd("z")), nil,
@@ -124,6 +125,10 @@ extension AppController {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === recentMenu {
+            fillRecent(menu)
+            return loadRecent()
+        }
         menu.removeAllItems()
         let window = keyWindow
         let reason: String? = window == nil ? "No window" : window?["desk"]?.bool == true ? "A Desk isn't a task's" : window?["lead"]?["pane"]?.string != nil ? "This window has its own agent" : nil
