@@ -7,6 +7,7 @@ use std::rc::Rc;
 pub struct Projects {
     db: Rc<Db>,
     home: Option<PathBuf>,
+    repos: Vec<PathBuf>,
 }
 
 fn bad(message: impl Into<String>) -> KmuxError {
@@ -19,8 +20,19 @@ fn failed(what: &str, error: rusqlite::Error) -> KmuxError {
 }
 
 impl Projects {
-    pub fn new(db: Rc<Db>, home: Option<PathBuf>) -> Projects {
-        Projects { db, home: home.map(|h| h.canonicalize().unwrap_or(h)) }
+    pub fn new(db: Rc<Db>, home: Option<PathBuf>, repos: Vec<PathBuf>) -> Projects {
+        Projects { db, home: home.map(|h| h.canonicalize().unwrap_or(h)), repos }
+    }
+
+    fn label(&self, path: &Path) -> String {
+        let cloned = path.parent().is_some_and(|parent| self.repos.iter().any(|r| r.canonicalize().as_deref().unwrap_or(r) == parent));
+        if let (true, Some(name)) = (cloned, path.file_name()) {
+            return name.to_string_lossy().into_owned();
+        }
+        match self.home.as_ref().and_then(|home| path.strip_prefix(home).ok()) {
+            Some(inside) => format!("~/{}", inside.display()),
+            None => path.display().to_string(),
+        }
     }
 
     pub fn install(self: &Rc<Self>, core: &CoreHandle) {
@@ -64,7 +76,7 @@ impl Projects {
         let mut kept = vec![];
         for (path, at) in self.db.projects().map_err(|e| failed("read the recent projects", e))? {
             if Path::new(&path).is_dir() {
-                kept.push(json!({ "path": path, "at": num(at.floor()) }));
+                kept.push(json!({ "path": path, "label": self.label(Path::new(&path)), "at": num(at.floor()) }));
             } else {
                 self.db.forget_project(&path).map_err(|e| failed("forget a recent project", e))?;
             }
@@ -102,7 +114,7 @@ mod tests {
     #[test]
     fn the_latest_project_comes_first_and_ten_are_kept() {
         let dir = folder("order");
-        let projects = Projects::new(Rc::new(Db::open(&dir.join("state"))), Some(dir.join("home")));
+        let projects = Projects::new(Rc::new(Db::open(&dir.join("state"))), Some(dir.join("home")), vec![]);
         let made: Vec<PathBuf> = (0..12).map(|n| dir.join(format!("p{n}"))).collect();
         for p in &made {
             fs::create_dir_all(p).unwrap();
@@ -127,7 +139,7 @@ mod tests {
     fn a_folder_that_is_gone_drops_off_and_home_is_not_a_project() {
         let dir = folder("gone");
         fs::create_dir_all(dir.join("home")).unwrap();
-        let projects = Projects::new(Rc::new(Db::open(&dir.join("state"))), Some(dir.join("home")));
+        let projects = Projects::new(Rc::new(Db::open(&dir.join("state"))), Some(dir.join("home")), vec![]);
         let (kept, gone) = (dir.join("kept"), dir.join("gone"));
         fs::create_dir_all(&kept).unwrap();
         fs::create_dir_all(&gone).unwrap();
@@ -144,9 +156,25 @@ mod tests {
     }
 
     #[test]
+    fn a_clone_or_new_project_goes_by_its_name_and_the_rest_by_their_path() {
+        let dir = folder("labels");
+        let home = dir.join("home");
+        let (repos, old) = (home.join(".kanna-v4/repos"), home.join(".kanna/repos"));
+        let projects = Projects::new(Rc::new(Db::open(&dir.join("state"))), Some(home.clone()), vec![repos.clone(), old.clone()]);
+        for folder in [repos.join("kojo"), old.join("recipe-box"), home.join("work/app"), dir.join("elsewhere"), repos.join("kojo/sub")] {
+            fs::create_dir_all(&folder).unwrap();
+            touch(&projects, &folder);
+        }
+        let reply = Value::Object(projects.handle(&json!({})).unwrap());
+        let labels: Vec<&str> = reply["projects"].as_array().unwrap().iter().map(|p| p["label"].as_str().unwrap()).collect();
+        assert_eq!(labels, ["~/.kanna-v4/repos/kojo/sub", &dir.join("elsewhere").to_string_lossy(), "~/work/app", "recipe-box", "kojo"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_worktree_or_a_subfolder_is_its_repo() {
         let dir = folder("worktree");
-        let projects = Projects::new(Rc::new(Db::open(&dir.join("state"))), None);
+        let projects = Projects::new(Rc::new(Db::open(&dir.join("state"))), None, vec![]);
         let repo = dir.join("app");
         fs::create_dir_all(repo.join("src")).unwrap();
         git(&repo, &["init", "-q"]);

@@ -77,16 +77,18 @@ clone() {
 where() {
   say "Open a folder, clone a repo (a URL or owner/repo), or name a new project. Clones and new projects go in $(tilde "$repos")."
   echo
-  recent=
-  [ -n "$kanna" ] && recent=$("$kanna" projects 2>/dev/null)
-  recents=$(printf '%s' "$recent" | grep -c .)
+  recent= recents=0
+  listed=$([ -n "$kanna" ] && "$kanna" projects --json 2>/dev/null)
+  count=$(printf '%s' "$listed" | plutil -extract projects raw -o - - 2>/dev/null) || count=0
   question="Folder, repo or name:"
-  if [ "$recents" -gt 0 ]; then
+  if [ "$count" -gt 0 ] 2>/dev/null; then
     echo "Recent:"
-    n=0
-    printf '%s\n' "$recent" | while IFS= read -r project; do
-      n=$((n + 1))
-      say "  $n  $(tilde "$project")"
+    while [ "$recents" -lt "$count" ]; do
+      project=$(printf '%s' "$listed" | plutil -extract "projects.$recents.path" raw -o - - 2>/dev/null) || break
+      label=$(printf '%s' "$listed" | plutil -extract "projects.$recents.label" raw -o - - 2>/dev/null) || label=$(tilde "$project")
+      recents=$((recents + 1))
+      recent="$recent$project$nl"
+      say "  $recents  $label"
     done
     echo
     question="Folder, repo, name or number [1]:"

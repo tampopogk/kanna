@@ -242,8 +242,8 @@ const LIMIT = 3;
 const initial = () => {
   const now = Date.now();
   return {
-    repos: ["~/work/kanna-v4", "~/work/kmux"],
-    recent: ["~/work/kanna-v4", "~/work/kmux"],
+    repos: ["~/work/kanna-v4", "~/work/kmux", "~/.kanna-v4/repos/recipe-box"],
+    recent: ["~/work/kanna-v4", "~/work/kmux", "~/.kanna-v4/repos/recipe-box"],
     menu: null,
     key: "w1",
     windows: [{ id: "w1", desk: "p1", repo: "~/work/kanna-v4" }],
@@ -326,12 +326,13 @@ function render() {
   menubar();
 }
 
+const recentLabel = r => /^~\/\.kanna(-v4)?\/repos\/[^/]+$/.test(r) ? r.split("/").pop() : r;
 function touch(repo) {
   if (!repo || repo === "~") return;
   s.recent = [repo].concat(s.recent.filter(r => r !== repo)).slice(0, 10);
 }
 function menubar() {
-  const recent = s.recent.map((r, i) => `<div class="i" data-recent="${i}">${esc(r)}</div>`).join("");
+  const recent = s.recent.map((r, i) => `<div class="i" data-recent="${i}" title="${esc(r)}">${esc(recentLabel(r))}</div>`).join("");
   const file = `<div class="drop">
       <div class="i" data-menu="newdesk">New Desk<span class="k">⌘N</span></div>
       <div class="i sub ${s.menu === "recent" ? "hot" : ""}">Open Recent<span class="k">▸</span>
@@ -440,7 +441,7 @@ function plannerWhere(t) {
   if (t.repo !== "~") return plannerChoose(t);
   t.log.push(`Open a folder, clone a repo (a URL or owner/repo), or name a new project. Clones and new projects go in ${REPOS}.`, ``);
   t.recent = s.recent.slice();
-  if (t.recent.length) t.log.push(`Recent:`, ...t.recent.map((r, i) => `  ${i + 1}  ${esc(r)}`), ``);
+  if (t.recent.length) t.log.push(`Recent:`, ...t.recent.map((r, i) => `  ${i + 1}  ${esc(recentLabel(r))}`), ``);
   t.ask = "project";
 }
 const projectQuestion = t => t.recent && t.recent.length ? "Folder, repo, name or number [1]:" : questions.project;

@@ -25,7 +25,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var localKey: String?
     var closingPlanners: Set<String> = []
     var givenPlanners: Set<String> = []
-    var recentProjects: [String] = []
+    var recentProjects: [RecentProject] = []
     var recentMenu: NSMenu?
     let physical = Physical(path: AppController.physicalPath, fresh: AppController.fresh)
     private var focusing: String?

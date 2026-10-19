@@ -1,5 +1,10 @@
 import AppKit
 
+struct RecentProject: Equatable {
+    var path: String
+    var label: String
+}
+
 extension AppController {
     func recentMenuItem() -> NSMenuItem {
         let item = NSMenuItem(title: "Open Recent", action: nil, keyEquivalent: "")
@@ -12,10 +17,11 @@ extension AppController {
 
     func fillRecent(_ menu: NSMenu) {
         menu.removeAllItems()
-        for path in recentProjects {
-            let item = menu.addItem(withTitle: tilde(path), action: #selector(openRecent(_:)), keyEquivalent: "")
+        for project in recentProjects {
+            let item = menu.addItem(withTitle: project.label, action: #selector(openRecent(_:)), keyEquivalent: "")
             item.target = self
-            item.representedObject = path
+            item.representedObject = project.path
+            item.toolTip = tilde(project.path)
         }
         if !recentProjects.isEmpty { menu.addItem(.separator()) }
         let clear = menu.addItem(withTitle: "Clear Menu", action: recentProjects.isEmpty ? nil : #selector(clearRecent), keyEquivalent: "")
@@ -28,9 +34,9 @@ extension AppController {
 
     private func recentLoaded(_ reply: JSON) {
         guard reply["ok"]?.bool == true else { return }
-        let paths = (reply["projects"]?.array ?? []).compactMap { $0["path"]?.string }
-        guard paths != recentProjects else { return }
-        recentProjects = paths
+        let projects = (reply["projects"]?.array ?? []).compactMap { p in p["path"]?.string.map { RecentProject(path: $0, label: p["label"]?.string ?? tilde($0)) } }
+        guard projects != recentProjects else { return }
+        recentProjects = projects
         if let menu = recentMenu { fillRecent(menu) }
     }
 

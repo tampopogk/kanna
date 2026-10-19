@@ -28,6 +28,7 @@ Reopen a project you've had open without setting it up again.
 | a Desk moves to it | its planning terminal's folder changes, a task from it is pulled onto the Desk |
 
 - **A project is its repo's folder**: the main repo for a worktree, a subfolder's repo (`project()`). `~` never is.
+- **Shown by name if Kanna cloned or made it** (in `~/.kanna-v4/repos` or `~/.kanna/repos`: `recipe-box`), else by its path from `~` (`~/work/kmux`); the menu item's tooltip has the full path. The daemon gives each its label (`label` in `kanna projects --json`), so the menu and the prompt agree.
 - **Ten are kept;** a folder that's gone drops off when the list is read.
 - **One list for every app and Desk,** in the daemon.
 
@@ -40,12 +41,12 @@ sequenceDiagram
     participant P as planner.sh
     A->>D: projects touch FOLDER (a Desk's project changed)
     A->>D: projects (Open Recent opens) · projects clear (Clear Menu)
-    P->>D: kanna projects (a Desk in ~)
+    P->>D: kanna projects --json (a Desk in ~)
 ```
 
 - **The app reports, the daemon keeps:** a Desk is the app's, so the app says when one's project changes (`deskMoved`, `openDesk` in `RecentProjects.swift` / `AppDesk.swift`); it remembers the Desk's project in `app-state.json`, so a relaunch reopening Desks doesn't reorder the list.
 - **`kanna projects [--json]`** prints a path a line, latest first; `kanna projects clear` empties it.
-- **`planner.sh`** asks `kanna projects` before the where question and shows the paths with `~`.
+- **`planner.sh`** asks `kanna projects --json` before the where question (reading it with `plutil`) and shows each label.
 
 ## Rejected
 
