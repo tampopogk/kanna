@@ -3106,6 +3106,16 @@ print("running" if t.get("running") else "stopped" if t.get("folder") else "wait
   in_repo task done "$other" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
   said="$(in_repo task send "$other" "too late" 2>&1)" && { echo "agent_messaging: a done task took a message"; return 1; }
   [[ "$said" == *"is done, so it takes no messages"* ]] || { echo "agent_messaging: send to a done task said: $said"; return 1; }
+  mkdir -p "$fake/bin" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/bin/claude"
+  printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$fake/bin/claude" >"$fake/claude" && chmod +x "$fake/claude"
+  in_repo task new "Claude" "work 4" --agent "$fake/claude" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
+  local claude; claude="$(tid 3)"
+  check wait_for 15 eval '[[ "$(task_state $claude)" == running* ]]' || { echo "agent_messaging: the claude task didn't run"; task_state "$claude"; return 1; }
+  local cterm; cterm="$(task_state $claude | cut -d' ' -f2)"
+  in_repo task send "$claude" "over the socket" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
+  check wait_for 15 shows "$cterm" "peer: \[message from user\] over the socket" || { echo "agent_messaging: the claude task didn't get its message on its socket"; kanna read "$cterm"; tail -5 "$out/daemon.log"; return 1; }
+  check test "$(times "$cterm" "over the socket")" -eq 1 || { echo "agent_messaging: the claude task's message was typed too"; kanna read "$cterm"; return 1; }
+  check wait_for 15 eval '[[ "$(task_state $claude)" == stopped* ]]' || { echo "agent_messaging: the claude task wasn't stopped after the turn its message started"; task_state "$claude"; return 1; }
 }
 
 scenario task_scripts M4

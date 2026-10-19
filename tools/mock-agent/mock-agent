@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
+import atexit
+import json
 import os
 import select
 import signal
+import socket
 import subprocess
 import sys
 import termios
@@ -100,6 +103,34 @@ def first(args):
     return told[-1].split("Your task: ", 1)[1] if told else None
 
 
+def inbox():
+    home = os.environ.get("KANNA_AGENTS_HOME")
+    if PROGRAM != "claude" or not home:
+        return
+    path = f"/tmp/kanna-mock-{os.getpid()}.sock"
+    entry = os.path.join(home, ".claude", "sessions", f"{os.getpid()}.json")
+    os.makedirs(os.path.dirname(entry), exist_ok=True)
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(path)
+    server.listen()
+    with open(entry, "w") as f:
+        json.dump({"pid": os.getpid(), "peerProtocol": 1, "messagingSocketPath": path}, f)
+    atexit.register(lambda: [os.remove(p) for p in (path, entry) if os.path.exists(p)])
+
+    def serve():
+        while True:
+            conn, _ = server.accept()
+            for line in conn.makefile():
+                message = json.loads(line)
+                if message.get("type") == "user":
+                    out("\x1b[J\r\n" + "\r\n".join(f"peer: {l}" for l in message["message"]["content"].splitlines()) + "\r\n")
+                    work(1)
+                    composer()
+            conn.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+
+
 def bye(id):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     if PROGRAM == "claude":
@@ -117,6 +148,7 @@ def main():
     if sys.argv[1:]:
         out("args: " + " ".join(sys.argv[1:]) + "\r\n")
     out(f"{'resumed' if resumed else 'session'} {id}\r\n")
+    inbox()
     try:
         talk(None if resumed else first(sys.argv[1:]))
     except KeyboardInterrupt:

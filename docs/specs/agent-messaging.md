@@ -1,6 +1,6 @@
 # Agent messaging
 
-**Status:** built · **Tested:** e2e `agent_messaging`, `cargo test -p kanna-daemon` (messages, db) · **Builds on:** [tasks](tasks.md), [backlog runners](backlog-runners.md), [agent status](agent-status.md), [kanna send](kanna-send.md) · **Why this design:** [research](../research/agent-messaging.md)
+**Status:** built · **Tested:** e2e `agent_messaging` (the mock agent named `claude` takes it on a socket), `cargo test -p kanna-daemon` (messages, db) · **Builds on:** [tasks](tasks.md), [backlog runners](backlog-runners.md), [agent status](agent-status.md), [kanna send](kanna-send.md) · **Why this design:** [research](../research/agent-messaging.md)
 
 The user, the planning agent and task agents leave each other messages with `kanna task send`. The daemon keeps each one in `kanna.db` and types it into the recipient's terminal as a prompt **once its turn is over**, so a message never lands mid-turn, isn't lost while the agent is stopped, and shows where it lands, in the agent's own terminal.
 
@@ -40,14 +40,19 @@ sequenceDiagram
     D-->>S: queued: it's working, so it gets it when its turn is over
     Note over T: its turn runs on
     T-->>D: idle: its OSC 7501 report, or the rules' idle held 3s
-    D->>T: [message from task-5e2c "Send spec"] Is your spec final? + Return
+    alt claude: its messaging socket
+        D->>T: {"type":"user", … "[message from task-5e2c …] Is your spec final?"}
+    else any other agent: typed
+        D->>T: [message from task-5e2c "Send spec"] Is your spec final? + Return
+    end
     D->>D: delivered
     Note over T: a new turn
 ```
 
 - **Only at its prompt:** a message waits while the agent is working, and while it needs you (typed text would answer the question). It goes when the agent is idle: at once when it reports its turn over ([OSC 7501](agent-status.md#4-the-agents-own-report-osc-7501)), otherwise once idle has held 3s, the [turn's end](backlog-runners.md#2-how-its-built) the runners use.
-- **Not over your typing:** a pane you typed into waits 5s after your last key; while what you typed sits in its prompt unsent (your last key wasn't Return or ⌃C), it waits up to 2 minutes for you to send or clear it.
-- **Typed as `kanna send` types it,** a bracketed paste and then Return, so a long message submits whole ([kanna send](kanna-send.md)).
+- **Claude takes it on its own messaging socket,** not typed: every Claude Code session listens on a Unix socket for messages from other local sessions, and Kanna writes the message there as one JSON line. It never touches the prompt, so a draft you left there, or Claude's suggested next prompt, stays as it is. Claude shows it as "Another Claude session sent a message:". The socket is undocumented: when a Claude agent has none, Kanna types instead.
+- **Every other agent gets it typed,** as `kanna send` types it, a bracketed paste and then Return, so a long message submits whole ([kanna send](kanna-send.md)).
+- **Typed, not over your typing:** a pane you typed into waits 5s after your last key; while what you typed sits in its prompt unsent (your last key wasn't Return or ⌃C), it waits up to 2 minutes for you to send or clear it. A message to Claude's socket doesn't wait for either.
 - **Once:** marked delivered when the send succeeds; one that fails is tried again once the agent has been idle another 3s. A waiting message outlives a restart of the daemon.
 - **The planner:** the planning terminal of a Desk whose folder is the sender's repo (the first, if several are). With none open, the message waits until one is.
 
@@ -80,6 +85,7 @@ flowchart TD
 
 - **`messages` table** in `kanna.db` ([database](database.md)): who to (a task ID or `planner`), the repo, who from, when, when delivered, the text. Keyed by task, not terminal, since a restart gives an agent a new `term-N`.
 - **The daemon delivers** (`Backlog::deliver` in `backlog.rs`, `messages.rs`): it keeps every agent pane's status and since when (`Ready`), updated from the status events agent status sends, and on each tick types waiting messages into each recipient that's idle long enough, through the `send` command. Each delivery is a `messaged` event on the task.
+- **Claude's socket** (`messages::inbox`, `messages::post`): agent status knows the pane's agent and its pid; Kanna reads `~/.claude/sessions/PID.json` (Claude's own registry: its `messagingSocketPath`, `peerProtocol` 1) and writes `{"type":"user","message":{"role":"user","content":TEXT}}` there off the main thread. No auth: on macOS the socket is your user's alone (0600), and Claude takes a message from any process of yours.
 - **Your typing** reaches the daemon as the app's `input` to the terminal, which marks the pane typed.
 - **Runners** (`Backlog::fill`) wake a stopped backlog task with a message (`Backlog::wake`: the pane's resume command, or a new agent if its pane is gone), and the turn's end skips a pane with mail.
 - **The planner** is found from the daemon's layout: a planner workspace's terminal, running, whose folder's repo is the message's.
@@ -89,5 +95,6 @@ flowchart TD
 | Term | Meaning |
 |---|---|
 | **Message** | Text one of the user, the planner or a task leaves for another, kept until it's delivered |
-| **Delivered** | Typed into the recipient's terminal as a prompt |
+| **Delivered** | Written to a Claude agent's messaging socket, or typed into any other agent's terminal as a prompt |
 | **Turn's end** | The agent back at its prompt: reported by OSC 7501, or idle on screen for 3s |
+| **Messaging socket** | Claude Code's Unix socket for messages from other local sessions, `/tmp/cc-socks/PID.sock`, named in `~/.claude/sessions/PID.json` |

@@ -62,6 +62,7 @@ pub enum Event {
     Status { terminal: String, serial: u64, status: Option<&'static str>, ended: bool },
     RulesUpdated { token: u64, report: kanna_detect::Report },
     Worktree { token: u64, result: Result<(String, String), String> },
+    Posted { token: u64, result: Result<(), String> },
     Finished { task: String, changes: Vec<db::Change> },
     Diff { id: String, diff: Value },
     DiffUpdating { id: String },
@@ -192,6 +193,11 @@ fn run() -> Result<(), String> {
         let view = layout.view();
         let workspaces = view["workspaces"].as_array().cloned().unwrap_or_default();
         workspaces.iter().filter(|w| w["where"].get("planner").is_some()).filter_map(|w| w["dock"]["pane"].as_str().map(String::from)).collect()
+    }));
+    let programs = Rc::downgrade(&detector);
+    *backlog.inbox.borrow_mut() = Some(Box::new(move |pane| {
+        let program = programs.upgrade()?.program(pane).filter(|program| program.agent == "claude")?;
+        messages::inbox(&agents::home(), program.pid)
     }));
     let quiz = Rc::new(quiz::Quiz::new(db, Some(core.weak())));
     quiz.install(&core);
@@ -383,6 +389,7 @@ fn run() -> Result<(), String> {
             }
             Event::RulesUpdated { token, report } => status_commands.updated(token, report),
             Event::Worktree { token, result } => backlog.worktree_made(token, result),
+            Event::Posted { token, result } => backlog.posted(token, result),
             Event::Finished { task, changes } => backlog.finished(&task, changes),
             Event::Diff { id, diff } => diffs.loaded(&id, diff),
             Event::DiffUpdating { id } => diffs.updating(&id),

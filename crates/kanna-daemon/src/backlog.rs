@@ -527,7 +527,9 @@ pub struct Backlog {
     ready: RefCell<HashMap<String, Ready>>,
     typed: RefCell<HashMap<String, (Instant, bool)>>,
     pub planners: RefCell<Option<Box<dyn Fn() -> Vec<String>>>>,
+    pub inbox: RefCell<Option<Box<dyn Fn(&str) -> Option<PathBuf>>>>,
     delivering: RefCell<HashSet<String>>,
+    posting: RefCell<HashMap<u64, (String, Vec<Message>)>>,
     pub on_change: RefCell<Option<Box<dyn Fn(Value)>>>,
 }
 
@@ -597,7 +599,9 @@ impl Backlog {
             ready: RefCell::default(),
             typed: RefCell::default(),
             planners: RefCell::default(),
+            inbox: RefCell::default(),
             delivering: RefCell::default(),
+            posting: RefCell::default(),
             on_change: RefCell::default(),
         }
     }
@@ -1229,6 +1233,9 @@ impl Backlog {
         if self.delivering.borrow_mut().remove(from) {
             self.delivering.borrow_mut().insert(to.into());
         }
+        for (pane, _) in self.posting.borrow_mut().values_mut().filter(|(pane, _)| pane == from) {
+            *pane = to.into();
+        }
         if self.stopping.borrow_mut().remove(from) {
             self.stopping.borrow_mut().insert(to.into());
         }
@@ -1413,10 +1420,11 @@ impl Backlog {
             if self.delivering.borrow().contains(&pane) || self.quitting.borrow().contains_key(&pane) || self.setting_up.borrow().contains_key(&pane) {
                 continue;
             }
-            let held = self.typed.borrow().get(&pane).map(|(at, draft)| *at + if *draft { DRAFT_HOLD } else { TYPED_HOLD }).filter(|until| *until > now);
+            let inbox = self.inbox.borrow().as_ref().and_then(|inbox| inbox(&pane));
+            let held = inbox.is_none().then(|| self.typed.borrow().get(&pane).map(|(at, draft)| *at + if *draft { DRAFT_HOLD } else { TYPED_HOLD })).flatten().filter(|until| *until > now);
             let at = self.ready.borrow().get(&pane).and_then(|r| r.at(TURN_SETTLE)).map(|at| held.map_or(at, |h| h.max(at)));
             match at {
-                Some(at) if at <= now => self.hand_over(core, pane, list),
+                Some(at) if at <= now => self.hand_over(core, pane, list, inbox),
                 Some(at) => next = Some(next.map_or(at, |n: Instant| n.min(at))),
                 None => {}
             }
@@ -1424,36 +1432,58 @@ impl Backlog {
         next
     }
 
-    fn hand_over(self: &Rc<Self>, core: &CoreHandle, pane: String, list: Vec<Message>) {
+    fn hand_over(self: &Rc<Self>, core: &CoreHandle, pane: String, list: Vec<Message>, inbox: Option<PathBuf>) {
         let named = |who: &str| if db::is_task_id(who) { self.label(who) } else { who.to_string() };
         let text = messages::prompt(&list.iter().map(|m| (named(&m.sender), m.text.clone())).collect::<Vec<_>>());
-        let ids: Vec<i64> = list.iter().map(|m| m.id).collect();
         self.delivering.borrow_mut().insert(pane.clone());
+        if let Some(socket) = inbox {
+            let token = self.next.get() + 1;
+            self.next.set(token);
+            self.posting.borrow_mut().insert(token, (pane, list));
+            let events = self.events.clone();
+            std::thread::spawn(move || {
+                let result = messages::post(&socket, &text);
+                let _ = events.send(Event::Posted { token, result });
+            });
+            return;
+        }
         let this = Rc::downgrade(self);
         core.handle(json!({ "cmd": "send", "args": { "pane": pane, "text": text } }), move |sent| {
-            let Some(this) = this.upgrade() else { return };
-            this.delivering.borrow_mut().remove(&pane);
-            let now = Instant::now();
-            if let Some(ready) = this.ready.borrow_mut().get_mut(&pane) {
-                ready.sent(now);
+            if let Some(this) = this.upgrade() {
+                this.handed(pane, list, failed(&sent).map_or(Ok(()), |error| Err(error.message)));
             }
-            if let Some(error) = failed(&sent) {
-                return eprintln!("kanna-daemon: couldn't give {pane} its messages ({}); they wait", error.message);
-            }
-            if let Err(error) = this.db.delivered(&ids) {
-                eprintln!("kanna-daemon: couldn't mark {pane}'s messages delivered in {}: {error}", db::FILE);
-            }
-            this.waiting.borrow_mut().retain(|m| !ids.contains(&m.id));
-            if let Some(turn) = this.turns.borrow_mut().get_mut(&pane) {
-                let status = this.core.upgrade().and_then(|core| core.pane(&pane)).and_then(|p| p.status);
-                *turn = Turn::underway();
-                turn.see(status.as_deref().and_then(Status::parse), now + messages::PICKUP);
-            }
-            for m in &list {
-                this.note(&pane, Change::new("messaged").by(Some(&m.sender)).with("message", json!(m.id)));
-            }
-            eprintln!("kanna-daemon: gave {pane} {} message(s)", ids.len());
         });
+    }
+
+    pub fn posted(self: &Rc<Self>, token: u64, result: Result<(), String>) {
+        if let Some((pane, list)) = self.posting.borrow_mut().remove(&token) {
+            self.handed(pane, list, result);
+        }
+    }
+
+    fn handed(self: &Rc<Self>, pane: String, list: Vec<Message>, result: Result<(), String>) {
+        self.delivering.borrow_mut().remove(&pane);
+        let now = Instant::now();
+        if let Some(ready) = self.ready.borrow_mut().get_mut(&pane) {
+            ready.sent(now);
+        }
+        if let Err(error) = result {
+            return eprintln!("kanna-daemon: couldn't give {pane} its messages ({error}); they wait");
+        }
+        let ids: Vec<i64> = list.iter().map(|m| m.id).collect();
+        if let Err(error) = self.db.delivered(&ids) {
+            eprintln!("kanna-daemon: couldn't mark {pane}'s messages delivered in {}: {error}", db::FILE);
+        }
+        self.waiting.borrow_mut().retain(|m| !ids.contains(&m.id));
+        if let Some(turn) = self.turns.borrow_mut().get_mut(&pane) {
+            let status = self.core.upgrade().and_then(|core| core.pane(&pane)).and_then(|p| p.status);
+            *turn = Turn::underway();
+            turn.see(status.as_deref().and_then(Status::parse), now + messages::PICKUP);
+        }
+        for m in &list {
+            self.note(&pane, Change::new("messaged").by(Some(&m.sender)).with("message", json!(m.id)));
+        }
+        eprintln!("kanna-daemon: gave {pane} {} message(s)", ids.len());
     }
 
     fn mint(&self, args: &Value, name: Option<String>, message: Option<String>) -> Result<Entry, KmuxError> {

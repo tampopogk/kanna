@@ -89,6 +89,10 @@ impl Detector {
         }
     }
 
+    pub fn program(&self, pane: &str) -> Option<Program> {
+        lock(&self.shared.watches).get(pane)?.program.clone()
+    }
+
     pub fn explain(&self, pane: &str) -> Option<Explained> {
         let watches = lock(&self.shared.watches);
         let watch = watches.get(pane)?;
