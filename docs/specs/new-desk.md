@@ -21,7 +21,8 @@ What happens when a Desk window opens with nothing in it: where it opens, and ho
 | How | Its folder |
 |---|---|
 | Kanna opens with nothing | the shell's folder Kanna was started from (`kanna …`, passed as `KANNA_START_DIR`), else `~` (started from Finder), which asks where ([2](#2-its-planning-terminal)) |
-| File → New Desk (⌘N) | `~`, as `kanna ~` would, and its planning terminal asks where ([2](#2-its-planning-terminal)) |
+| File → New Desk (⌘N) | `~`, as `kanna ~` would, and its planning terminal asks where, offering your [recent projects](recent-projects.md) ([2](#2-its-planning-terminal)) |
+| File → Open Recent | the project chosen, as `kanna PATH` ([recent projects](recent-projects.md)) |
 | `kanna PATH` | PATH, unless a Desk is on PATH's project already: then that Desk comes forward and nothing opens. The window keeps that project across a relaunch, until a task from another project is pulled onto it |
 
 - **It shows the Shelf:** the planning terminal on the left, the full Shelf of the folder's repo on the right ([planning terminal](planning-agent.md#1-when-it-shows)). The title bar says Shelf; there's no folder picker.
@@ -41,7 +42,7 @@ flowchart LR
 
 - **It runs Kanna's planner script once:** when the Desk opens, or when its terminal is restarted (`kanna restart`). Each run starts a new conversation.
 - **Agent setup first:** `kanna agents setup --ask` and `update --ask` ([agent setup](agent-setup.md#3-asking)).
-- **In `~`, it asks where first:** `Folder, repo or name:`, read in this order:
+- **In `~`, it asks where first:** `Folder, repo or name:`, or with recent projects, those numbered and `Folder, repo, name or number [1]:`, where Return takes 1 ([recent projects](recent-projects.md)). Otherwise read in this order:
   | You type | It |
   |---|---|
   | a git URL (`https://…`, `git@…`, `ssh://…`) | clones it into `~/.kanna-v4/repos/NAME` (the repo's name), or opens that clone if it's there |
@@ -86,6 +87,5 @@ flowchart LR
 - **Printing getting-started text** (before): the agent itself says what's running and waiting.
 - **Guessing a folder** (the latest parked or backlog task's repo) when Kanna starts with none: there's no project concept yet; the folder is where Kanna was started, else your home folder, and you `cd`.
 - **A folder picker dialog for New Desk:** the planning terminal takes a folder or a name.
-- **Listing your recent projects to choose from:** a path or a name is all it needs.
 - **Leaving the folder to you** (`cd` before starting your agent, as before): the script starts the agent at once, so in `~` it asks where first.
 - **The agent moving to the project:** an agent can't change its terminal's folder, so the window and the shell you're left in would stay in `~`.
