@@ -126,6 +126,7 @@ notarize() {
 verify_output="$dist/verification.txt"
 : >"$verify_output"
 dmgs=()
+symbols=()
 for arch in "${archs[@]}"; do
   step "Build $app_name $version for $arch"
   KANNA_VERSION="$version" "$repo_root/scripts/build.sh" "$channel" --arch "$arch"
@@ -148,9 +149,12 @@ for arch in "${archs[@]}"; do
     rel="${binary#"$app/Contents/"}"
     mkdir -p "$dist/dSYMs/$arch/$(dirname "$rel")"
     dsymutil "$binary" -o "$dist/dSYMs/$arch/$rel.dSYM"
-    strip -S "$binary" 2>/dev/null
+    stripped="$(strip -S "$binary" 2>&1)" || fail "strip -S $binary failed: $stripped"
     [[ "$(dsymutil -s "$binary" | grep -c N_OSO)" == 0 ]] || fail "$binary still has a debug map after strip -S"
   done
+  zip="$dist/$dmg_prefix-$version-$arch-dSYMs.zip"
+  ditto -c -k --norsrc --noextattr "$dist/dSYMs/$arch" "$zip"
+  symbols+=("$zip")
 
   step "Sign $arch"
   while IFS= read -r -d '' helper; do
@@ -207,11 +211,11 @@ echo "---"
 printf '%s\n' "$notes"
 echo "---"
 
-for dmg in "${dmgs[@]}"; do [[ "$(basename "$dmg")" != latest.json ]] || fail "refusing to publish an asset named latest.json"; done
+for dmg in "${dmgs[@]}" "${symbols[@]}"; do [[ "$(basename "$dmg")" != latest.json ]] || fail "refusing to publish an asset named latest.json"; done
 
 if $dry_run; then
   step "Dry run: built, signed, notarized and verified; nothing tagged, pushed or published"
-  for dmg in "${dmgs[@]}"; do echo "    $dmg"; done
+  for dmg in "${dmgs[@]}" "${symbols[@]}"; do echo "    $dmg"; done
   echo "    verification: $verify_output"
   exit 0
 fi
@@ -225,7 +229,7 @@ fi
 step "Release $tag on $repo"
 flags=(--repo "$repo" --verify-tag --title "Kanna $tag" --notes-file "$dist/notes.md")
 $staging && flags+=(--prerelease)
-gh release create "$tag" "${dmgs[@]}" "${flags[@]}" >/dev/null
+gh release create "$tag" "${dmgs[@]}" "${symbols[@]}" "${flags[@]}" >/dev/null
 assets="$(gh release view "$tag" --repo "$repo" --json assets --jq '.assets[].name')"
 ! grep -qx latest.json <<<"$assets" || fail "$tag has an asset named latest.json: delete it now, Kanna v2 installs read it"
 url="$(gh release view "$tag" --repo "$repo" --json url --jq .url)"

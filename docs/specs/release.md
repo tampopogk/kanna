@@ -29,12 +29,12 @@ flowchart TB
     N --> R{"--dry-run?"}
     R -->|yes| X["stop: DMGs and notes in<br/>target/release-dmg/vX.Y.Z"]
     R -->|no| T["push tag vX.Y.Z to origin<br/>(tampopogk/kanna)"]
-    T --> G["GitHub Release Kanna vX.Y.Z<br/>on that tag, DMGs attached"]
+    T --> G["GitHub Release Kanna vX.Y.Z<br/>on that tag, DMGs and dSYM zips attached"]
 ```
 
 - **The build runs in this checkout:** `target/Kanna.app` and `target/x86_64-apple-darwin/Kanna.app` become the production (or staging) apps, replacing the dev builds there.
 - **Nothing is launched:** the script never opens the app it builds, and never touches `/Applications`.
-- **Its output** is `target/release-dmg/vX.Y.Z/`: the DMGs, `notes.md`, `verification.txt` and `dSYMs/`.
+- **Its output** is `target/release-dmg/vX.Y.Z/`: the DMGs, the dSYM zips, `notes.md`, `verification.txt` and `dSYMs/`.
 
 ## Preflight
 
@@ -77,11 +77,13 @@ The workspace's release profile keeps line tables (`debug = "line-tables-only"`,
 
 | Step | For each of `Contents/MacOS/Kanna` and `Contents/Helpers/*` |
 |---|---|
-| `dsymutil BINARY -o dSYMs/ARCH/<path in Contents>.dSYM` | file:line for that exact build, kept in `target/release-dmg/vX.Y.Z/`, not in the DMG |
-| `strip -S BINARY` | drops the debug map; the symbol table stays, so crash reports name functions as before |
+| `dsymutil BINARY -o dSYMs/ARCH/<path in Contents>.dSYM` | file:line for that exact build, not in the DMG |
+| `strip -S BINARY` | drops the debug map; the symbol table stays, so crash reports name functions as before; a failure stops the release with strip's message |
 | `dsymutil -s` has no `N_OSO` | or the release stops |
 
-A user's crash report symbolicates to file:line with `atos -o dSYMs/ARCH/Helpers/kanna-daemon.dSYM -arch ARCH -l LOAD-ADDRESS ADDRESS`. Before line tables, cargo's release default (`strip = "debuginfo"` when there is no debug info) gave the Rust helpers no debug map and the release stripped nothing itself.
+Each architecture's dSYMs are zipped as `Kanna-X.Y.Z-ARCH-dSYMs.zip` and attached to the GitHub Release beside its DMG, so a crash report can be symbolicated after `target/` is gone. They add line numbers only: the shipped binaries already carry the symbol names.
+
+A user's crash report symbolicates to file:line with the release's zip unpacked: `atos -o Helpers/kanna-daemon.dSYM -arch ARCH -l LOAD-ADDRESS ADDRESS`. Before line tables, cargo's release default (`strip = "debuginfo"` when there is no debug info) gave the Rust helpers no debug map and the release stripped nothing itself.
 
 ## Signing and the DMG
 
@@ -110,7 +112,7 @@ flowchart LR
 The tag and the release are both on **tampopogk/kanna**, which origin must point at:
 
 1. the annotated tag `vX.Y.Z` at HEAD, pushed to origin;
-2. the GitHub Release `vX.Y.Z` on that tag (`gh release create --verify-tag`), titled "Kanna vX.Y.Z", with `Kanna-X.Y.Z-arm64.dmg` and `Kanna-X.Y.Z-x86_64.dmg`.
+2. the GitHub Release `vX.Y.Z` on that tag (`gh release create --verify-tag`), titled "Kanna vX.Y.Z", with `Kanna-X.Y.Z-arm64.dmg`, `Kanna-X.Y.Z-x86_64.dmg` and their `Kanna-X.Y.Z-ARCH-dSYMs.zip`.
 
 - **The repo's history:** Kanna v2's repo was tampopogk/kanna until it was renamed tampopogk/kanna2; this source repo (first jemdiggity/kanna-v4) then took the name. Preflight checks the name resolves to itself, not a redirect, and that no release `vX.Y.Z` exists yet.
 - **Release notes,** as in v2's `mirror-release.sh`: the merge commit subjects since the last tag (all of main's for the first) go to `claude --print --model haiku`, which writes short user-facing bullets under `### Added` and `### Fixed`, with no internal names or paths. They're printed before anything is published.
