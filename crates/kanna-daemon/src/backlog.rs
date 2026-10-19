@@ -722,6 +722,13 @@ impl Backlog {
         });
     }
 
+    pub fn about(&self, reference: &str) -> Result<(String, Option<String>, Option<String>), KmuxError> {
+        let id = self.resolve(reference)?.ok_or_else(|| KmuxError::new("not_found", format!("no task \"{reference}\"")))?;
+        let running = self.running.borrow().iter().find(|r| r.entry.id == id).map(|r| r.pane.clone());
+        let pane = running.or_else(|| self.entries.borrow().iter().find(|e| e.id == id).and_then(|e| e.held.clone()));
+        Ok((id.clone(), self.known(&id).and_then(|e| e.name), pane))
+    }
+
     fn short(&self, id: &str) -> String {
         db::short_id(id, self.open_tasks().iter().map(|e| e.id.as_str()))
     }
@@ -893,7 +900,7 @@ impl Backlog {
         }
     }
 
-    fn task_of(&self, pane: &str) -> Option<String> {
+    pub fn task_of(&self, pane: &str) -> Option<String> {
         let running = self.running.borrow().iter().find(|r| r.pane == pane).map(|r| r.entry.id.clone());
         running.or_else(|| self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).map(|e| e.id.clone()))
     }

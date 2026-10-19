@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Toasts</title>
+<style>
+:root {
+  --bg: #14161a; --panel: #1b1e24; --panel2: #22262d; --line: #2c313a; --text: #e6e8eb; --muted: #8b93a0;
+  --accent: #7aa2ff; --ok: #5fcf93; --warn: #f0b35a; --machine: #b48cff; --term: #16181c;
+  --page: #0d0e10; --shadow: 0 20px 50px rgba(0,0,0,.5); --toast: rgba(34,38,45,.97); --toast-shadow: 0 8px 24px rgba(0,0,0,.45);
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --panel: #f4f5f7; --panel2: #eaecf0; --line: #d8dce2; --text: #1d2026; --muted: #6b7280;
+  --accent: #2f63d8; --ok: #1f9d5c; --warn: #b7791f; --machine: #7c4dcc; --term: #fbfbfc;
+  --page: #dfe2e7; --shadow: 0 20px 50px rgba(0,0,0,.18); --toast: rgba(255,255,255,.98); --toast-shadow: 0 8px 24px rgba(0,0,0,.16);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1340px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro { display: none; }
+.intro h1 { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--muted); margin: 0 0 12px; max-width: 920px; }
+.intro code { font: 12px var(--mono); }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+button { font: 12px var(--sans); color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+.window { position: relative; border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: var(--shadow); background: var(--bg); height: 600px; display: flex; flex-direction: column; }
+body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 100vh; }
+.bar { height: 36px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 12px; border-bottom: 1px solid var(--line); }
+.lights { display: flex; gap: 6px; }
+.lights i { width: 11px; height: 11px; border-radius: 50%; background: var(--line); display: block; }
+.content { flex: 1; display: flex; min-height: 0; }
+.agent { flex: 0 0 40%; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--term); }
+.head { height: 32px; flex: none; display: flex; align-items: center; padding: 0 12px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+.head.focused { color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
+.term { flex: 1; overflow: auto; padding: 10px 12px; font: 12px/1.6 var(--mono); white-space: pre-wrap; }
+.term .p { color: var(--warn); }
+.term .m { color: var(--machine); }
+.term .out { color: var(--muted); }
+.side { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.shelf { height: 46px; flex: none; border-top: 1px solid var(--line); display: flex; gap: 8px; align-items: center; padding: 0 12px; }
+.card { border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; font-size: 12px; color: var(--muted); }
+.card .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); margin-right: 6px; }
+.card.working .dot { background: var(--accent); }
+.stack { position: absolute; top: 46px; right: 12px; width: 340px; display: flex; flex-direction: column; gap: 8px; z-index: 5; }
+.toast { display: flex; gap: 10px; align-items: flex-start; background: var(--toast); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; box-shadow: var(--toast-shadow);
+  transition: opacity .4s ease, transform .25s ease; cursor: default; }
+.toast.about { cursor: pointer; }
+.toast.about:hover { border-color: var(--accent); }
+.toast.new { opacity: 0; transform: translateY(-6px); }
+.toast.fading { opacity: 0; }
+.toast .icon { flex: none; width: 18px; height: 18px; color: var(--warn); margin-top: 1px; }
+.toast .body { flex: 1; min-width: 0; }
+.toast .title { font-weight: 600; }
+.toast .detail { color: var(--muted); font-size: 12px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.toast .where { color: var(--accent); font-size: 11px; margin-top: 3px; }
+.toast .x { flex: none; border: 0; background: transparent; color: var(--muted); padding: 0 2px; font-size: 14px; line-height: 1; visibility: hidden; }
+.toast:hover .x { visibility: visible; }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1>Toasts: a notice the daemon raises in the front window</h1>
+    <p>A toast stacks below the title bar on the right, newest on top, and fades after 6 seconds (8 with a pane or task), unless the pointer is on it. Clicking one about a pane or task shows that task on the Desk and focuses the pane; × closes it. The daemon raises a keyed toast once: <code>kanna toast "Messages wait for Lint fixes" "aider can't take messages" --pane term-12 --key m:term-12:aider</code> raised twice shows one.</p>
+    <div class="controls">
+      <button id="wait">A message waits (agent messaging)</button>
+      <button id="again">The same again (keyed: no second toast)</button>
+      <button id="cli">kanna toast from the CLI</button>
+      <button id="theme">Light / dark</button>
+      <button id="reset">Reset</button>
+    </div>
+  </div>
+  <div class="window">
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><b id="title">Toast notices</b></div>
+    <div class="content">
+      <div class="agent">
+        <div class="head" id="agenthead">Agent · claude · toasts</div>
+        <div class="term" id="term"></div>
+      </div>
+      <div class="side">
+        <div class="head">docs/specs/toasts.md</div>
+        <div class="term out" id="tab"></div>
+        <div class="shelf" id="shelf"></div>
+      </div>
+    </div>
+    <div class="stack" id="stack"></div>
+  </div>
+</main>
+<script>
+const LIFE = 6000, ABOUT_LIFE = 8000, FADE = 400, MAX = 4;
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const ICON = `<svg class="icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M10 2.8 18 17H2z"/><path d="M10 8v4.2M10 14.6v.1" stroke-linecap="round"/></svg>`;
+const initial = () => ({
+  next: 1, keys: new Set(), toasts: [], desk: "toasts",
+  tasks: { toasts: { name: "Toast notices", status: "working" }, lint: { name: "Lint fixes", status: "idle", agent: "aider" }, docs: { name: "Docs pass", status: "working" } },
+  term: [`<span class="p">&gt;</span> add toasts to Kanna.app`, `<span class="m">●</span> kanna toast "Build finished" "scripts/build.sh took 3m 12s"`, `  <span class="out">raised toast-1</span>`],
+});
+let s = initial();
+
+function raise({ title, detail, task, pane, key }) {
+  if (key && s.keys.has(key)) return null;
+  if (key) s.keys.add(key);
+  const t = { id: "toast-" + s.next++, title, detail, task, pane, born: Date.now(), left: task || pane ? ABOUT_LIFE : LIFE, hovered: false };
+  s.toasts.unshift(t);
+  s.toasts.slice(MAX).forEach(old => old.left = Math.min(old.left, FADE));
+  render();
+  return t.id;
+}
+
+function render() {
+  document.getElementById("stack").innerHTML = s.toasts.map(t => {
+    const where = t.task ? `${esc(s.tasks[t.task].name)} · ${t.task === s.desk ? "on the Desk" : "on the Shelf"}` : "";
+    return `<div class="toast ${t.task ? "about" : ""} ${t.fresh === false ? "" : "new"} ${t.left <= FADE ? "fading" : ""}" data-id="${t.id}">${ICON}
+      <div class="body"><div class="title">${esc(t.title)}</div><div class="detail">${esc(t.detail)}</div>${where ? `<div class="where">${where}</div>` : ""}</div>
+      <button class="x" data-close="${t.id}" title="Close">×</button></div>`;
+  }).join("");
+  requestAnimationFrame(() => document.querySelectorAll(".toast.new").forEach(el => { el.classList.remove("new"); const t = s.toasts.find(x => x.id === el.dataset.id); if (t) t.fresh = false; }));
+  const desk = s.tasks[s.desk];
+  document.getElementById("title").textContent = desk.name;
+  document.getElementById("agenthead").textContent = `Agent · ${desk.agent || "claude"} · ${desk.name}`;
+  document.getElementById("agenthead").classList.toggle("focused", s.focused === s.desk);
+  document.getElementById("term").innerHTML = s.desk === "toasts" ? s.term.join("\n") : `<span class="p">&gt;</span> fix the lint warnings in crates/kanna\n<span class="m">●</span> Done: 14 warnings fixed.\n\n<span class="out">aider&gt; </span>`;
+  document.getElementById("tab").textContent = s.desk === "toasts" ? "# Toasts\n\nA small, non-modal notice the daemon raises…" : "crates/kanna/src/output.rs";
+  document.getElementById("shelf").innerHTML = Object.entries(s.tasks).filter(([id]) => id !== s.desk).map(([, t]) => `<span class="card ${t.status}"><span class="dot"></span>${esc(t.name)}</span>`).join("");
+}
+
+let last = Date.now();
+setInterval(() => {
+  const now = Date.now(), step = now - last;
+  last = now;
+  let changed = false;
+  for (const t of s.toasts) {
+    if (t.hovered) continue;
+    const was = t.left;
+    t.left -= step;
+    if (was > FADE && t.left <= FADE) changed = true;
+  }
+  const kept = s.toasts.filter(t => t.left > 0);
+  if (kept.length !== s.toasts.length || changed) { s.toasts = kept; render(); }
+}, 100);
+
+const stack = document.getElementById("stack");
+stack.addEventListener("mouseover", e => { const el = e.target.closest(".toast"); s.toasts.forEach(t => t.hovered = !!el && t.id === el.dataset.id); });
+stack.addEventListener("mouseleave", () => s.toasts.forEach(t => { if (t.hovered) t.left = Math.max(t.left, 2000); t.hovered = false; }));
+stack.addEventListener("click", e => {
+  const close = e.target.closest("[data-close]"), el = e.target.closest(".toast");
+  if (!el) return;
+  const t = s.toasts.find(x => x.id === el.dataset.id);
+  s.toasts = s.toasts.filter(x => x !== t);
+  if (!close && t.task) { s.desk = t.task; s.focused = t.task; }
+  render();
+});
+
+const wait = () => raise({ title: "Messages wait for Lint fixes", detail: "aider can't take messages: only claude and codex can", task: "lint", pane: "term-12", key: "messages:term-12:aider" });
+document.getElementById("wait").onclick = wait;
+document.getElementById("again").onclick = () => { const id = wait(); s.term.push(`<span class="m">●</span> kanna toast … --key messages:term-12:aider`, `  <span class="out">${id ? "raised " + id : "already raised (key messages:term-12:aider)"}</span>`); render(); };
+document.getElementById("cli").onclick = () => { const id = raise({ title: "Build finished", detail: "scripts/build.sh took 3m 12s" }); s.term.push(`<span class="m">●</span> kanna toast "Build finished" "scripts/build.sh took 3m 12s"`, `  <span class="out">raised ${id}</span>`); render(); };
+document.getElementById("theme").onclick = () => { const r = document.documentElement; r.dataset.theme = r.dataset.theme === "light" ? "" : "light"; };
+document.getElementById("reset").onclick = () => { s = initial(); render(); };
+if (location.hash.includes("picture")) document.body.classList.add("picture");
+if (location.hash.includes("light")) document.documentElement.dataset.theme = "light";
+render();
+if (location.hash.includes("stack")) {
+  raise({ title: "Build finished", detail: "scripts/build.sh took 3m 12s" });
+  wait();
+  s.toasts.forEach(t => { t.fresh = false; t.hovered = true; });
+  render();
+}
+</script>
+</body>
+</html>
