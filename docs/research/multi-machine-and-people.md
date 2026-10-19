@@ -22,7 +22,7 @@
 | 3 | **People send each other tasks, not terminals.** A dev who owns UI receives UI issues and ideas in their backlog. | Shared terminal sessions between people |
 | 4 | **Everyone involved has Kanna.** | Email, web or Slack front ends for outsiders |
 | 5 | **Agents draft, people approve.** Every message that leaves a Kanna was approved by its person. | Agents talking to other people's Kanna on their own |
-| 6 | **Remote terminals aren't byte streams.** ssh-style streaming was laggy in Kanna v2. Instead, the agent CLI runs as client and server (a responsive local UI, the agent on the remote), and/or mosh-style screen state (the daemon already keeps every terminal's screen in headless Ghostty, [mux architecture](mux-architecture.md#3-what-the-daemon-keeps-and-what-the-app-keeps)). | Streaming a pty over ssh |
+| 6 | **Remote terminals aren't byte streams.** ssh-style streaming was laggy in Kanna v2. Instead, the agent CLI runs as client and server (a responsive local UI, the agent on the remote), and/or mosh-style screen state (the headless daemon already keeps every terminal's screen with libghostty-vt, [architecture](../specs/architecture.md#2-what-the-daemon-keeps-what-the-apps-keep)). | Streaming a pty over ssh |
 | 7 | **Tasks move only at boundaries:** not started yet, or stopped at a turn's end ([backlog runners](../specs/backlog-runners.md)), with the branch pushed and the transcript carried. | Moving live processes |
 | 8 | **Machines advertise what they can do.** | Guessing, or you choosing a machine for every task |
 | 9 | **iOS is for quick checks:** brainstorming, simple work, quizzes, answering a task that needs you. | Deep work on the phone |
@@ -58,7 +58,7 @@ flowchart LR
 
 | | Actor, trigger | What happens | What has to work | Open questions |
 |---|---|---|---|---|
-| **A. Away from the desk** | You, on the laptop; tasks run on the desktop | You pull one of the desktop's tasks onto the laptop's Desk, read its presentation, and steer it | The laptop sees the desktop's Shelf and backlog; a remote agent that feels local (principle 6); the task's tabs (docs, mockups) reach the laptop | Client/server agent CLI, screen state, or both? Which tabs travel: files only, or web panes too? Is the desktop reachable from outside home (tailnet, relay)? |
+| **A. Away from the desk** | You, on the laptop; tasks run on the desktop | You pull one of the desktop's tasks onto the laptop's Desk, read its presentation, and steer it | The laptop's app connects to the desktop's daemon: the daemon already serves any number of apps, each with its own Desk and Shelf over the daemon's backlog ([each app's Desk and Shelf](../specs/app-desk.md)); a remote agent that feels local (principle 6); the task's tabs (docs, mockups) reach the laptop | Client/server agent CLI, screen state, or both? Which tabs travel: files only, or web panes too? Is the desktop reachable from outside home (tailnet, relay)? |
 | **B. Offload** | You make tasks on the laptop; a bigger machine runs them | A machine with free [runners](../specs/backlog-runners.md) takes the next task, oldest first | One backlog across machines (principle 2); task IDs that stay unique across machines ([tasks open question 1](../specs/tasks.md#8-open-questions)); capabilities (principle 8); the repo and its credentials on that machine | Who owns the backlog: one machine, or each machine's merged? How does a machine claim a task without two taking it? |
 | **C. Teleport** | You, finishing for the day; a stopped task | It moves from the laptop to the desktop: its branch with uncommitted work, its conversation, its tabs; its terminals start again there | A boundary (principle 7); the same repo path on both, or a way round it ([5.1](#51-repo-paths-and-agent-sessions)); the agent's session files carried | Uncommitted work: a WIP commit pushed, or a patch? What about worktree-only files (`.kanna/tmp/`)? |
 | **D. Phone check-in** | You, on the phone | You see what finished, answer a task that needs you, or take a quiz | The phone reaches a Kanna; a task's needs-you question and its reply fit a phone; [quiz](../specs/quiz.md) on iOS | Answer through the agent's terminal, or a short form? Notifications? |
@@ -96,7 +96,7 @@ flowchart TB
 | **G. Closing the loop** | The sender, later | They see taken, done or declined, with the PR | The receiver's Kanna sends status back; the receiver approves declines with a reason | Are status updates messages that need approval too, or automatic? |
 | **H. Feedback from stakeholders** | A task's mockup or spec needs a designer's, PM's or client's eye | The task's agent drafts the request, you approve; they comment with [doc markup](../specs/doc-markup.md), their agent drafts their reply, they approve; it lands in the task's threads and the agent revises | Kanna-to-Kanna messages that carry a doc and its threads; doc markup threads that come from someone else | Do they get the file, or a link to view it on your machine? Does their reply reopen a stopped task? |
 
-**E and H likely share one mechanism:** Kanna-to-Kanna messages with agent drafts and human approval. See the inter-agent messaging exploration (task-d8d7, `docs/research/agent-messaging.md` once it exists).
+**E and H likely share one mechanism:** Kanna-to-Kanna messages with agent drafts and human approval. Within one Kanna, [agent messaging](../specs/agent-messaging.md) is built: `kanna task send` leaves a task or the planner a message, delivered when its turn ends ([why that design](agent-messaging.md)). E and H would carry it to another person's Kanna, with approval at each end.
 
 ## 5. Shared questions
 
@@ -140,7 +140,7 @@ sequenceDiagram
     RK->>SK: taken · done (PR) · declined (G)
 ```
 
-Open: identity (how one Kanna knows another's person), transport (a relay, a tailnet, git itself), and what a message may carry (a task, a doc, threads, a PR link).
+Open: identity (how one Kanna knows another's person), transport (a relay, a tailnet, git itself), what a message may carry (a task, a doc, threads, a PR link), and whether one arriving is an [agent message](../specs/agent-messaging.md) to the receiver's planner, held until its person approves.
 
 ## 6. Cheap or big, and the smallest experiment
 
