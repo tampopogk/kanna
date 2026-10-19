@@ -88,7 +88,15 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
     );
     create index messages_waiting on messages (delivered, recipient);
     create index messages_by_recipient on messages (recipient, at);
+"), Step::Sql("
+    create table projects (
+        path text primary key,
+        at real not null,
+        seq integer not null
+    );
 ")];
+
+pub const RECENT: usize = 10;
 
 pub fn version() -> i64 {
     MIGRATIONS.len() as i64
@@ -551,6 +559,31 @@ impl Db {
         let mut statement = self.conn.prepare(&format!("select {ANSWER} from quiz_answers a join quiz_rounds r on r.id = a.round where r.repo = ?1 {only} order by a.round desc, a.id"))?;
         let rows = statement.query_map([repo], answer_row)?;
         rows.collect()
+    }
+
+    pub fn touch_project(&self, path: &str) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "insert into projects (path, at, seq) values (?1, ?2, (select coalesce(max(seq), 0) + 1 from projects))
+             on conflict (path) do update set at = excluded.at, seq = excluded.seq",
+            params![path, now()],
+        )?;
+        tx.execute("delete from projects where path not in (select path from projects order by seq desc limit ?1)", [RECENT as i64])?;
+        tx.commit()
+    }
+
+    pub fn projects(&self) -> rusqlite::Result<Vec<(String, f64)>> {
+        let mut statement = self.conn.prepare("select path, at from projects order by seq desc")?;
+        let rows = statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
+    pub fn forget_project(&self, path: &str) -> rusqlite::Result<()> {
+        self.conn.execute("delete from projects where path = ?1", [path]).map(|_| ())
+    }
+
+    pub fn clear_projects(&self) -> rusqlite::Result<()> {
+        self.conn.execute("delete from projects", []).map(|_| ())
     }
 }
 
