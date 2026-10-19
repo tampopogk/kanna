@@ -7,6 +7,7 @@ mod keeper;
 mod content_ids;
 mod layout;
 mod pty;
+mod codex_remote;
 mod messages;
 mod quiz;
 mod reader;
@@ -81,6 +82,7 @@ fn main() {
     match args.first().map(String::as_str) {
         None => {}
         Some("--uses-keeper") => std::process::exit(0),
+        Some(codex_remote::FLAG) if args.len() >= 3 => std::process::exit(codex_remote::run(Path::new(&args[1]), &args[2], &args[3..])),
         Some("-h" | "--help") => return println!("{USAGE}"),
         Some(other) => {
             eprintln!("kanna-daemon: unknown argument {other}\n{USAGE}");
@@ -118,6 +120,9 @@ fn run() -> Result<(), String> {
         return Err(format!("{} belongs to Kanna.app; use another KANNA_SOCKET", socket.display()));
     }
     let state_dir = env_path("KANNA_STATE_DIR").unwrap_or_else(|| socket.parent().map(Path::to_path_buf).unwrap_or_default());
+    if let Ok(helper) = std::env::current_exe() {
+        backlog::serve_codex_remotely(&helper, &state_dir);
+    }
     std::fs::create_dir_all(&state_dir).map_err(|e| format!("can't make {}: {e}", state_dir.display()))?;
     let socket_path = socket.to_string_lossy().into_owned();
     let _lock = lock(&state_dir)?;
@@ -195,9 +200,14 @@ fn run() -> Result<(), String> {
         workspaces.iter().filter(|w| w["where"].get("planner").is_some()).filter_map(|w| w["dock"]["pane"].as_str().map(String::from)).collect()
     }));
     let programs = Rc::downgrade(&detector);
-    *backlog.inbox.borrow_mut() = Some(Box::new(move |pane| {
-        let program = programs.upgrade()?.program(pane).filter(|program| program.agent == "claude")?;
-        messages::inbox(&agents::home(), program.pid)
+    *backlog.channel.borrow_mut() = Some(Box::new(move |pane| {
+        let detector = programs.upgrade()?;
+        let program = detector.program(pane)?;
+        Some(match program.agent.as_str() {
+            "claude" => messages::Channel::Claude(messages::inbox(&agents::home(), program.pid)),
+            "codex" => messages::Channel::Codex(messages::codex_socket(&detector.argv(pane))),
+            other => messages::Channel::Other(other.to_string()),
+        })
     }));
     let quiz = Rc::new(quiz::Quiz::new(db, Some(core.weak())));
     quiz.install(&core);

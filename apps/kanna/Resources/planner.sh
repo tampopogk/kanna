@@ -146,10 +146,9 @@ save() {
 nl='
 '
 installed=
-while [ $# -ge 2 ]; do
-  program=${2%% *}
-  command -v "$program" >/dev/null 2>&1 && installed="$installed$1	$2$nl"
-  shift 2
+while [ $# -ge 3 ]; do
+  command -v "$2" >/dev/null 2>&1 && installed="$installed$1	$3$nl"
+  shift 3
 done
 
 if [ -n "$kanna" ]; then

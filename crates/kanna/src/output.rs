@@ -255,7 +255,8 @@ pub fn task(request: &Value, reply: &Value) -> String {
         ),
         Some("send") => {
             let to = reply["to"]["id"].as_str().or(reply["to"].as_str()).unwrap_or("?");
-            match (to, reply["state"].as_str().unwrap_or("")) {
+            let warning = reply["warning"].as_str().map_or(String::new(), |why| format!("\nwarning: it waits: {why}"));
+            let said: String = match (to, reply["state"].as_str().unwrap_or("")) {
                 ("planner", "no-planner") => "queued for this repo's planner: none is open, so it gets it when one is".into(),
                 ("planner", _) => "queued for this repo's planner: it gets it at its prompt".into(),
                 (to, "working") => format!("queued for {to}: it's working, so it gets it when its turn is over"),
@@ -263,7 +264,8 @@ pub fn task(request: &Value, reply: &Value) -> String {
                 (to, "needs-you") => format!("queued for {to}: it's asking you something, so it gets it once that's answered and its turn is over"),
                 (to, "stopped") => format!("queued for {to}: it's stopped; in the backlog it runs for it, elsewhere it gets it when it's started"),
                 (to, _) => format!("queued for {to}: it gets it at its prompt"),
-            }
+            };
+            said + &warning
         }
         Some("messages") => {
             let list = reply["messages"].as_array().cloned().unwrap_or_default();
@@ -277,14 +279,20 @@ pub fn task(request: &Value, reply: &Value) -> String {
                 .map(|m| {
                     let text: String = m["text"].as_str().unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" ");
                     let text = if text.chars().count() > 60 { format!("{}…", text.chars().take(59).collect::<String>()) } else { text };
-                    let state = if m["delivered"].is_null() { "waiting" } else { "delivered" };
+                    let state = match (m["delivered"].is_null(), m["warning"].is_string()) {
+                        (false, _) => "delivered",
+                        (true, true) => "held",
+                        (true, false) => "waiting",
+                    };
                     [ago(now - m["at"].as_f64().unwrap_or(now)), who(&m["from"]), who(&m["to"]), state.into(), text]
                 })
                 .collect();
+            let mut held: Vec<String> = list.iter().filter_map(|m| Some(format!("held for {}: {}", who(&m["to"]), m["warning"].as_str()?))).collect();
+            held.dedup();
             let head = ["SENT", "FROM", "TO", "STATE", "TEXT"];
             let width = |i: usize| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0).max(head[i].len());
             let line = |r: [&str; 5]| format!("{:w0$}  {:w1$}  {:w2$}  {:w3$}  {}", r[0], r[1], r[2], r[3], r[4], w0 = width(0), w1 = width(1), w2 = width(2), w3 = width(3)).trim_end().to_string();
-            std::iter::once(line(head)).chain(rows.iter().map(|r| line([&r[0], &r[1], &r[2], &r[3], &r[4]]))).collect::<Vec<_>>().join("\n")
+            std::iter::once(line(head)).chain(rows.iter().map(|r| line([&r[0], &r[1], &r[2], &r[3], &r[4]]))).chain(held).collect::<Vec<_>>().join("\n")
         }
         Some("name") => format!("named {} \"{}\"", request["task"].as_str().or(request["pane"].as_str()).unwrap_or("?"), request["name"].as_str().unwrap_or("")),
         Some("done") => format!("{} is done: closed {}{}", request["task"].as_str().unwrap_or("?"), join(&reply["closed"]), freed_lines(reply)),

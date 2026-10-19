@@ -61,7 +61,7 @@ When the user asks you to show them something (a diff, a file, a doc, a page, a 
 
 ## Message the planner or another task
 
-`kanna task send TASK TEXT` leaves a message for another task's agent, and `kanna task send planner TEXT` for this repo's planning agent. Kanna types it into their terminal once their turn is over, as `[message from YOUR-TASK "Name"] TEXT`, so it never lands mid-turn, and a stopped backlog task runs for it.
+`kanna task send TASK TEXT` leaves a message for another task's agent, and `kanna task send planner TEXT` for this repo's planning agent. Kanna hands it to their agent once their turn is over, as a prompt `[message from YOUR-TASK "Name"] TEXT`, so it never lands mid-turn, and a stopped backlog task runs for it. Only Claude and Codex agents take messages: for any other, `kanna task send` warns and the message waits.
 
 - **Ask another task directly** when you need something only it knows (is its spec final, which branch has the change), instead of asking the user to relay it. Find it with `kanna task list QUERY`.
 - **Tell the planner** when you're blocked on a decision it should take to the user, or when you're done and there's something to merge.

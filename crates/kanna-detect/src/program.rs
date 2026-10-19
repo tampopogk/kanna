@@ -51,6 +51,10 @@ pub fn identify(group: i32, rules: &RuleSet) -> Option<Program> {
     rules.agent(&found.agent).is_some().then_some(found)
 }
 
+pub fn group_argv(group: i32) -> Vec<Vec<String>> {
+    group_members(group).into_iter().filter_map(process).map(|p| p.argv).collect()
+}
+
 pub fn agent_of(executable: &Path) -> Option<&'static str> {
     let name = |p: &Path| p.file_name().and_then(|n| n.to_str()).map(str::to_owned);
     if let Some(agent) = name(executable).as_deref().and_then(known_agent) {
@@ -175,11 +179,11 @@ pub fn probe(executable: &Path, timeout: Duration) -> Option<String> {
 #[cfg(target_os = "macos")]
 fn group_members(group: i32) -> Vec<i32> {
     let mut pids = vec![0i32; 256];
-    let bytes = unsafe { libc::proc_listpgrppids(group, pids.as_mut_ptr().cast(), (pids.len() * std::mem::size_of::<i32>()) as libc::c_int) };
-    if bytes <= 0 {
+    let count = unsafe { libc::proc_listpgrppids(group, pids.as_mut_ptr().cast(), (pids.len() * std::mem::size_of::<i32>()) as libc::c_int) };
+    if count <= 0 {
         return vec![group];
     }
-    pids.truncate(bytes as usize / std::mem::size_of::<i32>());
+    pids.truncate(count as usize);
     pids.retain(|pid| *pid > 0);
     if !pids.contains(&group) {
         pids.push(group);
@@ -283,6 +287,22 @@ mod tests {
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
+    }
+
+    #[test]
+    fn a_small_process_group_lists_every_member_not_just_its_leader() {
+        use std::os::unix::process::CommandExt;
+        let mut child = Command::new("/bin/sh").args(["-c", "sleep 5 & sleep 5"]).process_group(0).spawn().unwrap();
+        let group = child.id() as i32;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut members = group_members(group);
+        while members.len() < 3 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            members = group_members(group);
+        }
+        let _ = unsafe { libc::killpg(group, libc::SIGTERM) };
+        let _ = child.wait();
+        assert_eq!(members.len(), 3, "the shell and its two sleeps: {members:?}");
     }
 
     #[test]

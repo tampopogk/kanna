@@ -1,5 +1,5 @@
 use crate::db::{self, Change, Db, Message, Place, Row};
-use crate::messages::{self, Ready, DRAFT_HOLD, PLANNER, TYPED_HOLD, USER};
+use crate::messages::{self, Channel, Ready, PLANNER, USER};
 use crate::task_scripts::{self, Cleanup, Scripts, Setup};
 use crate::Event;
 use kanna_mux::json::{json, num, opt, string, Map, Value};
@@ -206,14 +206,14 @@ pub fn started_as(program: &str, role: &str) -> String {
     }
 }
 
-/// The agents a planning terminal may start, each a name and the command that starts it as the planner: every agent
-/// Kanna knows, or for tests the programs in `KANNA_PLANNING_AGENTS`.
-pub fn planner_agents() -> Vec<(String, String)> {
+/// The agents a planning terminal may start, each a name, the program to find, and the command that starts it as the planner:
+/// every agent Kanna knows, or for tests the programs in `KANNA_PLANNING_AGENTS`.
+pub fn planner_agents() -> Vec<(String, String, String)> {
     let programs: Vec<String> = match std::env::var("KANNA_PLANNING_AGENTS") {
         Ok(list) => list.split_whitespace().map(String::from).collect(),
         Err(_) => AGENTS.iter().map(|a| a.names[0].to_string()).collect(),
     };
-    programs.iter().map(|p| (program(p).to_string(), started_as(p, PLANNER_ROLE))).collect()
+    programs.iter().map(|p| (program(p).to_string(), p.split_whitespace().next().unwrap_or(p).to_string(), started_as(p, PLANNER_ROLE))).collect()
 }
 
 /// The planning terminal's command line: it keeps a claude agent's context to `context` tokens, then runs the planner
@@ -221,7 +221,7 @@ pub fn planner_agents() -> Vec<(String, String)> {
 /// Without the script, it asks about agent setup and hands over to your shell.
 /// Kanna's zsh integration (`zsh`, its folder) hands ZDOTDIR back to yours while the command runs, so the shell it
 /// hands over to gets it again, as every Kanna terminal's does.
-pub fn planner_command(script: Option<&str>, context: Option<u64>, zsh: Option<&str>, cli: Option<&str>, repos: &Path, agents: &[(String, String)]) -> String {
+pub fn planner_command(script: Option<&str>, context: Option<u64>, zsh: Option<&str>, cli: Option<&str>, repos: &Path, agents: &[(String, String, String)]) -> String {
     let limit = context.map_or(String::new(), |tokens| format!("[ -n \"$CLAUDE_CODE_AUTO_COMPACT_WINDOW\" ] || export CLAUDE_CODE_AUTO_COMPACT_WINDOW={tokens}; "));
     if let Some(script) = script {
         let mut command = format!("{limit}exec {}", quote(script));
@@ -232,8 +232,8 @@ pub fn planner_command(script: Option<&str>, context: Option<u64>, zsh: Option<&
             command += &format!(" --zsh {}", quote(zsh));
         }
         command += &format!(" --repos {} --", quote(&repos.to_string_lossy()));
-        for (name, start) in agents {
-            command += &format!(" {} {}", quote(name), quote(start));
+        for (name, program, start) in agents {
+            command += &format!(" {} {} {}", quote(name), quote(program), quote(start));
         }
         return command;
     }
@@ -330,10 +330,21 @@ fn unprompted(agent: &str) -> String {
     }
 }
 
+static CODEX_REMOTE: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+
+pub fn serve_codex_remotely(helper: &Path, dir: &Path) {
+    let _ = CODEX_REMOTE.set((quote(&helper.to_string_lossy()), quote(&dir.to_string_lossy())));
+}
+
 fn in_its_terminal(agent: &str) -> String {
-    match program(agent) == "codex" && !agent.split_whitespace().any(|w| w == "--no-daemon") {
-        true => format!("{agent} --no-daemon"),
-        false => agent.to_string(),
+    wrapped(agent, CODEX_REMOTE.get())
+}
+
+fn wrapped(agent: &str, remote: Option<&(String, String)>) -> String {
+    match (program(agent) == "codex" && !agent.split_whitespace().any(|w| w == "--no-daemon"), remote) {
+        (true, Some((helper, dir))) => crate::codex_remote::command(helper, dir, agent),
+        (true, None) => format!("{agent} --no-daemon"),
+        (false, _) => agent.to_string(),
     }
 }
 
@@ -525,9 +536,9 @@ pub struct Backlog {
     fill_at: Cell<Option<Instant>>,
     waiting: RefCell<Vec<Message>>,
     ready: RefCell<HashMap<String, Ready>>,
-    typed: RefCell<HashMap<String, (Instant, bool)>>,
     pub planners: RefCell<Option<Box<dyn Fn() -> Vec<String>>>>,
-    pub inbox: RefCell<Option<Box<dyn Fn(&str) -> Option<PathBuf>>>>,
+    pub channel: RefCell<Option<Box<dyn Fn(&str) -> Option<Channel>>>>,
+    warned: RefCell<HashMap<String, String>>,
     delivering: RefCell<HashSet<String>>,
     posting: RefCell<HashMap<u64, (String, Vec<Message>)>>,
     pub on_change: RefCell<Option<Box<dyn Fn(Value)>>>,
@@ -597,9 +608,9 @@ impl Backlog {
             fill_at: Cell::new(Some(Instant::now())),
             waiting: RefCell::new(waiting),
             ready: RefCell::default(),
-            typed: RefCell::default(),
             planners: RefCell::default(),
-            inbox: RefCell::default(),
+            channel: RefCell::default(),
+            warned: RefCell::default(),
             delivering: RefCell::default(),
             posting: RefCell::default(),
             on_change: RefCell::default(),
@@ -892,7 +903,7 @@ impl Backlog {
         }
         self.turns.borrow_mut().remove(pane);
         self.ready.borrow_mut().remove(pane);
-        self.typed.borrow_mut().remove(pane);
+        self.warned.borrow_mut().remove(pane);
         let quitting = self.quitting.borrow_mut().remove(pane);
         if let Some(quitting) = quitting {
             return self.quitted(pane, quitting);
@@ -914,11 +925,6 @@ impl Backlog {
                 turn.see(status, Instant::now());
             }
         }
-    }
-
-    pub fn typed(&self, pane: &str, bytes: &[u8]) {
-        let draft = !matches!(bytes.last(), Some(b'\r' | b'\n' | 0x03));
-        self.typed.borrow_mut().insert(pane.to_string(), (Instant::now(), draft));
     }
 
     fn refill(&self) {
@@ -1101,7 +1107,7 @@ impl Backlog {
             let mut busy = mine.iter().filter(|e| starting.contains(&e.id) || e.held.as_deref().is_some_and(|pane| alive(core, pane))).count();
             let mail: HashSet<String> = self.waiting.borrow().iter().map(|m| m.recipient.clone()).collect();
             let ending = |pane: &str| self.quitting.borrow().contains_key(pane) || self.stopping.borrow().contains(pane) || self.tearing_down.borrow().contains_key(pane);
-            let mut woken: Vec<&&Entry> = mine.iter().filter(|e| mail.contains(&e.id) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane) || ending(pane))).collect();
+            let mut woken: Vec<&&Entry> = mine.iter().filter(|e| mail.contains(&e.id) && messages::AGENTS.contains(&program(&e.agent)) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane) || ending(pane))).collect();
             woken.sort_by(|a, b| a.made_at.total_cmp(&b.made_at));
             for entry in woken {
                 if busy >= slots {
@@ -1228,7 +1234,7 @@ impl Backlog {
         rekey(&self.quitting, from, to);
         rekey(&self.setting_up, from, to);
         rekey(&self.tearing_down, from, to);
-        rekey(&self.typed, from, to);
+        rekey(&self.warned, from, to);
         self.ready.borrow_mut().remove(from);
         if self.delivering.borrow_mut().remove(from) {
             self.delivering.borrow_mut().insert(to.into());
@@ -1339,28 +1345,36 @@ impl Backlog {
         let text = string(args, "text").map(str::trim).filter(|t| !t.is_empty()).ok_or_else(|| bad("say what: kanna task send TASK TEXT"))?;
         let (from, here) = self.sender(args);
         let here = here.or_else(|| string(args, "repo").map(String::from));
-        let (recipient, repo) = if to == PLANNER {
+        let (recipient, repo, agent) = if to == PLANNER {
             let repo = here.ok_or_else(|| bad("which repo's planner? run it in the repo"))?;
-            (PLANNER.to_string(), repo)
+            (PLANNER.to_string(), repo, None)
         } else {
             let id = self.resolve(to)?.ok_or_else(|| not_found(to))?;
             let entry = self.known(&id).ok_or_else(|| not_found(to))?;
             if !self.is_open(&id) {
                 return Err(KmuxError::new("done", format!("{} is done, so it takes no messages", self.short(&id))));
             }
-            (id, entry.repo)
+            (id, entry.repo, Some(program(&entry.agent).to_string()))
         };
         let message = self.db.put_message(&recipient, &repo, &from, text).map_err(|error| KmuxError::new("failed", format!("couldn't save the message in {}: {error}", db::FILE)))?;
         eprintln!("kanna-daemon: a message from {from} waits for {recipient}");
         self.waiting.borrow_mut().push(message.clone());
         self.refill();
-        let state = match self.recipient_pane(&message, &self.planners()) {
-            Some(pane) => self.core.upgrade().and_then(|core| core.pane(&pane)).and_then(|p| p.status).unwrap_or_else(|| "running".into()),
+        let pane = self.recipient_pane(&message, &self.planners());
+        let state = match &pane {
+            Some(pane) => self.core.upgrade().and_then(|core| core.pane(pane)).and_then(|p| p.status).unwrap_or_else(|| "running".into()),
             None if recipient == PLANNER => "no-planner".into(),
             None => "stopped".into(),
         };
+        let warning = match pane.and_then(|pane| self.channel(&pane)) {
+            Some(channel) => self.undeliverable(&channel),
+            None => agent.filter(|agent| !messages::AGENTS.contains(&agent.as_str())).map(|agent| format!("{agent} can't take messages: only {} can", messages::AGENTS.join(" and "))),
+        };
+        if let Some(why) = &warning {
+            eprintln!("kanna-daemon: warning: the message for {recipient} waits: {why}");
+        }
         let to = if recipient == PLANNER { json!(PLANNER) } else { json!({ "id": recipient, "short": self.short(&recipient) }) };
-        Ok(Map::from_iter([("message".to_string(), json!(message.id)), ("to".to_string(), to), ("state".to_string(), json!(state))]))
+        Ok(Map::from_iter([("message".to_string(), json!(message.id)), ("to".to_string(), to), ("state".to_string(), json!(state)), ("warning".to_string(), opt(warning.as_deref()))]))
     }
 
     fn messages(&self, args: &Value) -> Result<Map, KmuxError> {
@@ -1370,9 +1384,11 @@ impl Backlog {
         };
         let list = self.db.messages(task.as_deref()).map_err(|error| KmuxError::new("failed", format!("couldn't read the messages: {error}")))?;
         let named = |who: &str| if db::is_task_id(who) { json!({ "id": who, "short": self.short(who) }) } else { json!(who) };
+        let planners = self.planners();
+        let warning = |m: &Message| m.delivered.is_none().then(|| self.recipient_pane(m, &planners)).flatten().and_then(|pane| self.warned.borrow().get(&pane).cloned());
         let list = list
             .iter()
-            .map(|m| json!({ "id": m.id, "at": num(m.at), "from": named(&m.sender), "to": named(&m.recipient), "repo": m.repo, "delivered": m.delivered.map(num), "text": m.text }))
+            .map(|m| json!({ "id": m.id, "at": num(m.at), "from": named(&m.sender), "to": named(&m.recipient), "repo": m.repo, "delivered": m.delivered.map(num), "warning": warning(m), "text": m.text }))
             .collect();
         Ok(Map::from_iter([("task".to_string(), opt(task.as_deref())), ("messages".to_string(), Value::Array(list))]))
     }
@@ -1391,7 +1407,7 @@ impl Backlog {
     }
 
     fn has_mail(&self, pane: &str) -> bool {
-        self.task_of(pane).is_some_and(|id| self.waiting.borrow().iter().any(|m| m.recipient == id))
+        self.task_of(pane).is_some_and(|id| self.waiting.borrow().iter().any(|m| m.recipient == id)) && self.channel(pane).is_some_and(|channel| self.undeliverable(&channel).is_none())
     }
 
     fn deliver(self: &Rc<Self>, core: &CoreHandle, now: Instant) -> Option<Instant> {
@@ -1420,11 +1436,16 @@ impl Backlog {
             if self.delivering.borrow().contains(&pane) || self.quitting.borrow().contains_key(&pane) || self.setting_up.borrow().contains_key(&pane) {
                 continue;
             }
-            let inbox = self.inbox.borrow().as_ref().and_then(|inbox| inbox(&pane));
-            let held = inbox.is_none().then(|| self.typed.borrow().get(&pane).map(|(at, draft)| *at + if *draft { DRAFT_HOLD } else { TYPED_HOLD })).flatten().filter(|until| *until > now);
-            let at = self.ready.borrow().get(&pane).and_then(|r| r.at(TURN_SETTLE)).map(|at| held.map_or(at, |h| h.max(at)));
+            let Some(channel) = self.channel(&pane) else { continue };
+            let at = self.ready.borrow().get(&pane).and_then(|r| r.at(TURN_SETTLE));
             match at {
-                Some(at) if at <= now => self.hand_over(core, pane, list, inbox),
+                Some(at) if at <= now => match self.undeliverable(&channel) {
+                    Some(why) => {
+                        self.warn(&pane, why);
+                        next = Some(next.map_or(now + messages::RETRY, |n: Instant| n.min(now + messages::RETRY)));
+                    }
+                    None => self.hand_over(pane, list, channel),
+                },
                 Some(at) => next = Some(next.map_or(at, |n: Instant| n.min(at))),
                 None => {}
             }
@@ -1432,26 +1453,35 @@ impl Backlog {
         next
     }
 
-    fn hand_over(self: &Rc<Self>, core: &CoreHandle, pane: String, list: Vec<Message>, inbox: Option<PathBuf>) {
+    fn channel(&self, pane: &str) -> Option<Channel> {
+        self.channel.borrow().as_ref().and_then(|channel| channel(pane))
+    }
+
+    fn undeliverable(&self, channel: &Channel) -> Option<String> {
+        match channel {
+            Channel::Other(agent) => Some(format!("{agent} can't take messages: only {} can", messages::AGENTS.join(" and "))),
+            channel => channel.socket().and_then(Result::err).map(String::from),
+        }
+    }
+
+    fn warn(&self, pane: &str, why: String) {
+        if self.warned.borrow().get(pane) != Some(&why) {
+            eprintln!("kanna-daemon: warning: the messages for {pane} wait: {why}");
+            self.warned.borrow_mut().insert(pane.to_string(), why);
+        }
+    }
+
+    fn hand_over(self: &Rc<Self>, pane: String, list: Vec<Message>, channel: Channel) {
         let named = |who: &str| if db::is_task_id(who) { self.label(who) } else { who.to_string() };
         let text = messages::prompt(&list.iter().map(|m| (named(&m.sender), m.text.clone())).collect::<Vec<_>>());
         self.delivering.borrow_mut().insert(pane.clone());
-        if let Some(socket) = inbox {
-            let token = self.next.get() + 1;
-            self.next.set(token);
-            self.posting.borrow_mut().insert(token, (pane, list));
-            let events = self.events.clone();
-            std::thread::spawn(move || {
-                let result = messages::post(&socket, &text);
-                let _ = events.send(Event::Posted { token, result });
-            });
-            return;
-        }
-        let this = Rc::downgrade(self);
-        core.handle(json!({ "cmd": "send", "args": { "pane": pane, "text": text } }), move |sent| {
-            if let Some(this) = this.upgrade() {
-                this.handed(pane, list, failed(&sent).map_or(Ok(()), |error| Err(error.message)));
-            }
+        let token = self.next.get() + 1;
+        self.next.set(token);
+        self.posting.borrow_mut().insert(token, (pane, list));
+        let events = self.events.clone();
+        std::thread::spawn(move || {
+            let result = messages::deliver(&channel, &text);
+            let _ = events.send(Event::Posted { token, result });
         });
     }
 
@@ -1470,6 +1500,7 @@ impl Backlog {
         if let Err(error) = result {
             return eprintln!("kanna-daemon: couldn't give {pane} its messages ({error}); they wait");
         }
+        self.warned.borrow_mut().remove(&pane);
         let ids: Vec<i64> = list.iter().map(|m| m.id).collect();
         if let Err(error) = self.db.delivered(&ids) {
             eprintln!("kanna-daemon: couldn't mark {pane}'s messages delivered in {}: {error}", db::FILE);
@@ -2407,9 +2438,9 @@ mod tests {
     #[test]
     fn each_agent_starts_as_the_planner_as_you_d_start_it_with_its_first_message() {
         let agents = planner_agents();
-        let names: Vec<&str> = agents.iter().map(|(n, _)| n.as_str()).collect();
+        let names: Vec<&str> = agents.iter().map(|(n, _, _)| n.as_str()).collect();
         assert_eq!(names, ["claude", "codex", "copilot", "opencode", "agy"]);
-        let start = |name: &str| agents.iter().find(|(n, _)| n == name).unwrap().1.clone();
+        let start = |name: &str| agents.iter().find(|(n, _, _)| n == name).unwrap().2.clone();
         assert_eq!(start("claude"), "claude --dangerously-skip-permissions 'You are the Kanna planning agent.'", "no session; no permission prompts, as a task's agent");
         assert_eq!(start("codex"), "codex --yolo --no-daemon 'You are the Kanna planning agent.'");
         assert_eq!(start("copilot"), "copilot --yolo -i 'You are the Kanna planning agent.'");
@@ -2421,9 +2452,9 @@ mod tests {
 
     #[test]
     fn the_planning_terminal_keeps_claude_to_its_context_and_runs_the_planner_script() {
-        let agents = [("claude".to_string(), "claude 'You are the Kanna planning agent.'".to_string())];
+        let agents = [("claude".to_string(), "claude".to_string(), "claude 'You are the Kanna planning agent.'".to_string())];
         let command = planner_command(Some("/K/planner.sh"), Some(300_000), Some("/S/shell/zsh"), Some("/A/kanna"), Path::new("/H/.kanna-v4/repos"), &agents);
-        assert_eq!(command, r#"[ -n "$CLAUDE_CODE_AUTO_COMPACT_WINDOW" ] || export CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000; exec '/K/planner.sh' --kanna '/A/kanna' --zsh '/S/shell/zsh' --repos '/H/.kanna-v4/repos' -- 'claude' 'claude '\''You are the Kanna planning agent.'\'''"#);
+        assert_eq!(command, r#"[ -n "$CLAUDE_CODE_AUTO_COMPACT_WINDOW" ] || export CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000; exec '/K/planner.sh' --kanna '/A/kanna' --zsh '/S/shell/zsh' --repos '/H/.kanna-v4/repos' -- 'claude' 'claude' 'claude '\''You are the Kanna planning agent.'\'''"#);
         assert!(!command.contains("KANNA_PLANNER"));
         assert_eq!(planner_command(None, None, None, None, Path::new("/r"), &agents), "exec \"${SHELL:-/bin/sh}\" -l");
         assert_eq!(planner_command(None, None, None, Some("/A/kanna"), Path::new("/r"), &agents), "'/A/kanna' agents setup --ask; '/A/kanna' agents update --ask; exec \"${SHELL:-/bin/sh}\" -l");
@@ -2481,6 +2512,7 @@ mod tests {
             let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/kanna/Resources/planner.sh");
             let mut args = vec!["--repos".to_string(), self.home.join(".kanna-v4/repos").to_string_lossy().into_owned(), "--".to_string()];
             for agent in ["claude", "codex", "copilot"] {
+                args.push(agent.to_string());
                 args.push(agent.to_string());
                 args.push(started_as(agent, PLANNER_ROLE));
             }
@@ -2712,6 +2744,9 @@ mod tests {
         assert_eq!(in_its_terminal("/opt/bin/codex --yolo"), "/opt/bin/codex --yolo --no-daemon");
         assert_eq!(in_its_terminal("codex --no-daemon --yolo"), "codex --no-daemon --yolo");
         assert_eq!(in_its_terminal("claude"), "claude");
+        let remote = ("'/K/kanna-daemon'".to_string(), "'/s/kanna dev'".to_string());
+        assert_eq!(wrapped("/opt/bin/codex --yolo", Some(&remote)), "'/K/kanna-daemon' --codex-remote '/s/kanna dev' /opt/bin/codex --yolo");
+        assert_eq!(wrapped("claude", Some(&remote)), "claude");
     }
 
     #[test]

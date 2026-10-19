@@ -93,6 +93,11 @@ impl Detector {
         lock(&self.shared.watches).get(pane)?.program.clone()
     }
 
+    pub fn argv(&self, pane: &str) -> Vec<Vec<String>> {
+        let group = lock(&self.shared.watches).get(pane).and_then(|watch| program::foreground_group(watch.master.as_raw_fd()));
+        group.map(program::group_argv).unwrap_or_default()
+    }
+
     pub fn explain(&self, pane: &str) -> Option<Explained> {
         let watches = lock(&self.shared.watches);
         let watch = watches.get(pane)?;

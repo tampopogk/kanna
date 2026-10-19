@@ -87,6 +87,7 @@ flowchart TB
 | [Tasks](specs/tasks.md) · [backlog runners](specs/backlog-runners.md) · [backlog search](specs/backlog-search.md) · [blocked tasks](specs/task-dependencies.md) · [task IDs](specs/task-ids.md) · [task scripts](specs/task-scripts.md) · [agent messaging](specs/agent-messaging.md) | One agent in one worktree; the backlog |
 | [Agent status](specs/agent-status.md) | Working, needs you, idle, exited |
 | [Agent setup](specs/agent-setup.md) | Kanna's skills where agents find them |
+| [Codex's app-server](specs/codex-app-server.md) | Every Codex runs attached to a server of its own, Kanna's door for messages |
 | [Quiz](specs/quiz.md) | Questions on what landed on main |
 | [The database](specs/database.md) | Tasks and their history in `kanna.db` |
 | [Settings](specs/settings.md) | Kanna's own settings |
