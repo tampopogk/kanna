@@ -197,6 +197,21 @@ def signal_(pid, signo):
     except ProcessLookupError:
         pass
 
+def stop_scenario(folder):
+    try:
+        pid = int(open(folder + "/e2e-scenario.pid").read())
+    except (OSError, ValueError):
+        return
+    row = ps("-axww", "-o", "pid=,ppid=,stat=,command=").get(pid)
+    if not row or len(row) < 3 or "e2e-kanna.sh" not in row[2] or row[0] != "1":
+        return
+    signal_(pid, signal.SIGTERM)
+    deadline = time.time() + 2
+    while time.time() < deadline and alive(pid):
+        time.sleep(0.1)
+    if alive(pid):
+        signal_(pid, signal.SIGKILL)
+
 def stop(tied, why):
     for _ in range(4):
         pids = {pid: command for pid, command, env in table() if tied(command, env)}
@@ -225,6 +240,7 @@ if sweeping:
         count = sum(1 for _, command, env in table() if tied(command, env))
         if count:
             print(f"e2e-kanna: stopping {count} processes an earlier run left in {folder}", file=sys.stderr)
+        stop_scenario(folder)
         stop(tied, f" (left in {folder})")
         subprocess.run(["rm", "-rf", folder])
 else:
@@ -3428,6 +3444,7 @@ for s in "${run[@]}"; do
   new_state_dir
   "$s" >"$out/$s.log" 2>&1 &
   scenario_pid=$! ends=$((SECONDS + limit))
+  echo "$scenario_pid" >"$KANNA_STATE_DIR/e2e-scenario.pid"
   while kill -0 "$scenario_pid" 2>/dev/null && [[ $SECONDS -lt $ends ]]; do sleep 0.2; done
   if kill -0 "$scenario_pid" 2>/dev/null; then
     echo "$s didn't finish in ${limit}s (KANNA_E2E_TIMEOUT)" >>"$out/$s.log"; result=1

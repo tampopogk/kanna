@@ -49,11 +49,13 @@ How a run ends:
 | passes or fails | `trap cleanup EXIT` |
 | ctrl+c, SIGTERM, SIGHUP | `trap 'exit 130' INT` (143 TERM, 129 HUP), then the EXIT trap |
 | a scenario hangs | each scenario runs in a background subshell; after `$KANNA_E2E_TIMEOUT` s (600) it fails with "didn't finish", and the next `cleanup` stops it |
-| the runner is SIGKILLed (an agent's tool timeout) | nothing: the next run's sweep |
+| the runner is SIGKILLed (an agent's tool timeout) | nothing: the next run's sweep, which also stops the scenario's subshell, left running |
 
 ## 3. Ownership and the sweep
 
 **A run owns its folder:** `new_state_dir` writes the runner's PID (`$$`) to `e2e-kanna.pid` in each folder right after `mktemp`. A folder is owned while that PID is alive and its command is an `e2e-kanna.sh`.
+
+**Its scenario's subshell** is recorded too, in `e2e-scenario.pid`. A SIGKILLed runner leaves that subshell running the scenario on its own (ppid 1). The sweep stops it (TERM, then KILL after 2 s) before the folder's other processes. It does so only if that PID is still an orphaned `e2e-kanna.sh`.
 
 **The sweep** (`stop_tied --orphans`) runs once, before the run's first folder. It looks at every `/tmp/kanna-e2e.XXXXXX` folder that exists, and every one a process mentions, even if that folder is gone. It stops what is tied to a folder and removes the folder when:
 
