@@ -566,6 +566,21 @@ pub static COMMANDS: &[Command] = &[
         show: output::quiz,
     },
     Command {
+        name: "projects",
+        group: "Information",
+        summary: "List your recent projects, most recent first, as File → Open Recent and a new Desk's planning terminal show them.",
+        usage: "kanna projects [--json]\n       kanna projects clear",
+        options: &[("--json", "Each project's path and when a Desk last opened on it or moved to it.")],
+        notes: "A project is its repo's folder (the main repo for a worktree). One moves to the top whenever a Desk opens on it or moves to it: kanna PATH, Open Recent, a planning terminal's folder, a task pulled onto the Desk. Ten are kept, and a folder that's gone drops off. Each is printed as an absolute path on a line of its own. clear empties the list, as Open Recent's Clear Menu does.",
+        examples: &[("kanna projects", "Your recent projects, latest first."), ("kanna projects --json", "Each one's path and when it was last opened, as JSON."), ("kanna projects clear", "Forget them.")],
+        parse: |args| match args.positional().as_deref() {
+            None => Ok(json!({ "action": "list" })),
+            Some("clear") => Ok(json!({ "action": "clear" })),
+            Some(other) => Err(usage("projects", &format!("unknown action \"{other}\" (clear, or none to list them)"))),
+        },
+        show: output::projects,
+    },
+    Command {
         name: "agents",
         group: "Information",
         summary: "Set up your agents for Kanna: Kanna's skills for Claude and Codex, a hook that tells them they're in Kanna, and Claude's sandbox letting them reach Kanna.",
