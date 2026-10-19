@@ -2413,7 +2413,7 @@ diagram_check() {
   printf '# diagram_check\n\n```mermaid\nflowchart LR\n    A --> B\n```\n\n```mermaid\nerDiagram\n    A ||--o{ B : has\n```\n' >"$doc"
   said="$(kanna open md "$doc" --name doc --tab 2>"$KANNA_STATE_DIR/open.err")" || { echo "diagram_check: open md failed"; cat "$KANNA_STATE_DIR/open.err"; return 1; }
   err="$(cat "$KANNA_STATE_DIR/open.err")"
-  [[ "$said" == "opened p1 (doc) in window w1"* ]] || { echo "diagram_check: open said $said"; return 1; }
+  [[ "$said" == "opened file-1 (doc) in win-1"* ]] || { echo "diagram_check: open said $said"; return 1; }
   [[ "$err" == "$doc:8: unsupported diagram type: er (Kanna draws "* ]] || { echo "diagram_check: open md reported \"$err\""; return 1; }
   check test "$(printf '%s\n' "$err" | wc -l | tr -d ' ')" == 1 || return 1
   check test "$(kanna open md "$doc" --json 2>/dev/null | field diagrams.0.line)" == 8 || return 1

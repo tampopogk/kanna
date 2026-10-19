@@ -350,11 +350,11 @@ fn help_never_starts_anything_and_marks_what_the_running_kanna_lacks() {
     assert!(kanna_at(&dir, Some(&nowhere), &["raw", "--help"]).ok().starts_with("usage: kanna raw REQUEST"));
     kanna_at(&dir, Some(&nowhere), &["help", "nope"]).fails(2, "unknown command \"nope\"");
     let commands = kanna_at(&dir, Some(&nowhere), &["commands"]).ok();
-    assert_eq!(commands.lines().count(), 28);
+    assert_eq!(commands.lines().count(), 29);
     assert!(commands.starts_with("open          Open a terminal"), "{commands}");
     let described = kanna_at(&dir, Some(&nowhere), &["commands", "--json"]).json();
     assert_eq!(described["running"], false);
-    assert_eq!(described["commands"].as_array().unwrap().len(), 28);
+    assert_eq!(described["commands"].as_array().unwrap().len(), 29);
     assert_eq!(described["exitCodes"]["6"], "needs Kanna.app, which isn't attached and wasn't started");
     assert!(described["globalOptions"].as_array().unwrap().iter().any(|o| o["flag"] == "--"));
 
@@ -422,15 +422,15 @@ fn open_md_says_which_diagrams_do_not_draw_and_still_opens() {
     std::fs::write(daemon.dir.join("bad.md"), BAD).unwrap();
     let run = daemon.kanna(&["open", "md", "good.md", "--tab"]);
     assert_eq!(run.err, "");
-    assert_eq!(run.ok(), "opened p2 in window w1, tab t2: running");
+    assert_eq!(run.ok(), "opened file-1 in win-1, tab-2: running");
     let run = daemon.kanna(&["open", "md", "bad.md", "--tab"]);
     let err = run.err.clone();
-    assert_eq!(run.ok(), "opened p3 in window w1, tab t3: running");
+    assert_eq!(run.ok(), "opened file-2 in win-1, tab-3: running");
     let lines: Vec<&str> = err.lines().collect();
     assert_eq!(lines[0], ER);
     assert!(lines[1].starts_with("bad.md:15: diagram error: "), "{err}");
     let reply = daemon.kanna(&["open", "md", "bad.md", "--tab", "--json"]).json();
-    assert_eq!(reply["pane"]["id"], "p4");
+    assert_eq!(reply["pane"]["id"], "file-3");
     let failures = reply["diagrams"].as_array().unwrap();
     assert_eq!(failures.iter().map(|f| f["line"].clone()).collect::<Vec<_>>(), [json!(10), json!(15)]);
     assert_eq!(failures[0]["message"], ER.split_once(": ").unwrap().1);

@@ -32,7 +32,7 @@ The check lays diagrams out without measuring text (no fonts), so it can't see l
 
 ```
 $ kanna open md docs/specs/plan.md --tab
-opened p7 (plan.md) in window w1: running
+opened file-7 (plan.md) in win-1, tab-3: running
 docs/specs/plan.md:42: unsupported diagram type: er (Kanna draws flowchart, sequence, state, class and gitGraph)
 
 $ kanna diagrams check docs/specs/*.md
