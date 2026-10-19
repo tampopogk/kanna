@@ -2060,6 +2060,26 @@ print(next(p["id"] for p in json.load(sys.stdin)["panes"] if (p.get("path") or "
   check wait_for 5 eval '[[ "$(code $more tour.at)" == 5 && "$(code $more comment_first)" == 12 ]]' || return 1
   press $more next >/dev/null
   check wait_for 5 eval '[[ "$(KANNA_TERMINAL=$agent kanna tour)" == "no tour" && "$(code $more tour)" == None && "$(code $more comment_first)" == 12 ]]' || { echo "done: $(code $more tour)"; return 1; }
+  local doc="$KANNA_STATE_DIR/code_tour_steps.md" md
+  printf '# Trip\n\nThe keeper queues\nthe message.\n\n- It sends.\n' >"$doc"
+  mdf() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"$md\"${2:-}}}" | field "$1"; }
+  said="$(KANNA_TERMINAL=$agent kanna tour "$doc:4" "The whole trip." "$tour:3" "Then the code.")" || return 1
+  [[ "$said" == "tour of 2 · 1 of 2 · opened file-"*" · code_tour_steps.md:3 · c1" ]] || { echo "doc: $said"; return 1; }
+  md="$(grep -o 'file-[0-9]*' <<<"$said")"
+  check wait_for 5 eval '[[ "$(mdf tour.thread)" == c1 && "$(mdf tour.at)" == 1 && "$(mdf tour.next)" == "Next ›" && "$(mdf tour.back)" == False ]]' || { echo "doc footer: $(mdf tour)"; return 1; }
+  check wait_for 5 eval '[[ "$(mdf active)" == c1 && "$(mdf threads.0.messages.0)" == "agent: The whole trip." && "$(mdf markup)" == True ]]' || { echo "doc thread: $(mdf active) $(mdf threads)"; return 1; }
+  sleep 0.5
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"code_tour_steps-md.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/code_tour_steps-md.png" "$out/code_tour_steps-md.png" 2>/dev/null
+  [[ "$(mdf pressed ',"tour":"next"')" == True ]] || return 1
+  check wait_for 5 eval '[[ "$(code $id tour.at)" == 2 && "$(code $id tour.next)" == Done && "$(code $id comment_first)" == 3 ]]' || { echo "after the doc: $(code $id tour)"; return 1; }
+  check wait_for 5 eval '[[ "$(mdf tour)" == None ]]' || { echo "the doc kept its footer: $(mdf tour)"; return 1; }
+  press $id back >/dev/null
+  check wait_for 5 eval '[[ "$(mdf tour.thread)" == c1 && "$(mdf tour.at)" == 1 && "$(mdf active)" == c1 ]]' || { echo "back to the doc: $(mdf tour)"; return 1; }
+  [[ "$(mdf threads | python3 -c 'import json, sys; print(len(json.load(sys.stdin)))')" == 1 ]] || { echo "code_tour_steps: going back wrote another thread"; return 1; }
+  mdf pressed ',"tour":"next"' >/dev/null
+  check wait_for 5 eval '[[ "$(code $id tour.at)" == 2 ]]' || return 1
+  press $id next >/dev/null
+  check wait_for 5 eval '[[ "$(KANNA_TERMINAL=$agent kanna tour)" == "no tour" && "$(code $id tour)" == None ]]' || return 1
   [[ -z "$(kanna read "$agent" | tr -d '[:space:]')" ]] || { echo "code_tour_steps: stepping sent the agent: $(kanna read "$agent")"; return 1; }
 }
 

@@ -990,7 +990,8 @@ pub fn toured(args: &Value, reply: &Value) -> String {
             }
             let opened = if reply["opened"] == true { "opened " } else { "" };
             let place = format!("{}:{}", shown_path(reply["path"].as_str().unwrap_or("?")).rsplit('/').next().unwrap_or("?"), stop_lines(reply["first"].as_u64(), reply["last"].as_u64()));
-            let step = format!("{at} of {of} · {opened}{} · {place}", label(&reply["pane"]));
+            let thread = reply["thread"].as_str().map(|t| format!(" · {t}")).unwrap_or_default();
+            let step = format!("{at} of {of} · {opened}{} · {place}{thread}", label(&reply["pane"]));
             match action {
                 "new" => format!("tour of {of} · {step}"),
                 "add" => format!("added {} · {step}", args["stops"].as_array().map(Vec::len).unwrap_or(0)),

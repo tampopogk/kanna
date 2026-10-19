@@ -183,6 +183,8 @@ extension AppController {
                 guard let rect = markdown.markRect(id) else { throw KannaError("not_found", "no mark for \(id)") }
                 return ["x": .number(Double(rect.midX)), "y": .number(Double(markdown.bounds.height - rect.midY))]
             }
+            let pressed: JSON = args["tour"]?.string.map { .bool(markdown.pressTour($0)) } ?? .null
+            let footer: JSON = markdown.tourFooter.map { ["thread": .string($0.thread), "at": .number(Double($0.at)), "of": .number(Double($0.of)), "back": .bool($0.back), "next": .string($0.next)] } ?? .null
             let threads: [JSON] = markdown.threads.map { thread in
                 ["id": .string(thread.id), "quote": .string(thread.quote), "line": .number(Double(thread.line)), "state": .string(thread.state),
                  "status": thread.status.map { .string($0) } ?? .null, "error": thread.error.map { .string($0) } ?? .null,
@@ -195,7 +197,8 @@ extension AppController {
                     "box": markdown.commentBoxThread.map { .string($0) } ?? .null, "box_text": markdown.commentBoxText.map { .string($0) } ?? .null,
                     "active": markdown.activeThread.map { .string($0) } ?? .null, "agent": markdown.agent.map { .string($0) } ?? .null,
                     "markup": .bool(markdown.markup), "box_parts": Self.boxParts(markdown.commentBoxParts), "box_shown": .bool(markdown.commentBoxShown),
-                    "cards": .object(markdown.cards.mapValues { ["typing": .bool($0.typing), "waiting": $0.waiting.map { .string($0) } ?? .null, "reply": .bool($0.reply)] })]
+                    "cards": .object(markdown.cards.mapValues { ["typing": .bool($0.typing), "waiting": $0.waiting.map { .string($0) } ?? .null, "reply": .bool($0.reply)] }),
+                    "tour": footer, "pressed": pressed]
         }
         commands["debug.code"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let code = contents.code(id) else { throw KannaError("wrong_type", "not a running code pane") }

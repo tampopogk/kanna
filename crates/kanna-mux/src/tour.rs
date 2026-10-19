@@ -86,7 +86,13 @@ impl CoreHandle {
                 return Err(bad_request(format!("{path}: lines {line}-{} run backwards", last.unwrap_or(line))));
             }
             if is_doc(&path) {
-                return Err(bad_request(format!("{path}: a tour can't stop on a markdown file yet")));
+                if last.is_some() {
+                    return Err(bad_request(format!("{path}: a comment on a markdown file is on the block at one line")));
+                }
+                let source = std::fs::read_to_string(&path).map_err(|_| KmuxError::new("not_found", format!("No such file: {path}")))?;
+                let (first, _) = kanna_threads::block_at(&source, line as usize).ok_or_else(|| bad_request(format!("{path} has {} lines", source.lines().count())))?;
+                stops.push(Stop { path, first: first as u64, last: first as u64, text, doc: true, thread: None });
+                continue;
             }
             let mut ask = json!({ "path": path, "line": line });
             if let Some(last) = last {
@@ -120,6 +126,9 @@ impl CoreHandle {
         let stop = tour.stops[at].clone();
         let of = tour.stops.len();
         self.set_tour(owner, Some(tour));
+        if stop.doc {
+            return self.show_doc_stop(owner, at, of, stop, args).await;
+        }
         let mark = StopMark { owner: owner.to_string(), at, of, thread: stop.thread.clone() };
         let mut place = json!({ "path": stop.path, "from": owner });
         for key in PLACEMENT {
@@ -132,6 +141,64 @@ impl CoreHandle {
         self.clear_marks(owner, shown.as_deref()).await;
         out.insert("tour".into(), json!({ "at": at + 1, "of": of }));
         out.insert("path".into(), Value::String(stop.path));
+        Ok(out)
+    }
+
+    async fn show_doc_stop(&self, owner: &str, at: usize, of: usize, stop: Stop, args: &Value) -> Result<Map, KmuxError> {
+        let thread = match stop.thread.clone() {
+            Some(thread) => thread,
+            None => {
+                let agent = self.state().panes.get(owner).and_then(|p| p.terminal.clone()).unwrap_or_else(|| owner.to_string());
+                let (thread, _) = kanna_threads::add_agent_thread(std::path::Path::new(&stop.path), stop.first as usize, &stop.text, Some(&agent)).map_err(bad_request)?;
+                if let Some(pane) = self.state().panes.get_mut(owner) {
+                    if let Some(tour) = pane.tour.as_mut() {
+                        tour.stops[at].thread = Some(thread.clone());
+                    }
+                }
+                self.changed();
+                thread
+            }
+        };
+        let mark = StopMark { owner: owner.to_string(), at, of, thread: Some(thread.clone()) };
+        let placeless = PLACEMENT.iter().all(|key| *key == "wait" || args.get(*key).is_none());
+        let found = if placeless { self.showing_in(PaneType::Md, &stop.path, Some(owner)).await? } else { None };
+        let (id, location, opened) = match found {
+            Some((id, location)) => {
+                {
+                    let _turn = self.0.turns.take().await;
+                    self.layout(json!({ "op": "command", "cmd": "focus", "args": { "pane": id } })).await?;
+                }
+                if let Some(pane) = self.state().panes.get_mut(&id) {
+                    pane.markup = true;
+                    pane.agent = Some(owner.to_string());
+                    pane.stop = Some(mark);
+                }
+                let snapshot = self.reload(&id, false).await;
+                self.check_started(&id, &snapshot)?;
+                (id, Value::Object(location), false)
+            }
+            None => {
+                let mut open = json!({ "type": "md", "path": stop.path, "markup": true, "agent": owner, "from": owner, "tour": mark.to_json() });
+                for key in PLACEMENT {
+                    if let Some(value) = args.get(key) {
+                        open[key] = value.clone();
+                    }
+                }
+                let mut reply = self.open(&open).await?;
+                let id = reply.get("pane").and_then(|p| string(p, "id")).unwrap_or_default().to_string();
+                let location = json!({ "window": reply.remove("window").unwrap_or(Value::Null), "tab": reply.remove("tab").unwrap_or(Value::Null) });
+                (id, location, true)
+            }
+        };
+        self.clear_marks(owner, Some(&id)).await;
+        let snapshot = self.state().panes.get(&id).cloned().ok_or_else(|| KmuxError::new("not_found", "the pane closed"))?;
+        let mut out = reply([("pane", self.summary(&id, &snapshot)), ("first", num(stop.first as f64)), ("last", num(stop.first as f64)), ("opened", Value::Bool(opened))]);
+        for key in ["window", "tab"] {
+            out.insert(key.into(), location.get(key).cloned().unwrap_or(Value::Null));
+        }
+        out.insert("tour".into(), json!({ "at": at + 1, "of": of }));
+        out.insert("path".into(), Value::String(stop.path));
+        out.insert("thread".into(), Value::String(thread));
         Ok(out)
     }
 

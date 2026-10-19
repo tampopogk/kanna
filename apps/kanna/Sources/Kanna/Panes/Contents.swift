@@ -1,6 +1,7 @@
 import AppKit
 import KannaCode
 import KannaDiff
+import KannaDocs
 import KannaMarkdown
 
 @MainActor
@@ -124,6 +125,10 @@ final class Contents {
                 markdown.agent = pane["agent"]?.string
                 markdown.agentStatus = markdown.agent.flatMap { self.agentStatus?($0) }
                 markdown.onSend = { [weak self] agent, text, done in self?.send(text, to: agent, done: done) }
+                if let mark = pane["tour"], let thread = mark["thread"]?.string, let at = mark["at"]?.number, let owner = mark["owner"]?.string {
+                    markdown.onTourStep = { [weak self] to in self?.onRequest?("tour", ["action": "go", "owner": .string(owner), "to": .string(to)]) }
+                    markdown.tour = DocTourStep(thread: thread, at: Int(at), of: Int(mark["of"]?.number ?? at))
+                }
                 markdown.contextMenu = { [weak self] in self?.contextMenu?() }
                 markdown.onOpenMarkdown = { [weak self] target in self?.onRequest?("navigate", ["pane": .string(id), "path": .string(target)]) }
                 content = markdown

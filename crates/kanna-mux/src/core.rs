@@ -850,6 +850,10 @@ impl CoreHandle {
     }
 
     async fn showing(&self, path: &str, from: Option<&str>) -> Result<Option<(String, Map)>, KmuxError> {
+        self.showing_in(PaneType::Code, path, from).await
+    }
+
+    async fn showing_in(&self, kind: PaneType, path: &str, from: Option<&str>) -> Result<Option<(String, Map)>, KmuxError> {
         let from = from.and_then(|from| self.state().panes.pane(from).map(|p| p.id.clone()));
         let window = match from {
             Some(from) => self.layout(json!({ "op": "location", "pane": from })).await?.remove("window"),
@@ -861,7 +865,7 @@ impl CoreHandle {
         let Some(window) = window.filter(|w| !w.is_null()) else { return Ok(None) };
         let showing: Vec<String> = {
             let s = self.state();
-            s.panes.ids().into_iter().filter(|id| s.panes.get(id).is_some_and(|p| p.kind == PaneType::Code && p.path.as_deref() == Some(path))).collect()
+            s.panes.ids().into_iter().filter(|id| s.panes.get(id).is_some_and(|p| p.kind == kind && p.path.as_deref() == Some(path))).collect()
         };
         for id in showing {
             let location = self.layout(json!({ "op": "location", "pane": id })).await?;
