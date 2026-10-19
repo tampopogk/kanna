@@ -54,7 +54,7 @@ REF is any commit or branch, chosen by whoever opens the doc. It's compared as `
 | `]c` `[c` | next, previous change; a count works (`3]c`) |
 | click the header's "vs main · 7 changes" | next change |
 | `kanna workspace list --json` | the pane's record has `diff: "main"` |
-| `kanna raw '{"cmd":"debug.md","args":{"pane":"p4"}}'` | for tests: `diff`, `changes` (the count), `diff_error`; `change: N` jumps N changes |
+| `kanna raw '{"cmd":"debug.md","args":{"pane":"file-4"}}'` | for tests: `diff`, `changes` (the count), `diff_error`; `change: N` jumps N changes |
 
 ## 4. How it's built
 
