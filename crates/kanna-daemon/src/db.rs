@@ -83,7 +83,8 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         sender text not null,
         at real not null,
         delivered real,
-        text text not null
+        text text not null,
+        mode text
     );
     create index messages_waiting on messages (delivered, recipient);
     create index messages_by_recipient on messages (recipient, at);
@@ -178,6 +179,7 @@ pub struct Message {
     pub at: f64,
     pub delivered: Option<f64>,
     pub text: String,
+    pub mode: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -483,10 +485,10 @@ impl Db {
         rows.collect()
     }
 
-    pub fn put_message(&self, recipient: &str, repo: &str, sender: &str, text: &str) -> rusqlite::Result<Message> {
+    pub fn put_message(&self, recipient: &str, repo: &str, sender: &str, text: &str, mode: Option<&str>) -> rusqlite::Result<Message> {
         let at = now();
-        self.conn.execute("insert into messages (recipient, repo, sender, at, text) values (?1, ?2, ?3, ?4, ?5)", params![recipient, repo, sender, at, text])?;
-        Ok(Message { id: self.conn.last_insert_rowid(), recipient: recipient.into(), repo: repo.into(), sender: sender.into(), at, delivered: None, text: text.into() })
+        self.conn.execute("insert into messages (recipient, repo, sender, at, text, mode) values (?1, ?2, ?3, ?4, ?5, ?6)", params![recipient, repo, sender, at, text, mode])?;
+        Ok(Message { id: self.conn.last_insert_rowid(), recipient: recipient.into(), repo: repo.into(), sender: sender.into(), at, delivered: None, text: text.into(), mode: mode.map(String::from) })
     }
 
     pub fn waiting_messages(&self) -> rusqlite::Result<Vec<Message>> {
@@ -511,7 +513,7 @@ impl Db {
 
     fn select_messages<P: rusqlite::Params>(&self, sql: &str, params: P) -> rusqlite::Result<Vec<Message>> {
         let mut statement = self.conn.prepare(sql)?;
-        let rows = statement.query_map(params, |r| Ok(Message { id: r.get(0)?, recipient: r.get(1)?, repo: r.get(2)?, sender: r.get(3)?, at: r.get(4)?, delivered: r.get(5)?, text: r.get(6)? }))?;
+        let rows = statement.query_map(params, |r| Ok(Message { id: r.get(0)?, recipient: r.get(1)?, repo: r.get(2)?, sender: r.get(3)?, at: r.get(4)?, delivered: r.get(5)?, text: r.get(6)?, mode: r.get(7)? }))?;
         rows.collect()
     }
 
@@ -552,7 +554,7 @@ impl Db {
     }
 }
 
-const MESSAGE: &str = "id, recipient, repo, sender, at, delivered, text";
+const MESSAGE: &str = "id, recipient, repo, sender, at, delivered, text, mode";
 
 const ANSWER: &str = "a.id, a.round, a.at, a.kind, a.file, a.right, a.again, a.doc";
 
@@ -992,14 +994,15 @@ mod tests {
     fn a_message_waits_until_it_is_delivered_and_stays_in_both_tasks_history() {
         let dir = folder("messages");
         let db = Db::open(&dir);
-        let first = db.put_message("task-71af0000", "/r", "task-5e2c0000", "Is your spec final?").unwrap();
-        let second = db.put_message("planner", "/r", "task-71af0000", "I'm done").unwrap();
+        let first = db.put_message("task-71af0000", "/r", "task-5e2c0000", "Is your spec final?", Some("bypass")).unwrap();
+        let second = db.put_message("planner", "/r", "task-71af0000", "I'm done", None).unwrap();
         assert_eq!(db.waiting_messages().unwrap().iter().map(|m| m.id).collect::<Vec<_>>(), [first.id, second.id]);
         db.delivered(&[first.id]).unwrap();
         assert_eq!(db.waiting_messages().unwrap().iter().map(|m| m.id).collect::<Vec<_>>(), [second.id]);
         let history = db.messages(Some("task-71af0000")).unwrap();
         assert_eq!(history.iter().map(|m| (m.id, m.delivered.is_some())).collect::<Vec<_>>(), [(first.id, true), (second.id, false)], "what it got and what it sent");
         assert_eq!(db.messages(Some("task-5e2c0000")).unwrap()[0].text, "Is your spec final?");
+        assert_eq!(db.messages(Some("task-5e2c0000")).unwrap()[0].mode.as_deref(), Some("bypass"), "the sender's permissions");
         drop(db);
         assert_eq!(Db::open(&dir).waiting_messages().unwrap().len(), 1, "a waiting message outlives the daemon");
         fs::remove_dir_all(&dir).unwrap();

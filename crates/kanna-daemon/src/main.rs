@@ -204,11 +204,18 @@ fn run() -> Result<(), String> {
         let detector = programs.upgrade()?;
         let program = detector.program(pane)?;
         Some(match program.agent.as_str() {
-            "claude" => messages::Channel::Claude(messages::inbox(&agents::home(), program.pid)),
+            "claude" => {
+                let config = kanna_detect::program::environment(program.pid, "CLAUDE_CONFIG_DIR").filter(|dir| !dir.is_empty()).map(PathBuf::from).unwrap_or_else(|| agents::home().join(".claude"));
+                messages::Channel::Claude(messages::inbox(&config, program.pid))
+            }
             "codex" => messages::Channel::Codex(messages::codex_socket(&detector.argv(pane))),
             other => messages::Channel::Other(other.to_string()),
         })
     }));
+    let modes = Rc::downgrade(&detector);
+    *backlog.line_mode.borrow_mut() = Some(Box::new(move |pane| modes.upgrade().is_some_and(|detector| detector.line_mode(pane))));
+    let argvs = Rc::downgrade(&detector);
+    *backlog.permissions.borrow_mut() = Some(Box::new(move |pane| messages::permissions(&argvs.upgrade()?.argv(pane))));
     let quiz = Rc::new(quiz::Quiz::new(db, Some(core.weak())));
     quiz.install(&core);
     let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone());

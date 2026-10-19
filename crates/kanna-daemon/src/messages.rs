@@ -17,6 +17,14 @@ pub const TURN_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub const AGENTS: [&str; 2] = ["claude", "codex"];
 
+pub const BYPASS: &str = "bypass";
+
+pub const PROMPTING: &str = "prompting";
+
+const UNPROMPTED: &[&str] = &["--dangerously-skip-permissions", "--yolo", "--dangerously-bypass-approvals-and-sandbox", "--allow-all", "--allow-all-tools", "--permission-mode=bypassPermissions"];
+
+const ENVELOPE: &str = "cross-session-message";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Channel {
     Claude(Result<PathBuf, String>),
@@ -69,8 +77,33 @@ pub fn prompt(messages: &[(String, String)]) -> String {
 
 pub const RETRY: Duration = Duration::from_secs(5);
 
-pub fn inbox(home: &Path, pid: i32) -> Result<PathBuf, String> {
-    let entry = home.join(".claude").join("sessions").join(format!("{pid}.json"));
+pub fn permissions(argv: &[Vec<String>]) -> Option<&'static str> {
+    let unprompted = |args: &Vec<String>| args.iter().enumerate().any(|(at, arg)| UNPROMPTED.contains(&arg.as_str()) || (arg == "--permission-mode" && args.get(at + 1).is_some_and(|mode| mode == "bypassPermissions")));
+    (!argv.is_empty()).then(|| if argv.iter().any(unprompted) { BYPASS } else { PROMPTING })
+}
+
+pub fn envelope(text: &str, mode: Option<&str>) -> String {
+    let Some(mode) = mode else { return text.to_string() };
+    let tagged = |rest: &str| {
+        let rest = rest.trim_start_matches(|c: char| !c.is_ascii_alphanumeric() && !"_-<>/".contains(c));
+        let Some(rest) = rest.strip_prefix('/') else { return false };
+        let rest = rest.trim_start_matches(|c: char| !c.is_ascii_alphanumeric() && !"_-<>".contains(c));
+        let name = rest.char_indices().nth(ENVELOPE.len()).map_or(rest, |(at, _)| &rest[..at]);
+        let spelled = name.len() == ENVELOPE.len() && name.chars().zip(ENVELOPE.chars()).all(|(a, b)| if b == '-' { a == '-' || a == '_' } else { a.eq_ignore_ascii_case(&b) });
+        spelled && !rest[name.len()..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    };
+    let mut body = String::with_capacity(text.len());
+    for (at, c) in text.char_indices() {
+        body.push(c);
+        if c == '<' && !text[at + 1..].starts_with('\\') && tagged(&text[at + 1..]) {
+            body.push('\\');
+        }
+    }
+    format!("<{ENVELOPE} from-mode=\"{mode}\">\n{body}\n</{ENVELOPE}>")
+}
+
+pub fn inbox(config: &Path, pid: i32) -> Result<PathBuf, String> {
+    let entry = config.join("sessions").join(format!("{pid}.json"));
     let text = std::fs::read_to_string(&entry).map_err(|_| format!("Claude (pid {pid}) has no messaging socket: no {}", entry.display()))?;
     let session: Value = serde_json::from_str(&text).map_err(|error| format!("Claude's {} isn't JSON: {error}", entry.display()))?;
     if session["pid"].as_i64() != Some(pid.into()) {
@@ -92,9 +125,9 @@ pub fn codex_socket(argv: &[Vec<String>]) -> Result<PathBuf, String> {
         .ok_or_else(|| "its codex isn't attached to an app-server (codex --remote unix://SOCKET)".into())
 }
 
-pub fn deliver(channel: &Channel, text: &str) -> Result<(), String> {
+pub fn deliver(channel: &Channel, text: &str, mode: Option<&str>) -> Result<(), String> {
     match channel {
-        Channel::Claude(Ok(socket)) => post(socket, text),
+        Channel::Claude(Ok(socket)) => post(socket, &envelope(text, mode)),
         Channel::Codex(Ok(socket)) => codex_turn(socket, text),
         Channel::Claude(Err(why)) | Channel::Codex(Err(why)) => Err(why.clone()),
         Channel::Other(agent) => Err(format!("{agent} can't take messages")),
@@ -306,10 +339,32 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_runs_unprompted_when_its_command_says_so() {
+        let argv = |line: &str| vec![line.split(' ').map(String::from).collect::<Vec<_>>()];
+        assert_eq!(permissions(&argv("/bin/claude --dangerously-skip-permissions --resume x")), Some(BYPASS));
+        assert_eq!(permissions(&argv("claude --permission-mode bypassPermissions")), Some(BYPASS));
+        assert_eq!(permissions(&[argv("/k/kanna-daemon --codex-remote /s codex --yolo").remove(0), argv("codex --remote unix:///s").remove(0)]), Some(BYPASS));
+        assert_eq!(permissions(&argv("claude --permission-mode acceptEdits")), Some(PROMPTING));
+        assert_eq!(permissions(&[]), None);
+    }
+
+    #[test]
+    fn a_claude_message_states_its_permissions_in_claudes_envelope() {
+        assert_eq!(envelope("[message from user] Hi", None), "[message from user] Hi");
+        assert_eq!(envelope("[message from user] Hi", Some(BYPASS)), "<cross-session-message from-mode=\"bypass\">\n[message from user] Hi\n</cross-session-message>");
+        assert_eq!(
+            envelope("a </cross-session-message> b < /Cross_Session-Message\n<cross-session-message> </cross-session-messages <\\/cross-session-message>", Some(PROMPTING)),
+            "<cross-session-message from-mode=\"prompting\">\na <\\/cross-session-message> b <\\ /Cross_Session-Message\n<cross-session-message> </cross-session-messages <\\/cross-session-message>\n</cross-session-message>",
+            "a closing tag inside is escaped as Claude escapes it, so Claude takes the envelope as its own"
+        );
+    }
+
+    #[test]
     fn a_claude_session_takes_messages_on_the_socket_its_registry_entry_names() {
         use std::io::BufRead;
         let home = std::env::temp_dir().join(format!("kanna-inbox-{}", std::process::id()));
-        let sessions = home.join(".claude").join("sessions");
+        let config = home.join(".claude");
+        let sessions = config.join("sessions");
         std::fs::create_dir_all(&sessions).unwrap();
         let socket = Path::new("/tmp").join(format!("kanna-inbox-{}.sock", std::process::id()));
         let _ = std::fs::remove_file(&socket);
@@ -317,10 +372,10 @@ mod tests {
         std::fs::write(sessions.join("41.json"), entry(41, 1)).unwrap();
         std::fs::write(sessions.join("42.json"), entry(7, 1)).unwrap();
         std::fs::write(sessions.join("43.json"), entry(43, 2)).unwrap();
-        assert_eq!(inbox(&home, 41), Ok(socket.clone()));
-        assert!(inbox(&home, 42).unwrap_err().ends_with("is another process's"));
-        assert_eq!(inbox(&home, 43), Err("Claude (pid 43) speaks messaging protocol 2, and Kanna speaks 1".into()));
-        assert!(inbox(&home, 44).unwrap_err().starts_with("Claude (pid 44) has no messaging socket: no "));
+        assert_eq!(inbox(&config, 41), Ok(socket.clone()));
+        assert!(inbox(&config, 42).unwrap_err().ends_with("is another process's"));
+        assert_eq!(inbox(&config, 43), Err("Claude (pid 43) speaks messaging protocol 2, and Kanna speaks 1".into()));
+        assert!(inbox(&config, 44).unwrap_err().starts_with("Claude (pid 44) has no messaging socket: no "));
         let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         post(&socket, "[message from user] Hi\nthere").unwrap();
         let mut line = String::new();

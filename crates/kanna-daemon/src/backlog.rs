@@ -538,6 +538,8 @@ pub struct Backlog {
     ready: RefCell<HashMap<String, Ready>>,
     pub planners: RefCell<Option<Box<dyn Fn() -> Vec<String>>>>,
     pub channel: RefCell<Option<Box<dyn Fn(&str) -> Option<Channel>>>>,
+    pub permissions: RefCell<Option<Box<dyn Fn(&str) -> Option<&'static str>>>>,
+    pub line_mode: RefCell<Option<Box<dyn Fn(&str) -> bool>>>,
     warned: RefCell<HashMap<String, String>>,
     delivering: RefCell<HashSet<String>>,
     posting: RefCell<HashMap<u64, (String, Vec<Message>)>>,
@@ -610,6 +612,8 @@ impl Backlog {
             ready: RefCell::default(),
             planners: RefCell::default(),
             channel: RefCell::default(),
+            permissions: RefCell::default(),
+            line_mode: RefCell::default(),
             warned: RefCell::default(),
             delivering: RefCell::default(),
             posting: RefCell::default(),
@@ -962,6 +966,13 @@ impl Backlog {
         }
         let pressing: Vec<String> = self.quitting.borrow().iter().filter(|(_, q)| !q.hung_up && q.next.is_some_and(|at| at <= now)).map(|(pane, _)| pane.clone()).collect();
         for pane in pressing {
+            if self.line_mode.borrow().as_ref().is_some_and(|line_mode| line_mode(&pane)) {
+                if let Some(q) = self.quitting.borrow_mut().get_mut(&pane) {
+                    q.keys.clear();
+                    q.next = None;
+                }
+                continue;
+            }
             self.press(&pane);
         }
         let settled: Vec<(String, SettingUp)> = self.setting_up.borrow().iter().filter(|(_, s)| task_scripts::setup(&s.worktree).is_some()).map(|(p, s)| (p.clone(), s.clone())).collect();
@@ -1356,7 +1367,8 @@ impl Backlog {
             }
             (id, entry.repo, Some(program(&entry.agent).to_string()))
         };
-        let message = self.db.put_message(&recipient, &repo, &from, text).map_err(|error| KmuxError::new("failed", format!("couldn't save the message in {}: {error}", db::FILE)))?;
+        let mode = if from == USER { None } else { who(args).and_then(|pane| self.permissions(pane)) };
+        let message = self.db.put_message(&recipient, &repo, &from, text, mode).map_err(|error| KmuxError::new("failed", format!("couldn't save the message in {}: {error}", db::FILE)))?;
         eprintln!("kanna-daemon: a message from {from} waits for {recipient}");
         self.waiting.borrow_mut().push(message.clone());
         self.refill();
@@ -1457,6 +1469,10 @@ impl Backlog {
         self.channel.borrow().as_ref().and_then(|channel| channel(pane))
     }
 
+    fn permissions(&self, pane: &str) -> Option<&'static str> {
+        self.permissions.borrow().as_ref().and_then(|permissions| permissions(pane))
+    }
+
     fn undeliverable(&self, channel: &Channel) -> Option<String> {
         match channel {
             Channel::Other(agent) => Some(format!("{agent} can't take messages: only {} can", messages::AGENTS.join(" and "))),
@@ -1474,13 +1490,16 @@ impl Backlog {
     fn hand_over(self: &Rc<Self>, pane: String, list: Vec<Message>, channel: Channel) {
         let named = |who: &str| if db::is_task_id(who) { self.label(who) } else { who.to_string() };
         let text = messages::prompt(&list.iter().map(|m| (named(&m.sender), m.text.clone())).collect::<Vec<_>>());
+        let theirs = self.permissions(&pane);
+        let modes: Option<Vec<&str>> = list.iter().map(|m| if m.sender == USER { theirs } else { m.mode.as_deref() }).collect();
+        let mode = modes.map(|modes| if modes.iter().all(|mode| *mode == messages::BYPASS) { messages::BYPASS } else { messages::PROMPTING });
         self.delivering.borrow_mut().insert(pane.clone());
         let token = self.next.get() + 1;
         self.next.set(token);
         self.posting.borrow_mut().insert(token, (pane, list));
         let events = self.events.clone();
         std::thread::spawn(move || {
-            let result = messages::deliver(&channel, &text);
+            let result = messages::deliver(&channel, &text, mode);
             let _ = events.send(Event::Posted { token, result });
         });
     }
@@ -3135,6 +3154,18 @@ mod tests {
         assert!(t.agents.typed.borrow().is_empty());
         assert_eq!(*t.agents.hung_up.borrow(), [pane.as_str()]);
         assert_eq!(t.session(&pane).as_deref(), Some("given"), "with nothing said, the session it had is kept");
+    }
+
+    #[test]
+    fn an_agent_that_left_raw_mode_is_quitting_so_it_isnt_pressed_again() {
+        let t = Stopping::new("leaving");
+        t.agents.deaf.set(true);
+        *t.backlog.line_mode.borrow_mut() = Some(Box::new(|_| true));
+        let (pane, entry) = t.agent("claude", Place::Backlog);
+        t.backlog.quit(&pane, &entry, Status::Idle);
+        t.settle(|| t.backlog.quitting.borrow().get(&pane).is_some_and(|q| q.keys.is_empty() && q.next.is_none()));
+        assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: ctrl+c")], "a second ctrl+c in line mode would interrupt it as it says its session");
+        assert!(t.agents.hung_up.borrow().is_empty(), "it has 5s to quit");
     }
 
     #[test]

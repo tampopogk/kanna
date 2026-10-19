@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import select
 import signal
 import socket
@@ -126,10 +127,20 @@ def inbox():
             for line in conn.makefile():
                 message = json.loads(line)
                 if message.get("type") == "user":
-                    peer(message["message"]["content"])
+                    inbound(message["message"]["content"])
             conn.close()
 
     threading.Thread(target=serve, daemon=True).start()
+
+
+def inbound(text):
+    envelope = re.fullmatch(r'<cross-session-message(?: from-mode="(bypass|prompting)")?>\n([\s\S]*)\n</cross-session-message>', text)
+    stated = envelope and envelope.group(1)
+    mine = "bypass" if "--dangerously-skip-permissions" in sys.argv else "prompting"
+    if stated != mine and (stated or mine == "bypass"):
+        out("\x1b[J\r\nheld peer message: the sender did not attest its permission mode\r\n")
+        return composer()
+    peer(re.sub(r"<\\(?=/cross-session-message)", "<", envelope.group(2)) if envelope else text)
 
 
 def peer(text):
@@ -219,6 +230,11 @@ def main():
         return 0
     if sys.argv[1:2] == ["app-server"]:
         return app_server(sys.argv[1:])
+    if os.isatty(sys.stdin.fileno()):
+        fd = sys.stdin.fileno()
+        saved = termios.tcgetattr(fd)
+        tty.setraw(fd, termios.TCSANOW)
+        atexit.register(lambda: termios.tcsetattr(fd, termios.TCSANOW, saved))
     id, resumed = session(sys.argv[1:])
     out("\x1b]0;mock-agent\x07mock-agent: type turn, work N, run SCRIPT, ask, report STATUS or exit\r\n")
     if sys.argv[1:]:
@@ -238,9 +254,45 @@ def talk(task):
     composer()
     if task and not answer(task):
         return
-    for line in sys.stdin:
+    for line in typed():
         if not answer(line):
             return
+
+
+def typed():
+    fd = sys.stdin.fileno()
+    if not os.isatty(fd):
+        yield from sys.stdin
+        return
+    line = ""
+    while True:
+        data = os.read(fd, 1024)
+        if not data:
+            return
+        for c in data.decode("utf8", "replace"):
+            if c == "\x03":
+                raise KeyboardInterrupt
+            if c == "\x04" and not line:
+                return
+            if c in "\r\n":
+                out("\r\n")
+                yield line + "\n"
+                line = ""
+            elif c in "\x7f\x08":
+                if line:
+                    line = line[:-1]
+                    out("\b \b")
+            elif c == "\x15":
+                out("\b \b" * len(line))
+                line = ""
+            elif c == "\x17":
+                kept = line.rstrip()
+                kept = kept[: len(kept) - len(kept.split()[-1])] if kept.split() else ""
+                out("\b \b" * (len(line) - len(kept)))
+                line = kept
+            elif c >= " ":
+                line += c
+                out(c)
 
 
 def answer(line):

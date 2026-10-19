@@ -26,8 +26,13 @@ fn private(folder: &Path) -> Result<(), String> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(folder);
     let meta = std::fs::symlink_metadata(folder).map_err(|error| format!("{}: {error}", folder.display()))?;
-    let mine = meta.uid() == unsafe { libc::getuid() };
-    match meta.is_dir() && !meta.file_type().is_symlink() && mine && meta.mode() & 0o077 == 0 {
+    let mine = meta.is_dir() && !meta.file_type().is_symlink() && meta.uid() == unsafe { libc::getuid() };
+    if mine && meta.mode() & 0o077 != 0 {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o700));
+    }
+    let meta = std::fs::symlink_metadata(folder).map_err(|error| format!("{}: {error}", folder.display()))?;
+    match mine && !meta.file_type().is_symlink() && meta.mode() & 0o077 == 0 {
         true => Ok(()),
         false => Err(format!("{} isn't a folder only you can open", folder.display())),
     }
@@ -134,7 +139,8 @@ mod tests {
         assert_eq!(std::fs::metadata(root.join("codex")).unwrap().permissions().mode() & 0o777, 0o700);
         std::fs::create_dir_all(root.join("open")).unwrap();
         std::fs::set_permissions(root.join("open"), std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(private(&root.join("open")).is_err(), "others can open it");
+        assert_eq!(private(&root.join("open")), Ok(()), "your own folder that others can open is made owner-only");
+        assert_eq!(std::fs::metadata(root.join("open")).unwrap().permissions().mode() & 0o777, 0o700);
         std::os::unix::fs::symlink(root.join("codex"), root.join("link")).unwrap();
         assert!(private(&root.join("link")).is_err(), "a symlink someone could point elsewhere");
         let _ = std::fs::remove_dir_all(&root);
