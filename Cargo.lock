@@ -582,6 +582,7 @@ dependencies = [
  "kanna-build",
  "kanna-client",
  "kanna-mux",
+ "kanna-threads",
  "libc",
  "serde_json",
 ]
@@ -716,6 +717,14 @@ dependencies = [
  "tree-sitter-toml-ng",
  "tree-sitter-typescript",
  "tree-sitter-yaml",
+]
+
+[[package]]
+name = "kanna-threads"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_json",
 ]
 
 [[package]]
