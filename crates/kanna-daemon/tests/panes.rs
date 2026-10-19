@@ -216,3 +216,33 @@ fn a_tour_steps_through_its_stops_without_the_agent() {
     instance.call("close", json!({"pane": "agent"}));
     assert!(marks(&instance).iter().all(|(_, mark)| mark.is_null()), "the closed agent's tour stayed");
 }
+
+#[test]
+fn a_tour_stop_on_a_doc_is_the_agents_thread_written_once() {
+    let instance = Instance::start();
+    let app = App::connect(&instance.socket());
+    let _answering = app.answering();
+    instance.open("agent", Some("cat"));
+    let dir = std::env::temp_dir().join(format!("kanna-tour-doc-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    let doc = dir.join("trip.md");
+    std::fs::write(&doc, "# Trip\n\nThe keeper queues\nthe message.\n").unwrap();
+    let doc = doc.to_string_lossy().to_string();
+    let past = instance.call("tour", json!({"action": "new", "from": "agent", "stops": [{"path": doc, "line": 9, "text": "Past."}]}));
+    assert_eq!(past["error"]["code"], "bad_request", "{past}");
+    let gone = instance.call("tour", json!({"action": "new", "from": "agent", "stops": [{"path": dir.join("gone.md"), "line": 1, "text": "Gone."}]}));
+    assert_eq!(gone["error"]["code"], "not_found", "{gone}");
+    let queued = instance.call("tour", json!({"action": "new", "from": "agent", "stops": [{"path": doc, "line": 4, "text": "The trip."}, {"path": "/tmp/tour.rs", "line": 5, "text": "Code."}]}));
+    assert_eq!((queued["thread"].clone(), queued["first"].clone(), queued["opened"].clone()), (json!("c1"), json!(3), json!(true)), "{queued}");
+    let agent = instance.pane("agent")["id"].clone();
+    assert_eq!(queued["pane"]["type"], "md", "{queued}");
+    assert_eq!((queued["pane"]["markup"].clone(), queued["pane"]["agent"].clone()), (json!(true), agent.clone()), "{queued}");
+    assert_eq!(queued["pane"]["tour"], json!({"owner": agent, "at": 1, "of": 2, "thread": "c1"}), "{queued}");
+    instance.call("tour", json!({"action": "go", "from": "agent", "to": "next"}));
+    let back = instance.call("tour", json!({"action": "go", "from": "agent", "to": "back"}));
+    assert_eq!((back["thread"].clone(), back["opened"].clone(), back["pane"]["id"].clone()), (json!("c1"), json!(false), queued["pane"]["id"].clone()), "{back}");
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(dir.join(".kanna/docs/trip.md.json")).unwrap()).unwrap();
+    assert_eq!(saved["threads"].as_array().unwrap().len(), 1, "{saved}");
+    assert_eq!(saved["threads"][0]["messages"][0]["text"], "The trip.", "{saved}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
