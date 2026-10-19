@@ -2,9 +2,9 @@
 
 **Status:** decided · **Mockup:** [`references/mockups/code-tour-steps.html`](../../references/mockups/code-tour-steps.html) · **Builds on:** the [code tour](code-tour.md)
 
-The agent queues a whole tour at once, over code and markdown, and you step through it at your own pace: each comment has **Back**, where you are (**2 of 5**) and **Next**. Each step is sent to the agent, so it knows where you are and can add a line; a question in the middle becomes a stop of its own, right after the one you're on.
+The agent queues a whole tour at once, over code and markdown, and you step through it at your own pace: each comment has **Back**, where you are (**2 of 5**) and **Next**. The agent fills the pipeline and stepping doesn't involve it, so there's no round trip between stops. Only a question brings it back: it looks up where you are and answers with a stop of its own, right after the one you're on.
 
-![Stop 2 of 5: Next selects server.rs and scrolls to the comment; the step reached the agent](code-tour-steps.png)
+![Stop 2 of 5: Next selects server.rs and scrolls to the comment; the agent wasn't involved](code-tour-steps.png)
 
 ## Contents
 
@@ -28,13 +28,13 @@ sequenceDiagram
     You->>App: Next
     App->>D: tour next
     D->>App: stop 2: server.rs, its comment with 2 of 5
-    D->>A: [kanna tour 2/5 · server.rs:92–103]
-    A->>You: a line, or nothing
+    Note over A: not told: no round trip
     You->>A: a question
+    A->>D: kanna tour
+    D-->>A: at 3 of 5 · server.rs:105–125
     A->>D: kanna tour add --next client.rs:244 "…"
     D->>App: stop 4 of 6, shown now
     You->>App: Next … Done
-    D->>A: [kanna tour done · 6 stops]
 ```
 
 ## 2. Rules
@@ -46,12 +46,12 @@ sequenceDiagram
 ![The tour was just queued: stop 1 is the agent's thread on the doc, with Next](code-tour-steps-queued.png)
 
 - **Back, N of M, Next** sit along the bottom of the comment box, or of the thread's card on a markdown stop. Back is off on the first stop; on the last, Next says **Done**.
-- **Each step goes to the agent** as a message from you, through [agent messaging](agent-messaging.md): kept in `kanna.db` and handed to the agent once its turn is over, never typed into its prompt. It reads `[kanna tour 2/5 · crates/kanna-keeper/src/server.rs:92–103]` (the path from the agent's folder); Done sends `[kanna tour done · 5 stops]`. A step still waiting when you move on is replaced by the newer one, so the agent hears where you are, not every stop you passed. The agent answers in a line at most, or not at all: the comment is the explanation.
-- **A question in the middle** is answered with a stop after the current one (`kanna tour add --next`), shown at once; the count grows (4 of 6), Next carries on with the tour, and Back returns to where you were.
+- **Stepping doesn't involve the agent.** Next, Back and Done go to the daemon only; the agent isn't sent anything, so a step costs no turn and no wait. The agent can keep adding stops with `kanna tour add` while you read.
+- **A question in the middle** is typed in the agent's terminal as usual (or replied in a markdown stop's thread, which reaches the agent as any thread reply does). The agent runs `kanna tour` to see which stop you're on, and answers with a stop after it (`kanna tour add --next`), shown at once; the count grows (4 of 6), Next carries on with the tour, and Back returns to where you were.
 
 ![You asked at stop 3; the answer is stop 4 of 6, and Next goes on to fdpass.rs](code-tour-steps-question.png)
 
-- **Done ends the tour.** The last stop's comment stays, without its Back and Next; the tabs stay until closed, as any comment's.
+- **Done ends the tour,** without telling the agent. The last stop's comment stays, without its Back and Next; the tabs stay until closed, as any comment's.
 - **A closed tab comes back.** If you close a stop's tab, Back or Next to that stop opens it again.
 - **A markdown stop's thread is written when it's reached,** and stays in the doc's thread list afterwards, like any thread. Going back to it selects the same thread.
 - **Light and dark** follow the system.
@@ -64,9 +64,9 @@ sequenceDiagram
 |---|---|
 | `kanna tour FILE:LINE[-LAST] TEXT [FILE:LINE TEXT …]` | a new tour, replacing yours; shows stop 1. Answers `tour of 5 · 1 of 5 · p86 · server.rs:92–103` |
 | `kanna tour add [--next] FILE:LINE TEXT …` | adds stops at the end, or with `--next` right after the current one and shows the first of them |
-| `kanna tour go next\|back\|N` | shows that stop, as Next and Back do (the app's buttons call it), and tells the agent |
-| `kanna tour` | lists the stops, marking the current one |
-| `kanna tour end` | ends the tour, as Done does, without telling the agent |
+| `kanna tour go next\|back\|N` | shows that stop, as Next and Back do (the app's buttons call it) |
+| `kanna tour` | lists the stops, marking the current one: `at 3 of 5 · server.rs:105–125`, or `no tour` |
+| `kanna tour end` | ends the tour, as Done does |
 
 Each TEXT is one argument (quote it). Placement options are `comment`'s, for files that aren't open yet. `kanna workspace list --all --json` shows a code pane's comment with `tour: {at, of}` while it's the current stop; `debug.code` and `debug.md` report the footer.
 
@@ -75,10 +75,10 @@ Each TEXT is one argument (quote it). Placement options are `comment`'s, for fil
 `kanna-explain` queues the tour instead of commenting one part at a time:
 
 - **Plan the route, then queue it in one `kanna tour`:** the big-picture doc first, then the code, small parts each.
-- **In the chat, a line:** how many stops, and "Next on the comment; ask here any time". Then stop.
-- **On `[kanna tour N/M · …]`,** add a line only if there's something the comment couldn't say; otherwise say nothing more than a word.
-- **On a question,** answer with `kanna tour add --next` on the code that answers it, and a line.
-- **On `[kanna tour done …]`,** offer to leave the tabs or close them.
+- **In the chat, a line:** how many stops, and "Next on the comment; ask here any time". Then stop: the user steps through without you.
+- **Fill it while they read:** if more stops come to mind, `kanna tour add` them to the end.
+- **On a question during a tour,** run `kanna tour` to see where the user is, then answer with `kanna tour add --next` on the code that answers it, and a line.
+- **When the user says they're done,** offer to leave the tabs or close them.
 
 ## 5. How it's built
 
@@ -86,10 +86,10 @@ Each TEXT is one argument (quote it). Placement options are `comment`'s, for fil
 |---|---|---|
 | CLI | `crates/kanna` | `tour`, its pairs of `FILE:LINE TEXT`; markdown stops go to the daemon too |
 | Thread files | `crates/kanna-threads` (new) | the doc thread file (where it lives, reading and writing it safely, `block_at`, adding the agent's thread), moved out of the CLI's `threads.rs` so the daemon writes a markdown stop's thread with the same code |
-| Tour | `crates/kanna-mux` (`tour.rs`) | `tour` keeps `{stops, at}` on the agent's pane record; showing a stop reuses `comment` for code and `markup` plus a written thread for markdown; each step leaves the agent a message from `user` in `kanna.db`, replacing its tour message still waiting, for the daemon's messaging to deliver |
+| Tour | `crates/kanna-mux` (`tour.rs`) | `tour` keeps `{stops, at}` on the agent's pane record; showing a stop reuses `comment` for code and `markup` plus a written thread for markdown |
 | Code pane | `apps/kanna/Sources/KannaCode` | the comment box's footer: Back, N of M, Next or Done, calling `tour go` |
 | Markdown pane | `apps/kanna/Sources/KannaMarkdown` | the same footer on the card of the thread the pane's record names as the tour's |
 | Contents | `apps/kanna/Sources/Kanna/Panes` | passes each pane its stop's `tour: {owner, at, of}` and sends `tour go` for the buttons |
 
 - **The stop's place is on the record of the pane that shows it:** a code pane's `comment` gets `tour: {owner, at, of}`; a markdown pane gets `tour: {owner, thread, at, of}`. Only the current stop has it, so moving on clears the last one's.
-- **Checks:** `crates/kanna-daemon/tests/panes.rs` for `tour` (queueing, a bad stop refusing the lot, next, back, add --next, done, the message left for the agent and a waiting one replaced, a relaunch, the agent's pane closing); `crates/kanna` unit tests for parsing the pairs; e2e `code_tour_steps`: a tour of a doc and two code files, Next and Back pressed through `debug.code`/`debug.md`, which tab is selected and the footer's N of M, the agent's terminal reading each `[kanna tour …]` line, `add --next`, Done.
+- **Checks:** `crates/kanna-daemon/tests/panes.rs` for `tour` (queueing, a bad stop refusing the lot, next, back, add --next, done, nothing sent to the agent, a relaunch, the agent's pane closing); `crates/kanna` unit tests for parsing the pairs; e2e `code_tour_steps`: a tour of a doc and two code files, Next and Back pressed through `debug.code`/`debug.md`, which tab is selected and the footer's N of M, the agent's terminal left untouched by stepping, `kanna tour` reporting the current stop, `add --next`, Done.

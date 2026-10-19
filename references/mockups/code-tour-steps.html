@@ -126,7 +126,7 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
 <main>
   <div class="intro">
     <h1>Code tour steps: the agent queues a tour, you step through it</h1>
-    <p>The agent queues every stop at once with <code>kanna tour FILE:LINE "comment" …</code> (code or markdown). Each comment has <b>Back</b>, where you are (<b>2 of 5</b>) and <b>Next</b>; Next opens or selects the next stop's tab and scrolls to it. Each step is sent to the agent as <code>[kanna tour 2/5 · FILE:LINES]</code>, so it knows where you are and can add a line. A question in the middle is answered with a stop added right after the one you're on (<code>kanna tour add --next</code>), shown at once; Next then carries on with the tour. Click Back / Next on the comment itself.</p>
+    <p>The agent fills the tour up front: it queues every stop at once with <code>kanna tour FILE:LINE "comment" …</code> (code or markdown), and can keep adding stops with <code>kanna tour add</code> while you read. Each comment has <b>Back</b>, where you are (<b>2 of 5</b>) and <b>Next</b>; Next opens or selects the next stop's tab and scrolls to it. Stepping never bothers the agent, so there's no round trip between stops. When you ask a question, the agent runs <code>kanna tour</code> to see which stop you're on, and answers with a stop added right after it (<code>kanna tour add --next</code>), shown at once; Next then carries on with the tour. Click Back / Next on the comment itself.</p>
     <div class="controls">
       <button id="bAsk">1 · You ask; the agent queues a tour</button>
       <button id="bQ" disabled>You ask a question mid-tour</button>
@@ -236,12 +236,6 @@ const TOUR = [
   ["fdpass.rs:20", "This is where an open terminal crosses from one program to another: the message gets an extra envelope (`SCM_RIGHTS`) holding the terminals, and macOS copies them into the daemon."],
   ["fdpass.rs:50", "The other side: the daemon waits for a message and takes whatever terminals came with it."],
 ];
-const SAYS = {
-  2: "The queue is why the keeper never blocks on a slow daemon.",
-  3: "Note the first-piece rule; the daemon relies on it.",
-  4: "This is the only unsafe code on the trip.",
-  5: "Last stop on the daemon's side.",
-};
 const ASIDE = ["client.rs:244", "Each line says how many terminals belong to it (`fds`) and takes that many from the queue, in order. That's how a terminal finds its message."];
 
 const code = document.getElementById("code");
@@ -348,19 +342,14 @@ function stop(spec, note) {
   return { path: p, from: r.from, to: r.to, note, spec };
 }
 function where(s) { return s.path === DOC ? `${DOC}:${s.from}` : `${short(s.path)}:${s.from}–${s.to}`; }
-function show(i, tell) {
+function show(i) {
   cur = i;
   const s = stops[i];
   if (!tabsOpen.includes(s.path)) tabsOpen.push(s.path);
   path = s.path;
   render();
   if (s.path !== DOC) scrollTo(s.from);
-  if (tell) {
-    log += `\n<span class="g">&gt;</span> <span class="tour">[kanna tour ${i + 1}/${stops.length} · ${where(s)}]</span>\n`;
-    const say = s.aside ? null : SAYS[TOUR.findIndex(t => t[0] === s.spec) + 1];
-    log += `\n<span class="a">●</span> ${say || "Back to the trip."}\n`;
-    term_();
-  }
+
 }
 
 const term = document.getElementById("term");
@@ -378,7 +367,7 @@ function ask() {
   log += `<span class="ok">  ⎿ tour of 5 · 1 of 5 · c1 · keeper-fds.md:5 in p86</span>\n`;
   log += `\n<span class="a">●</span> Five stops. Next on the comment when you've read one; ask here any time.\n`;
   stops = TOUR.map(t => stop(t[0], t[1]));
-  show(0, false);
+  show(0);
   term_();
   document.getElementById("bAsk").disabled = true;
   document.getElementById("bQ").disabled = false;
@@ -388,22 +377,22 @@ function question() {
   asked = true;
   document.getElementById("bQ").disabled = true;
   log += `\n<span class="g">&gt;</span> how does it know which terminal goes with which message?\n`;
+  log += `\n<span class="g">  Bash(</span><span class="c">kanna tour</span><span class="g">)</span>\n`;
+  log += `<span class="ok">  ⎿ at ${cur + 1} of ${stops.length} · ${where(stops[cur])}</span>\n`;
   log += `\n<span class="a">●</span> Each message says how many terminals it carries.\n`;
   log += `\n<span class="g">  Bash(</span><span class="c">kanna tour add --next ${ASIDE[0]} "${esc(sh(ASIDE[1]))}"</span><span class="g">)</span>\n`;
   const s = stop(ASIDE[0], ASIDE[1]); s.aside = true;
   stops.splice(cur + 1, 0, s);
   log += `<span class="ok">  ⎿ added ${cur + 2} of ${stops.length} · opened p89 · client.rs:${s.from}–${s.to}</span>\n`;
   log += `\n<span class="a">●</span> Next carries on with the tour.\n`;
-  show(cur + 1, false);
+  show(cur + 1);
   term_();
 }
 document.getElementById("docs").addEventListener("click", e => {
   const b = e.target.closest("button[data-go]");
   if (b) {
-    if (b.dataset.go === "back") return show(cur - 1, true);
-    if (cur < stops.length - 1) return show(cur + 1, true);
-    log += `\n<span class="g">&gt;</span> <span class="tour">[kanna tour done · ${stops.length} stops]</span>\n`;
-    log += `\n<span class="a">●</span> That's the tour. Leave the tabs open, or close them?\n`;
+    if (b.dataset.go === "back") return show(cur - 1);
+    if (cur < stops.length - 1) return show(cur + 1);
     cur = -1; render(); term_();
     return;
   }
@@ -422,7 +411,7 @@ const params = new URLSearchParams(location.search);
 if (params.has("picture")) document.body.classList.add("picture");
 if (params.has("light")) document.getElementById("bTheme").click();
 if (params.has("ask")) ask();
-for (let i = 0; i < +(params.get("next") || 0); i++) show(cur + 1, true);
+for (let i = 0; i < +(params.get("next") || 0); i++) show(cur + 1);
 if (params.has("question")) question();
 </script>
 </body>
