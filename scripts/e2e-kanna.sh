@@ -2642,8 +2642,8 @@ shelf_times() {
   env -u KANNA_NO_INITIAL_WINDOW KANNA_START_DIR="$repo" "$app" --bg >>"$out/app.log" 2>&1 &
   app_pid=$!
   wait_for 10 app_attached || { echo "the app did not attach"; return 1; }
-  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"w1\"${2:+,$2}}}" | field "$1"; }
-  check wait_for 10 eval '[[ "$(desk lead)" == p* ]]' || { echo "shelf_times: no planning terminal"; kanna workspace list --all; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"d1\"${2:+,$2}}}" | field "$1"; }
+  check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { echo "shelf_times: no planning terminal"; kanna workspace list --all; return 1; }
   (cd "$repo" && kanna task new "Parked" "hello" --agent "$agent" && kanna task new "Waiting" "hello" --agent "$agent") >/dev/null || { echo "shelf_times line $LINENO"; return 1; }
   kanna task shelve "$(tid 1)" >/dev/null || { echo "shelf_times line $LINENO"; return 1; }
   check wait_for 10 eval '[[ "$(desk times)" == *"parked now"*"made just now"* ]]' || { desk times; return 1; }
