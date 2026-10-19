@@ -16,7 +16,7 @@ usage: scripts/e2e-kanna.sh [--through M0|M1|M2|M3|M4] [NAME …]
                later ones are listed as not due
   NAME…        only these scenarios (e.g. cli_terminal shelf_zoom)
 
-Uses target/release/{kanna,kanna-daemon,kanna-keeper} and target/Kanna.app (or $KANNA_E2E_APP)
+Uses target/release/{kanna,kanna-daemon,kanna-keeper,kanna-build} and target/Kanna.app (or $KANNA_E2E_APP)
 (scripts/build.sh). The private instance gets:
   KANNA_SOCKET     the daemon's socket (the CLI and the app connect to it)
   KANNA_STATE_DIR  where the daemon, keeper and app keep their files
@@ -323,8 +323,8 @@ web_md_ios_panes() {
 scenario cli_starts_app M1
 cli_starts_app() {
   local home="$KANNA_STATE_DIR/home" socket folder instance
-  folder="$("$bin/kanna-daemon" --build | sed -n 's/^folder=//p')"
-  instance="$("$bin/kanna-daemon" --build | sed -n 's/^instance=//p')"
+  folder="$("$bin/kanna-build" | sed -n 's/^folder=//p')"
+  instance="$("$bin/kanna-build" | sed -n 's/^instance=//p')"
   [[ "$instance" == default ]] || folder="$folder-$instance"
   socket="$home/Library/Application Support/$folder/kanna.sock"
   mkdir -p "$(dirname "$socket")"
@@ -849,7 +849,7 @@ terminal_colours() {
   printf 'background = #f0f0e0\nforeground = #202020\n' >"$KANNA_STATE_DIR/light"
   printf 'background = #123456\nforeground = #e5d4b0\n' >"$KANNA_STATE_DIR/dark"
   start_daemon && term_app || return 1
-  terminal background '{"appearance":"dark"}' >/dev/null 2>&1
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null || return 1
   kanna open --name terminal_colours --cmd "$(probe '\033]11;?\007\033]10;?\007\033]4;1;?\007\033[?996n' n 1)" >/dev/null || return 1
   check wait_for 5 shows terminal_colours 'GOT ^]11;rgb:1212/3434/5656~^]10;rgb:e5e5/d4d4/b0b0~^]4;1;rgb:0101/0202/fefe~^\[?997;1n' || { kanna read terminal_colours; return 1; }
   check test "$(terminal settings.cursorStyle '{"pane":"terminal_colours"}')" == bar || return 1
@@ -2919,7 +2919,7 @@ print(sum(1 for l in lines if l.get("turn") and sys.argv[2] in l["prompt"] and (
   grep -q "upgraded the keeper (pid $keeper) from build" <<<"$log" || { echo "keeper_upgrade: the daemon didn't upgrade the keeper"; echo "$log"; return 1; }
   grep -qE "took back [3-9] terminal\(s\) from the keeper \(0 the disk didn't know\), 0 that had exited; 0 gone" <<<"$log" || { echo "keeper_upgrade: the daemon didn't take every terminal back"; echo "$log"; return 1; }
   check test "$(cat "$KANNA_STATE_DIR/keeper.pid")" == "$keeper" || return 1
-  [[ "$(ps -o command= -p "$keeper")" == "$bin/kanna-keeper"* ]] || { echo "keeper_upgrade: the keeper runs $(ps -o command= -p "$keeper")"; return 1; }
+  [[ "$(ps -o command= -p "$keeper")" == "$(cd "$bin" && pwd -P)/kanna-keeper"* ]] || { echo "keeper_upgrade: the keeper runs $(ps -o command= -p "$keeper")"; return 1; }
   local i=0
   for pane in "claude task" Parked upgradeshell; do
     check is "$pane" pid "${pids[$i]}" || return 1
