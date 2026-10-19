@@ -223,6 +223,14 @@ fn run() -> Result<(), String> {
     let toasts = Rc::new(toasts::Toasts::new(core.weak()));
     toasts.connect_backlog(&backlog);
     toasts.install(&core);
+    let warnings = Rc::downgrade(&toasts);
+    *backlog.on_warn.borrow_mut() = Some(Box::new(move |pane, name, why| {
+        let Some(toasts) = warnings.upgrade() else { return };
+        let toast = toasts::Toast { title: format!("Messages wait for {name}"), detail: Some(why.to_string()), pane: Some(pane.to_string()), task: None, key: Some(format!("messages:{pane}:{why}")) };
+        if let Err(error) = toasts.raise(toast) {
+            eprintln!("kanna-daemon: can't raise a toast for {pane}: {}", error.message);
+        }
+    }));
     let quiz = Rc::new(quiz::Quiz::new(db, Some(core.weak())));
     quiz.install(&core);
     let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone());

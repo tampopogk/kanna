@@ -1,6 +1,6 @@
 # Toasts
 
-**Status:** built · **Tested:** e2e `toasts`, `crates/kanna/tests/cli.rs`, `toasts.rs` unit tests · **Mockup:** [`references/mockups/toasts.html`](../../references/mockups/toasts.html) (or `#picture-stack`) · **Builds on:** [app link](app-link.md), [Desk](desk.md)
+**Status:** built · **Tested:** e2e `toasts`, `agent_messaging`, `crates/kanna/tests/cli.rs`, `toasts.rs` unit tests · **Mockup:** [`references/mockups/toasts.html`](../../references/mockups/toasts.html) (or `#picture-stack`) · **Builds on:** [app link](app-link.md), [Desk](desk.md)
 
 A **toast** is a small, non-modal notice in Kanna.app: a title, a line of detail, and optionally the pane or task it's about. The daemon raises them for warnings that would otherwise only reach its log; `kanna toast` raises one from the CLI.
 
@@ -64,16 +64,13 @@ sequenceDiagram
 
 ## Its first user: messages that wait
 
-In [agent messaging](agent-messaging.md), a message waits when its recipient can't take it: an agent other than claude or codex, a Claude without a messaging socket, a Codex not attached to its app-server. `Backlog::warn` logs `kanna-daemon: warning: the messages for PANE wait: WHY`; it also raises a toast, once per pane and reason:
+In [agent messaging](agent-messaging.md), a message waits when its recipient can't take it: an agent other than claude or codex, a Claude without a messaging socket, a Codex not attached to its app-server. `Backlog::warn` logs `kanna-daemon: warning: the messages for PANE wait: WHY` when the pane's reason is new, and calls the Backlog's `on_warn` hook, which `main.rs` points at the toasts:
 
-```rust
-toasts.raise(Toast {
-    title: format!("Messages wait for {}", label),
-    detail: Some(why.clone()),
-    pane: Some(pane.to_string()),
-    key: Some(format!("messages:{pane}:{why}")),
-    ..Toast::default()
-})
-```
+| Field | Value |
+|---|---|
+| title | `Messages wait for NAME`: the recipient task's name, else the pane |
+| detail | WHY, e.g. `copilot can't take messages: only claude and codex can` |
+| pane | the recipient's pane, so the toast also names its task, and a click shows it |
+| key | `messages:PANE:WHY`: one toast per pane and reason for the daemon's life, though the log line comes again after a delivery clears the warning |
 
-Clicking it shows the recipient. That call lands with the agent-messaging branch, which has `Backlog::warn`: main makes `Toasts` right after the `Backlog` and links it (`connect_backlog`), so the branch gives the `Backlog` a `Weak<Toasts>` the same way.
+Tested in e2e `agent_messaging` (a message to a copilot task raises one toast, and only one).
