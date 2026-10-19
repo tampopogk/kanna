@@ -8,6 +8,7 @@ extension MarkdownPaneView {
         panel.onSelect = { [weak self] id in self?.reveal(id) }
         panel.onAct = { [weak self] thread in self?.setState(thread.id, open: !thread.isOpen) }
         panel.onReply = { [weak self] id, text in self?.reply(id, text) }
+        panel.onTour = { [weak self] to in self?.onTourStep?(to) }
         textView.onCommentKey = { [weak self] in self?.commentOnSelection() ?? false }
         textView.onCommandClick = { [weak self] point in self?.commentOnWord(at: point) ?? false }
         textView.onPlainClick = { [weak self] point in self?.clicked(at: point) }
@@ -34,6 +35,26 @@ extension MarkdownPaneView {
     public var activeThread: String? { active }
     public var threadsShown: Bool { threadsVisible }
     public var cards: [String: CardState] { panel.cardStates }
+
+    public var tourFooter: (thread: String, at: Int, of: Int, back: Bool, next: String)? {
+        guard let tour, let row = panel.card(tour.thread)?.tourRow else { return nil }
+        return (tour.thread, row.step.at, row.step.of, row.back.onPress != nil, row.next.label.stringValue)
+    }
+
+    public func pressTour(_ to: String) -> Bool {
+        guard let tour, let row = panel.card(tour.thread)?.tourRow else { return false }
+        guard let press = (to == "back" ? row.back : row.next).onPress else { return false }
+        press()
+        return true
+    }
+
+    func revealTourStop() {
+        guard markup, let tour, tourUnrevealed, anchors[tour.thread] != nil else { return }
+        tourUnrevealed = false
+        if !threadsVisible { toggleThreads() }
+        reveal(tour.thread)
+        panel.reveal(tour.thread)
+    }
 
     public func select(_ range: NSRange) {
         window?.makeFirstResponder(textView)
@@ -87,10 +108,12 @@ extension MarkdownPaneView {
         refreshPanel()
         bar.threads.set("Threads \(record.threads.filter(\.isOpen).count)")
         bar.needsLayout = true
+        revealTourStop()
     }
 
     func refreshPanel() {
         guard markup else { return }
+        panel.tour = tour
         panel.show(record.threads, active: active, waits: waits(), notes: notes())
     }
 

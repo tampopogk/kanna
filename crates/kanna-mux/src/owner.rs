@@ -118,14 +118,17 @@ impl LayoutOwner {
     }
 
     pub fn hello(&self) -> Value {
-        let panes = match &self.saved {
+        Value::Array(self.records().into_iter().filter(|p| p.kind != PaneType::Term).map(|p| Value::Object(state::pane_record(&p))).collect())
+    }
+
+    pub fn records(&self) -> Vec<Pane> {
+        match &self.saved {
             Some(saved) => state::import_versions(saved, &[1, 2, LAYOUT_VERSION], "Kanna reads").map(|(panes, _)| panes).unwrap_or_default(),
             None => {
                 let placed: HashSet<String> = self.placed().into_iter().collect();
                 self.panes.iter().filter(|p| placed.contains(&p.id)).cloned().collect()
             }
-        };
-        Value::Array(panes.iter().filter(|p| p.kind != PaneType::Term).map(|p| Value::Object(state::pane_record(p))).collect())
+        }
     }
 
     fn record(&mut self, record: &Value) -> Result<Map, KmuxError> {

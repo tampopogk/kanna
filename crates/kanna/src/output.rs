@@ -945,3 +945,58 @@ mod workspace_tests {
         assert_eq!(window(&json!({ "action": "assign", "window": "win-41" }), &json!({ "window": "win-41", "workspace": windowless["workspace"] })), "assigned win-41 to ws-3 (task-1dfb, on the Shelf)");
     }
 }
+
+fn shown_path(path: &str) -> String {
+    let here = std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+    match path.strip_prefix(&format!("{}/", here.trim_end_matches('/'))) {
+        Some(inside) if !here.is_empty() => inside.to_string(),
+        _ => path.to_string(),
+    }
+}
+
+fn stop_lines(first: Option<u64>, last: Option<u64>) -> String {
+    match (first, last) {
+        (Some(first), Some(last)) if last > first => format!("{first}–{last}"),
+        (Some(first), _) => first.to_string(),
+        _ => "?".into(),
+    }
+}
+
+pub fn toured(args: &Value, reply: &Value) -> String {
+    if reply["done"] == true {
+        return format!("tour done · {} stops", reply["of"].as_u64().unwrap_or(0));
+    }
+    match args["action"].as_str().unwrap_or("show") {
+        "end" => (if reply["ended"] == true { "tour ended" } else { "no tour" }).to_string(),
+        "show" => {
+            let stops = reply["stops"].as_array().cloned().unwrap_or_default();
+            if stops.is_empty() {
+                return "no tour".into();
+            }
+            let at = reply["at"].as_u64().unwrap_or(1) as usize;
+            let place = |stop: &Value| format!("{}:{}", shown_path(stop["path"].as_str().unwrap_or("?")), stop_lines(stop["first"].as_u64(), stop["last"].as_u64()));
+            let mut out = format!("at {at} of {} · {}", stops.len(), place(&stops[at - 1]));
+            for (i, stop) in stops.iter().enumerate() {
+                let marker = if i + 1 == at { "▸" } else { " " };
+                let text: String = stop["text"].as_str().unwrap_or("").chars().take(60).collect();
+                out += &format!("\n{marker} {:>2}  {}  {text}", i + 1, place(stop));
+            }
+            out
+        }
+        action => {
+            let (at, of) = (reply["tour"]["at"].as_u64().unwrap_or(0), reply["tour"]["of"].as_u64().unwrap_or(0));
+            if reply.get("pane").is_none() {
+                return format!("added {} · at {at} of {of}", reply["added"].as_u64().unwrap_or(0));
+            }
+            let opened = if reply["opened"] == true { "opened " } else { "" };
+            let place = format!("{}:{}", shown_path(reply["path"].as_str().unwrap_or("?")).rsplit('/').next().unwrap_or("?"), stop_lines(reply["first"].as_u64(), reply["last"].as_u64()));
+            let thread = reply["thread"].as_str().map(|t| format!(" · {t}")).unwrap_or_default();
+            let step = format!("{at} of {of} · {opened}{} · {place}{thread}", label(&reply["pane"]));
+            match action {
+                "new" => format!("tour of {of} · {step}"),
+                "add" => format!("added {} · {step}", args["stops"].as_array().map(Vec::len).unwrap_or(0)),
+                _ => step,
+            }
+        }
+    }
+}

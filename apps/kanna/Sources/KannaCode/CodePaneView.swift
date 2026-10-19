@@ -28,6 +28,7 @@ public final class CodePaneView: NSView {
     private var pendingLine: Int?
     public private(set) var comment: CodeComment?
     private var box: CodeCommentBox?
+    public var onTourStep: ((String) -> Void)?
     private var commentUnrevealed = false
 
     public init(path: String, line: Int?, zoom: CGFloat = 1, comment: CodeComment? = nil) {
@@ -200,7 +201,7 @@ public final class CodePaneView: NSView {
         let shown = comment.flatMap { failure == nil && $0.first <= file.lineCount ? $0 : nil }
         textView.comment = shown
         guard let shown else { return }
-        let made = CodeCommentBox(comment: shown)
+        let made = CodeCommentBox(comment: shown) { [weak self] to in self?.onTourStep?(to) }
         box = made
         textView.addSubview(made)
         placeComment()
@@ -408,6 +409,21 @@ public final class CodePaneView: NSView {
     }
 
     public var commentText: String? { box?.text }
+
+    public var tourFooter: (at: Int, of: Int, back: Bool, next: String, visible: Bool)? {
+        guard let footer = box?.footer else { return nil }
+        let clip = scrollView.contentView.bounds
+        let frame = textView.convert(footer.next.frame, from: footer)
+        return (footer.step.at, footer.step.of, footer.back.enabled, footer.next.title, clip.contains(frame))
+    }
+
+    public func pressTour(_ to: String) -> Bool {
+        guard let footer = box?.footer else { return false }
+        let button = to == "back" ? footer.back : footer.next
+        guard button.enabled else { return false }
+        button.click()
+        return true
+    }
 
     public var topLine: Int {
         let y = scrollView.contentView.bounds.minY + scrollView.contentView.contentInsets.top + textView.textContainerInset.height

@@ -612,6 +612,34 @@ mod tests {
     }
 
     #[test]
+    fn a_tour_takes_pairs_of_a_spot_and_its_text() {
+        let (name, request) = parse("kanna tour /tmp/a.rs:50 'Waits for a message.' /tmp/b.md:3 'The big picture.' --tab").unwrap();
+        assert_eq!(name, "tour");
+        assert_eq!((request["action"].clone(), request["tab"].clone()), (json!("new"), json!(true)));
+        assert_eq!(request["stops"], json!([{ "path": "/tmp/a.rs", "line": 50, "text": "Waits for a message." }, { "path": "/tmp/b.md", "line": 3, "text": "The big picture." }]));
+        let (_, request) = parse("kanna tour add --next /tmp/a.rs:20-48 'Sends it.'").unwrap();
+        assert_eq!((request["action"].clone(), request["next"].clone(), request["stops"][0]["last"].clone()), (json!("add"), json!(true), json!(48)));
+        assert_eq!(parse("kanna tour").unwrap().1["action"], "show");
+        assert_eq!(parse("kanna tour go back").unwrap().1["to"], "back");
+        assert_eq!(parse("kanna tour go 3").unwrap().1["to"], 3);
+        assert_eq!(parse("kanna tour end").unwrap().1["action"], "end");
+        for bad in [
+            "kanna tour /tmp/a.rs:5 Waits for a message.",
+            "kanna tour /tmp/a.rs:5",
+            "kanna tour /tmp/a.rs 'No line.'",
+            "kanna tour /tmp/a.rs:9-3 'Backwards.'",
+            "kanna tour /tmp/a.md:3-5 'A doc block.'",
+            "kanna tour add",
+            "kanna tour go",
+            "kanna tour go sideways",
+            "kanna tour --next /tmp/a.rs:5 'Next of nothing.'",
+            "kanna tour end now",
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn a_local_page_opens_as_a_file_url_and_markup_opens_or_switches_comments() {
         let dir = std::env::temp_dir().join(format!("kanna-page-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
