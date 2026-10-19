@@ -162,9 +162,13 @@ impl Pane {
         }
     }
 
-    pub fn program(&self) -> Option<&str> {
-        let first = self.command.as_deref()?.split_whitespace().next()?;
-        Some(first.rsplit('/').next().unwrap_or(first)).filter(|p| !p.is_empty())
+    pub fn program(&self) -> Option<String> {
+        let words = shlex::split(self.command.as_deref()?)?;
+        let first = match words.get(1).map(String::as_str) {
+            Some("--codex-remote") => words.get(3)?,
+            _ => words.first()?,
+        };
+        Some(first.rsplit('/').next().unwrap_or(first).to_string()).filter(|p| !p.is_empty())
     }
 
     pub fn label(&self) -> String {
@@ -462,6 +466,21 @@ mod status_tests {
         let mut web = Pane::new("p2", None, PaneType::Web);
         web.state = PaneState::Exited;
         assert!(web.summary().get("status").is_none());
+    }
+}
+
+#[cfg(test)]
+mod program_tests {
+    use super::*;
+
+    #[test]
+    fn a_terminal_names_the_agent_it_runs_through_codexs_wrapper() {
+        let mut pane = Pane::new("p1", None, PaneType::Term);
+        assert_eq!(pane.program(), None);
+        pane.command = Some("/opt/bin/claude --dangerously-skip-permissions 'hi'".into());
+        assert_eq!(pane.program().as_deref(), Some("claude"));
+        pane.command = Some("'/A/Kanna.app/Contents/Helpers/kanna' --codex-remote '/Users/me/Library/Application Support/kanna' /x/codex --yolo 'You'\\''re a task'\\''s agent'".into());
+        assert_eq!(pane.program().as_deref(), Some("codex"));
     }
 }
 

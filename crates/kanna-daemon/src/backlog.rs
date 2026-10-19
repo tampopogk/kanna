@@ -210,10 +210,10 @@ pub const QUIZ_ROLE: &str = "You are the Kanna quiz agent, on main: quiz me on w
 
 /// How an agent Kanna starts in a role starts: as you'd start it yourself, with its first message saying its role.
 pub fn started_as(program: &str, role: &str, context: Option<u64>) -> String {
-    let mut command = in_its_terminal(&unprompted(program));
-    if let (Some(flag), Some(tokens)) = (agent(program).and_then(|a| a.compact), context) {
-        command = format!("{command} {flag}{tokens}");
-    }
+    let command = match (agent(program).and_then(|a| a.compact), context) {
+        (Some(flag), Some(tokens)) => in_its_terminal(&format!("{} {flag}{tokens}", unprompted(program))),
+        _ => in_its_terminal(&unprompted(program)),
+    };
     match agent(program).and_then(|a| a.prompt) {
         Some(flag) => format!("{command} {flag} {}", quote(role)),
         None => format!("{command} {}", quote(role)),
@@ -2480,7 +2480,7 @@ mod tests {
         assert_eq!(start("agy"), "agy --dangerously-skip-permissions -i 'You are the Kanna planning agent.'");
         assert_eq!(started_as("/opt/bin/codex", PLANNER_ROLE, None), "/opt/bin/codex --yolo --no-daemon 'You are the Kanna planning agent.'");
         assert_eq!(started_as("/x/mock-agent", PLANNER_ROLE, Some(300_000)), "/x/mock-agent 'You are the Kanna planning agent.'");
-        assert_eq!(started_as("codex", PLANNER_ROLE, Some(300_000)), "codex --yolo --no-daemon -c model_auto_compact_token_limit=300000 'You are the Kanna planning agent.'", "codex compacts at planning.context too");
+        assert_eq!(started_as("codex", PLANNER_ROLE, Some(300_000)), "codex --yolo -c model_auto_compact_token_limit=300000 --no-daemon 'You are the Kanna planning agent.'", "codex compacts at planning.context too");
         assert_eq!(started_as("claude", PLANNER_ROLE, Some(300_000)), "claude --dangerously-skip-permissions 'You are the Kanna planning agent.'", "claude's is the terminal's CLAUDE_CODE_AUTO_COMPACT_WINDOW");
     }
 

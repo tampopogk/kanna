@@ -101,7 +101,7 @@ impl Model {
                 ("id", ws.dock.pane.clone().into()),
                 ("workspace", ws.id.clone().into()),
                 ("name", panes.get(&ws.dock.pane).and_then(|p| p.name.clone()).map_or(Value::Null, Value::String)),
-                ("agent", panes.get(&ws.dock.pane).and_then(|p| p.program()).map_or(Value::Null, |p| p.into())),
+                ("agent", panes.get(&ws.dock.pane).and_then(|p| p.program()).map_or(Value::Null, Value::String)),
                 ("where", ws.place.to_json()),
                 ("parkedAt", ws.parked_at.map_or(Value::Null, num)),
                 ("tabs", num(ws.tabs.tabs.len() as f64)),

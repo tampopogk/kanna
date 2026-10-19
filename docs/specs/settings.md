@@ -59,7 +59,7 @@ flowchart LR
 - **`backlog.runners`** is read for each repo with backlog tasks every 2s, and as a task's turn ends, so a change applies within seconds.
 - **`build.targets`** isn't read by the daemon: `kanna_targets` in `scripts/env.sh` reads it from your file with `plutil` each time a build script runs.
 - **`tasks.setup`, `tasks.teardown` and `tasks.timeout`** are read as a task's worktree is set up and as it's Done, for its repo.
-- **`planning.context`** is read as the daemon builds a planning terminal's command, for the folder it opens in, and becomes an `export` in that command, and a `-c model_auto_compact_token_limit` in codex's start (the `compact` flag in `AGENTS`, `backlog.rs`). Checked against the mock model: with a limit below a turn, codex compacts before its next one.
+- **`planning.context`** is read as the daemon builds a planning terminal's command, for the folder it opens in, and becomes an `export` in that command, and a `-c model_auto_compact_token_limit` in codex's start (the `compact` flag in `AGENTS`, `backlog.rs`), which Kanna's codex wrapper hands to codex's app-server, where compaction happens, as it does every `-c`. Checked against the mock model through the wrapper: with a limit below a turn, codex compacts before its next one.
 
 ## 5. Rejected
 

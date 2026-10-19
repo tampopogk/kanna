@@ -206,7 +206,7 @@ impl LayoutOwner {
                 out.insert("id".into(), ws.id.clone().into());
                 out.insert("where".into(), ws.place.to_json());
                 out.insert("dock".into(), self.dock(&ws.dock));
-                out.insert("agent".into(), self.panes.get(&ws.dock.pane).and_then(|p| p.program()).map_or(Value::Null, |p| p.into()));
+                out.insert("agent".into(), self.panes.get(&ws.dock.pane).and_then(|p| p.program()).map_or(Value::Null, Value::String));
                 out.insert("parkedAt".into(), ws.parked_at.map_or(Value::Null, num));
                 out.insert("windows".into(), model.workspace_windows(&ws.id).iter().map(|w| w.id.clone()).collect::<Vec<_>>().into());
                 out.insert("panes".into(), model.workspace_panes(s).into());

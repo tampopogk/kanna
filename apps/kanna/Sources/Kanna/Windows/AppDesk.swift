@@ -57,7 +57,7 @@ extension AppController {
         let dock = ws["dock"] ?? .null
         return [
             "task": dock["pane"] ?? .null, "workspace": ws["id"] ?? .null, "type": dock["type"] ?? "term", "parkedAt": .number(parkedAt),
-            "edge": dock["edge"] ?? "left", "width": dock["width"] ?? .null, "name": dock["name"] ?? .null,
+            "edge": dock["edge"] ?? "left", "width": dock["width"] ?? .null, "name": dock["name"] ?? .null, "agent": ws["agent"] ?? .null,
             "tabs": .array((ws["tabs"]?.array ?? []).map { $0["title"] ?? .null }), "panes": ws["panes"] ?? [],
         ]
     }
