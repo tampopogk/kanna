@@ -41,6 +41,8 @@ The reference has two parts:
 
 Scenarios are named for their behaviour, never numbered: tasks running in parallel would pick the same next number. Each is a function in the script with `scenario NAME MILESTONE` on the line above it; `scripts/e2e-kanna.sh NAME…` runs some by name, and `--through M` the ones due by that milestone.
 
+How a run stops everything it started, and sweeps up after runs that were killed: [e2e cleanup](../specs/e2e-cleanup.md).
+
 | Scenario | Checks | Passes in |
 |---|---|---|
 | `cli_terminal` | `kanna open term`, type `echo hi`, `kanna read` shows `hi` | M0 |

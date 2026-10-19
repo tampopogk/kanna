@@ -29,7 +29,7 @@ In `$KANNA_STATE_DIR/terminals/` (0700; a symlink there is refused), each writte
 
 ## 2. Stopping
 
-On SIGTERM, SIGINT or SIGHUP the daemon stops reading every pty (whatever is unread stays in the kernel buffer for the next daemon), writes `terminals.json`, saves every screen that changed since its last save, and exits; its terminals keep running in the keeper. A crash (SIGKILL) skips that: up to a second of screen changes are lost from the saved screens, and a full-screen program redraws them when it gets SIGWINCH.
+On SIGTERM, SIGINT or SIGHUP the daemon stops reading every pty (whatever is unread stays in the kernel buffer for the next daemon), writes `terminals.json`, saves every screen that changed since its last save, and exits; its terminals keep running in the keeper. The signal also sets `alarm(5)`, so a daemon whose main loop is stuck still ends 5 s later, as a crash. A crash (SIGKILL) skips that: up to a second of screen changes are lost from the saved screens, and a full-screen program redraws them when it gets SIGWINCH.
 
 ## 3. Starting
 

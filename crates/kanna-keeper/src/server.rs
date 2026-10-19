@@ -277,12 +277,13 @@ fn signals() -> Result<OwnedFd> {
     unsafe {
         libc::signal(libc::SIGHUP, libc::SIG_IGN);
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+        libc::signal(libc::SIGALRM, libc::SIG_DFL);
     }
     let sigs = sig::pipe(&[libc::SIGCHLD, libc::SIGTERM, libc::SIGINT])?;
     unsafe {
         let mut set: libc::sigset_t = std::mem::zeroed();
         libc::sigemptyset(&mut set);
-        for signo in [libc::SIGCHLD, libc::SIGTERM, libc::SIGINT] {
+        for signo in [libc::SIGCHLD, libc::SIGTERM, libc::SIGINT, libc::SIGALRM] {
             libc::sigaddset(&mut set, signo);
         }
         libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());

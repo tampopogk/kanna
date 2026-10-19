@@ -161,8 +161,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         installScreenshot()
         installAgentStatus()
         installDesk()
+        Darwin.signal(SIGALRM, SIG_DFL)
         for signal in [SIGTERM, SIGINT, SIGHUP] {
-            Darwin.signal(signal, SIG_IGN)
+            Darwin.signal(signal) { _ in alarm(5) }
             let source = DispatchSource.makeSignalSource(signal: signal, queue: .main)
             source.setEventHandler { NSApp.terminate(nil) }
             source.resume()

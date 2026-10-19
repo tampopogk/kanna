@@ -12,8 +12,13 @@ pub unsafe fn errno() -> *mut libc::c_int {
     libc::__error()
 }
 
+pub const STOP_GRACE: libc::c_uint = 5;
+
 extern "C" fn handler(signo: libc::c_int) {
     unsafe {
+        if signo == libc::SIGTERM || signo == libc::SIGINT {
+            libc::alarm(STOP_GRACE);
+        }
         let saved = *errno();
         let fd = WRITE_FD;
         if fd >= 0 {

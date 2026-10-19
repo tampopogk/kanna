@@ -56,6 +56,8 @@ const APP_TIMEOUT: Duration = Duration::from_secs(10);
 
 const LOCK_WAIT: Duration = Duration::from_secs(5);
 
+const STOP_GRACE: libc::c_uint = 5;
+
 pub enum Event {
     Request(Value, Box<dyn FnOnce(Value) + Send>),
     Wake,
@@ -130,7 +132,11 @@ fn run() -> Result<(), String> {
     let _ = std::fs::write(state_dir.join(kanna_build::RECORD), format!("{:#}\n", build.record(app_bundle().as_deref())));
 
     let stop_signals = signal_set(&[libc::SIGTERM, libc::SIGINT, libc::SIGHUP]);
-    unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &stop_signals, std::ptr::null_mut()) };
+    unsafe {
+        libc::pthread_sigmask(libc::SIG_BLOCK, &stop_signals, std::ptr::null_mut());
+        libc::signal(libc::SIGALRM, libc::SIG_DFL);
+        libc::pthread_sigmask(libc::SIG_UNBLOCK, &signal_set(&[libc::SIGALRM]), std::ptr::null_mut());
+    }
 
     let (events, inbox) = mpsc::channel::<Event>();
     let db = Rc::new(db::Db::open(&state_dir));
@@ -339,6 +345,7 @@ fn run() -> Result<(), String> {
         .spawn(move || loop {
             let mut signal = 0;
             if unsafe { libc::sigwait(&stop_signals, &mut signal) } == 0 {
+                unsafe { libc::alarm(STOP_GRACE) };
                 stop.store(signal, Ordering::SeqCst);
                 let _ = quit.send(Event::Quit(signal));
                 return;
