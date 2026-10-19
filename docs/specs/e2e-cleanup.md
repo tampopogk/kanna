@@ -83,6 +83,9 @@ Each sets SIGALRM to its default action and unblocks it at start, whatever it in
 
 ## 5. Checked by
 
-`crates/kanna-daemon/tests/codex_remote.rs`: the `--codex-remote` helper, with a fake `codex` whose app-server ignores SIGTERM and SIGHUP, exits on SIGHUP (129) and SIGTERM (143) and leaves neither child.
+`crates/kanna-daemon/tests/codex_remote.rs`, with a fake `codex` whose app-server ignores SIGTERM and SIGHUP:
+- the `--codex-remote` helper exits on SIGHUP (129) and SIGTERM (143) and leaves neither child;
+- a helper whose shell is SIGKILLed and whose terminal (a pty) is closed exits within 10 s, using under 1 s of CPU, and stops its children;
+- an orphaned helper running codex on its own (no terminal, parent gone) uses no CPU while it waits and quits when it alone gets SIGTERM.
 
 By hand, on 2026-10-19: a full run; a run interrupted with ctrl+c; a run SIGKILLed partway and then another run. After each, `ps -axo command | grep kanna-e2e` showed nothing from them.

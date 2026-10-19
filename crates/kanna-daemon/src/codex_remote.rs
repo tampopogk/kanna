@@ -120,8 +120,8 @@ impl Children {
         let stopping = pids.clone();
         let _ = std::thread::Builder::new().name("kanna.codex-signals".into()).spawn(move || {
             let mut signal = 0;
-            if unsafe { libc::sigwait(&set, &mut signal) } != 0 {
-                return;
+            while unsafe { libc::sigwait(&set, &mut signal) } != 0 {
+                std::thread::sleep(Duration::from_millis(100));
             }
             let pids = stopping.lock().map(|pids| pids.clone()).unwrap_or_default();
             for &pid in &pids {
@@ -135,7 +135,7 @@ impl Children {
             for &pid in pids.iter().filter(|&&pid| running(pid)) {
                 unsafe { libc::kill(pid, libc::SIGKILL) };
             }
-            std::process::exit(128 + signal);
+            unsafe { libc::_exit(128 + signal) };
         });
         Children(pids)
     }
