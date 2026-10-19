@@ -2015,6 +2015,54 @@ code_tour() {
   check wait_for 5 eval '[[ "$(code $id comment_first)" == 40 && "$(code $id comment_text)" == "Each step." ]]' || return 1
 }
 
+scenario code_tour_steps M4
+code_tour_steps() {
+  start_daemon && start_app || return 1
+  local tour="$KANNA_STATE_DIR/code_tour_steps.rs" other="$KANNA_STATE_DIR/code_tour_steps-other.rs" said id more agent
+  { echo 'fn outer() {'; echo '    loop {'; echo '        if ready() {'; for i in $(seq 4 60); do echo "            step($i);"; done; echo '        }'; echo '    }'; echo '}'; } >"$tour"
+  for i in $(seq 30); do echo "let line_$i = $i;"; done >"$other"
+  code() { raw "{\"id\":1,\"cmd\":\"debug.code\",\"args\":{\"pane\":\"$1\"${3:-}}}" | field "$2"; }
+  press() { code "$1" pressed ",\"tour\":\"$2\""; }
+  agent="$(kanna open --name agent --cmd cat | awk '{print $2}')"
+  [[ "$(kanna tour "$tour:3" "One." 2>&1)" == *"run it from the agent's terminal"* ]] || { echo "code_tour_steps: a tour without an agent"; return 1; }
+  [[ "$(KANNA_TERMINAL=$agent kanna tour "$tour:3" "One." "$other:99" "Past." 2>&1)" == *"has 30 lines"* ]] || { echo "code_tour_steps: a bad stop"; return 1; }
+  [[ "$(KANNA_TERMINAL=$agent kanna tour)" == "no tour" ]] || { echo "code_tour_steps: a refused tour was kept"; return 1; }
+  said="$(KANNA_TERMINAL=$agent kanna tour "$tour:3" "One." "$tour:40-42" "Two." "$other:7" "Three.")" || return 1
+  [[ "$said" == "tour of 3 · 1 of 3 · opened file-"*" · code_tour_steps.rs:3–61" ]] || { echo "said: $said"; return 1; }
+  id="$(grep -o 'file-[0-9]*' <<<"$said")"
+  check wait_for 5 eval '[[ "$(code $id tour.at)" == 1 && "$(code $id tour.of)" == 3 && "$(code $id tour.back)" == False && "$(code $id tour.next)" == "Next ›" ]]' || { echo "footer $(code $id tour)"; return 1; }
+  check wait_for 5 eval '[[ "$(code $id tour.visible)" == True ]]' || return 1
+  [[ "$(press $id back)" == False ]] || { echo "code_tour_steps: Back on the first stop"; return 1; }
+  [[ "$(press $id next)" == True ]] || return 1
+  check wait_for 5 eval '[[ "$(code $id comment_first)" == 40 && "$(code $id tour.at)" == 2 && "$(code $id tour.back)" == True ]]' || { echo "stop 2: $(code $id tour)"; return 1; }
+  sleep 0.5
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"code_tour_steps.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/code_tour_steps.png" "$out/code_tour_steps.png" 2>/dev/null
+  press $id next >/dev/null
+  check wait_for 5 eval '[[ "$(KANNA_TERMINAL=$agent kanna tour | head -1)" == "at 3 of 3 · "*"code_tour_steps-other.rs:7" ]]' || { KANNA_TERMINAL=$agent kanna tour; return 1; }
+  more="$(kanna workspace list --all --json | python3 -c 'import json, sys
+print(next(p["id"] for p in json.load(sys.stdin)["panes"] if (p.get("path") or "").endswith("-other.rs")))')"
+  check wait_for 5 eval '[[ "$(code $more tour.at)" == 3 && "$(code $more tour.next)" == Done ]]' || { echo "stop 3: $(code $more tour)"; return 1; }
+  check wait_for 5 eval '[[ "$(code $id tour)" == None && "$(code $id comment_first)" == 40 ]]' || { echo "the last stop kept its footer: $(code $id tour)"; return 1; }
+  said="$(KANNA_TERMINAL=$agent kanna tour add --next "$tour:20-22" "An answer.")" || return 1
+  [[ "$said" == "added 1 · 4 of 4 · $id · code_tour_steps.rs:20–22" ]] || { echo "added: $said"; return 1; }
+  check wait_for 5 eval '[[ "$(code $id comment_first)" == 20 && "$(code $id tour.at)" == 4 && "$(code $id tour.next)" == Done ]]' || return 1
+  check wait_for 5 eval '[[ "$(code $more tour)" == None ]]' || return 1
+  said="$(KANNA_TERMINAL=$agent kanna tour add "$other:12" "Later.")" || return 1
+  [[ "$said" == "added 1 · at 4 of 5" ]] || { echo "added later: $said"; return 1; }
+  check wait_for 5 eval '[[ "$(code $id tour.of)" == 5 && "$(code $id tour.next)" == "Next ›" ]]' || return 1
+  press $id back >/dev/null
+  check wait_for 5 eval '[[ "$(code $more tour.at)" == 3 && "$(code $more tour.of)" == 5 ]]' || return 1
+  stop_app; start_app || return 1
+  check wait_for 5 eval '[[ "$(code $more tour.at)" == 3 && "$(code $more comment_first)" == 7 ]]' || { echo "after a relaunch: $(code $more tour)"; return 1; }
+  press $more next >/dev/null
+  check wait_for 5 eval '[[ "$(code $id tour.at)" == 4 ]]' || return 1
+  press $id next >/dev/null
+  check wait_for 5 eval '[[ "$(code $more tour.at)" == 5 && "$(code $more comment_first)" == 12 ]]' || return 1
+  press $more next >/dev/null
+  check wait_for 5 eval '[[ "$(KANNA_TERMINAL=$agent kanna tour)" == "no tour" && "$(code $more tour)" == None && "$(code $more comment_first)" == 12 ]]' || { echo "done: $(code $more tour)"; return 1; }
+  [[ -z "$(kanna read "$agent" | tr -d '[:space:]')" ]] || { echo "code_tour_steps: stepping sent the agent: $(kanna read "$agent")"; return 1; }
+}
+
 scenario code_comment_box M4
 code_comment_box() {
   start_daemon && start_app || return 1

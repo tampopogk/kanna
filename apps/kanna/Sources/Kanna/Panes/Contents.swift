@@ -131,8 +131,10 @@ final class Contents {
         case "code":
             let path = pane["path"]?.string ?? ""
             let note = pane["comment"]
+            let mark = pane["tour"]
+            let step = mark.flatMap { mark in mark["at"]?.number.map { CodeTourStep(at: Int($0), of: Int(mark["of"]?.number ?? $0)) } }
             let comment = note?["path"]?.string == path ? note.flatMap { note in
-                note["first"]?.number.map { CodeComment(first: Int($0), last: Int(note["last"]?.number ?? $0), text: note["text"]?.string ?? "") }
+                note["first"]?.number.map { CodeComment(first: Int($0), last: Int(note["last"]?.number ?? $0), text: note["text"]?.string ?? "", tour: step) }
             } : nil
             let code = CodePaneView(path: Self.absolute(path), line: pane["line"]?.number.map { Int($0) }, zoom: textSize?(id) ?? 1, comment: comment)
             code.onZoom = { [weak self, weak code] in
@@ -141,6 +143,9 @@ final class Contents {
             }
             code.onHistory = { [weak self] back in self?.onRequest?("navigate", ["pane": .string(id), back ? "back" : "forward": true]) }
             code.onFocus = { [weak self] in self?.onFocus?(id) }
+            if let owner = mark?["owner"]?.string {
+                code.onTourStep = { [weak self] to in self?.onRequest?("tour", ["action": "go", "owner": .string(owner), "to": .string(to)]) }
+            }
             code.contextMenu = { [weak self] in self?.contextMenu?() }
             failure = code.failure?.message
             content = code

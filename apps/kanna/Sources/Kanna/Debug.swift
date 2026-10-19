@@ -209,6 +209,8 @@ extension AppController {
             out["path"] = .string(code.path)
             out["language"] = code.language.map { .string($0) } ?? .null
             out["comment_text"] = code.commentText.map { .string($0) } ?? .null
+            if let to = args["tour"]?.string { out["pressed"] = .bool(code.pressTour(to)) }
+            out["tour"] = code.tourFooter.map { ["at": .number(Double($0.at)), "of": .number(Double($0.of)), "back": .bool($0.back), "next": .string($0.next), "visible": .bool($0.visible)] } ?? .null
             out["pinned_rows"] = .array(code.pinnedMarks.map { line, marks in
                 let ranges: ([NSRange]) -> JSON = { .array($0.map { .array([.number(Double($0.location)), .number(Double($0.length))]) }) }
                 return ["line": .number(Double(line)), "selection": ranges(marks.selection), "matches": ranges(marks.matches), "current": .bool(marks.current),
