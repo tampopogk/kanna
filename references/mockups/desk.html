@@ -343,12 +343,12 @@ function menubar() {
 }
 function openRecent(repo) {
   s.menu = null;
+  touch(repo);
   const there = s.windows.find(w => repoOf(w) === repo);
   if (there) return bringForward(there);
   const id = "w" + s.nextWindow++;
   s.windows.push({ id, desk: null, repo });
   s.key = id;
-  touch(repo);
   render();
   document.getElementById(id).scrollIntoView({ behavior: "smooth", block: "center" });
 }
