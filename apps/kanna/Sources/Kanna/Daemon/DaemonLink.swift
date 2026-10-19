@@ -29,7 +29,7 @@ final class DaemonLink: TerminalLink {
         self.starter = starter
         connection = DaemonConnection(
             path: socketPath,
-            hello: { [weak self] in
+            hello: {
                 var args: [String: JSON] = ["pid": .number(Double(ProcessInfo.processInfo.processIdentifier))]
                 if let build = KannaBuild.daemonBuild { args["build"] = .string(build) }
                 return ["id": 0, "cmd": "app.hello", "args": .object(args)]
