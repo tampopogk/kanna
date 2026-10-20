@@ -141,7 +141,13 @@ flowchart LR
 
 ## 6. kmux
 
-kmux gets the same split, through [the kmux subtree](kmux-subtree.md) as a kmux PR: its server keeps the content and the logical presentation, with content IDs in its protocol and CLI, and its app keeps windows and panes. kmux stays the reference model ([kmux is the reference](kmux-reference.md)), so its protocol cases change with it and Kanna passes the new ones.
+kmux has the same split, through [the kmux subtree](kmux-subtree.md) as a kmux PR (its note: `references/kmux/docs/presentation-layers.md`). Its core keeps the content and the logical presentation, with content IDs (`term-N`, `page-N`, `file-N`, `ios-N`), `tab-N`, `win-N` and `ws-N` in its protocol, CLI and state file (version 2). Its app keeps window frames and markdown magnification in a file of its own, and changes the core only by requests: a dropped divider is `resize {tab, path, index, share}`, as in Kanna. kmux stays the reference model ([kmux is the reference](kmux-reference.md)), and Kanna passes its new cases.
+
+Where kmux differs, for kmux's sake:
+
+- **One process.** kmux's core runs in its app, and publishes to it in-process (`onChange`): Ghostty's terminals live in the app, so there is no server to split off yet, and no socket `subscribe`.
+- **No diffs.** kmux has no diff panes; `diff-N` stays Kanna's.
+- **Markdown magnification is the app's.** Kanna's mux state no longer saves a pane's `zoom` either.
 
 ## 7. Glossary
 

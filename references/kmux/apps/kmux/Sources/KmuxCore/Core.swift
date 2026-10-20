@@ -54,6 +54,16 @@ public final class Core {
         onChange()
     }
 
+    /// What a pane's content found out about itself: a terminal's working
+    /// directory (OSC 7), where a restored terminal starts; the simulator an
+    /// iOS pane runs on.
+    public func report(_ paneID: String, cwd: String? = nil, device: String? = nil) {
+        guard let pane = model.panes[paneID] else { return }
+        if let cwd { pane.cwd = cwd }
+        if let device { pane.device = device }
+        onChange()
+    }
+
     func settled(_ pane: Pane) async {
         guard pane.state == .starting else { return }
         let id = pane.id
@@ -327,6 +337,10 @@ public final class Core {
     private func restart(_ args: JSON) async throws -> [String: JSON] {
         let pane = try needPane(args["pane"]?.string)
         host?.stop(pane)
+        if pane.type == .term {
+            waiters.removeValue(forKey: pane.id)?.forEach { $0.resume() }
+            model.rename(pane, to: model.nextContentID(.term))
+        }
         pane.state = .starting
         pane.exitCode = nil
         pane.error = nil

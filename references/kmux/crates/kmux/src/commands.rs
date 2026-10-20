@@ -33,7 +33,7 @@ pub static COMMANDS: &[Command] = &[
         options: &[
             ("--cmd CMD", "Shell command line to run in your login shell, e.g. \"npm run dev\". Put it in single quotes if it uses $VARS or ;, so your own shell leaves it alone. Default: an interactive shell."),
             ("--cwd DIR", "Working directory."),
-            ("--name NAME", "Optional. A name to refer to the pane by in later commands; without one, use the ID that open prints (e.g. p3)."),
+            ("--name NAME", "Optional. A name to refer to the pane by in later commands; without one, use the ID that open prints (e.g. term-3)."),
             ("--split right|down|auto", "Where the new pane goes relative to the focused pane. auto (default) splits along the longer side."),
             ("--size FRACTION", "Share of the focused pane's space the new pane takes: 1/3, 25% or 0.25. Default 1/2."),
             ("--tab", "Open in a new tab instead of splitting."),
@@ -64,9 +64,9 @@ pub static COMMANDS: &[Command] = &[
         group: "Panes",
         summary: "Close a pane, or a whole tab or window with everything in it.",
         usage: "kmux close PANE\n       kmux close --tab TAB\n       kmux close --window WINDOW",
-        options: &[("--tab TAB", "Close a tab, e.g. t2."), ("--window WINDOW", "Close a window, e.g. w2.")],
+        options: &[("--tab TAB", "Close a tab, e.g. tab-2."), ("--window WINDOW", "Close a window, e.g. win-2.")],
         notes: "Closing a tab's last pane closes the tab; closing a window's last tab closes the window, unless it has a docked pane. A docked pane closes only with its window (`kmux close --window`); undock it first with `kmux move PANE --tab` to close it alone.",
-        examples: &[("kmux close logs", "Close the pane named logs."), ("kmux close --tab t2", "Close tab t2 and its panes.")],
+        examples: &[("kmux close logs", "Close the pane named logs."), ("kmux close --tab tab-2", "Close tab-2 and its panes.")],
         parse: |args| target(args, "close"),
         show: output::closed,
     },
@@ -77,7 +77,7 @@ pub static COMMANDS: &[Command] = &[
         usage: "kmux focus PANE\n       kmux focus --tab TAB\n       kmux focus --window WINDOW",
         options: &[("--tab TAB", "Focus a tab."), ("--window WINDOW", "Focus a window.")],
         notes: "Focusing a pane in another tab or window switches to it. Focusing another pane cancels zoom.",
-        examples: &[("kmux focus server", "Focus the pane named server."), ("kmux focus --tab t1", "Switch to tab t1.")],
+        examples: &[("kmux focus server", "Focus the pane named server."), ("kmux focus --tab tab-1", "Switch to tab-1.")],
         parse: |args| target(args, "focus"),
         show: |args, reply| match (args["pane"].as_str(), args["tab"].as_str()) {
             (Some(pane), _) => format!("focused {pane} (key window {})", reply["window"].as_str().unwrap_or("?")),
@@ -213,10 +213,10 @@ pub static COMMANDS: &[Command] = &[
         summary: "Rename a tab. (In the app: double-click the tab.)",
         usage: "kmux rename-tab TAB TITLE...",
         options: &[],
-        notes: "TAB is a tab ID such as t1 (see `kmux workspace list --all`). Everything after TAB is the title.",
-        examples: &[("kmux rename-tab t1 servers", "Call tab t1 \"servers\".")],
+        notes: "TAB is a tab ID such as tab-1 (see `kmux workspace list --all`). Everything after TAB is the title.",
+        examples: &[("kmux rename-tab tab-1 servers", "Call tab-1 \"servers\".")],
         parse: |args| {
-            let tab = args.positional().ok_or_else(|| usage("rename-tab", "missing TAB (an ID like t1; see `kmux workspace list --all`)"))?;
+            let tab = args.positional().ok_or_else(|| usage("rename-tab", "missing TAB (an ID like tab-1; see `kmux workspace list --all`)"))?;
             let title = args.rest().ok_or_else(|| usage("rename-tab", "missing TITLE"))?;
             Ok(json!({ "tab": tab, "title": title }))
         },
@@ -229,7 +229,7 @@ pub static COMMANDS: &[Command] = &[
         usage: "kmux move-tab TAB [--window WINDOW|new] [--index N]",
         options: &[("--window WINDOW|new", "Destination window. Default: the tab's own window."), ("--index N", "Position in the tab bar, from 0. Default: last.")],
         notes: "",
-        examples: &[("kmux move-tab t2 --window new", "Move tab t2 into a new window."), ("kmux move-tab t3 --index 0", "Make t3 the first tab.")],
+        examples: &[("kmux move-tab tab-2 --window new", "Move tab-2 into a new window."), ("kmux move-tab tab-3 --index 0", "Make tab-3 the first tab.")],
         parse: |args| {
             let tab = args.positional().ok_or_else(|| usage("move-tab", "missing TAB"))?;
             let mut out = json!({ "tab": tab });
@@ -250,7 +250,7 @@ pub static COMMANDS: &[Command] = &[
         summary: "Make, hide, show, close or list workspaces: named groups of windows, shown or hidden together.",
         usage: "kmux workspace new [NAME]\n       kmux workspace hide WORKSPACE\n       kmux workspace show WORKSPACE\n       kmux workspace close WORKSPACE\n       kmux workspace list [--all]",
         options: &[("--all", "Every window, workspace and pane, not just your own.")],
-        notes: "WORKSPACE is a workspace's ID (ws-1) or its name. A new workspace has no windows; put some in with `kmux window assign`. Hidden, its windows close, their panes still running, and nothing on them takes the keyboard (`kmux focus` refuses); shown, they open again where they were. Closing a workspace closes its windows and everything in them.\nlist shows your own: the window your terminal ($KMUX_PANE) is in, or its workspace with all its windows, and their panes. With --all: free windows first, then each workspace with its windows: `workspace ws-1 (checkout)`, with `hidden` after a hidden one. Layouts are written as `a:2/3 | b` (side by side) and `a / b` (stacked). `*` marks the key window, the active tab and the focused pane. A window's docked pane has its own line: `dock: p1 (agent)  left 2/5`, with `frozen` after a frozen one.",
+        notes: "WORKSPACE is a workspace's ID (ws-1) or its name. A new workspace has no windows; put some in with `kmux window assign`. Hidden, its windows close, their panes still running, and nothing on them takes the keyboard (`kmux focus` refuses); shown, they open again where they were. Closing a workspace closes its windows and everything in them.\nlist shows your own: the window your terminal ($KMUX_TERMINAL) is in, or its workspace with all its windows, and their panes. With --all: free windows first, then each workspace with its windows: `workspace ws-1 (checkout)`, with `hidden` after a hidden one. Layouts are written as `a:2/3 | b` (side by side) and `a / b` (stacked). `*` marks the key window, the active tab and the focused pane. A window's docked pane has its own line: `dock: term-1 (agent)  left 2/5`, with `frozen` after a frozen one.",
         examples: &[
             ("kmux workspace new checkout", "Make a workspace named checkout."),
             ("kmux workspace hide checkout", "Put its windows away; what runs in them keeps running."),
@@ -269,7 +269,7 @@ pub static COMMANDS: &[Command] = &[
         usage: "kmux window assign WINDOW WORKSPACE\n       kmux window free WINDOW",
         options: &[],
         notes: "A window is in one workspace, or none (a free window). Put in a hidden workspace, it closes with the workspace's other windows; freed, it's on screen again. In the app: Window → Assign Window to Workspace and Free Window.",
-        examples: &[("kmux window assign w2 checkout", "Make w2 one of checkout's windows."), ("kmux window free w2", "Take w2 out of its workspace; it stays open.")],
+        examples: &[("kmux window assign win-2 checkout", "Make win-2 one of checkout's windows."), ("kmux window free win-2", "Take win-2 out of its workspace; it stays open.")],
         parse: parse_window,
         show: output::window,
     },
@@ -348,7 +348,7 @@ pub fn usage(command: &str, problem: &str) -> Failure {
 }
 
 fn pane(args: &mut Args, command: &str) -> Result<String, Failure> {
-    args.positional().ok_or_else(|| usage(command, "missing PANE (a pane name, or an ID like p1; see `kmux workspace list --all`)"))
+    args.positional().ok_or_else(|| usage(command, "missing PANE (a pane name, or an ID like term-1; see `kmux workspace list --all`)"))
 }
 
 /// PANE, --tab TAB or --window WINDOW.
@@ -388,7 +388,7 @@ fn parse_workspace(args: &mut Args) -> Result<Value, Failure> {
     let action = args.positional().ok_or_else(|| usage("workspace", "say new, hide, show, close or list"))?;
     match action.as_str() {
         "list" if args.flag("--all") => Ok(json!({ "action": "list", "all": true })),
-        "list" => Ok(match std::env::var("KMUX_PANE").ok().filter(|p| !p.is_empty()) {
+        "list" => Ok(match std::env::var("KMUX_TERMINAL").ok().filter(|p| !p.is_empty()) {
             Some(pane) => json!({ "action": "list", "pane": pane }),
             None => json!({ "action": "list" }),
         }),
@@ -406,7 +406,7 @@ fn parse_workspace(args: &mut Args) -> Result<Value, Failure> {
 
 fn parse_window(args: &mut Args) -> Result<Value, Failure> {
     let action = args.positional().ok_or_else(|| usage("window", "say assign or free"))?;
-    let window = args.positional().ok_or_else(|| usage("window", "missing WINDOW (an ID like w2; see `kmux workspace list --all`)"))?;
+    let window = args.positional().ok_or_else(|| usage("window", "missing WINDOW (an ID like win-2; see `kmux workspace list --all`)"))?;
     match action.as_str() {
         "assign" => {
             let workspace = args.positional().ok_or_else(|| usage("window", "missing WORKSPACE (an ID like ws-1, or its name; see `kmux workspace list --all`)"))?;

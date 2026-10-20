@@ -5,7 +5,7 @@ use crate::json::{is_true, json, num, string, Map, Value};
 use crate::layout::{place_request, scope_request, Edge, LayoutHost, LayoutLink, LocalLayout, Placement, Scope, SplitSide};
 use crate::workspace::MAC_APP;
 use crate::model::{fraction, Model};
-use crate::pane::{read_diff_args, read_view, Comment, Pane, PaneState, PaneType, Panes, StopMark};
+use crate::pane::{read_diff_args, read_view, Comment, Pane, PaneState, PaneType, Panes, StopMark, CONTENT_PREFIXES};
 use crate::state;
 
 #[path = "tour.rs"]
@@ -1299,16 +1299,34 @@ impl CoreHandle {
             Some(Value::Object(counters)) => counters,
             _ => Map::new(),
         };
-        counters.insert("pane".into(), num(s.panes.counter() as f64));
+        let version = if s.panes.content_ids() {
+            let numbers = s.panes.numbers();
+            counters.insert("term".into(), num(s.panes.terminals() as f64));
+            for prefix in CONTENT_PREFIXES.into_iter().filter(|p| *p != "term") {
+                counters.insert(prefix.into(), num(numbers.get(prefix).copied().unwrap_or(0) as f64));
+            }
+            state::STATE_VERSION
+        } else {
+            counters.insert("pane".into(), num(s.panes.counter() as f64));
+            1
+        };
         out.insert("kmux".into(), "state".into());
-        out.insert("version".into(), num(state::STATE_VERSION as f64));
+        out.insert("version".into(), num(version as f64));
         out.insert("counters".into(), Value::Object(counters));
         out.insert("panes".into(), state::export_panes(&s.panes));
         Ok(Value::Object(out))
     }
 
     async fn restore_state(&self, saved: &Value) -> Result<(), KmuxError> {
-        let (panes, counter) = state::import_panes(saved)?;
+        let content = self.state().panes.content_ids();
+        let saved = &if content { state::upgrade(saved) } else { saved.clone() };
+        let (panes, counter, numbers) = if content {
+            let (panes, numbers) = state::import_content(saved)?;
+            (panes, 0, numbers)
+        } else {
+            let (panes, counter) = state::import_panes(saved)?;
+            (panes, counter, HashMap::new())
+        };
         let ids: Vec<String> = panes.iter().map(|p| p.id.clone()).collect();
         let _turn = self.0.turns.take().await;
         self.layout(json!({ "op": "check", "state": saved, "ids": ids })).await?;
@@ -1323,7 +1341,8 @@ impl CoreHandle {
             let mut s = self.state();
             let restored: Vec<Pane> = panes.into_iter().filter(|p| placed.contains(p.id.as_str())).collect();
             let ids = restored.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
-            s.panes.install(restored, counter, 0);
+            s.panes.install(restored, counter, numbers.get("term").copied().unwrap_or(0));
+            s.panes.note_numbers(&numbers);
             ids
         };
         self.changed();

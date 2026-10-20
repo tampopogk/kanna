@@ -199,7 +199,21 @@ function h(tag, attrs = {}, ...kids) {
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 const desktopSize = () => { const d = $('#desktop'); return { W: d.clientWidth || 1000, H: d.clientHeight || 600 }; };
-hooks.desktopSize = desktopSize;
+// The page's physical presentation, as kmux's app keeps its own: where each
+// window is on the desktop (G) and how far each markdown pane is magnified
+// (mdZoom). The core never sees them; the page saves them beside its layout.
+const G = {};
+function geo(w) {
+  if (!G[w.id]) {
+    const { W, H } = desktopSize();
+    const prev = S.windows.filter(x => x !== w && G[x.id] && shown(x)).sort((a, b) => b.z - a.z)[0];
+    const p = prev && G[prev.id];
+    let g = p ? { x: p.x + 32, y: p.y + 32, w: p.w, h: p.h } : { x: 24, y: 18, w: W - 48, h: H - 36 };
+    if (g.x + g.w > W || g.y + g.h > H) g = { x: 24, y: 18, w: Math.min(g.w, W - 48), h: Math.min(g.h, H - 36) };
+    G[w.id] = g;
+  }
+  return G[w.id];
+}
 hooks.render = render;
 hooks.paneIsWide = id => {
   const el = document.querySelector(`.pane[data-id="${id}"]`);
@@ -421,9 +435,16 @@ function render() {
   }
 }
 
+// A click asks the core to focus, like any request, but doesn't redraw the
+// page under the pointer: the page updates only what the click changed.
+function quietly(req) {
+  const draw = hooks.render;
+  hooks.render = () => {};
+  try { return handle(req); } finally { hooks.render = draw; }
+}
 function activateWin(w) {
   if (S.key === w.id) return;
-  raise(w);
+  quietly({ cmd: 'focus', args: { window: w.id } });
   document.querySelectorAll('.win').forEach(x => {
     x.classList.toggle('key', x.dataset.win === w.id);
     if (x.dataset.win === w.id) x.style.zIndex = w.z;
@@ -435,7 +456,7 @@ function renderWindow(w) {
   const shown = zoomedOf(w) && shownIds(w).includes(zoomedOf(w)) ? 1 : shownIds(w).length;
   const el = h('div', {
     class: 'win' + (w.id === S.key ? ' key' : '') + (shown > 1 ? ' multi' : ''), dataset: { win: w.id },
-    style: `left:${w.x}px;top:${w.y}px;width:${w.w}px;height:${w.h}px;z-index:${w.z}`,
+    style: `left:${geo(w).x}px;top:${geo(w).y}px;width:${geo(w).w}px;height:${geo(w).h}px;z-index:${w.z}`,
     onpointerdown: () => activateWin(w),
   });
   el.append(
@@ -478,13 +499,14 @@ function dockDivider(w, dock, rest) {
     const span = box.width - 4, min = Math.min(MIN_PX, span / 2);
     const tip = h('div', { class: 'drag-tip' });
     document.body.append(tip);
+    let width = w.dock.width;
     const move = ev => {
       const x = w.dock.edge === 'left' ? ev.clientX - box.left : box.right - ev.clientX;
       let s = clamp(x, min, span - min) / span;
       const snap = NICE.find(f => Math.abs(s - f) < 0.015) ?? (Math.abs(s - DOCK_WIDTH) < 0.015 ? DOCK_WIDTH : null);
       if (snap) s = snap;
-      w.dock.width = s;
-      sizeDock(w, dock, rest);
+      width = s;
+      dock.style.width = `calc((100% - 4px) * ${s})`;
       tip.textContent = w.dock.edge === 'left' ? `${fmtFrac(s)} | ${fmtFrac(1 - s)}` : `${fmtFrac(1 - s)} | ${fmtFrac(s)}`;
       tip.style.left = `${ev.clientX + 12}px`;
       tip.style.top = `${ev.clientY + 12}px`;
@@ -493,7 +515,7 @@ function dockDivider(w, dock, rest) {
       tip.remove();
       d.removeEventListener('pointermove', move);
       d.removeEventListener('pointerup', up);
-      render();
+      if (width !== w.dock.width) ui({ cmd: 'resize', args: { pane: w.dock.pane, size: width } }); else render();
     };
     d.addEventListener('pointermove', move);
     d.addEventListener('pointerup', up);
@@ -548,19 +570,21 @@ function renderTabs(w) {
   return bar;
 }
 
-function renderNode(node, w, share = 1) {
+function renderNode(node, w, path = []) {
   if (node.t === 'pane') return renderPane(S.panes[node.id], w);
   const el = h('div', { class: `split ${node.dir}` });
   node.kids.forEach((k, i) => {
-    if (i > 0) el.append(divider(node, i - 1));
-    const c = renderNode(k.node, w, k.size);
+    if (i > 0) el.append(divider(node, activeTabOf(w).id, path, i - 1));
+    const c = renderNode(k.node, w, [...path, i]);
     c.style.flex = `${k.size} ${k.size} 0px`;
     el.append(c);
   });
   return el;
 }
 
-function divider(split, i) {
+// A divider drag previews the new sizes and, when it's let go, asks the core
+// for them, as kmux's app does: resize { tab, path, index, share }.
+function divider(split, tab, path, i) {
   const d = h('div', { class: 'divider' });
   d.addEventListener('pointerdown', e => {
     e.preventDefault();
@@ -574,13 +598,13 @@ function divider(split, i) {
     const min = Math.min(MIN_PX, span / 2);
     const tip = h('div', { class: 'drag-tip' });
     document.body.append(tip);
+    let share = split.kids[i].size;
     const move = ev => {
       const pos = clamp((row ? ev.clientX : ev.clientY) - start, min, span - min);
       let s = pair * pos / span;
       const snap = NICE.find(f => Math.abs(s - f) < 0.015 && f < pair);
       if (snap) s = snap;
-      split.kids[i].size = s;
-      split.kids[i + 1].size = pair - s;
+      share = s;
       [[a, s], [b, pair - s]].forEach(([el, v]) => { el.style.flex = `${v} ${v} 0px`; });
       tip.textContent = `${fmtFrac(s)} ${row ? '|' : '/'} ${fmtFrac(pair - s)}`;
       tip.style.left = `${ev.clientX + 12}px`;
@@ -590,7 +614,7 @@ function divider(split, i) {
       tip.remove();
       d.removeEventListener('pointermove', move);
       d.removeEventListener('pointerup', up);
-      render();
+      if (share !== split.kids[i].size) ui({ cmd: 'resize', args: { tab, path, index: i, share } }); else render();
     };
     d.addEventListener('pointermove', move);
     d.addEventListener('pointerup', up);
@@ -608,7 +632,7 @@ function defaultsFor(type) {
 // --- pane actions: shared by menus and hotkeys --------------------------------
 async function splitFrom(p, dir, type) {
   const w = p ? findPane(p.id).win : keyWin();
-  if (p) w.focused = p.id;
+  if (p) await handle({ cmd: 'focus', args: { pane: p.id } });
   const res = await ui({ cmd: 'open', args: { ...defaultsFor(type), split: dir, ...(w ? { window: w.id } : {}) } });
   if (type === 'web' && res.ok) { S.urlEdit = res.pane.id; render(); }
 }
@@ -689,11 +713,10 @@ function renderPane(p, w) {
     class: `pane${p.id === w.focused ? ' focused' : ''}`, dataset: { id: p.id },
     onmousedown: () => {
       if (w.focused === p.id) return;
-      w.focused = p.id;
-      if (!dockOf(p.id)) activeTabOf(w).lastFocus = p.id;
+      quietly({ cmd: 'focus', args: { pane: p.id } });
       document.querySelectorAll(`.win[data-win="${w.id}"] .pane`).forEach(x => x.classList.toggle('focused', x.dataset.id === p.id));
     },
-    oncontextmenu: e => { e.preventDefault(); w.focused = p.id; raise(w); render(); showMenuAt(e.clientX, e.clientY, paneMenu(p)); },
+    oncontextmenu: async e => { e.preventDefault(); await handle({ cmd: 'focus', args: { pane: p.id } }); render(); showMenuAt(e.clientX, e.clientY, paneMenu(p)); },
   });
   const body = h('div', { class: 'pane-body' });
   if (p.state === 'failed') {
@@ -784,7 +807,6 @@ function magnify(view, z, ax = view.clientWidth / 2, ay = view.clientHeight / 2)
   sizer.style.width = view.clientWidth * z + 'px';
   sizer.style.height = inner.offsetHeight * z + 'px';
   view._z = mdZoom[view.dataset.pane] = z;
-  if (S.panes[view.dataset.pane]) S.panes[view.dataset.pane].zoom = z;
   scheduleSave();
   view.scrollLeft = x * z - ax;
   view.scrollTop = y * z - ay;
@@ -817,7 +839,7 @@ function mdView(p) {
     magnify(view, view._z * Math.exp(-e.deltaY / 100), e.clientX - box.left, e.clientY - box.top);
   }, { passive: false });
   requestAnimationFrame(() => {
-    magnify(view, mdZoom[p.id] || p.zoom || 1, 0, 0);
+    magnify(view, mdZoom[p.id] || 1, 0, 0);
     view.scrollTop = mdScroll[p.id] || 0;
     const fit = () => magnify(view, view._z, 0, 0); // diagrams change the page's height
     if (window.mermaid) mermaid.run({ nodes: page.querySelectorAll('.mermaid') }).then(fit, fit);
@@ -854,11 +876,8 @@ function focusInput(id) {
   const el = document.querySelector(`[data-keep="term:${id}"]`);
   if (el) el.focus(); else document.activeElement?.blur();
 }
-function switchTab(w, t) {
-  const ids = paneIds(t.root);
-  w.active = t.id;
-  w.focused = ids.includes(t.lastFocus) ? t.lastFocus : ids[0] ?? null;
-  raise(w);
+async function switchTab(w, t) {
+  await handle({ cmd: 'focus', args: { tab: t.id } });
   render();
   focusInput(w.focused);
 }
@@ -913,37 +932,35 @@ function placeNewWindow(id, pt, srcW) {
   const w = winById(id);
   if (!w || !pt) return;
   const { W, H } = desktopSize();
-  w.w = Math.min(srcW, W - 20);
-  w.h = Math.min(Math.round(srcW * 0.62), H - 20);
-  w.x = clamp(pt.x - 30, 0, W - w.w);
-  w.y = clamp(pt.y - 14, 0, H - w.h);
+  const g = { w: Math.min(srcW, W - 20), h: Math.min(Math.round(srcW * 0.62), H - 20) };
+  G[w.id] = { ...g, x: clamp(pt.x - 30, 0, W - g.w), y: clamp(pt.y - 14, 0, H - g.h) };
   render();
 }
 
 function startWinDrag(e, w, el) {
   if (e.button !== 0 || e.target.closest('button')) return;
   e.preventDefault();
-  const x0 = e.clientX, y0 = e.clientY, wx = w.x, wy = w.y;
+  const g = geo(w), x0 = e.clientX, y0 = e.clientY, wx = g.x, wy = g.y;
   const { W, H } = desktopSize();
   track(ev => {
-    w.x = clamp(wx + ev.clientX - x0, 80 - w.w, W - 80);
-    w.y = clamp(wy + ev.clientY - y0, 0, H - 28);
-    el.style.left = `${w.x}px`;
-    el.style.top = `${w.y}px`;
-  }, () => {});
+    g.x = clamp(wx + ev.clientX - x0, 80 - g.w, W - 80);
+    g.y = clamp(wy + ev.clientY - y0, 0, H - 28);
+    el.style.left = `${g.x}px`;
+    el.style.top = `${g.y}px`;
+  }, scheduleSave);
 }
 function startWinResize(e, w, el) {
   if (e.button !== 0) return;
   e.preventDefault();
   e.stopPropagation();
   activateWin(w);
-  const x0 = e.clientX, y0 = e.clientY, w0 = w.w, h0 = w.h;
+  const g = geo(w), x0 = e.clientX, y0 = e.clientY, w0 = g.w, h0 = g.h;
   track(ev => {
-    w.w = Math.max(320, w0 + ev.clientX - x0);
-    w.h = Math.max(220, h0 + ev.clientY - y0);
-    el.style.width = `${w.w}px`;
-    el.style.height = `${w.h}px`;
-  }, () => {});
+    g.w = Math.max(320, w0 + ev.clientX - x0);
+    g.h = Math.max(220, h0 + ev.clientY - y0);
+    el.style.width = `${g.w}px`;
+    el.style.height = `${g.h}px`;
+  }, scheduleSave);
 }
 
 // Tabs: drag within or between tab bars to reorder or move; onto the desktop for a new window.
@@ -951,7 +968,7 @@ function startTabDrag(e, t, btn) {
   if (e.button !== 0 || e.target.classList.contains('x')) return;
   const x0 = e.clientX, y0 = e.clientY;
   let dragging = false, drop = null;
-  const srcW = winOfTab(t).w;
+  const srcW = geo(winOfTab(t)).w;
   const hint = h('div', { class: 'drop-hint', hidden: true });
   document.body.append(hint);
   const clear = () => document.querySelectorAll('.drop-before, .drop-after').forEach(x => x.classList.remove('drop-before', 'drop-after'));
@@ -992,7 +1009,7 @@ function startTabDrag(e, t, btn) {
 function startPaneDrag(e, p, el) {
   if (e.button !== 0) return;
   e.preventDefault();
-  const srcW = findPane(p.id).win.w;
+  const srcW = geo(findPane(p.id).win).w;
   const ghost = h('div', { class: 'drag-tip' }, `move ${p.name || p.id}`);
   const hint = h('div', { class: 'drop-hint', hidden: true });
   document.body.append(ghost, hint);
@@ -1109,6 +1126,8 @@ $('#toggle-console').addEventListener('click', toggleConsole);
 function reset(withShell = true) {
   S && Object.values(S.panes).forEach(kill);
   S = freshState();
+  for (const id in G) delete G[id];
+  for (const id in mdZoom) delete mdZoom[id];
   $('#log').innerHTML = '';
   if (withShell) {
     const w = makeWindow();
@@ -1129,7 +1148,7 @@ const DEMO = [
   'open ios --name phone --app ./build/MyApp.app --split down --size 1/3',
   "arrange 'site:1/4 | server:1/2 | phone'",
   'open term --name logs --window new',
-  'move phone --to-window w2',
+  'move phone --to-window win-2',
   'open term --name agent --dock',
   'list',
 ];
@@ -1155,19 +1174,29 @@ $('#reset').addEventListener('click', () => { if (!demoRunning) reset(); });
 // Persistence: like kmux, the page saves the layout (debounced) after every
 // change and restores it when it loads, so reloading the page is restarting
 // kmux. Terminals come back as new terminals running their command again.
-// Reset starts fresh; a saved layout that can't be read is ignored.
+// Reset starts fresh; a saved layout that can't be read is ignored. The core's
+// state and the page's own (window frames, markdown magnification) are saved
+// apart, as kmux's server and app save theirs.
 const STATE_KEY = 'kmux-model-state';
+const PAGE_KEY = 'kmux-model-page';
 let saveTimer = null;
 function scheduleSave() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => { try { localStorage.setItem(STATE_KEY, JSON.stringify(exportState())); } catch {} }, 500);
+  saveTimer = setTimeout(() => {
+    try {
+      localStorage.setItem(STATE_KEY, JSON.stringify(exportState()));
+      localStorage.setItem(PAGE_KEY, JSON.stringify({ frames: G, zoom: mdZoom }));
+    } catch {}
+  }, 500);
 }
 function boot() {
-  let saved = null;
-  try { saved = JSON.parse(localStorage.getItem(STATE_KEY)); } catch {}
+  let saved = null, page = null;
+  try { saved = JSON.parse(localStorage.getItem(STATE_KEY)); page = JSON.parse(localStorage.getItem(PAGE_KEY)); } catch {}
   if (saved) {
     try {
       reset(false);
+      Object.assign(G, page?.frames ?? {});
+      Object.assign(mdZoom, page?.zoom ?? {});
       restoreState(saved);
       if (S.windows.length) return log('info', 'Restored the layout saved when the page was last open (reloading is restarting kmux; Reset starts fresh).');
     } catch (e) {

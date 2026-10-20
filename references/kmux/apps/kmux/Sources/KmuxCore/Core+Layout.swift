@@ -98,6 +98,30 @@ extension Core {
     }
 
     func resize(_ args: JSON) throws -> [String: JSON] {
+        if let ref = args["tab"], ref != .null {
+            // A divider dragged in an app: the panes either side of it share
+            // what they had, the first getting `share`.
+            let tab = try needTab(ref.string)
+            var node = tab.root
+            if case .array(let path)? = args["path"] {
+                for step in path {
+                    guard case .split(let split)? = node, let i = step.number.map(Int.init), split.kids.indices.contains(i) else { node = nil; break }
+                    node = split.kids[i].node
+                }
+            }
+            guard case .split(let split)? = node else { throw KmuxError("bad_request", "no split at that path") }
+            guard let number = args["index"]?.number, number == number.rounded(), number >= 0, Int(number) + 1 < split.kids.count else {
+                throw KmuxError("bad_request", "no divider at that index")
+            }
+            let i = Int(number)
+            let pair = split.kids[i].size + split.kids[i + 1].size
+            let share = try fraction(args["share"] ?? .null)
+            guard share > 0, share < pair else { throw KmuxError("bad_request", "the share must leave both panes some space") }
+            split.kids[i].size = share
+            split.kids[i + 1].size = pair - share
+            onChange()
+            return ["tab": .string(tab.id), "layout": model.tree(tab.root)]
+        }
         let pane = try needPane(args["pane"]?.string)
         let size = try fraction(args["size"] ?? .null)
         guard size > 0, size < 1 else { throw KmuxError("bad_request", "size must be a fraction between 0 and 1") }
