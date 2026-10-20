@@ -641,6 +641,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.pullTask(task, into: id)
         }
         controller.agentHeader.onPark = { [weak self] in self?.park(desk: id) }
+        controller.agentHeader.onNew = { [weak self] in self?.newTab(in: id) }
         controller.shelfPage.onPull = { [weak self] task in
             Clicks.pull(task)
             self?.pullTask(task, into: id)

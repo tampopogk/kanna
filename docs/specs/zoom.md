@@ -22,7 +22,7 @@
 |---|---|---|
 | a tab's pane | ![The docked agent and a tab split in two](zoom-splits.png) | ![The tab bar across the window, the request log under it](zoom-tab-zoomed.png) |
 | the docked pane, with tabs | ![The docked agent and a tab split in two](zoom-splits.png) | ![The agent fills the window](zoom-dock-zoomed.png) |
-| the docked pane, no tabs | ![A window with only its docked agent](zoom-only-dock.png) | ![The agent fills the window](zoom-only-dock-zoomed.png) |
+| the docked pane, no tabs | ![The agent fills the window, with no tab bar](tabless-dock-after.png) | ![The agent fills the window](zoom-only-dock-zoomed.png) |
 
 A zoomed tab's pane keeps the tab bar: the bar runs across the top of the whole window, its tab selected, and the pane fills the rest; the docked pane is hidden. A zoomed docked pane fills the window with no tab bar. In a window without a docked pane, the focused pane fills the tab, under the tab bar.
 
