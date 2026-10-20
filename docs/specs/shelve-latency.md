@@ -24,7 +24,7 @@ sequenceDiagram
     D->>D: Shelf limit, claim for the app
     D->>D: off the backlog, on the Shelf (kanna.db)
     D-->>A: backlog and layout notices: the card is on the Shelf
-    Note over A: the card is clickable; a pulled pane shows a spinner
+    Note over A: the card is clickable, and a pulled pane shows a spinner
     D->>K: next turn: restart the agent, then its tabs
     K-->>D: running
     D-->>A: folder of the agent's new terminal, then its output
