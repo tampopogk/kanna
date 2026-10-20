@@ -91,6 +91,102 @@ impl Comment {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct Stop {
+    pub path: String,
+    pub first: u64,
+    pub last: u64,
+    pub text: String,
+    pub doc: bool,
+    pub thread: Option<String>,
+}
+
+impl Stop {
+    pub fn to_json(&self) -> Value {
+        let mut out = Map::new();
+        out.insert("path".into(), Value::String(self.path.clone()));
+        out.insert("first".into(), num(self.first as f64));
+        out.insert("last".into(), num(self.last as f64));
+        out.insert("text".into(), Value::String(self.text.clone()));
+        if self.doc {
+            out.insert("doc".into(), Value::Bool(true));
+        }
+        if let Some(thread) = &self.thread {
+            out.insert("thread".into(), Value::String(thread.clone()));
+        }
+        Value::Object(out)
+    }
+
+    pub fn from_json(value: &Value) -> Option<Stop> {
+        let comment = Comment::from_json(value)?;
+        Some(Stop {
+            path: comment.path,
+            first: comment.first,
+            last: comment.last,
+            text: comment.text,
+            doc: value.get("doc").and_then(Value::as_bool).unwrap_or(false),
+            thread: value.get("thread").and_then(Value::as_str).map(String::from),
+        })
+    }
+
+    pub fn comment(&self) -> Comment {
+        Comment { path: self.path.clone(), first: self.first, last: self.last, text: self.text.clone() }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tour {
+    pub stops: Vec<Stop>,
+    pub at: usize,
+}
+
+impl Tour {
+    pub fn to_json(&self) -> Value {
+        let mut out = Map::new();
+        out.insert("stops".into(), Value::Array(self.stops.iter().map(Stop::to_json).collect()));
+        out.insert("at".into(), num(self.at as f64 + 1.0));
+        Value::Object(out)
+    }
+
+    pub fn from_json(value: &Value) -> Option<Tour> {
+        let stops: Vec<Stop> = value.get("stops")?.as_array()?.iter().filter_map(Stop::from_json).collect();
+        let at = value.get("at").and_then(Value::as_u64).unwrap_or(1).max(1) as usize - 1;
+        (!stops.is_empty()).then(|| Tour { at: at.min(stops.len() - 1), stops })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StopMark {
+    pub owner: String,
+    pub at: usize,
+    pub of: usize,
+    pub thread: Option<String>,
+}
+
+impl StopMark {
+    pub fn to_json(&self) -> Value {
+        let mut out = Map::new();
+        out.insert("owner".into(), Value::String(self.owner.clone()));
+        out.insert("at".into(), num(self.at as f64 + 1.0));
+        out.insert("of".into(), num(self.of as f64));
+        if let Some(thread) = &self.thread {
+            out.insert("thread".into(), Value::String(thread.clone()));
+        }
+        Value::Object(out)
+    }
+
+    pub fn from_json(value: &Value) -> Option<StopMark> {
+        let at = value.get("at").and_then(Value::as_u64).filter(|a| *a > 0)? as usize - 1;
+        let of = value.get("of").and_then(Value::as_u64)? as usize;
+        Some(StopMark {
+            owner: value.get("owner")?.as_str()?.to_string(),
+            at,
+            of: of.max(at + 1),
+            thread: value.get("thread").and_then(Value::as_str).map(String::from),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Pane {
     pub id: String,
     pub name: Option<String>,
@@ -108,6 +204,8 @@ pub struct Pane {
     pub path: Option<String>,
     pub line: Option<u64>,
     pub comment: Option<Comment>,
+    pub tour: Option<Tour>,
+    pub stop: Option<StopMark>,
     pub diff: Option<Vec<String>>,
     pub view: Option<String>,
     pub agent: Option<String>,
@@ -140,6 +238,8 @@ impl Pane {
             path: None,
             line: None,
             comment: None,
+            tour: None,
+            stop: None,
             diff: None,
             view: None,
             agent: None,
@@ -160,6 +260,15 @@ impl Pane {
             (PaneType::Term, _) => self.status.as_deref(),
             _ => None,
         }
+    }
+
+    pub fn program(&self) -> Option<String> {
+        let words = shlex::split(self.command.as_deref()?)?;
+        let first = match words.get(1).map(String::as_str) {
+            Some("--codex-remote") => words.get(3)?,
+            _ => words.first()?,
+        };
+        Some(first.rsplit('/').next().unwrap_or(first).to_string()).filter(|p| !p.is_empty())
     }
 
     pub fn label(&self) -> String {
@@ -230,6 +339,12 @@ impl Pane {
                 out.insert("args".into(), diff_args(self.diff.as_deref()));
                 out.insert("view".into(), Value::String(self.view.clone().unwrap_or_else(|| "unified".into())));
             }
+        }
+        if let Some(stop) = &self.stop {
+            out.insert("tour".into(), stop.to_json());
+        }
+        if let Some(tour) = &self.tour {
+            out.insert("tour".into(), Value::Object(Map::from_iter([("at".to_string(), num(tour.at as f64 + 1.0)), ("of".to_string(), num(tour.stops.len() as f64))])));
         }
         if let Some(code) = self.exit_code {
             out.insert("exitCode".into(), num(code as f64));
@@ -457,6 +572,21 @@ mod status_tests {
         let mut web = Pane::new("p2", None, PaneType::Web);
         web.state = PaneState::Exited;
         assert!(web.summary().get("status").is_none());
+    }
+}
+
+#[cfg(test)]
+mod program_tests {
+    use super::*;
+
+    #[test]
+    fn a_terminal_names_the_agent_it_runs_through_codexs_wrapper() {
+        let mut pane = Pane::new("p1", None, PaneType::Term);
+        assert_eq!(pane.program(), None);
+        pane.command = Some("/opt/bin/claude --dangerously-skip-permissions 'hi'".into());
+        assert_eq!(pane.program().as_deref(), Some("claude"));
+        pane.command = Some("'/A/Kanna.app/Contents/Helpers/kanna' --codex-remote '/Users/me/Library/Application Support/kanna' /x/codex --yolo 'You'\\''re a task'\\''s agent'".into());
+        assert_eq!(pane.program().as_deref(), Some("codex"));
     }
 }
 

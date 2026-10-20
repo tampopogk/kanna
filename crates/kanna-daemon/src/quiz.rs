@@ -1,6 +1,6 @@
 use crate::db::{self, Answer, Db, Round};
 use kanna_mux::json::{json, num, opt, string, Map, Value};
-use crate::backlog::{default_agent, started_as, QUIZ_ROLE};
+use crate::backlog::{config_files, started_as, task_agent, QUIZ_ROLE};
 use kanna_mux::{project, CoreHandle, KmuxError, PaneState, Responder, WeakCore};
 use std::path::Path;
 use std::rc::Rc;
@@ -107,10 +107,10 @@ impl Quiz {
         if let Some(pane) = open {
             return core.handle(json!({ "cmd": "focus", "args": { "pane": pane } }), move |reply| responder.reply(opened(&reply, &pane, false)));
         }
-        let agent = string(args, "agent").filter(|a| !a.trim().is_empty()).map_or_else(default_agent, String::from);
+        let agent = string(args, "agent").filter(|a| !a.trim().is_empty()).map_or_else(|| task_agent(&config_files(Path::new(&repo))), String::from);
         let base = Path::new(&repo).file_name().map_or_else(|| repo.clone(), |n| n.to_string_lossy().to_string());
         let name = ["Quiz".to_string(), format!("Quiz {base}")].into_iter().chain((2..).map(|n| format!("Quiz {base} {n}"))).find(|n| core.pane(n).is_none()).unwrap_or_default();
-        let open = json!({ "type": "term", "lead": true, "window": "new", "name": name, "cwd": repo, "cmd": started_as(&agent, QUIZ_ROLE), "wait": false });
+        let open = json!({ "type": "term", "lead": true, "window": "new", "name": name, "cwd": repo, "cmd": started_as(&agent, QUIZ_ROLE, None), "wait": false });
         core.handle(json!({ "cmd": "open", "args": open }), move |reply| {
             let pane = reply.get("pane").and_then(|p| p.get("id")).and_then(Value::as_str).unwrap_or_default().to_string();
             responder.reply(opened(&reply, &pane, true))

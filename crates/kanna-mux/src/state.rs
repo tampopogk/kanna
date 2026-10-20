@@ -1,6 +1,6 @@
 use crate::error::KmuxError;
 use crate::json::{encode, is_true, num, opt, string, Map, Value};
-use crate::pane::{content_prefix, diff_args, read_diff_args, read_view, Comment, History, Pane, PaneType, Panes};
+use crate::pane::{content_prefix, diff_args, read_diff_args, read_view, Comment, History, Pane, PaneType, Panes, StopMark, Tour};
 use std::collections::HashSet;
 
 pub const STATE_VERSION: u32 = 1;
@@ -79,6 +79,12 @@ pub fn pane_record(pane: &Pane) -> Map {
             out.insert("device".into(), opt(pane.device.as_deref()));
         }
     }
+    if let Some(tour) = &pane.tour {
+        out.insert("tour".into(), tour.to_json());
+    }
+    if let Some(stop) = &pane.stop {
+        out.insert("tour".into(), stop.to_json());
+    }
     out
 }
 
@@ -129,6 +135,11 @@ pub fn read_record(item: &Value, id: &str, kind: PaneType) -> Pane {
             pane.app = field("app");
             pane.device = field("device");
         }
+    }
+    match kind {
+        PaneType::Term => pane.tour = item.get("tour").and_then(Tour::from_json),
+        PaneType::Code | PaneType::Md => pane.stop = item.get("tour").and_then(StopMark::from_json),
+        _ => {}
     }
     pane
 }

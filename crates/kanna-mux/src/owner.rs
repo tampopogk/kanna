@@ -118,14 +118,17 @@ impl LayoutOwner {
     }
 
     pub fn hello(&self) -> Value {
-        let panes = match &self.saved {
+        Value::Array(self.records().into_iter().filter(|p| p.kind != PaneType::Term).map(|p| Value::Object(state::pane_record(&p))).collect())
+    }
+
+    pub fn records(&self) -> Vec<Pane> {
+        match &self.saved {
             Some(saved) => state::import_versions(saved, &[1, 2, LAYOUT_VERSION], "Kanna reads").map(|(panes, _)| panes).unwrap_or_default(),
             None => {
                 let placed: HashSet<String> = self.placed().into_iter().collect();
                 self.panes.iter().filter(|p| placed.contains(&p.id)).cloned().collect()
             }
-        };
-        Value::Array(panes.iter().filter(|p| p.kind != PaneType::Term).map(|p| Value::Object(state::pane_record(p))).collect())
+        }
     }
 
     fn record(&mut self, record: &Value) -> Result<Map, KmuxError> {
@@ -206,6 +209,7 @@ impl LayoutOwner {
                 out.insert("id".into(), ws.id.clone().into());
                 out.insert("where".into(), ws.place.to_json());
                 out.insert("dock".into(), self.dock(&ws.dock));
+                out.insert("agent".into(), self.panes.get(&ws.dock.pane).and_then(|p| p.program()).map_or(Value::Null, Value::String));
                 out.insert("parkedAt".into(), ws.parked_at.map_or(Value::Null, num));
                 out.insert("windows".into(), model.workspace_windows(&ws.id).iter().map(|w| w.id.clone()).collect::<Vec<_>>().into());
                 out.insert("panes".into(), model.workspace_panes(s).into());

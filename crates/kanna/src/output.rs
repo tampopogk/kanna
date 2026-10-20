@@ -189,12 +189,13 @@ pub fn task(request: &Value, reply: &Value) -> String {
                 (_, Some(status)) if status != "exited" => status.to_string(),
                 _ => "running".to_string(),
             };
-            let rows: Vec<[String; 5]> = tasks
+            let agent = |t: &Value| t["agent"].as_str().and_then(|a| a.split_whitespace().next()).map_or(String::new(), |a| a.rsplit('/').next().unwrap_or(a).to_string());
+            let rows: Vec<[String; 6]> = tasks
                 .iter()
                 .map(|t| {
                     let place = "Shelf".to_string();
                     let parked = t["parkedAt"].as_f64().map_or(String::new(), |at| format!("parked {}", ago(now - at)));
-                    [t["task"].as_str().or(t["id"].as_str()).unwrap_or("?").into(), t["name"].as_str().unwrap_or("").into(), place, state(t), parked]
+                    [t["task"].as_str().or(t["id"].as_str()).unwrap_or("?").into(), t["name"].as_str().unwrap_or("").into(), place, state(t), agent(t), parked]
                 })
                 .chain(waiting.iter().map(|t| {
                     let made = t["madeAt"].as_f64().map_or(String::new(), |at| format!("made {} · {}", ago(now - at), tilde(t["repo"].as_str().unwrap_or(""))));
@@ -203,13 +204,13 @@ pub fn task(request: &Value, reply: &Value) -> String {
                         (Some(false), false) => ("blocked".to_string(), format!("{made} · waits for {waits}")),
                         _ => (state(t), made),
                     };
-                    [t["id"].as_str().unwrap_or("?").into(), t["name"].as_str().unwrap_or("").into(), "Backlog".into(), state, made]
+                    [t["id"].as_str().unwrap_or("?").into(), t["name"].as_str().unwrap_or("").into(), "Backlog".into(), state, agent(t), made]
                 }))
                 .collect();
-            let head = ["TASK", "NAME", "WHERE", "STATE", ""];
+            let head = ["TASK", "NAME", "WHERE", "STATE", "AGENT", ""];
             let width = |i: usize| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0).max(head[i].len());
-            let line = |r: [&str; 5]| format!("{:w0$}  {:w1$}  {:w2$}  {:w3$}  {}", r[0], r[1], r[2], r[3], r[4], w0 = width(0), w1 = width(1), w2 = width(2), w3 = width(3)).trim_end().to_string();
-            std::iter::once(line(head)).chain(rows.iter().map(|r| line([&r[0], &r[1], &r[2], &r[3], &r[4]]))).collect::<Vec<_>>().join("\n")
+            let line = |r: [&str; 6]| format!("{:w0$}  {:w1$}  {:w2$}  {:w3$}  {:w4$}  {}", r[0], r[1], r[2], r[3], r[4], r[5], w0 = width(0), w1 = width(1), w2 = width(2), w3 = width(3), w4 = width(4)).trim_end().to_string();
+            std::iter::once(line(head)).chain(rows.iter().map(|r| line([&r[0], &r[1], &r[2], &r[3], &r[4], &r[5]]))).collect::<Vec<_>>().join("\n")
         }
         Some("park") if reply["parked"] == Value::Bool(true) => format!("parked {id}; {} is an empty Desk", reply["desk"].as_str().unwrap_or("its Desk")),
         Some("park") => format!("{id} is already on the Shelf"),
@@ -942,5 +943,60 @@ mod workspace_tests {
         let free = json!({ "pane": { "id": "p5", "state": "running" }, "window": "win-4", "tab": "tab-9", "workspace": null });
         assert_eq!(opened(&json!({}), &free), "opened p5 in win-4, tab-9: running");
         assert_eq!(window(&json!({ "action": "assign", "window": "win-41" }), &json!({ "window": "win-41", "workspace": windowless["workspace"] })), "assigned win-41 to ws-3 (task-1dfb, on the Shelf)");
+    }
+}
+
+fn shown_path(path: &str) -> String {
+    let here = std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+    match path.strip_prefix(&format!("{}/", here.trim_end_matches('/'))) {
+        Some(inside) if !here.is_empty() => inside.to_string(),
+        _ => path.to_string(),
+    }
+}
+
+fn stop_lines(first: Option<u64>, last: Option<u64>) -> String {
+    match (first, last) {
+        (Some(first), Some(last)) if last > first => format!("{first}–{last}"),
+        (Some(first), _) => first.to_string(),
+        _ => "?".into(),
+    }
+}
+
+pub fn toured(args: &Value, reply: &Value) -> String {
+    if reply["done"] == true {
+        return format!("tour done · {} stops", reply["of"].as_u64().unwrap_or(0));
+    }
+    match args["action"].as_str().unwrap_or("show") {
+        "end" => (if reply["ended"] == true { "tour ended" } else { "no tour" }).to_string(),
+        "show" => {
+            let stops = reply["stops"].as_array().cloned().unwrap_or_default();
+            if stops.is_empty() {
+                return "no tour".into();
+            }
+            let at = reply["at"].as_u64().unwrap_or(1) as usize;
+            let place = |stop: &Value| format!("{}:{}", shown_path(stop["path"].as_str().unwrap_or("?")), stop_lines(stop["first"].as_u64(), stop["last"].as_u64()));
+            let mut out = format!("at {at} of {} · {}", stops.len(), place(&stops[at - 1]));
+            for (i, stop) in stops.iter().enumerate() {
+                let marker = if i + 1 == at { "▸" } else { " " };
+                let text: String = stop["text"].as_str().unwrap_or("").chars().take(60).collect();
+                out += &format!("\n{marker} {:>2}  {}  {text}", i + 1, place(stop));
+            }
+            out
+        }
+        action => {
+            let (at, of) = (reply["tour"]["at"].as_u64().unwrap_or(0), reply["tour"]["of"].as_u64().unwrap_or(0));
+            if reply.get("pane").is_none() {
+                return format!("added {} · at {at} of {of}", reply["added"].as_u64().unwrap_or(0));
+            }
+            let opened = if reply["opened"] == true { "opened " } else { "" };
+            let place = format!("{}:{}", shown_path(reply["path"].as_str().unwrap_or("?")).rsplit('/').next().unwrap_or("?"), stop_lines(reply["first"].as_u64(), reply["last"].as_u64()));
+            let thread = reply["thread"].as_str().map(|t| format!(" · {t}")).unwrap_or_default();
+            let step = format!("{at} of {of} · {opened}{} · {place}{thread}", label(&reply["pane"]));
+            match action {
+                "new" => format!("tour of {of} · {step}"),
+                "add" => format!("added {} · {step}", args["stops"].as_array().map(Vec::len).unwrap_or(0)),
+                _ => step,
+            }
+        }
     }
 }

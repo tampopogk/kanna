@@ -1,6 +1,6 @@
 # Code Tour
 
-**Status:** built · **Mockup:** [`references/mockups/code-tour.html`](../../references/mockups/code-tour.html) · **Builds on:** the [code viewer](code-viewer.md)
+**Status:** built · **Mockup:** [`references/mockups/code-tour.html`](../../references/mockups/code-tour.html) · **Builds on:** the [code viewer](code-viewer.md) · **Next:** [stepping through a queued tour](code-tour-steps.md)
 
 A **code tour** is the agent commenting on code while it explains it, so you keep a mental model of how it works, whether you're a vibe coder, an engineer or not technical at all. As it talks, the agent comments on the part it's talking about: the file opens in a code tab, those lines are tinted and the rest dimmed, and the comment shows just above them. You ask questions as it goes; it comments on whatever answers them.
 
@@ -71,7 +71,7 @@ sequenceDiagram
 - **When:** the user asks how something works, wants to understand code the agent wrote or changed, or seems to be losing track of the code.
 - **The explanation is in the comments, not the chat.** A comment on the code (`kanna comment FILE:LINE`) says what that part does and the one thing to remember about it; the chat gets a line or two at most.
 - **The big picture in a temporary markdown doc:** object hierarchies, class or layer stacks, call and data flows, as a diagram (mermaid class or sequence diagram, layer diagram, table) in a short doc in the worktree's `.kanna/tmp/`, commented on the same way (`kanna comment DOC.md:LINE`); the doc first, the code after.
-- **One comment at a time.** Comment on one part, focus its pane, say where you are in a line, and stop: ask the user to tell you when to go on. Never comment on several parts in one turn.
+- **A tour, queued at once.** The agent queues every stop with `kanna tour` and the user steps through with Next and Back, without the agent: see [code tour steps](code-tour-steps.md).
 - **Follow the questions.** Answer by commenting on the code that answers it.
 - **Small parts.** A function or a block; `FILE:FIRST-LAST` for a few lines inside a long one.
 - **At the end, offer to leave the tabs open or close them** (`kanna close`), and do what the user picks. The docs stay: Kanna keeps `.kanna/tmp/` out of git (the repo's `info/exclude`, beside `.kanna-worktrees/`), and they go with the worktree.

@@ -581,10 +581,58 @@ package final class CommentBox: FlippedView {
     }
 }
 
+public struct DocTourStep: Equatable, Sendable {
+    public let thread: String
+    public let at: Int
+    public let of: Int
+
+    public init(thread: String, at: Int, of: Int) {
+        self.thread = thread
+        self.at = at
+        self.of = max(of, at)
+    }
+
+    public var last: Bool { at >= of }
+}
+
+@MainActor
+package final class TourRow: FlippedView {
+    package let step: DocTourStep
+    package let back = Chip("‹ Back")
+    package let next: Chip
+
+    package init(step: DocTourStep, width: CGFloat, onStep: @escaping (String) -> Void) {
+        self.step = step
+        next = Chip(step.last ? "Done" : "Next ›")
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 30))
+        identifier = NSUserInterfaceItemIdentifier("tour")
+        let place = NSMutableAttributedString(string: "\(step.at) of \(step.of)", attributes: [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: DocTheme.text])
+        place.append(NSAttributedString(string: " · tour", attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: DocTheme.dim]))
+        let label = NSTextField(labelWithAttributedString: place)
+        label.sizeToFit()
+        label.frame.origin = NSPoint(x: 0, y: 8 + ((22 - label.frame.height) / 2).rounded())
+        next.on = true
+        next.onPress = { onStep("next") }
+        if step.at > 1 { back.onPress = { onStep("back") } } else { back.alphaValue = 0.35 }
+        next.frame.origin = NSPoint(x: width - next.frame.width, y: 8)
+        back.frame.origin = NSPoint(x: next.frame.minX - 6 - back.frame.width, y: 8)
+        for view in [label, back, next] as [NSView] { addSubview(view) }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    package override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        DocTheme.line.setFill()
+        NSRect(x: 0, y: 0, width: bounds.width, height: 1).fill()
+    }
+}
+
 @MainActor
 package final class ThreadCard: FlippedView {
     package let thread: DocThread
     package let row: ReplyRow
+    package private(set) var tourRow: TourRow?
     package var field: BoxField { row.field }
     package var act: ActButton { row.act }
     package var grow: GrowField { row.grow }
@@ -592,7 +640,7 @@ package final class ThreadCard: FlippedView {
     package var onResize: (() -> Void)?
     private let active: Bool
 
-    package init(thread: DocThread, active: Bool, wait: DocWait?, note: String?, width: CGFloat) {
+    package init(thread: DocThread, active: Bool, wait: DocWait?, note: String?, width: CGFloat, tour: DocTourStep? = nil, onTour: @escaping (String) -> Void = { _ in }) {
         self.thread = thread
         self.active = active
         let inner = width - 20
@@ -601,7 +649,13 @@ package final class ThreadCard: FlippedView {
         radius = 8
         fill = DocTheme.card
         stroke = active ? DocTheme.accent : DocTheme.line
-        let y = stack(threadViews(thread, wait: wait, note: note, width: inner), in: self, x: 10, y: 9, gap: 6)
+        var views = threadViews(thread, wait: wait, note: note, width: inner)
+        if let tour {
+            let made = TourRow(step: tour, width: inner, onStep: onTour)
+            tourRow = made
+            views.append(made)
+        }
+        let y = stack(views, in: self, x: 10, y: 9, gap: 6)
         row.frame.origin = NSPoint(x: 10, y: y + 8)
         addSubview(row)
         frame.size.height = row.frame.maxY + 9
@@ -632,6 +686,7 @@ package final class ThreadCard: FlippedView {
     package override func hitTest(_ point: NSPoint) -> NSView? {
         let hit = super.hitTest(point)
         guard !active, let hit else { return hit }
+        if let tourRow, hit.isDescendant(of: tourRow) { return hit }
         return hit === act || hit.isDescendant(of: act) ? hit : self
     }
 
@@ -657,10 +712,12 @@ package final class ThreadPanel: FlippedView {
     package var onAct: ((DocThread) -> Void)?
     package var onReply: ((String, String) -> Void)?
     package var showResolved = false
+    package var tour: DocTourStep?
+    package var onTour: ((String) -> Void)?
     package var emptyText = "No comments yet. Select text and press ⌘↵, or ⌘-click a word."
     private(set) var cards: [ThreadCard] = []
     private var focusNext: String?
-    private var last: (threads: [DocThread], active: String?, waits: [String: DocWait], notes: [String: String], showResolved: Bool, width: CGFloat)?
+    private var last: (threads: [DocThread], active: String?, waits: [String: DocWait], notes: [String: String], showResolved: Bool, width: CGFloat, tour: DocTourStep?)?
 
     package init() {
         super.init(frame: .zero)
@@ -697,8 +754,8 @@ package final class ThreadPanel: FlippedView {
 
     package func show(_ threads: [DocThread], active: String?, waits: [String: DocWait], notes: [String: String]) {
         let width = bounds.width - 1
-        if let last, last.threads == threads, last.active == active, last.waits == waits, last.notes == notes, last.showResolved == showResolved, last.width == bounds.width { return }
-        last = (threads, active, waits, notes, showResolved, bounds.width)
+        if let last, last.threads == threads, last.active == active, last.waits == waits, last.notes == notes, last.showResolved == showResolved, last.width == bounds.width, last.tour == tour { return }
+        last = (threads, active, waits, notes, showResolved, bounds.width, tour)
         let drafts = Dictionary(cards.map { ($0.thread.id, $0.field.string) }, uniquingKeysWith: { a, _ in a })
         let focused = focusNext ?? cards.first { window?.firstResponder === $0.field }?.thread.id
         focusNext = nil
@@ -738,7 +795,8 @@ package final class ThreadPanel: FlippedView {
             y = empty.frame.maxY
         }
         for thread in shown {
-            let card = ThreadCard(thread: thread, active: thread.id == active, wait: waits[thread.id], note: notes[thread.id], width: width - 20)
+            let step = tour.flatMap { $0.thread == thread.id ? $0 : nil }
+            let card = ThreadCard(thread: thread, active: thread.id == active, wait: waits[thread.id], note: notes[thread.id], width: width - 20, tour: step) { [weak self] to in self?.onTour?(to) }
             card.frame.origin = NSPoint(x: 10, y: y)
             card.onSelect = { [weak self] in self?.onSelect?(thread.id) }
             card.act.onPress = { [weak self] in self?.onAct?(thread) }

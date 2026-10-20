@@ -293,7 +293,7 @@ const COMPLETIONS_HELP: &str = "usage: kanna completions zsh|bash\n\nPrints the 
 
 pub const CONFIG_SCHEMA: &str = include_str!("../../../schemas/config.schema.json");
 
-const CONFIG_HELP: &str = "usage: kanna config schema\n\nKanna's settings are ~/.kanna-v4/config.json, overridden key by key by a repo's .kanna/config.json, e.g.\n  { \"version\": 1, \"planning\": { \"context\": 300000 }, \"backlog\": { \"runners\": 3 } }\n\n`kanna config schema` prints their JSON Schema: every key, its type, default and what it does.";
+const CONFIG_HELP: &str = "usage: kanna config schema\n\nKanna's settings are ~/.kanna-v4/config.json, overridden key by key by a repo's .kanna/config.json, e.g.\n  { \"version\": 1, \"planning\": { \"context\": 300000 }, \"tasks\": { \"agent\": \"codex\" }, \"backlog\": { \"runners\": 3 } }\n\n`kanna config schema` prints their JSON Schema: every key, its type, default and what it does.";
 
 const RAW_HELP: &str = "usage: kanna raw REQUEST\n\nSends one control-protocol request as JSON and prints the reply, e.g.\n  kanna raw '{\"cmd\":\"list\"}'\n  kanna raw '{\"cmd\":\"open\",\"args\":{\"type\":\"term\",\"name\":\"a\"}}'";
 
@@ -609,6 +609,34 @@ mod tests {
         assert!(parse("kanna comment /tmp/a.rs:5").is_err());
         assert!(parse("kanna comment /tmp/a.rs:9-3 Backwards.").is_err());
         assert!(parse("kanna comment /tmp/a.rs:0 Nothing.").is_err());
+    }
+
+    #[test]
+    fn a_tour_takes_pairs_of_a_spot_and_its_text() {
+        let (name, request) = parse("kanna tour /tmp/a.rs:50 'Waits for a message.' /tmp/b.md:3 'The big picture.' --tab").unwrap();
+        assert_eq!(name, "tour");
+        assert_eq!((request["action"].clone(), request["tab"].clone()), (json!("new"), json!(true)));
+        assert_eq!(request["stops"], json!([{ "path": "/tmp/a.rs", "line": 50, "text": "Waits for a message." }, { "path": "/tmp/b.md", "line": 3, "text": "The big picture." }]));
+        let (_, request) = parse("kanna tour add --next /tmp/a.rs:20-48 'Sends it.'").unwrap();
+        assert_eq!((request["action"].clone(), request["next"].clone(), request["stops"][0]["last"].clone()), (json!("add"), json!(true), json!(48)));
+        assert_eq!(parse("kanna tour").unwrap().1["action"], "show");
+        assert_eq!(parse("kanna tour go back").unwrap().1["to"], "back");
+        assert_eq!(parse("kanna tour go 3").unwrap().1["to"], 3);
+        assert_eq!(parse("kanna tour end").unwrap().1["action"], "end");
+        for bad in [
+            "kanna tour /tmp/a.rs:5 Waits for a message.",
+            "kanna tour /tmp/a.rs:5",
+            "kanna tour /tmp/a.rs 'No line.'",
+            "kanna tour /tmp/a.rs:9-3 'Backwards.'",
+            "kanna tour /tmp/a.md:3-5 'A doc block.'",
+            "kanna tour add",
+            "kanna tour go",
+            "kanna tour go sideways",
+            "kanna tour --next /tmp/a.rs:5 'Next of nothing.'",
+            "kanna tour end now",
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

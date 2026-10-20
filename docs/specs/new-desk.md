@@ -56,7 +56,7 @@ flowchart LR
 - **The agents to choose from** are the agents Kanna knows that your shell finds, in the `AGENTS` table's order; Return takes the first.
 - **No question** when the folder's `planning.agent` is set ([settings](settings.md)) or only one agent is installed. With none, it says so and you're in your shell.
 - **Make it the project's:** yes writes `planning.agent` to the repo's `.kanna/config.json`, part of the repo, so every new Desk on the project, yours or anyone's, starts that agent. Not offered outside a git repo (`~`). No saves nothing, and the next Desk asks again.
-- **The agent starts as you'd start it,** in the terminal's folder, with `You are the Kanna planning agent.` as its first message, so it answers at once with what's running and waiting (in `~`, which new project). It doesn't ask permission, as a task's agent doesn't. Codex runs with `--no-daemon` ([tasks](tasks.md#7-how-its-built)).
+- **The agent starts as you'd start it,** in the terminal's folder, with `You are the Kanna planning agent.` as its first message, so it answers at once with what's running and waiting (in `~`, which new project). It doesn't ask permission, as a task's agent doesn't. Codex runs with `--no-daemon` ([tasks](tasks.md#8-how-its-built)).
 - **Quit it and you're in your shell,** with a line giving the command that starts it again as the planner. Anything you start there is yours.
 
 ## 3. How it's built

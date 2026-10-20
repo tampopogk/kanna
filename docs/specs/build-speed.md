@@ -50,7 +50,26 @@ With build outputs on another volume ([build targets](build-targets.md)), a work
 
 SwiftPM's release build compiles each module whole, on one core: the `Kanna` module (6k lines) takes ~10s whatever changed. Debug compiles files in parallel batches and only what an edit affects. Rust stays release everywhere: its dependencies cost the same either way, the daemon parses every terminal byte, and a dev build's `target/release` is what a worktree borrows. `KANNA_CONFIGURATION=release scripts/build.sh` builds a dev app in release.
 
-## 3. Measured
+## 3. Line tables in release
+
+The workspace's `[profile.release]` sets `debug = "line-tables-only"`: optimisation is unchanged, and backtraces, `sample`, `atos -o target/release/kanna-daemon` and lldb show file:line in every build, dev and shipped.
+
+- **On macOS the line tables stay in the `.o` files** (`split-debuginfo = "unpacked"`, cargo's default there). The linked binary gets only a debug map pointing at them, so tools find file:line while `target/release/deps` is there.
+- **Shipped builds strip the map** and keep dSYMs beside the DMGs ([release: stripping](release.md#stripping)).
+- **A worktree borrows dependencies built with the same profile.** The setting is in every crate's fingerprint, so a main checkout built before it rebuilds all dependencies once, and until then a worktree rebuilds them too.
+
+Measured with `scripts/build.sh`, dev channel, arm64:
+
+| | Before | Line tables | After `strip -S` |
+|---|---|---|---|
+| `kanna-daemon` | 11.36 MB | 12.56 MB (+10.6%) | 11.58 MB |
+| `kanna` | 1.68 MB | 1.85 MB | 1.71 MB |
+| `kanna-keeper` | 1.12 MB | 1.24 MB | 1.13 MB |
+| `libkanna_ffi.a` | 73 MB | 228 MB | |
+| `target/release/deps` | | 1.8 GB | |
+| fresh worktree, deps not borrowable | | 64s | |
+
+## 4. Measured
 
 `scripts/build.sh`, dev channel, in a task worktree, on a 10-core Apple Silicon Mac, the main checkout already built.
 
@@ -65,10 +84,10 @@ SwiftPM's release build compiles each module whole, on one core: the `Kanna` mod
 
 Before, the fresh worktree's 71s was cargo 43s (285 units, 275 CPU-seconds, ~7 of 10 cores), SwiftPM resolve 5s and a release Swift compile of 22s on ~1 core. The merman stack (merman-render, -elk-layered, -core, dugong) is a third of cargo's cold CPU time and its critical path; borrowed dependencies take it off the table.
 
-## 4. Not done
+## 5. Not done
 
 - **sccache:** the borrowed dependencies already cover what it would cache, and it can't share our crates between worktrees (their paths differ).
 - **A shared `CARGO_TARGET_DIR`:** concurrent tasks would serialise on cargo's lock and overwrite each other's `kanna-*` builds.
-- **A lighter Rust release profile:** our crates' critical path (`kanna-mux` → `kanna-daemon`) is ~7s; the profile is cargo's default (no LTO).
+- **A lighter Rust release profile:** our crates' critical path (`kanna-mux` → `kanna-daemon`) is ~7s; the profile is cargo's default (no LTO) plus line tables (§3).
 - **Overlapping SwiftPM with cargo:** resolve is 0.2s once borrowed; Swift needs `libkanna_ffi.a` to link.
 - **Skipping the bundle copy or the second cargo call:** 0.05s and 0.1s.
