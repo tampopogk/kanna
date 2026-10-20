@@ -111,7 +111,7 @@ impl Agents {
         }
         match self.settings(&mut record).and_then(|_| self.save(&record)) {
             Ok(()) => {}
-            Err(error) => eprintln!("kanna-daemon: can't keep agents' sandbox entry: {}", error.message),
+            Err(error) => log!("kanna-daemon: can't keep agents' sandbox entry: {}", error.message),
         }
     }
 

@@ -1,3 +1,9 @@
+macro_rules! log {
+    ($($arg:tt)*) => {
+        eprintln!("{} {}", $crate::stamp(), format_args!($($arg)*))
+    };
+}
+
 mod agents;
 mod app_link;
 mod backlog;
@@ -67,6 +73,8 @@ pub enum Event {
     Status { terminal: String, serial: u64, status: Option<&'static str>, ended: bool },
     RulesUpdated { token: u64, report: kanna_detect::Report },
     Worktree { token: u64, result: Result<(String, String), String> },
+    Branch { token: u64, branch: String },
+    Turn { token: u64 },
     Posted { token: u64, result: Result<(), String> },
     Finished { task: String, changes: Vec<db::Change> },
     Diff { id: String, diff: Value },
@@ -93,10 +101,23 @@ fn main() {
             std::process::exit(2);
         }
     }
+    let unstamped = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        eprint!("{} ", stamp());
+        unstamped(info)
+    }));
     if let Err(message) = run() {
-        eprintln!("kanna-daemon: {message}");
+        log!("kanna-daemon: {message}");
         std::process::exit(1);
     }
+}
+
+fn stamp() -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let seconds = now.as_secs() as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&seconds, &mut tm) };
+    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, now.subsec_millis())
 }
 
 fn support_folder() -> PathBuf {
@@ -173,7 +194,7 @@ fn run() -> Result<(), String> {
             return Err(format!("can't reach the keeper ({}): {error}", keeper_bin.display()));
         }
     };
-    eprintln!("kanna-daemon: using the keeper of {} (pid {})", state_dir.display(), keeper.pid());
+    log!("kanna-daemon: using the keeper of {} (pid {})", state_dir.display(), keeper.pid());
     let store = match Store::open(&state_dir) {
         Ok(store) => store,
         Err(error) => {
@@ -234,7 +255,7 @@ fn run() -> Result<(), String> {
         let Some(toasts) = warnings.upgrade() else { return };
         let toast = toasts::Toast { title: format!("Messages wait for {name}"), detail: Some(why.to_string()), pane: Some(pane.to_string()), task: None, key: Some(format!("messages:{pane}:{why}")) };
         if let Err(error) = toasts.raise(toast) {
-            eprintln!("kanna-daemon: can't raise a toast for {pane}: {}", error.message);
+            log!("kanna-daemon: can't raise a toast for {pane}: {}", error.message);
         }
     }));
     let quiz = Rc::new(quiz::Quiz::new(db, Some(core.weak())));
@@ -269,7 +290,7 @@ fn run() -> Result<(), String> {
     };
     let restored = terminals.restore(adopted);
     if restored != Restored::default() {
-        eprintln!(
+        log!(
             "kanna-daemon: took back {} terminal(s) from the keeper ({} the disk didn't know), {} that had exited; {} gone",
             restored.adopted + restored.unknown,
             restored.unknown,
@@ -295,6 +316,13 @@ fn run() -> Result<(), String> {
         }
     }));
     app.connect_backlog(&backlog);
+    let (folder_link, folder_core) = (Rc::downgrade(&app), core.weak());
+    core.on_renamed(Rc::new(move |_, to| {
+        let cwd = folder_core.upgrade().and_then(|core| core.pane(to)).and_then(|pane| pane.cwd);
+        if let (Some(app), Some(cwd)) = (folder_link.upgrade(), cwd) {
+            app.folder(to, &cwd);
+        }
+    }));
     let toast_link = Rc::downgrade(&app);
     *toasts.on_toast.borrow_mut() = Some(Box::new(move |record| toast_link.upgrade().is_some_and(|app| app.toast(record))));
     host.connect(&app);
@@ -349,7 +377,7 @@ fn run() -> Result<(), String> {
 
     let pid_file = state_dir.join("daemon.pid");
     let _ = std::fs::write(&pid_file, format!("{}\n", std::process::id()));
-    eprintln!("kanna-daemon: listening on {socket_path} (pid {})", std::process::id());
+    log!("kanna-daemon: listening on {socket_path} (pid {})", std::process::id());
 
     let quit = events.clone();
     let stopping = Arc::new(AtomicI32::new(0));
@@ -372,7 +400,7 @@ fn run() -> Result<(), String> {
     loop {
         let signal = stopping.load(Ordering::SeqCst);
         if signal != 0 {
-            eprintln!("kanna-daemon: stopping (signal {signal})");
+            log!("kanna-daemon: stopping (signal {signal})");
             break;
         }
         app.expire(Instant::now());
@@ -430,6 +458,8 @@ fn run() -> Result<(), String> {
             }
             Event::RulesUpdated { token, report } => status_commands.updated(token, report),
             Event::Worktree { token, result } => backlog.worktree_made(token, result),
+            Event::Branch { token, branch } => backlog.branch_found(token, branch),
+            Event::Turn { token } => backlog.next_turn(token),
             Event::Posted { token, result } => backlog.posted(token, result),
             Event::Finished { task, changes } => backlog.finished(&task, changes),
             Event::Diff { id, diff } => diffs.loaded(&id, diff),

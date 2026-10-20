@@ -178,7 +178,7 @@ impl Store {
         let mut text = serde_json::to_string_pretty(&value).unwrap_or_default();
         text.push('\n');
         if let Err(error) = write_atomic(&path, text.as_bytes()) {
-            eprintln!("kanna-daemon: couldn't rewrite {} with terminal IDs: {error}", path.display());
+            log!("kanna-daemon: couldn't rewrite {} with terminal IDs: {error}", path.display());
         }
         renamed
     }
@@ -213,7 +213,7 @@ impl Store {
         match saved {
             Some(saved) => saved,
             None => {
-                eprintln!("kanna-daemon: {} can't be read; moved aside as {RECORDS}.bad", path.display());
+                log!("kanna-daemon: {} can't be read; moved aside as {RECORDS}.bad", path.display());
                 let _ = fs::rename(&path, self.dir.join(format!("{RECORDS}.bad")));
                 Saved::default()
             }
@@ -373,7 +373,7 @@ fn save_one(dir: &Path, id: &str, terminal: &mut Tracked) {
         Ok(snapshot) => snapshot,
         Err(error) => {
             if !std::mem::replace(&mut terminal.failing, true) {
-                eprintln!("kanna-daemon: can't snapshot {id} for the disk yet ({error}); keeping the last one and trying again");
+                log!("kanna-daemon: can't snapshot {id} for the disk yet ({error}); keeping the last one and trying again");
             }
             return;
         }
@@ -381,13 +381,13 @@ fn save_one(dir: &Path, id: &str, terminal: &mut Tracked) {
     terminal.failing = false;
     if snapshot.len() > MAX_SNAPSHOT {
         if !std::mem::replace(&mut terminal.too_big, true) {
-            eprintln!("kanna-daemon: {id}'s screen is {} MiB, over {} MiB; keeping the last one saved", snapshot.len() >> 20, MAX_SNAPSHOT >> 20);
+            log!("kanna-daemon: {id}'s screen is {} MiB, over {} MiB; keeping the last one saved", snapshot.len() >> 20, MAX_SNAPSHOT >> 20);
         }
         return;
     }
     terminal.too_big = false;
     if let Err(error) = write_atomic(&snapshot_path(dir, id), &snapshot) {
-        eprintln!("kanna-daemon: couldn't save {id}'s screen: {error}");
+        log!("kanna-daemon: couldn't save {id}'s screen: {error}");
         Feed::lock(&terminal.feed).unsaved = true;
     }
 }

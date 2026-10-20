@@ -2504,6 +2504,51 @@ task_start_stop() {
   check wait_for 5 is side4 state running || { echo "task_start_stop: a hung-up terminal didn't run again after a restart"; kanna workspace list --all; return 1; }
 }
 
+scenario shelve_at_once M4
+shelve_at_once() {
+  local repo="$KANNA_STATE_DIR/repo" agent="$KANNA_STATE_DIR/bin/claude" task seen took card
+  mkdir -p "$repo" "${agent%/*}" && ln -s "$mock_agent" "$agent" || { echo "shelve_at_once line $LINENO"; return 1; }
+  git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "shelve_at_once line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  start_daemon || { echo "shelve_at_once line $LINENO"; return 1; }
+  env -u KANNA_NO_INITIAL_WINDOW KANNA_START_DIR="$repo" "$app" --bg >>"$out/app.log" 2>&1 &
+  app_pid=$!
+  wait_for 10 app_attached || { echo "the app did not attach"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"d1\"}}" | field "$1"; }
+  check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { echo "shelve_at_once: no planning terminal"; return 1; }
+  (cd "$repo" && kanna task new "Line tables" "say hi" --agent "$agent") >/dev/null && kanna task start $(tid 1) >/dev/null || { echo "shelve_at_once line $LINENO"; return 1; }
+  check wait_for 5 shows "Line tables" "say hi" || { echo "shelve_at_once: the task didn't start"; return 1; }
+  task="$(pane "Line tables" id)"
+  KANNA_TERMINAL="$task" kanna open --tab --name lines --cmd 'exec cat' >/dev/null && KANNA_TERMINAL="$task" kanna open --tab --name tables --cmd 'exec cat' >/dev/null || { echo "shelve_at_once line $LINENO"; return 1; }
+  kanna task stop $(tid 1) >/dev/null || { echo "shelve_at_once line $LINENO"; return 1; }
+  check wait_for 5 is "Line tables" state exited && check is tables state exited || { echo "shelve_at_once: the task didn't stop"; return 1; }
+  check wait_for 5 eval '[[ "$(desk backlog)" == "[\"$(tid 1)\"]" ]]' || { desk backlog; return 1; }
+  seen="$(python3 -c 'import json, socket, sys, time
+def ask(cmd, args):
+    s = socket.socket(socket.AF_UNIX); s.settimeout(30); s.connect(sys.argv[1])
+    s.sendall(json.dumps({"id": 1, "cmd": cmd, "args": args}).encode() + b"\n")
+    return json.loads(s.makefile().readline())
+start = time.monotonic()
+ask("debug.click", {"backlog": sys.argv[2], "window": "d1"})
+while time.monotonic() - start < 10:
+    d = ask("debug.desk", {"window": "d1"})
+    d = d.get("result", d)
+    if not d["backlog"] and [t["title"] for t in d["shelf"]] == ["Line tables"]:
+        print(round((time.monotonic() - start) * 1000), d["shelf"][0]["task"]); sys.exit(0)
+    time.sleep(0.005)
+print("never")' "$KANNA_SOCKET" "$(tid 1)")"
+  took="${seen%% *}" card="${seen#* }"
+  [[ "$took" =~ ^[0-9]+$ ]] || { echo "shelve_at_once: the task never reached the Shelf"; desk shelf; desk note; return 1; }
+  echo "shelve_at_once: on the Shelf ${took}ms after the click"
+  (( took <= 200 )) || { echo "shelve_at_once: the task took ${took}ms to reach the Shelf"; return 1; }
+  raw '{"id":1,"cmd":"debug.click","args":{"shelf":"'"$card"'","window":"d1"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk window.dock.pane)" == "$(pane "Line tables" id)" ]]' || { echo "shelve_at_once: pulling it at once didn't put it on the Desk"; raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}'; return 1; }
+  check wait_for 5 shows "Line tables" "--resume" || { echo "shelve_at_once: its agent didn't come back"; kanna read "Line tables"; return 1; }
+  check wait_for 5 is lines state running && check is tables state running || { echo "shelve_at_once: its tabs didn't run again"; kanna workspace list --all; return 1; }
+  check test "$(desk note)" == "" || { echo "shelve_at_once: $(desk note)"; return 1; }
+  grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:.]{12} kanna-daemon: ' "$out/daemon.log" || { echo "shelve_at_once: daemon.log's lines have no time"; tail -3 "$out/daemon.log"; return 1; }
+}
+
 scenario task_restart_typing M4
 task_restart_typing() {
   start_daemon && start_app || { echo "task_restart_typing line $LINENO"; return 1; }

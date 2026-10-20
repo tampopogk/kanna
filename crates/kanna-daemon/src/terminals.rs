@@ -192,7 +192,7 @@ impl Terminals {
             return;
         }
         if let Err(error) = self.store.save_settings(&settings) {
-            eprintln!("kanna-daemon: couldn't save the terminal settings: {error}");
+            log!("kanna-daemon: couldn't save the terminal settings: {error}");
         }
         for terminal in self.live.borrow().values() {
             let replies = Feed::lock(&terminal.feed).apply(&settings);
@@ -259,7 +259,7 @@ impl Terminals {
         let terminal = live.get_mut(id)?;
         let mut feed = Feed::lock(&terminal.feed);
         if cols > MAX_SIDE || rows > MAX_SIDE {
-            eprintln!("kanna-daemon: refused to make {id} {cols}×{rows}: at most {MAX_SIDE} cells a side");
+            log!("kanna-daemon: refused to make {id} {cols}×{rows}: at most {MAX_SIDE} cells a side");
             return Some((feed.cols, feed.rows));
         }
         let (cols, rows) = (cols.max(1), rows.max(1));
@@ -295,7 +295,7 @@ impl Terminals {
         }
         let Some(saved) = self.saved() else { return };
         if let Err(error) = self.store.save(&saved) {
-            eprintln!("kanna-daemon: couldn't save the terminals to {}: {error}", self.store.dir().display());
+            log!("kanna-daemon: couldn't save the terminals to {}: {error}", self.store.dir().display());
         }
     }
 
@@ -381,7 +381,7 @@ impl Terminals {
                     self.ended(&record, self.store.snapshot(&record.id))
                 }
                 None => {
-                    eprintln!("kanna-daemon: {} ended while no daemon was running, and the keeper has no exit for it", pane.label());
+                    log!("kanna-daemon: {} ended while no daemon was running, and the keeper has no exit for it", pane.label());
                     restored.dropped += 1;
                     continue;
                 }
@@ -391,7 +391,7 @@ impl Terminals {
                     self.live.borrow_mut().insert(record.id.clone(), terminal);
                     panes.push(pane);
                 }
-                Err(error) => eprintln!("kanna-daemon: couldn't take {} back: {error}", pane.label()),
+                Err(error) => log!("kanna-daemon: couldn't take {} back: {error}", pane.label()),
             }
         }
         let mut unknown: Vec<Adopted> = ptys.into_values().collect();
@@ -426,13 +426,13 @@ impl Terminals {
             exits.extend(pty.exit.map(|code| (keeper.clone(), pty.pid, code)));
             match self.adopt(&id, &pane_id, &keeper, pty, None) {
                 Ok(terminal) => {
-                    eprintln!("kanna-daemon: took back {id} as {pane_id}, which the keeper had and the disk didn't know");
+                    log!("kanna-daemon: took back {id} as {pane_id}, which the keeper had and the disk didn't know");
                     self.live.borrow_mut().insert(id, terminal);
                     panes.push(pane);
                     restored.unknown += 1;
                 }
                 Err(error) => {
-                    eprintln!("kanna-daemon: couldn't take back the keeper's {keeper}: {error}; closing it");
+                    log!("kanna-daemon: couldn't take back the keeper's {keeper}: {error}; closing it");
                     self.spawner.close(&keeper);
                 }
             }
@@ -446,7 +446,7 @@ impl Terminals {
         self.save_if_changed();
         for (keeper, pid, code) in exits {
             if let Some((terminal, _)) = self.exited(&keeper, pid, code) {
-                eprintln!("kanna-daemon: {terminal} exited ({code}) while no daemon was running");
+                log!("kanna-daemon: {terminal} exited ({code}) while no daemon was running");
             }
         }
         restored
@@ -457,7 +457,7 @@ impl Terminals {
         let restored = snapshot.and_then(|snapshot| match Feed::restore(&snapshot, &settings) {
             Ok(feed) => Some(feed),
             Err(error) => {
-                eprintln!("kanna-daemon: {id}'s saved screen can't be read ({error}); starting it blank");
+                log!("kanna-daemon: {id}'s saved screen can't be read ({error}); starting it blank");
                 None
             }
         });
@@ -586,7 +586,7 @@ impl PaneHost for Terminals {
         let Some(line) = line else { return done.reply(Err(KmuxError::new("bad_request", format!("{} has no running terminal", pane.label())))) };
         let sent = std::thread::Builder::new().name(format!("kanna.send.{}", pane.id)).spawn(move || line.type_in(done));
         if let Err(error) = sent {
-            eprintln!("kanna-daemon: couldn't start sending text: {error}");
+            log!("kanna-daemon: couldn't start sending text: {error}");
         }
     }
 
@@ -595,7 +595,7 @@ impl PaneHost for Terminals {
             Ok(presses) => {
                 let sent = std::thread::Builder::new().name(format!("kanna.keys.{}", pane.id)).spawn(move || presses.press(done));
                 if let Err(error) = sent {
-                    eprintln!("kanna-daemon: couldn't start sending keys: {error}");
+                    log!("kanna-daemon: couldn't start sending keys: {error}");
                 }
             }
             Err(error) => done.reply(Err(error)),
