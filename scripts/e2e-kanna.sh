@@ -62,6 +62,7 @@ done
 
 unset KANNA_PANE KANNA_TERMINAL KANNA_INSTANCE
 ps -o pid= -p $$ >/dev/null 2>&1 && kill -0 $$ 2>/dev/null || { echo "e2e-kanna: can't list or signal processes here (a sandbox?); run it unsandboxed" >&2; exit 2; }
+export KANNA_E2E_OWNER=$$
 mock_agent="$repo_root/tools/mock-agent/mock-agent"
 new_state_dir() {
   KANNA_STATE_DIR="$(mktemp -d /tmp/kanna-e2e.XXXXXX)" || exit 1
@@ -86,7 +87,10 @@ daemon_pid="" app_pid="" scenario_pid=""
 need() { [[ -x "$1" ]] || { echo "not built: ${1#$repo_root/}"; return 1; }; }
 wait_for() {
   local tries=$(($1 * 10)); shift
-  for _ in $(seq "$tries"); do "$@" 2>/dev/null && return 0; sleep 0.1; done
+  for _ in $(seq "$tries"); do
+    kill -0 "$KANNA_E2E_OWNER" 2>/dev/null || exit 1
+    "$@" 2>/dev/null && return 0; sleep 0.1
+  done
   return 1
 }
 start_daemon() {
@@ -115,24 +119,56 @@ start_app() {
 }
 stop_app() { stop_pid "$app_pid"; app_pid=""; }
 app_attached() { [[ "$(raw '{"id":1,"cmd":"debug.app"}' | field ok)" == True ]]; }
+instance_sockets() {
+  local socket
+  for socket in "$KANNA_STATE_DIR/kanna.sock" "$KANNA_STATE_DIR/home/Library/Application Support"/kanna-dev*/kanna.sock; do
+    [[ -S "$socket" ]] && echo "$socket"
+  done
+}
+stop_instances() {
+  [[ -n "$KANNA_STATE_DIR" && -d "$KANNA_STATE_DIR" ]] || return 0
+  local socket pids=()
+  while IFS= read -r socket; do
+    env -u KANNA_INSTANCE KANNA_SOCKET="$socket" "$bin/kanna" instances stop >/dev/null 2>>"$out/stop.log" &
+    pids+=($!)
+  done < <(instance_sockets)
+  [[ ${#pids[@]} -eq 0 ]] || wait "${pids[@]}"
+}
+stop_jobs() {
+  local pid command
+  for pid in $(jobs -p); do
+    kill -0 "$pid" 2>/dev/null || continue
+    command="$(ps -o command= -p "$pid")"
+    case "$command" in *kanna-daemon*|*Kanna.app*) echo "e2e-kanna: ${command:0:120} (pid $pid) outlived kanna instances stop" >&2 ;; esac
+    stop_pid "$pid"
+  done
+}
+run_scenario() {
+  trap 'exit 143' TERM
+  trap 'stop_instances; stop_jobs' EXIT
+  "$1"
+}
 cleanup() {
   if [[ -n "$scenario_pid" ]]; then
     kill "$scenario_pid" 2>/dev/null
-    wait_for 2 eval "! kill -0 $scenario_pid" || kill -9 "$scenario_pid" 2>/dev/null
+    wait_for 30 eval "! kill -0 $scenario_pid" || kill -9 "$scenario_pid" 2>/dev/null
     wait "$scenario_pid" 2>/dev/null
     scenario_pid=""
   fi
   [[ -n "$KANNA_STATE_DIR" ]] || return 0
-  stop_tied "$KANNA_STATE_DIR"
+  stop_instances
+  stop_tied --last-resort "$KANNA_STATE_DIR"
+  cp "$KANNA_STATE_DIR/daemon.log" "$out/last-daemon.log" 2>/dev/null
   app_pid="" daemon_pid=""
   rm -rf "$KANNA_STATE_DIR"
 }
 stop_agents() { stop_tied "$KANNA_STATE_DIR/agents" "$KANNA_STATE_DIR/codex"; }
-stop_folder() { stop_tied "$1"; }
 stop_tied() {
   python3 - "$$" "$@" <<'PY'
 import os, re, signal, subprocess, sys, time
 runner, paths = int(sys.argv[1]), sys.argv[2:]
+last_resort = paths[:1] == ["--last-resort"]
+paths = paths[1:] if last_resort else paths
 if not paths or not all(paths):
     sys.exit(0)
 sweeping = paths == ["--orphans"]
@@ -219,7 +255,9 @@ def stop(tied, why):
         pids = {pid: command for pid, command, env in table() if tied(command, env)}
         if not pids:
             return
-        for pid in pids:
+        for pid, command in pids.items():
+            if last_resort:
+                print(f"e2e-kanna: bug: {command[:120]} (pid {pid}) was still running after kanna instances stop{why}", file=sys.stderr)
             signal_(pid, signal.SIGTERM)
         deadline = time.time() + 5
         while time.time() < deadline and any(alive(p) for p in pids):
@@ -604,7 +642,11 @@ instances() {
   check test "$(inst --instance e2e instances --json | field instances.0.current)" == True || return 1
   inst --instance e2e open --name instancesb --split right >/dev/null || return 1
   check test "$(inst --instance e2e workspace list --all --json | field windows.0.tabs.0.layout)" == '{"children": [{"pane": "instances", "size": "1/2"}, {"pane": "instancesb", "size": "1/2"}], "split": "row"}' || return 1
-  stop_folder "$folder"
+  local daemon keeper
+  daemon="$(cat "$folder/daemon.pid")" keeper="$(cat "$folder/keeper.pid")"
+  check test "$(inst --instance e2e instances stop)" == "stopped e2e ($folder/kanna.sock)" || return 1
+  check test ! -e "$folder/daemon.pid" || return 1
+  check wait_for 5 eval '! kill -0 $daemon && ! kill -0 $keeper' || { echo "instances: the stopped instance's daemon or keeper is still running"; return 1; }
   check test "$(inst instances)" == "No Kanna instances are running. Any command starts one, e.g. kanna open or kanna --instance work open."
 }
 
@@ -3625,7 +3667,7 @@ for s in "${run[@]}"; do
   if [[ "$m" > "$through" ]]; then printf '%-20s --   not due (%s)\n' "$s" "$m"; continue; fi
   cleanup
   new_state_dir
-  "$s" >"$out/$s.log" 2>&1 &
+  run_scenario "$s" >"$out/$s.log" 2>&1 &
   scenario_pid=$! ends=$((SECONDS + limit))
   echo "$scenario_pid" >"$KANNA_STATE_DIR/e2e-scenario.pid"
   while kill -0 "$scenario_pid" 2>/dev/null && [[ $SECONDS -lt $ends ]]; do sleep 0.2; done

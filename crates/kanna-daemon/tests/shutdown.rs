@@ -81,3 +81,30 @@ fn the_daemon_shuts_down_when_its_owner_exits_even_with_an_app_that_doesnt_quit(
         .unwrap();
     assert!(status.success() && !dir.join("kanna.sock").exists() && !dir.join("keeper.sock").exists(), "a daemon whose owner is already gone doesn't start");
 }
+
+#[test]
+fn a_daemon_waiting_for_the_folder_while_it_shuts_down_doesnt_start() {
+    let mut instance = Instance::start_with(&[("KANNA_KEEPER_CLOSE_GRACE_MS", "2000")]);
+    instance.open("stubborn", Some("trap '' HUP; sleep 600 & wait"));
+    let mut waiting = Command::new(env!("CARGO_BIN_EXE_kanna-daemon"))
+        .env("HOME", instance.dir.join("home"))
+        .env("KANNA_SOCKET", instance.socket())
+        .env("KANNA_STATE_DIR", instance.dir.join("state"))
+        .env("KANNA_AGENT_RULES_URL", "none")
+        .stdin(Stdio::null())
+        .stderr(std::fs::File::create(instance.dir.join("waiting.log")).unwrap())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(1000));
+    instance.call("shutdown", json!({}));
+    assert!(exits_within(&mut instance, Duration::from_secs(10)), "{}", instance.log());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = waiting.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "the waiting daemon started: {}", std::fs::read_to_string(instance.dir.join("waiting.log")).unwrap_or_default());
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(status.success() && !instance.socket().exists());
+}

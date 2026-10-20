@@ -60,6 +60,8 @@ const LOCK_WAIT: Duration = Duration::from_secs(5);
 
 const STOP_GRACE: libc::c_uint = 5;
 
+const SHUTDOWN_MARKER: &str = "daemon.shutdown";
+
 const APP_QUIT_WAIT: Duration = Duration::from_secs(5);
 
 const KEEPER_STOP_WAIT: Duration = Duration::from_secs(8);
@@ -145,7 +147,13 @@ fn run() -> Result<(), String> {
     }
     std::fs::create_dir_all(&state_dir).map_err(|e| format!("can't make {}: {e}", state_dir.display()))?;
     let socket_path = socket.to_string_lossy().into_owned();
-    let _lock = lock(&state_dir)?;
+    let (_lock, waited) = lock(&state_dir)?;
+    let marker = state_dir.join(SHUTDOWN_MARKER);
+    if waited && marker.exists() {
+        eprintln!("kanna-daemon: the daemon before it shut this Kanna down while it waited; not starting");
+        return Ok(());
+    }
+    let _ = std::fs::remove_file(&marker);
     let _ = std::fs::write(state_dir.join(kanna_build::RECORD), format!("{:#}\n", build.record(app_bundle().as_deref())));
 
     let stop_signals = signal_set(&[libc::SIGTERM, libc::SIGINT, libc::SIGHUP]);
@@ -209,7 +217,7 @@ fn run() -> Result<(), String> {
         }
     }));
     let rules = kanna_detect::Store::new(status_command::rules_config(&state_dir));
-    let _rules_updater = rules.start();
+    let rules_updater = rules.start();
     let detector = Rc::new(status::Detector::start(rules, events.clone()));
     *terminals.detector.borrow_mut() = Some(detector.clone());
     let status_commands = Rc::new(status_command::StatusCommand::new(detector.clone(), events.clone()));
@@ -394,6 +402,7 @@ fn run() -> Result<(), String> {
             return;
         }
         eprintln!("kanna-daemon: shutting down: {why}");
+        let _ = std::fs::write(state_dir.join(SHUTDOWN_MARKER), format!("{why}\n"));
         *shutdown = Some(Shutdown::App(Instant::now() + APP_QUIT_WAIT));
         app.quit();
     };
@@ -561,6 +570,7 @@ fn run() -> Result<(), String> {
     layout.save_now();
     terminals.shutdown();
     let _ = std::fs::remove_file(&pid_file);
+    std::mem::forget(rules_updater);
     server.stop();
     match failure {
         Some(reason) => Err(format!("{reason}; stopping")),
@@ -589,7 +599,7 @@ fn app_bundle() -> Option<PathBuf> {
     (helpers.file_name()? == "Helpers" && contents.file_name()? == "Contents" && app.extension()? == "app").then(|| app.to_path_buf())
 }
 
-fn lock(state_dir: &Path) -> Result<std::fs::File, String> {
+fn lock(state_dir: &Path) -> Result<(std::fs::File, bool), String> {
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::OpenOptionsExt;
     let path = state_dir.join("daemon.lock");
@@ -603,14 +613,16 @@ fn lock(state_dir: &Path) -> Result<std::fs::File, String> {
         .open(&path)
         .map_err(|e| format!("can't open {}: {e}", path.display()))?;
     let deadline = Instant::now() + LOCK_WAIT;
+    let mut waited = false;
     while unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         if Instant::now() >= deadline {
             let other = std::fs::read_to_string(state_dir.join("daemon.pid")).unwrap_or_default();
             return Err(format!("another daemon (pid {}) uses {}", other.trim(), state_dir.display()));
         }
+        waited = true;
         std::thread::sleep(Duration::from_millis(50));
     }
-    Ok(file)
+    Ok((file, waited))
 }
 
 fn signal_set(signals: &[libc::c_int]) -> libc::sigset_t {
