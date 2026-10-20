@@ -50,15 +50,16 @@ final class DaemonConnection: @unchecked Sendable {
         }
     }
 
-    func send(_ message: JSON) { send(message, generation: nil) }
+    func send(_ message: JSON, sent: (@Sendable () -> Void)? = nil) { send(message, generation: nil, sent: sent) }
 
-    func send(_ message: JSON, generation: Int?) {
+    func send(_ message: JSON, generation: Int?, sent: (@Sendable () -> Void)? = nil) {
         var encoded = message.encoded()
         encoded.append(UInt8(ascii: "\n"))
         let line = encoded
         writes.async { [self] in
             let fd = lock.withLock { generation == nil || generation == self.generation ? self.fd : -1 }
             if fd >= 0 { _ = Self.writeAll(fd, line) }
+            sent?()
         }
     }
 

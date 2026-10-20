@@ -224,7 +224,11 @@ extension AppController {
 
     func startTask(_ task: String, from window: String) {
         controllers[window]?.note = ""
-        request("backlog", ["action": "shelve", "task": .string(task)]) { [weak self] reply in self?.noted(window, reply) }
+        let click = Clicks.shelve(task, shelf: controllers[window]?.shelf.map(\.id) ?? [])
+        request("backlog", ["action": "shelve", "task": .string(task)], reply: { [weak self] reply in
+            if reply["ok"]?.bool != true { Clicks.failed(task) }
+            self?.noted(window, reply)
+        }, sent: Clicks.sent(click))
     }
 
     func newDesk() {

@@ -1,4 +1,5 @@
 import Foundation
+import KannaPerf
 
 @MainActor
 final class DaemonLink: TerminalLink {
@@ -66,6 +67,8 @@ final class DaemonLink: TerminalLink {
     }
 
     private func received(_ message: JSON, _ delivery: DaemonConnection.Delivery) {
+        let span = Perf.begin(.daemon, "message", message["cmd"]?.string ?? (message["ok"] != nil ? "reply" : "unknown"))
+        defer { Perf.end(span) }
         let connection = connection!
         var consumed = true
         defer { if consumed { connection.consumed(delivery) } }
@@ -151,14 +154,14 @@ final class DaemonLink: TerminalLink {
         send("update", args)
     }
 
-    func request(_ cmd: String, _ args: [String: JSON], reply: ((JSON) -> Void)? = nil) {
+    func request(_ cmd: String, _ args: [String: JSON], reply: ((JSON) -> Void)? = nil, sent: (@Sendable () -> Void)? = nil) {
         guard attached else {
             reply?(["ok": false, "error": ["code": "no_daemon", "message": "Kanna.app is not attached to its daemon"]])
             return
         }
         requests += 1
         if let reply { replies[requests] = reply }
-        connection.send(["id": .number(Double(requests)), "cmd": .string(cmd), "args": .object(args)])
+        connection.send(["id": .number(Double(requests)), "cmd": .string(cmd), "args": .object(args)], sent: sent)
     }
 
     func opened(_ terminal: ExternalTerminal) {
