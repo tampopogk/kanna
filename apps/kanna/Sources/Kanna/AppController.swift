@@ -1,6 +1,7 @@
 import AppKit
 import GhosttyKit
 import KannaMarkdown
+import KannaPerf
 import KannaStatus
 
 @MainActor
@@ -90,6 +91,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         KannaBuild.badgeIcon()
+        HangWatch.start { hang in FileHandle.standardError.write(Data("kanna: \(HangWatch.line(hang))\n".utf8)) }
         do {
             runtime = try GhosttyRuntime()
         } catch {
@@ -341,14 +343,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func paneID(named name: String) -> String? { names[name] }
 
-    func request(_ cmd: String, _ args: [String: JSON], reply: ((JSON) -> Void)? = nil) {
+    func request(_ cmd: String, _ args: [String: JSON], reply: ((JSON) -> Void)? = nil, sent: (@Sendable () -> Void)? = nil) {
         guard let daemon else { return }
-        daemon.request(cmd, args) { answer in
+        daemon.request(cmd, args, reply: { answer in
             if answer["ok"]?.bool != true {
                 FileHandle.standardError.write(Data("kanna: \(cmd): \(answer["error"]?["message"]?.string ?? "failed")\n".utf8))
             }
             reply?(answer)
-        }
+        }, sent: sent)
     }
 
     func userFocused(_ pane: String) {
@@ -398,12 +400,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func refresh() {
         guard daemon != nil else { return }
-        rendering = true
-        render(state)
-        rendering = false
+        Perf.measure(.render, "refresh") {
+            rendering = true
+            render(state)
+            rendering = false
+        }
     }
 
     private func render(_ view: JSON) {
+        let span = Perf.begin(.render, "render")
+        defer { Perf.end(span) }
         state = view
         defer {
             statusSeen()
@@ -483,9 +489,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         controller.tabBar.onRename = { [weak self] tab, title in self?.layoutCommand("rename-tab", ["tab": .string(tab), "title": .string(title)]) }
         controller.onCloseRequest = { [weak self] in self?.close(window: id) }
-        controller.shelfStrip.onPull = { [weak self] task in self?.pullTask(task, into: id) }
+        controller.shelfStrip.onPull = { [weak self] task in
+            Clicks.pull(task)
+            self?.pullTask(task, into: id)
+        }
         controller.agentHeader.onPark = { [weak self] in self?.park(desk: id) }
-        controller.shelfPage.onPull = { [weak self] task in self?.pullTask(task, into: id) }
+        controller.shelfPage.onPull = { [weak self] task in
+            Clicks.pull(task)
+            self?.pullTask(task, into: id)
+        }
         controller.shelfPage.onStart = { [weak self] task in self?.startTask(task, from: id) }
         controller.shelfPage.onLeaveSearch = { [weak self, weak controller] in
             guard let self, let controller, let lead = controller.leadShown, let view = panes.keyView(lead) else { return }

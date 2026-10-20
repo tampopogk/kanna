@@ -145,6 +145,8 @@ flowchart LR
     F --> T["Swift tests"]
 ```
 
+**Where the app's time goes is measured inside it:** signposts, a main-thread hang detector, `debug.perf`, and the daemon's slow-request log ([performance monitoring](performance-monitoring.md)).
+
 ## 4. Glossary
 
 | Term | Meaning |

@@ -1,5 +1,6 @@
 import AppKit
 import KannaDocs
+import KannaPerf
 import Markdown
 
 @MainActor
@@ -166,6 +167,8 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     }
 
     private func reloadIfChanged() {
+        let span = Perf.begin(.markdown, "markdown.check")
+        defer { Perf.end(span) }
         reloadThreadsIfChanged()
         refreshPanel()
         guard pending == nil, let now = fileStamp() else { return }
@@ -174,6 +177,8 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     }
 
     private func load() {
+        let span = Perf.begin(.markdown, "markdown.load")
+        defer { Perf.end(span) }
         stamp = fileStamp()
         let text = FileManager.default.contents(atPath: path).map { String(decoding: $0, as: UTF8.self) } ?? ""
         source = text

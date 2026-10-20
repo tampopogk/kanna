@@ -1,4 +1,5 @@
 import AppKit
+import KannaPerf
 
 struct ShelfTask: Equatable {
     let id: String
@@ -446,6 +447,7 @@ final class ShelfPage: NSView, NSSearchFieldDelegate {
     }
 
     private func lay(_ page: DeskPage, top: CGFloat) {
+        let span = Perf.begin(.shelf, "ShelfPage.lay")
         document.subviews.filter { $0 !== search && $0 !== searchKey }.forEach { $0.removeFromSuperview() }
         let left: CGFloat = 48, width = min(760, scroller.contentSize.width - left * 2)
         var y: CGFloat = 40
@@ -493,6 +495,8 @@ final class ShelfPage: NSView, NSSearchFieldDelegate {
         note.frame.origin = NSPoint(x: left, y: y + 8)
         document.frame = NSRect(x: 0, y: 0, width: scroller.contentSize.width, height: y + 8 + note.frame.height + 40)
         scroll(toY: top)
+        Perf.end(span, "\(page.tasks.count + hits.count) rows")
+        Clicks.laid(shelf: page.tasks.map(\.id), backlog: page.backlog.map(\.id))
     }
 
     private func placeSearch(shown: Bool, right edge: CGFloat, middle: CGFloat, left: CGFloat) {

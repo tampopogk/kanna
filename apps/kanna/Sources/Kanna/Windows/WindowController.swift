@@ -1,5 +1,6 @@
 import AppKit
 import KannaMarkdown
+import KannaPerf
 
 @MainActor
 final class WindowController: NSObject, NSWindowDelegate {
@@ -89,6 +90,8 @@ final class WindowController: NSObject, NSWindowDelegate {
     }
 
     func render(_ state: JSON, _ panes: PaneViews) {
+        let span = Perf.begin(.render, "WindowController.render")
+        defer { Perf.end(span) }
         tab = state["tab"]?.string
         let instance = AppController.instanceName
         desk = state["desk"]?.bool == true
@@ -106,6 +109,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         emptyDesk = desk && task == nil && ids.isEmpty
         if deskTask && emptyDesk { cheerAt = (cheerAt + 1) % ShelfPage.cheers.count }
         deskTask = desk && task != nil
+        if deskTask, let pulled = task?["pane"]?.string { Clicks.pulled(pulled) }
         let zoomed = state["zoomed"]?.string
         arrange(dock, zoomed: zoomed.map { $0 == docked ? .dock : .tab })
         let visible = Set(ids)

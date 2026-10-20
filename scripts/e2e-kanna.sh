@@ -2549,6 +2549,42 @@ print("never")' "$KANNA_SOCKET" "$(tid 1)")"
   grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:.]{12} kanna-daemon: ' "$out/daemon.log" || { echo "shelve_at_once: daemon.log's lines have no time"; tail -3 "$out/daemon.log"; return 1; }
 }
 
+scenario perf_intervals M4
+perf_intervals() {
+  local repo="$KANNA_STATE_DIR/repo" agent="$KANNA_STATE_DIR/bin/claude" card perf
+  mkdir -p "$repo" "${agent%/*}" && ln -s "$mock_agent" "$agent" || { echo "perf_intervals line $LINENO"; return 1; }
+  git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "perf_intervals line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  start_daemon || { echo "perf_intervals line $LINENO"; return 1; }
+  env -u KANNA_NO_INITIAL_WINDOW KANNA_START_DIR="$repo" "$app" --bg >>"$out/app.log" 2>&1 &
+  app_pid=$!
+  wait_for 10 app_attached || { echo "the app did not attach"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"d1\"}}" | field "$1"; }
+  perf() { raw '{"id":1,"cmd":"debug.perf"}' | python3 -c 'import json, sys
+r = json.load(sys.stdin); r = r.get("result", r)
+names = {i["name"]: i for i in r["intervals"]}
+for want in sys.argv[1:]:
+    if want not in names: print("missing", want, sorted(names)); sys.exit(1)
+    print(want, names[want]["last"], "ms")' "$@"; }
+  check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { echo "perf_intervals: no planning terminal"; return 1; }
+  (cd "$repo" && kanna task new "Timed" "say hi" --agent "$agent") >/dev/null || { echo "perf_intervals line $LINENO"; return 1; }
+  check wait_for 5 eval '[[ "$(desk backlog)" == "[\"$(tid 1)\"]" ]]' || { desk backlog; return 1; }
+  raw '{"id":1,"cmd":"debug.perf","args":{"reset":true}}' >/dev/null
+  raw '{"id":1,"cmd":"debug.click","args":{"backlog":"'"$(tid 1)"'","window":"d1"}}' >/dev/null
+  check wait_for 5 perf click.shelve.wait click.shelve.sent click.shelve.shown message.layout refresh render ShelfPage.lay command.debug.click >/dev/null \
+    || { echo "perf_intervals: the click's intervals weren't recorded"; perf click.shelve.shown; return 1; }
+  echo "perf_intervals: $(perf click.shelve.wait click.shelve.sent click.shelve.shown | tr '\n' ' ')"
+  card="$(desk shelf.0.task)"
+  raw '{"id":1,"cmd":"debug.click","args":{"shelf":"'"$card"'","window":"d1"}}' >/dev/null
+  check wait_for 5 perf click.pull.shown >/dev/null || { echo "perf_intervals: pulling it wasn't timed"; perf click.pull.shown; return 1; }
+  raw '{"id":1,"cmd":"debug.hang","args":{"ms":300}}' >/dev/null
+  check wait_for 5 eval 'raw "{\"id\":1,\"cmd\":\"debug.perf\"}" | python3 -c "import json, sys
+r = json.load(sys.stdin); r = r.get(\"result\", r)
+sys.exit(not any(h[\"ms\"] >= 300 and \"command.debug.hang\" in h[\"open\"] for h in r[\"hangs\"]))"' \
+    || { echo "perf_intervals: debug.perf has no 300ms hang in command.debug.hang"; raw '{"id":1,"cmd":"debug.perf"}'; return 1; }
+  check wait_for 5 grep -qE 'kanna: the main thread hung [0-9]{3}ms; open: .*command\.debug\.hang' "$out/app.log" || { echo "perf_intervals: the hang isn't in the app's log"; tail -5 "$out/app.log"; return 1; }
+}
+
 scenario task_restart_typing M4
 task_restart_typing() {
   start_daemon && start_app || { echo "task_restart_typing line $LINENO"; return 1; }

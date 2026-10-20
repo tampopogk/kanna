@@ -64,6 +64,7 @@ const APP_TIMEOUT: Duration = Duration::from_secs(10);
 const LOCK_WAIT: Duration = Duration::from_secs(5);
 
 const STOP_GRACE: libc::c_uint = 5;
+const SLOW_REQUEST: Duration = Duration::from_millis(50);
 
 pub enum Event {
     Request(Value, Box<dyn FnOnce(Value) + Send>),
@@ -418,7 +419,7 @@ fn run() -> Result<(), String> {
             Err(RecvTimeoutError::Disconnected) => break,
         };
         match event {
-            Event::Request(request, reply) => match () {
+            Event::Request(request, reply) => timed(request_name(&request), "a client", || match () {
                 () if request.get("cmd").and_then(Value::as_str) == Some("capabilities") => {
                     let attached = app.attached();
                     let build = build_id.clone();
@@ -431,7 +432,7 @@ fn run() -> Result<(), String> {
                     })
                 }
                 () => core.handle(request, reply),
-            },
+            }),
             Event::Wake => {}
             Event::Output { terminal, serial } => {
                 let (taken, cwd) = terminals.output(&terminal, serial);
@@ -497,10 +498,12 @@ fn run() -> Result<(), String> {
             Event::AppMessage { conn, message } => {
                 if let Some(request) = app.message(conn, message) {
                     let link = Rc::downgrade(&app);
-                    core.handle(request, move |reply| {
-                        if let Some(link) = link.upgrade() {
-                            link.answer_app(conn, reply);
-                        }
+                    timed(request_name(&request), "the app", || {
+                        core.handle(request, move |reply| {
+                            if let Some(link) = link.upgrade() {
+                                link.answer_app(conn, reply);
+                            }
+                        })
                     });
                 }
             }
@@ -519,6 +522,23 @@ fn run() -> Result<(), String> {
     match failure {
         Some(reason) => Err(format!("{reason}; stopping")),
         None => Ok(()),
+    }
+}
+
+fn timed(name: String, from: &str, handle: impl FnOnce()) {
+    let started = Instant::now();
+    handle();
+    let took = started.elapsed();
+    if took > SLOW_REQUEST {
+        log!("kanna-daemon: {name} from {from} took {}ms", took.as_millis());
+    }
+}
+
+fn request_name(request: &Value) -> String {
+    let cmd = request.get("cmd").and_then(Value::as_str).unwrap_or("?");
+    match request.get("args").and_then(|args| args.get("action")).and_then(Value::as_str) {
+        Some(action) => format!("{cmd} {action}"),
+        None => cmd.to_string(),
     }
 }
 
