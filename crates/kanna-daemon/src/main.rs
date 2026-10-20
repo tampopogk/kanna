@@ -6,6 +6,7 @@ mod host;
 mod keeper;
 mod content_ids;
 mod layout;
+mod lifeline;
 mod pty;
 mod codex_remote;
 mod messages;
@@ -59,6 +60,16 @@ const LOCK_WAIT: Duration = Duration::from_secs(5);
 
 const STOP_GRACE: libc::c_uint = 5;
 
+const APP_QUIT_WAIT: Duration = Duration::from_secs(5);
+
+const KEEPER_STOP_WAIT: Duration = Duration::from_secs(8);
+
+enum Shutdown {
+    App(Instant),
+    Keeper(Instant),
+    Done,
+}
+
 pub enum Event {
     Request(Value, Box<dyn FnOnce(Value) + Send>),
     Wake,
@@ -79,6 +90,7 @@ pub enum Event {
     AppMessage { conn: u64, message: Value },
     AppGone { conn: u64 },
     Quit(i32),
+    Shutdown(String),
 }
 
 fn main() {
@@ -122,6 +134,10 @@ fn run() -> Result<(), String> {
     let socket = env_path("KANNA_SOCKET").unwrap_or_else(|| build.instance_folder(&support_folder(), &build.default_instance()).join(kanna_build::SOCKET));
     if socket.to_string_lossy().to_lowercase() == app_socket().to_string_lossy().to_lowercase() {
         return Err(format!("{} belongs to Kanna.app; use another KANNA_SOCKET", socket.display()));
+    }
+    if let Some(owner) = lifeline::owner().filter(|pid| lifeline::gone(*pid)) {
+        eprintln!("kanna-daemon: its owner (pid {owner}, {}) is gone; not starting", lifeline::OWNER);
+        return Ok(());
     }
     let state_dir = env_path("KANNA_STATE_DIR").unwrap_or_else(|| socket.parent().map(Path::to_path_buf).unwrap_or_default());
     if let Ok(helper) = std::env::current_exe() {
@@ -366,20 +382,64 @@ fn run() -> Result<(), String> {
             }
         })
         .map_err(|e| e.to_string())?;
+    if let Some(owner) = lifeline::watch(events.clone()) {
+        eprintln!("kanna-daemon: stops when its owner (pid {owner}, {}) exits", lifeline::OWNER);
+    }
     drop(events);
 
     let mut failure = None;
+    let mut shutdown: Option<Shutdown> = None;
+    let begin = |why: &str, shutdown: &mut Option<Shutdown>| {
+        if shutdown.is_some() {
+            return;
+        }
+        eprintln!("kanna-daemon: shutting down: {why}");
+        *shutdown = Some(Shutdown::App(Instant::now() + APP_QUIT_WAIT));
+        app.quit();
+    };
     loop {
         let signal = stopping.load(Ordering::SeqCst);
         if signal != 0 {
             eprintln!("kanna-daemon: stopping (signal {signal})");
             break;
         }
+        if let Some(Shutdown::App(by)) = shutdown {
+            if !app.attached() || Instant::now() >= by {
+                if app.attached() {
+                    eprintln!("kanna-daemon: the app didn't quit in {}s; going on without it", APP_QUIT_WAIT.as_secs());
+                    app.close();
+                }
+                let hung_up = terminals.hang_up_all();
+                match keeper.stop() {
+                    Ok(()) => {
+                        eprintln!("kanna-daemon: hung up {hung_up} terminal(s); the keeper is stopping");
+                        shutdown = Some(Shutdown::Keeper(Instant::now() + KEEPER_STOP_WAIT));
+                    }
+                    Err(error) => {
+                        eprintln!("kanna-daemon: the keeper (pid {}) didn't take stop: {error}", keeper.pid());
+                        shutdown = Some(Shutdown::Done);
+                    }
+                }
+            }
+        }
+        match shutdown {
+            Some(Shutdown::Keeper(by)) if Instant::now() >= by => {
+                eprintln!("kanna-daemon: the keeper (pid {}) didn't stop in {}s", keeper.pid(), KEEPER_STOP_WAIT.as_secs());
+                break;
+            }
+            Some(Shutdown::Done) => break,
+            _ => {}
+        }
         app.expire(Instant::now());
         terminals.save_if_changed();
-        backlog.sweep();
         layout.flush();
-        let deadline = [core.poll(), app.next_deadline(), backlog.tick(), layout.next_deadline()].into_iter().flatten().min();
+        let ticks = if shutdown.is_none() {
+            backlog.sweep();
+            backlog.tick()
+        } else {
+            Some(Instant::now() + Duration::from_millis(100))
+        };
+        let deadline = [core.poll(), app.next_deadline(), ticks, layout.next_deadline()].into_iter().flatten().min();
         let event = match deadline {
             Some(at) => inbox.recv_timeout(at.saturating_duration_since(Instant::now())),
             None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
@@ -390,8 +450,15 @@ fn run() -> Result<(), String> {
             Err(RecvTimeoutError::Disconnected) => break,
         };
         match event {
-            Event::Request(request, reply) => match () {
-                () if request.get("cmd").and_then(Value::as_str) == Some("capabilities") => {
+            Event::Request(request, reply) => match request.get("cmd").and_then(Value::as_str) {
+                Some("shutdown") => {
+                    begin("asked to", &mut shutdown);
+                    reply(json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": true, "stopping": true, "pid": std::process::id() }))
+                }
+                _ if shutdown.is_some() => {
+                    reply(json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": false, "error": { "code": "stopping", "message": "this Kanna is stopping" } }))
+                }
+                Some("capabilities") => {
                     let attached = app.attached();
                     let build = build_id.clone();
                     core.handle(request, move |mut answer| {
@@ -402,7 +469,7 @@ fn run() -> Result<(), String> {
                         reply(answer)
                     })
                 }
-                () => core.handle(request, reply),
+                _ => core.handle(request, reply),
             },
             Event::Wake => {}
             Event::Output { terminal, serial } => {
@@ -448,11 +515,19 @@ fn run() -> Result<(), String> {
                             }
                         }
                     }
+                    Err(_) if matches!(shutdown, Some(Shutdown::Keeper(_))) => {
+                        eprintln!("kanna-daemon: the keeper stopped");
+                        break;
+                    }
                     Err(reason) => {
                         failure = Some(reason);
                         break;
                     }
                 }
+            }
+            Event::KeeperLost(_) if matches!(shutdown, Some(Shutdown::Keeper(_))) => {
+                eprintln!("kanna-daemon: the keeper stopped");
+                break;
             }
             Event::KeeperLost(reason) => {
                 failure = Some(reason);
@@ -477,15 +552,16 @@ fn run() -> Result<(), String> {
             Event::AppGone { conn } => app.gone(conn),
             Event::AppCaughtUp { conn } => app.caught_up(conn),
             Event::Quit(_) => continue,
+            Event::Shutdown(why) => begin(&why, &mut shutdown),
         }
     }
 
-    server.stop();
     app.close();
     layout.flush();
     layout.save_now();
     terminals.shutdown();
     let _ = std::fs::remove_file(&pid_file);
+    server.stop();
     match failure {
         Some(reason) => Err(format!("{reason}; stopping")),
         None => Ok(()),

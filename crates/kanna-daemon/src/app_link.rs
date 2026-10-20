@@ -121,6 +121,7 @@ pub struct AppLink {
     next_id: Cell<u64>,
     attached: RefCell<HashSet<String>>,
     unsent: RefCell<HashMap<String, Instant>>,
+    stopping: Cell<bool>,
     backlog: RefCell<Option<Weak<crate::backlog::Backlog>>>,
     build: Option<String>,
 }
@@ -140,6 +141,7 @@ impl AppLink {
             next_id: Cell::new(0),
             attached: RefCell::default(),
             unsent: RefCell::default(),
+            stopping: Cell::new(false),
         }
     }
 
@@ -192,6 +194,11 @@ impl AppLink {
         let answer = |reply: Value| {
             out.push(&reply);
         };
+        if self.stopping.get() {
+            answer(json!({ "id": id, "ok": false, "error": { "code": "stopping", "message": "this Kanna is stopping" } }));
+            let _ = stream.shutdown(Shutdown::Read);
+            return false;
+        }
         if self.app.borrow().is_some() {
             answer(json!({ "id": id, "ok": false, "error": { "code": "app_attached", "message": "another Kanna.app is attached to this daemon" } }));
             let _ = stream.shutdown(Shutdown::Read);
@@ -261,6 +268,11 @@ impl AppLink {
         }
         self.notify("toast", record.clone());
         true
+    }
+
+    pub fn quit(&self) {
+        self.stopping.set(true);
+        self.notify("quit", json!({}));
     }
 
     pub fn attached(&self) -> bool {
