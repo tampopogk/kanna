@@ -100,3 +100,4 @@ flowchart TB
 | [Deployment target](specs/deployment-target.md) | Everything built for the app's macOS |
 | [Build speed](specs/build-speed.md) · [build architectures](specs/build-architectures.md) · [build targets](specs/build-targets.md) | Fast worktree builds; arm64 and x86_64; worktree builds on another volume |
 | [Release](specs/release.md) | Signed, notarized DMGs published on GitHub |
+| [Fleet provisioning](specs/fleet-provisioning.md) | Ubuntu on a Dell R720 through its iDRAC alone |
