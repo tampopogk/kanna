@@ -16,6 +16,11 @@ usage: scripts/e2e-kanna.sh [--through M0|M1|M2|M3|M4] [NAME …]
                later ones are listed as not due
   NAME…        only these scenarios (e.g. cli_terminal shelf_zoom)
 
+A scenario that runs longer than $KANNA_E2E_TIMEOUT seconds (600) fails.
+Every run stops what it started however it ends, and first stops what runs
+it can't see anymore left behind (docs/specs/e2e-cleanup.md). Run it
+unsandboxed: it needs ps, signals, Unix sockets and /tmp.
+
 Uses target/release/{kanna,kanna-daemon,kanna-keeper,kanna-build} and target/Kanna.app (or $KANNA_E2E_APP)
 (scripts/build.sh). The private instance gets:
   KANNA_SOCKET     the daemon's socket (the CLI and the app connect to it)
@@ -56,9 +61,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 unset KANNA_PANE KANNA_TERMINAL KANNA_INSTANCE
+ps -o pid= -p $$ >/dev/null 2>&1 && kill -0 $$ 2>/dev/null || { echo "e2e-kanna: can't list or signal processes here (a sandbox?); run it unsandboxed" >&2; exit 2; }
 mock_agent="$repo_root/tools/mock-agent/mock-agent"
 new_state_dir() {
   KANNA_STATE_DIR="$(mktemp -d /tmp/kanna-e2e.XXXXXX)" || exit 1
+  echo $$ >"$KANNA_STATE_DIR/e2e-kanna.pid"
   export KANNA_AGENT_RULES_DIR="$KANNA_STATE_DIR/agent-rules-override"
   export KANNA_AGENTS_HOME="$KANNA_STATE_DIR/home"
   [[ -n "$KANNA_STATE_DIR" && -d "$KANNA_STATE_DIR" ]] || { echo "e2e-kanna: mktemp gave no folder" >&2; exit 1; }
@@ -66,7 +73,7 @@ new_state_dir() {
   mkdir -p "$KANNA_AGENTS_HOME/.kanna-v4" && echo '{"version": 2, "setup": false}' >"$KANNA_AGENTS_HOME/.kanna-v4/agents.json"
   printf '{"version": 1, "backlog": {"runners": 0}, "tasks": {"agent": "%s"}}\n' "$mock_agent" >"$KANNA_AGENTS_HOME/.kanna-v4/config.json"
 }
-new_state_dir
+KANNA_STATE_DIR=""
 export KANNA_IGNORE_OCCLUSION=1
 export KANNA_DEBUG=1
 export KANNA_TEST_EFFECTS=1
@@ -74,7 +81,7 @@ export KANNA_NO_INITIAL_WINDOW=1
 export KANNA_AGENT_RULES_URL=none
 export KANNA_PLANNING_AGENTS=none
 export KANNA_AGENT_SKILLS="${app%/MacOS/Kanna}/Resources/kanna-skills"
-daemon_pid="" app_pid=""
+daemon_pid="" app_pid="" scenario_pid=""
 
 need() { [[ -x "$1" ]] || { echo "not built: ${1#$repo_root/}"; return 1; }; }
 wait_for() {
@@ -93,72 +100,162 @@ start_daemon() {
   daemon_pid=$!
   wait_for 5 test -S "$KANNA_SOCKET" || { echo "the daemon did not open its socket"; return 1; }
 }
-stop_daemon() { [[ -n "$daemon_pid" ]] && kill "$daemon_pid" 2>/dev/null; wait "$daemon_pid" 2>/dev/null; daemon_pid=""; }
+stop_daemon() { stop_pid "$daemon_pid"; daemon_pid=""; }
+stop_pid() {
+  [[ -n "$1" ]] || return 0
+  kill "$1" 2>/dev/null
+  wait_for 5 eval "! kill -0 $1" || { echo "e2e-kanna: $(ps -o command= -p "$1" | cut -c1-120) (pid $1) didn't stop on TERM; killed" >&2; kill -9 "$1" 2>/dev/null; }
+  wait "$1" 2>/dev/null
+}
 start_app() {
   need "$app" || return 1
   "$app" --bg >>"$out/app.log" 2>&1 &
   app_pid=$!
   wait_for 10 app_attached || { echo "the app did not attach to the daemon"; return 1; }
 }
-stop_app() {
-  [[ -n "$app_pid" ]] || return 0
-  kill "$app_pid" 2>/dev/null; wait "$app_pid" 2>/dev/null
-  wait_for 5 eval "! kill -0 $app_pid"
-  app_pid=""
-}
+stop_app() { stop_pid "$app_pid"; app_pid=""; }
 app_attached() { [[ "$(raw '{"id":1,"cmd":"debug.app"}' | field ok)" == True ]]; }
 cleanup() {
-  stop_instances
-  stop_app; stop_daemon
-  stop_started_daemon
-  stop_keeper
-  stop_agents
+  if [[ -n "$scenario_pid" ]]; then
+    kill "$scenario_pid" 2>/dev/null
+    wait_for 2 eval "! kill -0 $scenario_pid" || kill -9 "$scenario_pid" 2>/dev/null
+    wait "$scenario_pid" 2>/dev/null
+    scenario_pid=""
+  fi
+  [[ -n "$KANNA_STATE_DIR" ]] || return 0
+  stop_tied "$KANNA_STATE_DIR"
+  app_pid="" daemon_pid=""
   rm -rf "$KANNA_STATE_DIR"
 }
-stop_agents() {
-  [[ -d "$KANNA_STATE_DIR/agents" ]] || return 0
-  pkill -f "$KANNA_STATE_DIR/agents/" 2>/dev/null
-  wait_for 10 eval "! pgrep -f '$KANNA_STATE_DIR/agents/' >/dev/null" || pkill -9 -f "$KANNA_STATE_DIR/agents/" 2>/dev/null
-  return 0
-}
-stop_started_daemon() {
-  local pid
-  pid="$(cat "$KANNA_STATE_DIR/daemon.pid" 2>/dev/null)" || return 0
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
-  [[ "$(ps -o command= -p "$pid" 2>/dev/null)" == *Kanna.app/Contents/Helpers/kanna-daemon* ]] || return 0
-  kill "$pid" 2>/dev/null
-  wait_for 5 eval "! kill -0 $pid"
-}
-stop_keeper() {
-  local pid
-  pid="$(cat "$KANNA_STATE_DIR/keeper.pid" 2>/dev/null)" || return 0
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
-  [[ "$(ps -o command= -p "$pid" 2>/dev/null)" == *kanna-keeper*"--state-dir $KANNA_STATE_DIR"* ]] || return 0
-  kill "$pid" 2>/dev/null
-  wait_for 5 eval "! kill -0 $pid"
-}
-stop_folder() {
-  local dir="$1" pid command
-  [[ -d "$dir" ]] || return 0
-  pid="$(sed -n 's/.*the app attached (pid \([0-9]*\)).*/\1/p' "$dir/daemon.log" 2>/dev/null | tail -1)"
-  command="$(ps -o command= -p "$pid" 2>/dev/null)"
-  if [[ "$pid" =~ ^[0-9]+$ && ( "$command" == *"$repo_root/target/Kanna.app/Contents/MacOS/Kanna"* || "$command" == *"$(cd "$repo_root/target" && pwd -P)/Kanna.app/Contents/MacOS/Kanna"* ) ]]; then
-    kill "$pid" 2>/dev/null; wait_for 5 eval "! kill -0 $pid"
-  fi
-  pid="$(cat "$dir/daemon.pid" 2>/dev/null)"
-  if [[ "$pid" =~ ^[0-9]+$ && "$(ps -o command= -p "$pid" 2>/dev/null)" == *kanna-daemon* ]]; then
-    kill "$pid" 2>/dev/null; wait_for 5 eval "! kill -0 $pid"
-  fi
-  pid="$(cat "$dir/keeper.pid" 2>/dev/null)"
-  if [[ "$pid" =~ ^[0-9]+$ && "$(ps -o command= -p "$pid" 2>/dev/null)" == *kanna-keeper*"--state-dir $dir"* ]]; then
-    kill "$pid" 2>/dev/null; wait_for 5 eval "! kill -0 $pid"
-  fi
-}
-stop_instances() {
-  local dir
-  for dir in "$KANNA_STATE_DIR"/home/Library/Application\ Support/kanna-dev*; do stop_folder "$dir"; done
+stop_agents() { stop_tied "$KANNA_STATE_DIR/agents" "$KANNA_STATE_DIR/codex"; }
+stop_folder() { stop_tied "$1"; }
+stop_tied() {
+  python3 - "$$" "$@" <<'PY'
+import os, re, signal, subprocess, sys, time
+runner, paths = int(sys.argv[1]), sys.argv[2:]
+if not paths or not all(paths):
+    sys.exit(0)
+sweeping = paths == ["--orphans"]
+FOLDER = re.compile(r"/tmp/kanna-e2e\.[A-Za-z0-9]{6}(?=[/\s\"']|$)")
+KEYS = r"(?:^|\s)(?:KANNA_STATE_DIR|KANNA_SOCKET|KANNA_AGENTS_HOME|HOME)="
+norm = lambda text: text.replace("/private/tmp/", "/tmp/")
+
+def ps(*args):
+    rows = {}
+    for line in subprocess.run(["ps", *args], capture_output=True, text=True).stdout.splitlines():
+        fields = line.split(None, 3 if args[0] == "-axww" else 1)
+        if len(fields) >= 2:
+            rows[int(fields[0])] = fields[1:]
+    return rows
+
+def table():
+    plain = ps("-axww", "-o", "pid=,ppid=,stat=,command=")
+    env = ps("-E", "-axww", "-o", "pid=,command=")
+    mine, pid = set(), os.getpid()
+    while pid in plain and pid not in mine:
+        mine.add(pid)
+        pid = int(plain[pid][0])
+    rows = []
+    for pid, fields in plain.items():
+        if len(fields) < 3 or pid in mine or pid == runner or fields[1].startswith("Z"):
+            continue
+        command = fields[2]
+        if "e2e-kanna.sh" in command or command.startswith("/Applications/Kanna.app/"):
+            continue
+        whole = env.get(pid, [command])[0]
+        rows.append((pid, norm(command), norm(whole[len(command):] if whole.startswith(command) else "")))
+    return rows
+
+def ties(path):
+    path = re.escape(norm(path.rstrip("/")))
+    used, set_ = re.compile(path + r"(?=[/\s\"']|$)"), re.compile(KEYS + path + r"(?=[/\s]|$)")
+    return lambda command, env: bool(used.search(command) or set_.search(env))
+
+def folders(command, env):
+    found = set(FOLDER.findall(command))
+    found |= {m.group(1) for m in re.finditer(KEYS + r"(/tmp/kanna-e2e\.[A-Za-z0-9]{6})(?=[/\s]|$)", env)}
+    return found
+
+def owned(folder):
+    try:
+        pid = int(open(folder + "/e2e-kanna.pid").read())
+    except FileNotFoundError:
+        try:
+            return time.time() - os.stat(folder).st_mtime < 3600
+        except FileNotFoundError:
+            return False
+    except ValueError:
+        return False
+    command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
+    return "e2e-kanna.sh" in command
+
+def alive(pid):
+    stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    return bool(stat) and not stat.startswith("Z")
+
+def signal_(pid, signo):
+    try:
+        os.kill(pid, signo)
+    except ProcessLookupError:
+        pass
+
+def stop_scenario(folder):
+    try:
+        pid = int(open(folder + "/e2e-scenario.pid").read())
+    except (OSError, ValueError):
+        return
+    row = ps("-axww", "-o", "pid=,ppid=,stat=,command=").get(pid)
+    if not row or len(row) < 3 or "e2e-kanna.sh" not in row[2] or row[0] != "1":
+        return
+    signal_(pid, signal.SIGTERM)
+    deadline = time.time() + 2
+    while time.time() < deadline and alive(pid):
+        time.sleep(0.1)
+    if alive(pid):
+        signal_(pid, signal.SIGKILL)
+
+def stop(tied, why):
+    for _ in range(4):
+        pids = {pid: command for pid, command, env in table() if tied(command, env)}
+        if not pids:
+            return
+        for pid in pids:
+            signal_(pid, signal.SIGTERM)
+        deadline = time.time() + 5
+        while time.time() < deadline and any(alive(p) for p in pids):
+            time.sleep(0.1)
+        still = {pid: command for pid, command, env in table() if pid in pids and tied(command, env)}
+        for pid, command in still.items():
+            print(f"e2e-kanna: {command[:120]} (pid {pid}) didn't stop on TERM{why}; killed", file=sys.stderr)
+            signal_(pid, signal.SIGKILL)
+        deadline = time.time() + 2
+        while time.time() < deadline and any(alive(p) for p in still):
+            time.sleep(0.1)
+
+if sweeping:
+    seen = {f for _, command, env in table() for f in folders(command, env)}
+    seen |= {"/tmp/" + name for name in os.listdir("/tmp") if FOLDER.fullmatch("/tmp/" + name)}
+    for folder in sorted(seen):
+        if owned(folder):
+            continue
+        tied = ties(folder)
+        count = sum(1 for _, command, env in table() if tied(command, env))
+        if count:
+            print(f"e2e-kanna: stopping {count} processes an earlier run left in {folder}", file=sys.stderr)
+        stop_scenario(folder)
+        stop(tied, f" (left in {folder})")
+        subprocess.run(["rm", "-rf", folder])
+else:
+    tests = [ties(p) for p in paths]
+    stop(lambda command, env: any(t(command, env) for t in tests), "")
+PY
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+stop_tied --orphans
+new_state_dir
 
 kanna() { "$bin/kanna" "$@"; }
 raw() {
@@ -3522,18 +3619,26 @@ sys.exit(not (a[1] > b[1] and abs(a[0] - b[0]) < 1 and a[2] == 340))' || { echo 
 
 for s in ${only[@]+"${only[@]}"}; do due "$s" >/dev/null || { echo "e2e-kanna: no scenario named $s (see --help)" >&2; exit 2; }; done
 if [[ ${#only[@]} -gt 0 ]]; then run=("${only[@]}"); else run=("${scenarios[@]%%:*}"); fi
-passed=0 failed=0
+passed=0 failed=0 limit="${KANNA_E2E_TIMEOUT:-600}"
 for s in "${run[@]}"; do
   m="$(due "$s")"
   if [[ "$m" > "$through" ]]; then printf '%-20s --   not due (%s)\n' "$s" "$m"; continue; fi
   cleanup
   new_state_dir
-  if "$s" >"$out/$s.log" 2>&1; then
+  "$s" >"$out/$s.log" 2>&1 &
+  scenario_pid=$! ends=$((SECONDS + limit))
+  echo "$scenario_pid" >"$KANNA_STATE_DIR/e2e-scenario.pid"
+  while kill -0 "$scenario_pid" 2>/dev/null && [[ $SECONDS -lt $ends ]]; do sleep 0.2; done
+  if kill -0 "$scenario_pid" 2>/dev/null; then
+    echo "$s didn't finish in ${limit}s (KANNA_E2E_TIMEOUT)" >>"$out/$s.log"; result=1
+  else
+    wait "$scenario_pid"; result=$?; scenario_pid=""
+  fi
+  if [[ $result -eq 0 ]]; then
     printf '%-20s PASS (%s)\n' "$s" "$m"; passed=$((passed + 1))
   else
     printf '%-20s FAIL (%s)  %s\n' "$s" "$m" "$(tail -1 "$out/$s.log")"; failed=$((failed + 1))
   fi
-  stop_app; stop_daemon
 done
 echo "$passed passed, $failed failed"
 [[ $failed -eq 0 ]]
