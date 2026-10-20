@@ -216,6 +216,9 @@ pub fn launch_command(target: &Target, env: Env) -> Command {
     if let Some(folder) = env("KANNA_STATE_DIR") {
         open.arg("--env").arg(format!("KANNA_STATE_DIR={folder}"));
     }
+    if let Some(owner) = env("KANNA_E2E_OWNER") {
+        open.arg("--env").arg(format!("KANNA_E2E_OWNER={owner}"));
+    }
     if let Some(folder) = env("PWD").filter(|f| f.starts_with('/')) {
         open.arg("--env").arg(format!("KANNA_START_DIR={folder}"));
     }

@@ -428,6 +428,19 @@ fn instances_are_folders_that_answer() {
 }
 
 #[test]
+fn instances_stop_quits_the_app_and_waits_for_the_daemon_to_go() {
+    let daemon = Daemon::start();
+    daemon.kanna(&["open", "--name", "a", "--cmd", "exec sleep 600"]).ok();
+    let app = daemon.app();
+    let shown = format!("default ({})", daemon.socket().display());
+    assert_eq!(daemon.kanna(&["instances", "stop"]).ok(), format!("stopped {shown}"));
+    assert!(!daemon.socket().exists() && !daemon.dir.join("state/keeper.sock").exists());
+    let _ = app.thread.join();
+    assert_eq!(daemon.kanna(&["instances", "stop"]).ok(), format!("{shown} isn't running"));
+    assert_eq!(daemon.kanna(&["instances", "stop", "--json"]).json()["stopped"], false);
+}
+
+#[test]
 fn prune_deletes_dev_instances_whose_worktree_is_gone() {
     let dir = scratch("prune");
     let support = if cfg!(target_os = "macos") { dir.join("home/Library/Application Support") } else { dir.join("home/.local/share") };

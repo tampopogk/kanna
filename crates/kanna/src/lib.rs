@@ -93,8 +93,10 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
                 println!("{INSTANCES_HELP}");
                 return Ok(());
             }
-            if args.positional().as_deref() == Some("prune") {
-                return prune(env);
+            match args.positional().as_deref() {
+                Some("prune") => return prune(env),
+                Some("stop") => return stop(&target, json_output),
+                _ => {}
             }
             return instances(&target, json_output, env);
         }
@@ -301,6 +303,7 @@ const INSTANCES_HELP: &str = "kanna instances — List the running Kanna instanc
 \n\
 usage: kanna instances [--json]\n\
        kanna instances prune\n\
+       kanna [--instance NAME] instances stop [--json]\n\
 \n\
 Instances are a tool for developing and testing Kanna, not a user feature: the app\n\
 doesn't offer them. To work on another project, open a Desk on it (kanna PATH, or\n\
@@ -326,7 +329,9 @@ but never for $KANNA_SOCKET.\n\
 \n\
 kanna instances lists the running instances of every channel, with the worktree a dev\n\
 build came from. kanna instances prune deletes the folders of dev instances whose worktree\n\
-is gone, once nothing runs in them.\n\
+is gone, once nothing runs in them. kanna instances stop quits an instance: its Kanna.app\n\
+saves its windows and quits, its terminals are hung up (a task's resume when it starts\n\
+again), and its keeper and daemon exit. It waits until they have, and never starts one.\n\
 \n\
 examples:\n  \
   kanna instances\n      \
@@ -336,7 +341,9 @@ examples:\n  \
   KANNA_INSTANCE=test kanna workspace list --all\n      \
       The same choice, for every command in a test script.\n  \
   kanna instances prune\n      \
-      Clean up after worktrees you've removed.";
+      Clean up after worktrees you've removed.\n  \
+  kanna --instance test instances stop\n      \
+      Quit the scratch instance test: its app, daemon, keeper and terminals.";
 
 fn instances(target: &Target, json_output: bool, env: Env) -> Result<(), Failure> {
     let running: Vec<(target::Instance, Value)> = target::instances(env)
@@ -386,6 +393,33 @@ fn instances(target: &Target, json_output: bool, env: Env) -> Result<(), Failure
     }
     let variable = target.brand().variable("INSTANCE");
     println!("\n* the instance this shell's kanna commands talk to ({}). Pick another with --instance NAME or {variable}.", target.socket.display());
+    Ok(())
+}
+
+const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+fn stop(target: &Target, json_output: bool) -> Result<(), Failure> {
+    let shown = format!("{} ({})", target.instance, target.socket.display());
+    let report = |stopped: bool, text: String| {
+        if json_output {
+            println!("{}", json!({ "instance": target.instance, "socket": target.socket, "stopped": stopped }));
+        } else {
+            println!("{text}");
+        }
+    };
+    let Some(mut mux) = target.try_connect() else {
+        report(false, format!("{shown} isn't running"));
+        return Ok(());
+    };
+    mux.call("shutdown", json!({})).map_err(Failure::from)?;
+    let started = std::time::Instant::now();
+    while target.socket.exists() {
+        if started.elapsed() > STOP_WAIT {
+            return Err(fail(exit::FAILED, format!("asked {shown} to stop, but its socket is still there after {}s", STOP_WAIT.as_secs())));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    report(true, format!("stopped {shown}"));
     Ok(())
 }
 

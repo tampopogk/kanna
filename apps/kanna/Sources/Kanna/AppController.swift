@@ -11,6 +11,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var daemon: DaemonLink?
     private var server: SocketServer?
     private var signalSources: [DispatchSourceSignal] = []
+    private var ownerSource: DispatchSourceProcess?
     let background = CommandLine.arguments.contains("--bg") || ProcessInfo.processInfo.environment["KANNA_BG"] == "1"
     private let echo = ProcessInfo.processInfo.environment["KANNA_ECHO"] == "1"
     static let debugging = ProcessInfo.processInfo.environment["KANNA_DEBUG"] == "1"
@@ -110,6 +111,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if Self.isAppSocket(Self.daemonSocketPath) { fatal("kanna: \(Self.daemonSocketPath) belongs to Kanna.app; use another KANNA_SOCKET") }
             let daemon = DaemonLink(socketPath: Self.daemonSocketPath, commands: commands, starter: DaemonStarter(socketPath: Self.daemonSocketPath))
             daemon.onAttach = { [weak self] in self?.attached($0) }
+            daemon.onQuit = {
+                FileHandle.standardError.write(Data("kanna: the daemon is shutting down; quitting\n".utf8))
+                NSApp.terminate(nil)
+            }
             daemon.onView = { [weak self] view in
                 guard let self else { return }
                 if view["key"] != published["key"], view["key"]?.string != nil { localKey = nil }
@@ -172,6 +177,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             source.resume()
             signalSources.append(source)
         }
+        watchOwner()
         installMenu()
         if !background { NSApp.activate() }
         if echo {
@@ -179,6 +185,26 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                                "focused": "term-1", "root": ["pane": "term-1", "type": "term"]]]])
         }
         daemon?.start()
+    }
+
+    private func watchOwner() {
+        guard let owner = ProcessInfo.processInfo.environment["KANNA_E2E_OWNER"].flatMap({ pid_t($0) }), owner > 0 else { return }
+        if kill(owner, 0) != 0 && errno == ESRCH {
+            FileHandle.standardError.write(Data("kanna: its owner (pid \(owner)) is gone; quitting\n".utf8))
+            return ownerGone()
+        }
+        let source = DispatchSource.makeProcessSource(identifier: owner, eventMask: .exit, queue: .main)
+        source.setEventHandler { [weak self] in
+            FileHandle.standardError.write(Data("kanna: its owner (pid \(owner)) exited; quitting\n".utf8))
+            self?.ownerGone()
+        }
+        source.resume()
+        ownerSource = source
+    }
+
+    private func ownerGone() {
+        guard let daemon else { return NSApp.terminate(nil) }
+        daemon.quit()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
