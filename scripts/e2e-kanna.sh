@@ -18,7 +18,8 @@ usage: scripts/e2e-kanna.sh [--through M0|M1|M2|M3|M4] [NAME …]
 
 A scenario that runs longer than $KANNA_E2E_TIMEOUT seconds (600) fails.
 Every run stops what it started however it ends, and first stops what runs
-it can't see anymore left behind (docs/specs/e2e-cleanup.md).
+it can't see anymore left behind (docs/specs/e2e-cleanup.md). Run it
+unsandboxed: it needs ps, signals, Unix sockets and /tmp.
 
 Uses target/release/{kanna,kanna-daemon,kanna-keeper,kanna-build} and target/Kanna.app (or $KANNA_E2E_APP)
 (scripts/build.sh). The private instance gets:
@@ -60,6 +61,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 unset KANNA_PANE KANNA_TERMINAL KANNA_INSTANCE
+ps -o pid= -p $$ >/dev/null 2>&1 && kill -0 $$ 2>/dev/null || { echo "e2e-kanna: can't list or signal processes here (a sandbox?); run it unsandboxed" >&2; exit 2; }
 new_state_dir() {
   KANNA_STATE_DIR="$(mktemp -d /tmp/kanna-e2e.XXXXXX)" || exit 1
   echo $$ >"$KANNA_STATE_DIR/e2e-kanna.pid"

@@ -25,6 +25,8 @@ A process belongs to a state folder if the folder's path (or a path inside it) i
 
 Never stopped, whatever they mention: any `e2e-kanna.sh` (this run, its scenario's subshell, other runs), the process doing the stopping and its parents, and anything in `/Applications/Kanna.app`. A `PWD` inside a folder doesn't tie a process, so a shell you `cd`'d there is safe. Processes are found and signalled by PID only, never by `pkill` patterns.
 
+**Runs are unsandboxed.** Claude Code's and Codex's sandboxes block `ps`, signals and Unix sockets, and Claude Code's blocks writing to `/tmp`. In a sandbox the runner couldn't start an instance, and couldn't see or stop one either. It checks that it can list and signal its own process before anything else, and exits 2 with "run it unsandboxed" if it can't.
+
 ## 2. Stopping
 
 ```mermaid
