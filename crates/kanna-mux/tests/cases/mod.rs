@@ -6,12 +6,13 @@ use std::path::PathBuf;
 
 pub type Send = Box<dyn FnMut(Value) -> Value>;
 
-const KANNA_DIFFERS: [(&str, &str); 14] = [
+const KANNA_DIFFERS: [(&str, &str); 15] = [
     ("dock.json: move docks a pane, moves the docked pane to the other edge, and undocks it into a tab", "a docked pane is a task's agent, in its own workspace, not a window's"),
     ("dock.json: docking where a pane is docked sends that one to a new tab, not shown", "a docked pane is a task's agent, in its own workspace, not a window's"),
     ("dock.json: moving the docked pane to another window or beside a pane undocks it; dropping on it swaps", "a docked pane is a task's agent, in its own workspace, not a window's"),
     ("dock.json: open with dock makes the window's docked pane, outside its tabs, 2/5 wide on the left", "a docked pane is a task's agent, in its own workspace, not a window's"),
     ("dock.json: switching tabs leaves the docked pane; focus goes to the shown tab and back", "a docked pane is a task's agent, in its own workspace, not a window's"),
+    ("dock.json: showing a tab with keep dock leaves focus in the focused docked pane; from a tab's pane focus follows", "a docked pane is a task's agent, in its own workspace, not a window's; owner tests cover keep"),
     ("dock.json: the docked pane closes only with its window; a window keeps it when its last tab closes", "a docked pane is a task's agent, in its own workspace, not a window's"),
     ("dock.json: moving a tab to another window leaves the docked pane where it is", "a docked pane is a task's agent, in its own workspace, not a window's"),
     ("dock.json: a frozen docked pane doesn't move and nothing drops on it; it still resizes, is saved frozen and comes back frozen", "a docked pane is a task's agent, in its own workspace, not a window's"),

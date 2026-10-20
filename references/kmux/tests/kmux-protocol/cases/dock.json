@@ -44,6 +44,21 @@
     ]
   },
   {
+    "name": "showing a tab with keep dock leaves focus in the focused docked pane; from a tab's pane focus follows",
+    "steps": [
+      { "send": { "cmd": "open", "args": { "type": "term", "name": "a" } } },
+      { "send": { "cmd": "open", "args": { "type": "term", "name": "b", "tab": true } } },
+      { "send": { "cmd": "open", "args": { "type": "term", "name": "agent", "dock": "left" } } },
+      { "send": { "cmd": "focus", "args": { "tab": "t1", "keep": "dock" } }, "expect": { "window": "w1" } },
+      { "send": { "cmd": "list" }, "expect": { "windows": [ { "focused": "agent", "tabs": [ { "active": true }, { "active": false } ] } ] } },
+      { "send": { "cmd": "focus", "args": { "tab": "t2", "keep": "dock" } } },
+      { "send": { "cmd": "list" }, "expect": { "windows": [ { "focused": "agent", "tabs": [ { "active": false }, { "active": true } ] } ] } },
+      { "send": { "cmd": "focus", "args": { "pane": "b" } } },
+      { "send": { "cmd": "focus", "args": { "tab": "t1", "keep": "dock" } } },
+      { "send": { "cmd": "list" }, "expect": { "windows": [ { "focused": "a", "tabs": [ { "active": true }, { "active": false } ] } ] } }
+    ]
+  },
+  {
     "name": "the docked pane closes only with its window; a window keeps it when its last tab closes",
     "steps": [
       { "send": { "cmd": "open", "args": { "type": "term", "name": "agent", "dock": "left" } } },

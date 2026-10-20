@@ -80,7 +80,7 @@ enum Snapshot {
         return URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
     }
 
-    private static func outputURL(_ name: String) throws -> URL {
+    static func outputURL(_ name: String) throws -> URL {
         guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\0") else {
             throw KannaError("bad_request", "path must be a file name; snapshots are saved in \(outputDirectory.path)")
         }

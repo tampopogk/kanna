@@ -33,7 +33,7 @@ Every command, option, output and error is kmux's CLI's, except where [the CLI's
 | | `kanna instances [--json]`, `kanna instances prune` | For developing Kanna: list the running instances of every channel, or delete the folders of dev instances whose worktree is gone ([instances](instances.md)). |
 | Planned | `kanna up [FILE]` | Open a whole setup from a file, `kanna.yaml` by default ([layout files](arranging-panes.md#3-layout-files)). |
 
-Kanna's own commands beyond these (`markup`, `rename-pane`, `task`, `status`, `completions`, `kanna PATH`), and how its `window` differs from kmux's, which assigns to a kmux workspace (of kmux's `workspace` command Kanna has only `list`): [the CLI's differences](cli.md#2-where-kanna-differs-from-kmux).
+Kanna's own commands beyond these (`markup`, `rename-pane`, `task`, `status`, `toast` ([toasts](toasts.md)), `completions`, `kanna PATH`), and how its `window` differs from kmux's, which assigns to a kmux workspace (of kmux's `workspace` command Kanna has only `list`): [the CLI's differences](cli.md#2-where-kanna-differs-from-kmux).
 
 ## 2. Options
 

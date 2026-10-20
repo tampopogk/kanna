@@ -601,7 +601,13 @@ impl Model {
         }
         if let Some(reference) = string(args, "tab") {
             let (h, t) = self.tab_index(reference).ok_or_else(|| not_found(format!("no tab \"{reference}\"")))?;
-            self.tabs_mut(h).show(t);
+            let side = self.side(h);
+            let tabs = self.tabs_mut(h);
+            if string(args, "keep") == Some("dock") && tabs.focused.is_some() && tabs.focused == side {
+                tabs.active = Some(tabs.tabs[t].id.clone());
+            } else {
+                tabs.show(t);
+            }
             self.show_key(h);
             return Ok(self.at(h));
         }

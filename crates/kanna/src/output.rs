@@ -724,6 +724,14 @@ pub fn quiz(request: &Value, reply: &Value) -> String {
     }
 }
 
+pub fn toast(_: &Value, reply: &Value) -> String {
+    match reply["toast"].as_str() {
+        Some(id) if reply["shown"] == true => format!("raised {id}"),
+        Some(id) => format!("raised {id}; no app is attached, so it shows when one attaches within a minute"),
+        None => format!("already raised a toast with key {}", reply["already"].as_str().unwrap_or("?")),
+    }
+}
+
 pub fn status(args: &Value, reply: &Value) -> String {
     if args["action"] == "update" {
         let mut out = vec![match reply["site"].as_str() {

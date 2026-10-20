@@ -742,7 +742,7 @@ async function handle(req) {
           const t = needTab(args.tab), w = winOfTab(t), ids = paneIds(t.root);
           refuseHidden(w);
           w.active = t.id;
-          w.focused = ids.includes(t.lastFocus) ? t.lastFocus : ids[0];
+          if (!(args.keep === 'dock' && w.focused && w.focused === w.dock?.pane)) w.focused = ids.includes(t.lastFocus) ? t.lastFocus : ids[0];
           raise(w);
         } else if (args.window) { const w = targetWin(args.window); refuseHidden(w); raise(w); }
         else throw kerr('bad_request', 'focus needs a pane, tab or window');

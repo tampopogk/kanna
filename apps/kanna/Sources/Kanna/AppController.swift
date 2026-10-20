@@ -39,6 +39,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var names: [String: String] = [:]
     var backlog: [JSON] = []
     var starting: Set<String> = []
+    let toasts = ToastStack()
+    var toastShowing: (pane: String, desk: String?)?
 
     static var daemonSocketPath: String {
         if let path = ProcessInfo.processInfo.environment["KANNA_SOCKET"], !path.isEmpty { return path }
@@ -161,6 +163,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         installScreenshot()
         installAgentStatus()
         installDesk()
+        installToasts()
         Darwin.signal(SIGALRM, SIG_DFL)
         for signal in [SIGTERM, SIGINT, SIGHUP] {
             Darwin.signal(signal) { _ in alarm(5) }
@@ -387,6 +390,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func layoutChanged() {
         guard daemon != nil else { return }
         refresh()
+        showToastPane()
         let known = placed
         for id in contents.ids where !known.contains(id) { contents.forget(id) }
         agentStatuses.keep(known)
@@ -401,7 +405,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func render(_ view: JSON) {
         state = view
-        defer { statusSeen() }
+        defer {
+            statusSeen()
+            placeToasts()
+        }
         let ids = Set(windows.compactMap { $0["id"]?.string })
         for (id, controller) in controllers where !ids.contains(id) {
             controller.window.orderOut(nil)
@@ -496,6 +503,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
             if let window = window(id) { controller.render(window, panes) }
+            placeToasts()
         }
         controllers[id] = controller
         recordFrame(id)

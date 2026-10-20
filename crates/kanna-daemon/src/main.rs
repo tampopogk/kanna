@@ -20,6 +20,7 @@ mod diffs;
 mod store;
 mod task_scripts;
 mod terminals;
+mod toasts;
 
 use app_link::{AppLink, Outbox, APP_ASK, APP_PREFIX, HELLO};
 use kanna_mux::json::Value;
@@ -225,6 +226,17 @@ fn run() -> Result<(), String> {
     *backlog.permissions.borrow_mut() = Some(Box::new(move |pane| messages::permissions(&argvs.upgrade()?.argv(pane))));
     let projects = Rc::new(projects::Projects::new(db.clone(), std::env::var_os("HOME").map(std::path::PathBuf::from), [".kanna-v4/repos", ".kanna/repos"].map(|r| agents::home().join(r)).to_vec()));
     projects.install(&core);
+    let toasts = Rc::new(toasts::Toasts::new(core.weak()));
+    toasts.connect_backlog(&backlog);
+    toasts.install(&core);
+    let warnings = Rc::downgrade(&toasts);
+    *backlog.on_warn.borrow_mut() = Some(Box::new(move |pane, name, why| {
+        let Some(toasts) = warnings.upgrade() else { return };
+        let toast = toasts::Toast { title: format!("Messages wait for {name}"), detail: Some(why.to_string()), pane: Some(pane.to_string()), task: None, key: Some(format!("messages:{pane}:{why}")) };
+        if let Err(error) = toasts.raise(toast) {
+            eprintln!("kanna-daemon: can't raise a toast for {pane}: {}", error.message);
+        }
+    }));
     let quiz = Rc::new(quiz::Quiz::new(db, Some(core.weak())));
     quiz.install(&core);
     let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone());
@@ -283,6 +295,8 @@ fn run() -> Result<(), String> {
         }
     }));
     app.connect_backlog(&backlog);
+    let toast_link = Rc::downgrade(&app);
+    *toasts.on_toast.borrow_mut() = Some(Box::new(move |record| toast_link.upgrade().is_some_and(|app| app.toast(record))));
     host.connect(&app);
     let diff_link = Rc::downgrade(&app);
     *diffs.on_diff.borrow_mut() = Some(Box::new(move |views, payload| {
@@ -448,6 +462,7 @@ fn run() -> Result<(), String> {
                 if app.hello(conn, hello, out, stream) {
                     break;
                 }
+                toasts.attached();
             }
             Event::AppMessage { conn, message } => {
                 if let Some(request) = app.message(conn, message) {

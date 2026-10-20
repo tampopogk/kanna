@@ -1591,6 +1591,31 @@ zsh_completion() {
   check wait_for 5 shows zsh_completion-login 'zsh_completion:_kanna:home:gone'
 }
 
+scenario dock_keeps_focus_through_tabs M4
+dock_keeps_focus_through_tabs() {
+  start_daemon && start_app || return 1
+  local agent
+  kanna open --name agent --dock --cmd 'exec cat' >/dev/null || return 1
+  KANNA_TERMINAL=agent kanna open --name spec --cmd "printf 'spec\n'; exec sleep 600" >/dev/null || return 1
+  KANNA_TERMINAL=agent kanna open --name plan --cmd "printf 'plan\n'; exec sleep 600" >/dev/null || return 1
+  agent="$(pane agent id)"
+  kanna task pull agent >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(dwin d1 dock.pane)" == "$agent" ]]' || { app_view; return 1; }
+  kanna focus agent >/dev/null || return 1
+  check test "$(dwin d1 tab)" == "$(dwin d1 tabs.1.id)" || return 1
+  key "cmd+shift+]"; check test "$(dwin d1 tab)" == "$(dwin d1 tabs.0.id)" || return 1
+  check test "$(ws agent focused)" == agent || return 1
+  key "cmd+shift+["; check test "$(dwin d1 tab)" == "$(dwin d1 tabs.1.id)" || return 1
+  check test "$(ws agent focused)" == agent || return 1
+  check test "$(dwin d1 focused)" == "$agent" || return 1
+  for k in d o c k e d; do key "$k"; done
+  check wait_for 5 app_text agent docked || { kanna read agent; return 1; }
+  check test "$(ws agent focused)" == agent || return 1
+  kanna focus plan >/dev/null || return 1
+  key "cmd+shift+["; check test "$(dwin d1 tab)" == "$(dwin d1 tabs.0.id)" || return 1
+  check test "$(ws agent focused)" == spec || return 1
+}
+
 scenario desk_shelf M4
 desk_shelf() {
   start_daemon && start_app || return 1
@@ -3353,6 +3378,12 @@ print("running" if t.get("running") else "stopped" if t.get("folder") else "wait
   in_repo task new "Copilot" "work 1" --agent "$fake/copilot" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
   said="$(in_repo task send "$(tid 4)" "can you hear me")"
   [[ "$said" == *$'\n'"warning: it waits: copilot can't take messages: only claude and codex can" ]] || { echo "agent_messaging: send to a copilot task said: $said"; return 1; }
+  waits() { raw '{"id":1,"cmd":"debug.toasts"}' | python3 -c 'import json, sys
+print(" ".join(t["pane"] + ":" + t["about"] for t in json.load(sys.stdin)["toasts"] if t["title"] == "Messages wait for Copilot"))'; }
+  local copilot; copilot="$(task_state "$(tid 4)" | cut -d' ' -f2)"
+  check wait_for 15 eval '[[ "$(waits)" == "$copilot:Copilot" ]]' || { echo "agent_messaging: the waiting message raised no toast about $copilot: $(waits)"; return 1; }
+  sleep 2
+  check test "$(waits)" == "$copilot:Copilot" || { echo "agent_messaging: the same reason raised another toast: $(waits)"; return 1; }
   check wait_for 15 eval '[[ "$(in_repo task messages "$(tid 4)")" == *"held for $(sid 4): copilot can'"'"'t take messages"* ]]' || { echo "agent_messaging: task messages shows: $(in_repo task messages "$(tid 4)")"; return 1; }
 }
 
@@ -3537,6 +3568,53 @@ done_leaves_no_window() {
   kanna task done "$(tid 1)" >/dev/null || { echo "done_leaves_no_window line $LINENO"; return 1; }
   leftovers() { kanna workspace list --all --json | python3 -c 'import json, sys; s = json.load(sys.stdin); print(len(s["windows"]) + len(s.get("hiddenWindows") or []), len(s["panes"]))'; }
   check wait_for 5 eval '[[ "$(leftovers)" == "0 0" ]]' || { echo "done_leaves_no_window: windows and panes left: $(leftovers)"; kanna workspace list --all; return 1; }
+}
+
+scenario toasts M4
+toasts() {
+  local agent="$repo_root/tools/mock-agent/mock-agent" repo="$KANNA_STATE_DIR/repo"
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "toasts line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  start_daemon || { echo "toasts line $LINENO"; return 1; }
+  check test "$(kanna toast "Early" "raised before the app")" == "raised toast-1; no app is attached, so it shows when one attaches within a minute" || return 1
+  (cd "$repo" && kanna task new "Lint fixes" "say 1" --agent "$agent" && kanna task new "Docs pass" "say 2" --agent "$agent") >/dev/null || { echo "toasts line $LINENO"; return 1; }
+  kanna task shelve "$(tid 1)" >/dev/null || { echo "toasts line $LINENO"; return 1; }
+  env -u KANNA_NO_INITIAL_WINDOW KANNA_START_DIR="$repo" "$app" --bg >>"$out/app.log" 2>&1 &
+  app_pid=$!
+  wait_for 10 app_attached || { echo "the app did not attach"; return 1; }
+  toasted() { raw '{"id":1,"cmd":"debug.toasts"}' | python3 -c 'import json, sys; r = json.load(sys.stdin); print(r["window"], " ".join(t["id"] for t in r["toasts"]))'; }
+  toast_field() { raw '{"id":1,"cmd":"debug.toasts"}' | python3 -c 'import json, sys; r = json.load(sys.stdin); t = next(t for t in r["toasts"] if t["id"] == sys.argv[1]); print(t[sys.argv[2]])' "$1" "$2"; }
+  desk() { raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}' | field "$1"; }
+  check wait_for 10 eval '[[ "$(toasted)" == "d1 toast-1" ]]' || { echo "toasts: the toast raised before the app isn't shown in d1: $(toasted)"; return 1; }
+  check test "$(kanna toast "Build finished" "scripts/build.sh took 3m 12s")" == "raised toast-2" || return 1
+  check wait_for 5 eval '[[ "$(toasted)" == "d1 toast-2 toast-1" ]]' || { echo "toasts: the newest isn't on top: $(toasted)"; return 1; }
+  raw '{"id":1,"cmd":"debug.toasts"}' | python3 -c 'import json, sys
+r = json.load(sys.stdin); a, b = (t["frame"] for t in r["toasts"])
+sys.exit(not (a[1] > b[1] and abs(a[0] - b[0]) < 1 and a[2] == 340))' || { echo "toasts: the stack isn't one column, newest above"; raw '{"id":1,"cmd":"debug.toasts"}'; return 1; }
+  check test "$(kanna toast "Messages wait for Lint fixes" "mock can't take messages" --task "$(tid 1)" --key messages:lint:mock)" == "raised toast-3" || return 1
+  check test "$(kanna toast "Messages wait for Lint fixes" "mock can't take messages" --task "$(tid 1)" --key messages:lint:mock)" == "already raised a toast with key messages:lint:mock" || return 1
+  check wait_for 5 eval '[[ "$(toasted)" == "d1 toast-3 toast-2 toast-1" ]]' || { echo "toasts: the keyed toast: $(toasted)"; return 1; }
+  check test "$(toast_field toast-3 about)" == "Lint fixes" || return 1
+  check test "$(toast_field toast-3 pane)" == "$(pane "Lint fixes" id)" || { echo "toasts: the task's toast isn't about its agent"; return 1; }
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"toasts.png"}}' >/dev/null && cp "$KANNA_STATE_DIR/toasts.png" "$out/toasts.png"
+  check test "$(desk empty)" == True || { echo "toasts: the Desk isn't empty before the click"; return 1; }
+  raw '{"id":1,"cmd":"debug.toasts","args":{"click":"toast-3"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk title)" == "Lint fixes"* ]]' || { echo "toasts: clicking the toast didn't bring Lint fixes onto the Desk: $(desk title)"; return 1; }
+  check wait_for 5 eval '[[ "$(dwin d1 focused)" == "$(pane "Lint fixes" id)" ]]' || { echo "toasts: the task's agent isn't focused"; return 1; }
+  check wait_for 5 eval '[[ "$(toasted)" == "d1 toast-2 toast-1" ]]' || { echo "toasts: the clicked toast stayed: $(toasted)"; return 1; }
+  check test "$(kanna toast "Docs pass waits" --task "$(tid 2)")" == "raised toast-4" || return 1
+  check wait_for 5 eval '[[ "$(toasted)" == "d1 toast-4"* ]]' || return 1
+  raw '{"id":1,"cmd":"debug.toasts","args":{"click":"toast-4"}}' >/dev/null
+  check wait_for 15 eval '[[ "$(desk title)" == "Docs pass"* ]]' || { echo "toasts: clicking a backlog task's toast didn't shelve and show it: $(desk title)"; desk note; return 1; }
+  check wait_for 5 eval '[[ "$(dwin d1 focused)" == "$(pane "Docs pass" id)" ]]' || { echo "toasts: the backlog task's agent isn't focused"; return 1; }
+  kanna toast "Kept" "the pointer is on it" >/dev/null && kanna toast "Fades" >/dev/null || { echo "toasts line $LINENO"; return 1; }
+  raw '{"id":1,"cmd":"debug.toasts","args":{"hover":"toast-5"}}' >/dev/null
+  check wait_for 12 eval '[[ "$(toasted)" == "d1 toast-5" ]]' || { echo "toasts: after 6s only the hovered toast should be left: $(toasted)"; return 1; }
+  raw '{"id":1,"cmd":"debug.toasts","args":{"hover":"toast-5","on":false}}' >/dev/null
+  check wait_for 5 eval '[[ "$(toasted)" == "d1 " ]]' || { echo "toasts: the toast left by the pointer didn't fade: $(toasted)"; return 1; }
+  kanna toast "Closed" >/dev/null && check wait_for 5 eval '[[ "$(toasted)" == "d1 toast-7" ]]' || return 1
+  raw '{"id":1,"cmd":"debug.toasts","args":{"click":"toast-7","close":true}}' >/dev/null
+  check wait_for 2 eval '[[ "$(toasted)" == "d1 " ]]' || { echo "toasts: × didn't close it"; return 1; }
 }
 
 for s in ${only[@]+"${only[@]}"}; do due "$s" >/dev/null || { echo "e2e-kanna: no scenario named $s (see --help)" >&2; exit 2; }; done
