@@ -34,7 +34,7 @@ Each interval is an `OSSignposter` interval (subsystem `dev.kanna.app`, a catego
 | `markdown.check`, `markdown.load` | markdown | a markdown pane's file check (every 0.5s) and its reload |
 | `hang` (event) | hang | a main-thread hang, with what was open |
 
-A click's times start at the mouse event's own timestamp, so time the event spent queued behind a busy main thread counts (that is `wait`). "Drawn" is the main run loop's next `beforeWaiting` after the change, past Core Animation's commit.
+A click's times start at the mouse event's own timestamp, so time the event spent queued behind a busy main thread counts (that is `wait`). A `debug.click` makes its event inside its own command, so its `wait` is always 0. "Drawn" is the main run loop's next `beforeWaiting` after the change, past Core Animation's commit.
 
 ```mermaid
 sequenceDiagram
@@ -95,6 +95,7 @@ log show --last 10m --signpost --predicate 'subsystem == "dev.kanna.app" AND cat
 ## 5. Tested
 
 - `KannaPerfTests`: percentiles and the ring, a hang naming what was open and what ran, a hang the watchdog missed.
+- First reading (2026-10-21, dev build, 40 backlog tasks with 82k characters of first messages, one `debug.click` on a backlog task): `click.shelve.sent` 0.2ms, `click.shelve.shown` 141ms; in between `message.layout` 14ms, `message.backlog` 14ms and `message.status` 40ms, each a full `refresh` that ran `ShelfPage.lay` (40 rows, 12–33ms) again; no hang over 100ms.
 - e2e `perf_intervals`: a backlog click records `click.shelve.wait`, `.sent` and `.shown` with the messages, renders and `ShelfPage.lay`; a Shelf card click records `click.pull.shown`; `debug.hang` 300ms shows in `debug.perf` and in the app's log with `command.debug.hang` open.
 
 ## 6. Glossary
