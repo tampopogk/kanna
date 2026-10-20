@@ -278,7 +278,10 @@ public final class Core {
             try refuseHidden(window)
             let ids = Model.paneIDs(tab.root)
             window.active = tab.id
-            window.focused = tab.lastFocus.flatMap { ids.contains($0) ? $0 : nil } ?? ids.first
+            let keep = args["keep"]?.string == "dock" && window.focused != nil && window.focused == window.dock?.pane
+            if !keep {
+                window.focused = tab.lastFocus.flatMap { ids.contains($0) ? $0 : nil } ?? ids.first
+            }
             model.raise(window)
         } else if args["window"] != nil {
             let window = try targetWindow(args["window"])

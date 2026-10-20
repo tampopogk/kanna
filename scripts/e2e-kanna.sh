@@ -1494,6 +1494,31 @@ zsh_completion() {
   check wait_for 5 shows zsh_completion-login 'zsh_completion:_kanna:home:gone'
 }
 
+scenario dock_keeps_focus_through_tabs M4
+dock_keeps_focus_through_tabs() {
+  start_daemon && start_app || return 1
+  local agent
+  kanna open --name agent --dock --cmd 'exec cat' >/dev/null || return 1
+  KANNA_TERMINAL=agent kanna open --name spec --cmd "printf 'spec\n'; exec sleep 600" >/dev/null || return 1
+  KANNA_TERMINAL=agent kanna open --name plan --cmd "printf 'plan\n'; exec sleep 600" >/dev/null || return 1
+  agent="$(pane agent id)"
+  kanna task pull agent >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(dwin d1 dock.pane)" == "$agent" ]]' || { app_view; return 1; }
+  kanna focus agent >/dev/null || return 1
+  check test "$(dwin d1 tab)" == "$(dwin d1 tabs.1.id)" || return 1
+  key "cmd+shift+]"; check test "$(dwin d1 tab)" == "$(dwin d1 tabs.0.id)" || return 1
+  check test "$(ws agent focused)" == agent || return 1
+  key "cmd+shift+["; check test "$(dwin d1 tab)" == "$(dwin d1 tabs.1.id)" || return 1
+  check test "$(ws agent focused)" == agent || return 1
+  check test "$(dwin d1 focused)" == "$agent" || return 1
+  for k in d o c k e d; do key "$k"; done
+  check wait_for 5 app_text agent docked || { kanna read agent; return 1; }
+  check test "$(ws agent focused)" == agent || return 1
+  kanna focus plan >/dev/null || return 1
+  key "cmd+shift+["; check test "$(dwin d1 tab)" == "$(dwin d1 tabs.0.id)" || return 1
+  check test "$(ws agent focused)" == spec || return 1
+}
+
 scenario desk_shelf M4
 desk_shelf() {
   start_daemon && start_app || return 1

@@ -18,7 +18,7 @@ Kanna's menus and shortcuts are kmux's ([its spec](../../references/kmux/docs/km
 | File | New Desk ⌘N ([tasks](tasks.md#2-how-tasks-are-made)), Open Recent ▸ (recent projects, latest first, then Clear Menu: [recent projects](recent-projects.md)) |
 | Edit | Undo ⌘Z, Redo ⇧⌘Z, Cut ⌘X, Copy ⌘C, Paste ⌘V, Select All ⌘A (sent to whatever has focus) |
 | Pane | Split Right ⌘D, Split Down ⇧⌘D, New Web / iOS Pane Right and Below, New Markdown Pane Right… and Below…, Open URL… ⌘L, Back, Forward, Home ⇧⌘H, Next Pane ⌘], Previous Pane ⌘[, Zoom ⇧⌘↩, Move Pane to New Window, Reload ⌘R, Close Pane ⌘W |
-| View | New Tab ⌘T, Next Tab ⇧⌘], Previous Tab ⇧⌘[, Zoom In ⌘+, Zoom Out ⌘−, Actual Size ⌘0 (a markdown or web pane's magnification, which scales the page without re-laying it out, or a terminal's font size; a pinch magnifies markdown and web panes too) |
+| View | New Tab ⌘T, Next Tab ⇧⌘], Previous Tab ⇧⌘[ (from a Desk's docked pane they switch the shown tab and focus stays in the docked pane; from a tab's pane focus moves into the new tab), Zoom In ⌘+, Zoom Out ⌘−, Actual Size ⌘0 (a markdown or web pane's magnification, which scales the page without re-laying it out, or a terminal's font size; a pinch magnifies markdown and web panes too) |
 | Window | New Window (no shortcut: ⌘N is New Desk), Close Window ⇧⌘W, Move Tab to New Window, Next Window ⌘\`, Previous Window ⇧⌘\`, and the list of windows |
 
 ## 2. Rules
