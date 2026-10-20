@@ -76,7 +76,7 @@ flowchart TB
 | [kanna send](specs/kanna-send.md) | Return pressed on its own, after a bracketed paste, so agents submit |
 | [Sizing and arranging panes](specs/arranging-panes.md) | Fractions, the layout expression, `kanna.yaml` |
 | [Mux backends](specs/backends.md) | kmux, tmux, cmux; choosing one; the adapter interface; open questions |
-| [Instances](specs/instances.md) · [build channels](specs/build-channels.md) | Separate Kannas for developing Kanna |
+| [Instances](specs/instances.md) · [build channels](specs/build-channels.md) · [stopping an instance](specs/instance-stop.md) | Separate Kannas for developing Kanna, and quitting one |
 | [Tab completion](specs/tab-completion.md) · [screenshot](specs/screenshot.md) | Completing commands in zsh and bash; a PNG of a pane or window |
 
 **Tasks and agents**

@@ -158,7 +158,6 @@ cleanup() {
   [[ -n "$KANNA_STATE_DIR" ]] || return 0
   stop_instances
   stop_tied --last-resort "$KANNA_STATE_DIR"
-  cp "$KANNA_STATE_DIR/daemon.log" "$out/last-daemon.log" 2>/dev/null
   app_pid="" daemon_pid=""
   rm -rf "$KANNA_STATE_DIR"
 }
