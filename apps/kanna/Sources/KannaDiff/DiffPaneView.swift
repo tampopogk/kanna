@@ -10,6 +10,7 @@ public final class DiffPaneView: NSView {
     public var onShowFiles: (([String]) -> Void)?
     public var contextMenu: (() -> NSMenu?)? { didSet { columns.forEach { $0.textView.contextMenu = contextMenu } } }
     public var keyView: NSView { columns[0].textView }
+    public var keyViews: [NSView] { columns.map(\.textView) }
     public private(set) var result: DiffResult?
     public private(set) var document = DiffDocument(result: nil, view: .unified)
     public private(set) var view: DiffView

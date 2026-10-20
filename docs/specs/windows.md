@@ -53,9 +53,9 @@ sequenceDiagram
     D->>W: layout (the view)
     Note over W: draw win-1; term-4 attached
     U->>W: ⌘] (next pane)
+    Note over W: draw term-1 focused, term-1 first responder
     W->>D: focus {pane: term-1}
     D->>W: layout (the view)
-    Note over W: draw, term-1 first responder
     U->>W: drag the divider
     W->>D: resize {tab: tab-1, path [], index 0, share 1/3}
     D->>W: layout (the view)
@@ -83,6 +83,7 @@ The `layout` view is `{key, windows: [{id, title, tab, tabs: [{id, title, panes}
 - **Windows:** each window of the model is an `NSWindow` with a `WindowController`. Windows that leave the model close; new ones open cascading from the frontmost; a saved window goes back to its frame if that is still on a screen. The title is the active tab's: `store.rs — win-1`. When a window becomes key, it becomes the model's key window (`focus {window}`); when the model's key window changes (a new pane, ⌘\`, `kanna focus`), it's brought forward, or with `--bg` just behind the front app's window. The red button closes the window and its panes. The app stays open with no windows, and the Dock icon then opens a terminal in a new window. Quitting leaves every terminal running.
 - **Tabs:** each is named after the pane it was made with until it's renamed ([tab names](tab-names.md)). A click selects (a move of 5 pt first starts a drag); a double-click renames (Enter or clicking away saves, Escape cancels; keyboard focus stays in the field while it's open); a drag drops the tab at a gap in any window's tab bar or, outside every window, into a new window there. Right-click: Move Tab to New Window, Close Tab.
 - **Panes:** a pane shows a focus outline only in the key window and only with more than one pane in its tab, its exit code (`exited (3)`) or failure (`failed: …`), and a grip drawn only under the mouse. Dragging a divider snaps to ¼ ⅓ ½ ⅔ ¾ within 1.5 %, keeps both panes at least 80 px, and shows both shares (`1/4 | 3/4`). Dragging the grip docks the pane on the nearest edge of another pane, swaps it with one (the middle 40 %), moves it into a tab or onto + (a new tab), or, outside every window, into a new window there, with kmux's hints. A click focuses the pane under it; keyboard input follows the model's focused pane.
+- **Keyboard:** a pane's **key view** is what takes its keys: a terminal's surface, a web page, a markdown, code or diff text view, an iOS pane. The user's own move of focus (⌘] and ⌘[, Ghostty's `goto_split`; ⌘\` and ⇧⌘\`, Ghostty's `goto_window`) draws the new focus at once and gives that pane's key view the keyboard, whatever had it: a text field (the Shelf's search, a tab being renamed, a comment box) or another pane, in a tab or docked; then it tells the daemon. A focus change that comes from the daemon (`kanna focus`, a task starting, another client) moves the keyboard only when it is on a pane's key view or on nothing, so it never pulls the keys out of a field the user is typing in. Either way, after the user's move the outline and the keyboard are on the same pane.
 - **Light and dark:** the window's own parts follow the app's appearance as it changes: a colour given to a layer is resolved for the view's current appearance and given again when it changes, since a layer keeps the colour it was handed.
 - **Menus and shortcuts:** [menus](menus.md).
 
@@ -106,10 +107,11 @@ With `KANNA_DEBUG=1`; the daemon passes them to the app, turning a top-level `pa
 | `debug.stats` | the app's pid and memory footprint |
 | `debug.snapshot {window?, path?, marker?}` | any window (default: the key one), with each pane's `notice`, the window's tab titles and the tab bar's drawn colour |
 | `debug.text {pane?}` | also the surface's `columns` and `rows` |
+| `debug.desk {window?}` | also `responder` (the first responder's class), `keyboard` (the pane whose view holds it, or null), `highlighted` (the panes drawn with the focus outline) and `key` (the window is AppKit's key window; a `--bg` app's never is, so it draws no outline) |
 
 ## 6. Checked by
 
-`crates/kanna-mux` owner tests (`view`, a divider's `resize`, `auto` splits) and `windows_tabs_ui`, `resize_arrange`, `drag_panes_tabs`, `chrome_and_drops` of `scripts/e2e-kanna.sh`: menus and shortcuts split, tab, zoom, cycle and close; clicks select, rename and focus; dividers snap; `auto` follows the pane's shape; Ghostty's split navigation and font size; frames come back; the app outlives its last window; panes and tabs dragged everywhere; the tab and pane menus; every window drawn with its tab bar and dividers; the tab bar's colour in dark, light and dark again.
+`crates/kanna-mux` owner tests (`view`, a divider's `resize`, `auto` splits) and `windows_tabs_ui`, `resize_arrange`, `drag_panes_tabs`, `chrome_and_drops` of `scripts/e2e-kanna.sh`: menus and shortcuts split, tab, zoom, cycle and close; clicks select, rename and focus; dividers snap; `auto` follows the pane's shape; Ghostty's split navigation and font size; frames come back; the app outlives its last window; panes and tabs dragged everywhere; the tab and pane menus; every window drawn with its tab bar and dividers; the tab bar's colour in dark, light and dark again; `pane_cycle_keyboard`: on a Desk with a docked agent and a tab split into a terminal, a markdown and a code pane, real ⌘] and ⌘[ key presses round the panes leave the focused pane holding the keyboard (typed text reaches each terminal), also when starting from a tab being renamed (which `kanna focus` leaves alone) or from the Shelf's search.
 
 ## 7. Glossary
 

@@ -151,7 +151,9 @@ extension AppController {
                     "backlog": .array(controller.backlog.map { .string($0.id) }), "agents": .array(controller.backlog.map { $0.agent.map { .string($0) } ?? .null }), "running": .number(Double(controller.running)),
                     "waiting": .string(controller.shelfStrip.waitingText), "stripLayout": controller.shelfStrip.geometry, "note": .string(controller.note), "cheer": .string(controller.cheer),
                     "lead": controller.leadShown.map { .string($0) } ?? .null, "window": window(id) ?? .null, "scroll": scrolled, "search": search,
-                    "responder": .string(controller.window.firstResponder.map { String(describing: type(of: $0)) } ?? "")]
+                    "responder": .string(controller.window.firstResponder.map { String(describing: type(of: $0)) } ?? ""),
+                    "keyboard": Self.paneHolding(controller.window.firstResponder).map { .string($0) } ?? .null,
+                    "highlighted": .array(controller.highlighted.map { .string($0) }), "key": .bool(controller.window.isKeyWindow)]
         }
         commands["debug.web"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let web = contents.web(id) else { throw KannaError("wrong_type", "not a web pane") }
@@ -277,6 +279,15 @@ extension AppController {
             if args["home"]?.bool == true { screen.pressHome() }
             return ["width": .number(screen.pixelSize.width), "height": .number(screen.pixelSize.height)]
         }
+    }
+
+    private static func paneHolding(_ responder: NSResponder?) -> String? {
+        var view = responder as? NSView
+        while let current = view {
+            if let pane = current as? PaneView { return pane.id }
+            view = current.superview
+        }
+        return nil
     }
 
     private static func boxParts(_ parts: [String: NSRect]?) -> JSON {

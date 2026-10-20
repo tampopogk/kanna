@@ -1,5 +1,4 @@
 import AppKit
-import KannaMarkdown
 import KannaPerf
 
 @MainActor
@@ -40,6 +39,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     var onDockWidth: ((String, Double) -> Void)?
     private(set) var shown: [String] = []
     private(set) var tab: String?
+    var highlighted: [String] { (dockStage.subviews + stage.subviews).compactMap { ($0 as? PaneView).flatMap { $0.focused ? $0.id : nil } } }
 
     init(id: String, cascadeFrom previous: NSWindow?) {
         self.id = id
@@ -143,8 +143,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         }
         let responder = window.firstResponder
         if let focusedID, let target = panes.keyView(focusedID), responder !== target,
-           responder == nil || responder === window || responder is TerminalSurfaceView || responder is FocusReportingWebView
-           || responder is MarkdownTextView || responder is IosPaneView {
+           responder == nil || responder === window || panes.isKeyView(responder) {
             window.makeFirstResponder(target)
         }
     }
