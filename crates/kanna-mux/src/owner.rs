@@ -118,14 +118,17 @@ impl LayoutOwner {
     }
 
     pub fn hello(&self) -> Value {
-        let panes = match &self.saved {
+        Value::Array(self.records().into_iter().filter(|p| p.kind != PaneType::Term).map(|p| Value::Object(state::pane_record(&p))).collect())
+    }
+
+    pub fn records(&self) -> Vec<Pane> {
+        match &self.saved {
             Some(saved) => state::import_versions(saved, &[1, 2, LAYOUT_VERSION], "Kanna reads").map(|(panes, _)| panes).unwrap_or_default(),
             None => {
                 let placed: HashSet<String> = self.placed().into_iter().collect();
                 self.panes.iter().filter(|p| placed.contains(&p.id)).cloned().collect()
             }
-        };
-        Value::Array(panes.iter().filter(|p| p.kind != PaneType::Term).map(|p| Value::Object(state::pane_record(p))).collect())
+        }
     }
 
     fn record(&mut self, record: &Value) -> Result<Map, KmuxError> {
@@ -696,6 +699,32 @@ mod tests {
         assert_eq!((view["workspaces"].clone(), view["windows"].as_array().map(Vec::len)), (json!([]), Some(1)), "its tabs go to a window of their own: {view:?}");
         place(&mut owner, "p5", json!({ "dock": "left" }));
         assert_eq!(owner.export()["workspaces"][0]["id"], "ws-2", "IDs aren't reused");
+    }
+
+    #[test]
+    fn cycling_tabs_from_the_docked_agent_shows_the_tab_and_keeps_focus_on_the_agent() {
+        let (mut owner, _) = LayoutOwner::open(None, false);
+        owner.handle(&json!({ "call": "attach", "panes": [] }));
+        place(&mut owner, "p1", json!({ "dock": "left" }));
+        place(&mut owner, "p2", json!({ "from": "p1" }));
+        place(&mut owner, "p3", json!({ "from": "p1" }));
+        let workspace = |owner: &LayoutOwner| owner.view()["workspaces"][0].clone();
+        let tab = |owner: &LayoutOwner, i: usize| workspace(owner)["tabs"][i]["id"].clone();
+        let shown = |owner: &LayoutOwner| (workspace(owner)["tab"].clone(), workspace(owner)["focused"].clone());
+        let (first, second) = (tab(&owner, 0), tab(&owner, 1));
+        command(&mut owner, "focus", json!({ "pane": "p2" }));
+        command(&mut owner, "focus", json!({ "pane": "p1" }));
+        assert_eq!(shown(&owner), (first.clone(), json!("p1")));
+        command(&mut owner, "focus", json!({ "tab": second, "keep": "dock" }));
+        assert_eq!(shown(&owner), (second.clone(), json!("p1")), "the next tab is shown and the agent keeps focus");
+        assert_eq!((owner.export()["workspaces"][0]["focused"].clone(), owner.export()["workspaces"][0]["active"].clone()), (json!("p1"), second.clone()));
+        command(&mut owner, "focus", json!({ "tab": first, "keep": "dock" }));
+        assert_eq!(shown(&owner), (first.clone(), json!("p1")), "the previous tab is shown and the agent keeps focus");
+        command(&mut owner, "focus", json!({ "pane": "p2" }));
+        command(&mut owner, "focus", json!({ "tab": second, "keep": "dock" }));
+        assert_eq!(shown(&owner), (second.clone(), json!("p3")), "from a tab's pane, focus follows into the shown tab");
+        command(&mut owner, "focus", json!({ "tab": first }));
+        assert_eq!(shown(&owner), (first, json!("p2")), "without keep, focus goes into the tab");
     }
 
     #[test]

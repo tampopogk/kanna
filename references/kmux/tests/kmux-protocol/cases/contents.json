@@ -66,5 +66,27 @@
       { "send": { "cmd": "navigate", "args": { "pane": "doc", "forward": true } }, "expect": { "pane": { "path": "README.md" } } },
       { "send": { "cmd": "open", "args": { "type": "md", "path": "docs/spec.md", "history": true } }, "expect": { "ok": false, "error": { "code": "bad_request" } } }
     ]
+  },
+  {
+    "name": "content IDs: each kind counts on its own; restarting a terminal makes a new one with a new ID in its place, and its name goes with it",
+    "steps": [
+      { "send": { "cmd": "open", "args": { "type": "term", "name": "server" } }, "expect": { "pane": { "id": "term-1" }, "window": "win-1", "tab": "tab-1" } },
+      { "send": { "cmd": "open", "args": { "type": "web", "url": "a.test", "split": "right" } }, "expect": { "pane": { "id": "page-1" } } },
+      { "send": { "cmd": "open", "args": { "type": "md", "path": "README.md", "split": "down" } }, "expect": { "pane": { "id": "file-1" } } },
+      { "send": { "cmd": "open", "args": { "type": "term", "split": "down" } }, "expect": { "pane": { "id": "term-2" } } },
+      { "send": { "cmd": "focus", "args": { "pane": "server" } } },
+      { "send": { "cmd": "restart", "args": { "pane": "server" } }, "expect": { "ok": true, "pane": { "id": "term-3", "name": "server", "state": "running" } } },
+      { "send": { "cmd": "restart", "args": { "pane": "term-2" } }, "expect": { "ok": true, "pane": { "id": "term-4", "name": null } } },
+      { "send": { "cmd": "restart", "args": { "pane": "page-1" } }, "expect": { "ok": true, "pane": { "id": "page-1" } } },
+      { "send": { "cmd": "send", "args": { "pane": "term-1", "text": "ls" } }, "expect": { "ok": false, "error": { "code": "not_found", "message": "no pane \"term-1\"" } } },
+      { "send": { "cmd": "list" }, "expect": {
+        "windows": [ { "id": "win-1", "focused": "server", "tabs": [ { "id": "tab-1", "layout": { "split": "row", "children": [
+          { "pane": "server", "size": "1/2" },
+          { "split": "column", "size": "1/2", "children": [ { "pane": "page-1", "size": "1/2" }, { "pane": "file-1", "size": "1/4" }, { "pane": "term-4", "size": "1/4" } ] }
+        ] } } ] } ],
+        "panes": [ { "id": "term-3", "name": "server" }, { "id": "page-1" }, { "id": "file-1" }, { "id": "term-4" } ]
+      } },
+      { "send": { "cmd": "open", "args": { "type": "term", "tab": true } }, "expect": { "pane": { "id": "term-5" }, "tab": "tab-2" } }
+    ]
   }
 ]

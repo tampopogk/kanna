@@ -255,6 +255,14 @@ impl AppLink {
         self.notify("status", json!({ "pane": pane, "status": status }));
     }
 
+    pub fn toast(&self, record: &Value) -> bool {
+        if !self.attached() {
+            return false;
+        }
+        self.notify("toast", record.clone());
+        true
+    }
+
     pub fn attached(&self) -> bool {
         self.app.borrow().is_some()
     }

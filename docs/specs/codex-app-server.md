@@ -63,5 +63,5 @@ sequenceDiagram
 | Term | Meaning |
 |---|---|
 | **App-server** | Codex's JSON-RPC server: it runs sessions, and TUIs and other clients attach to it |
-| **Helper** | `kanna-daemon --codex-remote`: starts the server, runs the TUI attached to it, stops the server after |
+| **Helper** | `kanna-daemon --codex-remote`: starts the server, runs the TUI attached to it, stops the server after. On SIGHUP (its terminal closed), SIGTERM or SIGINT it sends both SIGTERM, SIGKILLs whichever is left after 5 s, and exits, so no server outlives its terminal. A signal thread waits for those signals (retrying `sigwait` if it fails) and ends the helper with `_exit`, so it never runs `exit` alongside the main thread |
 | **Session thread** | The thread a Codex session runs in; `turn/start` on it is a new prompt |

@@ -552,6 +552,7 @@ pub struct Backlog {
     ready: RefCell<HashMap<String, Ready>>,
     pub planners: RefCell<Option<Box<dyn Fn() -> Vec<String>>>>,
     pub channel: RefCell<Option<Box<dyn Fn(&str) -> Option<Channel>>>>,
+    pub on_warn: RefCell<Option<Box<dyn Fn(&str, &str, &str)>>>,
     pub permissions: RefCell<Option<Box<dyn Fn(&str) -> Option<&'static str>>>>,
     pub line_mode: RefCell<Option<Box<dyn Fn(&str) -> bool>>>,
     warned: RefCell<HashMap<String, String>>,
@@ -630,6 +631,7 @@ impl Backlog {
             channel: RefCell::default(),
             permissions: RefCell::default(),
             line_mode: RefCell::default(),
+            on_warn: RefCell::default(),
             warned: RefCell::default(),
             delivering: RefCell::default(),
             posting: RefCell::default(),
@@ -724,6 +726,13 @@ impl Backlog {
             Some(error) => then(Err(error)),
             None => then(Ok(string(&reply, "task").unwrap_or_default().to_string())),
         });
+    }
+
+    pub fn about(&self, reference: &str) -> Result<(String, Option<String>, Option<String>), KmuxError> {
+        let id = self.resolve(reference)?.ok_or_else(|| KmuxError::new("not_found", format!("no task \"{reference}\"")))?;
+        let running = self.running.borrow().iter().find(|r| r.entry.id == id).map(|r| r.pane.clone());
+        let pane = running.or_else(|| self.entries.borrow().iter().find(|e| e.id == id).and_then(|e| e.held.clone()));
+        Ok((id.clone(), self.known(&id).and_then(|e| e.name), pane))
     }
 
     fn short(&self, id: &str) -> String {
@@ -897,7 +906,7 @@ impl Backlog {
         }
     }
 
-    fn task_of(&self, pane: &str) -> Option<String> {
+    pub fn task_of(&self, pane: &str) -> Option<String> {
         let running = self.running.borrow().iter().find(|r| r.pane == pane).map(|r| r.entry.id.clone());
         running.or_else(|| self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).map(|e| e.id.clone()))
     }
@@ -1499,6 +1508,10 @@ impl Backlog {
     fn warn(&self, pane: &str, why: String) {
         if self.warned.borrow().get(pane) != Some(&why) {
             log!("kanna-daemon: warning: the messages for {pane} wait: {why}");
+            if let Some(on_warn) = self.on_warn.borrow().as_ref() {
+                let name = self.task_of(pane).and_then(|id| self.known(&id)).and_then(|e| e.name).unwrap_or_else(|| pane.to_string());
+                on_warn(pane, &name, &why);
+            }
             self.warned.borrow_mut().insert(pane.to_string(), why);
         }
     }

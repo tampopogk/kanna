@@ -22,6 +22,18 @@ public struct StateFile: Sendable {
         return (socket.hasSuffix(".sock") ? String(socket.dropLast(5)) : socket) + ".state.json"
     }
 
+    /// Where the app keeps what is only its own (docs/presentation-layers.md):
+    /// where its windows are and how large markdown panes are drawn.
+    /// `app-default.json` beside `state-default.json`, or the socket's path
+    /// with `.app.json`.
+    public static func appPath(for instance: Instance) -> String {
+        if instance.socketPath == Instance.socketPath(for: instance.name) {
+            return (Instance.directory as NSString).appendingPathComponent("app-\(instance.name).json")
+        }
+        let socket = instance.socketPath
+        return (socket.hasSuffix(".sock") ? String(socket.dropLast(5)) : socket) + ".app.json"
+    }
+
     public enum Contents: Equatable {
         /// No saved layout.
         case none

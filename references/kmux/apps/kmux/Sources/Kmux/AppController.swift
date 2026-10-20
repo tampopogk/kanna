@@ -23,8 +23,13 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Where the layout is saved (docs/kmux-spec.md §3.6); nil when this kmux
     /// doesn't keep one (`KMUX_NO_STATE=1`, or `KMUX_NO_INITIAL_WINDOW` for benchmarks).
     private var stateFile: StateFile?
+    /// Where the app keeps what is only its own: where each window is (also
+    /// while its workspace is hidden) and markdown panes' zoom.
+    private var appFile: StateFile?
+    private var frames: [String: NSRect] = [:]
     private var saveTimer: Timer?
     private var lastSaved: Data?
+    private var lastSavedApp: Data?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         do {
@@ -189,7 +194,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         let environment = ProcessInfo.processInfo.environment
         if environment["KMUX_NO_INITIAL_WINDOW"] == nil {
             // KMUX_NO_STATE=1: neither restore nor save a layout (tests on shared sockets).
-            if environment["KMUX_NO_STATE"] != "1" { stateFile = StateFile(path: StateFile.path(for: instance)) }
+            if environment["KMUX_NO_STATE"] != "1" {
+                stateFile = StateFile(path: StateFile.path(for: instance))
+                appFile = StateFile(path: StateFile.appPath(for: instance))
+            }
             // `--fresh` (or KMUX_FRESH=1) starts with a new window; the saved layout is replaced at the next save.
             let fresh = CommandLine.arguments.contains("--fresh") || environment[Brand.current.variable("FRESH")] == "1"
             if fresh || !restoreLayout() { newWindow() }
@@ -216,6 +224,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             NSLog("kmux: not restoring the saved layout: \(why); moved to \(file.setAside() ?? "nowhere")")
             return false
         case .state(let state):
+            restoreAppState(Core.upgrade(state))
             host.restoring = true
             defer { host.restoring = false }
             do {
@@ -225,6 +234,36 @@ final class AppController: NSObject, NSApplicationDelegate {
                 return false
             }
             return !core.model.windows.isEmpty
+        }
+    }
+
+    /// Reads the app's own file: `{ kmux: "app", version: 1, frames: { win-N: { x, y, w, h } },
+    /// zoom: { file-N: zoom } }`. Before there was one, the layout's own
+    /// state kept them (version 1), so they are taken from there.
+    private func restoreAppState(_ layout: JSON) {
+        var saved: [String: JSON] = [:]
+        switch appFile?.load() {
+        case .state(let state) where state["kmux"] == "app" && state["version"] == 1:
+            if case .object(let fields) = state { saved = fields }
+        case .refused(let why):
+            NSLog("kmux: not restoring where windows were: \(why); moved to \(appFile?.setAside() ?? "nowhere")")
+        default:
+            if case .array(let windows)? = layout["windows"] {
+                saved["frames"] = .object(Dictionary(windows.compactMap { w in w["id"]?.string.flatMap { id in w["frame"].map { (id, $0) } } }) { $1 })
+            }
+            if case .array(let panes)? = layout["panes"] {
+                saved["zoom"] = .object(Dictionary(panes.compactMap { p in p["id"]?.string.flatMap { id in p["zoom"].map { (id, $0) } } }) { $1 })
+            }
+        }
+        if case .object(let known)? = saved["frames"] {
+            for (id, f) in known {
+                guard let x = f["x"]?.number, let y = f["y"]?.number, let w = f["w"]?.number, let h = f["h"]?.number,
+                      [x, y, w, h].allSatisfy(\.isFinite), w > 0, h > 0 else { continue }
+                frames[id] = NSRect(x: x, y: y, width: w, height: h)
+            }
+        }
+        if case .object(let known)? = saved["zoom"] {
+            for (id, zoom) in known { if let zoom = zoom.number, zoom > 0, zoom.isFinite { host.markdownZoom[id] = CGFloat(zoom) } }
         }
     }
 
@@ -239,21 +278,34 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     private func saveLayout() {
         guard let file = stateFile else { return }
-        for (id, controller) in controllers {
-            let frame = controller.window.frame
-            core.model.window(id)?.frame = Frame(x: frame.minX, y: frame.minY, w: frame.width, h: frame.height)
-        }
-        for pane in core.model.panes.values where pane.type == .md {
-            if let zoom = host.markdown(pane.id)?.zoom { pane.zoom = Double(zoom) }
-        }
         let state = core.exportState()
         let data = state.encoded()
-        guard data != lastSaved else { return }
+        if data != lastSaved {
+            do {
+                try file.write(state)
+                lastSaved = data
+            } catch {
+                NSLog("kmux: could not save the layout: \((error as? KmuxError)?.message ?? "\(error)")")
+            }
+        }
+        guard let appFile else { return }
+        for (id, controller) in controllers { frames[id] = controller.window.frame }
+        frames = frames.filter { core.model.window($0.key) != nil }
+        var zoom: [String: JSON] = [:]
+        for pane in core.model.panes.values where pane.type == .md {
+            if let value = host.markdown(pane.id)?.zoom ?? host.markdownZoom[pane.id], value != 1 { zoom[pane.id] = .number(Double(value)) }
+        }
+        let app: JSON = [
+            "kmux": "app", "version": 1, "zoom": .object(zoom),
+            "frames": .object(frames.mapValues { ["x": .number($0.minX), "y": .number($0.minY), "w": .number($0.width), "h": .number($0.height)] }),
+        ]
+        let appData = app.encoded()
+        guard appData != lastSavedApp else { return }
         do {
-            try file.write(state)
-            lastSaved = data
+            try appFile.write(app)
+            lastSavedApp = appData
         } catch {
-            NSLog("kmux: could not save the layout: \((error as? KmuxError)?.message ?? "\(error)")")
+            NSLog("kmux: could not save where windows are: \((error as? KmuxError)?.message ?? "\(error)")")
         }
     }
 
@@ -271,8 +323,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func sync() {
         let ids = Set(core.model.shownWindows.map(\.id))
         for (id, controller) in controllers where !ids.contains(id) {
-            let frame = controller.window.frame
-            core.model.window(id)?.frame = Frame(x: frame.minX, y: frame.minY, w: frame.width, h: frame.height)
+            frames[id] = controller.window.frame
             controller.window.orderOut(nil)
             controllers[id] = nil
         }
@@ -289,15 +340,20 @@ final class AppController: NSObject, NSApplicationDelegate {
         let previous = controllers.values.map(\.window).max { $0.orderedIndex > $1.orderedIndex }
         let controller = WindowController(id: id, instance: instance, cascadeFrom: previous)
         // A restored window goes back where it was, if that is still on a screen.
-        if let saved = core.model.window(id)?.frame {
-            let frame = NSRect(x: saved.x, y: saved.y, width: saved.w, height: saved.h)
+        if let frame = frames[id] {
             if NSScreen.screens.contains(where: { $0.visibleFrame.intersects(frame) }) { controller.window.setFrame(frame, display: false) }
         }
         controller.onFrameChange = { [weak self] in self?.scheduleSave() }
         controller.relayout = { [weak self, weak controller] in
             guard let self, let controller else { return }
             controller.render(core.model, host)
-            scheduleSave() // e.g. a divider dragged
+        }
+        controller.onResize = { [weak self, weak controller] args in
+            guard let self else { return }
+            request(["cmd": "resize", "args": args]) { _ in
+                controller?.preview = nil
+                controller?.render(self.core.model, self.host)
+            }
         }
         controller.tabBar.onSelect = { [weak self] tab in self?.request(["cmd": "focus", "args": ["tab": .string(tab)]]) }
         controller.tabBar.onClose = { [weak self] tab in self?.request(["cmd": "close", "args": ["tab": .string(tab)]]) }
@@ -314,7 +370,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         controller.onCloseRequest = { [weak self] in self?.request(["cmd": "close", "args": ["window": .string(id)]]) }
         controller.onBecomeKey = { [weak self, weak controller] in
             guard let self, let controller else { return }
-            if controller.window.isKeyWindow { core.model.key = id }
+            if controller.window.isKeyWindow, core.model.key != id { request(["cmd": "focus", "args": ["window": .string(id)]]) }
             controller.render(core.model, host)
         }
         controllers[id] = controller
@@ -325,18 +381,18 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func focused(_ paneID: String) {
         guard let window = core.model.windows.first(where: { $0.shownPanes.contains(paneID) }) else { return }
         guard window.focused != paneID else { return }
-        window.focused = paneID
-        if window.dock?.pane != paneID { window.activeTab?.lastFocus = paneID }
-        controllers[window.id]?.render(core.model, host)
-        scheduleSave()
+        request(["cmd": "focus", "args": ["pane": .string(paneID)]])
     }
 
     // MARK: Actions
 
-    private func request(_ request: JSON) {
+    /// Every change the app makes goes to the core as a request, as a
+    /// client's would (docs/presentation-layers.md).
+    private func request(_ request: JSON, then done: ((JSON) -> Void)? = nil) {
         Task { @MainActor in
             let reply = await core.handle(request)
             if reply["ok"] != true { NSLog("kmux: \(String(decoding: reply.encoded(), as: UTF8.self))") }
+            done?(reply)
         }
     }
 
@@ -537,10 +593,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         // The shell reported its working directory (OSC 7): a restored
         // terminal starts there.
         if action.tag == GHOSTTY_ACTION_PWD {
-            if let pwd = action.action.pwd.pwd, let pane = core.model.panes[paneID] {
-                pane.cwd = String(cString: pwd)
-                scheduleSave()
-            }
+            if let pwd = action.action.pwd.pwd { core.report(paneID, cwd: String(cString: pwd)) }
             return true
         }
         let perform: (() -> Void)?
@@ -749,7 +802,8 @@ final class AppController: NSObject, NSApplicationDelegate {
                let content = handle.superview {
                 let to = try screen(content, handle.position(CGFloat(args["at"]?.number ?? 0.5)))
                 post([to, to])
-                handle.drag(in: content)
+                _ = await core.handle(["cmd": "resize", "args": handle.drag(in: content)])
+                controller.preview = nil
                 controller.render(core.model, host)
                 return [:]
             }
@@ -758,7 +812,8 @@ final class AppController: NSObject, NSApplicationDelegate {
             }).first, let stage = handle.superview else { throw KmuxError("not_found", "no divider after \(pane.id)") }
             let to = try screen(stage, handle.position(CGFloat(args["at"]?.number ?? 0.5)))
             post([to, to])
-            handle.drag(in: stage)
+            _ = await core.handle(["cmd": "resize", "args": handle.drag(in: stage)])
+            controller.preview = nil
             controller.render(core.model, host)
             return [:]
         }

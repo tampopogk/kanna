@@ -1,10 +1,13 @@
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const FLAG: &str = "--codex-remote";
 
 const STARTUP: Duration = Duration::from_secs(10);
+
+const GRACE: Duration = Duration::from_secs(5);
 
 const UNPROMPTED: &[&str] = &["--yolo", "--dangerously-bypass-approvals-and-sandbox"];
 
@@ -61,28 +64,29 @@ pub fn tui_args(args: &[String], listen: &str) -> Vec<String> {
 }
 
 pub fn run(dir: &Path, program: &str, args: &[String]) -> i32 {
+    let children = Children::stopped_with_us();
     let socket = socket(dir, std::process::id());
     let folder = socket.parent().unwrap_or(dir).to_path_buf();
     if let Err(why) = private(&folder) {
-        return alone(program, args, &why);
+        return alone(&children, program, args, &why);
     }
     sweep(&folder);
     let listen = format!("unix://{}", socket.display());
-    let server = Command::new(program).args(server_args(args, &listen)).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    let server = children.spawn(Command::new(program).args(server_args(args, &listen)).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()));
     let mut server = match server {
         Ok(server) => server,
-        Err(error) => return alone(program, args, &format!("couldn't start {program} app-server: {error}")),
+        Err(error) => return alone(&children, program, args, &format!("couldn't start {program} app-server: {error}")),
     };
     let deadline = Instant::now() + STARTUP;
     while !socket.exists() {
         if Instant::now() > deadline || matches!(server.try_wait(), Ok(Some(_))) {
             let _ = server.kill();
             let _ = server.wait();
-            return alone(program, args, &format!("{program} app-server didn't open {}", socket.display()));
+            return alone(&children, program, args, &format!("{program} app-server didn't open {}", socket.display()));
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    let status = Command::new(program).args(tui_args(args, &listen)).status();
+    let status = children.spawn(Command::new(program).args(tui_args(args, &listen))).and_then(|mut tui| tui.wait());
     let _ = server.kill();
     let _ = server.wait();
     let _ = std::fs::remove_file(&socket);
@@ -95,10 +99,56 @@ pub fn run(dir: &Path, program: &str, args: &[String]) -> i32 {
     }
 }
 
-fn alone(program: &str, args: &[String], why: &str) -> i32 {
+fn alone(children: &Children, program: &str, args: &[String], why: &str) -> i32 {
     eprintln!("kanna: {why}, so codex runs on its own and takes no messages");
-    let status = Command::new(program).args(args).arg("--no-daemon").status();
+    let status = children.spawn(Command::new(program).args(args).arg("--no-daemon")).and_then(|mut codex| codex.wait());
     status.ok().and_then(|s| s.code()).unwrap_or(127)
+}
+
+struct Children(Arc<Mutex<Vec<i32>>>);
+
+impl Children {
+    fn stopped_with_us() -> Children {
+        let pids = Arc::new(Mutex::new(Vec::new()));
+        let set = unsafe {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            for signal in [libc::SIGHUP, libc::SIGTERM, libc::SIGINT] {
+                libc::signal(signal, libc::SIG_DFL);
+                libc::sigaddset(&mut set, signal);
+            }
+            libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+            set
+        };
+        let stopping = pids.clone();
+        let _ = std::thread::Builder::new().name("kanna.codex-signals".into()).spawn(move || {
+            let mut signal = 0;
+            while unsafe { libc::sigwait(&set, &mut signal) } != 0 {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            let pids = stopping.lock().map(|pids| pids.clone()).unwrap_or_default();
+            for &pid in &pids {
+                unsafe { libc::kill(pid, libc::SIGTERM) };
+            }
+            let deadline = Instant::now() + GRACE;
+            let running = |pid: i32| unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) } == 0;
+            while Instant::now() < deadline && pids.iter().any(|&pid| running(pid)) {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            for &pid in pids.iter().filter(|&&pid| running(pid)) {
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+            unsafe { libc::_exit(128 + signal) };
+        });
+        Children(pids)
+    }
+
+    fn spawn(&self, command: &mut Command) -> std::io::Result<Child> {
+        let mut pids = self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let child = command.spawn()?;
+        pids.push(child.id() as i32);
+        Ok(child)
+    }
 }
 
 fn sweep(dir: &Path) {

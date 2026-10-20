@@ -15,7 +15,7 @@ mod commands {
 use kanna::args::Argv;
 use serde_json::{json, Value};
 
-const KANNA_ONLY: &[&str] = &["read", "screenshot", "send-key", "status", "agents", "markup", "comment", "rename-pane", "task", "quiz", "projects"];
+const KANNA_ONLY: &[&str] = &["read", "screenshot", "send-key", "status", "agents", "markup", "comment", "tour", "rename-pane", "task", "quiz", "projects", "toast"];
 
 const KMUX_ONLY: &[&str] = &[];
 
@@ -37,48 +37,11 @@ const OPTIONS_DIFFER: &[(&str, &str)] = &[("move", "--window WINDOW|new")];
 const CODE_PANES: &[(&str, &str)] = &[("open", "summary"), ("navigate", "summary")];
 
 fn from_kmux(text: &str) -> String {
-    kanna_ids(&text.replace("kmux", "kanna"))
+    text.replace("kmux", "kanna")
 }
 
 fn from_kanna(text: &str) -> String {
-    kanna_ids(&text.replace("Kanna.app", "kanna").replace("Kanna", "kanna"))
-}
-
-fn kanna_ids(text: &str) -> String {
-    let id = |word: &str| {
-        [("p", "term-"), ("t", "tab-"), ("w", "win-")].iter().find_map(|(kmux, kanna)| {
-            word.strip_prefix(kmux).filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())).map(|n| format!("{kanna}{n}"))
-        })
-    };
-    let mut out = String::new();
-    let mut word = String::new();
-    for c in text.chars().chain(std::iter::once('\0')) {
-        if c.is_ascii_alphanumeric() || c == '-' {
-            word.push(c);
-            continue;
-        }
-        out.push_str(&id(&word).unwrap_or_else(|| word.clone()));
-        word.clear();
-        if c != '\0' {
-            out.push(c);
-        }
-    }
-    let mut named = out;
-    for (noun, prefix) in [("window ", "win-"), ("tab ", "tab-"), ("pane ", "term-")] {
-        let mut kept = String::new();
-        let mut rest = named.as_str();
-        while let Some(at) = rest.find(&format!("{noun}{prefix}")) {
-            let flag = rest[..at].ends_with('-');
-            kept.push_str(&rest[..at]);
-            if flag {
-                kept.push_str(noun);
-            }
-            rest = &rest[at + noun.len()..];
-        }
-        kept.push_str(rest);
-        named = kept;
-    }
-    named
+    text.replace("Kanna.app", "kanna").replace("Kanna", "kanna")
 }
 
 fn without_code_panes(text: &str) -> String {
@@ -233,18 +196,18 @@ fn every_kmux_example_and_request_parses_the_same() {
             "kmux open --name logs --split right --size 1/3 --cmd 'tail -f a.log'",
             "kmux open web localhost:3000 --split down",
             "kmux open --tab --no-wait",
-            "kmux open --window w2 --name x",
+            "kmux open --window win-2 --name x",
             "kmux close logs",
-            "kmux close --window w2",
-            "kmux close --tab t3",
-            "kmux focus --window w1",
-            "kmux rename-tab t1 my servers",
+            "kmux close --window win-2",
+            "kmux close --tab tab-3",
+            "kmux focus --window win-1",
+            "kmux rename-tab tab-1 my servers",
             "kmux send server npm test",
             "kmux send server ls --color",
             "kmux move logs --to server --side bottom",
-            "kmux move logs --tab new --window w2",
-            "kmux move-tab t2 --index 0",
-            "kmux move-tab t2 --window=new",
+            "kmux move logs --tab new --window win-2",
+            "kmux move-tab tab-2 --index 0",
+            "kmux move-tab tab-2 --window=new",
             "kmux open web a.test --history",
             "kmux navigate site --back",
             "kmux navigate site --forward",
@@ -253,7 +216,7 @@ fn every_kmux_example_and_request_parses_the_same() {
             "kmux navigate spec /tmp/b.md",
             "kmux open ios --app com.apple.Preferences --device 'iPhone 16'",
             "kmux resize logs 25%",
-            "kmux arrange '{\"split\":\"column\",\"children\":[{\"pane\":\"a\"}]}' --window w1",
+            "kmux arrange '{\"split\":\"column\",\"children\":[{\"pane\":\"a\"}]}' --window win-1",
             "kmux workspace list --all --json",
             "kmux capabilities",
             "kmux open --dock right --cmd claude",
@@ -261,12 +224,12 @@ fn every_kmux_example_and_request_parses_the_same() {
             "kmux open --dock md /tmp/a.md",
             "kmux open web a.test --dock=right --window new",
             "kmux move agent --dock",
-            "kmux move agent --dock right --window w2",
-            "kmux move agent --tab t3",
-            "kmux move agent --tab --window w2",
+            "kmux move agent --dock right --window win-2",
+            "kmux move agent --tab tab-3",
+            "kmux move agent --tab --window win-2",
             "kmux resize agent 1/3",
-            "kmux window assign w4 s1",
-            "kmux window free w4",
+            "kmux window assign win-4 ws-1",
+            "kmux window free win-4",
         ]
         .map(String::from),
     );
@@ -296,14 +259,14 @@ fn usage_errors_are_kmux_errors() {
         "kmux navigate site --back x",
         "kmux navigate site --back --forward",
         "kmux navigate site",
-        "kmux send p1",
-        "kmux resize p1",
+        "kmux send term-1",
+        "kmux resize term-1",
         "kmux arrange",
         "kmux arrange '{nope'",
         "kmux rename-tab",
-        "kmux rename-tab t1",
+        "kmux rename-tab tab-1",
         "kmux move-tab",
-        "kmux move-tab t1 --index x",
+        "kmux move-tab tab-1 --index x",
         "kmux open --name",
         "kmux capabilities extra",
         "kmux open --dock --split right",
@@ -330,34 +293,34 @@ fn an_unknown_pane_type_lists_code_and_diff_panes_too() {
 
 #[test]
 fn replies_print_as_kmux_prints_them() {
-    let pane = json!({ "id": "p3", "name": "logs", "type": "term", "state": "running", "cmd": "tail -f a.log" });
-    let layout = json!({ "split": "row", "children": [{ "pane": "p1", "size": "2/3" }, { "pane": "logs", "size": "1/3" }] });
+    let pane = json!({ "id": "term-3", "name": "logs", "type": "term", "state": "running", "cmd": "tail -f a.log" });
+    let layout = json!({ "split": "row", "children": [{ "pane": "term-1", "size": "2/3" }, { "pane": "logs", "size": "1/3" }] });
     let cases: Vec<(&str, Value, Value)> = vec![
-        ("open", json!({ "type": "term" }), json!({ "pane": pane, "window": "w1", "tab": "t1" })),
-        ("open", json!({ "type": "term" }), json!({ "pane": { "id": "p5", "state": "failed", "error": "No such file" }, "window": "w1", "tab": "t1" })),
-        ("close", json!({ "pane": "logs" }), json!({ "closed": ["p3"] })),
-        ("close", json!({ "tab": "t2" }), json!({ "closed": ["p3", "p4"] })),
-        ("close", json!({ "window": "w2" }), json!({ "closed": ["p5"] })),
-        ("focus", json!({ "pane": "logs" }), json!({ "window": "w1" })),
-        ("focus", json!({ "tab": "t2" }), json!({ "window": "w1" })),
-        ("focus", json!({ "window": "w2" }), json!({ "window": "w2" })),
+        ("open", json!({ "type": "term" }), json!({ "pane": pane, "window": "win-1", "tab": "tab-1" })),
+        ("open", json!({ "type": "term" }), json!({ "pane": { "id": "term-5", "state": "failed", "error": "No such file" }, "window": "win-1", "tab": "tab-1" })),
+        ("close", json!({ "pane": "logs" }), json!({ "closed": ["term-3"] })),
+        ("close", json!({ "tab": "tab-2" }), json!({ "closed": ["term-3", "term-4"] })),
+        ("close", json!({ "window": "win-2" }), json!({ "closed": ["term-5"] })),
+        ("focus", json!({ "pane": "logs" }), json!({ "window": "win-1" })),
+        ("focus", json!({ "tab": "tab-2" }), json!({ "window": "win-1" })),
+        ("focus", json!({ "window": "win-2" }), json!({ "window": "win-2" })),
         ("zoom", json!({ "pane": "logs" }), json!({ "zoomed": true })),
         ("zoom", json!({ "pane": "logs" }), json!({ "zoomed": false })),
         ("restart", json!({ "pane": "logs" }), json!({ "pane": pane })),
         ("send", json!({ "pane": "logs", "text": "x" }), json!({})),
         ("resize", json!({ "pane": "logs", "size": "1/3" }), json!({ "layout": layout })),
-        ("move", json!({ "pane": "logs", "to": "p1" }), json!({ "layout": layout })),
+        ("move", json!({ "pane": "logs", "to": "term-1" }), json!({ "layout": layout })),
         ("arrange", json!({ "layout": layout }), json!({ "layout": layout })),
-        ("rename-tab", json!({ "tab": "t1", "title": "servers" }), json!({ "tab": "t1", "title": "servers" })),
-        ("move-tab", json!({ "tab": "t2", "index": 0 }), json!({ "window": "w1", "tabs": ["t2", "t1"] })),
-        ("navigate", json!({ "pane": "site", "url": "x" }), json!({ "pane": { "id": "p2", "name": "site", "state": "running", "url": "http://x/" } })),
-        ("navigate", json!({ "pane": "doc", "path": "/tmp/a.md" }), json!({ "pane": { "id": "p7", "name": "doc", "state": "running", "path": "/tmp/a.md" } })),
-        ("open", json!({ "type": "term", "dock": "left" }), json!({ "pane": pane, "window": "w1", "tab": null, "dock": "left" })),
-        ("move", json!({ "pane": "logs", "dock": "right" }), json!({ "window": "w1", "dock": { "pane": "logs", "edge": "right", "width": "2/5" } })),
-        ("resize", json!({ "pane": "logs", "size": "1/4" }), json!({ "window": "w1", "dock": { "pane": "logs", "edge": "left", "width": "1/4" } })),
+        ("rename-tab", json!({ "tab": "tab-1", "title": "servers" }), json!({ "tab": "tab-1", "title": "servers" })),
+        ("move-tab", json!({ "tab": "tab-2", "index": 0 }), json!({ "window": "win-1", "tabs": ["tab-2", "tab-1"] })),
+        ("navigate", json!({ "pane": "site", "url": "x" }), json!({ "pane": { "id": "page-2", "name": "site", "state": "running", "url": "http://x/" } })),
+        ("navigate", json!({ "pane": "doc", "path": "/tmp/a.md" }), json!({ "pane": { "id": "file-7", "name": "doc", "state": "running", "path": "/tmp/a.md" } })),
+        ("open", json!({ "type": "term", "dock": "left" }), json!({ "pane": pane, "window": "win-1", "tab": null, "dock": "left" })),
+        ("move", json!({ "pane": "logs", "dock": "right" }), json!({ "window": "win-1", "dock": { "pane": "logs", "edge": "right", "width": "2/5" } })),
+        ("resize", json!({ "pane": "logs", "size": "1/4" }), json!({ "window": "win-1", "dock": { "pane": "logs", "edge": "left", "width": "1/4" } })),
         ("capabilities", json!({}), json!({ "mux": "kmux", "paneTypes": ["term", "web"], "commands": ["capabilities", "list"] })),
-        ("window", json!({ "action": "free", "window": "w2" }), json!({ "window": "w2", "was": null, "shown": true })),
-        ("window", json!({ "action": "free", "window": "w2" }), json!({ "window": "w2", "was": { "id": "s1", "hidden": false }, "shown": true })),
+        ("window", json!({ "action": "free", "window": "win-2" }), json!({ "window": "win-2", "was": null, "shown": true })),
+        ("window", json!({ "action": "free", "window": "win-2" }), json!({ "window": "win-2", "was": { "id": "ws-1", "hidden": false }, "shown": true })),
     ];
     for (name, args, reply) in cases {
         let kmux = (commands::find(name).unwrap().show)(&args, &reply);
@@ -368,6 +331,6 @@ fn replies_print_as_kmux_prints_them() {
 
 #[test]
 fn kmux_cannot_type_what_kanna_can_after_a_double_dash() {
-    let kanna = kanna_parse("kanna send p1 -- --json --mux").unwrap();
-    assert_eq!(kanna, json!({ "pane": "p1", "text": "--json --mux" }));
+    let kanna = kanna_parse("kanna send term-1 -- --json --mux").unwrap();
+    assert_eq!(kanna, json!({ "pane": "term-1", "text": "--json --mux" }));
 }

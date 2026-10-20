@@ -16,6 +16,11 @@ usage: scripts/e2e-kanna.sh [--through M0|M1|M2|M3|M4] [NAME …]
                later ones are listed as not due
   NAME…        only these scenarios (e.g. cli_terminal shelf_zoom)
 
+A scenario that runs longer than $KANNA_E2E_TIMEOUT seconds (600) fails.
+Every run stops what it started however it ends, and first stops what runs
+it can't see anymore left behind (docs/specs/e2e-cleanup.md). Run it
+unsandboxed: it needs ps, signals, Unix sockets and /tmp.
+
 Uses target/release/{kanna,kanna-daemon,kanna-keeper,kanna-build} and target/Kanna.app (or $KANNA_E2E_APP)
 (scripts/build.sh). The private instance gets:
   KANNA_SOCKET     the daemon's socket (the CLI and the app connect to it)
@@ -56,9 +61,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 unset KANNA_PANE KANNA_TERMINAL KANNA_INSTANCE
+ps -o pid= -p $$ >/dev/null 2>&1 && kill -0 $$ 2>/dev/null || { echo "e2e-kanna: can't list or signal processes here (a sandbox?); run it unsandboxed" >&2; exit 2; }
 mock_agent="$repo_root/tools/mock-agent/mock-agent"
 new_state_dir() {
   KANNA_STATE_DIR="$(mktemp -d /tmp/kanna-e2e.XXXXXX)" || exit 1
+  echo $$ >"$KANNA_STATE_DIR/e2e-kanna.pid"
   export KANNA_AGENT_RULES_DIR="$KANNA_STATE_DIR/agent-rules-override"
   export KANNA_AGENTS_HOME="$KANNA_STATE_DIR/home"
   [[ -n "$KANNA_STATE_DIR" && -d "$KANNA_STATE_DIR" ]] || { echo "e2e-kanna: mktemp gave no folder" >&2; exit 1; }
@@ -66,7 +73,7 @@ new_state_dir() {
   mkdir -p "$KANNA_AGENTS_HOME/.kanna-v4" && echo '{"version": 2, "setup": false}' >"$KANNA_AGENTS_HOME/.kanna-v4/agents.json"
   printf '{"version": 1, "backlog": {"runners": 0}, "tasks": {"agent": "%s"}}\n' "$mock_agent" >"$KANNA_AGENTS_HOME/.kanna-v4/config.json"
 }
-new_state_dir
+KANNA_STATE_DIR=""
 export KANNA_IGNORE_OCCLUSION=1
 export KANNA_DEBUG=1
 export KANNA_TEST_EFFECTS=1
@@ -74,7 +81,7 @@ export KANNA_NO_INITIAL_WINDOW=1
 export KANNA_AGENT_RULES_URL=none
 export KANNA_PLANNING_AGENTS=none
 export KANNA_AGENT_SKILLS="${app%/MacOS/Kanna}/Resources/kanna-skills"
-daemon_pid="" app_pid=""
+daemon_pid="" app_pid="" scenario_pid=""
 
 need() { [[ -x "$1" ]] || { echo "not built: ${1#$repo_root/}"; return 1; }; }
 wait_for() {
@@ -93,72 +100,162 @@ start_daemon() {
   daemon_pid=$!
   wait_for 5 test -S "$KANNA_SOCKET" || { echo "the daemon did not open its socket"; return 1; }
 }
-stop_daemon() { [[ -n "$daemon_pid" ]] && kill "$daemon_pid" 2>/dev/null; wait "$daemon_pid" 2>/dev/null; daemon_pid=""; }
+stop_daemon() { stop_pid "$daemon_pid"; daemon_pid=""; }
+stop_pid() {
+  [[ -n "$1" ]] || return 0
+  kill "$1" 2>/dev/null
+  wait_for 5 eval "! kill -0 $1" || { echo "e2e-kanna: $(ps -o command= -p "$1" | cut -c1-120) (pid $1) didn't stop on TERM; killed" >&2; kill -9 "$1" 2>/dev/null; }
+  wait "$1" 2>/dev/null
+}
 start_app() {
   need "$app" || return 1
   "$app" --bg >>"$out/app.log" 2>&1 &
   app_pid=$!
   wait_for 10 app_attached || { echo "the app did not attach to the daemon"; return 1; }
 }
-stop_app() {
-  [[ -n "$app_pid" ]] || return 0
-  kill "$app_pid" 2>/dev/null; wait "$app_pid" 2>/dev/null
-  wait_for 5 eval "! kill -0 $app_pid"
-  app_pid=""
-}
+stop_app() { stop_pid "$app_pid"; app_pid=""; }
 app_attached() { [[ "$(raw '{"id":1,"cmd":"debug.app"}' | field ok)" == True ]]; }
 cleanup() {
-  stop_instances
-  stop_app; stop_daemon
-  stop_started_daemon
-  stop_keeper
-  stop_agents
+  if [[ -n "$scenario_pid" ]]; then
+    kill "$scenario_pid" 2>/dev/null
+    wait_for 2 eval "! kill -0 $scenario_pid" || kill -9 "$scenario_pid" 2>/dev/null
+    wait "$scenario_pid" 2>/dev/null
+    scenario_pid=""
+  fi
+  [[ -n "$KANNA_STATE_DIR" ]] || return 0
+  stop_tied "$KANNA_STATE_DIR"
+  app_pid="" daemon_pid=""
   rm -rf "$KANNA_STATE_DIR"
 }
-stop_agents() {
-  [[ -d "$KANNA_STATE_DIR/agents" ]] || return 0
-  pkill -f "$KANNA_STATE_DIR/agents/" 2>/dev/null
-  wait_for 10 eval "! pgrep -f '$KANNA_STATE_DIR/agents/' >/dev/null" || pkill -9 -f "$KANNA_STATE_DIR/agents/" 2>/dev/null
-  return 0
-}
-stop_started_daemon() {
-  local pid
-  pid="$(cat "$KANNA_STATE_DIR/daemon.pid" 2>/dev/null)" || return 0
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
-  [[ "$(ps -o command= -p "$pid" 2>/dev/null)" == *Kanna.app/Contents/Helpers/kanna-daemon* ]] || return 0
-  kill "$pid" 2>/dev/null
-  wait_for 5 eval "! kill -0 $pid"
-}
-stop_keeper() {
-  local pid
-  pid="$(cat "$KANNA_STATE_DIR/keeper.pid" 2>/dev/null)" || return 0
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
-  [[ "$(ps -o command= -p "$pid" 2>/dev/null)" == *kanna-keeper*"--state-dir $KANNA_STATE_DIR"* ]] || return 0
-  kill "$pid" 2>/dev/null
-  wait_for 5 eval "! kill -0 $pid"
-}
-stop_folder() {
-  local dir="$1" pid command
-  [[ -d "$dir" ]] || return 0
-  pid="$(sed -n 's/.*the app attached (pid \([0-9]*\)).*/\1/p' "$dir/daemon.log" 2>/dev/null | tail -1)"
-  command="$(ps -o command= -p "$pid" 2>/dev/null)"
-  if [[ "$pid" =~ ^[0-9]+$ && ( "$command" == *"$repo_root/target/Kanna.app/Contents/MacOS/Kanna"* || "$command" == *"$(cd "$repo_root/target" && pwd -P)/Kanna.app/Contents/MacOS/Kanna"* ) ]]; then
-    kill "$pid" 2>/dev/null; wait_for 5 eval "! kill -0 $pid"
-  fi
-  pid="$(cat "$dir/daemon.pid" 2>/dev/null)"
-  if [[ "$pid" =~ ^[0-9]+$ && "$(ps -o command= -p "$pid" 2>/dev/null)" == *kanna-daemon* ]]; then
-    kill "$pid" 2>/dev/null; wait_for 5 eval "! kill -0 $pid"
-  fi
-  pid="$(cat "$dir/keeper.pid" 2>/dev/null)"
-  if [[ "$pid" =~ ^[0-9]+$ && "$(ps -o command= -p "$pid" 2>/dev/null)" == *kanna-keeper*"--state-dir $dir"* ]]; then
-    kill "$pid" 2>/dev/null; wait_for 5 eval "! kill -0 $pid"
-  fi
-}
-stop_instances() {
-  local dir
-  for dir in "$KANNA_STATE_DIR"/home/Library/Application\ Support/kanna-dev*; do stop_folder "$dir"; done
+stop_agents() { stop_tied "$KANNA_STATE_DIR/agents" "$KANNA_STATE_DIR/codex"; }
+stop_folder() { stop_tied "$1"; }
+stop_tied() {
+  python3 - "$$" "$@" <<'PY'
+import os, re, signal, subprocess, sys, time
+runner, paths = int(sys.argv[1]), sys.argv[2:]
+if not paths or not all(paths):
+    sys.exit(0)
+sweeping = paths == ["--orphans"]
+FOLDER = re.compile(r"/tmp/kanna-e2e\.[A-Za-z0-9]{6}(?=[/\s\"']|$)")
+KEYS = r"(?:^|\s)(?:KANNA_STATE_DIR|KANNA_SOCKET|KANNA_AGENTS_HOME|HOME)="
+norm = lambda text: text.replace("/private/tmp/", "/tmp/")
+
+def ps(*args):
+    rows = {}
+    for line in subprocess.run(["ps", *args], capture_output=True, text=True).stdout.splitlines():
+        fields = line.split(None, 3 if args[0] == "-axww" else 1)
+        if len(fields) >= 2:
+            rows[int(fields[0])] = fields[1:]
+    return rows
+
+def table():
+    plain = ps("-axww", "-o", "pid=,ppid=,stat=,command=")
+    env = ps("-E", "-axww", "-o", "pid=,command=")
+    mine, pid = set(), os.getpid()
+    while pid in plain and pid not in mine:
+        mine.add(pid)
+        pid = int(plain[pid][0])
+    rows = []
+    for pid, fields in plain.items():
+        if len(fields) < 3 or pid in mine or pid == runner or fields[1].startswith("Z"):
+            continue
+        command = fields[2]
+        if "e2e-kanna.sh" in command or command.startswith("/Applications/Kanna.app/"):
+            continue
+        whole = env.get(pid, [command])[0]
+        rows.append((pid, norm(command), norm(whole[len(command):] if whole.startswith(command) else "")))
+    return rows
+
+def ties(path):
+    path = re.escape(norm(path.rstrip("/")))
+    used, set_ = re.compile(path + r"(?=[/\s\"']|$)"), re.compile(KEYS + path + r"(?=[/\s]|$)")
+    return lambda command, env: bool(used.search(command) or set_.search(env))
+
+def folders(command, env):
+    found = set(FOLDER.findall(command))
+    found |= {m.group(1) for m in re.finditer(KEYS + r"(/tmp/kanna-e2e\.[A-Za-z0-9]{6})(?=[/\s]|$)", env)}
+    return found
+
+def owned(folder):
+    try:
+        pid = int(open(folder + "/e2e-kanna.pid").read())
+    except FileNotFoundError:
+        try:
+            return time.time() - os.stat(folder).st_mtime < 3600
+        except FileNotFoundError:
+            return False
+    except ValueError:
+        return False
+    command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
+    return "e2e-kanna.sh" in command
+
+def alive(pid):
+    stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    return bool(stat) and not stat.startswith("Z")
+
+def signal_(pid, signo):
+    try:
+        os.kill(pid, signo)
+    except ProcessLookupError:
+        pass
+
+def stop_scenario(folder):
+    try:
+        pid = int(open(folder + "/e2e-scenario.pid").read())
+    except (OSError, ValueError):
+        return
+    row = ps("-axww", "-o", "pid=,ppid=,stat=,command=").get(pid)
+    if not row or len(row) < 3 or "e2e-kanna.sh" not in row[2] or row[0] != "1":
+        return
+    signal_(pid, signal.SIGTERM)
+    deadline = time.time() + 2
+    while time.time() < deadline and alive(pid):
+        time.sleep(0.1)
+    if alive(pid):
+        signal_(pid, signal.SIGKILL)
+
+def stop(tied, why):
+    for _ in range(4):
+        pids = {pid: command for pid, command, env in table() if tied(command, env)}
+        if not pids:
+            return
+        for pid in pids:
+            signal_(pid, signal.SIGTERM)
+        deadline = time.time() + 5
+        while time.time() < deadline and any(alive(p) for p in pids):
+            time.sleep(0.1)
+        still = {pid: command for pid, command, env in table() if pid in pids and tied(command, env)}
+        for pid, command in still.items():
+            print(f"e2e-kanna: {command[:120]} (pid {pid}) didn't stop on TERM{why}; killed", file=sys.stderr)
+            signal_(pid, signal.SIGKILL)
+        deadline = time.time() + 2
+        while time.time() < deadline and any(alive(p) for p in still):
+            time.sleep(0.1)
+
+if sweeping:
+    seen = {f for _, command, env in table() for f in folders(command, env)}
+    seen |= {"/tmp/" + name for name in os.listdir("/tmp") if FOLDER.fullmatch("/tmp/" + name)}
+    for folder in sorted(seen):
+        if owned(folder):
+            continue
+        tied = ties(folder)
+        count = sum(1 for _, command, env in table() if tied(command, env))
+        if count:
+            print(f"e2e-kanna: stopping {count} processes an earlier run left in {folder}", file=sys.stderr)
+        stop_scenario(folder)
+        stop(tied, f" (left in {folder})")
+        subprocess.run(["rm", "-rf", folder])
+else:
+    tests = [ties(p) for p in paths]
+    stop(lambda command, env: any(t(command, env) for t in tests), "")
+PY
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+stop_tied --orphans
+new_state_dir
 
 kanna() { "$bin/kanna" "$@"; }
 raw() {
@@ -1494,6 +1591,31 @@ zsh_completion() {
   check wait_for 5 shows zsh_completion-login 'zsh_completion:_kanna:home:gone'
 }
 
+scenario dock_keeps_focus_through_tabs M4
+dock_keeps_focus_through_tabs() {
+  start_daemon && start_app || return 1
+  local agent
+  kanna open --name agent --dock --cmd 'exec cat' >/dev/null || return 1
+  KANNA_TERMINAL=agent kanna open --name spec --cmd "printf 'spec\n'; exec sleep 600" >/dev/null || return 1
+  KANNA_TERMINAL=agent kanna open --name plan --cmd "printf 'plan\n'; exec sleep 600" >/dev/null || return 1
+  agent="$(pane agent id)"
+  kanna task pull agent >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(dwin d1 dock.pane)" == "$agent" ]]' || { app_view; return 1; }
+  kanna focus agent >/dev/null || return 1
+  check test "$(dwin d1 tab)" == "$(dwin d1 tabs.1.id)" || return 1
+  key "cmd+shift+]"; check test "$(dwin d1 tab)" == "$(dwin d1 tabs.0.id)" || return 1
+  check test "$(ws agent focused)" == agent || return 1
+  key "cmd+shift+["; check test "$(dwin d1 tab)" == "$(dwin d1 tabs.1.id)" || return 1
+  check test "$(ws agent focused)" == agent || return 1
+  check test "$(dwin d1 focused)" == "$agent" || return 1
+  for k in d o c k e d; do key "$k"; done
+  check wait_for 5 app_text agent docked || { kanna read agent; return 1; }
+  check test "$(ws agent focused)" == agent || return 1
+  kanna focus plan >/dev/null || return 1
+  key "cmd+shift+["; check test "$(dwin d1 tab)" == "$(dwin d1 tabs.0.id)" || return 1
+  check test "$(ws agent focused)" == spec || return 1
+}
+
 scenario desk_shelf M4
 desk_shelf() {
   start_daemon && start_app || return 1
@@ -2013,6 +2135,74 @@ code_tour() {
   check wait_for 5 eval '[[ "$(mdf active)" == c2 ]]' || { echo "active $(mdf active)"; return 1; }
   stop_app; start_app || return 1
   check wait_for 5 eval '[[ "$(code $id comment_first)" == 40 && "$(code $id comment_text)" == "Each step." ]]' || return 1
+}
+
+scenario code_tour_steps M4
+code_tour_steps() {
+  start_daemon && start_app || return 1
+  local tour="$KANNA_STATE_DIR/code_tour_steps.rs" other="$KANNA_STATE_DIR/code_tour_steps-other.rs" said id more agent
+  { echo 'fn outer() {'; echo '    loop {'; echo '        if ready() {'; for i in $(seq 4 60); do echo "            step($i);"; done; echo '        }'; echo '    }'; echo '}'; } >"$tour"
+  for i in $(seq 30); do echo "let line_$i = $i;"; done >"$other"
+  code() { raw "{\"id\":1,\"cmd\":\"debug.code\",\"args\":{\"pane\":\"$1\"${3:-}}}" | field "$2"; }
+  press() { code "$1" pressed ",\"tour\":\"$2\""; }
+  agent="$(kanna open --name agent --cmd cat | awk '{print $2}')"
+  [[ "$(kanna tour "$tour:3" "One." 2>&1)" == *"run it from the agent's terminal"* ]] || { echo "code_tour_steps: a tour without an agent"; return 1; }
+  [[ "$(KANNA_TERMINAL=$agent kanna tour "$tour:3" "One." "$other:99" "Past." 2>&1)" == *"has 30 lines"* ]] || { echo "code_tour_steps: a bad stop"; return 1; }
+  [[ "$(KANNA_TERMINAL=$agent kanna tour)" == "no tour" ]] || { echo "code_tour_steps: a refused tour was kept"; return 1; }
+  said="$(KANNA_TERMINAL=$agent kanna tour "$tour:3" "One." "$tour:40-42" "Two." "$other:7" "Three.")" || return 1
+  [[ "$said" == "tour of 3 · 1 of 3 · opened file-"*" · code_tour_steps.rs:3–61" ]] || { echo "said: $said"; return 1; }
+  id="$(grep -o 'file-[0-9]*' <<<"$said")"
+  check wait_for 5 eval '[[ "$(code $id tour.at)" == 1 && "$(code $id tour.of)" == 3 && "$(code $id tour.back)" == False && "$(code $id tour.next)" == "Next ›" ]]' || { echo "footer $(code $id tour)"; return 1; }
+  check wait_for 5 eval '[[ "$(code $id tour.visible)" == True ]]' || return 1
+  [[ "$(press $id back)" == False ]] || { echo "code_tour_steps: Back on the first stop"; return 1; }
+  [[ "$(press $id next)" == True ]] || return 1
+  check wait_for 5 eval '[[ "$(code $id comment_first)" == 40 && "$(code $id tour.at)" == 2 && "$(code $id tour.back)" == True ]]' || { echo "stop 2: $(code $id tour)"; return 1; }
+  sleep 0.5
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"code_tour_steps.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/code_tour_steps.png" "$out/code_tour_steps.png" 2>/dev/null
+  press $id next >/dev/null
+  check wait_for 5 eval '[[ "$(KANNA_TERMINAL=$agent kanna tour | head -1)" == "at 3 of 3 · "*"code_tour_steps-other.rs:7" ]]' || { KANNA_TERMINAL=$agent kanna tour; return 1; }
+  more="$(kanna workspace list --all --json | python3 -c 'import json, sys
+print(next(p["id"] for p in json.load(sys.stdin)["panes"] if (p.get("path") or "").endswith("-other.rs")))')"
+  check wait_for 5 eval '[[ "$(code $more tour.at)" == 3 && "$(code $more tour.next)" == Done ]]' || { echo "stop 3: $(code $more tour)"; return 1; }
+  check wait_for 5 eval '[[ "$(code $id tour)" == None && "$(code $id comment_first)" == 40 ]]' || { echo "the last stop kept its footer: $(code $id tour)"; return 1; }
+  said="$(KANNA_TERMINAL=$agent kanna tour add --next "$tour:20-22" "An answer.")" || return 1
+  [[ "$said" == "added 1 · 4 of 4 · $id · code_tour_steps.rs:20–22" ]] || { echo "added: $said"; return 1; }
+  check wait_for 5 eval '[[ "$(code $id comment_first)" == 20 && "$(code $id tour.at)" == 4 && "$(code $id tour.next)" == Done ]]' || return 1
+  check wait_for 5 eval '[[ "$(code $more tour)" == None ]]' || return 1
+  said="$(KANNA_TERMINAL=$agent kanna tour add "$other:12" "Later.")" || return 1
+  [[ "$said" == "added 1 · at 4 of 5" ]] || { echo "added later: $said"; return 1; }
+  check wait_for 5 eval '[[ "$(code $id tour.of)" == 5 && "$(code $id tour.next)" == "Next ›" ]]' || return 1
+  press $id back >/dev/null
+  check wait_for 5 eval '[[ "$(code $more tour.at)" == 3 && "$(code $more tour.of)" == 5 ]]' || return 1
+  stop_app; start_app || return 1
+  check wait_for 5 eval '[[ "$(code $more tour.at)" == 3 && "$(code $more comment_first)" == 7 ]]' || { echo "after a relaunch: $(code $more tour)"; return 1; }
+  press $more next >/dev/null
+  check wait_for 5 eval '[[ "$(code $id tour.at)" == 4 ]]' || return 1
+  press $id next >/dev/null
+  check wait_for 5 eval '[[ "$(code $more tour.at)" == 5 && "$(code $more comment_first)" == 12 ]]' || return 1
+  press $more next >/dev/null
+  check wait_for 5 eval '[[ "$(KANNA_TERMINAL=$agent kanna tour)" == "no tour" && "$(code $more tour)" == None && "$(code $more comment_first)" == 12 ]]' || { echo "done: $(code $more tour)"; return 1; }
+  local doc="$KANNA_STATE_DIR/code_tour_steps.md" md
+  printf '# Trip\n\nThe keeper queues\nthe message.\n\n- It sends.\n' >"$doc"
+  mdf() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"$md\"${2:-}}}" | field "$1"; }
+  said="$(KANNA_TERMINAL=$agent kanna tour "$doc:4" "The whole trip." "$tour:3" "Then the code.")" || return 1
+  [[ "$said" == "tour of 2 · 1 of 2 · opened file-"*" · code_tour_steps.md:3 · c1" ]] || { echo "doc: $said"; return 1; }
+  md="$(grep -o 'file-[0-9]*' <<<"$said")"
+  check wait_for 5 eval '[[ "$(mdf tour.thread)" == c1 && "$(mdf tour.at)" == 1 && "$(mdf tour.next)" == "Next ›" && "$(mdf tour.back)" == False ]]' || { echo "doc footer: $(mdf tour)"; return 1; }
+  check wait_for 5 eval '[[ "$(mdf active)" == c1 && "$(mdf threads.0.messages.0)" == "agent: The whole trip." && "$(mdf markup)" == True ]]' || { echo "doc thread: $(mdf active) $(mdf threads)"; return 1; }
+  sleep 0.5
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"code_tour_steps-md.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/code_tour_steps-md.png" "$out/code_tour_steps-md.png" 2>/dev/null
+  [[ "$(mdf pressed ',"tour":"next"')" == True ]] || return 1
+  check wait_for 5 eval '[[ "$(code $id tour.at)" == 2 && "$(code $id tour.next)" == Done && "$(code $id comment_first)" == 3 ]]' || { echo "after the doc: $(code $id tour)"; return 1; }
+  check wait_for 5 eval '[[ "$(mdf tour)" == None ]]' || { echo "the doc kept its footer: $(mdf tour)"; return 1; }
+  press $id back >/dev/null
+  check wait_for 5 eval '[[ "$(mdf tour.thread)" == c1 && "$(mdf tour.at)" == 1 && "$(mdf active)" == c1 ]]' || { echo "back to the doc: $(mdf tour)"; return 1; }
+  [[ "$(mdf threads | python3 -c 'import json, sys; print(len(json.load(sys.stdin)))')" == 1 ]] || { echo "code_tour_steps: going back wrote another thread"; return 1; }
+  mdf pressed ',"tour":"next"' >/dev/null
+  check wait_for 5 eval '[[ "$(code $id tour.at)" == 2 ]]' || return 1
+  press $id next >/dev/null
+  check wait_for 5 eval '[[ "$(KANNA_TERMINAL=$agent kanna tour)" == "no tour" && "$(code $id tour)" == None ]]' || return 1
+  [[ -z "$(kanna read "$agent" | tr -d '[:space:]')" ]] || { echo "code_tour_steps: stepping sent the agent: $(kanna read "$agent")"; return 1; }
 }
 
 scenario code_comment_box M4
@@ -3233,6 +3423,12 @@ print("running" if t.get("running") else "stopped" if t.get("folder") else "wait
   in_repo task new "Copilot" "work 1" --agent "$fake/copilot" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
   said="$(in_repo task send "$(tid 4)" "can you hear me")"
   [[ "$said" == *$'\n'"warning: it waits: copilot can't take messages: only claude and codex can" ]] || { echo "agent_messaging: send to a copilot task said: $said"; return 1; }
+  waits() { raw '{"id":1,"cmd":"debug.toasts"}' | python3 -c 'import json, sys
+print(" ".join(t["pane"] + ":" + t["about"] for t in json.load(sys.stdin)["toasts"] if t["title"] == "Messages wait for Copilot"))'; }
+  local copilot; copilot="$(task_state "$(tid 4)" | cut -d' ' -f2)"
+  check wait_for 15 eval '[[ "$(waits)" == "$copilot:Copilot" ]]' || { echo "agent_messaging: the waiting message raised no toast about $copilot: $(waits)"; return 1; }
+  sleep 2
+  check test "$(waits)" == "$copilot:Copilot" || { echo "agent_messaging: the same reason raised another toast: $(waits)"; return 1; }
   check wait_for 15 eval '[[ "$(in_repo task messages "$(tid 4)")" == *"held for $(sid 4): copilot can'"'"'t take messages"* ]]' || { echo "agent_messaging: task messages shows: $(in_repo task messages "$(tid 4)")"; return 1; }
 }
 
@@ -3419,20 +3615,75 @@ done_leaves_no_window() {
   check wait_for 5 eval '[[ "$(leftovers)" == "0 0" ]]' || { echo "done_leaves_no_window: windows and panes left: $(leftovers)"; kanna workspace list --all; return 1; }
 }
 
+scenario toasts M4
+toasts() {
+  local agent="$repo_root/tools/mock-agent/mock-agent" repo="$KANNA_STATE_DIR/repo"
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "toasts line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  start_daemon || { echo "toasts line $LINENO"; return 1; }
+  check test "$(kanna toast "Early" "raised before the app")" == "raised toast-1; no app is attached, so it shows when one attaches within a minute" || return 1
+  (cd "$repo" && kanna task new "Lint fixes" "say 1" --agent "$agent" && kanna task new "Docs pass" "say 2" --agent "$agent") >/dev/null || { echo "toasts line $LINENO"; return 1; }
+  kanna task shelve "$(tid 1)" >/dev/null || { echo "toasts line $LINENO"; return 1; }
+  env -u KANNA_NO_INITIAL_WINDOW KANNA_START_DIR="$repo" "$app" --bg >>"$out/app.log" 2>&1 &
+  app_pid=$!
+  wait_for 10 app_attached || { echo "the app did not attach"; return 1; }
+  toasted() { raw '{"id":1,"cmd":"debug.toasts"}' | python3 -c 'import json, sys; r = json.load(sys.stdin); print(r["window"], " ".join(t["id"] for t in r["toasts"]))'; }
+  toast_field() { raw '{"id":1,"cmd":"debug.toasts"}' | python3 -c 'import json, sys; r = json.load(sys.stdin); t = next(t for t in r["toasts"] if t["id"] == sys.argv[1]); print(t[sys.argv[2]])' "$1" "$2"; }
+  desk() { raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}' | field "$1"; }
+  check wait_for 10 eval '[[ "$(toasted)" == "d1 toast-1" ]]' || { echo "toasts: the toast raised before the app isn't shown in d1: $(toasted)"; return 1; }
+  check test "$(kanna toast "Build finished" "scripts/build.sh took 3m 12s")" == "raised toast-2" || return 1
+  check wait_for 5 eval '[[ "$(toasted)" == "d1 toast-2 toast-1" ]]' || { echo "toasts: the newest isn't on top: $(toasted)"; return 1; }
+  raw '{"id":1,"cmd":"debug.toasts"}' | python3 -c 'import json, sys
+r = json.load(sys.stdin); a, b = (t["frame"] for t in r["toasts"])
+sys.exit(not (a[1] > b[1] and abs(a[0] - b[0]) < 1 and a[2] == 340))' || { echo "toasts: the stack isn't one column, newest above"; raw '{"id":1,"cmd":"debug.toasts"}'; return 1; }
+  check test "$(kanna toast "Messages wait for Lint fixes" "mock can't take messages" --task "$(tid 1)" --key messages:lint:mock)" == "raised toast-3" || return 1
+  check test "$(kanna toast "Messages wait for Lint fixes" "mock can't take messages" --task "$(tid 1)" --key messages:lint:mock)" == "already raised a toast with key messages:lint:mock" || return 1
+  check wait_for 5 eval '[[ "$(toasted)" == "d1 toast-3 toast-2 toast-1" ]]' || { echo "toasts: the keyed toast: $(toasted)"; return 1; }
+  check test "$(toast_field toast-3 about)" == "Lint fixes" || return 1
+  check test "$(toast_field toast-3 pane)" == "$(pane "Lint fixes" id)" || { echo "toasts: the task's toast isn't about its agent"; return 1; }
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"toasts.png"}}' >/dev/null && cp "$KANNA_STATE_DIR/toasts.png" "$out/toasts.png"
+  check test "$(desk empty)" == True || { echo "toasts: the Desk isn't empty before the click"; return 1; }
+  raw '{"id":1,"cmd":"debug.toasts","args":{"click":"toast-3"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk title)" == "Lint fixes"* ]]' || { echo "toasts: clicking the toast didn't bring Lint fixes onto the Desk: $(desk title)"; return 1; }
+  check wait_for 5 eval '[[ "$(dwin d1 focused)" == "$(pane "Lint fixes" id)" ]]' || { echo "toasts: the task's agent isn't focused"; return 1; }
+  check wait_for 5 eval '[[ "$(toasted)" == "d1 toast-2 toast-1" ]]' || { echo "toasts: the clicked toast stayed: $(toasted)"; return 1; }
+  check test "$(kanna toast "Docs pass waits" --task "$(tid 2)")" == "raised toast-4" || return 1
+  check wait_for 5 eval '[[ "$(toasted)" == "d1 toast-4"* ]]' || return 1
+  raw '{"id":1,"cmd":"debug.toasts","args":{"click":"toast-4"}}' >/dev/null
+  check wait_for 15 eval '[[ "$(desk title)" == "Docs pass"* ]]' || { echo "toasts: clicking a backlog task's toast didn't shelve and show it: $(desk title)"; desk note; return 1; }
+  check wait_for 5 eval '[[ "$(dwin d1 focused)" == "$(pane "Docs pass" id)" ]]' || { echo "toasts: the backlog task's agent isn't focused"; return 1; }
+  kanna toast "Kept" "the pointer is on it" >/dev/null && kanna toast "Fades" >/dev/null || { echo "toasts line $LINENO"; return 1; }
+  raw '{"id":1,"cmd":"debug.toasts","args":{"hover":"toast-5"}}' >/dev/null
+  check wait_for 12 eval '[[ "$(toasted)" == "d1 toast-5" ]]' || { echo "toasts: after 6s only the hovered toast should be left: $(toasted)"; return 1; }
+  raw '{"id":1,"cmd":"debug.toasts","args":{"hover":"toast-5","on":false}}' >/dev/null
+  check wait_for 5 eval '[[ "$(toasted)" == "d1 " ]]' || { echo "toasts: the toast left by the pointer didn't fade: $(toasted)"; return 1; }
+  kanna toast "Closed" >/dev/null && check wait_for 5 eval '[[ "$(toasted)" == "d1 toast-7" ]]' || return 1
+  raw '{"id":1,"cmd":"debug.toasts","args":{"click":"toast-7","close":true}}' >/dev/null
+  check wait_for 2 eval '[[ "$(toasted)" == "d1 " ]]' || { echo "toasts: × didn't close it"; return 1; }
+}
+
 for s in ${only[@]+"${only[@]}"}; do due "$s" >/dev/null || { echo "e2e-kanna: no scenario named $s (see --help)" >&2; exit 2; }; done
 if [[ ${#only[@]} -gt 0 ]]; then run=("${only[@]}"); else run=("${scenarios[@]%%:*}"); fi
-passed=0 failed=0
+passed=0 failed=0 limit="${KANNA_E2E_TIMEOUT:-600}"
 for s in "${run[@]}"; do
   m="$(due "$s")"
   if [[ "$m" > "$through" ]]; then printf '%-20s --   not due (%s)\n' "$s" "$m"; continue; fi
   cleanup
   new_state_dir
-  if "$s" >"$out/$s.log" 2>&1; then
+  "$s" >"$out/$s.log" 2>&1 &
+  scenario_pid=$! ends=$((SECONDS + limit))
+  echo "$scenario_pid" >"$KANNA_STATE_DIR/e2e-scenario.pid"
+  while kill -0 "$scenario_pid" 2>/dev/null && [[ $SECONDS -lt $ends ]]; do sleep 0.2; done
+  if kill -0 "$scenario_pid" 2>/dev/null; then
+    echo "$s didn't finish in ${limit}s (KANNA_E2E_TIMEOUT)" >>"$out/$s.log"; result=1
+  else
+    wait "$scenario_pid"; result=$?; scenario_pid=""
+  fi
+  if [[ $result -eq 0 ]]; then
     printf '%-20s PASS (%s)\n' "$s" "$m"; passed=$((passed + 1))
   else
     printf '%-20s FAIL (%s)  %s\n' "$s" "$m" "$(tail -1 "$out/$s.log")"; failed=$((failed + 1))
   fi
-  stop_app; stop_daemon
 done
 echo "$passed passed, $failed failed"
 [[ $failed -eq 0 ]]

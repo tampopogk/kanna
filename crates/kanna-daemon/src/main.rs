@@ -26,6 +26,7 @@ mod diffs;
 mod store;
 mod task_scripts;
 mod terminals;
+mod toasts;
 
 use app_link::{AppLink, Outbox, APP_ASK, APP_PREFIX, HELLO};
 use kanna_mux::json::Value;
@@ -61,6 +62,8 @@ next daemon takes them back.
 const APP_TIMEOUT: Duration = Duration::from_secs(10);
 
 const LOCK_WAIT: Duration = Duration::from_secs(5);
+
+const STOP_GRACE: libc::c_uint = 5;
 
 pub enum Event {
     Request(Value, Box<dyn FnOnce(Value) + Send>),
@@ -151,7 +154,11 @@ fn run() -> Result<(), String> {
     let _ = std::fs::write(state_dir.join(kanna_build::RECORD), format!("{:#}\n", build.record(app_bundle().as_deref())));
 
     let stop_signals = signal_set(&[libc::SIGTERM, libc::SIGINT, libc::SIGHUP]);
-    unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &stop_signals, std::ptr::null_mut()) };
+    unsafe {
+        libc::pthread_sigmask(libc::SIG_BLOCK, &stop_signals, std::ptr::null_mut());
+        libc::signal(libc::SIGALRM, libc::SIG_DFL);
+        libc::pthread_sigmask(libc::SIG_UNBLOCK, &signal_set(&[libc::SIGALRM]), std::ptr::null_mut());
+    }
 
     let (events, inbox) = mpsc::channel::<Event>();
     let db = Rc::new(db::Db::open(&state_dir));
@@ -240,6 +247,17 @@ fn run() -> Result<(), String> {
     *backlog.permissions.borrow_mut() = Some(Box::new(move |pane| messages::permissions(&argvs.upgrade()?.argv(pane))));
     let projects = Rc::new(projects::Projects::new(db.clone(), std::env::var_os("HOME").map(std::path::PathBuf::from), [".kanna-v4/repos", ".kanna/repos"].map(|r| agents::home().join(r)).to_vec()));
     projects.install(&core);
+    let toasts = Rc::new(toasts::Toasts::new(core.weak()));
+    toasts.connect_backlog(&backlog);
+    toasts.install(&core);
+    let warnings = Rc::downgrade(&toasts);
+    *backlog.on_warn.borrow_mut() = Some(Box::new(move |pane, name, why| {
+        let Some(toasts) = warnings.upgrade() else { return };
+        let toast = toasts::Toast { title: format!("Messages wait for {name}"), detail: Some(why.to_string()), pane: Some(pane.to_string()), task: None, key: Some(format!("messages:{pane}:{why}")) };
+        if let Err(error) = toasts.raise(toast) {
+            log!("kanna-daemon: can't raise a toast for {pane}: {}", error.message);
+        }
+    }));
     let quiz = Rc::new(quiz::Quiz::new(db, Some(core.weak())));
     quiz.install(&core);
     let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone());
@@ -305,6 +323,8 @@ fn run() -> Result<(), String> {
             app.folder(to, &cwd);
         }
     }));
+    let toast_link = Rc::downgrade(&app);
+    *toasts.on_toast.borrow_mut() = Some(Box::new(move |record| toast_link.upgrade().is_some_and(|app| app.toast(record))));
     host.connect(&app);
     let diff_link = Rc::downgrade(&app);
     *diffs.on_diff.borrow_mut() = Some(Box::new(move |views, payload| {
@@ -367,6 +387,7 @@ fn run() -> Result<(), String> {
         .spawn(move || loop {
             let mut signal = 0;
             if unsafe { libc::sigwait(&stop_signals, &mut signal) } == 0 {
+                unsafe { libc::alarm(STOP_GRACE) };
                 stop.store(signal, Ordering::SeqCst);
                 let _ = quit.send(Event::Quit(signal));
                 return;
@@ -471,6 +492,7 @@ fn run() -> Result<(), String> {
                 if app.hello(conn, hello, out, stream) {
                     break;
                 }
+                toasts.attached();
             }
             Event::AppMessage { conn, message } => {
                 if let Some(request) = app.message(conn, message) {

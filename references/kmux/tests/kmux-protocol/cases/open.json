@@ -3,10 +3,10 @@
     "name": "open makes a window and waits until the pane is running",
     "steps": [
       { "send": { "cmd": "open", "args": { "type": "term", "name": "a" } },
-        "expect": { "ok": true, "window": "w1", "tab": "t1", "pane": { "id": "p1", "name": "a", "type": "term", "state": "running" } } },
+        "expect": { "ok": true, "window": "win-1", "tab": "tab-1", "pane": { "id": "term-1", "name": "a", "type": "term", "state": "running" } } },
       { "send": { "cmd": "list" },
-        "expect": { "windows": [ { "id": "w1", "key": true, "focused": "a", "zoomed": null,
-                                   "tabs": [ { "id": "t1", "title": "Tab 1", "active": true, "layout": { "pane": "a" } } ] } ] } }
+        "expect": { "windows": [ { "id": "win-1", "key": true, "focused": "a", "zoomed": null,
+                                   "tabs": [ { "id": "tab-1", "title": "Tab 1", "active": true, "layout": { "pane": "a" } } ] } ] } }
     ]
   },
   {
@@ -44,21 +44,21 @@
     "name": "tab: true opens a new tab named after the window's tab count",
     "steps": [
       { "send": { "cmd": "open", "args": { "type": "term", "name": "a" } } },
-      { "send": { "cmd": "open", "args": { "type": "term", "name": "b", "tab": true } }, "expect": { "window": "w1", "tab": "t2" } },
+      { "send": { "cmd": "open", "args": { "type": "term", "name": "b", "tab": true } }, "expect": { "window": "win-1", "tab": "tab-2" } },
       { "send": { "cmd": "list" },
         "expect": { "windows": [ { "focused": "b", "tabs": [
-          { "id": "t1", "title": "Tab 1", "active": false, "layout": { "pane": "a" } },
-          { "id": "t2", "title": "Tab 2", "active": true, "layout": { "pane": "b" } } ] } ] } }
+          { "id": "tab-1", "title": "Tab 1", "active": false, "layout": { "pane": "a" } },
+          { "id": "tab-2", "title": "Tab 2", "active": true, "layout": { "pane": "b" } } ] } ] } }
     ]
   },
   {
     "name": "window: new opens a key window with its own tab numbering",
     "steps": [
       { "send": { "cmd": "open", "args": { "type": "term", "name": "a" } } },
-      { "send": { "cmd": "open", "args": { "type": "term", "name": "b", "window": "new" } }, "expect": { "window": "w2" } },
+      { "send": { "cmd": "open", "args": { "type": "term", "name": "b", "window": "new" } }, "expect": { "window": "win-2" } },
       { "send": { "cmd": "list" },
-        "expect": { "windows": [ { "id": "w1", "key": false, "tabs": [ { "title": "Tab 1" } ] },
-                                 { "id": "w2", "key": true, "tabs": [ { "id": "t2", "title": "Tab 1" } ] } ] } }
+        "expect": { "windows": [ { "id": "win-1", "key": false, "tabs": [ { "title": "Tab 1" } ] },
+                                 { "id": "win-2", "key": true, "tabs": [ { "id": "tab-2", "title": "Tab 1" } ] } ] } }
     ]
   },
   {

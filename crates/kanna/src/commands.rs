@@ -541,6 +541,24 @@ pub static COMMANDS: &[Command] = &[
         show: output::status,
     },
     Command {
+        name: "toast",
+        group: "Information",
+        summary: "Show a toast in Kanna.app: a small notice in the front window that fades by itself.",
+        usage: "kanna toast TITLE [DETAIL] [--pane PANE] [--task TASK] [--key KEY]",
+        options: &[
+            ("--pane PANE", "The pane it's about: clicking the toast shows that pane, bringing its task onto the Desk."),
+            ("--task TASK", "The task it's about (an ID like task-3f9a, or its pane): clicking the toast brings it onto the Desk."),
+            ("--key KEY", "Raise it once: a later toast with the same key, from the CLI or the daemon, isn't shown until the daemon restarts."),
+        ],
+        notes: "The daemon raises toasts for its warnings, such as messages that wait because their recipient can't take them. A toast stacks below the title bar on the right, newest on top, and fades after 6 seconds (8 when it's about a pane or task) unless the pointer is on it. With no app attached, a toast waits up to a minute for one.",
+        examples: &[
+            ("kanna toast \"Build finished\" \"scripts/build.sh took 3m 12s\"", "A toast with a line of detail."),
+            ("kanna toast \"Tests failed\" \"3 of 120\" --pane tests --key tests-failed", "A toast about the pane named tests, raised once."),
+        ],
+        parse: parse_toast,
+        show: output::toast,
+    },
+    Command {
         name: "quiz",
         group: "Information",
         summary: "Open this repo's Quiz window, and keep a quiz's rounds and answers, so misses come back in a later round and a round can cover what's new since the last.",
@@ -650,6 +668,28 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: parse_comment,
         show: output::commented,
+    },
+    Command {
+        name: "tour",
+        group: "Panes",
+        summary: "Queue a tour of comments the user steps through with Next and Back, without you.",
+        usage: "kanna tour [add [--next]] FILE:LINE[-LAST] TEXT [FILE:LINE TEXT ...] [--name NAME] [--split right|down|auto] [--size FRACTION] [--tab] [--window ID|new]\n       kanna tour go next|back|N\n       kanna tour [show]\n       kanna tour end",
+        options: &[
+            ("--next", "With add: put the stops right after the one the user is on, and show the first of them."),
+            ("--name NAME", "A name for the code pane, if the stop shown opens one."),
+            ("--split right|down|auto", "Open the stop shown in a new pane split from the focused one."),
+            ("--size FRACTION", "Share of the focused pane's space the new pane takes."),
+            ("--tab", "Open the stop shown in a new tab, even if its file is already open."),
+            ("--window ID|new", "Open the stop shown in that window, or a new one."),
+        ],
+        notes: "A tour is yours, the agent's: a list of stops, each a comment as `kanna comment` makes it, given as pairs of FILE:LINE and its text (one argument each; quote it). A new tour replaces your last and shows its first stop; every stop is checked first, and nothing is queued if one fails. The user steps through it with Back and Next on the comment, and nothing is sent to you as they do: when they ask you something, `kanna tour` says which stop they're on. Answer a question with `kanna tour add --next` on the code that answers it. `add` without --next adds stops at the end while the user reads. Next on the last stop ends the tour; its comment stays.",
+        examples: &[
+            ("kanna tour src/server.rs:92 \"Queues the message with its terminals.\" src/fdpass.rs:20 \"Sends them across.\"", "A tour of two stops; shows the first."),
+            ("kanna tour", "Which stop the user is on, and the rest."),
+            ("kanna tour add --next src/client.rs:244 \"Each line says how many terminals are its.\"", "Answer a question with a stop after the current one, shown now."),
+        ],
+        parse: parse_tour,
+        show: output::toured,
     },
 ];
 
@@ -925,6 +965,86 @@ fn parse_comment(args: &mut Argv) -> Result<Value, Failure> {
     Ok(Value::Object(out))
 }
 
+fn parse_tour(args: &mut Argv) -> Result<Value, Failure> {
+    let mut out = Map::new();
+    for (flag, key) in [("--name", "name"), ("--split", "split"), ("--size", "size"), ("--window", "window")] {
+        if let Some(value) = args.option(flag)? {
+            out.insert(key.into(), json!(value));
+        }
+    }
+    if args.flag("--tab") {
+        out.insert("tab".into(), json!(true));
+    }
+    let next = args.flag("--next");
+    let mut words = args.positionals();
+    let action = match words.first().map(String::as_str) {
+        None | Some("show") => "show",
+        Some("add") => "add",
+        Some("go") => "go",
+        Some("end") => "end",
+        Some(_) => "new",
+    };
+    if action != "new" && !words.is_empty() {
+        words.remove(0);
+    }
+    if next && action != "add" {
+        return Err(usage("tour", "--next goes with add: kanna tour add --next FILE:LINE \"text\""));
+    }
+    out.insert("action".into(), json!(action));
+    match action {
+        "new" | "add" => {
+            if words.is_empty() {
+                return Err(usage("tour", "say where and what: FILE:LINE \"text\" ..."));
+            }
+            if words.len() % 2 == 1 {
+                let last = words.last().cloned().unwrap_or_default();
+                return Err(usage("tour", &match file_lines(&last) {
+                    Some(_) => format!("{last} has no text: give each stop as FILE:LINE \"text\""),
+                    None => format!("\"{last}\" has no FILE:LINE before it: give each stop as FILE:LINE \"text\", the text quoted as one argument"),
+                }));
+            }
+            let mut stops = vec![];
+            for pair in words.chunks(2) {
+                let (spot, text) = (&pair[0], pair[1].trim());
+                let (file, line, last) = file_lines(spot).ok_or_else(|| usage("tour", &format!("{spot} needs a line: FILE:LINE or FILE:LINE-LAST, then its text quoted as one argument")))?;
+                if text.is_empty() {
+                    return Err(usage("tour", &format!("{spot} has no text")));
+                }
+                let mut stop = json!({ "path": absolute(&file), "line": line, "text": text });
+                if let Some(last) = last {
+                    if last < line {
+                        return Err(usage("tour", &format!("{spot}: lines {line}-{last} run backwards")));
+                    }
+                    if is_markdown(&file) {
+                        return Err(usage("tour", &format!("{spot}: a comment on a markdown file is on the block at one line: FILE.md:LINE")));
+                    }
+                    stop["last"] = json!(last);
+                }
+                stops.push(stop);
+            }
+            out.insert("stops".into(), Value::Array(stops));
+            if next {
+                out.insert("next".into(), json!(true));
+            }
+        }
+        "go" => {
+            let to = match words.as_slice() {
+                [to] if to == "next" || to == "back" => json!(to),
+                [to] => json!(to.parse::<u64>().ok().filter(|n| *n > 0).ok_or_else(|| usage("tour", &format!("\"{to}\" isn't a stop: next, back or a stop's number")))?),
+                _ => return Err(usage("tour", "say where: kanna tour go next|back|N")),
+            };
+            out.insert("to".into(), to);
+        }
+        _ => {
+            if let Some(extra) = words.first() {
+                return Err(usage("tour", &format!("unexpected argument \"{extra}\"")));
+            }
+        }
+    }
+    from_caller(&mut out);
+    Ok(Value::Object(out))
+}
+
 pub fn file_lines(target: &str) -> Option<(String, u64, Option<u64>)> {
     let (file, spot) = target.rsplit_once(':')?;
     let (line, last) = match spot.split_once('-') {
@@ -947,6 +1067,20 @@ fn parse_status(args: &mut Argv) -> Result<Value, Failure> {
         Some(other) => Err(usage("status", &format!("unknown action \"{other}\" (explain or update)"))),
         None => Err(usage("status", "say what: explain PANE, explain --file SCREEN --agent AGENT, or update")),
     }
+}
+
+fn parse_toast(args: &mut Argv) -> Result<Value, Failure> {
+    let mut out = json!({});
+    for flag in ["pane", "task", "key"] {
+        if let Some(value) = args.option(&format!("--{flag}"))? {
+            out[flag] = json!(value);
+        }
+    }
+    out["title"] = json!(args.positional().filter(|t| !t.trim().is_empty()).ok_or_else(|| usage("toast", "missing TITLE"))?);
+    if let Some(detail) = args.rest() {
+        out["detail"] = json!(detail);
+    }
+    Ok(out)
 }
 
 fn parse_agents(args: &mut Argv) -> Result<Value, Failure> {

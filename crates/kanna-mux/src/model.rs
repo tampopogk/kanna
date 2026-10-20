@@ -601,7 +601,13 @@ impl Model {
         }
         if let Some(reference) = string(args, "tab") {
             let (h, t) = self.tab_index(reference).ok_or_else(|| not_found(format!("no tab \"{reference}\"")))?;
-            self.tabs_mut(h).show(t);
+            let side = self.side(h);
+            let tabs = self.tabs_mut(h);
+            if string(args, "keep") == Some("dock") && tabs.focused.is_some() && tabs.focused == side {
+                tabs.active = Some(tabs.tabs[t].id.clone());
+            } else {
+                tabs.show(t);
+            }
             self.show_key(h);
             return Ok(self.at(h));
         }
@@ -800,7 +806,8 @@ impl Model {
             let index = args.get("index").and_then(Value::as_u64).ok_or_else(|| bad_request("a divider needs its index"))? as usize;
             let share = args.get("share").and_then(Value::as_f64).ok_or_else(|| bad_request("a divider needs a share"))?;
             self.set_divider(tab, &path, index, share)?;
-            return Ok(reply([("tab", tab.into())]));
+            let root = self.tab(tab).and_then(|t| t.root.as_ref());
+            return Ok(reply([("tab", tab.into()), ("layout", self.tree(root, None, panes))]));
         }
         let pane = panes.need(string(args, "pane"))?;
         let size = fraction(args.get("size").unwrap_or(&Value::Null))?;
