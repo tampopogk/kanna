@@ -86,13 +86,21 @@ if [[ ! -w "$prefix" ]]; then
 fi
 dest="$prefix/$commit"
 rm -rf "$dest.new"
-mkdir -p "$dest.new"
-cp "$built/kanna" "$built/kanna-daemon" "$built/kanna-keeper" "$dest.new/"
 mkdir -p "$dest.new/kanna-skills"
+cp "$built/kanna" "$built/kanna-daemon" "$built/kanna-keeper" "$dest.new/"
 for skill in kanna-tasks kanna-planning kanna-new-project kanna-markup kanna-explain kanna-quiz; do cp -RL "$repo_root/.agents/kanna-skills/skills/$skill" "$dest.new/kanna-skills/"; done
-rm -rf "$dest"
-mv "$dest.new" "$dest"
-previous="$(readlink "$prefix/current" 2>/dev/null || true)"
+if diff -r -q "$dest.new" "$dest" >/dev/null 2>&1; then
+  rm -rf "$dest.new"
+else
+  rm -rf "$dest"
+  mv "$dest.new" "$dest"
+fi
+was="$(readlink "$prefix/current" 2>/dev/null || true)"
+if [[ -n "$was" && "$was" != "$commit" ]]; then
+  ln -sfn "$was" "$prefix/previous.new"
+  mv -T "$prefix/previous.new" "$prefix/previous"
+fi
+previous="$(readlink "$prefix/previous" 2>/dev/null || true)"
 ln -sfn "$commit" "$prefix/current.new"
 mv -T "$prefix/current.new" "$prefix/current"
 mkdir -p "$bin_dir"
@@ -108,7 +116,7 @@ Description=Kanna daemon
 After=network-online.target
 
 [Service]
-Environment=KANNA_SOCKET=%h/.local/share/kanna-prod/kanna.sock
+Environment=KANNA_SOCKET=$state/kanna.sock
 Environment=KANNA_KEEPER=$prefix/current/kanna-keeper
 Environment=KANNA_AGENT_SKILLS=$prefix/current/kanna-skills
 Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
@@ -131,21 +139,24 @@ for _ in $(seq 50); do [[ -S "$XDG_RUNTIME_DIR/systemd/private" ]] && break; sle
 [[ "$changed" == 1 ]] && systemctl --user daemon-reload
 systemctl --user enable -q kanna-daemon.service
 if [[ "$start" == 1 ]]; then
-  if [[ "$changed" == 1 || "$previous" != "$commit" ]] || ! systemctl --user -q is-active kanna-daemon.service; then
+  running="$(systemctl --user show kanna-daemon.service -P MainPID)"
+  if [[ "$changed" == 1 || "$running" == 0 ]] || ! [[ "/proc/$running/exe" -ef "$prefix/current/kanna-daemon" ]]; then
     systemctl --user restart kanna-daemon.service
   fi
-  for _ in $(seq 100); do [[ -S "$state/kanna.sock" ]] && break; sleep 0.1; done
-  [[ -S "$state/kanna.sock" ]] || fail "the daemon didn't start: journalctl --user -u kanna-daemon"
-  if [[ "$agents" != none ]] && "$prefix/current/kanna" agents status | grep -q "^not set up"; then
+  kanna() { KANNA_SOCKET="$state/kanna.sock" "$prefix/current/kanna" "$@"; }
+  for _ in $(seq 100); do kanna agents status >/dev/null 2>&1 && break; sleep 0.1; done
+  status="$(kanna agents status 2>&1)" && systemctl --user -q is-active kanna-daemon.service ||
+    fail "the daemon didn't start: ${status:-no reply}; journalctl --user -u kanna-daemon"
+  if [[ "$agents" != none && "$status" == "not set up yet"* ]]; then
     step "Kanna's skills for the agents"
-    "$prefix/current/kanna" agents setup
+    kanna agents setup
   fi
 fi
 
 for old in "$prefix"/*; do
   name="$(basename "$old")"
-  [[ "$name" == current || "$name" == "$commit" || "$name" == "${previous:-}" ]] && continue
-  [[ -d "$old" ]] && rm -rf "$old"
+  [[ "$name" == current || "$name" == previous || "$name" == "$commit" || "$name" == "$previous" ]] && continue
+  [[ -d "$old" && ! -L "$old" ]] && rm -rf "$old"
 done
 
 step "Done: Kanna $commit"
