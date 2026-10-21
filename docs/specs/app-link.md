@@ -2,7 +2,7 @@
 
 **Status:** built · **Builds on:** [architecture](architecture.md) · **Related:** [the daemon follows the app's build](daemon-build.md), [layout](layout.md), [app panes](app-panes.md)
 
-The app is a client of the daemon, like the CLI, but it stays connected: it shows the daemon's terminals, types into them, draws the layout the daemon publishes, and answers the requests only the app can (its web, markdown and iOS panes, `debug.*`). The **app link** is that one connection, on the daemon's own socket (`$KANNA_SOCKET`).
+The app is a client of the daemon, like the CLI, but it stays connected: it shows the daemon's terminals, types into them, draws the layout the daemon publishes, and answers the requests only the app can (its web, markdown and iOS panes, `debug.*`). The **app link** is that one connection, on the daemon's own socket (`$KANNA_SOCKET`). A link to a daemon on another machine carries the same lines over iroh, checked by protocol number instead of build ([fleet](fleet.md#5-the-app-link-over-the-network)).
 
 ## Contents
 
@@ -87,7 +87,7 @@ Kanna.app carries the daemon, the keeper and the `kanna` CLI in `Contents/Helper
 - **When:** at launch, as soon as nothing answers on the daemon socket; after losing a daemon it was attached to, once nothing has answered for 2 s (so a daemon being restarted on purpose gets there first). At most one start every 10 s. The daemon's lock makes a race harmless: a second daemon on the folder exits ([restarting](daemon-restart.md#1-files-on-disk)).
 - **How:** in its own session (`setsid`), so it outlives the app; signals back to their defaults; no descriptors of the app's; stdin from `/dev/null`, stdout and stderr appended to `daemon.log` in the state folder. It gets the app's environment without `KANNA_*` and `KMUX_*` (only `KANNA_STATE_DIR` and `KANNA_DEBUG` pass), plus `KANNA_SOCKET` and `KANNA_KEEPER` (the bundled keeper). The daemon then starts the keeper.
 - **Quitting the app** leaves the daemon and its terminals running; the next launch attaches to it if it's the same build, and replaces it if not.
-- **Why the app and not launchd:** the daemon is needed only when the app or the CLI is, and the app knows the socket and state folder it uses. A launch agent would add install steps and a second definition of both. On Linux, which has no app yet, the daemon is started by hand.
+- **Why the app and not launchd:** the daemon is needed only when the app or the CLI is, and the app knows the socket and state folder it uses. A launch agent would add install steps and a second definition of both. On Linux, which has no app, systemd starts it, and on a build Mac a LaunchAgent ([fleet](fleet.md#9-server-setup-and-updates)).
 - **The first terminal.** When the first attach after launch leaves the layout empty, the app opens a terminal, as kmux opens a window. Reopening the app from the Dock with nothing open does the same. `KANNA_NO_INITIAL_WINDOW=1` turns it off (the e2e scenarios set it).
 
 ## 5. Glossary

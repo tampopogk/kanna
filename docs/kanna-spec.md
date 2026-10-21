@@ -21,7 +21,7 @@
 | G3 | Make it easy to script: predictable output, JSON output and clear exit codes. |
 | G4 | Open a whole dev setup (server, web preview, iOS app) with one command. |
 
-**Non-goals (for now):** showing panes itself (that is the mux's job); pixel-exact sizing (sizes are fractions of the space); controlling muxes on other machines **[Assumption]**.
+**Non-goals (for now):** showing panes itself (that is the mux's job); pixel-exact sizing (sizes are fractions of the space). Kanna on other machines is planned in [fleet](specs/fleet.md).
 
 ## Architecture
 
@@ -56,6 +56,7 @@ flowchart TB
 | [The keeper](keeper.md) · [upgrading it](specs/keeper-upgrade.md) | The process that creates and holds the ptys |
 | [The app link](specs/app-link.md) | The app's connection to the daemon: messages, snapshots, the app starting the daemon |
 | [Daemon build](specs/daemon-build.md) | A relaunched app of another build replaces the daemon |
+| [Fleet](specs/fleet.md) · [build Macs](specs/build-macs.md) | Kanna across machines, free on the LAN, Cloud for about $5 a month; xcodebuild redirected to a pool of Macs |
 | [Restarting the daemon](specs/daemon-restart.md) | Terminals on disk, adopting the keeper's ptys |
 | [Pane sizes](specs/pane-sizes.md) | A program sees its view's size across a relaunch and a restart, and on the Shelf and in the backlog |
 | [The layout](specs/layout.md) | One layout model in the app; layout steps; saving, restoring; working with the app closed |
