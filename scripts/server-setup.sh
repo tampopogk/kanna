@@ -46,12 +46,12 @@ export PATH="$bin_dir:$HOME/.cargo/bin:$PATH"
 
 if [[ "$packages" == 1 ]]; then
   step "Packages"
-  wanted=(git build-essential pkg-config curl ca-certificates xz-utils nodejs npm)
+  wanted=(git openssh-client build-essential pkg-config curl ca-certificates xz-utils sqlite3 nodejs npm)
   missing=()
   for p in "${wanted[@]}"; do dpkg-query -W -f '${Status}' "$p" 2>/dev/null | grep -q "install ok installed" || missing+=("$p"); done
   if [[ ${#missing[@]} -gt 0 ]]; then
     sudo apt-get update -q
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q "${missing[@]}"
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends "${missing[@]}"
   fi
 fi
 
@@ -88,6 +88,8 @@ dest="$prefix/$commit"
 rm -rf "$dest.new"
 mkdir -p "$dest.new"
 cp "$built/kanna" "$built/kanna-daemon" "$built/kanna-keeper" "$dest.new/"
+mkdir -p "$dest.new/kanna-skills"
+for skill in kanna-tasks kanna-planning kanna-new-project kanna-markup kanna-explain kanna-quiz; do cp -RL "$repo_root/.agents/kanna-skills/skills/$skill" "$dest.new/kanna-skills/"; done
 rm -rf "$dest"
 mv "$dest.new" "$dest"
 previous="$(readlink "$prefix/current" 2>/dev/null || true)"
@@ -108,6 +110,7 @@ After=network-online.target
 [Service]
 Environment=KANNA_SOCKET=%h/.local/share/kanna-prod/kanna.sock
 Environment=KANNA_KEEPER=$prefix/current/kanna-keeper
+Environment=KANNA_AGENT_SKILLS=$prefix/current/kanna-skills
 Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=$prefix/current/kanna-daemon
 Restart=always
@@ -133,6 +136,10 @@ if [[ "$start" == 1 ]]; then
   fi
   for _ in $(seq 100); do [[ -S "$state/kanna.sock" ]] && break; sleep 0.1; done
   [[ -S "$state/kanna.sock" ]] || fail "the daemon didn't start: journalctl --user -u kanna-daemon"
+  if [[ "$agents" != none ]] && "$prefix/current/kanna" agents status | grep -q "^not set up"; then
+    step "Kanna's skills for the agents"
+    "$prefix/current/kanna" agents setup
+  fi
 fi
 
 for old in "$prefix"/*; do
