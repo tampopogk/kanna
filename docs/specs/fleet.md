@@ -221,6 +221,7 @@ Each slice is one agent's task and leaves `main` releasable. The tasks' first me
 |---|---|
 | **Peer** | One machine's Kanna, known by its device key: the MBP, a user's VM, a build Mac |
 | **iroh** | A Rust library for direct, encrypted QUIC connections between keys, with hole punching and relays |
+| **ALPN** | Application-Layer Protocol Negotiation: the name a connection asks for when it opens (`kanna/1`), so both ends agree what protocol it speaks before any data flows |
 | **Relay** | A server that forwards encrypted packets between peers that can't connect directly |
 | **PAKE** | Password-authenticated key exchange: proves both sides typed the same short code, without sending it |
 | **Job** | One step of a task (a build, an e2e suite) run on another machine that has the capability |
