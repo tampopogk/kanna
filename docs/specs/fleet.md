@@ -29,7 +29,7 @@ The first milestone is the user as the only tenant on their own machines, built 
 - **Cloud is cheap, about $5 a month,** and covers only what needs Kanna's servers: reach from away, mobile access away from the LAN, push notifications, the always-on backlog copy, automatic enrollment.
 - **End to end.** Relays and Kanna's own service carry only ciphertext and can't add a device. A machine that runs your agent sees your code, whoever operates it.
 - **Every daemon can send and receive tasks**, Macs included, at a boundary: not started, or stopped at a turn's end.
-- **One commit everywhere.** The machines of a fleet run the same protocol. A mismatch is reported, never worked around.
+- **Versions are compatible, not identical.** Daemons and apps of different releases work together over a range of protocol versions, so machines update on their own schedule.
 - **Bring your own key.** Agents run on each user's own Claude or Codex login or API key.
 
 ## 2. Machines and roles
@@ -111,19 +111,19 @@ sequenceDiagram
     participant A as Kanna.app (mbp)
     participant D as daemon on r720-1
     A->>D: connect (iroh: the app's endpoint key)
-    A->>D: app.hello {pid, app, client: "mbp", cert, protocol: 4, commit}
-    alt protocol differs
-        D-->>A: ok: false, other_protocol {mine: 3, commit}
-        Note over A: "r720-1 runs d7cb…: kanna fleet update", and the daemon keeps running
-    else same
-        D-->>A: ok, daemon {machine, commit, capabilities}, panes, layout
+    A->>D: app.hello {pid, app, client: "mbp", cert, protocols: 3..5, commit}
+    alt no protocol in common
+        D-->>A: ok: false, other_protocol {mine: 1..2, commit}
+        Note over A: "r720-1 is too old: it updates itself", and the daemon keeps running
+    else in common
+        D-->>A: ok, protocol: 4, daemon {machine, commit, capabilities}, panes, layout
     end
 ```
 
 | | Local daemon | Remote daemon |
 |---|---|---|
 | Transport | unix socket | iroh, through `kanna-net` in `kanna-ffi` for the app |
-| Version check | binary hash; another build is replaced ([daemon build](daemon-build.md)) | `protocol` integer, exact match; `other_protocol`, the commit named |
+| Version check | binary hash; another build is replaced ([daemon build](daemon-build.md)) | the highest protocol both support; `other_protocol` only when there is none |
 | Who starts it | the app; on a Mac that serves the fleet, launchd | systemd (Linux), launchd (Macs) |
 | Apps | one (`app_attached`) | one; lifting the limit is its own slice, needed before the phone |
 
@@ -169,7 +169,7 @@ In short ([detail](fleet-tasks.md)):
 ## 9. Server setup and updates
 
 - **R720 host:** installed from bare metal through its iDRAC ([provisioning](fleet-provisioning.md); r720-1 runs Ubuntu 26.04.1). Then Incus, with one VM per user (Ubuntu 26.04) bridged onto the LAN, so peers reach it directly. A task never gets its own VM by default.
-- **In the VM:** the user's account with `loginctl enable-linger`; git, build tools and Node for the agent CLIs; Kanna at `/opt/kanna/<commit>`, with `current` a symlink; state in `~/.local/share/kanna-prod/`. `scripts/server-setup.sh` does all of this and can be re-run safely.
+- **In the VM:** the user's account with `loginctl enable-linger`; git, build tools and Node for the agent CLIs; Kanna at `/opt/kanna/<commit>`, with `current` a symlink; state in `~/.local/share/kanna-prod/`. `scripts/server-setup.sh` does all of this and can be re-run safely. A VM starts from the stock Ubuntu cloud image, and setup installs the latest Kanna release, so there's no image per version.
 - **The daemon unit:** the keeper stays the daemon's child, as on the Mac, so `KillMode=process`, or a restart kills every shell:
 
   ```ini
@@ -185,7 +185,7 @@ In short ([detail](fleet-tasks.md)):
   ```
 
 - **Enrolling** pairs the VM (§4), sets up its git credentials ([tasks §4](fleet-tasks.md#4-repos-and-credentials)), then checks each agent's login there. For one that's missing, Kanna either runs its login in a terminal on the VM and opens the sign-in URL in the Mac's browser, or installs a long-lived token (`claude setup-token`) or an API key from your **secrets**. In Local, those stay in the Mac's Keychain and go to the VM over the link. In Cloud, there is also a copy encrypted with your keys. Refresh tokens are never copied between machines: they rotate, so two machines sharing one would sign each other out.
-- **Updates:** `scripts/release.sh` also builds a Linux tarball (x86_64, `baseline` CPU for the R720s' Ivy Bridge). `kanna fleet update` copies it to every peer, switches `current`, runs `kanna-keeper --upgrade` ([keeper upgrade](keeper-upgrade.md)) and restarts the daemon; terminals survive ([restarting](daemon-restart.md)). Servers update first, then the app.
+- **Updates:** `scripts/release.sh` also builds a Linux tarball (x86_64, `baseline` CPU for the R720s' Ivy Bridge). A daemon updates itself when a newer release is out (fetched from a peer that has it, or the release site): it switches `current`, runs `kanna-keeper --upgrade` ([keeper upgrade](keeper-upgrade.md)) and restarts; terminals survive ([restarting](daemon-restart.md)). `kanna fleet update` does it now, everywhere. No order is needed while versions overlap.
 
 ## 10. Build order
 
@@ -195,10 +195,10 @@ Each slice is one agent's task and leaves `main` releasable. The tasks' first me
 |---|---|---|---|
 | 1 | Fleet 1: Kanna on Linux, headless | Daemon, keeper and CLI build and run on Linux x86_64. `server-setup.sh` and the unit (§9). A real agent runs a task with runners; terminals survive a daemon restart. **Changed:** Ubuntu 26.04, on r720-1 (an Incus VM there, or the host until slice 9). | — |
 | 2 | Fleet 2: TCP listener and pairing | **Changed, renamed "iroh endpoint and pairing":** confirm iroh's version and stability first. Then: the endpoint in the daemon with `device.key`, iroh's defaults off, LAN discovery, `kanna fleet pair` with a PAKE, the signed peer log, `identity_mismatch`, revocation, `kanna fleet addr`, `kanna --host` through the local daemon, daemon-to-daemon connections, and the stream convention (§5). No `KANNA_LISTEN`, `fleet.json` or signed hello. Done: `kanna --host r720-1 task list` from the Mac; an unpaired key is refused; a stream of each kind opens between two daemons. | 1 |
-| 3 | Fleet 3: The app connects to a remote daemon | A link per machine through `kanna-net`, with the app's certified endpoint key; `app.hello` with `client`, `cert`, `protocol`, `commit`; `other_protocol`; views keyed by (machine, ID); Desks on a project, with the planner on its home machine; the fleet page and path indicator; `references/mockups/fleet.html`. **Changed:** iroh, not TCP; no machine picker or per-machine Desks (§2, placement). | 2, e044 |
+| 3 | Fleet 3: The app connects to a remote daemon | A link per machine through `kanna-net`, with the app's certified endpoint key; `app.hello` with `client`, `cert`, `protocols`, `commit`; `other_protocol`; views keyed by (machine, ID); Desks on a project, with the planner on its home machine; the fleet page and path indicator; `references/mockups/fleet.html`. **Changed:** iroh, not TCP; no machine picker or per-machine Desks (§2, placement). | 2, e044 |
 | 4 | Fleet 4: Files and threads through the daemon | `file.read`, `markup.*`, screenshot bytes (§7). Unchanged. | 3 |
 | 5 | Fleet 5: Port tunnels for web panes | `port.open`, a `port` stream per tunnelled connection. **Changed:** streams on the one connection, not a second connection. | 3 |
-| 6 | Fleet 6: Fleet update | The Linux tarball, `/opt/kanna/<commit>`, `kanna fleet update`, the app's `other_protocol` message. Unchanged. | 1, 2 |
+| 6 | Fleet 6: Fleet update | The Linux tarball, `/opt/kanna/<commit>`, `kanna fleet update`, the app's `other_protocol` message. **Changed:** daemons update themselves; a range of protocols, not one, so mixed versions work. | 1, 2 |
 | 7 | Fleet 7: xcodebuild redirect to the Mac mini | The shim's first version ([build Macs §6](build-macs.md#6-build-order)). **Changed:** worktree sync over a `sync` stream, not rsync over ssh; a durable supervisor from the start; jobs as the owner on this MBP, then as a job user on the mini; mapped diagnostics; `kanna build -- SCRIPT`. | 2 |
 | 8 | Fleet 8: Remote terminals measured | Bounded snapshots, reconnect by offset, an echo-delay table from the LAN and through the relay. **Changed:** also sets up `iroh-relay` on the GCP e2-micro. | 3 |
 | 9 | *(new: needs a task)* Fleet 9: Provisioning | After [provisioning](fleet-provisioning.md) installs the host: Incus, `kanna fleet provision` (a user's VM made, set up and enrolled), git credentials and agent sign-in on enrollment (§9). | 6 |
