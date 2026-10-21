@@ -40,7 +40,7 @@ sequenceDiagram
 ```
 
 - **Local (free):** B announces "pairing open" on the LAN, and A finds it with iroh's local discovery.
-- **Cloud:** you provision B from the signed-in app. The token Kanna puts in B's setup is the code, so you type nothing. The directory relays the PAKE and never sees the code, so it can't put its own key in B's place. v2's enrollment let the introducer do that once (TOFU).
+- **Cloud:** you provision B from the signed-in app. The token Kanna puts in B's setup is the code, so you type nothing. The directory relays the PAKE and never sees the code, so it can't put its own key in B's place. v2's enrollment trusted whatever key it was first handed (trust on first use), so its introducer could do that once.
 - **Signing a peer takes a gesture in the app,** never a command alone (§4).
 - **Upgrading from Local to Cloud** publishes the log you already have; nothing is paired again.
 
