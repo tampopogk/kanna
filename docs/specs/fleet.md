@@ -183,6 +183,23 @@ In short ([detail](fleet-tasks.md)):
   WantedBy=default.target
   ```
 
+- **Setting up a Linux server,** as the user Kanna runs as (with sudo), until releases have a Linux tarball (slice 6):
+
+  ```sh
+  git clone https://github.com/tampopogk/kanna.git ~/kanna && cd ~/kanna
+  scripts/server-setup.sh            # --agents claude,codex (default) | none; --no-packages; --no-start
+  claude                             # sign in once, until agent sign-in (slice 9)
+  kanna task list                    # ~/.local/bin/kanna, on PATH from the next login
+  ```
+
+  1. **Packages** with apt (git, build tools, sqlite3, Node and npm), Rust with rustup if `cargo` is missing, and the agent CLIs with npm into `~/.local`.
+  2. **Builds** from the checkout: `scripts/build-ghostty-vt.sh` (on Linux always `-Dcpu=baseline`; Zig downloads for Linux too), then `KANNA_CHANNEL=production cargo build --release -p kanna -p kanna-daemon -p kanna-keeper`, so the state folder is `kanna-prod`.
+  3. **Installs** the three binaries and Kanna's skills (`kanna-skills/`, which the Mac has in the app's `Resources`) in `/opt/kanna/<commit>` (`<commit>-dirty` for local changes), owned by the user so a daemon can update itself later; switches `current` with a rename; keeps the previous version and removes older ones; links `~/.local/bin/kanna`.
+  4. **The unit** as below, plus `KANNA_AGENT_SKILLS` and a `PATH` with `~/.local/bin`, where npm puts the agent CLIs; `loginctl enable-linger`; enabled, and restarted when the unit or the commit changed. The keeper survives the restart and is upgraded in place by the new daemon ([keeper upgrade](keeper-upgrade.md)), so terminals and agents keep running.
+  5. **`kanna agents setup`** when the agents aren't set up, since no planning terminal is there to ask.
+
+  The daemon logs to the journal (`journalctl --user -u kanna-daemon`). **Tested** in an Ubuntu 26.04 VM on an Apple Silicon Mac (lima): native arm64, and x86_64 cross-built in the VM (`gcc-x86-64-linux-gnu`, `libc6-dev-amd64-cross`) and run under Rosetta: a backlog runner starts a task in a worktree, `kanna task start` and `stop` work, a terminal's process and screen survive `systemctl --user restart kanna-daemon`, and a re-run of the script changes nothing it doesn't need to.
+
 - **Enrolling** pairs the VM (§4), sets up its git credentials ([tasks §4](fleet-tasks.md#4-repos-and-credentials)), then gives it your agent accounts ([agent sign-in](agent-sign-in.md)), with nothing to sign in on the VM.
 - **Updates:** `scripts/release.sh` also builds a Linux tarball (x86_64, `baseline` CPU for the R720s' Ivy Bridge). A daemon updates itself when a newer release is out (fetched from a peer that has it, or the release site): it switches `current`, runs `kanna-keeper --upgrade` ([keeper upgrade](keeper-upgrade.md)) and restarts; terminals survive ([restarting](daemon-restart.md)). `kanna fleet update` does it now, everywhere. No order is needed while versions overlap.
 
