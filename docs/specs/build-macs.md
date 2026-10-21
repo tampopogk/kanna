@@ -40,8 +40,8 @@ sequenceDiagram
     D2->>DM: sync the worktree snapshot
     DM->>S: run in the mirror, lock held
     S-->>DM: stdout, stderr, exit code (persisted)
-    DM-->>D2: live output; artifacts
-    D2-->>K: raw output + exit code; mapped diagnostics
+    DM-->>D2: live output, then artifacts
+    D2-->>K: raw output + exit code, mapped diagnostics
     K-->>AG: as if xcodebuild ran here
 ```
 

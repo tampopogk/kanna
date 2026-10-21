@@ -57,7 +57,7 @@ sequenceDiagram
     S->>R: the transcript, from where the agent keeps it
     R->>R: fetch into its own clone, new worktree, reset --soft to before the WIP commit
     R->>R: transcript into its own session folder
-    R->>R: agent resumes by session ID; tabs reopened
+    R->>R: agent resumes by session ID, tabs reopened
     R-->>S: done: the conversation carried on
 ```
 

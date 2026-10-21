@@ -116,7 +116,7 @@ sequenceDiagram
     A->>D: app.hello {pid, app: "mac", client: "mbp", protocol: 4, commit: "d7cbf0fb", sig}
     alt protocol differs
         D-->>A: ok: false, other_protocol {theirs: 4, mine: 3, commit}
-        Note over A: "r720-3 runs d7cb…; kanna fleet update r720-3" and no daemon is started
+        Note over A: "r720-3 runs d7cb…: kanna fleet update r720-3" and no daemon is started
     else same protocol
         D-->>A: ok, daemon {pid, commit, machine: "r720-3", capabilities}, panes, layout
         A->>D: attach term-41 … (as today)
@@ -221,10 +221,10 @@ sequenceDiagram
     SH->>K: kanna build xcodebuild -- ARGS
     K->>D2: which machine has xcode?
     D2-->>K: mini (fleet.json)
-    K->>DM: job.start {repo, worktree, cmd, env}; worktree synced (minus target/)
+    K->>DM: job.start {repo, worktree, cmd, env}, worktree synced (minus target/)
     DM->>XB: in /kanna/build/r720-2/app/task-1dfb/, same relative paths
     XB-->>DM: stdout, stderr, exit code
-    DM-->>K: output live; products back
+    DM-->>K: output live, then products back
     K-->>SH: pass-through
     SH-->>AG: as if xcodebuild ran here
 ```

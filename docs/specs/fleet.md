@@ -107,7 +107,7 @@ sequenceDiagram
     A->>D: app.hello {pid, app, client: "mbp", cert, protocol: 4, commit}
     alt protocol differs
         D-->>A: ok: false, other_protocol {mine: 3, commit}
-        Note over A: "r720-1 runs d7cb…: kanna fleet update"; the daemon keeps running
+        Note over A: "r720-1 runs d7cb…: kanna fleet update", and the daemon keeps running
     else same
         D-->>A: ok, daemon {machine, commit, capabilities}, panes, layout
     end
