@@ -26,7 +26,7 @@ The first milestone is the user as the only tenant on their own machines, built 
 - **You work on projects, not machines.** Kanna decides where a task runs (§2), and the app shows a machine only where it matters: a slow path, an offline machine, the fleet page. Underneath, a task lives on exactly one machine at a time, with its worktree, agent, terminals and workspace, and the app never owns work.
 - **LAN first.** Machines connect directly whenever they can. A relay is only for when you're away or the LAN fails, and the app shows which path each machine is on.
 - **Free unless it needs infrastructure.** Whatever works on the LAN with no server of Kanna's is free, as long as being free doesn't make it worse. A MacBook and a mini pair with no account and get everything except reach from away. Trust never depends on an account.
-- **Cloud is cheap, about $5 a month,** and covers only what needs Kanna's servers: reach from away, mobile access away from the LAN, push notifications, the always-on backlog copy, automatic enrollment. Its infrastructure has to cost Kanna well under that per user (§3). Machines that Kanna runs for a user, such as a VM on Kanna's R720s for agents or time on its build Macs, cost real hardware, so they're not in the $5: they're rented on top, per machine or per hour.
+- **Cloud is cheap, about $5 a month,** and covers only what needs Kanna's servers: reach from away, mobile access away from the LAN, push notifications, the always-on backlog copy, automatic enrollment.
 - **End to end.** Relays and Kanna's own service carry only ciphertext and can't add a device. A machine that runs your agent sees your code, whoever operates it.
 - **Every daemon can send and receive tasks**, Macs included, at a boundary: not started, or stopped at a turn's end.
 - **One commit everywhere.** The machines of a fleet run the same protocol. A mismatch is reported, never worked around.
@@ -90,7 +90,7 @@ Networking is built into the daemon with **[iroh](https://github.com/n0-computer
 | Backlog | replicated among your machines | plus an always-on encrypted copy |
 | Remote Desks, terminals, panes, port tunnels, transfer, build Macs | all of it | the same, from away too |
 
-**Keeping Cloud under $5:** most traffic never touches Kanna's servers, because iroh connects directly whenever it can. What does reach them is small: device metadata, encrypted backlog records, relayed keystrokes. Relay egress is the only cost that grows with use, at about $0.08 to $0.12 per GB on GCP. So relayed traffic is capped at about 10 GB a month per user (about $1). Using the LAN takes no action from the user: when two machines can reach each other directly, iroh moves the connection there by itself. A user past the cap keeps terminals and control at full speed, and only bulk streams (syncs, files, transfers) through the relay slow down. When Cloud opens, the relays move to a host whose price includes the traffic; an e2-micro serves one user, not a product. Nothing runs per user on Kanna's side: no VM, no process.
+**Most traffic never touches Kanna's servers:** iroh connects directly whenever it can, and moves a connection to a direct path by itself as soon as one exists, so using the LAN takes no action from the user.
 
 Each machine's row in the app shows its path (direct on the LAN, direct over the internet, or relayed), so LAN-first can be seen, not just assumed.
 
@@ -200,13 +200,13 @@ Each slice is one agent's task and leaves `main` releasable. The tasks' first me
 | 5 | Fleet 5: Port tunnels for web panes | `port.open`, a `port` stream per tunnelled connection. **Changed:** streams on the one connection, not a second connection. | 3 |
 | 6 | Fleet 6: Fleet update | The Linux tarball, `/opt/kanna/<commit>`, `kanna fleet update`, the app's `other_protocol` message. Unchanged. | 1, 2 |
 | 7 | Fleet 7: xcodebuild redirect to the Mac mini | The shim's first version ([build Macs §6](build-macs.md#6-build-order)). **Changed:** worktree sync over a `sync` stream, not rsync over ssh; a durable supervisor from the start; jobs as the owner on this MBP, then as a job user on the mini; mapped diagnostics; `kanna build -- SCRIPT`. | 2 |
-| 8 | Fleet 8: Remote terminals measured | Bounded snapshots, reconnect by offset, an echo-delay table from the LAN and through the relay. **Changed:** also sets up `iroh-relay` on the GCP e2-micro, and counts bytes direct and relayed per peer. | 3 |
+| 8 | Fleet 8: Remote terminals measured | Bounded snapshots, reconnect by offset, an echo-delay table from the LAN and through the relay. **Changed:** also sets up `iroh-relay` on the GCP e2-micro. | 3 |
 | 9 | *(new: needs a task)* Fleet 9: Provisioning | After [provisioning](fleet-provisioning.md) installs the host: Incus, `kanna fleet provision` (a user's VM made, set up and enrolled), git credentials and agent sign-in on enrollment (§9). | 6 |
 | 10 | Fleet 10: A home per repo | **Changed, renamed "A replicated backlog":** [tasks §1–2](fleet-tasks.md): every daemon holds every record (iroh-docs, Automerge or Loro: choose and say why), hybrid-clock order, owners that grant, `needs:` against capabilities, each project's home machine. Done: two daemons share a backlog; two runners asking at once and an owner going away are tested. The task waits for 6 and 3; it needs only 3. | 3 |
 | 11 | Fleet 11: Teleport between Linux machines | **Changed, renamed "Task transfer":** [tasks §3](fleet-tasks.md#3-transfer): between any daemons, Mac included; a git bundle over the link, not a push; no `/kanna/repos`; resume by session ID; durable on both ends. Done: a stopped claude task and a stopped codex task each move between two machines with different home folders and carry on their conversation. | 10 |
 | 12 | Fleet 12: Build jobs and iOS from remote tasks | **Changed:** a job queue across a pool of build Macs matched by capability (arch, macOS, Xcode), slots, Simulator leases, a job user per Mac behind a root launcher, the `.app` fetched to the MBP (no ssh to replace). | 7, 5 |
 
-**After the first milestone, not yet tasks:** Kanna Cloud's account, directory and relays (provisioning by token, the encrypted backlog copy, push); more than one app per daemon, then the phone; Kanna-run machines for other tenants (job users per tenant, billing). **Prices wait for measurements:** from slice 8, each daemon counts bytes sent direct and relayed per peer, and the fleet page shows them, so a month of your own use gives Cloud's cost per user before any price is set.
+**After the first milestone, not yet tasks:** Kanna Cloud's account, directory and relays (provisioning by token, the encrypted backlog copy, push); more than one app per daemon, then the phone; Kanna-run machines for other tenants (job users per tenant, billing).
 
 ## 11. Rejected
 
@@ -228,4 +228,4 @@ Each slice is one agent's task and leaves `main` releasable. The tasks' first me
 | **Job** | One step of a task (a build, an e2e suite) run on another machine that has the capability |
 | **Owner** | The one machine allowed to run a task, or to grant it to a runner that asks |
 | **Hybrid logical clock** | A timestamp that stays ordered across machines whose clocks drift |
-| **Local / Cloud** | Kanna free with no account (LAN, your own relay) / with an account for about $5 a month (directory, Kanna's relays, phone away, push, backlog copy); Kanna-run machines on top |
+| **Local / Cloud** | Kanna free with no account (LAN, your own relay) / with an account for about $5 a month (directory, Kanna's relays, phone away, push, backlog copy) |
