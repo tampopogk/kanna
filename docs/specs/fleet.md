@@ -23,7 +23,7 @@ The first milestone is the user as the only tenant on their own machines, built 
 
 ## 1. Rules
 
-- **You work on projects, not machines.** Kanna decides where a task runs (§2), and the app shows a machine only where it matters: a slow path, an offline machine, the fleet page. Underneath, a task lives on exactly one machine at a time, with its worktree, agent, terminals and workspace, and the app never owns work.
+- **You work on projects, not machines.** Kanna decides where a task's work runs (§2), and one task can use several machines at once. The app shows a machine only where it matters: a slow path, an offline machine, the fleet page.
 - **LAN first.** Machines connect directly whenever they can. A relay is only for when you're away or the LAN fails, and the app shows which path each machine is on.
 - **Free unless it needs infrastructure.** Whatever works on the LAN with no server of Kanna's is free, as long as being free doesn't make it worse. A MacBook and a mini pair with no account and get everything except reach from away. Trust never depends on an account.
 - **Cloud is cheap, about $5 a month,** and covers only what needs Kanna's servers: reach from away, mobile access away from the LAN, push notifications, the always-on backlog copy, automatic enrollment.
@@ -68,8 +68,8 @@ flowchart LR
 
 - **Each project has a home machine,** where its backlog is worked and its planning agent runs. Kanna picks one when the project is added (an always-on machine with the project's capabilities: a user's VM, or the mini for someone with only a MacBook and a mini), and the fleet page can change it. A project with no other machine is at home on the MBP, as today.
 - **Other machines help** when they have free slots and the capabilities a task `needs:` ([tasks §2](fleet-tasks.md#2-owners-and-grants)).
-- **Steps go where they can run.** An agent runs on one machine, but a step that needs another machine's capability goes there as a **job**: `xcodebuild` through the shim, an e2e suite with `kanna build -- scripts/e2e.sh` on a Mac with a display, while Linux VMs do the agent work ([build Macs](build-macs.md)).
-- **Taking a task to the Desk doesn't move it.** It stays where it runs and is shown over the link. To try a Mac or iOS app it built, the `.app` is fetched to the MBP ([build Macs §5](build-macs.md#5-ios-for-remote-tasks)). A task moves (§8) only when you ask or when it needs a capability its machine lacks.
+- **Steps go where they can run.** A step that needs another machine's capability goes there as a **job**: `xcodebuild` through the shim, an e2e suite with `kanna build -- scripts/e2e.sh` on a Mac with a display, while Linux VMs do the agent work ([build Macs](build-macs.md)).
+- **Taking a task to the Desk doesn't move it.** It stays where it runs and is shown over the link. To try a Mac or iOS app it built, the `.app` is fetched to the MBP ([build Macs §5](build-macs.md#5-ios-for-remote-tasks)).
 
 ## 3. Reach: LAN first, relay second
 
@@ -226,6 +226,6 @@ Each slice is one agent's task and leaves `main` releasable. The tasks' first me
 | **PAKE** | Password-authenticated key exchange: proves both sides typed the same short code, without sending it |
 | **Home machine** | Where a project's backlog is worked and its planning agent runs, unless a task needs another machine |
 | **Job** | One step of a task (a build, an e2e suite) run on another machine that has the capability |
-| **Owner** | The one machine allowed to run a task, or to grant it to a runner that asks |
+| **Owner** | The machine that starts a task's agent, so it never starts twice; it can grant that to a runner that asks |
 | **Hybrid logical clock** | A timestamp that stays ordered across machines whose clocks drift |
 | **Local / Cloud** | Kanna free with no account (LAN, your own relay) / with an account for about $5 a month (directory, Kanna's relays, phone away, push, backlog copy) |
