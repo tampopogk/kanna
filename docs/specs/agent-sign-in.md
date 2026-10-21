@@ -2,52 +2,49 @@
 
 **Status:** planned · **Part of:** [fleet](fleet.md) · **Builds on:** [agent setup](agent-setup.md)
 
-Agents run on the user's own Claude or Codex login, a subscription or an API key, on every machine that runs them. Kanna keeps track of which machine is signed in to which agent, and signs one in when a task needs it, wherever you are, with as little typing as each agent allows.
+Agents run on the user's own Claude or Codex accounts, subscriptions or API keys. **Accounts are the user's, not a machine's:** you add an account once, and every one of your machines can run every agent on it. Nothing is signed in per machine, and no machine advertises its sign-ins, since all of them have all of them.
 
 ## Contents
 
-1. [Ways to sign in](#1-ways-to-sign-in)
-2. [Signing a machine in](#2-signing-a-machine-in)
+1. [Accounts](#1-accounts)
+2. [How a machine gets them](#2-how-a-machine-gets-them)
 3. [Rules](#3-rules)
 
-## 1. Ways to sign in
+## 1. Accounts
 
-| Agent, account | Kanna does | You do |
+You add an account in the app, on the Mac: Kanna runs the agent's own sign-in there and keeps what it yields as a **secret**. From then on, every machine you have, and every one you add later, can use it.
+
+| Account | What Kanna keeps | What a machine gets |
 |---|---|---|
-| Claude, subscription | `claude auth login --claudeai` on the machine | sign in at the URL, paste the code back, once per machine |
-| Claude, subscription, one token | `claude setup-token` once; the token is a secret, set as `CLAUDE_CODE_OAUTH_TOKEN` on each machine | sign in once |
-| Claude, Console | `ANTHROPIC_API_KEY` from your secrets | paste the key once |
-| Codex, ChatGPT subscription | `codex login --device-auth` on the machine | enter the code at the URL, once per machine |
-| Codex, access token or API key | `codex login --with-access-token` or `--with-api-key`, from your secrets | paste it once |
+| Claude subscription | a long-lived token from `claude setup-token` | the token, as `CLAUDE_CODE_OAUTH_TOKEN` |
+| Claude Console | the API key | `ANTHROPIC_API_KEY` |
+| Codex, ChatGPT subscription | the login itself, held by one of your devices (§2) | a short-lived access token (`codex login --with-access-token`) |
+| Codex, API key | the API key | `codex login --with-api-key` |
 
-The slice checks each row against the agents' current versions: that one setup token works on several machines at once, and how long each sign-in lasts.
-
-## 2. Signing a machine in
+## 2. How a machine gets them
 
 ```mermaid
 sequenceDiagram
-    participant M as machine (r720-1)
-    participant APP as Kanna.app, where you are
-    participant B as your browser
-    M->>M: claude auth status, codex login status
-    M-->>APP: capabilities: claude signed in, codex not
-    Note over APP: a task for codex is waiting for r720-1
-    APP->>M: sign in to codex
-    M->>M: codex login --device-auth
-    M-->>APP: URL and code
-    APP->>B: open the URL, the code shown in the app
-    B-->>M: signed in
-    M-->>APP: capabilities: codex signed in
+    participant H as holder (one of your devices)
+    participant M as any machine
+    participant AG as agent on M
+    Note over H: the account's secret, refreshed here only
+    M->>H: starting codex for task-1dfb
+    H-->>M: access token (short-lived), over the link
+    M->>AG: started with it
+    AG-->>M: token expires mid-run
+    M->>H: another, please
+    H-->>M: a fresh one
 ```
 
-- **Status is a capability.** Each daemon checks its agents' sign-in at start, every hour, and whenever an agent fails to authenticate, and advertises it with its other capabilities. A runner takes a task only for an agent that is signed in there ([tasks §2](fleet-tasks.md#2-owners-and-grants)).
-- **Asking:** when a task waits only on a sign-in, the app shows a toast naming the machine and the agent, and one click starts the flow above. The fleet page shows every machine's sign-ins and signs one in or out.
-- **Where you are:** the URL opens on the device you're using, the Mac, or later the phone. A login that needs a pasted code gets a field in the app, and the app types it into the login's terminal.
-- **Enrolling** a machine signs it in to the agents you use, with the secrets you have, before it takes tasks ([fleet §9](fleet.md#9-server-setup-and-updates)).
+- **A token that lasts** (Claude's setup token, API keys) goes to every machine when the account is added or the machine enrolls, and stays there.
+- **A login that refreshes** (Codex's ChatGPT login) stays with one **holder**: the Mac, or an always-on device of yours. Only the holder refreshes it, and machines ask it for short-lived access tokens over the link, so a hundred VMs share one login without signing each other out.
+- **A broken account** (revoked, expired, a plan that ended) shows one toast, "sign in to Codex again", and signing in once fixes every machine.
+- **Slice 9 verifies** each row against the agents' current versions: that one setup token works on many machines at once, and that Codex accepts access tokens minted by a holder. An agent with no shareable credential falls back to signing in on each machine, done by Kanna on enrollment with the URL opened where you are.
 
 ## 3. Rules
 
-- **Secrets** (setup tokens, access tokens, API keys) are kept in the Mac's Keychain in Local and go to a machine over the link when it's signed in. In Cloud, there is also a copy encrypted with your keys, so a machine can sign in while the Mac is closed.
+- **Secrets** are kept in the Mac's Keychain in Local. In Cloud, there is also a copy encrypted with your keys, so a machine enrolls while the Mac is closed. Kanna's service can't read it, so a holder is always one of your devices.
 - **Login files are never copied** between machines (`~/.claude/.credentials.json`, `~/.codex/auth.json`): their refresh tokens rotate, so two machines sharing one sign each other out.
-- **Signing out** a machine, or revoking it ([identity §3](fleet-identity.md#3-the-peer-log)), removes its secrets and runs each agent's logout there.
-- **An agent sees only its own sign-in.** A token in its environment is readable by it, so each agent gets only its own. Other secrets stay in the daemon's state folder, on each agent's sandbox deny list, as `device.key` is ([identity §4](fleet-identity.md#4-risks)).
+- **Removing an account** removes it from every machine. Revoking a machine ([identity §3](fleet-identity.md#3-the-peer-log)) removes everything it was given, and a setup token or key it held is worth rotating.
+- **An agent sees only its own credential,** in its environment. Other secrets stay in the daemon's state folder, on each agent's sandbox deny list, as `device.key` is ([identity §4](fleet-identity.md#4-risks)).

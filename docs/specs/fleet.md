@@ -30,7 +30,7 @@ The first milestone is the user as the only tenant on their own machines, built 
 - **End to end.** Relays and Kanna's own service carry only ciphertext and can't add a device. A machine that runs your agent sees your code, whoever operates it.
 - **Every daemon can send and receive tasks**, Macs included, at a boundary: not started, or stopped at a turn's end.
 - **Versions are compatible, not identical.** Daemons and apps of different releases work together over a range of protocol versions, so machines update on their own schedule.
-- **Bring your own key.** Agents run on each user's own Claude or Codex subscription or API key, signed in on each machine with as little typing as the agent allows ([agent sign-in](agent-sign-in.md)).
+- **Bring your own key.** Agents run on each user's own Claude or Codex subscription or API key. An account is added once and every machine can use it ([agent sign-in](agent-sign-in.md)).
 
 ## 2. Machines and roles
 
@@ -183,7 +183,7 @@ In short ([detail](fleet-tasks.md)):
   WantedBy=default.target
   ```
 
-- **Enrolling** pairs the VM (§4), sets up its git credentials ([tasks §4](fleet-tasks.md#4-repos-and-credentials)), then signs it in to your agents ([agent sign-in](agent-sign-in.md)): a subscription login run on the VM with its URL opened where you are, or a token or API key from your secrets.
+- **Enrolling** pairs the VM (§4), sets up its git credentials ([tasks §4](fleet-tasks.md#4-repos-and-credentials)), then gives it your agent accounts ([agent sign-in](agent-sign-in.md)), with nothing to sign in on the VM.
 - **Updates:** `scripts/release.sh` also builds a Linux tarball (x86_64, `baseline` CPU for the R720s' Ivy Bridge). A daemon updates itself when a newer release is out (fetched from a peer that has it, or the release site): it switches `current`, runs `kanna-keeper --upgrade` ([keeper upgrade](keeper-upgrade.md)) and restarts; terminals survive ([restarting](daemon-restart.md)). `kanna fleet update` does it now, everywhere. No order is needed while versions overlap.
 
 ## 10. Build order
