@@ -43,7 +43,7 @@ flowchart LR
     end
     subgraph LAN["LAN"]
         subgraph R["r720-1 … r720-5 · Ubuntu 26.04 + Incus"]
-            VM["your VM on each<br/>daemon + keeper<br/>runners · repos"]
+            VM["your VMs<br/>daemon + keeper<br/>runners · repos"]
         end
         MACS["build Macs: mini + others<br/>Intel and Apple Silicon<br/>daemon · build jobs"]
     end
@@ -60,7 +60,7 @@ flowchart LR
 | Machine | Role | Peer |
 |---|---|---|
 | `mbp` | the client; still a Kanna machine for local projects | yes |
-| R720 hosts | run one VM per user (Incus) | no: each user's VM is the peer |
+| R720 hosts | run users' VMs (Incus), as many per user as wanted | no: each VM is a peer |
 | build Macs | `xcodebuild` and Simulator jobs for Linux tasks; Mac tasks too | yes ([build Macs](build-macs.md)) |
 | GCP e2-micro | an iroh relay at a stable IP; later Kanna Cloud's directory | no |
 
@@ -167,7 +167,7 @@ In short ([detail](fleet-tasks.md)):
 
 ## 9. Server setup and updates
 
-- **R720 host:** installed from bare metal through its iDRAC ([provisioning](fleet-provisioning.md); r720-1 runs Ubuntu 26.04.1). Then Incus, with one VM per user (Ubuntu 26.04) bridged onto the LAN, so peers reach it directly. A task never gets its own VM by default.
+- **R720 host:** installed from bare metal through its iDRAC ([provisioning](fleet-provisioning.md); r720-1 runs Ubuntu 26.04.1). Then Incus, with users' VMs (Ubuntu 26.04) bridged onto the LAN, so peers reach them directly. A user can have any number, on one host or across several, and each is a peer like any machine: for capacity, for a project kept apart, or one per task when a task needs isolation. A VM never holds two users.
 - **In the VM:** the user's account with `loginctl enable-linger`; git, build tools and Node for the agent CLIs; Kanna at `/opt/kanna/<commit>`, with `current` a symlink; state in `~/.local/share/kanna-prod/`. `scripts/server-setup.sh` does all of this and can be re-run safely. A VM starts from the stock Ubuntu cloud image, and setup installs the latest Kanna release, so there's no image per version.
 - **The daemon unit:** the keeper stays the daemon's child, as on the Mac, so `KillMode=process`, or a restart kills every shell:
 
@@ -200,7 +200,7 @@ Each slice is one agent's task and leaves `main` releasable. The tasks' first me
 | 6 | Fleet 6: Fleet update | The Linux tarball, `/opt/kanna/<commit>`, `kanna fleet update`, the app's `other_protocol` message. **Changed:** daemons update themselves; a range of protocols, not one, so mixed versions work. | 1, 2 |
 | 7 | Fleet 7: xcodebuild redirect to the Mac mini | The shim's first version ([build Macs §6](build-macs.md#6-build-order)). **Changed:** worktree sync over a `sync` stream, not rsync over ssh; a durable supervisor from the start; jobs as the owner on this MBP, then as a job user on the mini; mapped diagnostics; `kanna build -- SCRIPT`. | 2 |
 | 8 | Fleet 8: Remote terminals measured | Bounded snapshots, reconnect by offset, an echo-delay table from the LAN and through the relay. **Changed:** also sets up `iroh-relay` on the GCP e2-micro. | 3 |
-| 9 | *(new: needs a task)* Fleet 9: Provisioning | After [provisioning](fleet-provisioning.md) installs the host: Incus, `kanna fleet provision` (a user's VM made, set up and enrolled), git credentials on enrollment (§9), and [agent sign-in](agent-sign-in.md). | 6 |
+| 9 | *(new: needs a task)* Fleet 9: Provisioning | After [provisioning](fleet-provisioning.md) installs the host: Incus, `kanna fleet provision` (a VM for a user made, set up and enrolled), git credentials on enrollment (§9), and [agent sign-in](agent-sign-in.md). | 6 |
 | 10 | Fleet 10: A home per repo | **Changed, renamed "A replicated backlog":** [tasks §1–2](fleet-tasks.md): every daemon holds every record (iroh-docs, Automerge or Loro: choose and say why), hybrid-clock order, owners that grant, `needs:` against capabilities, placement preferences. Done: two daemons share a backlog; two runners asking at once and an owner going away are tested. The task waits for 6 and 3; it needs only 3. | 3 |
 | 11 | Fleet 11: Teleport between Linux machines | **Changed, renamed "Task transfer":** [tasks §3](fleet-tasks.md#3-transfer): between any daemons, Mac included; a git bundle over the link, not a push; no `/kanna/repos`; resume by session ID; durable on both ends. Done: a stopped claude task and a stopped codex task each move between two machines with different home folders and carry on their conversation. | 10 |
 | 12 | Fleet 12: Build jobs and iOS from remote tasks | **Changed:** a job queue across a pool of build Macs matched by capability (arch, macOS, Xcode), slots, Simulator leases, a job user per Mac behind a root launcher, the `.app` fetched to the MBP (no ssh to replace). | 7, 5 |

@@ -63,4 +63,4 @@ The peers are a **signed log**, not a record that replicates by last writer wins
 
 - **An agent can read `device.key`:** every machine runs its agents as the daemon's user. A prompt-injected agent could sign a peer into the fleet. For a single tenant that's the same trust the user already gives the agent, but two defences are cheap: signing needs a gesture in the app (§2), and agent setup adds the state folder's keys to each agent's sandbox deny list.
 - **A machine that runs your agent sees your code,** whoever operates it. End-to-end encryption protects what passes through relays and the directory, not what runs on a host.
-- **Kanna-run machines hold several tenants:** one VM per user on Linux and a macOS user per tenant on build Macs ([build Macs](build-macs.md#1-rules)). The peer log is per user, and one user's devices never see another's.
+- **Kanna-run machines hold several tenants:** VMs that each belong to one user on Linux, and a macOS user per tenant on build Macs ([build Macs](build-macs.md#1-rules)). The peer log is per user, and one user's devices never see another's.
