@@ -23,7 +23,7 @@ The first milestone is the user as the only tenant on their own machines, built 
 
 ## 1. Rules
 
-- **A task lives on exactly one machine**, with its worktree, agent, terminals and workspace. The app shows machines; it never owns work.
+- **You work on projects, not machines.** Kanna decides where a task runs (§2), and the app shows a machine only where it matters: a slow path, an offline machine, the fleet page. Underneath, a task lives on exactly one machine at a time, with its worktree, agent, terminals and workspace, and the app never owns work.
 - **LAN first.** Machines connect directly whenever they can. A relay is only for when you're away or the LAN fails, and the app shows which path each machine is on.
 - **Free unless it needs infrastructure.** Whatever works on the LAN with no server of Kanna's is free, as long as being free doesn't make it worse. A MacBook and a mini pair with no account and get everything except reach from away. Trust never depends on an account.
 - **Cloud is cheap, about $5 a month,** and covers only what needs Kanna's servers: reach from away, mobile access away from the LAN, push notifications, the always-on backlog copy, automatic enrollment. Its infrastructure has to cost Kanna well under that per user (§3). Kanna-run machines are priced separately.
@@ -63,6 +63,13 @@ flowchart LR
 | R720 hosts | run one VM per user (Incus) | no: each user's VM is the peer |
 | build Macs | `xcodebuild` and Simulator jobs for Linux tasks; Mac tasks too | yes ([build Macs](build-macs.md)) |
 | GCP e2-micro | an iroh relay at a stable IP; later Kanna Cloud's directory | no |
+
+**Placement: where work goes.**
+
+- **Each project has a home machine,** where its backlog is worked and its planning agent runs. Kanna picks one when the project is added (an always-on machine with the project's capabilities: a user's VM, or the mini for someone with only a MacBook and a mini), and the fleet page can change it. A project with no other machine is at home on the MBP, as today.
+- **Other machines help** when they have free slots and the capabilities a task `needs:` ([tasks §2](fleet-tasks.md#2-owners-and-grants)).
+- **Steps go where they can run.** An agent runs on one machine, but a step that needs another machine's capability goes there as a **job**: `xcodebuild` through the shim, an e2e suite with `kanna build -- scripts/e2e.sh` on a Mac with a display, while Linux VMs do the agent work ([build Macs](build-macs.md)).
+- **Taking a task to the Desk doesn't move it.** It stays where it runs and is shown over the link. To try a Mac or iOS app it built, the `.app` is fetched to the MBP ([build Macs §5](build-macs.md#5-ios-for-remote-tasks)). A task moves (§8) only when you ask or when it needs a capability its machine lacks.
 
 ## 3. Reach: LAN first, relay second
 
@@ -127,11 +134,11 @@ sequenceDiagram
 
 ## 6. One app, several machines
 
-- **A Desk is on (machine, project).** Its title names both (`app · r720-1`). Its planning terminal runs on that machine, where the code is. Its backlog page lists that project's tasks. The new-Desk prompt and Open Recent show `r720-1:~/repos/app`.
-- **The Shelf stays the app's:** claims in its order, keyed by (machine, task) in `app-state.json`, three per (machine, project), each card showing its machine.
+- **A Desk is on a project,** whichever machines its tasks run on. A project is known across machines by its remote URL or first commit ([tasks §4](fleet-tasks.md#4-repos-and-credentials)). Its planning terminal runs on the project's home machine, and its backlog page lists the project's tasks from every machine. The new-Desk prompt and Open Recent show projects, not paths on a machine.
+- **The Shelf stays the app's:** claims in its order, three per project, keyed by (machine, task) in `app-state.json`. A card shows its machine only when that machine is relayed or offline.
 - **Claims name the device:** `claimed by: mbp` (the hello's `client`) replaces `mac`. Runners leave claimed tasks alone, as today.
 - **Toasts** held while no app was attached arrive when the app connects, so five servers' finished tasks show up when you open the lid.
-- **What it looks like** (machine badges, path indicators, the machine picker) is drawn in slice 3's mockup, `references/mockups/fleet.html`.
+- **What it looks like** (the fleet page with each machine's path and the projects at home there, a card on a relayed machine) is drawn in slice 3's mockup, `references/mockups/fleet.html`.
 
 ## 7. Terminals and panes
 
@@ -188,14 +195,14 @@ Each slice is one agent's task and leaves `main` releasable. The tasks' first me
 |---|---|---|---|
 | 1 | Fleet 1: Kanna on Linux, headless | Daemon, keeper and CLI build and run on Linux x86_64. `server-setup.sh` and the unit (§9). A real agent runs a task with runners; terminals survive a daemon restart. **Changed:** Ubuntu 26.04, on r720-1 (an Incus VM there, or the host until slice 9). | — |
 | 2 | Fleet 2: TCP listener and pairing | **Changed, renamed "iroh endpoint and pairing":** confirm iroh's version and stability first. Then: the endpoint in the daemon with `device.key`, iroh's defaults off, LAN discovery, `kanna fleet pair` with a PAKE, the signed peer log, `identity_mismatch`, revocation, `kanna fleet addr`, `kanna --host` through the local daemon, daemon-to-daemon connections, and the stream convention (§5). No `KANNA_LISTEN`, `fleet.json` or signed hello. Done: `kanna --host r720-1 task list` from the Mac; an unpaired key is refused; a stream of each kind opens between two daemons. | 1 |
-| 3 | Fleet 3: The app connects to a remote daemon | A link per machine through `kanna-net`, with the app's certified endpoint key; `app.hello` with `client`, `cert`, `protocol`, `commit`; `other_protocol`; views keyed by (machine, ID); Desks on (machine, project) with their planners there; Shelf badges; the path indicator; `references/mockups/fleet.html`. **Changed:** iroh, not TCP. | 2, e044 |
+| 3 | Fleet 3: The app connects to a remote daemon | A link per machine through `kanna-net`, with the app's certified endpoint key; `app.hello` with `client`, `cert`, `protocol`, `commit`; `other_protocol`; views keyed by (machine, ID); Desks on a project, with the planner on its home machine; the fleet page and path indicator; `references/mockups/fleet.html`. **Changed:** iroh, not TCP; no machine picker or per-machine Desks (§2, placement). | 2, e044 |
 | 4 | Fleet 4: Files and threads through the daemon | `file.read`, `markup.*`, screenshot bytes (§7). Unchanged. | 3 |
 | 5 | Fleet 5: Port tunnels for web panes | `port.open`, a `port` stream per tunnelled connection. **Changed:** streams on the one connection, not a second connection. | 3 |
 | 6 | Fleet 6: Fleet update | The Linux tarball, `/opt/kanna/<commit>`, `kanna fleet update`, the app's `other_protocol` message. Unchanged. | 1, 2 |
 | 7 | Fleet 7: xcodebuild redirect to the Mac mini | The shim's first version ([build Macs §6](build-macs.md#6-build-order)). **Changed:** worktree sync over a `sync` stream, not rsync over ssh; a durable supervisor from the start; jobs as the owner on this MBP, then as a job user on the mini; mapped diagnostics; `kanna build -- SCRIPT`. | 2 |
 | 8 | Fleet 8: Remote terminals measured | Bounded snapshots, reconnect by offset, an echo-delay table from the LAN and through the relay. **Changed:** also sets up `iroh-relay` on the GCP e2-micro. | 3 |
 | 9 | *(new: needs a task)* Fleet 9: Provisioning | After [provisioning](fleet-provisioning.md) installs the host: Incus, `kanna fleet provision` (a user's VM made, set up and enrolled), git credentials and agent sign-in on enrollment (§9). | 6 |
-| 10 | Fleet 10: A home per repo | **Changed, renamed "A replicated backlog":** [tasks §1–2](fleet-tasks.md): every daemon holds every record (iroh-docs, Automerge or Loro: choose and say why), hybrid-clock order, owners that grant, `needs:` against capabilities. Done: two daemons share a backlog; two runners asking at once and an owner going away are tested. The task waits for 6 and 3; it needs only 3. | 3 |
+| 10 | Fleet 10: A home per repo | **Changed, renamed "A replicated backlog":** [tasks §1–2](fleet-tasks.md): every daemon holds every record (iroh-docs, Automerge or Loro: choose and say why), hybrid-clock order, owners that grant, `needs:` against capabilities, each project's home machine. Done: two daemons share a backlog; two runners asking at once and an owner going away are tested. The task waits for 6 and 3; it needs only 3. | 3 |
 | 11 | Fleet 11: Teleport between Linux machines | **Changed, renamed "Task transfer":** [tasks §3](fleet-tasks.md#3-transfer): between any daemons, Mac included; a git bundle over the link, not a push; no `/kanna/repos`; resume by session ID; durable on both ends. Done: a stopped claude task and a stopped codex task each move between two machines with different home folders and carry on their conversation. | 10 |
 | 12 | Fleet 12: Build jobs and iOS from remote tasks | **Changed:** a job queue across a pool of build Macs matched by capability (arch, macOS, Xcode), slots, Simulator leases, a job user per Mac behind a root launcher, the `.app` fetched to the MBP (no ssh to replace). | 7, 5 |
 
@@ -217,6 +224,8 @@ Each slice is one agent's task and leaves `main` releasable. The tasks' first me
 | **iroh** | A Rust library for direct, encrypted QUIC connections between keys, with hole punching and relays |
 | **Relay** | A server that forwards encrypted packets between peers that can't connect directly |
 | **PAKE** | Password-authenticated key exchange: proves both sides typed the same short code, without sending it |
+| **Home machine** | Where a project's backlog is worked and its planning agent runs, unless a task needs another machine |
+| **Job** | One step of a task (a build, an e2e suite) run on another machine that has the capability |
 | **Owner** | The one machine allowed to run a task, or to grant it to a runner that asks |
 | **Hybrid logical clock** | A timestamp that stays ordered across machines whose clocks drift |
 | **Local / Cloud** | Kanna free with no account (LAN, your own relay) / with an account for about $5 a month (directory, Kanna's relays, phone away, push, backlog copy); Kanna-run machines on top |

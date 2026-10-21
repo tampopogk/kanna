@@ -37,7 +37,7 @@ sequenceDiagram
     Note over O,X: the record replicates: owner r720-4
 ```
 
-- **A task starts on its owner,** at first the machine where it was made.
+- **A task starts on its owner,** at first its project's home machine ([fleet §2](fleet.md#2-machines-and-roles)), wherever it was made.
 - **Asking:** a runner with free slots and the right capabilities (`needs: xcode`) asks the owner for the oldest task waiting. The owner grants it to exactly one runner, and that runner becomes the owner.
 - **Two meanings, two words:** "ask" and "grant" are between machines. A **claim** stays what it is in [app-desk](app-desk.md): an app having a task out on its Shelf, now named by its device (`claimed by: mbp`).
 - **An offline owner's tasks wait.** Leases that expire would allow a double start, so add them only if waiting hurts.
