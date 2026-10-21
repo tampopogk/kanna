@@ -46,7 +46,7 @@ export PATH="$bin_dir:$HOME/.cargo/bin:$PATH"
 
 if [[ "$packages" == 1 ]]; then
   step "Packages"
-  wanted=(git openssh-client build-essential pkg-config curl ca-certificates xz-utils sqlite3 nodejs npm)
+  wanted=(git openssh-client build-essential pkg-config curl ca-certificates xz-utils sqlite3 jq nodejs npm)
   missing=()
   for p in "${wanted[@]}"; do dpkg-query -W -f '${Status}' "$p" 2>/dev/null | grep -q "install ok installed" || missing+=("$p"); done
   if [[ ${#missing[@]} -gt 0 ]]; then

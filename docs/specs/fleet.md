@@ -193,7 +193,7 @@ In short ([detail](fleet-tasks.md)):
   kanna task list                    # ~/.local/bin/kanna, on PATH from the next login
   ```
 
-  1. **Packages** with apt (git, build tools, sqlite3, Node and npm), Rust with rustup if `cargo` is missing, and the agent CLIs with npm into `~/.local`.
+  1. **Packages** with apt (git, build tools, sqlite3, jq, Node and npm), Rust with rustup if `cargo` is missing, and the agent CLIs with npm into `~/.local`.
   2. **Builds** from the checkout: `scripts/build-ghostty-vt.sh` (on Linux always `-Dcpu=baseline`; Zig downloads for Linux too), then `KANNA_CHANNEL=production cargo build --release -p kanna -p kanna-daemon -p kanna-keeper`, so the state folder is `kanna-prod`.
   3. **Installs** the three binaries and Kanna's skills (`kanna-skills/`, which the Mac has in the app's `Resources`) in `/opt/kanna/<commit>` (`<commit>-dirty` for local changes), owned by the user so a daemon can update itself later; switches `current` with a rename, pointing `previous` at the one it replaced, and removes the others; an unchanged build isn't copied again; links `~/.local/bin/kanna`.
   4. **The unit** as below, with the socket in the state folder (`$XDG_DATA_HOME` if set), plus `KANNA_AGENT_SKILLS` and a `PATH` with `~/.local/bin`, where npm puts the agent CLIs; `loginctl enable-linger`; enabled, and restarted unless the running daemon is `current`'s binary and the unit is unchanged. It's started when it answers a request, not when its socket appears. The keeper survives the restart and is upgraded in place by the new daemon ([keeper upgrade](keeper-upgrade.md)), so terminals and agents keep running.
