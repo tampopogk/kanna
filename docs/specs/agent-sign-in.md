@@ -44,7 +44,6 @@ sequenceDiagram
 
 ## 3. Rules
 
-- **An account is a budget, not a machine count.** A subscription's usage is one pool, shared by every session on every machine (5-hour and weekly windows for Claude, one allowance for Codex), so a hundred VMs on one login get one subscription's work. Each account has a limit on agents at once, a setting, and the backlog holds tasks while an account is at its limit or out of usage until its window resets. Scaling past that takes API keys (billed per token) or more accounts, such as a team's seats, each with its own budget.
 - **Terms:** whether a subscription may run agents on many machines is the provider's call, and the slice checks Anthropic's and OpenAI's current terms before Kanna shares one.
 
 - **Secrets** are kept in the Mac's Keychain in Local. In Cloud, there is also a copy encrypted with your keys, so a machine enrolls while the Mac is closed. Kanna's service can't read it, so a holder is always one of your devices.
