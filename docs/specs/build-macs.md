@@ -20,7 +20,10 @@ A task on Linux works on Apple code as if Xcode were local. Its `xcodebuild`, `x
 - **Swift is per project:** `swift build` on Linux stays Linux's unless the repo's `.kanna` settings send it to a Mac. The two platforms keep separate build folders.
 - **Requests are structured:** arguments are passed as a list and spawned directly on the Mac, never pasted into a shell command.
 - **The Mac never writes source back.** Files a build generates come back only as declared outputs.
-- **Not a sandbox:** builds, package plugins and tests run code. In the first milestone, jobs run as one dedicated macOS user (`kanna-build`), never the owner, so they can't reach the owner's keychain. Each tenant gets their own macOS user with Cloud tenants. Tart VMs are for jobs that need a clean machine; macOS licensing allows two VMs per Mac, so a VM per user doesn't scale.
+- **Not a sandbox:** builds, package plugins and tests run code. So a job never runs as the user that holds the daemon's `device.key`: a job that could read it could impersonate the Mac to the fleet.
+  - **On this MBP (slice 7's first step):** jobs run as the owner, as the owner's own tasks already do.
+  - **On a build Mac:** the daemon runs as a service user (`kanna`). A root LaunchDaemon, `kanna-jobd`, takes job requests from it on a local socket and runs each job as a job user (`kanna-build`, one per tenant with Cloud), who can reach neither the daemon's key nor the owner's keychain.
+- **UI tests can't be isolated per user:** macOS has one console session, and XCUITest in a background user's session is unreliable. A UI test owns the Mac's GUI session for its duration. For tenants, UI-test isolation is per Mac, or per Tart VM (macOS licensing allows two per Mac), and Cloud prices Mac UI time accordingly.
 
 ## 2. A job
 
@@ -42,8 +45,8 @@ sequenceDiagram
     K-->>AG: as if xcodebuild ran here
 ```
 
-- **The snapshot:** the worktree's files as they are (modified, untracked, deleted, executable bits, symlinks), minus `target/`, `.build/`, `node_modules/` and the repo's excludes. Changed blocks only, rsync's algorithm, sent over a stream on the daemon link. Kanna takes it at submit time, holding the task's writes for the moment of capture; it never reads the live worktree later.
-- **The mirror** on the Mac is keyed by (machine, repo, task): a Mac-local checkout of the same commit with the snapshot laid over it, since a linked worktree's `.git` file is meaningless there. It keeps DerivedData and SwiftPM's scratch folder outside the source, keyed by task and Xcode version, so rebuilds stay warm.
+- **The snapshot:** the worktree's files as they are (modified, untracked, deleted, executable bits, symlinks), minus `target/`, `.build/`, `node_modules/` and the repo's excludes. Changed blocks only, rsync's algorithm, sent over a stream on the daemon link. Kanna takes it at submit time: the agent is blocked on the shim meanwhile, the files are copied to a staging folder first, and the snapshot's hash is recorded with the job. The live worktree is never read later.
+- **The mirror** on the Mac is keyed by (machine, repo, task): a Mac-local checkout of the same commit with the snapshot laid over it, since a linked worktree's `.git` file is meaningless there. Commits the Mac lacks (unpushed ones) travel with the snapshot as a git bundle, so the Mac needs no git credentials. It keeps DerivedData and SwiftPM's scratch folder outside the source, keyed by task and Xcode version, so rebuilds stay warm.
 - **The lock** covers sync, run and artifact staging for one mirror. Other mirrors run in parallel, within the Mac's slots (§4).
 - **The supervisor** persists each job's request ID, status, logs and artifact manifest. A dropped connection reattaches to the running job instead of starting another. Cancelling signals the job's process group and waits before releasing the lock.
 - **The exit code** is the build's. A transport failure is a distinct error from Kanna, never a made-up exit code. Build status and artifact status are reported separately.
@@ -65,9 +68,9 @@ sequenceDiagram
 
 - **Each build Mac advertises** arch, macOS, the Xcode versions installed, Simulator runtimes, cores, RAM and free disk. A job states what it needs (`xcode: 26.x`, `arch: arm64`); Kanna picks the Mac that matches with the shortest queue, preferring one that already has the task's mirror.
 - **Slots:** one heavy build and one UI-test slot per Mac to start, raised after measuring warm builds and memory pressure. Xcode's own test parallelism is bounded as well.
-- **Simulators are leased** by UDID across a job's install, launch and screenshot steps, never `booted`. UI tests use the Mac's logged-in GUI session through a LaunchAgent.
+- **Simulators are leased** by UDID across a job's install, launch and screenshot steps, never `booted`. UI tests run in the console session, so a build Mac stays logged in as its job user, and `kanna-jobd` starts UI jobs there through a LaunchAgent.
 - **Disk:** mirrors and DerivedData have a quota per Mac and are evicted least recently used first. Five servers' tasks fill one mini quickly.
-- **A build Mac's daemon runs at login** from a LaunchAgent (`kanna fleet serve`), since no app may be open there ([app link §4](app-link.md#4-the-app-starts-the-daemon) covers the MBP).
+- **A build Mac's daemon runs from launchd** (`kanna fleet serve`), since no app may be open there ([fleet §5](fleet.md#5-the-app-link-over-the-network)).
 - **Signing:** Simulator and ad-hoc signing for agent jobs. Distribution identities stay out of ordinary jobs, and a signed build uses a temporary keychain made for that job.
 
 ## 5. iOS for remote tasks
@@ -78,7 +81,7 @@ The Simulator runs on the MBP. A remote task's `.app`, built on a build Mac, is 
 
 [Fleet](fleet.md#10-build-order) slices 7 and 12:
 
-- **7, first version:** one Mac (this MBP until the mini is set up):
+- **7, first version:** one Mac: this MBP first (jobs as the owner), then the mini (the service user, `kanna-jobd` and the job user):
   - the shim and `kanna build`, and `kanna build -- SCRIPT`;
   - the snapshot sync, the mirror and lock, the supervisor;
   - raw output and mapped diagnostics, the exit code, artifacts.
