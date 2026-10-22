@@ -2,7 +2,7 @@
 
 A standalone Rust transport probe for [Fleet §3, §5 and §10](../../../docs/specs/fleet.md), before Fleet 2, 3 and 8. This is a reference experiment, not product code.
 
-**Status: in progress.** LAN discovery/direct traffic is measured; the remaining runs and conclusions are recorded below as they complete. A real off-LAN hole-punching run is required before this model releases its dependent slices. A same-LAN connection bootstrapped through a relay does not satisfy that requirement.
+**Status: waiting for an off-LAN test.** Three LAN discovery/direct runs and three forced-relay runs are complete on the real Mac/R720/GCP rig. A real off-LAN hole-punching run is required before this model releases its dependent slices. A same-LAN connection bootstrapped through a relay does not satisfy that requirement.
 
 ## Versions and stability
 
@@ -129,14 +129,50 @@ To stop the model relay: `sudo systemctl disable --now fleet-net-relay`; remove 
 
 Every run makes one fresh connection, opens control first, waits for the requested selected path (up to 30 seconds), discards ten warm-up echoes, then takes 100 idle echoes with 10 ms between them. It subsequently transfers **16 MiB per kind per direction** (160 MiB total payload per run), verifies every byte, and continues sequential echoes during each bulk transfer. Only one bulk stream is active at a time. Each echo is allowed to finish even when its bulk transfer has just completed, so the last loaded sample may straddle completion.
 
-Echo is an application JSON round trip, **not one-way latency or rendered terminal latency**. It includes serialization, framing, event-loop scheduling and transport. Upload throughput ends after the server verifies the bytes and replies; download ends after all bytes and FIN arrive. Stream/header setup and verification are included. Numbers are payload Mbps (decimal 1,000,000 bits/s); sizes are MiB (1,048,576 bytes). Percentiles use nearest rank. Table upload/download rates aggregate the five transfers as total bytes / total time; loaded p95 is the **worst per-transfer p95**, not a pooled percentile.
+Echo is an application JSON round trip, **not one-way latency or rendered terminal latency**. It includes serialization, framing, event-loop scheduling and transport. Upload throughput ends after the server verifies the bytes and replies; download ends after all bytes and FIN arrive. Stream/header setup and verification are included. Numbers are payload Mbps (decimal 1,000,000 bits/s); sizes are MiB (1,048,576 bytes). Percentiles use nearest rank. Loaded sample counts vary with transfer duration; inspect `n` before interpreting a p95 from a short transfer. These are shared-network observations, not an isolated lab guarantee. Table upload/download rates aggregate the five transfers as total bytes / total time; loaded p95 is the **worst per-transfer p95**, not a pooled percentile.
 
 Rig: Apple M5 MacBook Pro, 16 GB, macOS 26.2 (25C56), arm64, address `172.16.0.104`; R720 host, Ubuntu 26.04.1, kernel 7.0.0-30, x86_64, address `172.16.0.105`. The R720 route is the USB Wi-Fi interface `wlxe0d768301a7a`; its four Ethernet interfaces are down. These are **shared-LAN measurements over Wi-Fi, not wired line-rate claims**. The relay is in Iowa (`us-central1`), so relay latency includes the path to that region. Both measured endpoints remain these two machines; the relay is not the benchmark receiver.
 
 ## Results and slice contract
 
-Run `python3 summarize.py` to regenerate the table from the committed raw JSON. Results and outstanding topology checks follow below.
+Measured October 23, 2026 (JST), using the source at commit `337bef91`. Run `python3 summarize.py` to validate and regenerate this table from the committed raw JSON. A zero exit from the probe means its payloads, echo sequence and selected-path checks passed; the summarizer additionally validates all ten kind/direction pairs and sample overlap.
 
-Fleet 2 should copy the explicit minimal endpoint setup, local discovery, private relay map and header-first stream dispatch. Fleet 3 should derive its path indicator from the **selected path**, not relay configuration or the mere presence of an open relay path. Fleet 8 should reuse the same sizes, warm-up, echo framing, priorities, payload verification and idle/loaded scenarios, then add the real PTY and rendering work to expose its incremental delay. Compare on the same rig/topology with a model run alongside the product; environmental jitter is not a product regression. Preserve raw samples and throughput in both directions.
+| Run | Selected path | Echo p50 ms | Echo p95 ms | Worst loaded p95 ms | Upload Mbps | Download Mbps |
+|---|---|---:|---:|---:|---:|---:|
+| mac-to-r720-lan-mdns-1 | direct | 5.41 | 20.36 | 236.01 | 20.47 | 68.59 |
+| mac-to-r720-lan-mdns-2 | direct | 7.89 | 22.27 | 731.02 | 48.46 | 60.14 |
+| mac-to-r720-lan-mdns-3 | direct | 7.63 | 32.53 | 1595.51 | 31.85 | 39.10 |
+| lan-relay-rendezvous-not-away | direct | 7.12 | 21.23 | 287.13 | 34.32 | 67.31 |
+| mac-to-r720-forced-relay-1 | relay | 332.96 | 351.84 | 1556.25 | 13.97 | 19.76 |
+| mac-to-r720-forced-relay-2 | relay | 339.55 | 350.92 | 2124.38 | 18.39 | 17.84 |
+| mac-to-r720-forced-relay-3 | relay | 332.17 | 351.55 | 1048.71 | 13.06 | 19.15 |
 
-Observed surprises so far: the test LAN is wireless; separate streams and control priority still share congestion and can have large loaded echo tails. Stable iroh 1.x and the separately versioned mDNS helper must be tracked independently. The VM already had an unrelated relay service, so this deployment uses separate ports rather than replacing it.
+The three LAN runs use no relay or external discovery; the three relay runs have no IP transport on the probe. Path byte counters show approximately 86–89 MB sent and 86 MB received on the single observed path per run, consistent with five verified 16 MiB payloads each way plus framing, acknowledgements and retransmission. The additional `lan-relay-rendezvous-not-away` run supplied only the peer ID and relay URL, with mDNS off and UDP on. It initially selected the relay, then selected `172.16.0.105:41596` about **738.5 ms after starting the dial** (about 388.7 ms after connection establishment). Its final counters show 86.9 MB sent / 86.2 MB received on the direct path, versus only 14.0 KB / 12.4 KB on the relay path. That demonstrates automatic relay-to-direct selection on the LAN, not NAT traversal from another network.
+
+No run in this table demonstrates off-LAN hole punching yet. The original raw event field `after_connect_ms` in the `337bef91` recording actually counts from the start of dialing; this was corrected to `since_dial_ms` in the source after recording. Raw files are preserved unchanged. This naming fix does not change the measured echo/throughput code.
+
+The relay's roughly 0.33-second idle round trip is a network floor for this route to Iowa; a local-echo decision must compare that with an actual PTY/rendering measurement in Fleet 8. The loaded tails (up to about 1.6 seconds on the LAN and 2.1 seconds relayed) show why stream separation alone is insufficient as a responsiveness guarantee. These runs establish observed costs, not an acceptable UX threshold or permission to weaken the spec's terminal behaviour.
+
+### Remaining gate and resume point
+
+Keep Fleet 2, 3 and 8 waiting until a real away test records direct reach (or reports the NAT limitation and resolves the model's acceptance with the user). The model does not claim completion based on LAN or forced fallback alone.
+
+The R720 listener is left running as the transient, lingering user service `fleet-net-model`, using the private relay. It survives this SSH session ending, but not a host reboot. To inspect or stop it:
+
+```sh
+ssh jeremyhale@172.16.0.105 'systemctl --user status fleet-net-model'
+ssh jeremyhale@172.16.0.105 'systemctl --user stop fleet-net-model'
+```
+
+To restart it after stopping:
+
+```sh
+ssh jeremyhale@172.16.0.105 'systemd-run --user --unit=fleet-net-model --collect /tmp/kanna-fleet-net-model/target/release/fleet-net --key /tmp/fleet-net-linux.key --relay https://relay.kanna.build:8443 serve'
+```
+
+The next manual step is to connect this Mac to an independent phone hotspot, disconnect LAN/VPN routes, and rerun the `away` command above. Three full runs transfer 480 MiB of payload plus overhead; one run transfers 160 MiB. Check the Mac's route before starting, retain evidence of the remote public direct address and startup relay-to-direct transition if observed, then add the results here. If direct reach fails, preserve its error JSON separately from successful benchmark files (the summarizer deliberately rejects failed runs).
+
+
+Fleet 2 should copy the explicit minimal endpoint setup, local discovery, private relay map and header-first stream dispatch. Fleet 3 should derive its path indicator from the **selected path**, not relay configuration or the mere presence of an open relay path. `is_ip()` means direct, not necessarily LAN; retain discovery/topology evidence to distinguish LAN from direct internet. Fleet 8 should reuse the same sizes, warm-up, echo framing, priorities, payload verification and idle/loaded scenarios, then add the real PTY and rendering work to expose its incremental delay. Compare on the same rig/topology with a model run alongside the product; environmental jitter is not a product regression. Preserve raw samples and throughput in both directions.
+
+Observed surprises so far: the relay can stay open after bulk traffic has moved to a direct path; the test LAN is wireless; separate streams and control priority still share congestion and can have large loaded echo tails. Stable iroh 1.x and the separately versioned mDNS helper must be tracked independently. The VM already had an unrelated relay service, so this deployment uses separate ports rather than replacing it.

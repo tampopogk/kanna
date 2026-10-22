@@ -154,7 +154,7 @@ async fn main() -> Result<()> {
             let events_copy = events.clone();
             let monitor = tokio::spawn(async move {
                 while let Some(event) = stream.next().await {
-                    events_copy.lock().unwrap().push(json!({"after_connect_ms":start.elapsed().as_secs_f64()*1000.,"event":format!("{event:?}")}));
+                    events_copy.lock().unwrap().push(json!({"since_dial_ms":start.elapsed().as_secs_f64()*1000.,"event":format!("{event:?}")}));
                 }
             });
             let initial_paths = paths(&conn);
