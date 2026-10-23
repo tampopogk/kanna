@@ -100,7 +100,7 @@ The variable is for tests. It's never set in a user's Kanna.
 - `crates/kanna-daemon/tests/shutdown.rs`: a shutdown sends the app `quit`, refuses requests and hellos while it runs, ends the terminal and keeper, removes `daemon.pid` and then the socket, and leaves the terminal `exited` and `hungUp` for the next daemon. A daemon whose owner is SIGKILLed shuts down even though its app ignores `quit`, and one whose owner is already gone doesn't start. A daemon queued on the lock during a shutdown doesn't start.
 - `crates/kanna-keeper/tests/keeper.rs` (`stop_closes_every_pty_and_exits_once_they_are_gone`).
 - `crates/kanna/tests/cli.rs` (`instances_stop_quits_the_app_and_waits_for_the_daemon_to_go`).
-- `instances` and `app_starts_daemon` of `scripts/e2e-kanna.sh` (a killed daemon is still replaced by its app), and every scenario's cleanup ([e2e cleanup](e2e-cleanup.md)).
+- `instance_stop` (the app, daemon, keeper and a shell all exit; `app-state.json` keeps the window's frame; the next start has the same layout, with the terminal exited), `instances` and `app_starts_daemon` (a killed daemon is still replaced by its app) of `scripts/e2e-kanna.sh`, and every scenario's cleanup ([e2e cleanup](e2e-cleanup.md)).
 
 ## 7. Glossary
 

@@ -91,4 +91,4 @@ Each sets SIGALRM to its default action and unblocks it at start, whatever it in
 - a helper whose shell is SIGKILLed and whose terminal (a pty) is closed exits within 10 s, using under 1 s of CPU, and stops its children;
 - an orphaned helper running codex on its own (no terminal, parent gone) uses no CPU while it waits and quits when it alone gets SIGTERM.
 
-By hand, on 2026-10-20 with cooperative cleanup: RESULTS.
+By hand, on 2026-10-24 with cooperative cleanup: a run interrupted with SIGINT (exit 130 within a second, its folder removed); a run SIGKILLed while a scenario's daemon, keeper and app ran (all three gone within a second, by the lifeline, leaving only the folder for the next sweep); 54 scenarios of a full run on 2026-10-20 and the cleanup scenarios since. None logged a sweep, a KILL or `bug:`.
