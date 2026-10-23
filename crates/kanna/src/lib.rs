@@ -2,6 +2,7 @@ pub mod agents;
 pub mod args;
 pub mod commands;
 pub mod complete;
+pub mod diagrams;
 pub mod output;
 pub mod target;
 pub mod threads;
@@ -140,6 +141,9 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
     if command.name == "workspace" && request["all"] != true && request["pane"].is_null() {
         return Err(commands::usage("workspace", "outside a Kanna terminal there's no workspace of yours: add --all"));
     }
+    if command.name == "diagrams" {
+        return diagrams::run(&request, json_output);
+    }
     let mut mux = Session::connect(&target, env)?;
     if command.name == "comment" && request["doc"] == true {
         return threads::comment(&request, &mut mux, json_output);
@@ -184,6 +188,13 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
     if let (true, Some(pane)) = (command.name == "workspace", request["pane"].as_str()) {
         reply = output::scoped(&reply, pane).ok_or_else(|| fail(exit::NOT_FOUND, format!("no pane \"{pane}\": your terminal isn't one of this Kanna's")))?;
     }
+    let undrawn = match request["path"].as_str() {
+        Some(path) if command.name == "open" && request["type"] == "md" => Some(diagrams::check(path).map(|r| r.failures).unwrap_or_default()),
+        _ => None,
+    };
+    if let Some(undrawn) = &undrawn {
+        reply["diagrams"] = Value::Array(undrawn.clone());
+    }
     if json_output {
         println!("{reply}");
     } else {
@@ -203,6 +214,9 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
         let text = (command.show)(&request, &reply);
         if !text.is_empty() {
             println!("{text}");
+        }
+        for failure in undrawn.iter().flatten() {
+            eprintln!("{}", diagrams::line(failure));
         }
     }
     Ok(())
@@ -286,7 +300,7 @@ fn unsupported_mark(target: &Target) -> String {
 
 fn mark(command: &Command, supported: Option<&[String]>, target: &Target) -> String {
     match supported {
-        Some(names) if !names.iter().any(|n| n == commands::sent_as(command.name)) => unsupported_mark(target),
+        Some(names) if !names.iter().any(|n| n == commands::sent_as(command.name)) && !commands::LOCAL.contains(&command.name) => unsupported_mark(target),
         _ => String::new(),
     }
 }
@@ -564,7 +578,7 @@ pub fn describe(supported: Option<&[String]>) -> Value {
             "name": c.name,
             "group": c.group,
             "summary": c.summary,
-            "supported": supported.map(|names| names.iter().any(|n| n == commands::sent_as(c.name))),
+            "supported": supported.map(|names| names.iter().any(|n| n == commands::sent_as(c.name)) || commands::LOCAL.contains(&c.name)),
             "usage": c.usage,
             "options": c.options.iter().map(|(flag, text)| json!({ "flag": flag, "description": text })).collect::<Vec<_>>(),
             "notes": c.notes,

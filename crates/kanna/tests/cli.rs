@@ -350,11 +350,11 @@ fn help_never_starts_anything_and_marks_what_the_running_kanna_lacks() {
     assert!(kanna_at(&dir, Some(&nowhere), &["raw", "--help"]).ok().starts_with("usage: kanna raw REQUEST"));
     kanna_at(&dir, Some(&nowhere), &["help", "nope"]).fails(2, "unknown command \"nope\"");
     let commands = kanna_at(&dir, Some(&nowhere), &["commands"]).ok();
-    assert_eq!(commands.lines().count(), 28);
+    assert_eq!(commands.lines().count(), 29);
     assert!(commands.starts_with("open          Open a terminal"), "{commands}");
     let described = kanna_at(&dir, Some(&nowhere), &["commands", "--json"]).json();
     assert_eq!(described["running"], false);
-    assert_eq!(described["commands"].as_array().unwrap().len(), 28);
+    assert_eq!(described["commands"].as_array().unwrap().len(), 29);
     assert_eq!(described["exitCodes"]["6"], "needs Kanna.app, which isn't attached and wasn't started");
     assert!(described["globalOptions"].as_array().unwrap().iter().any(|o| o["flag"] == "--"));
 
@@ -374,8 +374,67 @@ fn help_never_starts_anything_and_marks_what_the_running_kanna_lacks() {
     assert_eq!(described["running"], true);
     let zoom = described["commands"].as_array().unwrap().iter().find(|c| c["name"] == "zoom").unwrap().clone();
     assert_eq!(zoom["supported"], false);
+    let diagrams = described["commands"].as_array().unwrap().iter().find(|c| c["name"] == "diagrams").unwrap().clone();
+    assert_eq!(diagrams["supported"], true);
+    assert!(!overview.contains("  diagrams      Check that a markdown file's mermaid diagrams draw in Kanna, without opening anything.  [not"), "{overview}");
     kanna_at(&dir, Some(&socket), &["zoom", "a"]).fails(5, "the running Kanna doesn't support `zoom` yet. It supports: capabilities, list, open");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+const GOOD: &str = "# Plan\n\n```mermaid\nflowchart LR\n    A --> B\n```\n\n```mermaid\nsequenceDiagram\n    A->>B: hi\n```\n";
+
+const BAD: &str = "# Plan\n\n```mermaid\nflowchart LR\n    A --> B\n```\n\nText.\n\n```mermaid\nerDiagram\n    A ||--o{ B : has\n```\n\n```mermaid\nflowchart LR\n    A --> --> B\n```\n";
+
+const ER: &str = "bad.md:10: unsupported diagram type: er (Kanna draws flowchart, sequence, state, class and gitGraph)";
+
+#[test]
+fn diagrams_check_needs_no_kanna_and_exits_1_when_one_does_not_draw() {
+    let dir = scratch("diagrams");
+    let nowhere = dir.join("nothing.sock");
+    std::fs::write(dir.join("good.md"), GOOD).unwrap();
+    std::fs::write(dir.join("bad.md"), BAD).unwrap();
+    assert_eq!(kanna_at(&dir, Some(&nowhere), &["diagrams", "check", "good.md"]).ok(), "2 diagrams, all draw");
+    let run = kanna_at(&dir, Some(&nowhere), &["diagrams", "check", "good.md", "bad.md"]);
+    let out = run.out.clone();
+    run.fails(1, "kanna: 2 of 5 diagrams don't draw");
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines[0], ER);
+    assert!(lines[1].starts_with("bad.md:15: diagram error: "), "{out}");
+    assert_eq!(lines.len(), 2, "{out}");
+    let run = kanna_at(&dir, Some(&nowhere), &["diagrams", "check", "bad.md", "--json"]);
+    let reply: serde_json::Value = serde_json::from_str(run.out.trim()).unwrap();
+    run.fails(1, "2 of 3 diagrams don't draw");
+    assert_eq!((reply["diagrams"].clone(), reply["failures"][0]["line"].clone(), reply["failures"][0]["type"].clone()), (json!(3), json!(10), json!("er")));
+    kanna_at(&dir, Some(&nowhere), &["diagrams", "check", "missing.md"]).fails(4, "diagrams: can't read missing.md");
+    kanna_at(&dir, Some(&nowhere), &["diagrams", "check"]).fails(2, "diagrams: missing FILE.md");
+    kanna_at(&dir, Some(&nowhere), &["diagrams", "lint", "a.md"]).fails(2, "unknown action \"lint\" (check)");
+    assert!(kanna_at(&dir, Some(&nowhere), &["help", "diagrams"]).ok().starts_with("kanna diagrams — Check that"));
+    assert!(!nowhere.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn open_md_says_which_diagrams_do_not_draw_and_still_opens() {
+    let daemon = Daemon::start();
+    let _app = daemon.app();
+    daemon.kanna(&["open", "--name", "a", "--cmd", "exec /bin/sh"]).ok();
+    std::fs::write(daemon.dir.join("good.md"), GOOD).unwrap();
+    std::fs::write(daemon.dir.join("bad.md"), BAD).unwrap();
+    let run = daemon.kanna(&["open", "md", "good.md", "--tab"]);
+    assert_eq!(run.err, "");
+    assert_eq!(run.ok(), "opened file-1 in win-1, tab-2: running");
+    let run = daemon.kanna(&["open", "md", "bad.md", "--tab"]);
+    let err = run.err.clone();
+    assert_eq!(run.ok(), "opened file-2 in win-1, tab-3: running");
+    let lines: Vec<&str> = err.lines().collect();
+    assert_eq!(lines[0], ER);
+    assert!(lines[1].starts_with("bad.md:15: diagram error: "), "{err}");
+    let reply = daemon.kanna(&["open", "md", "bad.md", "--tab", "--json"]).json();
+    assert_eq!(reply["pane"]["id"], "file-3");
+    let failures = reply["diagrams"].as_array().unwrap();
+    assert_eq!(failures.iter().map(|f| f["line"].clone()).collect::<Vec<_>>(), [json!(10), json!(15)]);
+    assert_eq!(failures[0]["message"], ER.split_once(": ").unwrap().1);
+    assert_eq!(daemon.kanna(&["open", "md", "good.md", "--tab", "--json"]).json()["diagrams"], json!([]));
 }
 
 #[test]
