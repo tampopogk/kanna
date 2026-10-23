@@ -365,16 +365,16 @@ instance_stop() {
   start_daemon && start_app || return 1
   kanna open --name left --cmd 'echo LEFT-READY; exec sleep 600' >/dev/null && kanna open --name right --split right --size 1/3 >/dev/null || return 1
   wait_for 5 shows left LEFT-READY || { echo "instance_stop: left never drew"; return 1; }
-  local before shell keeper app daemon saved
-  before="$(layout)" shell="$(pane left pid)" keeper="$(cat "$KANNA_STATE_DIR/keeper.pid")" app="$app_pid" daemon="$daemon_pid"
+  local before shell keeper app_was daemon_was saved
+  before="$(layout)" shell="$(pane left pid)" keeper="$(cat "$KANNA_STATE_DIR/keeper.pid")" app_was="$app_pid" daemon_was="$daemon_pid"
   saved="$(stat -f %m "$KANNA_STATE_DIR/app-state.json" 2>/dev/null || echo 0)"
   sleep 1
   check test "$(kanna instances stop)" == "stopped default ($KANNA_SOCKET)" || return 1
   check test ! -S "$KANNA_SOCKET" -a ! -e "$KANNA_STATE_DIR/daemon.pid" || return 1
-  check wait_for 5 eval '! kill -0 $app && ! kill -0 $daemon && ! kill -0 $keeper && ! kill -0 $shell' || { echo "instance_stop: still running: $(ps -o pid=,command= -p "$app,$daemon,$keeper,$shell")"; return 1; }
+  check wait_for 5 eval '! kill -0 $app_was && ! kill -0 $daemon_was && ! kill -0 $keeper && ! kill -0 $shell' || { echo "instance_stop: still running: $(ps -o pid=,command= -p "$app_was,$daemon_was,$keeper,$shell")"; return 1; }
   wait "$app_pid" "$daemon_pid" 2>/dev/null; app_pid="" daemon_pid=""
   check test "$(stat -f %m "$KANNA_STATE_DIR/app-state.json")" -gt "$saved" || { echo "instance_stop: the app didn't save app-state.json as it quit"; return 1; }
-  check grep -q '"frame"' "$KANNA_STATE_DIR/app-state.json" || return 1
+  python3 -c 'import json, sys; sys.exit("win-1" not in json.load(open(sys.argv[1]))["frames"])' "$KANNA_STATE_DIR/app-state.json" || { echo "instance_stop: app-state.json has no frame for win-1"; cat "$KANNA_STATE_DIR/app-state.json"; return 1; }
   start_daemon && start_app || return 1
   check test "$(layout)" == "$before" || return 1
   check is left state exited || return 1
