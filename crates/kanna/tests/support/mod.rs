@@ -168,6 +168,10 @@ impl App {
             let mut desks: Vec<Value> = vec![];
             for line in reader.lines().map_while(Result::ok) {
                 let message: Value = serde_json::from_str(&line).unwrap();
+                if message["cmd"] == "quit" {
+                    let _ = writer.shutdown(std::net::Shutdown::Both);
+                    break;
+                }
                 if message["id"] == 0 && message.get("ok").is_some() {
                     owner.handle(&json!({"call": "attach", "panes": message["panes"]}));
                     if let Some(ready) = ready.take() {

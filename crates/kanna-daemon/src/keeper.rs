@@ -112,6 +112,10 @@ impl Keeper {
         Ok(())
     }
 
+    pub fn stop(&self) -> io::Result<()> {
+        self.request(|client| client.stop())
+    }
+
     pub fn resume_watch(&self) {
         let _ = self.resume_watch.send(());
     }
