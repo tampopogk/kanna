@@ -56,9 +56,9 @@ sequenceDiagram
     G->>A: CONFIG_CHANGE (the dark theme's config)
     A->>D: settings {foreground, background, palette, scheme: dark, …}
     D->>D: every screen: default colours, scheme
-    D->>P: ESC[?997;1n (only to programs that asked)
+    D->>P: ESC[?997…n scheme report, dark (only to programs that asked)
     P->>D: OSC 11 ? (background colour)
-    D->>P: OSC 11 ; rgb:… (from the dark theme)
+    D->>P: OSC 11 reply, rgb:… (from the dark theme)
 ```
 
 **`settings`** ([app link](app-link.md#2-messages)) carries the foreground, background, cursor colour, the 256-colour palette, the scheme, the cursor style and blink, and the grapheme width method. The daemon keeps the last one in `terminals/settings.json` (0600), so a restarted daemon answers colour queries the same way before the app is back, and applies it to every screen, new or restored (default colours, cursor and mode defaults, scrollback limit). The cursor colour isn't readable from a config, so the app takes it from a live surface's defaults.
