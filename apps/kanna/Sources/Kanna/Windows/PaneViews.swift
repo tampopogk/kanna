@@ -24,6 +24,7 @@ final class PaneViews {
         if let view = views[id] { return view }
         let content = type == "term" ? terminal(for: id) : contents.slot(id)
         let view = PaneView(id: id, type: type, content: content)
+        view.waiting = type == "term"
         view.grip.onDrag = { [weak self] _ in self?.onDrag?(id) }
         views[id] = view
         return view
@@ -61,6 +62,7 @@ final class PaneViews {
 
     private func start(_ terminal: TerminalSurfaceView, _ id: String, in view: PaneView) {
         running[view.id] = id
+        view.waiting = false
         if !terminals.start(terminal, terminal: id) {
             view.message = "failed: the terminal surface could not be created"
             FileHandle.standardError.write(Data("kanna: the terminal surface for \(view.id) could not be created\n".utf8))

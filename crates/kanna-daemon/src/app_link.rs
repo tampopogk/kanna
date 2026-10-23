@@ -86,7 +86,7 @@ pub fn takeover(events: Sender<Event>) -> Takeover {
                 Ok(_) => {}
             }
             if line.len() as u64 > MAX_LINE {
-                eprintln!("kanna-daemon: the app sent a line over {} MiB; dropping it", MAX_LINE >> 20);
+                log!("kanna-daemon: the app sent a line over {} MiB; dropping it", MAX_LINE >> 20);
                 break;
             }
             match serde_json::from_slice::<Value>(&line) {
@@ -95,7 +95,7 @@ pub fn takeover(events: Sender<Event>) -> Takeover {
                         break;
                     }
                 }
-                Err(_) => eprintln!("kanna-daemon: the app sent a line that isn't JSON"),
+                Err(_) => log!("kanna-daemon: the app sent a line that isn't JSON"),
             }
         }
         let _ = events.send(Event::AppGone { conn });
@@ -150,11 +150,11 @@ impl AppLink {
         let Some(app) = app.as_ref().filter(|app| !app.cut.get()) else { return };
         let queued = app.out.push(&message);
         if queued > QUEUE_LIMIT {
-            eprintln!("kanna-daemon: the app is {} MiB behind; dropping it", queued >> 20);
+            log!("kanna-daemon: the app is {} MiB behind; dropping it", queued >> 20);
             app.cut.set(true);
             let _ = app.stream.shutdown(Shutdown::Both);
         } else if queued > QUEUE_BEHIND && !app.behind.replace(true) {
-            eprintln!("kanna-daemon: the app is {} MiB behind; its terminals start over when it catches up", queued >> 20);
+            log!("kanna-daemon: the app is {} MiB behind; its terminals start over when it catches up", queued >> 20);
             app.out.queue.behind.store(true, Ordering::SeqCst);
         }
     }
@@ -207,7 +207,7 @@ impl AppLink {
         let app_build = hello.get("args").and_then(|a| a.get("build")).and_then(Value::as_str);
         if let (Some(app_build), Some(build)) = (app_build, self.build.as_deref()) {
             if app_build != build {
-                eprintln!("kanna-daemon: the app is from another build ({app_build}, this daemon is {build}); stopping so it starts its own");
+                log!("kanna-daemon: the app is from another build ({app_build}, this daemon is {build}); stopping so it starts its own");
                 let reply = json!({ "id": id, "ok": false, "error": { "code": "other_build", "message": format!("this daemon is from another build ({build}); it is stopping so the app can start its own") } });
                 let mut line = encode(&reply).into_bytes();
                 line.push(b'\n');
@@ -217,7 +217,7 @@ impl AppLink {
             }
         }
         let pid = hello.get("args").and_then(|a| a.get("pid")).cloned().unwrap_or(Value::Null);
-        eprintln!("kanna-daemon: the app attached (pid {pid})");
+        log!("kanna-daemon: the app attached (pid {pid})");
         self.layout.flush();
         let panes = self.core.upgrade().map_or(Value::Array(vec![]), |core| core.with_panes(pane_table));
         answer(json!({ "id": id, "ok": true, "daemon": { "pid": std::process::id(), "build": self.build }, "panes": panes, "layout": self.layout.view() }));
@@ -283,7 +283,7 @@ impl AppLink {
         if self.app.borrow().as_ref().map(|a| a.id) != Some(conn) {
             return;
         }
-        eprintln!("kanna-daemon: the app went away");
+        log!("kanna-daemon: the app went away");
         self.app.borrow_mut().take();
         self.attached.borrow_mut().clear();
         self.unsent.borrow_mut().clear();
@@ -370,7 +370,7 @@ impl AppLink {
             }
             "update" => self.updated(&pane, &args),
             "settings" => self.terminals.set_settings(Settings::from_value(&args)),
-            other => eprintln!("kanna-daemon: the app sent an unknown message \"{other}\""),
+            other => log!("kanna-daemon: the app sent an unknown message \"{other}\""),
         }
         None
     }
@@ -437,7 +437,7 @@ impl AppLink {
             Err(error) => {
                 let retry = Instant::now() + SNAPSHOT_RETRY;
                 if self.unsent.borrow_mut().insert(pane.into(), retry).is_none() {
-                    eprintln!("kanna-daemon: can't snapshot {pane} yet ({error}); trying again shortly");
+                    log!("kanna-daemon: can't snapshot {pane} yet ({error}); trying again shortly");
                 }
                 return;
             }

@@ -1,4 +1,5 @@
 import Foundation
+import KannaPerf
 
 struct KannaError: Error, Equatable {
     let code: String
@@ -26,6 +27,8 @@ final class Commands {
         do {
             guard let cmd = request["cmd"]?.string else { throw KannaError("bad_request", "missing cmd") }
             guard let command = commands[cmd] else { throw KannaError("bad_request", "unknown command \"\(cmd)\"") }
+            let span = Perf.begin(.commands, "command", cmd)
+            defer { Perf.end(span) }
             var reply = try await command(request["args"] ?? [:])
             reply["id"] = id
             reply["ok"] = true

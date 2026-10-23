@@ -18,7 +18,7 @@ pub fn watch(events: Sender<Event>) -> Option<i32> {
         let _ = events.send(Event::Shutdown(format!("its owner (pid {pid}) exited")));
     });
     if let Err(error) = spawned {
-        eprintln!("kanna-daemon: can't watch its owner (pid {pid}): {error}");
+        log!("kanna-daemon: can't watch its owner (pid {pid}): {error}");
         return None;
     }
     Some(pid)

@@ -15,7 +15,7 @@ fn bad(message: impl Into<String>) -> KmuxError {
 }
 
 fn failed(what: &str, error: rusqlite::Error) -> KmuxError {
-    eprintln!("kanna-daemon: couldn't {what} in {}: {error}", db::FILE);
+    log!("kanna-daemon: couldn't {what} in {}: {error}", db::FILE);
     KmuxError::new("failed", format!("couldn't {what}: {error}"))
 }
 

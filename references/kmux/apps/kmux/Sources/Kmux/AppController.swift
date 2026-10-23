@@ -541,7 +541,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     @objc func previousTab() { cycleTab(-1) }
     private func cycleTab(_ step: Int) {
         guard let window = keyWindow, let tab = core.cycleTab(in: window, by: step) else { return }
-        request(["cmd": "focus", "args": ["tab": .string(tab)]])
+        request(["cmd": "focus", "args": ["tab": .string(tab), "keep": "dock"]])
     }
 
     /// Starts another kmux, with its own windows and socket, named 2, 3, ….

@@ -32,7 +32,7 @@ impl DaemonLayout {
             None => None,
         };
         let owner = saved.and_then(|state| {
-            LayoutOwner::restoring(state).map_err(|error| eprintln!("kanna-daemon: not restoring the saved layout: {}", error.message)).ok()
+            LayoutOwner::restoring(state).map_err(|error| log!("kanna-daemon: not restoring the saved layout: {}", error.message)).ok()
         });
         let layout = Rc::new(DaemonLayout {
             owner: RefCell::new(owner.unwrap_or_default()),
@@ -71,10 +71,10 @@ impl DaemonLayout {
         match self.owner.borrow_mut().attach(panes) {
             Ok(reply) => {
                 if let Some(problem) = reply.get("problem").and_then(Value::as_str) {
-                    eprintln!("kanna-daemon: {problem}");
+                    log!("kanna-daemon: {problem}");
                 }
             }
-            Err(error) => eprintln!("kanna-daemon: the saved layout couldn't be restored: {}", error.message),
+            Err(error) => log!("kanna-daemon: the saved layout couldn't be restored: {}", error.message),
         }
         self.touched.set(true);
     }
@@ -92,7 +92,7 @@ impl DaemonLayout {
             let table = self.core.borrow().as_ref().and_then(WeakCore::upgrade).map(|core| core.with_panes(pane_table));
             if let Some(table) = table {
                 if let Err(error) = self.owner.borrow_mut().sync(&table) {
-                    eprintln!("kanna-daemon: the layout couldn't take the pane table: {}", error.message);
+                    log!("kanna-daemon: the layout couldn't take the pane table: {}", error.message);
                 }
                 self.touched.set(true);
             }
@@ -119,7 +119,7 @@ impl DaemonLayout {
         let Some(db) = &self.db else { return };
         let Some(state) = self.owner.borrow_mut().changed_state() else { return };
         if let Err(error) = db.put_layout(&state) {
-            eprintln!("kanna-daemon: couldn't save the layout: {error}");
+            log!("kanna-daemon: couldn't save the layout: {error}");
             self.owner.borrow_mut().forget_saved();
         }
     }
@@ -151,7 +151,7 @@ pub fn saved(db: &Db, state_dir: &Path) -> Option<Value> {
         Ok(Some(state)) => return Some(state),
         Ok(None) => {}
         Err(error) => {
-            eprintln!("kanna-daemon: can't read the saved layout: {error}");
+            log!("kanna-daemon: can't read the saved layout: {error}");
             return None;
         }
     }
@@ -160,18 +160,18 @@ pub fn saved(db: &Db, state_dir: &Path) -> Option<Value> {
         Contents::State(state) => state,
         Contents::None => return None,
         Contents::Refused(why) => {
-            eprintln!("kanna-daemon: not importing {}: {why}", path.display());
+            log!("kanna-daemon: not importing {}: {why}", path.display());
             return None;
         }
     };
     if let Err(error) = db.put_layout(&state) {
-        eprintln!("kanna-daemon: can't import {} into kanna.db: {error}", path.display());
+        log!("kanna-daemon: can't import {} into kanna.db: {error}", path.display());
         return Some(state);
     }
     let to = state_dir.join("layout.json.imported");
     match std::fs::rename(&path, &to) {
-        Ok(()) => eprintln!("kanna-daemon: imported the layout from {} into kanna.db; the file is now {}", path.display(), to.display()),
-        Err(error) => eprintln!("kanna-daemon: imported the layout from {} into kanna.db, but can't rename it ({error})", path.display()),
+        Ok(()) => log!("kanna-daemon: imported the layout from {} into kanna.db; the file is now {}", path.display(), to.display()),
+        Err(error) => log!("kanna-daemon: imported the layout from {} into kanna.db, but can't rename it ({error})", path.display()),
     }
     Some(state)
 }

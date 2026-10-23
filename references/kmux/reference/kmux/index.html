@@ -876,8 +876,8 @@ function focusInput(id) {
   const el = document.querySelector(`[data-keep="term:${id}"]`);
   if (el) el.focus(); else document.activeElement?.blur();
 }
-async function switchTab(w, t) {
-  await handle({ cmd: 'focus', args: { tab: t.id } });
+async function switchTab(w, t, keep) {
+  await handle({ cmd: 'focus', args: keep ? { tab: t.id, keep } : { tab: t.id } });
   render();
   focusInput(w.focused);
 }
@@ -889,7 +889,7 @@ function cycleTab(d) {
   const w = keyWin();
   if (!w || w.tabs.length < 2) return;
   const i = w.tabs.findIndex(t => t.id === w.active), n = w.tabs.length;
-  switchTab(w, w.tabs[(i + d + n) % n]);
+  switchTab(w, w.tabs[(i + d + n) % n], 'dock');
 }
 async function cyclePane(d) {
   const w = keyWin();

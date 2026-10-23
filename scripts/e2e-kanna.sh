@@ -127,9 +127,10 @@ instance_sockets() {
 }
 stop_instances() {
   [[ -n "$KANNA_STATE_DIR" && -d "$KANNA_STATE_DIR" ]] || return 0
-  local socket pids=()
+  local socket pids=() log="$out/stop.log"
+  : 2>/dev/null >>"$log" || log=/dev/stderr
   while IFS= read -r socket; do
-    env -u KANNA_INSTANCE KANNA_SOCKET="$socket" "$bin/kanna" instances stop >/dev/null 2>>"$out/stop.log" &
+    env -u KANNA_INSTANCE KANNA_SOCKET="$socket" "$bin/kanna" instances stop >/dev/null 2>>"$log" &
     pids+=($!)
   done < <(instance_sockets)
   [[ ${#pids[@]} -eq 0 ]] || wait "${pids[@]}"
@@ -357,6 +358,27 @@ survives_relaunch() {
   check is survives_relaunch pid "$pid" || return 1
   after="$(raw '{"id":1,"cmd":"debug.text","args":{"pane":"survives_relaunch"}}' | field text)"
   check test "$after" == "$before"
+}
+
+scenario instance_stop M4
+instance_stop() {
+  start_daemon && start_app || return 1
+  kanna open --name left --cmd 'echo LEFT-READY; exec sleep 600' >/dev/null && kanna open --name right --split right --size 1/3 >/dev/null || return 1
+  wait_for 5 shows left LEFT-READY || { echo "instance_stop: left never drew"; return 1; }
+  local before shell keeper app daemon saved
+  before="$(layout)" shell="$(pane left pid)" keeper="$(cat "$KANNA_STATE_DIR/keeper.pid")" app="$app_pid" daemon="$daemon_pid"
+  saved="$(stat -f %m "$KANNA_STATE_DIR/app-state.json" 2>/dev/null || echo 0)"
+  sleep 1
+  check test "$(kanna instances stop)" == "stopped default ($KANNA_SOCKET)" || return 1
+  check test ! -S "$KANNA_SOCKET" -a ! -e "$KANNA_STATE_DIR/daemon.pid" || return 1
+  check wait_for 5 eval '! kill -0 $app && ! kill -0 $daemon && ! kill -0 $keeper && ! kill -0 $shell' || { echo "instance_stop: still running: $(ps -o pid=,command= -p "$app,$daemon,$keeper,$shell")"; return 1; }
+  wait "$app_pid" "$daemon_pid" 2>/dev/null; app_pid="" daemon_pid=""
+  check test "$(stat -f %m "$KANNA_STATE_DIR/app-state.json")" -gt "$saved" || { echo "instance_stop: the app didn't save app-state.json as it quit"; return 1; }
+  check grep -q '"frame"' "$KANNA_STATE_DIR/app-state.json" || return 1
+  start_daemon && start_app || return 1
+  check test "$(layout)" == "$before" || return 1
+  check is left state exited || return 1
+  check test "$(app_view | field key)" == win-1 || return 1
 }
 
 scenario layout_restored M1
@@ -2543,6 +2565,87 @@ task_start_stop() {
   (cd "$repo" && kanna task list) | grep -qE '^'"$(sid 4)"' +Task 4 +Backlog +stopped' || { echo "task_start_stop: a stopped task didn't survive a restart"; (cd "$repo" && kanna task list); return 1; }
   kanna task start $(tid 4) >/dev/null && check wait_for 5 shows "Task 4" "--resume" || { echo "task_start_stop: $(sid 4) didn't resume after a restart"; return 1; }
   check wait_for 5 is side4 state running || { echo "task_start_stop: a hung-up terminal didn't run again after a restart"; kanna workspace list --all; return 1; }
+}
+
+scenario shelve_at_once M4
+shelve_at_once() {
+  local repo="$KANNA_STATE_DIR/repo" agent="$KANNA_STATE_DIR/bin/claude" task seen took card
+  mkdir -p "$repo" "${agent%/*}" && ln -s "$mock_agent" "$agent" || { echo "shelve_at_once line $LINENO"; return 1; }
+  git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "shelve_at_once line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  start_daemon || { echo "shelve_at_once line $LINENO"; return 1; }
+  env -u KANNA_NO_INITIAL_WINDOW KANNA_START_DIR="$repo" "$app" --bg >>"$out/app.log" 2>&1 &
+  app_pid=$!
+  wait_for 10 app_attached || { echo "the app did not attach"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"d1\"}}" | field "$1"; }
+  check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { echo "shelve_at_once: no planning terminal"; return 1; }
+  (cd "$repo" && kanna task new "Line tables" "say hi" --agent "$agent") >/dev/null && kanna task start $(tid 1) >/dev/null || { echo "shelve_at_once line $LINENO"; return 1; }
+  check wait_for 5 shows "Line tables" "say hi" || { echo "shelve_at_once: the task didn't start"; return 1; }
+  task="$(pane "Line tables" id)"
+  KANNA_TERMINAL="$task" kanna open --tab --name lines --cmd 'exec cat' >/dev/null && KANNA_TERMINAL="$task" kanna open --tab --name tables --cmd 'exec cat' >/dev/null || { echo "shelve_at_once line $LINENO"; return 1; }
+  kanna task stop $(tid 1) >/dev/null || { echo "shelve_at_once line $LINENO"; return 1; }
+  check wait_for 5 is "Line tables" state exited && check is tables state exited || { echo "shelve_at_once: the task didn't stop"; return 1; }
+  check wait_for 5 eval '[[ "$(desk backlog)" == "[\"$(tid 1)\"]" ]]' || { desk backlog; return 1; }
+  seen="$(python3 -c 'import json, socket, sys, time
+def ask(cmd, args):
+    s = socket.socket(socket.AF_UNIX); s.settimeout(30); s.connect(sys.argv[1])
+    s.sendall(json.dumps({"id": 1, "cmd": cmd, "args": args}).encode() + b"\n")
+    return json.loads(s.makefile().readline())
+start = time.monotonic()
+ask("debug.click", {"backlog": sys.argv[2], "window": "d1"})
+while time.monotonic() - start < 10:
+    d = ask("debug.desk", {"window": "d1"})
+    d = d.get("result", d)
+    if not d["backlog"] and [t["title"] for t in d["shelf"]] == ["Line tables"]:
+        print(round((time.monotonic() - start) * 1000), d["shelf"][0]["task"]); sys.exit(0)
+    time.sleep(0.005)
+print("never")' "$KANNA_SOCKET" "$(tid 1)")"
+  took="${seen%% *}" card="${seen#* }"
+  [[ "$took" =~ ^[0-9]+$ ]] || { echo "shelve_at_once: the task never reached the Shelf"; desk shelf; desk note; return 1; }
+  echo "shelve_at_once: on the Shelf ${took}ms after the click"
+  (( took <= 200 )) || { echo "shelve_at_once: the task took ${took}ms to reach the Shelf"; return 1; }
+  raw '{"id":1,"cmd":"debug.click","args":{"shelf":"'"$card"'","window":"d1"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk window.dock.pane)" == "$(pane "Line tables" id)" ]]' || { echo "shelve_at_once: pulling it at once didn't put it on the Desk"; raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}'; return 1; }
+  check wait_for 5 shows "Line tables" "--resume" || { echo "shelve_at_once: its agent didn't come back"; kanna read "Line tables"; return 1; }
+  check wait_for 5 is lines state running && check is tables state running || { echo "shelve_at_once: its tabs didn't run again"; kanna workspace list --all; return 1; }
+  check test "$(desk note)" == "" || { echo "shelve_at_once: $(desk note)"; return 1; }
+  grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:.]{12} kanna-daemon: ' "$out/daemon.log" || { echo "shelve_at_once: daemon.log's lines have no time"; tail -3 "$out/daemon.log"; return 1; }
+}
+
+scenario perf_intervals M4
+perf_intervals() {
+  local repo="$KANNA_STATE_DIR/repo" agent="$KANNA_STATE_DIR/bin/claude" card perf
+  mkdir -p "$repo" "${agent%/*}" && ln -s "$mock_agent" "$agent" || { echo "perf_intervals line $LINENO"; return 1; }
+  git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "perf_intervals line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  start_daemon || { echo "perf_intervals line $LINENO"; return 1; }
+  env -u KANNA_NO_INITIAL_WINDOW KANNA_START_DIR="$repo" "$app" --bg >>"$out/app.log" 2>&1 &
+  app_pid=$!
+  wait_for 10 app_attached || { echo "the app did not attach"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"d1\"}}" | field "$1"; }
+  perf() { raw '{"id":1,"cmd":"debug.perf"}' | python3 -c 'import json, sys
+r = json.load(sys.stdin); r = r.get("result", r)
+names = {i["name"]: i for i in r["intervals"]}
+for want in sys.argv[1:]:
+    if want not in names: print("missing", want, sorted(names)); sys.exit(1)
+    print(want, names[want]["last"], "ms")' "$@"; }
+  check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { echo "perf_intervals: no planning terminal"; return 1; }
+  (cd "$repo" && kanna task new "Timed" "say hi" --agent "$agent") >/dev/null || { echo "perf_intervals line $LINENO"; return 1; }
+  check wait_for 5 eval '[[ "$(desk backlog)" == "[\"$(tid 1)\"]" ]]' || { desk backlog; return 1; }
+  raw '{"id":1,"cmd":"debug.perf","args":{"reset":true}}' >/dev/null
+  raw '{"id":1,"cmd":"debug.click","args":{"backlog":"'"$(tid 1)"'","window":"d1"}}' >/dev/null
+  check wait_for 5 perf click.shelve.wait click.shelve.sent click.shelve.shown message.layout refresh render ShelfPage.lay command.debug.click >/dev/null \
+    || { echo "perf_intervals: the click's intervals weren't recorded"; perf click.shelve.shown; return 1; }
+  echo "perf_intervals: $(perf click.shelve.wait click.shelve.sent click.shelve.shown | tr '\n' ' ')"
+  card="$(desk shelf.0.task)"
+  raw '{"id":1,"cmd":"debug.click","args":{"shelf":"'"$card"'","window":"d1"}}' >/dev/null
+  check wait_for 5 perf click.pull.shown >/dev/null || { echo "perf_intervals: pulling it wasn't timed"; perf click.pull.shown; return 1; }
+  raw '{"id":1,"cmd":"debug.hang","args":{"ms":300}}' >/dev/null
+  check wait_for 5 eval 'raw "{\"id\":1,\"cmd\":\"debug.perf\"}" | python3 -c "import json, sys
+r = json.load(sys.stdin); r = r.get(\"result\", r)
+sys.exit(not any(h[\"ms\"] >= 300 and \"command.debug.hang\" in h[\"open\"] for h in r[\"hangs\"]))"' \
+    || { echo "perf_intervals: debug.perf has no 300ms hang in command.debug.hang"; raw '{"id":1,"cmd":"debug.perf"}'; return 1; }
+  check wait_for 5 grep -qE 'kanna: the main thread hung [0-9]{3}ms; open: .*command\.debug\.hang' "$out/app.log" || { echo "perf_intervals: the hang isn't in the app's log"; tail -5 "$out/app.log"; return 1; }
 }
 
 scenario task_restart_typing M4

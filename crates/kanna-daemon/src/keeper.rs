@@ -39,7 +39,7 @@ fn upgrade(client: &mut Client, bin: &Path) -> io::Result<Hello> {
         return Ok(hello);
     };
     let Some(running) = hello.build.clone() else {
-        eprintln!("kanna-daemon: the keeper (pid {}) predates keeper upgrades, so it keeps its code until it stops", hello.pid);
+        log!("kanna-daemon: the keeper (pid {}) predates keeper upgrades, so it keeps its code until it stops", hello.pid);
         return Ok(hello);
     };
     if running == wanted && hello.version == kanna_keeper::PROTOCOL_VERSION {
@@ -47,7 +47,7 @@ fn upgrade(client: &mut Client, bin: &Path) -> io::Result<Hello> {
     }
     match client.upgrade(&bin) {
         Ok(upgraded) => {
-            eprintln!(
+            log!(
                 "kanna-daemon: upgraded the keeper (pid {}) from build {} to {}",
                 upgraded.pid,
                 short(&running),
@@ -56,7 +56,7 @@ fn upgrade(client: &mut Client, bin: &Path) -> io::Result<Hello> {
             Ok(upgraded)
         }
         Err(error) if error.kind() == io::ErrorKind::Other => {
-            eprintln!("kanna-daemon: couldn't upgrade the keeper (pid {}) to {}: {error}; it keeps build {}", hello.pid, bin.display(), short(&running));
+            log!("kanna-daemon: couldn't upgrade the keeper (pid {}) to {}: {error}; it keeps build {}", hello.pid, bin.display(), short(&running));
             Ok(hello)
         }
         Err(error) => Err(error),
@@ -196,7 +196,7 @@ impl Spawner for Keeper {
 
     fn close(&self, id: &str) {
         if let Err(error) = self.request(|client| client.close(id)) {
-            eprintln!("kanna-daemon: the keeper couldn't close {id}: {error}");
+            log!("kanna-daemon: the keeper couldn't close {id}: {error}");
         }
     }
 

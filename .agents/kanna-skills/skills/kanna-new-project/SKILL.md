@@ -31,4 +31,4 @@ Make backlog tasks with `kanna task new "NAME" "FIRST MESSAGE"`, as the `kanna-p
 - **Each first message stands alone:** what the project is (the sentence from step 1), what this task does, the decisions you made together, and how to know it's done.
 - **A handful, not everything:** the first working version. More come once it runs.
 
-Then say what's in the backlog, and that **Move to Shelf** (or asking you) starts one.
+Then say what's in the backlog, each task by its name (never its ID), and that **Move to Shelf** (or asking you) starts one.

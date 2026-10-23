@@ -1,6 +1,7 @@
 import AppKit
 import GhosttyKit
 import KannaDocs
+import KannaPerf
 
 extension AppController {
     func installCommands() {
@@ -54,6 +55,24 @@ extension AppController {
             guard let self else { return [:] }
             if let title = args["item"]?.string { try choose(menuItem: title) }
             return ["items": .array(menuItems)]
+        }
+        commands["debug.perf"] = { args in
+            if args["reset"]?.bool == true { Perf.reset() }
+            let ms = { (value: Double) -> JSON in .number((value * 10).rounded() / 10) }
+            let intervals = Perf.stats().map { stats -> JSON in
+                ["name": .string(stats.name), "count": .number(Double(stats.count)), "recent": .number(Double(stats.recent)),
+                 "p50": ms(stats.p50), "p95": ms(stats.p95), "max": ms(stats.max), "last": ms(stats.last), "detail": stats.detail.map { .string($0) } ?? .null]
+            }
+            let hangs = Perf.hangs().reversed().map { hang -> JSON in
+                ["at": .string(ISO8601DateFormatter().string(from: hang.at)), "ms": ms(hang.ms),
+                 "open": .array(hang.open.map { .string($0) }), "ran": .array(hang.ran.map { .string($0) })]
+            }
+            return ["intervals": .array(intervals), "hangs": .array(hangs), "open": .array(Perf.open.map { .string($0) })]
+        }
+        commands["debug.hang"] = { args in
+            let ms = args["ms"]?.number ?? 300
+            usleep(useconds_t(ms * 1000))
+            return ["slept": .number(ms)]
         }
         commands["debug.stats"] = { _ in
             ["pid": .number(Double(ProcessInfo.processInfo.processIdentifier)), "footprint": .number(Double(memoryFootprint()))]
