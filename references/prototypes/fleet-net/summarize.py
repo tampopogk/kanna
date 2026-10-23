@@ -30,6 +30,13 @@ def summarize(path):
         selected(b["paths_before"], expected)
         selected(b["paths_after"], expected)
         assert b["bytes"] > 0 and b["seconds"] > 0
+        # A selected-path label alone does not prove where the payload travelled.
+        # Count outgoing bytes for uploads, incoming bytes for downloads.
+        counter = "udp_tx_bytes" if b["direction"] == "push" else "udp_rx_bytes"
+        before = {p["id"]: p[counter] for p in b["paths_before"] if p["kind"] == expected}
+        carried = sum(p[counter] - before.get(p["id"], 0)
+                      for p in b["paths_after"] if p["kind"] == expected)
+        assert carried >= b["bytes"], "payload not accounted for on the claimed path"
         assert abs(b["mbps"] - b["bytes"] * 8 / b["seconds"] / 1e6) < 1e-8
         assert b["echo_under_load"]["n"] > 0, "no overlapping echo samples; increase --mib"
     def rate(direction):
