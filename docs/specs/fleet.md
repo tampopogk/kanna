@@ -212,7 +212,7 @@ Each slice is one agent's task and leaves `main` releasable. The tasks' first me
 
 | Risk | Model | Shows | Before slices |
 |---|---|---|---|
-| iroh's reach and speed | `fleet-net`: two endpoints in Rust, LAN discovery, a relay on the e2-micro, `kanna/1` streams of each kind | a direct path on the LAN, hole punching from away, relay fallback; echo delay and throughput for each, the standard slice 8 is held to | 2, 3, 8 |
+| iroh's reach and speed | [fleet-net](../../references/prototypes/fleet-net/README.md): two endpoints in Rust, LAN discovery, a relay on the e2-micro, `kanna/1` streams of each kind | a direct path on the LAN, hole punching from away, relay fallback; echo delay and throughput for each, the standard slice 8 is held to | 2, 3, 8 |
 | Pairing and the peer log | `fleet-pairing`: Python, a PAKE over a code, a signed log between three simulated devices | a forged key refused; mutual revocation; a revoked key never re-added | 2 |
 | Desks across machines | `references/mockups/fleet.html` | a Desk per project with tasks on several machines; the fleet page; a card on a relayed or offline machine | 3 |
 | The replicated backlog | `fleet-backlog`: Python, N simulated daemons with partitions | the store chosen; two runners asking at once; an owner going away; a scheduler taking over | 10 |

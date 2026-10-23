@@ -1,0 +1,19 @@
+# iroh-relay 1.4.1, alongside the existing service on ports 80/443.
+# Credentials are supplied by systemd from Caddy's existing certificate store.
+# Only the two model endpoints may register. These are public IDs, not secrets.
+access.allowlist = [
+  "4a358d5c54d11ad344a5f3777bdb2c25830408d53d39315e09880dd76bf63f47",
+  "bedd173017ae1ee4c19b8501c2a6819c6c4c385a708c0da7ef99fe7f94aca248",
+]
+enable_relay = true
+http_bind_addr = "127.0.0.1:3340"
+enable_quic_addr_discovery = true
+enable_metrics = true
+metrics_bind_addr = "127.0.0.1:9091"
+
+[tls]
+https_bind_addr = "0.0.0.0:8443"
+quic_bind_addr = "0.0.0.0:7842"
+cert_mode = "Manual"
+manual_cert_path = "/run/credentials/fleet-net-relay.service/tls.crt"
+manual_key_path = "/run/credentials/fleet-net-relay.service/tls.key"
