@@ -227,6 +227,9 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
             eprintln!("{}", diagrams::line(failure));
         }
     }
+    if command.name == "fleet" && request["action"] == "update" && reply["machines"].as_array().is_some_and(|m| m.iter().any(|m| m["ok"] == false)) {
+        return Err(fail(exit::FAILED, "not every machine took the update"));
+    }
     Ok(())
 }
 

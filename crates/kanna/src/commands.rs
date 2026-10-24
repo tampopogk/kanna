@@ -628,13 +628,14 @@ pub static COMMANDS: &[Command] = &[
     Command {
         name: "fleet",
         group: "Information",
-        summary: "Your machines: pair one, list them, check one's link, give an address, or revoke one. kanna --host MACHINE COMMAND runs any command on one.",
-        usage: "kanna fleet [status]\n       kanna fleet pair\n       kanna fleet pair CODE [--peer KEY[@HOST[:PORT]]]\n       kanna fleet name NAME\n       kanna fleet ping MACHINE\n       kanna fleet addr MACHINE HOST[:PORT]\n       kanna fleet revoke MACHINE\n       kanna --host MACHINE COMMAND ...",
+        summary: "Your machines: pair one, list them, check one's link, give an address, update them, or revoke one. kanna --host MACHINE COMMAND runs any command on one.",
+        usage: "kanna fleet [status]\n       kanna fleet pair\n       kanna fleet pair CODE [--peer KEY[@HOST[:PORT]]]\n       kanna fleet name NAME\n       kanna fleet ping MACHINE\n       kanna fleet addr MACHINE HOST[:PORT]\n       kanna fleet revoke MACHINE\n       kanna fleet update [MACHINE ...] [--tarball FILE]\n       kanna --host MACHINE COMMAND ...",
         options: &[
             ("--peer KEY[@HOST[:PORT]]", "pair CODE: the machine to pair with, as `kanna fleet pair` prints it there, when it isn't on this LAN."),
+            ("--tarball FILE", "update: the Linux tarball to install (scripts/build-linux.sh makes one); without it, this release's tarball is downloaded."),
             ("--host MACHINE", "Before any command: run it on that machine (its name or key) instead of this one. KANNA_HOST does the same."),
         ],
-        notes: "Each machine's daemon has a key of its own (device.key in its state folder) and listens for the others over iroh, on UDP port 7470 when it's free. Machines on a LAN find each other by themselves.\nTo add a machine, run `kanna fleet pair` on it: it shows a six-digit code and waits. On a machine already in your fleet (or the first one: it starts the fleet), run `kanna fleet pair CODE`; Kanna.app there asks you to confirm, and the new machine joins. A code works once, for five minutes, and three wrong codes close it.\nA machine is known by its name, the first part of its host name unless `kanna fleet name` changed it before pairing. A name that comes back with another key is refused; a revoked machine is never let back in, under any name, and has to be paired with a new key.\n`kanna fleet addr` gives an address to try for a machine that isn't on this LAN, such as one on your VPN. ping opens a connection and one stream of each kind, and says whether the path is direct.",
+        notes: "Each machine's daemon has a key of its own (device.key in its state folder) and listens for the others over iroh, on UDP port 7470 when it's free. Machines on a LAN find each other by themselves.\nTo add a machine, run `kanna fleet pair` on it: it shows a six-digit code and waits. On a machine already in your fleet (or the first one: it starts the fleet), run `kanna fleet pair CODE`; Kanna.app there asks you to confirm, and the new machine joins. A code works once, for five minutes, and three wrong codes close it.\nA machine is known by its name, the first part of its host name unless `kanna fleet name` changed it before pairing. A name that comes back with another key is refused; a revoked machine is never let back in, under any name, and has to be paired with a new key.\n`kanna fleet addr` gives an address to try for a machine that isn't on this LAN, such as one on your VPN. ping opens a connection and one stream of each kind, and says whether the path is direct.\n`kanna fleet update` puts one commit on every Linux machine in the fleet (or those named): this release's tarball, or the one --tarball gives. Each machine installs it in /opt/kanna/COMMIT beside the one it runs, switches current to it and restarts its daemon; the keeper keeps every terminal and agent running. Macs update with Kanna.app. Machines of another protocol take an update too.",
         examples: &[
             ("kanna fleet", "This machine, the machines in its fleet and how each is reached."),
             ("kanna fleet pair", "On a new machine: show a code to pair it with."),
@@ -642,6 +643,8 @@ pub static COMMANDS: &[Command] = &[
             ("kanna fleet ping r720-1", "Whether r720-1 answers, by which path, and that each kind of stream opens."),
             ("kanna fleet addr r720-1 10.0.0.5", "Also try r720-1 at 10.0.0.5, port 7470."),
             ("kanna fleet revoke old-laptop", "Shut old-laptop out of every machine for good."),
+            ("kanna fleet update", "Put this release on every Linux machine in the fleet."),
+            ("kanna fleet update r720-1 --tarball target/release-linux/Kanna-4.1.0-linux-x86_64.tar.gz", "Put the build in that tarball on r720-1."),
         ],
         parse: parse_fleet,
         show: output::fleet,
@@ -1150,6 +1153,7 @@ fn parse_agents(args: &mut Argv) -> Result<Value, Failure> {
 
 fn parse_fleet(args: &mut Argv) -> Result<Value, Failure> {
     let peer = args.option("--peer")?;
+    let tarball = args.option("--tarball")?;
     let action = args.positional();
     let machine = |what: &str, args: &mut Argv| args.positional().ok_or_else(|| usage("fleet", &format!("fleet {what} needs a MACHINE: its name or key")));
     let request = match action.as_deref() {
@@ -1160,14 +1164,21 @@ fn parse_fleet(args: &mut Argv) -> Result<Value, Failure> {
         },
         Some("name") => json!({ "action": "name", "name": args.positional().ok_or_else(|| usage("fleet", "fleet name needs a NAME"))? }),
         Some(what @ ("ping" | "revoke" | "sync")) => json!({ "action": what, "host": machine(what, args)? }),
+        Some("update") => {
+            let tarball = tarball.as_ref().map(|t| std::path::absolute(t).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| t.clone()));
+            json!({ "action": "update", "hosts": args.positionals(), "tarball": tarball })
+        }
         Some("addr") => {
             let host = machine("addr", args)?;
             json!({ "action": "addr", "host": host, "addr": args.positional().ok_or_else(|| usage("fleet", "fleet addr needs a HOST or HOST:PORT"))? })
         }
-        Some(other) => return Err(usage("fleet", &format!("unknown action \"{other}\" (status, pair, name, ping, addr or revoke)"))),
+        Some(other) => return Err(usage("fleet", &format!("unknown action \"{other}\" (status, pair, name, ping, addr, update or revoke)"))),
     };
     if peer.is_some() && request["action"] != "pair" {
         return Err(usage("fleet", "--peer goes with pair CODE"));
+    }
+    if tarball.is_some() && request["action"] != "update" {
+        return Err(usage("fleet", "--tarball goes with update"));
     }
     Ok(request)
 }

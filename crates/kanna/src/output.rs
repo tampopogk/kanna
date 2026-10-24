@@ -1035,12 +1035,49 @@ fn short_key(key: &Value) -> String {
     key.as_str().unwrap_or("?").chars().take(10).collect()
 }
 
+fn release(release: &Value) -> String {
+    match (release["version"].as_str(), release["commit"].as_str()) {
+        (Some(version), Some(commit)) => format!("{version} ({})", short_commit(commit)),
+        (Some(version), None) => version.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn short_commit(commit: &str) -> String {
+    let dirty = if commit.ends_with("-dirty") { "-dirty" } else { "" };
+    format!("{}{dirty}", commit.chars().take(8).collect::<String>())
+}
+
+fn fleet_update(reply: &Value) -> String {
+    let mut out = vec![format!("Kanna {} for {} {}", release(&reply["release"]), reply["release"]["os"].as_str().unwrap_or("?"), reply["release"]["arch"].as_str().unwrap_or("?"))];
+    let machines = reply["machines"].as_array().cloned().unwrap_or_default();
+    if machines.is_empty() {
+        out.push("no other machines in the fleet".into());
+    }
+    for machine in machines {
+        let name = machine["name"].as_str().unwrap_or("?");
+        let line = if let Some(skipped) = machine["skipped"].as_str() {
+            format!("skipped ({skipped})")
+        } else if machine["already"] == true {
+            "already runs it".to_string()
+        } else if machine["ok"] == true {
+            let from = machine["from"].as_str().map_or(String::new(), |f| format!(" from {}", short_commit(f)));
+            format!("updated{from}, back in {:.0}s with its terminals", machine["secs"].as_f64().unwrap_or(0.0))
+        } else {
+            format!("failed: {}", machine["error"]["message"].as_str().unwrap_or("?"))
+        };
+        out.push(format!("  {name:<14} {line}"));
+    }
+    out.join("\n")
+}
+
 pub fn fleet(request: &Value, reply: &Value) -> String {
     match request["action"].as_str() {
         Some("pair") => format!("added {} to your fleet", reply["name"].as_str().unwrap_or("?")),
         Some("name") => format!("this machine is {} now", reply["name"].as_str().unwrap_or("?")),
         Some("addr") => format!("will try {} for {}", reply["addr"].as_str().unwrap_or("?"), request["host"].as_str().unwrap_or("?")),
         Some("sync") => format!("swapped peer logs with {}", reply["name"].as_str().unwrap_or("?")),
+        Some("update") => fleet_update(reply),
         Some("revoke") => {
             let told = join(&reply["told"]);
             let told = if told.is_empty() { "no other machine was reachable to hear it yet".to_string() } else { format!("told {told}") };
@@ -1071,7 +1108,9 @@ pub fn fleet(request: &Value, reply: &Value) -> String {
                 } else {
                     peer["path"].as_str().map_or("not connected".to_string(), String::from)
                 };
-                out.push(format!("  {:<14} {:<14} {}  {}", peer["name"].as_str().unwrap_or("?"), state, short_key(&peer["key"]), join(&peer["addrs"])));
+                let runs = release(&peer["release"]);
+                let runs = if runs.is_empty() { String::new() } else { format!("  Kanna {runs}") };
+                out.push(format!("  {:<14} {:<14} {}  {}{runs}", peer["name"].as_str().unwrap_or("?"), state, short_key(&peer["key"]), join(&peer["addrs"])));
             }
             for nearby in reply["nearby"].as_array().into_iter().flatten().filter(|n| n["pairing"] == true) {
                 out.push(format!("waiting to pair on this LAN: {}  {}", short_key(&nearby["key"]), join(&nearby["addrs"])));

@@ -103,6 +103,7 @@ pub enum Event {
     AppGone { conn: u64 },
     FleetConfirm { question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send> },
     FleetSave(Value),
+    Restart,
     Quit(i32),
     Shutdown(String),
 }
@@ -124,9 +125,19 @@ fn main() {
         eprint!("{} ", stamp());
         unstamped(info)
     }));
-    if let Err(message) = run() {
-        log!("kanna-daemon: {message}");
-        std::process::exit(1);
+    match run() {
+        Ok(Some(daemon)) => {
+            use std::os::unix::process::CommandExt;
+            log!("kanna-daemon: restarting as {}", daemon.display());
+            let error = std::process::Command::new(&daemon).args(&args).exec();
+            log!("kanna-daemon: can't restart as {}: {error}", daemon.display());
+            std::process::exit(1);
+        }
+        Ok(None) => {}
+        Err(message) => {
+            log!("kanna-daemon: {message}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -154,7 +165,7 @@ fn app_socket() -> PathBuf {
     support_folder().join("kanna/kanna.sock")
 }
 
-fn run() -> Result<(), String> {
+fn run() -> Result<Option<PathBuf>, String> {
     let _ = Brand::set_current(Brand::new("kanna", "Kanna"));
     let build_id = kanna_build::own_build_id();
     let build = Build::current();
@@ -164,7 +175,7 @@ fn run() -> Result<(), String> {
     }
     if let Some(owner) = lifeline::owner().filter(|pid| lifeline::gone(*pid)) {
         log!("kanna-daemon: its owner (pid {owner}, {}) is gone; not starting", lifeline::OWNER);
-        return Ok(());
+        return Ok(None);
     }
     let state_dir = env_path("KANNA_STATE_DIR").unwrap_or_else(|| socket.parent().map(Path::to_path_buf).unwrap_or_default());
     if let Ok(helper) = std::env::current_exe() {
@@ -176,7 +187,7 @@ fn run() -> Result<(), String> {
     let marker = state_dir.join(SHUTDOWN_MARKER);
     if waited && marker.exists() {
         log!("kanna-daemon: the daemon before it shut this Kanna down while it waited; not starting");
-        return Ok(());
+        return Ok(None);
     }
     let _ = std::fs::remove_file(&marker);
     let _ = std::fs::write(state_dir.join(kanna_build::RECORD), format!("{:#}\n", build.record(app_bundle().as_deref())));
@@ -348,7 +359,7 @@ fn run() -> Result<(), String> {
     }
 
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
-    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), layout.clone(), app_timeout, build_id.clone()));
+    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), layout.clone(), app_timeout, build_id.clone(), fleet::release(fleet.as_ref().and_then(|f| f.install.as_ref()))));
     let view_link = Rc::downgrade(&app);
     *layout.on_view.borrow_mut() = Some(Box::new(move |view| {
         if let Some(app) = view_link.upgrade() {
@@ -440,6 +451,7 @@ fn run() -> Result<(), String> {
     drop(events);
 
     let mut failure = None;
+    let mut restart = None;
     let mut shutdown: Option<Shutdown> = None;
     let begin = |why: &str, shutdown: &mut Option<Shutdown>| {
         if shutdown.is_some() {
@@ -617,6 +629,14 @@ fn run() -> Result<(), String> {
                     log!("kanna-daemon: can't save the fleet in kanna.db: {error}");
                 }
             }
+            Event::Restart => match fleet.as_ref().and_then(|f| f.install.as_ref()) {
+                Some(install) if shutdown.is_none() => {
+                    log!("kanna-daemon: updated to {}; restarting, and the keeper keeps the terminals", install.current().unwrap_or_default());
+                    restart = Some(install.daemon());
+                    break;
+                }
+                _ => {}
+            },
             Event::Quit(_) => continue,
             Event::Shutdown(why) => begin(&why, &mut shutdown),
         }
@@ -634,7 +654,7 @@ fn run() -> Result<(), String> {
     server.stop();
     match failure {
         Some(reason) => Err(format!("{reason}; stopping")),
-        None => Ok(()),
+        None => Ok(restart),
     }
 }
 

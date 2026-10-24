@@ -124,12 +124,14 @@ pub struct AppLink {
     stopping: Cell<bool>,
     backlog: RefCell<Option<Weak<crate::backlog::Backlog>>>,
     build: Option<String>,
+    release: Value,
 }
 
 impl AppLink {
-    pub fn new(core: WeakCore, terminals: Rc<Terminals>, diffs: Rc<Diffs>, layout: Rc<DaemonLayout>, timeout: Duration, build: Option<String>) -> AppLink {
+    pub fn new(core: WeakCore, terminals: Rc<Terminals>, diffs: Rc<Diffs>, layout: Rc<DaemonLayout>, timeout: Duration, build: Option<String>, release: Value) -> AppLink {
         AppLink {
             build,
+            release,
             core,
             terminals,
             diffs,
@@ -216,11 +218,23 @@ impl AppLink {
                 return true;
             }
         }
+        let mine = kanna_net::update::protocols(&self.release["protocols"]).unwrap_or([1, 1]);
+        let theirs = hello.get("args").and_then(|a| a.get("protocols")).and_then(kanna_net::update::protocols);
+        if let Some(theirs) = theirs.filter(|theirs| kanna_net::update::common(mine, *theirs).is_none()) {
+            log!("kanna-daemon: the app speaks protocol {}–{}, and this daemon {}–{}; it keeps running", theirs[0], theirs[1], mine[0], mine[1]);
+            answer(json!({ "id": id, "ok": false, "error": { "code": "other_protocol", "message": format!("this daemon speaks protocol {}–{}", mine[0], mine[1]) }, "daemon": self.release }));
+            let _ = stream.shutdown(Shutdown::Read);
+            return false;
+        }
         let pid = hello.get("args").and_then(|a| a.get("pid")).cloned().unwrap_or(Value::Null);
         log!("kanna-daemon: the app attached (pid {pid})");
         self.layout.flush();
         let panes = self.core.upgrade().map_or(Value::Array(vec![]), |core| core.with_panes(pane_table));
-        answer(json!({ "id": id, "ok": true, "daemon": { "pid": std::process::id(), "build": self.build }, "panes": panes, "layout": self.layout.view() }));
+        let mut daemon = json!({ "pid": std::process::id(), "build": self.build });
+        if let (Some(daemon), Some(release)) = (daemon.as_object_mut(), self.release.as_object()) {
+            daemon.extend(release.clone());
+        }
+        answer(json!({ "id": id, "ok": true, "daemon": daemon, "panes": panes, "layout": self.layout.view() }));
         *self.app.borrow_mut() = Some(Connection { id: conn, out, stream, behind: Cell::new(false), cut: Cell::new(false) });
         let statuses: Vec<(String, String)> = self.core.upgrade().map_or(vec![], |core| {
             core.with_panes(|panes| panes.iter().filter_map(|p| p.status().map(|s| (p.id.clone(), s.to_string()))).collect())

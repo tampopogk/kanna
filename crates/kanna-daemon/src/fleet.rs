@@ -3,8 +3,8 @@ use crate::db::Db;
 use crate::Event;
 use kanna_mux::json::{json, string, Map, Value};
 use kanna_mux::{CoreHandle, KmuxError, Responder};
-use kanna_net::{Config, Failure, Host, Node};
-use std::path::Path;
+use kanna_net::{Config, Failure, Host, Install, Node, Tarball};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -15,9 +15,13 @@ const CONFIRM_WAIT: Duration = Duration::from_secs(120);
 
 const CONFIRM: &str = "app.fleet.confirm";
 
+const RELEASES: &str = "https://github.com/tampopogk/kanna/releases/download";
+
 pub struct Fleet {
     runtime: tokio::runtime::Runtime,
     node: Result<Node, String>,
+    state_dir: PathBuf,
+    pub install: Option<Install>,
 }
 
 struct DaemonHost(Mutex<Sender<Event>>);
@@ -33,6 +37,10 @@ impl Host for DaemonHost {
 
     fn save(&self, state: Value) {
         let _ = self.0.lock().unwrap_or_else(|p| p.into_inner()).send(Event::FleetSave(state));
+    }
+
+    fn restart(&self) {
+        let _ = self.0.lock().unwrap_or_else(|p| p.into_inner()).send(Event::Restart);
     }
 }
 
@@ -50,6 +58,38 @@ fn capabilities() -> Value {
     json!({ "os": std::env::consts::OS, "arch": std::env::consts::ARCH, "cores": cores })
 }
 
+pub fn release(install: Option<&Install>) -> Value {
+    let channel = kanna_build::Build::current().channel.id();
+    json!({ "commit": install.and_then(Install::current), "version": kanna_build::VERSION, "channel": channel, "os": std::env::consts::OS, "arch": std::env::consts::ARCH, "protocols": kanna_build::PROTOCOLS })
+}
+
+fn release_url(arch: &str) -> Result<String, KmuxError> {
+    let channel = kanna_build::Build::current().channel;
+    let name = match channel {
+        kanna_build::Channel::Production => "Kanna",
+        kanna_build::Channel::Staging => "Kanna-Staging",
+        kanna_build::Channel::Dev => return Err(KmuxError::new("no_release", "this Kanna is a dev build, so no release has its Linux tarball: give one with --tarball FILE (scripts/build-linux.sh makes it)")),
+    };
+    let version = kanna_build::VERSION;
+    Ok(format!("{RELEASES}/v{version}/{name}-{version}-linux-{arch}.tar.gz"))
+}
+
+async fn download(url: &str, folder: &Path) -> Result<PathBuf, Failure> {
+    let file = folder.join(url.rsplit('/').next().unwrap_or("release.tar.gz"));
+    if file.is_file() {
+        return Ok(file);
+    }
+    tokio::fs::create_dir_all(folder).await.map_err(|e| Failure::new("no_release", format!("can't make {}: {e}", folder.display())))?;
+    let part = file.with_extension("part");
+    let fetched = tokio::process::Command::new("curl").arg("-fsSL").arg("-o").arg(&part).arg(url).output().await.map_err(|e| Failure::new("no_release", format!("can't run curl: {e}")))?;
+    if !fetched.status.success() {
+        let _ = tokio::fs::remove_file(&part).await;
+        return Err(Failure::new("no_release", format!("can't download {url}: {} (give a tarball with --tarball FILE)", String::from_utf8_lossy(&fetched.stderr).trim())));
+    }
+    tokio::fs::rename(&part, &file).await.map_err(|e| Failure::new("no_release", e.to_string()))?;
+    Ok(file)
+}
+
 fn port() -> Option<u16> {
     std::env::var("KANNA_FLEET_PORT").ok().and_then(|p| p.parse().ok())
 }
@@ -57,13 +97,14 @@ fn port() -> Option<u16> {
 impl Fleet {
     pub fn start(state_dir: &Path, db: &Db, events: Sender<Event>) -> Result<Fleet, String> {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("kanna.fleet").enable_all().build().map_err(|e| format!("can't start the fleet's runtime: {e}"))?;
+        let install = std::env::current_exe().ok().and_then(|exe| Install::detect(&exe));
         let node = kanna_net::read_key(&state_dir.join(KEY)).and_then(|secret| {
             let saved = db.fleet().unwrap_or_else(|_| json!({}));
             let mdns = std::env::var("KANNA_FLEET_MDNS").map_or(true, |v| v != "0");
-            let config = Config { secret, saved, name: hostname(), capabilities: capabilities(), port: port(), mdns };
+            let config = Config { secret, saved, name: hostname(), capabilities: capabilities(), port: port(), mdns, release: release(install.as_ref()), install: install.clone() };
             runtime.block_on(Node::start(config, Box::new(DaemonHost(Mutex::new(events)))))
         });
-        Ok(Fleet { runtime, node })
+        Ok(Fleet { runtime, node, state_dir: state_dir.to_path_buf(), install })
     }
 
     pub fn describe(&self) -> String {
@@ -109,6 +150,24 @@ impl Fleet {
                 let peer = string(&args, "peer").map(String::from);
                 self.spawn(responder, async move { node.pair(&code, peer.as_deref()).await })
             }
+            "update" => {
+                let hosts: Vec<String> = args.get("hosts").and_then(Value::as_array).map(|h| h.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+                let (path, url) = match string(&args, "tarball") {
+                    Some(path) => (Some(PathBuf::from(path)), String::new()),
+                    None => match release_url("x86_64") {
+                        Ok(url) => (None, url),
+                        Err(e) => return responder.reply(Err(e)),
+                    },
+                };
+                let folder = self.state_dir.join("releases");
+                self.spawn(responder, async move {
+                    let path = match path {
+                        Some(path) => path,
+                        None => download(&url, &folder).await?,
+                    };
+                    node.update(hosts, Tarball::open(&path).await?).await
+                })
+            }
             "revoke" | "ping" | "sync" => match needs_host(host) {
                 Ok(host) => self.spawn(responder, async move {
                     match action.as_str() {
@@ -139,7 +198,7 @@ impl Fleet {
                     })
                 });
             }
-            other => responder.reply(Err(KmuxError::new("bad_request", format!("unknown fleet action \"{other}\" (status, name, offer, wait, pair, revoke, addr, ping, sync or call)")))),
+            other => responder.reply(Err(KmuxError::new("bad_request", format!("unknown fleet action \"{other}\" (status, name, offer, wait, pair, revoke, addr, ping, sync, update or call)")))),
         }
     }
 
