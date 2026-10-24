@@ -1,6 +1,6 @@
 # Build Macs and the xcodebuild Shim
 
-**Status:** planned · **Part of:** [fleet](fleet.md) · **Research:** [xcodebuild shim](../research/xcodebuild-shim.md)
+**Status:** planned · **Part of:** [fleet](fleet.md) · **Isolation:** [shared build Macs](build-mac-isolation.md) · **Research:** [xcodebuild shim](../research/xcodebuild-shim.md)
 
 A task on Linux works on Apple code as if Xcode were local. Its `xcodebuild`, `xcrun`, `simctl`, `codesign` and project-chosen `swift` calls run on a **build Mac** against the agent's current worktree. Output and the exit code stream back, and test results, screenshots and built apps arrive where the agent expects them. Any number of Macs, Intel and Apple Silicon, form the **pool**.
 
@@ -20,10 +20,8 @@ A task on Linux works on Apple code as if Xcode were local. Its `xcodebuild`, `x
 - **Swift is per project:** `swift build` on Linux stays Linux's unless the repo's `.kanna` settings send it to a Mac. The two platforms keep separate build folders.
 - **Requests are structured:** arguments are passed as a list and spawned directly on the Mac, never pasted into a shell command.
 - **The Mac never writes source back.** Files a build generates come back only as declared outputs.
-- **Not a sandbox:** builds, package plugins and tests run code. So a job never runs as the user that holds the daemon's `device.key`: a job that could read it could impersonate the Mac to the fleet.
-  - **On this MBP (slice 7's first step):** jobs run as the owner, as the owner's own tasks already do.
-  - **On a build Mac:** the daemon runs as a service user (`kanna`). A root LaunchDaemon, `kanna-jobd`, takes job requests from it on a local socket and runs each job as a job user (`kanna-build`, one per tenant with Cloud), who can reach neither the daemon's key nor the owner's keychain.
-- **UI tests can't be isolated per user:** macOS has one console session, and XCUITest in a background user's session is unreliable. A UI test owns the Mac's GUI session for its duration. For tenants, UI-test isolation is per Mac, or per Tart VM (macOS licensing allows two per Mac), and Cloud prices Mac UI time accordingly.
+- **A macOS VM is mandatory for remote builds:** several mutually untrusted users can share a physical Mac. Project code runs only in a tenant-exclusive guest; host accounts are not the tenant boundary. The host retains its fleet identity and never falls back to executing a build itself. See [isolation](build-mac-isolation.md) for credentials, networking, VM lifecycle and the required proof. The previous owner-account MBP run is a forwarding experiment, not the product execution mode.
+- **UI tests use the guest console:** each tenant VM has its own logged-in job-user Aqua session and Simulator state. Concurrent tenants use separate guests; UI jobs within one guest serialize. Guest capacity is admitted against host resources and applicable licensing, not an assumed unlimited pool.
 
 ## 2. A job
 
@@ -32,8 +30,8 @@ sequenceDiagram
     participant AG as agent on r720-2
     participant K as kanna build (shim)
     participant D2 as daemon r720-2
-    participant DM as daemon on a build Mac
-    participant S as supervisor (kanna-build user)
+    participant DM as host daemon + VM manager
+    participant S as supervisor in tenant macOS VM
     AG->>K: xcodebuild -scheme App test
     K->>D2: job: argv, cwd, env allowlist, needs
     D2->>DM: pick a Mac (capabilities), open streams
@@ -54,9 +52,9 @@ sequenceDiagram
 
 ## 3. Paths and artifacts
 
-| | Linux | Mac |
+| | Linux | Mac guest |
 |---|---|---|
-| Source | `~/repos/app/.kanna-worktrees/task-1dfb/` | `~kanna-build/mirrors/r720-2/app/task-1dfb/src/` |
+| Source | `~/repos/app/.kanna-worktrees/task-1dfb/` | `~kanna-build/mirrors/r720-2/app/task-1dfb/src/` inside the tenant VM |
 | Caches | — | `~kanna-build/mirrors/r720-2/app/task-1dfb/derived/<xcode>/` |
 | One job's results | the path the agent named, or `.kanna/build/<job>/` | a fresh folder per job |
 
@@ -66,9 +64,9 @@ sequenceDiagram
 
 ## 4. The pool
 
-- **Each build Mac advertises** arch, macOS, the Xcode versions installed, Simulator runtimes, cores, RAM and free disk. A job states what it needs (`xcode: 26.x`, `arch: arm64`); Kanna picks the Mac that matches with the shortest queue, preferring one that already has the task's mirror.
-- **Slots:** one heavy build and one UI-test slot per Mac to start, raised after measuring warm builds and memory pressure. Xcode's own test parallelism is bounded as well.
-- **Simulators are leased** by UDID across a job's install, launch and screenshot steps, never `booted`. UI tests run in the console session, so a build Mac stays logged in as its job user, and `kanna-jobd` starts UI jobs there through a LaunchAgent.
+- **Each build Mac advertises** admitted guest capacity, guest arch/macOS, installed Xcode versions, Simulator runtimes, cores, RAM and free disk. A job states what it needs (`xcode: 26.x`, `arch: arm64`); Kanna picks a compatible tenant-owned guest with the shortest queue, preferring one that already has the task's mirror.
+- **Slots:** one heavy build and one UI-test slot per guest to start, with a host-wide admission cap based on measured memory/CPU pressure and allowed VM capacity. Xcode's own test parallelism is bounded as well.
+- **Simulators are leased** by (guest, UDID) across a job's install, launch and screenshot steps, never `booted`. UI tests run through a LaunchAgent in the guest job user's console session.
 - **Disk:** mirrors and DerivedData have a quota per Mac and are evicted least recently used first. Five servers' tasks fill one mini quickly.
 - **A build Mac's daemon runs from launchd** (`kanna fleet serve`), since no app may be open there ([fleet §5](fleet.md#5-the-app-link-over-the-network)).
 - **Signing:** Simulator and ad-hoc signing for agent jobs. Distribution identities stay out of ordinary jobs, and a signed build uses a temporary keychain made for that job.
@@ -81,10 +79,10 @@ The Simulator runs on the MBP. A remote task's `.app`, built on a build Mac, is 
 
 [Fleet](fleet.md#10-build-order) slices 7 and 12:
 
-- **7, first version:** one Mac: this MBP first (jobs as the owner), then the mini (the service user, `kanna-jobd` and the job user):
+- **7, first version:** one physical Mac, this MBP first then the mini, with builds inside a tenant macOS VM after the [isolation model](build-mac-isolation.md#5-proof-before-product) passes:
   - the shim and `kanna build`, and `kanna build -- SCRIPT`;
   - the snapshot sync, the mirror and lock, the supervisor;
   - raw output and mapped diagnostics, the exit code, artifacts.
 
   Acceptance covers files that are dirty, untracked and deleted; a warm rebuild; two tasks at once; cancelling; a dropped connection; a failed test's attachments; a screenshot coming back. Done when a Linux task builds Kanna.app and runs a Swift test.
-- **12, the pool:** several Macs matched by capability, slots, Simulator leases, the queue shown in the app, the `.app` fetched to the MBP.
+- **12, the pool:** several Macs with tenant-isolated guest slots, matched by guest capability, guest-scoped Simulator leases, the queue shown in the app, the `.app` fetched to the MBP. Never pool different tenants inside one guest.

@@ -28,5 +28,5 @@
   ],
   "returned_app_sha256": "cf7fb6ed9eb055ddd6beee4acba6bf0f1f03ee869d7ca27eb933884a0d5cfd57",
   "ui_job_user": "Owner-account UI proof completed 2026-10-25 per user request; see ui.json. Separate job user not exercised.",
-  "gate": "User-approved MBP model complete. Dedicated job-user boundary remains a Fleet 12 validation requirement."
+  "gate": "Forwarding proof only. Fleet 7 and 12 also require the build-mac-isolation model with tenant-exclusive macOS VMs."
 }

@@ -4,11 +4,12 @@ Reference for [Fleet §10](../../../docs/specs/fleet.md#10-build-order), before
 slices 7 and 12; follows [build Macs](../../../docs/specs/build-macs.md) and
 the [research](../../../docs/research/xcodebuild-shim.md).
 
-**Status: complete for the user-approved MBP owner-account scope.** On 25 October
-the user chose their own account for testing instead of creating `kanna-build`.
-Dirty builds, Linux diagnostics, and a console-session UI test are demonstrated.
-Dedicated job-user execution and isolation remain unproved for Fleet 12's build
-Mac setup; an owner-account test is not evidence of that isolation.
+**Status: forwarding proof complete; shared build-Mac isolation is not proved.**
+The user authorized an owner-account UI experiment, then required proper isolation
+for multiple users on one Mac. The [isolation spec](../../../docs/specs/build-mac-isolation.md)
+now mandates tenant-exclusive macOS VMs for remote builds. This model's host
+executor is an experiment only; Fleet 7 and 12 also wait for the separate
+`build-mac-isolation` model. Host accounts do not satisfy that requirement.
 This is a Python experiment, not product code. It builds a tiny macOS SwiftUI
 app, not Kanna.app (building Kanna.app is slice 7's acceptance requirement).
 
@@ -30,7 +31,7 @@ Real runs on the r720-1 Incus VM → this Mac, Xcode 26.6:
 | Cancellation | Process group terminated; build exit −15, CLI exit 143 |
 | Two tasks submitted together | Separate mirrors; both completed under one heavy slot |
 | Owner console UI test | 1 passed as `jeremyhale`, UID 502 = console UID, Aqua; screenshot returned to Linux |
-| Separate job-user execution/isolation | Not exercised; user selected the owner-account test |
+| Shared build-Mac isolation | Not exercised; requires tenant-exclusive macOS VM model before Fleet 7 and 12 |
 
 Recorded reports: [builds](evidence/builds.json), [lifecycle](evidence/lifecycle.json),
 [machine/session identity and raw diagnostic](evidence/run.json),
@@ -144,11 +145,11 @@ distribution-signing dependency: the macOS fixture uses ad-hoc signing.
    python3 /opt/kanna/current/shim/prove.py ui jeremyhale
    ```
 
-   For the separate build-Mac account case, get user approval before creating
-   the standard local `kanna-build` account, then log into it and launch the
-   endpoint there with its own token and state. Run `prove.py ui` without the
-   owner override. Do not substitute `sudo -u` or a background SSH session for
-   an actual console login.
+   The isolation follow-up must run this fixture inside tenant-exclusive macOS
+   guests, with `kanna-build` logged in inside each guest, and run `prove.py ui`
+   without the owner override. Creating another host account is not sufficient.
+   Do not substitute `sudo -u` or a background SSH session for a guest console
+   login. This README does not provision or claim to isolate those guests.
 
    The test launches the fixture app, asserts its dirty/untracked label, clicks
    its button and attaches a window screenshot. It verifies the expected user, the matching
@@ -174,9 +175,9 @@ transport/model errors use CLI status 125 and do not invent a build result.
   Account for Mac path aliases when constructing diagnostic mappings.
 - Persist IDs, logs, status and artifacts outside the client connection. Retrying
   a request or reconnecting must not execute it a second time.
-- Require the UI job's **own** Aqua console session; record UID and session
-  identity in the evidence. This MBP proof uses the owner; repeat as the job
-  user when implementing the dedicated build-Mac account boundary.
+- Require the UI job's **own guest** Aqua console session; record tenant, VM, UID
+  and session identity in the isolation follow-up. This experiment uses the host
+  owner and does not exercise that boundary.
 
 ## Boundaries and surprises
 
