@@ -623,12 +623,12 @@ fn run() -> Result<(), String> {
     }
 
     app.close();
-    if let Some(fleet) = &fleet {
-        fleet.stop();
-    }
     layout.flush();
     layout.save_now();
     terminals.shutdown();
+    if let Some(fleet) = &fleet {
+        fleet.stop();
+    }
     let _ = std::fs::remove_file(&pid_file);
     std::mem::forget(rules_updater);
     server.stop();

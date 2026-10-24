@@ -100,6 +100,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <key>CFBundleVersion</key><string>$build_number</string>
 <key>NSAppleEventsUsageDescription</key><string>A program running in Kanna would like to use AppleScript.</string>
 <key>NSMicrophoneUsageDescription</key><string>A program running in Kanna would like to use your microphone.</string>
+<key>NSLocalNetworkUsageDescription</key><string>Kanna connects to your other machines on this network to run and show their tasks.</string>
+<key>NSBonjourServices</key><array><string>_kanna._udp</string></array>
 <key>LSMinimumSystemVersion</key><string>$macos_target</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>

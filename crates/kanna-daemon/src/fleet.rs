@@ -163,7 +163,7 @@ impl Fleet {
 
     pub fn stop(&self) {
         if let Ok(node) = &self.node {
-            let _ = self.runtime.block_on(tokio::time::timeout(Duration::from_secs(1), node.close()));
+            let _ = self.runtime.block_on(async { tokio::time::timeout(Duration::from_secs(1), node.close()).await });
         }
     }
 }

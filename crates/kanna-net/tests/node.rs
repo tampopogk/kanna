@@ -27,14 +27,18 @@ impl Host for Machine {
 }
 
 async fn machine(name: &str, saved: Value) -> (Node, Machine) {
+    machine_on(name, saved, 0).await
+}
+
+async fn machine_on(name: &str, saved: Value, port: u16) -> (Node, Machine) {
     let host = Machine::default();
     *host.yes.lock().unwrap() = true;
-    let config = Config { secret: SecretKey::generate(), saved, name: name.into(), capabilities: json!({ "os": std::env::consts::OS }), port: Some(0), mdns: false };
+    let config = Config { secret: SecretKey::generate(), saved, name: name.into(), capabilities: json!({ "os": std::env::consts::OS }), port: Some(port), mdns: false };
     (Node::start(config, Box::new(host.clone())).await.unwrap(), host)
 }
 
 fn peer(node: &Node) -> String {
-    format!("{}@127.0.0.1:{}", node.key(), node.port())
+    format!("{}@{}:{}", node.key(), "127.0.0.1", node.port())
 }
 
 async fn pair(inviter: &Node, newcomer: &Node) -> Result<Value, kanna_net::Failure> {
@@ -142,4 +146,13 @@ async fn a_third_machine_learns_the_fleet_and_a_revocation_reaches_it() {
     let revoked = mbp.revoke("mini").await.unwrap();
     assert_eq!(revoked["told"], json!(["linux-vm"]));
     assert_eq!(mini.call("linux-vm", json!({ "id": 1, "cmd": "list" })).await.unwrap_err().code, "revoked");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn machines_on_fixed_ports_reach_each_other_at_a_given_address() {
+    let (mbp, _) = machine_on("mbp", json!({}), 47471).await;
+    let (vm, _) = machine_on("linux-vm", json!({}), 47472).await;
+    assert_eq!((mbp.port(), vm.port()), (47471, 47472));
+    pair(&mbp, &vm).await.unwrap();
+    mbp.call("linux-vm", json!({ "id": 1, "cmd": "list" })).await.unwrap();
 }
