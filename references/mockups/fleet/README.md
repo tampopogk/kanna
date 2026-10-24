@@ -20,7 +20,7 @@ The README is in this adjacent directory so `fleet.html` stays at the exact loca
 
 ## Try it
 
-1. Hover or keyboard-focus **Review build output**: its tooltip says **tests-1 · Relayed**. Pull it and hover its agent header or Shelf item for the same details. Open Fleet from the title bar, then return to the same task.
+1. Hover or keyboard-focus **Review build output**: its tooltip says **tests-1 · Relayed**. Pull it and hover its agent header or Shelf item for the same details. Select the fixed Fleet tab, then the task’s document tab. Shelf and Fleet stay first in the tab strip and cannot be closed; switching them keeps the current agent and task in place.
 2. Pull **Restore task tabs**. It is offline: the last view stays, but input is disabled. Switch to **All on LAN** above the app window: input returns without losing its place or changing its owner.
 3. Use **Internet direct** and inspect Fleet. Direct internet is distinct from LAN and relay; task tooltips update with the path. No connection state adds a persistent badge to a task card.
 4. Use **Remote offline**. Inspect the planner, retained claims, and the backlog task waiting for its offline owner. Open Recipe Box to use a local task.
@@ -54,6 +54,6 @@ Screenshots live in `docs/specs/fleet-{desk,page,relay,offline,tooltip}.png`. Fo
 - A direct-path recovery updates the connection tooltip automatically, without disturbing the task or its position.
 - Bare content IDs are insufficient: three peers can all have `term-41`.
 
-**Checked:** Chrome rendering at the capture sizes, light mode and 900px width; project reopening; three claims; direct / relay / offline tooltips; disabled offline input; reconnect preserving selection and order; pane-input isolation; no persistent host or path labels in task views; hover/focus tooltip contents and dismissal; Fleet path details; no JavaScript errors. Screenshots were inspected visually. Product tests should copy the comparison cases in the spec and compare their rendering with these scenes.
+**Checked:** Chrome rendering at the capture sizes, light mode and 900px width; project reopening; fixed Shelf/Fleet tabs, task preservation and keyboard tab navigation; three claims; direct / relay / offline tooltips; disabled offline input; reconnect preserving selection and order; pane-input isolation; no persistent host or path labels in task views; hover/focus tooltip contents and dismissal; Fleet path details; no JavaScript errors. Screenshots were inspected visually. Product tests should copy the comparison cases in the spec and compare their rendering with these scenes.
 
 **Simulation limits:** `mbp` is this Mac; `dev-1`, `tests-1`, and `tools-1` are illustrative Incus peers on r720-1, not provisioned VMs. All work, paths, ages and capabilities are fixtures. No SSH, Cloud or relay probe was needed. This model does not validate transport, persistence, repo-identity matching, actual jobs or background delivery; those belong to their slices and other Fleet models. Shelf membership is fixed; backlog mutation is outside this UI model. Project windows are represented by retained sections in one page, with only the front one visible.
