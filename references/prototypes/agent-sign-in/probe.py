@@ -90,7 +90,7 @@ def holder_token(refresh=False):
                 auth = path.read_text()
                 entry('codex-holder', auth)
             finally:
-                p.terminate()
+                p.stdin.close()
                 try:
                     p.wait(timeout=5)
                 except subprocess.TimeoutExpired:

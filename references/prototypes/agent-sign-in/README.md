@@ -4,14 +4,21 @@ Model for [agent sign-in](../../../docs/specs/agent-sign-in.md) and
 [Fleet §10](../../../docs/specs/fleet.md#10-build-order), before Fleet 9.
 This is a throwaway probe, not Kanna product code.
 
-**Status: model complete using the spec's Codex fallback (2026-10-24).**
-The user signed in on the Mac. [Live results](shared-token-results.json) record
-four successful Claude requests and four Codex login rejections across two VMs.
-After the user signed in separately on each VM, the [fallback results](fallback-results.json)
-record four successful, overlapping Codex requests. **Holder-token sharing failed;
-per-machine Codex sign-in passed.** Fleet 9 should implement the observed fallback,
-not treat this as a successful holder integration. Product terms checks remain a
-slice requirement, separate from this technical model.
+**Status: shared Claude and Codex holder flows verified (2026-10-25 JST).**
+One Mac login supplied two isolated VMs with Codex access tokens through the
+experimental app-server `chatgptAuthTokens` interface. [Live evidence](external-token-results.json)
+records **six successful requests**: concurrent initial use, replacement after
+holder refresh, and recovery from an injected invalid signature. Both workers
+kept the same app-server process and thread throughout; neither had a login file
+or refresh credential in its isolated home.
+
+The earlier [CLI-token rejection](shared-token-results.json) and successful
+[independent-login fallback](fallback-results.json) remain valid. The failure was
+the `--with-access-token` import interface, not an inability to share OAuth access
+tokens. **This passing route requires app-server integration; it does not establish
+sharing for the ordinary Codex terminal UI.** Public docs call it experimental,
+while the pinned binary's schema still says internal-only. Fleet 9 must explicitly
+account for this version/support mismatch. Product terms checks remain separate.
 
 ## Run
 
@@ -34,11 +41,14 @@ python3 references/prototypes/agent-sign-in/probe.py store-claude
 # In another terminal, complete Codex's browser flow:
 python3 references/prototypes/agent-sign-in/probe.py sign-in-codex
 
-# After sign-in, the agent or user runs:
+# Verify the holder through app-server (no per-VM sign-in):
+python3 references/prototypes/agent-sign-in/external.py > /tmp/agent-sign-in-external-results.json
+
+# Reproduce the original shared-Claude success / Codex CLI rejection:
 python3 references/prototypes/agent-sign-in/probe.py run > /tmp/agent-sign-in-results.json
 ```
 
-The observed Codex rejection activates the spec's fallback. The user runs these
+To reproduce the independent-login fallback instead, the user runs these
 in **two separate terminals**, following each device-code sign-in in their browser:
 
 ```sh
@@ -84,11 +94,59 @@ start in the main checkout, where this unmerged prototype does not exist yet.
 The holder materializes its Codex login into a private temporary directory only
 while asking Codex app-server to refresh it with `account/read {refreshToken:true}`.
 It saves the updated login back to Keychain before deleting that directory.
-**Only `tokens.access_token` leaves the holder.** No login file, refresh token,
-ID token, or account email is sent to the VMs. Credentials travel on SSH stdin,
+**Only the access token and account ID leave the holder** in the app-server probe
+(the older CLI probe sends just the token). No login file, refresh token, ID token,
+or separate account email is sent to the VMs. The access JWT itself contains identity
+claims: workers can read those, so it is still a sensitive credential. Credentials travel on SSH stdin,
 never shell command lines. Each worker gets only its own provider's credential.
 
-## What the probe measures
+## What the app-server probe measures
+
+`external.py` starts one app-server in a fresh private home on each VM, opts into
+`experimentalApi`, and calls `account/login/start` with `type: chatgptAuthTokens`,
+`accessToken` and `chatgptAccountId`. It starts an ephemeral thread and makes three
+turns on that same thread/process:
+
+1. Both VMs receive the same current access token from the Mac holder.
+2. The Mac forces refresh through its own managed Codex login, saves the rotated
+   credential in Keychain, and supplies the new access token to both running workers.
+3. The coordinator changes one character in the JWT signature (claims unchanged).
+   Codex requests `account/chatgptAuthTokens/refresh` with reason `unauthorized`.
+   The worker checks the account ID, asks the Mac, and returns the replacement.
+   Concurrent requests share **one** serialized holder refresh; Codex retries.
+
+`passed` requires six real marker responses, overlapping turn lifetimes in all
+three phases, changed holder tokens, no worker refresh credentials, and successful
+renewal callbacks on both VMs. Only allowlisted evidence is emitted. The worker
+never reads either VM's existing fallback login. Tokens travel through SSH stdin
+and app-server stdin, not argv or environment. The holder is the only process
+allowed to use its rotating refresh credential.
+
+[Evidence](external-token-results.json), recorded 2026-10-24 21:59 UTC / 25 October
+JST on Codex 0.163.0:
+
+| Phase | Real responses | Overlap | Worker renewal requests | Holder refreshes on request |
+|---|---:|---:|---:|---:|
+| Initial token | 2/2 | 2.442 s | 0 | 0 |
+| Holder-refreshed token | 2/2 | 3.284 s | 0 | 0 |
+| Injected invalid signature | 2/2 | 6.369 s | 2 per VM | 1 total |
+
+No worker `auth.json` was created. The second phase explicitly refreshed once on
+the holder before starting its turns. The third refreshed once on demand and
+coalesced all four callbacks. Do not assume one callback per user turn: background
+requests can also need renewal. The docs give the callback about ten seconds;
+a production holder needs fast responses, deduplication and bounded recovery.
+
+`python3 references/prototypes/agent-sign-in/external-selftest.py` checks isolation,
+callback forwarding, success parsing and secret redaction with a fake app-server.
+It deliberately echoes synthetic secrets in vendor errors and untrusted fields.
+
+This tests recovery from a **deliberately invalid signature**, not waiting for
+natural expiry. It does not test a holder outage, refresh revocation, account
+removal, VM enrollment offline, cross-process holder locking, or the ordinary
+Codex TUI. Timing overlap measures client turn lifetimes, not backend scheduling.
+
+## What the original CLI probe measures
 
 Each round starts both VMs against one credential at a shared future timestamp.
 The worker runs as an unprivileged `probe` user in a fresh temporary home with an
@@ -112,10 +170,10 @@ overlap for each pair, no refresh credential in either Codex worker's auth cache
 and a changed holder access token in round two. Timing overlap measures concurrent
 CLI lifetimes; it is not server-side scheduling telemetry.
 
-This deliberately does **not** claim to test natural token expiry in a running
+The original CLI probe does **not** claim to test natural token expiry in a running
 conversation, revocation propagation, enrollment while the holder is offline,
 Keychain recovery, API-key accounts, or hundreds of workers. Those need additional
-evidence. A refreshed token accepted by a new process is not mid-run renewal.
+evidence. The app-server probe above adds failure recovery within the same running process/thread.
 
 ## Evidence (2026-10-24)
 
@@ -174,10 +232,12 @@ Checked during preparation; these sources can change:
   a distinct credential, not the `access_token` field extracted from browser login.
   That route has not been tested with this user's account and is not evidence for
   the spec's short-lived OAuth holder design.
-- The installed 0.163.0 app-server schema exposes `chatgptAuthTokens`, but labels it
-  **unstable / for OpenAI internal use only**. Do not silently substitute that
-  interface and call the spec's CLI path verified. Generate the schema with
-  `codex app-server generate-json-schema --out /tmp/codex-schema` to inspect it.
+- The [public app-server docs](https://learn.chatgpt.com/docs/app-server#authentication-endpoints)
+  explicitly document external ChatGPT tokens for hosts owning the auth lifecycle,
+  experimental opt-in, and a refresh callback. This led to the passing follow-up
+  probe. The installed 0.163.0 schema still labels this **unstable / internal-only**:
+  record the discrepancy rather than claiming a stable CLI interface. Generate it
+  with `codex app-server generate-json-schema --out /tmp/codex-schema`.
 - [OpenAI Terms of Use](https://openai.com/policies/terms-of-use/)
   prohibit making an account available to other people and bypassing usage limits.
   This probe is one person's machines and does not attempt to increase quotas.
@@ -189,23 +249,29 @@ Copy the Claude evidence contract: real inference on two isolated VMs, overlappi
 runs, and the same unchanged setup token working again in fresh processes.
 Resolve the product terms question above before shipping a subscription-token vault.
 
-For Codex, copy the **negative regression test**: an ordinary ChatGPT OAuth access
-token is rejected by 0.163.0's `--with-access-token`, before and after holder refresh.
-Do not ship the spec's flag assumption as if it passed. Use the verified independent
-per-machine vendor sign-in fallback, or revise
-the design around a supported, verified holder integration. Never copy a rotating
-login file between machines to make a test pass. Successful `login status` is
-insufficient; require real inference in every acceptance case.
+For Codex, copy the **app-server holder contract**: one managed login and one
+refresh owner; only access token plus account ID delivered to workers; external
+login and renewal RPCs; concurrent requests coalesced into one refresh; real
+inference before/after replacement and after an injected authorization failure;
+no refresh credential on either worker. Supply tokens through the daemon's private
+app-server connection. Keep the per-machine sign-in fallback when that integration
+is unavailable. This model is not a TUI auth shim: a product retaining the ordinary
+Codex terminal command needs its own passing integration probe.
+
+Keep the negative CLI regression too: ordinary ChatGPT OAuth tokens are rejected
+by `--with-access-token` in 0.163.0. Never copy a rotating login file between VMs.
+Successful login status alone is insufficient; require real inference.
 
 Do not copy SSH/Incus transport, temporary-home management or this Python Keychain
 adapter into the product. The product supplies its peer link, secret storage,
 account removal/revocation, sandbox deny lists and user-visible sign-in recovery.
 
-**Surprises:** Codex's access-token flag accepts a different credential type from
-the ChatGPT login access token: the real probe confirmed the mismatch. Refreshing
-the token centrally works, but does not make that CLI import path accept it.
-Claude concurrency did work; its product-credential terms remain a separate
-constraint. The sign-in UI also needed separate TUI and token-capture terminals.
+**Surprises:** the token was shareable; the CLI flag was the wrong importer.
+Public app-server documentation describes a route the installed schema labels
+internal-only. A running thread recovered without restarting, and each VM emitted
+two refresh callbacks, all served by one holder refresh. Claude concurrency worked;
+its product terms remain separate. Sign-in also needed separate TUI and token-capture
+terminals so the hidden prompt was usable.
 
 ## Cleanup
 

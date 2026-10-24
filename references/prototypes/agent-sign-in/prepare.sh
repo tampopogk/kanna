@@ -35,5 +35,6 @@ done
 REMOTE
 for vm in agent-sign-in-a agent-sign-in-b; do
   ssh "$host" sudo -n incus exec "$vm" -- tee /opt/agent-sign-in/worker.py < "$here/worker.py" >/dev/null
+  ssh "$host" sudo -n incus exec "$vm" -- tee /opt/agent-sign-in/external.py < "$here/external.py" >/dev/null
 done
 ssh "$host" sudo -n incus list --format csv -c ns4
