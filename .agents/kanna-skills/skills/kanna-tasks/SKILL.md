@@ -77,10 +77,11 @@ When the user asks you to show them something (a diff, a file, a doc, a page, a 
 When the work is done, before you end your turn, set up your window to show the user what you changed and why. You may have run unattended in the backlog: whatever you leave open, focused and zoomed is what the user sees when they pull the task, maybe hours later. Kanna keeps it through the stop.
 
 1. **Open what explains the change best,** as tabs ([Show it in a tab](#show-it-in-a-tab)): the spec you changed (`kanna open md`), the mockup (`kanna open web`), comments on the key code (`kanna comment`, as the `kanna-explain` skill says), a diagram in a doc in `.kanna/tmp/`, the diff (`kanna open diff --merge-base main`: everything the branch changed, committed or not, following the worktree; not a terminal, so it outlasts the stop).
-2. **Close tabs that don't help** (`kanna close PANE`): scratch shells, finished builds.
-3. **Then focus the tab the user should see first** (`kanna focus PANE`), and zoom it if one pane says it all (`kanna zoom PANE`). Do it last: otherwise the tab you opened last is what shows when the task comes onto the Desk. It works the same from the backlog or the Shelf.
-4. **Check it with `kanna workspace list`:** your workspace's tabs and panes, the shown tab, what's focused and zoomed, as the user will see it.
-5. **End your turn with a short summary in the chat:** what changed, why, what's in the tabs, and what's left for the user (merge, a decision, a check).
+2. **If you wrote or changed a diagram, check it draws:** fix every `FILE:LINE: message` that `kanna open md` (or `kanna diagrams check FILE`) prints, then take `kanna screenshot PANE` of the doc, look at the PNG, and fix labels that overlap or are cut off.
+3. **Close tabs that don't help** (`kanna close PANE`): scratch shells, finished builds.
+4. **Then focus the tab the user should see first** (`kanna focus PANE`), and zoom it if one pane says it all (`kanna zoom PANE`). Do it last: otherwise the tab you opened last is what shows when the task comes onto the Desk. It works the same from the backlog or the Shelf.
+5. **Check it with `kanna workspace list`:** your workspace's tabs and panes, the shown tab, what's focused and zoomed, as the user will see it.
+6. **End your turn with a short summary in the chat:** what changed, why, what's in the tabs, and what's left for the user (merge, a decision, a check).
 
 **Nothing worth a tab** (a small fix, a question in words)? Close your tabs and zoom your own pane (`kanna zoom $KANNA_TERMINAL`), so your summary is what the user sees.
 

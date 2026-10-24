@@ -19,6 +19,7 @@ const MAX_LINE: usize = 1 << 20;
 const MAX_OUT: usize = 8 << 20;
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const STOP_LIMIT: Duration = Duration::from_secs(5);
 
 pub struct Settings {
     pub state_dir: PathBuf,
@@ -156,6 +157,7 @@ struct Keeper {
     accept_paused_until: Option<Instant>,
     peer_uid: libc::uid_t,
     stop: bool,
+    stopping: Option<Instant>,
     lock: Option<File>,
     build: Option<String>,
     upgrade: Option<(u64, Value, String)>,
@@ -336,6 +338,7 @@ impl Keeper {
             accept_paused_until: None,
             peer_uid: expected_uid(),
             stop: false,
+            stopping: None,
             lock: Some(lock),
             build: kanna_build::own_build_id(),
             upgrade: None,
@@ -351,7 +354,7 @@ impl Keeper {
             if self.accept_paused_until.is_some_and(|until| Instant::now() >= until) {
                 self.accept_paused_until = None;
             }
-            let listening = if self.accept_paused_until.is_none() { self.listener.as_raw_fd() } else { -1 };
+            let listening = if self.accept_paused_until.is_none() && self.stopping.is_none() { self.listener.as_raw_fd() } else { -1 };
             let mut fds = vec![pollfd(self.sigs.as_raw_fd(), libc::POLLIN), pollfd(listening, libc::POLLIN)];
             for c in &self.conns {
                 let events = if c.out.is_empty() { libc::POLLIN } else { libc::POLLIN | libc::POLLOUT };
@@ -401,6 +404,14 @@ impl Keeper {
             }
             if let Some(wanted) = self.upgrade.take() {
                 self.upgrade(wanted);
+            }
+            if let Some(since) = self.stopping {
+                self.reap();
+                let done = self.closed.is_empty() && self.pending.is_empty() && self.conns.iter().all(|c| c.out.is_empty());
+                if done || since.elapsed() >= STOP_LIMIT {
+                    self.stop = true;
+                }
+                continue;
             }
             self.check_idle();
         }
@@ -579,6 +590,7 @@ impl Keeper {
             }
             "close" => self.close(id),
             "ack" => self.ack(id),
+            "stop" => Ok(self.begin_stop()),
             "upgrade" => match req["binary"].as_str() {
                 Some(binary) if Path::new(binary).is_absolute() => {
                     self.upgrade = Some((self.conns[i].serial, tag, binary.to_string()));
@@ -608,6 +620,9 @@ impl Keeper {
     }
 
     fn spawn(&mut self, i: usize, tag: &Value, id: &str, req: &Value) -> Result<(), String> {
+        if self.stopping.is_some() {
+            return Err("the keeper is stopping".into());
+        }
         valid_id(id)?;
         if self.ptys.contains_key(id) || self.pending.iter().any(|p| p.id == id) {
             return Err(format!("pty {id:?} exists"));
@@ -716,6 +731,25 @@ impl Keeper {
             self.closed.push(Closed { pid: p.pid, kill_at: Some(Instant::now() + self.settings.close_grace) });
         }
         Ok((json!({}), vec![]))
+    }
+
+    fn begin_stop(&mut self) -> (Value, Vec<Rc<OwnedFd>>) {
+        if self.stopping.is_none() {
+            self.stopping = Some(Instant::now());
+            eprintln!("kanna-keeper: stopping: closing {} pty(s)", self.ptys.values().filter(|p| p.exit.is_none()).count());
+            let _ = std::fs::remove_file(paths::socket(&self.settings.state_dir));
+            let ids: Vec<String> = self.ptys.keys().cloned().collect();
+            for id in ids {
+                let _ = self.close(&id);
+            }
+            for p in std::mem::take(&mut self.pending) {
+                if p.exit.is_none() {
+                    unsafe { libc::kill(p.pid, libc::SIGKILL) };
+                }
+                self.spawn_failed(p, "the keeper is stopping".into());
+            }
+        }
+        (json!({}), vec![])
     }
 
     fn ack(&mut self, id: &str) -> Result<(Value, Vec<Rc<OwnedFd>>), String> {

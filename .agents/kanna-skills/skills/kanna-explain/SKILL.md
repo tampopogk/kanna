@@ -30,6 +30,8 @@ kanna comment .kanna/tmp/backlog.md:3 "The daemon owns the backlog; the app only
 
 - **A diagram, not prose:** a mermaid `classDiagram` for a hierarchy, a `flowchart` for who calls whom, a `sequenceDiagram` for a flow, a `stateDiagram-v2` for states, a `gitGraph` for branches and merges, a layer diagram for a stack (the `layer-diagrams` skill), a table for a set of parallel things. A heading and the diagram; at most a line of text under it.
 - **Only those diagram types draw in Kanna.** Any other (`erDiagram`, `gantt`, `pie`, …) shows as "Unsupported diagram type" and its source.
+- **Check it draws before you present it:** `kanna open md` prints `FILE:LINE: message` for each diagram that won't draw (a parse error, a type Kanna doesn't draw), and `kanna diagrams check FILE` checks without opening. Fix every one.
+- **Then look at it:** take `kanna screenshot PANE` of the markdown pane, read the PNG, and fix labels that overlap or are cut off.
 - **Big picture first,** then the code it points to.
 
 ## Not code: a doc in a tab

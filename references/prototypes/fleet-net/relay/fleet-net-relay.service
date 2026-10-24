@@ -1,0 +1,15 @@
+[Unit]
+Description=Fleet network model iroh relay
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+DynamicUser=yes
+ExecStart=/usr/local/bin/iroh-relay-fleet-net --config-path /etc/fleet-net-relay.toml
+LoadCredential=tls.crt:/var/lib/docker/volumes/kanna-relay_caddy-data/_data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/relay.kanna.build/relay.kanna.build.crt
+LoadCredential=tls.key:/var/lib/docker/volumes/kanna-relay_caddy-data/_data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/relay.kanna.build/relay.kanna.build.key
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
