@@ -175,3 +175,24 @@ async fn a_machine_that_restarted_is_dialed_again() {
     assert_eq!(again.port(), port);
     mbp.call("linux-vm", json!({ "id": 2, "cmd": "list" })).await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stale_machine_reached_first_by_a_ping_still_learns_a_revocation() {
+    let (mbp, _) = machine("mbp", json!({})).await;
+    let secret = SecretKey::generate();
+    let (vm, vm_host) = machine_with("linux-vm", json!({}), 0, secret.clone()).await;
+    let (mini, _) = machine("mini", json!({})).await;
+    pair(&mbp, &vm).await.unwrap();
+    pair(&mbp, &mini).await.unwrap();
+    let stale = vm_host.saved.lock().unwrap().clone();
+    vm.close().await;
+    drop(vm);
+    mbp.revoke("mini").await.unwrap();
+    let (vm, _) = machine_with("ignored", stale, 0, secret).await;
+    assert!(names(&vm).contains(&("mini".to_string(), true)), "the stale copy still trusts mini");
+    mbp.addr("linux-vm", &format!("127.0.0.1:{}", vm.port())).unwrap();
+    mini.addr("linux-vm", &format!("127.0.0.1:{}", vm.port())).unwrap();
+    mbp.ping("linux-vm").await.unwrap();
+    assert!(names(&vm).contains(&("mini".to_string(), false)), "{:?}", names(&vm));
+    assert_eq!(mini.call("linux-vm", json!({ "id": 1, "cmd": "list" })).await.unwrap_err().code, "revoked");
+}

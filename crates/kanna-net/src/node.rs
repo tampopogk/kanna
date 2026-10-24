@@ -29,6 +29,8 @@ const PAIRING_SESSION: Duration = Duration::from_secs(180);
 
 const LOOKING: Duration = Duration::from_secs(6);
 
+const BEFORE_THE_CODE: &[&str] = &["unreachable", "pake_confirmation_failed", "bad_pake_message", "no_offer", "code_used", "code_expired", "rate_limited", "already_paired"];
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Failure {
     pub code: String,
@@ -196,8 +198,7 @@ impl Node {
         });
     }
 
-    fn snapshot(&self) -> Value {
-        let state = self.state();
+    fn snapshot(state: &State) -> Value {
         let mut saved = json!({ "name": state.name, "port": state.port, "addrs": state.addrs });
         if let Some(log) = &state.log {
             saved["anchor"] = log.anchor().clone();
@@ -207,10 +208,10 @@ impl Node {
     }
 
     fn save(&self) {
-        if self.state().broken.is_some() {
-            return;
+        let state = self.state();
+        if state.broken.is_none() {
+            self.0.host.save(Node::snapshot(&state));
         }
-        self.0.host.save(self.snapshot());
     }
 
     fn descriptor(&self) -> Value {
@@ -506,6 +507,10 @@ impl Node {
             Err(_) => return Err(Failure::new("unreachable", format!("can't reach {name} within {}s (is its daemon running, and on this LAN? kanna fleet addr {name} HOST gives an address)", DIAL.as_secs()))),
         };
         self.state().conns.insert(key.to_string(), conn.clone());
+        if let Ok((mut send, mut recv, _)) = self.open(&conn, "control", &name).await {
+            let _ = self.sync_over(&mut send, &mut recv).await;
+            let _ = send.finish();
+        }
         Ok((conn, true))
     }
 
@@ -530,7 +535,7 @@ impl Node {
         }
         let name = self.name_of(&key);
         let (mut conn, mut fresh) = self.connect(&key).await?;
-        let (mut send, mut recv, _) = loop {
+        let (send, recv, _) = loop {
             match self.open(&conn, "control", &name).await {
                 Ok(opened) => break opened,
                 Err(failure) => {
@@ -542,20 +547,18 @@ impl Node {
                 }
             }
         };
-        if fresh {
-            self.sync_over(&mut send, &mut recv).await;
-        }
         Ok((send, recv, name))
     }
 
-    async fn sync_over(&self, send: &mut SendStream, recv: &mut BufReader<RecvStream>) {
-        let Some(log) = self.state().log.as_ref().map(PeerLog::export) else { return };
-        if write_line(send, &json!({ "id": 0, "cmd": "fleet.sync", "args": { "log": log } })).await.is_err() {
-            return;
+    async fn sync_over(&self, send: &mut SendStream, recv: &mut BufReader<RecvStream>) -> Result<(), Failure> {
+        let Some(log) = self.state().log.as_ref().map(PeerLog::export) else { return Ok(()) };
+        let lost = |e: String| Failure::new("unreachable", format!("lost the peer while swapping logs: {e}"));
+        write_line(send, &json!({ "id": 0, "cmd": "fleet.sync", "args": { "log": log } })).await.map_err(lost)?;
+        let reply = read_line(recv, MAX_LINE).await.map_err(lost)?;
+        if reply["ok"] != true {
+            return Err(Failure::from_reply(&reply));
         }
-        if let Ok(reply) = read_line(recv, MAX_LINE).await {
-            let _ = self.merge(&reply["log"]);
-        }
+        self.merge(&reply["log"])
     }
 
     pub async fn call(&self, host: &str, request: Value) -> Result<Value, Failure> {
@@ -569,9 +572,9 @@ impl Node {
 
     pub async fn sync(&self, host: &str) -> Result<Value, Failure> {
         let (mut send, mut recv, name) = self.control_stream(host).await?;
-        self.sync_over(&mut send, &mut recv).await;
+        let synced = self.sync_over(&mut send, &mut recv).await;
         let _ = send.finish();
-        Ok(json!({ "name": name }))
+        synced.map(|()| json!({ "name": name }))
     }
 
     pub async fn ping(&self, host: &str) -> Result<Value, Failure> {
@@ -681,7 +684,7 @@ impl Node {
         for target in targets {
             match tokio::time::timeout(PAIRING_SESSION, self.pair_a(code, target)).await {
                 Ok(Ok(paired)) => return Ok(paired),
-                Ok(Err(failure)) if failure.code == "pake_confirmation_failed" || failure.code == "unreachable" => last = failure,
+                Ok(Err(failure)) if BEFORE_THE_CODE.contains(&failure.code.as_str()) => last = failure,
                 Ok(Err(failure)) => return Err(failure),
                 Err(_) => return Err(Failure::new("timeout", "pairing took too long")),
             }
@@ -744,23 +747,23 @@ impl Node {
         if let Some(reason) = answer {
             return refuse(&mut send, Failure::new("gesture_required", reason)).await;
         }
-        write_line(&mut send, &json!({ "handoff": party.seal(&staged.export()) })).await.map_err(lost)?;
-        let done = read_line(&mut recv, MAX_LINE).await.map_err(lost)?;
-        let _ = send.finish();
-        if done["ok"] != true {
-            return Err(Failure::from_reply(&done));
-        }
         {
             let mut state = self.state();
             match state.log.as_mut() {
                 Some(log) => {
                     log.merge(&staged.entries())?;
                 }
-                None => state.log = Some(staged),
+                None => state.log = Some(staged.clone()),
             }
-            state.conns.insert(key.clone(), conn);
         }
         self.save();
+        write_line(&mut send, &json!({ "handoff": party.seal(&staged.export()) })).await.map_err(lost)?;
+        let done = read_line(&mut recv, MAX_LINE).await.map_err(lost)?;
+        let _ = send.finish();
+        if done["ok"] != true {
+            return Err(Failure::from_reply(&done));
+        }
+        self.state().conns.insert(key.clone(), conn);
         let others: Vec<String> = self.state().log.as_ref().map(|l| l.view().trusted().into_iter().filter(|k| *k != self.key() && *k != key).collect()).unwrap_or_default();
         for other in others {
             let _ = self.sync(&other).await;
@@ -801,8 +804,16 @@ impl Node {
                 return;
             }
         };
-        if let Some(offer) = self.state().offer.as_mut() {
-            offer.used = true;
+        let claimed = match self.state().offer.as_mut() {
+            Some(offer) if !offer.used => {
+                offer.used = true;
+                true
+            }
+            _ => false,
+        };
+        if !claimed {
+            let _ = write_line(send, &refusal(&Refused::new("code_used").into())).await;
+            return;
         }
         if write_line(send, &json!({ "ok": true, "proof": proof })).await.is_err() {
             return self.settle(Err(Failure::new("unreachable", "lost the machine pairing with this one")));
@@ -824,7 +835,7 @@ impl Node {
         };
         let inviter = party.hello_a["device"]["name"].as_str().unwrap_or_default().to_string();
         let fleet = log.fleet().to_string();
-        self.state().log = Some(log);
+        self.state().log.get_or_insert(log);
         self.save();
         let _ = write_line(send, &json!({ "ok": true })).await;
         self.settle(Ok(json!({ "name": inviter, "key": remote, "fleet": fleet })));
