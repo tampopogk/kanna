@@ -19,8 +19,14 @@ ssh jeremyhale@172.16.0.105 'sudo apt-get update && sudo apt-get install -y incu
 # On this Mac, from the repo root:
 bash references/prototypes/agent-sign-in/prepare.sh
 
-# THE USER runs this interactively, completing both providers' browser flows:
-python3 references/prototypes/agent-sign-in/probe.py sign-in
+# THE USER runs Claude's TUI by itself in one terminal:
+claude setup-token
+
+# In a SEPARATE terminal, paste the resulting token at the hidden prompt:
+python3 references/prototypes/agent-sign-in/probe.py store-claude
+
+# In another terminal, complete Codex's browser flow:
+python3 references/prototypes/agent-sign-in/probe.py sign-in-codex
 
 # After sign-in, the agent or user runs:
 python3 references/prototypes/agent-sign-in/probe.py run > /tmp/agent-sign-in-results.json
@@ -41,6 +47,12 @@ command prints a setup token in the user's terminal; paste it at the hidden
 prompt, never into chat or the repo. Codex signs into a separate temporary home;
 the helper stores that login in Keychain and removes the temporary home. It does
 not read or replace the user's everyday Claude or Codex login.
+
+Keep Claude's TUI and the token-saving prompt in separate tabs. Running them
+consecutively in one terminal mixed the TUI's output with the hidden prompt in
+the first attempt. When opening these tabs with `kanna open`, supply `--cwd`
+pointing to this worktree and an absolute script path: a task tab can otherwise
+start in the main checkout, where this unmerged prototype does not exist yet.
 
 The holder materializes its Codex login into a private temporary directory only
 while asking Codex app-server to refresh it with `account/read {refreshToken:true}`.

@@ -22,7 +22,7 @@ def entry(account, value=None):
     try:
         if value is None:
             if status:
-                raise RuntimeError(f'Keychain read failed ({status}); run sign-in first')
+                raise RuntimeError(f'Keychain read failed ({status}); complete that provider\'s sign-in first')
             return C.string_at(data, length.value).decode()
         value = value.encode()
         if status == -25300:  # errSecItemNotFound

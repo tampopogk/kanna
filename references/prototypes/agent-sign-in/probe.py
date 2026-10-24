@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Throwaway coordinator. Run sign-in yourself, then run the two-VM probe."""
+"""Throwaway coordinator. Sign in in separate terminals, then run the two-VM probe."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -23,16 +23,20 @@ def isolated_env(home):
             'LANG': 'en_US.UTF-8'}
 
 
-def sign_in():
-    # Human runs both vendor flows. Never inspect the user's everyday login files.
-    input('Press Enter to sign in to Claude and Codex for the two-VM probe. ')
-    print('Complete Claude setup-token in your browser, then paste its token below.', flush=True)
-    subprocess.run(['claude', 'setup-token'], check=True)
-    token = getpass.getpass('Claude setup token (hidden): ').strip()
-    if not token:
-        raise RuntimeError('No token entered')
+def store_claude():
+    # Claude's TUI runs in its own terminal. Never follow it with a getpass prompt
+    # on the same screen: its redraws/terminal state can hide or swallow input.
+    print('Paste the setup token from the Claude sign-in tab. Input is hidden.', flush=True)
+    token = ''
+    while not token:
+        token = getpass.getpass('Claude setup token: ').strip()
     entry('claude', token)
-    print('Claude token saved in your Mac Keychain. Now sign in to Codex.', flush=True)
+    print('Claude token saved in your Mac Keychain. You can return to the task.')
+
+
+def sign_in_codex():
+    # Human completes the vendor flow. Never inspect the everyday login files.
+    input('Press Enter to open the Codex browser sign-in. ')
     with tempfile.TemporaryDirectory(prefix='kanna-holder-login-') as tmp:
         subprocess.run(['codex', '-c', 'cli_auth_credentials_store="file"', 'login'],
                        env=isolated_env(tmp), cwd=tmp, check=True)
@@ -139,15 +143,20 @@ def run(host):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['sign-in', 'run'])
+    parser.add_argument('command', choices=['store-claude', 'sign-in-codex', 'run'])
     parser.add_argument('--host', default='jeremyhale@172.16.0.105')
     args = parser.parse_args()
     os.umask(0o077)
     try:
-        if args.command == 'sign-in':
-            sign_in()
+        if args.command == 'store-claude':
+            store_claude()
+        elif args.command == 'sign-in-codex':
+            sign_in_codex()
         else:
             raise SystemExit(0 if run(args.host) else 1)
+    except RuntimeError as e:
+        # These messages are authored here or in keychain.py, never CLI output.
+        raise SystemExit(str(e))
     except Exception as e:
         # Do not accidentally put auth.json, JWTs or CLI output in a traceback.
         raise SystemExit(f'Probe stopped ({type(e).__name__}); no raw credential output logged.')
