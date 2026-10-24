@@ -290,7 +290,8 @@ impl Node {
             return Err(Refused::new("already_paired").into());
         }
         let offer = Offer::new(Instant::now());
-        let reply = json!({ "code": offer.code, "key": self.key(), "port": state.port, "expires_in": offer.expires.saturating_duration_since(Instant::now()).as_secs(), "name": state.name });
+        let addrs: Vec<String> = self.0.endpoint.addr().ip_addrs().map(|a| a.to_string()).collect();
+        let reply = json!({ "code": offer.code, "key": self.key(), "port": state.port, "addrs": addrs, "expires_in": offer.expires.saturating_duration_since(Instant::now()).as_secs(), "name": state.name });
         state.offer = Some(offer);
         drop(state);
         self.0.outcome.send_replace(None);
@@ -354,13 +355,13 @@ impl Node {
 
     fn admit(&self, key: &str) -> Result<String, Failure> {
         let state = self.state();
-        let Some(log) = &state.log else { return Err(Failure::new("unpaired", "this machine isn't paired with yours: pair them with kanna fleet pair")) };
+        let Some(log) = &state.log else { return Err(Failure::new("unpaired", "it doesn't know this machine's key (pair the two with kanna fleet pair)")) };
         let view = log.view();
         if view.revoked.contains(key) {
-            return Err(Failure::new("revoked", "this machine's key is revoked in the fleet"));
+            return Err(Failure::new("revoked", "this machine's key is revoked in its fleet"));
         }
         if !view.trusted().contains(key) {
-            return Err(Failure::new("unpaired", "this machine isn't paired with yours: pair them with kanna fleet pair"));
+            return Err(Failure::new("unpaired", "it doesn't know this machine's key (pair the two with kanna fleet pair)"));
         }
         Ok(view.name_of(key).unwrap_or_default())
     }
@@ -406,6 +407,11 @@ impl Node {
         }
         if kind == "control" {
             while let Ok(request) = read_line(&mut recv, MAX_LINE).await {
+                if let Err(failure) = self.admit(&remote) {
+                    let id = request.get("id").cloned().unwrap_or(Value::Null);
+                    let _ = write_line(&mut send, &json!({ "id": id, "ok": false, "error": { "code": failure.code, "message": failure.message } })).await;
+                    break;
+                }
                 let reply = self.control(&from, request).await;
                 if write_line(&mut send, &reply).await.is_err() {
                     return;
@@ -483,6 +489,9 @@ impl Node {
     }
 
     async fn connect(&self, key: &str) -> Result<(Connection, bool), Failure> {
+        if self.state().log.as_ref().is_some_and(|l| l.view().revoked.contains(key)) {
+            return Err(Failure::new("revoked", format!("{} is revoked in your fleet", self.name_of(key))));
+        }
         if let Some(conn) = self.state().conns.get(key).filter(|c| c.close_reason().is_none()).cloned() {
             return Ok((conn, false));
         }

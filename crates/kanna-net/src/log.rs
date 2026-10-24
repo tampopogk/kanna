@@ -27,7 +27,7 @@ impl View {
     }
 
     pub fn name_of(&self, key: &str) -> Option<String> {
-        self.names.iter().find(|(_, keys)| keys.contains(key)).map(|(name, _)| name.clone())
+        self.names.iter().find(|(_, keys)| keys.len() == 1 && keys.contains(key)).map(|(name, _)| name.clone())
     }
 
     pub fn key_of(&self, name: &str) -> Option<String> {
@@ -90,20 +90,41 @@ impl PeerLog {
         let mut view = View { names: BTreeMap::new(), revoked: BTreeSet::new(), descriptors: BTreeMap::new() };
         let anchor_key = self.anchor["key"].as_str().unwrap_or_default().to_string();
         view.names.entry(self.anchor["name"].as_str().unwrap_or_default().to_string()).or_default().insert(anchor_key.clone());
-        view.descriptors.insert(anchor_key, self.anchor.clone());
-        for id in ids {
-            let body = &self.events[id]["body"];
-            let payload = &body["payload"];
-            let key = payload["key"].as_str().unwrap_or_default().to_string();
+        view.descriptors.insert(anchor_key.clone(), self.anchor.clone());
+        let ids: Vec<&String> = ids.collect();
+        let mut seen: BTreeMap<String, HashSet<String>> = BTreeMap::new();
+        for id in &ids {
+            let body = &self.events[*id]["body"];
             if body["kind"] == "revoke" {
-                view.revoked.insert(key);
-            } else {
+                let key = body["payload"]["key"].as_str().unwrap_or_default().to_string();
+                view.revoked.insert(key.clone());
+                seen.entry(key).or_default().extend(self.ancestors(&body["parents"]));
+            }
+        }
+        let mut signers: HashSet<String> = [anchor_key].into();
+        let mut adds: Vec<&String> = ids.iter().copied().filter(|id| self.events[*id]["body"]["kind"] == "add").collect();
+        loop {
+            let before = adds.len();
+            adds.retain(|id| {
+                let body = &self.events[*id]["body"];
+                let signer = body["signer"].as_str().unwrap_or_default();
+                let unseen = view.revoked.contains(signer) && !seen.get(signer).is_some_and(|s| s.contains(*id));
+                if !signers.contains(signer) || unseen {
+                    return true;
+                }
+                let payload = &body["payload"];
+                let key = payload["key"].as_str().unwrap_or_default().to_string();
+                signers.insert(key.clone());
                 view.names.entry(payload["name"].as_str().unwrap_or_default().to_string()).or_default().insert(key.clone());
                 let merged = match view.descriptors.get(&key) {
                     Some(known) => merge_descriptor(known, payload),
                     None => payload.clone(),
                 };
                 view.descriptors.insert(key, merged);
+                false
+            });
+            if adds.len() == before {
+                break;
             }
         }
         view
@@ -463,6 +484,25 @@ pub mod tests {
             assert!(!d.log.as_ref().unwrap().view().trusted().contains(&b.key()));
             assert_eq!(d.log.as_ref().unwrap().accept_endpoint(&b.key(), None).unwrap_err().code, "untrusted_endpoint");
         }
+    }
+
+    #[test]
+    fn what_a_revoked_key_adds_on_a_branch_its_revoker_never_saw_counts_for_nothing() {
+        let (mut a, mut b, mut c) = fleet();
+        let past = b.log().frontier();
+        let (x, y) = (Device::new("x"), Device::new("y"));
+        let stale = b.log.as_ref().unwrap().entry(&b.secret, "add", x.descriptor(), Some(past), 0);
+        let mut forked = b.log.clone().unwrap();
+        forked.merge(std::slice::from_ref(&stale)).unwrap();
+        let laundered = forked.entry(&x.secret, "add", y.descriptor(), None, 0);
+        c.revoke(&b.key(), 0);
+        let export = c.log().export();
+        a.log().sync(&export).unwrap();
+        a.log().merge(&[stale, laundered]).unwrap();
+        let trusted = a.log().view().trusted();
+        assert!(!trusted.contains(&x.key()) && !trusted.contains(&y.key()), "{trusted:?}");
+        assert!(trusted.contains(&c.key()));
+        assert_eq!(a.log().accept_endpoint(&y.key(), None).unwrap_err().code, "untrusted_endpoint");
     }
 
     #[test]

@@ -49,6 +49,8 @@ impl Daemon {
             .env("KANNA_KEEPER", keeper)
             .env("KANNA_AGENT_RULES_URL", "none")
             .env("KANNA_KEEPER_CLOSE_GRACE_MS", "300")
+            .env("KANNA_FLEET_MDNS", "0")
+            .env("KANNA_FLEET_PORT", "0")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(log)
@@ -106,7 +108,8 @@ pub fn cli(dir: &Path) -> Command {
         .env_remove("KANNA_MUX")
         .env_remove("KANNA_BG")
         .env_remove("KANNA_FRESH")
-        .env_remove("KMUX_SOCKET");
+        .env_remove("KMUX_SOCKET")
+        .env_remove("KANNA_HOST");
     command
 }
 
@@ -205,6 +208,10 @@ impl App {
                     let new = !desks.contains(&project);
                     desks.push(project.clone());
                     let _ = writeln!(writer, "{}", json!({"id": message["id"], "ok": true, "desk": "d1", "project": project, "new": new}));
+                }
+                if message["cmd"] == "app.fleet.confirm" {
+                    heard.lock().unwrap().push(message.clone());
+                    let _ = writeln!(writer, "{}", json!({"id": message["id"], "ok": true, "confirmed": true}));
                 }
                 if message["cmd"].as_str().is_some_and(|c| c.starts_with("debug.") || c == "screenshot") {
                     let reply = json!({"id": message["id"], "ok": true, "cmd": message["cmd"], "args": message["args"]});

@@ -12,6 +12,8 @@ kanna-keeper = { path = "../kanna-keeper" }
 kanna-vt = { path = "../kanna-vt" }
 kanna-detect = { path = "../kanna-detect" }
 kanna-diff = { path = "../kanna-diff" }
+kanna-net = { path = "../kanna-net" }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 notify = "8"
 base64 = "0.22"
 libc = "0.2"

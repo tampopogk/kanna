@@ -1768,12 +1768,14 @@ dependencies = [
  "kanna-diff",
  "kanna-keeper",
  "kanna-mux",
+ "kanna-net",
  "kanna-vt",
  "libc",
  "notify",
  "rusqlite",
  "serde_json",
  "sha2 0.10.9",
+ "tokio",
 ]
 
 [[package]]
