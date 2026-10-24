@@ -4,8 +4,12 @@ Model for [agent sign-in](../../../docs/specs/agent-sign-in.md) and
 [Fleet §10](../../../docs/specs/fleet.md#10-build-order), before Fleet 9.
 This is a throwaway probe, not Kanna product code.
 
-**Status: VMs and harness ready; awaiting the user's sign-in. No live inference result yet.**
-Fleet 9 must not treat preparation, CLI help, or synthetic tokens as a passing model.
+**Status: Claude sharing passed; Codex's specified holder-token path failed.**
+The user signed in on the Mac. [Live results](shared-token-results.json) record
+four successful Claude requests and four Codex login rejections across two VMs.
+The spec's per-machine Codex fallback is prepared but awaits the user's sign-ins;
+Fleet 9's full prerequisite remains unresolved until that fallback is demonstrated
+or another supported sharing path is verified.
 
 ## Run
 
@@ -31,6 +35,27 @@ python3 references/prototypes/agent-sign-in/probe.py sign-in-codex
 # After sign-in, the agent or user runs:
 python3 references/prototypes/agent-sign-in/probe.py run > /tmp/agent-sign-in-results.json
 ```
+
+The observed Codex rejection activates the spec's fallback. The user runs these
+in **two separate terminals**, following each device-code sign-in in their browser:
+
+```sh
+bash references/prototypes/agent-sign-in/sign-in-vm.sh agent-sign-in-a
+bash references/prototypes/agent-sign-in/sign-in-vm.sh agent-sign-in-b
+```
+
+After both complete:
+
+```sh
+python3 references/prototypes/agent-sign-in/probe.py run-fallback > /tmp/agent-sign-in-fallback.json
+```
+
+These are independent Codex logins created on the VMs, stored with private
+permissions under `/home/probe/.local/share/agent-sign-in/codex`. Neither is copied
+from the Mac or the other VM. The fallback sends **no credential** over the probe
+link and explicitly records `credential_mode: per_machine_login` and
+`refresh_credential_present: true`. `fallback_passed` requires two overlapping
+pairs of real Codex responses. It must not be reported as holder-token sharing.
 
 `prepare.sh` accepts an alternative SSH destination as its first argument;
 `probe.py run` accepts `--host DESTINATION`. It creates `agent-sign-in-a` and
@@ -89,7 +114,7 @@ conversation, revocation propagation, enrollment while the holder is offline,
 Keychain recovery, API-key accounts, or hundreds of workers. Those need additional
 evidence. A refreshed token accepted by a new process is not mid-run renewal.
 
-## Evidence so far
+## Evidence (2026-10-24)
 
 - Host: r720-1, Ubuntu 26.04.1 LTS, x86_64; `/dev/kvm` available. Incus 6.0.5
   and QEMU 10.2.1 installed for this model.
@@ -102,10 +127,17 @@ evidence. A refreshed token accepted by a new process is not mid-run renewal.
 - `python3 references/prototypes/agent-sign-in/selftest.py`: passes without accounts
   or network, checking environment isolation, success/rejection parsing, and
   redaction even when a fake CLI echoes a synthetic secret in its output.
-- A synthetic JWT passed to the installed Codex `--with-access-token` command
-  failed in its **Agent Identity** parser. This is not evidence that a real
-  ChatGPT OAuth access token succeeds or fails; that live check is pending.
-- No subscription credentials have been used and no live inference has passed yet.
+- The same Claude setup token completed **four real inference requests**, two on
+  each VM. CLI lifetimes overlapped by **5.878 s** in round one and **5.680 s** in
+  round two. Both VMs returned the exact requested marker, with exit code zero.
+- The Mac holder's `account/read {refreshToken:true}` completed and changed its
+  access token. Only the holder retained the refresh credential.
+- Both VMs rejected both the original and refreshed **real ChatGPT OAuth access
+  tokens** through `codex login --with-access-token`, in the Agent Identity JWT
+  path. There were **zero Codex inference requests** in this path, because login
+  failed. The report correctly has `passed: false`.
+- This is a reproducible incompatibility in Codex 0.163.0, not a hypothetical
+  failure inferred solely from CLI help or a synthetic JWT.
 
 ## Interface and terms findings
 
@@ -136,21 +168,29 @@ Checked during preparation; these sources can change:
   This probe is one person's machines and does not attempt to increase quotas.
   A technical pass does not authorize resale or multi-user credential sharing.
 
-## What Fleet 9 should copy, once observed
+## What Fleet 9 should copy
 
-Copy the evidence contract: real inference on two isolated VMs, overlapping runs,
-one unchanged Claude setup token, holder-only Codex refresh, access-only worker
-payloads, and another successful pair after refresh. Preserve failures as failures;
-successful `login status` is insufficient.
+Copy the Claude evidence contract: real inference on two isolated VMs, overlapping
+runs, and the same unchanged setup token working again in fresh processes.
+Resolve the product terms question above before shipping a subscription-token vault.
+
+For Codex, copy the **negative regression test**: an ordinary ChatGPT OAuth access
+token is rejected by 0.163.0's `--with-access-token`, before and after holder refresh.
+Do not ship the spec's flag assumption as if it passed. Use the spec's independent
+per-machine vendor sign-in fallback once its pending live probe passes, or revise
+the design around a supported, verified holder integration. Never copy a rotating
+login file between machines to make a test pass. Successful `login status` is
+insufficient; require real inference in every acceptance case.
 
 Do not copy SSH/Incus transport, temporary-home management or this Python Keychain
 adapter into the product. The product supplies its peer link, secret storage,
 account removal/revocation, sandbox deny lists and user-visible sign-in recovery.
 
-**Surprise so far:** Codex's access-token flag and its ChatGPT login access token
-are not documented as the same credential type. The model must settle that before
-Fleet 9 chooses its sharing path. The Claude product-credential restrictions also
-need to be kept separate from the narrower technical concurrency result.
+**Surprises:** Codex's access-token flag accepts a different credential type from
+the ChatGPT login access token: the real probe confirmed the mismatch. Refreshing
+the token centrally works, but does not make that CLI import path accept it.
+Claude concurrency did work; its product-credential terms remain a separate
+constraint. The sign-in UI also needed separate TUI and token-capture terminals.
 
 ## Cleanup
 

@@ -21,7 +21,8 @@ def run(request):
     provider = request['provider']
     if provider not in ('claude', 'codex'):
         raise ValueError('unsupported provider')
-    token = request['token']
+    token = request.get('token')
+    local_login = provider == 'codex' and request.get('credential_mode') == 'per_machine_login'
     with tempfile.TemporaryDirectory(prefix='kanna-auth-probe-') as tmp:
         home = Path(tmp)
         # An allowlist prevents inherited API keys, profiles, hooks and user config
@@ -31,10 +32,14 @@ def run(request):
                'CLAUDE_CONFIG_DIR': str(home / 'claude')}
         Path(env['CODEX_HOME']).mkdir(mode=0o700)
         Path(env['CLAUDE_CONFIG_DIR']).mkdir(mode=0o700)
+        if local_login:
+            # An independent vendor login made ON THIS VM. Never copied from the holder.
+            env['CODEX_HOME'] = '/home/probe/.local/share/agent-sign-in/codex'
         version = subprocess.check_output([provider, '--version'], env=env, text=True).strip()
         result = {'provider': provider, 'version': version, 'login_ok': True, 'inference_ok': False,
-                  'refresh_credential_present': False}
-        if provider == 'codex':
+                  'refresh_credential_present': False,
+                  'credential_mode': 'per_machine_login' if local_login else 'shared_token'}
+        if provider == 'codex' and not local_login:
             login = subprocess.run(['codex', '-c', 'cli_auth_credentials_store="file"',
                 'login', '--with-access-token'], input=token, env=env, cwd=tmp,
                 text=True, capture_output=True, timeout=60)
@@ -47,6 +52,13 @@ def run(request):
                 result['refresh_credential_present'] = contains_refresh(json.loads(auth.read_text()))
             if not result['login_ok'] or result['refresh_credential_present']:
                 return result
+        elif local_login:
+            auth = Path(env['CODEX_HOME']) / 'auth.json'
+            result['login_ok'] = auth.exists()
+            if not auth.exists():
+                result['login_error_kind'] = 'missing_local_login'
+                return result
+            result['refresh_credential_present'] = contains_refresh(json.loads(auth.read_text()))
         else:
             env['CLAUDE_CODE_OAUTH_TOKEN'] = token
 

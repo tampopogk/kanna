@@ -141,9 +141,38 @@ def run(host):
     return report['passed']
 
 
+def run_fallback(host):
+    """Uses separate user-created VM logins. No credential crosses the link."""
+    report = {'timestamp': datetime.now(timezone.utc).isoformat(), 'host': host,
+              'credential_mode': 'per_machine_login', 'rounds': []}
+    for round_number in (1, 2):
+        start_at = time.time() + 10
+
+        def worker(vm):
+            p = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host,
+                'sudo', '-n', 'incus', 'exec', vm, '--', 'su', '-', 'probe', '-c',
+                "'python3 /opt/agent-sign-in/worker.py'"],
+                input=json.dumps({'provider': 'codex', 'credential_mode': 'per_machine_login',
+                                  'start_at': start_at}), text=True, capture_output=True, timeout=240)
+            if p.returncode:
+                return {'machine': vm, 'inference_ok': False, 'error_kind': 'worker_failed'}
+            return {'machine': vm, **json.loads(p.stdout)}
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(worker, VMS))
+        overlap = min(r.get('ended_at', 0) for r in results) - max(r.get('started_at', 0) for r in results)
+        report['rounds'].append({'round': round_number, 'overlap_seconds': max(0, overlap),
+                                 'workers': results})
+    report['fallback_passed'] = all(r['overlap_seconds'] > 0 and all(
+        w.get('inference_ok') and w.get('refresh_credential_present') for w in r['workers'])
+        for r in report['rounds'])
+    print(json.dumps(report, indent=2))
+    return report['fallback_passed']
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['store-claude', 'sign-in-codex', 'run'])
+    parser.add_argument('command', choices=['store-claude', 'sign-in-codex', 'run', 'run-fallback'])
     parser.add_argument('--host', default='jeremyhale@172.16.0.105')
     args = parser.parse_args()
     os.umask(0o077)
@@ -152,6 +181,8 @@ if __name__ == '__main__':
             store_claude()
         elif args.command == 'sign-in-codex':
             sign_in_codex()
+        elif args.command == 'run-fallback':
+            raise SystemExit(0 if run_fallback(args.host) else 1)
         else:
             raise SystemExit(0 if run(args.host) else 1)
     except RuntimeError as e:
