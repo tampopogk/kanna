@@ -2752,8 +2752,8 @@ real_agent_tasks() {
   local claude="${KANNA_E2E_CLAUDE:-$(command -v claude)}" codex="${KANNA_E2E_CODEX:-$(command -v codex)}"
   [[ -x "$claude" ]] || { echo "real_agent_tasks: claude isn't installed (or set KANNA_E2E_CLAUDE)"; return 1; }
   [[ -x "$codex" ]] || { echo "real_agent_tasks: codex isn't installed (or set KANNA_E2E_CODEX)"; return 1; }
-  start_daemon && start_app || { echo "real_agent_tasks line $LINENO"; return 1; }
   local agents="$KANNA_STATE_DIR/agents" repo="$KANNA_STATE_DIR/repo" harness="$repo_root/tools/agent-harness"
+  CODEX_HOME="$agents/codex-home/.codex" start_daemon && start_app || { echo "real_agent_tasks line $LINENO"; return 1; }
   mkdir -p "$agents" "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "real_agent_tasks line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   python3 -I "$harness/mock_server.py" --log "$agents/mock.jsonl" >"$agents/port" 2>"$agents/mock.log" &
@@ -2777,6 +2777,11 @@ print(sum(1 for l in lines if l.get("turn") and sys.argv[2] in l["prompt"] and (
     [[ "$(asked "You're a task's agent in Kanna (terminal $(pane "$agent task" terminal)), in your task's worktree. Your task: $first")" == 1 ]] || { echo "real_agent_tasks: $agent wasn't told it's a task's agent"; tail -1 "$agents/mock.jsonl" | cut -c1-300; return 1; }
     check wait_for 30 shows "$agent task" "Agent status probe" || { echo "real_agent_tasks: $agent didn't show the mock's answer"; kanna read "$agent task"; return 1; }
     check wait_for 10 grep -rqs "Agent status probe" "$agents/$agent-home" || { echo "real_agent_tasks: $agent didn't save its answer"; return 1; }
+    if [[ $agent == codex ]]; then
+      local session; session="$(grep -rhos '"session_meta","payload":{[^}]*' "$agents/codex-home/.codex/sessions" | sed -n 's/.*"id":"\([0-9a-f-]*\)".*/\1/p' | head -1)"
+      [[ -n "$session" ]] || { echo "real_agent_tasks: codex wrote no session"; return 1; }
+      check wait_for 10 eval '[[ "$(pane "$agent task" cmd)" == *" resume '"'"'$session'"'"'" ]]' || { echo "real_agent_tasks: codex's pane doesn't resume its session $session: $(pane "$agent task" cmd)"; return 1; }
+    fi
     kanna restart "$agent task" >/dev/null || { echo "real_agent_tasks: $agent's pane didn't restart"; return 1; }
     check wait_for 60 eval 'shows "$agent task" "$first" && shows "$agent task" "Agent status probe"' || { echo "real_agent_tasks: $agent didn't restart into its conversation"; kanna read "$agent task"; return 1; }
     sleep 3
