@@ -5,6 +5,7 @@ enum FleetAlert {
     static func confirm(_ args: JSON) async -> Bool {
         let name = args["name"]?.string ?? "a machine"
         let key = args["key"]?.string ?? ""
+        guard !key.isEmpty else { return false }
         let addrs = (args["addrs"]?.array ?? []).compactMap(\.string)
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -16,7 +17,7 @@ enum FleetAlert {
         }
         details.append("Add it only if you just ran kanna fleet pair on it.")
         alert.informativeText = details.joined(separator: "\n\n")
-        alert.addButton(withTitle: "Add \(name)")
+        alert.addButton(withTitle: "Add Machine")
         alert.addButton(withTitle: "Cancel")
         NSApp.activate(ignoringOtherApps: true)
         return await withCheckedContinuation { continuation in

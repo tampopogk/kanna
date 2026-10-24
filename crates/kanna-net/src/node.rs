@@ -713,6 +713,9 @@ impl Node {
         party.confirm(&reply["proof"])?;
         let device = hb["device"].clone();
         let name = device["name"].as_str().unwrap_or_default().to_string();
+        if !valid_name(&name) {
+            return refuse(&mut send, Failure::new("bad_name", "the machine waiting to pair sent a name that isn't one (up to 32 lowercase letters, digits and -)")).await;
+        }
         let mut staged = staged;
         let entry = staged.entry(&self.0.secret, "add", device.clone(), None, unix_time());
         if let Err(refused) = staged.merge(&[entry]) {
