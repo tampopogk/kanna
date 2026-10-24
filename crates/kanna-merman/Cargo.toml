@@ -5,8 +5,9 @@ edition = "2021"
 rust-version = "1.95"
 publish = false
 license = "MIT"
-description = "Mermaid layout for Kanna.app's diagram view, behind one C call. From kmux's kmux-merman (MIT). Linked into the app by kanna-ffi."
+description = "Mermaid layout for Kanna.app's diagram view, behind one C call. From kmux's kmux-merman (MIT). Linked into the app by kanna-ffi; the kanna CLI checks markdown files' diagrams with it."
 
 [dependencies]
 merman = { version = "=0.8.0", default-features = false, features = ["svg", "layout-elk", "diagram-flowchart", "diagram-sequence", "diagram-state", "diagram-class", "diagram-git-graph"] }
+pulldown-cmark = { version = "0.13", default-features = false }
 serde_json = "1"

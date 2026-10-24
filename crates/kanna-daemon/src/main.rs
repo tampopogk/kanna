@@ -12,6 +12,7 @@ mod host;
 mod keeper;
 mod content_ids;
 mod layout;
+mod lifeline;
 mod pty;
 mod codex_remote;
 mod messages;
@@ -66,6 +67,18 @@ const LOCK_WAIT: Duration = Duration::from_secs(5);
 const STOP_GRACE: libc::c_uint = 5;
 const SLOW_REQUEST: Duration = Duration::from_millis(50);
 
+const SHUTDOWN_MARKER: &str = "daemon.shutdown";
+
+const APP_QUIT_WAIT: Duration = Duration::from_secs(5);
+
+const KEEPER_STOP_WAIT: Duration = Duration::from_secs(8);
+
+enum Shutdown {
+    App(Instant),
+    Keeper(Instant),
+    Done,
+}
+
 pub enum Event {
     Request(Value, Box<dyn FnOnce(Value) + Send>),
     Wake,
@@ -88,6 +101,7 @@ pub enum Event {
     AppMessage { conn: u64, message: Value },
     AppGone { conn: u64 },
     Quit(i32),
+    Shutdown(String),
 }
 
 fn main() {
@@ -145,13 +159,23 @@ fn run() -> Result<(), String> {
     if socket.to_string_lossy().to_lowercase() == app_socket().to_string_lossy().to_lowercase() {
         return Err(format!("{} belongs to Kanna.app; use another KANNA_SOCKET", socket.display()));
     }
+    if let Some(owner) = lifeline::owner().filter(|pid| lifeline::gone(*pid)) {
+        log!("kanna-daemon: its owner (pid {owner}, {}) is gone; not starting", lifeline::OWNER);
+        return Ok(());
+    }
     let state_dir = env_path("KANNA_STATE_DIR").unwrap_or_else(|| socket.parent().map(Path::to_path_buf).unwrap_or_default());
     if let Ok(helper) = std::env::current_exe() {
         backlog::serve_codex_remotely(&helper, &state_dir);
     }
     std::fs::create_dir_all(&state_dir).map_err(|e| format!("can't make {}: {e}", state_dir.display()))?;
     let socket_path = socket.to_string_lossy().into_owned();
-    let _lock = lock(&state_dir)?;
+    let (_lock, waited) = lock(&state_dir)?;
+    let marker = state_dir.join(SHUTDOWN_MARKER);
+    if waited && marker.exists() {
+        log!("kanna-daemon: the daemon before it shut this Kanna down while it waited; not starting");
+        return Ok(());
+    }
+    let _ = std::fs::remove_file(&marker);
     let _ = std::fs::write(state_dir.join(kanna_build::RECORD), format!("{:#}\n", build.record(app_bundle().as_deref())));
 
     let stop_signals = signal_set(&[libc::SIGTERM, libc::SIGINT, libc::SIGHUP]);
@@ -215,7 +239,7 @@ fn run() -> Result<(), String> {
         }
     }));
     let rules = kanna_detect::Store::new(status_command::rules_config(&state_dir));
-    let _rules_updater = rules.start();
+    let rules_updater = rules.start();
     let detector = Rc::new(status::Detector::start(rules, events.clone()));
     *terminals.detector.borrow_mut() = Some(detector.clone());
     let status_commands = Rc::new(status_command::StatusCommand::new(detector.clone(), events.clone()));
@@ -395,20 +419,65 @@ fn run() -> Result<(), String> {
             }
         })
         .map_err(|e| e.to_string())?;
+    if let Some(owner) = lifeline::watch(events.clone()) {
+        log!("kanna-daemon: stops when its owner (pid {owner}, {}) exits", lifeline::OWNER);
+    }
     drop(events);
 
     let mut failure = None;
+    let mut shutdown: Option<Shutdown> = None;
+    let begin = |why: &str, shutdown: &mut Option<Shutdown>| {
+        if shutdown.is_some() {
+            return;
+        }
+        log!("kanna-daemon: shutting down: {why}");
+        let _ = std::fs::write(state_dir.join(SHUTDOWN_MARKER), format!("{why}\n"));
+        *shutdown = Some(Shutdown::App(Instant::now() + APP_QUIT_WAIT));
+        app.quit();
+    };
     loop {
         let signal = stopping.load(Ordering::SeqCst);
         if signal != 0 {
             log!("kanna-daemon: stopping (signal {signal})");
             break;
         }
+        if let Some(Shutdown::App(by)) = shutdown {
+            if !app.attached() || Instant::now() >= by {
+                if app.attached() {
+                    log!("kanna-daemon: the app didn't quit in {}s; going on without it", APP_QUIT_WAIT.as_secs());
+                    app.close();
+                }
+                let hung_up = terminals.hang_up_all();
+                match keeper.stop() {
+                    Ok(()) => {
+                        log!("kanna-daemon: hung up {hung_up} terminal(s); the keeper is stopping");
+                        shutdown = Some(Shutdown::Keeper(Instant::now() + KEEPER_STOP_WAIT));
+                    }
+                    Err(error) => {
+                        log!("kanna-daemon: the keeper (pid {}) didn't take stop: {error}", keeper.pid());
+                        shutdown = Some(Shutdown::Done);
+                    }
+                }
+            }
+        }
+        match shutdown {
+            Some(Shutdown::Keeper(by)) if Instant::now() >= by => {
+                log!("kanna-daemon: the keeper (pid {}) didn't stop in {}s", keeper.pid(), KEEPER_STOP_WAIT.as_secs());
+                break;
+            }
+            Some(Shutdown::Done) => break,
+            _ => {}
+        }
         app.expire(Instant::now());
         terminals.save_if_changed();
-        backlog.sweep();
         layout.flush();
-        let deadline = [core.poll(), app.next_deadline(), backlog.tick(), layout.next_deadline()].into_iter().flatten().min();
+        let ticks = if shutdown.is_none() {
+            backlog.sweep();
+            backlog.tick()
+        } else {
+            Some(Instant::now() + Duration::from_millis(100))
+        };
+        let deadline = [core.poll(), app.next_deadline(), ticks, layout.next_deadline()].into_iter().flatten().min();
         let event = match deadline {
             Some(at) => inbox.recv_timeout(at.saturating_duration_since(Instant::now())),
             None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
@@ -419,8 +488,15 @@ fn run() -> Result<(), String> {
             Err(RecvTimeoutError::Disconnected) => break,
         };
         match event {
-            Event::Request(request, reply) => timed(request_name(&request), "a client", || match () {
-                () if request.get("cmd").and_then(Value::as_str) == Some("capabilities") => {
+            Event::Request(request, reply) => timed(request_name(&request), "a client", || match request.get("cmd").and_then(Value::as_str) {
+                Some("shutdown") => {
+                    begin("asked to", &mut shutdown);
+                    reply(json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": true, "stopping": true, "pid": std::process::id() }))
+                }
+                _ if shutdown.is_some() => {
+                    reply(json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": false, "error": { "code": "stopping", "message": "this Kanna is stopping" } }))
+                }
+                Some("capabilities") => {
                     let attached = app.attached();
                     let build = build_id.clone();
                     core.handle(request, move |mut answer| {
@@ -431,7 +507,7 @@ fn run() -> Result<(), String> {
                         reply(answer)
                     })
                 }
-                () => core.handle(request, reply),
+                _ => core.handle(request, reply),
             }),
             Event::Wake => {}
             Event::Output { terminal, serial } => {
@@ -479,11 +555,19 @@ fn run() -> Result<(), String> {
                             }
                         }
                     }
+                    Err(_) if matches!(shutdown, Some(Shutdown::Keeper(_))) => {
+                        log!("kanna-daemon: the keeper stopped");
+                        break;
+                    }
                     Err(reason) => {
                         failure = Some(reason);
                         break;
                     }
                 }
+            }
+            Event::KeeperLost(_) if matches!(shutdown, Some(Shutdown::Keeper(_))) => {
+                log!("kanna-daemon: the keeper stopped");
+                break;
             }
             Event::KeeperLost(reason) => {
                 failure = Some(reason);
@@ -510,15 +594,17 @@ fn run() -> Result<(), String> {
             Event::AppGone { conn } => app.gone(conn),
             Event::AppCaughtUp { conn } => app.caught_up(conn),
             Event::Quit(_) => continue,
+            Event::Shutdown(why) => begin(&why, &mut shutdown),
         }
     }
 
-    server.stop();
     app.close();
     layout.flush();
     layout.save_now();
     terminals.shutdown();
     let _ = std::fs::remove_file(&pid_file);
+    std::mem::forget(rules_updater);
+    server.stop();
     match failure {
         Some(reason) => Err(format!("{reason}; stopping")),
         None => Ok(()),
@@ -563,7 +649,7 @@ fn app_bundle() -> Option<PathBuf> {
     (helpers.file_name()? == "Helpers" && contents.file_name()? == "Contents" && app.extension()? == "app").then(|| app.to_path_buf())
 }
 
-fn lock(state_dir: &Path) -> Result<std::fs::File, String> {
+fn lock(state_dir: &Path) -> Result<(std::fs::File, bool), String> {
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::OpenOptionsExt;
     let path = state_dir.join("daemon.lock");
@@ -577,14 +663,16 @@ fn lock(state_dir: &Path) -> Result<std::fs::File, String> {
         .open(&path)
         .map_err(|e| format!("can't open {}: {e}", path.display()))?;
     let deadline = Instant::now() + LOCK_WAIT;
+    let mut waited = false;
     while unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         if Instant::now() >= deadline {
             let other = std::fs::read_to_string(state_dir.join("daemon.pid")).unwrap_or_default();
             return Err(format!("another daemon (pid {}) uses {}", other.trim(), state_dir.display()));
         }
+        waited = true;
         std::thread::sleep(Duration::from_millis(50));
     }
-    Ok(file)
+    Ok((file, waited))
 }
 
 fn signal_set(signals: &[libc::c_int]) -> libc::sigset_t {

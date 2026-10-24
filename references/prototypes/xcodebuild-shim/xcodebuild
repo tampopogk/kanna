@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""Put this folder first on PATH in the Linux fixture."""
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+root = Path(subprocess.check_output(["git", "rev-parse", "--show-toplevel"]).decode().strip()).resolve()
+cwd = str(Path.cwd().resolve().relative_to(root))
+os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve().with_name("model.py")),
+                         "run", "--root", str(root), "--cwd", cwd,
+                         *(["--task", os.environ["SHIM_TASK"]] if "SHIM_TASK" in os.environ else []),
+                         *(["--ui"] if os.environ.get("SHIM_UI") == "1" else []),
+                         "--", "xcodebuild", *sys.argv[1:]])

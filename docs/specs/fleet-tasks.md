@@ -20,7 +20,7 @@ Every one of your daemons holds every task's record, synced peer to peer over ir
 | A task's record: name, first message, agent, `after`, `needs`, state, owner | eventual: last writer wins per field, ordered by a hybrid logical clock ("oldest first") |
 | Who runs it: the **owner** | one machine; changes only by a grant from the owner (§2) |
 
-Slice 10 picks the store (iroh-docs, Automerge or Loro) and says why.
+The [backlog model](../../references/prototypes/fleet-backlog/README.md) chooses **iroh-docs**, with immutable field updates projected by hybrid logical clock; it compares Automerge and Loro and records the tradeoffs. Slice 10 follows its ownership, placement and partition scenarios, then tests real storage and crash recovery. The Python model simulates the storage contract, not the library.
 
 ## 2. Owners and grants
 

@@ -29,7 +29,7 @@ In `$KANNA_STATE_DIR/terminals/` (0700; a symlink there is refused), each writte
 
 ## 2. Stopping
 
-On SIGTERM, SIGINT or SIGHUP the daemon stops reading every pty (whatever is unread stays in the kernel buffer for the next daemon), writes `terminals.json`, saves every screen that changed since its last save, and exits; its terminals keep running in the keeper. The signal also sets `alarm(5)`, so a daemon whose main loop is stuck still ends 5 s later, as a crash. A crash (SIGKILL) skips that: up to a second of screen changes are lost from the saved screens, and a full-screen program redraws them when it gets SIGWINCH.
+On SIGTERM, SIGINT or SIGHUP the daemon stops reading every pty (whatever is unread stays in the kernel buffer for the next daemon), writes `terminals.json`, saves every screen that changed since its last save, and exits; its terminals keep running in the keeper. The signal also sets `alarm(5)`, so a daemon whose main loop is stuck still ends 5 s later, as a crash. A crash (SIGKILL) skips that: up to a second of screen changes are lost from the saved screens, and a full-screen program redraws them when it gets SIGWINCH. To stop the terminals and the keeper too, use `kanna instances stop` ([stopping an instance](instance-stop.md)).
 
 ## 3. Starting
 
@@ -43,14 +43,14 @@ sequenceDiagram
     participant D2 as new daemon
     participant A as Kanna app
     Note over D1: SIGTERM: stops reading, saves terminals.json and the screens<br/>(SIGKILL: what it saved up to a second before)
-    D1--xA: link closes; the app keeps trying to reconnect
+    D1--xA: link closes, and the app keeps trying to reconnect
     S->>S: output waits in the pty buffer
     D2->>D2: flock daemon.lock
     D2->>K: connect, hello (unacknowledged exits arrive as events)
     D2->>K: adopt
     K->>D2: each pty: {id, pid, cmd, cwd, exit?} + master
-    D2->>D2: read terminals.json: same IDs, names, cmd, cwd; counter continues
-    D2->>D2: each screen from <terminal>.snap (if the pid matches), sized to the pty (TIOCGWINSZ)
+    D2->>D2: read terminals.json: same IDs, names, cmd, cwd, and the counter continues
+    D2->>D2: each screen from its term-N.snap (if the pid matches), sized to the pty (TIOCGWINSZ)
     D2->>S: TIOCSWINSZ, then SIGWINCH to the pty's foreground group
     D2->>S: reads what waited in the buffer into the screen, then carries on
     D2->>K: ack exits that happened meanwhile (after saving them)

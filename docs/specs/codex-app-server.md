@@ -22,7 +22,7 @@ sequenceDiagram
     T->>H: kanna-daemon --codex-remote STATE codex --yolo 'FIRST'
     H->>S: codex app-server -c approval_policy="never" -c sandbox_mode="danger-full-access" --listen unix://STATE/codex/codex-PID.sock
     Note over S: the terminal's environment: KANNA_TERMINAL, KANNA_SOCKET
-    H->>U: codex 'FIRST' --remote unix://STATE/codex/codex-PID.sock
+    H->>U: codex -c approval_policy="never" -c sandbox_mode="danger-full-access" 'FIRST' --remote unix://STATE/codex/codex-PID.sock
     Note over U: the TUI as usual, in the terminal
     U-->>H: quits
     H->>S: stop, remove the socket
@@ -30,8 +30,8 @@ sequenceDiagram
 
 - **The helper is the daemon's own binary** (`codex_remote.rs`), so it needs no shell syntax and works whatever your login shell is.
 - **The server gets the terminal's environment,** so the commands Codex runs see the task's `KANNA_TERMINAL` and `KANNA_SOCKET`. That's why Kanna used to start Codex with `--no-daemon`: Codex's shared background server runs every session's commands with its own environment. A server per Codex is the task's own.
-- **Permissions go on the server:** `--yolo` becomes the server's `approval_policy` and `sandbox_mode`; the TUI gets none, since Codex refuses permission flags when resuming against a server.
-- **Resume is the same:** `codex resume ID --remote unix://SOCKET` brings the session back on a new server.
+- **Permissions go on the server and on a new session's TUI:** `--yolo` becomes `approval_policy="never"` and `sandbox_mode="danger-full-access"` (`-c`) for both. The TUI starts the session's thread with its own config, so without them a [trusted](https://developers.openai.com/codex/config-reference) folder's `on-request` and `workspace-write` win over the server's, and a task's `git commit` (its refs are in the main repo's `.git`, outside the sandbox) asks to escalate.
+- **Resume keeps the session's own:** `codex resume ID --remote unix://SOCKET` brings the session back on a new server, with the permissions it was started with; the TUI gets no permission flags or `-c`, since Codex refuses them when resuming against a server ("Permission overrides are not supported when resuming a remote task").
 - **The socket** is `codex-PID.sock` in Kanna's state folder's `codex/`, or in `/tmp/kanna-UID` when that path is too long for a Unix socket; a leftover from a helper that's gone is removed at the next start.
 - **Only you can reach it:** the server takes any connection without auth, and a turn on it runs with the agent's permissions, so the folder must be yours alone: the helper makes it 0700 (tightening one of yours that others could open) and checks it's a real folder, owned by you, that no one else can open (a `/tmp` name someone else made first, or a symlink, fails), else Codex runs on its own.
 - **Quitting:** its quit keys work as before ([backlog runners](backlog-runners.md#2-how-its-built)); attached, Codex says its session as `codex --remote unix://SOCKET resume ID`, which Kanna reads like `codex resume ID`.

@@ -51,7 +51,7 @@ sequenceDiagram
     U->>W: ⌘D
     W->>D: open {type: term, split: right, window: win-1}
     D->>W: layout (the view)
-    Note over W: draw win-1; term-4 attached
+    Note over W: draw win-1, term-4 attached
     U->>W: ⌘] (next pane)
     W->>D: focus {pane: term-1}
     D->>W: layout (the view)
@@ -97,7 +97,7 @@ With `KANNA_DEBUG=1`; the daemon passes them to the app, turning a top-level `pa
 | Command | Does |
 |---|---|
 | `debug.key {key, pane?}` | a key press (`cmd+shift+d`, `cmd+]`, `return`, `left`, a letter) in the key window, or in `pane`'s terminal: with ⌘, ⌃ or ⌥ the window and then the main menu get it as a key equivalent first, as AppKit does; otherwise (or if nothing takes it) the window's first responder |
-| `debug.click {tab, clicks?}`, `{pane, at?: [x, y]}`, `{…, button}` | clicks a tab (2 clicks: rename) or a point in a pane (from its top left). In a `--bg` app the click goes to the view under the point as it would in the key window. `button` 3 or 4 is the mouse's back or forward button; `button: 1` doesn't open the right-click menu (it would block) but answers its items: `{menu: [titles]}` |
+| `debug.click {tab, clicks?}`, `{pane, at?: [x, y]}`, `{…, button}` | clicks a tab (2 clicks: rename) or a point in a pane (from its top left). In a `--bg` app the click goes to the view under the point as it would in the key window. `button` 3 or 4 is the mouse's back or forward button; `button: 1` doesn't open the right-click menu (it would block) but answers its items: `{menu: [titles]}`, empty on a terminal whose program takes the mouse, as a right-click there opens no menu |
 | `debug.drag {pane, to}`, `{tab, to}`, `{divider: pane, at}` | kmux's: a drag replayed along scripted points, with no hint shown; `to` is `{pane, x, y}` (fractions from the top left), `{tab}`, `{plus: window}` or `{outside: true}`; `divider` is the divider after that pane, moved to `at` of the pair |
 | `debug.menu` | every menu item: `{menu, item, shortcut}` |
 | `debug.view` | the view the app draws: the daemon's `layout` with the app's physical state laid over it ([2](#2-what-the-app-keeps)) |
