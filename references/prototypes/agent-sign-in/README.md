@@ -159,6 +159,13 @@ Checked during preparation; these sources can change:
   [Current source](https://github.com/openai/codex/blob/main/codex-rs/login/src/auth/manager.rs)
   classifies it as a personal access token or an Agent Identity JWT. This source
   is supporting context, not a substitute for probing the installed binaries.
+- The more specific [access-token guide](https://learn.chatgpt.com/docs/enterprise/access-tokens)
+  currently lists **Business and Enterprise** workspaces. The user creates a
+  personal access token in the ChatGPT admin console's Access tokens page, with
+  Codex scope and the workspace's token/local-Codex permissions enabled. This is
+  a distinct credential, not the `access_token` field extracted from browser login.
+  That route has not been tested with this user's account and is not evidence for
+  the spec's short-lived OAuth holder design.
 - The installed 0.163.0 app-server schema exposes `chatgptAuthTokens`, but labels it
   **unstable / for OpenAI internal use only**. Do not silently substitute that
   interface and call the spec's CLI path verified. Generate the schema with
