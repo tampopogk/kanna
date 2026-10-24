@@ -494,9 +494,16 @@ impl AppLink {
     }
 
     fn ask(&self, cmd: &str, args: Value, responder: Responder) {
+        self.ask_within(cmd, args, self.timeout, responder);
+    }
+
+    pub fn ask_within(&self, cmd: &str, args: Value, within: Duration, responder: Responder) {
+        if self.app.borrow().is_none() {
+            return responder.reply(Err(no_app(cmd)));
+        }
         let id = self.next_id.get() + 1;
         self.next_id.set(id);
-        self.pending.borrow_mut().insert(id, (Instant::now() + self.timeout, responder));
+        self.pending.borrow_mut().insert(id, (Instant::now() + within, responder));
         self.send(json!({ "id": id, "cmd": cmd, "args": args }));
     }
 

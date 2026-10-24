@@ -1008,3 +1008,78 @@ pub fn toured(args: &Value, reply: &Value) -> String {
         }
     }
 }
+
+pub fn offer(offer: &Value) -> String {
+    let code = offer["code"].as_str().unwrap_or("?");
+    let minutes = offer["expires_in"].as_u64().unwrap_or(300).div_ceil(60);
+    let peer = match crate::fleet::reachable(&offer["addrs"]) {
+        Some(addr) => format!("{}@{addr}", offer["key"].as_str().unwrap_or("?")),
+        None => offer["key"].as_str().unwrap_or("?").to_string(),
+    };
+    format!(
+        "To add this machine ({}) to your fleet, run on a machine in it, or on the one that starts it:\n  kanna fleet pair {code}\nIt finds this one on the LAN. From another network:\n  kanna fleet pair {code} --peer {peer}\n{}The code works once, for {minutes} minutes. Waiting…",
+        offer["name"].as_str().unwrap_or("?"),
+        others(&offer["addrs"])
+    )
+}
+
+fn others(addrs: &Value) -> String {
+    let all: Vec<&str> = addrs.as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    if all.len() < 2 {
+        return String::new();
+    }
+    format!("(this machine's addresses: {}; put the one the other machine can reach after the @)\n", all.join(", "))
+}
+
+fn short_key(key: &Value) -> String {
+    key.as_str().unwrap_or("?").chars().take(10).collect()
+}
+
+pub fn fleet(request: &Value, reply: &Value) -> String {
+    match request["action"].as_str() {
+        Some("pair") => format!("added {} to your fleet", reply["name"].as_str().unwrap_or("?")),
+        Some("name") => format!("this machine is {} now", reply["name"].as_str().unwrap_or("?")),
+        Some("addr") => format!("will try {} for {}", reply["addr"].as_str().unwrap_or("?"), request["host"].as_str().unwrap_or("?")),
+        Some("sync") => format!("swapped peer logs with {}", reply["name"].as_str().unwrap_or("?")),
+        Some("revoke") => {
+            let told = join(&reply["told"]);
+            let told = if told.is_empty() { "no other machine was reachable to hear it yet".to_string() } else { format!("told {told}") };
+            format!("revoked {} for good; {told}", reply["name"].as_str().unwrap_or("?"))
+        }
+        Some("ping") => {
+            let streams = reply["streams"].as_object().map(|s| s.iter().map(|(kind, r)| format!("{kind} {}", if r["ok"] == true { "ok".to_string() } else { r["error"]["code"].as_str().unwrap_or("failed").to_string() })).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+            let rtt = reply["rtt_ms"].as_f64().map_or(String::new(), |ms| format!(", {ms:.1} ms round trip"));
+            format!("{}: {} to {}{rtt}\nstreams: {streams}", reply["name"].as_str().unwrap_or("?"), reply["path"].as_str().unwrap_or("no path"), reply["remote"].as_str().unwrap_or("?"))
+        }
+        _ => {
+            let mut out = vec![];
+            if let Some(broken) = reply["broken"].as_str() {
+                out.push(format!("fleet disabled: {broken}"));
+            }
+            out.push(format!("{} (this machine)  key {}  UDP port {}", reply["name"].as_str().unwrap_or("?"), reply["key"].as_str().unwrap_or("?"), reply["port"]));
+            let peers: Vec<&Value> = reply["peers"].as_array().map(|p| p.iter().filter(|p| p["me"] != true).collect()).unwrap_or_default();
+            if reply["paired"] != true {
+                out.push("not paired with any machine: kanna fleet pair".into());
+            } else if peers.is_empty() {
+                out.push("no other machines in the fleet yet".into());
+            }
+            for peer in peers {
+                let state = if peer["revoked"] == true {
+                    "revoked".to_string()
+                } else if peer["conflict"] == true {
+                    "name claimed by two keys".to_string()
+                } else {
+                    peer["path"].as_str().map_or("not connected".to_string(), String::from)
+                };
+                out.push(format!("  {:<14} {:<14} {}  {}", peer["name"].as_str().unwrap_or("?"), state, short_key(&peer["key"]), join(&peer["addrs"])));
+            }
+            for nearby in reply["nearby"].as_array().into_iter().flatten().filter(|n| n["pairing"] == true) {
+                out.push(format!("waiting to pair on this LAN: {}  {}", short_key(&nearby["key"]), join(&nearby["addrs"])));
+            }
+            if let Some(code) = reply["offer"]["code"].as_str() {
+                out.push(format!("this machine is waiting to pair, code {code}"));
+            }
+            out.join("\n")
+        }
+    }
+}
