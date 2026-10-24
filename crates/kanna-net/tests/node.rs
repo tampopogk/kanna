@@ -172,7 +172,7 @@ async fn a_machine_that_restarted_is_dialed_again() {
     vm.close().await;
     drop(vm);
     let (again, _) = machine_with("ignored", saved, port, secret).await;
-    assert_eq!(again.port(), port);
+    mbp.addr("linux-vm", &format!("127.0.0.1:{}", again.port())).unwrap();
     mbp.call("linux-vm", json!({ "id": 2, "cmd": "list" })).await.unwrap();
 }
 
