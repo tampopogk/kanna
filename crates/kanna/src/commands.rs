@@ -17,6 +17,8 @@ pub struct Command {
 
 pub const GROUPS: &[&str] = &["Panes", "Tabs and windows", "Information"];
 
+pub const LOCAL: &[&str] = &["diagrams"];
+
 pub static COMMANDS: &[Command] = &[
     Command {
         name: "open",
@@ -521,6 +523,31 @@ pub static COMMANDS: &[Command] = &[
         examples: &[("kanna capabilities", "See which commands this Kanna supports.")],
         parse: |_| Ok(json!({})),
         show: |_, reply| output::capabilities(reply),
+    },
+    Command {
+        name: "diagrams",
+        group: "Information",
+        summary: "Check that a markdown file's mermaid diagrams draw in Kanna, without opening anything.",
+        usage: "kanna diagrams check FILE.md...",
+        options: &[],
+        notes: "Prints FILE:LINE: message for each ```mermaid block that won't draw, LINE being its fence line: merman can't parse it, or Kanna.app doesn't draw its type. Then `N diagrams, all draw`, or exits 1 saying how many don't. `kanna open md` checks the same and prints the failures after it opens the pane.\nNeeds no Kanna.app or daemon. It can't see labels that overlap or clip: take `kanna screenshot PANE` of the markdown pane and look.",
+        examples: &[
+            ("kanna diagrams check docs/specs/plan.md", "Check one doc's diagrams."),
+            ("kanna diagrams check docs/specs/*.md --json", "Check many; the count and the failures as JSON."),
+        ],
+        parse: |args| {
+            match args.positional().as_deref() {
+                Some("check") => {}
+                Some(other) => return Err(usage("diagrams", &format!("unknown action \"{other}\" (check)"))),
+                None => return Err(usage("diagrams", "missing check")),
+            }
+            let files = args.positionals();
+            if files.is_empty() {
+                return Err(usage("diagrams", "missing FILE.md"));
+            }
+            Ok(json!({ "action": "check", "files": files }))
+        },
+        show: |_, _| String::new(),
     },
     Command {
         name: "status",

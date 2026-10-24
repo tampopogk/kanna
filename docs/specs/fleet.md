@@ -133,11 +133,7 @@ sequenceDiagram
 
 ## 6. One app, several machines
 
-- **A Desk is on a project,** whichever machines its tasks run on. A project is known across machines by its remote URL or first commit ([tasks §4](fleet-tasks.md#4-repos-and-credentials)). Its planning terminal runs on a machine that has the project, placed like a task, and its backlog page lists the project's tasks from every machine. The new-Desk prompt and Open Recent show projects, not paths on a machine.
-- **The Shelf stays the app's:** claims in its order, three per project, keyed by (machine, task) in `app-state.json`. A card shows its machine only when that machine is relayed or offline.
-- **Claims name the device:** `claimed by: mbp` (the hello's `client`) replaces `mac`. Runners leave claimed tasks alone, as today.
-- **Toasts** held while no app was attached arrive when the app connects, so five servers' finished tasks show up when you open the lid.
-- **What it looks like** (the fleet page with each machine's path and what it's running, a card on a relayed machine) is drawn in `references/mockups/fleet.html`, made before slice 3 (§10).
+See [Desks across machines](fleet-app.md) for project identity, the app’s Shelf and claims, and the [Fleet mockup](../../references/mockups/fleet.html) with screenshots and the Fleet 3 comparison cases.
 
 ## 7. Terminals and panes
 
@@ -182,6 +178,24 @@ In short ([detail](fleet-tasks.md)):
   [Install]
   WantedBy=default.target
   ```
+
+- **Setting up a Linux server,** as the user Kanna runs as (with sudo), until releases have a Linux tarball (slice 6):
+
+  ```sh
+  sudo apt-get install -y git       # a stock cloud image has none
+  git clone https://github.com/tampopogk/kanna.git ~/kanna && cd ~/kanna
+  scripts/server-setup.sh            # --agents claude,codex (default) | none; --no-packages; --no-start
+  claude                             # sign in once, until agent sign-in (slice 9)
+  kanna task list                    # ~/.local/bin/kanna, on PATH from the next login
+  ```
+
+  1. **Packages** with apt (git, build tools, sqlite3, jq, Node and npm, and bubblewrap and socat for the agents' sandboxes: Ubuntu's AppArmor blocks the user namespaces a bundled `bwrap` needs, and only the system `/usr/bin/bwrap` has a profile allowing them), Rust with rustup if `cargo` is missing, and the agent CLIs with npm into `~/.local`.
+  2. **Builds** from the checkout: `scripts/build-ghostty-vt.sh` (on Linux always `-Dcpu=baseline`; Zig downloads for Linux too), then `KANNA_CHANNEL=production cargo build --release -p kanna -p kanna-daemon -p kanna-keeper`, so the state folder is `kanna-prod`.
+  3. **Installs** the three binaries and Kanna's skills (`kanna-skills/`, which the Mac has in the app's `Resources`) in `/opt/kanna/<commit>` (`<commit>-dirty` for local changes), owned by the user so a daemon can update itself later; switches `current` with a rename, pointing `previous` at the one it replaced, and removes the others; an unchanged build isn't copied again; links `~/.local/bin/kanna`.
+  4. **The unit** as below, with the socket in the state folder (`$XDG_DATA_HOME` if set), plus `KANNA_AGENT_SKILLS` and a `PATH` with `~/.local/bin`, where npm puts the agent CLIs, so the daemon and every terminal it starts find them without a login shell. Ubuntu's `~/.profile` adds `~/.local/bin` only to login shells, so a plain `ssh host kanna …` needs `~/.local/bin/kanna` (or `ssh -t host bash -l`); `loginctl enable-linger`; enabled, and restarted unless the running daemon is `current`'s binary and the unit is unchanged. It's started when it answers a request, not when its socket appears. The keeper survives the restart and is upgraded in place by the new daemon ([keeper upgrade](keeper-upgrade.md)), so terminals and agents keep running.
+  5. **`kanna agents setup`** when the agents aren't set up yet (not when you said no), since no planning terminal is there to ask.
+
+  The daemon logs to the journal (`journalctl --user -u kanna-daemon`). **Tested** on r720-1 (Ubuntu 26.04.1 on the host, x86_64; a first run takes about 5 minutes) and in an Ubuntu 26.04 lima VM on an Apple Silicon Mac (arm64, and x86_64 cross-built with `gcc-x86-64-linux-gnu` and `libc6-dev-amd64-cross`, run under Rosetta): a backlog runner starts a task in a worktree, `kanna task start` and `stop` work, real claude tasks commit their work and are stopped when their turn ends (claude asks once per machine to trust the project and to accept bypass mode), a working claude carries on through a daemon restart, a terminal's process and screen survive `systemctl --user restart kanna-daemon` and each update, and re-runs restart the daemon only when its binary or unit changed (A → B → B keeps A as `previous`; a dirty rebuild installed with `--no-start` is started by the next run).
 
 - **Enrolling** pairs the VM (§4), sets up its git credentials ([tasks §4](fleet-tasks.md#4-repos-and-credentials)), then gives it your agent accounts ([agent sign-in](agent-sign-in.md)), with nothing to sign in on the VM.
 - **Updates:** `scripts/release.sh` also builds a Linux tarball (x86_64, `baseline` CPU for the R720s' Ivy Bridge). A daemon updates itself when a newer release is out (fetched from a peer that has it, or the release site): it switches `current`, runs `kanna-keeper --upgrade` ([keeper upgrade](keeper-upgrade.md)) and restarts; terminals survive ([restarting](daemon-restart.md)). `kanna fleet update` does it now, everywhere. No order is needed while versions overlap.

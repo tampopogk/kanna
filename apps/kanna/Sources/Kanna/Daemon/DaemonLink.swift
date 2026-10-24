@@ -20,6 +20,7 @@ final class DaemonLink: TerminalLink {
     var onBacklog: (([JSON]) -> Void)?
     var onDiff: ((String, JSON) -> Void)?
     var onToast: ((JSON) -> Void)?
+    var onQuit: (() -> Void)?
     private var requests = 0
     private var replies: [Int: (JSON) -> Void] = [:]
     private let starter: DaemonStarter?
@@ -44,6 +45,12 @@ final class DaemonLink: TerminalLink {
 
     func start() { connection.start() }
     func stop() { connection.stop() }
+
+    func quit() {
+        starter?.quitting()
+        connection.stop()
+        onQuit?()
+    }
 
     private func send(_ cmd: String, _ args: [String: JSON]) {
         connection.send(["cmd": .string(cmd), "args": .object(args)])
@@ -136,6 +143,8 @@ final class DaemonLink: TerminalLink {
             if case .array(let tasks)? = args["tasks"] { onBacklog?(tasks) }
         case "toast":
             onToast?(args)
+        case "quit":
+            quit()
         case "folder":
             if let pane = args["pane"]?.string, let cwd = args["cwd"]?.string { onFolder?(pane, cwd) }
         default: FileHandle.standardError.write(Data("kanna: unknown message from the daemon: \(cmd)\n".utf8))

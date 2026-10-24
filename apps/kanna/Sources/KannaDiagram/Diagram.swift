@@ -9,11 +9,11 @@ public enum Diagram {
               let layout = json["layout"] as? [String: Any] else { throw DiagramError(message: "merman returned no layout") }
         let type = meta["diagram_type"] as? String ?? "unknown"
         let scene: DiagramScene?
-        switch type {
-        case "flowchart-v2", "flowchart": scene = Flowchart.scene(semantic: semantic, layout: layout["FlowchartV2"] as? [String: Any] ?? [:])
+        switch json["scene"] as? String {
+        case "flowchart": scene = Flowchart.scene(semantic: semantic, layout: layout["FlowchartV2"] as? [String: Any] ?? [:])
         case "sequence": scene = Sequence.scene(semantic: semantic, layout: layout["SequenceDiagram"] as? [String: Any] ?? [:])
-        case "stateDiagram", "state": scene = State.scene(semantic: semantic, layout: layout["StateDiagramV2"] as? [String: Any] ?? [:])
-        case "classDiagram", "class": scene = Class.scene(semantic: semantic, layout: layout["ClassDiagramV2"] as? [String: Any] ?? [:])
+        case "state": scene = State.scene(semantic: semantic, layout: layout["StateDiagramV2"] as? [String: Any] ?? [:])
+        case "class": scene = Class.scene(semantic: semantic, layout: layout["ClassDiagramV2"] as? [String: Any] ?? [:])
         case "gitGraph": scene = GitGraph.scene(semantic: semantic, layout: layout["GitGraphDiagram"] as? [String: Any] ?? [:])
         default: scene = nil
         }
@@ -36,12 +36,7 @@ public enum Diagram {
         guard let object = try? JSONSerialization.jsonObject(with: Data(bytes: raw, count: strlen(raw))) as? [String: Any] else {
             throw DiagramError(message: "merman returned invalid JSON")
         }
-        if let error = object["error"] as? String {
-            if let match = error.firstMatch(of: /Unsupported diagram type: ([^;]+)/) {
-                return ["meta": ["diagram_type": String(match.1)], "semantic": [String: Any](), "layout": [String: Any]()]
-            }
-            throw DiagramError(message: error)
-        }
+        if let error = object["error"] as? String { throw DiagramError(message: error) }
         return object
     }
 }

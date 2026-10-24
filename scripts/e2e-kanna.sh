@@ -62,6 +62,7 @@ done
 
 unset KANNA_PANE KANNA_TERMINAL KANNA_INSTANCE
 ps -o pid= -p $$ >/dev/null 2>&1 && kill -0 $$ 2>/dev/null || { echo "e2e-kanna: can't list or signal processes here (a sandbox?); run it unsandboxed" >&2; exit 2; }
+export KANNA_E2E_OWNER=$$
 mock_agent="$repo_root/tools/mock-agent/mock-agent"
 new_state_dir() {
   KANNA_STATE_DIR="$(mktemp -d /tmp/kanna-e2e.XXXXXX)" || exit 1
@@ -86,7 +87,10 @@ daemon_pid="" app_pid="" scenario_pid=""
 need() { [[ -x "$1" ]] || { echo "not built: ${1#$repo_root/}"; return 1; }; }
 wait_for() {
   local tries=$(($1 * 10)); shift
-  for _ in $(seq "$tries"); do "$@" 2>/dev/null && return 0; sleep 0.1; done
+  for _ in $(seq "$tries"); do
+    kill -0 "$KANNA_E2E_OWNER" 2>/dev/null || exit 1
+    "$@" 2>/dev/null && return 0; sleep 0.1
+  done
   return 1
 }
 start_daemon() {
@@ -115,24 +119,56 @@ start_app() {
 }
 stop_app() { stop_pid "$app_pid"; app_pid=""; }
 app_attached() { [[ "$(raw '{"id":1,"cmd":"debug.app"}' | field ok)" == True ]]; }
+instance_sockets() {
+  local socket
+  for socket in "$KANNA_STATE_DIR/kanna.sock" "$KANNA_STATE_DIR/home/Library/Application Support"/kanna-dev*/kanna.sock; do
+    [[ -S "$socket" ]] && echo "$socket"
+  done
+}
+stop_instances() {
+  [[ -n "$KANNA_STATE_DIR" && -d "$KANNA_STATE_DIR" ]] || return 0
+  local socket pids=() log="$out/stop.log"
+  : 2>/dev/null >>"$log" || log=/dev/stderr
+  while IFS= read -r socket; do
+    env -u KANNA_INSTANCE KANNA_SOCKET="$socket" "$bin/kanna" instances stop >/dev/null 2>>"$log" &
+    pids+=($!)
+  done < <(instance_sockets)
+  [[ ${#pids[@]} -eq 0 ]] || wait "${pids[@]}"
+}
+stop_jobs() {
+  local pid command
+  for pid in $(jobs -p); do
+    kill -0 "$pid" 2>/dev/null || continue
+    command="$(ps -o command= -p "$pid")"
+    case "$command" in *kanna-daemon*|*Kanna.app*) echo "e2e-kanna: ${command:0:120} (pid $pid) outlived kanna instances stop" >&2 ;; esac
+    stop_pid "$pid"
+  done
+}
+run_scenario() {
+  trap 'exit 143' TERM
+  trap 'stop_instances; stop_jobs' EXIT
+  "$1"
+}
 cleanup() {
   if [[ -n "$scenario_pid" ]]; then
     kill "$scenario_pid" 2>/dev/null
-    wait_for 2 eval "! kill -0 $scenario_pid" || kill -9 "$scenario_pid" 2>/dev/null
+    wait_for 30 eval "! kill -0 $scenario_pid" || kill -9 "$scenario_pid" 2>/dev/null
     wait "$scenario_pid" 2>/dev/null
     scenario_pid=""
   fi
   [[ -n "$KANNA_STATE_DIR" ]] || return 0
-  stop_tied "$KANNA_STATE_DIR"
+  stop_instances
+  stop_tied --last-resort "$KANNA_STATE_DIR"
   app_pid="" daemon_pid=""
   rm -rf "$KANNA_STATE_DIR"
 }
 stop_agents() { stop_tied "$KANNA_STATE_DIR/agents" "$KANNA_STATE_DIR/codex"; }
-stop_folder() { stop_tied "$1"; }
 stop_tied() {
   python3 - "$$" "$@" <<'PY'
 import os, re, signal, subprocess, sys, time
 runner, paths = int(sys.argv[1]), sys.argv[2:]
+last_resort = paths[:1] == ["--last-resort"]
+paths = paths[1:] if last_resort else paths
 if not paths or not all(paths):
     sys.exit(0)
 sweeping = paths == ["--orphans"]
@@ -219,7 +255,9 @@ def stop(tied, why):
         pids = {pid: command for pid, command, env in table() if tied(command, env)}
         if not pids:
             return
-        for pid in pids:
+        for pid, command in pids.items():
+            if last_resort:
+                print(f"e2e-kanna: bug: {command[:120]} (pid {pid}) was still running after kanna instances stop{why}", file=sys.stderr)
             signal_(pid, signal.SIGTERM)
         deadline = time.time() + 5
         while time.time() < deadline and any(alive(p) for p in pids):
@@ -320,6 +358,27 @@ survives_relaunch() {
   check is survives_relaunch pid "$pid" || return 1
   after="$(raw '{"id":1,"cmd":"debug.text","args":{"pane":"survives_relaunch"}}' | field text)"
   check test "$after" == "$before"
+}
+
+scenario instance_stop M4
+instance_stop() {
+  start_daemon && start_app || return 1
+  kanna open --name left --cmd 'echo LEFT-READY; exec sleep 600' >/dev/null && kanna open --name right --split right --size 1/3 >/dev/null || return 1
+  wait_for 5 shows left LEFT-READY || { echo "instance_stop: left never drew"; return 1; }
+  local before shell keeper app_was daemon_was saved
+  before="$(layout)" shell="$(pane left pid)" keeper="$(cat "$KANNA_STATE_DIR/keeper.pid")" app_was="$app_pid" daemon_was="$daemon_pid"
+  saved="$(stat -f %m "$KANNA_STATE_DIR/app-state.json" 2>/dev/null || echo 0)"
+  sleep 1
+  check test "$(kanna instances stop)" == "stopped default ($KANNA_SOCKET)" || return 1
+  check test ! -S "$KANNA_SOCKET" -a ! -e "$KANNA_STATE_DIR/daemon.pid" || return 1
+  check wait_for 5 eval '! kill -0 $app_was && ! kill -0 $daemon_was && ! kill -0 $keeper && ! kill -0 $shell' || { echo "instance_stop: still running: $(ps -o pid=,command= -p "$app_was,$daemon_was,$keeper,$shell")"; return 1; }
+  wait "$app_pid" "$daemon_pid" 2>/dev/null; app_pid="" daemon_pid=""
+  check test "$(stat -f %m "$KANNA_STATE_DIR/app-state.json")" -gt "$saved" || { echo "instance_stop: the app didn't save app-state.json as it quit"; return 1; }
+  python3 -c 'import json, sys; sys.exit("win-1" not in json.load(open(sys.argv[1]))["frames"])' "$KANNA_STATE_DIR/app-state.json" || { echo "instance_stop: app-state.json has no frame for win-1"; cat "$KANNA_STATE_DIR/app-state.json"; return 1; }
+  start_daemon && start_app || return 1
+  check test "$(layout)" == "$before" || return 1
+  check is left state exited || return 1
+  check test "$(app_view | field key)" == win-1 || return 1
 }
 
 scenario layout_restored M1
@@ -604,7 +663,11 @@ instances() {
   check test "$(inst --instance e2e instances --json | field instances.0.current)" == True || return 1
   inst --instance e2e open --name instancesb --split right >/dev/null || return 1
   check test "$(inst --instance e2e workspace list --all --json | field windows.0.tabs.0.layout)" == '{"children": [{"pane": "instances", "size": "1/2"}, {"pane": "instancesb", "size": "1/2"}], "split": "row"}' || return 1
-  stop_folder "$folder"
+  local daemon keeper
+  daemon="$(cat "$folder/daemon.pid")" keeper="$(cat "$folder/keeper.pid")"
+  check test "$(inst --instance e2e instances stop)" == "stopped e2e ($folder/kanna.sock)" || return 1
+  check test ! -e "$folder/daemon.pid" || return 1
+  check wait_for 5 eval '! kill -0 $daemon && ! kill -0 $keeper' || { echo "instances: the stopped instance's daemon or keeper is still running"; return 1; }
   check test "$(inst instances)" == "No Kanna instances are running. Any command starts one, e.g. kanna open or kanna --instance work open."
 }
 
@@ -2343,6 +2406,22 @@ r = json.loads(sys.argv[1]); assert r["pane"] == "file-1" and r["window"] == "wi
   check test "$caller" == win-1
 }
 
+scenario diagram_check M4
+diagram_check() {
+  start_daemon && start_app || return 1
+  local doc="$KANNA_STATE_DIR/diagram_check.md" said err
+  printf '# diagram_check\n\n```mermaid\nflowchart LR\n    A --> B\n```\n\n```mermaid\nerDiagram\n    A ||--o{ B : has\n```\n' >"$doc"
+  said="$(kanna open md "$doc" --name doc --tab 2>"$KANNA_STATE_DIR/open.err")" || { echo "diagram_check: open md failed"; cat "$KANNA_STATE_DIR/open.err"; return 1; }
+  err="$(cat "$KANNA_STATE_DIR/open.err")"
+  [[ "$said" == "opened file-1 (doc) in win-1"* ]] || { echo "diagram_check: open said $said"; return 1; }
+  [[ "$err" == "$doc:8: unsupported diagram type: er (Kanna draws "* ]] || { echo "diagram_check: open md reported \"$err\""; return 1; }
+  check test "$(printf '%s\n' "$err" | wc -l | tr -d ' ')" == 1 || return 1
+  check test "$(kanna open md "$doc" --json 2>/dev/null | field diagrams.0.line)" == 8 || return 1
+  check wait_for 5 doc_text doc "Unsupported diagram type: er" || return 1
+  check test "$(raw '{"id":1,"cmd":"debug.md","args":{"pane":"doc"}}' | python3 -c 'import json, sys; print([d["type"] for d in json.load(sys.stdin)["diagrams"]])')" == "['flowchart-v2']" || return 1
+  kanna diagrams check "$doc" >/dev/null 2>&1; check test $? -eq 1 || return 1
+}
+
 scenario bash_completion M4
 bash_completion() {
   SHELL=/bin/bash PATH="$bin:$PATH" start_daemon && start_app || return 1
@@ -2673,8 +2752,8 @@ real_agent_tasks() {
   local claude="${KANNA_E2E_CLAUDE:-$(command -v claude)}" codex="${KANNA_E2E_CODEX:-$(command -v codex)}"
   [[ -x "$claude" ]] || { echo "real_agent_tasks: claude isn't installed (or set KANNA_E2E_CLAUDE)"; return 1; }
   [[ -x "$codex" ]] || { echo "real_agent_tasks: codex isn't installed (or set KANNA_E2E_CODEX)"; return 1; }
-  start_daemon && start_app || { echo "real_agent_tasks line $LINENO"; return 1; }
   local agents="$KANNA_STATE_DIR/agents" repo="$KANNA_STATE_DIR/repo" harness="$repo_root/tools/agent-harness"
+  CODEX_HOME="$agents/codex-home/.codex" start_daemon && start_app || { echo "real_agent_tasks line $LINENO"; return 1; }
   mkdir -p "$agents" "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "real_agent_tasks line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   python3 -I "$harness/mock_server.py" --log "$agents/mock.jsonl" >"$agents/port" 2>"$agents/mock.log" &
@@ -2698,6 +2777,11 @@ print(sum(1 for l in lines if l.get("turn") and sys.argv[2] in l["prompt"] and (
     [[ "$(asked "You're a task's agent in Kanna (terminal $(pane "$agent task" terminal)), in your task's worktree. Your task: $first")" == 1 ]] || { echo "real_agent_tasks: $agent wasn't told it's a task's agent"; tail -1 "$agents/mock.jsonl" | cut -c1-300; return 1; }
     check wait_for 30 shows "$agent task" "Agent status probe" || { echo "real_agent_tasks: $agent didn't show the mock's answer"; kanna read "$agent task"; return 1; }
     check wait_for 10 grep -rqs "Agent status probe" "$agents/$agent-home" || { echo "real_agent_tasks: $agent didn't save its answer"; return 1; }
+    if [[ $agent == codex ]]; then
+      local session; session="$(grep -rhos '"session_meta","payload":{[^}]*' "$agents/codex-home/.codex/sessions" | sed -n 's/.*"id":"\([0-9a-f-]*\)".*/\1/p' | head -1)"
+      [[ -n "$session" ]] || { echo "real_agent_tasks: codex wrote no session"; return 1; }
+      check wait_for 10 eval '[[ "$(pane "$agent task" cmd)" == *" resume '"'"'$session'"'"'" ]]' || { echo "real_agent_tasks: codex's pane doesn't resume its session $session: $(pane "$agent task" cmd)"; return 1; }
+    fi
     kanna restart "$agent task" >/dev/null || { echo "real_agent_tasks: $agent's pane didn't restart"; return 1; }
     check wait_for 60 eval 'shows "$agent task" "$first" && shows "$agent task" "Agent status probe"' || { echo "real_agent_tasks: $agent didn't restart into its conversation"; kanna read "$agent task"; return 1; }
     sleep 3
@@ -3057,7 +3141,7 @@ planner_choice() {
   check wait_for 5 shows "$planner" "Make codex the planning agent for repo? \[y/N\]" || { kanna read "$planner"; return 1; }
   kanna send "$planner" y >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
   check wait_for 5 shows "$planner" "codex plans repo from now on" || { kanna read "$planner"; return 1; }
-  check wait_for 10 spaceless "$planner" "args: -c model_auto_compact_token_limit=300000 You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: codex didn't start as the planner"; kanna read "$planner"; return 1; }
+  check wait_for 10 spaceless "$planner" "args: -c approval_policy=\"never\" -c sandbox_mode=\"danger-full-access\" -c model_auto_compact_token_limit=300000 You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: codex didn't start as the planner"; kanna read "$planner"; return 1; }
   check grep -Eq '"agent" ?: "codex"' "$repo/.kanna/config.json" || { cat "$repo/.kanna/config.json"; return 1; }
   kanna send "$planner" exit >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
   check wait_for 5 shows "$planner" "The planning agent quit. Start it again:" || { kanna read "$planner"; return 1; }
@@ -3067,7 +3151,7 @@ planner_choice() {
   w="${BASH_REMATCH[1]}"
   check wait_for 10 eval '[[ "$(desk lead "$w")" == term-* ]]' || { echo "planner_choice: the next Desk has no planning terminal"; return 1; }
   planner="$(desk lead "$w")"
-  check wait_for 10 spaceless "$planner" "args: -c model_auto_compact_token_limit=300000 You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: the next Desk didn't start the project's planner"; kanna read "$planner"; return 1; }
+  check wait_for 10 spaceless "$planner" "args: -c approval_policy=\"never\" -c sandbox_mode=\"danger-full-access\" -c model_auto_compact_token_limit=300000 You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: the next Desk didn't start the project's planner"; kanna read "$planner"; return 1; }
   ! shows "$planner" "Choose an agent" || { echo "planner_choice: the next Desk asked again"; return 1; }
   key cmd+n
   check wait_for 10 eval '[[ "$(desk lead d3)" == term-* ]]' || { echo "planner_choice: ⌘N opened no Desk"; kanna workspace list --all; return 1; }
@@ -3075,7 +3159,7 @@ planner_choice() {
   check wait_for 10 shows "$planner" "Folder, repo, name or number \[1\]:" || { echo "planner_choice: a Desk in ~ didn't ask where"; kanna read "$planner"; return 1; }
   kanna send "$planner" "$repo" >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
   check wait_for 10 eval '[[ "$(desk header d3)" == "Planning · "*"${repo#/private} · main" ]]' || { echo "planner_choice: the Desk didn't follow to the folder"; desk header d3; return 1; }
-  check wait_for 10 spaceless "$planner" "args: -c model_auto_compact_token_limit=300000 You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: the Desk didn't start the folder's planner"; kanna read "$planner"; return 1; }
+  check wait_for 10 spaceless "$planner" "args: -c approval_policy=\"never\" -c sandbox_mode=\"danger-full-access\" -c model_auto_compact_token_limit=300000 You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: the Desk didn't start the folder's planner"; kanna read "$planner"; return 1; }
 }
 
 scenario real_agent_planners M4
@@ -3706,7 +3790,7 @@ for s in "${run[@]}"; do
   if [[ "$m" > "$through" ]]; then printf '%-20s --   not due (%s)\n' "$s" "$m"; continue; fi
   cleanup
   new_state_dir
-  "$s" >"$out/$s.log" 2>&1 &
+  run_scenario "$s" >"$out/$s.log" 2>&1 &
   scenario_pid=$! ends=$((SECONDS + limit))
   echo "$scenario_pid" >"$KANNA_STATE_DIR/e2e-scenario.pid"
   while kill -0 "$scenario_pid" 2>/dev/null && [[ $SECONDS -lt $ends ]]; do sleep 0.2; done
