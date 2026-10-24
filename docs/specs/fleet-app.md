@@ -10,7 +10,7 @@ A Desk belongs to a project. Pulling a task changes what the app shows, while it
 
 - **A Desk is on a project,** whichever machines its tasks run on. A project is known across machines by its remote URL or first commit ([tasks §4](fleet-tasks.md#4-repos-and-credentials)). Its planning terminal runs on a machine that has the project, placed like a task, and its backlog page lists the project's tasks from every machine. The new-Desk prompt and Open Recent show projects, not paths on a machine. Opening an already-open project brings its existing Desk forward.
 - **The Shelf stays the app's:** claims in its order, three per project including the task on the Desk, keyed by (machine, task) in `app-state.json`. Pulling and parking preserve claims, order and ownership. A card shows its host machine only when that machine is relayed or offline.
-- **Claims name the device:** `claimed by: mbp` (the hello's `client`) replaces `mac`. Runners leave claimed tasks alone, as today.
+- **Claim records name the device:** `claimed by: mbp` (the hello's `client`) replaces `mac` in the protocol. This is internal bookkeeping, not a label in the UI: users work on tasks without tracking the claiming device or execution machine. Runners leave claimed tasks alone, as today.
 - **Toasts** held while no app was attached arrive when the app connects, so five servers' finished tasks show up when you open the lid. Toast delivery is outside this model; use the [toast reference](../../references/mockups/toasts.html) for its presentation.
 - A task can use several machines: the model's **Keep terminal output** agent runs on `dev-1`, and its macOS UI test job runs on `mbp`. The Mac is this build Mac; no mini is assumed. Fleet lists the agent and job separately, without creating another task or claim.
 
@@ -42,7 +42,7 @@ Compare the product against these scenes and transitions, using the model's fixt
 
 | Scene / action | Expected result |
 |---|---|
-| Default / `#picture` | One Kanna Desk, three claims across three peers; one merged project backlog; no machine picker |
+| Default / `#picture` | One Kanna Desk, three claims across three peers; one merged project backlog; no machine picker or claim-device labels |
 | File → New Desk / Open Recent → Kanna twice | Existing project Desk comes forward; its task selection survives; no duplicate Desk |
 | Open Recipe Box, then Kanna | Separate project Desks with their own Shelf and selection; names, not clone paths |
 | Pull **Keep terminal output** then **Review build output** | Correct agent and tabs despite matching terminal IDs; task input cannot leak between peers |

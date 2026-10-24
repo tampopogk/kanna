@@ -180,7 +180,7 @@ function badge(machine,always=false) {
   return `<button class="path ${p==='lan'||p==='internet'?'direct':p}" data-path="${machine}" aria-label="${machine}: ${label[p]}. Show path details">${always?'':`${machine} · `}${label[p]}</button>`;
 }
 function card(t,backlog=false) {
-  return `<div class="task" data-task="${key(t)}">${dot(t)}<div class="text"><div class="name">${t.name}</div><div class="meta">${t.agent} · ${status(t)}${t.claimed?' · claimed by: mbp':''}</div>${badge(t.machine)}${!t.claimed && isOffline(t)?'<div class="meta">Waiting for its owner to reconnect.</div>':''}</div>${backlog?'<span class="muted">'+(isOffline(t)?'Unavailable':tasks.filter(x=>x.project===t.project&&x.claimed).length===3?'Shelf full':'In backlog')+'</span>':`<button class="go" data-pull="${key(t)}">${isOffline(t)?'View last state':'Pull to Desk'} →</button>`}</div>`;
+  return `<div class="task" data-task="${key(t)}">${dot(t)}<div class="text"><div class="name">${t.name}</div><div class="meta">${t.agent} · ${status(t)}</div>${badge(t.machine)}${!t.claimed && isOffline(t)?'<div class="meta">Waiting for connection.</div>':''}</div>${backlog?'<span class="muted">'+(isOffline(t)?'Unavailable':tasks.filter(x=>x.project===t.project&&x.claimed).length===3?'Shelf full':'In backlog')+'</span>':`<button class="go" data-pull="${key(t)}">${isOffline(t)?'View last state':'Pull to Desk'} →</button>`}</div>`;
 }
 function terminal(project,t) {
   const machine=t?t.machine:(project.id==='kanna'?'dev-1':'mbp'), off=path(machine)==='off';
@@ -195,7 +195,7 @@ function terminal(project,t) {
 }
 function overview(project) {
   const mine=tasks.filter(t=>t.project===project.id);
-  return `<section class="docs"><div class="tabs"><span class="selected">Shelf & backlog</span></div><div class="page"><h2>${project.name}</h2><p class="sub">Your tasks, wherever they run.</p><div class="group"><div class="grouphead"><b>Shelf</b><span>${mine.filter(t=>t.claimed).length} of 3 tasks · claimed by: mbp</span></div>${mine.filter(t=>t.claimed).map(t=>card(t)).join('')}</div><div class="group backlog"><div class="grouphead"><b>Backlog</b><span>${mine.filter(t=>!t.claimed).length} tasks · all machines</span></div>${mine.filter(t=>!t.claimed).map(t=>card(t,true)).join('')}</div></div></section>`;
+  return `<section class="docs"><div class="tabs"><span class="selected">Shelf & backlog</span></div><div class="page"><h2>${project.name}</h2><p class="sub">Your tasks, wherever they run.</p><div class="group"><div class="grouphead"><b>Shelf</b><span>${mine.filter(t=>t.claimed).length} of 3 tasks</span></div>${mine.filter(t=>t.claimed).map(t=>card(t)).join('')}</div><div class="group backlog"><div class="grouphead"><b>Backlog</b><span>${mine.filter(t=>!t.claimed).length} tasks · all machines</span></div>${mine.filter(t=>!t.claimed).map(t=>card(t,true)).join('')}</div></div></section>`;
 }
 function workspace(t) {
   const off=isOffline(t);
@@ -207,7 +207,7 @@ function detail(machine) {
     lan:['Direct on the LAN','The app connects directly to this machine. Traffic is not using a relay.'],
     internet:['Direct over the internet','The app reaches this machine directly through the internet. Traffic is not using a relay.'],
     relay:['Relayed · your relay','A direct path is unavailable. Traffic is end-to-end encrypted through your relay. Kanna switches to a direct path automatically when one is available.'],
-    off:['Offline · last seen 4 min ago','Current task state is unknown. Last received views stay available, with input disabled. Tasks keep their claims and owners; waiting tasks are not started elsewhere.']
+    off:['Offline · last seen 4 min ago','Current task state is unknown. Last received views stay available, with input disabled. Tasks keep their place on your Shelf. Waiting tasks stay queued until the connection returns.']
   };
   return `<div class="details" data-details="${machine}"><h3>${machine} · ${messages[p][0]}</h3><p>${messages[p][1]}</p></div>`;
 }
@@ -215,7 +215,7 @@ function fleet(w) {
   return `<section class="fleet"><div class="page"><div class="fleet-title"><div><h2>Fleet</h2><p class="sub">Your machines · all projects</p></div><span class="spacer"></span><button data-view="desk">Back to Desk</button></div><table><thead><tr><th>Machine</th><th>Path from this Mac</th><th>Work</th></tr></thead><tbody>${peers.map(m=>{
     const off=path(m.id)==='off';
     const running=tasks.filter(t=>t.machine===m.id && !['waiting','stopped'].includes(t.state));
-    return `<tr data-machine="${m.id}"><td><strong>${m.name}</strong><small>${m.role}</small><small>${m.capability}</small></td><td>${badge(m.id,true)}<small>${off?'Last seen 4 min ago':path(m.id)==='relay'?'Via your relay · encrypted':path(m.id)==='local'?'Client + build Mac':'No relay in use'}</small></td><td>${off?'<div class="offline">Current state unknown</div>':''}${m.id==='dev-1'?'<div class="workload">Kanna · planning agent'+(off?' <span class="muted">· last known</span>':'')+'</div>':''}${running.map(t=>`<div class="workload"><strong>${t.name}</strong><small>${projects.find(p=>p.id===t.project).name} · ${off?'last known: ':''}${t.state}${t.claimed?' · claimed by: mbp':' · backlog'}</small></div>`).join('')}${m.id==='mbp'?'<div class="workload"><strong>macOS UI tests</strong><small>Kanna · build job for Keep terminal output · agent on dev-1</small></div>':''}${m.id==='tools-1'?'<small>Check tab restoration · '+(off?'waiting for this owner':'waiting')+'</small>':''}</td></tr>`;
+    return `<tr data-machine="${m.id}"><td><strong>${m.name}</strong><small>${m.role}</small><small>${m.capability}</small></td><td>${badge(m.id,true)}<small>${off?'Last seen 4 min ago':path(m.id)==='relay'?'Via your relay · encrypted':path(m.id)==='local'?'Client + build Mac':'No relay in use'}</small></td><td>${off?'<div class="offline">Current state unknown</div>':''}${m.id==='dev-1'?'<div class="workload">Kanna · planning agent'+(off?' <span class="muted">· last known</span>':'')+'</div>':''}${running.map(t=>`<div class="workload"><strong>${t.name}</strong><small>${projects.find(p=>p.id===t.project).name} · ${off?'last known: ':''}${t.state}${t.claimed?'':' · backlog'}</small></div>`).join('')}${m.id==='mbp'?'<div class="workload"><strong>macOS UI tests</strong><small>Kanna · build job for Keep terminal output · agent on dev-1</small></div>':''}${m.id==='tools-1'?'<small>Check tab restoration · '+(off?'waiting for connection':'waiting')+'</small>':''}</td></tr>`;
   }).join('')}</tbody></table>${detail(w.detail)}<p class="muted">Connections change automatically. Tasks stay where they run when you bring them to a Desk.</p></div></section>`;
 }
 function render() {

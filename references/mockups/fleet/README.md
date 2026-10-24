@@ -48,7 +48,7 @@ Screenshots live in `docs/specs/fleet-{desk,page,relay,offline}.png`. Refresh th
 
 ## What it showed
 
-- A single project Desk can hold claims across peers without choosing a machine. Pulling and parking are presentation changes.
+- A single project Desk can hold claims across peers without choosing a machine. Pulling and parking are presentation changes. Claim-device metadata stays internal; it is not shown on cards, the Shelf header or Fleet work entries.
 - Connection state and task state need separate treatment. An offline task keeps its claim; its last state must be labeled stale, not silently presented as current or changed to stopped.
 - The same task can have a Linux agent and a Mac build job. Fleet needs both work entries, while the Shelf still has only one task.
 - A direct-path recovery removes exceptional machine labels automatically, without disturbing the task or its position.
