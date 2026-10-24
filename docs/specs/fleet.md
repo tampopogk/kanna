@@ -133,11 +133,7 @@ sequenceDiagram
 
 ## 6. One app, several machines
 
-- **A Desk is on a project,** whichever machines its tasks run on. A project is known across machines by its remote URL or first commit ([tasks §4](fleet-tasks.md#4-repos-and-credentials)). Its planning terminal runs on a machine that has the project, placed like a task, and its backlog page lists the project's tasks from every machine. The new-Desk prompt and Open Recent show projects, not paths on a machine.
-- **The Shelf stays the app's:** claims in its order, three per project, keyed by (machine, task) in `app-state.json`. A card shows its machine only when that machine is relayed or offline.
-- **Claims name the device:** `claimed by: mbp` (the hello's `client`) replaces `mac`. Runners leave claimed tasks alone, as today.
-- **Toasts** held while no app was attached arrive when the app connects, so five servers' finished tasks show up when you open the lid.
-- **What it looks like** (the fleet page with each machine's path and what it's running, a card on a relayed machine) is drawn in `references/mockups/fleet.html`, made before slice 3 (§10).
+See [Desks across machines](fleet-app.md) for project identity, the app’s Shelf and claims, and the [Fleet mockup](../../references/mockups/fleet.html) with screenshots and the Fleet 3 comparison cases.
 
 ## 7. Terminals and panes
 
