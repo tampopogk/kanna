@@ -16,6 +16,7 @@ pub struct Agents {
     pub home: PathBuf,
     pub skills: Option<PathBuf>,
     pub socket: String,
+    pub keys: Vec<String>,
     pub asked_setup: Cell<bool>,
     pub asked_update: Cell<bool>,
 }
@@ -26,6 +27,7 @@ struct Record {
     files: BTreeMap<String, String>,
     answered: Option<String>,
     sockets: Vec<String>,
+    denied: Vec<String>,
     made: Vec<String>,
 }
 
@@ -73,14 +75,22 @@ pub fn skills() -> Option<PathBuf> {
     }
 }
 
+pub fn keys(support: &Path, state: &Path) -> Vec<String> {
+    let mut keys = vec![support.join("kanna*").join(crate::fleet::KEY)];
+    if state.parent() != Some(support) {
+        keys.push(state.join(crate::fleet::KEY));
+    }
+    keys.iter().map(|k| k.to_string_lossy().into_owned()).collect()
+}
+
 pub fn home() -> PathBuf {
     let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty());
     PathBuf::from(var("KANNA_AGENTS_HOME").or_else(|| var("HOME")).unwrap_or_default())
 }
 
 impl Agents {
-    pub fn new(home: PathBuf, skills: Option<PathBuf>, socket: String) -> Agents {
-        Agents { home, skills, socket, asked_setup: Cell::new(false), asked_update: Cell::new(false) }
+    pub fn new(home: PathBuf, skills: Option<PathBuf>, socket: String, keys: Vec<String>) -> Agents {
+        Agents { home, skills, socket, keys, asked_setup: Cell::new(false), asked_update: Cell::new(false) }
     }
 
     pub fn install(self, core: &CoreHandle) {
@@ -207,6 +217,7 @@ impl Agents {
         }
         report.settings = self.unsettings(&record).unwrap_or(false);
         record.sockets.clear();
+        record.denied.clear();
         record.made.clear();
         record.answered = None;
         record.setup = Some(false);
@@ -355,38 +366,43 @@ impl Agents {
         let claude = self.home.join(".claude/settings.json");
         let socket = self.socket.clone();
         let mut sockets = record.sockets.clone();
+        let mut denied = record.denied.clone();
+        let paths: Vec<String> = self.keys.iter().map(|k| format!("/{k}")).collect();
+        let rules: Vec<String> = paths.iter().map(|p| format!("Read({p})")).collect();
         let changed = edit(&claude, true, &mut record.made, |object, made| {
-            let sandbox = ensure(object, "sandbox", made, "sandbox");
-            let network = sandbox.and_then(|o| ensure(o, "network", made, "sandbox.network"));
-            if let Some(list) = network.and_then(|o| list(o, "allowUnixSockets", made, "sandbox.network.allowUnixSockets")) {
-                if !sockets.contains(&socket) {
-                    sockets.push(socket.clone());
+            if let Some(sandbox) = ensure(object, "sandbox", made, "sandbox") {
+                let network = ensure(sandbox, "network", made, "sandbox.network");
+                if let Some(list) = network.and_then(|o| list(o, "allowUnixSockets", made, "sandbox.network.allowUnixSockets")) {
+                    add(list, &mut sockets, std::slice::from_ref(&socket));
                 }
-                if !list.iter().any(|s| s.as_str() == Some(&socket)) {
-                    list.push(json!(socket));
+                let filesystem = ensure(sandbox, "filesystem", made, "sandbox.filesystem");
+                if let Some(list) = filesystem.and_then(|o| list(o, "denyRead", made, "sandbox.filesystem.denyRead")) {
+                    add(list, &mut denied, &paths);
                 }
+            }
+            let permissions = ensure(object, "permissions", made, "permissions");
+            if let Some(list) = permissions.and_then(|o| list(o, "deny", made, "permissions.deny")) {
+                add(list, &mut denied, &rules);
             }
             drop_hook(object, made);
         })?;
         record.sockets = sockets;
+        record.denied = denied;
         edit(&self.home.join(".codex/hooks.json"), false, &mut record.made, drop_hook)?;
         Ok(changed)
     }
 
     fn unsettings(&self, record: &Record) -> io::Result<bool> {
         let sockets = record.sockets.clone();
+        let denied = record.denied.clone();
         let mut made = record.made.clone();
         let claude = edit(&self.home.join(".claude/settings.json"), false, &mut made, |object, made| {
-            if let Some(network) = object.get_mut("sandbox").and_then(Value::as_object_mut).and_then(|s| s.get_mut("network")).and_then(Value::as_object_mut) {
-                if let Some(list) = network.get_mut("allowUnixSockets").and_then(Value::as_array_mut) {
-                    list.retain(|s| !s.as_str().is_some_and(|s| sockets.iter().any(|ours| ours == s)));
-                }
-                prune(network, "allowUnixSockets", made, "sandbox.network.allowUnixSockets");
-            }
             if let Some(sandbox) = object.get_mut("sandbox").and_then(Value::as_object_mut) {
-                prune(sandbox, "network", made, "sandbox.network");
+                take(sandbox, "network", "allowUnixSockets", &sockets, made, "sandbox.network");
+                take(sandbox, "filesystem", "denyRead", &denied, made, "sandbox.filesystem");
             }
             prune(object, "sandbox", made, "sandbox");
+            take(object, "permissions", "deny", &denied, made, "permissions");
             drop_hook(object, made);
         });
         let codex = edit(&self.home.join(".codex/hooks.json"), false, &mut made, drop_hook);
@@ -420,12 +436,13 @@ impl Agents {
             files: value.get("files").and_then(Value::as_object).map(|f| f.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()).unwrap_or_default(),
             answered: value.get("answered").and_then(Value::as_str).map(String::from),
             sockets: strings("sockets"),
+            denied: strings("denied"),
             made: strings("made"),
         }
     }
 
     fn save(&self, record: &Record) -> Result<(), KmuxError> {
-        let value = json!({ "version": RECORD_VERSION, "setup": record.setup, "files": record.files, "answered": record.answered, "sockets": record.sockets, "made": record.made });
+        let value = json!({ "version": RECORD_VERSION, "setup": record.setup, "files": record.files, "answered": record.answered, "sockets": record.sockets, "denied": record.denied, "made": record.made });
         let file = self.record_file();
         write_atomic(&file, format!("{}\n", serde_json::to_string_pretty(&value).unwrap_or_default()).as_bytes()).map_err(|e| KmuxError::new("failed", format!("can't write {}: {e}", file.display())))
     }
@@ -534,6 +551,27 @@ fn list<'a>(object: &'a mut Map, key: &str, made: &mut Made, tag: &str) -> Optio
         made.add(tag);
     }
     object.entry(key).or_insert_with(|| json!([])).as_array_mut()
+}
+
+fn add(list: &mut Vec<Value>, ours: &mut Vec<String>, entries: &[String]) {
+    for entry in entries {
+        if !ours.contains(entry) {
+            ours.push(entry.clone());
+        }
+        if !list.iter().any(|v| v.as_str() == Some(entry)) {
+            list.push(json!(entry));
+        }
+    }
+}
+
+fn take(object: &mut Map, key: &str, field: &str, ours: &[String], made: &mut Made, tag: &str) {
+    if let Some(inner) = object.get_mut(key).and_then(Value::as_object_mut) {
+        if let Some(list) = inner.get_mut(field).and_then(Value::as_array_mut) {
+            list.retain(|v| !v.as_str().is_some_and(|v| ours.iter().any(|o| o == v)));
+        }
+        prune(inner, field, made, &format!("{tag}.{field}"));
+    }
+    prune(object, key, made, tag);
 }
 
 fn prune(object: &mut Map, key: &str, made: &mut Made, tag: &str) {
@@ -716,7 +754,7 @@ mod tests {
         fs::write(skills.join("kanna-tasks/SKILL.md"), "tasks v1").unwrap();
         fs::write(skills.join("kanna-tasks/notes/more.md"), "more").unwrap();
         fs::create_dir_all(root.join("home")).unwrap();
-        Fixture { agents: Agents::new(root.join("home"), Some(skills), "/S/kanna.sock".into()), root }
+        Fixture { agents: Agents::new(root.join("home"), Some(skills), "/S/kanna.sock".into(), keys(Path::new("/S"), Path::new("/S/kanna-dev"))), root }
     }
 
     fn read(f: &Fixture, path: &str) -> String {
@@ -798,7 +836,7 @@ mod tests {
         f.agents.setup(false).unwrap();
         ship(&f, "kanna-tasks/SKILL.md", "tasks v2");
         f.agents.skip().unwrap();
-        let fresh = Agents::new(f.agents.home.clone(), f.agents.skills.clone(), f.agents.socket.clone());
+        let fresh = Agents::new(f.agents.home.clone(), f.agents.skills.clone(), f.agents.socket.clone(), f.agents.keys.clone());
         assert_eq!(fresh.ask("update").unwrap()["ask"], false);
         ship(&f, "kanna-tasks/SKILL.md", "tasks v3");
         assert_eq!(fresh.ask("update").unwrap()["ask"], true);
@@ -887,11 +925,11 @@ mod tests {
         let settings = f.agents.home.join(".claude/settings.json");
         f.agents.setup(false).unwrap();
         let made: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
-        assert_eq!(made, json!({"sandbox": {"network": {"allowUnixSockets": ["/S/kanna.sock"]}}}), "no hooks");
+        assert_eq!(made, json!({"sandbox": {"network": {"allowUnixSockets": ["/S/kanna.sock"]}, "filesystem": {"denyRead": ["//S/kanna*/device.key"]}}, "permissions": {"deny": ["Read(//S/kanna*/device.key)"]}}), "no hooks");
         f.agents.remove().unwrap();
         assert!(!settings.exists(), "a settings file Kanna made goes when it's emptied");
 
-        fs::write(&settings, r#"{"model":"opus","sandbox":{"enabled":true,"network":{"allowUnixSockets":["/u/mine.sock"]}},"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo mine"}]}]},"env":{}}"#).unwrap();
+        fs::write(&settings, r#"{"model":"opus","sandbox":{"enabled":true,"network":{"allowUnixSockets":["/u/mine.sock"]},"filesystem":{"denyRead":["~/.ssh"]}},"permissions":{"allow":["Bash(ls)"],"deny":["Read(~/.ssh/**)"]},"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo mine"}]}]},"env":{}}"#).unwrap();
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&settings, fs::Permissions::from_mode(0o600)).unwrap();
         assert!(f.agents.setup(false).unwrap().settings);
@@ -901,13 +939,21 @@ mod tests {
         f.agents.refresh();
         let value: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
         assert_eq!(value["sandbox"]["network"]["allowUnixSockets"], json!(["/u/mine.sock", "/S/kanna.sock"]));
+        assert_eq!(value["sandbox"]["filesystem"]["denyRead"], json!(["~/.ssh", "//S/kanna*/device.key"]));
+        assert_eq!(value["permissions"], json!({"allow": ["Bash(ls)"], "deny": ["Read(~/.ssh/**)", "Read(//S/kanna*/device.key)"]}));
         f.agents.remove().unwrap();
         let value: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
-        assert_eq!(value, json!({"model": "opus", "sandbox": {"enabled": true, "network": {"allowUnixSockets": ["/u/mine.sock"]}}, "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "echo mine"}]}]}, "env": {}}));
+        assert_eq!(value, json!({"model": "opus", "sandbox": {"enabled": true, "network": {"allowUnixSockets": ["/u/mine.sock"]}, "filesystem": {"denyRead": ["~/.ssh"]}}, "permissions": {"allow": ["Bash(ls)"], "deny": ["Read(~/.ssh/**)"]}, "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "echo mine"}]}]}, "env": {}}));
 
         fs::write(&settings, "{ not json").unwrap();
         f.agents.setup(false).unwrap();
         assert_eq!(fs::read_to_string(&settings).unwrap(), "{ not json");
+    }
+
+    #[test]
+    fn every_instance_s_device_key_is_denied() {
+        assert_eq!(keys(Path::new("/u/Library/Application Support"), Path::new("/u/Library/Application Support/kanna-dev-work")), ["/u/Library/Application Support/kanna*/device.key"]);
+        assert_eq!(keys(Path::new("/u/.local/share"), Path::new("/tmp/kanna-e2e.x")), ["/u/.local/share/kanna*/device.key", "/tmp/kanna-e2e.x/device.key"], "a state folder outside the support folder is denied too");
     }
 
     const EARLIER_HOOK: &str = "if [ -n \"$KANNA_PLANNER\" ]; then echo \"You're running in Kanna, as a window's planning agent: use the kanna-planning skill now.\"; fi # kanna agents setup";
@@ -937,7 +983,7 @@ mod tests {
         earlier_kanna(&f, &[".claude/settings.json#sandbox", ".claude/settings.json#sandbox.network", ".claude/settings.json#sandbox.network.allowUnixSockets", ".codex/hooks.json#hooks.SessionStart"]);
 
         f.agents.setup(false).unwrap();
-        assert_eq!(hooks(&claude), json!({ "model": "opus", "sandbox": { "network": { "allowUnixSockets": ["/S/kanna.sock"] } }, "hooks": { "SessionStart": [{ "hooks": [mine] }], "Stop": [{ "hooks": [mine] }] } }));
+        assert_eq!(hooks(&claude), json!({ "model": "opus", "sandbox": { "network": { "allowUnixSockets": ["/S/kanna.sock"] }, "filesystem": { "denyRead": ["//S/kanna*/device.key"] } }, "permissions": { "deny": ["Read(//S/kanna*/device.key)"] }, "hooks": { "SessionStart": [{ "hooks": [mine] }], "Stop": [{ "hooks": [mine] }] } }));
         assert_eq!(hooks(&codex), json!({ "hooks": {} }), "the SessionStart list Kanna made goes; the file and its hooks are yours");
     }
 
@@ -954,7 +1000,7 @@ mod tests {
         let made = [".claude/settings.json#hooks", ".claude/settings.json#hooks.SessionStart", ".codex/hooks.json", ".codex/hooks.json#hooks", ".codex/hooks.json#hooks.SessionStart"];
         earlier_kanna(&f, &made);
         f.agents.update(false).unwrap();
-        assert_eq!(hooks(&claude), json!({ "sandbox": { "network": { "allowUnixSockets": ["/S/kanna.sock"] } } }));
+        assert_eq!(hooks(&claude), json!({ "sandbox": { "network": { "allowUnixSockets": ["/S/kanna.sock"] }, "filesystem": { "denyRead": ["//S/kanna*/device.key"] } }, "permissions": { "deny": ["Read(//S/kanna*/device.key)"] } }), "an earlier Kanna's setup gets the key's deny entries");
         assert!(!codex.exists(), "a hooks.json Kanna made goes when its hook does");
 
         fs::write(&claude, json!({ "hooks": { "SessionStart": [{ "hooks": [ours] }] } }).to_string()).unwrap();
