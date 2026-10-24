@@ -1,8 +1,8 @@
 # Agent Sign-In Across Machines
 
-**Status:** planned · **Part of:** [fleet](fleet.md) · **Builds on:** [agent setup](agent-setup.md)
+**Status:** planned; model verified with Codex's per-machine fallback (2026-10-24) · **Part of:** [fleet](fleet.md) · **Builds on:** [agent setup](agent-setup.md) · **Model:** [agent-sign-in](../../references/prototypes/agent-sign-in/README.md)
 
-Agents run on the user's own Claude or Codex accounts, subscriptions or API keys. **Accounts are the user's, not a machine's:** you add an account once, and every one of your machines can run every agent on it. Nothing is signed in per machine, and no machine advertises its sign-ins, since all of them have all of them.
+Agents run on the user's own Claude or Codex accounts, subscriptions or API keys. **Accounts are the user's, not a machine's:** a shareable credential is added once and supplied to every machine. Where an agent has no verified sharing path, Kanna runs its own sign-in on each machine during enrollment, with the URL opened where the user is. Codex's current ChatGPT subscription path uses this fallback. Machines do not advertise sign-ins for task placement; enrollment supplies the configured accounts.
 
 ## Contents
 
@@ -12,16 +12,20 @@ Agents run on the user's own Claude or Codex accounts, subscriptions or API keys
 
 ## 1. Accounts
 
-You add an account in the app, on the Mac: Kanna runs the agent's own sign-in there and keeps what it yields as a **secret**. From then on, every machine you have, and every one you add later, can use it.
+You add an account in the app, on the Mac: Kanna runs the agent's own sign-in and keeps what it yields as a **secret**. Shared credentials go to existing and newly enrolled machines; an account using the fallback needs the user's vendor sign-in for each machine.
 
 | Account | What Kanna keeps | What a machine gets |
 |---|---|---|
 | Claude subscription | a long-lived token from `claude setup-token` | the token, as `CLAUDE_CODE_OAUTH_TOKEN` |
 | Claude Console | the API key | `ANTHROPIC_API_KEY` |
-| Codex, ChatGPT subscription | the login itself, held by one of your devices (§2) | a short-lived access token (`codex login --with-access-token`) |
+| Codex, ChatGPT subscription | an independent login on each machine, created through Codex's own flow | its own login; no login file is copied from another machine |
 | Codex, API key | the API key | `codex login --with-api-key` |
 
 ## 2. How a machine gets them
+
+**Model result:** on two Ubuntu 26.04 VMs on r720-1, Claude Code 2.1.310 completed concurrent requests with one setup token. Codex 0.163.0 rejected the Mac holder's ordinary ChatGPT OAuth access tokens through `login --with-access-token`, both before and after a successful holder refresh. That flag expects a different credential type: [Codex personal access tokens](https://learn.chatgpt.com/docs/enterprise/access-tokens). Independent device-code sign-ins then completed concurrent Codex requests on both VMs. Fleet 9 uses this per-machine fallback and compares its tests with the [model's evidence](../../references/prototypes/agent-sign-in/README.md#evidence-2026-10-24).
+
+The holder flow below remains a **future option**, conditional on a supported access-token import and renewal interface being verified. It is not the current Codex implementation plan:
 
 ```mermaid
 sequenceDiagram
@@ -38,9 +42,9 @@ sequenceDiagram
 ```
 
 - **A token that lasts** (Claude's setup token, API keys) goes to every machine when the account is added or the machine enrolls, and stays there.
-- **A login that refreshes** (Codex's ChatGPT login) stays with one **holder**: the Mac, or an always-on device of yours. Only the holder refreshes it, and machines ask it for short-lived access tokens over the link, so a hundred VMs share one login without signing each other out.
-- **A broken account** (revoked, expired, a plan that ended) shows one toast, "sign in to Codex again", and signing in once fixes every machine.
-- **Slice 9 verifies** each row against the agents' current versions: that one setup token works on many machines at once, and that Codex accepts access tokens minted by a holder. An agent with no shareable credential falls back to signing in on each machine, done by Kanna on enrollment with the URL opened where you are.
+- **A login that refreshes:** in the current Codex fallback, each machine refreshes its own independent login. A future holder flow would keep one login on the Mac or another always-on device, with only that holder refreshing it and machines requesting short-lived access tokens. That path needs a new passing model before it replaces the fallback.
+- **A broken account** (revoked, expired, a plan that ended) shows one toast, "sign in to Codex again". Replacing a shared credential repairs all machines; independent logins may need sign-in again on each affected machine.
+- **Slice 9 verifies** each row against the agents' current versions. Compare with the model's successful shared-Claude runs, successful per-machine Codex runs, and rejected holder-token imports. Personal access tokens and API keys are distinct credential types; this model did not test them. Natural expiry mid-run, revocation and offline enrollment are not established by these short probes.
 
 ## 3. Rules
 

@@ -4,12 +4,14 @@ Model for [agent sign-in](../../../docs/specs/agent-sign-in.md) and
 [Fleet §10](../../../docs/specs/fleet.md#10-build-order), before Fleet 9.
 This is a throwaway probe, not Kanna product code.
 
-**Status: Claude sharing passed; Codex's specified holder-token path failed.**
+**Status: model complete using the spec's Codex fallback (2026-10-24).**
 The user signed in on the Mac. [Live results](shared-token-results.json) record
 four successful Claude requests and four Codex login rejections across two VMs.
-The spec's per-machine Codex fallback is prepared but awaits the user's sign-ins;
-Fleet 9's full prerequisite remains unresolved until that fallback is demonstrated
-or another supported sharing path is verified.
+After the user signed in separately on each VM, the [fallback results](fallback-results.json)
+record four successful, overlapping Codex requests. **Holder-token sharing failed;
+per-machine Codex sign-in passed.** Fleet 9 should implement the observed fallback,
+not treat this as a successful holder integration. Product terms checks remain a
+slice requirement, separate from this technical model.
 
 ## Run
 
@@ -102,7 +104,8 @@ provide a fallback. Requests ask for `KANNA_AUTH_PROBE_OK`, with no tool use.
 The report contains only an allowlist: CLI versions, login/inference booleans,
 known error categories, timestamps, token-change boolean and overlap duration.
 Raw stdout/stderr, credentials, JWT claims and token hashes are excluded.
-Worker temporary homes, including any access-token cache, are removed after use.
+Worker temporary homes, including any imported access-token cache, are removed
+after use. The fallback's independent login remains in its private VM state folder.
 
 `passed: true` requires all four pairs of requests to succeed, positive process
 overlap for each pair, no refresh credential in either Codex worker's auth cache,
@@ -138,6 +141,11 @@ evidence. A refreshed token accepted by a new process is not mid-run renewal.
   failed. The report correctly has `passed: false`.
 - This is a reproducible incompatibility in Codex 0.163.0, not a hypothetical
   failure inferred solely from CLI help or a synthetic JWT.
+- With independent user-created logins, Codex completed **four real inference
+  requests**, two per VM, returning the exact marker with exit code zero. CLI
+  lifetimes overlapped by **9.953 s** and **10.150 s**. The evidence has
+  `fallback_passed: true`. Both refresh credentials remain local to their own VMs;
+  each auth file is owned by `probe` with mode `0600`.
 
 ## Interface and terms findings
 
@@ -183,8 +191,8 @@ Resolve the product terms question above before shipping a subscription-token va
 
 For Codex, copy the **negative regression test**: an ordinary ChatGPT OAuth access
 token is rejected by 0.163.0's `--with-access-token`, before and after holder refresh.
-Do not ship the spec's flag assumption as if it passed. Use the spec's independent
-per-machine vendor sign-in fallback once its pending live probe passes, or revise
+Do not ship the spec's flag assumption as if it passed. Use the verified independent
+per-machine vendor sign-in fallback, or revise
 the design around a supported, verified holder integration. Never copy a rotating
 login file between machines to make a test pass. Successful `login status` is
 insufficient; require real inference in every acceptance case.
