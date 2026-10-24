@@ -111,6 +111,8 @@ h2 { margin:0 0 4px; font-size:22px; font-weight:600; }
 .checklist li { padding:10px 0; border-bottom:1px solid var(--line); }
 .checklist .ok { margin-right:8px; }
 .job { padding:14px; border:1px solid var(--line); border-radius:8px; }
+#tooltip { position:fixed; z-index:10; pointer-events:none; padding:5px 9px; border:1px solid var(--line); border-radius:5px; background:var(--panel2); color:var(--text); box-shadow:0 4px 14px #0005; font:12px var(--sans); }
+[data-tooltip]:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 dialog { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:10px; padding:24px; min-width:370px; box-shadow:var(--shadow); }
 dialog::backdrop { background:rgba(0,0,0,.55); }
 dialog .project { display:flex; align-items:center; justify-content:space-between; width:100%; margin:10px 0; padding:12px; }
@@ -138,6 +140,7 @@ body.picture .window { height:100vh; border:0; border-radius:0; box-shadow:none;
   </div>
   <div id="stage"></div>
 </main>
+<div id="tooltip" role="tooltip" hidden></div>
 <dialog id="projects"><h2>Open a project</h2><p class="muted">A Desk for each project.</p><div id="project-list"></div><button id="cancel">Cancel</button></dialog>
 <script>
 // Fixture data only. Machine/task and machine/pane pairs deliberately matter:
@@ -172,6 +175,7 @@ const esc = str => String(str).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>
 const path = machine => scenarios[s.scenario][machine];
 const key = task => `${task.machine}/${task.id}`;
 const isOffline = task => path(task.machine)==='off';
+const tip = machine => `${machine} · ${label[path(machine)]}`;
 const status = task => isOffline(task) ? `Last known: ${task.state} · 4 min ago` : task.state;
 const dot = task => `<span class="dot ${isOffline(task)?'offline':task.state==='needs you'?'needs':task.state==='stopped'?'stopped':''}"></span>`;
 function badge(machine,always=false) {
@@ -180,7 +184,7 @@ function badge(machine,always=false) {
   return `<button class="path ${p==='lan'||p==='internet'?'direct':p}" data-path="${machine}" aria-label="${always?machine+': ':''}${label[p]}. Show path details">${label[p]}</button>`;
 }
 function card(t,backlog=false) {
-  return `<div class="task" data-task="${key(t)}">${dot(t)}<div class="text"><div class="name">${t.name}</div><div class="meta">${t.agent} · ${status(t)}</div>${badge(t.machine)}${!t.claimed && isOffline(t)?'<div class="meta">Waiting for connection.</div>':''}</div>${backlog?'<span class="muted">'+(isOffline(t)?'Unavailable':tasks.filter(x=>x.project===t.project&&x.claimed).length===3?'Shelf full':'In backlog')+'</span>':`<button class="go" data-pull="${key(t)}">${isOffline(t)?'View last state':'Pull to Desk'} →</button>`}</div>`;
+  return `<div class="task" data-task="${key(t)}" tabindex="0" data-tooltip="${tip(t.machine)}">${dot(t)}<div class="text"><div class="name">${t.name}</div><div class="meta">${t.agent} · ${status(t)}</div>${!t.claimed && isOffline(t)?'<div class="meta">Waiting for connection.</div>':''}</div>${backlog?'<span class="muted">'+(isOffline(t)?'Unavailable':tasks.filter(x=>x.project===t.project&&x.claimed).length===3?'Shelf full':'In backlog')+'</span>':`<button class="go" data-pull="${key(t)}">${isOffline(t)?'View last state':'Pull to Desk'} →</button>`}</div>`;
 }
 function terminal(project,t) {
   const machine=t?t.machine:(project.id==='kanna'?'dev-1':'mbp'), off=path(machine)==='off';
@@ -191,7 +195,7 @@ function terminal(project,t) {
     t3:'The tabs are restored in their previous order.\n\nI’m checking that the focused pane comes back too.',
     t7:'Favorites are saved. I’m checking the empty state.'
   }[t.id] : `The ${project.name} backlog is up to date.\n\n${project.id==='kanna'?'Three tasks are out on your Shelf. Keep terminal output is running its macOS UI tests.\n\nPolish project search is running in the backlog.':'Save favorite recipes is on your Shelf. Test recipe import is running in the backlog.'}`;
-  return `<aside class="agent" data-pane="${paneKey}"><div class="head">${t?dot(t):`<span class="dot ${off?'offline':''}"></span>`}<span>${t?t.agent:'Planning agent'}</span><span class="spacer"></span>${badge(machine)}</div>${off?`<div class="notice offline">Connection offline · last received 4 min ago.<br><span class="muted">Input is unavailable. Reconnecting automatically.</span></div>`:''}<div class="terminal"><p class="muted">${t?t.branch:project.name+' · planning'}</p><p><span class="lead">●</span> ${esc(log).replace(/\n/g,'<br>')}</p>${off?'<p class="muted">Last received output · current agent state unknown.</p>':''}<div class="sent">${(s.input[paneKey]||[]).map(x=>`<p>› ${esc(x)}</p>`).join('')}</div><form class="prompt" data-input="${paneKey}"><span class="muted">›</span><input aria-label="Message ${t?t.agent:'planning agent'}" placeholder="${off?'Waiting for connection…':'Message the agent…'}" ${off?'disabled':''}></form></div></aside>`;
+  return `<aside class="agent" data-pane="${paneKey}"><div class="head" tabindex="0" data-tooltip="${tip(machine)}">${t?dot(t):`<span class="dot ${off?'offline':''}"></span>`}<span>${t?t.agent:'Planning agent'}</span><span class="spacer"></span></div>${off?`<div class="notice offline">Last received 4 min ago.<br><span class="muted">Input is unavailable. Reconnecting automatically.</span></div>`:''}<div class="terminal"><p class="muted">${t?t.branch:project.name+' · planning'}</p><p><span class="lead">●</span> ${esc(log).replace(/\n/g,'<br>')}</p>${off?'<p class="muted">Last received output · current agent state unknown.</p>':''}<div class="sent">${(s.input[paneKey]||[]).map(x=>`<p>› ${esc(x)}</p>`).join('')}</div><form class="prompt" data-input="${paneKey}"><span class="muted">›</span><input aria-label="Message ${t?t.agent:'planning agent'}" placeholder="${off?'Waiting for connection…':'Message the agent…'}" ${off?'disabled':''}></form></div></aside>`;
 }
 function overview(project) {
   const mine=tasks.filter(t=>t.project===project.id);
@@ -199,7 +203,7 @@ function overview(project) {
 }
 function workspace(t) {
   const off=isOffline(t);
-  return `<section class="docs"><div class="tabs"><span class="selected">${t.id==='t1'?'UI tests':'Review notes'}</span><span>${t.branch}</span></div>${off?'<div class="notice muted">Last received view · 4 min ago · read-only</div>':''}<div class="page"><h2>${t.name}</h2><p class="sub">${off?'Last known: ':''}${t.state} · ${t.agent}</p><ul class="checklist"><li><span class="ok">✓</span> Changes ready on the task branch</li><li><span class="ok">✓</span> Focused checks passed</li><li>${t.id==='t1'?'◌ macOS UI tests in progress':t.id==='t3'?'◌ Checking focused-pane restoration':'Review the result with you'}</li></ul>${t.id==='t1'?'<div class="job"><b>macOS UI tests</b><p class="muted">'+(off?'Last known: running · current job state unknown':'Running')+'</p><span class="mono muted">'+(off?'Last received: 18 / 24 checks passed':'18 / 24 checks passed')+'</span></div>':'<p class="muted">'+(off?'This view will resume when the connection returns. The task keeps its place on your Shelf.':'Your branch and tabs stay with this task when you park it.')+'</p>'}</div></section>`;
+  return `<section class="docs"><div class="tabs"><span class="selected">${t.id==='t1'?'UI tests':'Review notes'}</span><span>${t.branch}</span></div>${off?'<div class="notice muted">Last received view · 4 min ago · read-only</div>':''}<div class="page"><h2>${t.name}</h2><p class="sub">${off?'Last known: ':''}${t.state} · ${t.agent}</p><ul class="checklist"><li><span class="ok">✓</span> Changes ready on the task branch</li><li><span class="ok">✓</span> Focused checks passed</li><li>${t.id==='t1'?'◌ macOS UI tests in progress':t.id==='t3'?'◌ Checking focused-pane restoration':'Review the result with you'}</li></ul>${t.id==='t1'?'<div class="job" tabindex="0" data-tooltip="'+tip('mbp')+'"><b>macOS UI tests</b><p class="muted">'+(off?'Last known: running · current job state unknown':'Running')+'</p><span class="mono muted">'+(off?'Last received: 18 / 24 checks passed':'18 / 24 checks passed')+'</span></div>':'<p class="muted">'+(off?'This view will resume when the connection returns. The task keeps its place on your Shelf.':'Your branch and tabs stay with this task when you park it.')+'</p>'}</div></section>`;
 }
 function detail(machine) {
   const p=path(machine), messages={
@@ -219,12 +223,44 @@ function fleet(w) {
   }).join('')}</tbody></table>${detail(w.detail)}<p class="muted">Connections change automatically. Tasks stay where they run when you bring them to a Desk.</p></div></section>`;
 }
 function render() {
+  hideTip();
   document.querySelectorAll('[data-scenario]').forEach(b=>{b.classList.toggle('on',b.dataset.scenario===s.scenario);b.setAttribute('aria-pressed',b.dataset.scenario===s.scenario);});
   document.getElementById('stage').innerHTML=Object.entries(s.windows).map(([id,w])=>{
     const project=projects.find(p=>p.id===id), t=tasks.find(t=>key(t)===w.task), mine=tasks.filter(t=>t.project===id && t.claimed);
-    return `<section class="window" data-project="${id}" ${id===s.current?'':'hidden'}><header class="bar"><span class="lights"><i></i><i></i><i></i></span><details class="menu"><summary>File</summary><div class="drop"><button data-new>New Desk…</button><div class="muted">Open Recent</div>${projects.map(p=>`<button data-project-open="${p.id}">${p.name}${s.windows[p.id]?' · open':''}</button>`).join('')}</div></details><span class="where"><b>${project.name}</b> · ${t?t.name:'Planning'}</span><span class="spacer"></span>${t?'<button class="ghost" data-park>Park</button>':''}<button data-view="fleet" class="${w.fleet?'on':'ghost'}">Fleet${peers.some(m=>path(m.id)==='off')?' · '+peers.filter(m=>path(m.id)==='off').length+' offline':''}</button></header><div class="content">${w.fleet?fleet(w):terminal(project,t)+(t?workspace(t):overview(project))}</div><footer class="shelf">${mine.map(task=>`<button data-pull="${key(task)}" class="${w.task===key(task)?'on':''}">${dot(task)}<span class="title">${task.name}</span>${['relay','off'].includes(path(task.machine))?`<span class="path ${path(task.machine)}">${label[path(task.machine)]}</span>`:''}</button>`).join('')}<span class="count">${mine.length}/3 out</span><button data-park>Shelf & backlog</button></footer></section>`;
+    return `<section class="window" data-project="${id}" ${id===s.current?'':'hidden'}><header class="bar"><span class="lights"><i></i><i></i><i></i></span><details class="menu"><summary>File</summary><div class="drop"><button data-new>New Desk…</button><div class="muted">Open Recent</div>${projects.map(p=>`<button data-project-open="${p.id}">${p.name}${s.windows[p.id]?' · open':''}</button>`).join('')}</div></details><span class="where"><b>${project.name}</b> · ${t?t.name:'Planning'}</span><span class="spacer"></span>${t?'<button class="ghost" data-park>Park</button>':''}<button data-view="fleet" class="${w.fleet?'on':'ghost'}">Fleet</button></header><div class="content">${w.fleet?fleet(w):terminal(project,t)+(t?workspace(t):overview(project))}</div><footer class="shelf">${mine.map(task=>`<button data-pull="${key(task)}" data-tooltip="${tip(task.machine)}" class="${w.task===key(task)?'on':''}">${dot(task)}<span class="title">${task.name}</span></button>`).join('')}<span class="count">${mine.length}/3 out</span><button data-park>Shelf & backlog</button></footer></section>`;
   }).join('');
 }
+// A shared tooltip escapes the scrolling Shelf and is available on keyboard focus.
+const tooltip=document.getElementById('tooltip');
+let tooltipTarget=null;
+function hideTip() {
+  tooltip.hidden=true;
+  tooltipTarget?.removeAttribute('aria-describedby');
+  tooltipTarget=null;
+}
+function showTip(target) {
+  hideTip();
+  if(!target) return;
+  tooltipTarget=target;
+  tooltip.textContent=target.dataset.tooltip;
+  tooltip.hidden=false;
+  target.setAttribute('aria-describedby','tooltip');
+  const box=target.getBoundingClientRect(), size=tooltip.getBoundingClientRect();
+  tooltip.style.left=Math.max(8,Math.min(box.left+12,innerWidth-size.width-8))+'px';
+  tooltip.style.top=(box.bottom+size.height+14<innerHeight?box.bottom+6:box.top-size.height-6)+'px';
+}
+document.addEventListener('pointerover',e=>{
+  const target=e.target.closest('[data-tooltip]');
+  if(target!==tooltipTarget) showTip(target);
+});
+document.addEventListener('pointerout',e=>{
+  if(tooltipTarget&&!tooltipTarget.contains(e.relatedTarget)) hideTip();
+});
+document.addEventListener('focusin',e=>showTip(e.target.closest('[data-tooltip]')));
+document.addEventListener('focusout',hideTip);
+document.addEventListener('keydown',e=>{if(e.key==='Escape') hideTip();});
+document.addEventListener('scroll',hideTip,true);
+window.addEventListener('resize',hideTip);
 document.addEventListener('click',e=>{
   const b=e.target.closest('button'); if(!b) return;
   const w=s.windows[s.current];
