@@ -273,7 +273,7 @@ fn lookup(name: &str) -> Result<&'static Command, Failure> {
 
 fn explain(command: &Command, mut failure: Failure, mux: &mut Session, target: &Target) -> Failure {
     match failure.code {
-        exit::NOT_FOUND => failure.message += "\nRun `kanna workspace list --all` to see pane names and IDs (term-1, file-1, …), tabs (tab-1, …) and windows (win-1, …).",
+        exit::NOT_FOUND if !failure.message.contains("your fleet") => failure.message += "\nRun `kanna workspace list --all` to see pane names and IDs (term-1, file-1, …), tabs (tab-1, …) and windows (win-1, …).",
         exit::UNSUPPORTED => {
             let supported = mux.call("capabilities", json!({})).map(|c| output::join(&c["commands"])).unwrap_or_default();
             failure.message = format!("the running {} doesn't support `{}` yet. It supports: {supported}", target.name(), command.name);

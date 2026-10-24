@@ -1017,9 +1017,18 @@ pub fn offer(offer: &Value) -> String {
         None => offer["key"].as_str().unwrap_or("?").to_string(),
     };
     format!(
-        "To add this machine ({}) to your fleet, run on a machine in it, or on the one that starts it:\n  kanna fleet pair {code}\nIt finds this one on the LAN. From another network:\n  kanna fleet pair {code} --peer {peer}\nThe code works once, for {minutes} minutes. Waiting…",
-        offer["name"].as_str().unwrap_or("?")
+        "To add this machine ({}) to your fleet, run on a machine in it, or on the one that starts it:\n  kanna fleet pair {code}\nIt finds this one on the LAN. From another network:\n  kanna fleet pair {code} --peer {peer}\n{}The code works once, for {minutes} minutes. Waiting…",
+        offer["name"].as_str().unwrap_or("?"),
+        others(&offer["addrs"])
     )
+}
+
+fn others(addrs: &Value) -> String {
+    let all: Vec<&str> = addrs.as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    if all.len() < 2 {
+        return String::new();
+    }
+    format!("(this machine's addresses: {}; put the one the other machine can reach after the @)\n", all.join(", "))
 }
 
 fn short_key(key: &Value) -> String {

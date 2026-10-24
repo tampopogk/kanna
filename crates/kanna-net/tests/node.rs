@@ -31,9 +31,13 @@ async fn machine(name: &str, saved: Value) -> (Node, Machine) {
 }
 
 async fn machine_on(name: &str, saved: Value, port: u16) -> (Node, Machine) {
+    machine_with(name, saved, port, SecretKey::generate()).await
+}
+
+async fn machine_with(name: &str, saved: Value, port: u16, secret: SecretKey) -> (Node, Machine) {
     let host = Machine::default();
     *host.yes.lock().unwrap() = true;
-    let config = Config { secret: SecretKey::generate(), saved, name: name.into(), capabilities: json!({ "os": std::env::consts::OS }), port: Some(port), mdns: false };
+    let config = Config { secret, saved, name: name.into(), capabilities: json!({ "os": std::env::consts::OS }), port: Some(port), mdns: false };
     (Node::start(config, Box::new(host.clone())).await.unwrap(), host)
 }
 
@@ -155,4 +159,19 @@ async fn machines_on_fixed_ports_reach_each_other_at_a_given_address() {
     assert_eq!((mbp.port(), vm.port()), (47471, 47472));
     pair(&mbp, &vm).await.unwrap();
     mbp.call("linux-vm", json!({ "id": 1, "cmd": "list" })).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_machine_that_restarted_is_dialed_again() {
+    let (mbp, _) = machine("mbp", json!({})).await;
+    let secret = SecretKey::generate();
+    let (vm, vm_host) = machine_with("linux-vm", json!({}), 0, secret.clone()).await;
+    pair(&mbp, &vm).await.unwrap();
+    mbp.call("linux-vm", json!({ "id": 1, "cmd": "list" })).await.unwrap();
+    let (port, saved) = (vm.port(), vm_host.saved.lock().unwrap().clone());
+    vm.close().await;
+    drop(vm);
+    let (again, _) = machine_with("ignored", saved, port, secret).await;
+    assert_eq!(again.port(), port);
+    mbp.call("linux-vm", json!({ "id": 2, "cmd": "list" })).await.unwrap();
 }

@@ -529,12 +529,17 @@ impl Node {
             return Err(Failure::new("bad_request", format!("{host} is this machine")));
         }
         let name = self.name_of(&key);
-        let (conn, fresh) = self.connect(&key).await?;
-        let (mut send, mut recv, _) = match self.open(&conn, "control", &name).await {
-            Ok(opened) => opened,
-            Err(failure) => {
-                self.state().conns.remove(&key);
-                return Err(failure);
+        let (mut conn, mut fresh) = self.connect(&key).await?;
+        let (mut send, mut recv, _) = loop {
+            match self.open(&conn, "control", &name).await {
+                Ok(opened) => break opened,
+                Err(failure) => {
+                    self.state().conns.remove(&key);
+                    if fresh || failure.code != "unreachable" {
+                        return Err(failure);
+                    }
+                    (conn, fresh) = self.connect(&key).await?;
+                }
             }
         };
         if fresh {
@@ -574,7 +579,11 @@ impl Node {
         let key = self.resolve(host)?;
         let name = self.name_of(&key);
         let started = Instant::now();
-        let (conn, _) = self.connect(&key).await?;
+        let (mut conn, fresh) = self.connect(&key).await?;
+        if !fresh && conn.open_bi().await.is_err() {
+            self.state().conns.remove(&key);
+            conn = self.connect(&key).await?.0;
+        }
         let mut streams = serde_json::Map::new();
         for kind in KINDS {
             let opened = Instant::now();
