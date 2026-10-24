@@ -9,7 +9,7 @@ A Desk belongs to a project. Pulling a task changes what the app shows, while it
 ![One project Desk with direct, relayed and offline tasks on its three-place Shelf, and a backlog spanning machines](fleet-desk.png)
 
 - **A Desk is on a project,** whichever machines its tasks run on. A project is known across machines by its remote URL or first commit ([tasks §4](fleet-tasks.md#4-repos-and-credentials)). Its planning terminal runs on a machine that has the project, placed like a task, and its backlog page lists the project's tasks from every machine. The new-Desk prompt and Open Recent show projects, not paths on a machine. Opening an already-open project brings its existing Desk forward.
-- **The Shelf stays the app's:** claims in its order, three per project including the task on the Desk, keyed by (machine, task) in `app-state.json`. Pulling and parking preserve claims, order and ownership. A card shows its host machine only when that machine is relayed or offline.
+- **The Shelf stays the app's:** claims in its order, three per project including the task on the Desk, keyed by (machine, task) in `app-state.json`. Pulling and parking preserve claims, order and ownership. Machine names are confined to Fleet. Task cards, the Shelf, agent headers and build summaries never name the host, even when relayed or offline; they show only the relevant connection or work state.
 - **Claim records name the device:** `claimed by: mbp` (the hello's `client`) replaces `mac` in the protocol. This is internal bookkeeping, not a label in the UI: users work on tasks without tracking the claiming device or execution machine. Runners leave claimed tasks alone, as today.
 - **Toasts** held while no app was attached arrive when the app connects, so five servers' finished tasks show up when you open the lid. Toast delivery is outside this model; use the [toast reference](../../references/mockups/toasts.html) for its presentation.
 - A task can use several machines: the model's **Keep terminal output** agent runs on `dev-1`, and its macOS UI test job runs on `mbp`. The Mac is this build Mac; no mini is assumed. Fleet lists the agent and job separately, without creating another task or claim.
@@ -22,13 +22,13 @@ Fleet is app-wide: each peer's path **from this Mac**, capabilities and work acr
 
 Each row distinguishes **This Mac**, **Direct · LAN**, **Direct · internet**, **Relayed**, and **Offline**. Clicking a path opens its explanation. The task's exceptional-path badge opens Fleet with that same peer's details. Returning to the Desk preserves the selected task. Fleet offers no machine picker or manual path switch; the switches above the window are model controls only.
 
-A relay-to-direct transition removes the task's host badge automatically. It does not move the task, replace its workspace, or create a second Desk. A direct internet path is not labeled LAN or relayed. Example paths and work in the screenshots are fixtures, not measurements or a report of deployed machines.
+A relay-to-direct transition removes the task's connection badge automatically. It does not move the task, replace its workspace, or create a second Desk. A direct internet path is not labeled LAN or relayed. Example paths and work in the screenshots are fixtures, not measurements or a report of deployed machines.
 
 ## 3. Relayed and offline tasks
 
 ![A relayed task remains usable, with its path badge beside the agent and on the Shelf](fleet-relay.png)
 
-A relayed task remains interactive. Its host and path are visible beside the agent and on its Shelf card. Connectivity is separate from the agent's working / needs-you state.
+A relayed task remains interactive. A **Relayed** badge is visible beside the agent and on its Shelf card, without a machine name. The offline equivalent is **Offline**. Clicking the badge opens the host details in Fleet. Connectivity is separate from the agent's working / needs-you state.
 
 ![An offline task retains its last view and claim; input is disabled and the received output is marked stale](fleet-offline.png)
 
@@ -42,7 +42,7 @@ Compare the product against these scenes and transitions, using the model's fixt
 
 | Scene / action | Expected result |
 |---|---|
-| Default / `#picture` | One Kanna Desk, three claims across three peers; one merged project backlog; no machine picker or claim-device labels |
+| Default / `#picture` | One Kanna Desk, three claims across three peers; one merged project backlog; no machine picker, host names or claim-device labels |
 | File → New Desk / Open Recent → Kanna twice | Existing project Desk comes forward; its task selection survives; no duplicate Desk |
 | Open Recipe Box, then Kanna | Separate project Desks with their own Shelf and selection; names, not clone paths |
 | Pull **Keep terminal output** then **Review build output** | Correct agent and tabs despite matching terminal IDs; task input cannot leak between peers |
@@ -50,8 +50,10 @@ Compare the product against these scenes and transitions, using the model's fixt
 | `#picture,relay-task`, click its path | Usable relay task; Fleet explains that peer; Back to Desk returns to that task |
 | `#picture,offline-task` | Retained claim and last view; stale labels; disabled input; other tasks remain available |
 | Mixed paths → All on LAN | Exceptional badges disappear; input returns; task, owner, claim count and order unchanged |
-| Internet direct | Direct internet path in Fleet; no host badge on the connected task card |
+| Internet direct | Direct internet path in Fleet; no connection badge on the connected task card |
 | Remote offline | Remote planner and remote task input disabled; local tasks and local Fleet work remain available |
+
+**Review correction:** execution and claim machines are implementation details throughout the task UI. Machine identity is visible only when the user opens Fleet, including when inspecting a connection problem.
 
 **What the model exposed:** a connection failure is not an agent stop. Reusing a plain “working” card during disconnection falsely claims fresh knowledge; clearing the card loses the app's claim. Keep the card and explicitly age its state. Similarly, a build job's machine is not necessarily the agent's machine, so Fleet must list work by role without multiplying tasks.
 
