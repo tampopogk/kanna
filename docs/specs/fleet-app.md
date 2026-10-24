@@ -20,11 +20,13 @@ A Desk belongs to a project. Pulling a task changes what the app shows, while it
 
 Fleet is app-wide: each peer's path **from this Mac**, capabilities and connection state. It has no Work column; task and job details stay with the task. A host such as r720-1 is context for a VM, not an additional peer. The relay is a path, not a task-running machine.
 
-Each row distinguishes **This Mac**, **Direct · LAN**, **Direct · internet**, **Relayed**, and **Offline**. Shelf and Fleet are fixed, non-closeable tabs at the start of the right-hand tab strip, before the current task’s document tabs. Shelf shows the project’s Shelf and backlog; Fleet shows the machine inventory. Both remain available while a task is open. Switching tabs preserves the current agent, task selection, input and claims; it does not park the task. Clicking a path within Fleet opens its details. Select Shelf or the task’s document tab to return.
+Each row distinguishes **This Mac**, **Direct · LAN**, **Direct · internet**, **Relayed**, and **Offline**. Shelf and Fleet are fixed, non-closeable tabs at the start of the right-hand tab strip, before the current task’s document tabs. Shelf shows the project’s Shelf and backlog; Fleet shows the machine inventory. Both remain available while a task is open. Switching tabs preserves the current agent, task selection, input and claims; it does not park the task. Hovering or keyboard-focusing a path indicator within Fleet reveals its connection explanation as a tooltip. There is no persistent connection-detail panel. Select Shelf or the task’s document tab to return.
 
 Fleet offers no machine picker or manual path switch; the switches above the window are model controls only.
 
 A relay-to-direct transition updates the task's tooltip automatically. It does not move the task, replace its workspace, or create a second Desk. A direct internet path is not labeled LAN or relayed. Example paths and work in the screenshots are fixtures, not measurements or a report of deployed machines.
+
+![The relayed path explains its connection on hover or keyboard focus](fleet-path-tooltip.png)
 
 ## 3. Relayed and offline tasks
 

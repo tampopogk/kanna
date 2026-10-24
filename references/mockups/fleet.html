@@ -97,7 +97,7 @@ h2 { margin:0 0 4px; font-size:22px; font-weight:600; }
 .shelf button:hover,.shelf button.on { background:var(--panel2); }
 .shelf .count { font-size:11px; white-space:nowrap; margin-left:auto; padding-left:8px; }
 .fleet { width:100%; flex:1; min-height:0; display:flex; flex-direction:column; }
-.fleet .page { height:100%; max-width:1200px; margin:auto; }
+.fleet .page { width:100%; height:100%; max-width:1200px; margin:auto; }
 .fleet-title { display:flex; align-items:flex-start; gap:18px; }
 .fleet table { width:100%; border-collapse:collapse; margin-bottom:22px; }
 .fleet th { font-weight:500; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); text-align:left; padding:0 14px 10px; }
@@ -106,14 +106,11 @@ h2 { margin:0 0 4px; font-size:22px; font-weight:600; }
 .fleet th:nth-child(2) { width:45%; }
 .fleet strong { font-weight:600; }
 .fleet small { display:block; margin-top:5px; font-size:12px; color:var(--muted); }
-.details { border:1px solid var(--line); border-radius:8px; padding:14px 18px; background:var(--panel); }
-.details h3 { margin:0 0 6px; font-size:13px; }
-.details p { margin:4px 0; color:var(--muted); }
 .checklist { padding:0; list-style:none; margin:24px 0; }
 .checklist li { padding:10px 0; border-bottom:1px solid var(--line); }
 .checklist .ok { margin-right:8px; }
 .job { padding:14px; border:1px solid var(--line); border-radius:8px; }
-#tooltip { position:fixed; z-index:10; pointer-events:none; padding:5px 9px; border:1px solid var(--line); border-radius:5px; background:var(--panel2); color:var(--text); box-shadow:0 4px 14px #0005; font:12px var(--sans); }
+#tooltip { max-width:min(360px,calc(100vw - 16px)); white-space:pre-line; line-height:1.5; position:fixed; z-index:10; pointer-events:none; padding:5px 9px; border:1px solid var(--line); border-radius:5px; background:var(--panel2); color:var(--text); box-shadow:0 4px 14px #0005; font:12px/1.5 var(--sans); }
 [data-tooltip]:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 dialog { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:10px; padding:24px; min-width:370px; box-shadow:var(--shadow); }
 dialog::backdrop { background:rgba(0,0,0,.55); }
@@ -171,7 +168,7 @@ const scenarios = {
   offline:{mbp:'local','dev-1':'off','tests-1':'off','tools-1':'off'}
 };
 const label = {local:'This Mac',lan:'Direct · LAN',internet:'Direct · internet',relay:'Relayed',off:'Offline'};
-const initial = () => ({scenario:'mixed',current:'kanna',windows:{kanna:{task:null,view:'shelf',detail:'tests-1'}},input:{},drafts:{}});
+const initial = () => ({scenario:'mixed',current:'kanna',windows:{kanna:{task:null,view:'shelf'}},input:{},drafts:{}});
 let s = initial();
 const esc = str => String(str).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const path = machine => scenarios[s.scenario][machine];
@@ -180,10 +177,9 @@ const isOffline = task => path(task.machine)==='off';
 const tip = machine => `${machine} · ${label[path(machine)]}`;
 const status = task => isOffline(task) ? `Last known: ${task.state} · 4 min ago` : task.state;
 const dot = task => `<span class="dot ${isOffline(task)?'offline':task.state==='needs you'?'needs':task.state==='stopped'?'stopped':''}"></span>`;
-function badge(machine,always=false) {
+function badge(machine) {
   const p=path(machine);
-  if(!always && !['relay','off'].includes(p)) return '';
-  return `<button class="path ${p==='lan'||p==='internet'?'direct':p}" data-path="${machine}" aria-label="${always?machine+': ':''}${label[p]}. Show path details">${label[p]}</button>`;
+  return `<span class="path ${p==='lan'||p==='internet'?'direct':p}" tabindex="0" data-path="${machine}" data-tooltip="${esc(detail(machine))}">${label[p]}</span>`;
 }
 function card(t,backlog=false) {
   return `<div class="task" data-task="${key(t)}" tabindex="0" data-tooltip="${tip(t.machine)}">${dot(t)}<div class="text"><div class="name">${t.name}</div><div class="meta">${t.agent} · ${status(t)}</div>${!t.claimed && isOffline(t)?'<div class="meta">Waiting for connection.</div>':''}</div>${backlog?'<span class="muted">'+(isOffline(t)?'Unavailable':tasks.filter(x=>x.project===t.project&&x.claimed).length===3?'Shelf full':'In backlog')+'</span>':`<button class="go" data-pull="${key(t)}">${isOffline(t)?'View last state':'Pull to Desk'} →</button>`}</div>`;
@@ -215,13 +211,13 @@ function detail(machine) {
     relay:['Relayed · your relay','A direct path is unavailable. Traffic is end-to-end encrypted through your relay. Kanna switches to a direct path automatically when one is available.'],
     off:['Offline · last seen 4 min ago','Current task state is unknown. Last received views stay available, with input disabled. Tasks keep their place on your Shelf. Waiting tasks stay queued until the connection returns.']
   };
-  return `<div class="details" data-details="${machine}"><h3>${machine} · ${messages[p][0]}</h3><p>${messages[p][1]}</p></div>`;
+  return `${machine} · ${messages[p][0]}\n${messages[p][1]}`;
 }
-function fleet(w) {
+function fleet() {
   return `<section class="fleet"><div class="page"><div class="fleet-title"><div><h2>Fleet</h2><p class="sub">Your machines · all projects</p></div></div><table><thead><tr><th>Machine</th><th>Path from this Mac</th></tr></thead><tbody>${peers.map(m=>{
     const off=path(m.id)==='off';
-    return `<tr data-machine="${m.id}"><td><strong>${m.name}</strong><small>${m.role}</small><small>${m.capability}</small></td><td>${badge(m.id,true)}<small>${off?'Last seen 4 min ago':path(m.id)==='relay'?'Via your relay · encrypted':path(m.id)==='local'?'Client + build Mac':'No relay in use'}</small></td></tr>`;
-  }).join('')}</tbody></table>${detail(w.detail)}<p class="muted">Connections change automatically. Tasks stay where they run when you bring them to a Desk.</p></div></section>`;
+    return `<tr data-machine="${m.id}"><td><strong>${m.name}</strong><small>${m.role}</small><small>${m.capability}</small></td><td>${badge(m.id)}<small>${off?'Last seen 4 min ago':path(m.id)==='relay'?'Via your relay · encrypted':path(m.id)==='local'?'Client + build Mac':'No relay in use'}</small></td></tr>`;
+  }).join('')}</tbody></table><p class="muted">Connections change automatically. Tasks stay where they run when you bring them to a Desk.</p></div></section>`;
 }
 function navigation(w,t,projectId) {
   const tabs=[['shelf','Shelf'],['fleet','Fleet']];
@@ -233,7 +229,7 @@ function render() {
   document.querySelectorAll('[data-scenario]').forEach(b=>{b.classList.toggle('on',b.dataset.scenario===s.scenario);b.setAttribute('aria-pressed',b.dataset.scenario===s.scenario);});
   document.getElementById('stage').innerHTML=Object.entries(s.windows).map(([id,w])=>{
     const project=projects.find(p=>p.id===id), t=tasks.find(t=>key(t)===w.task), mine=tasks.filter(t=>t.project===id && t.claimed);
-    return `<section class="window" data-project="${id}" ${id===s.current?'':'hidden'}><header class="bar"><span class="lights"><i></i><i></i><i></i></span><details class="menu"><summary>File</summary><div class="drop"><button data-new>New Desk…</button><div class="muted">Open Recent</div>${projects.map(p=>`<button data-project-open="${p.id}">${p.name}${s.windows[p.id]?' · open':''}</button>`).join('')}</div></details><span class="where"><b>${project.name}</b> · ${t?t.name:'Planning'}</span><span class="spacer"></span>${t?'<button class="ghost" data-park>Park</button>':''}</header><div class="content">${terminal(project,t)}<section class="docs">${navigation(w,t,id)}<div class="tabbody" role="tabpanel" id="${id}-panel" aria-labelledby="${id}-${w.view}-tab">${w.view==='fleet'?fleet(w):w.view==='task'&&t?workspace(t):overview(project)}</div></section></div><footer class="shelf">${mine.map(task=>`<button data-pull="${key(task)}" data-tooltip="${tip(task.machine)}" class="${w.task===key(task)?'on':''}">${dot(task)}<span class="title">${task.name}</span></button>`).join('')}<span class="count">${mine.length}/3 out</span></footer></section>`;
+    return `<section class="window" data-project="${id}" ${id===s.current?'':'hidden'}><header class="bar"><span class="lights"><i></i><i></i><i></i></span><details class="menu"><summary>File</summary><div class="drop"><button data-new>New Desk…</button><div class="muted">Open Recent</div>${projects.map(p=>`<button data-project-open="${p.id}">${p.name}${s.windows[p.id]?' · open':''}</button>`).join('')}</div></details><span class="where"><b>${project.name}</b> · ${t?t.name:'Planning'}</span><span class="spacer"></span>${t?'<button class="ghost" data-park>Park</button>':''}</header><div class="content">${terminal(project,t)}<section class="docs">${navigation(w,t,id)}<div class="tabbody" role="tabpanel" id="${id}-panel" aria-labelledby="${id}-${w.view}-tab">${w.view==='fleet'?fleet():w.view==='task'&&t?workspace(t):overview(project)}</div></section></div><footer class="shelf">${mine.map(task=>`<button data-pull="${key(task)}" data-tooltip="${tip(task.machine)}" class="${w.task===key(task)?'on':''}">${dot(task)}<span class="title">${task.name}</span></button>`).join('')}<span class="count">${mine.length}/3 out</span></footer></section>`;
   }).join('');
 }
 // A shared tooltip escapes the scrolling Shelf and is available on keyboard focus.
@@ -280,11 +276,10 @@ document.addEventListener('click',e=>{
   if(b.dataset.scenario) s.scenario=b.dataset.scenario;
   else if(b.dataset.pull) {w.task=b.dataset.pull;w.view='task';}
   else if(b.hasAttribute('data-park')) {w.task=null;w.view='shelf';}
-  else if(b.dataset.path) {w.view='fleet';w.detail=b.dataset.path;}
   else if(b.dataset.view) w.view=b.dataset.view;
   else if(b.dataset.projectOpen) {
     s.current=b.dataset.projectOpen;
-    s.windows[s.current] ||= {task:null,view:'shelf',detail:'mbp'};
+    s.windows[s.current] ||= {task:null,view:'shelf'};
     document.getElementById('projects').close();
   } else if(b.hasAttribute('data-new')) {
     document.querySelectorAll('.menu').forEach(m=>m.open=false);
