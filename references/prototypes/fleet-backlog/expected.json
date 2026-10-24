@@ -1,0 +1,402 @@
+{
+  "fault_schedule": {
+    "converged": true,
+    "fault_steps": 300,
+    "nodes": 8,
+    "seed": 0,
+    "starts": 16,
+    "tasks": 16
+  },
+  "id_collision": {
+    "known_collision_refused": true,
+    "unseen_collision_quarantined": true
+  },
+  "lost_grant": {
+    "lost_grant_and_ack": true,
+    "restarts": 3,
+    "starts": 1,
+    "trace": [
+      {
+        "event": "ask",
+        "source": "linux-a",
+        "target": "creator",
+        "task": "task-d82c07cd"
+      },
+      {
+        "epoch": 1,
+        "event": "grant",
+        "source": "creator",
+        "target": "linux-a",
+        "task": "task-d82c07cd"
+      },
+      {
+        "event": "drop",
+        "kind": "grant",
+        "source": "creator",
+        "target": "linux-a"
+      },
+      {
+        "event": "ask",
+        "source": "linux-b",
+        "target": "creator",
+        "task": "task-d82c07cd"
+      },
+      {
+        "event": "drop",
+        "kind": "ask",
+        "source": "linux-b",
+        "target": "creator"
+      },
+      {
+        "event": "restart",
+        "node": "creator"
+      },
+      {
+        "event": "restart",
+        "node": "linux-a"
+      },
+      {
+        "epoch": 1,
+        "event": "start",
+        "node": "linux-a",
+        "task": "task-d82c07cd"
+      },
+      {
+        "event": "restart",
+        "node": "linux-a"
+      }
+    ]
+  },
+  "offline_owner": {
+    "starts_after_owner_returned": 1,
+    "trace": [
+      {
+        "event": "ask",
+        "source": "linux-a",
+        "target": "creator",
+        "task": "task-d82c07cd"
+      },
+      {
+        "event": "ask",
+        "source": "linux-b",
+        "target": "creator",
+        "task": "task-d82c07cd"
+      },
+      {
+        "event": "drop",
+        "kind": "ask",
+        "source": "linux-a",
+        "target": "creator"
+      },
+      {
+        "event": "drop",
+        "kind": "ask",
+        "source": "linux-b",
+        "target": "creator"
+      },
+      {
+        "event": "ask",
+        "source": "linux-a",
+        "target": "creator",
+        "task": "task-d82c07cd"
+      },
+      {
+        "event": "ask",
+        "source": "linux-b",
+        "target": "creator",
+        "task": "task-d82c07cd"
+      },
+      {
+        "event": "drop",
+        "kind": "ask",
+        "source": "linux-a",
+        "target": "creator"
+      },
+      {
+        "event": "drop",
+        "kind": "ask",
+        "source": "linux-b",
+        "target": "creator"
+      },
+      {
+        "event": "ask",
+        "source": "linux-a",
+        "target": "creator",
+        "task": "task-d82c07cd"
+      },
+      {
+        "event": "ask",
+        "source": "linux-b",
+        "target": "creator",
+        "task": "task-d82c07cd"
+      },
+      {
+        "event": "drop",
+        "kind": "ask",
+        "source": "linux-a",
+        "target": "creator"
+      },
+      {
+        "event": "drop",
+        "kind": "ask",
+        "source": "linux-b",
+        "target": "creator"
+      },
+      {
+        "event": "scheduler",
+        "node": "scheduler"
+      },
+      {
+        "event": "restart",
+        "node": "creator"
+      },
+      {
+        "epoch": 1,
+        "event": "grant",
+        "source": "creator",
+        "target": "scheduler",
+        "task": "task-d82c07cd"
+      },
+      {
+        "event": "scheduler",
+        "node": "scheduler"
+      },
+      {
+        "epoch": 2,
+        "event": "grant",
+        "source": "scheduler",
+        "target": "linux-b",
+        "task": "task-d82c07cd"
+      },
+      {
+        "epoch": 2,
+        "event": "start",
+        "node": "linux-b",
+        "task": "task-d82c07cd"
+      }
+    ],
+    "waited_days": 3
+  },
+  "partitioned_edits": {
+    "causal_order": true,
+    "converged": true,
+    "field_winner": "B",
+    "order": [
+      "task-d82c07cd",
+      "task-19488dec"
+    ],
+    "records": {
+      "task-19488dec": {
+        "after": [],
+        "agent": "codex",
+        "claimed_by": null,
+        "created": {
+          "logical": 2,
+          "node": "linux-b",
+          "physical": 6000
+        },
+        "first_message": "Do the task",
+        "name": "causally later, slow wall clock",
+        "needs": [],
+        "owner": "linux-b",
+        "preferred": [],
+        "state": "waiting"
+      },
+      "task-d82c07cd": {
+        "after": [],
+        "agent": "codex",
+        "claimed_by": null,
+        "created": {
+          "logical": 0,
+          "node": "linux-a",
+          "physical": 6000
+        },
+        "first_message": "independent edit survives",
+        "name": "B",
+        "needs": [
+          "linux"
+        ],
+        "owner": "linux-a",
+        "preferred": [],
+        "state": "waiting"
+      }
+    },
+    "rollback_monotonic": true
+  },
+  "placement_guards": {
+    "capabilities_and_preferences": true,
+    "claims_skipped": true,
+    "dependencies_wait": true,
+    "slots_respected": true
+  },
+  "reverse_race": {
+    "starts": 1,
+    "trace": [
+      {
+        "event": "ask",
+        "source": "linux-b",
+        "target": "creator",
+        "task": "task-d82c07cd"
+      },
+      {
+        "event": "ask",
+        "source": "linux-a",
+        "target": "creator",
+        "task": "task-d82c07cd"
+      },
+      {
+        "epoch": 1,
+        "event": "grant",
+        "source": "creator",
+        "target": "linux-b",
+        "task": "task-d82c07cd"
+      },
+      {
+        "asker": "linux-a",
+        "event": "refused",
+        "node": "creator",
+        "owner": "linux-b",
+        "task": "task-d82c07cd"
+      },
+      {
+        "epoch": 1,
+        "event": "start",
+        "node": "linux-b",
+        "task": "task-d82c07cd"
+      }
+    ],
+    "winner": "linux-b"
+  },
+  "scheduler_takeover": {
+    "creator_needed": false,
+    "owners": [
+      "linux-b",
+      "build-mac",
+      "linux-a"
+    ],
+    "trace": [
+      {
+        "event": "ask",
+        "source": "linux-b",
+        "target": "creator",
+        "task": "task-d82c07cd"
+      },
+      {
+        "epoch": 1,
+        "event": "grant",
+        "source": "creator",
+        "target": "linux-b",
+        "task": "task-d82c07cd"
+      },
+      {
+        "epoch": 1,
+        "event": "start",
+        "node": "linux-b",
+        "task": "task-d82c07cd"
+      },
+      {
+        "event": "ask",
+        "source": "build-mac",
+        "target": "build-mac",
+        "task": "task-629f6fbe"
+      },
+      {
+        "epoch": 1,
+        "event": "grant",
+        "source": "linux-a",
+        "target": "scheduler",
+        "task": "task-c2094cac"
+      },
+      {
+        "epoch": 1,
+        "event": "grant",
+        "source": "build-mac",
+        "target": "scheduler",
+        "task": "task-629f6fbe"
+      },
+      {
+        "event": "scheduler",
+        "node": "scheduler"
+      },
+      {
+        "asker": "build-mac",
+        "event": "refused",
+        "node": "build-mac",
+        "owner": "scheduler",
+        "task": "task-629f6fbe"
+      },
+      {
+        "epoch": 2,
+        "event": "grant",
+        "source": "scheduler",
+        "target": "build-mac",
+        "task": "task-629f6fbe"
+      },
+      {
+        "epoch": 2,
+        "event": "grant",
+        "source": "scheduler",
+        "target": "linux-a",
+        "task": "task-c2094cac"
+      },
+      {
+        "epoch": 2,
+        "event": "start",
+        "node": "linux-a",
+        "task": "task-c2094cac"
+      },
+      {
+        "epoch": 2,
+        "event": "start",
+        "node": "build-mac",
+        "task": "task-629f6fbe"
+      }
+    ]
+  },
+  "two_runners": {
+    "starts": 1,
+    "trace": [
+      {
+        "event": "ask",
+        "source": "linux-a",
+        "target": "creator",
+        "task": "task-d82c07cd"
+      },
+      {
+        "event": "ask",
+        "source": "linux-b",
+        "target": "creator",
+        "task": "task-d82c07cd"
+      },
+      {
+        "epoch": 1,
+        "event": "grant",
+        "source": "creator",
+        "target": "linux-a",
+        "task": "task-d82c07cd"
+      },
+      {
+        "asker": "linux-b",
+        "event": "refused",
+        "node": "creator",
+        "owner": "linux-a",
+        "task": "task-d82c07cd"
+      },
+      {
+        "epoch": 1,
+        "event": "start",
+        "node": "linux-a",
+        "task": "task-d82c07cd"
+      }
+    ],
+    "winner": "linux-a"
+  },
+  "unsafe_lww_control": {
+    "conclusion": "Convergence cannot undo a double start",
+    "converged_owner": "linux-b",
+    "starts": [
+      "linux-a",
+      "linux-b"
+    ]
+  }
+}
