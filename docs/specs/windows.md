@@ -51,7 +51,7 @@ sequenceDiagram
     U->>W: ⌘D
     W->>D: open {type: term, split: right, window: win-1}
     D->>W: layout (the view)
-    Note over W: draw win-1; term-4 attached
+    Note over W: draw win-1, term-4 attached
     U->>W: ⌘] (next pane)
     W->>D: focus {pane: term-1}
     D->>W: layout (the view)

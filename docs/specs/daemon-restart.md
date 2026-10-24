@@ -43,14 +43,14 @@ sequenceDiagram
     participant D2 as new daemon
     participant A as Kanna app
     Note over D1: SIGTERM: stops reading, saves terminals.json and the screens<br/>(SIGKILL: what it saved up to a second before)
-    D1--xA: link closes; the app keeps trying to reconnect
+    D1--xA: link closes, and the app keeps trying to reconnect
     S->>S: output waits in the pty buffer
     D2->>D2: flock daemon.lock
     D2->>K: connect, hello (unacknowledged exits arrive as events)
     D2->>K: adopt
     K->>D2: each pty: {id, pid, cmd, cwd, exit?} + master
-    D2->>D2: read terminals.json: same IDs, names, cmd, cwd; counter continues
-    D2->>D2: each screen from <terminal>.snap (if the pid matches), sized to the pty (TIOCGWINSZ)
+    D2->>D2: read terminals.json: same IDs, names, cmd, cwd, and the counter continues
+    D2->>D2: each screen from its term-N.snap (if the pid matches), sized to the pty (TIOCGWINSZ)
     D2->>S: TIOCSWINSZ, then SIGWINCH to the pty's foreground group
     D2->>S: reads what waited in the buffer into the screen, then carries on
     D2->>K: ack exits that happened meanwhile (after saving them)
