@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet · Kanna reference model</title>
+<style>
+:root {
+  --bg:#14161a; --panel:#1b1e24; --panel2:#22262d; --line:#2c313a; --text:#e6e8eb; --muted:#8b93a0;
+  --accent:#7aa2ff; --ok:#5fcf93; --warn:#f0b35a; --bad:#ef6b6b; --machine:#b48cff; --term:#16181c;
+  --tint:rgba(122,162,255,.18); --page:#0d0e10; --shadow:0 20px 50px rgba(0,0,0,.5);
+  --mono:"SF Mono",ui-monospace,Menlo,monospace; --sans:-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;
+}
+:root[data-theme="light"] {
+  --bg:#fff; --panel:#f4f5f7; --panel2:#eaecf0; --line:#d8dce2; --text:#1d2026; --muted:#6b7280;
+  --accent:#2f63d8; --ok:#1f9d5c; --warn:#b7791f; --bad:#cf3f3f; --machine:#7c4dcc; --term:#fbfbfc;
+  --tint:rgba(47,99,216,.14); --page:#dfe2e7; --shadow:0 20px 50px rgba(0,0,0,.18);
+}
+* { box-sizing:border-box; }
+[hidden] { display:none !important; }
+body { margin:0; background:var(--page); color:var(--text); font:13px/1.45 var(--sans); }
+main { padding:20px; max-width:1500px; margin:auto; }
+.intro h1 { font-size:15px; margin:0 0 4px; }
+.intro p { color:var(--muted); margin:0 0 12px; max-width:1000px; }
+.controls { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px; align-items:center; }
+.controls .label { color:var(--muted); font-size:12px; margin-right:4px; }
+button,input { font:12px var(--sans); color:var(--text); }
+button { background:var(--panel2); border:1px solid var(--line); border-radius:6px; padding:4px 10px; cursor:pointer; }
+button:hover { border-color:var(--accent); }
+button:focus-visible,input:focus-visible,summary:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+button:disabled { opacity:.5; cursor:default; }
+button.on { border-color:var(--accent); background:var(--tint); }
+button.ghost { background:transparent; }
+.spacer { flex:1; }
+.muted { color:var(--muted); }
+.warn { color:var(--warn); }
+.offline { color:var(--bad); }
+.ok { color:var(--ok); }
+.mono { font-family:var(--mono); }
+.window { height:760px; display:flex; flex-direction:column; background:var(--bg); border:1px solid #000; border-radius:10px; box-shadow:var(--shadow); overflow:hidden; }
+.bar { min-height:38px; display:flex; align-items:center; gap:14px; padding:0 12px; }
+.lights { display:flex; gap:8px; }
+.lights i { width:12px; height:12px; border-radius:50%; background:var(--line); }
+.where { color:var(--muted); font-size:12px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.where b { color:var(--text); font-weight:600; }
+.menu { position:relative; }
+.menu summary { cursor:pointer; color:var(--muted); list-style:none; font-size:12px; }
+.menu summary::-webkit-details-marker { display:none; }
+.drop { position:absolute; z-index:3; top:26px; left:0; min-width:210px; padding:6px; background:var(--panel2); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow); }
+.drop button { display:block; width:100%; border:0; text-align:left; background:transparent; padding:7px; }
+.drop button:hover { background:var(--tint); }
+.drop .muted { padding:6px 7px 2px; font-size:11px; }
+.content { flex:1; min-height:0; display:flex; }
+.agent { flex:0 0 37%; min-width:0; display:flex; flex-direction:column; border-right:1px solid var(--line); }
+.head { min-height:34px; padding:6px 12px; display:flex; align-items:center; gap:8px; color:var(--muted); border-top:1px solid var(--line); border-bottom:1px solid var(--line); font-size:12px; }
+.dot { display:inline-block; flex:none; width:7px; height:7px; border-radius:50%; background:var(--accent); }
+.dot.idle { background:var(--ok); }
+.dot.stopped { background:var(--muted); }
+.dot.offline { background:transparent; border:1px solid var(--bad); }
+.dot.needs { background:var(--warn); }
+.terminal { background:var(--term); padding:18px 16px; flex:1; min-height:0; overflow:auto; font:12px/1.75 var(--mono); }
+.terminal p { margin:0 0 18px; }
+.terminal .lead { color:var(--machine); }
+.prompt { display:flex; gap:8px; align-items:center; margin-top:28px; padding:7px 9px; border:1px solid var(--line); border-radius:6px; }
+.prompt input { border:0; min-width:0; width:100%; background:transparent; outline:none; font:12px var(--mono); }
+.prompt:focus-within { border-color:var(--accent); }
+.prompt:has(input:disabled) { opacity:.5; }
+.notice { padding:9px 12px; font-size:12px; background:var(--panel); border-bottom:1px solid var(--line); }
+.docs { flex:1; min-width:0; display:flex; flex-direction:column; }
+.tabs { display:flex; gap:20px; height:34px; padding:0 18px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); color:var(--muted); align-items:center; font-size:12px; }
+.tabs .selected { color:var(--text); }
+.page { flex:1; overflow:auto; padding:28px 32px; }
+h2 { margin:0 0 4px; font-size:22px; font-weight:600; }
+.sub { color:var(--muted); margin:0 0 24px; }
+.group { margin-bottom:28px; }
+.grouphead { display:flex; justify-content:space-between; align-items:center; color:var(--muted); font-size:12px; margin-bottom:9px; }
+.grouphead b { color:var(--text); }
+.task { display:flex; align-items:center; gap:12px; border:1px solid var(--line); border-radius:8px; padding:13px 14px; margin-bottom:8px; }
+.task .text { min-width:0; flex:1; }
+.task .name { font-weight:600; margin-bottom:3px; }
+.task .meta { font-size:12px; color:var(--muted); }
+.path { display:inline-flex; align-items:center; gap:6px; font-size:11px; white-space:nowrap; background:transparent; border:1px solid var(--line); border-radius:5px; padding:2px 7px; }
+.path.relay { color:var(--warn); }
+.path.off { color:var(--bad); }
+.path.direct,.path.local { color:var(--muted); }
+.task .path { margin-top:7px; }
+.task .go { background:transparent; font-size:12px; color:var(--accent); border:0; white-space:nowrap; }
+.backlog .task { padding:9px 0; border:0; border-bottom:1px solid var(--line); border-radius:0; }
+.backlog .name { font-weight:500; }
+.shelf { overflow-x:auto; flex-shrink:0; min-height:34px; display:flex; align-items:center; gap:4px; padding:4px 8px; border-top:1px solid var(--line); color:var(--muted); }
+.shelf button { border:0; background:transparent; display:flex; align-items:center; gap:7px; padding:3px 8px; min-width:0; }
+.shelf button .title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:200px; }
+.shelf button .path { border:0; padding:0; }
+.shelf button:hover,.shelf button.on { background:var(--panel2); }
+.shelf .count { font-size:11px; white-space:nowrap; margin-left:auto; padding-left:8px; }
+.fleet { width:100%; }
+.fleet .page { height:100%; max-width:1200px; margin:auto; }
+.fleet-title { display:flex; align-items:flex-start; gap:18px; }
+.fleet table { width:100%; border-collapse:collapse; margin-bottom:22px; }
+.fleet th { font-weight:500; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); text-align:left; padding:0 14px 10px; }
+.fleet td { vertical-align:top; border-top:1px solid var(--line); padding:17px 14px; }
+.fleet th:first-child,.fleet td:first-child { padding-left:0; width:25%; }
+.fleet th:nth-child(2) { width:25%; }
+.fleet strong { font-weight:600; }
+.fleet small { display:block; margin-top:5px; font-size:12px; color:var(--muted); }
+.workload { margin-bottom:8px; }
+.details { border:1px solid var(--line); border-radius:8px; padding:14px 18px; background:var(--panel); }
+.details h3 { margin:0 0 6px; font-size:13px; }
+.details p { margin:4px 0; color:var(--muted); }
+.checklist { padding:0; list-style:none; margin:24px 0; }
+.checklist li { padding:10px 0; border-bottom:1px solid var(--line); }
+.checklist .ok { margin-right:8px; }
+.job { padding:14px; border:1px solid var(--line); border-radius:8px; }
+dialog { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:10px; padding:24px; min-width:370px; box-shadow:var(--shadow); }
+dialog::backdrop { background:rgba(0,0,0,.55); }
+dialog .project { display:flex; align-items:center; justify-content:space-between; width:100%; margin:10px 0; padding:12px; }
+dialog h2 { font-size:18px; }
+body.picture main { padding:0; max-width:none; }
+body.picture .intro { display:none; }
+body.picture .window { height:100vh; border:0; border-radius:0; box-shadow:none; }
+@media(max-width:900px) {
+  .page { padding:20px; } .agent { flex-basis:34%; }
+  .task { padding:10px; } .bar { gap:10px; } .fleet td { padding:14px 8px; }
+}
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1>Fleet: one Desk per project</h1>
+    <p>Interactive reference model · simulated machines and work. Pull a task, inspect its path in Fleet, or open a project from File. Scenario controls change connectivity without moving tasks. No sign-in or server needed.</p>
+    <div class="controls" aria-label="Model controls">
+      <span class="label">Simulate</span>
+      <button data-scenario="mixed">Mixed paths</button><button data-scenario="lan">All on LAN</button>
+      <button data-scenario="internet">Internet direct</button><button data-scenario="offline">Remote offline</button>
+      <span class="spacer"></span><button id="theme">Light / dark</button><button id="reset">Reset</button>
+    </div>
+  </div>
+  <div id="stage"></div>
+</main>
+<dialog id="projects"><h2>Open a project</h2><p class="muted">A Desk for each project.</p><div id="project-list"></div><button id="cancel">Cancel</button></dialog>
+<script>
+// Fixture data only. Machine/task and machine/pane pairs deliberately matter:
+// all three claimed tasks' terminals have the same daemon-local ID, term-41.
+const peers = [
+  { id:'mbp', name:'mbp', role:'This Mac · macOS · Apple Silicon', capability:'Agents · Xcode · display' },
+  { id:'dev-1', name:'dev-1', role:'Ubuntu 26.04 · VM on r720-1', capability:'Agents · Linux builds' },
+  { id:'tests-1', name:'tests-1', role:'Ubuntu 26.04 · VM on r720-1', capability:'Agents · Linux tests' },
+  { id:'tools-1', name:'tools-1', role:'Ubuntu 26.04 · VM on r720-1', capability:'Agents · Linux builds' }
+];
+const projects = [{id:'kanna',name:'Kanna',identity:'github.com/jemdiggity/kanna-v4'}, {id:'recipe',name:'Recipe Box',identity:'github.com/example/recipe-box'}];
+const tasks = [
+  { id:'t1', machine:'dev-1', project:'kanna', name:'Keep terminal output', agent:'claude', state:'working', branch:'terminal-output', claimed:true, pane:'term-41' },
+  { id:'t2', machine:'tests-1', project:'kanna', name:'Review build output', agent:'codex', state:'needs you', branch:'build-output', claimed:true, pane:'term-41' },
+  { id:'t3', machine:'tools-1', project:'kanna', name:'Restore task tabs', agent:'claude', state:'working', branch:'restore-tabs', claimed:true, pane:'term-41' },
+  { id:'t4', machine:'mbp', project:'kanna', name:'Polish project search', agent:'codex', state:'working', branch:'project-search' },
+  { id:'t5', machine:'dev-1', project:'kanna', name:'Document reconnect behavior', agent:'claude', state:'stopped', branch:'reconnect-docs' },
+  { id:'t6', machine:'tools-1', project:'kanna', name:'Check tab restoration', agent:'codex', state:'waiting', branch:'tab-checks' },
+  { id:'t7', machine:'mbp', project:'recipe', name:'Save favorite recipes', agent:'claude', state:'working', branch:'favorites', claimed:true, pane:'term-41' },
+  { id:'t8', machine:'tests-1', project:'recipe', name:'Test recipe import', agent:'codex', state:'working', branch:'import-tests' }
+];
+const scenarios = {
+  mixed:{mbp:'local','dev-1':'lan','tests-1':'relay','tools-1':'off'},
+  lan:{mbp:'local','dev-1':'lan','tests-1':'lan','tools-1':'lan'},
+  internet:{mbp:'local','dev-1':'internet','tests-1':'internet','tools-1':'off'},
+  offline:{mbp:'local','dev-1':'off','tests-1':'off','tools-1':'off'}
+};
+const label = {local:'This Mac',lan:'Direct · LAN',internet:'Direct · internet',relay:'Relayed',off:'Offline'};
+const initial = () => ({scenario:'mixed',current:'kanna',windows:{kanna:{task:null,fleet:false,detail:'tests-1'}},input:{}});
+let s = initial();
+const esc = str => String(str).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const path = machine => scenarios[s.scenario][machine];
+const key = task => `${task.machine}/${task.id}`;
+const isOffline = task => path(task.machine)==='off';
+const status = task => isOffline(task) ? `Last known: ${task.state} · 4 min ago` : task.state;
+const dot = task => `<span class="dot ${isOffline(task)?'offline':task.state==='needs you'?'needs':task.state==='stopped'?'stopped':''}"></span>`;
+function badge(machine,always=false) {
+  const p=path(machine);
+  if(!always && !['relay','off'].includes(p)) return '';
+  return `<button class="path ${p==='lan'||p==='internet'?'direct':p}" data-path="${machine}" aria-label="${machine}: ${label[p]}. Show path details">${always?'':`${machine} · `}${label[p]}</button>`;
+}
+function card(t,backlog=false) {
+  return `<div class="task" data-task="${key(t)}">${dot(t)}<div class="text"><div class="name">${t.name}</div><div class="meta">${t.agent} · ${status(t)}${t.claimed?' · claimed by: mbp':''}</div>${badge(t.machine)}${!t.claimed && isOffline(t)?'<div class="meta">Waiting for its owner to reconnect.</div>':''}</div>${backlog?'<span class="muted">'+(isOffline(t)?'Unavailable':tasks.filter(x=>x.project===t.project&&x.claimed).length===3?'Shelf full':'In backlog')+'</span>':`<button class="go" data-pull="${key(t)}">${isOffline(t)?'View last state':'Pull to Desk'} →</button>`}</div>`;
+}
+function terminal(project,t) {
+  const machine=t?t.machine:(project.id==='kanna'?'dev-1':'mbp'), off=path(machine)==='off';
+  const paneKey=t?`${machine}/${t.pane}`:`${machine}/planner-${project.id}`;
+  const log = t ? {
+    t1:'The output now resumes from the last byte received.\n\nI’m running the macOS UI tests before wrapping up.',
+    t2:'The build output is ready to review.\n\nWarnings now link to the file and line in your worktree. Should I keep the summary expanded?',
+    t3:'The tabs are restored in their previous order.\n\nI’m checking that the focused pane comes back too.',
+    t7:'Favorites are saved. I’m checking the empty state.'
+  }[t.id] : `The ${project.name} backlog is up to date.\n\n${project.id==='kanna'?'Three tasks are out on your Shelf. Keep terminal output is running its macOS UI tests.\n\nPolish project search is running in the backlog.':'Save favorite recipes is on your Shelf. Test recipe import is running in the backlog.'}`;
+  return `<aside class="agent" data-pane="${paneKey}"><div class="head">${t?dot(t):`<span class="dot ${off?'offline':''}"></span>`}<span>${t?t.agent:'Planning agent'}</span><span class="spacer"></span>${badge(machine)}</div>${off?`<div class="notice offline">${machine} is offline · last received 4 min ago.<br><span class="muted">Input is unavailable. Reconnecting automatically.</span></div>`:''}<div class="terminal"><p class="muted">${t?t.branch:project.name+' · planning'}</p><p><span class="lead">●</span> ${esc(log).replace(/\n/g,'<br>')}</p>${off?'<p class="muted">Last received output · current agent state unknown.</p>':''}<div class="sent">${(s.input[paneKey]||[]).map(x=>`<p>› ${esc(x)}</p>`).join('')}</div><form class="prompt" data-input="${paneKey}"><span class="muted">›</span><input aria-label="Message ${t?t.agent:'planning agent'}" placeholder="${off?'Waiting for connection…':'Message the agent…'}" ${off?'disabled':''}></form></div></aside>`;
+}
+function overview(project) {
+  const mine=tasks.filter(t=>t.project===project.id);
+  return `<section class="docs"><div class="tabs"><span class="selected">Shelf & backlog</span></div><div class="page"><h2>${project.name}</h2><p class="sub">Your tasks, wherever they run.</p><div class="group"><div class="grouphead"><b>Shelf</b><span>${mine.filter(t=>t.claimed).length} of 3 tasks · claimed by: mbp</span></div>${mine.filter(t=>t.claimed).map(t=>card(t)).join('')}</div><div class="group backlog"><div class="grouphead"><b>Backlog</b><span>${mine.filter(t=>!t.claimed).length} tasks · all machines</span></div>${mine.filter(t=>!t.claimed).map(t=>card(t,true)).join('')}</div></div></section>`;
+}
+function workspace(t) {
+  const off=isOffline(t);
+  return `<section class="docs"><div class="tabs"><span class="selected">${t.id==='t1'?'UI tests':'Review notes'}</span><span>${t.branch}</span></div>${off?'<div class="notice muted">Last received view · 4 min ago · read-only</div>':''}<div class="page"><h2>${t.name}</h2><p class="sub">${off?'Last known: ':''}${t.state} · ${t.agent}</p><ul class="checklist"><li><span class="ok">✓</span> Changes ready on the task branch</li><li><span class="ok">✓</span> Focused checks passed</li><li>${t.id==='t1'?'◌ macOS UI tests in progress':t.id==='t3'?'◌ Checking focused-pane restoration':'Review the result with you'}</li></ul>${t.id==='t1'?'<div class="job"><b>macOS UI tests</b><p class="muted">'+(off?'Last known: running · current job state unknown':'Running on mbp · Xcode + display')+'</p><span class="mono muted">'+(off?'Last received: 18 / 24 checks passed':'18 / 24 checks passed')+'</span></div>':'<p class="muted">'+(off?'This view will resume when the machine reconnects. The task keeps its place on your Shelf.':'Your branch and tabs stay with this task when you park it.')+'</p>'}</div></section>`;
+}
+function detail(machine) {
+  const p=path(machine), messages={
+    local:['Local daemon','This app uses the local connection. This Mac also runs build jobs for Linux tasks.'],
+    lan:['Direct on the LAN','The app connects directly to this machine. Traffic is not using a relay.'],
+    internet:['Direct over the internet','The app reaches this machine directly through the internet. Traffic is not using a relay.'],
+    relay:['Relayed · your relay','A direct path is unavailable. Traffic is end-to-end encrypted through your relay. Kanna switches to a direct path automatically when one is available.'],
+    off:['Offline · last seen 4 min ago','Current task state is unknown. Last received views stay available, with input disabled. Tasks keep their claims and owners; waiting tasks are not started elsewhere.']
+  };
+  return `<div class="details" data-details="${machine}"><h3>${machine} · ${messages[p][0]}</h3><p>${messages[p][1]}</p></div>`;
+}
+function fleet(w) {
+  return `<section class="fleet"><div class="page"><div class="fleet-title"><div><h2>Fleet</h2><p class="sub">Your machines · all projects</p></div><span class="spacer"></span><button data-view="desk">Back to Desk</button></div><table><thead><tr><th>Machine</th><th>Path from this Mac</th><th>Work</th></tr></thead><tbody>${peers.map(m=>{
+    const off=path(m.id)==='off';
+    const running=tasks.filter(t=>t.machine===m.id && !['waiting','stopped'].includes(t.state));
+    return `<tr data-machine="${m.id}"><td><strong>${m.name}</strong><small>${m.role}</small><small>${m.capability}</small></td><td>${badge(m.id,true)}<small>${off?'Last seen 4 min ago':path(m.id)==='relay'?'Via your relay · encrypted':path(m.id)==='local'?'Client + build Mac':'No relay in use'}</small></td><td>${off?'<div class="offline">Current state unknown</div>':''}${m.id==='dev-1'?'<div class="workload">Kanna · planning agent'+(off?' <span class="muted">· last known</span>':'')+'</div>':''}${running.map(t=>`<div class="workload"><strong>${t.name}</strong><small>${projects.find(p=>p.id===t.project).name} · ${off?'last known: ':''}${t.state}${t.claimed?' · claimed by: mbp':' · backlog'}</small></div>`).join('')}${m.id==='mbp'?'<div class="workload"><strong>macOS UI tests</strong><small>Kanna · build job for Keep terminal output · agent on dev-1</small></div>':''}${m.id==='tools-1'?'<small>Check tab restoration · '+(off?'waiting for this owner':'waiting')+'</small>':''}</td></tr>`;
+  }).join('')}</tbody></table>${detail(w.detail)}<p class="muted">Connections change automatically. Tasks stay where they run when you bring them to a Desk.</p></div></section>`;
+}
+function render() {
+  document.querySelectorAll('[data-scenario]').forEach(b=>{b.classList.toggle('on',b.dataset.scenario===s.scenario);b.setAttribute('aria-pressed',b.dataset.scenario===s.scenario);});
+  document.getElementById('stage').innerHTML=Object.entries(s.windows).map(([id,w])=>{
+    const project=projects.find(p=>p.id===id), t=tasks.find(t=>key(t)===w.task), mine=tasks.filter(t=>t.project===id && t.claimed);
+    return `<section class="window" data-project="${id}" ${id===s.current?'':'hidden'}><header class="bar"><span class="lights"><i></i><i></i><i></i></span><details class="menu"><summary>File</summary><div class="drop"><button data-new>New Desk…</button><div class="muted">Open Recent</div>${projects.map(p=>`<button data-project-open="${p.id}">${p.name}${s.windows[p.id]?' · open':''}</button>`).join('')}</div></details><span class="where"><b>${project.name}</b> · ${t?t.name:'Planning'}</span><span class="spacer"></span>${t?'<button class="ghost" data-park>Park</button>':''}<button data-view="fleet" class="${w.fleet?'on':'ghost'}">Fleet${peers.some(m=>path(m.id)==='off')?' · '+peers.filter(m=>path(m.id)==='off').length+' offline':''}</button></header><div class="content">${w.fleet?fleet(w):terminal(project,t)+(t?workspace(t):overview(project))}</div><footer class="shelf">${mine.map(task=>`<button data-pull="${key(task)}" class="${w.task===key(task)?'on':''}">${dot(task)}<span class="title">${task.name}</span>${['relay','off'].includes(path(task.machine))?`<span class="path ${path(task.machine)}">${task.machine} · ${label[path(task.machine)]}</span>`:''}</button>`).join('')}<span class="count">${mine.length}/3 out</span><button data-park>Shelf & backlog</button></footer></section>`;
+  }).join('');
+}
+document.addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  const w=s.windows[s.current];
+  if(b.dataset.scenario) s.scenario=b.dataset.scenario;
+  else if(b.dataset.pull) {w.task=b.dataset.pull;w.fleet=false;}
+  else if(b.hasAttribute('data-park')) {w.task=null;w.fleet=false;}
+  else if(b.dataset.path) {w.fleet=true;w.detail=b.dataset.path;}
+  else if(b.dataset.view) w.fleet=b.dataset.view==='fleet';
+  else if(b.dataset.projectOpen) {
+    s.current=b.dataset.projectOpen;
+    s.windows[s.current] ||= {task:null,fleet:false,detail:'mbp'};
+    document.getElementById('projects').close();
+  } else if(b.hasAttribute('data-new')) {
+    document.querySelectorAll('.menu').forEach(m=>m.open=false);
+    document.getElementById('project-list').innerHTML=projects.map(p=>`<button class="project" data-project-open="${p.id}"><span>${p.name}</span><span class="muted">${s.windows[p.id]?'Bring forward':'Open Desk'}</span></button>`).join('');
+    document.getElementById('projects').showModal(); return;
+  } else if(b.id==='cancel') {document.getElementById('projects').close();return;}
+  else if(b.id==='theme') {document.documentElement.dataset.theme=document.documentElement.dataset.theme==='light'?'':'light';return;}
+  else if(b.id==='reset') s=initial();
+  else return;
+  render();
+});
+document.addEventListener('submit',e=>{
+  if(!e.target.dataset.input) return;
+  e.preventDefault();
+  const input=e.target.querySelector('input'), value=input.value.trim();
+  if(input.disabled||!value) return;
+  (s.input[e.target.dataset.input] ||= []).push(value);render();
+});
+// Stable scenes for product comparisons and screenshots; no persistence or services.
+const flags=location.hash.slice(1).split(',');
+if(flags.includes('picture')) document.body.classList.add('picture');
+if(flags.includes('light')) document.documentElement.dataset.theme='light';
+for(const scene of Object.keys(scenarios)) if(flags.includes(scene)) s.scenario=scene;
+if(flags.includes('relay-task')) s.windows.kanna.task='tests-1/t2';
+if(flags.includes('offline-task')) s.windows.kanna.task='tools-1/t3';
+if(flags.includes('fleet')) s.windows.kanna.fleet=true;
+render();
+</script>
+</body>
+</html>
