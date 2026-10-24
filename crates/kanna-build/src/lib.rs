@@ -13,6 +13,8 @@ pub const DAEMON: &str = "kanna-daemon";
 
 pub const VERSION: &str = env!("KANNA_BUILD_VERSION");
 
+pub const PROTOCOLS: [u32; 2] = [1, 1];
+
 pub fn build_id(binary: &Path) -> Option<String> {
     let mut file = std::fs::File::open(binary).ok()?;
     let mut hasher = Sha256::new();

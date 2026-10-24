@@ -1,9 +1,11 @@
 pub mod log;
 mod node;
 pub mod pair;
+pub mod update;
 
 pub use iroh::SecretKey;
 pub use node::{Config, Failure, Host, Node, DEFAULT_PORT};
+pub use update::{Install, Tarball};
 
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -11,6 +13,8 @@ use sha2::{Digest, Sha256};
 pub const ALPN: &[u8] = b"kanna/1";
 
 pub const KINDS: &[&str] = &["control", "file", "port", "sync", "job", "transfer"];
+
+pub const UPDATE: &str = "update";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Refused {
