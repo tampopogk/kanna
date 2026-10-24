@@ -12,13 +12,13 @@ A Desk belongs to a project. Pulling a task changes what the app shows, while it
 - **The Shelf stays the app's:** claims in its order, three per project including the task on the Desk, keyed by (machine, task) in `app-state.json`. Pulling and parking preserve claims, order and ownership. Task cards, the Shelf, agent headers and build summaries put the machine and connection path in a tooltip, available on hover or keyboard focus. No host names or Relayed / Offline badges appear in their normal presentation.
 - **Claim records name the device:** `claimed by: mbp` (the hello's `client`) replaces `mac` in the protocol. This is internal bookkeeping, not a label in the UI: users work on tasks without tracking the claiming device or execution machine. Runners leave claimed tasks alone, as today.
 - **Toasts** held while no app was attached arrive when the app connects, so five servers' finished tasks show up when you open the lid. Toast delivery is outside this model; use the [toast reference](../../references/mockups/toasts.html) for its presentation.
-- A task can use several machines: the model's **Keep terminal output** agent runs on `dev-1`, and its macOS UI test job runs on `mbp`. The Mac is this build Mac; no mini is assumed. Fleet lists the agent and job separately, without creating another task or claim.
+- A task can use several machines: the model's **Keep terminal output** agent runs on `dev-1`, and its macOS UI test job runs on `mbp`. The Mac is this build Mac; no mini is assumed. The task’s UI tests pane shows the job, with its build machine in a tooltip. It does not create another task or claim.
 
 ## 2. Fleet and paths
 
-![Fleet shows the local Mac, a direct LAN peer, a relayed peer and an offline peer, with work across projects](fleet-page.png)
+![Fleet shows the local Mac, a direct LAN peer, a relayed peer and an offline peer](fleet-page.png)
 
-Fleet is app-wide: each peer's path **from this Mac**, capabilities and work across projects. A host such as r720-1 is context for a VM, not an additional peer. The relay is a path, not a task-running machine.
+Fleet is app-wide: each peer's path **from this Mac**, capabilities and connection state. It has no Work column; task and job details stay with the task. A host such as r720-1 is context for a VM, not an additional peer. The relay is a path, not a task-running machine.
 
 Each row distinguishes **This Mac**, **Direct · LAN**, **Direct · internet**, **Relayed**, and **Offline**. Shelf and Fleet are fixed, non-closeable tabs at the start of the right-hand tab strip, before the current task’s document tabs. Shelf shows the project’s Shelf and backlog; Fleet shows the machine inventory. Both remain available while a task is open. Switching tabs preserves the current agent, task selection, input and claims; it does not park the task. Clicking a path within Fleet opens its details. Select Shelf or the task’s document tab to return.
 
@@ -51,15 +51,15 @@ Compare the product against these scenes and transitions, using the model's fixt
 | File → New Desk / Open Recent → Kanna twice | Existing project Desk comes forward; its task selection survives; no duplicate Desk |
 | Open Recipe Box, then Kanna | Separate project Desks with their own Shelf and selection; names, not clone paths |
 | Pull **Keep terminal output** then **Review build output** | Correct agent and tabs despite matching terminal IDs; task input cannot leak between peers |
-| `#picture,fleet` | Per-peer path and work; Linux agent plus its Mac job; last-known offline work labeled |
+| `#picture,fleet` | Machine and path columns only; capabilities and last-seen information; no task or job listing |
 | `#picture,relay-task`, hover or focus its header | Tooltip gives the machine and Relayed state; no persistent badge; Fleet remains available as a fixed tab |
 | `#picture,offline-task` | Retained claim and last view; stale labels; disabled input; other tasks remain available |
 | Mixed paths → All on LAN | Tooltip changes to Direct · LAN; input returns; task, owner, claim count and order unchanged |
 | Internet direct | Direct internet path in Fleet; updated tooltip, no connection badge on the task card |
-| Remote offline | Remote planner and remote task input disabled; local tasks and local Fleet work remain available |
+| Remote offline | Remote planner and remote task input disabled; local tasks and the Fleet inventory remain available |
 
 **Review correction:** execution and claim machines are implementation details throughout the task UI. Machine identity and relay/offline state belong in task tooltips, not persistent labels. Fleet remains the explicit machine inventory. Stale-output notices and disabled input remain visible so loss of reach is not mistaken for a live agent.
 
-**What the model exposed:** a connection failure is not an agent stop. Reusing a plain “working” card during disconnection falsely claims fresh knowledge; clearing the card loses the app's claim. Keep the card and explicitly age its state. Similarly, a build job's machine is not necessarily the agent's machine, so Fleet must list work by role without multiplying tasks.
+**What the model exposed:** a connection failure is not an agent stop. Reusing a plain “working” card during disconnection falsely claims fresh knowledge; clearing the card loses the app's claim. Keep the card and explicitly age its state. Similarly, a build job's machine is not necessarily the agent's machine, so its details belong to that task without multiplying tasks or adding a work inventory to Fleet.
 
 **Limits:** fixed fixture data and timestamps; in-memory views and text input; no real link, peer discovery, repo-identity normalization, disk persistence, background work, transfer, pairing or toast queue. The model switches between project windows inside one HTML page. Fleet 3 must prove those real boundaries separately; this model establishes the presentation and state transitions, not network performance.

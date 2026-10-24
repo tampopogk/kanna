@@ -102,11 +102,10 @@ h2 { margin:0 0 4px; font-size:22px; font-weight:600; }
 .fleet table { width:100%; border-collapse:collapse; margin-bottom:22px; }
 .fleet th { font-weight:500; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); text-align:left; padding:0 14px 10px; }
 .fleet td { vertical-align:top; border-top:1px solid var(--line); padding:17px 14px; }
-.fleet th:first-child,.fleet td:first-child { padding-left:0; width:25%; }
-.fleet th:nth-child(2) { width:25%; }
+.fleet th:first-child,.fleet td:first-child { padding-left:0; width:55%; }
+.fleet th:nth-child(2) { width:45%; }
 .fleet strong { font-weight:600; }
 .fleet small { display:block; margin-top:5px; font-size:12px; color:var(--muted); }
-.workload { margin-bottom:8px; }
 .details { border:1px solid var(--line); border-radius:8px; padding:14px 18px; background:var(--panel); }
 .details h3 { margin:0 0 6px; font-size:13px; }
 .details p { margin:4px 0; color:var(--muted); }
@@ -219,10 +218,9 @@ function detail(machine) {
   return `<div class="details" data-details="${machine}"><h3>${machine} · ${messages[p][0]}</h3><p>${messages[p][1]}</p></div>`;
 }
 function fleet(w) {
-  return `<section class="fleet"><div class="page"><div class="fleet-title"><div><h2>Fleet</h2><p class="sub">Your machines · all projects</p></div></div><table><thead><tr><th>Machine</th><th>Path from this Mac</th><th>Work</th></tr></thead><tbody>${peers.map(m=>{
+  return `<section class="fleet"><div class="page"><div class="fleet-title"><div><h2>Fleet</h2><p class="sub">Your machines · all projects</p></div></div><table><thead><tr><th>Machine</th><th>Path from this Mac</th></tr></thead><tbody>${peers.map(m=>{
     const off=path(m.id)==='off';
-    const running=tasks.filter(t=>t.machine===m.id && !['waiting','stopped'].includes(t.state));
-    return `<tr data-machine="${m.id}"><td><strong>${m.name}</strong><small>${m.role}</small><small>${m.capability}</small></td><td>${badge(m.id,true)}<small>${off?'Last seen 4 min ago':path(m.id)==='relay'?'Via your relay · encrypted':path(m.id)==='local'?'Client + build Mac':'No relay in use'}</small></td><td>${off?'<div class="offline">Current state unknown</div>':''}${m.id==='dev-1'?'<div class="workload">Kanna · planning agent'+(off?' <span class="muted">· last known</span>':'')+'</div>':''}${running.map(t=>`<div class="workload"><strong>${t.name}</strong><small>${projects.find(p=>p.id===t.project).name} · ${off?'last known: ':''}${t.state}${t.claimed?'':' · backlog'}</small></div>`).join('')}${m.id==='mbp'?'<div class="workload"><strong>macOS UI tests</strong><small>Kanna · build job for Keep terminal output · agent on dev-1</small></div>':''}${m.id==='tools-1'?'<small>Check tab restoration · '+(off?'waiting for connection':'waiting')+'</small>':''}</td></tr>`;
+    return `<tr data-machine="${m.id}"><td><strong>${m.name}</strong><small>${m.role}</small><small>${m.capability}</small></td><td>${badge(m.id,true)}<small>${off?'Last seen 4 min ago':path(m.id)==='relay'?'Via your relay · encrypted':path(m.id)==='local'?'Client + build Mac':'No relay in use'}</small></td></tr>`;
   }).join('')}</tbody></table>${detail(w.detail)}<p class="muted">Connections change automatically. Tasks stay where they run when you bring them to a Desk.</p></div></section>`;
 }
 function navigation(w,t,projectId) {

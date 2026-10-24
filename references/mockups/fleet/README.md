@@ -50,7 +50,7 @@ Screenshots live in `docs/specs/fleet-{desk,page,relay,offline,tooltip}.png`. Fo
 
 - A single project Desk can hold claims across peers without choosing a machine. Pulling and parking are presentation changes. Claim-device metadata stays internal. Machine and connection details live in tooltips on task cards, Shelf items, agent headers and build summaries; hover or keyboard focus reveals them, Escape dismisses them. Fleet shows the full machine inventory.
 - Connection state and task state need separate treatment. An offline task keeps its claim; its last state must be labeled stale, not silently presented as current or changed to stopped.
-- The same task can have a Linux agent and a Mac build job. Fleet needs both work entries, while the Shelf still has only one task.
+- The same task can have a Linux agent and a Mac build job. The job stays in the task’s UI tests pane, with its machine in a tooltip; Fleet lists machines and paths, without a Work column.
 - A direct-path recovery updates the connection tooltip automatically, without disturbing the task or its position.
 - Bare content IDs are insufficient: three peers can all have `term-41`.
 
