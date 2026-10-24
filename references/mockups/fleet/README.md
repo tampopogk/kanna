@@ -1,6 +1,6 @@
 # Fleet Desk model
 
-The interactive model is **[../fleet.html](../fleet.html)**. Its [spec and screenshots](../../../docs/specs/fleet-app.md) are linked from [Fleet §6](../../../docs/specs/fleet.md#6-one-app-several-machines). This is a standalone reference model before Fleet 3, not product code. Ready for user review; approval is still pending.
+The interactive model is **[../fleet.html](../fleet.html)**. Its [spec and screenshots](../../../docs/specs/fleet-app.md) are linked from [Fleet §6](../../../docs/specs/fleet.md#6-one-app-several-machines). This is a standalone reference model before Fleet 3, not product code. Approved by the user after review. Ready to merge before Fleet 3.
 
 ## Run
 

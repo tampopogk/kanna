@@ -1,6 +1,6 @@
 # Fleet: Desks Across Machines
 
-**Status:** model ready for user review; product planned · **Part of:** [Fleet §6](fleet.md#6-one-app-several-machines) · **Model:** [fleet.html](../../references/mockups/fleet.html) · **Run and scope:** [README](../../references/mockups/fleet/README.md) · **Before:** Fleet 3
+**Status:** model approved by user; product planned · **Part of:** [Fleet §6](fleet.md#6-one-app-several-machines) · **Model:** [fleet.html](../../references/mockups/fleet.html) · **Run and scope:** [README](../../references/mockups/fleet/README.md) · **Before:** Fleet 3
 
 A Desk belongs to a project. Pulling a task changes what the app shows, while its agent and jobs keep running where they are. The model follows the existing [Desk](../../references/mockups/desk.html) style.
 
