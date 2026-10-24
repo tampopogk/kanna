@@ -1,0 +1,25 @@
+{
+  "job": "e994a1a4-d526-4816-82fa-95293c77ac26",
+  "expected_user": "jeremyhale",
+  "identity": {
+    "uid": 502,
+    "user": "jeremyhale",
+    "console_uid": 502,
+    "launchd_domain": "Aqua"
+  },
+  "summary": {
+    "result": "Passed",
+    "passedTests": 1,
+    "failedTests": 0,
+    "totalTestCount": 1
+  },
+  "date": "2026-10-25",
+  "screenshot": {
+    "file": "ui-window.png",
+    "sha256": "4fa11491e970496107daeea8580323968296ff2836dd4e6d266f742e916442f0",
+    "bytes": 51494,
+    "retrieved_from": "Linux VM artifact directory",
+    "matches_mac_export": true
+  },
+  "scope": "User-approved MBP owner console session; separate job-user isolation not tested"
+}

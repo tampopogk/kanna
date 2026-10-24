@@ -74,7 +74,7 @@ final class ProbeTests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.staticTexts["dirty + untracked"].waitForExistence(timeout: 15))
         app.buttons["confirm"].click()
-        let shot = XCTAttachment(screenshot: app.screenshot())
+        let shot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
         shot.name = "dirty-snapshot-console"
         shot.lifetime = .keepAlways
         add(shot)

@@ -27,6 +27,6 @@
     "/tmp/kanna-shim-model/state/mirrors/62a36a9a9f46063b199d5ad5/src/App/App.swift:14:30: error: cannot convert value of type 'String' to specified type 'Int'"
   ],
   "returned_app_sha256": "cf7fb6ed9eb055ddd6beee4acba6bf0f1f03ee869d7ca27eb933884a0d5cfd57",
-  "ui_job_user": "PENDING \u2014 account creation and console login need user approval",
-  "gate": "Models-first gate for Fleet 7 and 12 remains closed"
+  "ui_job_user": "Owner-account UI proof completed 2026-10-25 per user request; see ui.json. Separate job user not exercised.",
+  "gate": "User-approved MBP model complete. Dedicated job-user boundary remains a Fleet 12 validation requirement."
 }

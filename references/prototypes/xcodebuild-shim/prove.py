@@ -104,15 +104,16 @@ elif sys.argv[1] == "reconnect":
     model.save(proof / "lifecycle.json", report)
     print(json.dumps(report, indent=2))
 elif sys.argv[1] == "ui":
+    expected_user = sys.argv[2] if len(sys.argv) > 2 else "kanna-build"
     job = submit(build + ["-only-testing:ShimProbeUITests", "test"], ui=True)
     dest, status = attach(job, 0)
     execution = json.loads((dest / "execution.json").read_text())
-    assert execution["identity"]["user"] == "kanna-build", execution["identity"]
+    assert execution["identity"]["user"] == expected_user, execution["identity"]
     assert execution["identity"]["uid"] == execution["identity"]["console_uid"]
     assert execution["identity"]["launchd_domain"] == "Aqua"
     summary = json.loads((dest / "tests.json").read_text())
     assert summary["passedTests"] == 1, summary
     assert list((dest / "attachments").rglob("*.png")), "screenshot missing"
-    model.save(proof / "ui.json", {"job": job, "identity": execution["identity"],
+    model.save(proof / "ui.json", {"job": job, "expected_user": expected_user, "identity": execution["identity"],
                "summary": {k: summary[k] for k in ["result", "passedTests", "failedTests", "totalTestCount"]}})
     print((proof / "ui.json").read_text())

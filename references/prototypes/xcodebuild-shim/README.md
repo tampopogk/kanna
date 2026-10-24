@@ -4,12 +4,15 @@ Reference for [Fleet §10](../../../docs/specs/fleet.md#10-build-order), before
 slices 7 and 12; follows [build Macs](../../../docs/specs/build-macs.md) and
 the [research](../../../docs/research/xcodebuild-shim.md).
 
-**Status: partial proof; job-user console UI test still pending user approval.**
-Do not release the dependent slices on the strength of the owner tests alone.
+**Status: complete for the user-approved MBP owner-account scope.** On 25 October
+the user chose their own account for testing instead of creating `kanna-build`.
+Dirty builds, Linux diagnostics, and a console-session UI test are demonstrated.
+Dedicated job-user execution and isolation remain unproved for Fleet 12's build
+Mac setup; an owner-account test is not evidence of that isolation.
 This is a Python experiment, not product code. It builds a tiny macOS SwiftUI
 app, not Kanna.app (building Kanna.app is slice 7's acceptance requirement).
 
-## Observed on 24 October 2026
+## Observed on 24–25 October 2026
 
 Real runs on the r720-1 Incus VM → this Mac, Xcode 26.6:
 
@@ -26,16 +29,22 @@ Real runs on the r720-1 Incus VM → this Mac, Xcode 26.6:
 | Edit after submission | Mac saw captured bytes; Linux's later edit remained intact |
 | Cancellation | Process group terminated; build exit −15, CLI exit 143 |
 | Two tasks submitted together | Separate mirrors; both completed under one heavy slot |
-| Job-user console UI test | **Pending — not demonstrated** |
+| Owner console UI test | 1 passed as `jeremyhale`, UID 502 = console UID, Aqua; screenshot returned to Linux |
+| Separate job-user execution/isolation | Not exercised; user selected the owner-account test |
 
 Recorded reports: [builds](evidence/builds.json), [lifecycle](evidence/lifecycle.json),
 [machine/session identity and raw diagnostic](evidence/run.json),
-[relative path options](evidence/path-options.json).
+[relative path options](evidence/path-options.json), [console UI test](evidence/ui.json).
 Timings cover worker preparation, build and artifact staging on this small fixture;
 they are not a Kanna.app performance prediction. Full logs and results remain in
 the rig's private scratch directories and on the VM.
-The owner LaunchAgent was stopped after these checks; the dedicated VM and
-scratch state remain for the pending job-user run. Restart the endpoint to resume.
+The owner LaunchAgent and dedicated VM were stopped after these checks; their
+scratch state remains for reproduction. Run `sudo incus start xcodebuild-shim`
+on r720-1 and restart the endpoint to resume.
+
+Returned test-window screenshot:
+
+![Dirty and untracked source built on the Mac, tested from Linux](evidence/ui-window.png)
 
 ## What runs
 
@@ -60,8 +69,9 @@ caches stay on the Mac. Source never syncs back.
 
 `launch_agent.py` starts the endpoint in the logged-in user's Aqua domain.
 `--ui` refuses execution unless the worker's UID owns `/dev/console` and its
-launchd manager is Aqua. The UI proof also asserts the user is **kanna-build**;
-an owner's successful UI test cannot satisfy it.
+launchd manager is Aqua. The UI proof asserts an expected user: `kanna-build`
+by default, or an explicitly named owner for the MBP case. The evidence records
+which account actually ran the test.
 
 ## Run
 
@@ -127,16 +137,21 @@ distribution-signing dependency: the macOS fixture uses ad-hoc signing.
    with exit 65. Evidence goes under `.kanna/proof/` on Linux; ordinary shim runs
    write `.kanna/build/<job>/` and save the last ID in `.shim-last-job.json`.
 
-5. **Pending, requires the user's agreement and a console login:** create the
-   standard local Mac account `kanna-build`, without administrator privileges.
-   Log into it with Fast User Switching. Run the endpoint's LaunchAgent from a
-   location readable by that user, using a new token and state directory owned
-   by it; update the Linux token to match. Stop the owner endpoint first so the
-   port is free. Do not run the UI worker through `sudo -u` or a background SSH
-   session. Then run `prove.py ui` from Linux with the tunnel connected.
+5. With the endpoint running as the Mac's current console user, run the UI
+   proof from Linux, naming the expected **Mac** user (not Linux's `root`):
+
+   ```sh
+   python3 /opt/kanna/current/shim/prove.py ui jeremyhale
+   ```
+
+   For the separate build-Mac account case, get user approval before creating
+   the standard local `kanna-build` account, then log into it and launch the
+   endpoint there with its own token and state. Run `prove.py ui` without the
+   owner override. Do not substitute `sudo -u` or a background SSH session for
+   an actual console login.
 
    The test launches the fixture app, asserts its dirty/untracked label, clicks
-   its button and attaches a screenshot. It verifies `kanna-build`, the matching
+   its button and attaches a window screenshot. It verifies the expected user, the matching
    console UID, Aqua, one passing UI test, and a returned PNG. A macOS automation
    permission prompt requires the user; stop there if one appears. No user
    account, login, TCC grant, or password is created by these scripts.
@@ -160,8 +175,8 @@ transport/model errors use CLI status 125 and do not invent a build result.
 - Persist IDs, logs, status and artifacts outside the client connection. Retrying
   a request or reconnecting must not execute it a second time.
 - Require the UI job's **own** Aqua console session; record UID and session
-  identity in the evidence. The proof is not complete until this runs as the
-  job user.
+  identity in the evidence. This MBP proof uses the owner; repeat as the job
+  user when implementing the dedicated build-Mac account boundary.
 
 ## Boundaries and surprises
 
@@ -173,6 +188,8 @@ transport/model errors use CLI status 125 and do not invent a build result.
 - macOS tar can add AppleDouble files, and its numeric file owner makes Linux
   Git reject a transferred checkout as dubious. Use a metadata-neutral archive
   and assign ownership on import.
+- `XCUIApplication.screenshot()` included the desktop in this macOS test.
+  Capture `app.windows.firstMatch.screenshot()` for an artifact of just the app.
 - This transports full gzip snapshots, with local rsync overlay. It does **not**
   measure or model block-delta transport. The product must use the spec's daemon
   stream, not this SSH/HTTP adapter.
@@ -187,7 +204,8 @@ transport/model errors use CLI status 125 and do not invent a build result.
   is claimed. The prototype covers macOS XCUITest, not an iOS Simulator lease.
 - Product acceptance still needs failed-test attachment export and explicit
   `simctl` screenshot return, Kanna.app, broader path options, and all pool cases.
-  This model only exports XCUITest attachments; the UI screenshot remains pending.
+  This model exports XCUITest attachments and demonstrated its window screenshot
+  reaching Linux; it does not implement arbitrary `simctl` screenshot forwarding.
 
 Cleanup after the evidence is complete: `launchctl bootout
 gui/$(id -u)/dev.kanna.shim-model` as the relevant Mac user; close the SSH tunnel;
