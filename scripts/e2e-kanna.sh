@@ -579,6 +579,21 @@ markdown_diff() {
   check grep -q "isn't in a git repo" <<<"$failed" || { echo "markdown_diff: outside a repo: $failed"; return 1; }
   failed="$(kanna open md "$repo/spec.md" --diff nope --tab 2>&1)"
   check grep -q 'no commit or branch "nope"' <<<"$failed" || { echo "markdown_diff: a bad ref: $failed"; return 1; }
+  kanna open md "$repo/spec.md" --name rangedoc --diff main..work --tab >/dev/null || return 1
+  check is rangedoc diff main..work || return 1
+  check wait_for 5 eval '[[ "$(mdd rangedoc changes)" == 2 ]]' || { echo "markdown_diff: $(mdd rangedoc changes) changes in main..work, expected 2"; return 1; }
+  check doc_text rangedoc "The last paragraph." || return 1
+  doc_text rangedoc "now differs" && { echo "markdown_diff: main..work shows the file on disk, not work"; return 1; }
+  printf '\nAnother edit on disk.\n' >>"$repo/spec.md"; sleep 2.5
+  doc_text rangedoc "Another edit on disk" && { echo "markdown_diff: a range followed the file"; return 1; }
+  check test "$(mdd rangedoc changes)" == 2 || return 1
+  failed="$(kanna markup rangedoc 2>&1)"
+  check grep -q "takes no comments" <<<"$failed" || { echo "markdown_diff: comments on a range: $failed"; return 1; }
+  printf '# Added\n\nNew on work.\n' >"$repo/added.md" && "${git[@]}" add added.md && "${git[@]}" commit -qm added || return 1
+  kanna open md "$repo/added.md" --name addeddoc --diff main..work --tab >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(mdd addeddoc changes)" == 1 ]]' || { echo "markdown_diff: a doc new in work: $(mdd addeddoc changes)"; return 1; }
+  failed="$(kanna open md "$repo/fresh.md" --diff main..work --tab 2>&1)"
+  check grep -q "fresh.md isn't in work" <<<"$failed" || { echo "markdown_diff: a doc missing at B: $failed"; return 1; }
 }
 
 scenario cli_commands M4

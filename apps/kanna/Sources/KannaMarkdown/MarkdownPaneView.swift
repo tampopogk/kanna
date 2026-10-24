@@ -18,6 +18,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     public let diffBase: String?
     public private(set) var diffError: String?
     public private(set) var changes: [NSRange] = []
+    public var diffRange: (from: String, to: String)? { diffBase.flatMap(MarkdownDiff.range) }
     public var keyView: NSView { textView }
     public var zoom: CGFloat { scrollView.magnification }
     public private(set) var renderMs: Double = 0
@@ -61,7 +62,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
 
     public init(path: String, zoom: CGFloat = 1, markup: Bool = false, diff: String? = nil) {
         self.path = path
-        self.markup = markup
+        self.markup = markup && diff.flatMap(MarkdownDiff.range) == nil
         diffBase = diff
         store = DocStore(file: path)
         record = store.read()
@@ -88,13 +89,13 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         if markup || diff != nil {
             addSubview(bar)
             bar.path.stringValue = store.relativeName
-            bar.agent.isHidden = !markup
-            bar.threads.isHidden = !markup
+            bar.agent.isHidden = !self.markup
+            bar.threads.isHidden = !self.markup
             bar.diff.isHidden = diff == nil
             bar.diff.onPress = { [weak self] in self?.jump(by: 1) }
             textView.onChangeKey = diff == nil ? nil : { [weak self] step in self?.jump(by: step) }
         }
-        if markup {
+        if self.markup {
             addSubview(panel)
             setUpComments()
         }
@@ -186,7 +187,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         defer { Perf.end(span) }
         reloadThreadsIfChanged()
         refreshPanel()
-        guard pending == nil, let now = fileStamp() else { return }
+        guard pending == nil, diffRange == nil, let now = fileStamp() else { return }
         ticks += 1
         if let diffBase, ticks % 4 == 0, let commit = baseCommit,
            MarkdownDiff.mergeBase(URL(fileURLWithPath: path).resolvingSymlinksInPath().deletingLastPathComponent().path, diffBase) != commit {
@@ -200,12 +201,25 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         let span = Perf.begin(.markdown, "markdown.load")
         defer { Perf.end(span) }
         stamp = fileStamp()
-        let text = FileManager.default.contents(atPath: path).map { String(decoding: $0, as: UTF8.self) } ?? ""
+        var text = FileManager.default.contents(atPath: path).map { String(decoding: $0, as: UTF8.self) } ?? ""
+        var old: String??
+        if let range = diffRange {
+            switch MarkdownDiff.versions(of: path, from: range.from, to: range.to) {
+            case .success(let versions):
+                text = versions.new
+                old = .some(versions.old)
+                diffError = nil
+            case .failure(let failure):
+                diffError = failure.message
+            }
+        }
         source = text
         let start = Date()
         document = Document(parsing: MarkdownRenderer.fencingFrontMatter(text), options: [.disableSmartOpts])
         entries = nil
-        if let diffBase {
+        if let old {
+            entries = MarkdownDiff.entries(old: old.map { Document(parsing: MarkdownRenderer.fencingFrontMatter($0), options: [.disableSmartOpts]) }, new: document)
+        } else if let diffBase, diffRange == nil {
             switch MarkdownDiff.base(of: path, against: diffBase) {
             case .success(let base):
                 baseCommit = base.commit
@@ -239,7 +253,8 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         guard let diffBase, let storage = textView.textStorage else { return }
         changes = Self.changes(in: storage)
         let count = changes.count == 0 ? "no changes" : changes.count == 1 ? "1 change" : "\(changes.count) changes"
-        bar.diff.set(diffError.map { "vs \(diffBase) · \($0)" } ?? "vs \(diffBase) · \(count)")
+        let label = diffRange == nil ? "vs \(diffBase)" : diffBase
+        bar.diff.set(diffError.map { "\(label) · \($0)" } ?? "\(label) · \(count)")
         bar.diff.warn = diffError != nil
         bar.needsLayout = true
     }

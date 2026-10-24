@@ -27,7 +27,7 @@ A real one, this task's change to [markdown keys](markdown-keys.md), after `]c`:
 - **Diagrams and images** that changed show old above new, labelled Before and After.
 - **A change** is a run of changed blocks with no unchanged block between them. The header counts them; `]c` and `[c` move between them.
 - **Comments** anchor in the rendered text as usual; struck-through text is in it too.
-- **Live:** the marks are worked out again when the file changes, and when the commit it's compared with moves (a commit, a rebase, a merge of main), checked every 2 s.
+- **Live** (except a range, [§2](#2-what-its-compared-with)): the marks are worked out again when the file changes, and when the commit it's compared with moves (a commit, a rebase, a merge of main), checked every 2 s.
 
 ## 2. What it's compared with
 
@@ -38,12 +38,16 @@ REF is any commit or branch, chosen by whoever opens the doc. It's compared as `
 | `main` (also a bare `--diff`, or `master` if there's no main) | everything this branch changed in the doc |
 | `HEAD` | changes not committed yet |
 | a commit or another branch | changes since it (since where it and HEAD meet) |
+| `A..B`, two commits or branches (an empty side is HEAD) | the doc as it is in B, marked against A: compared directly, not from where they meet; read-only (below) |
+
+A range shows a past version, not the file on disk, so it **doesn't reload** (an edit on disk, or B moving, changes nothing until it's opened again) and **takes no comments**: a comment's line would point into B's text, which the file may no longer have, so `kanna markup` refuses the pane and Comments stays off.
 
 | Case | Result |
 |---|---|
-| The file is new since REF | all of it is added |
+| The file is new since REF (or isn't in A) | all of it is added |
+| The file isn't in B | `kanna open` fails: "notes.md isn't in work" |
 | The file isn't in a git repo | `kanna open` fails: "notes.md isn't in a git repo, so it has nothing to be compared with" |
-| REF isn't a commit | `kanna open` fails: `no commit or branch "nope" in its repo` |
+| REF (or A or B) isn't a commit | `kanna open` fails: `no commit or branch "nope" in its repo` |
 | Either happens later (the branch is deleted) | the doc shows unmarked, the error in the header |
 
 ## 3. CLI and keys
@@ -51,6 +55,7 @@ REF is any commit or branch, chosen by whoever opens the doc. It's compared as `
 | Command or key | Does |
 |---|---|
 | `kanna open md FILE --diff [REF]` | open the doc with its changes since REF marked (placement options as `kanna open md`) |
+| `kanna open md FILE --diff A..B` | open the doc as it is in B, marked against A, read-only |
 | `]c` `[c` | next, previous change; a count works (`3]c`) |
 | click the header's "vs main · 7 changes" | next change |
 | `kanna workspace list --json` | the pane's record has `diff: "main"` |
@@ -61,7 +66,7 @@ REF is any commit or branch, chosen by whoever opens the doc. It's compared as `
 ```mermaid
 flowchart LR
     F[file on disk] --> P1[parse]
-    G["git merge-base REF HEAD<br/>git show BASE:./FILE"] --> P2[parse]
+    G["git merge-base REF HEAD<br/>git show BASE:./FILE<br/>(a range: git show A: and B:)"] --> P2[parse]
     P1 --> B[match blocks]
     P2 --> B
     B --> W[diff words in paired blocks]
@@ -81,7 +86,7 @@ flowchart LR
 - **Matching** is a longest common subsequence of the blocks (as `git diff` matches lines), then, between each pair of matches, the best pairing of same-kind blocks by shared words. Words are matched the same way. Past 4 million cells either step gives up pairing: the blocks show removed and added.
 - **The diff runs in the app,** which already reads the file; the daemon only keeps REF in the record. The app runs `git` (`/usr/bin/git`) in the file's folder.
 - **Rendering:** the renderer walks the new doc with the diff's entries; a removed block is rendered from the old doc where it was, a changed one from both, merged word by word. Every changed block carries a `kanna.change` attribute (added, removed, changed); the bars and the count read it.
-- **Tests:** `MarkdownDiffTests` (added, removed and reworded paragraphs, list items, table rows, headings, a changed diagram, a new file, the word diff); `markdown_diff` in `scripts/e2e-kanna.sh` (a doc changed on a branch, the count before and after an edit, `]c` `[c`, `HEAD`, a new file, outside a repo, a bad REF).
+- **Tests:** `MarkdownDiffTests` (added, removed and reworded paragraphs, list items, table rows, headings, a changed diagram, a new file, the word diff, a range's two versions); `markdown_diff` in `scripts/e2e-kanna.sh` (a doc changed on a branch, the count before and after an edit, `]c` `[c`, `HEAD`, a new file, outside a repo, a bad REF, a range: B's text, no reload, no comments, a doc new in B, one missing from B).
 
 Separate from the [diff viewer](diff-viewer.md) (`kanna open diff`), whose `.md` files may later open in this mode.
 

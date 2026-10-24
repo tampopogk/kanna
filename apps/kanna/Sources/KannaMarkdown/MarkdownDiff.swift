@@ -267,6 +267,23 @@ enum MarkdownDiff {
 
     static func mergeBase(_ folder: String, _ ref: String) -> String? { git(folder, ["merge-base", ref, "HEAD"]) }
 
+    static func range(_ ref: String) -> (from: String, to: String)? {
+        guard let dots = ref.range(of: ".."), !ref.contains("...") else { return nil }
+        let from = String(ref[..<dots.lowerBound]), to = String(ref[dots.upperBound...])
+        return (from.isEmpty ? "HEAD" : from, to.isEmpty ? "HEAD" : to)
+    }
+
+    static func versions(of path: String, from: String, to: String) -> Result<(old: String?, new: String), DiffFailure> {
+        let file = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        let folder = file.deletingLastPathComponent().path, name = file.lastPathComponent
+        guard git(folder, ["rev-parse", "--show-toplevel"]) != nil else { return .failure(DiffFailure(message: "\(name) isn't in a git repo, so it has nothing to be compared with")) }
+        for ref in [from, to] where git(folder, ["rev-parse", "--verify", "--quiet", "\(ref)^{commit}"]) == nil {
+            return .failure(DiffFailure(message: "no commit or branch \"\(ref)\" in its repo"))
+        }
+        guard let new = git(folder, ["show", "\(to):./\(name)"], trim: false) else { return .failure(DiffFailure(message: "\(name) isn't in \(to)")) }
+        return .success((git(folder, ["show", "\(from):./\(name)"], trim: false), new))
+    }
+
     static func git(_ folder: String, _ args: [String], trim: Bool = true) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")

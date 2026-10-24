@@ -142,4 +142,33 @@ struct MarkdownDiffTests {
         #expect(entries.count == 5000)
         #expect(Date().timeIntervalSince(start) < 5)
     }
+
+    @Test func aRangeNamesTwoCommits() {
+        #expect(MarkdownDiff.range("v1..main")! == ("v1", "main"))
+        #expect(MarkdownDiff.range("v1..")! == ("v1", "HEAD"))
+        #expect(MarkdownDiff.range("..work")! == ("HEAD", "work"))
+        #expect(MarkdownDiff.range("main") == nil)
+        #expect(MarkdownDiff.range("main...work") == nil)
+    }
+
+    @Test func aRangeReadsBothVersionsFromGit() throws {
+        let repo = FileManager.default.temporaryDirectory.appendingPathComponent("kanna-range-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: repo) }
+        let git = { (args: [String]) in MarkdownDiff.git(repo.path, ["-c", "user.name=t", "-c", "user.email=t@example.invalid"] + args) }
+        let doc = repo.appendingPathComponent("doc.md"), path = doc.path
+        _ = git(["init", "-q", "-b", "main"])
+        try "One.\n".write(to: doc, atomically: true, encoding: .utf8)
+        _ = git(["add", "doc.md"]); _ = git(["commit", "-qm", "a"]); _ = git(["tag", "a"])
+        try "Two.\n".write(to: doc, atomically: true, encoding: .utf8)
+        _ = git(["commit", "-qam", "b"]); _ = git(["tag", "b"])
+        try "On disk.\n".write(to: doc, atomically: true, encoding: .utf8)
+        let both = try MarkdownDiff.versions(of: path, from: "a", to: "b").get()
+        #expect(both.old == "One.\n" && both.new == "Two.\n")
+        try "x\n".write(to: repo.appendingPathComponent("later.md"), atomically: true, encoding: .utf8)
+        _ = git(["add", "later.md"]); _ = git(["commit", "-qm", "c"])
+        #expect(try MarkdownDiff.versions(of: repo.appendingPathComponent("later.md").path, from: "a", to: "HEAD").get().old == nil)
+        #expect(throws: DiffFailure(message: "later.md isn't in b")) { try MarkdownDiff.versions(of: repo.appendingPathComponent("later.md").path, from: "a", to: "b").get() }
+        #expect(throws: DiffFailure(message: "no commit or branch \"nope\" in its repo")) { try MarkdownDiff.versions(of: path, from: "nope", to: "b").get() }
+    }
 }

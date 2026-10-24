@@ -36,6 +36,7 @@ sequenceDiagram
 
 - **The agent decides how it presents itself.** Kanna sets no default layout and zooms nothing: the agent picks what to open, which tab is shown and focused, and whether to zoom. The directions are in the `kanna-tasks` skill ("Present your work"), since they apply to every task, watched or not.
 - **Focus comes last:** once its tabs are set up, the agent focuses the tab you should see first (`kanna focus`), so that's the tab the task shows when it comes onto the Desk, not whichever one it opened last. From the backlog or the Shelf it goes to the task's own workspace, wherever that is ([workspaces](workspaces.md#3-commands-target-and-reply)).
+- **A changed doc shows its changes:** the agent opens it with `kanna open md FILE --diff main`, or `--diff A..B` for what changed between two commits ([markdown diff](markdown-diff.md)).
 - **The same when it stops to ask:** it sets up what the question is about.
 - **Nothing worth a tab:** the agent closes its tabs and zooms its own pane, so its summary is what you see.
 - **Stop keeps the whole layout:** every tab, the shown tab, focus and zoom; markdown, web, code and diff tabs, with their comments. Every terminal is hung up and stays in place, exited, like the agent's.
