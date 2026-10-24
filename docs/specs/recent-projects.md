@@ -46,7 +46,7 @@ sequenceDiagram
 
 - **The app reports, the daemon keeps:** a Desk is the app's, so the app says when one's project changes (`deskMoved`, `openDesk` in `RecentProjects.swift` / `AppDesk.swift`); it remembers the Desk's project in `app-state.json`, so a relaunch reopening Desks doesn't reorder the list.
 - **`kanna projects [--json]`** prints a path a line, latest first; `kanna projects clear` empties it.
-- **`planner.sh`** asks `kanna projects --json` before the where question (reading it with `plutil`) and shows each label.
+- **`planner.sh`** asks `kanna projects --json` before the where question (reading it with `jq`) and shows each label.
 
 ## Rejected
 

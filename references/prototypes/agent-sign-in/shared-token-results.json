@@ -1,0 +1,123 @@
+{
+  "timestamp": "2026-10-24T13:05:45.934859+00:00",
+  "host": "jeremyhale@172.16.0.105",
+  "machines": [
+    "agent-sign-in-a",
+    "agent-sign-in-b"
+  ],
+  "rounds": [
+    {
+      "round": 1,
+      "provider": "claude",
+      "holder_access_changed": null,
+      "overlap_seconds": 5.877652645111084,
+      "workers": [
+        {
+          "machine": "agent-sign-in-a",
+          "provider": "claude",
+          "version": "2.1.310 (Claude Code)",
+          "login_ok": true,
+          "inference_ok": true,
+          "refresh_credential_present": false,
+          "started_at": 1792847155.945876,
+          "exit_code": 0,
+          "ended_at": 1792847161.8235285
+        },
+        {
+          "machine": "agent-sign-in-b",
+          "provider": "claude",
+          "version": "2.1.310 (Claude Code)",
+          "login_ok": true,
+          "inference_ok": true,
+          "refresh_credential_present": false,
+          "started_at": 1792847155.9457657,
+          "exit_code": 0,
+          "ended_at": 1792847162.4629946
+        }
+      ]
+    },
+    {
+      "round": 1,
+      "provider": "codex",
+      "holder_access_changed": null,
+      "overlap_seconds": 0,
+      "workers": [
+        {
+          "machine": "agent-sign-in-a",
+          "provider": "codex",
+          "version": "codex-cli 0.163.0",
+          "login_ok": false,
+          "inference_ok": false,
+          "refresh_credential_present": false,
+          "login_error_kind": "agent_identity_jwt"
+        },
+        {
+          "machine": "agent-sign-in-b",
+          "provider": "codex",
+          "version": "codex-cli 0.163.0",
+          "login_ok": false,
+          "inference_ok": false,
+          "refresh_credential_present": false,
+          "login_error_kind": "agent_identity_jwt"
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "provider": "claude",
+      "holder_access_changed": null,
+      "overlap_seconds": 5.679648399353027,
+      "workers": [
+        {
+          "machine": "agent-sign-in-a",
+          "provider": "claude",
+          "version": "2.1.310 (Claude Code)",
+          "login_ok": true,
+          "inference_ok": true,
+          "refresh_credential_present": false,
+          "started_at": 1792847181.010248,
+          "exit_code": 0,
+          "ended_at": 1792847187.7705822
+        },
+        {
+          "machine": "agent-sign-in-b",
+          "provider": "claude",
+          "version": "2.1.310 (Claude Code)",
+          "login_ok": true,
+          "inference_ok": true,
+          "refresh_credential_present": false,
+          "started_at": 1792847181.0100965,
+          "exit_code": 0,
+          "ended_at": 1792847186.6898963
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "provider": "codex",
+      "holder_access_changed": true,
+      "overlap_seconds": 0,
+      "workers": [
+        {
+          "machine": "agent-sign-in-a",
+          "provider": "codex",
+          "version": "codex-cli 0.163.0",
+          "login_ok": false,
+          "inference_ok": false,
+          "refresh_credential_present": false,
+          "login_error_kind": "agent_identity_jwt"
+        },
+        {
+          "machine": "agent-sign-in-b",
+          "provider": "codex",
+          "version": "codex-cli 0.163.0",
+          "login_ok": false,
+          "inference_ok": false,
+          "refresh_credential_present": false,
+          "login_error_kind": "agent_identity_jwt"
+        }
+      ]
+    }
+  ],
+  "passed": false
+}

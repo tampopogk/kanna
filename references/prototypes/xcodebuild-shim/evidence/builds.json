@@ -1,0 +1,26 @@
+{
+  "cold": {
+    "job": "2dfd7e70-9311-4160-8f15-448133d73648",
+    "seconds": 7.471321105957031,
+    "swift_compile_lines": 4
+  },
+  "warm": {
+    "job": "1f5115f4-0cdb-44b0-973f-0b0198535be0",
+    "seconds": 1.7497742176055908,
+    "swift_compile_lines": 0
+  },
+  "diagnostic_error": {
+    "job": "a9bc265b-d892-4eea-a5b6-0f021d69f6a2",
+    "build_exit": 65,
+    "mapped": "/worktrees/fixture/App/App.swift:1:10: warning: SHIM_DIRTY_WARNING\n/worktrees/fixture/App/App.swift:1:10: warning: SHIM_DIRTY_WARNING\n/worktrees/fixture/App/App.swift:14:30: error: cannot convert value of type 'String' to specified type 'Int'\n/worktrees/fixture/App/App.swift:1:10: warning: SHIM_DIRTY_WARNING\n"
+  },
+  "swift_test": {
+    "job": "eafdd725-972b-400e-b59a-82d18d81550d",
+    "summary": {
+      "result": "Passed",
+      "passedTests": 1,
+      "failedTests": 0,
+      "totalTestCount": 1
+    }
+  }
+}
