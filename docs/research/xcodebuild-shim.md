@@ -1,6 +1,6 @@
 # Redirecting xcodebuild to a build Mac
 
-> 2026-10-21. Research by Codex, read-only: prior art, three designs, a first version. Copied from the planner's scratchpad into the repo; what was decided is in the [fleet spec](../specs/fleet.md). The prompt it answered: a `/kanna/bin/xcodebuild` on a Linux task's PATH calling `kanna build xcodebuild`, the worktree synced to a mirror on the Mac, a lock per mirror, products back, later a job queue in the Mac's daemon.
+> 2026-10-21. Research by Codex, read-only: prior art, three designs, a first version. Copied from the planner's scratchpad into the repo; what was decided is in the [fleet spec](../specs/machines.md). The prompt it answered: a `/kanna/bin/xcodebuild` on a Linux task's PATH calling `kanna build xcodebuild`, the worktree synced to a mirror on the Mac, a lock per mirror, products back, later a job queue in the Mac's daemon.
 
 **Kanna should keep the proposed PATH shim and rsync-over-SSH design, backed by a small Mac-side execution supervisor from the first version.** Add consistent source snapshots, explicit path and artifact mappings, host-wide resource limits, and durable job status. A full queue can follow without changing the agent-facing commands.
 

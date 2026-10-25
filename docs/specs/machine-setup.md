@@ -1,8 +1,8 @@
-# Fleet: Setting Up a Linux Machine
+# Machines: Setting Up a Linux Machine
 
-**Status:** built in slice 1 (`scripts/server-setup.sh`), updates in slice 6 · **Part of:** [fleet](fleet.md) · **Used by:** [Kanna Cloud's provisioning](kanna-cloud.md#3-provisioning)
+**Status:** built in slice 1 (`scripts/server-setup.sh`), updates in slice 6 · **Part of:** [your machines](machines.md) · **Used by:** [Kanna Cloud's provisioning](kanna-cloud.md#3-provisioning)
 
-How any Linux machine becomes a Kanna machine: one you own in the self-hosted fleet, or a VM Kanna Cloud makes for you. The script and the unit are the same in both; only who runs them differs.
+How any Linux machine becomes one of your machines: a box of your own, or a VM Kanna Cloud makes for you. The script and the unit are the same in both; only who runs them differs.
 
 ## Contents
 
@@ -56,5 +56,5 @@ The daemon logs to the journal (`journalctl --user -u kanna-daemon`).
 
 ## 4. Joining and updates
 
-- **Joining:** in the self-hosted fleet you pair the machine by code ([identity §2](fleet-identity.md#2-pairing)), set up its git credentials ([tasks §4](fleet-tasks.md#4-repos-and-credentials)), then give it your agent accounts ([agent sign-in](agent-sign-in.md)). A Kanna Cloud VM joins by token instead ([Cloud §4](kanna-cloud.md#4-enrollment-by-token)).
+- **Joining:** you pair the machine by code ([identity §2](machine-identity.md#2-pairing)), set up its git credentials ([tasks §4](machine-tasks.md#4-repos-and-credentials)), then give it your agent accounts ([agent sign-in](agent-sign-in.md)). A Kanna Cloud VM joins by token instead ([Cloud §4](kanna-cloud.md#4-enrollment-by-token)).
 - **Updates:** `scripts/release.sh` also builds a Linux tarball (x86_64, `baseline` CPU, so older Xeons such as the R720s' Ivy Bridge run it). A daemon updates itself when a newer release is out (fetched from a peer that has it, or the release site): it switches `current`, runs `kanna-keeper --upgrade` ([keeper upgrade](keeper-upgrade.md)) and restarts; terminals survive ([restarting](daemon-restart.md)). `kanna fleet update` does it now, everywhere. No order is needed while versions overlap.

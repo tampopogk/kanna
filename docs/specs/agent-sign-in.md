@@ -1,6 +1,6 @@
 # Agent Sign-In Across Machines
 
-**Status:** planned; holder model verified through experimental Codex app-server (2026-10-25) · **Part of:** [fleet](fleet.md) · **On Kanna-run machines:** [Cloud §7](kanna-cloud.md#7-agent-sign-in-on-kanna-run-machines) · **Builds on:** [agent setup](agent-setup.md) · **Model:** [agent-sign-in](../../references/prototypes/agent-sign-in/README.md)
+**Status:** planned; holder model verified through experimental Codex app-server (2026-10-25) · **Part of:** [your machines](machines.md) · **On Kanna-run machines:** [Cloud §7](kanna-cloud.md#7-agent-sign-in-on-kanna-run-machines) · **Builds on:** [agent setup](agent-setup.md) · **Model:** [agent-sign-in](../../references/prototypes/agent-sign-in/README.md)
 
 Agents run on the user's own Claude or Codex accounts, subscriptions or API keys. **Accounts are the user's, not a machine's:** a shareable credential is added once and supplied to every machine. Where an agent has no verified sharing path, Kanna runs its own sign-in on each machine during enrollment, with the URL opened where the user is. Codex sharing is verified through app-server; the ordinary terminal command still uses the fallback until its integration is modeled. Machines do not advertise sign-ins for task placement; enrollment supplies the configured accounts.
 
@@ -53,5 +53,5 @@ sequenceDiagram
 
 - **Secrets** are kept in the Mac's Keychain, and a holder is always one of your devices. Kanna Cloud keeps no copy (proposed: [Cloud §9](kanna-cloud.md#9-open-questions)).
 - **Login files are never copied** between machines (`~/.claude/.credentials.json`, `~/.codex/auth.json`): their refresh tokens rotate, so two machines sharing one sign each other out.
-- **Removing an account** removes it from every machine. Revoking a machine ([identity §3](fleet-identity.md#3-the-peer-log)) removes everything it was given, and a setup token or key it held is worth rotating.
-- **An agent sees only its own credential,** in its environment or private app-server connection. Access JWTs carry identity claims; withholding a separate email or ID token does not hide those claims. Other secrets stay in the daemon's state folder, on each agent's sandbox deny list, as `device.key` is ([identity §4](fleet-identity.md#4-risks)).
+- **Removing an account** removes it from every machine. Revoking a machine ([identity §3](machine-identity.md#3-the-peer-log)) removes everything it was given, and a setup token or key it held is worth rotating.
+- **An agent sees only its own credential,** in its environment or private app-server connection. Access JWTs carry identity claims; withholding a separate email or ID token does not hide those claims. Other secrets stay in the daemon's state folder, on each agent's sandbox deny list, as `device.key` is ([identity §4](machine-identity.md#4-risks)).

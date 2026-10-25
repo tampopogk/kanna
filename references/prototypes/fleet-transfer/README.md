@@ -1,7 +1,7 @@
 # Fleet transfer model
 
-Reference for [Fleet tasks §3](../../../docs/specs/fleet-tasks.md#3-transfer), before Fleet 11,
-under [Models first](../../../docs/specs/fleet.md#10-build-order). This is a Python script,
+Reference for [Fleet tasks §3](../../../docs/specs/machine-tasks.md#3-transfer), before Fleet 11,
+under [Models first](../../../docs/specs/machines.md#10-build-order). This is a Python script,
 not daemon code. SSH/SCP substitutes for the eventual `transfer` stream.
 
 ## Run

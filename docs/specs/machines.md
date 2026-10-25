@@ -1,12 +1,12 @@
-# Fleet: Kanna Across Machines
+# Your Machines
 
-**Status:** planned · **Parts:** [identity and pairing](fleet-identity.md), [tasks across machines](fleet-tasks.md), [desks across machines](fleet-app.md), [setting up a Linux machine](fleet-server-setup.md), [agent sign-in](agent-sign-in.md), [build order](fleet-build-order.md) · **Hosted:** [Kanna Cloud](kanna-cloud.md) · **Builds on:** [architecture](architecture.md), [app link](app-link.md), [each app's Desk and Shelf](app-desk.md), [backlog runners](backlog-runners.md) · **Research:** [fleet](../research/fleet.md)
+**Status:** planned · **Parts:** [identity and pairing](machine-identity.md), [tasks across machines](machine-tasks.md), [Desks across machines](machines-app.md), [setting up a Linux machine](machine-setup.md), [agent sign-in](agent-sign-in.md), [build order](machines-build-order.md) · **Builds on:** [architecture](architecture.md), [app link](app-link.md), [each app's Desk and Shelf](app-desk.md), [backlog runners](backlog-runners.md) · **Built on by:** [Kanna Cloud](kanna-cloud.md) · **Research:** [fleet](../research/fleet.md)
 
-One person's Kanna runs on several machines they own: a MacBook Pro as the client, Linux machines and other Macs that run tasks, and, when they want reach from away, a relay of their own. This is the **self-hosted fleet**: free, open source, with no account and no server of Kanna's. Kanna develops any project, not only Kanna.
+**Your machines** are the machines your daemons trust: paired by code, listed in your signed peer log, connected over iroh, sharing your backlog and passing tasks between them. A MacBook Pro is usually the client; a Mac mini at home, a Linux box, or a VM Kanna Cloud made for you runs tasks too. Once a machine has joined, it's a peer like any other, whoever runs it. Kanna develops any project, not only Kanna.
 
-**Kanna Cloud** ([its spec](kanna-cloud.md)) is a separate product on the same core: VMs Kanna runs for you on its own servers, Kanna's directory and relays, and build Macs. This spec is the shared core and the self-hosted fleet; Cloud's parts are only linked from here.
+It's free and open source, with no account and no server of Kanna's: on the LAN, and from away through a relay of your own or an address you give. [Kanna Cloud](kanna-cloud.md) is a service that hands you machines; what it makes joins your machines, and the line between the two is enrollment.
 
-**The first milestone is the self-hosted fleet:** the user's own machines on the LAN, reached from away through their own relay or a fixed address. It has one tenant, so it needs no tenant isolation, and it neither includes nor depends on build Macs, which are a [Kanna Cloud](kanna-cloud.md#6-build-macs) feature.
+**The first milestone** is your machines on the LAN, reached from away through your own relay or a fixed address. All of them are yours, so it needs no isolation between users.
 
 ## Contents
 
@@ -26,10 +26,10 @@ One person's Kanna runs on several machines they own: a MacBook Pro as the clien
 
 ## 1. Rules
 
-- **You work on projects, not machines.** Kanna decides where a task runs (§2). The app shows a machine only where it matters: a slow path, an offline machine, the fleet page.
+- **You work on projects, not machines.** Kanna decides where a task runs (§2). The app shows a machine only where it matters: a slow path, an offline machine, the Machines tab.
 - **LAN first.** Machines connect directly whenever they can. A relay is only for when you're away or the LAN fails, and the app shows which path each machine is on.
-- **Self-hosting is free and complete.** Everything here, your own relay included, is open source and needs no account. Trust never depends on an account or a server.
-- **One tenant.** Every machine in a self-hosted fleet is yours and runs only your work, so the fleet's boundary is the peer log, not a sandbox between users.
+- **Free and complete on its own.** Everything here, your own relay included, is open source and needs no account. Trust never depends on an account or a server.
+- **Yours alone.** Every machine in your peer log runs only your work, so the boundary is the peer log, not a sandbox between users. Who runs a machine changes only how far you trust it ([Cloud §8](kanna-cloud.md#8-threat-model) for a VM Kanna runs).
 - **End to end.** A relay carries only ciphertext and can't add a device.
 - **Every daemon can send and receive tasks**, Macs included, at a boundary: not started, or stopped at a turn's end.
 - **Versions are compatible, not identical.** Daemons and apps of different releases work together over a range of protocol versions, so machines update on their own schedule.
@@ -60,14 +60,15 @@ flowchart LR
 | Machine | Role | Peer |
 |---|---|---|
 | `mbp` | the client; still a Kanna machine for local projects | yes |
-| your Linux machines | run tasks: a box under the desk, a VM on it, a rented server | yes ([setup](fleet-server-setup.md)) |
+| your Linux machines | run tasks: a box under the desk, a VM on it, a rented server | yes ([setup](machine-setup.md)) |
 | your other Macs | run tasks that need macOS, whole | yes |
+| a VM Kanna Cloud made | runs tasks, like a Linux machine of yours | yes, once it has joined ([Cloud §4](kanna-cloud.md#4-enrollment-by-token)) |
 | your relay | an `iroh-relay` at a stable address, for reach from away | no |
 
 **Placement: where work goes.**
 
-- **Placement is a policy, not a place.** By default, any machine with free slots and the capabilities a task `needs:` asks for the oldest waiting task, so a mini and ten Linux boxes share one backlog without a scheduler ([tasks §2](fleet-tasks.md#2-owners-and-grants)). Preferences narrow who asks (e2e on the mini, this project's agents on those machines).
-- **A task runs whole on one machine.** A task that needs macOS goes to a Mac. Sending one step of a Linux task (an `xcodebuild`) to a Mac is a build Mac's job, a Kanna Cloud feature ([build Macs](build-macs.md)).
+- **Placement is a policy, not a place.** By default, any machine with free slots and the capabilities a task `needs:` asks for the oldest waiting task, so a mini and ten Linux boxes share one backlog without a scheduler ([tasks §2](machine-tasks.md#2-owners-and-grants)). Preferences narrow who asks (e2e on the mini, this project's agents on those machines).
+- **A task runs whole on one machine.** A task that needs macOS goes to a Mac.
 - **Taking a task to the Desk doesn't move it.** It stays where it runs and is shown over the link.
 
 ## 3. Reach: LAN first, relay second
@@ -75,17 +76,17 @@ flowchart LR
 Networking is built into the daemon with **[iroh](https://github.com/n0-computer/iroh)** (Rust). An iroh endpoint *is* an Ed25519 key: you dial a key, not an address.
 
 1. **On the LAN:** machines find each other with iroh's local discovery and connect directly at wire speed.
-2. **Away, with your relay:** a relay is iroh's meeting point for hole punching. iroh connects directly through NAT when it can, and otherwise sends the traffic through the relay, which forwards QUIC it can't read. You run `iroh-relay` on any machine with a stable address and name it in the fleet's settings.
-3. **Away, with an address:** `kanna fleet addr NAME HOST` dials a peer at an address you give it, such as one on a VPN you already have ([identity §3](fleet-identity.md#3-the-peer-log)).
+2. **Away, with your relay:** a relay is iroh's meeting point for hole punching. iroh connects directly through NAT when it can, and otherwise sends the traffic through the relay, which forwards QUIC it can't read. You run `iroh-relay` on any machine with a stable address and name it in your machines' settings.
+3. **Away, with an address:** `kanna machine addr NAME HOST` dials a peer at an address you give it, such as one on a VPN you already have ([identity §3](machine-identity.md#3-the-peer-log)).
 
-**iroh's defaults are off,** which use n0's public relays and DNS discovery, so the fleet depends on no third party's terms. iroh moves a connection to a direct path by itself as soon as one exists, so using the LAN takes no action from the user. Each machine's row in the app shows its path (direct on the LAN, direct over the internet, or relayed). Kanna Cloud adds a directory and Kanna's relays ([Cloud §5](kanna-cloud.md#5-directory-and-relays)).
+**iroh's defaults are off,** which use n0's public relays and DNS discovery, so your machines depend on no third party's terms. iroh moves a connection to a direct path by itself as soon as one exists, so using the LAN takes no action from the user. Each machine's row in the app shows its path (direct on the LAN, direct over the internet, or relayed).
 
 ## 4. Identity and pairing
 
-In short ([detail](fleet-identity.md)):
+In short ([detail](machine-identity.md)):
 
 - **The daemon has `device.key`**, an Ed25519 key that is its iroh endpoint and signs for the device. The app has its own endpoint key, certified by `device.key`. The CLI goes through the local daemon.
-- **Pairing** is a PAKE over a one-time code you type, run directly between your two devices. You are the only party: no server takes part.
+- **Pairing** is a PAKE over a one-time code, run directly between your two devices. You are the only party: no server takes part. A machine Kanna Cloud makes is handed the code as a token instead ([Cloud §4](kanna-cloud.md#4-enrollment-by-token)).
 - **The peers form a signed log**, replicated to every peer. A revocation beats any later add, and a name that comes back with another key is refused. Signing a peer takes a gesture in the app.
 
 ## 5. The app link over the network
@@ -110,17 +111,17 @@ sequenceDiagram
 |---|---|---|
 | Transport | unix socket | iroh, through `kanna-net` in `kanna-ffi` for the app |
 | Version check | binary hash; another build is replaced ([daemon build](daemon-build.md)) | the highest protocol both support; `other_protocol` only when there is none |
-| Who starts it | the app; on a Mac that serves the fleet, launchd | systemd (Linux), launchd (Macs) |
+| Who starts it | the app; on a Mac that serves your other machines, launchd | systemd (Linux), launchd (Macs) |
 | Apps | one (`app_attached`) | one; lifting the limit is its own slice, needed before the phone |
 
 - **One link per machine.** Every view is keyed by (machine, content ID), since `term-41` exists on every daemon.
 - **The CLI:** `kanna --host NAME` (or `KANNA_HOST`) sends any command to that machine: the local daemon dials it and forwards the command as `fleet call` over a control stream, and the reply is the remote daemon's own. Inside a remote terminal nothing changes: the CLI there uses its own unix socket. Commands that read local files (`diagrams`, doc comments) still run on this machine.
-- **A Mac that serves the fleet** (a Mac whose tasks you reach from elsewhere) runs its daemon from launchd (`kanna fleet serve`), a LaunchAgent pointed at the installed app's `Contents/Helpers/kanna-daemon`. The app's replace rule still holds: on `other_build` the daemon exits, and launchd starts it again from the updated bundle.
-- **Streams:** one ALPN, `kanna/1`. Each stream opens with a header line naming its kind (`control`, `file`, `port`, `sync`, `job`, `transfer`), answered by `{ok: true, kind, name}` or a refusal (`unpaired`, `revoked`, `unknown_stream`), and its bytes follow. A `control` stream carries JSON-line requests and replies, as on the unix socket. A seventh kind, `pair`, is the only one an unknown key may open ([identity §2](fleet-identity.md#2-pairing)). Until their slices, `file`, `port`, `sync`, `job` and `transfer` are acknowledged and closed; `sync` and `job` are Cloud's build-Mac streams.
+- **A Mac that serves your other machines** (a Mac whose tasks you reach from elsewhere) runs its daemon from launchd (`kanna machine serve`), a LaunchAgent pointed at the installed app's `Contents/Helpers/kanna-daemon`. The app's replace rule still holds: on `other_build` the daemon exits, and launchd starts it again from the updated bundle.
+- **Streams:** one ALPN, `kanna/1`. Each stream opens with a header line naming its kind (`control`, `file`, `port`, `sync`, `job`, `transfer`), answered by `{ok: true, kind, name}` or a refusal (`unpaired`, `revoked`, `unknown_stream`), and its bytes follow. A `control` stream carries JSON-line requests and replies, as on the unix socket. A seventh kind, `pair`, is the only one an unknown key may open ([identity §2](machine-identity.md#2-pairing)). Until their slices, `file`, `port`, `sync`, `job` and `transfer` are acknowledged and closed; `sync` and `job` are used by services built on top, such as [Kanna Cloud](kanna-cloud.md).
 
 ## 6. One app, several machines
 
-See [Desks across machines](fleet-app.md) for project identity, the app's Shelf and claims, and the [Fleet mockup](../../references/mockups/fleet.html) with screenshots and the Fleet 3 comparison cases.
+See [Desks across machines](machines-app.md) for project identity, the app's Shelf and claims, and the [mockup](../../references/mockups/fleet.html) with screenshots and the Fleet 3 comparison cases.
 
 ## 7. Terminals and panes
 
@@ -141,7 +142,7 @@ See [Desks across machines](fleet-app.md) for project identity, the app's Shelf 
 
 ## 8. Where tasks run
 
-In short ([detail](fleet-tasks.md)):
+In short ([detail](machine-tasks.md)):
 
 - **The backlog is replicated** to every one of your daemons, eventually consistent, ordered oldest first by a hybrid logical clock.
 - **Each task has one owner.** A runner elsewhere with free slots and the right capabilities asks for it, and the owner grants it to exactly one.
@@ -149,15 +150,15 @@ In short ([detail](fleet-tasks.md)):
 
 ## 9. Server setup and updates
 
-A Linux machine is set up with `scripts/server-setup.sh` and a systemd user unit, and daemons update themselves from a peer or the release site ([setting up a Linux machine](fleet-server-setup.md)). Making VMs on Kanna's servers is Cloud's ([provisioning](kanna-cloud.md#3-provisioning)).
+A Linux machine is set up with `scripts/server-setup.sh` and a systemd user unit, and daemons update themselves from a peer or the release site ([setting up a Linux machine](machine-setup.md)).
 
 ## 10. Build order
 
-[Models first, then the self-hosted fleet's slices, then Cloud's](fleet-build-order.md).
+[Models first, then your machines' slices, then Kanna Cloud's](machines-build-order.md).
 
 ## 11. Open questions
 
-- **The user's GCP e2-micro** runs the relay slice 8 measures through. **Proposed:** it is the user's own self-hosted relay, the example of "your own relay"; Kanna Cloud's relays are a separate deployment.
+- **The user's GCP e2-micro** runs the relay slice 8 measures through. **Proposed:** it is the user's own relay, the example of "your own relay"; Kanna Cloud's relays are a separate deployment.
 
 ## 12. Rejected
 
@@ -171,12 +172,12 @@ A Linux machine is set up with `scripts/server-setup.sh` and a systemd user unit
 
 | Term | Meaning |
 |---|---|
-| **Peer** | One machine's Kanna, known by its device key: the MBP, a Linux machine, a Mac |
+| **Peer** | One machine's Kanna, known by its device key: the MBP, a Linux machine, a Mac, a Cloud VM |
 | **iroh** | A Rust library for direct, encrypted QUIC connections between keys, with hole punching and relays |
 | **ALPN** | Application-Layer Protocol Negotiation: the name a connection asks for when it opens (`kanna/1`), so both ends agree what protocol it speaks before any data flows |
 | **Relay** | A server that forwards encrypted packets between peers that can't connect directly |
 | **PAKE** | Password-authenticated key exchange: proves both sides typed the same short code, without sending it |
 | **Owner** | The machine that starts a task's agent, so it never starts twice; it can grant that to a runner that asks |
 | **Hybrid logical clock** | A timestamp that stays ordered across machines whose clocks drift |
-| **Self-hosted fleet** | Kanna on your own machines, free, with no account: LAN, your own relay or a fixed address |
-| **Kanna Cloud** | Kanna's hosted service on the same software: Kanna-run VMs, directory and relays, build Macs ([spec](kanna-cloud.md)) |
+| **Your machines** | The machines in your peer log, whoever runs them |
+| **Kanna Cloud** | A service that hands you machines, which join yours ([spec](kanna-cloud.md)) |

@@ -1,8 +1,8 @@
-# Fleet provisioning
+# Kanna Cloud: Installing a Host
 
 **Part of:** [Kanna Cloud §3](kanna-cloud.md#3-provisioning)
 
-`scripts/fleet/provision-idrac.sh` takes a Dell PowerEdge (Kanna Cloud's R720s) from powered off to Ubuntu Server you can ssh into, through its iDRAC alone: no monitor, no USB stick, no PXE server. It runs on the operator's Mac. Making users' VMs on the host is the next step ([Cloud §3](kanna-cloud.md#3-provisioning)).
+`scripts/fleet/provision-idrac.sh` takes a Dell PowerEdge (Kanna Cloud's R720s) from powered off to Ubuntu Server you can ssh into, through its iDRAC alone: no monitor, no USB stick, no PXE server. It runs on the operator's Mac. Its files and Keychain items are still named `fleet`, as built. Making users' VMs on the host is the next step ([Cloud §3](kanna-cloud.md#3-provisioning)).
 
 ```sh
 scripts/fleet/provision-idrac.sh --idrac 172.16.0.2 --hostname r720-1 --wifi-ssid SSID

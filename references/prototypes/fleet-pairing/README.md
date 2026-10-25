@@ -1,7 +1,7 @@
 # Fleet pairing model
 
-Runnable reference for [fleet identity](../../../docs/specs/fleet-identity.md)
-and [Fleet §10, Models first](../../../docs/specs/fleet.md#10-build-order), before
+Runnable reference for [fleet identity](../../../docs/specs/machine-identity.md)
+and [Fleet §10, Models first](../../../docs/specs/machines.md#10-build-order), before
 **Fleet 2: iroh endpoint and pairing**. Three devices (`mbp`, `linux-vm`, and
 `build-mac`) run in one Python process with separate keys and log replicas.
 These are simulated roles; no mini, server, account, or real device key is used.
