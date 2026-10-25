@@ -130,6 +130,15 @@ extension AppController {
             } ?? []
             return reply
         }
+        commands["debug.fleet"] = { [weak self] _ in
+            guard let self, let links else { return [:] }
+            let remotes = links.remotes.keys.sorted().map { machine -> JSON in
+                let link = links.remotes[machine]
+                return ["machine": .string(machine), "attached": .bool(link?.attached == true), "path": links.path(of: machine),
+                        "failure": links.failure(of: machine) ?? .null, "daemon": link?.daemonInfo ?? .null]
+            }
+            return ["name": links.name.map { .string($0) } ?? .null, "links": .array(remotes)]
+        }
         commands["debug.desk"] = { [weak self] args in
             guard let self else { return [:] }
             let id = args["window"]?.string ?? state["key"]?.string ?? ""

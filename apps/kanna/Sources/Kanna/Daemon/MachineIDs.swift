@@ -26,7 +26,7 @@ enum MachineIDs {
 
     private static func rewrite(_ json: JSON, _ machine: String, inside: Bool) -> JSON {
         switch json {
-        case .string(let text) where inside && isID(Substring(text)): return .string("\(text)@\(machine)")
+        case .string(let text) where inside && isID(Substring(bare(text))): return .string("\(bare(text))@\(machine)")
         case .array(let items): return .array(items.map { rewrite($0, machine, inside: inside) })
         case .object(let object): return .object(Dictionary(uniqueKeysWithValues: object.map { ($0.key, rewrite($0.value, machine, inside: fields.contains($0.key))) }))
         default: return json

@@ -94,6 +94,22 @@ final class Contents {
         onUpdate?(id, fields)
     }
 
+    static func refusal(_ type: String, _ pane: JSON, from machine: String) -> String? {
+        switch type {
+        case "ios": return "an iOS pane runs only for this Mac's own tasks"
+        case "web":
+            guard let url = pane["url"]?.string.flatMap(URL.init(string:)), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+                return "a page from \(machine) opens only over http or https"
+            }
+            let host = url.host?.lowercased() ?? ""
+            if host.isEmpty || host == "localhost" || host.hasSuffix(".localhost") || host == "::1" || host.hasPrefix("127.") || host == "0.0.0.0" {
+                return "\(machine)'s \(host.isEmpty ? "page" : host) is on \(machine), and this Mac can't reach it yet"
+            }
+            return nil
+        default: return nil
+        }
+    }
+
     private func report(_ id: String, _ fields: [String: JSON]) {
         if let state = fields["state"]?.string {
             states[id] = state
@@ -104,6 +120,11 @@ final class Contents {
 
     func start(_ pane: JSON, restoring: Bool = false) {
         guard let id = pane["id"]?.string, let type = pane["type"]?.string, type != "term" else { return }
+        if let machine = MachineIDs.machine(of: id), let refusal = Self.refusal(type, pane, from: machine) {
+            stop(id)
+            states[id] = "failed"
+            return report(id, ["state": "failed", "error": .string(refusal)])
+        }
         stop(id)
         states[id] = "starting"
         let content: NSView

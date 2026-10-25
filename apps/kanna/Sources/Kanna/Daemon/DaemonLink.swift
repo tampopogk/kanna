@@ -34,6 +34,7 @@ final class DaemonLink: TerminalLink {
     var socketPath: String { connection.path }
 
     static let protocols: [JSON] = [1, 1]
+    static let localOnly: Set<String> = ["app.fleet.confirm", "app.snap"]
 
     init(socketPath: String, commands: Commands, starter: DaemonStarter? = nil, machine: String? = nil, dial: (@Sendable () -> Int32?)? = nil) {
         self.commands = commands
@@ -124,6 +125,10 @@ final class DaemonLink: TerminalLink {
             return
         }
         guard let cmd = message["cmd"]?.string else { return }
+        if message["id"] != nil, machine != nil, Self.localOnly.contains(cmd) {
+            connection.send(["id": message["id"] ?? .null, "ok": false, "error": ["code": "local_only", "message": .string("\(cmd) is answered only for this Mac's own daemon")]], generation: delivery.generation)
+            return
+        }
         if message["id"] != nil {
             var request = message
             if let machine, case .object(var fields) = request, case .object(var args) = fields["args"] ?? .object([:]) {
@@ -179,7 +184,7 @@ final class DaemonLink: TerminalLink {
         case "toast":
             onToast?(args)
         case "quit":
-            quit()
+            if machine == nil { quit() }
         case "folder":
             if let pane = args["pane"]?.string, let cwd = args["cwd"]?.string { onFolder?(pane, cwd, args["place"]) }
         default: FileHandle.standardError.write(Data("kanna: unknown message from the daemon: \(cmd)\n".utf8))

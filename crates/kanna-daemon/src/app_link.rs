@@ -559,7 +559,7 @@ impl AppLink {
         if self.app.borrow().is_none() {
             return responder.reply(Err(no_app(cmd)));
         }
-        if let (Some(reference), Some(core)) = (string(&args, "pane").map(String::from), self.core.upgrade()) {
+        if let (Some(reference), Some(core)) = (string(&args, "pane").filter(|p| !p.contains('@')).map(String::from), self.core.upgrade()) {
             match core.pane(&reference) {
                 Some(pane) => args["pane"] = Value::String(pane.id),
                 None => return responder.reply(Err(KmuxError::new("not_found", format!("no pane \"{reference}\"")))),
