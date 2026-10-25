@@ -407,7 +407,12 @@ fn run() -> Result<(), String> {
         "desk",
         Rc::new(move |mut args, responder| {
             let (Some(app), Some(backlog)) = (link.upgrade(), resolving.upgrade()) else { return };
-            let Some(task) = args.get("task").and_then(Value::as_str).map(String::from) else { return app.forward("desk", args, responder) };
+            let Some(task) = args.get("task").and_then(Value::as_str).map(String::from) else {
+                if let Some(folder) = args.get("project").and_then(Value::as_str).filter(|_| args.get("action").and_then(Value::as_str) == Some("desk")) {
+                    args["place"] = projects::place(folder);
+                }
+                return app.forward("desk", args, responder);
+            };
             backlog.agent(&task, move |found| match found {
                 Ok(pane) => {
                     args["task"] = Value::String(pane);
@@ -611,6 +616,10 @@ fn run() -> Result<(), String> {
             }
             Event::AppMessage { conn, message } => {
                 if let Some(request) = app.message(conn, message) {
+                    if let Some(refused) = fleet::refuse_remote(&request).filter(|_| !app.attached_here()) {
+                        app.answer_app(conn, refused);
+                        continue;
+                    }
                     let link = Rc::downgrade(&app);
                     timed(request_name(&request), "the app", || {
                         core.handle(request, move |reply| {

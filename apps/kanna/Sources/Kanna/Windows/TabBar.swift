@@ -13,6 +13,7 @@ final class TabBar: NSView {
     var onDrag: ((String) -> Void)?
     var onMoveToNewWindow: ((String) -> Void)?
     var onPage: ((String) -> Void)?
+    var onCycle: ((Int) -> Void)?
     private var shown: [(id: String, title: String, active: Bool)] = []
     private var shownPages: [String] = []
     private var shownPage: String?
@@ -48,6 +49,7 @@ final class TabBar: NSView {
         for name in pages {
             let item = PageItem(title: name, active: name == page)
             item.onSelect = { [weak self] in self?.onPage?(name) }
+            item.onCycle = { [weak self] step in self?.onCycle?(step) }
             item.frame.origin = NSPoint(x: x, y: 0)
             addSubview(item)
             x += item.frame.width + 2
@@ -111,9 +113,20 @@ final class TabBar: NSView {
 private final class PageItem: NSView {
     let title: String
     var onSelect: (() -> Void)?
+    var onCycle: ((Int) -> Void)?
     private let active: Bool
 
     override var acceptsFirstResponder: Bool { true }
+    override var canBecomeKeyView: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 123: onCycle?(-1)
+        case 124: onCycle?(1)
+        case 36, 49, 76: onSelect?()
+        default: super.keyDown(with: event)
+        }
+    }
 
     init(title: String, active: Bool) {
         self.title = title

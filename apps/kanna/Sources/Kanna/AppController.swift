@@ -623,6 +623,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if page == WindowController.pages[1] { links?.refresh() }
             redraw(controller)
         }
+        controller.tabBar.onCycle = { [weak self] step in self?.cycleTab(step) }
         controller.tabBar.onClose = { [weak self] tab in self?.closeTab(tab) }
         controller.tabBar.onNew = { [weak self] in self?.newTab(in: id) }
         controller.tabBar.onDrag = { [weak self] tab in self?.dragTab(tab) }

@@ -152,7 +152,9 @@ extension AppController {
                 }
                 return ["task": .string(task), "parked": true, "desk": .string(desk.id)]
             case "desk":
-                let project = args["project"]?.string.map { MachineIDs.location($0, on: args["machine"]?.string) }
+                let place = args["place"]
+                let project = (place?["main"]?.string ?? args["project"]?.string).map { MachineIDs.location($0, on: args["machine"]?.string) }
+                if let project, let identity = place?["project"]?.string { identities[rootLocation(project)] = identity }
                 let opened = openDesk(project: project, fresh: args["new"]?.bool == true)
                 return ["desk": .string(opened.desk), "project": opened.project.map { .string($0) } ?? .null, "new": .bool(opened.new)]
             case "close":

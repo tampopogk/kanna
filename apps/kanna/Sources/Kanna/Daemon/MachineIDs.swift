@@ -2,7 +2,7 @@ import Foundation
 
 enum MachineIDs {
     static let kinds: Set<Substring> = ["task", "ws", "win", "tab", "term", "diff", "file", "page", "ios"]
-    static let fields: Set<String> = ["id", "pane", "terminal", "workspace", "tab", "window", "key", "focused", "zoomed", "shows", "planner", "content", "view", "held", "by", "task", "panes", "windows", "tasks", "about", "lead"]
+    static let fields: Set<String> = ["id", "pane", "terminal", "workspace", "tab", "window", "key", "focused", "zoomed", "shows", "planner", "content", "view", "held", "by", "task", "panes", "windows", "tasks", "about", "lead", "agent", "owner", "from", "under"]
 
     static func isID(_ text: Substring) -> Bool {
         guard let dash = text.firstIndex(of: "-"), kinds.contains(text[..<dash]) else { return false }
@@ -34,10 +34,14 @@ enum MachineIDs {
     }
 
     static func local(_ json: JSON, on machine: String) -> JSON {
+        strip(json, machine, inside: false)
+    }
+
+    private static func strip(_ json: JSON, _ machine: String, inside: Bool) -> JSON {
         switch json {
-        case .string(let text) where self.machine(of: text) == machine: return .string(bare(text))
-        case .array(let items): return .array(items.map { local($0, on: machine) })
-        case .object(let object): return .object(object.mapValues { local($0, on: machine) })
+        case .string(let text) where inside && self.machine(of: text) == machine: return .string(bare(text))
+        case .array(let items): return .array(items.map { strip($0, machine, inside: inside) })
+        case .object(let object): return .object(Dictionary(uniqueKeysWithValues: object.map { ($0.key, strip($0.value, machine, inside: fields.contains($0.key))) }))
         default: return json
         }
     }

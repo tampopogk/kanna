@@ -282,9 +282,10 @@ extension AppController {
 
     func openPlanner(in window: String) {
         guard !starting.contains(window), let controller = controllers[window] else { return }
-        starting.insert(window)
         let location = self.window(window)?["project"]?.string ?? controller.projectRoot
         let (machine, folder) = location.map(MachineIDs.split(location:)) ?? (nil, "")
+        guard links?.link(machine)?.attached == true else { return }
+        starting.insert(window)
         var args: [String: JSON] = ["action": "plan", "app": .string(claimName(machine))]
         if location != nil { args["folder"] = .string(folder) }
         if let script = Bundle.main.url(forResource: "planner", withExtension: "sh") { args["script"] = .string(script.path) }

@@ -5,16 +5,20 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 thread_local! {
-    static IDENTITIES: std::cell::RefCell<std::collections::HashMap<PathBuf, Option<String>>> = std::cell::RefCell::default();
+    static FIRST_COMMITS: std::cell::RefCell<std::collections::HashMap<PathBuf, String>> = std::cell::RefCell::default();
 }
 
 pub fn identity(main: &Path) -> Option<String> {
-    if let Some(known) = IDENTITIES.with(|ids| ids.borrow().get(main).cloned()) {
-        return known;
+    if let Some(url) = origin(main) {
+        return Some(format!("url:{url}"));
     }
-    let found = origin(main).map(|url| format!("url:{url}")).or_else(|| first_commit(main).map(|sha| format!("commit:{sha}")));
-    IDENTITIES.with(|ids| ids.borrow_mut().insert(main.to_path_buf(), found.clone()));
-    found
+    let known = FIRST_COMMITS.with(|ids| ids.borrow().get(main).cloned());
+    let sha = known.or_else(|| {
+        let found = first_commit(main)?;
+        FIRST_COMMITS.with(|ids| ids.borrow_mut().insert(main.to_path_buf(), found.clone()));
+        Some(found)
+    })?;
+    Some(format!("commit:{sha}"))
 }
 
 fn origin(main: &Path) -> Option<String> {
@@ -199,12 +203,15 @@ mod tests {
         let repo = dir.join("repo");
         fs::create_dir_all(&repo).unwrap();
         git(&repo, &["init", "-q", "-b", "main"]);
+        assert_eq!(identity(&repo), None, "a repo with no commit and no origin has no identity yet");
         git(&repo, &["-c", "user.name=k", "-c", "user.email=k@k", "commit", "-q", "--allow-empty", "-m", "first"]);
         let commit = identity(&repo).unwrap();
         assert!(commit.starts_with("commit:") && commit.len() == 47, "{commit}");
         git(&repo, &["worktree", "add", "-q", "-b", "task-1", dir.join("wt").to_str().unwrap()]);
         let found = place(dir.join("wt").to_str().unwrap());
         assert_eq!((found["branch"].clone(), found["project"].clone(), found["main"].clone()), (json!("task-1"), json!(commit), json!(repo.canonicalize().unwrap())));
+        git(&repo, &["remote", "add", "origin", "git@github.com:tampopogk/kanna.git"]);
+        assert_eq!(identity(&repo).as_deref(), Some("url:github.com/tampopogk/kanna"), "an origin added later is the identity");
     }
 
     #[test]

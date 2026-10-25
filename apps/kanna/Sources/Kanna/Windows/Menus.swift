@@ -370,11 +370,24 @@ extension AppController {
     @objc func nextTab() { cycleTab(1) }
     @objc func previousTab() { cycleTab(-1) }
 
-    private func cycleTab(_ step: Int) {
-        guard let window = keyWindow, case .array(let tabs)? = window["tabs"], !tabs.isEmpty else { return }
-        let at = tabs.firstIndex { $0["id"] == window["tab"] } ?? 0
-        guard let tab = tabs[((at + step) % tabs.count + tabs.count) % tabs.count]["id"]?.string else { return }
-        layoutCommand("focus", ["tab": .string(tab), "keep": "dock"])
+    func cycleTab(_ step: Int) {
+        guard let window = keyWindow, let id = window["id"]?.string else { return }
+        let controller = controllers[id]
+        let pages = isDesk(id) ? WindowController.pages.map { "page:\($0)" } : []
+        let stops = pages + (window["tabs"]?.array ?? []).compactMap { $0["id"]?.string }
+        guard !stops.isEmpty else { return }
+        let current = controller?.shownPage.map { "page:\($0)" } ?? window["tab"]?.string
+        let at = current.flatMap { stops.firstIndex(of: $0) } ?? 0
+        let next = stops[((at + step) % stops.count + stops.count) % stops.count]
+        if next.hasPrefix("page:") {
+            controller?.tabBar.onPage?(String(next.dropFirst(5)))
+            return
+        }
+        if controller?.page != nil {
+            controller?.page = nil
+            refresh()
+        }
+        layoutCommand("focus", ["tab": .string(next), "keep": "dock"])
     }
 
     @objc func newWindow() {

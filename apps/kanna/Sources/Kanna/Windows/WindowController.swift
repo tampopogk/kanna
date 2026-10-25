@@ -24,6 +24,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     var stale: String?
     var headerTip: String?
     private var pageShown: String?
+    var shownPage: String? { pageShown }
     private var dockedTask: String?
     var shelf: [ShelfTask] = []
     var shelfDocks: [JSON] = []

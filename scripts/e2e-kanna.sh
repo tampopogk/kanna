@@ -3927,7 +3927,7 @@ PY
   check test "$(fleet links.0.machine) $(fleet links.0.daemon.machine) $(fleet links.0.path.path)" == "vm vm direct" || { raw '{"id":1,"cmd":"debug.fleet"}'; return 1; }
 
   local repo="$vm/repo"
-  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "fleet_remote_task line $LINENO"; return 1; }
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first && git -C "$repo" remote add origin https://example.com/team/notes.git || { echo "fleet_remote_task line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   local opened; opened="$(cd / && vmk "$repo")" && [[ "$opened" == "opened d1 on vm:$repo" ]] || { echo "fleet_remote_task: a Desk on vm's project: $opened"; return 1; }
   desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"${2:-d1}\"}}" | field "$1"; }
@@ -3956,10 +3956,14 @@ PY
 
   local worktree="$repo/.kanna-worktrees/${task%@vm}"
   echo "remote change" >"$worktree/notes.txt"
-  local diff; diff="$(cd "$worktree" && KANNA_TERMINAL="${agent%@vm}" vmk open diff --tab --name remote-diff --json | python3 -c 'import json, sys; print(json.load(sys.stdin)["pane"]["id"])')@vm" || { echo "fleet_remote_task line $LINENO"; return 1; }
+  local diffopen; diffopen="$(cd "$worktree" && KANNA_TERMINAL="${agent%@vm}" vmk open diff --tab --name remote-diff --json)" || { echo "fleet_remote_task line $LINENO"; return 1; }
+  local diff; diff="$(echo "$diffopen" | field pane.id)@vm"
   diffpane() { raw "{\"id\":1,\"cmd\":\"debug.diff\",\"args\":{\"pane\":\"$diff\"}}" | field "$1"; }
   check wait_for 10 eval '[[ "$(diffpane files)" == *notes.txt* ]]' || { echo "fleet_remote_task: the app doesn't show vm's diff"; raw "{\"id\":1,\"cmd\":\"debug.diff\",\"args\":{\"pane\":\"$diff\"}}"; return 1; }
   check test "$(desk window.dock.pane)" == "$agent" || { echo "fleet_remote_task: the diff moved the agent"; return 1; }
+  local difftab; difftab="$(echo "$diffopen" | field tab)"
+  raw '{"id":1,"cmd":"debug.rename","args":{"tab":"'"$difftab"'@vm","title":"term-1@vm"}}' | grep -q '"ok":true' || { echo "fleet_remote_task line $LINENO"; return 1; }
+  check wait_for 5 eval 'vmk workspace list --all --json | grep -q "\"term-1@vm\""' || { echo "fleet_remote_task: a remote tab's title that looks like an ID lost its suffix through the app"; vmk workspace list --all --json; return 1; }
   sleep 0.5; snap d1 fleet_remote_task >/dev/null
 
   check test "$(desk pages)" == '["Shelf", "Fleet"]' || { echo "fleet_remote_task: the Desk's fixed tabs"; desk pages; return 1; }
@@ -3977,12 +3981,22 @@ assert "local network" in rows[1]["tip"], rows' "$(desk fleet)" || return 1
   check wait_for 5 eval '[[ "$(desk page)" == True && "$(desk fleetPage)" == False ]]' || { echo "fleet_remote_task: the Shelf tab"; return 1; }
   raw '{"id":1,"cmd":"debug.click","args":{"tab":"'"$(desk window.tab)"'"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk page)" == False ]]' || { echo "fleet_remote_task: a document tab didn't leave the Shelf tab"; return 1; }
+  local first; first="$(desk window.tabs.0.id)"
+  raw '{"id":1,"cmd":"debug.click","args":{"tab":"'"$first"'"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk window.tab)" == "$first" ]]' || { echo "fleet_remote_task line $LINENO"; return 1; }
+  raw '{"id":1,"cmd":"debug.menu","args":{"item":"Previous Tab"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk fleetPage)" == True ]]' || { echo "fleet_remote_task: Previous Tab from the first document tab didn't show the Fleet tab"; return 1; }
+  raw '{"id":1,"cmd":"debug.menu","args":{"item":"Next Tab"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk page)" == False && "$(desk fleetPage)" == False && "$(desk window.tab)" == "$first" ]]' || { echo "fleet_remote_task: Next Tab from the Fleet tab didn't return to the first document tab"; return 1; }
+  check test "$(desk window.dock.pane)" == "$agent" || { echo "fleet_remote_task: switching tabs by keyboard moved the agent"; return 1; }
 
   kill "$vm_pid"; wait_for 10 eval '! kill -0 '"$vm_pid" || { echo "fleet_remote_task: vm's daemon didn't stop"; return 1; }
   check wait_for 10 eval '[[ "$(fleet links.0.attached)" == False ]]' || { echo "fleet_remote_task: the app didn't see vm go"; return 1; }
   check wait_for 5 eval '[[ "$(desk headerTip)" == "vm · Offline" && "$(desk header)" == "Last received"*"input is unavailable"* ]]' || { echo "fleet_remote_task: an offline task's header"; desk header; desk headerTip; return 1; }
   check test "$(desk window.dock.pane)" == "$agent" || { echo "fleet_remote_task: going offline moved the task"; return 1; }
   raw '{"id":1,"cmd":"debug.type","args":{"pane":"'"$agent"'","text":"lost while offline\r"}}' >/dev/null
+  stop_app; start_app || { echo "fleet_remote_task: the app didn't start again with vm's Desk saved and vm offline"; return 1; }
+  sleep 1; check app_attached || { echo "fleet_remote_task: the app didn't survive restoring vm's Desk while vm is offline"; tail -5 "$out/app.log"; return 1; }
   KANNA_FLEET_PORT="$(head -1 "$KANNA_STATE_DIR/offer" | field port)" KANNA_SOCKET="$vm/kanna.sock" KANNA_STATE_DIR="$vm/state" KANNA_KEEPER="$bin/kanna-keeper" "$bin/kanna-daemon" >>"$out/daemon-vm.log" 2>&1 &
   vm_pid=$!
   check wait_for 30 eval '[[ "$(fleet links.0.attached)" == True ]]' || { echo "fleet_remote_task: the app didn't link to vm again"; raw '{"id":1,"cmd":"debug.fleet"}'; return 1; }
@@ -3991,6 +4005,11 @@ assert "local network" in rows[1]["tip"], rows' "$(desk fleet)" || return 1
   ! vmk read "${agent%@vm}" | grep -q "lost while offline" || { echo "fleet_remote_task: input typed while offline was queued"; return 1; }
   vraw '{"id":1,"cmd":"debug.type","args":{"pane":"'"${agent%@vm}"'","text":"back online\r"}}' >/dev/null
   check wait_for 5 eval 'vmk read "${agent%@vm}" | grep -q "back online"' || { echo "fleet_remote_task: input after reconnecting"; return 1; }
+
+  local clone="$KANNA_STATE_DIR/clone"
+  git clone -q "$repo" "$clone" && git -C "$clone" remote set-url origin git@example.com:team/notes.git || { echo "fleet_remote_task line $LINENO"; return 1; }
+  opened="$(cd / && kanna "$clone")"
+  [[ "$opened" == "brought forward d1 on "* ]] || { echo "fleet_remote_task: a clone of vm's project on this Mac didn't bring its Desk forward: $opened"; return 1; }
 
   kanna task list >/dev/null || return 1
   check test "$(kanna task list --json | python3 -c 'import json, sys; print(len(json.load(sys.stdin)["tasks"]))')" == 0 || { echo "fleet_remote_task: vm's task leaked into this Mac's backlog"; return 1; }

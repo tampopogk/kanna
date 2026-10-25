@@ -24,6 +24,9 @@ struct DaemonHost(Mutex<Sender<Event>>);
 
 impl Host for DaemonHost {
     fn request(&self, _from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send>) {
+        if let Some(refused) = refuse_remote(&request) {
+            return reply(refused);
+        }
         let _ = self.0.lock().unwrap_or_else(|p| p.into_inner()).send(Event::Request(request, reply));
     }
 
@@ -40,6 +43,11 @@ impl Host for DaemonHost {
         let Ok(reader) = stream.try_clone() else { return };
         let _ = std::thread::Builder::new().name("kanna.app.read".into()).spawn(move || crate::app_link::serve(events, hello, std::io::BufReader::new(reader), stream, Some(from)));
     }
+}
+
+pub fn refuse_remote(request: &Value) -> Option<Value> {
+    let certify = request.get("cmd").and_then(Value::as_str) == Some("fleet") && request.pointer("/args/action").and_then(Value::as_str) == Some("certify");
+    certify.then(|| json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": false, "error": { "code": "local_only", "message": "only this machine's own Kanna.app can have its endpoint certified" } }))
 }
 
 fn hostname() -> String {

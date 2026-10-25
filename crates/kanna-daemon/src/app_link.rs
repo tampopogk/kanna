@@ -213,7 +213,9 @@ impl AppLink {
         let remote_attached = self.app.borrow().as_ref().filter(|app| app.remote.is_some()).map(|app| app.id);
         if let (Some(old), None) = (remote_attached, &remote) {
             log!("kanna-daemon: this machine's app takes over from the app attached over the fleet");
-            self.close();
+            if let Some(app) = self.app.borrow().as_ref() {
+                let _ = app.stream.shutdown(Shutdown::Both);
+            }
             self.gone(old);
         }
         if self.app.borrow().is_some() {

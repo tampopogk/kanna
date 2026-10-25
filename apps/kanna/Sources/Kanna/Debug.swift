@@ -56,6 +56,11 @@ extension AppController {
             if let title = args["item"]?.string { try choose(menuItem: title) }
             return ["items": .array(menuItems)]
         }
+        commands["debug.rename"] = { [weak self] args in
+            guard let tab = args["tab"]?.string, let title = args["title"]?.string else { throw KannaError("bad_request", "debug.rename needs a tab and a title") }
+            self?.layoutCommand("rename-tab", ["tab": .string(tab), "title": .string(title)])
+            return ["tab": .string(tab)]
+        }
         commands["debug.perf"] = { args in
             if args["reset"]?.bool == true { Perf.reset() }
             let ms = { (value: Double) -> JSON in .number((value * 10).rounded() / 10) }
