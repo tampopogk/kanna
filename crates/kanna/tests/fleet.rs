@@ -87,7 +87,7 @@ fn an_update_moves_a_machine_to_another_commit_and_its_terminals_carry_on() {
     assert!(std::process::Command::new("tar").arg("-czf").arg(&tarball).arg("-C").arg(&stage).arg("kanna").status().unwrap().success());
 
     let updated = mbp.kanna(&["fleet", "update", "--tarball", tarball.to_str().unwrap()]).ok();
-    assert!(updated.contains("vm             updated from aaaaaaaa, back in"), "{updated}");
+    assert!(updated.contains("vm             updated from aaaaaaaa: sent "), "{updated}");
     assert_eq!(std::fs::read_link(vm.dir.join("opt/current")).unwrap().to_str(), Some(b.as_str()));
     assert_eq!(std::fs::read_link(vm.dir.join("opt/previous")).unwrap().to_str(), Some(a.as_str()));
     let log = std::fs::read_to_string(vm.dir.join("daemon.log")).unwrap();

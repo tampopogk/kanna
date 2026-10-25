@@ -1062,7 +1062,8 @@ fn fleet_update(reply: &Value) -> String {
             "already runs it".to_string()
         } else if machine["ok"] == true {
             let from = machine["from"].as_str().map_or(String::new(), |f| format!(" from {}", short_commit(f)));
-            format!("updated{from}, back in {:.0}s with its terminals", machine["secs"].as_f64().unwrap_or(0.0))
+            let mb = machine["bytes"].as_f64().unwrap_or(0.0) / 1e6;
+            format!("updated{from}: sent {mb:.0} MB in {:.1}s, restarted with its terminals in {:.1}s", machine["sent_secs"].as_f64().unwrap_or(0.0), machine["back_secs"].as_f64().unwrap_or(0.0))
         } else {
             format!("failed: {}", machine["error"]["message"].as_str().unwrap_or("?"))
         };

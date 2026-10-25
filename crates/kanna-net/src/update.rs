@@ -257,21 +257,23 @@ impl Node {
         let mut file = tokio::fs::File::open(&tarball.path).await.map_err(|e| Failure::new("bad_tarball", format!("can't read {}: {e}", tarball.path.display())))?;
         tokio::io::copy(&mut file, &mut send).await.map_err(|e| lost(e.to_string()))?;
         send.flush().await.map_err(|e| lost(e.to_string()))?;
+        let sent = started.elapsed().as_secs_f64();
         let reply = read_line(&mut recv, MAX_LINE).await.map_err(lost)?;
         let _ = send.finish();
         if reply["ok"] != true {
             return Err(Failure::from_reply(&reply));
         }
+        let installed = Instant::now();
         self.forget(key);
         let back = self.back_at(key, &commit).await;
-        Ok(json!({ "name": name, "ok": back.is_ok(), "from": from, "to": commit, "secs": started.elapsed().as_secs_f64(), "error": back.err().map(|f| json!({ "code": f.code, "message": f.message })) }))
+        Ok(json!({ "name": name, "ok": back.is_ok(), "from": from, "to": commit, "bytes": tarball.size, "sent_secs": sent, "back_secs": installed.elapsed().as_secs_f64(), "error": back.err().map(|f| json!({ "code": f.code, "message": f.message })) }))
     }
 
     async fn back_at(&self, key: &str, commit: &str) -> Result<(), Failure> {
         let deadline = Instant::now() + BACK;
         let mut last = None;
         while Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
             match self.release_of(key).await {
                 Ok(release) if release["commit"] == commit => return Ok(()),
                 Ok(release) => last = release["commit"].as_str().map(String::from),
