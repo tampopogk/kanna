@@ -3,6 +3,9 @@ import KannaCode
 
 extension AppController {
     func installAppCommands() {
+        commands["app.fleet.confirm"] = { args in
+            ["confirmed": .bool(await FleetAlert.confirm(args))]
+        }
         commands["app.snap"] = { args in
             guard let path = args["path"]?.string, !path.isEmpty, let line = args["line"]?.number.map({ Int($0) }), line > 0 else {
                 throw KannaError("bad_request", "app.snap needs a path and a line")

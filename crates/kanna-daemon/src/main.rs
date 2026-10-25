@@ -24,6 +24,7 @@ mod shell;
 mod status;
 mod status_command;
 mod diffs;
+mod fleet;
 mod store;
 mod task_scripts;
 mod terminals;
@@ -100,6 +101,8 @@ pub enum Event {
     AppCaughtUp { conn: u64 },
     AppMessage { conn: u64, message: Value },
     AppGone { conn: u64 },
+    FleetConfirm { question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send> },
+    FleetSave(Value),
     Quit(i32),
     Shutdown(String),
 }
@@ -283,8 +286,20 @@ fn run() -> Result<(), String> {
             log!("kanna-daemon: can't raise a toast for {pane}: {}", error.message);
         }
     }));
-    let quiz = Rc::new(quiz::Quiz::new(db, Some(core.weak())));
+    let quiz = Rc::new(quiz::Quiz::new(db.clone(), Some(core.weak())));
     quiz.install(&core);
+    let fleet = match fleet::Fleet::start(&state_dir, &db, events.clone()) {
+        Ok(fleet) => {
+            log!("kanna-daemon: {}", fleet.describe());
+            let fleet = Rc::new(fleet);
+            fleet.install(&core);
+            Some(fleet)
+        }
+        Err(reason) => {
+            log!("kanna-daemon: {reason}");
+            None
+        }
+    };
     let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone());
     agents.refresh();
     agents.install(&core);
@@ -593,6 +608,15 @@ fn run() -> Result<(), String> {
             }
             Event::AppGone { conn } => app.gone(conn),
             Event::AppCaughtUp { conn } => app.caught_up(conn),
+            Event::FleetConfirm { question, answer } => match &fleet {
+                Some(fleet) => fleet.confirm(&app, question, answer),
+                None => answer(Err("this daemon has no fleet endpoint".into())),
+            },
+            Event::FleetSave(doc) => {
+                if let Err(error) = db.put_fleet(&doc) {
+                    log!("kanna-daemon: can't save the fleet in kanna.db: {error}");
+                }
+            }
             Event::Quit(_) => continue,
             Event::Shutdown(why) => begin(&why, &mut shutdown),
         }
@@ -602,6 +626,9 @@ fn run() -> Result<(), String> {
     layout.flush();
     layout.save_now();
     terminals.shutdown();
+    if let Some(fleet) = &fleet {
+        fleet.stop();
+    }
     let _ = std::fs::remove_file(&pid_file);
     std::mem::forget(rules_updater);
     server.stop();

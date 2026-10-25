@@ -2905,7 +2905,7 @@ codex_task() {
   in_repo task list | grep -qE '^'"$(sid 1)"' +Codex task +Backlog +stopped +codex +made ' || { echo "codex_task: task list doesn't say the agent"; in_repo task list; return 1; }
   w="$(cd / && kanna "$repo")" && [[ "$w" =~ ^opened\ (d[0-9]+) ]] && w="${BASH_REMATCH[1]}" || { echo "codex_task line $LINENO: $w"; return 1; }
   desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$w\"}}" | field "$1"; }
-  check wait_for 10 eval '[[ "$(desk agents)" == "[\"codex\"]" ]]' || { echo "codex_task: the backlog row doesn't say the agent"; desk agents; return 1; }
+  check wait_for 10 eval '[[ "$(desk agents)" == "[\"codex\"]" ]]' || { echo "codex_task: the app doesn't keep the backlog task's agent"; desk agents; return 1; }
   kanna task start $(tid 1) >/dev/null || { echo "codex_task: the task didn't start"; return 1; }
   check wait_for 10 shows "Codex task" "RUN_DONE 0" || { echo "codex_task: the first message didn't run"; kanna read "Codex task"; return 1; }
   spaceless "Codex task" "args: You're a task's agent in Kanna (terminal $(pane "Codex task" id)), in your task's worktree. Your task: run git branch -m codex-mock-work --remote unix://" || { echo "codex_task: codex wasn't started as a task's agent"; kanna read "Codex task"; return 1; }
@@ -2917,7 +2917,7 @@ codex_task() {
   kanna send "Codex task" ask && check wait_for 5 is "Codex task" status needs-you || { echo "codex_task: not needs you at codex's question"; kanna read "Codex task"; return 1; }
   kanna send-key "Codex task" return && check wait_for 10 shows "Codex task" TURN_DONE && check wait_for 10 is "Codex task" status idle || { echo "codex_task: the answer didn't go through"; return 1; }
   [[ "$(kanna task shelve $(tid 1))" == "moved $(sid 1) to the Shelf: "* ]] || { echo "codex_task: the task didn't move to the Shelf"; return 1; }
-  check wait_for 10 eval '[[ "$(desk shelf.0.agent)" == codex ]]' || { echo "codex_task: the Shelf row doesn't say the agent"; desk shelf; return 1; }
+  check wait_for 10 eval '[[ "$(desk shelf.0.agent)" == codex ]]' || { echo "codex_task: the app doesn't keep the Shelf task's agent"; desk shelf; return 1; }
   in_repo task list | grep -qE "^[^ ]+ +Codex task +Shelf +idle +codex +parked " || { echo "codex_task: task list doesn't say the Shelf task's agent"; in_repo task list; return 1; }
   kanna task done $(tid 1) >/dev/null || { echo "codex_task: done failed"; return 1; }
   check wait_for 10 eval '! kanna workspace list --all --json | grep -q "\"Codex task\""' || { echo "codex_task: the agent outlived done"; return 1; }

@@ -626,6 +626,27 @@ pub static COMMANDS: &[Command] = &[
         show: output::projects,
     },
     Command {
+        name: "fleet",
+        group: "Information",
+        summary: "Your machines: pair one, list them, check one's link, give an address, or revoke one. kanna --host MACHINE COMMAND runs any command on one.",
+        usage: "kanna fleet [status]\n       kanna fleet pair\n       kanna fleet pair CODE [--peer KEY[@HOST[:PORT]]]\n       kanna fleet name NAME\n       kanna fleet ping MACHINE\n       kanna fleet addr MACHINE HOST[:PORT]\n       kanna fleet revoke MACHINE\n       kanna --host MACHINE COMMAND ...",
+        options: &[
+            ("--peer KEY[@HOST[:PORT]]", "pair CODE: the machine to pair with, as `kanna fleet pair` prints it there, when it isn't on this LAN."),
+            ("--host MACHINE", "Before any command: run it on that machine (its name or key) instead of this one. KANNA_HOST does the same."),
+        ],
+        notes: "Each machine's daemon has a key of its own (device.key in its state folder) and listens for the others over iroh, on UDP port 7470 when it's free. Machines on a LAN find each other by themselves.\nTo add a machine, run `kanna fleet pair` on it: it shows a six-digit code and waits. On a machine already in your fleet (or the first one: it starts the fleet), run `kanna fleet pair CODE`; Kanna.app there asks you to confirm, and the new machine joins. A code works once, for five minutes, and three wrong codes close it.\nA machine is known by its name, the first part of its host name unless `kanna fleet name` changed it before pairing. A name that comes back with another key is refused; a revoked machine is never let back in, under any name, and has to be paired with a new key.\n`kanna fleet addr` gives an address to try for a machine that isn't on this LAN, such as one on your VPN. ping opens a connection and one stream of each kind, and says whether the path is direct.",
+        examples: &[
+            ("kanna fleet", "This machine, the machines in its fleet and how each is reached."),
+            ("kanna fleet pair", "On a new machine: show a code to pair it with."),
+            ("kanna fleet pair 042917", "On your Mac: add the machine showing 042917."),
+            ("kanna fleet ping r720-1", "Whether r720-1 answers, by which path, and that each kind of stream opens."),
+            ("kanna fleet addr r720-1 10.0.0.5", "Also try r720-1 at 10.0.0.5, port 7470."),
+            ("kanna fleet revoke old-laptop", "Shut old-laptop out of every machine for good."),
+        ],
+        parse: parse_fleet,
+        show: output::fleet,
+    },
+    Command {
         name: "agents",
         group: "Information",
         summary: "Set up your agents for Kanna: Kanna's skills for Claude and Codex, a hook that tells them they're in Kanna, and Claude's sandbox letting them reach Kanna.",
@@ -1123,6 +1144,30 @@ fn parse_agents(args: &mut Argv) -> Result<Value, Failure> {
     };
     if force && request["action"] != "update" || ask && !matches!(action.as_deref(), Some("setup" | "update")) {
         return Err(usage("agents", "--ask goes with setup or update, --force with update"));
+    }
+    Ok(request)
+}
+
+fn parse_fleet(args: &mut Argv) -> Result<Value, Failure> {
+    let peer = args.option("--peer")?;
+    let action = args.positional();
+    let machine = |what: &str, args: &mut Argv| args.positional().ok_or_else(|| usage("fleet", &format!("fleet {what} needs a MACHINE: its name or key")));
+    let request = match action.as_deref() {
+        None | Some("status") => json!({ "action": "status" }),
+        Some("pair") => match args.positional() {
+            None => json!({ "action": "offer" }),
+            Some(code) => json!({ "action": "pair", "code": code, "peer": peer }),
+        },
+        Some("name") => json!({ "action": "name", "name": args.positional().ok_or_else(|| usage("fleet", "fleet name needs a NAME"))? }),
+        Some(what @ ("ping" | "revoke" | "sync")) => json!({ "action": what, "host": machine(what, args)? }),
+        Some("addr") => {
+            let host = machine("addr", args)?;
+            json!({ "action": "addr", "host": host, "addr": args.positional().ok_or_else(|| usage("fleet", "fleet addr needs a HOST or HOST:PORT"))? })
+        }
+        Some(other) => return Err(usage("fleet", &format!("unknown action \"{other}\" (status, pair, name, ping, addr or revoke)"))),
+    };
+    if peer.is_some() && request["action"] != "pair" {
+        return Err(usage("fleet", "--peer goes with pair CODE"));
     }
     Ok(request)
 }

@@ -370,7 +370,11 @@ extension AppController {
                 var view = window.contentView?.hitTest(window.contentView?.convert(point, from: nil) ?? point)
                 var menu: NSMenu?
                 while let current = view, menu == nil {
-                    menu = (current as? TerminalSurfaceView)?.contextMenu?() ?? current.menu(for: down)
+                    if let terminal = current as? TerminalSurfaceView {
+                        menu = terminal.paneMenu ?? NSMenu()
+                    } else {
+                        menu = current.menu(for: down)
+                    }
                     view = current.superview
                 }
                 let items = (menu?.items ?? []).filter { !$0.isSeparatorItem }.map { JSON.string($0.title) }

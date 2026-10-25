@@ -37,7 +37,7 @@ Files: [model.py](model.py) implements pairing and the log,
 ## What it showed
 
 Verified on 2026-10-24, this Mac (Darwin arm64), Python 3.9.6:
-**27 tests passed**. The demo produces:
+**28 tests passed**. The demo produces:
 
 ```text
 PASS directory_key_substitution: pake_confirmation_failed
@@ -121,14 +121,16 @@ of A. Reversing delivery changes the winner. Signed causal histories plus a unio
 of revocation tombstones preserve both revocations, without trusting timestamps.
 
 **Causal history proves a stated context, not when someone actually signed.** A
-stolen key can omit a revocation from its parents. The model deliberately tests
-this: its attempt to restore the *same* key still fails. But that key can sign
-old-context additions of *different* keys, or further revocations. These are
-indistinguishable from legitimate partitioned operations under this policy.
-The spec already allows a trusted signing key to admit peers; this model does
-not establish transitive eviction of everything a compromised device introduced.
-Fleet 2 must retain the specified app gesture/key sandbox protections and must
-not describe this as complete compromise recovery.
+stolen key can omit a revocation from its parents. Its attempt to restore the
+*same* key still fails, and since Fleet 2 an add it signs on a branch the
+revoker never saw counts for nothing: an add takes effect only through a chain
+of effective adds from the anchor, and an add by a revoked key must be among the
+ancestors of a revocation of that key. So the stale key can't admit a different
+key either, nor can a key it admitted admit another. It can still sign
+revocations on a stale branch: those only shut devices out (re-pairing fixes
+that), and they have to stand, or two devices revoking each other wouldn't both
+end up revoked. Fleet 2 keeps the app gesture and the key sandbox, and this is
+still not complete compromise recovery.
 
 **An offline peer cannot enforce a revocation it has not received.** The test
 makes this explicit. The no-return invariant begins when a valid revocation is

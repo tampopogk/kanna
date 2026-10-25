@@ -94,6 +94,11 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         at real not null,
         seq integer not null
     );
+"), Step::Sql("
+    create table fleet (
+        id integer primary key check (id = 1),
+        doc text not null check (json_valid(doc))
+    );
 ")];
 
 pub const RECENT: usize = 10;
@@ -473,6 +478,15 @@ impl Db {
             tx.execute("update tasks set terminal = ?2 where terminal = ?1", params![from, to])?;
         }
         tx.commit()
+    }
+
+    pub fn fleet(&self) -> rusqlite::Result<Value> {
+        let doc: Option<String> = self.conn.query_row("select doc from fleet where id = 1", [], |row| row.get(0)).optional()?;
+        Ok(doc.and_then(|doc| serde_json::from_str(&doc).ok()).unwrap_or_else(|| Value::Object(Default::default())))
+    }
+
+    pub fn put_fleet(&self, doc: &Value) -> rusqlite::Result<()> {
+        self.conn.execute("insert into fleet (id, doc) values (1, ?1) on conflict (id) do update set doc = excluded.doc", params![doc.to_string()]).map(|_| ())
     }
 
     pub fn put_layout(&self, doc: &Value) -> rusqlite::Result<()> {
@@ -1021,6 +1035,18 @@ mod tests {
         assert_eq!(db.find_answer(missed).unwrap().map(|(a, repo)| (a.file, repo)), Some(("src/a.rs".into(), "/r".into())));
         assert!(db.answer(404, "why", "x", true, None, &json!({})).is_err(), "an answer needs its round");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_fleet_doc_starts_empty_and_keeps_what_was_put() {
+        let dir = folder("fleet");
+        let db = Db::open(&dir);
+        assert_eq!(db.fleet().unwrap(), serde_json::json!({}));
+        let doc = serde_json::json!({ "name": "mbp", "entries": [{ "body": {}, "signature": "00" }] });
+        db.put_fleet(&doc).unwrap();
+        db.put_fleet(&doc).unwrap();
+        assert_eq!(Db::open(&dir).fleet().unwrap(), doc);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

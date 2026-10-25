@@ -266,6 +266,7 @@ fn make_folder(folder: &Path) {
 }
 
 pub struct Session<'a> {
+    pub host: Option<String>,
     mux: Kmux,
     target: &'a Target,
     started: Option<Instant>,
@@ -275,7 +276,7 @@ pub struct Session<'a> {
 impl<'a> Session<'a> {
     pub fn connect(target: &'a Target, env: Env<'a>) -> Result<Session<'a>, Failure> {
         if let Some(mux) = target.try_connect() {
-            return Ok(Session { mux, target, started: None, env });
+            return Ok(Session { host: None, mux, target, started: None, env });
         }
         if let Some(variable) = &target.pinned {
             return Err(fail(exit::UNREACHABLE, format!("nothing answers on {} ({variable} is set, so kanna doesn't start an app for it)", target.socket.display())));
@@ -285,13 +286,13 @@ impl<'a> Session<'a> {
                 std::env::set_var("KMUX_FRESH", "1");
             }
             let mux = Kmux::connect_to(&target.client()).map_err(Failure::from)?;
-            return Ok(Session { mux, target, started: None, env });
+            return Ok(Session { host: None, mux, target, started: None, env });
         }
         launch_app(target, exit::UNREACHABLE, env)?;
         let started = Instant::now();
         loop {
             if let Some(mux) = target.try_connect() {
-                return Ok(Session { mux, target, started: Some(started), env });
+                return Ok(Session { host: None, mux, target, started: Some(started), env });
             }
             if started.elapsed() > APP_START {
                 return Err(fail(exit::UNREACHABLE, format!("Kanna.app was started, but nothing answered on {} within {}s", target.socket.display(), APP_START.as_secs())));
@@ -301,6 +302,9 @@ impl<'a> Session<'a> {
     }
 
     pub fn call(&mut self, cmd: &str, args: Value) -> Result<Value, Failure> {
+        if let Some(host) = self.host.clone() {
+            return self.mux.call("fleet", json!({ "action": "call", "host": host, "cmd": cmd, "args": args })).map_err(Failure::from);
+        }
         loop {
             match self.mux.call(cmd, args.clone()) {
                 Err(Error::Mux { code, message }) if code == "no_app" => {

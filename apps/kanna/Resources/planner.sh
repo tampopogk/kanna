@@ -79,13 +79,13 @@ where() {
   echo
   recent= recents=0
   listed=$([ -n "$kanna" ] && "$kanna" projects --json 2>/dev/null)
-  count=$(printf '%s' "$listed" | plutil -extract projects raw -o - - 2>/dev/null) || count=0
+  count=$(printf '%s' "$listed" | jq -e '.projects | length' 2>/dev/null) || count=0
   question="Folder, repo or name:"
   if [ "$count" -gt 0 ] 2>/dev/null; then
     echo "Recent:"
     while [ "$recents" -lt "$count" ]; do
-      project=$(printf '%s' "$listed" | plutil -extract "projects.$recents.path" raw -o - - 2>/dev/null) || break
-      label=$(printf '%s' "$listed" | plutil -extract "projects.$recents.label" raw -o - - 2>/dev/null) || label=$(tilde "$project")
+      project=$(printf '%s' "$listed" | jq -er ".projects[$recents].path // empty" 2>/dev/null) || break
+      label=$(printf '%s' "$listed" | jq -er ".projects[$recents].label // empty" 2>/dev/null) || label=$(tilde "$project")
       recents=$((recents + 1))
       recent="$recent$project$nl"
       say "  $recents  $label"
@@ -155,12 +155,12 @@ setting() {
   top=$(git rev-parse --show-toplevel 2>/dev/null)
   for file in ${top:+"$top/.kanna/config.json"} "$HOME/.kanna-v4/config.json"; do
     [ -f "$file" ] || continue
-    version=$(plutil -extract version raw -o - "$file" 2>/dev/null)
+    version=$(jq -r '.version // empty' "$file" 2>/dev/null)
     case $version in
       ''|1) ;;
       *) continue ;;
     esac
-    value=$(plutil -extract planning.agent raw -o - "$file" 2>/dev/null) && [ -n "$value" ] && { echo "$value"; return; }
+    value=$(jq -er '.planning.agent // empty' "$file" 2>/dev/null) && [ -n "$value" ] && { echo "$value"; return; }
   done
 }
 
@@ -172,8 +172,7 @@ save() {
     printf '{\n  "version": 1,\n  "planning": {\n    "agent": "%s"\n  }\n}\n' "$2" >"$file"
     return
   fi
-  plutil -extract planning raw -o - "$file" >/dev/null 2>&1 || plutil -extract planning xml1 -o - "$file" >/dev/null 2>&1 || plutil -insert planning -dictionary "$file" || return 1
-  plutil -replace planning.agent -string "$2" "$file" && plutil -convert json -r "$file"
+  json=$(jq --arg agent "$2" '.planning.agent = $agent' "$file") && printf '%s\n' "$json" >"$file"
 }
 
 nl='
