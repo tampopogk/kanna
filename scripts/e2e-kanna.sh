@@ -778,7 +778,9 @@ windows_tabs_ui() {
   key "cmd+["; check test "$(win win-1 zoomed)" == term-2 || return 1
   check test "$(win win-1 focused)" == term-2 || return 1
   key "cmd+]"; check test "$(win win-1 zoomed)" == term-3 || return 1
-  check drawn "$(snap win-1 windows_tabs_ui-zoom-term-3)" 1 || return 1
+  shot="$(snap win-1 windows_tabs_ui-zoom-term-3)"
+  check drawn "$shot" 1 || return 1
+  check test "$(field tabBar.shown <<<"$shot")" == True || { echo "the tab bar should show while a pane is zoomed"; return 1; }
   key "cmd+]"; check test "$(win win-1 zoomed)" == k1 || return 1
   check drawn "$(snap win-1 windows_tabs_ui-zoom-k1)" 1 || return 1
   key cmd+shift+return; check test "$(win win-1 zoomed)" == None || return 1
@@ -1317,8 +1319,11 @@ docked_pane() {
   key cmd+shift+return; check test "$(dwin d1 zoomed)" == "$agent" || return 1
   shot="$(snap d1 docked_pane-zoomed)"
   check test "$(field panes <<<"$shot" | count)" == 1 || return 1
+  check test "$(field tabBar.shown <<<"$shot")" == False || { echo "the zoomed docked pane should hide the tab bar"; return 1; }
   key "cmd+]"; check test "$(dwin d1 zoomed)" == "$dt2" || return 1
-  check test "$(field panes <<<"$(snap d1 docked_pane-zoomed-server)" | count)" == 1 || return 1
+  shot="$(snap d1 docked_pane-zoomed-server)"
+  check test "$(field panes <<<"$shot" | count)" == 1 || return 1
+  check test "$(field tabBar.shown <<<"$shot"):$(field tabBar.width <<<"$shot")" == "True:$(field width <<<"$shot")" || { echo "a zoomed tab pane should show the tab bar across the window"; return 1; }
   key "cmd+shift+["; check test "$(dwin d1 zoomed)" == "$dt1" || return 1
   key "cmd+shift+]"; check test "$(dwin d1 zoomed)" == "$dt2" || return 1
   key "cmd+["; check test "$(dwin d1 zoomed)" == "$agent" || return 1
@@ -1333,7 +1338,12 @@ docked_pane() {
   sleep 0.5
   shot="$(snap d1 docked_pane-tab-zoomed)"
   check drawn "$shot" 1 || return 1
-  check python3 -c 'import json, sys; s = json.loads(sys.argv[1]); assert s["panes"][0]["width"] == s["width"], s' "$shot" || return 1
+  check python3 -c 'import json, sys; s = json.loads(sys.argv[1]); assert s["panes"][0]["width"] == s["width"] == s["tabBar"]["width"] and s["tabBar"]["shown"], s' "$shot" || return 1
+  click_tab "$(dwin d1 tabs.0.id)"
+  check test "$(dwin d1 tab):$(dwin d1 zoomed)" == "$(dwin d1 tabs.0.id):$dt1" || { echo "clicking a tab while zoomed should show its pane zoomed"; return 1; }
+  check test "$(field tabBar.shown <<<"$(snap d1 docked_pane-tab-zoomed-clicked)")" == True || return 1
+  click_tab "$(dwin d1 tabs.1.id)"
+  check test "$(dwin d1 tab):$(dwin d1 zoomed)" == "$(dwin d1 tabs.1.id):$dt3" || return 1
   key cmd+shift+return; check test "$(dwin d1 zoomed)" == None || return 1
   sleep 0.5
   check drawn "$(snap d1 docked_pane-tab-unzoomed)" 3 || return 1
@@ -1381,6 +1391,7 @@ docked_pane() {
   sleep 0.5
   shot="$(snap d1 docked_pane-only-dock-zoomed)"
   check drawn "$shot" 1 || return 1
+  check test "$(field tabBar.shown <<<"$shot")" == False || return 1
   check python3 -c 'import json, sys; s = json.loads(sys.argv[1]); assert s["panes"][0]["width"] == s["width"], s' "$shot" || return 1
   key cmd+shift+return; check test "$(dwin d1 zoomed)" == None || return 1
   kanna task done agent >/dev/null || return 1
@@ -2933,8 +2944,8 @@ shelf_zoom() {
   KANNA_TERMINAL="$log" kanna open --name tests --split right --cmd "printf 'test result: ok\n'; exec sleep 600" >/dev/null || { echo "shelf_zoom line $LINENO"; return 1; }
   kanna focus log >/dev/null && key cmd+shift+return || { echo "shelf_zoom line $LINENO"; return 1; }
   check test "$(dwin d1 zoomed)" == "$log" || { echo "shelf_zoom: ⇧⌘↩ didn't zoom the task's pane"; kanna workspace list --all; return 1; }
-  shown_alone() { shot="$(snap d1 "$1")"; python3 -c 'import json, sys; s = json.loads(sys.argv[1]); p = s["panes"]; assert len(p) == 1 and p[0]["width"] == s["width"], s' "$shot"; }
-  sleep 0.5; check shown_alone shelf_zoom-task-zoomed || { echo "shelf_zoom: the zoomed pane doesn't fill the window"; return 1; }
+  shown_alone() { shot="$(snap d1 "$1")"; python3 -c 'import json, sys; s = json.loads(sys.argv[1]); p = s["panes"]; assert len(p) == 1 and p[0]["width"] == s["width"] and s["tabBar"]["shown"] == (sys.argv[2] == "tab"), s' "$shot" "$2"; }
+  sleep 0.5; check shown_alone shelf_zoom-task-zoomed tab || { echo "shelf_zoom: the zoomed pane doesn't fill the window"; return 1; }
   key "cmd+."
   check wait_for 5 eval '[[ "$(dwin d1 dock)" == None ]]' || { echo "shelf_zoom: ⌘. didn't park the task"; return 1; }
   check test "$(ws $(tid 1) where):$(ws $(tid 1) tabs.0.title)" == "{\"shelf\": \"mac\"}:log" || { echo "shelf_zoom: $(sid 1)'s workspace isn't on the Shelf with its tabs"; state; return 1; }
@@ -2942,7 +2953,7 @@ shelf_zoom() {
   check test "$(desk page)" == True || { echo "shelf_zoom: no full Shelf beside the planner"; return 1; }
   key cmd+shift+return
   check test "$(dwin d1 zoomed)" == "$planner" || { echo "shelf_zoom: ⇧⌘↩ didn't zoom the planner"; kanna workspace list --all; return 1; }
-  sleep 0.5; check shown_alone shelf_zoom-planner-zoomed || { echo "shelf_zoom: the zoomed planner doesn't fill the window"; return 1; }
+  sleep 0.5; check shown_alone shelf_zoom-planner-zoomed dock || { echo "shelf_zoom: the zoomed planner doesn't fill the window"; return 1; }
   key "cmd+."
   check wait_for 5 eval '[[ "$(dwin d1 dock.pane)" == "$task" ]]' || { echo "shelf_zoom: ⌘. didn't pull the task back"; return 1; }
   check test "$(dwin d1 focused):$(dwin d1 zoomed)" == "$log:$log" || { echo "shelf_zoom: the task didn't come back zoomed where it was"; kanna workspace list --all; return 1; }
@@ -2953,7 +2964,7 @@ shelf_zoom() {
   check wait_for 5 eval '[[ "$(dwin d1 dock.pane)" == "$task" ]]' || { echo "shelf_zoom line $LINENO"; return 1; }
   stop_app; start_app || { echo "shelf_zoom line $LINENO"; return 1; }
   check wait_for 10 eval '[[ "$(dwin d1 zoomed)" == "$log" ]]' || { echo "shelf_zoom: the task's zoom didn't survive a relaunch"; kanna workspace list --all; return 1; }
-  sleep 0.5; check shown_alone shelf_zoom-task-relaunched || { echo "shelf_zoom line $LINENO"; return 1; }
+  sleep 0.5; check shown_alone shelf_zoom-task-relaunched tab || { echo "shelf_zoom line $LINENO"; return 1; }
   key "cmd+."
   check wait_for 5 eval '[[ "$(dwin d1 dock)" == None ]]' || { echo "shelf_zoom line $LINENO"; return 1; }
   check test "$(dwin d1 zoomed)" == "$planner" || { echo "shelf_zoom: the Shelf's zoom didn't survive a relaunch"; kanna workspace list --all; return 1; }

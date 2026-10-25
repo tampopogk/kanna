@@ -71,7 +71,7 @@ enum Snapshot {
             }
             return .object(result)
         })
-        if let tabBar { out["tabBar"] = .object(measure(tabBar).fields) }
+        if let tabBar { out["tabBar"] = .object(measure(tabBar).fields.merging(["shown": .bool(!tabBar.isHidden)]) { $1 }) }
         return out
     }
 
