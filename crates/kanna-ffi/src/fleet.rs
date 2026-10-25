@@ -59,7 +59,7 @@ pub extern "C" fn kanna_fleet_link(request: *const c_char) -> *mut c_char {
     };
     let key = request["key"].as_str().unwrap_or_default().to_string();
     let addrs: Vec<String> = request["addrs"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
-    give(match fleet.runtime.block_on(fleet.client.link(&key, &addrs, &request["cert"])) {
+    give(match fleet.runtime.block_on(fleet.client.link(&key, &addrs, request["relay"].as_str(), &request["cert"])) {
         Ok(stream) => json!({ "fd": stream.into_raw_fd() }),
         Err(failed) => failure(&failed.code, failed.message),
     })

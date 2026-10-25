@@ -12,6 +12,18 @@ use sha2::{Digest, Sha256};
 
 pub const ALPN: &[u8] = b"kanna/1";
 
+pub fn relay_mode() -> iroh::RelayMode {
+    iroh::RelayMode::Custom(iroh::RelayMap::empty())
+}
+
+pub fn relay_url(text: &str) -> Result<iroh::RelayUrl, Failure> {
+    let url: iroh::RelayUrl = text.parse().map_err(|_| Failure::new("bad_request", format!("\"{text}\" isn't a relay's URL: give one like https://relay.example.com")))?;
+    match url.scheme() {
+        "https" | "http" => Ok(url),
+        _ => Err(Failure::new("bad_request", format!("\"{text}\" isn't a relay's URL: it starts with https://"))),
+    }
+}
+
 pub const KINDS: &[&str] = &["control", "file", "port", "sync", "job", "transfer"];
 
 #[derive(Clone, Debug, PartialEq)]

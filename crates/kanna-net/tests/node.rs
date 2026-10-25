@@ -211,7 +211,7 @@ fn line(stream: &UnixStream) -> Option<Value> {
 }
 
 async fn hello(client: &Client, node: &Node, cert: &Value) -> Result<UnixStream, kanna_net::Failure> {
-    let link = client.link(&node.key(), &[format!("127.0.0.1:{}", node.port())], cert).await?;
+    let link = client.link(&node.key(), &[format!("127.0.0.1:{}", node.port())], None, cert).await?;
     (&link).write_all(b"{\"id\":0,\"cmd\":\"app.hello\",\"args\":{\"client\":\"mbp\"}}\n").unwrap();
     Ok(link)
 }
@@ -259,3 +259,47 @@ async fn an_app_certified_by_a_paired_machine_holds_a_link_until_its_machine_is_
     assert_eq!(hello(&client, &vm, &cert).await.unwrap_err().code, "revoked");
 }
 
+
+async fn relay() -> (iroh_relay::server::Server, String) {
+    let mut config = iroh_relay::server::ServerConfig::default();
+    config.relay = Some(iroh_relay::server::RelayConfig::new(std::net::SocketAddr::from(([127, 0, 0, 1], 0))));
+    let server = iroh_relay::server::Server::spawn(config).await.unwrap();
+    let url = format!("http://{}/", server.http_addr().unwrap());
+    (server, url)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_app_given_only_a_key_reaches_a_machine_through_its_relay() {
+    let (_server, url) = relay().await;
+    let (mbp, mbp_host) = machine("mbp", json!({})).await;
+    let (vm, vm_host) = machine("linux-vm", json!({})).await;
+    pair(&mbp, &vm).await.unwrap();
+    assert_eq!(vm.set_relay(Some("ftp://nowhere")).await.unwrap_err().code, "bad_request");
+    assert_eq!(vm.set_relay(Some(&url)).await.unwrap()["relay"], json!(url));
+    mbp.set_relay(Some(&url)).await.unwrap();
+    assert_eq!(vm_host.saved.lock().unwrap()["relay"], json!(url));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while vm.status()["home_relay"].is_null() {
+        assert!(std::time::Instant::now() < deadline, "the machine never connected to its relay");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let peers = mbp.status()["peers"].clone();
+    let them = peers.as_array().unwrap().iter().find(|p| p["name"] == "linux-vm").unwrap();
+    assert_eq!(them["relay"], json!(url), "{them}");
+
+    let client = Client::start(SecretKey::generate()).await.unwrap();
+    let cert = mbp.certify(&client.key()).unwrap();
+    let link = client.link(&vm.key(), &[], Some(&url), &cert).await.unwrap();
+    (&link).write_all(b"{\"id\":0,\"cmd\":\"app.hello\",\"args\":{}}\n").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while vm_host.apps.lock().unwrap().is_empty() {
+        assert!(std::time::Instant::now() < deadline, "the hello never came through the relay");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let saved = mbp_host.saved.lock().unwrap().clone();
+    mbp.close().await;
+    let (again, _) = machine("mbp", saved).await;
+    assert_eq!(again.status()["relay"], json!(url), "the relay is kept across a restart");
+    assert_eq!(again.set_relay(None).await.unwrap()["relay"], Value::Null);
+}

@@ -1,7 +1,7 @@
 use crate::node::{read_line, write_line, DIAL, MAX_HEADER};
-use crate::{Failure, ALPN, DEFAULT_PORT};
+use crate::{relay_mode, relay_url, Failure, ALPN, DEFAULT_PORT};
 use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
-use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey};
+use iroh::{Endpoint, EndpointAddr, EndpointId, RelayUrl, SecretKey};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -12,12 +12,13 @@ use tokio::io::{AsyncWriteExt, BufReader};
 pub struct Client {
     endpoint: Endpoint,
     conns: Mutex<HashMap<String, Connection>>,
+    relays: Mutex<Vec<RelayUrl>>,
 }
 
 impl Client {
     pub async fn start(secret: SecretKey) -> Result<Client, String> {
-        let endpoint = Endpoint::builder(presets::Minimal).secret_key(secret).relay_mode(RelayMode::Disabled).bind().await.map_err(|e| format!("can't open the app's endpoint: {e}"))?;
-        Ok(Client { endpoint, conns: Mutex::default() })
+        let endpoint = Endpoint::builder(presets::Minimal).secret_key(secret).relay_mode(relay_mode()).bind().await.map_err(|e| format!("can't open the app's endpoint: {e}"))?;
+        Ok(Client { endpoint, conns: Mutex::default(), relays: Mutex::default() })
     }
 
     pub fn key(&self) -> String {
@@ -28,7 +29,7 @@ impl Client {
         self.conns.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    async fn connect(&self, key: &str, addrs: &[String]) -> Result<(Connection, bool), Failure> {
+    async fn connect(&self, key: &str, addrs: &[String], relay: Option<&str>) -> Result<(Connection, bool), Failure> {
         if let Some(conn) = self.conns().get(key).filter(|c| c.close_reason().is_none()).cloned() {
             return Ok((conn, false));
         }
@@ -36,6 +37,14 @@ impl Client {
         let mut addr = EndpointAddr::new(id);
         for socket in resolve(addrs).await {
             addr = addr.with_ip_addr(socket);
+        }
+        if let Some(relay) = relay.map(relay_url).transpose()? {
+            let known = self.relays.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).contains(&relay);
+            if !known {
+                self.endpoint.insert_relay(relay.clone(), std::sync::Arc::new(relay.clone().into())).await;
+                self.relays.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(relay.clone());
+            }
+            addr = addr.with_relay_url(relay);
         }
         let conn = match tokio::time::timeout(DIAL, self.endpoint.connect(addr, ALPN)).await {
             Ok(Ok(conn)) => conn,
@@ -46,8 +55,8 @@ impl Client {
         Ok((conn, true))
     }
 
-    pub async fn open(&self, key: &str, addrs: &[String], header: Value) -> Result<(SendStream, BufReader<RecvStream>, Value), Failure> {
-        let (mut conn, mut fresh) = self.connect(key, addrs).await?;
+    pub async fn open(&self, key: &str, addrs: &[String], relay: Option<&str>, header: Value) -> Result<(SendStream, BufReader<RecvStream>, Value), Failure> {
+        let (mut conn, mut fresh) = self.connect(key, addrs, relay).await?;
         loop {
             match open(&conn, &header).await {
                 Ok(opened) => return Ok(opened),
@@ -56,14 +65,14 @@ impl Client {
                     if fresh || failure.code != "unreachable" {
                         return Err(failure);
                     }
-                    (conn, fresh) = self.connect(key, addrs).await?;
+                    (conn, fresh) = self.connect(key, addrs, relay).await?;
                 }
             }
         }
     }
 
-    pub async fn link(&self, key: &str, addrs: &[String], cert: &Value) -> Result<std::os::unix::net::UnixStream, Failure> {
-        let (mut send, mut recv, _) = self.open(key, addrs, json!({ "kind": "control", "cert": cert })).await?;
+    pub async fn link(&self, key: &str, addrs: &[String], relay: Option<&str>, cert: &Value) -> Result<std::os::unix::net::UnixStream, Failure> {
+        let (mut send, mut recv, _) = self.open(key, addrs, relay, json!({ "kind": "control", "cert": cert })).await?;
         let (ours, theirs) = std::os::unix::net::UnixStream::pair().map_err(|e| Failure::new("failed", e.to_string()))?;
         let ours = ours.set_nonblocking(true).and_then(|()| tokio::net::UnixStream::from_std(ours)).map_err(|e| Failure::new("failed", e.to_string()))?;
         let (mut from_app, mut to_app) = ours.into_split();

@@ -119,6 +119,10 @@ impl Fleet {
                 responder.reply(result.and_then(object))
             }
             "wait" => self.spawn(responder, async move { node.wait_offer().await }),
+            "relay" => {
+                let url = string(&args, "url").map(String::from);
+                self.spawn(responder, async move { node.set_relay(url.as_deref()).await })
+            }
             "pair" => {
                 let Some(code) = string(&args, "code").map(String::from) else { return responder.reply(Err(KmuxError::new("bad_request", "fleet pair CODE: the code the other machine shows"))) };
                 let peer = string(&args, "peer").map(String::from);
@@ -154,7 +158,7 @@ impl Fleet {
                     })
                 });
             }
-            other => responder.reply(Err(KmuxError::new("bad_request", format!("unknown fleet action \"{other}\" (status, name, offer, wait, pair, revoke, addr, ping, sync, certify or call)")))),
+            other => responder.reply(Err(KmuxError::new("bad_request", format!("unknown fleet action \"{other}\" (status, name, offer, wait, pair, revoke, addr, relay, ping, sync, certify or call)")))),
         }
     }
 

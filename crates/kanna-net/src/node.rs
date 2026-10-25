@@ -1,8 +1,8 @@
 use crate::log::PeerLog;
 use crate::pair::{hello_a, hello_b, pake_bytes, pake_hex, Offer, Party, Role};
-use crate::{is_key, Refused, ALPN, KINDS};
+use crate::{is_key, relay_mode, relay_url, Refused, ALPN, KINDS};
 use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
-use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey};
+use iroh::{Endpoint, EndpointAddr, EndpointId, RelayUrl, SecretKey};
 use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
 use n0_future::StreamExt;
 use serde_json::{json, Value};
@@ -92,6 +92,7 @@ struct Inner {
 struct State {
     name: String,
     port: u16,
+    relay: Option<RelayUrl>,
     log: Option<PeerLog>,
     broken: Option<String>,
     addrs: BTreeMap<String, Vec<String>>,
@@ -115,7 +116,7 @@ pub fn valid_name(name: &str) -> bool {
 }
 
 async fn bind(secret: &SecretKey, port: u16) -> Result<Endpoint, String> {
-    let builder = || Endpoint::builder(presets::Minimal).secret_key(secret.clone()).alpns(vec![ALPN.to_vec()]).relay_mode(RelayMode::Disabled);
+    let builder = || Endpoint::builder(presets::Minimal).secret_key(secret.clone()).alpns(vec![ALPN.to_vec()]).relay_mode(relay_mode());
     if port != 0 {
         if let Ok(fixed) = builder().bind_addr(SocketAddr::from(([0, 0, 0, 0], port))) {
             if let Ok(endpoint) = fixed.bind().await {
@@ -144,7 +145,11 @@ impl Node {
         };
         let name = saved["name"].as_str().filter(|n| valid_name(n)).map(String::from).unwrap_or(config.name);
         let addrs = saved["addrs"].as_object().map(|m| m.iter().map(|(k, v)| (k.clone(), strings(v))).collect()).unwrap_or_default();
-        let state = State { name, port, log, broken, addrs, offer: None, nearby: BTreeMap::new(), conns: HashMap::new() };
+        let relay = saved["relay"].as_str().and_then(|url| relay_url(url).ok());
+        if let Some(url) = &relay {
+            endpoint.insert_relay(url.clone(), Arc::new(url.clone().into())).await;
+        }
+        let state = State { name, port, relay, log, broken, addrs, offer: None, nearby: BTreeMap::new(), conns: HashMap::new() };
         let node = Node(Arc::new(Inner { endpoint, secret: config.secret, host, capabilities: config.capabilities, state: Mutex::new(state), outcome: watch::channel(None).0, revoked: watch::channel(0).0 }));
         if config.mdns {
             node.discover();
@@ -204,6 +209,9 @@ impl Node {
 
     fn snapshot(state: &State) -> Value {
         let mut saved = json!({ "name": state.name, "port": state.port, "addrs": state.addrs });
+        if let Some(relay) = &state.relay {
+            saved["relay"] = json!(relay.to_string());
+        }
         if let Some(log) = &state.log {
             saved["anchor"] = log.anchor().clone();
             saved["entries"] = json!(log.entries());
@@ -220,7 +228,8 @@ impl Node {
 
     fn descriptor(&self) -> Value {
         let addrs: Vec<String> = self.0.endpoint.addr().ip_addrs().map(|a| a.to_string()).collect();
-        json!({ "name": self.state().name, "key": self.key(), "capabilities": self.0.capabilities, "relay": null, "addrs": addrs })
+        let state = self.state();
+        json!({ "name": state.name, "key": self.key(), "capabilities": self.0.capabilities, "relay": state.relay.as_ref().map(|r| r.to_string()), "addrs": addrs })
     }
 
     fn usable(&self) -> Result<(), Failure> {
@@ -242,6 +251,7 @@ impl Node {
                     let path = conn.and_then(|c| c.paths().iter().find(|p| p.is_selected()).map(|p| if p.is_ip() { "direct" } else { "relay" }));
                     let mut addrs = strings(&view.descriptors.get(key).map(|d| d["addrs"].clone()).unwrap_or_default());
                     addrs.extend(state.addrs.get(key).cloned().unwrap_or_default());
+                    let relay = view.descriptors.get(key).and_then(|d| d["relay"].as_str().map(String::from)).or_else(|| state.relay.as_ref().map(|r| r.to_string()));
                     peers.push(json!({
                         "name": name,
                         "key": key,
@@ -251,6 +261,7 @@ impl Node {
                         "conflict": keys.len() > 1,
                         "path": path,
                         "addrs": addrs,
+                        "relay": relay,
                     }));
                 }
             }
@@ -263,6 +274,8 @@ impl Node {
             "key": me,
             "port": state.port,
             "addrs": addrs,
+            "relay": state.relay.as_ref().map(|r| r.to_string()),
+            "home_relay": self.0.endpoint.addr().relay_urls().next().map(|r| r.to_string()),
             "paired": state.log.is_some(),
             "fleet": state.log.as_ref().map(|l| l.fleet().to_string()),
             "broken": state.broken,
@@ -286,6 +299,19 @@ impl Node {
         }
         self.save();
         Ok(json!({ "name": name }))
+    }
+
+    pub async fn set_relay(&self, url: Option<&str>) -> Result<Value, Failure> {
+        let url = url.map(relay_url).transpose()?;
+        let old = std::mem::replace(&mut self.state().relay, url.clone());
+        if let Some(old) = old.filter(|old| Some(old) != url.as_ref()) {
+            self.0.endpoint.remove_relay(&old).await;
+        }
+        if let Some(url) = &url {
+            self.0.endpoint.insert_relay(url.clone(), Arc::new(url.clone().into())).await;
+        }
+        self.save();
+        Ok(json!({ "relay": url.map(|u| u.to_string()) }))
     }
 
     pub fn offer(&self) -> Result<Value, Failure> {
@@ -537,6 +563,10 @@ impl Node {
         let mut direct: Vec<SocketAddr> = addrs.iter().filter_map(|a| a.parse().ok()).collect();
         direct.extend(state.nearby.get(key).map(|n| n.addrs.clone()).unwrap_or_default());
         let mut addr = EndpointAddr::new(id);
+        let theirs = state.log.as_ref().and_then(|l| l.view().descriptors.get(key).and_then(|d| d["relay"].as_str().and_then(|r| relay_url(r).ok())));
+        if let Some(relay) = theirs.or_else(|| state.relay.clone()) {
+            addr = addr.with_relay_url(relay);
+        }
         for socket in direct {
             addr = addr.with_ip_addr(socket);
         }
