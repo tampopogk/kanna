@@ -3975,7 +3975,7 @@ PY
   check python3 -c 'import json, sys
 rows = json.loads(sys.argv[1])
 assert [(r["name"], r["path"]) for r in rows] == [("mbp", "This Mac"), ("vm", "Direct · LAN")], rows
-assert rows[0]["detail"].startswith("This Mac · macOS") and "cores" in rows[1]["detail"], rows
+assert rows[0]["detail"].startswith("This Mac · macOS") and rows[1]["detail"].startswith("macOS") and "cores" not in rows[1]["detail"], rows
 assert "local network" in rows[1]["tip"], rows' "$(desk fleet)" || return 1
   raw '{"id":1,"cmd":"debug.click","args":{"page":"Shelf","window":"d1"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk page)" == True && "$(desk fleetPage)" == False ]]' || { echo "fleet_remote_task: the Shelf tab"; return 1; }

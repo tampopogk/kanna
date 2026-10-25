@@ -145,10 +145,10 @@ body.picture .window { height:100vh; border:0; border-radius:0; box-shadow:none;
 // Fixture data only. Machine/task and machine/pane pairs deliberately matter:
 // all three claimed tasks' terminals have the same daemon-local ID, term-41.
 const peers = [
-  { id:'mbp', name:'mbp', role:'This Mac · macOS · Apple Silicon', capability:'Agents · Xcode · display' },
-  { id:'dev-1', name:'dev-1', role:'Ubuntu 26.04 · VM on r720-1', capability:'Agents · Linux builds' },
-  { id:'tests-1', name:'tests-1', role:'Ubuntu 26.04 · VM on r720-1', capability:'Agents · Linux tests' },
-  { id:'tools-1', name:'tools-1', role:'Ubuntu 26.04 · VM on r720-1', capability:'Agents · Linux builds' }
+  { id:'mbp', name:'mbp', role:'This Mac · macOS · Apple Silicon' },
+  { id:'dev-1', name:'dev-1', role:'Ubuntu 26.04 · VM on r720-1' },
+  { id:'tests-1', name:'tests-1', role:'Ubuntu 26.04 · VM on r720-1' },
+  { id:'tools-1', name:'tools-1', role:'Ubuntu 26.04 · VM on r720-1' }
 ];
 const projects = [{id:'kanna',name:'Kanna',identity:'github.com/jemdiggity/kanna-v4'}, {id:'recipe',name:'Recipe Box',identity:'github.com/example/recipe-box'}];
 const tasks = [
@@ -216,7 +216,7 @@ function detail(machine) {
 function fleet() {
   return `<section class="fleet"><div class="page"><div class="fleet-title"><div><h2>Fleet</h2><p class="sub">Your machines · all projects</p></div></div><table><thead><tr><th>Machine</th><th>Path from this Mac</th></tr></thead><tbody>${peers.map(m=>{
     const off=path(m.id)==='off';
-    return `<tr data-machine="${m.id}"><td><strong>${m.name}</strong><small>${m.role}</small><small>${m.capability}</small></td><td>${badge(m.id)}<small>${off?'Last seen 4 min ago':path(m.id)==='relay'?'Via your relay · encrypted':path(m.id)==='local'?'Client + build Mac':'No relay in use'}</small></td></tr>`;
+    return `<tr data-machine="${m.id}"><td><strong>${m.name}</strong><small>${m.role}</small></td><td>${badge(m.id)}<small>${off?'Last seen 4 min ago':path(m.id)==='relay'?'Via your relay · encrypted':path(m.id)==='local'?'Client + build Mac':'No relay in use'}</small></td></tr>`;
   }).join('')}</tbody></table><p class="muted">Connections change automatically. Tasks stay where they run when you bring them to a Desk.</p></div></section>`;
 }
 function navigation(w,t,projectId) {

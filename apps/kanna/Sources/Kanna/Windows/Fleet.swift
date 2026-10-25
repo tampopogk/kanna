@@ -42,8 +42,7 @@ extension AppController {
         let arch = capabilities["arch"]?.string
         let system = os == "macos" ? "macOS" : os == "linux" ? "Linux" : os
         let chip = os == "macos" && arch == "aarch64" ? "Apple Silicon" : arch
-        let cores = capabilities["cores"]?.number.map { "\(Int($0)) cores" }
-        return [system, chip, cores].compactMap { $0 }.joined(separator: " · ")
+        return [system, chip].compactMap { $0 }.joined(separator: " · ")
     }
 
     var fleetMachines: [FleetMachine] {
