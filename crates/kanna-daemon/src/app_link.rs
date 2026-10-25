@@ -260,6 +260,10 @@ impl AppLink {
             daemon["capabilities"] = machine["capabilities"].clone();
         }
         answer(json!({ "id": id, "ok": true, "protocol": protocol, "daemon": daemon, "panes": panes, "layout": self.layout.view() }));
+        let claimant = remote.as_ref().map(|from| args.get("client").and_then(Value::as_str).unwrap_or(from).to_string());
+        if let Some(backlog) = self.backlog.borrow().as_ref().and_then(|b| b.upgrade()) {
+            *backlog.claimant.borrow_mut() = claimant.unwrap_or_else(|| kanna_mux::MAC_APP.into());
+        }
         *self.app.borrow_mut() = Some(Connection { id: conn, remote, out, stream, behind: Cell::new(false), cut: Cell::new(false) });
         let statuses: Vec<(String, String)> = self.core.upgrade().map_or(vec![], |core| {
             core.with_panes(|panes| panes.iter().filter_map(|p| p.status().map(|s| (p.id.clone(), s.to_string()))).collect())
@@ -330,6 +334,9 @@ impl AppLink {
         }
         log!("kanna-daemon: the app went away");
         self.app.borrow_mut().take();
+        if let Some(backlog) = self.backlog.borrow().as_ref().and_then(|b| b.upgrade()) {
+            *backlog.claimant.borrow_mut() = kanna_mux::MAC_APP.into();
+        }
         self.attached.borrow_mut().clear();
         self.unsent.borrow_mut().clear();
         let prefix = view_prefix(conn);

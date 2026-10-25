@@ -597,6 +597,7 @@ pub struct Backlog {
     delivering: RefCell<HashSet<String>>,
     posting: RefCell<HashMap<u64, (String, Vec<Message>)>>,
     pub on_change: RefCell<Option<Box<dyn Fn(Value)>>>,
+    pub claimant: RefCell<String>,
 }
 
 struct Book(Weak<Backlog>);
@@ -655,6 +656,7 @@ impl Backlog {
             branching: RefCell::default(),
             turns_away: RefCell::default(),
             next: Cell::new(0),
+            claimant: RefCell::new(MAC_APP.into()),
             turns: RefCell::default(),
             quitting: RefCell::default(),
             launching: RefCell::default(),
@@ -1854,7 +1856,8 @@ impl Backlog {
 
     fn plan(&self, args: &Value, responder: Responder) {
         let Some(core) = self.core.upgrade() else { return responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))) };
-        let app = string(args, "app").unwrap_or(MAC_APP);
+        let claimant = self.claimant.borrow().clone();
+        let app = string(args, "app").unwrap_or(&claimant);
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
         let folder = string(args, "folder").filter(|f| Path::new(f).is_absolute() && Path::new(f).is_dir()).unwrap_or(&home);
         let zsh = Some(self.state.join("shell/zsh")).filter(|dir| dir.join(".zshenv").is_file());
@@ -1879,7 +1882,8 @@ impl Backlog {
         if let Err(error) = self.ready(&entry) {
             return responder.reply(Err(error));
         }
-        self.room(entry, string(args, "app").unwrap_or(MAC_APP).to_string(), who(args).map(String::from), Answer::To(responder));
+        let app = string(args, "app").map_or_else(|| self.claimant.borrow().clone(), String::from);
+        self.room(entry, app, who(args).map(String::from), Answer::To(responder));
     }
 
     fn start(self: &Rc<Self>, args: &Value, responder: Responder) {
