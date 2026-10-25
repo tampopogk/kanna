@@ -1,8 +1,10 @@
+mod client;
 pub mod log;
 mod node;
 pub mod pair;
 
 pub use iroh::SecretKey;
+pub use client::Client;
 pub use node::{Config, Failure, Host, Node, DEFAULT_PORT};
 
 use serde_json::{Map, Value};

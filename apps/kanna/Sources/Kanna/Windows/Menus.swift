@@ -121,7 +121,7 @@ extension AppController {
         let desks = windows.compactMap { window in window["dock"]?["pane"]?.string.map { ($0, window["dock"]?["name"]?.string) } }
         let shelf = shelfEntries.compactMap { entry in entry["task"]?.string.map { ($0, entry["name"]?.string) } }
         let held = backlog.filter { $0["running"]?.bool == true }.compactMap { entry in entry["held"]?.string.map { ($0, entry["name"]?.string) } }
-        return (desks + shelf + held).filter { root == nil || projectRoot($0.0) == root }.map { (pane: $0.0, title: taskTitle($0.0, name: $0.1)) }
+        return (desks + shelf + held).filter { root == nil || sameProject(projectRoot($0.0), root) }.map { (pane: $0.0, title: taskTitle($0.0, name: $0.1)) }
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -364,23 +364,37 @@ extension AppController {
 
     private func repo(of window: String?) -> JSON? {
         guard let window, self.window(window)?["dock"]?["pane"] == nil, let root = controllers[window]?.projectRoot else { return nil }
-        return .string(root)
+        return .string(MachineIDs.split(location: root).path)
     }
 
     @objc func nextTab() { cycleTab(1) }
     @objc func previousTab() { cycleTab(-1) }
 
-    private func cycleTab(_ step: Int) {
-        guard let window = keyWindow, case .array(let tabs)? = window["tabs"], !tabs.isEmpty else { return }
-        let at = tabs.firstIndex { $0["id"] == window["tab"] } ?? 0
-        guard let tab = tabs[((at + step) % tabs.count + tabs.count) % tabs.count]["id"]?.string else { return }
-        layoutCommand("focus", ["tab": .string(tab), "keep": "dock"])
+    func cycleTab(_ step: Int) {
+        guard let window = keyWindow, let id = window["id"]?.string else { return }
+        let controller = controllers[id]
+        let pages = isDesk(id) ? WindowController.pages.map { "page:\($0)" } : []
+        let stops = pages + (window["tabs"]?.array ?? []).compactMap { $0["id"]?.string }
+        guard !stops.isEmpty else { return }
+        let current = controller?.shownPage.map { "page:\($0)" } ?? window["tab"]?.string
+        let at = current.flatMap { stops.firstIndex(of: $0) } ?? 0
+        let next = stops[((at + step) % stops.count + stops.count) % stops.count]
+        if next.hasPrefix("page:") {
+            controller?.tabBar.onPage?(String(next.dropFirst(5)))
+            return
+        }
+        if controller?.page != nil {
+            controller?.page = nil
+            refresh()
+        }
+        layoutCommand("focus", ["tab": .string(next), "keep": "dock"])
     }
 
     @objc func newWindow() {
         var args: [String: JSON] = ["type": "term", "window": "new"]
-        if let root = keyWindow?["id"]?.string.flatMap({ controllers[$0]?.projectRoot }) { args["cwd"] = .string(root) }
-        request("open", args)
+        let root = keyWindow?["id"]?.string.flatMap { controllers[$0]?.projectRoot }.map(MachineIDs.split(location:))
+        if let root { args["cwd"] = .string(root.path) }
+        request("open", args, on: .some(root?.machine))
     }
 
     @objc func closeWindow() {

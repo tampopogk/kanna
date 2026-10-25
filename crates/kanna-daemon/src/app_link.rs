@@ -56,55 +56,61 @@ pub const APP_PREFIX: &str = "debug.";
 
 pub const APP_ASK: &str = "app.";
 
+pub const PROTOCOLS: (u64, u64) = (1, 1);
+
+static CONNECTIONS: AtomicU64 = AtomicU64::new(0);
+
 pub fn takeover(events: Sender<Event>) -> Takeover {
-    let counter = Arc::new(AtomicU64::new(0));
-    Arc::new(move |hello: Value, mut reader: BufReader<UnixStream>, stream: UnixStream| {
-        let conn = counter.fetch_add(1, Ordering::SeqCst) + 1;
-        let (sender, lines) = mpsc::channel::<Vec<u8>>();
-        let out = Outbox { lines: sender, queue: Arc::default() };
-        let (queue, caught_up) = (out.queue.clone(), events.clone());
-        let (Ok(writer), Ok(closer)) = (stream.try_clone(), stream.try_clone()) else { return };
-        let spawned = std::thread::Builder::new().name("kanna.app.write".into()).spawn(move || {
-            for line in lines {
-                if !write_all(&writer, &line) {
-                    break;
-                }
-                let left = queue.bytes.fetch_sub(line.len(), Ordering::SeqCst) - line.len();
-                if left <= QUEUE_CAUGHT_UP && queue.behind.swap(false, Ordering::SeqCst) {
-                    let _ = caught_up.send(Event::AppCaughtUp { conn });
-                }
-            }
-            let _ = writer.shutdown(Shutdown::Both);
-        });
-        if spawned.is_err() || events.send(Event::AppHello { conn, hello, out, stream: closer }).is_err() {
-            return;
-        }
-        let mut line = Vec::new();
-        loop {
-            line.clear();
-            match reader.by_ref().take(MAX_LINE + 1).read_until(b'\n', &mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
-            }
-            if line.len() as u64 > MAX_LINE {
-                log!("kanna-daemon: the app sent a line over {} MiB; dropping it", MAX_LINE >> 20);
+    Arc::new(move |hello: Value, reader: BufReader<UnixStream>, stream: UnixStream| serve(events.clone(), hello, reader, stream, None))
+}
+
+pub fn serve(events: Sender<Event>, hello: Value, mut reader: BufReader<UnixStream>, stream: UnixStream, remote: Option<String>) {
+    let conn = CONNECTIONS.fetch_add(1, Ordering::SeqCst) + 1;
+    let (sender, lines) = mpsc::channel::<Vec<u8>>();
+    let out = Outbox { lines: sender, queue: Arc::default() };
+    let (queue, caught_up) = (out.queue.clone(), events.clone());
+    let (Ok(writer), Ok(closer)) = (stream.try_clone(), stream.try_clone()) else { return };
+    let spawned = std::thread::Builder::new().name("kanna.app.write".into()).spawn(move || {
+        for line in lines {
+            if !write_all(&writer, &line) {
                 break;
             }
-            match serde_json::from_slice::<Value>(&line) {
-                Ok(message) => {
-                    if events.send(Event::AppMessage { conn, message }).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => log!("kanna-daemon: the app sent a line that isn't JSON"),
+            let left = queue.bytes.fetch_sub(line.len(), Ordering::SeqCst) - line.len();
+            if left <= QUEUE_CAUGHT_UP && queue.behind.swap(false, Ordering::SeqCst) {
+                let _ = caught_up.send(Event::AppCaughtUp { conn });
             }
         }
-        let _ = events.send(Event::AppGone { conn });
-    })
+        let _ = writer.shutdown(Shutdown::Both);
+    });
+    if spawned.is_err() || events.send(Event::AppHello { conn, hello, out, stream: closer, remote }).is_err() {
+        return;
+    }
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.by_ref().take(MAX_LINE + 1).read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        if line.len() as u64 > MAX_LINE {
+            log!("kanna-daemon: the app sent a line over {} MiB; dropping it", MAX_LINE >> 20);
+            break;
+        }
+        match serde_json::from_slice::<Value>(&line) {
+            Ok(message) => {
+                if events.send(Event::AppMessage { conn, message }).is_err() {
+                    break;
+                }
+            }
+            Err(_) => log!("kanna-daemon: the app sent a line that isn't JSON"),
+        }
+    }
+    let _ = events.send(Event::AppGone { conn });
 }
 
 struct Connection {
     id: u64,
+    remote: Option<String>,
     out: Outbox,
     stream: UnixStream,
     behind: Cell<bool>,
@@ -126,6 +132,7 @@ pub struct AppLink {
     stopping: Cell<bool>,
     backlog: RefCell<Option<Weak<crate::backlog::Backlog>>>,
     build: Option<String>,
+    pub machine: RefCell<Option<Box<dyn Fn() -> Value>>>,
 }
 
 impl AppLink {
@@ -145,6 +152,7 @@ impl AppLink {
             attached: RefCell::default(),
             unsent: RefCell::default(),
             stopping: Cell::new(false),
+            machine: RefCell::new(None),
         }
     }
 
@@ -192,7 +200,7 @@ impl AppLink {
         self.send(json!({ "cmd": cmd, "args": args }));
     }
 
-    pub fn hello(&self, conn: u64, hello: Value, out: Outbox, stream: UnixStream) -> bool {
+    pub fn hello(&self, conn: u64, hello: Value, out: Outbox, stream: UnixStream, remote: Option<String>) -> bool {
         let id = hello.get("id").cloned().unwrap_or(Value::Null);
         let answer = |reply: Value| {
             out.push(&reply);
@@ -202,12 +210,33 @@ impl AppLink {
             let _ = stream.shutdown(Shutdown::Read);
             return false;
         }
+        let remote_attached = self.app.borrow().as_ref().filter(|app| app.remote.is_some()).map(|app| app.id);
+        if let (Some(old), None) = (remote_attached, &remote) {
+            log!("kanna-daemon: this machine's app takes over from the app attached over the fleet");
+            if let Some(app) = self.app.borrow().as_ref() {
+                let _ = app.stream.shutdown(Shutdown::Both);
+            }
+            self.gone(old);
+        }
         if self.app.borrow().is_some() {
             answer(json!({ "id": id, "ok": false, "error": { "code": "app_attached", "message": "another Kanna.app is attached to this daemon" } }));
             let _ = stream.shutdown(Shutdown::Read);
             return false;
         }
-        let app_build = hello.get("args").and_then(|a| a.get("build")).and_then(Value::as_str);
+        let args = hello.get("args").cloned().unwrap_or(Value::Null);
+        let (low, high) = match args.get("protocols").and_then(Value::as_array).map(|r| r.iter().filter_map(Value::as_u64).collect::<Vec<_>>()) {
+            Some(range) if range.len() == 2 => (range[0], range[1]),
+            _ => (1, 1),
+        };
+        let protocol = high.min(PROTOCOLS.1);
+        if protocol < low.max(PROTOCOLS.0) {
+            let theirs = if low == high { format!("{low}") } else { format!("{low}–{high}") };
+            log!("kanna-daemon: an app speaking protocol {theirs} said hello; this daemon speaks {}–{}", PROTOCOLS.0, PROTOCOLS.1);
+            answer(json!({ "id": id, "ok": false, "error": { "code": "other_protocol", "message": format!("this daemon speaks protocols {}–{} and the app {theirs}", PROTOCOLS.0, PROTOCOLS.1) }, "mine": [PROTOCOLS.0, PROTOCOLS.1], "commit": kanna_build::COMMIT }));
+            let _ = stream.shutdown(Shutdown::Read);
+            return false;
+        }
+        let app_build = args.get("build").and_then(Value::as_str).filter(|_| remote.is_none());
         if let (Some(app_build), Some(build)) = (app_build, self.build.as_deref()) {
             if app_build != build {
                 log!("kanna-daemon: the app is from another build ({app_build}, this daemon is {build}); stopping so it starts its own");
@@ -219,12 +248,25 @@ impl AppLink {
                 return true;
             }
         }
-        let pid = hello.get("args").and_then(|a| a.get("pid")).cloned().unwrap_or(Value::Null);
-        log!("kanna-daemon: the app attached (pid {pid})");
+        let pid = args.get("pid").cloned().unwrap_or(Value::Null);
+        match (&remote, args.get("client").and_then(Value::as_str)) {
+            (Some(from), client) => log!("kanna-daemon: the app on {} attached over the fleet (pid {pid}, protocol {protocol})", client.unwrap_or(from)),
+            (None, _) => log!("kanna-daemon: the app attached (pid {pid})"),
+        }
         self.layout.flush();
         let panes = self.core.upgrade().map_or(Value::Array(vec![]), |core| core.with_panes(pane_table));
-        answer(json!({ "id": id, "ok": true, "daemon": { "pid": std::process::id(), "build": self.build }, "panes": panes, "layout": self.layout.view() }));
-        *self.app.borrow_mut() = Some(Connection { id: conn, out, stream, behind: Cell::new(false), cut: Cell::new(false) });
+        let mut daemon = json!({ "pid": std::process::id(), "build": self.build, "commit": kanna_build::COMMIT, "machine": null, "capabilities": null });
+        if let Some(describe) = self.machine.borrow().as_ref() {
+            let machine = describe();
+            daemon["machine"] = machine["name"].clone();
+            daemon["capabilities"] = machine["capabilities"].clone();
+        }
+        answer(json!({ "id": id, "ok": true, "protocol": protocol, "daemon": daemon, "panes": panes, "layout": self.layout.view() }));
+        let claimant = remote.as_ref().map(|from| args.get("client").and_then(Value::as_str).unwrap_or(from).to_string());
+        if let Some(backlog) = self.backlog.borrow().as_ref().and_then(|b| b.upgrade()) {
+            *backlog.claimant.borrow_mut() = claimant.unwrap_or_else(|| kanna_mux::MAC_APP.into());
+        }
+        *self.app.borrow_mut() = Some(Connection { id: conn, remote, out, stream, behind: Cell::new(false), cut: Cell::new(false) });
         let statuses: Vec<(String, String)> = self.core.upgrade().map_or(vec![], |core| {
             core.with_panes(|panes| panes.iter().filter_map(|p| p.status().map(|s| (p.id.clone(), s.to_string()))).collect())
         });
@@ -258,7 +300,9 @@ impl AppLink {
     }
 
     pub fn folder(&self, pane: &str, cwd: &str) {
-        self.notify("folder", json!({ "pane": pane, "cwd": cwd }));
+        if self.attached() {
+            self.notify("folder", json!({ "pane": pane, "cwd": cwd, "place": crate::projects::place(cwd) }));
+        }
     }
 
     pub fn status(&self, pane: &str, status: Option<&str>) {
@@ -282,12 +326,19 @@ impl AppLink {
         self.app.borrow().is_some()
     }
 
+    pub fn attached_here(&self) -> bool {
+        self.app.borrow().as_ref().is_some_and(|app| app.remote.is_none())
+    }
+
     pub fn gone(&self, conn: u64) {
         if self.app.borrow().as_ref().map(|a| a.id) != Some(conn) {
             return;
         }
         log!("kanna-daemon: the app went away");
         self.app.borrow_mut().take();
+        if let Some(backlog) = self.backlog.borrow().as_ref().and_then(|b| b.upgrade()) {
+            *backlog.claimant.borrow_mut() = kanna_mux::MAC_APP.into();
+        }
         self.attached.borrow_mut().clear();
         self.unsent.borrow_mut().clear();
         let prefix = view_prefix(conn);
@@ -510,7 +561,7 @@ impl AppLink {
         if self.app.borrow().is_none() {
             return responder.reply(Err(no_app(cmd)));
         }
-        if let (Some(reference), Some(core)) = (string(&args, "pane").map(String::from), self.core.upgrade()) {
+        if let (Some(reference), Some(core)) = (string(&args, "pane").filter(|p| !p.contains('@')).map(String::from), self.core.upgrade()) {
             match core.pane(&reference) {
                 Some(pane) => args["pane"] = Value::String(pane.id),
                 None => return responder.reply(Err(KmuxError::new("not_found", format!("no pane \"{reference}\"")))),

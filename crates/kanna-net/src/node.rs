@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{oneshot, watch};
 
 pub const DEFAULT_PORT: u16 = 7470;
@@ -19,11 +19,13 @@ const SERVICE: &str = "kanna";
 
 const PAIRING: &str = "pair";
 
-const MAX_HEADER: u64 = 64 << 10;
+const APP_HELLO: &str = "app.hello";
 
-const MAX_LINE: u64 = 16 << 20;
+pub(crate) const MAX_HEADER: u64 = 64 << 10;
 
-const DIAL: Duration = Duration::from_secs(10);
+pub(crate) const MAX_LINE: u64 = 16 << 20;
+
+pub(crate) const DIAL: Duration = Duration::from_secs(10);
 
 const PAIRING_SESSION: Duration = Duration::from_secs(180);
 
@@ -62,6 +64,7 @@ pub trait Host: Send + Sync + 'static {
     fn request(&self, from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send>);
     fn confirm(&self, question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send>);
     fn save(&self, state: Value);
+    fn app(&self, _from: String, _hello: Value, _stream: std::os::unix::net::UnixStream) {}
 }
 
 pub struct Config {
@@ -83,6 +86,7 @@ struct Inner {
     capabilities: Value,
     state: Mutex<State>,
     outcome: watch::Sender<Option<Result<Value, Failure>>>,
+    revoked: watch::Sender<u64>,
 }
 
 struct State {
@@ -141,7 +145,7 @@ impl Node {
         let name = saved["name"].as_str().filter(|n| valid_name(n)).map(String::from).unwrap_or(config.name);
         let addrs = saved["addrs"].as_object().map(|m| m.iter().map(|(k, v)| (k.clone(), strings(v))).collect()).unwrap_or_default();
         let state = State { name, port, log, broken, addrs, offer: None, nearby: BTreeMap::new(), conns: HashMap::new() };
-        let node = Node(Arc::new(Inner { endpoint, secret: config.secret, host, capabilities: config.capabilities, state: Mutex::new(state), outcome: watch::channel(None).0 }));
+        let node = Node(Arc::new(Inner { endpoint, secret: config.secret, host, capabilities: config.capabilities, state: Mutex::new(state), outcome: watch::channel(None).0, revoked: watch::channel(0).0 }));
         if config.mdns {
             node.discover();
         }
@@ -354,17 +358,30 @@ impl Node {
         self.state().log.as_ref().and_then(|l| l.view().name_of(key)).unwrap_or_else(|| key.chars().take(10).collect())
     }
 
-    fn admit(&self, key: &str) -> Result<String, Failure> {
+    fn admit(&self, key: &str, cert: Option<&Value>) -> Result<String, Failure> {
         let state = self.state();
-        let Some(log) = &state.log else { return Err(Failure::new("unpaired", "it doesn't know this machine's key (pair the two with kanna fleet pair)")) };
+        let unpaired = || Failure::new("unpaired", "it doesn't know this machine's key (pair the two with kanna fleet pair)");
+        let Some(log) = &state.log else { return Err(unpaired()) };
         let view = log.view();
-        if view.revoked.contains(key) {
+        let device = cert.and_then(|c| c["body"]["device"].as_str()).unwrap_or(key);
+        if view.revoked.contains(key) || view.revoked.contains(device) {
             return Err(Failure::new("revoked", "this machine's key is revoked in its fleet"));
         }
-        if !view.trusted().contains(key) {
-            return Err(Failure::new("unpaired", "it doesn't know this machine's key (pair the two with kanna fleet pair)"));
+        if log.accept_endpoint(key, cert).is_err() {
+            return Err(unpaired());
         }
-        Ok(view.name_of(key).unwrap_or_default())
+        Ok(view.name_of(device).unwrap_or_default())
+    }
+
+    pub fn certify(&self, app_key: &str) -> Result<Value, Failure> {
+        self.usable()?;
+        if !is_key(app_key) {
+            return Err(Failure::new("bad_request", format!("{app_key} isn't an endpoint key")));
+        }
+        if self.state().log.is_none() {
+            return Err(Failure::new("unpaired", "this machine has no fleet"));
+        }
+        Ok(crate::log::certificate(&self.0.secret, app_key))
     }
 
     async fn accept(&self) {
@@ -395,7 +412,8 @@ impl Node {
             let _ = send.finish();
             return;
         }
-        let from = match self.admit(&remote) {
+        let cert = header.get("cert").filter(|c| c.is_object()).cloned();
+        let from = match self.admit(&remote, cert.as_ref()) {
             Ok(name) => name,
             Err(failure) => {
                 let _ = write_line(&mut send, &refusal(&failure)).await;
@@ -408,16 +426,62 @@ impl Node {
         }
         if kind == "control" {
             while let Ok(request) = read_line(&mut recv, MAX_LINE).await {
-                if let Err(failure) = self.admit(&remote) {
+                if let Err(failure) = self.admit(&remote, cert.as_ref()) {
                     let id = request.get("id").cloned().unwrap_or(Value::Null);
                     let _ = write_line(&mut send, &json!({ "id": id, "ok": false, "error": { "code": failure.code, "message": failure.message } })).await;
                     break;
+                }
+                if request["cmd"] == APP_HELLO {
+                    return self.bridge(remote, cert, from, request, send, recv).await;
                 }
                 let reply = self.control(&from, request).await;
                 if write_line(&mut send, &reply).await.is_err() {
                     return;
                 }
             }
+        }
+        let _ = send.finish();
+    }
+
+    async fn bridge(&self, remote: String, cert: Option<Value>, from: String, hello: Value, mut send: SendStream, mut recv: BufReader<RecvStream>) {
+        let Ok((ours, theirs)) = std::os::unix::net::UnixStream::pair() else { return };
+        let Ok(ours) = ours.set_nonblocking(true).and_then(|()| tokio::net::UnixStream::from_std(ours)) else { return };
+        self.0.host.app(from, hello, theirs);
+        let (mut from_daemon, mut to_daemon) = ours.into_split();
+        let mut revoked = self.0.revoked.subscribe();
+        let admitted = {
+            let (node, remote, cert) = (self.clone(), remote.clone(), cert.clone());
+            move || node.admit(&remote, cert.as_ref()).is_ok()
+        };
+        let still = admitted.clone();
+        let inbound = async move {
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                match (&mut recv).take(MAX_LINE + 1).read_until(b'\n', &mut line).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                if line.len() as u64 > MAX_LINE || !still() || to_daemon.write_all(&line).await.is_err() {
+                    break;
+                }
+            }
+        };
+        let outbound = async {
+            let _ = tokio::io::copy(&mut from_daemon, &mut send).await;
+        };
+        let watched = async move {
+            while revoked.changed().await.is_ok() {
+                if !admitted() {
+                    return;
+                }
+            }
+            std::future::pending::<()>().await
+        };
+        tokio::select! {
+            () = inbound => {}
+            () = outbound => {}
+            () = watched => {}
         }
         let _ = send.finish();
     }
@@ -454,6 +518,7 @@ impl Node {
     }
 
     fn drop_revoked(&self) {
+        self.0.revoked.send_modify(|n| *n += 1);
         let mut state = self.state();
         let revoked = state.log.as_ref().map(|l| l.view().revoked).unwrap_or_default();
         let gone: Vec<String> = state.conns.keys().filter(|k| revoked.contains(*k)).cloned().collect();
@@ -852,7 +917,7 @@ fn unix_time() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
-async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(recv: &mut R, max: u64) -> Result<Value, String> {
+pub(crate) async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(recv: &mut R, max: u64) -> Result<Value, String> {
     let mut line = Vec::new();
     let read = (&mut *recv).take(max).read_until(b'\n', &mut line).await.map_err(|e| e.to_string())?;
     if read == 0 {
@@ -864,7 +929,7 @@ async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(recv: &mut R, max: u64) -
     serde_json::from_slice(&line).map_err(|e| format!("a line that isn't JSON: {e}"))
 }
 
-async fn write_line(send: &mut SendStream, value: &Value) -> Result<(), String> {
+pub(crate) async fn write_line(send: &mut SendStream, value: &Value) -> Result<(), String> {
     let mut line = serde_json::to_vec(value).map_err(|e| e.to_string())?;
     line.push(b'\n');
     send.write_all(&line).await.map_err(|e| e.to_string())

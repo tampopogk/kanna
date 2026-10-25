@@ -14,6 +14,8 @@ enum KannaBuild {
 
     static var name: String { info["CFBundleName"] as? String ?? "Kanna" }
 
+    static var commit: String { info["KannaCommit"] as? String ?? "unknown" }
+
     static let daemonBuild: String? = buildID(of: DaemonStarter.helpers.appendingPathComponent("kanna-daemon"))
 
     static func buildID(of binary: URL) -> String? {

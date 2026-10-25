@@ -21,7 +21,7 @@ extension AppController {
             let item = menu.addItem(withTitle: project.label, action: #selector(openRecent(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = project.path
-            item.toolTip = tilde(project.path)
+            item.toolTip = MachineIDs.split(location: project.path).machine == nil ? tilde(project.path) : project.path
         }
         if !recentProjects.isEmpty { menu.addItem(.separator()) }
         let clear = menu.addItem(withTitle: "Clear Menu", action: recentProjects.isEmpty ? nil : #selector(clearRecent), keyEquivalent: "")
@@ -29,26 +29,39 @@ extension AppController {
     }
 
     func loadRecent() {
-        request("projects", ["action": "list"]) { [weak self] reply in self?.recentLoaded(reply) }
+        for link in links?.all ?? [] where link.attached {
+            let machine = link.machine
+            request("projects", ["action": "list"], on: .some(machine)) { [weak self] reply in self?.recentLoaded(reply, on: machine) }
+        }
     }
 
-    private func recentLoaded(_ reply: JSON) {
+    private func recentLoaded(_ reply: JSON, on machine: String?) {
         guard reply["ok"]?.bool == true else { return }
-        let projects = (reply["projects"]?.array ?? []).compactMap { p in p["path"]?.string.map { RecentProject(path: $0, label: p["label"]?.string ?? tilde($0)) } }
+        recentBy[machine ?? ""] = (reply["projects"]?.array ?? []).compactMap { p in
+            guard let path = p["path"]?.string else { return nil }
+            let location = MachineIDs.location(path, on: machine)
+            if let project = p["project"]?.string { identities[location] = project }
+            return RecentProject(path: location, label: p["label"]?.string ?? (machine == nil ? tilde(path) : path))
+        }
+        var projects: [RecentProject] = []
+        for key in recentBy.keys.sorted() {
+            projects += (recentBy[key] ?? []).filter { project in !projects.contains { sameProject($0.path, project.path) } }
+        }
         guard projects != recentProjects else { return }
         recentProjects = projects
         if let menu = recentMenu { fillRecent(menu) }
     }
 
     func deskMoved(_ id: String, to root: String) {
-        guard var desk = physical.desk(id), desk.project.map({ canonical(GitPlace.of($0)?.main ?? $0) }) != root else { return }
+        guard var desk = physical.desk(id), desk.project.map(rootLocation) != root else { return }
         desk.project = root
         physical.setDesk(desk)
         touchProject(root)
     }
 
-    func touchProject(_ folder: String) {
-        request("projects", ["action": "touch", "folder": .string(folder)]) { [weak self] _ in self?.loadRecent() }
+    func touchProject(_ location: String) {
+        let (machine, folder) = MachineIDs.split(location: location)
+        request("projects", ["action": "touch", "folder": .string(folder)], on: .some(machine)) { [weak self] _ in self?.loadRecent() }
     }
 
     @objc func openRecent(_ item: NSMenuItem) {
@@ -57,6 +70,9 @@ extension AppController {
     }
 
     @objc func clearRecent() {
-        request("projects", ["action": "clear"]) { [weak self] reply in self?.recentLoaded(reply) }
+        for link in links?.all ?? [] where link.attached {
+            let machine = link.machine
+            request("projects", ["action": "clear"], on: .some(machine)) { [weak self] reply in self?.recentLoaded(reply, on: machine) }
+        }
     }
 }

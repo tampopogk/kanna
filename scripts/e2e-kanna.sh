@@ -121,7 +121,7 @@ stop_app() { stop_pid "$app_pid"; app_pid=""; }
 app_attached() { [[ "$(raw '{"id":1,"cmd":"debug.app"}' | field ok)" == True ]]; }
 instance_sockets() {
   local socket
-  for socket in "$KANNA_STATE_DIR/kanna.sock" "$KANNA_STATE_DIR/home/Library/Application Support"/kanna-dev*/kanna.sock; do
+  for socket in "$KANNA_STATE_DIR/kanna.sock" "$KANNA_STATE_DIR"/fleet-*/kanna.sock "$KANNA_STATE_DIR/home/Library/Application Support"/kanna-dev*/kanna.sock; do
     [[ -S "$socket" ]] && echo "$socket"
   done
 }
@@ -3886,6 +3886,133 @@ sys.exit(not (a[1] > b[1] and abs(a[0] - b[0]) < 1 and a[2] == 340))' || { echo 
   kanna toast "Closed" >/dev/null && check wait_for 5 eval '[[ "$(toasted)" == "d1 toast-7" ]]' || return 1
   raw '{"id":1,"cmd":"debug.toasts","args":{"click":"toast-7","close":true}}' >/dev/null
   check wait_for 2 eval '[[ "$(toasted)" == "d1 " ]]' || { echo "toasts: × didn't close it"; return 1; }
+}
+
+scenario fleet_remote_task M4
+fleet_remote_task() {
+  export KANNA_FLEET_MDNS=0 KANNA_FLEET_PORT=0
+  start_daemon || { echo "fleet_remote_task line $LINENO"; return 1; }
+  local vm="$KANNA_STATE_DIR/fleet-vm"
+  mkdir -p "$vm/state" && chmod 700 "$vm"
+  vmk() { KANNA_SOCKET="$vm/kanna.sock" KANNA_STATE_DIR="$vm/state" "$bin/kanna" "$@"; }
+  vraw() { KANNA_SOCKET="$vm/kanna.sock" raw "$@"; }
+  KANNA_SOCKET="$vm/kanna.sock" KANNA_STATE_DIR="$vm/state" KANNA_KEEPER="$bin/kanna-keeper" "$bin/kanna-daemon" >>"$out/daemon-vm.log" 2>&1 &
+  local vm_pid=$!
+  wait_for 5 test -S "$vm/kanna.sock" || { echo "fleet_remote_task: the second daemon didn't open its socket"; return 1; }
+  kanna fleet name mbp >/dev/null && vmk fleet name vm >/dev/null || { echo "fleet_remote_task line $LINENO"; return 1; }
+  python3 - "$KANNA_SOCKET" >"$KANNA_STATE_DIR/confirmed" <<'PY' &
+import json, socket, sys
+s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); f = s.makefile("rw")
+f.write(json.dumps({"id": 0, "cmd": "app.hello", "args": {"pid": 1}}) + "\n"); f.flush()
+for line in f:
+    m = json.loads(line)
+    if m.get("cmd") == "app.fleet.confirm":
+        f.write(json.dumps({"id": m["id"], "ok": True, "confirmed": True}) + "\n"); f.flush()
+        print(m["args"]["name"], flush=True)
+        break
+PY
+  local confirmer=$!
+  vmk fleet pair --json >"$KANNA_STATE_DIR/offer" &
+  local waiting=$!
+  check wait_for 5 test -s "$KANNA_STATE_DIR/offer" || { echo "fleet_remote_task: no pairing code"; return 1; }
+  local code peer
+  code="$(head -1 "$KANNA_STATE_DIR/offer" | field code)"
+  peer="$(head -1 "$KANNA_STATE_DIR/offer" | python3 -c 'import json, sys; o = json.load(sys.stdin); print("%s@127.0.0.1:%s" % (o["key"], o["port"]))')"
+  expected="added vm to your fleet"; says kanna fleet pair "$code" --peer "$peer" || return 1
+  wait "$waiting" "$confirmer"
+  check test "$(cat "$KANNA_STATE_DIR/confirmed")" == vm || { echo "fleet_remote_task: the pairing wasn't confirmed in an app"; return 1; }
+  start_app || { echo "fleet_remote_task line $LINENO"; return 1; }
+  fleet() { raw '{"id":1,"cmd":"debug.fleet"}' | field "$1"; }
+  check wait_for 20 eval '[[ "$(fleet links.0.attached)" == True ]]' || { echo "fleet_remote_task: the app didn't link to vm"; raw '{"id":1,"cmd":"debug.fleet"}'; return 1; }
+  check test "$(fleet links.0.machine) $(fleet links.0.daemon.machine) $(fleet links.0.path.path)" == "vm vm direct" || { raw '{"id":1,"cmd":"debug.fleet"}'; return 1; }
+
+  local repo="$vm/repo"
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first && git -C "$repo" remote add origin https://example.com/team/notes.git || { echo "fleet_remote_task line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  local opened; opened="$(cd / && vmk "$repo")" && [[ "$opened" == "opened d1 on vm:$repo" ]] || { echo "fleet_remote_task: a Desk on vm's project: $opened"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"${2:-d1}\"}}" | field "$1"; }
+  check wait_for 10 eval '[[ "$(desk lead)" == term-*@vm ]]' || { echo "fleet_remote_task: the Desk's planner isn't on vm"; desk lead; vmk workspace list --all; return 1; }
+  local planner; planner="$(desk lead)"
+  check test "$(vmk workspace list --all --json | python3 -c 'import json, sys; print(sum(1 for w in json.load(sys.stdin)["workspaces"] if w.get("where") == {"planner": "mbp"}))')" == 1 || { echo "fleet_remote_task: vm's planner isn't claimed by mbp"; vmk workspace list --all --json; return 1; }
+  check test "$(kanna workspace list --all --json | python3 -c 'import json, sys; print(len(json.load(sys.stdin)["workspaces"]))')" == 0 || { echo "fleet_remote_task: the planner ran on this Mac"; return 1; }
+  check wait_for 10 eval '[[ "$(desk header)" == "Planning · $repo · main" ]]' || { echo "fleet_remote_task: header"; desk header; return 1; }
+
+  (cd "$repo" && KANNA_TERMINAL="${planner%@vm}" vmk task new "Remote work" "Change the notes") >/dev/null || { echo "fleet_remote_task line $LINENO"; return 1; }
+  local task; task="$(sqlite3 -readonly "$vm/state/kanna.db" "select id from tasks order by rowid limit 1")@vm"
+  check wait_for 10 eval '[[ "$(desk backlog)" == "[\"$task\"]" ]]' || { echo "fleet_remote_task: the Desk's backlog doesn't list vm's task"; desk backlog; return 1; }
+  raw '{"id":1,"cmd":"debug.click","args":{"backlog":"'"$task"'","window":"d1"}}' >/dev/null
+  check wait_for 10 eval '[[ "$(desk shelf.0.title)" == "Remote work" ]]' || { echo "fleet_remote_task: starting vm's task didn't put it on the Shelf"; desk shelf; desk note; return 1; }
+  local agent; agent="$(desk shelf.0.task)"
+  [[ "$agent" == term-*@vm ]] || { echo "fleet_remote_task: the task's agent isn't vm's: $agent"; return 1; }
+  check test "$(desk places.0)" == "vm · Direct · LAN" || { echo "fleet_remote_task: the Shelf's tooltips"; desk places; return 1; }
+  check test "$(vmk task list --json | python3 -c 'import json, sys; print([t.get("where") for t in json.load(sys.stdin)["tasks"]])')" == "[{'shelf': 'mbp'}]" || { vmk task list --json; return 1; }
+  raw '{"id":1,"cmd":"debug.click","args":{"shelf":"'"$agent"'","window":"d1"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk window.dock.pane)" == "$agent" ]]' || { echo "fleet_remote_task: pulling vm's task didn't dock its agent"; raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}'; return 1; }
+  check wait_for 10 eval 'vmk read "${agent%@vm}" | grep -q mock-agent' || { vmk read "${agent%@vm}"; return 1; }
+
+  vraw '{"id":1,"cmd":"debug.type","args":{"pane":"'"${agent%@vm}"'","text":"typed from the mac\r"}}' >/dev/null
+  check wait_for 5 eval 'vmk read "${agent%@vm}" | grep -q "typed from the mac"' || { echo "fleet_remote_task: typing into vm's agent didn't reach it"; vmk read "${agent%@vm}"; return 1; }
+  check wait_for 5 eval 'raw "{\"id\":1,\"cmd\":\"debug.text\",\"args\":{\"pane\":\"$agent\"}}" | field text | grep -q "typed from the mac"' || { echo "fleet_remote_task: the app's view of vm's agent didn't show its output"; raw "{\"id\":1,\"cmd\":\"debug.text\",\"args\":{\"pane\":\"$agent\"}}" | cut -c1-600; return 1; }
+
+  local worktree="$repo/.kanna-worktrees/${task%@vm}"
+  echo "remote change" >"$worktree/notes.txt"
+  local diffopen; diffopen="$(cd "$worktree" && KANNA_TERMINAL="${agent%@vm}" vmk open diff --tab --name remote-diff --json)" || { echo "fleet_remote_task line $LINENO"; return 1; }
+  local diff; diff="$(echo "$diffopen" | field pane.id)@vm"
+  diffpane() { raw "{\"id\":1,\"cmd\":\"debug.diff\",\"args\":{\"pane\":\"$diff\"}}" | field "$1"; }
+  check wait_for 10 eval '[[ "$(diffpane files)" == *notes.txt* ]]' || { echo "fleet_remote_task: the app doesn't show vm's diff"; raw "{\"id\":1,\"cmd\":\"debug.diff\",\"args\":{\"pane\":\"$diff\"}}"; return 1; }
+  check test "$(desk window.dock.pane)" == "$agent" || { echo "fleet_remote_task: the diff moved the agent"; return 1; }
+  local difftab; difftab="$(echo "$diffopen" | field tab)"
+  raw '{"id":1,"cmd":"debug.rename","args":{"tab":"'"$difftab"'@vm","title":"term-1@vm"}}' | grep -q '"ok":true' || { echo "fleet_remote_task line $LINENO"; return 1; }
+  check wait_for 5 eval 'vmk workspace list --all --json | grep -q "\"term-1@vm\""' || { echo "fleet_remote_task: a remote tab's title that looks like an ID lost its suffix through the app"; vmk workspace list --all --json; return 1; }
+  sleep 0.5; snap d1 fleet_remote_task >/dev/null
+
+  check test "$(desk pages)" == '["Shelf", "Machines"]' || { echo "fleet_remote_task: the Desk's fixed tabs"; desk pages; return 1; }
+  check test "$(desk headerTip)" == "vm · Direct · LAN" || { echo "fleet_remote_task: the agent header's tooltip"; desk headerTip; return 1; }
+  check test "$(desk header)" == "$repo/.kanna-worktrees/${task%@vm} · ${task%@vm}" || { echo "fleet_remote_task: the agent header"; desk header; return 1; }
+  raw '{"id":1,"cmd":"debug.click","args":{"page":"Machines","window":"d1"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk fleetPage)" == True ]]' || { echo "fleet_remote_task: the Machines tab didn't show the Machines page"; return 1; }
+  check test "$(desk window.dock.pane)" == "$agent" || { echo "fleet_remote_task: the Machines tab moved the agent"; return 1; }
+  check python3 -c 'import json, sys
+rows = json.loads(sys.argv[1])
+assert [(r["name"], r["path"]) for r in rows] == [("mbp", "This Mac"), ("vm", "Direct · LAN")], rows
+assert rows[0]["detail"].startswith("This Mac · macOS") and rows[1]["detail"].startswith("macOS") and "cores" not in rows[1]["detail"], rows
+assert "local network" in rows[1]["tip"], rows' "$(desk fleet)" || return 1
+  raw '{"id":1,"cmd":"debug.click","args":{"page":"Shelf","window":"d1"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk page)" == True && "$(desk fleetPage)" == False ]]' || { echo "fleet_remote_task: the Shelf tab"; return 1; }
+  raw '{"id":1,"cmd":"debug.click","args":{"tab":"'"$(desk window.tab)"'"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk page)" == False ]]' || { echo "fleet_remote_task: a document tab didn't leave the Shelf tab"; return 1; }
+  local first; first="$(desk window.tabs.0.id)"
+  raw '{"id":1,"cmd":"debug.click","args":{"tab":"'"$first"'"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk window.tab)" == "$first" ]]' || { echo "fleet_remote_task line $LINENO"; return 1; }
+  raw '{"id":1,"cmd":"debug.menu","args":{"item":"Previous Tab"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk fleetPage)" == True ]]' || { echo "fleet_remote_task: Previous Tab from the first document tab didn't show the Machines tab"; return 1; }
+  raw '{"id":1,"cmd":"debug.menu","args":{"item":"Next Tab"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk page)" == False && "$(desk fleetPage)" == False && "$(desk window.tab)" == "$first" ]]' || { echo "fleet_remote_task: Next Tab from the Machines tab didn't return to the first document tab"; return 1; }
+  check test "$(desk window.dock.pane)" == "$agent" || { echo "fleet_remote_task: switching tabs by keyboard moved the agent"; return 1; }
+
+  kill "$vm_pid"; wait_for 10 eval '! kill -0 '"$vm_pid" || { echo "fleet_remote_task: vm's daemon didn't stop"; return 1; }
+  check wait_for 10 eval '[[ "$(fleet links.0.attached)" == False ]]' || { echo "fleet_remote_task: the app didn't see vm go"; return 1; }
+  check wait_for 5 eval '[[ "$(desk headerTip)" == "vm · Offline" && "$(desk header)" == "Last received"*"input is unavailable"* ]]' || { echo "fleet_remote_task: an offline task's header"; desk header; desk headerTip; return 1; }
+  check test "$(desk window.dock.pane)" == "$agent" || { echo "fleet_remote_task: going offline moved the task"; return 1; }
+  raw '{"id":1,"cmd":"debug.type","args":{"pane":"'"$agent"'","text":"lost while offline\r"}}' >/dev/null
+  stop_app; start_app || { echo "fleet_remote_task: the app didn't start again with vm's Desk saved and vm offline"; return 1; }
+  sleep 1; check app_attached || { echo "fleet_remote_task: the app didn't survive restoring vm's Desk while vm is offline"; tail -5 "$out/app.log"; return 1; }
+  KANNA_FLEET_PORT="$(head -1 "$KANNA_STATE_DIR/offer" | field port)" KANNA_SOCKET="$vm/kanna.sock" KANNA_STATE_DIR="$vm/state" KANNA_KEEPER="$bin/kanna-keeper" "$bin/kanna-daemon" >>"$out/daemon-vm.log" 2>&1 &
+  vm_pid=$!
+  check wait_for 30 eval '[[ "$(fleet links.0.attached)" == True ]]' || { echo "fleet_remote_task: the app didn't link to vm again"; raw '{"id":1,"cmd":"debug.fleet"}'; return 1; }
+  check wait_for 5 eval '[[ "$(desk headerTip)" == "vm · Direct · LAN" && "$(desk header)" != "Last received"* ]]' || { echo "fleet_remote_task: the task didn't come back online"; desk header; return 1; }
+  check test "$(desk window.dock.pane) $(desk shelf)" == "$agent []" || { echo "fleet_remote_task: reconnecting changed the Desk"; desk shelf; return 1; }
+  ! vmk read "${agent%@vm}" | grep -q "lost while offline" || { echo "fleet_remote_task: input typed while offline was queued"; return 1; }
+  vraw '{"id":1,"cmd":"debug.type","args":{"pane":"'"${agent%@vm}"'","text":"back online\r"}}' >/dev/null
+  check wait_for 5 eval 'vmk read "${agent%@vm}" | grep -q "back online"' || { echo "fleet_remote_task: input after reconnecting"; return 1; }
+
+  local clone="$KANNA_STATE_DIR/clone"
+  git clone -q "$repo" "$clone" && git -C "$clone" remote set-url origin git@example.com:team/notes.git || { echo "fleet_remote_task line $LINENO"; return 1; }
+  opened="$(cd / && kanna "$clone")"
+  [[ "$opened" == "brought forward d1 on "* ]] || { echo "fleet_remote_task: a clone of vm's project on this Mac didn't bring its Desk forward: $opened"; return 1; }
+
+  kanna task list >/dev/null || return 1
+  check test "$(kanna task list --json | python3 -c 'import json, sys; print(len(json.load(sys.stdin)["tasks"]))')" == 0 || { echo "fleet_remote_task: vm's task leaked into this Mac's backlog"; return 1; }
 }
 
 for s in ${only[@]+"${only[@]}"}; do due "$s" >/dev/null || { echo "e2e-kanna: no scenario named $s (see --help)" >&2; exit 2; }; done

@@ -99,7 +99,7 @@ pub enum Event {
     KeeperReadable,
     KeeperExits,
     KeeperLost(String),
-    AppHello { conn: u64, hello: Value, out: Outbox, stream: UnixStream },
+    AppHello { conn: u64, hello: Value, out: Outbox, stream: UnixStream, remote: Option<String> },
     AppCaughtUp { conn: u64 },
     AppMessage { conn: u64, message: Value },
     AppGone { conn: u64 },
@@ -353,6 +353,10 @@ fn run() -> Result<(), String> {
 
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
     let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), files.clone(), layout.clone(), app_timeout, build_id.clone()));
+    if let Some(fleet) = &fleet {
+        let fleet = Rc::downgrade(fleet);
+        *app.machine.borrow_mut() = Some(Box::new(move || fleet.upgrade().map_or(Value::Null, |f| f.machine())));
+    }
     let view_link = Rc::downgrade(&app);
     *layout.on_view.borrow_mut() = Some(Box::new(move |view| {
         if let Some(app) = view_link.upgrade() {
@@ -403,7 +407,12 @@ fn run() -> Result<(), String> {
         "desk",
         Rc::new(move |mut args, responder| {
             let (Some(app), Some(backlog)) = (link.upgrade(), resolving.upgrade()) else { return };
-            let Some(task) = args.get("task").and_then(Value::as_str).map(String::from) else { return app.forward("desk", args, responder) };
+            let Some(task) = args.get("task").and_then(Value::as_str).map(String::from) else {
+                if let Some(folder) = args.get("project").and_then(Value::as_str).filter(|_| args.get("action").and_then(Value::as_str) == Some("desk")) {
+                    args["place"] = projects::place(folder);
+                }
+                return app.forward("desk", args, responder);
+            };
             backlog.agent(&task, move |found| match found {
                 Ok(pane) => {
                     args["task"] = Value::String(pane);
@@ -599,14 +608,18 @@ fn run() -> Result<(), String> {
                 failure = Some(reason);
                 break;
             }
-            Event::AppHello { conn, hello, out, stream } => {
-                if app.hello(conn, hello, out, stream) {
+            Event::AppHello { conn, hello, out, stream, remote } => {
+                if app.hello(conn, hello, out, stream, remote) {
                     break;
                 }
                 toasts.attached();
             }
             Event::AppMessage { conn, message } => {
                 if let Some(request) = app.message(conn, message) {
+                    if let Some(refused) = fleet::refuse_remote(&request).filter(|_| !app.attached_here()) {
+                        app.answer_app(conn, refused);
+                        continue;
+                    }
                     let link = Rc::downgrade(&app);
                     timed(request_name(&request), "the app", || {
                         core.handle(request, move |reply| {

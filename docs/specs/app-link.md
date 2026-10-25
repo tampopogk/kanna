@@ -49,7 +49,7 @@ sequenceDiagram
 
 | Message | From | What it says |
 |---|---|---|
-| `app.hello {pid, build}` | app | I'm the app, of this build; the reply accepts or refuses it (`app_attached`, `other_build`) and has the daemon's panes and layout |
+| `app.hello {pid, build, protocols, commit, client}` | app | I'm the app, of this build; the reply accepts or refuses it (`app_attached`, `other_build`, `other_protocol`) and has the protocol, the daemon's machine and capabilities, its panes and layout; over the fleet `build` is left out ([links §2](machine-links.md#2-the-hello)) |
 | `layout {windows, …}` | daemon | the layout changed; this is the whole view to draw ([layout](layout.md)) |
 | `attach {terminal}` / `detach {terminal}` | app | I show (or no longer show) this terminal, by its terminal ID (`term-41`, [presentation layers](presentation-layers.md#3-ids)) |
 | `snapshot {terminal, data}` | daemon | the terminal's whole screen as a GHOSTSNP snapshot; sent on attach, before anything else for that terminal |

@@ -1727,9 +1727,11 @@ dependencies = [
  "kanna-client",
  "kanna-merman",
  "kanna-mux",
+ "kanna-net",
  "kanna-threads",
  "libc",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -1804,7 +1806,10 @@ version = "0.1.0"
 dependencies = [
  "kanna-layout",
  "kanna-merman",
+ "kanna-net",
  "kanna-syntax",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

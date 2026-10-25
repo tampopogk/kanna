@@ -20,7 +20,7 @@ How one of your machines knows another is yours, with no account and no server. 
 | the app's endpoint key | Kanna.app, made at first launch | its own iroh endpoint, with a **certificate** from `device.key`: `{key, device, sig}` |
 
 - **Why two:** an iroh endpoint *is* its key, so the daemon and the app can't share one. The relay would register only the latest, and the daemon would drop off while the app is open.
-- **A remote daemon accepts** an endpoint whose certificate chains to a device in its peer log. The certificate is in the app's hello.
+- **A remote daemon accepts** an endpoint whose certificate chains to a device in its peer log. The certificate is in the header of the app's `control` stream ([links §1](machine-links.md#1-making-a-link)).
 - **The CLI has no endpoint:** `kanna --host NAME` asks the local daemon to dial NAME and forwards the command, so a short-lived process never registers with a relay.
 
 ## 2. Pairing

@@ -24,6 +24,9 @@ struct DaemonHost(Mutex<Sender<Event>>);
 
 impl Host for DaemonHost {
     fn request(&self, _from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send>) {
+        if let Some(refused) = refuse_remote(&request) {
+            return reply(refused);
+        }
         let _ = self.0.lock().unwrap_or_else(|p| p.into_inner()).send(Event::Request(request, reply));
     }
 
@@ -34,6 +37,17 @@ impl Host for DaemonHost {
     fn save(&self, state: Value) {
         let _ = self.0.lock().unwrap_or_else(|p| p.into_inner()).send(Event::FleetSave(state));
     }
+
+    fn app(&self, from: String, hello: Value, stream: std::os::unix::net::UnixStream) {
+        let events = self.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let Ok(reader) = stream.try_clone() else { return };
+        let _ = std::thread::Builder::new().name("kanna.app.read".into()).spawn(move || crate::app_link::serve(events, hello, std::io::BufReader::new(reader), stream, Some(from)));
+    }
+}
+
+pub fn refuse_remote(request: &Value) -> Option<Value> {
+    let certify = request.get("cmd").and_then(Value::as_str) == Some("fleet") && request.pointer("/args/action").and_then(Value::as_str) == Some("certify");
+    certify.then(|| json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": false, "error": { "code": "local_only", "message": "only this machine's own Kanna.app can have its endpoint certified" } }))
 }
 
 fn hostname() -> String {
@@ -94,6 +108,7 @@ impl Fleet {
         let needs_host = |host: Option<String>| host.ok_or_else(|| KmuxError::new("bad_request", format!("fleet {action} needs a machine: its name or key")));
         match action.as_str() {
             "status" => responder.reply(object(node.status())),
+            "certify" => responder.reply(string(&args, "key").ok_or_else(|| KmuxError::new("bad_request", "fleet certify needs the app's endpoint KEY")).and_then(|key| node.certify(key).map_err(error)).and_then(|cert| object(json!({ "cert": cert })))),
             "name" => responder.reply(string(&args, "name").ok_or_else(|| KmuxError::new("bad_request", "fleet name needs a NAME")).and_then(|name| node.rename(name).map_err(error)).and_then(object)),
             "offer" => responder.reply(node.offer().map_err(error).and_then(object)),
             "addr" => {
@@ -139,7 +154,7 @@ impl Fleet {
                     })
                 });
             }
-            other => responder.reply(Err(KmuxError::new("bad_request", format!("unknown fleet action \"{other}\" (status, name, offer, wait, pair, revoke, addr, ping, sync or call)")))),
+            other => responder.reply(Err(KmuxError::new("bad_request", format!("unknown fleet action \"{other}\" (status, name, offer, wait, pair, revoke, addr, ping, sync, certify or call)")))),
         }
     }
 
@@ -148,7 +163,7 @@ impl Fleet {
     }
 
     pub fn confirm(&self, app: &AppLink, question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send>) {
-        if !app.attached() {
+        if !app.attached_here() {
             return answer(Err("Kanna.app isn't open on this machine".into()));
         }
         let (responder, reply) = kanna_mux::responder();
@@ -159,6 +174,13 @@ impl Fleet {
                 Err(e) => Err(e.message),
             })
         });
+    }
+
+    pub fn machine(&self) -> Value {
+        match &self.node {
+            Ok(node) => json!({ "name": node.status()["name"], "capabilities": capabilities() }),
+            Err(_) => json!({ "name": hostname(), "capabilities": capabilities() }),
+        }
     }
 
     pub fn stop(&self) {

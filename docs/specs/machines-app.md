@@ -1,6 +1,6 @@
 # Machines: Desks Across Machines
 
-**Status:** model approved by user; product planned · **Part of:** [machines §6](machines.md#6-one-app-several-machines) · **Model:** [fleet.html](../../references/mockups/fleet.html) · **Run and scope:** [README](../../references/mockups/fleet/README.md) · **Before:** Fleet 3
+**Status:** model approved by user; built in Fleet 3 ([one link per machine](machine-links.md)) · **Part of:** [machines §6](machines.md#6-one-app-several-machines) · **Model:** [fleet.html](../../references/mockups/fleet.html) · **Run and scope:** [README](../../references/mockups/fleet/README.md) · **Before:** Fleet 3
 
 A Desk belongs to a project. Pulling a task changes what the app shows, while its agent and jobs keep running where they are. The model follows the existing [Desk](../../references/mockups/desk.html) style.
 
@@ -20,7 +20,7 @@ The mockup still labels this tab **Fleet**; the product calls it **Machines**.
 
 ![Machines shows the local Mac, a direct LAN peer, a relayed peer and an offline peer](machines-page.png)
 
-The Machines tab is app-wide: each peer's path **from this Mac**, capabilities and connection state. It has no Work column; task and job details stay with the task. A host such as r720-1 is context for a VM, not an additional peer. The relay is a path, not a task-running machine.
+The Machines tab is app-wide: each peer's path **from this Mac** and connection state. It has no Work column; task and job details stay with the task. A host such as r720-1 is context for a VM, not an additional peer. The relay is a path, not a task-running machine.
 
 Each row distinguishes **This Mac**, **Direct · LAN**, **Direct · internet**, **Relayed**, and **Offline**. Shelf and Machines are fixed, non-closeable tabs at the start of the right-hand tab strip, before the current task’s document tabs. Shelf shows the project’s Shelf and backlog; Machines shows the machine inventory. Both remain available while a task is open. Switching tabs preserves the current agent, task selection, input and claims; it does not park the task. Hovering or keyboard-focusing a path indicator within Machines reveals its connection explanation as a tooltip. There is no persistent connection-detail panel. Select Shelf or the task’s document tab to return.
 
@@ -55,7 +55,7 @@ Compare the product against these scenes and transitions, using the model's fixt
 | File → New Desk / Open Recent → Kanna twice | Existing project Desk comes forward; its task selection survives; no duplicate Desk |
 | Open Recipe Box, then Kanna | Separate project Desks with their own Shelf and selection; names, not clone paths |
 | Pull **Keep terminal output** then **Review build output** | Correct agent and tabs despite matching terminal IDs; task input cannot leak between peers |
-| `#picture,fleet` | Machine and path columns only; capabilities and last-seen information; no task or job listing |
+| `#picture,fleet` | Machine and path columns only; last-seen information; no task or job listing |
 | `#picture,relay-task`, hover or focus its header | Tooltip gives the machine and Relayed state; no persistent badge; Machines remains available as a fixed tab |
 | `#picture,offline-task` | Retained claim and last view; stale labels; disabled input; other tasks remain available |
 | Mixed paths → All on LAN | Tooltip changes to Direct · LAN; input returns; task, owner, claim count and order unchanged |

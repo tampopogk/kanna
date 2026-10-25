@@ -597,6 +597,7 @@ pub struct Backlog {
     delivering: RefCell<HashSet<String>>,
     posting: RefCell<HashMap<u64, (String, Vec<Message>)>>,
     pub on_change: RefCell<Option<Box<dyn Fn(Value)>>>,
+    pub claimant: RefCell<String>,
 }
 
 struct Book(Weak<Backlog>);
@@ -655,6 +656,7 @@ impl Backlog {
             branching: RefCell::default(),
             turns_away: RefCell::default(),
             next: Cell::new(0),
+            claimant: RefCell::new(MAC_APP.into()),
             turns: RefCell::default(),
             quitting: RefCell::default(),
             launching: RefCell::default(),
@@ -831,6 +833,7 @@ impl Backlog {
         value["script"] = opt(self.script_said(entry, entry.held.as_deref(), running).as_deref());
         let waits = self.waits(entry).iter().map(|id| json!({ "id": id, "name": opt(self.known(id).and_then(|e| e.name).as_deref()), "pane": opt(self.pane_of(id).as_deref()) })).collect();
         value["waits"] = Value::Array(waits);
+        value["project"] = opt(kanna_mux::project(Some(&entry.repo)).and_then(|main| crate::projects::identity(&main)).as_deref());
         value
     }
 
@@ -1853,11 +1856,13 @@ impl Backlog {
 
     fn plan(&self, args: &Value, responder: Responder) {
         let Some(core) = self.core.upgrade() else { return responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))) };
-        let app = string(args, "app").unwrap_or(MAC_APP);
+        let claimant = self.claimant.borrow().clone();
+        let app = string(args, "app").unwrap_or(&claimant);
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
         let folder = string(args, "folder").filter(|f| Path::new(f).is_absolute() && Path::new(f).is_dir()).unwrap_or(&home);
         let zsh = Some(self.state.join("shell/zsh")).filter(|dir| dir.join(".zshenv").is_file());
-        let script = string(args, "script").filter(|s| Path::new(s).is_file());
+        let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("planner.sh"))).filter(|s| s.is_file());
+        let script = string(args, "script").filter(|s| Path::new(s).is_file()).or(beside.as_deref().and_then(Path::to_str));
         let repos = crate::agents::home().join(".kanna-v4/repos");
         let context = planning_context(&config_files(Path::new(folder)));
         let cmd = planner_command(script, context, zsh.as_deref().and_then(Path::to_str), cli().as_deref().and_then(Path::to_str), &repos, &planner_agents(context));
@@ -1877,7 +1882,8 @@ impl Backlog {
         if let Err(error) = self.ready(&entry) {
             return responder.reply(Err(error));
         }
-        self.room(entry, string(args, "app").unwrap_or(MAC_APP).to_string(), who(args).map(String::from), Answer::To(responder));
+        let app = string(args, "app").map_or_else(|| self.claimant.borrow().clone(), String::from);
+        self.room(entry, app, who(args).map(String::from), Answer::To(responder));
     }
 
     fn start(self: &Rc<Self>, args: &Value, responder: Responder) {

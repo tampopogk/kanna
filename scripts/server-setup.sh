@@ -87,7 +87,7 @@ fi
 dest="$prefix/$commit"
 rm -rf "$dest.new"
 mkdir -p "$dest.new/kanna-skills"
-cp "$built/kanna" "$built/kanna-daemon" "$built/kanna-keeper" "$dest.new/"
+cp "$built/kanna" "$built/kanna-daemon" "$built/kanna-keeper" "$repo_root/apps/kanna/Resources/planner.sh" "$dest.new/"
 for skill in kanna-tasks kanna-planning kanna-new-project kanna-markup kanna-explain kanna-quiz; do cp -RL "$repo_root/.agents/kanna-skills/skills/$skill" "$dest.new/kanna-skills/"; done
 if diff -r -q "$dest.new" "$dest" >/dev/null 2>&1; then
   rm -rf "$dest.new"

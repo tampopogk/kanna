@@ -1,6 +1,6 @@
 # Your Machines
 
-**Status:** planned · **Parts:** [identity and pairing](machine-identity.md), [tasks across machines](machine-tasks.md), [Desks across machines](machines-app.md), [setting up a Linux machine](machine-setup.md), [agent sign-in](agent-sign-in.md), [build order](machines-build-order.md) · **Builds on:** [architecture](architecture.md), [app link](app-link.md), [each app's Desk and Shelf](app-desk.md), [backlog runners](backlog-runners.md) · **Built on by:** [Kanna Cloud](kanna-cloud.md) · **Research:** [fleet](../research/fleet.md)
+**Status:** planned · **Parts:** [identity and pairing](machine-identity.md), [tasks across machines](machine-tasks.md), [Desks across machines](machines-app.md), [one link per machine](machine-links.md), [setting up a Linux machine](machine-setup.md), [agent sign-in](agent-sign-in.md), [build order](machines-build-order.md) · **Builds on:** [architecture](architecture.md), [app link](app-link.md), [each app's Desk and Shelf](app-desk.md), [backlog runners](backlog-runners.md) · **Built on by:** [Kanna Cloud](kanna-cloud.md) · **Research:** [fleet](../research/fleet.md)
 
 **Your machines** are the machines your daemons trust: paired by code, listed in your signed peer log, connected over iroh, sharing your backlog and passing tasks between them. A MacBook Pro is usually the client; a Mac mini at home, a Linux box, or a VM Kanna Cloud made for you runs tasks too. Once a machine has joined, it's a peer like any other, whoever runs it. Kanna develops any project, not only Kanna.
 
@@ -37,7 +37,7 @@ It's free and open source, with no account and no server of Kanna's: on the LAN,
 
 ## 2. Machines and roles
 
-Every machine runs the same daemon and keeper. They differ in what each is for, advertised as **capabilities**: OS, architecture, cores, RAM, Xcode versions, display.
+Every machine runs the same daemon and keeper. They differ in what each is for, which you say with placement preferences; matching tasks to machines by capability is [Kanna Cloud's](kanna-cloud.md#5-directory-and-relays).
 
 ```mermaid
 flowchart LR
@@ -67,8 +67,8 @@ flowchart LR
 
 **Placement: where work goes.**
 
-- **Placement is a policy, not a place.** By default, any machine with free slots and the capabilities a task `needs:` asks for the oldest waiting task, so a mini and ten Linux boxes share one backlog without a scheduler ([tasks §2](machine-tasks.md#2-owners-and-grants)). Preferences narrow who asks (e2e on the mini, this project's agents on those machines).
-- **A task runs whole on one machine.** A task that needs macOS goes to a Mac.
+- **Placement is a policy, not a place.** By default, any machine with free slots asks for the oldest waiting task, so a mini and ten Linux boxes share one backlog without a scheduler ([tasks §2](machine-tasks.md#2-owners-and-grants)). Preferences narrow who asks (e2e on the mini, this project's agents on those machines).
+- **A task runs whole on one machine.** A task that needs macOS goes to a Mac by preference.
 - **Taking a task to the Desk doesn't move it.** It stays where it runs and is shown over the link.
 
 ## 3. Reach: LAN first, relay second
@@ -98,7 +98,8 @@ sequenceDiagram
     participant A as Kanna.app (mbp)
     participant D as daemon on linux-1
     A->>D: connect (iroh: the app's endpoint key)
-    A->>D: app.hello {pid, app, client: "mbp", cert, protocols: 3..5, commit}
+    A->>D: control stream {kind, cert}
+    A->>D: app.hello {pid, app, client: "mbp", protocols: 3..5, commit}
     alt no protocol in common
         D-->>A: ok: false, other_protocol {mine: 1..2, commit}
         Note over A: "linux-1 is too old: it updates itself", and the daemon keeps running
@@ -114,7 +115,7 @@ sequenceDiagram
 | Who starts it | the app; on a Mac that serves your other machines, launchd | systemd (Linux), launchd (Macs) |
 | Apps | one (`app_attached`) | one; lifting the limit is its own slice, needed before the phone |
 
-- **One link per machine.** Every view is keyed by (machine, content ID), since `term-41` exists on every daemon.
+- **One link per machine.** Every view is keyed by (machine, content ID), since `term-41` exists on every daemon. Built: [one link per machine](machine-links.md).
 - **The CLI:** `kanna --host NAME` (or `KANNA_HOST`) sends any command to that machine: the local daemon dials it and forwards the command as `fleet call` over a control stream, and the reply is the remote daemon's own. Inside a remote terminal nothing changes: the CLI there uses its own unix socket. Commands that read local files (`diagrams`, doc comments) still run on this machine.
 - **A Mac that serves your other machines** (a Mac whose tasks you reach from elsewhere) runs its daemon from launchd (`kanna machine serve`), a LaunchAgent pointed at the installed app's `Contents/Helpers/kanna-daemon`. The app's replace rule still holds: on `other_build` the daemon exits, and launchd starts it again from the updated bundle.
 - **Streams:** one ALPN, `kanna/1`. Each stream opens with a header line naming its kind (`control`, `file`, `port`, `sync`, `job`, `transfer`), answered by `{ok: true, kind, name}` or a refusal (`unpaired`, `revoked`, `unknown_stream`), and its bytes follow. A `control` stream carries JSON-line requests and replies, as on the unix socket. A seventh kind, `pair`, is the only one an unknown key may open ([identity §2](machine-identity.md#2-pairing)). Until their slices, `file`, `port`, `sync`, `job` and `transfer` are acknowledged and closed; `sync` and `job` are used by services built on top, such as [Kanna Cloud](kanna-cloud.md).
@@ -145,7 +146,7 @@ See [Desks across machines](machines-app.md) for project identity, the app's She
 In short ([detail](machine-tasks.md)):
 
 - **The backlog is replicated** to every one of your daemons, eventually consistent, ordered oldest first by a hybrid logical clock.
-- **Each task has one owner.** A runner elsewhere with free slots and the right capabilities asks for it, and the owner grants it to exactly one.
+- **Each task has one owner.** A runner elsewhere with free slots, within the task's preferences, asks for it, and the owner grants it to exactly one.
 - **Transfer** moves a task between any two daemons at a boundary. The branch goes as a git bundle over the link, the transcript is copied, and the agent resumes by session ID at the receiver's own paths.
 
 ## 9. Server setup and updates

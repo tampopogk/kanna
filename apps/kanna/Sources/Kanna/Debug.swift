@@ -56,6 +56,11 @@ extension AppController {
             if let title = args["item"]?.string { try choose(menuItem: title) }
             return ["items": .array(menuItems)]
         }
+        commands["debug.rename"] = { [weak self] args in
+            guard let tab = args["tab"]?.string, let title = args["title"]?.string else { throw KannaError("bad_request", "debug.rename needs a tab and a title") }
+            self?.layoutCommand("rename-tab", ["tab": .string(tab), "title": .string(title)])
+            return ["tab": .string(tab)]
+        }
         commands["debug.perf"] = { args in
             if args["reset"]?.bool == true { Perf.reset() }
             let ms = { (value: Double) -> JSON in .number((value * 10).rounded() / 10) }
@@ -130,6 +135,15 @@ extension AppController {
             } ?? []
             return reply
         }
+        commands["debug.fleet"] = { [weak self] _ in
+            guard let self, let links else { return [:] }
+            let remotes = links.remotes.keys.sorted().map { machine -> JSON in
+                let link = links.remotes[machine]
+                return ["machine": .string(machine), "attached": .bool(link?.attached == true), "path": links.path(of: machine),
+                        "failure": links.failure(of: machine) ?? .null, "daemon": link?.daemonInfo ?? .null]
+            }
+            return ["name": links.name.map { .string($0) } ?? .null, "links": .array(remotes)]
+        }
         commands["debug.desk"] = { [weak self] args in
             guard let self else { return [:] }
             let id = args["window"]?.string ?? state["key"]?.string ?? ""
@@ -150,7 +164,9 @@ extension AppController {
                     "header": controller.agentHeader.isHidden ? .null : .string(controller.agentHeader.text),
                     "backlog": .array(controller.backlog.map { .string($0.id) }), "agents": .array(controller.backlog.map { $0.agent.map { .string($0) } ?? .null }), "running": .number(Double(controller.running)),
                     "waiting": .string(controller.shelfStrip.waitingText), "stripLayout": controller.shelfStrip.geometry, "note": .string(controller.note), "cheer": .string(controller.cheer),
-                    "lead": controller.leadShown.map { .string($0) } ?? .null, "window": window(id) ?? .null, "scroll": scrolled, "search": search,
+                    "lead": controller.leadShown.map { .string($0) } ?? .null, "pages": .array(controller.tabBar.pageItems.map { .string($0.title) }),
+                    "fleetPage": .bool(!controller.fleetPage.isHidden), "fleet": .array(controller.fleetPage.machines.map { ["name": .string($0.name), "detail": .string($0.detail), "path": .string($0.path), "note": .string($0.note), "tip": .string($0.explanation)] }),
+                    "headerTip": controller.agentHeader.toolTip.map { .string($0) } ?? .null, "places": .array(controller.shelf.map { $0.place.map { .string($0) } ?? .null }), "window": window(id) ?? .null, "scroll": scrolled, "search": search,
                     "responder": .string(controller.window.firstResponder.map { String(describing: type(of: $0)) } ?? "")]
         }
         commands["debug.web"] = { [weak self] args in
@@ -341,7 +357,7 @@ extension AppController {
         } else if let task = args["shelf"]?.string {
             let id = args["window"]?.string ?? state["key"]?.string ?? ""
             guard let controller = controllers[id] else { throw KannaError("not_found", "no window \"\(id)\"") }
-            let spots = controller.emptyDesk ? controller.shelfPage.rows : controller.shelfStrip.items
+            let spots = !controller.shelfPage.isHidden ? controller.shelfPage.rows : controller.shelfStrip.items
             guard let spot = spots.first(where: { $0.task == task }) else { throw KannaError("not_found", "\(task) is not on \(id)'s Shelf") }
             window = controller.window
             point = spot.center
@@ -349,6 +365,11 @@ extension AppController {
             let id = args["window"]?.string ?? state["key"]?.string ?? ""
             guard let controller = controllers[id], let spot = controller.shelfPage.backlogRows.first(where: { $0.task == task }) else { throw KannaError("not_found", "\(task) is not in \(id)'s backlog") }
             guard controller.shelfPage.visibleBacklog.contains(task) else { throw KannaError("not_found", "\(task) is scrolled out of \(id)'s view") }
+            window = controller.window
+            point = spot.center
+        } else if let page = args["page"]?.string {
+            let id = args["window"]?.string ?? state["key"]?.string ?? ""
+            guard let controller = controllers[id], let spot = controller.tabBar.pageItems.first(where: { $0.title == page }) else { throw KannaError("not_found", "no \(page) tab on \(id)") }
             window = controller.window
             point = spot.center
         } else if let id = args["park"]?.string {

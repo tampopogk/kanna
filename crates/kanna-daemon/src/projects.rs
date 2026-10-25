@@ -4,6 +4,86 @@ use kanna_mux::{project, CoreHandle, KmuxError};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+thread_local! {
+    static FIRST_COMMITS: std::cell::RefCell<std::collections::HashMap<PathBuf, String>> = std::cell::RefCell::default();
+}
+
+pub fn identity(main: &Path) -> Option<String> {
+    if let Some(url) = origin(main) {
+        return Some(format!("url:{url}"));
+    }
+    let known = FIRST_COMMITS.with(|ids| ids.borrow().get(main).cloned());
+    let sha = known.or_else(|| {
+        let found = first_commit(main)?;
+        FIRST_COMMITS.with(|ids| ids.borrow_mut().insert(main.to_path_buf(), found.clone()));
+        Some(found)
+    })?;
+    Some(format!("commit:{sha}"))
+}
+
+fn origin(main: &Path) -> Option<String> {
+    let config = std::fs::read_to_string(main.join(".git/config")).ok()?;
+    let mut inside = false;
+    for line in config.lines().map(str::trim) {
+        if line.starts_with('[') {
+            inside = line.replace(' ', "") == "[remote\"origin\"]";
+        } else if let Some(url) = line.strip_prefix("url").map(str::trim_start).and_then(|rest| rest.strip_prefix('=')).filter(|_| inside) {
+            return normalized(url.trim());
+        }
+    }
+    None
+}
+
+pub fn normalized(url: &str) -> Option<String> {
+    let (scheme, rest) = match url.split_once("://") {
+        Some((scheme, rest)) => (Some(scheme), rest),
+        None => (None, url),
+    };
+    if scheme == Some("file") || (scheme.is_none() && (rest.starts_with('/') || rest.starts_with('.') || !rest.contains(':'))) {
+        return None;
+    }
+    let rest = rest.rsplit_once('@').filter(|(user, _)| !user.contains('/')).map_or(rest, |(_, host)| host);
+    let (host, path) = match scheme {
+        Some(_) => rest.split_once('/')?,
+        None => rest.split_once(':')?,
+    };
+    let host = host.split(':').next().unwrap_or(host).to_lowercase();
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    (!host.is_empty() && !path.is_empty()).then(|| format!("{host}/{path}"))
+}
+
+fn first_commit(main: &Path) -> Option<String> {
+    let out = std::process::Command::new("git").arg("-C").arg(main).args(["rev-list", "--max-parents=0", "HEAD"]).stderr(std::process::Stdio::null()).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut roots: Vec<&str> = text.lines().filter(|l| l.len() >= 40).collect();
+    roots.sort();
+    roots.first().map(|r| r.to_string())
+}
+
+pub fn place(cwd: &str) -> Value {
+    let Some(main) = project(Some(cwd)) else { return Value::Null };
+    let resolved = std::fs::canonicalize(cwd).unwrap_or_else(|_| PathBuf::from(cwd));
+    let Some(root) = resolved.ancestors().find(|dir| dir.join(".git").exists()) else { return json!({ "main": main, "root": null, "branch": null, "project": null }) };
+    json!({ "main": main, "root": root, "branch": branch(root), "project": identity(&main) })
+}
+
+fn branch(root: &Path) -> Option<String> {
+    let marker = root.join(".git");
+    let dir = if marker.is_dir() {
+        marker
+    } else {
+        let text = std::fs::read_to_string(&marker).ok().filter(|t| t.len() <= 4096)?;
+        root.join(text.lines().next()?.strip_prefix("gitdir: ")?.trim())
+    };
+    let head = std::fs::read_to_string(dir.join("HEAD")).ok()?;
+    let head = head.trim();
+    match head.strip_prefix("ref: refs/heads/") {
+        Some(name) => Some(name.to_string()),
+        None => (head.len() >= 40 && head.bytes().all(|b| b.is_ascii_hexdigit())).then(|| head[..7].to_string()),
+    }
+}
+
 pub struct Projects {
     db: Rc<Db>,
     home: Option<PathBuf>,
@@ -76,7 +156,7 @@ impl Projects {
         let mut kept = vec![];
         for (path, at) in self.db.projects().map_err(|e| failed("read the recent projects", e))? {
             if Path::new(&path).is_dir() {
-                kept.push(json!({ "path": path, "label": self.label(Path::new(&path)), "at": num(at.floor()) }));
+                kept.push(json!({ "path": path, "label": self.label(Path::new(&path)), "at": num(at.floor()), "project": identity(Path::new(&path)) }));
             } else {
                 self.db.forget_project(&path).map_err(|e| failed("forget a recent project", e))?;
             }
@@ -109,6 +189,29 @@ mod tests {
 
     fn git(dir: &Path, args: &[&str]) {
         assert!(Command::new("git").args(["-c", "user.email=e@e", "-c", "user.name=e"]).args(args).current_dir(dir).status().unwrap().success());
+    }
+
+    #[test]
+    fn a_project_is_known_by_its_origin_wherever_it_is_cloned() {
+        for url in ["git@github.com:tampopogk/kanna.git", "https://github.com/tampopogk/kanna", "ssh://git@GitHub.com:22/tampopogk/kanna.git/", "https://token@github.com/tampopogk/kanna.git"] {
+            assert_eq!(normalized(url).as_deref(), Some("github.com/tampopogk/kanna"), "{url}");
+        }
+        for url in ["/srv/git/kanna", "../kanna", "file:///srv/git/kanna"] {
+            assert_eq!(normalized(url), None, "{url}");
+        }
+        let dir = folder("identity");
+        let repo = dir.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        assert_eq!(identity(&repo), None, "a repo with no commit and no origin has no identity yet");
+        git(&repo, &["-c", "user.name=k", "-c", "user.email=k@k", "commit", "-q", "--allow-empty", "-m", "first"]);
+        let commit = identity(&repo).unwrap();
+        assert!(commit.starts_with("commit:") && commit.len() == 47, "{commit}");
+        git(&repo, &["worktree", "add", "-q", "-b", "task-1", dir.join("wt").to_str().unwrap()]);
+        let found = place(dir.join("wt").to_str().unwrap());
+        assert_eq!((found["branch"].clone(), found["project"].clone(), found["main"].clone()), (json!("task-1"), json!(commit), json!(repo.canonicalize().unwrap())));
+        git(&repo, &["remote", "add", "origin", "git@github.com:tampopogk/kanna.git"]);
+        assert_eq!(identity(&repo).as_deref(), Some("url:github.com/tampopogk/kanna"), "an origin added later is the identity");
     }
 
     #[test]
