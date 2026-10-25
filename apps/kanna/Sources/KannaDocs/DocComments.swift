@@ -106,6 +106,7 @@ package final class DocBar: FlippedView {
     package let path = NSTextField(labelWithString: "")
     package let agent = Chip("")
     package let threads = Chip("Threads")
+    package let diff = Chip("")
 
     package init() {
         super.init(frame: .zero)
@@ -113,7 +114,7 @@ package final class DocBar: FlippedView {
         path.font = DocTheme.mono
         path.textColor = DocTheme.soft
         path.lineBreakMode = .byTruncatingTail
-        for view in [path, agent, threads] { addSubview(view) }
+        for view in [path, agent, threads, diff] { addSubview(view) }
         threads.on = true
     }
 
@@ -122,13 +123,15 @@ package final class DocBar: FlippedView {
     package override func layout() {
         super.layout()
         var x = bounds.width - 10
-        for chip in [threads, agent] {
+        for chip in [threads, agent] where !chip.isHidden {
             x -= chip.frame.width
             chip.frame.origin = NSPoint(x: x, y: 6)
             x -= 10
         }
+        let room = diff.isHidden ? 0 : diff.frame.width + 10
         path.sizeToFit()
-        path.frame = NSRect(x: 10, y: ((bounds.height - path.frame.height) / 2).rounded(), width: max(0, min(path.frame.width, x - 10)), height: path.frame.height)
+        path.frame = NSRect(x: 10, y: ((bounds.height - path.frame.height) / 2).rounded(), width: max(0, min(path.frame.width, x - 10 - room)), height: path.frame.height)
+        diff.frame.origin = NSPoint(x: path.frame.maxX + 10, y: 6)
     }
 
     package override func draw(_ dirtyRect: NSRect) {

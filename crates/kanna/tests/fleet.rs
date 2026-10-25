@@ -25,7 +25,7 @@ fn a_paired_machine_runs_any_command_on_another_and_an_unpaired_or_revoked_one_i
     let paired: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
     assert_eq!(paired["name"], "mbp");
     assert!(waiting.wait().unwrap().success());
-    let asked: Vec<Value> = app.diffs.lock().unwrap().iter().filter(|m| m["cmd"] == "app.fleet.confirm").cloned().collect();
+    let asked: Vec<Value> = app.heard.lock().unwrap().iter().filter(|m| m["cmd"] == "app.fleet.confirm").cloned().collect();
     assert_eq!(asked.len(), 1);
     assert_eq!(asked[0]["args"]["name"], "vm");
 

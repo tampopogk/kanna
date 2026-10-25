@@ -25,6 +25,7 @@ mod status;
 mod status_command;
 mod diffs;
 mod fleet;
+mod files;
 mod store;
 mod task_scripts;
 mod terminals;
@@ -94,6 +95,7 @@ pub enum Event {
     Finished { task: String, changes: Vec<db::Change> },
     Diff { id: String, diff: Value },
     DiffUpdating { id: String },
+    File { id: String, read: files::Read },
     KeeperReadable,
     KeeperExits,
     KeeperLost(String),
@@ -305,6 +307,8 @@ fn run() -> Result<(), String> {
     agents.install(&core);
     let diffs = Rc::new(diffs::Diffs::new(events.clone()));
     diffs.install(&core);
+    let files = Rc::new(files::Files::new(events.clone()));
+    files.install(&core);
     let host = Rc::new(Host::new(terminals.clone()));
     core.set_host(Some(host.clone()));
     let on_change = Rc::downgrade(&terminals);
@@ -348,7 +352,7 @@ fn run() -> Result<(), String> {
     }
 
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
-    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), layout.clone(), app_timeout, build_id.clone()));
+    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), files.clone(), layout.clone(), app_timeout, build_id.clone()));
     let view_link = Rc::downgrade(&app);
     *layout.on_view.borrow_mut() = Some(Box::new(move |view| {
         if let Some(app) = view_link.upgrade() {
@@ -370,6 +374,12 @@ fn run() -> Result<(), String> {
     *diffs.on_diff.borrow_mut() = Some(Box::new(move |views, payload| {
         if let Some(app) = diff_link.upgrade() {
             app.diff(views, payload);
+        }
+    }));
+    let file_link = Rc::downgrade(&app);
+    *files.on_file.borrow_mut() = Some(Box::new(move |views, payload| {
+        if let Some(app) = file_link.upgrade() {
+            app.file(views, payload);
         }
     }));
     let on_start = Rc::downgrade(&app);
@@ -556,6 +566,7 @@ fn run() -> Result<(), String> {
             Event::Finished { task, changes } => backlog.finished(&task, changes),
             Event::Diff { id, diff } => diffs.loaded(&id, diff),
             Event::DiffUpdating { id } => diffs.updating(&id),
+            Event::File { id, read } => files.loaded(&id, read),
             Event::KeeperReadable | Event::KeeperExits => {
                 let exits = keeper.take_exits();
                 if matches!(event, Event::KeeperReadable) {

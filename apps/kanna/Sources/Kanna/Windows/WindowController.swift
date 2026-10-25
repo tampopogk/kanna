@@ -191,7 +191,7 @@ final class WindowController: NSObject, NSWindowDelegate {
             shelfPage.show(DeskPage(tasks: shelf, backlog: backlog, running: running, project: project, cheer: cheer, note: note))
             side = .zero
         }
-        tabBar.isHidden = side.isEmpty || (dock != nil && zoomed == .tab)
+        tabBar.isHidden = side.isEmpty
         stage.isHidden = side.isEmpty
         let bar = tabBar.isHidden ? 0 : TabBar.height
         tabBar.frame = NSRect(x: side.minX, y: side.maxY - TabBar.height, width: side.width, height: TabBar.height)

@@ -7,7 +7,8 @@ public final class CodePaneView: NSView {
     public let path: String
     public var keyView: NSView { textView }
     public private(set) var file = CodeFile(text: "")
-    public private(set) var failure: CodeFile.Failure?
+    public private(set) var failure: String?
+    public private(set) var loaded = false
     public private(set) var language: String?
     public private(set) var highlights = CodeHighlights()
     public var onHighlighted: (() -> Void)?
@@ -21,8 +22,6 @@ public final class CodePaneView: NSView {
     let gutter: CodeGutter
     let sticky = CodeStickyView()
     private let layoutManager = NSLayoutManager()
-    private var stamp: (Date, Int)?
-    private var poll: Timer?
     private var fontSize = CodeTheme.fontSize
     private var scrollObserver: NSObjectProtocol?
     private var pendingLine: Int?
@@ -48,13 +47,8 @@ public final class CodePaneView: NSView {
         layoutManager.delegate = self
         configure()
         gutter.textView = textView
-        load()
         pendingLine = line
         commentUnrevealed = comment != nil
-        if let line { textView.currentLine = min(max(line, 1), file.lineCount) }
-        poll = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.reloadIfChanged() }
-        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -104,8 +98,6 @@ public final class CodePaneView: NSView {
     }
 
     public func stop() {
-        poll?.invalidate()
-        poll = nil
         scrollObserver.map(NotificationCenter.default.removeObserver)
         scrollObserver = nil
     }
@@ -116,7 +108,7 @@ public final class CodePaneView: NSView {
         sizeText()
         placeComment()
         updateSticky()
-        if let line = pendingLine, bounds.height > 0 {
+        if loaded, let line = pendingLine, bounds.height > 0 {
             pendingLine = nil
             if comment != nil { revealComment() } else { reveal(line: line) }
         }
@@ -156,32 +148,32 @@ public final class CodePaneView: NSView {
         }
     }
 
-    private func fileStamp() -> (Date, Int)? {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path) else { return nil }
-        return ((attributes[.modificationDate] as? Date) ?? .distantPast, (attributes[.size] as? Int) ?? 0)
-    }
-
-    private func reloadIfChanged() {
-        guard let now = fileStamp() else { return }
-        if let stamp, stamp == now { return }
+    public func show(text: String) {
+        guard loaded else {
+            loaded = true
+            load(CodeFile(text: text), failure: nil)
+            if let line = pendingLine { textView.currentLine = min(max(line, 1), file.lineCount) }
+            needsLayout = true
+            return
+        }
+        guard failure != nil || text != file.text else { return }
         let top = scrollView.contentView.bounds.origin
         let old = file
-        load()
+        load(CodeFile(text: text), failure: nil)
         textView.changed = file.changedLines(from: old)
         scrollView.contentView.scroll(to: top)
         scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
-    private func load() {
-        stamp = fileStamp()
-        switch CodeFile.read(path) {
-        case .success(let read):
-            failure = nil
-            file = read
-        case .failure(let error):
-            failure = error
-            file = CodeFile(text: "")
-        }
+    public func show(failure message: String) {
+        loaded = true
+        pendingLine = nil
+        load(CodeFile(text: ""), failure: message)
+    }
+
+    private func load(_ read: CodeFile, failure message: String?) {
+        failure = message
+        file = read
         textView.file = file
         textView.indents = CodeScopes.indents(file)
         textView.indentUnit = CodeScopes.unit(textView.indents)

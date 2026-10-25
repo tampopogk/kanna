@@ -1,4 +1,5 @@
 use crate::diffs::Diffs;
+use crate::files::Files;
 use crate::layout::DaemonLayout;
 use crate::settings::Settings;
 use crate::terminals::Terminals;
@@ -114,6 +115,7 @@ pub struct AppLink {
     core: WeakCore,
     terminals: Rc<Terminals>,
     diffs: Rc<Diffs>,
+    files: Rc<Files>,
     layout: Rc<DaemonLayout>,
     app: RefCell<Option<Connection>>,
     pending: RefCell<HashMap<u64, (Instant, Responder)>>,
@@ -127,12 +129,13 @@ pub struct AppLink {
 }
 
 impl AppLink {
-    pub fn new(core: WeakCore, terminals: Rc<Terminals>, diffs: Rc<Diffs>, layout: Rc<DaemonLayout>, timeout: Duration, build: Option<String>) -> AppLink {
+    pub fn new(core: WeakCore, terminals: Rc<Terminals>, diffs: Rc<Diffs>, files: Rc<Files>, layout: Rc<DaemonLayout>, timeout: Duration, build: Option<String>) -> AppLink {
         AppLink {
             build,
             core,
             terminals,
             diffs,
+            files,
             layout,
             app: RefCell::new(None),
             pending: RefCell::default(),
@@ -289,6 +292,7 @@ impl AppLink {
         self.unsent.borrow_mut().clear();
         let prefix = view_prefix(conn);
         self.diffs.leave(|view| view.starts_with(&prefix));
+        self.files.leave(|view| view.starts_with(&prefix));
         let pending: Vec<Responder> = self.pending.borrow_mut().drain().map(|(_, (_, r))| r).collect();
         for responder in pending {
             responder.reply(Err(KmuxError::new("app_gone", "Kanna.app went away before answering")));
@@ -321,15 +325,8 @@ impl AppLink {
         let view = string(&args, "view").map(|view| format!("{}{view}", view_prefix(conn)));
         match (string(&message, "cmd").unwrap_or_default(), view) {
             ("diff.subscribe", Some(view)) => {
-                let reply = match self.diffs.subscribe(&view, &args) {
-                    Ok(mut fields) => {
-                        fields.insert("id".into(), message.get("id").cloned().unwrap_or(Value::Null));
-                        fields.insert("ok".into(), Value::Bool(true));
-                        Value::Object(fields)
-                    }
-                    Err(error) => json!({ "id": message.get("id").cloned().unwrap_or(Value::Null), "ok": false, "error": { "code": error.code, "message": error.message } }),
-                };
-                self.send(reply);
+                let reply = self.diffs.subscribe(&view, &args);
+                self.answer_subscribe(&message, reply);
                 return None;
             }
             ("diff.show", Some(view)) => {
@@ -338,6 +335,15 @@ impl AppLink {
             }
             ("diff.unsubscribe", Some(view)) => {
                 self.diffs.unsubscribe(&view);
+                return None;
+            }
+            ("file.subscribe", Some(view)) => {
+                let reply = self.files.subscribe(&view, &args);
+                self.answer_subscribe(&message, reply);
+                return None;
+            }
+            ("file.unsubscribe", Some(view)) => {
+                self.files.unsubscribe(&view);
                 return None;
             }
             _ => {}
@@ -373,6 +379,18 @@ impl AppLink {
             other => log!("kanna-daemon: the app sent an unknown message \"{other}\""),
         }
         None
+    }
+
+    fn answer_subscribe(&self, message: &Value, reply: Result<Map, KmuxError>) {
+        let id = message.get("id").cloned().unwrap_or(Value::Null);
+        self.send(match reply {
+            Ok(mut fields) => {
+                fields.insert("id".into(), id);
+                fields.insert("ok".into(), Value::Bool(true));
+                Value::Object(fields)
+            }
+            Err(error) => json!({ "id": id, "ok": false, "error": { "code": error.code, "message": error.message } }),
+        });
     }
 
     pub fn answer_app(&self, conn: u64, reply: Value) {
@@ -418,6 +436,14 @@ impl AppLink {
         let prefix = view_prefix(conn);
         if views.iter().any(|view| view.starts_with(&prefix)) {
             self.notify("diff", payload.clone());
+        }
+    }
+
+    pub fn file(&self, views: &[String], payload: &Value) {
+        let Some(conn) = self.app.borrow().as_ref().map(|a| a.id) else { return };
+        let prefix = view_prefix(conn);
+        if views.iter().any(|view| view.starts_with(&prefix)) {
+            self.notify("file", payload.clone());
         }
     }
 

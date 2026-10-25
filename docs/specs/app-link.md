@@ -63,9 +63,11 @@ sequenceDiagram
 | `debug.*` (with an `id`) | daemon | a request from a client, passed on; the app's reply is the client's |
 | `start`, `stop`, `pane`; `update`; the app's own requests | both | web, markdown and iOS panes ([app panes](app-panes.md)); `pane` also tells the app a terminal pane's new `terminal` when it starts again, and the app makes a new view for it |
 | `diff.subscribe {view, path, args}` (with an `id`), `diff.show {view, show}`, `diff.unsubscribe {view}` | app | this view shows the diff of that folder and git arguments; the reply has its content ID and latest diff ([diff viewer](diff-viewer.md#5-how-its-built)) |
+| `file.subscribe {view, path, kind}` (with an `id`), `file.unsubscribe {view}` | app | this view shows that file as `md` or `code`; the reply has its content ID and latest read ([file panes](file-panes.md#2-messages)) |
 | `diff {content, serial, diff, updating}` | daemon | a subscribed diff changed |
 | `quit` | daemon | the daemon is shutting down on purpose: quit, and don't start a daemon ([stopping an instance](instance-stop.md)) |
 | `toast {id, title, detail, pane, task, about}` | daemon | show a toast; also each one held while no app was attached, after `app.hello` ([toasts](toasts.md)) |
+| `file {content, path, serial, text\|error}` | daemon | a subscribed file was read and differs ([file panes](file-panes.md#2-messages)) |
 
 ## 3. Rules
 
