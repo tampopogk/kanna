@@ -1771,6 +1771,7 @@ dependencies = [
  "kanna-keeper",
  "kanna-mux",
  "kanna-net",
+ "kanna-threads",
  "kanna-vt",
  "libc",
  "notify",

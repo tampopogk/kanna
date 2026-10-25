@@ -26,6 +26,7 @@ final class DaemonLink: TerminalLink {
     var onToast: ((JSON) -> Void)?
     var onQuit: (() -> Void)?
     var onFile: ((String, JSON) -> Void)?
+    var onMarkup: ((String, JSON) -> Void)?
     var onLost: (() -> Void)?
     private var requests = 0
     private var replies: [Int: (JSON) -> Void] = [:]
@@ -34,7 +35,7 @@ final class DaemonLink: TerminalLink {
     var socketPath: String { connection.path }
 
     static let protocols: [JSON] = [1, 1]
-    static let localOnly: Set<String> = ["app.fleet.confirm", "app.snap"]
+    static let localOnly: Set<String> = ["app.fleet.confirm"]
 
     init(socketPath: String, commands: Commands, starter: DaemonStarter? = nil, machine: String? = nil, dial: (@Sendable () -> Int32?)? = nil) {
         self.commands = commands
@@ -179,6 +180,8 @@ final class DaemonLink: TerminalLink {
             if let content = args["content"]?.string { onDiff?(content, args) }
         case "file":
             if let content = args["content"]?.string { onFile?(content, args) }
+        case "markup":
+            if let content = args["content"]?.string { onMarkup?(content, args) }
         case "backlog":
             if case .array(let tasks)? = args["tasks"] { onBacklog?(tasks) }
         case "toast":

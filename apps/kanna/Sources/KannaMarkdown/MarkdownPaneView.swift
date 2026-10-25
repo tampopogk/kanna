@@ -30,18 +30,22 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     private let diagrams = DiagramCache()
     private var document = Document(parsing: "")
     private var entries: [DiffEntry]?
-    private var baseCommit: String?
-    private var ticks = 0
-    private var disk: String?
-    private var held: String?
+    private var disk: (text: String, compared: MarkdownComparison?)?
+    private var held: (text: String, compared: MarkdownComparison?)?
     private var poll: Timer?
     private var magnifyObserver: NSObjectProtocol?
     let bar = DocBar()
     let panel = ThreadPanel()
-    let store: DocStore
+    public var changeThreads: DocChanger?
+    public var readFile: ((String, Bool, @escaping @MainActor (Result<MarkdownFile, MarkdownFile.Failure>) -> Void) -> Void)?
+    public var canReveal = true
+    public private(set) var docName: String
     var record: DocRecord
-    var storeStamp: Date?
+    var threadsLoaded = false
     var source = ""
+    private var images: [String: (data: Data, image: NSImage)] = [:]
+    private var fetchImages = false
+    private var rerender = false
     var anchors: [String: NSRange] = [:]
     var active: String?
     var box: CommentBox?
@@ -65,9 +69,8 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         self.path = path
         self.markup = markup && diff.flatMap(MarkdownDiff.range) == nil
         diffBase = diff
-        store = DocStore(file: path)
-        record = store.read()
-        storeStamp = store.stamp
+        docName = (path as NSString).lastPathComponent
+        record = DocRecord(file: path)
         let storage = NSTextStorage()
         storage.addLayoutManager(layoutManager)
         let container = NSTextContainer(size: NSSize(width: 600, height: CGFloat.greatestFiniteMagnitude))
@@ -89,7 +92,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         addSubview(scrollView)
         if markup || diff != nil {
             addSubview(bar)
-            bar.path.stringValue = store.relativeName
+            bar.path.stringValue = docName
             bar.agent.isHidden = !self.markup
             bar.threads.isHidden = !self.markup
             bar.diff.isHidden = diff == nil
@@ -131,7 +134,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     }
 
     func showHeld() {
-        if let held { show(text: held) }
+        if let held { show(text: held.text, compared: held.compared) }
     }
 
     public func stop() {
@@ -181,40 +184,37 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         if textView.frame.width != width { textView.frame.size.width = width }
     }
 
-    public func show(text: String) {
-        guard pending == nil else { return held = text }
+    public func show(text: String, compared: MarkdownComparison? = nil) {
+        guard pending == nil else { return held = (text, compared) }
         held = nil
-        guard text != disk, diffRange == nil || disk == nil else { return }
-        disk = text
-        load(text)
+        guard disk.map({ $0.text != text || $0.compared != compared }) ?? true else { return }
+        disk = (text, compared)
+        load(text, compared: compared)
+    }
+
+    public func show(name: String) {
+        guard name != docName else { return }
+        docName = name
+        bar.path.stringValue = name
+        bar.needsLayout = true
     }
 
     private func check() {
         let span = Perf.begin(.markdown, "markdown.check")
         defer { Perf.end(span) }
-        reloadThreadsIfChanged()
         refreshPanel()
-        guard pending == nil, diffRange == nil, let diffBase, let disk else { return }
-        ticks += 1
-        if ticks % 4 == 0, let commit = baseCommit,
-           MarkdownDiff.mergeBase(URL(fileURLWithPath: path).resolvingSymlinksInPath().deletingLastPathComponent().path, diffBase) != commit {
-            load(disk)
-        }
     }
 
-    private func load(_ disk: String) {
+    private func load(_ text: String, compared: MarkdownComparison?) {
         let span = Perf.begin(.markdown, "markdown.load")
         defer { Perf.end(span) }
-        var text = disk
         var old: String??
-        if let range = diffRange {
-            switch MarkdownDiff.versions(of: path, from: range.from, to: range.to) {
-            case .success(let versions):
-                text = versions.new
-                old = .some(versions.old)
-                diffError = nil
-            case .failure(let failure):
-                diffError = failure.message
+        diffError = nil
+        if diffRange != nil {
+            switch compared {
+            case .range(let before)?: old = .some(before)
+            case .failed(let message)?: diffError = message
+            default: break
             }
         }
         source = text
@@ -223,19 +223,17 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         entries = nil
         if let old {
             entries = MarkdownDiff.entries(old: old.map { Document(parsing: MarkdownRenderer.fencingFrontMatter($0), options: [.disableSmartOpts]) }, new: document)
-        } else if let diffBase, diffRange == nil {
-            switch MarkdownDiff.base(of: path, against: diffBase) {
-            case .success(let base):
-                baseCommit = base.commit
-                diffError = nil
-                let old = base.text.map { Document(parsing: MarkdownRenderer.fencingFrontMatter($0), options: [.disableSmartOpts]) }
+        } else if diffBase != nil, diffRange == nil {
+            switch compared {
+            case .base(let base)?:
+                let old = base.map { Document(parsing: MarkdownRenderer.fencingFrontMatter($0), options: [.disableSmartOpts]) }
                 entries = MarkdownDiff.entries(old: old, new: document)
-            case .failure(let failure):
-                baseCommit = nil
-                diffError = failure.message
+            case .failed(let message)?: diffError = message
+            default: break
             }
         }
         parseMs = Date().timeIntervalSince(start) * 1000
+        fetchImages = true
         render()
     }
 
@@ -243,14 +241,46 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         let start = Date()
         let position = readingPosition()
         var renderer = MarkdownRenderer(folder: URL(fileURLWithPath: path).deletingLastPathComponent(), diagrams: diagrams)
+        renderer.images = images.mapValues(\.image)
         let text = entries.map { renderer.render($0) } ?? renderer.render(document)
         diagrams.keep(only: Set(renderer.diagramSources))
+        if fetchImages {
+            fetchImages = false
+            fetch(Set(renderer.imagePaths))
+        }
         updateInset()
         textView.textStorage?.setAttributedString(text)
         if let position { restoreReadingPosition(position) }
         refreshMarks()
         refreshChanges()
         renderMs = Date().timeIntervalSince(start) * 1000
+    }
+
+    private func fetch(_ paths: Set<String>) {
+        guard let readFile else { return }
+        for path in paths {
+            readFile(path, true) { [weak self] result in
+                guard let self else { return }
+                switch result {
+                case .success(let file):
+                    guard let data = file.data, images[path]?.data != data, let image = NSImage(data: data) else { return }
+                    images[path] = (data, image)
+                case .failure:
+                    guard images.removeValue(forKey: path) != nil else { return }
+                }
+                renderSoon()
+            }
+        }
+    }
+
+    private func renderSoon() {
+        guard !rerender else { return }
+        rerender = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            rerender = false
+            render()
+        }
     }
 
     private func refreshChanges() {
@@ -341,8 +371,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     public enum LinkAction: Equatable {
         case scroll(String)
         case openWeb(URL)
-        case showMarkdown(String)
-        case reveal(URL)
+        case file(URL)
         case ignore
     }
 
@@ -355,14 +384,8 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         if let hash = file.firstIndex(of: "#") { file = String(file[..<hash]) }
         file = file.removingPercentEncoding ?? file
         guard !file.isEmpty else { return .ignore }
-        let url = (file.hasPrefix("/") ? URL(fileURLWithPath: file)
-            : URL(fileURLWithPath: documentPath).deletingLastPathComponent().appendingPathComponent(file)).standardizedFileURL
-        let real = url.resolvingSymlinksInPath()
-        guard let type = (try? FileManager.default.attributesOfItem(atPath: real.path))?[.type] as? FileAttributeType else { return .ignore }
-        if type == .typeRegular, ["md", "markdown", "mdown"].contains(real.pathExtension.lowercased()) {
-            return .showMarkdown(real.path)
-        }
-        return .reveal(url)
+        return .file((file.hasPrefix("/") ? URL(fileURLWithPath: file)
+            : URL(fileURLWithPath: documentPath).deletingLastPathComponent().appendingPathComponent(file)).standardizedFileURL)
     }
 
     var openWeb: (URL) -> Void = { NSWorkspace.shared.open($0) }
@@ -377,8 +400,15 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         switch Self.action(for: target, from: path) {
         case .scroll(let fragment): scroll(toAnchor: fragment)
         case .openWeb(let url): openWeb(url)
-        case .showMarkdown(let file): onOpenMarkdown?(file)
-        case .reveal(let url): reveal(url)
+        case .file(let url):
+            readFile?(url.path, false) { [weak self] result in
+                guard let self, case .success(let file) = result else { return }
+                if file.type == "file", ["md", "markdown", "mdown"].contains((file.path as NSString).pathExtension.lowercased()) {
+                    onOpenMarkdown?(file.path)
+                } else if canReveal {
+                    reveal(url)
+                }
+            }
         case .ignore: break
         }
     }
@@ -410,6 +440,30 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     public var scrollTop: CGFloat { scrollView.contentView.bounds.minY }
 
     public func scroll(toY y: CGFloat) { textView.scroll(NSPoint(x: 0, y: max(0, y))) }
+}
+
+public struct MarkdownFile: Equatable, Sendable {
+    public var path: String
+    public var type: String
+    public var data: Data?
+
+    public init(path: String, type: String, data: Data?) {
+        self.path = path
+        self.type = type
+        self.data = data
+    }
+
+    public struct Failure: Error, Equatable {
+        public var message: String
+
+        public init(_ message: String) { self.message = message }
+    }
+}
+
+public enum MarkdownComparison: Equatable, Sendable {
+    case base(String?)
+    case range(String?)
+    case failed(String)
 }
 
 final class MarkdownScrollView: NSScrollView {

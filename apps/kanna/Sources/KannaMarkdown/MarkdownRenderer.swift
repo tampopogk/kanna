@@ -47,14 +47,22 @@ final class DiagramCache {
 }
 
 @MainActor
+private final class ImagesWanted {
+    var paths: [String] = []
+}
+
+@MainActor
 struct MarkdownRenderer {
     var folder: URL
     var diagrams: DiagramCache
+    var images: [String: NSImage] = [:]
 
     private var blockCount = 0
     private var old = false
     private var slugs: [String: Int] = [:]
     private(set) var diagramSources: [String] = []
+    private let wanted = ImagesWanted()
+    var imagePaths: [String] { wanted.paths }
 
     init(folder: URL, diagrams: DiagramCache) {
         self.folder = folder
@@ -511,8 +519,9 @@ struct MarkdownRenderer {
     }
 
     private func imageAttachment(_ source: String?) -> NSTextAttachment? {
-        guard let source, let path = Self.localImagePath(source, folder: folder),
-              let image = NSImage(contentsOf: URL(fileURLWithPath: path)) else { return nil }
+        guard let source, let path = Self.localImagePath(source, folder: folder) else { return nil }
+        wanted.paths.append(path)
+        guard let image = images[path] else { return nil }
         let attachment = NSTextAttachment()
         attachment.attachmentCell = ImageCell(image: image)
         return attachment
@@ -541,44 +550,7 @@ struct MarkdownRenderer {
         }
         guard let decoded = raw.removingPercentEncoding, !decoded.isEmpty, !decoded.contains("\0") else { return nil }
         let start = decoded.hasPrefix("/") ? decoded : folder.path + "/" + decoded
-        guard let resolved = resolveLocally(start) else { return nil }
-        var info = statfs()
-        guard statfs(resolved, &info) == 0, info.f_flags & UInt32(MNT_LOCAL) != 0 else { return nil }
-        return resolved
-    }
-
-    nonisolated private static let automountRoots: Set<String> = ["net", "Network", "home"]
-
-    nonisolated private static func resolveLocally(_ path: String) -> String? {
-        var pending = path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
-        var done: [String] = []
-        var hops = 0
-        while !pending.isEmpty {
-            let part = pending.removeFirst()
-            if part == "." { continue }
-            if part == ".." { if !done.isEmpty { done.removeLast() }; continue }
-            done.append(part)
-            if isAutomount(done) { return nil }
-            let current = "/" + done.joined(separator: "/")
-            var info = stat()
-            guard lstat(current, &info) == 0 else { return nil }
-            guard info.st_mode & S_IFMT == S_IFLNK else { continue }
-            hops += 1
-            guard hops <= 32, let target = try? FileManager.default.destinationOfSymbolicLink(atPath: current) else { return nil }
-            done.removeLast()
-            let targetParts = target.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
-            if target.hasPrefix("/") { done = [] }
-            pending = targetParts + pending
-        }
-        return "/" + done.joined(separator: "/")
-    }
-
-    nonisolated private static func isAutomount(_ parts: [String]) -> Bool {
-        var rest = parts[...]
-        if rest.starts(with: ["System", "Volumes", "Data"]) { rest = rest.dropFirst(3) }
-        if rest.first == "private" { rest = rest.dropFirst() }
-        guard let root = rest.first else { return false }
-        return automountRoots.contains(root) && rest.count >= 2
+        return URL(fileURLWithPath: start).standardizedFileURL.path
     }
 
     private mutating func slug(_ text: String) -> String {

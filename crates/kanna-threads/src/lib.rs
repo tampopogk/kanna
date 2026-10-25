@@ -56,6 +56,39 @@ pub fn update<E>(file: &Path, change: impl FnOnce(&mut Value) -> Result<(), E>, 
     File::unlock(&lock).map_err(broken)
 }
 
+pub fn is_thread_id(id: &str) -> bool {
+    id.len() > 1 && id.len() < 12 && id.starts_with('c') && id[1..].bytes().all(|b| b.is_ascii_digit())
+}
+
+pub fn mark_path(file: &Path, id: &str) -> PathBuf {
+    let store = store_path(file);
+    let stem = store.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    store.with_file_name("marks").join(format!("{stem}-{id}.png"))
+}
+
+pub fn save_mark(file: &Path, id: &str, png: &[u8]) -> Result<String, String> {
+    if !is_thread_id(id) || !png.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err("a marked-up copy is a PNG of a thread".into());
+    }
+    let target = mark_path(file, id);
+    let broken = |e: std::io::Error| format!("can't write {}: {e}", target.display());
+    let marks = target.parent().unwrap_or(Path::new("/"));
+    let docs = marks.parent().unwrap_or(marks);
+    for dir in [docs.parent().unwrap_or(docs), docs, marks] {
+        real_folder(dir).map_err(broken)?;
+    }
+    let temporary = target.with_extension(format!("png.{}.tmp", std::process::id()));
+    let mut out = OpenOptions::new().write(true).create_new(true).mode(0o644).custom_flags(libc_no_follow()).open(&temporary).map_err(broken)?;
+    out.write_all(png).map_err(broken)?;
+    drop(out);
+    std::fs::rename(&temporary, &target).map_err(|e| {
+        let _ = std::fs::remove_file(&temporary);
+        broken(e)
+    })?;
+    let root = repo_root(file);
+    Ok(target.strip_prefix(&root).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| target.to_string_lossy().into_owned()))
+}
+
 fn real_folder(dir: &Path) -> std::io::Result<()> {
     match std::fs::create_dir(dir) {
         Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(e),

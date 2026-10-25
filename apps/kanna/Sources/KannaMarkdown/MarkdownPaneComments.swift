@@ -3,7 +3,6 @@ import KannaDocs
 
 extension MarkdownPaneView {
     func setUpComments() {
-        bar.path.stringValue = store.relativeName
         bar.threads.onPress = { [weak self] in self?.toggleThreads() }
         panel.onSelect = { [weak self] id in self?.reveal(id) }
         panel.onAct = { [weak self] thread in self?.setState(thread.id, open: !thread.isOpen) }
@@ -20,11 +19,22 @@ extension MarkdownPaneView {
         bar.agent.set(agent.map { "Agent: \($0)" } ?? "No agent: comments are saved, not sent")
         bar.agent.warn = agent == nil
         bar.needsLayout = true
-        if let agent, record.agent != agent {
-            try? store.update { $0.agent = agent }
-            storeStamp = store.stamp
-            record = store.read()
+        if threadsLoaded, let agent, record.agent != agent { change(.agent(agent)) }
+    }
+
+    func change(_ change: DocChange, then: (@MainActor (String?) -> Void)? = nil) {
+        guard let changeThreads else { return }
+        changeThreads(change) { [weak self] answer in
+            guard let self else { return }
+            if let record = answer.record { apply(record) }
+            then?(answer.id)
         }
+    }
+
+    private func apply(_ record: DocRecord) {
+        guard record != self.record else { return }
+        self.record = record
+        refreshMarks()
     }
 
     public var threads: [DocThread] { record.threads }
@@ -81,12 +91,14 @@ extension MarkdownPaneView {
         needsLayout = true
     }
 
-    func reloadThreadsIfChanged() {
-        let stamp = store.stamp
-        guard stamp != storeStamp else { return }
-        storeStamp = stamp
+    public func show(threads: DocRecord) {
+        if !threadsLoaded {
+            threadsLoaded = true
+            if let agent, threads.agent != agent { change(.agent(agent)) }
+        }
+        guard threads != record else { return }
         let known = Set(record.threads.map(\.id))
-        record = store.read()
+        record = threads
         refreshMarks()
         if markup, let started = record.threads.last(where: { !known.contains($0.id) && $0.isOpen && $0.messages.first?.who == "agent" }) {
             if !threadsVisible { toggleThreads() }
@@ -99,7 +111,7 @@ extension MarkdownPaneView {
         let text = textView.textStorage?.string ?? ""
         anchors = [:]
         for thread in record.threads {
-            if let range = DocStore.locate(thread, in: text) { anchors[thread.id] = range }
+            if let range = Doc.locate(thread, in: text) { anchors[thread.id] = range }
         }
         var marks = record.threads.compactMap { thread in anchors[thread.id].map { DocMark(range: $0, kind: thread.isOpen ? .open : .resolved) } }
         if let pending { marks.append(DocMark(range: pending.range, kind: .active)) } else if let active, let range = anchors[active] { marks.append(DocMark(range: range, kind: .active)) }
@@ -191,7 +203,7 @@ extension MarkdownPaneView {
         let prefix = whole.substring(with: NSRange(location: max(0, start - 32), length: min(32, start)))
         let end = NSMaxRange(range)
         let suffix = whole.substring(with: NSRange(location: end, length: min(32, whole.length - end)))
-        pending = (quote, prefix, suffix, DocStore.line(of: quote, in: source, near: hint), range)
+        pending = (quote, prefix, suffix, Doc.line(of: quote, in: source, near: hint), range)
         textView.setSelectedRange(NSRange(location: start, length: 0))
         let box = CommentBox(composer: (), width: boxWidth)
         anchor(box, to: range)
@@ -272,39 +284,26 @@ extension MarkdownPaneView {
     }
 
     func post() {
-        guard let pending, let text = box.map({ DocStore.clean($0.field.trimmed) }), !text.isEmpty else { return }
+        guard let pending, let text = box.map({ Doc.clean($0.field.trimmed) }), !text.isEmpty else { return }
         closeBox()
-        let id = try? store.update { record -> String in
-            let id = "c\(record.next)"
-            record.next += 1
-            record.threads.append(DocThread(id: id, quote: DocStore.clean(pending.quote), prefix: pending.prefix, suffix: pending.suffix,
-                                            line: pending.line, state: "open", status: "sent",
-                                            messages: [DocMessage(who: "you", text: text, at: DocStore.now())], error: nil))
-            return id
+        let thread = DocThread(id: "", quote: Doc.clean(pending.quote), prefix: pending.prefix, suffix: pending.suffix,
+                               line: pending.line, state: "open", status: "sent",
+                               messages: [DocMessage(who: "you", text: text, at: Doc.now())], error: nil)
+        change(.post(thread, mark: nil)) { [weak self] id in
+            guard let self, let id else { return }
+            active = id
+            refreshMarks()
+            deliver(id, text)
         }
-        guard let id else { return }
-        active = id
-        reloadThreads()
-        deliver(id, text)
     }
 
     func reply(_ id: String, _ text: String) {
-        let text = DocStore.clean(text)
-        try? store.update { record in
-            guard let index = record.threads.firstIndex(where: { $0.id == id }) else { return }
-            record.threads[index].messages.append(DocMessage(who: "you", text: text, at: DocStore.now()))
-            record.threads[index].state = "open"
-        }
-        reloadThreads()
-        deliver(id, text)
+        let text = Doc.clean(text)
+        change(.edit(id, DocEdit(state: "open", message: DocMessage(who: "you", text: text, at: Doc.now())))) { [weak self] _ in self?.deliver(id, text) }
     }
 
     func setState(_ id: String, open: Bool) {
-        try? store.update { record in
-            guard let index = record.threads.firstIndex(where: { $0.id == id }) else { return }
-            record.threads[index].state = open ? "open" : "resolved"
-        }
-        reloadThreads()
+        change(.edit(id, DocEdit(state: open ? "open" : "resolved")))
     }
 
     func reveal(_ id: String) {
@@ -316,26 +315,13 @@ extension MarkdownPaneView {
         textView.scroll(NSPoint(x: 0, y: max(0, top)))
     }
 
-    private func reloadThreads() {
-        record = store.read()
-        storeStamp = store.stamp
-        refreshMarks()
-    }
-
     private func deliver(_ id: String, _ text: String) {
-        guard var thread = record.threads.first(where: { $0.id == id }), DocStore.isThreadID(id) else { return }
-        thread.line = DocStore.line(of: thread.quote, in: source, near: thread.line)
+        guard var thread = record.threads.first(where: { $0.id == id }), Doc.isThreadID(id) else { return }
+        thread.line = Doc.line(of: thread.quote, in: source, near: thread.line)
         let shown = anchors[id] != nil
-        let message = DocStore.clean(DocStore.message(thread, file: store.relativeName, text: text, quoted: shown))
+        let message = Doc.clean(Doc.message(thread, file: docName, text: text, quoted: shown))
         let finish: (String?) -> Void = { [weak self] error in
-            guard let self else { return }
-            try? store.update { record in
-                guard let index = record.threads.firstIndex(where: { $0.id == id }) else { return }
-                record.threads[index].status = error == nil ? "sent" : "unsent"
-                record.threads[index].error = error
-                record.threads[index].line = thread.line
-            }
-            reloadThreads()
+            self?.change(.edit(id, DocEdit(status: error == nil ? "sent" : "unsent", error: .some(error), line: thread.line)))
         }
         guard let agent, let onSend else { return finish("no agent") }
         onSend(agent, message, finish)

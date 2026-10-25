@@ -167,6 +167,22 @@ impl Drop for Core {
     }
 }
 
+pub(crate) fn code_text(path: &str) -> Result<String, KmuxError> {
+    let missing = || KmuxError::new("not_found", format!("No such file: {path}"));
+    let meta = std::fs::metadata(path).map_err(|_| missing())?;
+    if meta.is_dir() {
+        return Err(KmuxError::new("not_found", format!("{path} is a folder, not a file")));
+    }
+    if meta.len() > 8 << 20 {
+        return Err(KmuxError::new("too_big", format!("{path} is too big to show, over 8 MiB")));
+    }
+    let bytes = std::fs::read(path).map_err(|_| missing())?;
+    if bytes[..bytes.len().min(8192)].contains(&0) {
+        return Err(KmuxError::new("not_found", format!("{path} isn't a text file")));
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 fn bad_request(message: impl Into<String>) -> KmuxError {
     KmuxError::new("bad_request", message)
 }
@@ -909,7 +925,7 @@ impl CoreHandle {
         let path = string(args, "path").filter(|p| !p.is_empty()).ok_or_else(|| bad_request("missing path"))?.to_string();
         let text = string(args, "text").map(str::trim).filter(|t| !t.is_empty()).ok_or_else(|| bad_request("missing text"))?.to_string();
         let line = args.get("line").and_then(Value::as_u64).filter(|l| *l > 0).ok_or_else(|| bad_request("missing line"))?;
-        let mut asked = json!({ "path": path, "line": line });
+        let mut asked = json!({ "path": path, "line": line, "text": code_text(&path)? });
         if let Some(last) = args.get("last").and_then(Value::as_u64) {
             if last < line {
                 return Err(bad_request(format!("lines {line}-{last} run backwards")));

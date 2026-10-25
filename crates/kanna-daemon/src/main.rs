@@ -26,6 +26,8 @@ mod status_command;
 mod diffs;
 mod fleet;
 mod files;
+mod reads;
+mod screenshot;
 mod store;
 mod task_scripts;
 mod terminals;
@@ -308,7 +310,10 @@ fn run() -> Result<(), String> {
     let diffs = Rc::new(diffs::Diffs::new(events.clone()));
     diffs.install(&core);
     let files = Rc::new(files::Files::new(events.clone()));
-    files.install(&core);
+    files.install(&core, "files");
+    let threads = Rc::new(files::Files::new(events.clone()));
+    threads.install(&core, "threads");
+    reads::install(&core);
     let host = Rc::new(Host::new(terminals.clone()));
     core.set_host(Some(host.clone()));
     let on_change = Rc::downgrade(&terminals);
@@ -352,7 +357,7 @@ fn run() -> Result<(), String> {
     }
 
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
-    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), files.clone(), layout.clone(), app_timeout, build_id.clone()));
+    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), (files.clone(), threads.clone()), layout.clone(), app_timeout, build_id.clone()));
     if let Some(fleet) = &fleet {
         let fleet = Rc::downgrade(fleet);
         *app.machine.borrow_mut() = Some(Box::new(move || fleet.upgrade().map_or(Value::Null, |f| f.machine())));
@@ -383,7 +388,13 @@ fn run() -> Result<(), String> {
     let file_link = Rc::downgrade(&app);
     *files.on_file.borrow_mut() = Some(Box::new(move |views, payload| {
         if let Some(app) = file_link.upgrade() {
-            app.file(views, payload);
+            app.file("file", views, payload);
+        }
+    }));
+    let threads_link = Rc::downgrade(&app);
+    *threads.on_file.borrow_mut() = Some(Box::new(move |views, payload| {
+        if let Some(app) = threads_link.upgrade() {
+            app.file("markup", views, payload);
         }
     }));
     let on_start = Rc::downgrade(&app);
@@ -398,7 +409,7 @@ fn run() -> Result<(), String> {
         "screenshot",
         Rc::new(move |args, responder| {
             if let Some(link) = screenshot.upgrade() {
-                link.forward("screenshot", args, responder);
+                screenshot::take(&link, args, responder);
             }
         }),
     );
@@ -575,7 +586,10 @@ fn run() -> Result<(), String> {
             Event::Finished { task, changes } => backlog.finished(&task, changes),
             Event::Diff { id, diff } => diffs.loaded(&id, diff),
             Event::DiffUpdating { id } => diffs.updating(&id),
-            Event::File { id, read } => files.loaded(&id, read),
+            Event::File { id, read } => {
+                files.loaded(&id, read.clone());
+                threads.loaded(&id, read);
+            }
             Event::KeeperReadable | Event::KeeperExits => {
                 let exits = keeper.take_exits();
                 if matches!(event, Event::KeeperReadable) {

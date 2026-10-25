@@ -19,6 +19,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
     var agent: String? { didSet { markup?.agent = agent } }
     var agentStatus: String? { didSet { markup?.agentStatus = agentStatus } }
     var onSend: ((String, String, @escaping (String?) -> Void) -> Void)? { didSet { markup?.onSend = onSend } }
+    var onMarkup: ((PageMarkupView?) -> Void)?
 
     let markable: Bool
 
@@ -74,6 +75,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
         }
         relay.target = markup
         needsLayout = true
+        onMarkup?(markup)
     }
 
     var zoom: CGFloat { webView.magnification }

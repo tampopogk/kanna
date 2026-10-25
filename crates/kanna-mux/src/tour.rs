@@ -94,7 +94,7 @@ impl CoreHandle {
                 stops.push(Stop { path, first: first as u64, last: first as u64, text, doc: true, thread: None });
                 continue;
             }
-            let mut ask = json!({ "path": path, "line": line });
+            let mut ask = json!({ "path": path, "line": line, "text": super::code_text(&path)? });
             if let Some(last) = last {
                 ask["last"] = json!(last);
             }

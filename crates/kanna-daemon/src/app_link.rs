@@ -122,6 +122,7 @@ pub struct AppLink {
     terminals: Rc<Terminals>,
     diffs: Rc<Diffs>,
     files: Rc<Files>,
+    threads: Rc<Files>,
     layout: Rc<DaemonLayout>,
     app: RefCell<Option<Connection>>,
     pending: RefCell<HashMap<u64, (Instant, Responder)>>,
@@ -136,13 +137,15 @@ pub struct AppLink {
 }
 
 impl AppLink {
-    pub fn new(core: WeakCore, terminals: Rc<Terminals>, diffs: Rc<Diffs>, files: Rc<Files>, layout: Rc<DaemonLayout>, timeout: Duration, build: Option<String>) -> AppLink {
+    pub fn new(core: WeakCore, terminals: Rc<Terminals>, diffs: Rc<Diffs>, files: (Rc<Files>, Rc<Files>), layout: Rc<DaemonLayout>, timeout: Duration, build: Option<String>) -> AppLink {
+        let (files, threads) = files;
         AppLink {
             build,
             core,
             terminals,
             diffs,
             files,
+            threads,
             layout,
             app: RefCell::new(None),
             pending: RefCell::default(),
@@ -344,6 +347,7 @@ impl AppLink {
         let prefix = view_prefix(conn);
         self.diffs.leave(|view| view.starts_with(&prefix));
         self.files.leave(|view| view.starts_with(&prefix));
+        self.threads.leave(|view| view.starts_with(&prefix));
         let pending: Vec<Responder> = self.pending.borrow_mut().drain().map(|(_, (_, r))| r).collect();
         for responder in pending {
             responder.reply(Err(KmuxError::new("app_gone", "Kanna.app went away before answering")));
@@ -395,6 +399,17 @@ impl AppLink {
             }
             ("file.unsubscribe", Some(view)) => {
                 self.files.unsubscribe(&view);
+                return None;
+            }
+            ("markup.subscribe", Some(view)) => {
+                let mut args = args.clone();
+                args["kind"] = json!("threads");
+                let reply = self.threads.subscribe(&view, &args);
+                self.answer_subscribe(&message, reply);
+                return None;
+            }
+            ("markup.unsubscribe", Some(view)) => {
+                self.threads.unsubscribe(&view);
                 return None;
             }
             _ => {}
@@ -490,11 +505,11 @@ impl AppLink {
         }
     }
 
-    pub fn file(&self, views: &[String], payload: &Value) {
+    pub fn file(&self, cmd: &str, views: &[String], payload: &Value) {
         let Some(conn) = self.app.borrow().as_ref().map(|a| a.id) else { return };
         let prefix = view_prefix(conn);
         if views.iter().any(|view| view.starts_with(&prefix)) {
-            self.notify("file", payload.clone());
+            self.notify(cmd, payload.clone());
         }
     }
 
