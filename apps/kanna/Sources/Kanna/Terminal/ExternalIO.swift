@@ -8,6 +8,11 @@ protocol TerminalLink: AnyObject {
     func resizeRequested(_ terminal: ExternalTerminal, cols: UInt16, rows: UInt16, width: UInt32, height: UInt32)
     func closed(_ terminal: ExternalTerminal)
     func settingsChanged(_ settings: TerminalSettings)
+    func scrolledToTop(_ terminal: ExternalTerminal)
+}
+
+extension TerminalLink {
+    func scrolledToTop(_ terminal: ExternalTerminal) {}
 }
 
 @MainActor
@@ -108,6 +113,10 @@ final class ExternalIOBackend: TerminalBackend {
         self.link = link
         Self.shared = self
         runtime.onSettings = { [weak link] settings in link?.settingsChanged(settings) }
+        runtime.onScrollbar = { [weak self] view, scrollbar in
+            guard let self, scrollbar.offset == 0, scrollbar.total > scrollbar.len, let terminal = terminals[view.surfaceID] else { return }
+            self.link.scrolledToTop(terminal)
+        }
     }
 
     func start(_ view: TerminalSurfaceView, terminal id: String) -> Bool {

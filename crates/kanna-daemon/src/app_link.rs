@@ -2,14 +2,15 @@ use crate::diffs::Diffs;
 use crate::files::Files;
 use crate::layout::DaemonLayout;
 use crate::settings::Settings;
-use crate::terminals::Terminals;
+use crate::reader::{Replayed, Taken};
+use crate::terminals::{Screen, Terminals};
 use crate::Event;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use kanna_mux::json::{encode, json, string, Map, Value};
 use kanna_mux::{pane_record, pane_table, write_all, KmuxError, Pane, PaneState, PaneType, Responder, Takeover, WeakCore};
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
@@ -127,18 +128,21 @@ pub struct AppLink {
     pending: RefCell<HashMap<u64, (Instant, Responder)>>,
     timeout: Duration,
     next_id: Cell<u64>,
-    attached: RefCell<HashSet<String>>,
+    attached: RefCell<HashMap<String, Option<usize>>>,
     unsent: RefCell<HashMap<String, Instant>>,
     stopping: Cell<bool>,
     backlog: RefCell<Option<Weak<crate::backlog::Backlog>>>,
     build: Option<String>,
+    run: String,
     pub machine: RefCell<Option<Box<dyn Fn() -> Value>>>,
 }
 
 impl AppLink {
     pub fn new(core: WeakCore, terminals: Rc<Terminals>, diffs: Rc<Diffs>, files: Rc<Files>, layout: Rc<DaemonLayout>, timeout: Duration, build: Option<String>) -> AppLink {
+        let started = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
         AppLink {
             build,
+            run: format!("{:x}-{:x}", std::process::id(), started.as_nanos()),
             core,
             terminals,
             diffs,
@@ -175,7 +179,7 @@ impl AppLink {
     }
 
     fn shows(&self, pane: &str) -> bool {
-        !self.behind() && self.attached.borrow().contains(pane)
+        !self.behind() && self.attached.borrow().contains_key(pane)
     }
 
     pub fn caught_up(&self, conn: u64) {
@@ -183,16 +187,16 @@ impl AppLink {
             Some(app) if app.id == conn => app.behind.set(false),
             _ => return,
         }
-        let mut panes: Vec<String> = self.attached.borrow().iter().cloned().collect();
+        let mut panes: Vec<String> = self.attached.borrow().keys().cloned().collect();
         panes.sort();
         for pane in panes {
-            self.attach(&pane);
+            self.attach(&pane, None);
         }
     }
 
     pub fn resync(&self, pane: &str) {
         if self.shows(pane) {
-            self.attach(pane);
+            self.attach(pane, None);
         }
     }
 
@@ -255,7 +259,7 @@ impl AppLink {
         }
         self.layout.flush();
         let panes = self.core.upgrade().map_or(Value::Array(vec![]), |core| core.with_panes(pane_table));
-        let mut daemon = json!({ "pid": std::process::id(), "build": self.build, "commit": kanna_build::COMMIT, "machine": null, "capabilities": null });
+        let mut daemon = json!({ "pid": std::process::id(), "build": self.build, "run": self.run, "commit": kanna_build::COMMIT, "machine": null, "capabilities": null });
         if let Some(describe) = self.machine.borrow().as_ref() {
             let machine = describe();
             daemon["machine"] = machine["name"].clone();
@@ -406,8 +410,19 @@ impl AppLink {
         let terminal = string(&args, "terminal").unwrap_or_default().to_string();
         match string(&message, "cmd").unwrap_or_default() {
             "attach" => {
-                if !self.attached.borrow().contains(&terminal) {
-                    self.attach(&terminal);
+                if !self.attached.borrow().contains_key(&terminal) {
+                    let history = args.get("scrollback").and_then(Value::as_u64).map(|rows| rows as usize);
+                    self.attached.borrow_mut().insert(terminal.clone(), history);
+                    let from = args.get("from").and_then(Value::as_u64).filter(|_| string(&args, "run") == Some(self.run.as_str()));
+                    self.attach(&terminal, from);
+                }
+            }
+            "scrollback" => {
+                if let Some(history) = self.attached.borrow_mut().get_mut(&terminal) {
+                    *history = None;
+                }
+                if self.shows(&terminal) {
+                    self.attach(&terminal, None);
                 }
             }
             "detach" => {
@@ -421,8 +436,13 @@ impl AppLink {
             }
             "resize" => {
                 let field = |key: &str| args.get(key).and_then(Value::as_u64).unwrap_or(0).min(u16::MAX as u64) as u16;
-                if let Some((cols, rows)) = self.terminals.resize(&terminal, field("cols"), field("rows"), field("width"), field("height")) {
-                    self.notify("grid", json!({ "terminal": terminal, "cols": cols, "rows": rows }));
+                if let Some(resized) = self.terminals.resize(&terminal, field("cols"), field("rows"), field("width"), field("height")) {
+                    match resized.before {
+                        Some(Taken::Bytes(bytes, offset)) => self.output(&terminal, &bytes, offset),
+                        Some(Taken::Overflowed) => self.resync(&terminal),
+                        None => {}
+                    }
+                    self.notify("grid", json!({ "terminal": terminal, "cols": resized.cols, "rows": resized.rows }));
                 }
             }
             "update" => self.updated(&pane, &args),
@@ -506,22 +526,32 @@ impl AppLink {
         self.notify("stop", json!({ "pane": pane }));
     }
 
-    fn attach(&self, pane: &str) {
-        self.attached.borrow_mut().insert(pane.into());
-        let Some(attach) = self.terminals.attach(pane) else { return };
-        let snapshot = match attach.snapshot {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
+    fn attach(&self, pane: &str, from: Option<u64>) {
+        let history = *self.attached.borrow_mut().entry(pane.into()).or_default();
+        let Some(attach) = self.terminals.attach(pane, history, from) else { return };
+        let snapshot = match attach.screen {
+            Screen::Snapshot(Ok(snapshot)) => Some(snapshot),
+            Screen::Snapshot(Err(error)) => {
                 let retry = Instant::now() + SNAPSHOT_RETRY;
                 if self.unsent.borrow_mut().insert(pane.into(), retry).is_none() {
                     log!("kanna-daemon: can't snapshot {pane} yet ({error}); trying again shortly");
                 }
                 return;
             }
+            Screen::Replay(replayed) => {
+                self.unsent.borrow_mut().remove(pane);
+                for item in replayed {
+                    match item {
+                        Replayed::Output(bytes, offset) => self.output(pane, &bytes, offset),
+                        Replayed::Grid(cols, rows) => self.notify("grid", json!({ "terminal": pane, "cols": cols, "rows": rows })),
+                    }
+                }
+                None
+            }
         };
         self.unsent.borrow_mut().remove(pane);
-        if self.shows(pane) {
-            self.notify("snapshot", json!({ "terminal": pane, "data": BASE64.encode(&snapshot) }));
+        if let Some(snapshot) = snapshot.filter(|_| self.shows(pane)) {
+            self.notify("snapshot", json!({ "terminal": pane, "data": BASE64.encode(&snapshot.data), "offset": snapshot.offset, "more": snapshot.more }));
             self.notify("grid", json!({ "terminal": pane, "cols": attach.cols, "rows": attach.rows }));
         }
         if let Some(code) = attach.exit_code {
@@ -529,14 +559,14 @@ impl AppLink {
         }
     }
 
-    pub fn output(&self, pane: &str, bytes: &[u8]) {
+    pub fn output(&self, pane: &str, bytes: &[u8], offset: u64) {
         if !self.shows(pane) {
             return;
         }
         if self.unsent.borrow().contains_key(pane) {
             return;
         }
-        self.notify("output", json!({ "terminal": pane, "data": BASE64.encode(bytes) }));
+        self.notify("output", json!({ "terminal": pane, "data": BASE64.encode(bytes), "offset": offset }));
     }
 
     pub fn exited(&self, pane: &str, code: i32) {
@@ -594,8 +624,8 @@ impl AppLink {
         let due: Vec<String> = self.unsent.borrow().iter().filter(|(_, retry)| **retry <= now).map(|(pane, _)| pane.clone()).collect();
         for pane in due {
             self.unsent.borrow_mut().remove(&pane);
-            if self.attached.borrow().contains(&pane) {
-                self.attach(&pane);
+            if self.attached.borrow().contains_key(&pane) {
+                self.attach(&pane, None);
             }
         }
         let late: Vec<u64> = self.pending.borrow().iter().filter(|(_, (deadline, _))| *deadline <= now).map(|(id, _)| *id).collect();

@@ -1,5 +1,5 @@
 use crate::pty::{self, Adopted, Spawned, Spawner, Spec};
-use crate::reader::{Feed, Reader, Taken};
+use crate::reader::{Feed, Reader, Replayed, Snapshot, Taken};
 use crate::settings::Settings;
 use crate::status::Detector;
 use crate::store::{pane_number, Record, Saved, Store};
@@ -22,8 +22,19 @@ pub type OnStart = Box<dyn Fn(&str)>;
 pub struct Attach {
     pub cols: u16,
     pub rows: u16,
-    pub snapshot: Result<Vec<u8>, kanna_vt::Error>,
+    pub screen: Screen,
     pub exit_code: Option<i32>,
+}
+
+pub enum Screen {
+    Snapshot(Result<Snapshot, kanna_vt::Error>),
+    Replay(Vec<Replayed>),
+}
+
+pub struct Resized {
+    pub cols: u16,
+    pub rows: u16,
+    pub before: Option<Taken>,
 }
 
 const COLS: u16 = 80;
@@ -254,14 +265,15 @@ impl Terminals {
         }
     }
 
-    pub fn resize(&self, id: &str, cols: u16, rows: u16, width: u16, height: u16) -> Option<(u16, u16)> {
+    pub fn resize(&self, id: &str, cols: u16, rows: u16, width: u16, height: u16) -> Option<Resized> {
         let mut live = self.live.borrow_mut();
         let terminal = live.get_mut(id)?;
         let mut feed = Feed::lock(&terminal.feed);
         if cols > MAX_SIDE || rows > MAX_SIDE {
             log!("kanna-daemon: refused to make {id} {cols}×{rows}: at most {MAX_SIDE} cells a side");
-            return Some((feed.cols, feed.rows));
+            return Some(Resized { cols: feed.cols, rows: feed.rows, before: None });
         }
+        let before = feed.take();
         let (cols, rows) = (cols.max(1), rows.max(1));
         if (cols, rows, (width, height)) != (feed.cols, feed.rows, terminal.pixels) {
             if let Some(pty) = &terminal.pty {
@@ -274,15 +286,18 @@ impl Terminals {
                 let _ = pty.input.send(replies);
             }
         }
-        Some((cols, rows))
+        Some(Resized { cols, rows, before })
     }
 
-    pub fn attach(&self, id: &str) -> Option<Attach> {
+    pub fn attach(&self, id: &str, history: Option<usize>, from: Option<u64>) -> Option<Attach> {
         let live = self.live.borrow();
         let t = live.get(id)?;
         let mut feed = Feed::lock(&t.feed);
-        let snapshot = feed.snapshot();
-        Some(Attach { cols: feed.cols, rows: feed.rows, snapshot, exit_code: t.exit_code.filter(|_| t.exit_reported) })
+        let screen = match from.and_then(|from| feed.replay(from)) {
+            Some(replayed) => Screen::Replay(replayed),
+            None => Screen::Snapshot(feed.snapshot(history)),
+        };
+        Some(Attach { cols: feed.cols, rows: feed.rows, screen, exit_code: t.exit_code.filter(|_| t.exit_reported) })
     }
 
     pub fn mark_changed(&self) {

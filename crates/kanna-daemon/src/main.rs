@@ -550,7 +550,7 @@ fn run() -> Result<(), String> {
                     app.folder(&pane, &cwd);
                 }
                 match taken {
-                    Some(Taken::Bytes(bytes)) => app.output(&terminal, &bytes),
+                    Some(Taken::Bytes(bytes, offset)) => app.output(&terminal, &bytes, offset),
                     Some(Taken::Overflowed) => app.resync(&terminal),
                     None => {}
                 }

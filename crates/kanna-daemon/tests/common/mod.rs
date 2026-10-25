@@ -159,6 +159,7 @@ pub struct App {
     reader: BufReader<UnixStream>,
     pub view: Value,
     pub shows: bool,
+    pub hello: Value,
 }
 
 impl App {
@@ -173,6 +174,7 @@ impl App {
             app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": std::process::id(), "panes": panes}}));
             let hello = app.next().expect("no answer to app.hello");
             if hello["ok"] == true {
+                app.hello = hello;
                 return app;
             }
             assert!(hello["error"]["code"] == "app_attached" && Instant::now() < deadline, "{hello}");
@@ -184,7 +186,7 @@ impl App {
         let stream = UnixStream::connect(socket).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let reader = BufReader::new(stream.try_clone().unwrap());
-        App { stream, reader, view: Value::Null, shows: true }
+        App { stream, reader, view: Value::Null, shows: true, hello: Value::Null }
     }
 
     pub fn answering(self) -> std::thread::JoinHandle<()> {

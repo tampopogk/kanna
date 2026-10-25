@@ -7,6 +7,9 @@ final class DaemonLink: TerminalLink {
     private let commands: Commands
     private var terminals: [String: ExternalTerminal] = [:]
     private var sizes: [String: JSON] = [:]
+    private var offsets: [String: Double] = [:]
+    private var more: Set<String> = []
+    private var run: String?
     private(set) var attached = false
     let machine: String?
     var client: String?
@@ -34,6 +37,7 @@ final class DaemonLink: TerminalLink {
     var socketPath: String { connection.path }
 
     static let protocols: [JSON] = [1, 1]
+    static let remoteScrollback = 1000
     static let localOnly: Set<String> = ["app.fleet.confirm", "app.snap"]
 
     init(socketPath: String, commands: Commands, starter: DaemonStarter? = nil, machine: String? = nil, dial: (@Sendable () -> Int32?)? = nil) {
@@ -76,7 +80,7 @@ final class DaemonLink: TerminalLink {
         starter?.connected()
         if let settings = GhosttyRuntime.shared?.settings { send("settings", settings.objectFields) }
         for terminal in terminals.keys.sorted() {
-            send("attach", ["terminal": .string(terminal)])
+            attach(terminal)
             if case .object(let size)? = sizes[terminal] { send("resize", size) }
         }
     }
@@ -107,6 +111,7 @@ final class DaemonLink: TerminalLink {
             if ok {
                 refusal = nil
                 daemonInfo = message["daemon"]
+                run = message["daemon"]?["run"]?.string
                 connection.accepted()
                 onAttach?(message)
             } else if message["error"]?["code"]?.string == "other_protocol" {
@@ -153,12 +158,15 @@ final class DaemonLink: TerminalLink {
             if let pane = args["pane"] { onPane?(pane) }
         case "output":
             if let terminal, let data = args["data"]?.string.flatMap({ Data(base64Encoded: $0) }) {
+                offsets[terminal.id] = args["offset"]?.number
                 consumed = false
                 terminal.output(data) { connection.consumed(delivery) }
             }
         case "snapshot":
             if let id = args["terminal"]?.string { onSnapshot?(id) }
             if let terminal, let data = args["data"]?.string.flatMap({ Data(base64Encoded: $0) }) {
+                offsets[terminal.id] = args["offset"]?.number
+                if args["more"]?.bool == true { more.insert(terminal.id) } else { more.remove(terminal.id) }
                 consumed = false
                 terminal.loadSnapshot(data) { connection.consumed(delivery) }
             }
@@ -215,7 +223,23 @@ final class DaemonLink: TerminalLink {
 
     func opened(_ terminal: ExternalTerminal) {
         terminals[terminal.id] = terminal
-        send("attach", ["terminal": .string(terminal.id)])
+        offsets.removeValue(forKey: terminal.id)
+        attach(terminal.id)
+    }
+
+    private func attach(_ terminal: String) {
+        var args: [String: JSON] = ["terminal": .string(terminal)]
+        if machine != nil { args["scrollback"] = .number(Double(Self.remoteScrollback)) }
+        if let offset = offsets[terminal], let run {
+            args["from"] = .number(offset)
+            args["run"] = .string(run)
+        }
+        send("attach", args)
+    }
+
+    func scrolledToTop(_ terminal: ExternalTerminal) {
+        guard attached, more.remove(terminal.id) != nil else { return }
+        send("scrollback", ["terminal": .string(terminal.id)])
     }
 
     func input(_ bytes: Data, from terminal: ExternalTerminal) {
@@ -236,6 +260,8 @@ final class DaemonLink: TerminalLink {
     func closed(_ terminal: ExternalTerminal) {
         terminals.removeValue(forKey: terminal.id)
         sizes.removeValue(forKey: terminal.id)
+        offsets.removeValue(forKey: terminal.id)
+        more.remove(terminal.id)
         send("detach", ["terminal": .string(terminal.id)])
     }
 }
