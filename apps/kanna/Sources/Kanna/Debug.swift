@@ -140,7 +140,8 @@ extension AppController {
             let remotes = links.remotes.keys.sorted().map { machine -> JSON in
                 let link = links.remotes[machine]
                 return ["machine": .string(machine), "attached": .bool(link?.attached == true), "path": links.path(of: machine),
-                        "failure": links.failure(of: machine) ?? .null, "daemon": link?.daemonInfo ?? .null]
+                        "failure": links.failure(of: machine) ?? .null, "daemon": link?.daemonInfo ?? .null,
+                        "ports": .object(Dictionary(uniqueKeysWithValues: (links.ports[machine] ?? [:]).map { (String($0.key), JSON.number(Double($0.value))) }))]
             }
             return ["name": links.name.map { .string($0) } ?? .null, "links": .array(remotes)]
         }

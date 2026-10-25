@@ -3888,18 +3888,17 @@ sys.exit(not (a[1] > b[1] and abs(a[0] - b[0]) < 1 and a[2] == 340))' || { echo 
   check wait_for 2 eval '[[ "$(toasted)" == "d1 " ]]' || { echo "toasts: × didn't close it"; return 1; }
 }
 
-scenario fleet_remote_task M4
-fleet_remote_task() {
+fleet_vm() {
   export KANNA_FLEET_MDNS=0 KANNA_FLEET_PORT=0
-  start_daemon || { echo "fleet_remote_task line $LINENO"; return 1; }
-  local vm="$KANNA_STATE_DIR/fleet-vm"
+  start_daemon || { echo "$1 line $LINENO"; return 1; }
+  vm="$KANNA_STATE_DIR/fleet-vm"
   mkdir -p "$vm/state" && chmod 700 "$vm"
   vmk() { KANNA_SOCKET="$vm/kanna.sock" KANNA_STATE_DIR="$vm/state" "$bin/kanna" "$@"; }
   vraw() { KANNA_SOCKET="$vm/kanna.sock" raw "$@"; }
   KANNA_SOCKET="$vm/kanna.sock" KANNA_STATE_DIR="$vm/state" KANNA_KEEPER="$bin/kanna-keeper" "$bin/kanna-daemon" >>"$out/daemon-vm.log" 2>&1 &
-  local vm_pid=$!
-  wait_for 5 test -S "$vm/kanna.sock" || { echo "fleet_remote_task: the second daemon didn't open its socket"; return 1; }
-  kanna fleet name mbp >/dev/null && vmk fleet name vm >/dev/null || { echo "fleet_remote_task line $LINENO"; return 1; }
+  vm_pid=$!
+  wait_for 5 test -S "$vm/kanna.sock" || { echo "$1: the second daemon didn't open its socket"; return 1; }
+  kanna fleet name mbp >/dev/null && vmk fleet name vm >/dev/null || { echo "$1 line $LINENO"; return 1; }
   python3 - "$KANNA_SOCKET" >"$KANNA_STATE_DIR/confirmed" <<'PY' &
 import json, socket, sys
 s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); f = s.makefile("rw")
@@ -3914,18 +3913,23 @@ PY
   local confirmer=$!
   vmk fleet pair --json >"$KANNA_STATE_DIR/offer" &
   local waiting=$!
-  check wait_for 5 test -s "$KANNA_STATE_DIR/offer" || { echo "fleet_remote_task: no pairing code"; return 1; }
+  check wait_for 5 test -s "$KANNA_STATE_DIR/offer" || { echo "$1: no pairing code"; return 1; }
   local code peer
   code="$(head -1 "$KANNA_STATE_DIR/offer" | field code)"
   peer="$(head -1 "$KANNA_STATE_DIR/offer" | python3 -c 'import json, sys; o = json.load(sys.stdin); print("%s@127.0.0.1:%s" % (o["key"], o["port"]))')"
   expected="added vm to your fleet"; says kanna fleet pair "$code" --peer "$peer" || return 1
   wait "$waiting" "$confirmer"
-  check test "$(cat "$KANNA_STATE_DIR/confirmed")" == vm || { echo "fleet_remote_task: the pairing wasn't confirmed in an app"; return 1; }
-  start_app || { echo "fleet_remote_task line $LINENO"; return 1; }
+  check test "$(cat "$KANNA_STATE_DIR/confirmed")" == vm || { echo "$1: the pairing wasn't confirmed in an app"; return 1; }
+  start_app || { echo "$1 line $LINENO"; return 1; }
   fleet() { raw '{"id":1,"cmd":"debug.fleet"}' | field "$1"; }
-  check wait_for 20 eval '[[ "$(fleet links.0.attached)" == True ]]' || { echo "fleet_remote_task: the app didn't link to vm"; raw '{"id":1,"cmd":"debug.fleet"}'; return 1; }
+  check wait_for 20 eval '[[ "$(fleet links.0.attached)" == True ]]' || { echo "$1: the app didn't link to vm"; raw '{"id":1,"cmd":"debug.fleet"}'; return 1; }
   check test "$(fleet links.0.machine) $(fleet links.0.daemon.machine) $(fleet links.0.path.path)" == "vm vm direct" || { raw '{"id":1,"cmd":"debug.fleet"}'; return 1; }
+}
 
+scenario fleet_remote_task M4
+fleet_remote_task() {
+  local vm vm_pid
+  fleet_vm fleet_remote_task || return 1
   local repo="$vm/repo"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first && git -C "$repo" remote add origin https://example.com/team/notes.git || { echo "fleet_remote_task line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
@@ -4013,6 +4017,62 @@ assert "local network" in rows[1]["tip"], rows' "$(desk fleet)" || return 1
 
   kanna task list >/dev/null || return 1
   check test "$(kanna task list --json | python3 -c 'import json, sys; print(len(json.load(sys.stdin)["tasks"]))')" == 0 || { echo "fleet_remote_task: vm's task leaked into this Mac's backlog"; return 1; }
+}
+
+scenario fleet_remote_web M4
+fleet_remote_web() {
+  local vm vm_pid
+  fleet_vm fleet_remote_web || return 1
+  local repo="$vm/repo"
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "fleet_remote_web line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  (cd / && vmk "$repo") >/dev/null || { echo "fleet_remote_web line $LINENO"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"d1\"}}" | field "$1"; }
+  check wait_for 10 eval '[[ "$(desk lead)" == term-*@vm ]]' || { echo "fleet_remote_web: the Desk's planner isn't on vm"; return 1; }
+  local planner; planner="$(desk lead)"
+  (cd "$repo" && KANNA_TERMINAL="${planner%@vm}" vmk task new "Dev server" "Run the dev server") >/dev/null || { echo "fleet_remote_web line $LINENO"; return 1; }
+  local task; task="$(sqlite3 -readonly "$vm/state/kanna.db" "select id from tasks order by rowid limit 1")@vm"
+  check wait_for 10 eval '[[ "$(desk backlog)" == "[\"$task\"]" ]]' || { echo "fleet_remote_web: the Desk's backlog doesn't list vm's task"; return 1; }
+  raw '{"id":1,"cmd":"debug.click","args":{"backlog":"'"$task"'","window":"d1"}}' >/dev/null
+  check wait_for 10 eval '[[ "$(desk shelf.0.title)" == "Dev server" ]]' || { echo "fleet_remote_web: starting vm's task didn't put it on the Shelf"; return 1; }
+  local agent; agent="$(desk shelf.0.task)"
+  raw '{"id":1,"cmd":"debug.click","args":{"shelf":"'"$agent"'","window":"d1"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk window.dock.pane)" == "$agent" ]]' || { echo "fleet_remote_web: pulling vm's task didn't dock its agent"; return 1; }
+
+  local worktree="$repo/.kanna-worktrees/${task%@vm}" port
+  port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+  echo "hello from vm" >"$worktree/message.txt"
+  (cd "$worktree" && KANNA_TERMINAL="${agent%@vm}" vmk open --tab --name devserver --cmd "python3 '$repo_root/tools/hmr-server/hmr-server.py' $port '$worktree'") >/dev/null || { echo "fleet_remote_web line $LINENO"; return 1; }
+  check wait_for 10 eval 'vmk read devserver | grep -q "hmr-server on"' || { echo "fleet_remote_web: the task's dev server didn't start"; vmk read devserver; return 1; }
+  local opened; opened="$(cd "$worktree" && KANNA_TERMINAL="${agent%@vm}" vmk open web "http://localhost:$port/" --tab --name devpage --json)" || { echo "fleet_remote_web: opening the dev server's page: $opened"; return 1; }
+  local page; page="$(echo "$opened" | field pane.id)@vm"
+  web() { raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"$page\"}}" | field "$1"; }
+  tunnel() { raw '{"id":1,"cmd":"debug.fleet"}' | python3 -c 'import json, sys; print(json.load(sys.stdin)["links"][0]["ports"].get(sys.argv[1], ""))' "$port"; }
+  check wait_for 10 eval '[[ "$(tunnel)" =~ ^[0-9]+$ ]]' || { echo "fleet_remote_web: the app opened no tunnel to vm's port $port"; raw '{"id":1,"cmd":"debug.fleet"}'; return 1; }
+  local local_port; local_port="$(tunnel)"
+  [[ "$local_port" != "$port" ]] || { echo "fleet_remote_web: the tunnel listens on the dev server's own port"; return 1; }
+  check wait_for 10 eval 'web text | grep -q "hello from vm"' || { echo "fleet_remote_web: the web pane didn't load vm's dev server"; web url; web text; return 1; }
+  check test "$(web url)" == "http://127.0.0.1:$local_port/" || { echo "fleet_remote_web: the web pane isn't on this Mac's loopback"; web url; return 1; }
+  check web text | grep -q "served for 127.0.0.1:$local_port" || { echo "fleet_remote_web: the dev server didn't see a localhost Host"; web text; return 1; }
+  check wait_for 10 eval 'web text | grep -qx connected' || { echo "fleet_remote_web: the page's HMR socket didn't connect"; web text; return 1; }
+  vmurl() { KANNA_SOCKET="$vm/kanna.sock" pane devpage url; }
+  check test "$(vmurl)" == "http://localhost:$port/" || { echo "fleet_remote_web: vm's daemon doesn't keep the dev server's own URL"; vmurl; return 1; }
+  sleep 0.5; snap d1 fleet_remote_web >/dev/null
+
+  echo "hot reloaded on vm" >"$worktree/message.txt"
+  check wait_for 10 eval 'web text | grep -q "hot reloaded on vm"' || { echo "fleet_remote_web: editing the file on vm didn't hot reload the page"; web text; return 1; }
+  check web text | grep -q "hot updated" || { web text; return 1; }
+  check web text | grep -q "loads 1" || { echo "fleet_remote_web: the page reloaded instead of taking a hot update"; web text; return 1; }
+
+  raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"$page\",\"js\":\"location.href = '/next?x=2'; 1\"}}" >/dev/null
+  check wait_for 10 eval 'web text | grep -q "loads 2"' || { echo "fleet_remote_web: following a link on the page"; web text; return 1; }
+  check wait_for 5 eval '[[ "$(vmurl)" == "http://localhost:$port/next?x=2" ]]' || { echo "fleet_remote_web: a page followed in the app didn't reach vm's daemon with the dev server's own address"; vmurl; return 1; }
+
+  stop_app; start_app || { echo "fleet_remote_web line $LINENO"; return 1; }
+  check wait_for 30 eval '[[ "$(fleet links.0.attached)" == True ]]' || { echo "fleet_remote_web: the app didn't link to vm again"; return 1; }
+  check wait_for 15 eval 'web text | grep -q "hot reloaded on vm"' || { echo "fleet_remote_web: the restored web pane didn't load vm's dev server again"; web url; web text; return 1; }
+  echo "after the restart" >"$worktree/message.txt"
+  check wait_for 10 eval 'web text | grep -q "after the restart"' || { echo "fleet_remote_web: hot reload after the app restarted"; web text; return 1; }
 }
 
 for s in ${only[@]+"${only[@]}"}; do due "$s" >/dev/null || { echo "e2e-kanna: no scenario named $s (see --help)" >&2; exit 2; }; done

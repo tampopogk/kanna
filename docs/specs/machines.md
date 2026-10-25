@@ -118,7 +118,7 @@ sequenceDiagram
 - **One link per machine.** Every view is keyed by (machine, content ID), since `term-41` exists on every daemon. Built: [one link per machine](machine-links.md).
 - **The CLI:** `kanna --host NAME` (or `KANNA_HOST`) sends any command to that machine: the local daemon dials it and forwards the command as `fleet call` over a control stream, and the reply is the remote daemon's own. Inside a remote terminal nothing changes: the CLI there uses its own unix socket. Commands that read local files (`diagrams`, doc comments) still run on this machine.
 - **A Mac that serves your other machines** (a Mac whose tasks you reach from elsewhere) runs its daemon from launchd (`kanna machine serve`), a LaunchAgent pointed at the installed app's `Contents/Helpers/kanna-daemon`. The app's replace rule still holds: on `other_build` the daemon exits, and launchd starts it again from the updated bundle.
-- **Streams:** one ALPN, `kanna/1`. Each stream opens with a header line naming its kind (`control`, `file`, `port`, `sync`, `job`, `transfer`), answered by `{ok: true, kind, name}` or a refusal (`unpaired`, `revoked`, `unknown_stream`), and its bytes follow. A `control` stream carries JSON-line requests and replies, as on the unix socket. A seventh kind, `pair`, is the only one an unknown key may open ([identity §2](machine-identity.md#2-pairing)). Until their slices, `file`, `port`, `sync`, `job` and `transfer` are acknowledged and closed; `sync` and `job` are used by services built on top, such as [Kanna Cloud](kanna-cloud.md).
+- **Streams:** one ALPN, `kanna/1`. Each stream opens with a header line naming its kind (`control`, `file`, `port`, `sync`, `job`, `transfer`), answered by `{ok: true, kind, name}` or a refusal (`unpaired`, `revoked`, `unknown_stream`), and its bytes follow. A `control` stream carries JSON-line requests and replies, as on the unix socket. A seventh kind, `pair`, is the only one an unknown key may open ([identity §2](machine-identity.md#2-pairing)). A `port` stream carries one TCP connection to the machine's loopback ([port tunnels](port-tunnels.md)). Until their slices, `file`, `sync`, `job` and `transfer` are acknowledged and closed; `sync` and `job` are used by services built on top, such as [Kanna Cloud](kanna-cloud.md).
 
 ## 6. One app, several machines
 
@@ -139,7 +139,7 @@ See [Desks across machines](machines-app.md) for project identity, the app's She
 | Markdown, code | through the daemon ([file panes](file-panes.md)); images and relative links with `file.read` |
 | Doc markup threads | `markup.*` through the daemon |
 | `kanna screenshot` | bytes come back over a stream; the daemon writes the file where the agent asked |
-| Web | **port tunnel:** the dev server stays on the machine's loopback; the app listens on `127.0.0.1:LOCAL` and carries each connection over a stream. The origin stays localhost; bodies are never rewritten. |
+| Web | **[port tunnel](port-tunnels.md):** the dev server stays on the machine's loopback; the app listens on `127.0.0.1:LOCAL` and carries each connection over a stream. The origin stays localhost; bodies are never rewritten. |
 
 ## 8. Where tasks run
 

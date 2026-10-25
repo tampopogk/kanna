@@ -1,23 +1,31 @@
-use crate::node::{read_line, write_line, DIAL, MAX_HEADER};
+use crate::node::{read_line, splice, write_line, DIAL, MAX_HEADER};
 use crate::{Failure, ALPN, DEFAULT_PORT};
 use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncWriteExt, BufReader};
 
+#[derive(Clone)]
 pub struct Client {
     endpoint: Endpoint,
-    conns: Mutex<HashMap<String, Connection>>,
+    conns: Arc<Mutex<HashMap<String, Connection>>>,
+    ports: Arc<Mutex<HashMap<(String, u16), Port>>>,
+}
+
+struct Port {
+    local: u16,
+    target: Arc<Mutex<(Vec<String>, Value)>>,
+    accepting: tokio::task::JoinHandle<()>,
 }
 
 impl Client {
     pub async fn start(secret: SecretKey) -> Result<Client, String> {
         let endpoint = Endpoint::builder(presets::Minimal).secret_key(secret).relay_mode(RelayMode::Disabled).bind().await.map_err(|e| format!("can't open the app's endpoint: {e}"))?;
-        Ok(Client { endpoint, conns: Mutex::default() })
+        Ok(Client { endpoint, conns: Arc::default(), ports: Arc::default() })
     }
 
     pub fn key(&self) -> String {
@@ -82,6 +90,57 @@ impl Client {
             }
         });
         Ok(theirs)
+    }
+
+    fn ports(&self) -> std::sync::MutexGuard<'_, HashMap<(String, u16), Port>> {
+        self.ports.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub async fn port_open(&self, key: &str, addrs: &[String], cert: &Value, port: u16) -> Result<u16, Failure> {
+        if port == 0 {
+            return Err(Failure::new("bad_request", "port 0 isn't a port"));
+        }
+        if let Some(open) = self.ports().get(&(key.to_string(), port)).filter(|p| !p.accepting.is_finished()) {
+            *open.target.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = (addrs.to_vec(), cert.clone());
+            return Ok(open.local);
+        }
+        let listener = tokio::net::TcpListener::bind((IpAddr::from([127, 0, 0, 1]), 0)).await.map_err(|e| Failure::new("failed", format!("can't listen on this Mac's loopback: {e}")))?;
+        let local = listener.local_addr().map_err(|e| Failure::new("failed", e.to_string()))?.port();
+        let target = Arc::new(Mutex::new((addrs.to_vec(), cert.clone())));
+        let accepting = tokio::spawn({
+            let (client, key, target) = (self.clone(), key.to_string(), target.clone());
+            async move {
+                while let Ok((tcp, _)) = listener.accept().await {
+                    let _ = tcp.set_nodelay(true);
+                    let (client, key, target) = (client.clone(), key.clone(), target.clone());
+                    tokio::spawn(async move {
+                        let (addrs, cert) = target.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+                        if let Ok((send, recv, _)) = client.open(&key, &addrs, json!({ "kind": "port", "cert": cert, "port": port })).await {
+                            splice(tcp, send, recv).await;
+                        }
+                    });
+                }
+            }
+        });
+        if let Some(old) = self.ports().insert((key.to_string(), port), Port { local, target, accepting }) {
+            old.accepting.abort();
+        }
+        Ok(local)
+    }
+
+    pub fn ports_of(&self, key: &str) -> Vec<(u16, u16)> {
+        let mut open: Vec<(u16, u16)> = self.ports().iter().filter(|((k, _), p)| k == key && !p.accepting.is_finished()).map(|((_, port), p)| (*port, p.local)).collect();
+        open.sort();
+        open
+    }
+
+    pub fn port_close(&self, key: &str) {
+        self.ports().retain(|(k, _), p| {
+            if k == key {
+                p.accepting.abort();
+            }
+            k != key
+        });
     }
 
     pub fn path(&self, key: &str) -> Value {
