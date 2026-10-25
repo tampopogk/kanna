@@ -54,7 +54,7 @@ mkdir -p "$wrappers"
 for tool in cc c++ ar; do
   case "$tool" in
     ar) body="exec \"$zig\" ar \"\$@\"" ;;
-    *) body="args=(); for a in \"\$@\"; do case \"\$a\" in --target=*|-target|-Wl,-O1) ;; *) args+=(\"\$a\") ;; esac; done; exec \"$zig\" $tool -target $arch-linux-gnu.$glibc -mcpu=baseline \"\${args[@]}\"" ;;
+    *) body="args=(); for a in \"\$@\"; do case \"\$a\" in --target=*|-target|-Wl,-O1|-Wl,--fix-cortex-a53-843419) ;; *) args+=(\"\$a\") ;; esac; done; exec \"$zig\" $tool -target $arch-linux-gnu.$glibc -mcpu=baseline \"\${args[@]}\"" ;;
   esac
   printf '#!/usr/bin/env bash\n%s\n' "$body" > "$wrappers/$tool.new"
   chmod +x "$wrappers/$tool.new"
