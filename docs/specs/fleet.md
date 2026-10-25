@@ -1,6 +1,6 @@
 # Fleet: Kanna Across Machines
 
-**Status:** planned · **Parts:** [identity and pairing](fleet-identity.md), [tasks across machines](fleet-tasks.md), [build Macs](build-macs.md), [provisioning a server](fleet-provisioning.md), [agent sign-in](agent-sign-in.md) · **Builds on:** [architecture](architecture.md), [app link](app-link.md), [each app's Desk and Shelf](app-desk.md), [backlog runners](backlog-runners.md) · **Research:** [fleet](../research/fleet.md), [scenarios](../research/multi-machine-and-people.md), [xcodebuild shim](../research/xcodebuild-shim.md)
+**Status:** planned · **Parts:** [identity and pairing](fleet-identity.md), [tasks across machines](fleet-tasks.md), [build Macs](build-macs.md), [provisioning a server](fleet-provisioning.md), [updates](fleet-update.md), [agent sign-in](agent-sign-in.md) · **Builds on:** [architecture](architecture.md), [app link](app-link.md), [each app's Desk and Shelf](app-desk.md), [backlog runners](backlog-runners.md) · **Research:** [fleet](../research/fleet.md), [scenarios](../research/multi-machine-and-people.md), [xcodebuild shim](../research/xcodebuild-shim.md)
 
 One person's Kanna runs on several machines: a MacBook Pro as the client, Linux servers that run tasks, Macs that build, and a relay for when the LAN isn't there. The same software later becomes **Kanna Cloud**, a cheap private cloud rented to users, who bring their own machines, rent Kanna's, or both. Kanna develops any project, not only Kanna.
 
@@ -129,7 +129,7 @@ sequenceDiagram
 - **One link per machine.** Every view is keyed by (machine, content ID), since `term-41` exists on every daemon.
 - **The CLI:** `kanna --host NAME` (or `KANNA_HOST`) sends any command to that machine: the local daemon dials it and forwards the command as `fleet call` over a control stream, and the reply is the remote daemon's own. Inside a remote terminal nothing changes: the CLI there uses its own unix socket. Commands that read local files (`diagrams`, doc comments) still run on this machine.
 - **A Mac that serves the fleet** (a build Mac, or a Mac whose tasks you reach from elsewhere) runs its daemon from launchd (`kanna fleet serve`), pointed at the installed app's `Contents/Helpers/kanna-daemon`: a LaunchAgent on a Mac you use, and on a build Mac a LaunchDaemon running as its service user ([build Macs §1](build-macs.md#1-rules)). The app's replace rule still holds: on `other_build` the daemon exits, and launchd starts it again from the updated bundle.
-- **Streams:** one ALPN, `kanna/1`. Each stream opens with a header line naming its kind (`control`, `file`, `port`, `sync`, `job`, `transfer`), answered by `{ok: true, kind, name}` or a refusal (`unpaired`, `revoked`, `unknown_stream`), and its bytes follow. A `control` stream carries JSON-line requests and replies, as on the unix socket. A seventh kind, `pair`, is the only one an unknown key may open ([identity §2](fleet-identity.md#2-pairing)). Until their slices, `file`, `port`, `sync`, `job` and `transfer` are acknowledged and closed.
+- **Streams:** one ALPN, `kanna/1`. Each stream opens with a header line naming its kind (`control`, `file`, `port`, `sync`, `job`, `transfer`) and the protocols the opener speaks, answered by `{ok: true, kind, name, protocol, release}` or a refusal (`unpaired`, `revoked`, `unknown_stream`, `other_protocol`), and its bytes follow ([updates §6](fleet-update.md#6-protocols)). A `control` stream carries JSON-line requests and replies, as on the unix socket. Two more kinds aren't negotiated: `pair`, the only one an unknown key may open ([identity §2](fleet-identity.md#2-pairing)), and `update`, which carries a new build to any trusted daemon, of any protocol ([updates §4](fleet-update.md#4-the-update-stream)). Until their slices, `file`, `port`, `sync`, `job` and `transfer` are acknowledged and closed.
 
 ## 6. One app, several machines
 
@@ -179,7 +179,7 @@ In short ([detail](fleet-tasks.md)):
   WantedBy=default.target
   ```
 
-- **Setting up a Linux server,** as the user Kanna runs as (with sudo), until releases have a Linux tarball (slice 6):
+- **Setting up a Linux server,** as the user Kanna runs as (with sudo); `--tarball FILE` installs a Linux tarball instead of building (step 2):
 
   ```sh
   sudo apt-get install -y git       # a stock cloud image has none
@@ -198,7 +198,7 @@ In short ([detail](fleet-tasks.md)):
   The daemon logs to the journal (`journalctl --user -u kanna-daemon`). **Tested** on r720-1 (Ubuntu 26.04.1 on the host, x86_64; a first run takes about 5 minutes) and in an Ubuntu 26.04 lima VM on an Apple Silicon Mac (arm64, and x86_64 cross-built with `gcc-x86-64-linux-gnu` and `libc6-dev-amd64-cross`, run under Rosetta): a backlog runner starts a task in a worktree, `kanna task start` and `stop` work, real claude tasks commit their work and are stopped when their turn ends (claude asks once per machine to trust the project and to accept bypass mode), a working claude carries on through a daemon restart, a terminal's process and screen survive `systemctl --user restart kanna-daemon` and each update, and re-runs restart the daemon only when its binary or unit changed (A → B → B keeps A as `previous`; a dirty rebuild installed with `--no-start` is started by the next run).
 
 - **Enrolling** pairs the VM (§4), sets up its git credentials ([tasks §4](fleet-tasks.md#4-repos-and-credentials)), then gives it your agent accounts ([agent sign-in](agent-sign-in.md)), with nothing to sign in on the VM.
-- **Updates:** `scripts/release.sh` also builds a Linux tarball (x86_64, `baseline` CPU for the R720s' Ivy Bridge). A daemon updates itself when a newer release is out (fetched from a peer that has it, or the release site): it switches `current`, runs `kanna-keeper --upgrade` ([keeper upgrade](keeper-upgrade.md)) and restarts; terminals survive ([restarting](daemon-restart.md)). `kanna fleet update` does it now, everywhere. No order is needed while versions overlap.
+- **Updates** ([detail](fleet-update.md)): `scripts/release.sh` also builds a Linux tarball (x86_64, `baseline` CPU for the R720s' Ivy Bridge). `kanna fleet update` sends it to every Linux machine; each daemon installs it in `/opt/kanna/<commit>`, switches `current` and restarts itself in place, upgrading the keeper when its build differs ([keeper upgrade](keeper-upgrade.md)); terminals survive ([restarting](daemon-restart.md)). No order is needed while versions overlap. Not yet: a daemon updating itself when a newer release is out (fetched from a peer that has it, or the release site).
 
 ## 10. Build order
 
