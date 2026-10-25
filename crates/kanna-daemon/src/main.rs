@@ -99,7 +99,7 @@ pub enum Event {
     KeeperReadable,
     KeeperExits,
     KeeperLost(String),
-    AppHello { conn: u64, hello: Value, out: Outbox, stream: UnixStream },
+    AppHello { conn: u64, hello: Value, out: Outbox, stream: UnixStream, remote: Option<String> },
     AppCaughtUp { conn: u64 },
     AppMessage { conn: u64, message: Value },
     AppGone { conn: u64 },
@@ -353,6 +353,10 @@ fn run() -> Result<(), String> {
 
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
     let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), files.clone(), layout.clone(), app_timeout, build_id.clone()));
+    if let Some(fleet) = &fleet {
+        let fleet = Rc::downgrade(fleet);
+        *app.machine.borrow_mut() = Some(Box::new(move || fleet.upgrade().map_or(Value::Null, |f| f.machine())));
+    }
     let view_link = Rc::downgrade(&app);
     *layout.on_view.borrow_mut() = Some(Box::new(move |view| {
         if let Some(app) = view_link.upgrade() {
@@ -599,8 +603,8 @@ fn run() -> Result<(), String> {
                 failure = Some(reason);
                 break;
             }
-            Event::AppHello { conn, hello, out, stream } => {
-                if app.hello(conn, hello, out, stream) {
+            Event::AppHello { conn, hello, out, stream, remote } => {
+                if app.hello(conn, hello, out, stream, remote) {
                     break;
                 }
                 toasts.attached();

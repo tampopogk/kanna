@@ -1727,9 +1727,11 @@ dependencies = [
  "kanna-client",
  "kanna-merman",
  "kanna-mux",
+ "kanna-net",
  "kanna-threads",
  "libc",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

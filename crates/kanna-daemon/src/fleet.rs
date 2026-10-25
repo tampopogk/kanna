@@ -34,6 +34,12 @@ impl Host for DaemonHost {
     fn save(&self, state: Value) {
         let _ = self.0.lock().unwrap_or_else(|p| p.into_inner()).send(Event::FleetSave(state));
     }
+
+    fn app(&self, from: String, hello: Value, stream: std::os::unix::net::UnixStream) {
+        let events = self.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let Ok(reader) = stream.try_clone() else { return };
+        let _ = std::thread::Builder::new().name("kanna.app.read".into()).spawn(move || crate::app_link::serve(events, hello, std::io::BufReader::new(reader), stream, Some(from)));
+    }
 }
 
 fn hostname() -> String {
@@ -94,6 +100,7 @@ impl Fleet {
         let needs_host = |host: Option<String>| host.ok_or_else(|| KmuxError::new("bad_request", format!("fleet {action} needs a machine: its name or key")));
         match action.as_str() {
             "status" => responder.reply(object(node.status())),
+            "certify" => responder.reply(string(&args, "key").ok_or_else(|| KmuxError::new("bad_request", "fleet certify needs the app's endpoint KEY")).and_then(|key| node.certify(key).map_err(error)).and_then(|cert| object(json!({ "cert": cert })))),
             "name" => responder.reply(string(&args, "name").ok_or_else(|| KmuxError::new("bad_request", "fleet name needs a NAME")).and_then(|name| node.rename(name).map_err(error)).and_then(object)),
             "offer" => responder.reply(node.offer().map_err(error).and_then(object)),
             "addr" => {
@@ -139,7 +146,7 @@ impl Fleet {
                     })
                 });
             }
-            other => responder.reply(Err(KmuxError::new("bad_request", format!("unknown fleet action \"{other}\" (status, name, offer, wait, pair, revoke, addr, ping, sync or call)")))),
+            other => responder.reply(Err(KmuxError::new("bad_request", format!("unknown fleet action \"{other}\" (status, name, offer, wait, pair, revoke, addr, ping, sync, certify or call)")))),
         }
     }
 
@@ -159,6 +166,13 @@ impl Fleet {
                 Err(e) => Err(e.message),
             })
         });
+    }
+
+    pub fn machine(&self) -> Value {
+        match &self.node {
+            Ok(node) => json!({ "name": node.status()["name"], "capabilities": capabilities() }),
+            Err(_) => json!({ "name": hostname(), "capabilities": capabilities() }),
+        }
     }
 
     pub fn stop(&self) {
