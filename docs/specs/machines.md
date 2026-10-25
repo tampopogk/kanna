@@ -37,7 +37,7 @@ It's free and open source, with no account and no server of Kanna's: on the LAN,
 
 ## 2. Machines and roles
 
-Every machine runs the same daemon and keeper. They differ in what each is for, advertised as **capabilities**: OS, architecture, cores, RAM, Xcode versions, display.
+Every machine runs the same daemon and keeper. They differ in what each is for, which you say with placement preferences; matching tasks to machines by capability is [Kanna Cloud's](kanna-cloud.md#5-directory-and-relays).
 
 ```mermaid
 flowchart LR
@@ -67,8 +67,8 @@ flowchart LR
 
 **Placement: where work goes.**
 
-- **Placement is a policy, not a place.** By default, any machine with free slots and the capabilities a task `needs:` asks for the oldest waiting task, so a mini and ten Linux boxes share one backlog without a scheduler ([tasks §2](machine-tasks.md#2-owners-and-grants)). Preferences narrow who asks (e2e on the mini, this project's agents on those machines).
-- **A task runs whole on one machine.** A task that needs macOS goes to a Mac.
+- **Placement is a policy, not a place.** By default, any machine with free slots asks for the oldest waiting task, so a mini and ten Linux boxes share one backlog without a scheduler ([tasks §2](machine-tasks.md#2-owners-and-grants)). Preferences narrow who asks (e2e on the mini, this project's agents on those machines).
+- **A task runs whole on one machine.** A task that needs macOS goes to a Mac by preference.
 - **Taking a task to the Desk doesn't move it.** It stays where it runs and is shown over the link.
 
 ## 3. Reach: LAN first, relay second
@@ -146,7 +146,7 @@ See [Desks across machines](machines-app.md) for project identity, the app's She
 In short ([detail](machine-tasks.md)):
 
 - **The backlog is replicated** to every one of your daemons, eventually consistent, ordered oldest first by a hybrid logical clock.
-- **Each task has one owner.** A runner elsewhere with free slots and the right capabilities asks for it, and the owner grants it to exactly one.
+- **Each task has one owner.** A runner elsewhere with free slots, within the task's preferences, asks for it, and the owner grants it to exactly one.
 - **Transfer** moves a task between any two daemons at a boundary. The branch goes as a git bundle over the link, the transcript is copied, and the agent resumes by session ID at the receiver's own paths.
 
 ## 9. Server setup and updates
