@@ -73,7 +73,7 @@ final class FleetPage: NSView {
         let left: CGFloat = 32, width = max(320, min(800, scroller.contentSize.width - left * 2))
         let column = left + (width * 0.56).rounded()
         var y: CGFloat = 28
-        let title = label("Fleet", size: 22, weight: .bold)
+        let title = label("Machines", size: 22, weight: .bold)
         title.frame.origin = NSPoint(x: left, y: y)
         y += title.frame.height + 4
         let sub = label("Your machines · all projects", size: 13, color: .secondaryLabelColor)

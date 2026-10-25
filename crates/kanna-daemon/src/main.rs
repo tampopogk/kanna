@@ -302,7 +302,7 @@ fn run() -> Result<(), String> {
             None
         }
     };
-    let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone());
+    let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone(), agents::keys(&support_folder(), &state_dir));
     agents.refresh();
     agents.install(&core);
     let diffs = Rc::new(diffs::Diffs::new(events.clone()));

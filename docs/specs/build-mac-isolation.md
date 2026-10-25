@@ -1,6 +1,6 @@
 # Isolation on Shared Build Macs
 
-**Status:** required, not yet modelled · **Part of:** [build Macs](build-macs.md) · **Model:** `references/prototypes/build-mac-isolation/` (to be built)
+**Status:** required, not yet modelled · **Part of:** [build Macs](build-macs.md), in [Kanna Cloud](kanna-cloud.md) · **Model:** `references/prototypes/build-mac-isolation/` (to be built)
 
 Several mutually untrusted users may use the same physical Mac. Every remote build runs inside a macOS VM assigned exclusively to one tenant. Separate host accounts and serialized host UI tests do not meet this requirement. The owner-account shim experiment demonstrated transport and build behaviour only.
 
@@ -16,15 +16,15 @@ Several mutually untrusted users may use the same physical Mac. Every remote bui
 
 ```mermaid
 flowchart LR
-    A["Tenant A's Linux task"] --> H["Mac host: trusted fleet broker + VM manager"]
+    A["Tenant A's Linux task"] --> H["Mac host: trusted Kanna broker + VM manager"]
     B["Tenant B's Linux task"] --> H
     H --> VA["macOS VM A<br/>A's source, caches, credentials<br/>A's GUI + Simulator"]
     H --> VB["macOS VM B<br/>B's source, caches, credentials<br/>B's GUI + Simulator"]
 ```
 
-- The host OS, hypervisor, administrator and fleet broker are trusted. Tenant repositories, build phases, plugins, tests and their outputs are untrusted. A malicious host administrator is outside this boundary.
+- The host OS, hypervisor, administrator and Kanna broker are trusted. Tenant repositories, build phases, plugins, tests and their outputs are untrusted. A malicious host administrator is outside this boundary.
 - A VM never contains two tenants' workloads or private state. A tenant may have multiple VMs. Tenant means an authenticated user or explicitly shared trust domain, never a caller-supplied username.
-- Guest compromise, including guest root, must not grant access to the host's fleet identity, personal account, other guests or host management APIs. Hypervisor escape remains a platform risk requiring supported, patched software; a VM is not a claim of absolute security.
+- Guest compromise, including guest root, must not grant access to the host's `device.key`, personal account, other guests or host management APIs. Hypervisor escape remains a platform risk requiring supported, patched software; a VM is not a claim of absolute security.
 - Same-tenant jobs may share warm caches. Mutually untrusted repositories within a tenant require separate disposable VMs too; per-task mirror locks are not isolation.
 - The physical host never executes submitted project code, including Git hooks, package resolution or archive extraction helpers. There is no automatic fallback to host execution when VM capacity is exhausted.
 

@@ -1,6 +1,6 @@
 # xcodebuild shim model
 
-Reference for [Fleet §10](../../../docs/specs/fleet.md#10-build-order), before
+Reference for [Fleet §10](../../../docs/specs/machines.md#10-build-order), before
 slices 7 and 12; follows [build Macs](../../../docs/specs/build-macs.md) and
 the [research](../../../docs/research/xcodebuild-shim.md).
 

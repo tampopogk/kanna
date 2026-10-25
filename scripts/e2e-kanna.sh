@@ -3966,12 +3966,12 @@ PY
   check wait_for 5 eval 'vmk workspace list --all --json | grep -q "\"term-1@vm\""' || { echo "fleet_remote_task: a remote tab's title that looks like an ID lost its suffix through the app"; vmk workspace list --all --json; return 1; }
   sleep 0.5; snap d1 fleet_remote_task >/dev/null
 
-  check test "$(desk pages)" == '["Shelf", "Fleet"]' || { echo "fleet_remote_task: the Desk's fixed tabs"; desk pages; return 1; }
+  check test "$(desk pages)" == '["Shelf", "Machines"]' || { echo "fleet_remote_task: the Desk's fixed tabs"; desk pages; return 1; }
   check test "$(desk headerTip)" == "vm · Direct · LAN" || { echo "fleet_remote_task: the agent header's tooltip"; desk headerTip; return 1; }
   check test "$(desk header)" == "$repo/.kanna-worktrees/${task%@vm} · ${task%@vm}" || { echo "fleet_remote_task: the agent header"; desk header; return 1; }
-  raw '{"id":1,"cmd":"debug.click","args":{"page":"Fleet","window":"d1"}}' >/dev/null
-  check wait_for 5 eval '[[ "$(desk fleetPage)" == True ]]' || { echo "fleet_remote_task: the Fleet tab didn't show the Fleet page"; return 1; }
-  check test "$(desk window.dock.pane)" == "$agent" || { echo "fleet_remote_task: the Fleet tab moved the agent"; return 1; }
+  raw '{"id":1,"cmd":"debug.click","args":{"page":"Machines","window":"d1"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk fleetPage)" == True ]]' || { echo "fleet_remote_task: the Machines tab didn't show the Machines page"; return 1; }
+  check test "$(desk window.dock.pane)" == "$agent" || { echo "fleet_remote_task: the Machines tab moved the agent"; return 1; }
   check python3 -c 'import json, sys
 rows = json.loads(sys.argv[1])
 assert [(r["name"], r["path"]) for r in rows] == [("mbp", "This Mac"), ("vm", "Direct · LAN")], rows
@@ -3985,9 +3985,9 @@ assert "local network" in rows[1]["tip"], rows' "$(desk fleet)" || return 1
   raw '{"id":1,"cmd":"debug.click","args":{"tab":"'"$first"'"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk window.tab)" == "$first" ]]' || { echo "fleet_remote_task line $LINENO"; return 1; }
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Previous Tab"}}' >/dev/null
-  check wait_for 5 eval '[[ "$(desk fleetPage)" == True ]]' || { echo "fleet_remote_task: Previous Tab from the first document tab didn't show the Fleet tab"; return 1; }
+  check wait_for 5 eval '[[ "$(desk fleetPage)" == True ]]' || { echo "fleet_remote_task: Previous Tab from the first document tab didn't show the Machines tab"; return 1; }
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Next Tab"}}' >/dev/null
-  check wait_for 5 eval '[[ "$(desk page)" == False && "$(desk fleetPage)" == False && "$(desk window.tab)" == "$first" ]]' || { echo "fleet_remote_task: Next Tab from the Fleet tab didn't return to the first document tab"; return 1; }
+  check wait_for 5 eval '[[ "$(desk page)" == False && "$(desk fleetPage)" == False && "$(desk window.tab)" == "$first" ]]' || { echo "fleet_remote_task: Next Tab from the Machines tab didn't return to the first document tab"; return 1; }
   check test "$(desk window.dock.pane)" == "$agent" || { echo "fleet_remote_task: switching tabs by keyboard moved the agent"; return 1; }
 
   kill "$vm_pid"; wait_for 10 eval '! kill -0 '"$vm_pid" || { echo "fleet_remote_task: vm's daemon didn't stop"; return 1; }

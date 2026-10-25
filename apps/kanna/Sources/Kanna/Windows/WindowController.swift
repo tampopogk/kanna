@@ -18,7 +18,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     let shelfStrip = ShelfStrip()
     let shelfPage = ShelfPage()
     let fleetPage = FleetPage()
-    static let pages = ["Shelf", "Fleet"]
+    static let pages = ["Shelf", "Machines"]
     var page: String?
     var fleet: [FleetMachine] = []
     var stale: String?
