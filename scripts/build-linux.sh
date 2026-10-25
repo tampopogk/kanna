@@ -66,8 +66,7 @@ env "CC_$triple_lower=$wrappers/cc" "CXX_$triple_lower=$wrappers/c++" "AR_$tripl
   "CARGO_TARGET_${triple_env}_LINKER=$wrappers/cc" \
   CARGO_PROFILE_RELEASE_STRIP=debuginfo KANNA_CHANNEL="$channel" KANNA_VERSION="$version" \
   cargo build --release --manifest-path "$repo_root/Cargo.toml" --target "$target" -p kanna -p kanna-daemon -p kanna-keeper
-built="$(kanna_arch_dir "$repo_root" "$target")/release"
-[[ -d "$built" ]] || built="$repo_root/target/$target/release"
+built="$repo_root/target/$target/release"
 
 step "Tarball"
 stage="$out/.stage-$arch"

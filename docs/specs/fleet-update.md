@@ -59,10 +59,10 @@ kanna fleet update                                  # this release, to every Lin
 kanna fleet update r720-1 --tarball target/release-linux/Kanna-4.1.0-linux-x86_64.tar.gz
 ```
 
-- **What goes:** the tarball given, or this Kanna's own release: the daemon downloads `Kanna-VERSION-linux-x86_64.tar.gz` from the GitHub release `vVERSION` with curl, once, into its state folder's `releases/`. A dev build has no release, so it needs `--tarball`.
+- **What goes:** the tarball given, or this Kanna's own release: the daemon downloads `Kanna-VERSION-linux-x86_64.tar.gz` from the GitHub release `vVERSION` with curl, once, into its state folder's `releases/` (each download into a file of its own, renamed into place when complete, so two at once never mix). A dev build has no release, so it needs `--tarball`.
 - **Where:** every machine in the fleet but this one, or the machines named. A machine whose capabilities name another OS or architecture is skipped (`macos …: Kanna.app updates it`); naming it makes that a failure.
 - **How:** to every machine at once, each over an `update` stream (§4). A machine already running that commit says so and takes nothing.
-- **Done** when the machine answers again at the new commit (it is dialed every 200 ms for up to 60 s). The reply lists each machine with `from`, `to`, the bytes sent and how long sending and restarting took; `kanna fleet` shows each connected machine's version and commit.
+- **Done** when the machine answers again at the new commit (it is dialed every 200 ms for up to 60 s), read from the ack of a control stream, or from the `other_protocol` refusal when the new build shares no protocol with this one. The reply lists each machine with `from`, `to`, the bytes sent and how long sending and restarting took; `kanna fleet` shows each connected machine's version and commit.
 - **Exit code** 1 when any machine failed or was named and skipped; the others are still updated.
 
 ```mermaid
@@ -96,7 +96,7 @@ A seventh admitted stream kind, `update`, beside the six of [fleet §5](fleet.md
 | bytes | exactly `size` bytes of the tarball |
 | reply | `{ok: true, from, to}`, then the receiver restarts; or a refusal |
 
-Refusals: `unpaired`/`revoked` (as every stream), `not_installed`, `wrong_build` (another OS, architecture or channel: a production install never takes a staging build), `busy` (another update is being taken), `bad_request`, `bad_tarball` (the sha256 doesn't match), `install_failed` (§2). A daemon from before this slice answers `unknown_stream`, reported as "its Kanna predates kanna fleet update: run scripts/server-setup.sh there once". Downgrades are allowed: the user named the build.
+Refusals: `unpaired`/`revoked` (as every stream), `not_installed`, `wrong_build` (another OS, architecture or channel: a production install never takes a staging build), `busy` (another update is being taken, or one was taken and the daemon is about to restart), `bad_request`, `bad_tarball` (the sha256 doesn't match), `install_failed` (§2). A daemon from before this slice answers `unknown_stream`, reported as "its Kanna predates kanna fleet update: run scripts/server-setup.sh there once". Downgrades are allowed: the user named the build.
 
 ## 5. Restarting in place
 
@@ -106,7 +106,7 @@ Once the reply is sent, the daemon leaves its main loop the way a SIGTERM does (
 
 `kanna_build::PROTOCOLS` is the range of protocols this build speaks, `[lo, hi]`, now `[1, 1]`; Kanna.app's `Protocols.mine` must be the same (a test in `kanna-build` checks). A change that old peers can't follow raises `hi`; dropping the oldest raises `lo`. Two ends work together at the highest protocol both speak.
 
-- **Between daemons:** every stream header carries `protocols` (a daemon from before this slice sends none and counts as `[1, 1]`). The ack carries `protocol`, the one chosen, and `release`. With none in common the stream is refused with `other_protocol` and the receiver's `release`, and the caller reports, for example, `vm runs Kanna 4.0.0 (aaaaaaaa), protocol 2–3, and this machine speaks 1; this machine is older: update it, or run kanna fleet update on vm`. `pair` and `update` streams aren't negotiated.
+- **Between daemons:** every stream header carries `protocols` (a daemon from before this slice sends none and counts as `[1, 1]`). The ack carries `protocol`, the one chosen, and `release`; the opener checks it speaks that protocol, and takes an ack without one (a daemon from before this slice) as protocol 1. With none in common the stream is refused with `other_protocol` and the receiver's `release`, and the caller reports, for example, `vm runs Kanna 4.0.0 (aaaaaaaa), protocol 2–3, and this machine speaks 1; this machine is older: update it, or run kanna fleet update on vm`. `pair` and `update` streams aren't negotiated.
 - **The app:** `app.hello` carries `protocols`, and its reply's `daemon` carries the daemon's `release`. With none in common the daemon answers `other_protocol` with its `release` and **keeps running** (unlike `other_build`, which a local daemon answers by stopping so the app starts its own; that check comes first). Kanna.app shows a toast that says which side is older and leads with the fix:
 
 ![A toast: "r720-1 runs an older Kanna", detail "kanna fleet update r720-1 updates it. It runs 4.0.1 (d7cb0a1e), protocol 1; this Kanna speaks 2–3."](fleet-update-other-protocol.png)

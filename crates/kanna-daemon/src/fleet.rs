@@ -15,6 +15,8 @@ const CONFIRM_WAIT: Duration = Duration::from_secs(120);
 
 const CONFIRM: &str = "app.fleet.confirm";
 
+static DOWNLOADS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 const RELEASES: &str = "https://github.com/tampopogk/kanna/releases/download";
 
 pub struct Fleet {
@@ -80,7 +82,7 @@ async fn download(url: &str, folder: &Path) -> Result<PathBuf, Failure> {
         return Ok(file);
     }
     tokio::fs::create_dir_all(folder).await.map_err(|e| Failure::new("no_release", format!("can't make {}: {e}", folder.display())))?;
-    let part = file.with_extension("part");
+    let part = folder.join(format!(".{}.{}.part", file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), DOWNLOADS.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
     let fetched = tokio::process::Command::new("curl").arg("-fsSL").arg("-o").arg(&part).arg(url).output().await.map_err(|e| Failure::new("no_release", format!("can't run curl: {e}")))?;
     if !fetched.status.success() {
         let _ = tokio::fs::remove_file(&part).await;

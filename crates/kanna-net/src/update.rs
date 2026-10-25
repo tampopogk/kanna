@@ -43,6 +43,13 @@ pub fn common(mine: [u32; 2], theirs: [u32; 2]) -> Option<u32> {
     (top >= mine[0].max(theirs[0])).then_some(top)
 }
 
+pub fn agreed(ack: &Value, mine: [u32; 2]) -> bool {
+    match ack["protocol"].as_u64() {
+        Some(protocol) => u32::try_from(protocol).is_ok_and(|p| mine[0] <= p && p <= mine[1]),
+        None => common(mine, [1, 1]).is_some(),
+    }
+}
+
 pub fn short(commit: &str) -> String {
     let dirty = if commit.ends_with("-dirty") { "-dirty" } else { "" };
     format!("{}{dirty}", commit.chars().take(8).collect::<String>())
@@ -271,13 +278,21 @@ impl Node {
 
     async fn back_at(&self, key: &str, commit: &str) -> Result<(), Failure> {
         let deadline = Instant::now() + BACK;
-        let mut last = None;
+        let mut last: Option<String> = None;
         while Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(200)).await;
-            match self.release_of(key).await {
-                Ok(release) if release["commit"] == commit => return Ok(()),
-                Ok(release) => last = release["commit"].as_str().map(String::from),
-                Err(_) => self.forget(key),
+            let release = match self.release_of(key).await {
+                Ok(release) => Some(release),
+                Err(failure) if failure.code == "other_protocol" => self.state().releases.get(key).cloned(),
+                Err(_) => {
+                    self.forget(key);
+                    None
+                }
+            };
+            match release {
+                Some(release) if release["commit"] == commit => return Ok(()),
+                Some(release) => last = release["commit"].as_str().map(String::from),
+                None => {}
             }
         }
         Err(Failure::new("not_back", match last {
@@ -299,7 +314,9 @@ impl Node {
             return;
         };
         let result = self.take_update(&install, &commit, header, send, recv).await;
-        self.0.updating.store(false, std::sync::atomic::Ordering::SeqCst);
+        if result.is_err() {
+            self.0.updating.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
         match result {
             Ok(was) => {
                 let _ = write_line(send, &json!({ "ok": true, "from": was, "to": commit })).await;
@@ -391,6 +408,14 @@ mod tests {
         assert_eq!(common([1, 2], [3, 4]), None);
         assert_eq!(protocols(&json!([2, 1])), None);
         assert_eq!(protocols(&json!([1, 2])), Some([1, 2]));
+    }
+
+    #[test]
+    fn an_ack_must_name_a_protocol_this_side_speaks_and_none_means_1() {
+        assert!(agreed(&json!({ "ok": true, "protocol": 2 }), [1, 3]));
+        assert!(!agreed(&json!({ "ok": true, "protocol": 4 }), [1, 3]));
+        assert!(agreed(&json!({ "ok": true }), [1, 2]));
+        assert!(!agreed(&json!({ "ok": true }), [2, 3]));
     }
 
     #[test]

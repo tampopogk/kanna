@@ -318,3 +318,30 @@ async fn another_protocol_is_refused_with_its_fix_but_still_takes_an_update() {
     assert_eq!(named["machines"][0]["ok"], false);
     assert!(named["machines"][0]["skipped"].as_str().unwrap().contains("Kanna.app updates it"), "{named}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_update_to_a_build_of_another_protocol_still_sees_it_come_back() {
+    let (a, b) = ("a".repeat(40), "b".repeat(40));
+    let dir = folder("across");
+    let prefix = dir.join("opt");
+    std::fs::create_dir_all(&prefix).unwrap();
+    let install = installed(&prefix, &a);
+    let (mbp, _) = machine("mbp", json!({})).await;
+    let secret = SecretKey::generate();
+    let (vm, vm_host) = server("linux-vm", json!({}), 0, secret.clone(), linux(&a, [1, 1]), Some(install)).await;
+    pair(&mbp, &vm).await.unwrap();
+    let restarted = {
+        let (vm_host, prefix, b) = (vm_host.clone(), prefix.clone(), b.clone());
+        tokio::spawn(async move {
+            vm_host.restarts.notified().await;
+            let (port, saved) = (vm.port(), vm_host.saved.lock().unwrap().clone());
+            vm.close().await;
+            drop(vm);
+            server("ignored", saved, port, secret, linux(&b, [2, 2]), Install::detect(&prefix.join("current/kanna-daemon"))).await.0
+        })
+    };
+    let done = mbp.update(vec![], tarball(&dir, &linux(&b, [2, 2]), 0).await).await.unwrap();
+    assert_eq!(done["machines"][0]["ok"], true, "{done}");
+    let _vm = restarted.await.unwrap();
+    assert_eq!(mbp.call("linux-vm", json!({ "id": 1, "cmd": "list" })).await.unwrap_err().code, "other_protocol");
+}

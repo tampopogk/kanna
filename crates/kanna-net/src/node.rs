@@ -102,7 +102,7 @@ pub(crate) struct State {
     offer: Option<Offer>,
     nearby: BTreeMap<String, Nearby>,
     conns: HashMap<String, Connection>,
-    releases: HashMap<String, Value>,
+    pub(crate) releases: HashMap<String, Value>,
 }
 
 #[derive(Clone, Default)]
@@ -582,6 +582,11 @@ impl Node {
                 return Err(Failure::new("other_protocol", update::other_protocol(name, &ack["release"], self.protocols())));
             }
             return Err(Failure::new(&failure.code, format!("{name} refused this machine: {}", failure.message)));
+        }
+        if kind != UPDATE && !update::agreed(&ack, self.protocols()) {
+            let _ = send.finish();
+            let release = if ack["release"].is_object() { ack["release"].clone() } else { json!({ "protocols": [1, 1] }) };
+            return Err(Failure::new("other_protocol", update::other_protocol(name, &release, self.protocols())));
         }
         Ok((send, recv, ack))
     }
