@@ -28,13 +28,15 @@ let package = Package(
         .target(name: "KannaLinks"),
         .target(name: "KannaDrop"),
         .target(name: "KannaStatus"),
+        .target(name: "KannaFleet"),
+        .testTarget(name: "KannaFleetTests", dependencies: ["KannaFleet"]),
         .testTarget(name: "KannaStatusTests", dependencies: ["KannaStatus"]),
         .testTarget(name: "KannaDropTests", dependencies: ["KannaDrop"]),
         .testTarget(name: "KannaLinksTests", dependencies: ["KannaLinks"]),
         .target(name: "SimBridge", linkerSettings: ["AppKit", "IOSurface", "QuartzCore"].map { .linkedFramework($0) }),
         .executableTarget(
             name: "Kanna",
-            dependencies: ["GhosttyKit", "KannaLayoutC", "KannaDiagram", "KannaDocs", "KannaMarkdown", "KannaCode", "KannaDiff", "KannaLinks", "KannaDrop", "KannaStatus", "KannaPerf", "SimBridge"],
+            dependencies: ["GhosttyKit", "KannaLayoutC", "KannaDiagram", "KannaDocs", "KannaMarkdown", "KannaCode", "KannaDiff", "KannaLinks", "KannaDrop", "KannaStatus", "KannaFleet", "KannaPerf", "SimBridge"],
             linkerSettings: [.linkedLibrary("c++"), kannaFFI]
                 + ["AppKit", "Carbon", "CoreText", "IOSurface", "Metal", "QuartzCore", "UniformTypeIdentifiers", "WebKit"].map { .linkedFramework($0) }
         ),

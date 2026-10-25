@@ -1,4 +1,5 @@
 import Foundation
+import KannaFleet
 import KannaPerf
 
 @MainActor
@@ -24,6 +25,7 @@ final class DaemonLink: TerminalLink {
     private var requests = 0
     private var replies: [Int: (JSON) -> Void] = [:]
     private let starter: DaemonStarter?
+    var machine = "this Mac"
 
     var socketPath: String { connection.path }
 
@@ -33,7 +35,7 @@ final class DaemonLink: TerminalLink {
         connection = DaemonConnection(
             path: socketPath,
             hello: { [weak self] in
-                var args: [String: JSON] = ["pid": .number(Double(ProcessInfo.processInfo.processIdentifier))]
+                var args: [String: JSON] = ["pid": .number(Double(ProcessInfo.processInfo.processIdentifier)), "protocols": .array(Protocols.mine.map { .number(Double($0)) })]
                 if let build = KannaBuild.daemonBuild { args["build"] = .string(build) }
                 return ["id": 0, "cmd": "app.hello", "args": .object(args)]
             },
@@ -93,6 +95,13 @@ final class DaemonLink: TerminalLink {
                 connection.accepted()
                 starter?.replacing()
                 FileHandle.standardError.write(Data("kanna: the daemon is from another build and is stopping; starting this build's\n".utf8))
+            } else if message["error"]?["code"]?.string == "other_protocol" {
+                connection.refused()
+                let daemon = message["daemon"] ?? [:]
+                let protocols = daemon["protocols"]?.array?.compactMap { $0.number.map(Int.init) }
+                let text = Protocols.otherProtocol(machine: machine, protocols: protocols, version: daemon["version"]?.string, commit: daemon["commit"]?.string)
+                FileHandle.standardError.write(Data("kanna: \(text)\n".utf8))
+                onToast?(["id": .string("other_protocol:\(machine)"), "title": .string("\(machine) runs another version of Kanna"), "detail": .string(text)])
             } else {
                 connection.refused()
                 FileHandle.standardError.write(Data("kanna: the daemon refused this app: \(message["error"]?["message"]?.string ?? "")\n".utf8))
