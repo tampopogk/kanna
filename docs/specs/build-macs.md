@@ -1,8 +1,8 @@
 # Build Macs and the xcodebuild Shim
 
-**Status:** planned · **Part of:** [fleet](fleet.md) · **Isolation:** [shared build Macs](build-mac-isolation.md) · **Research:** [xcodebuild shim](../research/xcodebuild-shim.md)
+**Status:** planned · **Part of:** [Kanna Cloud](kanna-cloud.md#6-build-macs) · **Isolation:** [shared build Macs](build-mac-isolation.md) · **Research:** [xcodebuild shim](../research/xcodebuild-shim.md)
 
-A task on Linux works on Apple code as if Xcode were local. Its `xcodebuild`, `xcrun`, `simctl`, `codesign` and project-chosen `swift` calls run on a **build Mac** against the agent's current worktree. Output and the exit code stream back, and test results, screenshots and built apps arrive where the agent expects them. Any number of Macs, Intel and Apple Silicon, form the **pool**.
+A task on Linux works on Apple code as if Xcode were local. Its `xcodebuild`, `xcrun`, `simctl`, `codesign` and project-chosen `swift` calls run on a **build Mac** against the agent's current worktree. Output and the exit code stream back, and test results, screenshots and built apps arrive where the agent expects them. Any number of Macs, Intel and Apple Silicon, form the **pool**. This is Kanna Cloud's alone: the self-hosted [fleet](fleet.md) has no build Macs.
 
 ## Contents
 
@@ -68,7 +68,7 @@ sequenceDiagram
 - **Slots:** one heavy build and one UI-test slot per guest to start, with a host-wide admission cap based on measured memory/CPU pressure and allowed VM capacity. Xcode's own test parallelism is bounded as well.
 - **Simulators are leased** by (guest, UDID) across a job's install, launch and screenshot steps, never `booted`. UI tests run through a LaunchAgent in the guest job user's console session.
 - **Disk:** mirrors and DerivedData have a quota per Mac and are evicted least recently used first. Five servers' tasks fill one mini quickly.
-- **A build Mac's daemon runs from launchd** (`kanna fleet serve`), since no app may be open there ([fleet §5](fleet.md#5-the-app-link-over-the-network)).
+- **A build Mac's daemon runs from launchd** (`kanna fleet serve`), as a LaunchDaemon running as its service user, since no app may be open there ([fleet §5](fleet.md#5-the-app-link-over-the-network)).
 - **Signing:** Simulator and ad-hoc signing for agent jobs. Distribution identities stay out of ordinary jobs, and a signed build uses a temporary keychain made for that job.
 
 ## 5. iOS for remote tasks
@@ -77,7 +77,7 @@ The Simulator runs on the MBP. A remote task's `.app`, built on a build Mac, is 
 
 ## 6. Build order
 
-[Fleet](fleet.md#10-build-order) slices 7 and 12:
+[Build order](fleet-build-order.md#cloud), Cloud's slices 7 and 12:
 
 - **7, first version:** one physical Mac, this MBP first then the mini, with builds inside a tenant macOS VM after the [isolation model](build-mac-isolation.md#5-proof-before-product) passes:
   - the shim and `kanna build`, and `kanna build -- SCRIPT`;

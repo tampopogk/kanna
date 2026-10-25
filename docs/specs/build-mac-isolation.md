@@ -1,6 +1,6 @@
 # Isolation on Shared Build Macs
 
-**Status:** required, not yet modelled · **Part of:** [build Macs](build-macs.md) · **Model:** `references/prototypes/build-mac-isolation/` (to be built)
+**Status:** required, not yet modelled · **Part of:** [build Macs](build-macs.md), in [Kanna Cloud](kanna-cloud.md) · **Model:** `references/prototypes/build-mac-isolation/` (to be built)
 
 Several mutually untrusted users may use the same physical Mac. Every remote build runs inside a macOS VM assigned exclusively to one tenant. Separate host accounts and serialized host UI tests do not meet this requirement. The owner-account shim experiment demonstrated transport and build behaviour only.
 

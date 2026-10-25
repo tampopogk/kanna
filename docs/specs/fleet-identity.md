@@ -1,8 +1,8 @@
 # Fleet: Identity and Pairing
 
-**Status:** built in slice 2 (`crates/kanna-net`, the daemon's `fleet` command), except the app's own endpoint key (slice 3) and Cloud · **Part of:** [fleet](fleet.md) · **Model:** [fleet-pairing](../../references/prototypes/fleet-pairing/README.md)
+**Status:** built in slice 2 (`crates/kanna-net`, the daemon's `fleet` command), except the app's own endpoint key (slice 3) · **Part of:** [fleet](fleet.md) · **Cloud:** [enrollment by token](kanna-cloud.md#4-enrollment-by-token), [hosted peers](kanna-cloud.md#8-threat-model) · **Model:** [fleet-pairing](../../references/prototypes/fleet-pairing/README.md)
 
-How one of your machines knows another is yours, with no account (free, on the LAN) and with one (Cloud). The rule in both cases: **trust comes from your devices, never from a server.** Kanna's directory can withhold entries but can't forge one.
+How one of your machines knows another is yours, with no account and no server. The rule, here and in [Kanna Cloud](kanna-cloud.md): **trust comes from your devices, never from a server.**
 
 ## Contents
 
@@ -25,7 +25,7 @@ How one of your machines knows another is yours, with no account (free, on the L
 
 ## 2. Pairing
 
-One mechanism serves both tiers: a **PAKE** over a one-time code authenticates both keys directly between the two devices. In Cloud, the directory only carries the PAKE's messages.
+A **PAKE** over a one-time code authenticates both keys directly between the two devices. You are the only party: no server takes part. (Kanna Cloud reuses it with a token instead of a typed code: [enrollment](kanna-cloud.md#4-enrollment-by-token).)
 
 ```mermaid
 sequenceDiagram
@@ -51,13 +51,12 @@ The exchange copies the [model](../../references/prototypes/fleet-pairing/README
 - **The gesture:** the daemon asks Kanna.app (`app.fleet.confirm`), which shows a sheet naming the machine, its key and addresses; it waits two minutes. With no app attached the add is refused (`gesture_required`): a headless server joins a fleet, it never adds to one.
 - **Finding the newcomer:** while a code is open, the daemon advertises `pair` in its mDNS record (service `kanna`); `kanna fleet pair CODE` tries each machine on the LAN that advertises it. From another network, `--peer KEY@HOST[:PORT]` names it; `kanna fleet pair` prints that line with each of its addresses. iroh's mDNS listens only on a machine's default interface, so a machine whose LAN isn't its default route (a VM with a second NIC) is paired with `--peer`.
 - **macOS Local Network privacy:** macOS refuses LAN traffic (`EHOSTUNREACH`) and Bonjour to a process whose app hasn't been allowed on the local network. The daemon is Kanna.app's helper, so Kanna.app declares `NSLocalNetworkUsageDescription` and `NSBonjourServices` (`_kanna._udp`), and macOS asks once. A daemon started from elsewhere (a terminal, a test) gets its terminal's permission; loopback is never refused.
-- **Cloud:** you provision B from the signed-in app. The token Kanna puts in B's setup is the code, so you type nothing. The directory relays the PAKE and never sees the code, so it can't put its own key in B's place. v2's enrollment trusted whatever key it was first handed (trust on first use), so its introducer could do that once.
+- **Not trust on first use:** v2's enrollment trusted whatever key it was first handed, so its introducer could put its own key in once. Here both sides prove the code.
 - **Signing a peer takes a gesture in the app,** never a command alone (§4).
-- **Upgrading from Local to Cloud** publishes the log you already have; nothing is paired again.
 
 ## 3. The peer log
 
-The peers are a **signed log**, not a record that replicates by last writer wins. It is replicated to every peer and to the directory in Cloud.
+The peers are a **signed log**, not a record that replicates by last writer wins. It is replicated to every peer.
 
 | Entry | Valid when |
 |---|---|
@@ -77,10 +76,10 @@ The peers are a **signed log**, not a record that replicates by last writer wins
 
 ## 4. Risks
 
-- **An agent can read `device.key`:** every machine runs its agents as the daemon's user. A prompt-injected agent could sign a peer into the fleet. For a single tenant that's the same trust the user already gives the agent, but two defences are cheap: signing needs a gesture in the app (§2), and agent setup adds the state folder's keys to each agent's sandbox deny list.
-- **A machine that runs your agent sees your code,** whoever operates it. End-to-end encryption protects what passes through relays and the directory, not what runs on a host.
+- **An agent can read `device.key`:** every machine runs its agents as the daemon's user. A prompt-injected agent could sign a peer into the fleet. Every machine in a self-hosted fleet is yours, so that's the same trust the user already gives the agent, but two defences are cheap: signing needs a gesture in the app (§2), and agent setup adds the state folder's keys to each agent's sandbox deny list.
+- **A machine that runs your agent sees your code.** End-to-end encryption protects what passes through a relay, not what runs on a host.
 - **A stolen key can still revoke on a stale branch:** those revocations stand (they must, for mutual revocation), so a thief can shut honest machines out until they re-pair. It can't let anything in.
-- **Kanna-run machines hold several tenants:** VMs that each belong to one user on Linux, and a macOS user per tenant on build Macs ([build Macs](build-macs.md#1-rules)). The peer log is per user, and one user's devices never see another's.
+- **On machines someone else runs,** the operator can sign with `device.key` too: that's Kanna Cloud's threat model ([Cloud §8](kanna-cloud.md#8-threat-model)).
 
 ## 5. Interfaces
 
