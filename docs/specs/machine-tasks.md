@@ -1,8 +1,8 @@
-# Fleet: Tasks Across Machines
+# Machines: Tasks Across Machines
 
-**Status:** planned · **Part of:** [fleet](fleet.md) · **Builds on:** [backlog runners](backlog-runners.md), [tasks](tasks.md), [each app's Desk and Shelf](app-desk.md)
+**Status:** planned · **Part of:** [your machines](machines.md) · **Builds on:** [backlog runners](backlog-runners.md), [tasks](tasks.md), [each app's Desk and Shelf](app-desk.md)
 
-Where a task runs when you have several machines: one backlog replicated to all of them, exactly one machine allowed to start each task, and tasks moving between any two daemons at a boundary. All of it works on the LAN with no account; Cloud adds an always-on copy.
+Where a task runs when you have several machines: one backlog replicated to all of them, exactly one machine allowed to start each task, and tasks moving between any two daemons at a boundary. All of it works on your own machines with no account; [Kanna Cloud](kanna-cloud.md#5-directory-and-relays) adds an always-on copy.
 
 ## Contents
 
@@ -13,7 +13,7 @@ Where a task runs when you have several machines: one backlog replicated to all 
 
 ## 1. The replicated backlog
 
-Every one of your daemons holds every task's record, synced peer to peer over iroh, LAN first. In Cloud, the service keeps one more copy, encrypted with your keys, so a task you add on a closed laptop still reaches the servers.
+Every one of your daemons holds every task's record, synced peer to peer over iroh, LAN first.
 
 | Part | Consistency |
 |---|---|
@@ -37,7 +37,7 @@ sequenceDiagram
     Note over O,X: the record replicates: owner r720-4
 ```
 
-- **A task starts on its owner,** at first the machine where it was made. Who grants is a policy too: a scheduler (Kanna Cloud, or a load balancer over many VMs) can own every waiting task and assign them centrally ([fleet §2](fleet.md#2-machines-and-roles)).
+- **A task starts on its owner,** at first the machine where it was made. Who grants is a policy too: a scheduler (a load balancer over many machines, or [Kanna Cloud's](kanna-cloud.md#5-directory-and-relays)) can own every waiting task and assign them centrally ([machines §2](machines.md#2-machines-and-roles)).
 - **Asking:** a runner with free slots and the right capabilities (`needs: xcode`) asks the owner for the oldest task waiting. The owner grants it to exactly one runner, and that runner becomes the owner.
 - **Two meanings, two words:** "ask" and "grant" are between machines. A **claim** stays what it is in [app-desk](app-desk.md): an app having a task out on its Shelf, now named by its device (`claimed by: mbp`).
 - **An offline owner's tasks wait.** Leases that expire would allow a double start, so add them only if waiting hurts.
@@ -70,5 +70,5 @@ sequenceDiagram
 ## 4. Repos and credentials
 
 - **Clones** live wherever a machine likes (`~/repos/<name>` on servers). A repo is identified across machines by its remote URL, or, for one with no remote, by the ID of its first commit.
-- **Git credentials** are per machine: a deploy key or `gh auth login` with a fine-grained token on each VM. Your personal key never leaves the Mac.
-- **Agent logins** are set up when a machine enrolls ([fleet §9](fleet.md#9-server-setup-and-updates)).
+- **Git credentials** are per machine: a deploy key or `gh auth login` with a fine-grained token on each machine. Your personal key never leaves the Mac.
+- **Agent logins** are set up when a machine joins ([agent sign-in](agent-sign-in.md), [setup §4](machine-setup.md#4-joining-and-updates)).

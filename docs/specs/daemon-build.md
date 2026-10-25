@@ -4,7 +4,7 @@
 
 A relaunched app whose bundled daemon differs from the one running replaces it. Nothing is lost: the keeper holds the ptys, and the next daemon adopts them.
 
-**Only the local daemon follows the app's build.** A daemon on another machine is checked by a protocol range and never stopped by an app ([fleet](fleet.md#5-the-app-link-over-the-network)).
+**Only the local daemon follows the app's build.** A daemon on another machine is checked by a protocol range and never stopped by an app ([your machines](machines.md#5-the-app-link-over-the-network)).
 
 ## 1. The build ID
 

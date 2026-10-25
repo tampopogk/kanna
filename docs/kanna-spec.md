@@ -21,7 +21,7 @@
 | G3 | Make it easy to script: predictable output, JSON output and clear exit codes. |
 | G4 | Open a whole dev setup (server, web preview, iOS app) with one command. |
 
-**Non-goals (for now):** showing panes itself (that is the mux's job); pixel-exact sizing (sizes are fractions of the space). Kanna on other machines is planned in [fleet](specs/fleet.md).
+**Non-goals (for now):** showing panes itself (that is the mux's job); pixel-exact sizing (sizes are fractions of the space). Kanna on other machines is planned in [your machines](specs/machines.md).
 
 ## Architecture
 
@@ -56,7 +56,8 @@ flowchart TB
 | [The keeper](keeper.md) · [upgrading it](specs/keeper-upgrade.md) | The process that creates and holds the ptys |
 | [The app link](specs/app-link.md) | The app's connection to the daemon: messages, snapshots, the app starting the daemon |
 | [Daemon build](specs/daemon-build.md) | A relaunched app of another build replaces the daemon |
-| [Fleet](specs/fleet.md) · [identity and pairing](specs/fleet-identity.md) · [tasks across machines](specs/fleet-tasks.md) · [build Macs](specs/build-macs.md) · [agent sign-in](specs/agent-sign-in.md) | Kanna across machines, free on the LAN, Cloud for about $5 a month; xcodebuild redirected to a pool of Macs |
+| [Your machines](specs/machines.md) · [identity and pairing](specs/machine-identity.md) · [tasks across machines](specs/machine-tasks.md) · [agent sign-in](specs/agent-sign-in.md) | The machines your daemons trust, paired by code, sharing a backlog: free, LAN first |
+| [Kanna Cloud](specs/kanna-cloud.md) · [build Macs](specs/build-macs.md) | A service that hands you machines: Kanna-run VMs, enrollment by token, its directory and relays, build Macs; open source, so anyone can run one |
 | [Restarting the daemon](specs/daemon-restart.md) | Terminals on disk, adopting the keeper's ptys |
 | [Pane sizes](specs/pane-sizes.md) | A program sees its view's size across a relaunch and a restart, and on the Shelf and in the backlog |
 | [The layout](specs/layout.md) | One layout model in the app; layout steps; saving, restoring; working with the app closed |
@@ -102,4 +103,4 @@ flowchart TB
 | [Deployment target](specs/deployment-target.md) | Everything built for the app's macOS |
 | [Build speed](specs/build-speed.md) · [build architectures](specs/build-architectures.md) · [build targets](specs/build-targets.md) | Fast worktree builds; arm64 and x86_64; worktree builds on another volume |
 | [Release](specs/release.md) | Signed, notarized DMGs published on GitHub |
-| [Fleet provisioning](specs/fleet-provisioning.md) | Ubuntu on a Dell R720 through its iDRAC alone |
+| [Kanna Cloud: installing a host](specs/cloud-provisioning.md) | Ubuntu on a Kanna Cloud R720 through its iDRAC alone |

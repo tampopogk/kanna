@@ -1,6 +1,6 @@
 # Fleet network model
 
-A standalone Rust transport probe for [Fleet §3, §5 and §10](../../../docs/specs/fleet.md), before Fleet 2, 3 and 8. This is a reference experiment, not product code.
+A standalone Rust transport probe for [Fleet §3, §5 and §10](../../../docs/specs/machines.md), before Fleet 2, 3 and 8. This is a reference experiment, not product code.
 
 **Status: measured on all three paths.** The real Mac/R720/GCP rig demonstrates LAN discovery and direct traffic, relay-assisted hole punching from independent Wi-Fi, and forced relay fallback. Each path has three full echo/throughput runs across every stream kind. This model’s prerequisite for Fleet 2, 3 and 8 is satisfied once this branch is merged; the other prerequisites of those slices still apply.
 

@@ -30,7 +30,7 @@ Every command, option, output and error is kmux's CLI's, except where [the CLI's
 | | `kanna workspace list [--all]` | Your workspace (from `$KANNA_TERMINAL`): its dock, tabs and panes, the shown tab, focus and zoom, also off screen; `--all`: every window, workspace and pane ([workspace list](workspace-list.md)). |
 | Information | `kanna capabilities` | Show what the running mux supports (and, for Kanna, whether the app is attached). |
 | | `kanna diagrams check FILE...` | Check that a markdown file's mermaid diagrams draw in Kanna, without the app; `open md` prints the same failures ([diagram check](diagram-check.md)). Kanna's. |
-| | `kanna fleet [status\|pair [CODE]\|name\|ping\|addr\|revoke]` | Your machines: pair one with a code, list them, check one's link, give it an address, or revoke it ([fleet identity](fleet-identity.md#5-interfaces)). Kanna's. |
+| | `kanna machine [list\|pair [CODE]\|name\|ping\|addr\|revoke]` | Your machines (shipped as `kanna fleet` until renamed): pair one with a code, list them, check one's link, give it an address, or revoke it ([machine identity](machine-identity.md#5-interfaces)). Kanna's. |
 | More | `kanna help [COMMAND\|instances\|raw]`, `kanna commands [--json]`, `kanna raw REQUEST` | Help; every command, for scripts; one control-protocol request as JSON. |
 | | `kanna instances [--json]`, `kanna instances prune` | For developing Kanna: list the running instances of every channel, or delete the folders of dev instances whose worktree is gone ([instances](instances.md)). |
 | Planned | `kanna up [FILE]` | Open a whole setup from a file, `kanna.yaml` by default ([layout files](arranging-panes.md#3-layout-files)). |
@@ -48,7 +48,7 @@ Kanna's own commands beyond these (`markup`, `rename-pane`, `task`, `status`, `t
 | `--window ID\|new` | Open in that window, or a new one. |
 | `--no-wait` | Return as soon as the pane is created, without waiting until it's running. |
 
-Global options, as kmux's: `--json` (the reply as one line of JSON), `--help`/`-h`, `--version`, `--instance NAME`, `--bg` (`KANNA_BG=1`), `--fresh` (`KANNA_FRESH=1`); and Kanna's `--mux kanna|kmux` (`KANNA_MUX`; `kanna-dev` is another name for `kanna`), `--host MACHINE` (`KANNA_HOST`), which sends the command to another machine in your fleet ([fleet identity §5](fleet-identity.md#5-interfaces)); and `--`, which ends the options: everything after it is text, so `kanna send term-1 -- --json` types `--json` (kmux's CLI strips `--json` from anywhere in the arguments). Exit codes: [CLI](cli.md#5-output-errors-and-exit-codes).
+Global options, as kmux's: `--json` (the reply as one line of JSON), `--help`/`-h`, `--version`, `--instance NAME`, `--bg` (`KANNA_BG=1`), `--fresh` (`KANNA_FRESH=1`); and Kanna's `--mux kanna|kmux` (`KANNA_MUX`; `kanna-dev` is another name for `kanna`), `--host MACHINE` (`KANNA_HOST`), which sends the command to another of your machines ([machine identity §5](machine-identity.md#5-interfaces)); and `--`, which ends the options: everything after it is text, so `kanna send term-1 -- --json` types `--json` (kmux's CLI strips `--json` from anywhere in the arguments). Exit codes: [CLI](cli.md#5-output-errors-and-exit-codes).
 
 ## 3. send-key
 
