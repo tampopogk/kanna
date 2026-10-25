@@ -294,7 +294,9 @@ impl AppLink {
     }
 
     pub fn folder(&self, pane: &str, cwd: &str) {
-        self.notify("folder", json!({ "pane": pane, "cwd": cwd }));
+        if self.attached() {
+            self.notify("folder", json!({ "pane": pane, "cwd": cwd, "place": crate::projects::place(cwd) }));
+        }
     }
 
     pub fn status(&self, pane: &str, status: Option<&str>) {
