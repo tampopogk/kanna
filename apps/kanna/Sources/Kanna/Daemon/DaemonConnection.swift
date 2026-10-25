@@ -8,6 +8,8 @@ final class DaemonConnection: @unchecked Sendable {
     }
 
     let path: String
+    private let dial: @Sendable () -> Int32?
+    private let remote: Bool
     private let hello: @MainActor @Sendable () -> JSON
     private let connected: @MainActor @Sendable () -> Void
     private let received: @MainActor @Sendable (JSON, Delivery) -> Void
@@ -25,10 +27,12 @@ final class DaemonConnection: @unchecked Sendable {
     private static let reconnectDelay: TimeInterval = 0.5
     private static let refusedDelayLimit: TimeInterval = 30
 
-    init(path: String, hello: @escaping @MainActor @Sendable () -> JSON, connected: @escaping @MainActor @Sendable () -> Void,
+    init(path: String, dial: (@Sendable () -> Int32?)? = nil, hello: @escaping @MainActor @Sendable () -> JSON, connected: @escaping @MainActor @Sendable () -> Void,
          received: @escaping @MainActor @Sendable (JSON, Delivery) -> Void, disconnected: @escaping @MainActor @Sendable () -> Void,
          unreachable: @escaping @Sendable () -> Void = {}) {
         self.path = path
+        self.dial = dial ?? { Self.connect(path) }
+        remote = dial != nil
         self.hello = hello
         self.connected = connected
         self.received = received
@@ -81,9 +85,14 @@ final class DaemonConnection: @unchecked Sendable {
 
     private func run() {
         while !lock.withLock({ stopped }) {
-            guard let socket = Self.connect(path) else {
+            guard let socket = dial() else {
                 unreachable()
-                Thread.sleep(forTimeInterval: 0.2)
+                if remote {
+                    refused()
+                    sleepUntilRetry()
+                } else {
+                    Thread.sleep(forTimeInterval: 0.2)
+                }
                 continue
             }
             let hello = hello

@@ -3,21 +3,17 @@ import AppKit
 extension AppController {
     static let app = "mac"
 
-    static func claimed(_ workspace: JSON, as place: String) -> Bool {
-        workspace["where"]?[place]?.string == app
-    }
-
     func composed(_ view: JSON) -> JSON {
         guard case .object(var fields) = view, let workspaces = view["workspaces"]?.array else { return view }
-        let mine = workspaces.filter { Self.claimed($0, as: "shelf") }
-        let planners = workspaces.filter { Self.claimed($0, as: "planner") }
+        let mine = workspaces.filter { claimed($0, as: "shelf") }
+        let planners = workspaces.filter { claimed($0, as: "planner") }
         let listed = Set(planners.compactMap { $0["id"]?.string })
         givenPlanners.subtract(listed)
-        physical.keep(shelf: mine.compactMap { ws in ws["id"]?.string.map { ($0, ws["parkedAt"]?.number) } }, planners: listed.union(givenPlanners))
+        physical.keep(shelf: mine.compactMap { ws in ws["id"]?.string.map { ($0, ws["parkedAt"]?.number) } }, planners: listed.union(givenPlanners), present: Set(views.keys))
         let known = Set(physical.desks.compactMap(\.planner)).union(closingPlanners)
         for planner in planners where starting.isEmpty {
             guard let id = planner["id"]?.string, !known.contains(id) else { continue }
-            var desk = physical.newDesk(project: planner["dock"]?["pane"]?.string.flatMap { folders[$0] })
+            var desk = physical.newDesk(project: planner["dock"]?["pane"]?.string.flatMap { pane in folders[pane].map { MachineIDs.location($0, on: MachineIDs.machine(of: pane)) } })
             desk.planner = id
             physical.setDesk(desk)
         }
@@ -70,7 +66,7 @@ extension AppController {
     }
 
     func workspace(ofTask pane: String) -> String? {
-        published["workspaces"]?.array?.first { Self.claimed($0, as: "shelf") && $0["dock"]?["pane"]?.string == pane }?["id"]?.string
+        published["workspaces"]?.array?.first { claimed($0, as: "shelf") && $0["dock"]?["pane"]?.string == pane }?["id"]?.string
     }
 
     func deskShowing(_ workspace: String) -> DeskRecord? { physical.desks.first { $0.shows == workspace } }
@@ -114,9 +110,9 @@ extension AppController {
     }
 
     func openDesk(project: String?, fresh: Bool) -> (desk: String, project: String?, new: Bool) {
-        let root = project.map { canonical(GitPlace.of($0)?.main ?? $0) }
+        let root = project.map(rootLocation)
         if !fresh, let root { touchProject(root) }
-        if !fresh, let root, let found = physical.desks.first(where: { controllers[$0.id]?.projectRoot == root || $0.project.map { canonical(GitPlace.of($0)?.main ?? $0) } == root }) {
+        if !fresh, let root, let found = physical.desks.first(where: { sameProject(controllers[$0.id]?.projectRoot, root) || sameProject($0.project.map(rootLocation), root) }) {
             show(desk: found.id)
             return (found.id, found.project ?? root, false)
         }
@@ -156,7 +152,8 @@ extension AppController {
                 }
                 return ["task": .string(task), "parked": true, "desk": .string(desk.id)]
             case "desk":
-                let opened = openDesk(project: args["project"]?.string, fresh: args["new"]?.bool == true)
+                let project = args["project"]?.string.map { MachineIDs.location($0, on: args["machine"]?.string) }
+                let opened = openDesk(project: project, fresh: args["new"]?.bool == true)
                 return ["desk": .string(opened.desk), "project": opened.project.map { .string($0) } ?? .null, "new": .bool(opened.new)]
             case "close":
                 guard let id = args["desk"]?.string, isDesk(id) else { throw KannaError("not_found", "no Desk \"\(args["desk"]?.string ?? "")\"") }

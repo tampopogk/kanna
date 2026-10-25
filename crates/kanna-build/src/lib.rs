@@ -184,6 +184,7 @@ impl Build {
             ("instance", self.default_instance()),
             ("folder", self.channel.folder().to_string()),
             ("version", VERSION.to_string()),
+            ("commit", COMMIT.to_string()),
         ]
         .iter()
         .map(|(key, value)| format!("{key}={value}\n"))

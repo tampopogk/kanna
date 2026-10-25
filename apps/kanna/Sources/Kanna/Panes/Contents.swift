@@ -263,8 +263,8 @@ final class Contents {
         markdownSpots.removeValue(forKey: id)
     }
 
-    func subscribeDiffs() {
-        for id in ids {
+    func subscribeDiffs(on machine: String?) {
+        for id in ids where MachineIDs.machine(of: id) == machine {
             if let view = diff(id) { subscribe(diff: view, id) }
         }
     }
@@ -301,8 +301,8 @@ final class Contents {
         if message["updating"]?.bool == true { view.setUpdating(true) }
     }
 
-    func subscribeFiles() {
-        for id in ids where fileSources[id] != nil { subscribe(file: id) }
+    func subscribeFiles(on machine: String?) {
+        for id in ids where fileSources[id] != nil && MachineIDs.machine(of: id) == machine { subscribe(file: id) }
     }
 
     private func subscribe(file id: String) {
