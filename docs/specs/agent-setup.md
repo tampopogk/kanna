@@ -22,12 +22,13 @@ flowchart LR
     APP["Kanna.app/Contents/Resources/kanna-skills"] -->|"you agree; again for each new Kanna"| D["daemon"]
     D -->|"copy"| A["~/.agents/skills/kanna-*<br/>(Codex)"]
     D -->|"link"| C["~/.claude/skills/kanna-*<br/>(Claude)"]
-    D -->|"add Kanna's socket"| S["~/.claude/settings.json<br/>sandbox.network.allowUnixSockets"]
+    D -->|"add Kanna's socket, deny its keys"| S["~/.claude/settings.json<br/>sandbox.network.allowUnixSockets<br/>sandbox.filesystem.denyRead, permissions.deny"]
     D -->|"copy of each file as installed"| R["~/.kanna-v4/agents/"]
 ```
 
 - **The skills:** `kanna-tasks`, `kanna-planning`, `kanna-new-project`, `kanna-markup`, `kanna-explain`, `kanna-quiz`, copied to `~/.agents/skills/` and linked from `~/.claude/skills/` (`../../.agents/skills/NAME`), the layout `install.sh --global` uses.
 - **The socket entry** lets an agent in Claude's sandbox run `kanna`. That lets it control Kanna's terminals, which run outside the sandbox, as the kmux socket entry in a repo's own settings did; the prompt says so. The rest of `settings.json` stays as it was, keys in their order and its permissions kept. A `settings.json` Kanna had to make is deleted again by remove.
+- **The key deny entries** keep agents from reading the daemons' signing keys ([fleet identity](fleet-identity.md#4-risks)): `//SUPPORT/kanna*/device.key` in `sandbox.filesystem.denyRead`, and `Read(//SUPPORT/kanna*/device.key)` in `permissions.deny`, where SUPPORT is the application support folder ([instances](instances.md#1-the-folders)); a daemon whose state folder is elsewhere (`KANNA_STATE_DIR`) adds its own key too. Like the socket, each entry is recorded, kept on each launch and taken out by remove, leaving yours.
 - **No hooks.** Kanna tells the agents it starts that they're in Kanna in their first message ([2](#2-how-an-agent-knows-its-in-kanna)). Setup and update remove the `SessionStart` hooks earlier Kannas added to `~/.claude/settings.json` and `~/.codex/hooks.json` (their command ends `# kanna agents setup`), leaving yours.
 - **Nothing else.**
 
