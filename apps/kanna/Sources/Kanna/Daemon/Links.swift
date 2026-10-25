@@ -141,7 +141,10 @@ final class Links: TerminalLink {
 
     func opened(_ terminal: ExternalTerminal) { link(for: terminal.id)?.opened(terminal) }
 
-    func input(_ bytes: Data, from terminal: ExternalTerminal) { link(for: terminal.id)?.input(bytes, from: terminal) }
+    func input(_ bytes: Data, from terminal: ExternalTerminal) {
+        guard let link = link(for: terminal.id), link.attached else { return }
+        link.input(bytes, from: terminal)
+    }
 
     func resizeRequested(_ terminal: ExternalTerminal, cols: UInt16, rows: UInt16, width: UInt32, height: UInt32) {
         link(for: terminal.id)?.resizeRequested(terminal, cols: cols, rows: rows, width: width, height: height)

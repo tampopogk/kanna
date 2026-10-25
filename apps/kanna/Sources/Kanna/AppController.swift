@@ -16,6 +16,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var paneSets: [String: Set<String>] = [:]
     var places: [String: JSON] = [:]
     var identities: [String: String] = [:]
+    var lastSeen: [String: Date] = [:]
     private var server: SocketServer?
     private var signalSources: [DispatchSourceSignal] = []
     private var ownerSource: DispatchSourceProcess?
@@ -302,12 +303,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 openTerminalIfEmpty()
             }
         } else {
+            seen(machine)
             refresh()
         }
     }
 
     private func linkLost(_ machine: String?) {
         guard machine != nil else { return }
+        seen(machine)
         refresh()
     }
 
@@ -386,7 +389,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var shelfTasks: [ShelfTask] {
         let tasks = shelfEntries.compactMap { entry -> ShelfTask? in
             guard let id = entry["task"]?.string else { return nil }
-            return ShelfTask(id: id, title: taskTitle(id, name: entry["name"]?.string), parkedAt: entry["parkedAt"]?.number, status: agentStatuses.statuses[id], detail: taskDetail(id), agent: entry["agent"]?.string)
+            return ShelfTask(id: id, title: taskTitle(id, name: entry["name"]?.string), parkedAt: entry["parkedAt"]?.number, status: agentStatuses.statuses[id], detail: taskDetail(id), agent: entry["agent"]?.string,
+                             place: placeText(id), offline: offline(MachineIDs.machine(of: id)))
         }
         let waiting: [ShelfTask] = tasks.filter { $0.status == "needs-you" }
         let rest: [ShelfTask] = tasks.filter { $0.status != "needs-you" }
@@ -546,6 +550,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         panes.keep(placed)
         let tasks = shelfTasks
+        let fleet = fleetMachines
         var held = Set<String>()
         for window in windows {
             guard let id = window["id"]?.string else { continue }
@@ -571,6 +576,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             controller.project = controller.projectRoot.map(displayName) ?? projectName(mine.map(\.id))
             controller.taskTitle = docked.map { taskTitle($0, name: window["dock"]?["name"]?.string) }
             controller.headerText = docked.map(headerText) ?? leadHeader(window, controller.projectRoot)
+            controller.fleet = fleet
+            controller.stale = staleText(docked ?? lead)
+            controller.headerTip = (docked ?? lead).map(placeText)
             controller.render(window, panes)
             if wantsPlanner(window) { openPlanner(in: id) }
         }
@@ -602,7 +610,19 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             restate()
             refresh()
         }
-        controller.tabBar.onSelect = { [weak self] tab in self?.layoutCommand("focus", ["tab": .string(tab)]) }
+        controller.tabBar.onSelect = { [weak self, weak controller] tab in
+            if controller?.page != nil {
+                controller?.page = nil
+                self?.refresh()
+            }
+            self?.layoutCommand("focus", ["tab": .string(tab)])
+        }
+        controller.tabBar.onPage = { [weak self, weak controller] page in
+            guard let self, let controller else { return }
+            controller.page = page
+            if page == WindowController.pages[1] { links?.refresh() }
+            redraw(controller)
+        }
         controller.tabBar.onClose = { [weak self] tab in self?.closeTab(tab) }
         controller.tabBar.onNew = { [weak self] in self?.newTab(in: id) }
         controller.tabBar.onDrag = { [weak self] tab in self?.dragTab(tab) }

@@ -159,7 +159,9 @@ extension AppController {
                     "header": controller.agentHeader.isHidden ? .null : .string(controller.agentHeader.text),
                     "backlog": .array(controller.backlog.map { .string($0.id) }), "agents": .array(controller.backlog.map { $0.agent.map { .string($0) } ?? .null }), "running": .number(Double(controller.running)),
                     "waiting": .string(controller.shelfStrip.waitingText), "stripLayout": controller.shelfStrip.geometry, "note": .string(controller.note), "cheer": .string(controller.cheer),
-                    "lead": controller.leadShown.map { .string($0) } ?? .null, "window": window(id) ?? .null, "scroll": scrolled, "search": search,
+                    "lead": controller.leadShown.map { .string($0) } ?? .null, "pages": .array(controller.tabBar.pageItems.map { .string($0.title) }),
+                    "fleetPage": .bool(!controller.fleetPage.isHidden), "fleet": .array(controller.fleetPage.machines.map { ["name": .string($0.name), "detail": .string($0.detail), "path": .string($0.path), "note": .string($0.note), "tip": .string($0.explanation)] }),
+                    "headerTip": controller.agentHeader.toolTip.map { .string($0) } ?? .null, "places": .array(controller.shelf.map { $0.place.map { .string($0) } ?? .null }), "window": window(id) ?? .null, "scroll": scrolled, "search": search,
                     "responder": .string(controller.window.firstResponder.map { String(describing: type(of: $0)) } ?? "")]
         }
         commands["debug.web"] = { [weak self] args in
@@ -350,7 +352,7 @@ extension AppController {
         } else if let task = args["shelf"]?.string {
             let id = args["window"]?.string ?? state["key"]?.string ?? ""
             guard let controller = controllers[id] else { throw KannaError("not_found", "no window \"\(id)\"") }
-            let spots = controller.emptyDesk ? controller.shelfPage.rows : controller.shelfStrip.items
+            let spots = !controller.shelfPage.isHidden ? controller.shelfPage.rows : controller.shelfStrip.items
             guard let spot = spots.first(where: { $0.task == task }) else { throw KannaError("not_found", "\(task) is not on \(id)'s Shelf") }
             window = controller.window
             point = spot.center
@@ -358,6 +360,11 @@ extension AppController {
             let id = args["window"]?.string ?? state["key"]?.string ?? ""
             guard let controller = controllers[id], let spot = controller.shelfPage.backlogRows.first(where: { $0.task == task }) else { throw KannaError("not_found", "\(task) is not in \(id)'s backlog") }
             guard controller.shelfPage.visibleBacklog.contains(task) else { throw KannaError("not_found", "\(task) is scrolled out of \(id)'s view") }
+            window = controller.window
+            point = spot.center
+        } else if let page = args["page"]?.string {
+            let id = args["window"]?.string ?? state["key"]?.string ?? ""
+            guard let controller = controllers[id], let spot = controller.tabBar.pageItems.first(where: { $0.title == page }) else { throw KannaError("not_found", "no \(page) tab on \(id)") }
             window = controller.window
             point = spot.center
         } else if let id = args["park"]?.string {

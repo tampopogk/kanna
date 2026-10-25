@@ -94,8 +94,10 @@ final class AgentHeader: NSView {
     var parkCenter: NSPoint { park.convert(NSPoint(x: park.bounds.midX, y: park.bounds.midY), to: nil) }
     var text: String { label.stringValue }
 
-    func show(_ text: String) {
-        if label.stringValue != text { label.stringValue = text }
+    func show(_ text: String, stale: String? = nil) {
+        let shown = stale.map { "\($0) · \(text)" } ?? text
+        if label.stringValue != shown { label.stringValue = shown }
+        label.textColor = stale == nil ? .secondaryLabelColor : .systemRed
         needsLayout = true
     }
 
