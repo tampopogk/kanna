@@ -129,7 +129,7 @@ A Linux task's `xcodebuild`, `xcrun`, `simctl` and chosen `swift` calls run on a
 | Reassignment | — | never: a released VM is destroyed with its disks and snapshots, your app revokes its key, and the next user gets a new VM with a new key |
 | Other tenants | none | VMs and host-enforced networks between them (§3); build Macs per [isolation](build-mac-isolation.md) |
 
-- **A prompt-injected agent on a hosted VM** can read its `device.key` too; the `hosted` rule means it can't admit a peer either, and the key is on the agent's sandbox deny list as everywhere.
+- **A prompt-injected agent on a hosted VM** can read its `device.key` too; the `hosted` rule means it can't admit a peer either. Claude's settings deny reading the key; Codex, run with `--yolo`, can read it ([identity §4](machine-identity.md#4-risks)).
 - **The directory** is the operator's: it can withhold peers or delay revocations, which your devices also carry to each other directly. It can't forge an add.
 
 ## 9. Open questions
