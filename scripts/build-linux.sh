@@ -81,7 +81,7 @@ cat > "$stage/kanna/release.json" <<JSON
 {"commit": "$commit", "version": "$version", "channel": "$channel", "os": "linux", "arch": "$arch", "protocols": $protocols}
 JSON
 tarball="$out/$name-$version-linux-$arch.tar.gz"
-tar -czf "$tarball.new" -C "$stage" kanna
+COPYFILE_DISABLE=1 tar --no-xattrs -czf "$tarball.new" -C "$stage" kanna
 mv "$tarball.new" "$tarball"
 rm -rf "$stage"
 echo "    $tarball"
