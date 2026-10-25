@@ -127,6 +127,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             daemon.onStart = { [weak self] pane in self?.startContent(pane) }
             daemon.onStop = { [weak self] pane in self?.contents.stop(pane) }
             daemon.onDiff = { [weak self] content, message in self?.contents.received(diff: message, content: content) }
+            daemon.onFile = { [weak self] content, message in self?.contents.received(file: message, content: content) }
             daemon.onPane = { [weak self] pane in self?.learn(pane) }
             daemon.onExited = { [weak self] terminal, code in
                 if let pane = self?.panes.pane(showing: terminal) { self?.panes.exited(pane, code: code) }
@@ -239,6 +240,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         contents.subscribeDiffs()
+        contents.subscribeFiles()
         loadRecent()
         layoutChanged()
         if wantsFirstTerminal {

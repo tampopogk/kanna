@@ -51,6 +51,9 @@ final class Contents {
     private var diffSources: [String: (path: String, args: [String])] = [:]
     private var diffContents: [String: String] = [:]
     private var diffLatest: [String: JSON] = [:]
+    private var fileSources: [String: (path: String, kind: String)] = [:]
+    private var fileContents: [String: String] = [:]
+    private var fileLatest: [String: JSON] = [:]
 
     func slot(_ id: String) -> PaneSlot {
         if let slot = slots[id] { return slot }
@@ -104,36 +107,31 @@ final class Contents {
         stop(id)
         states[id] = "starting"
         let content: NSView
-        var failure: String?
         switch type {
         case "md":
             let path = Self.absolute(pane["path"]?.string ?? "")
-            var directory: ObjCBool = false
-            if !FileManager.default.fileExists(atPath: path, isDirectory: &directory) || directory.boolValue {
-                content = NSView()
-                failure = directory.boolValue ? "\(path) is a folder, not a markdown file" : "No such file: \(path)"
-            } else {
-                let spot = markdownSpots[id]?[path]
-                let markdown = MarkdownPaneView(path: path, zoom: spot?.zoom ?? textSize?(id) ?? 1, markup: pane["markup"]?.bool == true, diff: pane["diff"]?.string)
-                markdown.startScrollY = spot?.y
-                markdown.onHistory = { [weak self] back in self?.onRequest?("navigate", ["pane": .string(id), back ? "back" : "forward": true]) }
-                markdown.onZoom = { [weak self, weak markdown] in
-                    guard let markdown else { return }
-                    self?.onTextSize?(id, markdown.zoom)
-                }
-                markdown.onFocus = { [weak self] in self?.onFocus?(id) }
-                markdown.agent = pane["agent"]?.string
-                markdown.agentStatus = markdown.agent.flatMap { self.agentStatus?($0) }
-                markdown.onSend = { [weak self] agent, text, done in self?.send(text, to: agent, done: done) }
-                if let mark = pane["tour"], let thread = mark["thread"]?.string, let at = mark["at"]?.number, let owner = mark["owner"]?.string {
-                    markdown.onTourStep = { [weak self] to in self?.onRequest?("tour", ["action": "go", "owner": .string(owner), "to": .string(to)]) }
-                    markdown.tour = DocTourStep(thread: thread, at: Int(at), of: Int(mark["of"]?.number ?? at))
-                }
-                markdown.contextMenu = { [weak self] in self?.contextMenu?() }
-                markdown.onOpenMarkdown = { [weak self] target in self?.onRequest?("navigate", ["pane": .string(id), "path": .string(target)]) }
-                failure = markdown.diffError
-                content = markdown
+            let spot = markdownSpots[id]?[path]
+            let markdown = MarkdownPaneView(path: path, zoom: spot?.zoom ?? textSize?(id) ?? 1, markup: pane["markup"]?.bool == true, diff: pane["diff"]?.string)
+            markdown.startScrollY = spot?.y
+            markdown.onHistory = { [weak self] back in self?.onRequest?("navigate", ["pane": .string(id), back ? "back" : "forward": true]) }
+            markdown.onZoom = { [weak self, weak markdown] in
+                guard let markdown else { return }
+                self?.onTextSize?(id, markdown.zoom)
             }
+            markdown.onFocus = { [weak self] in self?.onFocus?(id) }
+            markdown.agent = pane["agent"]?.string
+            markdown.agentStatus = markdown.agent.flatMap { self.agentStatus?($0) }
+            markdown.onSend = { [weak self] agent, text, done in self?.send(text, to: agent, done: done) }
+            if let mark = pane["tour"], let thread = mark["thread"]?.string, let at = mark["at"]?.number, let owner = mark["owner"]?.string {
+                markdown.onTourStep = { [weak self] to in self?.onRequest?("tour", ["action": "go", "owner": .string(owner), "to": .string(to)]) }
+                markdown.tour = DocTourStep(thread: thread, at: Int(at), of: Int(mark["of"]?.number ?? at))
+            }
+            markdown.contextMenu = { [weak self] in self?.contextMenu?() }
+            markdown.onOpenMarkdown = { [weak self] target in self?.onRequest?("navigate", ["pane": .string(id), "path": .string(target)]) }
+            fileSources[id] = (pane["path"]?.string ?? "", "md")
+            slot(id).content = markdown
+            subscribe(file: id)
+            return
         case "code":
             let path = pane["path"]?.string ?? ""
             let note = pane["comment"]
@@ -153,8 +151,10 @@ final class Contents {
                 code.onTourStep = { [weak self] to in self?.onRequest?("tour", ["action": "go", "owner": .string(owner), "to": .string(to)]) }
             }
             code.contextMenu = { [weak self] in self?.contextMenu?() }
-            failure = code.failure?.message
-            content = code
+            fileSources[id] = (path, "code")
+            slot(id).content = code
+            subscribe(file: id)
+            return
         case "diff":
             let diff = DiffPaneView(view: pane["view"]?.string, zoom: textSize?(id) ?? 1)
             diff.onFocus = { [weak self] in self?.onFocus?(id) }
@@ -199,7 +199,7 @@ final class Contents {
         slot(id).content = content
         DispatchQueue.main.async { [weak self] in
             guard self?.slots[id]?.content === content else { return }
-            if let failure { self?.report(id, ["state": "failed", "error": .string(failure)]) } else { self?.report(id, ["state": "running"]) }
+            self?.report(id, ["state": "running"])
         }
     }
 
@@ -242,6 +242,11 @@ final class Contents {
             diffContents.removeValue(forKey: id)
             diffLatest = diffLatest.filter { diffContents.values.contains($0.key) }
             onNotice?("diff.unsubscribe", ["view": .string(id)])
+        }
+        if fileSources.removeValue(forKey: id) != nil {
+            fileContents.removeValue(forKey: id)
+            fileLatest = fileLatest.filter { fileContents.values.contains($0.key) }
+            onNotice?("file.unsubscribe", ["view": .string(id)])
         }
         if let markdown = content as? MarkdownPaneView {
             markdown.stop()
@@ -294,6 +299,44 @@ final class Contents {
         }
         view.show(found.encoded(), serial: Int(message["serial"]?.number ?? 0))
         if message["updating"]?.bool == true { view.setUpdating(true) }
+    }
+
+    func subscribeFiles() {
+        for id in ids where fileSources[id] != nil { subscribe(file: id) }
+    }
+
+    private func subscribe(file id: String) {
+        guard let source = fileSources[id], let view = slots[id]?.content else { return }
+        guard let onCall else { return show(file: ["error": ["message": "Kanna.app isn't connected to its daemon"]], in: id) }
+        onCall("file.subscribe", ["view": .string(id), "path": .string(source.path), "kind": .string(source.kind)]) { [weak self, weak view] answer in
+            guard let self, let view, slots[id]?.content === view else { return }
+            guard answer["ok"]?.bool == true, let content = answer["content"]?.string else {
+                return show(file: ["error": ["message": answer["error"]?["message"] ?? "The daemon couldn't read this file"]], in: id)
+            }
+            fileContents[id] = content
+            let latest = fileLatest[content]
+            let newest = (latest?["serial"]?.number ?? -1) > (answer["serial"]?.number ?? 0) ? latest ?? answer : answer
+            if (newest["serial"]?.number ?? 0) > 0 { show(file: newest, in: id) }
+        }
+    }
+
+    func received(file message: JSON, content: String) {
+        if (fileLatest[content]?["serial"]?.number ?? -1) < (message["serial"]?.number ?? 0) { fileLatest[content] = message }
+        for (id, shown) in fileContents where shown == content { show(file: message, in: id) }
+    }
+
+    private func show(file message: JSON, in id: String) {
+        var failure = message["error"]?["message"]?.string
+        if let text = message["text"]?.string {
+            markdown(id)?.show(text: text)
+            code(id)?.show(text: text)
+            failure = markdown(id)?.diffError
+        } else if let failure {
+            code(id)?.show(failure: failure)
+        }
+        let state = failure == nil ? "running" : "failed"
+        guard states[id] != state else { return }
+        report(id, failure.map { ["state": .string(state), "error": .string($0)] } ?? ["state": .string(state)])
     }
 
     static func absolute(_ path: String) -> String {

@@ -21,6 +21,7 @@ final class DaemonLink: TerminalLink {
     var onDiff: ((String, JSON) -> Void)?
     var onToast: ((JSON) -> Void)?
     var onQuit: (() -> Void)?
+    var onFile: ((String, JSON) -> Void)?
     private var requests = 0
     private var replies: [Int: (JSON) -> Void] = [:]
     private let starter: DaemonStarter?
@@ -139,6 +140,8 @@ final class DaemonLink: TerminalLink {
             onView?(args)
         case "diff":
             if let content = args["content"]?.string { onDiff?(content, args) }
+        case "file":
+            if let content = args["content"]?.string { onFile?(content, args) }
         case "backlog":
             if case .array(let tasks)? = args["tasks"] { onBacklog?(tasks) }
         case "toast":
