@@ -110,7 +110,8 @@ sequenceDiagram
     participant A as Kanna.app (mbp)
     participant D as daemon on r720-1
     A->>D: connect (iroh: the app's endpoint key)
-    A->>D: app.hello {pid, app, client: "mbp", cert, protocols: 3..5, commit}
+    A->>D: control stream {kind, cert}
+    A->>D: app.hello {pid, app, client: "mbp", protocols: 3..5, commit}
     alt no protocol in common
         D-->>A: ok: false, other_protocol {mine: 1..2, commit}
         Note over A: "r720-1 is too old: it updates itself", and the daemon keeps running
@@ -126,7 +127,7 @@ sequenceDiagram
 | Who starts it | the app; on a Mac that serves the fleet, launchd | systemd (Linux), launchd (Macs) |
 | Apps | one (`app_attached`) | one; lifting the limit is its own slice, needed before the phone |
 
-- **One link per machine.** Every view is keyed by (machine, content ID), since `term-41` exists on every daemon.
+- **One link per machine.** Every view is keyed by (machine, content ID), since `term-41` exists on every daemon. Built: [one link per machine](fleet-links.md).
 - **The CLI:** `kanna --host NAME` (or `KANNA_HOST`) sends any command to that machine: the local daemon dials it and forwards the command as `fleet call` over a control stream, and the reply is the remote daemon's own. Inside a remote terminal nothing changes: the CLI there uses its own unix socket. Commands that read local files (`diagrams`, doc comments) still run on this machine.
 - **A Mac that serves the fleet** (a build Mac, or a Mac whose tasks you reach from elsewhere) runs its daemon from launchd (`kanna fleet serve`), pointed at the installed app's `Contents/Helpers/kanna-daemon`: a LaunchAgent on a Mac you use, and on a build Mac a LaunchDaemon running as its service user ([build Macs §1](build-macs.md#1-rules)). The app's replace rule still holds: on `other_build` the daemon exits, and launchd starts it again from the updated bundle.
 - **Streams:** one ALPN, `kanna/1`. Each stream opens with a header line naming its kind (`control`, `file`, `port`, `sync`, `job`, `transfer`), answered by `{ok: true, kind, name}` or a refusal (`unpaired`, `revoked`, `unknown_stream`), and its bytes follow. A `control` stream carries JSON-line requests and replies, as on the unix socket. A seventh kind, `pair`, is the only one an unknown key may open ([identity §2](fleet-identity.md#2-pairing)). Until their slices, `file`, `port`, `sync`, `job` and `transfer` are acknowledged and closed.
@@ -191,7 +192,7 @@ In short ([detail](fleet-tasks.md)):
 
   1. **Packages** with apt (git, build tools, sqlite3, jq, Node and npm, and bubblewrap and socat for the agents' sandboxes: Ubuntu's AppArmor blocks the user namespaces a bundled `bwrap` needs, and only the system `/usr/bin/bwrap` has a profile allowing them), Rust with rustup if `cargo` is missing, and the agent CLIs with npm into `~/.local`.
   2. **Builds** from the checkout: `scripts/build-ghostty-vt.sh` (on Linux always `-Dcpu=baseline`; Zig downloads for Linux too), then `KANNA_CHANNEL=production cargo build --release -p kanna -p kanna-daemon -p kanna-keeper`, so the state folder is `kanna-prod`.
-  3. **Installs** the three binaries and Kanna's skills (`kanna-skills/`, which the Mac has in the app's `Resources`) in `/opt/kanna/<commit>` (`<commit>-dirty` for local changes), owned by the user so a daemon can update itself later; switches `current` with a rename, pointing `previous` at the one it replaced, and removes the others; an unchanged build isn't copied again; links `~/.local/bin/kanna`.
+  3. **Installs** the three binaries, `planner.sh` (a remote Desk's planner runs it, [links §4](fleet-links.md#4-projects-desks-and-claims)) and Kanna's skills (`kanna-skills/`, which the Mac has in the app's `Resources`) in `/opt/kanna/<commit>` (`<commit>-dirty` for local changes), owned by the user so a daemon can update itself later; switches `current` with a rename, pointing `previous` at the one it replaced, and removes the others; an unchanged build isn't copied again; links `~/.local/bin/kanna`.
   4. **The unit** as below, with the socket in the state folder (`$XDG_DATA_HOME` if set), plus `KANNA_AGENT_SKILLS` and a `PATH` with `~/.local/bin`, where npm puts the agent CLIs, so the daemon and every terminal it starts find them without a login shell. Ubuntu's `~/.profile` adds `~/.local/bin` only to login shells, so a plain `ssh host kanna …` needs `~/.local/bin/kanna` (or `ssh -t host bash -l`); `loginctl enable-linger`; enabled, and restarted unless the running daemon is `current`'s binary and the unit is unchanged. It's started when it answers a request, not when its socket appears. The keeper survives the restart and is upgraded in place by the new daemon ([keeper upgrade](keeper-upgrade.md)), so terminals and agents keep running.
   5. **`kanna agents setup`** when the agents aren't set up yet (not when you said no), since no planning terminal is there to ask.
 
