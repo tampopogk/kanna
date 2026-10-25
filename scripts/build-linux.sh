@@ -39,6 +39,10 @@ version="${KANNA_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$repo_root/Carg
 case "$channel" in staging) name=Kanna-Staging ;; *) name=Kanna ;; esac
 
 zig="$(kanna_zig "$repo_root")"
+if command -v rustup >/dev/null 2>&1 && ! rustup target list --installed | grep -qx "$target"; then
+  step "Rust's $target target"
+  rustup target add "$target"
+fi
 if [[ ! -f "$repo_root/target/ghostty-vt/$target/lib/libghostty-vt.a" ]] || [[ "$(cat "$repo_root/target/ghostty-vt/$target/ghostty.rev" 2>/dev/null)" != "$KANNA_GHOSTTY_COMMIT" ]]; then
   step "libghostty-vt for $target"
   "$repo_root/scripts/build-ghostty-vt.sh" "$target"
