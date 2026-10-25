@@ -15,6 +15,10 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     public var contextMenu: (() -> NSMenu?)? { didSet { textView.contextMenu = contextMenu } }
     public let path: String
     public let markup: Bool
+    public let diffBase: String?
+    public private(set) var diffError: String?
+    public private(set) var changes: [NSRange] = []
+    public var diffRange: (from: String, to: String)? { diffBase.flatMap(MarkdownDiff.range) }
     public var keyView: NSView { textView }
     public var zoom: CGFloat { scrollView.magnification }
     public private(set) var renderMs: Double = 0
@@ -25,6 +29,9 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     let layoutManager = MarkdownLayoutManager()
     private let diagrams = DiagramCache()
     private var document = Document(parsing: "")
+    private var entries: [DiffEntry]?
+    private var baseCommit: String?
+    private var ticks = 0
     private var stamp: (Date, Int)?
     private var poll: Timer?
     private var magnifyObserver: NSObjectProtocol?
@@ -53,9 +60,10 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         }
     }
 
-    public init(path: String, zoom: CGFloat = 1, markup: Bool = false) {
+    public init(path: String, zoom: CGFloat = 1, markup: Bool = false, diff: String? = nil) {
         self.path = path
-        self.markup = markup
+        self.markup = markup && diff.flatMap(MarkdownDiff.range) == nil
+        diffBase = diff
         store = DocStore(file: path)
         record = store.read()
         storeStamp = store.stamp
@@ -78,8 +86,16 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         scrollView.magnification = zoom
         scrollView.backgroundColor = MarkdownTheme.background
         addSubview(scrollView)
-        if markup {
+        if markup || diff != nil {
             addSubview(bar)
+            bar.path.stringValue = store.relativeName
+            bar.agent.isHidden = !self.markup
+            bar.threads.isHidden = !self.markup
+            bar.diff.isHidden = diff == nil
+            bar.diff.onPress = { [weak self] in self?.jump(by: 1) }
+            textView.onChangeKey = diff == nil ? nil : { [weak self] step in self?.jump(by: step) }
+        }
+        if self.markup {
             addSubview(panel)
             setUpComments()
         }
@@ -123,7 +139,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
 
     public override func layout() {
         super.layout()
-        let barHeight: CGFloat = markup ? 34 : 0
+        let barHeight: CGFloat = markup || diffBase != nil ? 34 : 0
         let side = markup && threadsVisible ? ThreadPanel.width : 0
         bar.frame = NSRect(x: 0, y: bounds.height - barHeight, width: bounds.width, height: barHeight)
         scrollView.frame = NSRect(x: 0, y: 0, width: max(0, bounds.width - side), height: max(0, bounds.height - barHeight))
@@ -171,7 +187,12 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         defer { Perf.end(span) }
         reloadThreadsIfChanged()
         refreshPanel()
-        guard pending == nil, let now = fileStamp() else { return }
+        guard pending == nil, diffRange == nil, let now = fileStamp() else { return }
+        ticks += 1
+        if let diffBase, ticks % 4 == 0, let commit = baseCommit,
+           MarkdownDiff.mergeBase(URL(fileURLWithPath: path).resolvingSymlinksInPath().deletingLastPathComponent().path, diffBase) != commit {
+            return load()
+        }
         if let stamp, stamp == now { return }
         load()
     }
@@ -180,10 +201,36 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         let span = Perf.begin(.markdown, "markdown.load")
         defer { Perf.end(span) }
         stamp = fileStamp()
-        let text = FileManager.default.contents(atPath: path).map { String(decoding: $0, as: UTF8.self) } ?? ""
+        var text = FileManager.default.contents(atPath: path).map { String(decoding: $0, as: UTF8.self) } ?? ""
+        var old: String??
+        if let range = diffRange {
+            switch MarkdownDiff.versions(of: path, from: range.from, to: range.to) {
+            case .success(let versions):
+                text = versions.new
+                old = .some(versions.old)
+                diffError = nil
+            case .failure(let failure):
+                diffError = failure.message
+            }
+        }
         source = text
         let start = Date()
         document = Document(parsing: MarkdownRenderer.fencingFrontMatter(text), options: [.disableSmartOpts])
+        entries = nil
+        if let old {
+            entries = MarkdownDiff.entries(old: old.map { Document(parsing: MarkdownRenderer.fencingFrontMatter($0), options: [.disableSmartOpts]) }, new: document)
+        } else if let diffBase, diffRange == nil {
+            switch MarkdownDiff.base(of: path, against: diffBase) {
+            case .success(let base):
+                baseCommit = base.commit
+                diffError = nil
+                let old = base.text.map { Document(parsing: MarkdownRenderer.fencingFrontMatter($0), options: [.disableSmartOpts]) }
+                entries = MarkdownDiff.entries(old: old, new: document)
+            case .failure(let failure):
+                baseCommit = nil
+                diffError = failure.message
+            }
+        }
         parseMs = Date().timeIntervalSince(start) * 1000
         render()
     }
@@ -192,13 +239,49 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         let start = Date()
         let position = readingPosition()
         var renderer = MarkdownRenderer(folder: URL(fileURLWithPath: path).deletingLastPathComponent(), diagrams: diagrams)
-        let text = renderer.render(document)
+        let text = entries.map { renderer.render($0) } ?? renderer.render(document)
         diagrams.keep(only: Set(renderer.diagramSources))
         updateInset()
         textView.textStorage?.setAttributedString(text)
         if let position { restoreReadingPosition(position) }
         refreshMarks()
+        refreshChanges()
         renderMs = Date().timeIntervalSince(start) * 1000
+    }
+
+    private func refreshChanges() {
+        guard let diffBase, let storage = textView.textStorage else { return }
+        changes = Self.changes(in: storage)
+        let count = changes.count == 0 ? "no changes" : changes.count == 1 ? "1 change" : "\(changes.count) changes"
+        let label = diffRange == nil ? "vs \(diffBase)" : diffBase
+        bar.diff.set(diffError.map { "\(label) · \($0)" } ?? "\(label) · \(count)")
+        bar.diff.warn = diffError != nil
+        bar.needsLayout = true
+    }
+
+    static func changes(in text: NSAttributedString) -> [NSRange] {
+        var out: [NSRange] = []
+        let string = text.string as NSString
+        text.enumerateAttribute(.kannaChange, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+            guard value != nil else { return }
+            if let last = out.last, string.range(of: "\n", range: NSRange(location: NSMaxRange(last), length: range.location - NSMaxRange(last))).location == NSNotFound {
+                out[out.count - 1] = NSUnionRange(last, range)
+            } else {
+                out.append(range)
+            }
+        }
+        return out
+    }
+
+    public func jump(by step: Int) {
+        guard step != 0, let container = textView.textContainer, !changes.isEmpty else { return }
+        layoutManager.ensureLayout(for: container)
+        let now = scrollView.contentView.bounds.minY
+        let tops = changes.map { max(0, lineTop(at: $0.location) - 24) }
+        let target = step > 0 ? tops.filter { $0 > now + 1 }.dropFirst(step - 1).first ?? tops.filter { $0 > now + 1 }.last
+            : tops.filter { $0 < now - 1 }.dropLast(-step - 1).last ?? tops.filter { $0 < now - 1 }.first
+        guard let target else { return }
+        textView.scroll(NSPoint(x: 0, y: target))
     }
 
     public func zoom(by step: Int) {
@@ -366,6 +449,28 @@ public final class MarkdownTextView: NSTextView {
     var onCommandClick: ((NSPoint) -> Bool)?
     var onPlainClick: ((NSPoint) -> Void)?
     var onCommentKey: (() -> Bool)?
+    var onChangeKey: ((Int) -> Void)?
+    private var bracket: Character?
+    private var count = ""
+
+    public override func keyDown(with event: NSEvent) {
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option])
+        guard let onChangeKey, modifiers.isEmpty, let characters = event.characters, characters.count == 1, let key = characters.first else {
+            bracket = nil
+            count = ""
+            return super.keyDown(with: event)
+        }
+        if let open = bracket {
+            bracket = nil
+            let times = max(1, Int(count) ?? 1)
+            count = ""
+            if key == "c" { return onChangeKey(open == "]" ? times : -times) }
+        }
+        if key == "]" || key == "[" { return bracket = key }
+        if key.isNumber, key != "0" || !count.isEmpty { return count.append(key) }
+        count = ""
+        super.keyDown(with: event)
+    }
 
     public override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
@@ -388,6 +493,11 @@ public final class MarkdownTextView: NSTextView {
             height = max(height, ceil(manager.usedRect(for: container).height + textContainerInset.height * 2 + tail))
         }
         super.setFrameSize(NSSize(width: layoutWidth > 0 ? layoutWidth : newSize.width, height: height))
+    }
+
+    public override func drawBackground(in rect: NSRect) {
+        super.drawBackground(in: rect)
+        (layoutManager as? MarkdownLayoutManager)?.drawChangeBars(in: rect, origin: textContainerOrigin)
     }
 
     public override func becomeFirstResponder() -> Bool {

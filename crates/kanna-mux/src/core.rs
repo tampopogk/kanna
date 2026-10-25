@@ -709,6 +709,12 @@ impl CoreHandle {
         if args.get("markup").is_some() && !matches!(kind, PaneType::Md | PaneType::Web) {
             return Err(bad_request("markup is only for markdown and web panes"));
         }
+        if args.get("diff").is_some() && (kind != PaneType::Md || string(args, "diff").is_none_or(str::is_empty)) {
+            return Err(bad_request("diff is only for markdown panes, and names a commit or branch"));
+        }
+        if is_true(args, "markup") && string(args, "diff").is_some_and(is_range) {
+            return Err(bad_request("a range (A..B) shows a past version of the doc, so it takes no comments"));
+        }
         let agent = match string(args, "agent") {
             Some(agent) => Some(self.need_pane(Some(agent))?.id),
             None => None,
@@ -820,6 +826,7 @@ impl CoreHandle {
             pane.line = line;
             pane.agent = agent.clone();
             pane.markup = is_true(args, "markup");
+            pane.diff_base = field("diff");
             if kind == PaneType::Code {
                 pane.comment = args.get("comment").and_then(Comment::from_json);
             }
@@ -1262,6 +1269,9 @@ impl CoreHandle {
             ));
         }
         let on = !is_true(args, "off");
+        if on && pane.diff_base.as_deref().is_some_and(is_range) {
+            return Err(bad_request(format!("{} shows a range ({}), a past version of the doc, so it takes no comments", pane.label(), pane.diff_base.as_deref().unwrap_or_default())));
+        }
         let agent = match string(args, "agent").filter(|_| on) {
             Some(agent) => Some(self.need_pane(Some(agent))?.id),
             None => None,
@@ -1479,4 +1489,8 @@ pub fn responder() -> (Responder, impl Future<Output = Result<Map, KmuxError>>) 
         }
     });
     (Responder(answer), future)
+}
+
+fn is_range(diff: &str) -> bool {
+    diff.contains("..")
 }

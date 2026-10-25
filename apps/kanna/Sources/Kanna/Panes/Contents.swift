@@ -114,7 +114,7 @@ final class Contents {
                 failure = directory.boolValue ? "\(path) is a folder, not a markdown file" : "No such file: \(path)"
             } else {
                 let spot = markdownSpots[id]?[path]
-                let markdown = MarkdownPaneView(path: path, zoom: spot?.zoom ?? textSize?(id) ?? 1, markup: pane["markup"]?.bool == true)
+                let markdown = MarkdownPaneView(path: path, zoom: spot?.zoom ?? textSize?(id) ?? 1, markup: pane["markup"]?.bool == true, diff: pane["diff"]?.string)
                 markdown.startScrollY = spot?.y
                 markdown.onHistory = { [weak self] back in self?.onRequest?("navigate", ["pane": .string(id), back ? "back" : "forward": true]) }
                 markdown.onZoom = { [weak self, weak markdown] in
@@ -131,6 +131,7 @@ final class Contents {
                 }
                 markdown.contextMenu = { [weak self] in self?.contextMenu?() }
                 markdown.onOpenMarkdown = { [weak self] target in self?.onRequest?("navigate", ["pane": .string(id), "path": .string(target)]) }
+                failure = markdown.diffError
                 content = markdown
             }
         case "code":

@@ -540,6 +540,62 @@ app_text() { raw "{\"id\":1,\"cmd\":\"debug.text\",\"args\":{\"pane\":\"$1\"}}" 
 page_text() { raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"$1\"}}" | field text | grep -q -- "$2"; }
 doc_text() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"$1\"}}" | field text | grep -q -- "$2"; }
 
+scenario markdown_diff M3
+markdown_diff() {
+  start_daemon && start_app || return 1
+  local repo="$KANNA_STATE_DIR/markdown_diff" git=(git -C "$KANNA_STATE_DIR/markdown_diff" -c user.name=e2e -c user.email=e2e@example.invalid)
+  mkdir -p "$repo" && "${git[@]}" init -q -b main || return 1
+  { printf '# Spec\n\nKeep this paragraph as it is.\n\nThe old wording of this sentence.\n\n- one\n- two\n'; for i in $(seq 60); do printf '\nFiller paragraph %s stays the same.\n' "$i"; done; printf '\nThe last paragraph.\n'; } >"$repo/spec.md"
+  "${git[@]}" add spec.md && "${git[@]}" commit -qm base || return 1
+  "${git[@]}" checkout -qb work || return 1
+  perl -pi -e 's/The old wording/The new wording/; s/^- two$/- two\n- three/' "$repo/spec.md" && "${git[@]}" commit -qam work || return 1
+  "${git[@]}" checkout -q main && printf '\nOn main only.\n' >>"$repo/other.md" && "${git[@]}" add other.md && "${git[@]}" commit -qm later && "${git[@]}" checkout -q work || return 1
+  perl -pi -e 's/The last paragraph\./The last paragraph, edited./' "$repo/spec.md"
+  mdd() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"$1\"${3:-}}}" | field "$2"; }
+  kanna open md "$repo/spec.md" --name diffdoc --diff main --tab >/dev/null || return 1
+  check is diffdoc diff main || return 1
+  check wait_for 5 eval '[[ "$(mdd diffdoc changes)" == 3 ]]' || { echo "markdown_diff: $(mdd diffdoc changes) changes vs main, expected 3"; return 1; }
+  check doc_text diffdoc "The oldnew wording" || return 1
+  printf '\nA new closing paragraph.\n' >>"$repo/spec.md"
+  check wait_for 5 eval '[[ "$(mdd diffdoc changes)" == 3 ]] && doc_text diffdoc "A new closing paragraph"' || { echo "markdown_diff: an edit next to a change: $(mdd diffdoc changes)"; return 1; }
+  perl -pi -e 's/Filler paragraph 30 stays the same\./Filler paragraph 30 now differs./' "$repo/spec.md"
+  check wait_for 5 eval '[[ "$(mdd diffdoc changes)" == 4 ]]' || { echo "markdown_diff: the count didn't follow the edit: $(mdd diffdoc changes)"; return 1; }
+  raw '{"id":1,"cmd":"debug.click","args":{"pane":"diffdoc","at":[4,200]}}' >/dev/null; sleep 0.3
+  mdd diffdoc scroll ',"scroll":0' >/dev/null
+  key "]"; key c; key "]"; key c; key "]"; key c; key "]"; key c
+  check python3 -c 'import sys; assert float(sys.argv[1]) > 300, sys.argv[1]' "$(mdd diffdoc scroll)" || { echo "markdown_diff: ]c didn't reach the last change"; return 1; }
+  local far; far="$(mdd diffdoc scroll)"
+  key "["; key c
+  check python3 -c 'import sys; assert 0 < float(sys.argv[1]) < float(sys.argv[2]), sys.argv[1:]' "$(mdd diffdoc scroll)" "$far" || { echo "markdown_diff: [c didn't go back"; return 1; }
+  kanna open md "$repo/spec.md" --name headdoc --diff HEAD --tab >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(mdd headdoc changes)" == 2 ]]' || { echo "markdown_diff: $(mdd headdoc changes) uncommitted changes, expected 2"; return 1; }
+  printf '# Fresh\n\nAll of it is new.\n' >"$repo/fresh.md"
+  kanna open md "$repo/fresh.md" --name fresh --diff --tab >/dev/null || return 1
+  check is fresh diff main || return 1
+  check wait_for 5 eval '[[ "$(mdd fresh changes)" == 1 ]]' || return 1
+  local failed
+  printf '# Loose\n' >"$KANNA_STATE_DIR/loose.md"
+  failed="$(kanna open md "$KANNA_STATE_DIR/loose.md" --diff HEAD --tab 2>&1)"
+  check grep -q "isn't in a git repo" <<<"$failed" || { echo "markdown_diff: outside a repo: $failed"; return 1; }
+  failed="$(kanna open md "$repo/spec.md" --diff nope --tab 2>&1)"
+  check grep -q 'no commit or branch "nope"' <<<"$failed" || { echo "markdown_diff: a bad ref: $failed"; return 1; }
+  kanna open md "$repo/spec.md" --name rangedoc --diff main..work --tab >/dev/null || return 1
+  check is rangedoc diff main..work || return 1
+  check wait_for 5 eval '[[ "$(mdd rangedoc changes)" == 2 ]]' || { echo "markdown_diff: $(mdd rangedoc changes) changes in main..work, expected 2"; return 1; }
+  check doc_text rangedoc "The last paragraph." || return 1
+  doc_text rangedoc "now differs" && { echo "markdown_diff: main..work shows the file on disk, not work"; return 1; }
+  printf '\nAnother edit on disk.\n' >>"$repo/spec.md"; sleep 2.5
+  doc_text rangedoc "Another edit on disk" && { echo "markdown_diff: a range followed the file"; return 1; }
+  check test "$(mdd rangedoc changes)" == 2 || return 1
+  failed="$(kanna markup rangedoc 2>&1)"
+  check grep -q "takes no comments" <<<"$failed" || { echo "markdown_diff: comments on a range: $failed"; return 1; }
+  printf '# Added\n\nNew on work.\n' >"$repo/added.md" && "${git[@]}" add added.md && "${git[@]}" commit -qm added || return 1
+  kanna open md "$repo/added.md" --name addeddoc --diff main..work --tab >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(mdd addeddoc changes)" == 1 ]]' || { echo "markdown_diff: a doc new in work: $(mdd addeddoc changes)"; return 1; }
+  failed="$(kanna open md "$repo/fresh.md" --diff main..work --tab 2>&1)"
+  check grep -q "fresh.md isn't in work" <<<"$failed" || { echo "markdown_diff: a doc missing at B: $failed"; return 1; }
+}
+
 scenario cli_commands M4
 cli_commands() {
   start_daemon && start_app || return 1

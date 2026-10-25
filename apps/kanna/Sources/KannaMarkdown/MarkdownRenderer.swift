@@ -6,6 +6,12 @@ extension NSAttributedString.Key {
     static let kannaHeading = NSAttributedString.Key("kanna.heading")
     static let kannaBlock = NSAttributedString.Key("kanna.block")
     static let kannaLine = NSAttributedString.Key("kanna.line")
+    static let kannaChange = NSAttributedString.Key("kanna.change")
+    static let kannaSource = NSAttributedString.Key("kanna.source")
+}
+
+enum ChangeKind: String {
+    case added, removed, changed
 }
 
 final class BlockDecoration: NSObject {
@@ -46,6 +52,7 @@ struct MarkdownRenderer {
     var diagrams: DiagramCache
 
     private var blockCount = 0
+    private var old = false
     private var slugs: [String: Int] = [:]
     private(set) var diagramSources: [String] = []
 
@@ -82,16 +89,145 @@ struct MarkdownRenderer {
     }
 
     mutating func render(_ document: Document) -> NSAttributedString {
+        render(document.children.map { .same($0) })
+    }
+
+    mutating func render(_ entries: [DiffEntry]) -> NSAttributedString {
         let out = NSMutableAttributedString()
-        for child in document.children { block(child, Context(), into: out) }
+        for entry in entries { self.entry(entry, Context(), into: out) }
         while out.length > 0, out.string.hasSuffix("\n") { out.deleteCharacters(in: NSRange(location: out.length - 1, length: 1)) }
         return out
     }
 
-    private mutating func block(_ markup: any Markup, _ context: Context, into out: NSMutableAttributedString) {
+    private mutating func entry(_ entry: DiffEntry, _ context: Context, into out: NSMutableAttributedString) {
+        let start = out.length
+        switch entry {
+        case .same(let node):
+            block(node, context, into: out)
+        case .added(let node):
+            block(node, context, into: out)
+            if node is CodeBlock, out.length > start, out.attribute(.attachment, at: start, effectiveRange: nil) != nil {
+                label("Added", color: MarkdownTheme.addedBar, context, at: start, into: out)
+            }
+            Self.mark(.added, NSRange(location: start, length: out.length - start), in: out)
+        case .removed(let node):
+            asOld { $0.block(node, context, into: out) }
+            if out.length > start, out.attribute(.attachment, at: start, effectiveRange: nil) != nil {
+                label("Removed", color: MarkdownTheme.removedText, context, at: start, into: out)
+            }
+            Self.mark(.removed, NSRange(location: start, length: out.length - start), in: out)
+        case .changed(let was, let node, let children?):
+            block(node, context, into: out, diff: (was, children))
+        case .changed(let was, let node, nil):
+            changed(was, node, context, into: out)
+        }
+    }
+
+    private mutating func asOld(_ body: (inout MarkdownRenderer) -> Void) {
+        let before = old
+        old = true
+        body(&self)
+        old = before
+    }
+
+    private mutating func changed(_ was: any Markup, _ node: any Markup, _ context: Context, into out: NSMutableAttributedString) {
+        let start = out.length
+        let before = NSMutableAttributedString(), after = NSMutableAttributedString()
+        asOld { $0.block(was, context, into: before) }
+        block(node, context, into: after)
+        if let words = Self.compose(before, after) {
+            out.append(words)
+        } else {
+            note("Before", color: MarkdownTheme.removedText, context, into: out)
+            out.append(before)
+            note("After", color: MarkdownTheme.addedBar, context, into: out)
+            out.append(after)
+        }
+        Self.mark(.changed, NSRange(location: start, length: out.length - start), in: out)
+    }
+
+    private func label(_ text: String, color: NSColor, _ context: Context, at index: Int, into out: NSMutableAttributedString) {
+        let note = NSMutableAttributedString()
+        self.note(text, color: color, context, into: note)
+        out.insert(note, at: index)
+    }
+
+    static func mark(_ kind: ChangeKind, _ range: NSRange, in out: NSMutableAttributedString) {
+        guard range.length > 0 else { return }
+        out.addAttribute(.kannaChange, value: kind.rawValue, range: range)
+        guard kind != .changed else { return }
+        let text = out.string as NSString
+        var index = range.location
+        while index < NSMaxRange(range) {
+            let character = text.character(at: index)
+            var end = index + 1
+            while end < NSMaxRange(range), (text.character(at: end) == 10) == (character == 10) { end += 1 }
+            if character != 10 { style(kind, NSRange(location: index, length: end - index), in: out) }
+            index = end
+        }
+    }
+
+    private static func style(_ kind: ChangeKind, _ range: NSRange, in out: NSMutableAttributedString) {
+        switch kind {
+        case .added:
+            out.addAttribute(.backgroundColor, value: MarkdownTheme.addedTint, range: range)
+        case .removed:
+            out.addAttributes([.strikethroughStyle: NSUnderlineStyle.single.rawValue, .strikethroughColor: MarkdownTheme.removedText,
+                               .foregroundColor: MarkdownTheme.removedText], range: range)
+        case .changed:
+            break
+        }
+    }
+
+    static func compose(_ old: NSAttributedString, _ new: NSAttributedString) -> NSMutableAttributedString? {
+        let source = { (text: NSAttributedString) in { (index: Int) in text.attribute(.kannaSource, at: index, effectiveRange: nil) as? String } }
+        let ops = MarkdownDiff.words(MarkdownDiff.tokens(in: old.string as NSString, key: source(old)),
+                                     MarkdownDiff.tokens(in: new.string as NSString, key: source(new)))
+        let touches = { (text: NSAttributedString, range: NSRange) in (text.string as NSString).range(of: "\u{FFFC}", range: range).location != NSNotFound }
+        for op in ops {
+            switch op {
+            case .removed(let range) where touches(old, range): return nil
+            case .added(let range) where touches(new, range): return nil
+            default: continue
+            }
+        }
+        let out = NSMutableAttributedString()
+        var at = 0
+        for op in ops {
+            switch op {
+            case .same(_, let range):
+                out.append(new.attributedSubstring(from: range))
+                at = NSMaxRange(range)
+            case .added(let range):
+                let start = out.length
+                out.append(new.attributedSubstring(from: range))
+                mark(.added, NSRange(location: start, length: range.length), in: out)
+                at = NSMaxRange(range)
+            case .removed(let range):
+                let piece = NSMutableAttributedString(attributedString: old.attributedSubstring(from: range))
+                let whole = NSRange(location: 0, length: piece.length)
+                let near = new.length == 0 ? nil : min(at, new.length - 1)
+                piece.removeAttribute(.kannaHeading, range: whole)
+                if let near {
+                    if let block = new.attribute(.kannaBlock, at: near, effectiveRange: nil) { piece.addAttribute(.kannaBlock, value: block, range: whole) }
+                    if !piece.string.contains("\n"), let style = new.attribute(.paragraphStyle, at: near, effectiveRange: nil) {
+                        piece.addAttribute(.paragraphStyle, value: style, range: whole)
+                    }
+                    if let heading = new.attribute(.kannaHeading, at: near, effectiveRange: nil) { piece.addAttribute(.kannaHeading, value: heading, range: whole) }
+                }
+                let start = out.length
+                out.append(piece)
+                mark(.removed, NSRange(location: start, length: piece.length), in: out)
+            }
+        }
+        return out
+    }
+
+    private mutating func block(_ markup: any Markup, _ context: Context, into out: NSMutableAttributedString,
+                                diff: (was: any Markup, children: [DiffEntry])? = nil) {
         let start = out.length
         defer {
-            if let line = markup.range?.lowerBound.line, out.length > start {
+            if !old, let line = markup.range?.lowerBound.line, out.length > start {
                 let added = NSRange(location: start, length: out.length - start)
                 out.enumerateAttribute(.kannaLine, in: added) { value, range, _ in
                     if value == nil { out.addAttribute(.kannaLine, value: line, range: range) }
@@ -105,7 +241,7 @@ struct MarkdownRenderer {
             let text = inline(heading.children, attributes(context, font: font))
             let style = paragraph(context, before: level <= 2 ? 14 : 10, after: level <= 2 ? 10 : 6, lineSpacing: 2)
             text.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: text.length))
-            text.addAttribute(.kannaHeading, value: slug(heading.plainText), range: NSRange(location: 0, length: text.length))
+            if !old { text.addAttribute(.kannaHeading, value: slug(heading.plainText), range: NSRange(location: 0, length: text.length)) }
             out.append(text)
             out.append(newline(style, font, context))
 
@@ -122,13 +258,14 @@ struct MarkdownRenderer {
             inner.indent += 16
             inner.color = MarkdownTheme.muted
             inner.quote = BlockDecoration(.quote, id: blockCount, indent: context.indent)
-            for child in quote.children { block(child, inner, into: out) }
+            for child in diff?.children ?? quote.children.map({ .same($0) }) { entry(child, inner, into: out) }
 
         case let list as UnorderedList:
-            listItems(Array(list.listItems), ordered: nil, context, into: out)
+            listItems(diff?.children ?? list.listItems.map { .same($0) }, ordered: nil, was: nil, context, into: out)
 
         case let list as OrderedList:
-            listItems(Array(list.listItems), ordered: Int(list.startIndex), context, into: out)
+            listItems(diff?.children ?? list.listItems.map { .same($0) }, ordered: Int(list.startIndex),
+                      was: (diff?.was as? OrderedList).map { Int($0.startIndex) }, context, into: out)
 
         case let code as CodeBlock:
             if code.language?.lowercased() == "mermaid" {
@@ -145,7 +282,7 @@ struct MarkdownRenderer {
             ]))
 
         case let table as Markdown.Table:
-            self.table(table, context, into: out)
+            self.table(table, rows: diff?.children ?? MarkdownDiff.children(of: table)!.map { .same($0) }, context, into: out)
 
         case let html as HTMLBlock:
             codeBlock(html.rawHTML, context, into: out)
@@ -161,13 +298,21 @@ struct MarkdownRenderer {
         return NSAttributedString(string: "\n", attributes: attributes)
     }
 
-    private mutating func listItems(_ items: [ListItem], ordered start: Int?, _ context: Context, into out: NSMutableAttributedString) {
+    private mutating func listItems(_ entries: [DiffEntry], ordered start: Int?, was: Int?, _ context: Context, into out: NSMutableAttributedString) {
         let depth = Int((context.indent / 24).rounded())
         let bullets = ["•", "◦", "▪"]
-        let widest = start.map { "\($0 + items.count - 1)." } ?? "☐"
+        let widest = start.map { "\($0 + entries.count - 1)." } ?? "☐"
         let markerWidth = max(18, (widest + " ").size(withAttributes: [.font: bodyFont]).width + 6)
-        for (index, item) in items.enumerated() {
-            var marker = start.map { "\($0 + index)." } ?? bullets[depth % bullets.count]
+        var number = start ?? 1
+        for entry in entries {
+            guard let item = entry.node as? ListItem else { continue }
+            let itemStart = out.length
+            var marker = start.map { _ in "\(number)." } ?? bullets[depth % bullets.count]
+            if case .removed = entry {
+                marker = start.map { "\((was ?? $0) + item.indexInParent)." } ?? marker
+            } else {
+                number += 1
+            }
             switch item.checkbox {
             case .checked: marker = "☑"
             case .unchecked: marker = "☐"
@@ -176,11 +321,13 @@ struct MarkdownRenderer {
             var inner = context
             inner.indent = context.indent + markerWidth
             inner.tight = true
-            let children = Array(item.children)
+            var children: [DiffEntry] = item.children.map { .same($0) }
+            if case .changed(_, _, let inside?) = entry { children = inside }
+            let removed: Bool = if case .removed = entry { true } else { false }
             for (position, child) in children.enumerated() {
                 let start = out.length
-                block(child, inner, into: out)
-                guard position == 0, child is Paragraph else { continue }
+                if removed { asOld { $0.entry(child, inner, into: out) } } else { self.entry(child, inner, into: out) }
+                guard position == 0, child.node is Paragraph else { continue }
                 let style = (out.attribute(.paragraphStyle, at: start, effectiveRange: nil) as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle
                     ?? paragraph(inner)
                 style.firstLineHeadIndent = context.indent
@@ -192,8 +339,14 @@ struct MarkdownRenderer {
                 let range = (out.string as NSString).paragraphRange(for: NSRange(location: start, length: 0))
                 out.addAttribute(.paragraphStyle, value: style, range: range)
             }
-            if children.isEmpty || !(children[0] is Paragraph) {
+            if children.isEmpty || !(children[0].node is Paragraph) {
                 out.append(NSAttributedString(string: marker + "\n", attributes: [.font: bodyFont, .foregroundColor: MarkdownTheme.muted, .paragraphStyle: paragraph(context)]))
+            }
+            let range = NSRange(location: itemStart, length: out.length - itemStart)
+            switch entry {
+            case .added: Self.mark(.added, range, in: out)
+            case .removed: Self.mark(.removed, range, in: out)
+            default: break
             }
         }
         if out.length > 0, let style = (out.attribute(.paragraphStyle, at: out.length - 1, effectiveRange: nil) as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle {
@@ -230,7 +383,7 @@ struct MarkdownRenderer {
             let text = NSMutableAttributedString(attachment: attachment)
             let style = paragraph(context, before: 6, after: 14)
             style.alignment = .center
-            text.addAttributes([.paragraphStyle: style, .font: bodyFont], range: NSRange(location: 0, length: text.length))
+            text.addAttributes([.paragraphStyle: style, .font: bodyFont, .kannaSource: source], range: NSRange(location: 0, length: text.length))
             out.append(text)
             out.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: style, .font: bodyFont]))
         case .success(let layout):
@@ -248,16 +401,20 @@ struct MarkdownRenderer {
         ]))
     }
 
-    private mutating func table(_ table: Markdown.Table, _ context: Context, into out: NSMutableAttributedString) {
+    private mutating func table(_ table: Markdown.Table, rows: [DiffEntry], _ context: Context, into out: NSMutableAttributedString) {
         let grid = NSTextTable()
-        grid.numberOfColumns = max(1, table.maxColumnCount)
+        grid.numberOfColumns = max(1, rows.map { $0.node.childCount }.max() ?? 1)
         grid.layoutAlgorithm = .automaticLayoutAlgorithm
         grid.collapsesBorders = true
         grid.hidesEmptyCells = false
-        let rows: [[Markdown.Table.Cell]] = [Array(table.head.cells)] + table.body.rows.map { Array($0.cells) }
         let alignments = table.columnAlignments
         for (rowIndex, row) in rows.enumerated() {
-            for (column, cell) in row.enumerated() {
+            let rowStart = out.length
+            let head = row.node is Markdown.Table.Head
+            let cells = Array(row.node.children)
+            var before: [any Markup] = []
+            if case .changed(let was, _, _) = row { before = Array(was.children) }
+            for column in 0..<max(cells.count, before.count) {
                 let block = NSTextTableBlock(table: grid, startingRow: rowIndex, rowSpan: 1, startingColumn: column, columnSpan: 1)
                 block.setWidth(1, type: .absoluteValueType, for: .border)
                 block.setBorderColor(MarkdownTheme.line)
@@ -265,7 +422,7 @@ struct MarkdownRenderer {
                 block.setWidth(6, type: .absoluteValueType, for: .padding, edge: .maxY)
                 block.setWidth(12, type: .absoluteValueType, for: .padding, edge: .minX)
                 block.setWidth(12, type: .absoluteValueType, for: .padding, edge: .maxX)
-                if rowIndex == 0 { block.backgroundColor = MarkdownTheme.panel }
+                if head { block.backgroundColor = MarkdownTheme.panel }
                 let style = NSMutableParagraphStyle()
                 style.textBlocks = [block]
                 style.lineSpacing = 2
@@ -274,11 +431,28 @@ struct MarkdownRenderer {
                 case .right: style.alignment = .right
                 default: style.alignment = .left
                 }
-                let font = rowIndex == 0 ? NSFontManager.shared.convert(bodyFont, toHaveTrait: .boldFontMask) : bodyFont
-                let text = inline(cell.children, attributes(context, font: font))
-                text.append(NSAttributedString(string: "\n", attributes: [.font: font]))
-                text.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: text.length))
-                out.append(text)
+                let font = head ? NSFontManager.shared.convert(bodyFont, toHaveTrait: .boldFontMask) : bodyFont
+                let renderer = self
+                let cell = { (node: (any Markup)?) in
+                    let text = renderer.inline(node.map { Array($0.children) } ?? [], renderer.attributes(context, font: font))
+                    text.append(NSAttributedString(string: "\n", attributes: [.font: font]))
+                    text.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: text.length))
+                    return text
+                }
+                let now = column < cells.count ? cells[column] : nil
+                if case .changed = row {
+                    let was = column < before.count ? before[column] : nil
+                    out.append(Self.compose(cell(was), cell(now)) ?? cell(now))
+                } else {
+                    out.append(cell(now))
+                }
+            }
+            let range = NSRange(location: rowStart, length: out.length - rowStart)
+            switch row {
+            case .added: Self.mark(.added, range, in: out)
+            case .removed: Self.mark(.removed, range, in: out)
+            case .changed: Self.mark(.changed, range, in: out)
+            case .same: break
             }
         }
         out.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 4), .paragraphStyle: paragraph(context, after: 6)]))
@@ -313,7 +487,9 @@ struct MarkdownRenderer {
             return
         case let image as Markdown.Image:
             if let attachment = imageAttachment(image.source) {
-                out.append(NSAttributedString(attachment: attachment))
+                let text = NSMutableAttributedString(attachment: attachment)
+                text.addAttribute(.kannaSource, value: image.source ?? "", range: NSRange(location: 0, length: text.length))
+                out.append(text)
             } else {
                 attributes[.foregroundColor] = MarkdownTheme.muted
                 if let source = image.source { attributes[.link] = source }
