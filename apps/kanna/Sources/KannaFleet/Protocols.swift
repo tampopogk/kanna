@@ -7,15 +7,18 @@ public enum Protocols {
         return top >= max(mine[0], theirs[0]) ? top : nil
     }
 
-    public static func otherProtocol(machine: String, protocols: [Int]?, version: String?, commit: String?, mine: [Int] = mine) -> String {
+    public static func otherProtocol(machine: String, protocols: [Int]?, version: String?, commit: String?, mine: [Int] = mine) -> (title: String, detail: String) {
         let theirs = protocols.flatMap { $0.count == 2 && $0[0] <= $0[1] ? $0 : nil } ?? [1, 1]
         var runs = "an older Kanna"
         if let version {
-            runs = "Kanna \(version)"
+            runs = version
             if let commit { runs += " (\(short(commit)))" }
         }
-        let fix = theirs[1] < mine[0] ? "it's older: kanna fleet update \(machine)" : "this Kanna is older: update it, or run kanna fleet update on \(machine)"
-        return "\(machine) runs \(runs), protocol \(span(theirs)), and this Kanna speaks \(span(mine)); \(fix)"
+        let facts = "It runs \(runs), protocol \(span(theirs)); this Kanna speaks \(span(mine))."
+        if theirs[1] < mine[0] {
+            return ("\(machine) runs an older Kanna", "kanna fleet update \(machine) updates it. \(facts)")
+        }
+        return ("\(machine) runs a newer Kanna", "Update this Kanna, or run kanna fleet update on \(machine). \(facts)")
     }
 
     static func short(_ commit: String) -> String {

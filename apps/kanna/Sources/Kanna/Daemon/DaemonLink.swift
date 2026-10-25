@@ -99,9 +99,9 @@ final class DaemonLink: TerminalLink {
                 connection.refused()
                 let daemon = message["daemon"] ?? [:]
                 let protocols = daemon["protocols"]?.array?.compactMap { $0.number.map(Int.init) }
-                let text = Protocols.otherProtocol(machine: machine, protocols: protocols, version: daemon["version"]?.string, commit: daemon["commit"]?.string)
-                FileHandle.standardError.write(Data("kanna: \(text)\n".utf8))
-                onToast?(["id": .string("other_protocol:\(machine)"), "title": .string("\(machine) runs another version of Kanna"), "detail": .string(text)])
+                let message = Protocols.otherProtocol(machine: machine, protocols: protocols, version: daemon["version"]?.string, commit: daemon["commit"]?.string)
+                FileHandle.standardError.write(Data("kanna: \(message.title): \(message.detail)\n".utf8))
+                onToast?(["id": .string("other_protocol:\(machine)"), "title": .string(message.title), "detail": .string(message.detail)])
             } else {
                 connection.refused()
                 FileHandle.standardError.write(Data("kanna: the daemon refused this app: \(message["error"]?["message"]?.string ?? "")\n".utf8))
