@@ -6,7 +6,7 @@ One person's Kanna runs on several machines they own: a MacBook Pro as the clien
 
 **Kanna Cloud** ([its spec](kanna-cloud.md)) is a separate product on the same core: VMs Kanna runs for you on its own servers, Kanna's directory and relays, and build Macs. This spec is the shared core and the self-hosted fleet; Cloud's parts are only linked from here.
 
-**The first milestone is the self-hosted fleet:** the user's own machines on the LAN, reached from away through their own relay or a fixed address. It has one tenant, so it needs no tenant isolation, and it has no build Macs.
+**The first milestone is the self-hosted fleet:** the user's own machines on the LAN, reached from away through their own relay or a fixed address. It has one tenant, so it needs no tenant isolation, and it neither includes nor depends on build Macs, which are a [Kanna Cloud](kanna-cloud.md#6-build-macs) feature.
 
 ## Contents
 
@@ -67,7 +67,7 @@ flowchart LR
 **Placement: where work goes.**
 
 - **Placement is a policy, not a place.** By default, any machine with free slots and the capabilities a task `needs:` asks for the oldest waiting task, so a mini and ten Linux boxes share one backlog without a scheduler ([tasks §2](fleet-tasks.md#2-owners-and-grants)). Preferences narrow who asks (e2e on the mini, this project's agents on those machines).
-- **A task runs whole on one machine.** A task that needs macOS goes to a Mac. Sending one step of a Linux task (an `xcodebuild`) to a Mac is a build Mac's job, which is Kanna Cloud's ([build Macs](build-macs.md)).
+- **A task runs whole on one machine.** A task that needs macOS goes to a Mac. Sending one step of a Linux task (an `xcodebuild`) to a Mac is a build Mac's job, a Kanna Cloud feature ([build Macs](build-macs.md)).
 - **Taking a task to the Desk doesn't move it.** It stays where it runs and is shown over the link.
 
 ## 3. Reach: LAN first, relay second

@@ -10,7 +10,7 @@ Each slice is one agent's task and leaves `main` releasable. The **self-hosted f
 
 ## Self-hosted
 
-The first milestone: your own machines, LAN first, your own relay or a fixed address. One tenant, so no tenant isolation; no build Macs.
+The first milestone: your own machines, LAN first, your own relay or a fixed address. One tenant, so no tenant isolation; it neither includes nor depends on build Macs, a Cloud feature.
 
 | Risk | Model | Shows | Before slices |
 |---|---|---|---|

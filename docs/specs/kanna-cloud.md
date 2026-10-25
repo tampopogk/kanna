@@ -4,7 +4,7 @@
 
 Kanna Cloud is a hosted service built on the [fleet](fleet.md)'s core. It runs **Linux VMs for you** on Kanna's servers (Dell R720s), gives your own machines **Kanna's directory and relays** so they find each other anywhere, and runs **build Macs** that build and test Apple code for Linux tasks. It has accounts, many tenants and an operator.
 
-It is open source like the rest of Kanna. **A self-hosted Kanna Cloud is the same software run by someone else**: whoever runs it is the operator, and everything below about Kanna as operator applies to them. The free [self-hosted fleet](fleet.md) has none of this: no directory, no provisioning, no build Macs.
+It is open source like the rest of Kanna. **A self-hosted Kanna Cloud is the same software run by someone else**: whoever runs it is the operator, and everything below about Kanna as operator applies to them. The free [self-hosted fleet](fleet.md) isn't designed around any of this: its first milestone neither includes nor depends on a directory, provisioning or build Macs. A self-hoster who wants them runs them, for example by running their own Kanna Cloud.
 
 ## Contents
 
@@ -109,7 +109,7 @@ sequenceDiagram
 
 ## 6. Build Macs
 
-A Linux task's `xcodebuild`, `xcrun`, `simctl` and chosen `swift` calls run on a build Mac against the agent's worktree, as if Xcode were local, and a remote task's `.app` is fetched to the MBP's Simulator ([build Macs](build-macs.md)). Build Macs form a **pool** shared by tenants, so every build runs in a macOS VM exclusive to one tenant, and the host never runs project code ([isolation](build-mac-isolation.md)). The self-hosted fleet has no build Macs; a self-hosted Kanna Cloud runs the same pool software.
+A Linux task's `xcodebuild`, `xcrun`, `simctl` and chosen `swift` calls run on a build Mac against the agent's worktree, as if Xcode were local, and a remote task's `.app` is fetched to the MBP's Simulator ([build Macs](build-macs.md)). Build Macs form a **pool** shared by tenants, so every build runs in a macOS VM exclusive to one tenant, and the host never runs project code ([isolation](build-mac-isolation.md)). Build Macs are a Cloud feature: the self-hosted fleet isn't designed around them, and a self-hoster who wants them runs the same pool software, for example in their own Kanna Cloud.
 
 ## 7. Agent sign-in on Kanna-run machines
 
