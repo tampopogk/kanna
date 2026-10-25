@@ -86,6 +86,7 @@ struct Inner {
     capabilities: Value,
     state: Mutex<State>,
     outcome: watch::Sender<Option<Result<Value, Failure>>>,
+    revoked: watch::Sender<u64>,
 }
 
 struct State {
@@ -144,7 +145,7 @@ impl Node {
         let name = saved["name"].as_str().filter(|n| valid_name(n)).map(String::from).unwrap_or(config.name);
         let addrs = saved["addrs"].as_object().map(|m| m.iter().map(|(k, v)| (k.clone(), strings(v))).collect()).unwrap_or_default();
         let state = State { name, port, log, broken, addrs, offer: None, nearby: BTreeMap::new(), conns: HashMap::new() };
-        let node = Node(Arc::new(Inner { endpoint, secret: config.secret, host, capabilities: config.capabilities, state: Mutex::new(state), outcome: watch::channel(None).0 }));
+        let node = Node(Arc::new(Inner { endpoint, secret: config.secret, host, capabilities: config.capabilities, state: Mutex::new(state), outcome: watch::channel(None).0, revoked: watch::channel(0).0 }));
         if config.mdns {
             node.discover();
         }
@@ -447,7 +448,12 @@ impl Node {
         let Ok(ours) = ours.set_nonblocking(true).and_then(|()| tokio::net::UnixStream::from_std(ours)) else { return };
         self.0.host.app(from, hello, theirs);
         let (mut from_daemon, mut to_daemon) = ours.into_split();
-        let node = self.clone();
+        let mut revoked = self.0.revoked.subscribe();
+        let admitted = {
+            let (node, remote, cert) = (self.clone(), remote.clone(), cert.clone());
+            move || node.admit(&remote, cert.as_ref()).is_ok()
+        };
+        let still = admitted.clone();
         let inbound = async move {
             let mut line = Vec::new();
             loop {
@@ -456,17 +462,28 @@ impl Node {
                     Ok(0) | Err(_) => break,
                     Ok(_) => {}
                 }
-                if line.len() as u64 > MAX_LINE || node.admit(&remote, cert.as_ref()).is_err() || to_daemon.write_all(&line).await.is_err() {
+                if line.len() as u64 > MAX_LINE || !still() || to_daemon.write_all(&line).await.is_err() {
                     break;
                 }
             }
-            let _ = to_daemon.shutdown().await;
         };
-        let outbound = async move {
+        let outbound = async {
             let _ = tokio::io::copy(&mut from_daemon, &mut send).await;
-            let _ = send.finish();
         };
-        tokio::join!(inbound, outbound);
+        let watched = async move {
+            while revoked.changed().await.is_ok() {
+                if !admitted() {
+                    return;
+                }
+            }
+            std::future::pending::<()>().await
+        };
+        tokio::select! {
+            () = inbound => {}
+            () = outbound => {}
+            () = watched => {}
+        }
+        let _ = send.finish();
     }
 
     async fn control(&self, from: &str, request: Value) -> Value {
@@ -501,6 +518,7 @@ impl Node {
     }
 
     fn drop_revoked(&self) {
+        self.0.revoked.send_modify(|n| *n += 1);
         let mut state = self.state();
         let revoked = state.log.as_ref().map(|l| l.view().revoked).unwrap_or_default();
         let gone: Vec<String> = state.conns.keys().filter(|k| revoked.contains(*k)).cloned().collect();

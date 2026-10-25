@@ -110,6 +110,7 @@ pub fn serve(events: Sender<Event>, hello: Value, mut reader: BufReader<UnixStre
 
 struct Connection {
     id: u64,
+    remote: Option<String>,
     out: Outbox,
     stream: UnixStream,
     behind: Cell<bool>,
@@ -209,6 +210,12 @@ impl AppLink {
             let _ = stream.shutdown(Shutdown::Read);
             return false;
         }
+        let remote_attached = self.app.borrow().as_ref().filter(|app| app.remote.is_some()).map(|app| app.id);
+        if let (Some(old), None) = (remote_attached, &remote) {
+            log!("kanna-daemon: this machine's app takes over from the app attached over the fleet");
+            self.close();
+            self.gone(old);
+        }
         if self.app.borrow().is_some() {
             answer(json!({ "id": id, "ok": false, "error": { "code": "app_attached", "message": "another Kanna.app is attached to this daemon" } }));
             let _ = stream.shutdown(Shutdown::Read);
@@ -253,7 +260,7 @@ impl AppLink {
             daemon["capabilities"] = machine["capabilities"].clone();
         }
         answer(json!({ "id": id, "ok": true, "protocol": protocol, "daemon": daemon, "panes": panes, "layout": self.layout.view() }));
-        *self.app.borrow_mut() = Some(Connection { id: conn, out, stream, behind: Cell::new(false), cut: Cell::new(false) });
+        *self.app.borrow_mut() = Some(Connection { id: conn, remote, out, stream, behind: Cell::new(false), cut: Cell::new(false) });
         let statuses: Vec<(String, String)> = self.core.upgrade().map_or(vec![], |core| {
             core.with_panes(|panes| panes.iter().filter_map(|p| p.status().map(|s| (p.id.clone(), s.to_string()))).collect())
         });
@@ -309,6 +316,10 @@ impl AppLink {
 
     pub fn attached(&self) -> bool {
         self.app.borrow().is_some()
+    }
+
+    pub fn attached_here(&self) -> bool {
+        self.app.borrow().as_ref().is_some_and(|app| app.remote.is_none())
     }
 
     pub fn gone(&self, conn: u64) {

@@ -132,6 +132,9 @@ fn an_app_on_another_machine_attaches_over_the_fleet_and_another_protocol_leaves
     far.send(json!({ "cmd": "input", "args": { "terminal": terminal, "data": "dHlwZWQgZmFyCg==" } }));
     wait_for("the typed line on vm", || vm.kanna(&["read", "far"]).ok().contains("typed far"));
     far.next(|m| m["cmd"] == "output");
+    let here = vm.app();
+    assert!(far.lines.by_ref().all(|line| line.is_ok()), "the machine's own app takes over from the remote one");
+    here.quit();
 
     let stranger = runtime.block_on(kanna_net::Client::start(kanna_net::SecretKey::generate())).unwrap();
     let unpaired = runtime.block_on(stranger.link(&vm_key, &[format!("127.0.0.1:{port}")], &cert)).unwrap_err();

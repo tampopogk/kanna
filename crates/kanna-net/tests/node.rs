@@ -254,8 +254,8 @@ async fn an_app_certified_by_a_paired_machine_holds_a_link_until_its_machine_is_
     assert_eq!(hello(&stranger, &vm, &forged).await.unwrap_err().code, "unpaired", "a certificate is for one endpoint");
 
     vm.revoke("mbp").await.unwrap();
-    (&link).write_all(b"{\"cmd\":\"input\"}\n").unwrap();
     let after = tokio::task::spawn_blocking(move || line(&daemon_end));
-    assert_eq!(after.await.unwrap(), None, "the bridge closes once its machine is revoked");
+    assert_eq!(after.await.unwrap(), None, "the bridge closes as soon as its machine is revoked");
     assert_eq!(hello(&client, &vm, &cert).await.unwrap_err().code, "revoked");
 }
+

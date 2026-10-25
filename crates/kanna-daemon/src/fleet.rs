@@ -155,7 +155,7 @@ impl Fleet {
     }
 
     pub fn confirm(&self, app: &AppLink, question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send>) {
-        if !app.attached() {
+        if !app.attached_here() {
             return answer(Err("Kanna.app isn't open on this machine".into()));
         }
         let (responder, reply) = kanna_mux::responder();

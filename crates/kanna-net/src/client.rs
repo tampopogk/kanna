@@ -76,7 +76,10 @@ impl Client {
                 let _ = tokio::io::copy(&mut from_app, &mut send).await;
                 let _ = send.finish();
             };
-            tokio::join!(inbound, outbound);
+            tokio::select! {
+                () = inbound => {}
+                () = outbound => {}
+            }
         });
         Ok(theirs)
     }
