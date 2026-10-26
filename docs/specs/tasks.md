@@ -117,7 +117,7 @@ An agent not in the table starts again with its first message, its conversation 
 
 | Command | Does |
 |---|---|
-| `kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,…]` | Add a task to this repo's backlog (the agent defaults to the `tasks.agent` setting, else `claude`, and starts without asking permission; [6](#6-choosing-the-agent)); `--after` makes it wait for others ([blocked tasks](task-dependencies.md)) |
+| `kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,…] [--on MACHINE,…]` | Add a task to this repo's backlog (the agent defaults to the `tasks.agent` setting, else `claude`, and starts without asking permission; [6](#6-choosing-the-agent)); `--after` makes it wait for others ([blocked tasks](task-dependencies.md)); `--on` names the machines it may run on ([machine tasks §2](machine-tasks.md#2-owners-and-grants)) |
 | `kanna task edit TASK --after TASK,…\|none` | Change what a backlog task waits for |
 | `kanna task start TASK` | Run a task where it is: a backlog task gets its worktree, agent and first message and stays in the backlog; a stopped task's agent comes back, resuming its conversation |
 | `kanna task stop [TASK]` | End a task's agent and hang up its terminals, leaving it where it is with its tabs as they are (default: the one you're in) |

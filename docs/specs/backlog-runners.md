@@ -39,7 +39,7 @@ stateDiagram-v2
 
 ## 2. How it's built
 
-- **The runners are the daemon's** (`Backlog::tick` in `backlog.rs`): every 2s, and whenever a task is made, edited, done or stopped, it starts each repo's oldest waiting tasks (never started, not blocked) until `backlog.runners` of them run. Tasks you start in the backlog, or move there running, count too.
+- **The runners are the daemon's** (`Backlog::tick` in `backlog.rs`): every 2s, and whenever a task is made, edited, done or stopped, it starts each repo's oldest waiting tasks (never started, not blocked) until `backlog.runners` of them run. Tasks you start in the backlog, or move there running, count too. With several machines, a runner also asks other machines for their waiting tasks in the same project, oldest first with its own ([machine tasks §2](machine-tasks.md#2-owners-and-grants)).
 - **A turn's end is code, not the agent's judgement:** `Turn` (`kanna-detect`) watches a running backlog task's agent status and says its turn is over when, after working, it stays needs you or idle for 3s (the status tracker already holds idle 300 ms).
 - **3s is tested against the corpus:** `kanna-corpus --turns` replays `tools/agent-harness` recordings through the rules and the tracker. Across 27 claude and codex recordings, no turn was judged over while its agent still worked, from 0.5s up; 3s leaves room for a real agent's pauses between tool calls.
 - **Each agent says how it quits and where its session is**, in `agent-rules/quit/AGENT.json` beside its rules: the keys that quit it, and a pattern that finds its session ID in what it prints as it exits.
