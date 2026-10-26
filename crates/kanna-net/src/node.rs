@@ -251,7 +251,7 @@ impl Node {
                     let path = conn.and_then(|c| c.paths().iter().find(|p| p.is_selected()).map(|p| if p.is_ip() { "direct" } else { "relay" }));
                     let mut addrs = strings(&view.descriptors.get(key).map(|d| d["addrs"].clone()).unwrap_or_default());
                     addrs.extend(state.addrs.get(key).cloned().unwrap_or_default());
-                    let relay = view.descriptors.get(key).and_then(|d| d["relay"].as_str().map(String::from)).or_else(|| state.relay.as_ref().map(|r| r.to_string()));
+                    let relay = state.relay.as_ref().map(|r| r.to_string()).or_else(|| view.descriptors.get(key).and_then(|d| d["relay"].as_str().map(String::from)));
                     peers.push(json!({
                         "name": name,
                         "key": key,
@@ -564,8 +564,8 @@ impl Node {
         direct.extend(state.nearby.get(key).map(|n| n.addrs.clone()).unwrap_or_default());
         let mut addr = EndpointAddr::new(id);
         let theirs = state.log.as_ref().and_then(|l| l.view().descriptors.get(key).and_then(|d| d["relay"].as_str().and_then(|r| relay_url(r).ok())));
-        if let Some(relay) = theirs.or_else(|| state.relay.clone()) {
-            addr = addr.with_relay_url(relay);
+        for relay in state.relay.iter().chain(theirs.iter()) {
+            addr = addr.with_relay_url(relay.clone());
         }
         for socket in direct {
             addr = addr.with_ip_addr(socket);

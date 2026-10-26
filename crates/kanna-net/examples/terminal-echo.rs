@@ -114,7 +114,11 @@ fn echo(link: &mut Link, terminal: &str, samples: usize, key: u8) -> Vec<f64> {
     for i in 0..WARMUP + samples {
         let started = Instant::now();
         link.tell("input", json!({ "terminal": terminal, "data": base64(&[key]) }));
-        link.until(|m| is(m, "output", terminal) && data(m).contains(&key));
+        let deadline = started + Duration::from_secs(30);
+        link.until(|m| {
+            assert!(Instant::now() < deadline, "no echo within 30 s");
+            (is(m, "output", terminal) || is(m, "snapshot", terminal)) && data(m).contains(&key)
+        });
         if i >= WARMUP {
             times.push(started.elapsed().as_secs_f64() * 1000.0);
         }

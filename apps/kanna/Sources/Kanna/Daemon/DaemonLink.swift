@@ -111,7 +111,9 @@ final class DaemonLink: TerminalLink {
             if ok {
                 refusal = nil
                 daemonInfo = message["daemon"]
-                run = message["daemon"]?["run"]?.string
+                let fresh = message["daemon"]?["run"]?.string
+                if fresh != run { offsets.removeAll() }
+                run = fresh
                 connection.accepted()
                 onAttach?(message)
             } else if message["error"]?["code"]?.string == "other_protocol" {
@@ -237,9 +239,10 @@ final class DaemonLink: TerminalLink {
         send("attach", args)
     }
 
-    func scrolledToTop(_ terminal: ExternalTerminal) {
-        guard attached, more.remove(terminal.id) != nil else { return }
+    func scrolledToTop(_ terminal: ExternalTerminal) -> Bool {
+        guard attached, more.remove(terminal.id) != nil else { return false }
         send("scrollback", ["terminal": .string(terminal.id)])
+        return true
     }
 
     func input(_ bytes: Data, from terminal: ExternalTerminal) {

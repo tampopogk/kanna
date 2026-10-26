@@ -144,13 +144,12 @@ impl Feed {
     }
 
     pub fn snapshot(&mut self, history: Option<usize>) -> Result<Snapshot, kanna_vt::Error> {
-        let data = match history {
+        let (data, more) = match history {
             Some(rows) => self.screen.snapshot_with_history(rows)?,
-            None => self.screen.snapshot()?,
+            None => (self.screen.snapshot()?, false),
         };
         self.outbox = Vec::new();
         self.overflowed = false;
-        let more = history.is_some_and(|rows| self.screen.scrollback_rows() > rows);
         Ok(Snapshot { data, offset: self.written, more })
     }
 
@@ -483,6 +482,18 @@ mod tests {
         assert!(!snapshot.more);
         let bounded = f.snapshot(Some(100)).unwrap();
         assert!(bounded.data.len() * 4 < snapshot.data.len(), "{} of {} bytes", bounded.data.len(), snapshot.data.len());
+        assert!(bounded.more);
+    }
+
+    #[test]
+    fn a_bounded_snapshot_in_the_alternate_screen_still_says_the_shell_has_more() {
+        let f = feed(80, 24, "");
+        let mut f = Feed::lock(&f);
+        for i in 0..5000 {
+            f.push(format!("line {i}\r\n").as_bytes());
+        }
+        f.push(b"\x1b[?1049h full screen");
+        let bounded = f.snapshot(Some(100)).unwrap();
         assert!(bounded.more);
     }
 

@@ -152,7 +152,7 @@ final class Links: TerminalLink {
 
     func closed(_ terminal: ExternalTerminal) { link(for: terminal.id)?.closed(terminal) }
 
-    func scrolledToTop(_ terminal: ExternalTerminal) { link(for: terminal.id)?.scrolledToTop(terminal) }
+    func scrolledToTop(_ terminal: ExternalTerminal) -> Bool { link(for: terminal.id)?.scrolledToTop(terminal) ?? false }
 
     func settingsChanged(_ settings: TerminalSettings) {
         for link in all { link.settingsChanged(settings) }

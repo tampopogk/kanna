@@ -246,10 +246,10 @@ impl Terminal {
     }
 
     pub fn from_snapshot(bytes: &[u8]) -> Result<Terminal, Error> {
-        Terminal::decode(bytes, None)
+        Terminal::decode(bytes, None).map(|(terminal, _)| terminal)
     }
 
-    fn decode(bytes: &[u8], history_rows: Option<usize>) -> Result<Terminal, Error> {
+    fn decode(bytes: &[u8], history_rows: Option<usize>) -> Result<(Terminal, bool), Error> {
         let mut decoder: ffi::GhosttySnapshotDecoder = ptr::null_mut();
         check("ghostty_snapshot_decoder_new_buf", unsafe {
             ffi::ghostty_snapshot_decoder_new_buf(ptr::null(), &mut decoder, bytes.as_ptr(), bytes.len())
@@ -257,6 +257,7 @@ impl Terminal {
         let mut raw: ffi::GhosttyTerminal = ptr::null_mut();
         let limit = MAX_UNFINISHED_SEQUENCE_BYTES;
         let retain = true;
+        let mut more = false;
         let result = unsafe {
             check(
                 "snapshot continuation limit",
@@ -279,12 +280,13 @@ impl Terminal {
             .and_then(|()| match history_rows {
                 None => check("ghostty_snapshot_decoder_decode", ffi::ghostty_snapshot_decoder_decode(decoder, &mut raw)),
                 Some(wanted) => check("ghostty_snapshot_decoder_ready", ffi::ghostty_snapshot_decoder_ready(decoder, &mut raw))
-                    .and_then(|()| history(decoder, wanted)),
+                    .and_then(|()| history(decoder, wanted))
+                    .map(|left| more = left),
             })
         };
         unsafe { ffi::ghostty_snapshot_decoder_free(decoder) };
         match result {
-            Ok(()) => Terminal::adopt(raw),
+            Ok(()) => Terminal::adopt(raw).map(|terminal| (terminal, more)),
             Err(error) => {
                 if !raw.is_null() {
                     unsafe { ffi::ghostty_terminal_free(raw) };
@@ -616,23 +618,24 @@ impl Terminal {
         Ok(unsafe { take_buffer(out, len) })
     }
 
-    pub fn snapshot_with_history(&self, rows: usize) -> Result<Vec<u8>, Error> {
-        Terminal::decode(&self.snapshot()?, Some(rows))?.snapshot()
+    pub fn snapshot_with_history(&self, rows: usize) -> Result<(Vec<u8>, bool), Error> {
+        let (bounded, more) = Terminal::decode(&self.snapshot()?, Some(rows))?;
+        Ok((bounded.snapshot()?, more))
     }
 }
 
-unsafe fn history(decoder: ffi::GhosttySnapshotDecoder, wanted: usize) -> Result<(), Error> {
+unsafe fn history(decoder: ffi::GhosttySnapshotDecoder, wanted: usize) -> Result<bool, Error> {
     let mut kept = 0usize;
     while kept < wanted {
         match ffi::ghostty_snapshot_decoder_next(decoder) {
-            ffi::GHOSTTY_NO_VALUE => break,
+            ffi::GHOSTTY_NO_VALUE => return Ok(false),
             code => check("ghostty_snapshot_decoder_next", code)?,
         }
         let mut rows = 0usize;
         check("snapshot history rows", ffi::ghostty_snapshot_decoder_get(decoder, ffi::GHOSTTY_SNAPSHOT_DECODER_DATA_PROGRESS_ROWS, &mut rows as *mut usize as *mut c_void))?;
         kept += rows;
     }
-    Ok(())
+    Ok(true)
 }
 
 impl Drop for Terminal {

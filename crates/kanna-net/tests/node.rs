@@ -297,9 +297,24 @@ async fn an_app_given_only_a_key_reaches_a_machine_through_its_relay() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 
+    let (_other, moved) = relay().await;
+    vm.set_relay(Some(&moved)).await.unwrap();
+    mbp.set_relay(Some(&moved)).await.unwrap();
+    let peers = mbp.status()["peers"].clone();
+    let them = peers.as_array().unwrap().iter().find(|p| p["name"] == "linux-vm").unwrap();
+    assert_eq!(them["relay"], json!(moved), "the relay set now, not the one in the peer log: {them}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while vm.status()["home_relay"] != json!(moved) {
+        assert!(std::time::Instant::now() < deadline, "the machine never moved to its new relay");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let fresh = Client::start(SecretKey::generate()).await.unwrap();
+    let cert = mbp.certify(&fresh.key()).unwrap();
+    fresh.link(&vm.key(), &[], Some(&moved), &cert).await.unwrap();
+
     let saved = mbp_host.saved.lock().unwrap().clone();
     mbp.close().await;
     let (again, _) = machine("mbp", saved).await;
-    assert_eq!(again.status()["relay"], json!(url), "the relay is kept across a restart");
+    assert_eq!(again.status()["relay"], json!(moved), "the relay is kept across a restart");
     assert_eq!(again.set_relay(None).await.unwrap()["relay"], Value::Null);
 }
