@@ -12,6 +12,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
     private var titled: NSKeyValueObservation?
     private(set) var url: URL?
     var waitingFor: String?
+    var unmap: (URL) -> URL = { $0 }
     private let notice = NSTextField(wrappingLabelWithString: "")
     private var editor: NSTextField?
     private var retry: Timer?
@@ -23,10 +24,10 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
 
     let markable: Bool
 
-    init(url: String, markup: Bool = false) {
+    init(url: String, markup: Bool = false, store: WKWebsiteDataStore = .default()) {
         markable = markup
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
+        configuration.websiteDataStore = store
         relay = PageMarkupView.install(on: configuration)
         webView = FocusReportingWebView(frame: .zero, configuration: configuration)
         super.init(frame: .zero)
@@ -146,7 +147,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
             window?.makeFirstResponder(editor)
             return
         }
-        let field = NSTextField(string: url?.absoluteString ?? "")
+        let field = NSTextField(string: url.map(unmap)?.absoluteString ?? "")
         field.font = .systemFont(ofSize: 13)
         field.bezelStyle = .roundedBezel
         field.delegate = self
@@ -161,9 +162,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         switch selector {
         case #selector(NSResponder.insertNewline(_:)):
-            let text = control.stringValue.trimmingCharacters(in: .whitespaces)
-            closeEditor()
-            if !text.isEmpty { onNavigate?(text) }
+            submit(control.stringValue)
             return true
         case #selector(NSResponder.cancelOperation(_:)):
             closeEditor()
@@ -171,6 +170,16 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
         default:
             return false
         }
+    }
+
+    var editing: String? { editor?.stringValue }
+
+    var shownNotice: String? { notice.isHidden ? nil : notice.stringValue }
+
+    func submit(_ text: String) {
+        let text = text.trimmingCharacters(in: .whitespaces)
+        closeEditor()
+        if !text.isEmpty { onNavigate?(text) }
     }
 
     func controlTextDidEndEditing(_ notification: Notification) { closeEditor() }

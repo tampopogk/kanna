@@ -307,6 +307,35 @@ async fn a_port_on_a_paired_machines_loopback_opens_on_the_apps_loopback_until_i
     let write = writing.await.unwrap();
     let mut tcp = read.reunite(write).unwrap();
 
+    client.port_close(&vm.key());
+    assert_eq!(client.ports_of(&vm.key()), []);
+    let after = tokio::time::timeout(std::time::Duration::from_secs(10), tcp.read(&mut buf)).await.unwrap().unwrap_or(0);
+    assert_eq!(after, 0, "closing a machine's ports ends its open tunnels");
+    assert!(tokio::net::TcpStream::connect(("127.0.0.1", local)).await.is_err(), "a closed machine's ports stop listening");
+
+    let halves = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let half_port = halves.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let (mut tcp, _) = halves.accept().await.unwrap();
+        let mut got = vec![];
+        tcp.read_to_end(&mut got).await.unwrap();
+        tcp.write_all(format!("read {} bytes", got.len()).as_bytes()).await.unwrap();
+    });
+    let half = client.port_open(&vm.key(), &addrs, &cert, half_port).await.unwrap();
+    let mut tcp = tokio::net::TcpStream::connect(("127.0.0.1", half)).await.unwrap();
+    tcp.write_all(b"request body").await.unwrap();
+    tcp.shutdown().await.unwrap();
+    let mut answer = String::new();
+    tokio::time::timeout(std::time::Duration::from_secs(10), tcp.read_to_string(&mut answer)).await.unwrap().unwrap();
+    assert_eq!(answer, "read 12 bytes", "a half-closed connection still gets its answer");
+
+    let local = client.port_open(&vm.key(), &addrs, &cert, port).await.unwrap();
+    let mut tcp = tokio::net::TcpStream::connect(("127.0.0.1", local)).await.unwrap();
+    tcp.write_all(b"ping").await.unwrap();
+    let mut got = [0u8; 9];
+    tcp.read_exact(&mut got).await.unwrap();
+    assert_eq!(&got, b"echo:ping");
+
     let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap().port();
     let nothing = client.port_open(&vm.key(), &addrs, &cert, closed).await.unwrap();
     let mut refused = tokio::net::TcpStream::connect(("127.0.0.1", nothing)).await.unwrap();
@@ -321,8 +350,4 @@ async fn a_port_on_a_paired_machines_loopback_opens_on_the_apps_loopback_until_i
     vm.revoke("mbp").await.unwrap();
     let after = tokio::time::timeout(std::time::Duration::from_secs(10), tcp.read(&mut buf)).await.unwrap().unwrap_or(0);
     assert_eq!(after, 0, "an open tunnel closes as soon as its machine is revoked");
-
-    client.port_close(&vm.key());
-    assert_eq!(client.ports_of(&vm.key()), []);
-    assert!(tokio::net::TcpStream::connect(("127.0.0.1", local)).await.is_err(), "a closed machine's ports stop listening");
 }

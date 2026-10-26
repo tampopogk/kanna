@@ -413,6 +413,7 @@ impl Node {
             return;
         }
         let cert = header.get("cert").filter(|c| c.is_object()).cloned();
+        let mut revoked = self.0.revoked.subscribe();
         let from = match self.admit(&remote, cert.as_ref()) {
             Ok(name) => name,
             Err(failure) => {
@@ -437,9 +438,9 @@ impl Node {
             return;
         }
         if let Some(tcp) = target {
-            let mut revoked = self.0.revoked.subscribe();
             let (node, cert) = (self.clone(), cert.clone());
             let watched = async move {
+                revoked.mark_changed();
                 while revoked.changed().await.is_ok() {
                     if node.admit(&remote, cert.as_ref()).is_err() {
                         return;

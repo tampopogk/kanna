@@ -20,6 +20,7 @@ struct Port {
     local: u16,
     target: Arc<Mutex<(Vec<String>, Value)>>,
     accepting: tokio::task::JoinHandle<()>,
+    _open: tokio::sync::watch::Sender<()>,
 }
 
 impl Client {
@@ -107,22 +108,29 @@ impl Client {
         let listener = tokio::net::TcpListener::bind((IpAddr::from([127, 0, 0, 1]), 0)).await.map_err(|e| Failure::new("failed", format!("can't listen on this Mac's loopback: {e}")))?;
         let local = listener.local_addr().map_err(|e| Failure::new("failed", e.to_string()))?.port();
         let target = Arc::new(Mutex::new((addrs.to_vec(), cert.clone())));
+        let (open, closed) = tokio::sync::watch::channel(());
         let accepting = tokio::spawn({
             let (client, key, target) = (self.clone(), key.to_string(), target.clone());
             async move {
                 while let Ok((tcp, _)) = listener.accept().await {
                     let _ = tcp.set_nodelay(true);
-                    let (client, key, target) = (client.clone(), key.clone(), target.clone());
+                    let (client, key, target, mut closed) = (client.clone(), key.clone(), target.clone(), closed.clone());
                     tokio::spawn(async move {
                         let (addrs, cert) = target.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
-                        if let Ok((send, recv, _)) = client.open(&key, &addrs, json!({ "kind": "port", "cert": cert, "port": port })).await {
-                            splice(tcp, send, recv).await;
+                        let tunnel = async {
+                            if let Ok((send, recv, _)) = client.open(&key, &addrs, json!({ "kind": "port", "cert": cert, "port": port })).await {
+                                splice(tcp, send, recv).await;
+                            }
+                        };
+                        tokio::select! {
+                            () = tunnel => {}
+                            _ = closed.wait_for(|_| false) => {}
                         }
                     });
                 }
             }
         });
-        if let Some(old) = self.ports().insert((key.to_string(), port), Port { local, target, accepting }) {
+        if let Some(old) = self.ports().insert((key.to_string(), port), Port { local, target, accepting, _open: open }) {
             old.accepting.abort();
         }
         Ok(local)

@@ -177,8 +177,15 @@ extension AppController {
                 let data = value.flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.fragmentsAllowed]) }
                 return ["value": .string(data.map { String(decoding: $0, as: UTF8.self) } ?? "null"), "magnification": .number(Double(web.webView.magnification))]
             }
+            if let edit = args["edit"]?.string {
+                web.editURL()
+                let shown = web.editing ?? ""
+                web.submit(edit.replacingOccurrences(of: "{shown}", with: shown))
+                return ["editor": .string(shown)]
+            }
             let text = try? await web.webView.evaluateJavaScript("document.body ? document.body.innerText : ''") as? String
-            var reply: [String: JSON] = ["url": web.webView.url.map { .string($0.absoluteString) } ?? .null, "text": .string(text ?? ""), "zoom": .number(Double(web.zoom))]
+            var reply: [String: JSON] = ["url": web.webView.url.map { .string($0.absoluteString) } ?? .null, "text": .string(text ?? ""), "zoom": .number(Double(web.zoom)),
+                                         "notice": web.shownNotice.map { .string($0) } ?? .null]
             guard let markup = web.markup else { return reply }
             let point = { (rect: NSRect) -> JSON in [.number(Double(rect.midX)), .number(Double(markup.bounds.height - rect.midY))] }
             if let selector = args["find"]?.string {

@@ -4042,13 +4042,14 @@ fleet_remote_web() {
   local worktree="$repo/.kanna-worktrees/${task%@vm}" port
   port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
   echo "hello from vm" >"$worktree/message.txt"
-  (cd "$worktree" && KANNA_TERMINAL="${agent%@vm}" vmk open --tab --name devserver --cmd "python3 '$repo_root/tools/hmr-server/hmr-server.py' $port '$worktree'") >/dev/null || { echo "fleet_remote_web line $LINENO"; return 1; }
-  check wait_for 10 eval 'vmk read devserver | grep -q "hmr-server on"' || { echo "fleet_remote_web: the task's dev server didn't start"; vmk read devserver; return 1; }
   local opened; opened="$(cd "$worktree" && KANNA_TERMINAL="${agent%@vm}" vmk open web "http://localhost:$port/" --tab --name devpage --json)" || { echo "fleet_remote_web: opening the dev server's page: $opened"; return 1; }
   local page; page="$(echo "$opened" | field pane.id)@vm"
   web() { raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"$page\"}}" | field "$1"; }
   tunnel() { raw '{"id":1,"cmd":"debug.fleet"}' | python3 -c 'import json, sys; print(json.load(sys.stdin)["links"][0]["ports"].get(sys.argv[1], ""))' "$port"; }
   check wait_for 10 eval '[[ "$(tunnel)" =~ ^[0-9]+$ ]]' || { echo "fleet_remote_web: the app opened no tunnel to vm's port $port"; raw '{"id":1,"cmd":"debug.fleet"}'; return 1; }
+  check wait_for 10 eval '[[ "$(web notice)" == "Waiting for localhost:$port on vm…"* ]]' || { echo "fleet_remote_web: a page before its dev server is up should wait for it"; web notice; return 1; }
+  (cd "$worktree" && KANNA_TERMINAL="${agent%@vm}" vmk open --tab --name devserver --cmd "python3 '$repo_root/tools/hmr-server/hmr-server.py' $port '$worktree'") >/dev/null || { echo "fleet_remote_web line $LINENO"; return 1; }
+  check wait_for 10 eval 'vmk read devserver | grep -q "hmr-server on"' || { echo "fleet_remote_web: the task's dev server didn't start"; vmk read devserver; return 1; }
   local local_port; local_port="$(tunnel)"
   [[ "$local_port" != "$port" ]] || { echo "fleet_remote_web: the tunnel listens on the dev server's own port"; return 1; }
   check wait_for 10 eval 'web text | grep -q "hello from vm"' || { echo "fleet_remote_web: the web pane didn't load vm's dev server"; web url; web text; return 1; }
@@ -4067,10 +4068,26 @@ fleet_remote_web() {
   raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"$page\",\"js\":\"location.href = '/next?x=2'; 1\"}}" >/dev/null
   check wait_for 10 eval 'web text | grep -q "loads 2"' || { echo "fleet_remote_web: following a link on the page"; web text; return 1; }
   check wait_for 5 eval '[[ "$(vmurl)" == "http://localhost:$port/next?x=2" ]]' || { echo "fleet_remote_web: a page followed in the app didn't reach vm's daemon with the dev server's own address"; vmurl; return 1; }
+  raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"$page\",\"js\":\"document.body.append('stale view'); 1\"}}" >/dev/null
+  check wait_for 5 eval 'web text | grep -q "stale view"' || return 1
+  local shown; shown="$(raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"$page\",\"edit\":\"{shown}\"}}" | field editor)"
+  [[ "$shown" == "http://localhost:$port/next?x=2" ]] || { echo "fleet_remote_web: the URL editor shows the tunnel's address: $shown"; return 1; }
+  check wait_for 10 eval 'web text | grep -q "hot reloaded on vm" && ! web text | grep -q "stale view"' || { echo "fleet_remote_web: submitting the URL editor didn't load the page again"; web text; return 1; }
+  check test "$(vmurl)" == "http://localhost:$port/next?x=2" || { echo "fleet_remote_web: submitting the URL editor gave vm's daemon the tunnel's address"; vmurl; return 1; }
+
+  kill "$vm_pid"; wait_for 10 eval '! kill -0 '"$vm_pid" || { echo "fleet_remote_web: vm's daemon didn't stop"; return 1; }
+  check wait_for 10 eval '[[ "$(fleet links.0.attached)" == False ]]' || { echo "fleet_remote_web: the app didn't see vm go"; return 1; }
+  KANNA_FLEET_PORT="$(head -1 "$KANNA_STATE_DIR/offer" | field port)" KANNA_SOCKET="$vm/kanna.sock" KANNA_STATE_DIR="$vm/state" KANNA_KEEPER="$bin/kanna-keeper" "$bin/kanna-daemon" >>"$out/daemon-vm.log" 2>&1 &
+  vm_pid=$!
+  check wait_for 30 eval '[[ "$(fleet links.0.attached)" == True ]]' || { echo "fleet_remote_web: the app didn't link to vm again"; return 1; }
+  check test "$(tunnel)" == "$local_port" || { echo "fleet_remote_web: vm coming back changed the page's origin"; tunnel; return 1; }
+  echo "after vm came back" >"$worktree/message.txt"
+  raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"$page\",\"js\":\"location.reload(); 1\"}}" >/dev/null
+  check wait_for 10 eval 'web text | grep -q "after vm came back"' || { echo "fleet_remote_web: the page didn't load through the tunnel after vm came back"; web text; return 1; }
 
   stop_app; start_app || { echo "fleet_remote_web line $LINENO"; return 1; }
   check wait_for 30 eval '[[ "$(fleet links.0.attached)" == True ]]' || { echo "fleet_remote_web: the app didn't link to vm again"; return 1; }
-  check wait_for 15 eval 'web text | grep -q "hot reloaded on vm"' || { echo "fleet_remote_web: the restored web pane didn't load vm's dev server again"; web url; web text; return 1; }
+  check wait_for 15 eval 'web text | grep -q "after vm came back"' || { echo "fleet_remote_web: the restored web pane didn't load vm's dev server again"; web url; web text; return 1; }
   echo "after the restart" >"$worktree/message.txt"
   check wait_for 10 eval 'web text | grep -q "after the restart"' || { echo "fleet_remote_web: hot reload after the app restarted"; web text; return 1; }
 }
