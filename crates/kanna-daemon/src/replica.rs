@@ -364,6 +364,13 @@ impl Replica {
     }
 }
 
+pub fn hold_unless_held(conn: &Connection, task: &str, birth: &str, permit: Permit) -> rusqlite::Result<()> {
+    if authority(conn, task, birth)?.is_none() {
+        set_authority(conn, task, birth, &Authority { epoch: 0, permit, to: None })?;
+    }
+    Ok(())
+}
+
 pub fn ops_of(value: &Value) -> Vec<Op> {
     value.as_array().map_or(vec![], |ops| ops.iter().filter_map(Op::from_value).collect())
 }

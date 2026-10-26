@@ -633,7 +633,12 @@ fn run() -> Result<(), String> {
                 toasts.attached();
             }
             Event::AppMessage { conn, message } => {
-                if let Some(request) = app.message(conn, message) {
+                if let Some(mut request) = app.message(conn, message) {
+                    if request["cmd"] == "replica" {
+                        if let Some(args) = request.get_mut("args").and_then(Value::as_object_mut) {
+                            args.remove(kanna_net::PEER);
+                        }
+                    }
                     if let Some(refused) = fleet::refuse_remote(&request).filter(|_| !app.attached_here()) {
                         app.answer_app(conn, refused);
                         continue;

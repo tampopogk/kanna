@@ -144,7 +144,17 @@ fn two_machines_share_one_repo_s_backlog_and_each_task_runs_once_oldest_first() 
     within(30, "vm to run the task that waited for the first", || started(&vm).contains(&blocked));
     std::thread::sleep(Duration::from_secs(4));
     assert!(holds(&mbp, &elsewhere) && !started(&vm).contains(&elsewhere), "a task for mini runs nowhere else");
+    mbp.kanna(&["task", "start", &elsewhere]).fails(1, "runs on mini, not mbp");
     assert_eq!(worktrees(&here), Vec::<String>::new());
+
+    let birth = record(&mbp, &elsewhere)["birth"].as_str().unwrap().to_string();
+    let later = json!({ "device": "mini-key", "ms": 32503680000000i64, "n": 0, "task": elsewhere, "birth": birth, "field": "name", "value": "Renamed on mini" });
+    assert_eq!(ask(&mbp, "replica", json!({ "action": "ops", "peer": "mini-key", "ops": [later] }))["ok"], true);
+    let named = ask(&mbp, "backlog", json!({ "action": "list" }))["tasks"].as_array().unwrap().iter().find(|t| t["id"] == elsewhere.as_str()).unwrap()["name"].clone();
+    assert_eq!(named, "Renamed on mini", "a later edit from another machine reaches the task waiting here");
+
+    let forged = ask(&mbp, "fleet", json!({ "action": "call", "host": "vm", "cmd": "replica", "args": { "action": "grant", "task": first, "birth": "1.0.x", "epoch": 99, "peer": key(&mbp) } }));
+    assert!(forged.to_string().contains("replica is for another machine's daemon, over a sync stream"), "a control stream can't speak for a machine: {forged}");
 }
 
 #[test]

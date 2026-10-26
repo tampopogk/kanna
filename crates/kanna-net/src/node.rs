@@ -23,6 +23,8 @@ const APP_HELLO: &str = "app.hello";
 
 pub const PEER: &str = "peer";
 
+const REPLICA: &str = "replica";
+
 pub(crate) const MAX_HEADER: u64 = 64 << 10;
 
 pub(crate) const MAX_LINE: u64 = 16 << 20;
@@ -441,10 +443,19 @@ impl Node {
                 if kind == "control" && request["cmd"] == APP_HELLO {
                     return self.bridge(remote, cert, from, request, send, recv).await;
                 }
+                let replica = request["cmd"] == REPLICA;
+                if kind == "sync" && !replica {
+                    let id = request.get("id").cloned().unwrap_or(Value::Null);
+                    if write_line(&mut send, &json!({ "id": id, "ok": false, "error": { "code": "bad_request", "message": "a sync stream carries only replica requests" } })).await.is_err() {
+                        return;
+                    }
+                    continue;
+                }
                 if let Some(args) = request.get_mut("args").and_then(Value::as_object_mut) {
-                    args.remove(PEER);
                     if kind == "sync" {
                         args.insert(PEER.into(), json!(remote));
+                    } else if replica {
+                        args.remove(PEER);
                     }
                 }
                 let reply = self.control(&from, request).await;

@@ -65,7 +65,7 @@ sequenceDiagram
 - **The owner checks each ask** against what it knows: still `ready`, not starting, not waiting for others, `on` names the asker, the ID not made twice. The asker takes the grant in one transaction, `ready` at the grant's epoch only if it's newer than any it had, so a grant delivered twice, or an old one replayed after the task came back, gives nothing.
 - **A grant lost on the way is sent again:** the owner keeps `sent` grants and resends each every 3 s to its machine until it's acked, the same epoch to the same machine. While the receiver is away, nobody can run the task: that gap is the price of never running it twice.
 - **An offline owner's tasks wait.** An ask that can't reach the owner skips its tasks for 10 s, then asks again; a refused task is skipped 10 s. Leases that expire would allow a double start, so add them only if waiting hurts.
-- **Placement preferences:** `kanna task new … --on mini,r720-1` names the machines a task may run on, its owner included; without it, any machine with a clone of the project and a free runner. Matching a task's `needs:` to machines' capabilities is [Kanna Cloud's](kanna-cloud.md#5-directory-and-relays).
+- **Placement preferences:** `kanna task new … --on mini,r720-1` names the machines a task may run on, its owner included, whether a runner or `kanna task start` or `shelve` starts it (`not_here`); without it, any machine with a clone of the project and a free runner. Matching a task's `needs:` to machines' capabilities is [Kanna Cloud's](kanna-cloud.md#5-directory-and-relays).
 - **A machine's clones** are the repos of its tasks and its recent projects (`projects touch`, as opening a folder does), matched by project identity. A task granted here goes into the backlog of that clone, made from its record.
 - **Two meanings, two words:** "ask" and "grant" are between machines. A **claim** stays what it is in [app-desk](app-desk.md): an app having a task out on its Shelf, now named by its device (`claimed by: mbp`).
 - **Task IDs** stay random 32 bits ([task IDs](task-ids.md)). Apps key views by (machine, ID). An ID already in the replica is refused when a task is made; one two machines make at once, before they've synced, stays two births, and neither is started or granted (`ambiguous`).
@@ -80,7 +80,11 @@ sequenceDiagram
 | `ack {task, birth, epoch}` | `{}` |
 | `list` (local socket only) | `{device, records, authority}`, for tests and debugging |
 
-The stream adds the asking daemon's key as `peer`; a `control` stream drops a `peer` it's sent, so `kanna --host` can't speak for another machine.
+A `sync` stream carries only `replica` requests and adds the asking daemon's key as `peer`; a `control` stream or an app link drops a `peer` sent with `replica`, so neither `kanna --host` nor a remote app can speak for a machine.
+
+- **One transaction per change:** saving a task's row writes its record's fields and, the first time, this machine's permission with it, so a crash can't leave a task done here but waiting in the replica.
+- **Edits from elsewhere:** a waiting task's name, `after` and `on` take another machine's later write (by the clock), so a grant that overtakes an edit doesn't undo it.
+- **Cycles:** `--after` refuses a cycle through other machines' tasks too.
 
 ## 3. Transfer
 
