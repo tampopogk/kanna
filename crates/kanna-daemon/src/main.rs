@@ -4,6 +4,7 @@ macro_rules! log {
     };
 }
 
+mod accounts;
 mod agents;
 mod app_link;
 mod backlog;
