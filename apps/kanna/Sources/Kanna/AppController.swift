@@ -10,6 +10,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var terminals: ExternalIOBackend!
     let commands = Commands()
     var daemon: DaemonLink?
+    var links: Links?
+    var views: [String: JSON] = [:]
+    var backlogs: [String: [JSON]] = [:]
+    var paneSets: [String: Set<String>] = [:]
+    var places: [String: JSON] = [:]
+    var identities: [String: String] = [:]
+    var lastSeen: [String: Date] = [:]
     private var server: SocketServer?
     private var signalSources: [DispatchSourceSignal] = []
     private var ownerSource: DispatchSourceProcess?
@@ -28,6 +35,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var closingPlanners: Set<String> = []
     var givenPlanners: Set<String> = []
     var recentProjects: [RecentProject] = []
+    var recentBy: [String: [RecentProject]] = [:]
     var recentMenu: NSMenu?
     let physical = Physical(path: AppController.physicalPath, fresh: AppController.fresh)
     private var focusing: String?
@@ -54,6 +62,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if environment["KANNA_NO_STATE"] == "1" { return nil }
         let folder = environment["KANNA_STATE_DIR"].flatMap { $0.isEmpty ? nil : $0 } ?? (daemonSocketPath as NSString).deletingLastPathComponent
         return (folder as NSString).appendingPathComponent("app-state.json")
+    }
+
+    static var appKeyPath: String? {
+        physicalPath.map { (($0 as NSString).deletingLastPathComponent as NSString).appendingPathComponent("app.key") }
     }
 
     static var fresh: Bool {
@@ -112,40 +124,28 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             if Self.isAppSocket(Self.daemonSocketPath) { fatal("kanna: \(Self.daemonSocketPath) belongs to Kanna.app; use another KANNA_SOCKET") }
             let daemon = DaemonLink(socketPath: Self.daemonSocketPath, commands: commands, starter: DaemonStarter(socketPath: Self.daemonSocketPath))
-            daemon.onAttach = { [weak self] in self?.attached($0) }
+            let links = Links(local: daemon, commands: commands, keyPath: Self.appKeyPath)
+            links.configure = { [weak self] link in self?.wire(link) }
+            links.onGone = { [weak self] machine in self?.machineGone(machine) }
+            links.onPeers = { [weak self] in self?.peersChanged() }
+            wire(daemon)
             daemon.onQuit = {
                 FileHandle.standardError.write(Data("kanna: the daemon is shutting down; quitting\n".utf8))
                 NSApp.terminate(nil)
             }
-            daemon.onView = { [weak self] view in
-                guard let self else { return }
-                if view["key"] != published["key"], view["key"]?.string != nil { localKey = nil }
-                published = view
-                restate()
-                layoutChanged()
-            }
-            daemon.onStart = { [weak self] pane in self?.startContent(pane) }
-            daemon.onStop = { [weak self] pane in self?.contents.stop(pane) }
-            daemon.onDiff = { [weak self] content, message in self?.contents.received(diff: message, content: content) }
-            daemon.onPane = { [weak self] pane in self?.learn(pane) }
-            daemon.onExited = { [weak self] terminal, code in
-                if let pane = self?.panes.pane(showing: terminal) { self?.panes.exited(pane, code: code) }
-            }
-            daemon.onSnapshot = { [weak self] terminal in
-                if let pane = self?.panes.pane(showing: terminal) { self?.panes.restarted(pane) }
-            }
-            contents.onUpdate = { [weak self, weak daemon] pane, fields in
+            contents.onUpdate = { [weak self, weak links] pane, fields in
                 if fields["state"] != nil { self?.panes.report(pane, state: fields["state"]?.string, error: fields["error"]?.string) }
-                daemon?.update(pane, fields)
+                links?.link(for: pane)?.update(pane, fields)
             }
-            contents.onRequest = { [weak daemon] cmd, args in daemon?.request(cmd, args) }
-            contents.onNotice = { [weak daemon] cmd, args in daemon?.notice(cmd, args) }
-            contents.onCall = { [weak daemon] cmd, args, reply in
-                guard let daemon else { return reply(["ok": false, "error": ["message": "not connected to the daemon"]]) }
-                daemon.request(cmd, args) { answer in DispatchQueue.main.async { reply(answer) } }
+            contents.onRequest = { [weak self] cmd, args in self?.request(cmd, args) }
+            contents.onNotice = { [weak links] cmd, args in links?.link(MachineIDs.machine(in: .object(args)))?.notice(cmd, args) }
+            contents.onCall = { [weak self] cmd, args, reply in
+                guard let self else { return reply(["ok": false, "error": ["message": "not connected to the daemon"]]) }
+                route(cmd, args) { answer in DispatchQueue.main.async { reply(answer) } }
             }
-            terminals = ExternalIOBackend(runtime: runtime, link: daemon)
+            terminals = ExternalIOBackend(runtime: runtime, link: links)
             self.daemon = daemon
+            self.links = links
         }
         panes = PaneViews(contents: contents, terminals: terminals)
         panes.terminalOf = { [weak self] pane in self?.terminalIDs[pane] }
@@ -213,6 +213,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for id in controllers.keys { recordFrame(id) }
         physical.save()
         panes?.stopAll()
+        links?.stop()
         daemon?.stop()
         server?.stop()
     }
@@ -224,27 +225,114 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return true
     }
 
-    private func attached(_ hello: JSON) {
+    private func wire(_ link: DaemonLink) {
+        let machine = link.machine
+        link.onAttach = { [weak self] in self?.attached($0, on: machine) }
+        link.onView = { [weak self] view in self?.viewArrived(view, on: machine) }
+        link.onStart = { [weak self] pane in self?.startContent(pane) }
+        link.onStop = { [weak self] pane in self?.contents.stop(pane) }
+        link.onDiff = { [weak self] content, message in self?.contents.received(diff: message, content: content) }
+        link.onFile = { [weak self] content, message in self?.contents.received(file: message, content: content) }
+        link.onPane = { [weak self] pane in self?.learn(pane) }
+        link.onExited = { [weak self] terminal, code in
+            if let pane = self?.panes.pane(showing: terminal) { self?.panes.exited(pane, code: code) }
+        }
+        link.onSnapshot = { [weak self] terminal in
+            if let pane = self?.panes.pane(showing: terminal) { self?.panes.restarted(pane) }
+        }
+        link.onStatus = { [weak self] pane, status in self?.statusChanged(pane, status) }
+        link.onFolder = { [weak self] pane, cwd, place in self?.folderChanged(pane, cwd, place) }
+        link.onBacklog = { [weak self] tasks in self?.backlogChanged(tasks, on: machine) }
+        link.onToast = { [weak self] record in self?.toastArrived(record) }
+        link.onLost = { [weak self] in self?.linkLost(machine) }
+    }
+
+    private func viewArrived(_ view: JSON, on machine: String?) {
+        if machine == nil, view["key"] != views[""]?["key"], view["key"]?.string != nil { localKey = nil }
+        views[machine ?? ""] = view
+        published = merged()
+        restate()
+        layoutChanged()
+    }
+
+    func merged() -> JSON {
+        var windows: [JSON] = []
+        var workspaces: [JSON] = []
+        for machine in views.keys.sorted() {
+            guard let view = views[machine] else { continue }
+            let tag: JSON = machine.isEmpty ? .null : .string(machine)
+            windows += (view["windows"]?.array ?? []).map { Self.tagged($0, tag) }
+            workspaces += (view["workspaces"]?.array ?? []).map { Self.tagged($0, tag) }
+        }
+        return ["key": views[""]?["key"] ?? .null, "windows": .array(windows), "workspaces": .array(workspaces)]
+    }
+
+    private static func tagged(_ item: JSON, _ machine: JSON) -> JSON {
+        guard case .object(var fields) = item else { return item }
+        fields["machine"] = machine
+        return .object(fields)
+    }
+
+    private func attached(_ hello: JSON, on machine: String?) {
         let panes = hello["panes"] ?? []
         if case .array(let list) = panes { learn(records: list) }
         if let view = hello["layout"] {
-            published = view
+            views[machine ?? ""] = view
+            published = merged()
             restate()
         }
-        if case .array(let list) = panes { physical.keep(panes: Set(list.compactMap { $0["id"]?.string }), in: plain) }
+        if case .array(let list) = panes {
+            let ids = Set(list.compactMap { $0["id"]?.string })
+            paneSets[machine ?? ""] = ids
+            physical.keep(panes: ids, in: plain, on: machine)
+        }
         if case .array(let list) = panes {
             for pane in list where pane["type"]?.string != "term" {
                 guard let id = pane["id"]?.string else { continue }
                 if contents.shows(id) { contents.resend(id) } else { contents.start(pane, restoring: true) }
             }
         }
-        contents.subscribeDiffs()
+        contents.subscribeDiffs(on: machine)
+        contents.subscribeFiles(on: machine)
         loadRecent()
         layoutChanged()
-        if wantsFirstTerminal {
-            wantsFirstTerminal = false
-            openTerminalIfEmpty()
+        if machine == nil {
+            links?.start()
+            if wantsFirstTerminal {
+                wantsFirstTerminal = false
+                openTerminalIfEmpty()
+            }
+        } else {
+            seen(machine)
+            refresh()
         }
+    }
+
+    private func linkLost(_ machine: String?) {
+        guard machine != nil else { return }
+        seen(machine)
+        refresh()
+    }
+
+    private func machineGone(_ machine: String) {
+        views.removeValue(forKey: machine)
+        backlogs.removeValue(forKey: machine)
+        backlog = backlogs.keys.sorted().flatMap { backlogs[$0] ?? [] }
+        published = merged()
+        restate()
+        layoutChanged()
+    }
+
+    func peersChanged() {
+        refresh()
+    }
+
+    func claimName(_ machine: String?) -> String {
+        machine == nil ? Self.app : links?.name ?? Self.app
+    }
+
+    func claimed(_ workspace: JSON, as place: String) -> Bool {
+        workspace["where"]?[place]?.string == claimName(workspace["machine"]?.string)
     }
 
     var windows: [JSON] {
@@ -301,7 +389,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var shelfTasks: [ShelfTask] {
         let tasks = shelfEntries.compactMap { entry -> ShelfTask? in
             guard let id = entry["task"]?.string else { return nil }
-            return ShelfTask(id: id, title: taskTitle(id, name: entry["name"]?.string), parkedAt: entry["parkedAt"]?.number, status: agentStatuses.statuses[id], detail: taskDetail(id), agent: entry["agent"]?.string)
+            return ShelfTask(id: id, title: taskTitle(id, name: entry["name"]?.string), parkedAt: entry["parkedAt"]?.number, status: agentStatuses.statuses[id], detail: taskDetail(id), agent: entry["agent"]?.string,
+                             place: placeText(id), offline: offline(MachineIDs.machine(of: id)))
         }
         let waiting: [ShelfTask] = tasks.filter { $0.status == "needs-you" }
         let rest: [ShelfTask] = tasks.filter { $0.status != "needs-you" }
@@ -369,14 +458,27 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func paneID(named name: String) -> String? { names[name] }
 
-    func request(_ cmd: String, _ args: [String: JSON], reply: ((JSON) -> Void)? = nil, sent: (@Sendable () -> Void)? = nil) {
-        guard let daemon else { return }
-        daemon.request(cmd, args, reply: { answer in
+    func request(_ cmd: String, _ args: [String: JSON], on machine: String?? = nil, reply: ((JSON) -> Void)? = nil, sent: (@Sendable () -> Void)? = nil) {
+        route(cmd, args, on: machine, reply: { answer in
             if answer["ok"]?.bool != true {
                 FileHandle.standardError.write(Data("kanna: \(cmd): \(answer["error"]?["message"]?.string ?? "failed")\n".utf8))
             }
             reply?(answer)
         }, sent: sent)
+    }
+
+    func route(_ cmd: String, _ args: [String: JSON], on given: String?? = nil, reply: ((JSON) -> Void)? = nil, sent: (@Sendable () -> Void)? = nil) {
+        guard let links else { return }
+        let machine = given ?? MachineIDs.machine(in: .object(args))
+        guard let link = links.link(machine) else {
+            reply?(["ok": false, "error": ["code": "offline", "message": .string("\(machine ?? "this machine") isn't connected")]])
+            return
+        }
+        var args = args
+        if machine != nil, cmd == "backlog", ["shelve", "plan"].contains(args["action"]?.string), args["app"] == nil {
+            args["app"] = .string(claimName(machine))
+        }
+        link.request(cmd, args, reply: reply, sent: sent)
     }
 
     func userFocused(_ pane: String) {
@@ -448,6 +550,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         panes.keep(placed)
         let tasks = shelfTasks
+        let fleet = fleetMachines
         var held = Set<String>()
         for window in windows {
             guard let id = window["id"]?.string else { continue }
@@ -457,10 +560,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let root = docked.flatMap(projectRoot) ?? lead.flatMap(projectRoot) {
                 controller.projectRoot = root
             } else if controller.projectRoot == nil, let folder = window["project"]?.string {
-                controller.projectRoot = canonical(GitPlace.of(folder)?.main ?? folder)
+                controller.projectRoot = rootLocation(folder)
             }
             if window["desk"]?.bool == true, let root = controller.projectRoot { deskMoved(id, to: root) }
-            let mine = controller.projectRoot.map { root in tasks.filter { projectRoot($0.id) == root } } ?? tasks
+            let mine = controller.projectRoot.map { root in tasks.filter { sameProject(projectRoot($0.id), root) } } ?? tasks
             controller.shelf = mine
             let ours = Set(mine.map(\.id))
             let docks = window["desk"]?.bool == true
@@ -470,9 +573,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             controller.shelfDocks = docks
             controller.backlog = backlogTasks(in: controller.projectRoot)
             controller.running = runningTasks(in: controller.projectRoot)
-            controller.project = controller.projectRoot.map(tilde) ?? projectName(mine.map(\.id))
+            controller.project = controller.projectRoot.map(displayName) ?? projectName(mine.map(\.id))
             controller.taskTitle = docked.map { taskTitle($0, name: window["dock"]?["name"]?.string) }
             controller.headerText = docked.map(headerText) ?? leadHeader(window, controller.projectRoot)
+            controller.fleet = fleet
+            controller.stale = staleText(docked ?? lead)
+            controller.headerTip = (docked ?? lead).map(placeText)
             controller.render(window, panes)
             if wantsPlanner(window) { openPlanner(in: id) }
         }
@@ -504,7 +610,20 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             restate()
             refresh()
         }
-        controller.tabBar.onSelect = { [weak self] tab in self?.layoutCommand("focus", ["tab": .string(tab)]) }
+        controller.tabBar.onSelect = { [weak self, weak controller] tab in
+            if controller?.page != nil {
+                controller?.page = nil
+                self?.refresh()
+            }
+            self?.layoutCommand("focus", ["tab": .string(tab)])
+        }
+        controller.tabBar.onPage = { [weak self, weak controller] page in
+            guard let self, let controller else { return }
+            controller.page = page
+            if page == WindowController.pages[1] { links?.refresh() }
+            redraw(controller)
+        }
+        controller.tabBar.onCycle = { [weak self] step in self?.cycleTab(step) }
         controller.tabBar.onClose = { [weak self] tab in self?.closeTab(tab) }
         controller.tabBar.onNew = { [weak self] in self?.newTab(in: id) }
         controller.tabBar.onDrag = { [weak self] tab in self?.dragTab(tab) }

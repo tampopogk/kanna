@@ -12,7 +12,11 @@ final class TabBar: NSView {
     var onEditEnded: (() -> Void)?
     var onDrag: ((String) -> Void)?
     var onMoveToNewWindow: ((String) -> Void)?
+    var onPage: ((String) -> Void)?
+    var onCycle: ((Int) -> Void)?
     private var shown: [(id: String, title: String, active: Bool)] = []
+    private var shownPages: [String] = []
+    private var shownPage: String?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -31,14 +35,25 @@ final class TabBar: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    func show(_ window: JSON) {
+    func show(_ window: JSON, pages: [String] = [], page: String? = nil) {
         guard case .array(let list)? = window["tabs"] else { return }
-        let active = window["tab"]?.string
+        let active = page == nil ? window["tab"]?.string : nil
         let tabs = list.compactMap { tab in tab["id"]?.string.map { (id: $0, title: tab["title"]?.string ?? $0, active: $0 == active) } }
-        guard tabs.map(\.id) != shown.map(\.id) || tabs.map(\.title) != shown.map(\.title) || tabs.map(\.active) != shown.map(\.active) else { return }
+        guard tabs.map(\.id) != shown.map(\.id) || tabs.map(\.title) != shown.map(\.title) || tabs.map(\.active) != shown.map(\.active)
+            || pages != shownPages || page != shownPage else { return }
         shown = tabs
+        shownPages = pages
+        shownPage = page
         subviews.forEach { $0.removeFromSuperview() }
         var x: CGFloat = 8
+        for name in pages {
+            let item = PageItem(title: name, active: name == page)
+            item.onSelect = { [weak self] in self?.onPage?(name) }
+            item.onCycle = { [weak self] step in self?.onCycle?(step) }
+            item.frame.origin = NSPoint(x: x, y: 0)
+            addSubview(item)
+            x += item.frame.width + 2
+        }
         for tab in tabs {
             let item = TabItem(id: tab.id, title: tab.title, active: tab.active)
             item.onSelect = { [weak self] in self?.onSelect?(tab.id) }
@@ -59,6 +74,10 @@ final class TabBar: NSView {
         plus.toolTip = "New tab"
         addSubview(plus)
         self.plus = plus
+    }
+
+    var pageItems: [(title: String, center: NSPoint)] {
+        subviews.compactMap { $0 as? PageItem }.map { ($0.title, $0.convert(NSPoint(x: $0.bounds.midX, y: $0.bounds.midY), to: nil)) }
     }
 
     private weak var plus: NSButton?
@@ -88,6 +107,50 @@ final class TabBar: NSView {
         NSColor.separatorColor.setFill()
         NSRect(x: 0, y: 0, width: bounds.width, height: 1).fill()
     }
+}
+
+@MainActor
+private final class PageItem: NSView {
+    let title: String
+    var onSelect: (() -> Void)?
+    var onCycle: ((Int) -> Void)?
+    private let active: Bool
+
+    override var acceptsFirstResponder: Bool { true }
+    override var canBecomeKeyView: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 123: onCycle?(-1)
+        case 124: onCycle?(1)
+        case 36, 49, 76: onSelect?()
+        default: super.keyDown(with: event)
+        }
+    }
+
+    init(title: String, active: Bool) {
+        self.title = title
+        self.active = active
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 12, weight: active ? .semibold : .regular)
+        label.textColor = active ? .labelColor : .secondaryLabelColor
+        label.sizeToFit()
+        super.init(frame: NSRect(x: 0, y: 0, width: label.frame.width + 24, height: TabBar.height))
+        label.frame.origin = NSPoint(x: 12, y: (TabBar.height - label.frame.height) / 2)
+        addSubview(label)
+        setAccessibilityRole(.radioButton)
+        setAccessibilityLabel(title)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard active else { return }
+        NSColor.controlAccentColor.setFill()
+        NSRect(x: 6, y: 1, width: bounds.width - 12, height: 2).fill()
+    }
+
+    override func mouseDown(with event: NSEvent) { onSelect?() }
 }
 
 @MainActor

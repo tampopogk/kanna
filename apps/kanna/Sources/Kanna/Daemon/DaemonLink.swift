@@ -9,6 +9,10 @@ final class DaemonLink: TerminalLink {
     private var terminals: [String: ExternalTerminal] = [:]
     private var sizes: [String: JSON] = [:]
     private(set) var attached = false
+    let machine: String?
+    var client: String?
+    private(set) var refusal: JSON?
+    private(set) var daemonInfo: JSON?
     var onAttach: ((JSON) -> Void)?
     var onView: ((JSON) -> Void)?
     var onStart: ((JSON) -> Void)?
@@ -17,26 +21,33 @@ final class DaemonLink: TerminalLink {
     var onExited: ((String, Int32) -> Void)?
     var onSnapshot: ((String) -> Void)?
     var onStatus: ((String, String?) -> Void)?
-    var onFolder: ((String, String) -> Void)?
+    var onFolder: ((String, String, JSON?) -> Void)?
     var onBacklog: (([JSON]) -> Void)?
     var onDiff: ((String, JSON) -> Void)?
     var onToast: ((JSON) -> Void)?
     var onQuit: (() -> Void)?
+    var onFile: ((String, JSON) -> Void)?
+    var onLost: (() -> Void)?
     private var requests = 0
     private var replies: [Int: (JSON) -> Void] = [:]
     private let starter: DaemonStarter?
-    var machine = "this Mac"
 
     var socketPath: String { connection.path }
 
-    init(socketPath: String, commands: Commands, starter: DaemonStarter? = nil) {
+    static let protocols: [JSON] = Protocols.mine.map { .number(Double($0)) }
+    static let localOnly: Set<String> = ["app.fleet.confirm", "app.snap"]
+
+    init(socketPath: String, commands: Commands, starter: DaemonStarter? = nil, machine: String? = nil, dial: (@Sendable () -> Int32?)? = nil) {
         self.commands = commands
         self.starter = starter
+        self.machine = machine
         connection = DaemonConnection(
             path: socketPath,
+            dial: dial,
             hello: { [weak self] in
-                var args: [String: JSON] = ["pid": .number(Double(ProcessInfo.processInfo.processIdentifier)), "protocols": .array(Protocols.mine.map { .number(Double($0)) })]
-                if let build = KannaBuild.daemonBuild { args["build"] = .string(build) }
+                var args: [String: JSON] = ["pid": .number(Double(ProcessInfo.processInfo.processIdentifier)), "protocols": .array(Self.protocols), "commit": .string(KannaBuild.commit)]
+                if machine == nil, let build = KannaBuild.daemonBuild { args["build"] = .string(build) }
+                if let client = self?.client { args["client"] = .string(client) }
                 return ["id": 0, "cmd": "app.hello", "args": .object(args)]
             },
             connected: { [weak self] in self?.connected() },
@@ -54,8 +65,12 @@ final class DaemonLink: TerminalLink {
         onQuit?()
     }
 
+    private func outbound(_ message: JSON) -> JSON {
+        machine.map { MachineIDs.local(message, on: $0) } ?? message
+    }
+
     private func send(_ cmd: String, _ args: [String: JSON]) {
-        connection.send(["cmd": .string(cmd), "args": .object(args)])
+        connection.send(outbound(["cmd": .string(cmd), "args": .object(args)]))
     }
 
     private func connected() {
@@ -72,10 +87,12 @@ final class DaemonLink: TerminalLink {
         replies.removeAll()
         for reply in waiting.values { reply(["ok": false, "error": ["code": "no_daemon", "message": "lost the daemon"]]) }
         if attached { FileHandle.standardError.write(Data("kanna: lost the daemon at \(socketPath)\n".utf8)) }
+        onLost?()
         attached = false
     }
 
-    private func received(_ message: JSON, _ delivery: DaemonConnection.Delivery) {
+    private func received(_ raw: JSON, _ delivery: DaemonConnection.Delivery) {
+        let message = machine.map { MachineIDs.qualified(raw, on: $0) } ?? raw
         let span = Perf.begin(.daemon, "message", message["cmd"]?.string ?? (message["ok"] != nil ? "reply" : "unknown"))
         defer { Perf.end(span) }
         let connection = connection!
@@ -89,28 +106,41 @@ final class DaemonLink: TerminalLink {
             }
             attached = ok
             if ok {
+                refusal = nil
+                daemonInfo = message["daemon"]
                 connection.accepted()
                 onAttach?(message)
+            } else if message["error"]?["code"]?.string == "other_protocol" {
+                refusal = message
+                connection.refused()
+                FileHandle.standardError.write(Data("kanna: \(machine ?? "the daemon") speaks another protocol: \(message["error"]?["message"]?.string ?? "")\n".utf8))
             } else if message["error"]?["code"]?.string == "other_build" {
                 connection.accepted()
                 starter?.replacing()
                 FileHandle.standardError.write(Data("kanna: the daemon is from another build and is stopping; starting this build's\n".utf8))
-            } else if message["error"]?["code"]?.string == "other_protocol" {
-                connection.refused()
-                let daemon = message["daemon"] ?? [:]
-                let protocols = daemon["protocols"]?.array?.compactMap { $0.number.map(Int.init) }
-                let message = Protocols.otherProtocol(machine: machine, protocols: protocols, version: daemon["version"]?.string, commit: daemon["commit"]?.string)
-                FileHandle.standardError.write(Data("kanna: \(message.title): \(message.detail)\n".utf8))
-                onToast?(["id": .string("other_protocol:\(machine)"), "title": .string(message.title), "detail": .string(message.detail)])
             } else {
+                refusal = message
                 connection.refused()
                 FileHandle.standardError.write(Data("kanna: the daemon refused this app: \(message["error"]?["message"]?.string ?? "")\n".utf8))
             }
             return
         }
         guard let cmd = message["cmd"]?.string else { return }
+        if message["id"] != nil, machine != nil, Self.localOnly.contains(cmd) {
+            connection.send(["id": message["id"] ?? .null, "ok": false, "error": ["code": "local_only", "message": .string("\(cmd) is answered only for this Mac's own daemon")]], generation: delivery.generation)
+            return
+        }
         if message["id"] != nil {
-            Task { [commands] in connection.send(await commands.handle(message), generation: delivery.generation) }
+            var request = message
+            if let machine, case .object(var fields) = request, case .object(var args) = fields["args"] ?? .object([:]) {
+                args["machine"] = .string(machine)
+                fields["args"] = .object(args)
+                request = .object(fields)
+            }
+            Task { [commands, machine] in
+                let reply = await commands.handle(request)
+                connection.send(machine.map { MachineIDs.local(reply, on: $0) } ?? reply, generation: delivery.generation)
+            }
             return
         }
         let args = message["args"] ?? [:]
@@ -148,14 +178,16 @@ final class DaemonLink: TerminalLink {
             onView?(args)
         case "diff":
             if let content = args["content"]?.string { onDiff?(content, args) }
+        case "file":
+            if let content = args["content"]?.string { onFile?(content, args) }
         case "backlog":
             if case .array(let tasks)? = args["tasks"] { onBacklog?(tasks) }
         case "toast":
             onToast?(args)
         case "quit":
-            quit()
+            if machine == nil { quit() }
         case "folder":
-            if let pane = args["pane"]?.string, let cwd = args["cwd"]?.string { onFolder?(pane, cwd) }
+            if let pane = args["pane"]?.string, let cwd = args["cwd"]?.string { onFolder?(pane, cwd, args["place"]) }
         default: FileHandle.standardError.write(Data("kanna: unknown message from the daemon: \(cmd)\n".utf8))
         }
     }
@@ -179,7 +211,7 @@ final class DaemonLink: TerminalLink {
         }
         requests += 1
         if let reply { replies[requests] = reply }
-        connection.send(["id": .number(Double(requests)), "cmd": .string(cmd), "args": .object(args)], sent: sent)
+        connection.send(outbound(["id": .number(Double(requests)), "cmd": .string(cmd), "args": .object(args)]), sent: sent)
     }
 
     func opened(_ terminal: ExternalTerminal) {

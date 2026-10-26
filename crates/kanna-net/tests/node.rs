@@ -1,5 +1,7 @@
-use kanna_net::{Config, Host, Install, Node, SecretKey, Tarball, KINDS};
+use kanna_net::{Client, Config, Host, Install, Node, SecretKey, Tarball, KINDS};
 use serde_json::{json, Value};
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -9,6 +11,7 @@ struct Machine {
     asked: Arc<Mutex<Vec<Value>>>,
     saved: Arc<Mutex<Value>>,
     served: Arc<Mutex<Vec<(String, Value)>>>,
+    apps: Arc<Mutex<Vec<(String, Value, UnixStream)>>>,
     restarts: Arc<tokio::sync::Notify>,
 }
 
@@ -25,6 +28,10 @@ impl Host for Machine {
 
     fn save(&self, state: Value) {
         *self.saved.lock().unwrap() = state;
+    }
+
+    fn app(&self, from: String, hello: Value, stream: UnixStream) {
+        self.apps.lock().unwrap().push((from, hello, stream));
     }
 
     fn restart(&self) {
@@ -248,6 +255,62 @@ async fn a_stale_machine_reached_first_by_a_ping_still_learns_a_revocation() {
     assert!(names(&vm).contains(&("mini".to_string(), false)), "{:?}", names(&vm));
     assert_eq!(mini.call("linux-vm", json!({ "id": 1, "cmd": "list" })).await.unwrap_err().code, "revoked");
 }
+
+fn line(stream: &UnixStream) -> Option<Value> {
+    let mut text = String::new();
+    BufReader::new(stream).read_line(&mut text).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+async fn hello(client: &Client, node: &Node, cert: &Value) -> Result<UnixStream, kanna_net::Failure> {
+    let link = client.link(&node.key(), &[format!("127.0.0.1:{}", node.port())], cert).await?;
+    (&link).write_all(b"{\"id\":0,\"cmd\":\"app.hello\",\"args\":{\"client\":\"mbp\"}}\n").unwrap();
+    Ok(link)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_app_certified_by_a_paired_machine_holds_a_link_until_its_machine_is_revoked() {
+    let (mbp, _) = machine("mbp", json!({})).await;
+    let (vm, vm_host) = machine("linux-vm", json!({})).await;
+    pair(&mbp, &vm).await.unwrap();
+    let client = Client::start(SecretKey::generate()).await.unwrap();
+    let cert = mbp.certify(&client.key()).unwrap();
+
+    let link = hello(&client, &vm, &cert).await.unwrap();
+    let served = loop {
+        if let Some(app) = vm_host.apps.lock().unwrap().pop() {
+            break app;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    let (from, hello_line, daemon_end) = served;
+    assert_eq!((from.as_str(), &hello_line["args"]["client"]), ("mbp", &json!("mbp")));
+    (&daemon_end).write_all(b"{\"id\":0,\"ok\":true}\n").unwrap();
+    let reply = tokio::task::spawn_blocking({
+        let link = link.try_clone().unwrap();
+        move || line(&link)
+    });
+    assert_eq!(reply.await.unwrap().unwrap()["ok"], true);
+    (&link).write_all(b"{\"cmd\":\"input\"}\n").unwrap();
+    let got = tokio::task::spawn_blocking({
+        let end = daemon_end.try_clone().unwrap();
+        move || line(&end)
+    });
+    assert_eq!(got.await.unwrap().unwrap()["cmd"], "input");
+    let path = client.path(&vm.key());
+    assert_eq!((path["path"].clone(), path["lan"].clone()), (json!("direct"), json!(true)), "{path}");
+
+    let stranger = Client::start(SecretKey::generate()).await.unwrap();
+    assert_eq!(hello(&stranger, &vm, &json!(null)).await.unwrap_err().code, "unpaired");
+    let forged = mbp.certify(&client.key()).unwrap();
+    assert_eq!(hello(&stranger, &vm, &forged).await.unwrap_err().code, "unpaired", "a certificate is for one endpoint");
+
+    vm.revoke("mbp").await.unwrap();
+    let after = tokio::task::spawn_blocking(move || line(&daemon_end));
+    assert_eq!(after.await.unwrap(), None, "the bridge closes as soon as its machine is revoked");
+    assert_eq!(hello(&client, &vm, &cert).await.unwrap_err().code, "revoked");
+}
+
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_update_moves_a_machine_to_the_tarballs_commit_and_it_comes_back_there() {

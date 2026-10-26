@@ -100,7 +100,7 @@ fn the_daemon_diffs_a_subscribed_folder_and_diffs_again_when_the_worktree_change
     std::fs::write(repo.join("a.txt"), "one\n2\n").unwrap();
     let folder = repo.to_string_lossy().to_string();
     app.send(json!({"id": 1, "cmd": "diff.subscribe", "args": {"view": "diff-1", "path": folder, "args": []}}));
-    let read = || app.diffs.lock().unwrap().iter().rev().find(|m| !m["diff"].is_null()).cloned().unwrap_or(json!({}));
+    let read = || app.heard.lock().unwrap().iter().rev().find(|m| !m["diff"].is_null()).cloned().unwrap_or(json!({}));
     wait_for("the first diff", || read()["serial"] == 1);
     let first = read();
     assert_eq!(first["content"].as_str().map(|id| id.starts_with("diff-")), Some(true));
@@ -130,9 +130,56 @@ fn the_daemon_diffs_a_subscribed_folder_and_diffs_again_when_the_worktree_change
     assert_eq!(read()["diff"]["files"], json!([]));
     assert_eq!(views()[0]["args"], json!(["--staged"]));
     app.send(json!({"id": 4, "cmd": "diff.subscribe", "args": {"view": "diff-3", "args": []}}));
-    wait_for("the refusal", || app.diffs.lock().unwrap().iter().any(|m| m["id"] == 4 && m["error"]["message"] == "a diff needs the folder it's in (path)"));
+    wait_for("the refusal", || app.heard.lock().unwrap().iter().any(|m| m["id"] == 4 && m["error"]["message"] == "a diff needs the folder it's in (path)"));
     app.quit();
     wait_for("the watcher stopped with its app", || views() == json!([]));
+}
+
+#[test]
+fn the_daemon_reads_a_subscribed_file_and_sends_it_again_when_it_changes() {
+    let daemon = Daemon::start();
+    let app = daemon.app();
+    let dir = daemon.dir.join("docs");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("a.md");
+    std::fs::write(&file, "# One\n").unwrap();
+    let path = file.to_string_lossy().to_string();
+    app.send(json!({"id": 1, "cmd": "file.subscribe", "args": {"view": "file-1", "path": path, "kind": "md"}}));
+    let read = || app.heard.lock().unwrap().iter().rev().find(|m| m.get("serial").is_some_and(|s| s.as_u64() > Some(0))).cloned().unwrap_or(json!({}));
+    wait_for("the first text", || read()["text"] == "# One\n");
+    assert_eq!(read()["content"].as_str().map(|id| id.starts_with("file-")), Some(true));
+    assert_eq!(read()["path"], path);
+    std::fs::write(&file, "# Two\n").unwrap();
+    wait_for("the text written in place", || read()["text"] == "# Two\n");
+    std::fs::write(dir.join(".a.md.tmp"), "# Three\n").unwrap();
+    std::fs::rename(dir.join(".a.md.tmp"), &file).unwrap();
+    wait_for("the text renamed over the file", || read()["text"] == "# Three\n");
+    let serial = read()["serial"].clone();
+    std::fs::remove_file(&file).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    assert_eq!(read()["serial"], serial, "a deleted file keeps its text");
+    std::fs::write(&file, "# Four\n").unwrap();
+    wait_for("the recreated file", || read()["text"] == "# Four\n");
+
+    let files = || daemon.kanna(&["raw", r#"{"cmd":"files"}"#]).json()["files"].clone();
+    app.send(json!({"id": 2, "cmd": "file.subscribe", "args": {"view": "file-2", "path": path, "kind": "md"}}));
+    wait_for("a second view of the file", || files()[0]["views"].as_array().is_some_and(|v| v.len() == 2));
+    assert_eq!(files().as_array().map(Vec::len), Some(1));
+    app.send(json!({"cmd": "file.unsubscribe", "args": {"view": "file-2"}}));
+    wait_for("the second view gone", || files()[0]["views"].as_array().is_some_and(|v| v.len() == 1));
+
+    let missing = dir.join("later/b.rs").to_string_lossy().to_string();
+    app.send(json!({"id": 3, "cmd": "file.subscribe", "args": {"view": "file-3", "path": missing, "kind": "code"}}));
+    let of = |view_path: &str| app.heard.lock().unwrap().iter().rev().find(|m| m["path"] == view_path && m.get("serial").is_some_and(|s| s.as_u64() > Some(0))).cloned().unwrap_or(json!({}));
+    wait_for("the missing file's error", || of(&missing)["error"]["code"] == "missing");
+    assert_eq!(of(&missing)["error"]["message"], format!("No such file: {missing}"));
+    std::fs::create_dir_all(dir.join("later")).unwrap();
+    std::fs::write(&missing, "fn main() {}\n").unwrap();
+    wait_for("the file once it's there", || of(&missing)["text"] == "fn main() {}\n");
+    app.send(json!({"id": 4, "cmd": "file.subscribe", "args": {"view": "file-4", "kind": "md"}}));
+    wait_for("the refusal", || app.heard.lock().unwrap().iter().any(|m| m["id"] == 4 && m["error"]["message"] == "a file needs its path"));
+    app.quit();
+    wait_for("the watchers stopped with their app", || files() == json!([]));
 }
 
 #[test]
@@ -202,7 +249,7 @@ fn every_command_works_through_the_daemon_and_the_app() {
     assert_eq!(daemon.kanna(&["markup", "doc", "--off"]).ok(), "comments off in file-1 (doc)");
 
     let capabilities = daemon.kanna(&["capabilities"]).ok();
-    assert!(capabilities.starts_with("pane types: term, web, ios, md, code, diff\ncommands: agents, arrange, backlog, capabilities, close, comment, desk, diffs, fleet, focus, list, markup, move, move-tab, navigate, open, projects, quiz, read, rename-pane, rename-tab, resize, restart, screenshot, send, send-key, status, task, toast, tour, window, zoom"), "{capabilities}");
+    assert!(capabilities.starts_with("pane types: term, web, ios, md, code, diff\ncommands: agents, arrange, backlog, capabilities, close, comment, desk, diffs, files, fleet, focus, list, markup, move, move-tab, navigate, open, projects, quiz, read, rename-pane, rename-tab, resize, restart, screenshot, send, send-key, status, task, toast, tour, window, zoom"), "{capabilities}");
     assert!(capabilities.ends_with("Kanna.app: attached"), "{capabilities}");
     assert_eq!(daemon.kanna(&["toast", "Build finished", "it took", "3m"]).ok(), "raised toast-1");
     assert_eq!(daemon.kanna(&["toast", "Messages wait", "--pane", "a", "--key", "k1"]).ok(), "raised toast-2");

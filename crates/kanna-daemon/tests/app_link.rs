@@ -326,8 +326,8 @@ fn an_app_of_another_protocol_is_told_so_and_the_daemon_keeps_running() {
     other.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "protocols": [7, 9]}}));
     let reply = other.next().unwrap();
     assert_eq!(reply["error"]["code"], "other_protocol", "{reply}");
-    assert_eq!(reply["daemon"]["protocols"], json!([1, 1]), "{reply}");
-    assert!(reply["daemon"]["version"].is_string(), "{reply}");
+    assert_eq!(reply["mine"], json!([1, 1]), "{reply}");
+    assert!(reply["version"].is_string() && reply["commit"].is_string(), "{reply}");
     assert_eq!(instance.call("capabilities", json!({}))["ok"], true);
 
     let mut app = App::raw(&instance.socket());

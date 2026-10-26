@@ -66,8 +66,10 @@ final class Physical {
         changed()
     }
 
-    func keep(shelf claimed: [(workspace: String, parkedAt: Double?)], planners: Set<String>) {
-        let ids = Set(claimed.map(\.workspace))
+    func keep(shelf claimed: [(workspace: String, parkedAt: Double?)], planners given: Set<String>, present: Set<String>) {
+        let absent = { (id: String) in !present.contains(MachineIDs.machine(of: id) ?? "") }
+        let ids = Set(claimed.map(\.workspace)).union(shelf.map(\.workspace).filter(absent)).union(desks.compactMap(\.shows).filter(absent))
+        let planners = given.union(desks.compactMap(\.planner).filter(absent))
         var kept = shelf.filter { ids.contains($0.workspace) }
         for entry in claimed where !kept.contains(where: { $0.workspace == entry.workspace }) {
             kept.insert((entry.workspace, entry.parkedAt ?? Date().timeIntervalSince1970.rounded(.down)), at: 0)
@@ -109,13 +111,14 @@ final class Physical {
         return .object(fields)
     }
 
-    func keep(panes: Set<String>, in view: JSON) {
+    func keep(panes: Set<String>, in view: JSON, on machine: String?) {
         let before = (docks.count, textSizes.count)
         var owners = Set((view["workspaces"]?.array ?? []).compactMap { $0["id"]?.string })
         owners.formUnion((view["windows"]?.array ?? []).compactMap { $0["id"]?.string })
         owners.formUnion(desks.map(\.id))
-        docks = docks.filter { owners.contains($0.key) }
-        textSizes = textSizes.filter { panes.contains($0.key) }
+        let elsewhere = { (id: String) in MachineIDs.machine(of: id) != machine }
+        docks = docks.filter { elsewhere($0.key) || owners.contains($0.key) }
+        textSizes = textSizes.filter { elsewhere($0.key) || panes.contains($0.key) }
         if (docks.count, textSizes.count) != before { changed() }
     }
 

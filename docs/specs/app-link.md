@@ -2,7 +2,7 @@
 
 **Status:** built · **Builds on:** [architecture](architecture.md) · **Related:** [the daemon follows the app's build](daemon-build.md), [layout](layout.md), [app panes](app-panes.md)
 
-The app is a client of the daemon, like the CLI, but it stays connected: it shows the daemon's terminals, types into them, draws the layout the daemon publishes, and answers the requests only the app can (its web, markdown and iOS panes, `debug.*`). The **app link** is that one connection, on the daemon's own socket (`$KANNA_SOCKET`). A link to a daemon on another machine carries the same lines over iroh, checked by a protocol range instead of build ([fleet](fleet.md#5-the-app-link-over-the-network)).
+The app is a client of the daemon, like the CLI, but it stays connected: it shows the daemon's terminals, types into them, draws the layout the daemon publishes, and answers the requests only the app can (its web, markdown and iOS panes, `debug.*`). The **app link** is that one connection, on the daemon's own socket (`$KANNA_SOCKET`). A link to a daemon on another machine carries the same lines over iroh, checked by a protocol range instead of build ([your machines](machines.md#5-the-app-link-over-the-network)).
 
 ## Contents
 
@@ -49,7 +49,7 @@ sequenceDiagram
 
 | Message | From | What it says |
 |---|---|---|
-| `app.hello {pid, build}` | app | I'm the app, of this build; the reply accepts or refuses it (`app_attached`, `other_build`) and has the daemon's panes and layout |
+| `app.hello {pid, build, protocols, commit, client}` | app | I'm the app, of this build; the reply accepts or refuses it (`app_attached`, `other_build`, `other_protocol`) and has the protocol, the daemon's machine and capabilities, its panes and layout; over the fleet `build` is left out ([links §2](machine-links.md#2-the-hello)) |
 | `layout {windows, …}` | daemon | the layout changed; this is the whole view to draw ([layout](layout.md)) |
 | `attach {terminal}` / `detach {terminal}` | app | I show (or no longer show) this terminal, by its terminal ID (`term-41`, [presentation layers](presentation-layers.md#3-ids)) |
 | `snapshot {terminal, data}` | daemon | the terminal's whole screen as a GHOSTSNP snapshot; sent on attach, before anything else for that terminal |
@@ -63,9 +63,11 @@ sequenceDiagram
 | `debug.*` (with an `id`) | daemon | a request from a client, passed on; the app's reply is the client's |
 | `start`, `stop`, `pane`; `update`; the app's own requests | both | web, markdown and iOS panes ([app panes](app-panes.md)); `pane` also tells the app a terminal pane's new `terminal` when it starts again, and the app makes a new view for it |
 | `diff.subscribe {view, path, args}` (with an `id`), `diff.show {view, show}`, `diff.unsubscribe {view}` | app | this view shows the diff of that folder and git arguments; the reply has its content ID and latest diff ([diff viewer](diff-viewer.md#5-how-its-built)) |
+| `file.subscribe {view, path, kind}` (with an `id`), `file.unsubscribe {view}` | app | this view shows that file as `md` or `code`; the reply has its content ID and latest read ([file panes](file-panes.md#2-messages)) |
 | `diff {content, serial, diff, updating}` | daemon | a subscribed diff changed |
 | `quit` | daemon | the daemon is shutting down on purpose: quit, and don't start a daemon ([stopping an instance](instance-stop.md)) |
 | `toast {id, title, detail, pane, task, about}` | daemon | show a toast; also each one held while no app was attached, after `app.hello` ([toasts](toasts.md)) |
+| `file {content, path, serial, text\|error}` | daemon | a subscribed file was read and differs ([file panes](file-panes.md#2-messages)) |
 
 ## 3. Rules
 
@@ -89,7 +91,7 @@ Kanna.app carries the daemon, the keeper and the `kanna` CLI in `Contents/Helper
 - **How:** in its own session (`setsid`), so it outlives the app; signals back to their defaults; no descriptors of the app's; stdin from `/dev/null`, stdout and stderr appended to `daemon.log` in the state folder. It gets the app's environment without `KANNA_*` and `KMUX_*` (only `KANNA_STATE_DIR` and `KANNA_DEBUG` pass), plus `KANNA_SOCKET` and `KANNA_KEEPER` (the bundled keeper). The daemon then starts the keeper.
 - **Not after `quit`:** a daemon that is shutting down on purpose says `quit` first, and the app then quits without starting one ([stopping an instance](instance-stop.md)).
 - **Quitting the app** leaves the daemon and its terminals running; the next launch attaches to it if it's the same build, and replaces it if not.
-- **Why the app and not launchd:** the daemon is needed only when the app or the CLI is, and the app knows the socket and state folder it uses. A launch agent would add install steps and a second definition of both. On Linux, which has no app, systemd starts it, and on a build Mac a LaunchAgent ([fleet](fleet.md#9-server-setup-and-updates)).
+- **Why the app and not launchd:** the daemon is needed only when the app or the CLI is, and the app knows the socket and state folder it uses. A launch agent would add install steps and a second definition of both. On Linux, which has no app, systemd starts it ([Linux setup](machine-setup.md#2-the-daemon-unit)), and on a Mac that serves your other machines launchd ([machines §5](machines.md#5-the-app-link-over-the-network)).
 - **The first terminal.** When the first attach after launch leaves the layout empty, the app opens a terminal, as kmux opens a window. Reopening the app from the Dock with nothing open does the same. `KANNA_NO_INITIAL_WINDOW=1` turns it off (the e2e scenarios set it).
 
 ## 5. Glossary

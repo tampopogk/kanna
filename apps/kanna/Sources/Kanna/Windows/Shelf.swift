@@ -8,13 +8,27 @@ struct ShelfTask: Equatable {
     let status: String?
     let detail: String
     var agent: String?
+    var place: String?
+    var offline = false
 
-    var meta: String { status == "needs-you" ? "needs you" : "parked " + Self.ago(parkedAt) }
+    var meta: String { offline ? "offline" : status == "needs-you" ? "needs you" : "parked " + Self.ago(parkedAt) }
 
     static func ago(_ at: Double?) -> String {
         guard let at else { return "now" }
         let minutes = Int(max(0, Date().timeIntervalSince1970 - at) / 60)
         return minutes < 1 ? "now" : minutes < 60 ? "\(minutes)m ago" : minutes < 60 * 24 ? "\(minutes / 60)h ago" : "\(minutes / 60 / 24)d ago"
+    }
+
+    @MainActor
+    static func dot(_ task: ShelfTask, in rect: NSRect) {
+        guard task.offline else {
+            color(task.status).setFill()
+            return NSBezierPath(ovalIn: rect).fill()
+        }
+        NSColor.systemRed.setStroke()
+        let ring = NSBezierPath(ovalIn: rect.insetBy(dx: 0.75, dy: 0.75))
+        ring.lineWidth = 1.5
+        ring.stroke()
     }
 
     static func color(_ status: String?) -> NSColor {
@@ -42,8 +56,6 @@ struct BacklogTask: Equatable {
     }
 
     var blocked: Bool { !waits.isEmpty }
-
-    var sub: String { [waits.isEmpty ? nil : "waits for " + waits.joined(separator: ", "), agent, message, after].compactMap { $0 }.joined(separator: " · ") }
 
     var after: String {
         let made = "made " + ShelfTask.ago(madeAt).replacingOccurrences(of: "now", with: "just now")
@@ -231,7 +243,7 @@ private final class ShelfItem: NSView {
         titleWidth = min(title.frame.width, 260)
         paintTitle()
         refresh()
-        toolTip = task.title
+        toolTip = [task.title, task.place].compactMap { $0 }.joined(separator: "\n")
         wantsLayer = true
         layer?.cornerRadius = 6
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
@@ -259,8 +271,7 @@ private final class ShelfItem: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        ShelfTask.color(task.status).setFill()
-        NSBezierPath(ovalIn: NSRect(x: 9, y: bounds.midY - 4, width: 8, height: 8)).fill()
+        ShelfTask.dot(task, in: NSRect(x: 9, y: bounds.midY - 4, width: 8, height: 8))
     }
 
     override func mouseEntered(with event: NSEvent) { setHover(true) }
@@ -563,7 +574,6 @@ private final class BacklogRow: NSView {
         name.frame = NSRect(x: 30, y: 8, width: width - 160, height: 18)
         let small = NSFont.systemFont(ofSize: 12)
         let detail = NSMutableAttributedString(string: task.waits.isEmpty ? "" : "waits for " + task.waits.joined(separator: ", ") + " · ", attributes: [.font: small, .foregroundColor: NSColor.systemOrange])
-        detail.append(NSAttributedString(string: task.agent.map { $0 + " · " } ?? "", attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
         detail.append(BacklogTask.marked(task.message.map { $0 + " · " } ?? "", query, font: small, color: .secondaryLabelColor))
         detail.append(NSAttributedString(string: task.after, attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
         let sub = NSTextField(labelWithAttributedString: detail)
@@ -633,8 +643,8 @@ private final class ShelfRow: NSView {
         name.font = .systemFont(ofSize: 13, weight: .semibold)
         name.lineBreakMode = .byTruncatingTail
         name.frame = NSRect(x: 30, y: 8, width: width - 140, height: 18)
-        let status = task.status.map { $0 == "needs-you" ? "needs you" : $0 }
-        let sub = NSTextField(labelWithString: [task.agent, status, task.detail.isEmpty ? nil : task.detail, "parked " + ShelfTask.ago(task.parkedAt)].compactMap { $0 }.joined(separator: " · "))
+        let status = task.status.map { $0 == "needs-you" ? "needs you" : $0 }.map { task.offline ? "last known: \($0)" : $0 }
+        let sub = NSTextField(labelWithString: [status, task.detail.isEmpty ? nil : task.detail, task.offline ? "offline" : "parked " + ShelfTask.ago(task.parkedAt)].compactMap { $0 }.joined(separator: " · "))
         sub.font = .systemFont(ofSize: 12)
         sub.textColor = .secondaryLabelColor
         sub.lineBreakMode = .byTruncatingTail
@@ -644,6 +654,7 @@ private final class ShelfRow: NSView {
         go.sizeToFit()
         go.frame.origin = NSPoint(x: width - go.frame.width - 10, y: (52 - go.frame.height) / 2)
         go.isHidden = true
+        toolTip = task.place
         [name, sub, go].forEach(addSubview)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
@@ -651,8 +662,7 @@ private final class ShelfRow: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     override func draw(_ dirtyRect: NSRect) {
-        ShelfTask.color(task.status).setFill()
-        NSBezierPath(ovalIn: NSRect(x: 10, y: bounds.midY - 4, width: 8, height: 8)).fill()
+        ShelfTask.dot(task, in: NSRect(x: 10, y: bounds.midY - 4, width: 8, height: 8))
     }
 
     override func mouseEntered(with event: NSEvent) {

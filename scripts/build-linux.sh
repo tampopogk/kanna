@@ -64,7 +64,7 @@ triple_env="$(echo "$target" | tr 'a-z-' 'A-Z_')"
 triple_lower="$(echo "$target" | tr '-' '_')"
 env "CC_$triple_lower=$wrappers/cc" "CXX_$triple_lower=$wrappers/c++" "AR_$triple_lower=$wrappers/ar" \
   "CARGO_TARGET_${triple_env}_LINKER=$wrappers/cc" \
-  CARGO_PROFILE_RELEASE_STRIP=debuginfo KANNA_CHANNEL="$channel" KANNA_VERSION="$version" \
+  CARGO_PROFILE_RELEASE_STRIP=debuginfo KANNA_CHANNEL="$channel" KANNA_VERSION="$version" KANNA_COMMIT="$commit" \
   cargo build --release --manifest-path "$repo_root/Cargo.toml" --target "$target" -p kanna -p kanna-daemon -p kanna-keeper
 built="$repo_root/target/$target/release"
 
@@ -72,7 +72,7 @@ step "Tarball"
 stage="$out/.stage-$arch"
 rm -rf "$stage"
 mkdir -p "$stage/kanna/kanna-skills"
-cp "$built/kanna" "$built/kanna-daemon" "$built/kanna-keeper" "$stage/kanna/"
+cp "$built/kanna" "$built/kanna-daemon" "$built/kanna-keeper" "$repo_root/apps/kanna/Resources/planner.sh" "$stage/kanna/"
 for skill in kanna-tasks kanna-planning kanna-new-project kanna-markup kanna-explain kanna-quiz; do cp -RL "$repo_root/.agents/kanna-skills/skills/$skill" "$stage/kanna/kanna-skills/"; done
 protocols="$(sed -n 's/^pub const PROTOCOLS: \[u32; 2\] = \[\([0-9]*\), \([0-9]*\)\];/[\1, \2]/p' "$repo_root/crates/kanna-build/src/lib.rs")"
 [[ -n "$protocols" ]] || fail "can't read PROTOCOLS from crates/kanna-build/src/lib.rs"

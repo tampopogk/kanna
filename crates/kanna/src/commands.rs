@@ -24,7 +24,7 @@ pub static COMMANDS: &[Command] = &[
         name: "open",
         group: "Panes",
         summary: "Open a terminal, web, iOS, markdown, code or diff pane and wait until it is running.",
-        usage: "kanna open [term] [--cmd CMD] [--cwd DIR] [--name NAME] [--split right|down|auto] [--size FRACTION] [--tab] [--window ID|new] [--dock [left|right] [--frozen]] [--no-wait]\n       kanna open web URL [--history] [same placement options]\n       kanna open md FILE [same placement options]\n       kanna open ios --app APP [--device DEVICE] [same placement options]\n       kanna open code FILE[:LINE] [same placement options]\n       kanna open diff [GIT-DIFF-ARGS] [same placement options]",
+        usage: "kanna open [term] [--cmd CMD] [--cwd DIR] [--name NAME] [--split right|down|auto] [--size FRACTION] [--tab] [--window ID|new] [--dock [left|right] [--frozen]] [--no-wait]\n       kanna open web URL [--history] [same placement options]\n       kanna open md FILE [same placement options]\n       kanna open ios --app APP [--device DEVICE] [same placement options]\n       kanna open code FILE[:LINE] [same placement options]\n       kanna open diff [GIT-DIFF-ARGS] [same placement options]\n       kanna open md FILE --diff [REF|A..B] [same placement options]",
         options: &[
             ("--cmd CMD", "Shell command line to run in your login shell, e.g. \"npm run dev\". Put it in single quotes if it uses $VARS or ;, so your own shell leaves it alone. Default: an interactive shell."),
             ("--cwd DIR", "Working directory."),
@@ -40,7 +40,7 @@ pub static COMMANDS: &[Command] = &[
             ("--dock [left|right]", "Make the pane the window's docked pane: along its left (default) or right edge, outside its tabs, shown whichever tab is. Not with --split, --size or --tab. A pane already docked there moves to a new tab."),
             ("--frozen", "With --dock: the docked pane is frozen. It doesn't move, and nothing drops on it or docks in its place; it closes with its window."),
         ],
-        notes: "Prints the new pane's ID and name. A pane whose command exits stays on screen as `exited`. A docked pane closes only with its window.\nA terminal opened without --split, --size, --tab, --window or --dock opens even with Kanna.app closed, and takes its place when the app next opens; anything else starts the app.\nRun from a pane without --window or --dock, it opens in that pane's window, not the key one; from a task kept off-screen (the backlog, the Shelf), in a new tab of the task's window.",
+        notes: "Prints the new pane's ID and name. A pane whose command exits stays on screen as `exited`. A docked pane closes only with its window.\nA terminal opened without --split, --size, --tab, --window or --dock opens even with Kanna.app closed, and takes its place when the app next opens; anything else starts the app.\nRun from a pane without --window or --dock, it opens in that pane's window, not the key one; from a task kept off-screen (the backlog, the Shelf), in a new tab of the task's window.\n--diff [REF] marks what changed in a markdown doc since REF, inline: added text in green, removed text struck through in red, a bar beside each changed block; ]c and [c jump to the next and previous change. REF is any commit or branch, compared as `git diff REF...` compares: from where HEAD and REF meet, uncommitted changes included. Default: main (or master), so a task's doc shows everything the task changed. --diff A..B shows the doc as it is in commit B, marked against commit A (compared directly, not from where they meet); it's read-only, doesn't follow the file and takes no comments.",
         examples: &[
             ("kanna open --name server --cmd \"npm run dev\"", "Run a dev server in a pane named server."),
             ("kanna open --name logs --split right --size 1/3 --cmd \"tail -f app.log\"", "Put a log tail in the right third."),
@@ -50,6 +50,7 @@ pub static COMMANDS: &[Command] = &[
             ("kanna open ios --name phone --app build/MyApp.app --split right --size 1/3", "Run your app in the simulator, in the right third."),
             ("kanna open md docs/spec.md --name spec --split right", "Show a markdown file (with mermaid diagrams) beside this pane; it reloads when the file changes."),
             ("kanna open --name agent --cmd claude --dock", "Dock an agent on the window's left edge; it stays while you switch tabs."),
+            ("kanna open md docs/specs/presenting.md --diff main --tab", "Show a spec with what this branch changed in it marked."),
             ("kanna open code src/main.rs:42", "Show a source file, highlighted, at line 42; it follows the file on disk."),
             ("kanna open diff --merge-base main", "Show everything this branch changed since it left main, committed or not, with untracked files; it follows the worktree."),
         ],
@@ -652,13 +653,13 @@ pub static COMMANDS: &[Command] = &[
     Command {
         name: "agents",
         group: "Information",
-        summary: "Set up your agents for Kanna: Kanna's skills for Claude and Codex, a hook that tells them they're in Kanna, and Claude's sandbox letting them reach Kanna.",
+        summary: "Set up your agents for Kanna: Kanna's skills for Claude and Codex, a hook that tells them they're in Kanna, and Claude's sandbox letting them reach Kanna but not read its device keys.",
         usage: "kanna agents [status]\n       kanna agents setup [--ask]\n       kanna agents update [--ask] [--force]\n       kanna agents remove",
         options: &[
             ("--ask", "Say what it would do and ask first; says nothing if there's nothing to ask (the planning terminal runs it)."),
             ("--force", "update: put Kanna's version over files you've changed."),
         ],
-        notes: "setup copies Kanna's skills (kanna-tasks, kanna-planning, kanna-new-project, kanna-markup, kanna-explain, kanna-quiz) to ~/.agents/skills, where Codex reads them, links each from ~/.claude/skills for Claude, and adds Kanna's socket to sandbox.network.allowUnixSockets in ~/.claude/settings.json. update brings the skills up to this Kanna's: a file you've changed is merged with Kanna's changes, and where they conflict it offers your merge editor (git's merge.tool, else opendiff). remove takes back what Kanna put there. Setup and update also take out the SessionStart hooks earlier Kannas added; Kanna tells the agents it starts that they're in Kanna in their first message. Kanna's planning terminal asks before setting up and before each update; nothing is written until you agree.",
+        notes: "setup copies Kanna's skills (kanna-tasks, kanna-planning, kanna-new-project, kanna-markup, kanna-explain, kanna-quiz) to ~/.agents/skills, where Codex reads them, links each from ~/.claude/skills for Claude, adds Kanna's socket to sandbox.network.allowUnixSockets in ~/.claude/settings.json, and denies reading every instance's device.key there (sandbox.filesystem.denyRead and a Read rule in permissions.deny). update brings the skills up to this Kanna's: a file you've changed is merged with Kanna's changes, and where they conflict it offers your merge editor (git's merge.tool, else opendiff). remove takes back what Kanna put there. Setup and update also take out the SessionStart hooks earlier Kannas added; Kanna tells the agents it starts that they're in Kanna in their first message. Kanna's planning terminal asks before setting up and before each update; nothing is written until you agree.",
         examples: &[
             ("kanna agents", "Whether your agents are set up, and whether this Kanna has newer skills."),
             ("kanna agents setup", "Install Kanna's skills, the hook and the sandbox entry."),
@@ -884,6 +885,18 @@ fn main_commit(repo: &str) -> Result<String, Failure> {
         .iter()
         .find_map(|branch| git_line(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}^{{commit}}")]))
         .ok_or_else(|| usage("quiz", "a quiz asks about main, and this repo has no main (or master) branch"))
+}
+
+fn diff_base(path: &str, reference: Option<String>) -> Result<String, Failure> {
+    if let Some(reference) = reference {
+        return Ok(reference);
+    }
+    let folder = std::path::Path::new(path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
+    ["main", "master"]
+        .iter()
+        .find(|branch| git_line(&folder, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_some())
+        .map(|branch| branch.to_string())
+        .ok_or_else(|| usage("open", "--diff compares with main (or master), and there's none here: say what to compare with, e.g. --diff HEAD"))
 }
 
 fn git_line(at: &str, args: &[&str]) -> Option<String> {
@@ -1373,6 +1386,7 @@ fn parse_open(args: &mut Argv) -> Result<Value, Failure> {
         out.insert("wait".into(), json!(false));
     }
     let history = args.flag("--history");
+    let diff = args.optional("--diff", |word| !word.starts_with('-') && !is_markdown(word));
     let kind = match args.positional() {
         None => "term".to_string(),
         Some(kind) if ["term", "web", "ios", "md", "code", "diff"].contains(&kind.as_str()) => kind,
@@ -1409,6 +1423,13 @@ fn parse_open(args: &mut Argv) -> Result<Value, Failure> {
     }
     if kind != "ios" && (out.contains_key("app") || out.contains_key("device")) {
         return Err(usage("open", "--app and --device are only for iOS panes: kanna open ios --app APP"));
+    }
+    if let Some(reference) = diff {
+        if kind != "md" {
+            return Err(usage("open", "--diff is only for markdown panes: kanna open md FILE --diff REF"));
+        }
+        let path = out["path"].as_str().unwrap_or_default().to_string();
+        out.insert("diff".into(), json!(diff_base(&path, reference)?));
     }
     if history {
         if kind != "web" {

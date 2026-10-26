@@ -1,7 +1,7 @@
 # Shared agent sign-in probe
 
 Model for [agent sign-in](../../../docs/specs/agent-sign-in.md) and
-[Fleet §10](../../../docs/specs/fleet.md#10-build-order), before Fleet 9.
+[Fleet §10](../../../docs/specs/machines.md#10-build-order), before Fleet 9.
 This is a throwaway probe, not Kanna product code.
 
 **Status: shared Claude and Codex holder flows verified (2026-10-25 JST).**

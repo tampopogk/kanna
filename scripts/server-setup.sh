@@ -94,9 +94,9 @@ else
   commit="$(git -C "$repo_root" rev-parse HEAD)"
   [[ -z "$(git -C "$repo_root" status --porcelain --untracked-files=no)" ]] || commit="$commit-dirty"
   "$repo_root/scripts/build-ghostty-vt.sh"
-  KANNA_CHANNEL=production cargo build --release --manifest-path "$repo_root/Cargo.toml" -p kanna -p kanna-daemon -p kanna-keeper
+  KANNA_CHANNEL=production KANNA_COMMIT="$commit" cargo build --release --manifest-path "$repo_root/Cargo.toml" -p kanna -p kanna-daemon -p kanna-keeper
   built="$repo_root/target/release"
-  cp "$built/kanna" "$built/kanna-daemon" "$built/kanna-keeper" "$staged/"
+  cp "$built/kanna" "$built/kanna-daemon" "$built/kanna-keeper" "$repo_root/apps/kanna/Resources/planner.sh" "$staged/"
   for skill in kanna-tasks kanna-planning kanna-new-project kanna-markup kanna-explain kanna-quiz; do cp -RL "$repo_root/.agents/kanna-skills/skills/$skill" "$staged/kanna-skills/"; done
   version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$repo_root/Cargo.toml" | head -1)"
   protocols="$(sed -n 's/^pub const PROTOCOLS: \[u32; 2\] = \[\([0-9]*\), \([0-9]*\)\];/[\1, \2]/p' "$repo_root/crates/kanna-build/src/lib.rs")"

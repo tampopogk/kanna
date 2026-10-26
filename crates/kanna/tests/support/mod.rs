@@ -175,7 +175,7 @@ impl Run {
 pub struct App {
     pub thread: std::thread::JoinHandle<()>,
     stream: UnixStream,
-    pub diffs: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+    pub heard: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
 }
 
 impl App {
@@ -204,7 +204,7 @@ impl App {
                     }
                     continue;
                 }
-                if message["cmd"] == "diff" {
+                if message["cmd"] == "diff" || message["cmd"] == "file" {
                     heard.lock().unwrap().push(message["args"].clone());
                 } else if message.get("content").is_some() || (message.get("ok").is_some() && message["id"] != 0) {
                     heard.lock().unwrap().push(message.clone());
@@ -242,7 +242,7 @@ impl App {
             }
         });
         assert_eq!(hello.recv_timeout(Duration::from_secs(10)), Ok(true), "the app wasn't accepted");
-        App { thread, stream, diffs }
+        App { thread, stream, heard: diffs }
     }
 
     pub fn send(&self, message: Value) {

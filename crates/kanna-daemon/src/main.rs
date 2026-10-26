@@ -25,6 +25,7 @@ mod status;
 mod status_command;
 mod diffs;
 mod fleet;
+mod files;
 mod store;
 mod task_scripts;
 mod terminals;
@@ -94,10 +95,11 @@ pub enum Event {
     Finished { task: String, changes: Vec<db::Change> },
     Diff { id: String, diff: Value },
     DiffUpdating { id: String },
+    File { id: String, read: files::Read },
     KeeperReadable,
     KeeperExits,
     KeeperLost(String),
-    AppHello { conn: u64, hello: Value, out: Outbox, stream: UnixStream },
+    AppHello { conn: u64, hello: Value, out: Outbox, stream: UnixStream, remote: Option<String> },
     AppCaughtUp { conn: u64 },
     AppMessage { conn: u64, message: Value },
     AppGone { conn: u64 },
@@ -311,11 +313,13 @@ fn run() -> Result<Option<PathBuf>, String> {
             None
         }
     };
-    let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone());
+    let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone(), agents::keys(&support_folder(), &state_dir));
     agents.refresh();
     agents.install(&core);
     let diffs = Rc::new(diffs::Diffs::new(events.clone()));
     diffs.install(&core);
+    let files = Rc::new(files::Files::new(events.clone()));
+    files.install(&core);
     let host = Rc::new(Host::new(terminals.clone()));
     core.set_host(Some(host.clone()));
     let on_change = Rc::downgrade(&terminals);
@@ -359,7 +363,11 @@ fn run() -> Result<Option<PathBuf>, String> {
     }
 
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
-    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), layout.clone(), app_timeout, build_id.clone(), fleet::release(fleet.as_ref().and_then(|f| f.install.as_ref()))));
+    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), files.clone(), layout.clone(), app_timeout, build_id.clone()));
+    if let Some(fleet) = &fleet {
+        let fleet = Rc::downgrade(fleet);
+        *app.machine.borrow_mut() = Some(Box::new(move || fleet.upgrade().map_or(Value::Null, |f| f.machine())));
+    }
     let view_link = Rc::downgrade(&app);
     *layout.on_view.borrow_mut() = Some(Box::new(move |view| {
         if let Some(app) = view_link.upgrade() {
@@ -383,6 +391,12 @@ fn run() -> Result<Option<PathBuf>, String> {
             app.diff(views, payload);
         }
     }));
+    let file_link = Rc::downgrade(&app);
+    *files.on_file.borrow_mut() = Some(Box::new(move |views, payload| {
+        if let Some(app) = file_link.upgrade() {
+            app.file(views, payload);
+        }
+    }));
     let on_start = Rc::downgrade(&app);
     *terminals.on_start.borrow_mut() = Some(Box::new(move |pane| {
         if let Some(app) = on_start.upgrade() {
@@ -404,7 +418,12 @@ fn run() -> Result<Option<PathBuf>, String> {
         "desk",
         Rc::new(move |mut args, responder| {
             let (Some(app), Some(backlog)) = (link.upgrade(), resolving.upgrade()) else { return };
-            let Some(task) = args.get("task").and_then(Value::as_str).map(String::from) else { return app.forward("desk", args, responder) };
+            let Some(task) = args.get("task").and_then(Value::as_str).map(String::from) else {
+                if let Some(folder) = args.get("project").and_then(Value::as_str).filter(|_| args.get("action").and_then(Value::as_str) == Some("desk")) {
+                    args["place"] = projects::place(folder);
+                }
+                return app.forward("desk", args, responder);
+            };
             backlog.agent(&task, move |found| match found {
                 Ok(pane) => {
                     args["task"] = Value::String(pane);
@@ -568,6 +587,7 @@ fn run() -> Result<Option<PathBuf>, String> {
             Event::Finished { task, changes } => backlog.finished(&task, changes),
             Event::Diff { id, diff } => diffs.loaded(&id, diff),
             Event::DiffUpdating { id } => diffs.updating(&id),
+            Event::File { id, read } => files.loaded(&id, read),
             Event::KeeperReadable | Event::KeeperExits => {
                 let exits = keeper.take_exits();
                 if matches!(event, Event::KeeperReadable) {
@@ -600,14 +620,18 @@ fn run() -> Result<Option<PathBuf>, String> {
                 failure = Some(reason);
                 break;
             }
-            Event::AppHello { conn, hello, out, stream } => {
-                if app.hello(conn, hello, out, stream) {
+            Event::AppHello { conn, hello, out, stream, remote } => {
+                if app.hello(conn, hello, out, stream, remote) {
                     break;
                 }
                 toasts.attached();
             }
             Event::AppMessage { conn, message } => {
                 if let Some(request) = app.message(conn, message) {
+                    if let Some(refused) = fleet::refuse_remote(&request).filter(|_| !app.attached_here()) {
+                        app.answer_app(conn, refused);
+                        continue;
+                    }
                     let link = Rc::downgrade(&app);
                     timed(request_name(&request), "the app", || {
                         core.handle(request, move |reply| {

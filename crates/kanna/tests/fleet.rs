@@ -1,7 +1,8 @@
 mod support;
 
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
 use std::process::Stdio;
 use support::{cli, wait_for, Daemon};
 
@@ -25,7 +26,7 @@ fn a_paired_machine_runs_any_command_on_another_and_an_unpaired_or_revoked_one_i
     let paired: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
     assert_eq!(paired["name"], "mbp");
     assert!(waiting.wait().unwrap().success());
-    let asked: Vec<Value> = app.diffs.lock().unwrap().iter().filter(|m| m["cmd"] == "app.fleet.confirm").cloned().collect();
+    let asked: Vec<Value> = app.heard.lock().unwrap().iter().filter(|m| m["cmd"] == "app.fleet.confirm").cloned().collect();
     assert_eq!(asked.len(), 1);
     assert_eq!(asked[0]["args"]["name"], "vm");
 
@@ -57,13 +58,98 @@ fn a_paired_machine_runs_any_command_on_another_and_an_unpaired_or_revoked_one_i
     app.quit();
 }
 
-fn pair(mbp: &Daemon, vm: &Daemon) {
+fn pair(mbp: &Daemon, vm: &Daemon) -> u64 {
+    mbp.kanna(&["fleet", "name", "mbp"]).ok();
+    vm.kanna(&["fleet", "name", "vm"]).ok();
     let mut waiting = cli(&vm.dir).env("KANNA_SOCKET", vm.socket()).args(["fleet", "pair", "--json"]).stdout(Stdio::piped()).spawn().unwrap();
     let mut lines = BufReader::new(waiting.stdout.take().unwrap()).lines();
     let offer: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
     let peer = format!("{}@127.0.0.1:{}", offer["key"].as_str().unwrap(), offer["port"]);
     mbp.kanna(&["fleet", "pair", offer["code"].as_str().unwrap(), "--peer", &peer]).ok();
     assert!(waiting.wait().unwrap().success());
+    offer["port"].as_u64().unwrap()
+}
+
+fn ask(daemon: &Daemon, cmd: &str, args: Value) -> Value {
+    let stream = UnixStream::connect(daemon.socket()).unwrap();
+    writeln!(&stream, "{}", json!({ "id": 1, "cmd": cmd, "args": args })).unwrap();
+    let mut line = String::new();
+    BufReader::new(&stream).read_line(&mut line).unwrap();
+    serde_json::from_str(&line).unwrap()
+}
+
+struct Link {
+    lines: std::io::Lines<BufReader<UnixStream>>,
+    stream: UnixStream,
+}
+
+impl Link {
+    fn send(&self, message: Value) {
+        writeln!(&self.stream, "{message}").unwrap();
+    }
+
+    fn next(&mut self, what: impl Fn(&Value) -> bool) -> Value {
+        loop {
+            let message: Value = serde_json::from_str(&self.lines.next().expect("the link closed").unwrap()).unwrap();
+            if what(&message) {
+                return message;
+            }
+        }
+    }
+}
+
+fn link(runtime: &tokio::runtime::Runtime, client: &kanna_net::Client, key: &str, port: u64, cert: &Value, hello: Value) -> (Link, Value) {
+    let stream = runtime.block_on(client.link(key, &[format!("127.0.0.1:{port}")], cert)).unwrap();
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+    let mut link = Link { lines: BufReader::new(stream.try_clone().unwrap()).lines(), stream };
+    link.send(json!({ "id": 0, "cmd": "app.hello", "args": hello }));
+    let reply = link.next(|m| m["id"] == 0);
+    (link, reply)
+}
+
+#[test]
+fn an_app_on_another_machine_attaches_over_the_fleet_and_another_protocol_leaves_the_daemon_running() {
+    let (mbp, vm) = (Daemon::start(), Daemon::start());
+    let app = mbp.app();
+    let port = pair(&mbp, &vm);
+    let vm_key = vm.kanna(&["fleet", "--json"]).json()["key"].as_str().unwrap().to_string();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let client = runtime.block_on(kanna_net::Client::start(kanna_net::SecretKey::generate())).unwrap();
+    let certified = ask(&mbp, "fleet", json!({ "action": "certify", "key": client.key() }));
+    assert_eq!(certified["ok"], true, "{certified}");
+    let cert = certified["cert"].clone();
+
+    let (_, refused) = link(&runtime, &client, &vm_key, port, &cert, json!({ "pid": 1, "client": "mbp", "protocols": [7, 9], "build": "another" }));
+    assert_eq!((refused["ok"].clone(), refused["error"]["code"].clone(), refused["mine"].clone()), (json!(false), json!("other_protocol"), json!([1, 1])), "{refused}");
+    assert_eq!(vm.kanna(&["fleet", "--json"]).json()["name"], "vm", "the daemon keeps running");
+
+    vm.kanna(&["open", "--name", "far", "--no-wait", "--cmd", "/bin/cat"]).ok();
+    let (mut far, hello) = link(&runtime, &client, &vm_key, port, &cert, json!({ "pid": 1, "client": "mbp", "protocols": [1, 3], "build": "another", "commit": "abc" }));
+    assert_eq!((hello["ok"].clone(), hello["protocol"].clone(), hello["daemon"]["machine"].clone()), (json!(true), json!(1), json!("vm")), "{hello}");
+    let terminal = hello["panes"].as_array().unwrap().iter().find(|p| p["name"] == "far").unwrap()["id"].as_str().unwrap().to_string();
+    far.send(json!({ "cmd": "attach", "args": { "terminal": terminal } }));
+    far.next(|m| m["cmd"] == "snapshot" && m["args"]["terminal"] == terminal.as_str());
+    far.send(json!({ "cmd": "input", "args": { "terminal": terminal, "data": "dHlwZWQgZmFyCg==" } }));
+    wait_for("the typed line on vm", || vm.kanna(&["read", "far"]).ok().contains("typed far"));
+    far.next(|m| m["cmd"] == "output");
+    far.send(json!({ "id": 5, "cmd": "fleet", "args": { "action": "certify", "key": client.key() } }));
+    assert_eq!(far.next(|m| m["id"] == 5)["error"]["code"], "local_only", "a remote app can't have an endpoint certified");
+    let called = ask(&mbp, "fleet", json!({ "action": "call", "host": "vm", "cmd": "fleet", "args": { "action": "certify", "key": client.key() } }));
+    assert!(called.to_string().contains("local_only"), "another machine can't have an endpoint certified: {called}");
+    let here = UnixStream::connect(vm.socket()).unwrap();
+    here.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+    let mut here = Link { lines: BufReader::new(here.try_clone().unwrap()).lines(), stream: here };
+    here.send(json!({ "id": 0, "cmd": "app.hello", "args": { "pid": 2 } }));
+    assert_eq!(here.next(|m| m["id"] == 0)["ok"], true);
+    assert!(far.lines.by_ref().all(|line| line.is_ok()), "the machine's own app takes over from the remote one");
+    here.send(json!({ "cmd": "attach", "args": { "terminal": terminal } }));
+    here.next(|m| m["cmd"] == "snapshot" && m["args"]["terminal"] == terminal.as_str());
+    drop(here);
+
+    let stranger = runtime.block_on(kanna_net::Client::start(kanna_net::SecretKey::generate())).unwrap();
+    let unpaired = runtime.block_on(stranger.link(&vm_key, &[format!("127.0.0.1:{port}")], &cert)).unwrap_err();
+    assert_eq!(unpaired.code, "unpaired");
+    app.quit();
 }
 
 #[test]

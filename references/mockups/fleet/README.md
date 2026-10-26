@@ -1,6 +1,6 @@
 # Fleet Desk model
 
-The interactive model is **[../fleet.html](../fleet.html)**. Its [spec and screenshots](../../../docs/specs/fleet-app.md) are linked from [Fleet §6](../../../docs/specs/fleet.md#6-one-app-several-machines). This is a standalone reference model before Fleet 3, not product code. Approved by the user after review. Ready to merge before Fleet 3.
+The interactive model is **[../fleet.html](../fleet.html)**. Its [spec and screenshots](../../../docs/specs/machines-app.md) are linked from [Fleet §6](../../../docs/specs/machines.md#6-one-app-several-machines). This is a standalone reference model before Fleet 3, not product code. Approved by the user after review. Ready to merge before Fleet 3.
 
 ## Run
 
@@ -56,4 +56,4 @@ Screenshots live in `docs/specs/fleet-{desk,page,relay,offline,tooltip,path-tool
 
 **Checked:** Chrome rendering at the capture sizes, light mode and 900px width; project reopening; fixed Shelf/Fleet tabs, task preservation and keyboard tab navigation; three claims; direct / relay / offline tooltips; disabled offline input; reconnect preserving selection and order; pane-input isolation; no persistent host or path labels in task views; hover/focus tooltip contents and dismissal; Fleet path details; no JavaScript errors. Screenshots were inspected visually. Product tests should copy the comparison cases in the spec and compare their rendering with these scenes.
 
-**Simulation limits:** `mbp` is this Mac; `dev-1`, `tests-1`, and `tools-1` are illustrative Incus peers on r720-1, not provisioned VMs. All work, paths, ages and capabilities are fixtures. No SSH, Cloud or relay probe was needed. This model does not validate transport, persistence, repo-identity matching, actual jobs or background delivery; those belong to their slices and other Fleet models. Shelf membership is fixed; backlog mutation is outside this UI model. Project windows are represented by retained sections in one page, with only the front one visible.
+**Simulation limits:** `mbp` is this Mac; `dev-1`, `tests-1`, and `tools-1` are illustrative Incus peers on r720-1, not provisioned VMs. All work, paths and ages are fixtures. No SSH, Cloud or relay probe was needed. This model does not validate transport, persistence, repo-identity matching, actual jobs or background delivery; those belong to their slices and other Fleet models. Shelf membership is fixed; backlog mutation is outside this UI model. Project windows are represented by retained sections in one page, with only the front one visible.

@@ -2,7 +2,7 @@
 
 **Status:** built ([plan](../plans/mux-build.md) M3) · **Builds on:** [the app link](app-link.md), [layout](layout.md) · **Related:** [code viewer](code-viewer.md), [doc markup](doc-markup.md)
 
-A web, markdown or iOS pane is a record in the daemon's layout and a view in each app: a web pane's URL (and whether it keeps history), a markdown pane's file, whether either is open for comments (`kanna markup`), the agent pane that opened a doc for comments ([doc markup](doc-markup.md)), an iOS pane's app and device, saved in the saved layout. The daemon's `kanna-mux` core gives them their IDs, checks and answers every command about them as kmux does (`open`, `navigate` with its history, `close`, `restart`, `list`), and tells the app to show them. A markdown file's front matter (the `---` block at its top) shows as a YAML code block on the same lines.
+A web, markdown or iOS pane is a record in the daemon's layout and a view in each app: a web pane's URL (and whether it keeps history), a markdown pane's file and the commit it marks changes since ([markdown diff](markdown-diff.md)), whether either is open for comments (`kanna markup`), the agent pane that opened a doc for comments ([doc markup](doc-markup.md)), an iOS pane's app and device, saved in the saved layout. The daemon's `kanna-mux` core gives them their IDs, checks and answers every command about them as kmux does (`open`, `navigate` with its history, `close`, `restart`, `list`), and tells the app to show them. A markdown file's front matter (the `---` block at its top) shows as a YAML code block on the same lines.
 
 ## 1. The daemon keeps the records; the app shows them
 
@@ -41,7 +41,7 @@ sequenceDiagram
 
 ## 3. Rules
 
-- **Starting:** a web pane reports `running` as soon as its view loads the URL (a server that isn't up yet shows a notice and is retried, as kmux); a markdown pane once the file is read (`failed`: "No such file"); an iOS pane once the simulator is booted, the app launched and the screen attached (up to 180 s). `open` waits for that, as kmux.
+- **Starting:** a web pane reports `running` as soon as its view loads the URL (a server that isn't up yet shows a notice and is retried, as kmux); a markdown pane once the daemon sends its file's text (`failed`: "No such file"; [file panes](file-panes.md)); an iOS pane once the simulator is booted, the app launched and the screen attached (up to 180 s). `open` waits for that, as kmux.
 - **With the app closed** `open web|md|ios`, `navigate`, `close` and `restart` work, and the pane is `running` at once: an app shows it when it attaches. `send`, `send-key` and `read` answer `wrong_type` for them; `debug.web|md|ios` fail with `no_app` (the CLI starts the app, [layout](layout.md#5-the-cli-starts-the-app)).
 - **When the app goes away** the panes stay; one still starting counts as running, so an `open` waiting for it finishes.
 - **After a relaunch** the app gets the records in the hello reply and shows them: pages load at their URL (cookies and logins stay in WebKit's store; back and forward lists aren't kept, as kmux), files reopen at their zoom, iOS panes find their device (still booted) and attach to its screen, launching the app only if it isn't running. After a daemon restart the views are untouched: the daemon restores the records from `layout.json` as running, and the app reports the state of each view it still shows.
