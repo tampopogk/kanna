@@ -34,18 +34,18 @@ sequenceDiagram
     participant X as kanna-daemon --codex-remote
     participant S as codex app-server
     participant U as codex TUI
-    H->>W: accounts supply {version, accounts}: tokens and keys, and which machine holds a ChatGPT login
+    H->>W: accounts supply with a version, tokens, keys and which machine holds a ChatGPT login
     X->>W: accounts token
-    W->>H: accounts token {account}
+    W->>H: accounts token for the account
     H-->>W: access token and account ID
-    X->>S: start with cli_auth_credentials_store="ephemeral"
+    X->>S: start, keeping auth in memory only
     X->>S: account/login/start chatgptAuthTokens
     X->>U: codex --remote unix://SOCKET
-    S->>X: account/chatgptAuthTokens/refresh (unauthorized)
-    X->>W: accounts token {previous}
-    W->>H: accounts token {account, previous}
+    S->>X: account/chatgptAuthTokens/refresh, reason unauthorized
+    X->>W: accounts token, with the rejected one
+    W->>H: accounts token for the account, with the rejected one
     H-->>W: the current token, or one refresh shared by every renewal of the same token
-    X-->>S: the new token; Codex retries in the same process and thread
+    X-->>S: the new token, and Codex retries in the same process and thread
 ```
 
 - **A token that lasts** (Claude's setup token, API keys) goes to every machine when it's added and when a machine joins, and stays there. The holder's daemon supplies each machine it trusts the whole set with a version number; a machine keeps the newest and drops an older one. A machine that's offline gets it when it next answers (retried every minute, backing off to 15).
