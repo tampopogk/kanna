@@ -154,6 +154,9 @@ pub fn post(args: &Value) -> Result<Map, KmuxError> {
             id = format!("c{next}");
             record["next"] = json!(next + 1);
             thread["id"] = json!(id);
+            if let Some(png) = &mark {
+                thread["mark"] = json!(kanna_threads::save_mark(&doc, &id, png).map_err(failed)?);
+            }
             match record["threads"].as_array_mut() {
                 Some(list) => list.push(thread),
                 None => record["threads"] = json!([thread]),
@@ -162,19 +165,6 @@ pub fn post(args: &Value) -> Result<Map, KmuxError> {
         },
         failed,
     )?;
-    if let Some(png) = mark {
-        let saved = kanna_threads::save_mark(&doc, &id, &png).map_err(failed)?;
-        kanna_threads::update(
-            &doc,
-            |record| {
-                if let Some(thread) = thread_mut(record, &id) {
-                    thread["mark"] = json!(saved);
-                }
-                Ok(())
-            },
-            failed,
-        )?;
-    }
     let mut out = Map::new();
     out.insert("thread".into(), json!(id));
     answer(&doc, out)
@@ -287,5 +277,9 @@ mod tests {
         assert_eq!(agent(&json!({ "path": doc, "agent": "term-4" })).unwrap()["record"]["agent"], "term-4");
         assert_eq!(kanna_threads::read(&doc)["next"], 3);
         assert!(post(&json!({ "path": doc, "thread": thread, "mark": BASE64.encode(b"not a png") })).is_err());
+        std::fs::remove_dir_all(dir.join(".kanna/docs/marks")).unwrap();
+        std::fs::write(dir.join(".kanna/docs/marks"), "not a folder").unwrap();
+        assert!(post(&json!({ "path": doc, "thread": thread, "mark": BASE64.encode(b"\x89PNG\r\n\x1a\nrest") })).is_err());
+        assert_eq!(kanna_threads::read(&doc)["threads"].as_array().unwrap().len(), 2, "a thread whose mark wasn't saved isn't saved");
     }
 }

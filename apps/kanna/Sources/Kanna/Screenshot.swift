@@ -1,7 +1,7 @@
 import AppKit
 
 extension AppController {
-    static let largestShot = 12 << 20
+    static let largestShot = 11 << 20
 
     func installScreenshot() {
         commands["screenshot"] = { [weak self] args in try await self?.screenshot(args) ?? [:] }

@@ -187,7 +187,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     public func show(text: String, compared: MarkdownComparison? = nil) {
         guard pending == nil else { return held = (text, compared) }
         held = nil
-        guard disk.map({ $0.text != text || $0.compared != compared }) ?? true else { return }
+        guard disk.map({ diffRange == nil && ($0.text != text || $0.compared != compared) }) ?? true else { return }
         disk = (text, compared)
         load(text, compared: compared)
     }
@@ -263,7 +263,11 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
                 guard let self else { return }
                 switch result {
                 case .success(let file):
-                    guard let data = file.data, images[path]?.data != data, let image = NSImage(data: data) else { return }
+                    guard let data = file.data, images[path]?.data != data else { return }
+                    guard let image = NSImage(data: data) else {
+                        guard images.removeValue(forKey: path) != nil else { return }
+                        return renderSoon()
+                    }
                     images[path] = (data, image)
                 case .failure:
                     guard images.removeValue(forKey: path) != nil else { return }

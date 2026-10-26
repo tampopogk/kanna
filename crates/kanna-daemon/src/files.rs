@@ -9,9 +9,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const QUIET: Duration = Duration::from_millis(100);
+
+const GATHER: Duration = Duration::from_secs(1);
 
 const BASE_CHECK: Duration = Duration::from_secs(2);
 
@@ -372,26 +374,32 @@ fn work(id: String, doc: PathBuf, kind: Kind, diff: Option<String>, inbox: Recei
     let mut last = load(&doc, kind, diff.as_deref());
     let mut base = checks_base.then(|| merge_base(&doc, diff.as_deref().unwrap_or_default())).flatten();
     let _ = events.send(Event::File { id: id.clone(), read: last.clone() });
+    let mut check_at = Instant::now() + BASE_CHECK;
     loop {
         let mut changed: Vec<PathBuf> = vec![];
-        let next = if checks_base { inbox.recv_timeout(BASE_CHECK) } else { inbox.recv().map_err(|_| RecvTimeoutError::Disconnected) };
+        let next = if checks_base { inbox.recv_timeout(check_at.saturating_duration_since(Instant::now())) } else { inbox.recv().map_err(|_| RecvTimeoutError::Disconnected) };
         match next {
             Ok(Control::Stop) | Err(RecvTimeoutError::Disconnected) => return,
             Ok(Control::Changed(paths)) => changed.extend(paths),
-            Err(RecvTimeoutError::Timeout) => {
-                let now = merge_base(&doc, diff.as_deref().unwrap_or_default());
-                if now != base {
-                    base = now;
-                    let read = load(&doc, kind, diff.as_deref());
-                    if read != last {
-                        last = read.clone();
-                        let _ = events.send(Event::File { id: id.clone(), read });
-                    }
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+        if checks_base && Instant::now() >= check_at {
+            check_at = Instant::now() + BASE_CHECK;
+            let now = merge_base(&doc, diff.as_deref().unwrap_or_default());
+            if now != base {
+                base = now;
+                let read = load(&doc, kind, diff.as_deref());
+                if read != last {
+                    last = read.clone();
+                    let _ = events.send(Event::File { id: id.clone(), read });
                 }
-                continue;
             }
         }
-        loop {
+        if changed.is_empty() {
+            continue;
+        }
+        let gathered = Instant::now() + GATHER;
+        while Instant::now() < gathered {
             match inbox.recv_timeout(QUIET) {
                 Ok(Control::Stop) | Err(RecvTimeoutError::Disconnected) => return,
                 Ok(Control::Changed(paths)) => changed.extend(paths),
@@ -576,6 +584,47 @@ mod tests {
         let Read::Shown(unknown) = load(&doc, Kind::Md, Some("nope")) else { panic!() };
         assert_eq!((unknown["text"].clone(), unknown["diff_error"].clone()), (json!("newer\n"), json!("no commit or branch \"nope\" in its repo")));
         assert_eq!((range("a..b"), range("..b"), range("a...b")), (Some(("a", "b")), Some(("HEAD", "b")), None));
+    }
+
+    #[test]
+    fn a_moved_base_is_seen_while_the_folder_keeps_changing() {
+        let (files, inbox) = files();
+        let dir = std::fs::canonicalize(scratch("busy")).unwrap();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&dir).args(["-c", "user.name=t", "-c", "user.email=t@e", "-c", "commit.gpgsign=false"]).args(args).output().unwrap().status.success(), "{args:?}");
+        git(&["init", "-q", "-b", "main"]);
+        let doc = dir.join("doc.md");
+        std::fs::write(&doc, "old\n").unwrap();
+        git(&["add", "doc.md"]);
+        git(&["commit", "-qm", "a"]);
+        git(&["branch", "base"]);
+        std::fs::write(&doc, "new\n").unwrap();
+        git(&["commit", "-qam", "b"]);
+        files.subscribe("app1:v1", &json!({ "path": doc, "kind": "md", "diff": "base" })).unwrap();
+        let base = || loop {
+            match inbox.recv_timeout(Duration::from_secs(8)) {
+                Ok(Event::File { read: Read::Shown(fields), .. }) => return fields["base"]["text"].clone(),
+                Ok(_) => continue,
+                Err(_) => panic!("no base"),
+            }
+        };
+        assert_eq!(base(), json!("old\n"));
+        let busy = dir.join("busy.txt");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writing = stop.clone();
+        let writer = std::thread::spawn(move || {
+            let mut n = 0;
+            while !writing.load(std::sync::atomic::Ordering::Relaxed) {
+                n += 1;
+                let _ = std::fs::write(&busy, format!("{n}"));
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        git(&["branch", "-f", "base", "HEAD"]);
+        let moved = base();
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().unwrap();
+        assert_eq!(moved, json!("new\n"));
+        files.unsubscribe("app1:v1");
     }
 
     #[test]

@@ -61,7 +61,7 @@ On the [app link](app-link.md#2-messages). Requests name the pane as `view` (or 
 - **Images** load from the daemon on every render of new text; a pane keeps the last bytes per path and redraws only when they change, so an edited image shows and an unchanged one doesn't flicker. A failed read draws the alt text, as a missing file did.
 - **What counts as local** is the daemon's to decide: on macOS a path is refused before it is touched if it passes through an automount root (`/net`, `/Network`, `/home`, also under `/private` and `/System/Volumes/Data`) or lands on a filesystem that isn't local, as the renderer refused before; symlinks are followed by hand, at most 32. Linux has no automount roots.
 - **Links.** A link to a markdown file shows it in the pane (`navigate`); to anything else, on this Mac, reveals it in Finder; on another machine, does nothing.
-- **Screenshots** over 12 MiB of PNG are refused by the app (`too_big`), well under the link's 16 MiB line. `--force` replaces a file; without it an existing file is refused, as before.
+- **Screenshots** over 11 MiB of PNG are refused by the app (`too_big`): in base64 with its reply that stays under the link's 16 MiB line. `--force` replaces a file; without it an existing file is refused, as before.
 - **Offline.** A pane on a machine that isn't linked keeps what it shows. A comment posted there isn't saved: the toolbar says *Not saved* and why, and the comment has to be written again once the machine is back.
 
 ## 4. How it's built

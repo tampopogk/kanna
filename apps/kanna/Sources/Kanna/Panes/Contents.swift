@@ -303,6 +303,7 @@ final class Contents {
     }
 
     func subscribeDiffs(on machine: String?) {
+        diffLatest = diffLatest.filter { MachineIDs.machine(of: $0.key) != machine }
         for id in ids where MachineIDs.machine(of: id) == machine {
             if let view = diff(id) { subscribe(diff: view, id) }
         }
@@ -341,6 +342,8 @@ final class Contents {
     }
 
     func subscribeFiles(on machine: String?) {
+        fileLatest = fileLatest.filter { MachineIDs.machine(of: $0.key) != machine }
+        threadLatest = threadLatest.filter { MachineIDs.machine(of: $0.key) != machine }
         for id in ids where fileSources[id] != nil && MachineIDs.machine(of: id) == machine { subscribe(file: id) }
         for id in ids where threadSources[id] != nil && MachineIDs.machine(of: id) == machine { subscribe(threads: id) }
     }
