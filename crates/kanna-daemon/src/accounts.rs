@@ -541,7 +541,11 @@ impl Service {
                 "list" => Ok(service.list()),
                 "add" => service.add(&args),
                 "remove" => match string(&args, "account") {
-                    Some(which) => service.accounts.remove(which).inspect(|_| service.changed()),
+                    Some(which) => service.accounts.remove(which).map(|mut removed| {
+                        service.changed();
+                        removed["machines"] = service.list()["machines"].clone();
+                        removed
+                    }),
                     None => Err(bad("accounts remove needs an ACCOUNT: its ID, or claude or codex")),
                 },
                 "token" => service.token(&args),
