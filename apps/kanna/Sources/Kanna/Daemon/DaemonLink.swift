@@ -1,5 +1,5 @@
 import Foundation
-import KannaFleet
+import KannaMachines
 import KannaPerf
 
 @MainActor
@@ -35,7 +35,7 @@ final class DaemonLink: TerminalLink {
     var socketPath: String { connection.path }
 
     static let protocols: [JSON] = Protocols.mine.map { .number(Double($0)) }
-    static let localOnly: Set<String> = ["app.fleet.confirm", "app.snap"]
+    static let localOnly: Set<String> = ["app.machine.confirm", "app.snap"]
 
     init(socketPath: String, commands: Commands, starter: DaemonStarter? = nil, machine: String? = nil, dial: (@Sendable () -> Int32?)? = nil) {
         self.commands = commands

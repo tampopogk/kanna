@@ -4,17 +4,17 @@ export LC_ALL=C
 
 usage() {
   cat <<'USAGE'
-usage: scripts/fleet/provision-idrac.sh --idrac ADDR --hostname NAME [options]
+usage: scripts/cloud/provision-idrac.sh --idrac ADDR --hostname NAME [options]
 
 Installs Ubuntu Server on a Dell PowerEdge through its iDRAC alone: RAID 1 on the PERC,
 the ISO and an autoinstall config served from this Mac over a temporary SMB share,
 one boot from virtual media, an unattended install, then waits until ssh works.
-docs/specs/fleet-provisioning.md says what it does and what is left to do by hand.
+docs/specs/cloud-provisioning.md says what it does and what is left to do by hand.
 
   --idrac ADDR        the iDRAC's address
-  --hostname NAME     the host's name; also names the Keychain item "kanna-fleet idrac NAME"
+  --hostname NAME     the host's name; also names the Keychain item "kanna-cloud idrac NAME"
   --wifi-ssid SSID    join this Wi-Fi network; its password is read from the Keychain item
-                      service "kanna-fleet wifi", account SSID
+                      service "kanna-cloud wifi", account SSID
   --user NAME         the host's user (default: this Mac's user)
   --pubkey FILE       the key that user logs in with (default: ~/.ssh/id_ed25519.pub)
   --iso FILE          the Ubuntu live-server ISO (default: downloads 26.04.1 to the cache)
@@ -51,17 +51,37 @@ done
 
 ubuntu_iso_url="https://releases.ubuntu.com/26.04/ubuntu-26.04.1-live-server-amd64.iso"
 ubuntu_iso_sha256="cc8a95cde20f6ced61a322420de00f10cc3c90ced545daa46cb9c1a117f1d927"
-cache="$HOME/Library/Caches/kanna-fleet"
-state="$HOME/Library/Application Support/kanna-fleet"
-idrac_key="$HOME/.ssh/kanna-fleet-idrac"
-keychain_idrac="kanna-fleet idrac $name"
-keychain_wifi="kanna-fleet wifi"
+cache="$HOME/Library/Caches/kanna-cloud"
+state="$HOME/Library/Application Support/kanna-cloud"
+idrac_key="$HOME/.ssh/kanna-cloud-idrac"
+keychain_idrac="kanna-cloud idrac $name"
+keychain_wifi="kanna-cloud wifi"
 work="$cache/$name"
-mkdir -p "$cache" "$state" "$work"
-chmod 700 "$work"
 
 log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 die() { log "error: $*"; exit 1; }
+
+former="kanna-fleet"
+move_former() {
+  if [[ -e "$1" && ! -e "$2" ]]; then
+    mv "$1" "$2" && log "moved $1 to $2"
+  fi
+}
+copy_former_keychain() {
+  local password
+  security find-generic-password -s "$2" -a "$3" >/dev/null 2>&1 && return 0
+  password="$(security find-generic-password -s "$1" -a "$3" -w 2>/dev/null)" || return 0
+  security add-generic-password -s "$2" -a "$3" -w "$password" && log "copied the Keychain item \"$1\" to \"$2\""
+}
+move_former "$HOME/Library/Caches/$former" "$cache"
+move_former "$HOME/Library/Application Support/$former" "$state"
+move_former "$HOME/.ssh/$former-idrac" "$idrac_key"
+move_former "$HOME/.ssh/$former-idrac.pub" "$idrac_key.pub"
+copy_former_keychain "$former idrac $name" "$keychain_idrac" root
+[[ -z "$ssid" ]] || copy_former_keychain "$former wifi" "$keychain_wifi" "$ssid"
+
+mkdir -p "$cache" "$state" "$work"
+chmod 700 "$work"
 
 ssh_opts=(-o ConnectTimeout=15 -o ServerAliveInterval=15 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR)
 racadm() { ssh "${ssh_opts[@]}" -i "$idrac_key" -o IdentitiesOnly=yes -o BatchMode=yes "root@$idrac" racadm "$@" 2>&1 | tr -d '\r'; }
@@ -69,9 +89,9 @@ racadm() { ssh "${ssh_opts[@]}" -i "$idrac_key" -o IdentitiesOnly=yes -o BatchMo
 racadm_with_password() {
   local password="$1"; shift
   local askpass; askpass="$(mktemp "$work/askpass.XXXXXX")"
-  printf '#!/bin/sh\nprintf "%%s\\n" "$KANNA_FLEET_PW"\n' >"$askpass"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$KANNA_CLOUD_PW"\n' >"$askpass"
   chmod 700 "$askpass"
-  KANNA_FLEET_PW="$password" SSH_ASKPASS="$askpass" SSH_ASKPASS_REQUIRE=force \
+  KANNA_CLOUD_PW="$password" SSH_ASKPASS="$askpass" SSH_ASKPASS_REQUIRE=force \
     ssh "${ssh_opts[@]}" -o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive \
     "root@$idrac" racadm "$@" </dev/null 2>&1 | tr -d '\r' || true
   rm -f "$askpass"
@@ -82,7 +102,7 @@ idrac_access() {
     log "iDRAC $idrac: key login works"
     return
   fi
-  [[ -f "$idrac_key" ]] || ssh-keygen -q -t rsa -b 4096 -N '' -C "kanna-fleet idrac $(id -un)@$(hostname -s)" -f "$idrac_key"
+  [[ -f "$idrac_key" ]] || ssh-keygen -q -t rsa -b 4096 -N '' -C "kanna-cloud idrac $(id -un)@$(hostname -s)" -f "$idrac_key"
   local password
   if password="$(security find-generic-password -s "$keychain_idrac" -a root -w 2>/dev/null)"; then
     racadm_with_password "$password" getsysinfo -s | grep -q 'System Model' \
@@ -200,17 +220,17 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/kanna-fleet-report
+ExecStart=/usr/local/sbin/kanna-cloud-report
 
 [Install]
 WantedBy=multi-user.target
 """
 late = [
     "mkdir -p /target/usr/local/sbin",
-    "echo " + base64.b64encode(report.encode()).decode() + " | base64 -d > /target/usr/local/sbin/kanna-fleet-report",
-    "chmod 755 /target/usr/local/sbin/kanna-fleet-report",
-    "echo " + base64.b64encode(unit.encode()).decode() + " | base64 -d > /target/etc/systemd/system/kanna-fleet-report.service",
-    "curtin in-target -- systemctl enable kanna-fleet-report.service",
+    "echo " + base64.b64encode(report.encode()).decode() + " | base64 -d > /target/usr/local/sbin/kanna-cloud-report",
+    "chmod 755 /target/usr/local/sbin/kanna-cloud-report",
+    "echo " + base64.b64encode(unit.encode()).decode() + " | base64 -d > /target/etc/systemd/system/kanna-cloud-report.service",
+    "curtin in-target -- systemctl enable kanna-cloud-report.service",
     "sed -i 's/^GRUB_CMDLINE_LINUX=.*/GRUB_CMDLINE_LINUX=\"console=tty0 console=ttyS0,115200n8\"/' /target/etc/default/grub",
     "curtin in-target -- update-grub",
 ]
@@ -257,9 +277,9 @@ out=/dev/ttyS0
 if [ -n "$dev" ]; then
   ip=$(ip -4 -o addr show dev "$dev" scope global | awk '{split($4,a,"/"); print a[1]; exit}')
   mac=$(cat /sys/class/net/"$dev"/address)
-  echo "KANNA-FLEET-READY host=$(hostname) ip=$ip mac=$mac dev=$dev" >$out
+  echo "KANNA-CLOUD-READY host=$(hostname) ip=$ip mac=$mac dev=$dev" >$out
 else
-  echo "KANNA-FLEET-NONET host=$(hostname)" >$out
+  echo "KANNA-CLOUD-NONET host=$(hostname)" >$out
   ip -br link >$out
   lsusb >$out 2>&1
 fi
@@ -296,7 +316,7 @@ share_start() {
   cat >"$dir/smb.conf" <<EOF
 [global]
   server role = standalone server
-  netbios name = KFLEET
+  netbios name = KCLOUD
   smb ports = 445
   lock directory = $dir/lock
   state directory = $dir/state
@@ -312,7 +332,7 @@ share_start() {
   load printers = no
   printcap name = /dev/null
   disable spoolss = yes
-[kfleet]
+[kcloud]
   path = $work
   read only = yes
   guest ok = yes
@@ -322,7 +342,7 @@ EOF
   smbd_pid=$!
   sleep 3
   kill -0 "$smbd_pid" 2>/dev/null || die "smbd didn't start; see $dir/log/smbd.log"
-  log "SMB share //$mac_ip/kfleet up (pid $smbd_pid, only $idrac may connect)"
+  log "SMB share //$mac_ip/kcloud up (pid $smbd_pid, only $idrac may connect)"
 }
 
 share_stop() {
@@ -384,8 +404,8 @@ install_host() {
   fi
 
   racadm remoteimage -d >/dev/null || true
-  racadm remoteimage -c -u guest -p guest -l "//$mac_ip/kfleet/install.iso" | grep -q 'Configured' \
-    || die "the iDRAC couldn't mount //$mac_ip/kfleet/install.iso; see $cache/smb/log/smbd.log"
+  racadm remoteimage -c -u guest -p guest -l "//$mac_ip/kcloud/install.iso" | grep -q 'Configured' \
+    || die "the iDRAC couldn't mount //$mac_ip/kcloud/install.iso; see $cache/smb/log/smbd.log"
   media_attached=1
   racadm set iDRAC.ServerBoot.FirstBootDevice VCD-DVD >/dev/null
   racadm set iDRAC.ServerBoot.BootOnce Enabled >/dev/null
@@ -413,14 +433,14 @@ install_host() {
   racadm serveraction powerup >/dev/null
   log "first boot from the disk"
   local ready="" start=$SECONDS
-  until ready="$(tr -d '\r' <"$work/console.log" | grep -aoE 'KANNA-FLEET-(READY|NONET)[^[:cntrl:]]*' | tail -1)" && [[ -n "$ready" ]]; do
+  until ready="$(tr -d '\r' <"$work/console.log" | grep -aoE 'KANNA-CLOUD-(READY|NONET)[^[:cntrl:]]*' | tail -1)" && [[ -n "$ready" ]]; do
     (( SECONDS - start < 1200 )) || die "the host didn't report an address in 20 minutes; see $work/console.log"
     kill -0 "$sol_pid" 2>/dev/null || sol_start
     sleep 15
   done
   sol_stop
   log "host: $ready"
-  [[ "$ready" == KANNA-FLEET-READY* ]] || die "the host has no network; its interfaces and USB devices are at the end of $work/console.log"
+  [[ "$ready" == KANNA-CLOUD-READY* ]] || die "the host has no network; its interfaces and USB devices are at the end of $work/console.log"
   local ip mac dev
   ip="$(sed -n 's/.* ip=\([^ ]*\).*/\1/p' <<<"$ready")"
   mac="$(sed -n 's/.* mac=\([^ ]*\).*/\1/p' <<<"$ready")"

@@ -132,7 +132,7 @@ async fn bind(secret: &SecretKey, port: u16) -> Result<Endpoint, String> {
             }
         }
     }
-    builder().bind().await.map_err(|e| format!("can't open the fleet endpoint: {e}"))
+    builder().bind().await.map_err(|e| format!("can't open the endpoint: {e}"))
 }
 
 impl Node {
@@ -275,7 +275,7 @@ impl Node {
             "release": self.0.release,
             "addrs": addrs,
             "paired": state.log.is_some(),
-            "fleet": state.log.as_ref().map(|l| l.fleet().to_string()),
+            "log": state.log.as_ref().map(|l| l.id().to_string()),
             "broken": state.broken,
             "peers": peers,
             "nearby": nearby,
@@ -318,7 +318,7 @@ impl Node {
     pub async fn wait_offer(&self) -> Result<Value, Failure> {
         let deadline = match &self.state().offer {
             Some(offer) => offer.expires,
-            None => return Err(Failure::new("no_offer", "no pairing is open here: run kanna fleet pair")),
+            None => return Err(Failure::new("no_offer", "no pairing is open here: run kanna machine pair")),
         };
         let mut outcome = self.0.outcome.subscribe();
         let result = tokio::time::timeout_at(deadline.into(), outcome.wait_for(Option::is_some)).await;
@@ -361,7 +361,7 @@ impl Node {
         match view.as_ref().and_then(|v| v.names.get(host)) {
             Some(keys) if keys.len() == 1 => Ok(keys.iter().next().cloned().unwrap_or_default()),
             Some(_) => Err(Refused::new("identity_mismatch").into()),
-            None => Err(Failure::new("not_found", format!("no machine \"{host}\" in your fleet (kanna fleet lists them)"))),
+            None => Err(Failure::new("not_found", format!("no machine \"{host}\" among your machines (kanna machine list lists them)"))),
         }
     }
 
@@ -383,12 +383,12 @@ impl Node {
 
     fn admit(&self, key: &str, cert: Option<&Value>) -> Result<String, Failure> {
         let state = self.state();
-        let unpaired = || Failure::new("unpaired", "it doesn't know this machine's key (pair the two with kanna fleet pair)");
+        let unpaired = || Failure::new("unpaired", "it doesn't know this machine's key (pair the two with kanna machine pair)");
         let Some(log) = &state.log else { return Err(unpaired()) };
         let view = log.view();
         let device = cert.and_then(|c| c["body"]["device"].as_str()).unwrap_or(key);
         if view.revoked.contains(key) || view.revoked.contains(device) {
-            return Err(Failure::new("revoked", "this machine's key is revoked in its fleet"));
+            return Err(Failure::new("revoked", "this machine's key is revoked from your machines"));
         }
         if log.accept_endpoint(key, cert).is_err() {
             return Err(unpaired());
@@ -402,7 +402,7 @@ impl Node {
             return Err(Failure::new("bad_request", format!("{app_key} isn't an endpoint key")));
         }
         if self.state().log.is_none() {
-            return Err(Failure::new("unpaired", "this machine has no fleet"));
+            return Err(Failure::new("unpaired", "this machine isn't paired"));
         }
         Ok(crate::log::certificate(&self.0.secret, app_key))
     }
@@ -529,7 +529,7 @@ impl Node {
 
     async fn control(&self, from: &str, request: Value) -> Value {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
-        if request["cmd"] == "fleet.sync" {
+        if request["cmd"] == "machine.sync" {
             return match self.merge(&request["args"]["log"]) {
                 Ok(()) => json!({ "id": id, "ok": true, "log": self.state().log.as_ref().map(PeerLog::export) }),
                 Err(failure) => json!({ "id": id, "ok": false, "error": { "code": failure.code, "message": failure.message } }),
@@ -597,7 +597,7 @@ impl Node {
 
     async fn connect(&self, key: &str) -> Result<(Connection, bool), Failure> {
         if self.state().log.as_ref().is_some_and(|l| l.view().revoked.contains(key)) {
-            return Err(Failure::new("revoked", format!("{} is revoked in your fleet", self.name_of(key))));
+            return Err(Failure::new("revoked", format!("{} is revoked from your machines", self.name_of(key))));
         }
         if let Some(conn) = self.state().conns.get(key).filter(|c| c.close_reason().is_none()).cloned() {
             return Ok((conn, false));
@@ -610,7 +610,7 @@ impl Node {
         let conn = match tokio::time::timeout(DIAL, self.0.endpoint.connect(addr, ALPN)).await {
             Ok(Ok(conn)) => conn,
             Ok(Err(e)) => return Err(Failure::new("unreachable", format!("can't reach {name}: {e}"))),
-            Err(_) => return Err(Failure::new("unreachable", format!("can't reach {name} within {}s (is its daemon running, and on this LAN? kanna fleet addr {name} HOST gives an address)", DIAL.as_secs()))),
+            Err(_) => return Err(Failure::new("unreachable", format!("can't reach {name} within {}s (is its daemon running, and on this LAN? kanna machine addr {name} HOST gives an address)", DIAL.as_secs()))),
         };
         self.state().conns.insert(key.to_string(), conn.clone());
         if let Ok((mut send, mut recv, _)) = self.open(&conn, "control", &name).await {
@@ -693,7 +693,7 @@ impl Node {
     async fn sync_over(&self, send: &mut SendStream, recv: &mut BufReader<RecvStream>) -> Result<(), Failure> {
         let Some(log) = self.state().log.as_ref().map(PeerLog::export) else { return Ok(()) };
         let lost = |e: String| Failure::new("unreachable", format!("lost the peer while swapping logs: {e}"));
-        write_line(send, &json!({ "id": 0, "cmd": "fleet.sync", "args": { "log": log } })).await.map_err(lost)?;
+        write_line(send, &json!({ "id": 0, "cmd": "machine.sync", "args": { "log": log } })).await.map_err(lost)?;
         let reply = read_line(recv, MAX_LINE).await.map_err(lost)?;
         if reply["ok"] != true {
             return Err(Failure::from_reply(&reply));
@@ -755,12 +755,12 @@ impl Node {
         self.usable()?;
         let key = self.resolve(host)?;
         if key == self.key() {
-            return Err(Failure::new("bad_request", "this machine can't revoke itself: revoke it from another machine in the fleet"));
+            return Err(Failure::new("bad_request", "this machine can't revoke itself: revoke it from another of your machines"));
         }
         let name = {
             let mut state = self.state();
-            let Some(log) = state.log.as_mut() else { return Err(Failure::new("unpaired", "this machine has no fleet")) };
-            let name = log.view().name_of(&key).ok_or_else(|| Failure::new("not_found", format!("{host} isn't in your fleet")))?;
+            let Some(log) = state.log.as_mut() else { return Err(Failure::new("unpaired", "this machine isn't paired")) };
+            let name = log.view().name_of(&key).ok_or_else(|| Failure::new("not_found", format!("{host} isn't one of your machines")))?;
             let entry = log.entry(&self.0.secret, "revoke", json!({ "key": key }), None, unix_time());
             log.merge(&[entry])?;
             name
@@ -808,7 +808,7 @@ impl Node {
                 .collect();
             if !found.is_empty() || Instant::now() >= deadline {
                 return if found.is_empty() {
-                    Err(Failure::new("not_found", "no machine on this LAN is waiting to pair: run kanna fleet pair on it first (or give its --peer KEY@HOST, which it prints)"))
+                    Err(Failure::new("not_found", "no machine on this LAN is waiting to pair: run kanna machine pair on it first (or give its --peer KEY@HOST, which it prints)"))
                 } else {
                     Ok(found)
                 };
@@ -974,11 +974,11 @@ impl Node {
             }
         };
         let inviter = party.hello_a["device"]["name"].as_str().unwrap_or_default().to_string();
-        let fleet = log.fleet().to_string();
+        let id = log.id().to_string();
         self.state().log.get_or_insert(log);
         self.save();
         let _ = write_line(send, &json!({ "ok": true })).await;
-        self.settle(Ok(json!({ "name": inviter, "key": remote, "fleet": fleet })));
+        self.settle(Ok(json!({ "name": inviter, "key": remote, "log": id })));
     }
 }
 

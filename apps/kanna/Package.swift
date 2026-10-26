@@ -13,7 +13,7 @@ let package = Package(
         .systemLibrary(name: "KannaLayoutC", path: "Sources/KannaLayoutC"),
         .systemLibrary(name: "KannaMerman", path: "Sources/KannaMerman"),
         .systemLibrary(name: "KannaSyntaxC", path: "Sources/KannaSyntaxC"),
-        .systemLibrary(name: "KannaFleetC", path: "Sources/KannaFleetC"),
+        .systemLibrary(name: "KannaMachinesC", path: "Sources/KannaMachinesC"),
         .target(name: "KannaDiagram", dependencies: ["KannaMerman"], linkerSettings: [kannaFFI] + ["AppKit", "CoreText"].map { .linkedFramework($0) }),
         .target(name: "KannaDocs", linkerSettings: ["AppKit", "WebKit"].map { .linkedFramework($0) }),
         .testTarget(name: "KannaDocsTests", dependencies: ["KannaDocs"]),
@@ -29,15 +29,15 @@ let package = Package(
         .target(name: "KannaLinks"),
         .target(name: "KannaDrop"),
         .target(name: "KannaStatus"),
-        .target(name: "KannaFleet"),
-        .testTarget(name: "KannaFleetTests", dependencies: ["KannaFleet"]),
+        .target(name: "KannaMachines"),
+        .testTarget(name: "KannaMachinesTests", dependencies: ["KannaMachines"]),
         .testTarget(name: "KannaStatusTests", dependencies: ["KannaStatus"]),
         .testTarget(name: "KannaDropTests", dependencies: ["KannaDrop"]),
         .testTarget(name: "KannaLinksTests", dependencies: ["KannaLinks"]),
         .target(name: "SimBridge", linkerSettings: ["AppKit", "IOSurface", "QuartzCore"].map { .linkedFramework($0) }),
         .executableTarget(
             name: "Kanna",
-            dependencies: ["GhosttyKit", "KannaLayoutC", "KannaFleetC", "KannaDiagram", "KannaDocs", "KannaMarkdown", "KannaCode", "KannaDiff", "KannaLinks", "KannaDrop", "KannaStatus", "KannaFleet", "KannaPerf", "SimBridge"],
+            dependencies: ["GhosttyKit", "KannaLayoutC", "KannaMachinesC", "KannaDiagram", "KannaDocs", "KannaMarkdown", "KannaCode", "KannaDiff", "KannaLinks", "KannaDrop", "KannaStatus", "KannaMachines", "KannaPerf", "SimBridge"],
             linkerSettings: [.linkedLibrary("c++"), kannaFFI]
                 + ["AppKit", "Carbon", "CoreText", "IOSurface", "Metal", "QuartzCore", "Security", "SystemConfiguration", "UniformTypeIdentifiers", "WebKit"].map { .linkedFramework($0) }
         ),

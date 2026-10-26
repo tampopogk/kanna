@@ -1,10 +1,8 @@
 # Machines: One Commit on Every Machine
 
-**Status:** built (slice 6, task "Fleet 6") · **Part of:** [your machines](machines.md) §9, [setting up a Linux machine](machine-setup.md) · **Builds on:** [identity and pairing](machine-identity.md), [one link per machine](machine-links.md), [restarting the daemon](daemon-restart.md), [upgrading the keeper](keeper-upgrade.md)
+**Status:** built (slice 6, task "Machines 6") · **Part of:** [your machines](machines.md) §9, [setting up a Linux machine](machine-setup.md) · **Builds on:** [identity and pairing](machine-identity.md), [one link per machine](machine-links.md), [restarting the daemon](daemon-restart.md), [upgrading the keeper](keeper-upgrade.md)
 
 `kanna machine update` puts one build of Kanna on every one of your Linux machines. Each machine's daemon takes the tarball over the link between daemons, installs it beside the one it runs, switches to it and restarts itself in place; the keeper keeps every terminal and agent running. Machines of different releases keep working together over a range of protocols, and Kanna.app names the fix when a machine has none in common with it.
-
-**Names:** the specs say `kanna machine`; until the task "Rename fleet to machines in code" merges, the command is `kanna fleet update`, the daemon's command `fleet {action: update}`, and the test `crates/kanna/tests/fleet.rs`.
 
 ## Contents
 
@@ -73,7 +71,7 @@ sequenceDiagram
     participant M as daemon (mbp)
     participant V as daemon on vm (pid 16597)
     participant K as keeper on vm
-    C->>M: fleet {action: update, hosts, tarball}
+    C->>M: machine {action: update, hosts, tarball}
     M->>M: read kanna/release.json, sha256 and size
     M->>V: update stream: {kind: update, release, sha256, size}
     V-->>M: {ok, send: true, release: the one it runs}
@@ -109,7 +107,7 @@ Once the reply is sent, the daemon leaves its main loop the way a SIGTERM does (
 `kanna_build::PROTOCOLS` is the range of protocols this build speaks, `[lo, hi]`, now `[1, 1]`; Kanna.app's `Protocols.mine` must be the same (a test in `kanna-build` checks). A change that old peers can't follow raises `hi`; dropping the oldest raises `lo`. Two ends work together at the highest protocol both speak.
 
 - **Between daemons:** every stream header carries `protocols` (a daemon from before this slice sends none and counts as `[1, 1]`). The ack carries `protocol`, the one chosen, and `release`; the opener checks it speaks that protocol, and takes an ack without one (a daemon from before this slice) as protocol 1. With none in common the stream is refused with `other_protocol` and the receiver's `release`, and the caller reports, for example, `vm runs Kanna 4.0.0 (aaaaaaaa), protocol 2–3, and this machine speaks 1; this machine is older: update it, or run kanna machine update on vm`. `pair` and `update` streams aren't negotiated.
-- **The app:** `app.hello` carries `protocols` and the daemon answers as [links §2](machine-links.md) says: with none in common, `other_protocol` with `mine`, `commit` and `version`, and the daemon **keeps running**. The Machines tab shows that machine as Offline, with a note that says which side is older and a tooltip that leads with the fix (`KannaFleet`'s `Protocols.otherProtocol`):
+- **The app:** `app.hello` carries `protocols` and the daemon answers as [links §2](machine-links.md) says: with none in common, `other_protocol` with `mine`, `commit` and `version`, and the daemon **keeps running**. The Machines tab shows that machine as Offline, with a note that says which side is older and a tooltip that leads with the fix (`KannaMachines`'s `Protocols.otherProtocol`):
 
   ![The Machines tab: this Mac, and linux-1 Offline with the note "linux-1 runs an older Kanna"](machine-update-other-protocol.png)
 
@@ -128,7 +126,7 @@ Once the reply is sent, the daemon leaves its main loop the way a SIGTERM does (
 ## 8. Tested
 
 - `cargo test -p kanna-net`: an update between two paired endpoints moves a fake install from commit A to B (current, previous, other folders removed) and waits for the machine to come back at B; a second update says it's already there; a build whose daemon doesn't run is refused and nothing is switched; another architecture and a Mac are skipped; a machine of protocol 2–3 refuses a protocol-1 caller with `other_protocol` and its fix, yet takes an update.
-- `cargo test -p kanna --test fleet`: two daemons on this Mac, one installed in a temporary `opt/<commit>`; `kanna fleet update --tarball` moves it to another commit; the daemon restarts under the same pid and a terminal's shell keeps running.
+- `cargo test -p kanna --test machine`: two daemons on this Mac, one installed in a temporary `opt/<commit>`; `kanna machine update --tarball` moves it to another commit; the daemon restarts under the same pid and a terminal's shell keeps running.
 - `cargo test -p kanna-daemon --test app_link`: an app of another protocol gets `other_protocol` with `mine`, `commit` and `version`, and the daemon keeps running.
-- The picture above is the product: Kanna.app and its daemon built with protocols `[2, 2]` for the occasion, paired with a second daemon of today's `[1, 1]` on this Mac; the Machines tab's tooltip read "kanna fleet update linux-1 updates it. It runs 0.1.0 (8031dc44), protocol 1; this Kanna speaks 2. Until then, linux-1's tasks keep their places on the Shelf."
-- Between this Mac and an Ubuntu 26.04 arm64 lima VM (October 2026): `server-setup.sh --tarball` installed an aarch64 tarball built on the Mac (commit 99e9fc36); paired with a test daemon on the Mac through lima's loopback forward of UDP 7470 (a test daemon has no Local Network permission, [identity §2](machine-identity.md#2-pairing)); a terminal opened with `kanna --host vm open`; `kanna fleet update --tarball` with a build of the next commit (341bbd52, version 0.1.1): the daemon kept pid 16597 and systemd's `MainPID`, the terminal's shell (pid 16768) kept running under the same keeper, `current` and `previous` switched, and the restart took 70 ms. Sending the 16 MB took 30 s that time, through lima's UDP forward; a second update with the final build (4a4e6b15) went over the direct path to the VM's address: 16 MB in 0.3 s, back in 0.2 s, the same shell and daemon pid, 99e9fc36 removed as neither current nor previous, and a repeat answered `already runs it`. The x86_64 tarball is built and checked by type, but not yet run on a server: the next test is a real x86_64 server.
+- The picture above is the product: Kanna.app and its daemon built with protocols `[2, 2]` for the occasion, paired with a second daemon of today's `[1, 1]` on this Mac; the Machines tab's tooltip read "kanna machine update linux-1 updates it. It runs 0.1.0 (8031dc44), protocol 1; this Kanna speaks 2. Until then, linux-1's tasks keep their places on the Shelf."
+- Between this Mac and an Ubuntu 26.04 arm64 lima VM (October 2026): `server-setup.sh --tarball` installed an aarch64 tarball built on the Mac (commit 99e9fc36); paired with a test daemon on the Mac through lima's loopback forward of UDP 7470 (a test daemon has no Local Network permission, [identity §2](machine-identity.md#2-pairing)); a terminal opened with `kanna --host vm open`; `kanna machine update --tarball` with a build of the next commit (341bbd52, version 0.1.1): the daemon kept pid 16597 and systemd's `MainPID`, the terminal's shell (pid 16768) kept running under the same keeper, `current` and `previous` switched, and the restart took 70 ms. Sending the 16 MB took 30 s that time, through lima's UDP forward; a second update with the final build (4a4e6b15) went over the direct path to the VM's address: 16 MB in 0.3 s, back in 0.2 s, the same shell and daemon pid, 99e9fc36 removed as neither current nor previous, and a repeat answered `already runs it`. The x86_64 tarball is built and checked by type, but not yet run on a server: the next test is a real x86_64 server.

@@ -3,7 +3,7 @@ name = "kanna-ffi"
 version.workspace = true
 edition.workspace = true
 license = "FSL-1.1-MIT"
-description = "Kanna.app's Rust, as one static library: kanna-layout, kanna-syntax, kanna-merman and the app's fleet endpoint (kanna-net), so the app and its tests link Rust's std once."
+description = "Kanna.app's Rust, as one static library: kanna-layout, kanna-syntax, kanna-merman and the app's endpoint (kanna-net), so the app and its tests link Rust's std once."
 
 [lib]
 crate-type = ["staticlib"]

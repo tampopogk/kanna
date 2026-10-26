@@ -17,10 +17,10 @@ final class WindowController: NSObject, NSWindowDelegate {
     let tabBar = TabBar()
     let shelfStrip = ShelfStrip()
     let shelfPage = ShelfPage()
-    let fleetPage = FleetPage()
+    let machinesPage = MachinesPage()
     static let pages = ["Shelf", "Machines"]
     var page: String?
-    var fleet: [FleetMachine] = []
+    var machines: [MachineRow] = []
     var stale: String?
     var headerTip: String?
     private var pageShown: String?
@@ -72,12 +72,12 @@ final class WindowController: NSObject, NSWindowDelegate {
         dockStage.addSubview(agentHeader)
         content.addSubview(shelfStrip)
         content.addSubview(shelfPage)
-        content.addSubview(fleetPage)
+        content.addSubview(machinesPage)
         content.addSubview(shelfStage)
         shelfStage.isHidden = true
         shelfStrip.isHidden = true
         shelfPage.isHidden = true
-        fleetPage.isHidden = true
+        machinesPage.isHidden = true
         window.contentView = content
         if let previous {
             window.setFrameTopLeftPoint(window.cascadeTopLeft(from: NSPoint(x: previous.frame.minX, y: previous.frame.maxY)))
@@ -176,7 +176,7 @@ final class WindowController: NSObject, NSWindowDelegate {
             shelfPage.isHidden = !showsShelf
             if !showsShelf { shelfPage.clearSearch() }
         }
-        fleetPage.isHidden = pageShown != Self.pages[1]
+        machinesPage.isHidden = pageShown != Self.pages[1]
         if shelfStrip.isHidden == (desk && !taskless) { shelfStrip.isHidden = !desk || taskless }
         if taskless {
         } else if desk {
@@ -213,8 +213,8 @@ final class WindowController: NSObject, NSWindowDelegate {
             shelfPage.frame = below
             shelfPage.show(DeskPage(tasks: shelf, backlog: backlog, running: running, project: project, cheer: cheer, note: note))
         } else if pageShown != nil {
-            fleetPage.frame = below
-            fleetPage.show(fleet)
+            machinesPage.frame = below
+            machinesPage.show(machines)
         }
         stage.isHidden = side.isEmpty || pageShown != nil
         stage.frame = below

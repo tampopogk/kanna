@@ -3,7 +3,7 @@ name = "kanna-net"
 version.workspace = true
 edition.workspace = true
 license = "FSL-1.1-MIT"
-description = "Kanna's fleet network: the iroh endpoint, kanna/1 streams, the signed peer log and pairing."
+description = "The network between your machines: the iroh endpoint, kanna/1 streams, the signed peer log and pairing."
 
 [dependencies]
 iroh = { version = "=1.4.1", default-features = false, features = ["tls-ring", "fast-apple-datapath"] }

@@ -141,7 +141,7 @@ impl Party {
         }
         let anchor = &self.hello_a["anchor"];
         if wire["payload"]["anchor"] != *anchor {
-            return Err(Refused::new("wrong_fleet"));
+            return Err(Refused::new("wrong_log"));
         }
         let mut log = PeerLog::new(anchor.clone());
         log.sync(&wire["payload"])?;
@@ -374,7 +374,7 @@ mod tests {
 
     #[test]
     fn a_surviving_third_device_pairs_a_fresh_key() {
-        let (mut a, mut b, mut c) = crate::log::tests::fleet();
+        let (mut a, mut b, mut c) = crate::log::tests::machines();
         let (a_key, b_key) = (a.key(), b.key());
         a.revoke(&b_key, 0);
         b.revoke(&a_key, 0);

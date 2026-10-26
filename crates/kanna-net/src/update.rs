@@ -66,7 +66,7 @@ pub fn other_protocol(name: &str, theirs: &Value, mine: [u32; 2]) -> String {
         (Some(version), None) => format!("Kanna {version}"),
         _ => "an older Kanna".into(),
     };
-    let fix = if their[1] < mine[0] { format!("it's older: kanna fleet update {name}") } else { format!("this machine is older: update it, or run kanna fleet update on {name}") };
+    let fix = if their[1] < mine[0] { format!("it's older: kanna machine update {name}") } else { format!("this machine is older: update it, or run kanna machine update on {name}") };
     format!("{name} runs {runs}, protocol {}, and this machine speaks {}; {fix}", span(their), span(mine))
 }
 
@@ -219,7 +219,7 @@ impl Node {
             self.trusted().into_iter().filter(|k| *k != me).collect()
         };
         if named && keys.contains(&me) {
-            return Err(Failure::new("bad_request", "this machine can't update itself with kanna fleet update"));
+            return Err(Failure::new("bad_request", "this machine can't update itself with kanna machine update"));
         }
         let tarball = std::sync::Arc::new(tarball);
         let mut running = vec![];
@@ -252,7 +252,7 @@ impl Node {
         let commit = tarball.release["commit"].as_str().unwrap_or_default().to_string();
         let header = json!({ "release": tarball.release, "sha256": tarball.sha256, "size": tarball.size });
         let (mut send, mut recv, ack) = self.open_to(key, UPDATE, header).await.map_err(|failure| match failure.code.as_str() {
-            "unknown_stream" => Failure::new("unknown_stream", format!("{name}'s Kanna predates kanna fleet update: run scripts/server-setup.sh there once")),
+            "unknown_stream" => Failure::new("unknown_stream", format!("{name}'s Kanna predates kanna machine update: run scripts/server-setup.sh there once")),
             _ => failure,
         })?;
         let from = ack["release"]["commit"].as_str().map(String::from);
@@ -421,9 +421,9 @@ mod tests {
     #[test]
     fn the_message_says_which_side_is_older() {
         let old = json!({ "protocols": [1, 1], "version": "4.0.1", "commit": "d7cb0a1e".repeat(5) });
-        assert_eq!(other_protocol("r720-1", &old, [2, 3]), "r720-1 runs Kanna 4.0.1 (d7cb0a1e), protocol 1, and this machine speaks 2–3; it's older: kanna fleet update r720-1");
+        assert_eq!(other_protocol("r720-1", &old, [2, 3]), "r720-1 runs Kanna 4.0.1 (d7cb0a1e), protocol 1, and this machine speaks 2–3; it's older: kanna machine update r720-1");
         let new = json!({ "protocols": [4, 5], "version": "4.2.0" });
-        assert_eq!(other_protocol("vm", &new, [2, 3]), "vm runs Kanna 4.2.0, protocol 4–5, and this machine speaks 2–3; this machine is older: update it, or run kanna fleet update on vm");
+        assert_eq!(other_protocol("vm", &new, [2, 3]), "vm runs Kanna 4.2.0, protocol 4–5, and this machine speaks 2–3; this machine is older: update it, or run kanna machine update on vm");
     }
 
     #[test]

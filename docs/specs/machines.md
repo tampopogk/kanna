@@ -116,13 +116,13 @@ sequenceDiagram
 | Apps | one (`app_attached`) | one; lifting the limit is its own slice, needed before the phone |
 
 - **One link per machine.** Every view is keyed by (machine, content ID), since `term-41` exists on every daemon. Built: [one link per machine](machine-links.md).
-- **The CLI:** `kanna --host NAME` (or `KANNA_HOST`) sends any command to that machine: the local daemon dials it and forwards the command as `fleet call` over a control stream, and the reply is the remote daemon's own. Inside a remote terminal nothing changes: the CLI there uses its own unix socket. Commands that read local files (`diagrams`, doc comments) still run on this machine.
+- **The CLI:** `kanna --host NAME` (or `KANNA_HOST`) sends any command to that machine: the local daemon dials it and forwards the command as `machine call` over a control stream, and the reply is the remote daemon's own. Inside a remote terminal nothing changes: the CLI there uses its own unix socket. Commands that read local files (`diagrams`, doc comments) still run on this machine.
 - **A Mac that serves your other machines** (a Mac whose tasks you reach from elsewhere) runs its daemon from launchd (`kanna machine serve`), a LaunchAgent pointed at the installed app's `Contents/Helpers/kanna-daemon`. The app's replace rule still holds: on `other_build` the daemon exits, and launchd starts it again from the updated bundle.
 - **Streams:** one ALPN, `kanna/1`. Each stream opens with a header line naming its kind (`control`, `file`, `port`, `sync`, `job`, `transfer`) and the protocols the opener speaks, answered by `{ok: true, kind, name, protocol, release}` or a refusal (`unpaired`, `revoked`, `unknown_stream`, `other_protocol`), and its bytes follow ([updates §6](machine-update.md#6-protocols)). A `control` stream carries JSON-line requests and replies, as on the unix socket. Two more kinds aren't negotiated: `pair`, the only one an unknown key may open ([identity §2](machine-identity.md#2-pairing)), and `update`, which carries a new build to any trusted daemon of any protocol ([updates §4](machine-update.md#4-the-update-stream)). Until their slices, `file`, `port`, `sync`, `job` and `transfer` are acknowledged and closed; `sync` and `job` are used by services built on top, such as [Kanna Cloud](kanna-cloud.md).
 
 ## 6. One app, several machines
 
-See [Desks across machines](machines-app.md) for project identity, the app's Shelf and claims, and the [mockup](../../references/mockups/fleet.html) with screenshots and the Fleet 3 comparison cases.
+See [Desks across machines](machines-app.md) for project identity, the app's Shelf and claims, and the [mockup](../../references/mockups/fleet.html) with screenshots and the Machines 3 comparison cases.
 
 ## 7. Terminals and panes
 

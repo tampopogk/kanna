@@ -550,7 +550,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         panes.keep(placed)
         let tasks = shelfTasks
-        let fleet = fleetMachines
+        let rows = machineRows
         var held = Set<String>()
         for window in windows {
             guard let id = window["id"]?.string else { continue }
@@ -576,7 +576,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             controller.project = controller.projectRoot.map(displayName) ?? projectName(mine.map(\.id))
             controller.taskTitle = docked.map { taskTitle($0, name: window["dock"]?["name"]?.string) }
             controller.headerText = docked.map(headerText) ?? leadHeader(window, controller.projectRoot)
-            controller.fleet = fleet
+            controller.machines = rows
             controller.stale = staleText(docked ?? lead)
             controller.headerTip = (docked ?? lead).map(placeText)
             controller.render(window, panes)

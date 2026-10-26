@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn the_app_speaks_the_daemons_protocols() {
-        let swift = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/kanna/Sources/KannaFleet/Protocols.swift")).unwrap();
+        let swift = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/kanna/Sources/KannaMachines/Protocols.swift")).unwrap();
         assert!(swift.contains(&format!("public static let mine: [Int] = [{}, {}]", PROTOCOLS[0], PROTOCOLS[1])), "Protocols.swift's mine isn't {PROTOCOLS:?}");
     }
 

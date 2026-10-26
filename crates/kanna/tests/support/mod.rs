@@ -71,8 +71,8 @@ impl Daemon {
             .env("KANNA_KEEPER", keeper)
             .env("KANNA_AGENT_RULES_URL", "none")
             .env("KANNA_KEEPER_CLOSE_GRACE_MS", "300")
-            .env("KANNA_FLEET_MDNS", "0")
-            .env("KANNA_FLEET_PORT", port.to_string())
+            .env("KANNA_MACHINE_MDNS", "0")
+            .env("KANNA_MACHINE_PORT", port.to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(log)
@@ -231,7 +231,7 @@ impl App {
                     desks.push(project.clone());
                     let _ = writeln!(writer, "{}", json!({"id": message["id"], "ok": true, "desk": "d1", "project": project, "new": new}));
                 }
-                if message["cmd"] == "app.fleet.confirm" {
+                if message["cmd"] == "app.machine.confirm" {
                     heard.lock().unwrap().push(message.clone());
                     let _ = writeln!(writer, "{}", json!({"id": message["id"], "ok": true, "confirmed": true}));
                 }

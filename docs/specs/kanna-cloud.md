@@ -70,7 +70,7 @@ flowchart LR
 
 Operator work, in two steps:
 
-1. **The host:** `scripts/fleet/provision-idrac.sh` installs Ubuntu Server on an R720 through its iDRAC ([provisioning a host](cloud-provisioning.md)); then Incus.
+1. **The host:** `scripts/cloud/provision-idrac.sh` installs Ubuntu Server on an R720 through its iDRAC ([provisioning a host](cloud-provisioning.md)); then Incus.
 2. **A user's VM:** `kanna cloud provision` makes an Incus VM (Ubuntu 26.04, stock cloud image) for one user, runs [server setup](machine-setup.md) in it with the user's enrollment token, and enrolls it (§4). Git credentials for its repos are made per VM: a deploy key or a fine-grained token ([tasks §4](machine-tasks.md#4-repos-and-credentials)).
 
 - **Networking:** a tenant VM reaches the internet and Kanna's relays, never another tenant's VM, the host's management or the operator's LAN; enforced on the host, IPv4 and IPv6. Users reach their VMs through iroh: direct over the internet when it can punch through, else relayed.

@@ -8,7 +8,7 @@ usage: scripts/build-linux.sh [production|staging|dev] [--arch x86_64|aarch64] [
 Builds Kanna's Linux tarball on this Mac or a Linux machine: the daemon, keeper and CLI
 cross-compiled with Zig (baseline CPU, glibc 2.35), Kanna's skills and release.json, as
 DIR/Kanna-VERSION-linux-ARCH.tar.gz (default DIR: target/release-linux). KANNA_VERSION sets
-the version. docs/specs/fleet-update.md says what's in it.
+the version. docs/specs/machine-update.md says what's in it.
 USAGE
   exit 2
 }

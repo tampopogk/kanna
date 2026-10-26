@@ -3,7 +3,7 @@ pub mod args;
 pub mod commands;
 pub mod complete;
 pub mod diagrams;
-pub mod fleet;
+pub mod machine;
 pub mod output;
 pub mod target;
 pub mod threads;
@@ -150,8 +150,8 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
     }
     let mut mux = Session::connect(&target, env)?;
     mux.host = host;
-    if command.name == "fleet" && request["action"] == "offer" {
-        return fleet::offer(&mut mux, json_output);
+    if command.name == "machine" && request["action"] == "offer" {
+        return machine::offer(&mut mux, json_output);
     }
     if command.name == "comment" && request["doc"] == true {
         return threads::comment(&request, &mut mux, json_output);
@@ -227,7 +227,7 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
             eprintln!("{}", diagrams::line(failure));
         }
     }
-    if command.name == "fleet" && request["action"] == "update" && reply["machines"].as_array().is_some_and(|m| m.iter().any(|m| m["ok"] == false)) {
+    if command.name == "machine" && request["action"] == "update" && reply["machines"].as_array().is_some_and(|m| m.iter().any(|m| m["ok"] == false)) {
         return Err(fail(exit::FAILED, "not every machine took the update"));
     }
     Ok(())
@@ -276,7 +276,7 @@ fn lookup(name: &str) -> Result<&'static Command, Failure> {
 
 fn explain(command: &Command, mut failure: Failure, mux: &mut Session, target: &Target) -> Failure {
     match failure.code {
-        exit::NOT_FOUND if !failure.message.contains("your fleet") => failure.message += "\nRun `kanna workspace list --all` to see pane names and IDs (term-1, file-1, …), tabs (tab-1, …) and windows (win-1, …).",
+        exit::NOT_FOUND if !failure.message.contains("your machines") => failure.message += "\nRun `kanna workspace list --all` to see pane names and IDs (term-1, file-1, …), tabs (tab-1, …) and windows (win-1, …).",
         exit::UNSUPPORTED => {
             let supported = mux.call("capabilities", json!({})).map(|c| output::join(&c["commands"])).unwrap_or_default();
             failure.message = format!("the running {} doesn't support `{}` yet. It supports: {supported}", target.name(), command.name);

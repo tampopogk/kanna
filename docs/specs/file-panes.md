@@ -94,7 +94,7 @@ On the [app link](app-link.md#2-messages), as diffs have:
 
 ## 5. Not in this change
 
-The markdown pane still touches the filesystem in a few places; each moves to the daemon the same way, in Fleet 4 (task-4053):
+The markdown pane still touches the filesystem in a few places; each moves to the daemon the same way, in Machines 4 (task-4053):
 
 - **Images** in a markdown pane (`MarkdownRenderer.imageAttachment`).
 - **Following a link** to another file (`MarkdownPaneView.action` checks the target's type).
