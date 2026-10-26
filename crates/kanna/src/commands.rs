@@ -651,6 +651,27 @@ pub static COMMANDS: &[Command] = &[
         show: output::machine,
     },
     Command {
+        name: "accounts",
+        group: "Information",
+        summary: "Your Claude and Codex accounts for the agents on all your machines: add one once, on your Mac, and every machine's agents use it.",
+        usage: "kanna accounts [list]\n       kanna accounts add claude|codex [--api-key] [--label TEXT]\n       kanna accounts remove ACCOUNT|claude|codex\n       kanna accounts sign-in claude|codex",
+        options: &[
+            ("--api-key", "add: an API key (Anthropic Console or OpenAI) instead of your subscription."),
+            ("--label TEXT", "add: a name to know the account by."),
+        ],
+        notes: "add runs the agent's own sign-in. For Claude, claude setup-token gives a token that lasts a year; for Codex, codex login signs in to ChatGPT in a folder of Kanna's, never touching your everyday login. What it yields is kept in this Mac's Keychain (in the state folder's agent-secrets on Linux), never in a login file. A token or API key goes to each of your machines when you add it, or when a machine joins, and stays there; a ChatGPT login stays on the machine you added it on, which hands each Codex short-lived access tokens and refreshes them, one refresh at a time. Each agent uses one account: adding another replaces it. remove takes it off every machine, as revoking a machine (kanna machine revoke) takes back what it was given. sign-in is the fallback: this machine signs in to the agent by itself, with the sign-in page opened in your browser on the Mac you're at. Whether a subscription may run agents on several of your machines is Anthropic's and OpenAI's call: see docs/specs/agent-sign-in.md.",
+        examples: &[
+            ("kanna accounts", "Your accounts, which machine holds each, and the machines that get them."),
+            ("kanna accounts add claude", "Sign in to your Claude subscription once, for every machine's agents."),
+            ("kanna accounts add codex", "Sign in to ChatGPT once; this Mac holds the login and hands out access tokens."),
+            ("kanna accounts add codex --api-key", "Use an OpenAI API key instead."),
+            ("kanna accounts remove claude", "Take the Claude account off every machine."),
+            ("kanna accounts sign-in codex", "On a machine without the shared account: sign it in to Codex by itself."),
+        ],
+        parse: parse_accounts,
+        show: output::accounts,
+    },
+    Command {
         name: "agents",
         group: "Information",
         summary: "Set up your agents for Kanna: Kanna's skills for Claude and Codex, a hook that tells them they're in Kanna, and Claude's sandbox letting them reach Kanna but not read its device keys.",
@@ -1160,6 +1181,26 @@ fn parse_agents(args: &mut Argv) -> Result<Value, Failure> {
     };
     if force && request["action"] != "update" || ask && !matches!(action.as_deref(), Some("setup" | "update")) {
         return Err(usage("agents", "--ask goes with setup or update, --force with update"));
+    }
+    Ok(request)
+}
+
+fn parse_accounts(args: &mut Argv) -> Result<Value, Failure> {
+    let api_key = args.flag("--api-key");
+    let label = args.option("--label")?;
+    let agent = |what: &str, args: &mut Argv| match args.positional().as_deref() {
+        Some(agent @ ("claude" | "codex")) => Ok(agent.to_string()),
+        _ => Err(usage("accounts", &format!("accounts {what} needs an agent: claude or codex"))),
+    };
+    let request = match args.positional().as_deref() {
+        None | Some("list") => json!({ "action": "list" }),
+        Some("add") => json!({ "action": "add", "agent": agent("add", args)?, "api_key": api_key, "label": label, "local": "interactive" }),
+        Some("sign-in") => json!({ "action": "sign-in", "agent": agent("sign-in", args)?, "local": "interactive" }),
+        Some("remove") => json!({ "action": "remove", "account": args.positional().ok_or_else(|| usage("accounts", "accounts remove needs an ACCOUNT: its ID, or claude or codex"))? }),
+        Some(other) => return Err(usage("accounts", &format!("unknown action \"{other}\" (list, add, remove or sign-in)"))),
+    };
+    if (api_key || label.is_some()) && request["action"] != "add" {
+        return Err(usage("accounts", "--api-key and --label go with add"));
     }
     Ok(request)
 }

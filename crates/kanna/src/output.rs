@@ -1035,6 +1035,49 @@ fn short_key(key: &Value) -> String {
     key.as_str().unwrap_or("?").chars().take(10).collect()
 }
 
+pub fn accounts(request: &Value, reply: &Value) -> String {
+    let what = |a: &Value| {
+        let kind = match a["kind"].as_str() {
+            Some("claude-subscription") => "Claude subscription",
+            Some("claude-api-key") => "Anthropic API key",
+            Some("codex-chatgpt") => "Codex, ChatGPT login",
+            Some("codex-api-key") => "OpenAI API key",
+            _ => "account",
+        };
+        match (a["label"].as_str().filter(|l| Some(*l) != a["kind"].as_str()), a["holder_name"].as_str()) {
+            (Some(label), Some(holder)) => format!("{kind} ({label}), held by {holder}"),
+            (Some(label), None) => format!("{kind} ({label})"),
+            (None, Some(holder)) => format!("{kind}, held by {holder}"),
+            (None, None) => kind.to_string(),
+        }
+    };
+    let machines = join(&reply["machines"]);
+    let reaching = if machines.is_empty() { "no other machine yet".to_string() } else { machines };
+    match request["action"].as_str() {
+        Some("add") => {
+            let replaced = reply["replaced"].as_array().filter(|r| !r.is_empty()).map_or(String::new(), |r| format!(" in place of {}", r.iter().map(&what).collect::<Vec<_>>().join(", ")));
+            format!("added {}{replaced} ({}); your agents use it here and on {reaching}", what(&reply["account"]), reply["account"]["id"].as_str().unwrap_or("?"))
+        }
+        Some("remove") => format!("removed {}; it comes off {reaching} as each one hears it", reply["removed"].as_array().map(|r| r.iter().map(&what).collect::<Vec<_>>().join(", ")).unwrap_or_default()),
+        _ => {
+            let mut out = vec![];
+            for account in reply["accounts"].as_array().into_iter().flatten() {
+                let broken = account["broken"].as_str().map_or(String::new(), |why| format!("  broken: {why}"));
+                out.push(format!("{:<7} {}  {}{broken}", account["agent"].as_str().unwrap_or("?"), account["id"].as_str().unwrap_or("?"), what(account)));
+            }
+            for account in reply["received"].as_array().into_iter().flatten() {
+                out.push(format!("{:<7} {}  {}, from {}", account["agent"].as_str().unwrap_or("?"), account["id"].as_str().unwrap_or("?"), what(account), account["from"].as_str().unwrap_or("?")));
+            }
+            if out.is_empty() {
+                out.push("no accounts: your agents use each machine's own sign-in (kanna accounts add claude, or codex)".into());
+            } else if reply["accounts"].as_array().is_some_and(|a| !a.is_empty()) {
+                out.push(format!("going to: {reaching}"));
+            }
+            out.join("\n")
+        }
+    }
+}
+
 fn release(release: &Value) -> String {
     match (release["version"].as_str(), release["commit"].as_str()) {
         (Some(version), Some(commit)) => format!("{version} ({})", short_commit(commit)),

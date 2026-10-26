@@ -226,15 +226,20 @@ impl Accounts {
     }
 
     pub fn received(&self) -> Map {
+        if self.book()["received"].as_array().map_or(true, Vec::is_empty) {
+            return Map::new();
+        }
         self.secrets.read(RECEIVED).and_then(|text| serde_json::from_str::<Value>(&text).ok()).and_then(|v| v.as_object().cloned()).unwrap_or_default()
     }
 
     fn keep_received(&self, received: &Map) -> Result<(), KmuxError> {
-        if received.is_empty() {
-            self.secrets.delete(RECEIVED);
-            return Ok(());
+        match received.is_empty() {
+            true => self.secrets.delete(RECEIVED),
+            false => self.secrets.write(RECEIVED, &Value::Object(received.clone()).to_string()).map_err(|e| KmuxError::new("failed", e))?,
         }
-        self.secrets.write(RECEIVED, &Value::Object(received.clone()).to_string()).map_err(|e| KmuxError::new("failed", e))
+        let mut book = self.book();
+        book["received"] = json!(received.keys().collect::<Vec<_>>());
+        self.save(&book)
     }
 
     pub fn add(&self, kind: Kind, secret: &str, label: Option<&str>, program: Option<&str>, me: &str) -> Result<Value, KmuxError> {
