@@ -101,6 +101,7 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
     );
 "), Step::Sql("
     alter table fleet rename to machines;
+    update machines set doc = json_remove(doc, '$.anchor', '$.entries');
 ")];
 
 pub const RECENT: usize = 10;
@@ -1052,7 +1053,7 @@ mod tests {
     }
 
     #[test]
-    fn a_db_with_a_fleet_table_keeps_its_doc_as_machines() {
+    fn a_db_with_a_fleet_table_keeps_its_name_and_port_as_machines_and_drops_the_old_log() {
         let dir = folder("fleet-migration");
         let conn = connect(&dir.join(FILE)).unwrap();
         let rename = MIGRATIONS.iter().position(|s| matches!(s, Step::Sql(sql) if sql.contains("rename to machines"))).unwrap();
@@ -1063,10 +1064,10 @@ mod tests {
             }
         }
         conn.pragma_update(None, "user_version", rename as i64).unwrap();
-        conn.execute("insert into fleet (id, doc) values (1, '{\"name\": \"mbp\", \"port\": 7470}')", []).unwrap();
+        conn.execute("insert into fleet (id, doc) values (1, '{\"name\": \"mbp\", \"port\": 7470, \"addrs\": {\"k\": [\"10.0.0.5:7470\"]}, \"anchor\": {\"key\": \"k\"}, \"entries\": [{\"body\": {}}]}')", []).unwrap();
         drop(conn);
         let db = Db::open(&dir);
-        assert_eq!(db.machines().unwrap(), serde_json::json!({ "name": "mbp", "port": 7470 }));
+        assert_eq!(db.machines().unwrap(), serde_json::json!({ "name": "mbp", "port": 7470, "addrs": { "k": ["10.0.0.5:7470"] } }));
         let fleet: i64 = db.conn.query_row("select count(*) from sqlite_master where name = 'fleet'", [], |r| r.get(0)).unwrap();
         assert_eq!(fleet, 0);
         let _ = fs::remove_dir_all(&dir);

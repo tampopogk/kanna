@@ -3,7 +3,7 @@ use iroh::{PublicKey, SecretKey, Signature};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-pub const DOMAIN: &str = "kanna/fleet/1";
+pub const DOMAIN: &str = "kanna/machines/1";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct View {
@@ -174,7 +174,7 @@ impl PeerLog {
         for entry in entries {
             let body = &entry["body"];
             verify(body["signer"].as_str().unwrap_or_default(), entry["signature"].as_str().unwrap_or_default(), &canonical(body))?;
-            if body["domain"] != DOMAIN || body["fleet"] != self.id {
+            if body["domain"] != DOMAIN || body["machines"] != self.id {
                 return Err(Refused::new("wrong_log"));
             }
             if !body["parents"].is_array() {
@@ -227,7 +227,7 @@ impl PeerLog {
         parents.sort();
         let body = json!({
             "domain": DOMAIN,
-            "fleet": self.id,
+            "machines": self.id,
             "kind": kind,
             "signer": secret.public().to_string(),
             "parents": parents,
