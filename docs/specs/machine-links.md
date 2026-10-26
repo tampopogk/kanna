@@ -1,6 +1,6 @@
 # Machines: One Link per Machine
 
-**Status:** built (Fleet 3) · **Part of:** [Machines §5–6](machines.md#5-the-app-link-over-the-network) · **Presentation:** [Desks across machines](machines-app.md), [model](../../references/mockups/fleet.html) · **Messages:** [app link](app-link.md)
+**Status:** built (Machines 3) · **Part of:** [Machines §5–6](machines.md#5-the-app-link-over-the-network) · **Presentation:** [Desks across machines](machines-app.md), [model](../../references/mockups/fleet.html) · **Messages:** [app link](app-link.md)
 
 Kanna.app holds one [app link](app-link.md) per machine: the local daemon's unix socket, and for every trusted peer of that daemon an iroh connection through `kanna-net`. Each remote link carries the same JSON lines as the local one. The app merges the machines' layouts and backlogs into one set of Desks, keyed by (machine, ID).
 
@@ -91,4 +91,4 @@ What the user sees follows the [model](../../references/mockups/fleet.html) ([De
 - **macOS Local Network privacy** blocks an unsigned or not-yet-allowed binary from sending to LAN addresses (`sendto` gives "No route to host"; loopback is exempt). The dev daemon and app hit it when run from an agent's shell, so the Linux check went through a loopback UDP relay. The app's `Info.plist` declares the use (`NSLocalNetworkUsageDescription`, `_kanna._udp`); the user still has to allow Kanna under Privacy & Security → Local Network before a LAN fleet works.
 - One app per daemon, as before: a remote app and the local one can't both attach; the local one wins.
 - A remote checkout's branch reaches the app only with its folder notices.
-- Screenshots of the product couldn't be made where Fleet 3 was built (the agent's display renders blank); the pictures here are the model's, which still labels the tab Fleet.
+- Screenshots of the product couldn't be made where Machines 3 was built (the agent's display renders blank); the pictures here are the model's, which still labels the tab Fleet.

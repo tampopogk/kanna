@@ -122,7 +122,7 @@ sequenceDiagram
 
 ## 6. One app, several machines
 
-See [Desks across machines](machines-app.md) for project identity, the app's Shelf and claims, and the [mockup](../../references/mockups/fleet.html) with screenshots and the Fleet 3 comparison cases.
+See [Desks across machines](machines-app.md) for project identity, the app's Shelf and claims, and the [mockup](../../references/mockups/fleet.html) with screenshots and the Machines 3 comparison cases.
 
 ## 7. Terminals and panes
 

@@ -1,6 +1,6 @@
 # Machines: Desks Across Machines
 
-**Status:** model approved by user; built in Fleet 3 ([one link per machine](machine-links.md)) · **Part of:** [machines §6](machines.md#6-one-app-several-machines) · **Model:** [fleet.html](../../references/mockups/fleet.html) · **Run and scope:** [README](../../references/mockups/fleet/README.md) · **Before:** Fleet 3
+**Status:** model approved by user; built in Machines 3 ([one link per machine](machine-links.md)) · **Part of:** [machines §6](machines.md#6-one-app-several-machines) · **Model:** [fleet.html](../../references/mockups/fleet.html) · **Run and scope:** [README](../../references/mockups/fleet/README.md) · **Before:** Machines 3
 
 A Desk belongs to a project. Pulling a task changes what the app shows, while its agent and jobs keep running where they are. The model follows the existing [Desk](../../references/mockups/desk.html) style.
 
@@ -12,7 +12,7 @@ A Desk belongs to a project. Pulling a task changes what the app shows, while it
 - **The Shelf stays the app's:** claims in its order, three per project including the task on the Desk, keyed by (machine, task) in `app-state.json`. Pulling and parking preserve claims, order and ownership. Task cards, the Shelf, agent headers and build summaries put the machine and connection path in a tooltip, available on hover or keyboard focus. No host names or Relayed / Offline badges appear in their normal presentation.
 - **Claim records name the device:** `claimed by: mbp` (the hello's `client`) replaces `mac` in the protocol. This is internal bookkeeping, not a label in the UI: users work on tasks without tracking the claiming device or execution machine. Runners leave claimed tasks alone, as today.
 - **Toasts** held while no app was attached arrive when the app connects, so five servers' finished tasks show up when you open the lid. Toast delivery is outside this model; use the [toast reference](../../references/mockups/toasts.html) for its presentation.
-- **A job on another machine:** the model's **Keep terminal output** agent runs on `dev-1`, and its macOS UI test job runs on `mbp`, shown in the task's UI tests pane with its machine in a tooltip, without another task or claim. That's a [Kanna Cloud build Mac](build-macs.md) scene; Fleet 3 doesn't depend on it.
+- **A job on another machine:** the model's **Keep terminal output** agent runs on `dev-1`, and its macOS UI test job runs on `mbp`, shown in the task's UI tests pane with its machine in a tooltip, without another task or claim. That's a [Kanna Cloud build Mac](build-macs.md) scene; Machines 3 doesn't depend on it.
 
 ## 2. The Machines tab and paths
 
@@ -44,7 +44,7 @@ An offline machine's task remains on the Shelf. **View last state** opens its la
 
 On reconnection, the same task and panes become interactive again. The claim, Shelf order and Desk selection survive. Each pane is keyed by (machine, content ID); the model deliberately gives its three claimed tasks the same daemon-local terminal ID to expose accidental cross-machine reuse.
 
-## 4. What Fleet 3 should copy
+## 4. What Machines 3 should copy
 
 Compare the product against these scenes and transitions, using the model's fixture names and the same viewport (1360 × 850; Machines tab 1360 × 920). The model's URL fragments make each starting scene repeatable.
 
@@ -66,4 +66,4 @@ Compare the product against these scenes and transitions, using the model's fixt
 
 **What the model exposed:** a connection failure is not an agent stop. Reusing a plain “working” card during disconnection falsely claims fresh knowledge; clearing the card loses the app's claim. Keep the card and explicitly age its state. Similarly, a build job's machine is not necessarily the agent's machine, so its details belong to that task without multiplying tasks or adding a work inventory to Machines.
 
-**Limits:** fixed fixture data and timestamps; in-memory views and text input; no real link, peer discovery, repo-identity normalization, disk persistence, background work, transfer, pairing or toast queue. The model switches between project windows inside one HTML page. Fleet 3 must prove those real boundaries separately; this model establishes the presentation and state transitions, not network performance.
+**Limits:** fixed fixture data and timestamps; in-memory views and text input; no real link, peer discovery, repo-identity normalization, disk persistence, background work, transfer, pairing or toast queue. The model switches between project windows inside one HTML page. Machines 3 must prove those real boundaries separately; this model establishes the presentation and state transitions, not network performance.

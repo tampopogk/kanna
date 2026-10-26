@@ -53,7 +53,7 @@ flowchart LR
 
 ## 5. Proof before product
 
-Build a disposable model in `references/prototypes/build-mac-isolation/` before Fleet 7 and 12. Reuse the shim fixture and contracts, not its unrestricted host executor. Demonstrate on this Mac first if resources and required setup permit:
+Build a disposable model in `references/prototypes/build-mac-isolation/` before Cloud 7 and 12. Reuse the shim fixture and contracts, not its unrestricted host executor. Demonstrate on this Mac first if resources and required setup permit:
 
 | Probe | Required evidence |
 |---|---|
