@@ -45,7 +45,7 @@ After your machines' first milestone. Its first stage has the operator as the on
 |---|---|---|---|
 | The xcodebuild shim | `xcodebuild-shim`: a Python shim from a Linux VM to a Mac | a dirty worktree built, diagnostics mapped, a console UI test; the owner-account experiment proves forwarding only | 7, 12 |
 | Shared build-Mac isolation | `build-mac-isolation`: two tenant-exclusive macOS VMs, per [isolation spec](build-mac-isolation.md) | concurrent guest UI tests; host/cross-tenant access refused; safe artifact handling, guest reassignment and resource limits | 7, 12 |
-| Linux tenant VMs | *(new: needs a task)* `cloud-tenant-vms`: two users' Incus VMs on r720-1 | neither reaches the other, the host's management or the LAN, enforced on the host for IPv4 and IPv6; a released VM leaves nothing; a `hosted` key admits no one | C3 |
+| Linux tenant VMs | [cloud-tenant-vms](../../references/prototypes/cloud-tenant-vms/README.md): two users' Incus VMs on r720-1 | neither reaches the other, the host's management or the LAN, enforced on the host for IPv4 and IPv6; a released VM leaves nothing; a `hosted` key admits no one | C3 |
 
 | # | Task | Slice | After |
 |---|---|---|---|
