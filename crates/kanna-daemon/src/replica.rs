@@ -548,4 +548,17 @@ mod tests {
         let me = runner.replica.me().to_string();
         assert!(runner.replica.grant(&runner.db, "task-00000001", &birth, &me, |_| Ok(())).is_err(), "nor to grant it");
     }
+
+    #[test]
+    fn one_id_made_on_two_machines_at_once_stays_two_tasks_and_both_see_it() {
+        let (mut a, mut b) = (Machine::new("a"), Machine::new("b"));
+        let one = a.make("task-0000beef");
+        let other = b.make("task-0000beef");
+        sync(&mut a, &mut b);
+        for m in [&a, &b] {
+            let births: Vec<&str> = m.replica.births("task-0000beef").iter().map(|r| r.birth.as_str()).collect();
+            assert_eq!(births.len(), 2, "{} keeps both births apart", m.replica.me());
+            assert!(births.contains(&one.as_str()) && births.contains(&other.as_str()));
+        }
+    }
 }

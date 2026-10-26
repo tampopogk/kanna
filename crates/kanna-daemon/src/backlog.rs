@@ -873,6 +873,10 @@ impl Backlog {
         entry.after.iter().filter(|id| self.open_anywhere(id)).cloned().collect()
     }
 
+    fn ambiguous(&self, id: &str) -> bool {
+        self.replica.borrow().births(id).len() > 1
+    }
+
     fn open_anywhere(&self, id: &str) -> bool {
         self.is_open(id) || self.replica.borrow().open_task(id)
     }
@@ -1261,6 +1265,9 @@ impl Backlog {
         if !entry.on.is_empty() && !entry.on.contains(&name) {
             return refuse("not_there", format!("{task} runs on {}", entry.on.join(", ")));
         }
+        if self.ambiguous(task) {
+            return refuse("ambiguous", format!("another machine made a task {task} too"));
+        }
         let row = entry.row(Place::Done, None);
         let change = Change::new("granted").moved(Place::Backlog, Place::Done).by(Some("daemon")).with("to", json!(name));
         let grant = self.replica.borrow_mut().grant(&self.db, task, birth, peer, |conn| db::put_row(conn, &row, Some(&change))).map_err(|why| KmuxError::new("refused", format!("{task}: {why}")))?;
@@ -1598,7 +1605,7 @@ impl Backlog {
             }
             let mut waiting: Vec<(bool, Hlc, Candidate)> = mine
                 .iter()
-                .filter(|e| e.folder.is_none() && e.held.is_none() && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && self.waits(e).is_empty() && allowed(&e.on, &machines.me.name))
+                .filter(|e| e.folder.is_none() && e.held.is_none() && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && self.waits(e).is_empty() && allowed(&e.on, &machines.me.name) && !self.ambiguous(&e.id))
                 .map(|e| (mail.contains(&e.id), order(e), Candidate::Here((*e).clone())))
                 .collect();
             if let Some(project) = identity(&repo) {
@@ -2698,6 +2705,9 @@ impl Backlog {
             (entry.folder, entry.session) = (None, None);
         }
         if let Some(birth) = entry.birth.clone() {
+            if self.ambiguous(&entry.id) {
+                return responder.reply(Err(KmuxError::new("ambiguous", format!("{} can't start: another machine made a task with its ID at the same time; make it again with kanna task new", entry.id))));
+            }
             if let Err(why) = Replica::start(&self.db, &entry.id, &birth) {
                 return responder.reply(Err(KmuxError::new("not_owner", format!("{} can't start on this machine: {why}", entry.id))));
             }
