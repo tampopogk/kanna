@@ -3966,12 +3966,24 @@ PY
   check wait_for 5 eval 'vmk workspace list --all --json | grep -q "\"term-1@vm\""' || { echo "machine_remote_task: a remote tab's title that looks like an ID lost its suffix through the app"; vmk workspace list --all --json; return 1; }
   sleep 0.5; snap d1 machine_remote_task >/dev/null
 
-  check test "$(desk pages)" == '["Shelf", "Machines"]' || { echo "machine_remote_task: the Desk's fixed tabs"; desk pages; return 1; }
+  check test "$(desk pages)" == '[]' || { echo "machine_remote_task: a task's Desk shows the Shelf or Machines tab"; desk pages; return 1; }
   check test "$(desk headerTip)" == "vm · Direct · LAN" || { echo "machine_remote_task: the agent header's tooltip"; desk headerTip; return 1; }
   check test "$(desk header)" == "$repo/.kanna-worktrees/${task%@vm} · ${task%@vm}" || { echo "machine_remote_task: the agent header"; desk header; return 1; }
+  local first last; first="$(desk window.tabs.0.id)"; last="$(desk window.tabs | python3 -c 'import json, sys; print(json.load(sys.stdin)[-1]["id"])')"
+  raw '{"id":1,"cmd":"debug.click","args":{"tab":"'"$first"'"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk window.tab)" == "$first" ]]' || { echo "machine_remote_task line $LINENO"; return 1; }
+  raw '{"id":1,"cmd":"debug.menu","args":{"item":"Previous Tab"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk window.tab)" == "$last" ]]' || { echo "machine_remote_task: Previous Tab from a task's first tab didn't wrap to its last"; desk window.tab; return 1; }
+  check test "$(desk page) $(desk machinesPage)" == "False False" || { echo "machine_remote_task: Previous Tab on a task's Desk showed a fixed page"; return 1; }
+  raw '{"id":1,"cmd":"debug.menu","args":{"item":"Next Tab"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk window.tab)" == "$first" ]]' || { echo "machine_remote_task: Next Tab from a task's last tab didn't wrap to its first"; desk window.tab; return 1; }
+  check test "$(desk page) $(desk machinesPage)" == "False False" || { echo "machine_remote_task: Next Tab on a task's Desk showed a fixed page"; return 1; }
+
+  raw '{"id":1,"cmd":"debug.click","args":{"park":"d1"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk empty)" == True && "$(desk page)" == True ]]' || { echo "machine_remote_task: parking didn't show the empty Desk's Shelf page"; desk empty; desk page; return 1; }
+  check test "$(desk pages)" == '["Shelf", "Machines"]' || { echo "machine_remote_task: the empty Desk's fixed tabs"; desk pages; return 1; }
   raw '{"id":1,"cmd":"debug.click","args":{"page":"Machines","window":"d1"}}' >/dev/null
-  check wait_for 5 eval '[[ "$(desk machinesPage)" == True ]]' || { echo "machine_remote_task: the Machines tab didn't show the Machines page"; return 1; }
-  check test "$(desk window.dock.pane)" == "$agent" || { echo "machine_remote_task: the Machines tab moved the agent"; return 1; }
+  check wait_for 5 eval '[[ "$(desk machinesPage)" == True && "$(desk page)" == False ]]' || { echo "machine_remote_task: the Machines tab didn't show the Machines page"; return 1; }
   check python3 -c 'import json, sys
 rows = json.loads(sys.argv[1])
 assert [(r["name"], r["path"]) for r in rows] == [("mbp", "This Mac"), ("vm", "Direct · LAN")], rows
@@ -3979,16 +3991,17 @@ assert rows[0]["detail"].startswith("This Mac · macOS") and rows[1]["detail"].s
 assert "local network" in rows[1]["tip"], rows' "$(desk machines)" || return 1
   raw '{"id":1,"cmd":"debug.click","args":{"page":"Shelf","window":"d1"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk page)" == True && "$(desk machinesPage)" == False ]]' || { echo "machine_remote_task: the Shelf tab"; return 1; }
-  raw '{"id":1,"cmd":"debug.click","args":{"tab":"'"$(desk window.tab)"'"}}' >/dev/null
-  check wait_for 5 eval '[[ "$(desk page)" == False ]]' || { echo "machine_remote_task: a document tab didn't leave the Shelf tab"; return 1; }
-  local first; first="$(desk window.tabs.0.id)"
-  raw '{"id":1,"cmd":"debug.click","args":{"tab":"'"$first"'"}}' >/dev/null
-  check wait_for 5 eval '[[ "$(desk window.tab)" == "$first" ]]' || { echo "machine_remote_task line $LINENO"; return 1; }
-  raw '{"id":1,"cmd":"debug.menu","args":{"item":"Previous Tab"}}' >/dev/null
-  check wait_for 5 eval '[[ "$(desk machinesPage)" == True ]]' || { echo "machine_remote_task: Previous Tab from the first document tab didn't show the Machines tab"; return 1; }
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Next Tab"}}' >/dev/null
-  check wait_for 5 eval '[[ "$(desk page)" == False && "$(desk machinesPage)" == False && "$(desk window.tab)" == "$first" ]]' || { echo "machine_remote_task: Next Tab from the Machines tab didn't return to the first document tab"; return 1; }
-  check test "$(desk window.dock.pane)" == "$agent" || { echo "machine_remote_task: switching tabs by keyboard moved the agent"; return 1; }
+  check wait_for 5 eval '[[ "$(desk machinesPage)" == True && "$(desk page)" == False ]]' || { echo "machine_remote_task: Next Tab from the Shelf tab didn't show the Machines tab"; return 1; }
+  raw '{"id":1,"cmd":"debug.menu","args":{"item":"Next Tab"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk page)" == True && "$(desk machinesPage)" == False ]]' || { echo "machine_remote_task: Next Tab from the Machines tab didn't wrap to the Shelf tab"; return 1; }
+  raw '{"id":1,"cmd":"debug.menu","args":{"item":"Previous Tab"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk machinesPage)" == True && "$(desk page)" == False ]]' || { echo "machine_remote_task: Previous Tab from the Shelf tab didn't show the Machines tab"; return 1; }
+  sleep 0.5; snap d1 machine_remote_machines >/dev/null
+
+  raw '{"id":1,"cmd":"debug.menu","args":{"item":"Pull Shelf Task 1"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk window.dock.pane)" == "$agent" ]]' || { echo "machine_remote_task: Pull Shelf Task 1 from the Machines page didn't dock vm's task"; return 1; }
+  check wait_for 5 eval '[[ "$(desk pages)" == "[]" && "$(desk machinesPage)" == False && "$(desk page)" == False ]]' || { echo "machine_remote_task: pulling a task from the Machines page left a fixed tab or page"; desk pages; return 1; }
 
   kill "$vm_pid"; wait_for 10 eval '! kill -0 '"$vm_pid" || { echo "machine_remote_task: vm's daemon didn't stop"; return 1; }
   check wait_for 10 eval '[[ "$(machines links.0.attached)" == False ]]' || { echo "machine_remote_task: the app didn't see vm go"; return 1; }

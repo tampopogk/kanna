@@ -20,7 +20,7 @@ The README is in this adjacent directory so `fleet.html` stays at the exact loca
 
 ## Try it
 
-1. Hover or keyboard-focus **Review build output**: its tooltip says **tests-1 · Relayed**. Pull it and hover its agent header or Shelf item for the same details. Select the fixed Fleet tab and hover or focus a path indicator for its connection explanation; then return to the task’s document tab. Shelf and Fleet stay first in the tab strip and cannot be closed; switching them keeps the current agent and task in place.
+1. Hover or keyboard-focus **Review build output**: its tooltip says **tests-1 · Relayed**. Pull it and hover its agent header or Shelf item for the same details: its Desk shows only the task's tab. Park it, select the fixed Fleet tab and hover or focus a path indicator for its connection explanation. Shelf and Fleet are the empty Desk's first tabs and cannot be closed; switching them keeps the planning agent in place.
 2. Pull **Restore task tabs**. It is offline: the last view stays, but input is disabled. Switch to **All on LAN** above the app window: input returns without losing its place or changing its owner.
 3. Use **Internet direct** and inspect Fleet. Direct internet is distinct from LAN and relay; task tooltips update with the path. No connection state adds a persistent badge to a task card.
 4. Use **Remote offline**. Inspect the planner, retained claims, and the backlog task waiting for its offline owner. Open Recipe Box to use a local task.

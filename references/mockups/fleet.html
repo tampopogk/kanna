@@ -70,7 +70,6 @@ button.ghost { background:transparent; }
 .tabs { display:flex; flex:none; gap:4px; height:34px; padding:0 10px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); color:var(--muted); align-items:center; font-size:12px; }
 .tabs button { height:100%; padding:0 12px; background:transparent; border:0; border-bottom:2px solid transparent; border-radius:0; color:var(--muted); }
 .tabs button[aria-selected="true"] { color:var(--text); border-bottom-color:var(--accent); }
-.tabs .task-tab { margin-left:10px; }
 .tabbody { flex:1; min-height:0; display:flex; flex-direction:column; }
 .page { flex:1; overflow:auto; padding:28px 32px; }
 h2 { margin:0 0 4px; font-size:22px; font-weight:600; }
@@ -220,8 +219,7 @@ function fleet() {
   }).join('')}</tbody></table><p class="muted">Connections change automatically. Tasks stay where they run when you bring them to a Desk.</p></div></section>`;
 }
 function navigation(w,t,projectId) {
-  const tabs=[['shelf','Shelf'],['fleet','Fleet']];
-  if(t) tabs.push(['task',t.id==='t1'?'UI tests':'Review notes']);
+  const tabs=t?[['task',t.id==='t1'?'UI tests':'Review notes']]:[['shelf','Shelf'],['fleet','Fleet']];
   return `<div class="tabs" role="tablist" aria-label="Desk tabs">${tabs.map(([view,name])=>`<button role="tab" id="${projectId}-${view}-tab" aria-controls="${projectId}-panel" aria-selected="${w.view===view}" tabindex="${w.view===view?0:-1}" data-view="${view}" class="${view==='task'?'task-tab':'fixed-tab'}">${name}</button>`).join('')}</div>`;
 }
 function render() {

@@ -373,7 +373,7 @@ extension AppController {
     func cycleTab(_ step: Int) {
         guard let window = keyWindow, let id = window["id"]?.string else { return }
         let controller = controllers[id]
-        let pages = isDesk(id) ? WindowController.pages.map { "page:\($0)" } : []
+        let pages = (controller?.pages ?? []).map { "page:\($0)" }
         let stops = pages + (window["tabs"]?.array ?? []).compactMap { $0["id"]?.string }
         guard !stops.isEmpty else { return }
         let current = controller?.shownPage.map { "page:\($0)" } ?? window["tab"]?.string

@@ -25,6 +25,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     var headerTip: String?
     private var pageShown: String?
     var shownPage: String? { pageShown }
+    private(set) var pages: [String] = []
     private var dockedTask: String?
     var shelf: [ShelfTask] = []
     var shelfDocks: [JSON] = []
@@ -121,8 +122,9 @@ final class WindowController: NSObject, NSWindowDelegate {
         let ids = Self.paneIDs(root)
         shown = Self.shownPanes(state)
         emptyDesk = desk && task == nil && ids.isEmpty
-        pageShown = !desk ? nil : emptyDesk ? page ?? Self.pages[0] : page
-        tabBar.show(state, pages: desk ? Self.pages : [], page: pageShown)
+        pages = desk && task == nil ? Self.pages : []
+        pageShown = pages.isEmpty ? nil : emptyDesk ? page ?? pages[0] : page
+        tabBar.show(state, pages: pages, page: pageShown)
         if deskTask && emptyDesk { cheerAt = (cheerAt + 1) % ShelfPage.cheers.count }
         deskTask = desk && task != nil
         if deskTask, let pulled = task?["pane"]?.string { Clicks.pulled(pulled) }
