@@ -1125,7 +1125,12 @@ pub fn machine(request: &Value, reply: &Value) -> String {
         Some("revoke") => {
             let told = join(&reply["told"]);
             let told = if told.is_empty() { "no other machine was reachable to hear it yet".to_string() } else { format!("told {told}") };
-            format!("revoked {} for good; {told}", reply["name"].as_str().unwrap_or("?"))
+            let accounts = match reply["accounts"].as_bool() {
+                Some(true) => "\nit dropped the agent accounts it was given; if it may be in someone else's hands, rotate them too (kanna accounts)",
+                Some(false) => "\nit couldn't be told to drop the agent accounts it was given: rotate them (kanna accounts)",
+                None => "",
+            };
+            format!("revoked {} for good; {told}{accounts}", reply["name"].as_str().unwrap_or("?"))
         }
         Some("ping") => {
             let streams = reply["streams"].as_object().map(|s| s.iter().map(|(kind, r)| format!("{kind} {}", if r["ok"] == true { "ok".to_string() } else { r["error"]["code"].as_str().unwrap_or("failed").to_string() })).collect::<Vec<_>>().join(", ")).unwrap_or_default();

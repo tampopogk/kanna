@@ -503,6 +503,16 @@ impl Service {
         core.add_command(COMMAND, std::rc::Rc::new(move |args, responder| service.local(args, responder)));
     }
 
+    pub fn withdraw(&self, host: &str) -> Option<bool> {
+        let caller = self.caller.as_ref()?;
+        let held = self.accounts.own().iter().any(|a| a["kind"] != Kind::CodexChatgpt.name());
+        if !held {
+            return None;
+        }
+        let told = caller.call(host, COMMAND, json!({ "action": "supply", "version": self.accounts.version(), "accounts": [] }));
+        Some(told.is_ok())
+    }
+
     fn me(&self) -> String {
         self.caller.as_ref().map(Caller::key).unwrap_or_default()
     }

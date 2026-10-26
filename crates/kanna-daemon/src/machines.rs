@@ -15,6 +15,8 @@ const CONFIRM_WAIT: Duration = Duration::from_secs(120);
 
 const CONFIRM: &str = "app.machine.confirm";
 
+pub type Withdraw = std::sync::Arc<dyn Fn(&str) -> Option<bool> + Send + Sync>;
+
 static DOWNLOADS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 const RELEASES: &str = "https://github.com/tampopogk/kanna/releases/download";
@@ -24,6 +26,7 @@ pub struct Machines {
     node: Result<Node, String>,
     state_dir: PathBuf,
     pub install: Option<Install>,
+    withdraw: std::sync::OnceLock<Withdraw>,
 }
 
 struct DaemonHost(Mutex<Sender<Event>>);
@@ -78,7 +81,7 @@ impl Caller {
 
     pub fn call(&self, host: &str, cmd: &str, args: Value) -> Result<Value, KmuxError> {
         let request = json!({ "id": 1, "cmd": cmd, "args": args });
-        let reply = self.handle.block_on(tokio::time::timeout(CALL_WAIT, self.node.call(host, request)));
+        let reply = self.handle.block_on(async { tokio::time::timeout(CALL_WAIT, self.node.call(host, request)).await });
         match reply {
             Ok(Ok(reply)) if reply["ok"] == true => Ok(reply),
             Ok(Ok(reply)) => Err(KmuxError::new(reply["error"]["code"].as_str().unwrap_or("failed"), reply["error"]["message"].as_str().unwrap_or("failed"))),
@@ -153,7 +156,11 @@ impl Machines {
             let config = Config { secret, saved, name: hostname(), capabilities: capabilities(), port: port(), mdns, release: release(install.as_ref()), install: install.clone() };
             runtime.block_on(Node::start(config, Box::new(DaemonHost(Mutex::new(events)))))
         });
-        Ok(Machines { runtime, node, state_dir: state_dir.to_path_buf(), install })
+        Ok(Machines { runtime, node, state_dir: state_dir.to_path_buf(), install, withdraw: std::sync::OnceLock::new() })
+    }
+
+    pub fn before_revoke(&self, withdraw: Withdraw) {
+        let _ = self.withdraw.set(withdraw);
     }
 
     pub fn caller(&self) -> Option<Caller> {
@@ -222,10 +229,29 @@ impl Machines {
                     node.update(hosts, Tarball::open(&path).await?).await
                 })
             }
-            "revoke" | "ping" | "sync" => match needs_host(host) {
+            "revoke" => match needs_host(host) {
+                Ok(host) => {
+                    let withdraw = self.withdraw.get().cloned();
+                    self.spawn(responder, async move {
+                        let withdrawn = match withdraw {
+                            Some(withdraw) => {
+                                let host = host.clone();
+                                tokio::task::spawn_blocking(move || withdraw(&host)).await.ok().flatten()
+                            }
+                            None => None,
+                        };
+                        let mut revoked = node.revoke(&host).await?;
+                        if let Some(withdrawn) = withdrawn {
+                            revoked["accounts"] = json!(withdrawn);
+                        }
+                        Ok(revoked)
+                    })
+                }
+                Err(e) => responder.reply(Err(e)),
+            },
+            "ping" | "sync" => match needs_host(host) {
                 Ok(host) => self.spawn(responder, async move {
                     match action.as_str() {
-                        "revoke" => node.revoke(&host).await,
                         "ping" => node.ping(&host).await,
                         _ => node.sync(&host).await,
                     }

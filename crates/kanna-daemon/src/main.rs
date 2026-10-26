@@ -323,6 +323,10 @@ fn run() -> Result<Option<PathBuf>, String> {
         let _ = broken.send(Event::AccountBroken(account));
     }));
     accounts.install(&core);
+    if let Some(machines) = &machines {
+        let withdrawing = Arc::downgrade(&accounts);
+        machines.before_revoke(Arc::new(move |host| withdrawing.upgrade().and_then(|accounts| accounts.withdraw(host))));
+    }
     let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone(), agents::keys(&support_folder(), &state_dir));
     agents.refresh();
     agents.install(&core);

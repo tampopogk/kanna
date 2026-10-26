@@ -6,9 +6,10 @@ extension AppController {
         commands["app.machine.confirm"] = { args in
             ["confirmed": .bool(await MachineAlert.confirm(args))]
         }
-        commands["app.open_url"] = { args in
-            guard let text = args["url"]?.string, let url = URL(string: text), url.scheme == "https" else {
-                throw KannaError("bad_request", "app.open_url opens an https address")
+        commands["app.open_sign_in"] = { args in
+            let hosts: Set<String> = ["claude.ai", "claude.com", "platform.claude.com", "console.anthropic.com", "auth.openai.com", "chatgpt.com"]
+            guard let text = args["url"]?.string, let url = URL(string: text), url.scheme == "https", let host = url.host?.lowercased(), hosts.contains(host) else {
+                throw KannaError("bad_request", "app.open_sign_in opens only Claude's and OpenAI's sign-in pages")
             }
             await MainActor.run { _ = NSWorkspace.shared.open(url) }
             return ["opened": .string(text)]

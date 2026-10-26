@@ -153,9 +153,9 @@ fn sign_in(agent: &str, call: &mut dyn FnMut(&str, Value) -> Result<Value, Failu
     let ok = passthrough(&mut command, &mut |bytes| {
         seen.extend_from_slice(bytes);
         for url in urls(&plain(&seen)) {
-            if !opened.contains(&url) {
+            if sign_in_page(&url) && !opened.contains(&url) {
                 opened.push(url.clone());
-                if call("app.open_url", json!({ "url": url })).is_err() {
+                if call("app.open_sign_in", json!({ "url": url })).is_err() {
                     print!("\r\n(Kanna.app isn't connected to this machine: open the address above yourself.)\r\n");
                 }
             }
@@ -165,6 +165,13 @@ fn sign_in(agent: &str, call: &mut dyn FnMut(&str, Value) -> Result<Value, Failu
         true => Ok(println!("\n{agent} is signed in on this machine; its agents use this sign-in when no account is set up in Kanna.")),
         false => Err(fail(exit::FAILED, format!("{agent}'s sign-in didn't finish"))),
     }
+}
+
+const SIGN_IN_HOSTS: &[&str] = &["claude.ai", "claude.com", "platform.claude.com", "console.anthropic.com", "auth.openai.com", "chatgpt.com"];
+
+pub fn sign_in_page(url: &str) -> bool {
+    let host = url.strip_prefix("https://").and_then(|rest| rest.split(['/', '?', '#']).next()).unwrap_or_default().to_lowercase();
+    SIGN_IN_HOSTS.contains(&host.as_str())
 }
 
 pub fn urls(text: &str) -> Vec<String> {
@@ -322,5 +329,9 @@ mod tests {
         let text = plain(b"Follow these steps:\r\n1. Open \x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\r\n2. Enter this one-time code \x1b[94mABCD-1234\x1b[0m\r\n");
         assert_eq!(urls(&text), ["https://auth.openai.com/codex/device"]);
         assert!(urls("Open https://auth.openai.com/co").is_empty(), "not yet all printed");
+        assert!(sign_in_page("https://auth.openai.com/codex/device"));
+        assert!(sign_in_page("https://claude.ai/oauth/authorize?code=true"));
+        assert!(!sign_in_page("https://claude.ai.example.com/oauth"), "only the vendors' own sign-in pages");
+        assert!(!sign_in_page("http://claude.ai/oauth"));
     }
 }
