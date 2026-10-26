@@ -184,6 +184,7 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
     if command.name == "task" && request["action"] == "list" {
         if let Ok(backlog) = mux.call("backlog", serde_json::json!({ "action": "list" })) {
             reply["backlog"] = backlog["tasks"].clone();
+            reply["elsewhere"] = backlog["elsewhere"].clone();
             output::name_out(&mut reply, &backlog["out"]);
             shorts.extend(output::shorts(&backlog));
             listed = true;

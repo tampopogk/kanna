@@ -106,6 +106,7 @@ pub enum Event {
     AppGone { conn: u64 },
     FleetConfirm { question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send> },
     FleetSave(Value),
+    Replica { token: u64, reply: Result<Value, String> },
     Quit(i32),
     Shutdown(String),
 }
@@ -303,6 +304,22 @@ fn run() -> Result<(), String> {
             None
         }
     };
+    if let Some(fleet) = &fleet {
+        let machines = Rc::downgrade(fleet);
+        *backlog.machines.borrow_mut() = Some(Box::new(move || machines.upgrade().map(|f| f.machines()).unwrap_or_default()));
+        let (exchanging, replies) = (Rc::downgrade(fleet), events.clone());
+        *backlog.exchange.borrow_mut() = Some(Box::new(move |peer, request, token| {
+            let replies = replies.clone();
+            let done: Box<dyn FnOnce(Result<Value, String>) + Send> = Box::new(move |reply| {
+                let _ = replies.send(Event::Replica { token, reply });
+            });
+            match exchanging.upgrade() {
+                Some(fleet) => fleet.exchange(peer, request, done),
+                None => done(Err("the daemon is stopping".into())),
+            }
+        }));
+    }
+    backlog.join();
     let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone(), agents::keys(&support_folder(), &state_dir));
     agents.refresh();
     agents.install(&core);
@@ -642,6 +659,7 @@ fn run() -> Result<(), String> {
                     log!("kanna-daemon: can't save the fleet in kanna.db: {error}");
                 }
             }
+            Event::Replica { token, reply } => backlog.replied(token, reply),
             Event::Quit(_) => continue,
             Event::Shutdown(why) => begin(&why, &mut shutdown),
         }

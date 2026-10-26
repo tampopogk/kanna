@@ -21,6 +21,8 @@ const PAIRING: &str = "pair";
 
 const APP_HELLO: &str = "app.hello";
 
+pub const PEER: &str = "peer";
+
 pub(crate) const MAX_HEADER: u64 = 64 << 10;
 
 pub(crate) const MAX_LINE: u64 = 16 << 20;
@@ -424,15 +426,26 @@ impl Node {
         if write_line(&mut send, &json!({ "ok": true, "kind": kind, "name": self.state().name })).await.is_err() {
             return;
         }
-        if kind == "control" {
-            while let Ok(request) = read_line(&mut recv, MAX_LINE).await {
+        if kind == "sync" && cert.is_some() {
+            let _ = write_line(&mut send, &refusal(&Failure::new("not_a_daemon", "only a machine's daemon syncs"))).await;
+            let _ = send.finish();
+            return;
+        }
+        if kind == "control" || kind == "sync" {
+            while let Ok(mut request) = read_line(&mut recv, MAX_LINE).await {
                 if let Err(failure) = self.admit(&remote, cert.as_ref()) {
                     let id = request.get("id").cloned().unwrap_or(Value::Null);
                     let _ = write_line(&mut send, &json!({ "id": id, "ok": false, "error": { "code": failure.code, "message": failure.message } })).await;
                     break;
                 }
-                if request["cmd"] == APP_HELLO {
+                if kind == "control" && request["cmd"] == APP_HELLO {
                     return self.bridge(remote, cert, from, request, send, recv).await;
+                }
+                if let Some(args) = request.get_mut("args").and_then(Value::as_object_mut) {
+                    args.remove(PEER);
+                    if kind == "sync" {
+                        args.insert(PEER.into(), json!(remote));
+                    }
                 }
                 let reply = self.control(&from, request).await;
                 if write_line(&mut send, &reply).await.is_err() {
@@ -593,6 +606,10 @@ impl Node {
     }
 
     async fn control_stream(&self, host: &str) -> Result<(SendStream, BufReader<RecvStream>, String), Failure> {
+        self.stream(host, "control").await
+    }
+
+    async fn stream(&self, host: &str, kind: &str) -> Result<(SendStream, BufReader<RecvStream>, String), Failure> {
         self.usable()?;
         let key = self.resolve(host)?;
         if key == self.key() {
@@ -601,7 +618,7 @@ impl Node {
         let name = self.name_of(&key);
         let (mut conn, mut fresh) = self.connect(&key).await?;
         let (send, recv, _) = loop {
-            match self.open(&conn, "control", &name).await {
+            match self.open(&conn, kind, &name).await {
                 Ok(opened) => break opened,
                 Err(failure) => {
                     self.state().conns.remove(&key);
@@ -628,6 +645,15 @@ impl Node {
 
     pub async fn call(&self, host: &str, request: Value) -> Result<Value, Failure> {
         let (mut send, mut recv, name) = self.control_stream(host).await?;
+        let lost = |e: String| Failure::new("unreachable", format!("lost {name}: {e}"));
+        write_line(&mut send, &request).await.map_err(lost)?;
+        let reply = read_line(&mut recv, MAX_LINE).await.map_err(lost)?;
+        let _ = send.finish();
+        Ok(reply)
+    }
+
+    pub async fn exchange(&self, host: &str, request: Value) -> Result<Value, Failure> {
+        let (mut send, mut recv, name) = self.stream(host, "sync").await?;
         let lost = |e: String| Failure::new("unreachable", format!("lost {name}: {e}"));
         write_line(&mut send, &request).await.map_err(lost)?;
         let reply = read_line(&mut recv, MAX_LINE).await.map_err(lost)?;

@@ -133,6 +133,24 @@ pub struct Grant {
     pub to: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Peer {
+    pub key: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Machines {
+    pub me: Peer,
+    pub peers: Vec<Peer>,
+}
+
+impl Machines {
+    pub fn name_of(&self, key: &str) -> String {
+        std::iter::once(&self.me).chain(&self.peers).find(|p| p.key == key).map_or_else(|| key.chars().take(10).collect(), |p| p.name.clone())
+    }
+}
+
 pub fn wall() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
 }
@@ -145,11 +163,15 @@ pub struct Replica {
 }
 
 impl Replica {
+    pub fn empty() -> Replica {
+        Replica { me: String::new(), clock: (0, 0), seen: HashMap::new(), records: BTreeMap::new() }
+    }
+
     pub fn open(db: &Db) -> rusqlite::Result<Replica> {
         db.atomically(|conn| {
             let clock: Option<String> = conn.query_row("select value from meta where key = 'hlc'", [], |r| r.get(0)).optional()?;
             let clock = clock.and_then(|c| serde_json::from_str::<(i64, i64)>(&c).ok()).unwrap_or((0, 0));
-            let mut replica = Replica { me: String::new(), clock, seen: HashMap::new(), records: BTreeMap::new() };
+            let mut replica = Replica { clock, ..Replica::empty() };
             let mut statement = conn.prepare("select device, ms, n, task, birth, field, value from record_ops")?;
             let ops = statement.query_map([], op_row)?.collect::<rusqlite::Result<Vec<Op>>>()?;
             for op in &ops {

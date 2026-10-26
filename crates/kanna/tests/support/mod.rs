@@ -22,6 +22,7 @@ fn sibling(name: &str, package: &str) -> PathBuf {
 pub struct Daemon {
     pub dir: PathBuf,
     child: Child,
+    port: u16,
 }
 
 impl Daemon {
@@ -31,9 +32,30 @@ impl Daemon {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("home")).unwrap();
         let dir = dir.canonicalize().unwrap();
+        let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let child = Daemon::spawn(&dir, port);
+        let daemon = Daemon { dir, child, port };
+        wait_for("the daemon's socket", || UnixStream::connect(daemon.socket()).is_ok());
+        daemon
+    }
+
+    /// Stops the daemon as a machine going away would, keeping its state to start again.
+    pub fn stop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_file(self.socket());
+    }
+
+    pub fn restart(&mut self) {
+        self.stop();
+        self.child = Daemon::spawn(&self.dir, self.port);
+        wait_for("the daemon's socket", || UnixStream::connect(self.socket()).is_ok());
+    }
+
+    fn spawn(dir: &Path, port: u16) -> Child {
         let daemon = sibling("kanna-daemon", "kanna-daemon");
         let keeper = sibling("kanna-keeper", "kanna-keeper");
-        let log = std::fs::File::create(dir.join("daemon.log")).unwrap();
+        let log = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("daemon.log")).unwrap();
         let mut command = Command::new(daemon);
         command.env_clear();
         for key in ["PATH", "USER", "LOGNAME", "TMPDIR"] {
@@ -41,7 +63,7 @@ impl Daemon {
                 command.env(key, value);
             }
         }
-        let child = command
+        command
             .env("HOME", dir.join("home"))
             .env("SHELL", "/bin/sh")
             .env("KANNA_SOCKET", dir.join("kanna.sock"))
@@ -50,15 +72,12 @@ impl Daemon {
             .env("KANNA_AGENT_RULES_URL", "none")
             .env("KANNA_KEEPER_CLOSE_GRACE_MS", "300")
             .env("KANNA_FLEET_MDNS", "0")
-            .env("KANNA_FLEET_PORT", "0")
+            .env("KANNA_FLEET_PORT", port.to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(log)
             .spawn()
-            .unwrap();
-        let daemon = Daemon { dir, child };
-        wait_for("the daemon's socket", || UnixStream::connect(daemon.socket()).is_ok());
-        daemon
+            .unwrap()
     }
 
     pub fn socket(&self) -> PathBuf {

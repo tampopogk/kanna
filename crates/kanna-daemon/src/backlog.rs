@@ -1,5 +1,6 @@
 use crate::db::{self, Change, Db, Message, Place, Row};
 use crate::messages::{self, Channel, Ready, PLANNER, USER};
+use crate::replica::{self, Grant, Hlc, Machines, Permit, Replica};
 use crate::task_scripts::{self, Cleanup, Scripts, Setup};
 use crate::Event;
 use kanna_mux::json::{json, num, opt, string, Map, Value};
@@ -36,6 +37,8 @@ pub struct Entry {
     pub after: Vec<String>,
     pub stopped: Option<String>,
     pub workspace: Option<String>,
+    pub birth: Option<String>,
+    pub on: Vec<String>,
 }
 
 impl Entry {
@@ -54,6 +57,7 @@ impl Entry {
             "after": self.after,
             "stopped": opt(self.stopped.as_deref()),
             "workspace": opt(self.workspace.as_deref()),
+            "on": self.on,
         })
     }
 
@@ -74,6 +78,8 @@ impl Entry {
                 "after": self.after,
                 "stopped": opt(self.stopped.as_deref()),
                 "workspace": opt(self.workspace.as_deref()),
+                "birth": opt(self.birth.as_deref()),
+                "on": self.on,
             }),
         }
     }
@@ -91,9 +97,11 @@ impl Entry {
             folder: text("folder"),
             session: text("session"),
             held: row.terminal.clone().filter(|_| row.place == Place::Backlog),
-            after: row.doc.get("after").and_then(Value::as_array).map_or(vec![], |ids| ids.iter().filter_map(Value::as_str).map(String::from).collect()),
+            after: strings(&row.doc, "after"),
             stopped: text("stopped").filter(|_| row.place == Place::Backlog),
             workspace: text("workspace"),
+            birth: text("birth"),
+            on: strings(&row.doc, "on"),
         }
     }
 
@@ -406,6 +414,27 @@ fn who(args: &Value) -> Option<&str> {
     Some(string(args, "by").filter(|by| !by.is_empty()).unwrap_or("user"))
 }
 
+fn identity(repo: &str) -> Option<String> {
+    project(Some(repo)).and_then(|main| crate::projects::identity(&main))
+}
+
+fn order(entry: &Entry) -> Hlc {
+    entry.birth.as_deref().and_then(Hlc::parse).unwrap_or(Hlc { ms: (entry.made_at * 1000.0) as i64, n: 0, device: String::new() })
+}
+
+fn allowed(on: &[String], name: &str) -> bool {
+    on.is_empty() || on.iter().any(|machine| machine == name)
+}
+
+enum Candidate {
+    Here(Entry),
+    There { task: String, birth: String, owner: String },
+}
+
+fn strings(value: &Value, key: &str) -> Vec<String> {
+    value.get(key).and_then(Value::as_array).map_or(vec![], |items| items.iter().filter_map(Value::as_str).map(String::from).collect())
+}
+
 fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
@@ -598,7 +627,29 @@ pub struct Backlog {
     posting: RefCell<HashMap<u64, (String, Vec<Message>)>>,
     pub on_change: RefCell<Option<Box<dyn Fn(Value)>>>,
     pub claimant: RefCell<String>,
+    replica: RefCell<Replica>,
+    pub machines: RefCell<Option<Box<dyn Fn() -> Machines>>>,
+    pub exchange: RefCell<Option<Box<dyn Fn(String, Value, u64)>>>,
+    asked: RefCell<HashMap<u64, Asked>>,
+    away: RefCell<HashMap<String, Instant>>,
+    refused: RefCell<HashMap<String, Instant>>,
+    syncing: RefCell<HashSet<String>>,
+    sync_at: Cell<Instant>,
 }
+
+enum Asked {
+    Sync(String),
+    Ops,
+    Ask { task: String, birth: String, owner: String, repo: String },
+    Grant(Grant),
+    Ack,
+}
+
+const SYNC_EVERY: Duration = Duration::from_secs(3);
+
+const AWAY_WAIT: Duration = Duration::from_secs(10);
+
+const REFUSED_WAIT: Duration = Duration::from_secs(10);
 
 struct Book(Weak<Backlog>);
 
@@ -643,6 +694,10 @@ impl Backlog {
             log!("kanna-daemon: can't read the waiting messages in {}: {error}", state_dir.join(db::FILE).display());
             vec![]
         });
+        let replica = Replica::open(&db).unwrap_or_else(|error| {
+            log!("kanna-daemon: can't read the replicated backlog in {}: {error}", state_dir.join(db::FILE).display());
+            Replica::empty()
+        });
         Backlog {
             state: state_dir.to_path_buf(),
             db,
@@ -676,6 +731,14 @@ impl Backlog {
             delivering: RefCell::default(),
             posting: RefCell::default(),
             on_change: RefCell::default(),
+            replica: RefCell::new(replica),
+            machines: RefCell::default(),
+            exchange: RefCell::default(),
+            asked: RefCell::default(),
+            away: RefCell::default(),
+            refused: RefCell::default(),
+            syncing: RefCell::default(),
+            sync_at: Cell::new(Instant::now()),
         }
     }
 
@@ -752,7 +815,15 @@ impl Backlog {
                 }
             }
         }
-        Ok(self.db.task(reference).ok().flatten().map(|row| row.id))
+        if let Some(row) = self.db.task(reference).ok().flatten() {
+            return Ok(Some(row.id));
+        }
+        let replica = self.replica.borrow();
+        let elsewhere: Vec<String> = replica.records().filter(|r| r.text("state").is_some_and(|s| s != "done")).map(|r| r.task.clone()).filter(|id| id == reference || (!start.is_empty() && id.strip_prefix(db::TASK).is_some_and(|hex| hex.starts_with(start)))).collect();
+        Ok(match elsewhere.as_slice() {
+            [one] => Some(one.clone()),
+            _ => None,
+        })
     }
 
     pub fn agent(&self, reference: &str, then: impl FnOnce(Result<String, KmuxError>) + 'static) {
@@ -799,11 +870,16 @@ impl Backlog {
     }
 
     fn waits(&self, entry: &Entry) -> Vec<String> {
-        entry.after.iter().filter(|id| self.is_open(id)).cloned().collect()
+        entry.after.iter().filter(|id| self.open_anywhere(id)).cloned().collect()
+    }
+
+    fn open_anywhere(&self, id: &str) -> bool {
+        self.is_open(id) || self.replica.borrow().open_task(id)
     }
 
     fn label(&self, id: &str) -> String {
-        match self.known(id).and_then(|e| e.name) {
+        let elsewhere = || self.replica.borrow().births(id).first().and_then(|r| r.text("name").map(String::from));
+        match self.known(id).and_then(|e| e.name).or_else(elsewhere) {
             Some(name) => format!("{} \"{name}\"", self.short(id)),
             None => self.short(id),
         }
@@ -833,7 +909,7 @@ impl Backlog {
         value["script"] = opt(self.script_said(entry, entry.held.as_deref(), running).as_deref());
         let waits = self.waits(entry).iter().map(|id| json!({ "id": id, "name": opt(self.known(id).and_then(|e| e.name).as_deref()), "pane": opt(self.pane_of(id).as_deref()) })).collect();
         value["waits"] = Value::Array(waits);
-        value["project"] = opt(kanna_mux::project(Some(&entry.repo)).and_then(|main| crate::projects::identity(&main)).as_deref());
+        value["project"] = opt(identity(&entry.repo).as_deref());
         value
     }
 
@@ -844,7 +920,7 @@ impl Backlog {
                 let mut ids: Vec<String> = vec![];
                 for reference in list.iter().filter_map(Value::as_str) {
                     let id = self.resolve(reference)?.ok_or_else(|| not_found(reference))?;
-                    if !self.is_open(&id) {
+                    if !self.open_anywhere(&id) {
                         return Err(bad(format!("{} is done already, so there's nothing to wait for", self.short(reference))));
                     }
                     if id == me || self.waits_for(&id, me) {
@@ -937,7 +1013,303 @@ impl Backlog {
         self.db.put(&entry.row(place, pane), change.as_ref()).map_err(|error| {
             log!("kanna-daemon: couldn't save {} in {}: {error}", entry.id, db::FILE);
             KmuxError::new("failed", format!("couldn't save {}: {error}", entry.id))
-        })
+        })?;
+        self.publish(entry, place);
+        Ok(())
+    }
+
+    fn machines(&self) -> Machines {
+        self.machines.borrow().as_ref().map(|machines| machines()).unwrap_or_default()
+    }
+
+    /// Joins the replicated backlog as this machine: its tasks' records are published, with permission to start the ones it holds.
+    pub fn join(&self) {
+        let me = self.machines().me;
+        self.replica.borrow_mut().set_device(if me.key.is_empty() { "this" } else { &me.key });
+        let mut held: Vec<(Entry, Place, Option<String>)> = self.entries.borrow().iter().map(|e| (e.clone(), Place::Backlog, e.held.clone())).collect();
+        held.extend(self.running.borrow().iter().map(|r| (r.entry.clone(), r.place, Some(r.pane.clone()))));
+        for (mut entry, place, pane) in held {
+            if entry.birth.is_some() {
+                self.publish(&entry, place);
+                continue;
+            }
+            entry.birth = Some(Hlc { ms: (entry.made_at * 1000.0) as i64, n: 0, device: self.replica.borrow().me().to_string() }.text());
+            if self.store(&entry, place, pane.as_deref(), None).is_ok() {
+                for e in self.entries.borrow_mut().iter_mut().filter(|e| e.id == entry.id) {
+                    e.birth = entry.birth.clone();
+                }
+                for r in self.running.borrow_mut().iter_mut().filter(|r| r.entry.id == entry.id) {
+                    r.entry.birth = entry.birth.clone();
+                }
+            }
+        }
+    }
+
+    fn publish(&self, entry: &Entry, place: Place) {
+        let Some(birth) = entry.birth.as_deref() else { return };
+        let mut replica = self.replica.borrow_mut();
+        if replica.me().is_empty() {
+            return;
+        }
+        let started = entry.folder.is_some() || entry.held.is_some() || place != Place::Backlog;
+        let state = match place {
+            Place::Done => "done",
+            _ if started => "started",
+            _ => "waiting",
+        };
+        if place != Place::Done && Replica::authority(&self.db, &entry.id, birth).is_ok_and(|held| held.is_none()) {
+            let permit = if started { Permit::Running } else { Permit::Ready };
+            if let Err(error) = Replica::hold(&self.db, &entry.id, birth, permit) {
+                log!("kanna-daemon: couldn't save that this machine holds {}: {error}", entry.id);
+            }
+        }
+        let me = replica.me().to_string();
+        let fields = [
+            ("project", opt(identity(&entry.repo).as_deref())),
+            ("name", opt(entry.name.as_deref())),
+            ("message", opt(entry.message.as_deref())),
+            ("agent", json!(entry.agent)),
+            ("after", json!(entry.after)),
+            ("on", json!(entry.on)),
+            ("state", json!(state)),
+            ("owner", json!(me)),
+        ];
+        match replica.write(&self.db, &entry.id, birth, &fields) {
+            Ok(0) => {}
+            Ok(_) => self.sync_at.set(Instant::now()),
+            Err(error) => log!("kanna-daemon: couldn't save {}'s record in {}: {error}", entry.id, db::FILE),
+        }
+    }
+
+    fn clones(&self) -> Vec<String> {
+        let mut repos: Vec<String> = self.entries.borrow().iter().map(|e| e.repo.clone()).collect();
+        repos.extend(self.db.projects().unwrap_or_default().into_iter().map(|(path, _)| path).filter(|path| Path::new(path).is_dir()));
+        repos.sort();
+        repos.dedup();
+        repos
+    }
+
+    fn clone_of(&self, project: &str) -> Option<String> {
+        self.clones().into_iter().find(|repo| identity(repo).as_deref() == Some(project))
+    }
+
+    /// Takes the tasks granted to this machine into its backlog, in the clone of their project here.
+    fn adopt(&self) {
+        let Ok(held) = Replica::held(&self.db) else { return };
+        let mut adopted = false;
+        for (task, birth, _) in held.into_iter().filter(|(_, _, a)| a.permit == Permit::Ready) {
+            if self.is_open(&task) {
+                continue;
+            }
+            let Some(record) = self.replica.borrow().record(&task, &birth).cloned() else { continue };
+            if record.text("state") != Some("waiting") {
+                continue;
+            }
+            let Some(repo) = record.text("project").and_then(|project| self.clone_of(project)) else {
+                log!("kanna-daemon: {task} was granted here, but this machine has no clone of {}", record.text("project").unwrap_or("its project"));
+                continue;
+            };
+            let entry = Entry {
+                id: task.clone(),
+                name: record.text("name").map(String::from),
+                message: record.text("message").map(String::from),
+                repo,
+                made_at: record.born().ms as f64 / 1000.0,
+                agent: record.text("agent").unwrap_or(DEFAULT_AGENT).to_string(),
+                after: record.list("after"),
+                on: record.list("on"),
+                birth: Some(birth),
+                ..Default::default()
+            };
+            if self.store(&entry, Place::Backlog, None, Some(Change { to: Some(Place::Backlog), ..Change::new("granted") }.by(Some("daemon")))).is_ok() {
+                log!("kanna-daemon: {task} is in this machine's backlog now, in {}", entry.repo);
+                self.entries.borrow_mut().push(entry);
+                adopted = true;
+            }
+        }
+        if adopted {
+            self.changed();
+        }
+    }
+
+    fn send_to(&self, peer: &str, args: Value, asked: Asked) {
+        let token = self.next.get() + 1;
+        self.next.set(token);
+        self.asked.borrow_mut().insert(token, asked);
+        match self.exchange.borrow().as_ref() {
+            Some(exchange) => exchange(peer.to_string(), json!({ "id": 1, "cmd": "replica", "args": args }), token),
+            None => {
+                self.asked.borrow_mut().remove(&token);
+            }
+        }
+    }
+
+    fn sync_all(&self) {
+        let machines = self.machines();
+        let now = Instant::now();
+        let vector = self.replica.borrow().vector();
+        for peer in &machines.peers {
+            if self.syncing.borrow().contains(&peer.key) || self.away.borrow().get(&peer.key).is_some_and(|until| *until > now) {
+                continue;
+            }
+            self.syncing.borrow_mut().insert(peer.key.clone());
+            self.send_to(&peer.key, json!({ "action": "sync", "vector": vector }), Asked::Sync(peer.key.clone()));
+        }
+        let sending: HashSet<String> = self.asked.borrow().values().filter_map(|a| if let Asked::Grant(g) = a { Some(g.task.clone()) } else { None }).collect();
+        for grant in Replica::outbox(&self.db).unwrap_or_default() {
+            if !sending.contains(&grant.task) && machines.peers.iter().any(|p| p.key == grant.to) {
+                let args = json!({ "action": "grant", "task": grant.task, "birth": grant.birth, "epoch": grant.epoch });
+                self.send_to(&grant.to.clone(), args, Asked::Grant(grant));
+            }
+        }
+    }
+
+    pub fn replied(self: &Rc<Self>, token: u64, reply: Result<Value, String>) {
+        let Some(asked) = self.asked.borrow_mut().remove(&token) else { return };
+        let reply = reply.and_then(|r| if r["ok"] == true { Ok(r) } else { Err(format!("{} [{}]", r["error"]["message"].as_str().unwrap_or("refused"), r["error"]["code"].as_str().unwrap_or("failed"))) });
+        let machines = self.machines();
+        match asked {
+            Asked::Sync(peer) => {
+                self.syncing.borrow_mut().remove(&peer);
+                match reply {
+                    Ok(reply) => {
+                        self.take_ops(&reply["ops"]);
+                        let ops = self.replica.borrow().ops_after(&self.db, &reply["vector"]).unwrap_or_default();
+                        if !ops.is_empty() {
+                            self.send_to(&peer, json!({ "action": "ops", "ops": replica::ops_value(&ops) }), Asked::Ops);
+                        }
+                    }
+                    Err(why) => {
+                        log!("kanna-daemon: couldn't sync the backlog with {}: {why}", machines.name_of(&peer));
+                        self.away.borrow_mut().insert(peer, Instant::now() + AWAY_WAIT);
+                    }
+                }
+            }
+            Asked::Ops | Asked::Ack => {}
+            Asked::Ask { task, birth, owner, repo } => {
+                match reply {
+                    Ok(reply) => {
+                        let epoch = reply["epoch"].as_i64().unwrap_or(0);
+                        log!("kanna-daemon: {} granted {task} to this machine for {repo}", machines.name_of(&owner));
+                        self.take_grant(&owner, &task, &birth, epoch);
+                    }
+                    Err(why) if why.ends_with("[unreachable]") => {
+                        log!("kanna-daemon: {task} waits: its owner {} is away ({why})", machines.name_of(&owner));
+                        self.away.borrow_mut().insert(owner, Instant::now() + AWAY_WAIT);
+                    }
+                    Err(why) => {
+                        log!("kanna-daemon: {} didn't grant {task}: {why}", machines.name_of(&owner));
+                        self.refused.borrow_mut().insert(task, Instant::now() + REFUSED_WAIT);
+                        self.sync_at.set(Instant::now());
+                    }
+                }
+                self.refill();
+            }
+            Asked::Grant(grant) => {
+                if reply.is_ok() {
+                    if let Err(error) = Replica::acked(&self.db, &grant.task, &grant.birth, grant.epoch) {
+                        log!("kanna-daemon: couldn't save that {} took {}: {error}", machines.name_of(&grant.to), grant.task);
+                    }
+                }
+            }
+        }
+    }
+
+    fn take_ops(&self, ops: &Value) {
+        let ops = replica::ops_of(ops);
+        if ops.is_empty() {
+            return;
+        }
+        match self.replica.borrow_mut().apply(&self.db, &ops) {
+            Ok(0) => return,
+            Ok(_) => {}
+            Err(error) => return log!("kanna-daemon: couldn't save other machines' tasks in {}: {error}", db::FILE),
+        }
+        self.refill();
+    }
+
+    fn take_grant(&self, from: &str, task: &str, birth: &str, epoch: i64) -> bool {
+        let taken = self.replica.borrow_mut().receive(&self.db, task, birth, epoch);
+        match taken {
+            Ok(_) => {
+                self.adopt();
+                self.refill();
+                self.sync_at.set(Instant::now());
+                self.send_to(from, json!({ "action": "ack", "task": task, "birth": birth, "epoch": epoch }), Asked::Ack);
+                true
+            }
+            Err(error) => {
+                log!("kanna-daemon: couldn't save the grant of {task}: {error}");
+                false
+            }
+        }
+    }
+
+    fn grant_to(&self, peer: &str, task: &str, birth: &str) -> Result<Map, KmuxError> {
+        let name = self.machines().name_of(peer);
+        let refuse = |code: &str, why: String| Err(KmuxError::new(code, why));
+        let Some(entry) = self.entries.borrow().iter().find(|e| e.id == task && e.birth.as_deref() == Some(birth)).cloned() else {
+            return refuse("not_owner", format!("{task} isn't in this machine's backlog"));
+        };
+        let starting = self.pending.borrow().values().any(|p| p.entry.id == task) || self.launching.borrow().contains(task);
+        if entry.folder.is_some() || entry.held.is_some() || starting {
+            return refuse("started", format!("{task} has started here"));
+        }
+        if !self.waits(&entry).is_empty() {
+            return refuse("blocked", format!("{task} waits for {}", self.waits(&entry).join(", ")));
+        }
+        if !entry.on.is_empty() && !entry.on.contains(&name) {
+            return refuse("not_there", format!("{task} runs on {}", entry.on.join(", ")));
+        }
+        let row = entry.row(Place::Done, None);
+        let change = Change::new("granted").moved(Place::Backlog, Place::Done).by(Some("daemon")).with("to", json!(name));
+        let grant = self.replica.borrow_mut().grant(&self.db, task, birth, peer, |conn| db::put_row(conn, &row, Some(&change))).map_err(|why| KmuxError::new("refused", format!("{task}: {why}")))?;
+        log!("kanna-daemon: granted {task} to {name}");
+        self.take(task);
+        self.changed();
+        self.sync_at.set(Instant::now());
+        Ok(Map::from_iter([("epoch".to_string(), json!(grant.epoch))]))
+    }
+
+    fn replica_command(&self, args: &Value) -> Result<Map, KmuxError> {
+        let action = string(args, "action").unwrap_or_default();
+        if action == "list" {
+            let replica = self.replica.borrow();
+            let records = replica.records().map(|r| r.to_value()).collect();
+            let held = Replica::held(&self.db).unwrap_or_default().into_iter().map(|(task, birth, a)| {
+                let mut value = Value::Object(replica::authority_value(&a));
+                value["task"] = json!(task);
+                value["birth"] = json!(birth);
+                value
+            });
+            return Ok(Map::from_iter([("device".to_string(), json!(replica.me())), ("records".to_string(), Value::Array(records)), ("authority".to_string(), Value::Array(held.collect()))]));
+        }
+        let Some(peer) = string(args, kanna_net::PEER).map(String::from) else {
+            return Err(bad("replica is for another machine's daemon, over a sync stream"));
+        };
+        let task = string(args, "task").unwrap_or_default();
+        let birth = string(args, "birth").unwrap_or_default();
+        match action {
+            "sync" => {
+                let replica = self.replica.borrow();
+                let ops = replica.ops_after(&self.db, &args["vector"]).map_err(|e| KmuxError::new("failed", e.to_string()))?;
+                Ok(Map::from_iter([("ops".to_string(), replica::ops_value(&ops)), ("vector".to_string(), replica.vector())]))
+            }
+            "ops" => {
+                self.take_ops(&args["ops"]);
+                Ok(Map::new())
+            }
+            "ask" => self.grant_to(&peer, task, birth),
+            "grant" => match self.take_grant(&peer, task, birth, args["epoch"].as_i64().unwrap_or(0)) {
+                true => Ok(Map::new()),
+                false => Err(KmuxError::new("failed", format!("couldn't save the grant of {task}"))),
+            },
+            "ack" => {
+                Replica::acked(&self.db, task, birth, args["epoch"].as_i64().unwrap_or(0)).map_err(|e| KmuxError::new("failed", e.to_string()))?;
+                Ok(Map::new())
+            }
+            other => Err(bad(format!("unknown replica action \"{other}\" (sync, ops, ask, grant, ack or list)"))),
+        }
     }
 
     fn note(&self, pane: &str, change: Change) {
@@ -1081,10 +1453,14 @@ impl Backlog {
             self.fill_at.set(Some(now + FILL_EVERY));
             self.fill(&core);
         }
+        if self.sync_at.get() <= now {
+            self.sync_at.set(now + SYNC_EVERY);
+            self.sync_all();
+        }
         let turns = self.turns.borrow().values().filter_map(|t| t.due(TURN_SETTLE)).min();
         let quits = self.quitting.borrow().values().filter(|q| !q.hung_up).flat_map(|q| [Some(q.by), q.next]).flatten().min();
         let setups = (!self.setting_up.borrow().is_empty()).then(|| now + SETUP_EVERY);
-        [turns, quits, setups, self.fill_at.get(), mail].into_iter().flatten().min()
+        [turns, quits, setups, self.fill_at.get(), mail, Some(self.sync_at.get())].into_iter().flatten().min()
     }
 
     fn quit(self: &Rc<Self>, pane: &str, entry: &Entry, why: Status) {
@@ -1191,18 +1567,23 @@ impl Backlog {
     }
 
     fn fill(self: &Rc<Self>, core: &CoreHandle) {
+        self.adopt();
         let entries = self.entries.borrow().clone();
-        let mut repos: Vec<&str> = entries.iter().map(|e| e.repo.as_str()).collect();
-        repos.sort();
-        repos.dedup();
+        let machines = self.machines();
+        let now = Instant::now();
+        let repos = self.clones();
         let starting: HashSet<String> = self.pending.borrow().values().map(|p| p.entry.id.clone()).chain(self.launching.borrow().iter().cloned()).collect();
+        let asking: Vec<(String, String)> = self.asked.borrow().values().filter_map(|a| if let Asked::Ask { repo, task, .. } = a { Some((repo.clone(), task.clone())) } else { None }).collect();
+        let mut asked: HashSet<String> = asking.iter().map(|(_, task)| task.clone()).collect();
+        self.away.borrow_mut().retain(|_, until| *until > now);
+        self.refused.borrow_mut().retain(|_, until| *until > now);
         for repo in repos {
-            let slots = runners(&config_files(Path::new(repo)));
+            let slots = runners(&config_files(Path::new(&repo)));
             if slots == 0 {
                 continue;
             }
             let mine: Vec<&Entry> = entries.iter().filter(|e| e.repo == repo).collect();
-            let mut busy = mine.iter().filter(|e| starting.contains(&e.id) || e.held.as_deref().is_some_and(|pane| alive(core, pane))).count();
+            let mut busy = mine.iter().filter(|e| starting.contains(&e.id) || e.held.as_deref().is_some_and(|pane| alive(core, pane))).count() + asking.iter().filter(|(r, _)| *r == repo).count();
             let mail: HashSet<String> = self.waiting.borrow().iter().map(|m| m.recipient.clone()).collect();
             let ending = |pane: &str| self.quitting.borrow().contains_key(pane) || self.stopping.borrow().contains(pane) || self.tearing_down.borrow().contains_key(pane);
             let mut woken: Vec<&&Entry> = mine.iter().filter(|e| mail.contains(&e.id) && messages::AGENTS.contains(&program(&e.agent)) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane) || ending(pane))).collect();
@@ -1215,21 +1596,55 @@ impl Backlog {
                 log!("kanna-daemon: {} has a message, so it runs in the backlog ({busy} of {slots} in {repo})", entry.id);
                 self.wake(core, (*entry).clone());
             }
-            let mut waiting: Vec<&&Entry> = mine.iter().filter(|e| e.folder.is_none() && e.held.is_none() && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && self.waits(e).is_empty()).collect();
-            waiting.sort_by(|a, b| mail.contains(&b.id).cmp(&mail.contains(&a.id)).then(a.made_at.total_cmp(&b.made_at)));
-            for entry in waiting {
+            let mut waiting: Vec<(bool, Hlc, Candidate)> = mine
+                .iter()
+                .filter(|e| e.folder.is_none() && e.held.is_none() && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && self.waits(e).is_empty() && allowed(&e.on, &machines.me.name))
+                .map(|e| (mail.contains(&e.id), order(e), Candidate::Here((*e).clone())))
+                .collect();
+            if let Some(project) = identity(&repo) {
+                let replica = self.replica.borrow();
+                for record in replica.records() {
+                    let owner = record.text("owner").unwrap_or_default();
+                    let eligible = record.text("project") == Some(project.as_str())
+                        && record.text("state") == Some("waiting")
+                        && !owner.is_empty()
+                        && owner != replica.me()
+                        && !self.is_open(&record.task)
+                        && !asked.contains(&record.task)
+                        && replica.births(&record.task).len() == 1
+                        && allowed(&record.list("on"), &machines.me.name)
+                        && !self.away.borrow().contains_key(owner)
+                        && !self.refused.borrow().contains_key(&record.task)
+                        && record.list("after").iter().all(|id| !self.is_open(id) && !replica.open_task(id));
+                    if eligible {
+                        waiting.push((false, record.born(), Candidate::There { task: record.task.clone(), birth: record.birth.clone(), owner: owner.to_string() }));
+                    }
+                }
+            }
+            waiting.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+            for (_, _, candidate) in waiting {
                 if busy >= slots {
                     break;
                 }
                 busy += 1;
-                let (this, id) = (Rc::downgrade(self), entry.id.clone());
-                log!("kanna-daemon: {id} runs in the backlog ({busy} of {slots} in {repo})");
-                self.prepare((*entry).clone(), None, Some("daemon".into()), Answer::Then(Box::new(move |result| {
-                    if let (Err(error), Some(this)) = (result, this.upgrade()) {
-                        log!("kanna-daemon: {id} couldn't run in the backlog: {}", error.message);
-                        this.failed.borrow_mut().insert(id);
+                match candidate {
+                    Candidate::Here(entry) => {
+                        let (this, id) = (Rc::downgrade(self), entry.id.clone());
+                        log!("kanna-daemon: {id} runs in the backlog ({busy} of {slots} in {repo})");
+                        self.prepare(entry, None, Some("daemon".into()), Answer::Then(Box::new(move |result| {
+                            if let (Err(error), Some(this)) = (result, this.upgrade()) {
+                                log!("kanna-daemon: {id} couldn't run in the backlog: {}", error.message);
+                                this.failed.borrow_mut().insert(id);
+                            }
+                        })));
                     }
-                })));
+                    Candidate::There { task, birth, owner } => {
+                        log!("kanna-daemon: asks {} for {task} ({busy} of {slots} in {repo})", machines.name_of(&owner));
+                        asked.insert(task.clone());
+                        let args = json!({ "action": "ask", "task": task, "birth": birth });
+                        self.send_to(&owner.clone(), args, Asked::Ask { task, birth, owner, repo: repo.clone() });
+                    }
+                }
             }
         }
     }
@@ -1371,6 +1786,14 @@ impl Backlog {
             }
         }));
         core.set_tasks(Rc::new(Book(Rc::downgrade(self))));
+        let this = Rc::downgrade(self);
+        core.add_command(
+            "replica",
+            Rc::new(move |args, responder| match this.upgrade() {
+                Some(this) => responder.reply(this.replica_command(&args)),
+                None => responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))),
+            }),
+        );
         let this = Rc::downgrade(self);
         core.add_command(
             "backlog",
@@ -1633,7 +2056,7 @@ impl Backlog {
             return Err(bad(format!("{repo} isn't a git repo: a task works in a worktree of the repo, so set one up first (git init)")));
         }
         let by = string(args, "by").and_then(|by| self.core.upgrade()?.pane(by)).map(|pane| pane.id);
-        let id = self.db.new_id(|id| !taken(Path::new(repo), id)).map_err(|error| {
+        let id = self.db.new_id(|id| !taken(Path::new(repo), id) && self.replica.borrow().births(id).is_empty()).map_err(|error| {
             log!("kanna-daemon: couldn't save a new task ID in {}: {error}", db::FILE);
             KmuxError::new("failed", format!("couldn't save a new task ID: {error}"))
         })?;
@@ -1645,6 +2068,8 @@ impl Backlog {
             by,
             made_at: now(),
             agent: string(args, "agent").filter(|a| !a.trim().is_empty()).map(String::from).unwrap_or_else(|| task_agent(&config_files(Path::new(repo)))),
+            birth: Some(self.replica.borrow_mut().tick().text()),
+            on: strings(args, "on"),
             ..Default::default()
         })
     }
@@ -1688,7 +2113,22 @@ impl Backlog {
                 self.script_said(&r.entry, Some(&r.pane), running).map(|said| (r.pane.clone(), json!(said)))
             })
             .collect();
-        Map::from_iter([("tasks".to_string(), Value::Array(tasks)), ("out".to_string(), Value::Array(out)), ("script".to_string(), Value::Object(shelf))])
+        let project = repo.and_then(identity);
+        let machines = self.machines();
+        let replica = self.replica.borrow();
+        let elsewhere = replica
+            .records()
+            .filter(|r| r.text("state").is_some_and(|s| s != "done") && r.text("owner").is_some_and(|o| o != replica.me()) && !self.is_open(&r.task))
+            .filter(|r| repo.is_none() || (project.is_some() && r.text("project") == project.as_deref()))
+            .map(|r| {
+                let mut value = r.to_value();
+                value["id"] = json!(r.task);
+                value["machine"] = json!(machines.name_of(r.text("owner").unwrap_or_default()));
+                value["madeAt"] = num(r.born().ms as f64 / 1000.0);
+                value
+            })
+            .collect();
+        Map::from_iter([("tasks".to_string(), Value::Array(tasks)), ("out".to_string(), Value::Array(out)), ("script".to_string(), Value::Object(shelf)), ("elsewhere".to_string(), Value::Array(elsewhere))])
 
     }
 
@@ -2256,6 +2696,15 @@ impl Backlog {
                 return self.launch(Starting { entry: entry.resumable(), app, by, responder }, folder, None);
             }
             (entry.folder, entry.session) = (None, None);
+        }
+        if let Some(birth) = entry.birth.clone() {
+            if let Err(why) = Replica::start(&self.db, &entry.id, &birth) {
+                return responder.reply(Err(KmuxError::new("not_owner", format!("{} can't start on this machine: {why}", entry.id))));
+            }
+            if let Err(error) = self.replica.borrow_mut().write(&self.db, &entry.id, &birth, &[("state", json!("started"))]) {
+                log!("kanna-daemon: couldn't save that {} started: {error}", entry.id);
+            }
+            self.sync_at.set(Instant::now());
         }
         let token = self.next.get() + 1;
         self.next.set(token);
@@ -2997,7 +3446,7 @@ mod tests {
 
     #[test]
     fn entries_round_trip_through_the_db() {
-        let entry = Entry { id: "task-0000c0de".into(), name: Some("Fix it".into()), message: None, repo: "/r".into(), by: Some("p2".into()), made_at: 5.0, agent: "codex".into(), folder: Some("/r/.kanna-worktrees/task-0000c0de".into()), session: Some("s".into()), held: Some("p3".into()), after: vec!["task-00000002".into()], stopped: Some("needs-you".into()), workspace: None };
+        let entry = Entry { id: "task-0000c0de".into(), name: Some("Fix it".into()), message: None, repo: "/r".into(), by: Some("p2".into()), made_at: 5.0, agent: "codex".into(), folder: Some("/r/.kanna-worktrees/task-0000c0de".into()), session: Some("s".into()), held: Some("p3".into()), after: vec!["task-00000002".into()], stopped: Some("needs-you".into()), workspace: None, birth: Some("5000.0.k".into()), on: vec!["vm".into()] };
         assert_eq!(Entry::from_row(&entry.row(Place::Backlog, Some("p3"))), entry);
         assert_eq!(Entry::from_row(&entry.row(Place::Shelf, Some("p3"))).held, None, "a task on the Shelf isn't held");
         assert_eq!(Entry::from_row(&entry.row(Place::Shelf, Some("p3"))).stopped, None, "nor stopped by the backlog");
