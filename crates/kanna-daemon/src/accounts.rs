@@ -23,6 +23,7 @@ const REFRESH_WAIT: Duration = Duration::from_secs(30);
 
 const RETRY_BROKEN: Duration = Duration::from_secs(60);
 
+#[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "Kanna agent accounts";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
