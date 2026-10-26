@@ -18,6 +18,7 @@ mod codex_remote;
 mod messages;
 mod projects;
 mod quiz;
+mod replica;
 mod reader;
 mod settings;
 mod shell;
