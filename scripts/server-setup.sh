@@ -5,26 +5,30 @@ usage() {
   cat <<'USAGE'
 usage: scripts/server-setup.sh [options]
 
-Sets up Kanna on a Linux server (Ubuntu) for the user who runs it, from this checkout:
-packages, Rust, the agent CLIs, the daemon, keeper and CLI built and installed in
-/opt/kanna/<commit> with /opt/kanna/current linked to it, and a systemd user unit that
-runs the daemon at boot (linger). docs/specs/fleet.md §9 says what it sets up and why.
-Safe to run again: each step is skipped when already done, and an update restarts the
-daemon, whose terminals the keeper keeps.
+Sets up Kanna on a Linux server (Ubuntu) for the user who runs it: packages, the agent
+CLIs, the daemon, keeper and CLI installed in /opt/kanna/<commit> with /opt/kanna/current
+linked to it (from a release tarball, or built from this checkout with Rust), and a
+systemd user unit that runs the daemon at boot (linger). docs/specs/fleet.md §9 says
+what it sets up and why. Safe to run again: each step is skipped when already done, and
+an update restarts the daemon, whose terminals the keeper keeps. Later updates come with
+kanna fleet update from another machine (docs/specs/fleet-update.md).
 
   --agents LIST    agent CLIs to install with npm, comma-separated: claude, codex
                    (default: claude,codex; none installs none)
   --no-packages    don't install packages with apt
+  --tarball FILE   install this Linux tarball (scripts/build-linux.sh, or a release's)
+                   instead of building from this checkout
   --no-start       install the unit but don't start the daemon
 USAGE
 }
 
-agents="claude,codex" packages=1 start=1
+agents="claude,codex" packages=1 start=1 tarball=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --agents) agents="$2"; shift 2 ;;
     --no-packages) packages=0; shift ;;
     --no-start) start=0; shift ;;
+    --tarball) tarball="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
@@ -55,7 +59,7 @@ if [[ "$packages" == 1 ]]; then
   fi
 fi
 
-if ! command -v cargo >/dev/null 2>&1; then
+if [[ -z "$tarball" ]] && ! command -v cargo >/dev/null 2>&1; then
   step "Rust"
   curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
 fi
@@ -73,22 +77,36 @@ if [[ "$agents" != none ]]; then
   done
 fi
 
-step "Build"
-commit="$(git -C "$repo_root" rev-parse HEAD)"
-[[ -z "$(git -C "$repo_root" status --porcelain --untracked-files=no)" ]] || commit="$commit-dirty"
-"$repo_root/scripts/build-ghostty-vt.sh"
-KANNA_CHANNEL=production cargo build --release --manifest-path "$repo_root/Cargo.toml" -p kanna -p kanna-daemon -p kanna-keeper
-built="$repo_root/target/release"
-
-step "Install $prefix/$commit"
 if [[ ! -w "$prefix" ]]; then
   sudo install -d -o "$user" -g "$(id -gn)" -m 755 "$prefix"
 fi
+staged="$prefix/.setup.new"
+rm -rf "$staged"
+mkdir -p "$staged/kanna-skills"
+if [[ -n "$tarball" ]]; then
+  step "Unpack $(basename "$tarball")"
+  tar -xzf "$tarball" -C "$staged" --strip-components=1 --no-same-owner
+  commit="$(jq -r .commit "$staged/release.json")"
+  [[ "$commit" =~ ^[0-9a-f]{40}(-dirty)?$ ]] || fail "$tarball's release.json names no commit"
+  [[ "$(jq -r .os "$staged/release.json")-$(jq -r .arch "$staged/release.json")" == "linux-$(uname -m)" ]] || fail "$tarball is for $(jq -r '.os + " " + .arch' "$staged/release.json"), and this is linux $(uname -m)"
+else
+  step "Build"
+  commit="$(git -C "$repo_root" rev-parse HEAD)"
+  [[ -z "$(git -C "$repo_root" status --porcelain --untracked-files=no)" ]] || commit="$commit-dirty"
+  "$repo_root/scripts/build-ghostty-vt.sh"
+  KANNA_CHANNEL=production KANNA_COMMIT="$commit" cargo build --release --manifest-path "$repo_root/Cargo.toml" -p kanna -p kanna-daemon -p kanna-keeper
+  built="$repo_root/target/release"
+  cp "$built/kanna" "$built/kanna-daemon" "$built/kanna-keeper" "$repo_root/apps/kanna/Resources/planner.sh" "$staged/"
+  for skill in kanna-tasks kanna-planning kanna-new-project kanna-markup kanna-explain kanna-quiz; do cp -RL "$repo_root/.agents/kanna-skills/skills/$skill" "$staged/kanna-skills/"; done
+  version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$repo_root/Cargo.toml" | head -1)"
+  protocols="$(sed -n 's/^pub const PROTOCOLS: \[u32; 2\] = \[\([0-9]*\), \([0-9]*\)\];/[\1, \2]/p' "$repo_root/crates/kanna-build/src/lib.rs")"
+  echo "{\"commit\": \"$commit\", \"version\": \"$version\", \"channel\": \"production\", \"os\": \"linux\", \"arch\": \"$(uname -m)\", \"protocols\": $protocols}" > "$staged/release.json"
+fi
+
+step "Install $prefix/$commit"
 dest="$prefix/$commit"
 rm -rf "$dest.new"
-mkdir -p "$dest.new/kanna-skills"
-cp "$built/kanna" "$built/kanna-daemon" "$built/kanna-keeper" "$repo_root/apps/kanna/Resources/planner.sh" "$dest.new/"
-for skill in kanna-tasks kanna-planning kanna-new-project kanna-markup kanna-explain kanna-quiz; do cp -RL "$repo_root/.agents/kanna-skills/skills/$skill" "$dest.new/kanna-skills/"; done
+mv "$staged" "$dest.new"
 if diff -r -q "$dest.new" "$dest" >/dev/null 2>&1; then
   rm -rf "$dest.new"
 else

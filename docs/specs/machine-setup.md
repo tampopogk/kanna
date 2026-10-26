@@ -34,7 +34,7 @@ WantedBy=default.target
 
 ## 3. Running the setup
 
-As the user Kanna runs as (with sudo), until releases have a Linux tarball (slice 6):
+As the user Kanna runs as (with sudo); `--tarball FILE` installs a Linux tarball ([updates §1](machine-update.md#1-the-linux-tarball)) instead of building (step 2):
 
 ```sh
 sudo apt-get install -y git       # a stock cloud image has none
@@ -57,4 +57,4 @@ The daemon logs to the journal (`journalctl --user -u kanna-daemon`).
 ## 4. Joining and updates
 
 - **Joining:** you pair the machine by code ([identity §2](machine-identity.md#2-pairing)), set up its git credentials ([tasks §4](machine-tasks.md#4-repos-and-credentials)), then give it your agent accounts ([agent sign-in](agent-sign-in.md)). A Kanna Cloud VM joins by token instead ([Cloud §4](kanna-cloud.md#4-enrollment-by-token)).
-- **Updates:** `scripts/release.sh` also builds a Linux tarball (x86_64, `baseline` CPU, so older Xeons such as the R720s' Ivy Bridge run it). A daemon updates itself when a newer release is out (fetched from a peer that has it, or the release site): it switches `current`, runs `kanna-keeper --upgrade` ([keeper upgrade](keeper-upgrade.md)) and restarts; terminals survive ([restarting](daemon-restart.md)). `kanna fleet update` does it now, everywhere. No order is needed while versions overlap.
+- **Updates** ([detail](machine-update.md)): `scripts/release.sh` also builds a Linux tarball (x86_64, `baseline` CPU, so older Xeons such as the R720s' Ivy Bridge run it). `kanna machine update` sends it to every Linux machine; each daemon installs it in `/opt/kanna/<commit>`, switches `current` and restarts itself in place, upgrading the keeper when its build differs ([keeper upgrade](keeper-upgrade.md)); terminals survive ([restarting](daemon-restart.md)). No order is needed while versions overlap. A daemon updating itself when a newer release is out (fetched from a peer that has it, or the release site) is slice 6b.

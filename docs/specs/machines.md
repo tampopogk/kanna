@@ -102,7 +102,7 @@ sequenceDiagram
     A->>D: app.hello {pid, app, client: "mbp", protocols: 3..5, commit}
     alt no protocol in common
         D-->>A: ok: false, other_protocol {mine: 1..2, commit}
-        Note over A: "linux-1 is too old: it updates itself", and the daemon keeps running
+        Note over A: "linux-1 runs an older Kanna: kanna machine update linux-1", and the daemon keeps running
     else in common
         D-->>A: ok, protocol: 4, daemon {machine, commit, capabilities}, panes, layout
     end
@@ -118,7 +118,7 @@ sequenceDiagram
 - **One link per machine.** Every view is keyed by (machine, content ID), since `term-41` exists on every daemon. Built: [one link per machine](machine-links.md).
 - **The CLI:** `kanna --host NAME` (or `KANNA_HOST`) sends any command to that machine: the local daemon dials it and forwards the command as `fleet call` over a control stream, and the reply is the remote daemon's own. Inside a remote terminal nothing changes: the CLI there uses its own unix socket. Commands that read local files (`diagrams`, doc comments) still run on this machine.
 - **A Mac that serves your other machines** (a Mac whose tasks you reach from elsewhere) runs its daemon from launchd (`kanna machine serve`), a LaunchAgent pointed at the installed app's `Contents/Helpers/kanna-daemon`. The app's replace rule still holds: on `other_build` the daemon exits, and launchd starts it again from the updated bundle.
-- **Streams:** one ALPN, `kanna/1`. Each stream opens with a header line naming its kind (`control`, `file`, `port`, `sync`, `job`, `transfer`), answered by `{ok: true, kind, name}` or a refusal (`unpaired`, `revoked`, `unknown_stream`), and its bytes follow. A `control` stream carries JSON-line requests and replies, as on the unix socket. A seventh kind, `pair`, is the only one an unknown key may open ([identity §2](machine-identity.md#2-pairing)). Until their slices, `file`, `port`, `sync`, `job` and `transfer` are acknowledged and closed; `sync` and `job` are used by services built on top, such as [Kanna Cloud](kanna-cloud.md).
+- **Streams:** one ALPN, `kanna/1`. Each stream opens with a header line naming its kind (`control`, `file`, `port`, `sync`, `job`, `transfer`) and the protocols the opener speaks, answered by `{ok: true, kind, name, protocol, release}` or a refusal (`unpaired`, `revoked`, `unknown_stream`, `other_protocol`), and its bytes follow ([updates §6](machine-update.md#6-protocols)). A `control` stream carries JSON-line requests and replies, as on the unix socket. Two more kinds aren't negotiated: `pair`, the only one an unknown key may open ([identity §2](machine-identity.md#2-pairing)), and `update`, which carries a new build to any trusted daemon of any protocol ([updates §4](machine-update.md#4-the-update-stream)). Until their slices, `file`, `port`, `sync`, `job` and `transfer` are acknowledged and closed; `sync` and `job` are used by services built on top, such as [Kanna Cloud](kanna-cloud.md).
 
 ## 6. One app, several machines
 
@@ -151,7 +151,7 @@ In short ([detail](machine-tasks.md)):
 
 ## 9. Server setup and updates
 
-A Linux machine is set up with `scripts/server-setup.sh` and a systemd user unit, and daemons update themselves from a peer or the release site ([setting up a Linux machine](machine-setup.md)).
+A Linux machine is set up with `scripts/server-setup.sh` and a systemd user unit ([setting up a Linux machine](machine-setup.md)), and `kanna machine update` puts one build on every Linux machine, each daemon installing it and restarting itself with its terminals kept ([updates](machine-update.md)). Daemons updating themselves from a peer or the release site is slice 6b.
 
 ## 10. Build order
 

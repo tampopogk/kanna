@@ -35,11 +35,11 @@ flowchart LR
 | | Local daemon | Remote daemon |
 |---|---|---|
 | `build` mismatch | `other_build`; the daemon stops and the app starts its own ([daemon build](daemon-build.md)) | not checked |
-| No protocol in common | `other_protocol {mine, commit}`, the daemon keeps running | the same |
+| No protocol in common | `other_protocol {mine, commit, version}`, the daemon keeps running | the same |
 | Reply | `{ok, protocol, daemon: {pid, build, commit, machine, capabilities: {os, arch, cores}}, panes, layout}` | the same |
 | App already attached | `app_attached` if it is local; a local app **takes over** from a remote one | `app_attached` |
 
-- **Protocols:** `PROTOCOLS = (1, 1)` today; the highest both support is used. `commit` is the build's short commit (`KANNA_COMMIT`, else `git rev-parse --short=12`), shown with `other_protocol`. The app shows a refused machine as Offline with the refusal in its tooltip; it never starts, stops or replaces a remote daemon, and a remote `quit` doesn't quit the app.
+- **Protocols:** `kanna_build::PROTOCOLS = [1, 1]` today (Kanna.app's `Protocols.mine` must match; a test checks), shared with the daemons' own streams ([updates §6](machine-update.md#6-protocols)); the highest both support is used. `commit` is the build's short commit (`KANNA_COMMIT`, else `git rev-parse --short=12`), shown with `other_protocol`. The app shows a refused machine as Offline with the refusal in its tooltip, and one of another protocol says which side is older and how to update it ([updates §6](machine-update.md#6-protocols)); it never starts, stops or replaces a remote daemon, and a remote `quit` doesn't quit the app.
 - **`DaemonStarter` is the local link's only.** A remote link that drops redials with backoff up to 30 s.
 - **`client`** is this Mac's fleet name. The daemon makes it the default claimant (§4) while that app is attached.
 
