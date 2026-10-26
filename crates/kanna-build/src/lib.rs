@@ -13,6 +13,8 @@ pub const DAEMON: &str = "kanna-daemon";
 
 pub const VERSION: &str = env!("KANNA_BUILD_VERSION");
 
+pub const PROTOCOLS: [u32; 2] = [1, 1];
+
 pub const COMMIT: &str = env!("KANNA_BUILD_COMMIT");
 
 pub fn build_id(binary: &Path) -> Option<String> {
@@ -199,6 +201,12 @@ pub fn read_record(folder: &Path) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_app_speaks_the_daemons_protocols() {
+        let swift = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/kanna/Sources/KannaMachines/Protocols.swift")).unwrap();
+        assert!(swift.contains(&format!("public static let mine: [Int] = [{}, {}]", PROTOCOLS[0], PROTOCOLS[1])), "Protocols.swift's mine isn't {PROTOCOLS:?}");
+    }
 
     fn build(channel: Channel, worktree: Option<&str>) -> Build {
         Build { channel, checkout: PathBuf::from("/r/kanna"), worktree: worktree.map(String::from) }

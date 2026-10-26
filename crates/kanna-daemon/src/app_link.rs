@@ -56,7 +56,7 @@ pub const APP_PREFIX: &str = "debug.";
 
 pub const APP_ASK: &str = "app.";
 
-pub const PROTOCOLS: (u64, u64) = (1, 1);
+pub const PROTOCOLS: (u64, u64) = (kanna_build::PROTOCOLS[0] as u64, kanna_build::PROTOCOLS[1] as u64);
 
 static CONNECTIONS: AtomicU64 = AtomicU64::new(0);
 
@@ -232,7 +232,7 @@ impl AppLink {
         if protocol < low.max(PROTOCOLS.0) {
             let theirs = if low == high { format!("{low}") } else { format!("{low}–{high}") };
             log!("kanna-daemon: an app speaking protocol {theirs} said hello; this daemon speaks {}–{}", PROTOCOLS.0, PROTOCOLS.1);
-            answer(json!({ "id": id, "ok": false, "error": { "code": "other_protocol", "message": format!("this daemon speaks protocols {}–{} and the app {theirs}", PROTOCOLS.0, PROTOCOLS.1) }, "mine": [PROTOCOLS.0, PROTOCOLS.1], "commit": kanna_build::COMMIT }));
+            answer(json!({ "id": id, "ok": false, "error": { "code": "other_protocol", "message": format!("this daemon speaks protocols {}–{} and the app {theirs}", PROTOCOLS.0, PROTOCOLS.1) }, "mine": [PROTOCOLS.0, PROTOCOLS.1], "commit": kanna_build::COMMIT, "version": kanna_build::VERSION }));
             let _ = stream.shutdown(Shutdown::Read);
             return false;
         }
@@ -255,7 +255,7 @@ impl AppLink {
         }
         self.layout.flush();
         let panes = self.core.upgrade().map_or(Value::Array(vec![]), |core| core.with_panes(pane_table));
-        let mut daemon = json!({ "pid": std::process::id(), "build": self.build, "commit": kanna_build::COMMIT, "machine": null, "capabilities": null });
+        let mut daemon = json!({ "pid": std::process::id(), "build": self.build, "commit": kanna_build::COMMIT, "version": kanna_build::VERSION, "protocols": [PROTOCOLS.0, PROTOCOLS.1], "machine": null, "capabilities": null });
         if let Some(describe) = self.machine.borrow().as_ref() {
             let machine = describe();
             daemon["machine"] = machine["name"].clone();

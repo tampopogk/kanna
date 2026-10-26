@@ -97,7 +97,7 @@ The peers are a **signed log**, not a record that replicates by last writer wins
 | `kanna machine revoke MACHINE` | revokes a machine for good and tells the others |
 | `kanna --host MACHINE COMMAND …` (or `KANNA_HOST`) | runs COMMAND on that machine: its name, or its key |
 
-A MACHINE is a name in the log or a 64-digit key. The daemon's `machine` command takes the same actions (`status`, `name`, `offer`, `wait`, `pair`, `ping`, `sync`, `addr`, `revoke`, `call`); `call {host, cmd, args}` is what `--host` sends, and its reply is the remote daemon's reply. Error codes: `unpaired`, `revoked`, `identity_mismatch`, `unreachable`, `not_found`, `gesture_required`, `pake_confirmation_failed`, `code_expired`, `rate_limited`, `already_paired`, `broken`.
+A MACHINE is a name in the log or a 64-digit key. `kanna machine update` is in [updates](machine-update.md). The daemon's `machine` command takes the same actions (`status`, `name`, `offer`, `wait`, `pair`, `ping`, `sync`, `addr`, `revoke`, `update`, `call`); `call {host, cmd, args}` is what `--host` sends, and its reply is the remote daemon's reply. Error codes: `unpaired`, `revoked`, `identity_mismatch`, `unreachable`, `not_found`, `gesture_required`, `pake_confirmation_failed`, `code_expired`, `rate_limited`, `already_paired`, `broken`.
 
 **Port:** the endpoint binds the UDP port it used last (kept in the `machines` document), else 7470, else any free port. `KANNA_MACHINE_PORT` overrides it, and `KANNA_MACHINE_MDNS=0` turns LAN discovery off; tests set both, so test daemons never advertise on the LAN.
 

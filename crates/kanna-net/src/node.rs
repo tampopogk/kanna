@@ -1,6 +1,7 @@
 use crate::log::PeerLog;
 use crate::pair::{hello_a, hello_b, pake_bytes, pake_hex, Offer, Party, Role};
-use crate::{is_key, Refused, ALPN, KINDS};
+use crate::update::{self, Install};
+use crate::{is_key, Refused, ALPN, KINDS, UPDATE};
 use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey};
 use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
@@ -8,6 +9,7 @@ use n0_future::StreamExt;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -44,7 +46,7 @@ impl Failure {
         Failure { code: code.into(), message: message.into() }
     }
 
-    fn from_reply(reply: &Value) -> Failure {
+    pub(crate) fn from_reply(reply: &Value) -> Failure {
         let error = &reply["error"];
         Failure::new(error["code"].as_str().unwrap_or("failed"), error["message"].as_str().unwrap_or("failed"))
     }
@@ -56,7 +58,7 @@ impl From<Refused> for Failure {
     }
 }
 
-fn refusal(failure: &Failure) -> Value {
+pub(crate) fn refusal(failure: &Failure) -> Value {
     json!({ "ok": false, "error": { "code": failure.code, "message": failure.message } })
 }
 
@@ -64,6 +66,7 @@ pub trait Host: Send + Sync + 'static {
     fn request(&self, from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send>);
     fn confirm(&self, question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send>);
     fn save(&self, state: Value);
+    fn restart(&self);
     fn app(&self, _from: String, _hello: Value, _stream: std::os::unix::net::UnixStream) {}
 }
 
@@ -74,23 +77,28 @@ pub struct Config {
     pub capabilities: Value,
     pub port: Option<u16>,
     pub mdns: bool,
+    pub release: Value,
+    pub install: Option<Install>,
 }
 
 #[derive(Clone)]
-pub struct Node(Arc<Inner>);
+pub struct Node(pub(crate) Arc<Inner>);
 
-struct Inner {
+pub(crate) struct Inner {
     endpoint: Endpoint,
     secret: SecretKey,
-    host: Box<dyn Host>,
+    pub(crate) host: Box<dyn Host>,
     capabilities: Value,
+    pub(crate) release: Value,
+    pub(crate) install: Option<Install>,
+    pub(crate) updating: AtomicBool,
     state: Mutex<State>,
     outcome: watch::Sender<Option<Result<Value, Failure>>>,
     revoked: watch::Sender<u64>,
 }
 
-struct State {
-    name: String,
+pub(crate) struct State {
+    pub(crate) name: String,
     port: u16,
     log: Option<PeerLog>,
     broken: Option<String>,
@@ -98,6 +106,7 @@ struct State {
     offer: Option<Offer>,
     nearby: BTreeMap<String, Nearby>,
     conns: HashMap<String, Connection>,
+    pub(crate) releases: HashMap<String, Value>,
 }
 
 #[derive(Clone, Default)]
@@ -144,8 +153,8 @@ impl Node {
         };
         let name = saved["name"].as_str().filter(|n| valid_name(n)).map(String::from).unwrap_or(config.name);
         let addrs = saved["addrs"].as_object().map(|m| m.iter().map(|(k, v)| (k.clone(), strings(v))).collect()).unwrap_or_default();
-        let state = State { name, port, log, broken, addrs, offer: None, nearby: BTreeMap::new(), conns: HashMap::new() };
-        let node = Node(Arc::new(Inner { endpoint, secret: config.secret, host, capabilities: config.capabilities, state: Mutex::new(state), outcome: watch::channel(None).0, revoked: watch::channel(0).0 }));
+        let state = State { name, port, log, broken, addrs, offer: None, nearby: BTreeMap::new(), conns: HashMap::new(), releases: HashMap::new() };
+        let node = Node(Arc::new(Inner { endpoint, secret: config.secret, host, capabilities: config.capabilities, release: config.release, install: config.install, updating: AtomicBool::new(false), state: Mutex::new(state), outcome: watch::channel(None).0, revoked: watch::channel(0).0 }));
         if config.mdns {
             node.discover();
         }
@@ -167,7 +176,7 @@ impl Node {
         self.state().port
     }
 
-    fn state(&self) -> std::sync::MutexGuard<'_, State> {
+    pub(crate) fn state(&self) -> std::sync::MutexGuard<'_, State> {
         self.0.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
@@ -223,7 +232,7 @@ impl Node {
         json!({ "name": self.state().name, "key": self.key(), "capabilities": self.0.capabilities, "relay": null, "addrs": addrs })
     }
 
-    fn usable(&self) -> Result<(), Failure> {
+    pub(crate) fn usable(&self) -> Result<(), Failure> {
         match self.broken() {
             Some(reason) => Err(Failure::new("broken", reason)),
             None => Ok(()),
@@ -251,6 +260,7 @@ impl Node {
                         "conflict": keys.len() > 1,
                         "path": path,
                         "addrs": addrs,
+                        "release": state.releases.get(key).cloned().unwrap_or(if *key == me { self.0.release.clone() } else { Value::Null }),
                     }));
                 }
             }
@@ -262,6 +272,7 @@ impl Node {
             "name": state.name,
             "key": me,
             "port": state.port,
+            "release": self.0.release,
             "addrs": addrs,
             "paired": state.log.is_some(),
             "log": state.log.as_ref().map(|l| l.id().to_string()),
@@ -341,7 +352,7 @@ impl Node {
         Ok(json!({ "key": key, "addr": addr }))
     }
 
-    fn resolve(&self, host: &str) -> Result<String, Failure> {
+    pub(crate) fn resolve(&self, host: &str) -> Result<String, Failure> {
         if is_key(host) {
             return Ok(host.to_string());
         }
@@ -354,7 +365,19 @@ impl Node {
         }
     }
 
-    fn name_of(&self, key: &str) -> String {
+    pub(crate) fn trusted(&self) -> Vec<String> {
+        self.state().log.as_ref().map(|l| l.view().trusted().into_iter().collect()).unwrap_or_default()
+    }
+
+    pub(crate) fn capabilities_of(&self, key: &str) -> Value {
+        self.state().log.as_ref().and_then(|l| l.view().descriptors.get(key).map(|d| d["capabilities"].clone())).unwrap_or(Value::Null)
+    }
+
+    pub(crate) fn forget(&self, key: &str) {
+        self.state().conns.remove(key);
+    }
+
+    pub(crate) fn name_of(&self, key: &str) -> String {
         self.state().log.as_ref().and_then(|l| l.view().name_of(key)).unwrap_or_else(|| key.chars().take(10).collect())
     }
 
@@ -407,6 +430,16 @@ impl Node {
             let _ = send.finish();
             return;
         }
+        if kind == UPDATE {
+            match self.admit(&remote, None) {
+                Ok(_) => self.receive_update(&header, &mut send, &mut recv).await,
+                Err(failure) => {
+                    let _ = write_line(&mut send, &refusal(&failure)).await;
+                }
+            }
+            let _ = send.finish();
+            return;
+        }
         if !KINDS.contains(&kind.as_str()) {
             let _ = write_line(&mut send, &refusal(&Failure::new("unknown_stream", format!("no stream kind \"{kind}\"")))).await;
             let _ = send.finish();
@@ -421,7 +454,15 @@ impl Node {
                 return;
             }
         };
-        if write_line(&mut send, &json!({ "ok": true, "kind": kind, "name": self.state().name })).await.is_err() {
+        let mine = self.protocols();
+        let theirs = if cert.is_some() { mine } else { update::protocols(&header["protocols"]).unwrap_or([1, 1]) };
+        let Some(protocol) = update::common(mine, theirs) else {
+            let refused = json!({ "ok": false, "error": { "code": "other_protocol", "message": format!("{} speaks protocol {}–{}", self.state().name, mine[0], mine[1]) }, "release": self.0.release });
+            let _ = write_line(&mut send, &refused).await;
+            let _ = send.finish();
+            return;
+        };
+        if write_line(&mut send, &json!({ "ok": true, "kind": kind, "name": self.state().name, "protocol": protocol, "release": self.0.release })).await.is_err() {
             return;
         }
         if kind == "control" {
@@ -579,17 +620,64 @@ impl Node {
         Ok((conn, true))
     }
 
+    pub(crate) fn protocols(&self) -> [u32; 2] {
+        update::protocols(&self.0.release["protocols"]).unwrap_or([1, 1])
+    }
+
     async fn open(&self, conn: &Connection, kind: &str, name: &str) -> Result<(SendStream, BufReader<RecvStream>, Value), Failure> {
+        self.open_with(conn, kind, name, json!({})).await
+    }
+
+    async fn open_with(&self, conn: &Connection, kind: &str, name: &str, extra: Value) -> Result<(SendStream, BufReader<RecvStream>, Value), Failure> {
         let lost = |e: String| Failure::new("unreachable", format!("lost {name}: {e}"));
         let (mut send, recv) = conn.open_bi().await.map_err(|e| lost(e.to_string()))?;
         let mut recv = BufReader::new(recv);
-        write_line(&mut send, &json!({ "kind": kind })).await.map_err(lost)?;
+        let mut header = json!({ "kind": kind, "protocols": self.protocols() });
+        if let (Some(header), Some(extra)) = (header.as_object_mut(), extra.as_object()) {
+            header.extend(extra.clone());
+        }
+        write_line(&mut send, &header).await.map_err(lost)?;
         let ack = read_line(&mut recv, MAX_HEADER).await.map_err(lost)?;
+        let key = conn.remote_id().to_string();
+        if ack["release"].is_object() {
+            self.state().releases.insert(key, ack["release"].clone());
+        }
         if ack["ok"] != true {
             let failure = Failure::from_reply(&ack);
+            if failure.code == "other_protocol" {
+                return Err(Failure::new("other_protocol", update::other_protocol(name, &ack["release"], self.protocols())));
+            }
             return Err(Failure::new(&failure.code, format!("{name} refused this machine: {}", failure.message)));
         }
+        if kind != UPDATE && !update::agreed(&ack, self.protocols()) {
+            let _ = send.finish();
+            let release = if ack["release"].is_object() { ack["release"].clone() } else { json!({ "protocols": [1, 1] }) };
+            return Err(Failure::new("other_protocol", update::other_protocol(name, &release, self.protocols())));
+        }
         Ok((send, recv, ack))
+    }
+
+    pub(crate) async fn open_to(&self, key: &str, kind: &str, extra: Value) -> Result<(SendStream, BufReader<RecvStream>, Value), Failure> {
+        let name = self.name_of(key);
+        let (mut conn, mut fresh) = self.connect(key).await?;
+        loop {
+            match self.open_with(&conn, kind, &name, extra.clone()).await {
+                Ok(opened) => return Ok(opened),
+                Err(failure) => {
+                    self.forget(key);
+                    if fresh || failure.code != "unreachable" {
+                        return Err(failure);
+                    }
+                    (conn, fresh) = self.connect(key).await?;
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn release_of(&self, key: &str) -> Result<Value, Failure> {
+        let (mut send, _, ack) = self.open_to(key, "control", json!({})).await?;
+        let _ = send.finish();
+        Ok(ack["release"].clone())
     }
 
     async fn control_stream(&self, host: &str) -> Result<(SendStream, BufReader<RecvStream>, String), Failure> {
@@ -598,21 +686,8 @@ impl Node {
         if key == self.key() {
             return Err(Failure::new("bad_request", format!("{host} is this machine")));
         }
-        let name = self.name_of(&key);
-        let (mut conn, mut fresh) = self.connect(&key).await?;
-        let (send, recv, _) = loop {
-            match self.open(&conn, "control", &name).await {
-                Ok(opened) => break opened,
-                Err(failure) => {
-                    self.state().conns.remove(&key);
-                    if fresh || failure.code != "unreachable" {
-                        return Err(failure);
-                    }
-                    (conn, fresh) = self.connect(&key).await?;
-                }
-            }
-        };
-        Ok((send, recv, name))
+        let (send, recv, _) = self.open_to(&key, "control", json!({})).await?;
+        Ok((send, recv, self.name_of(&key)))
     }
 
     async fn sync_over(&self, send: &mut SendStream, recv: &mut BufReader<RecvStream>) -> Result<(), Failure> {

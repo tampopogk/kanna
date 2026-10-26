@@ -25,14 +25,36 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    pub fn start() -> Daemon {
+    fn folder() -> PathBuf {
         static COUNT: AtomicUsize = AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!("kcli{}-{}", std::process::id(), COUNT.fetch_add(1, Ordering::SeqCst)));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("home")).unwrap();
-        let dir = dir.canonicalize().unwrap();
-        let daemon = sibling("kanna-daemon", "kanna-daemon");
-        let keeper = sibling("kanna-keeper", "kanna-keeper");
+        dir.canonicalize().unwrap()
+    }
+
+    pub fn start() -> Daemon {
+        Daemon::run(Daemon::folder(), sibling("kanna-daemon", "kanna-daemon"), sibling("kanna-keeper", "kanna-keeper"), 0)
+    }
+
+    pub fn installed(commit: &str) -> Daemon {
+        let dir = Daemon::folder();
+        let prefix = dir.join("opt");
+        Daemon::build(&prefix.join(commit), &json!({ "commit": commit }));
+        std::os::unix::fs::symlink(commit, prefix.join("current")).unwrap();
+        let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        Daemon::run(dir, prefix.join("current/kanna-daemon"), prefix.join("current/kanna-keeper"), port)
+    }
+
+    pub fn build(dir: &Path, release: &Value) {
+        std::fs::create_dir_all(dir.join("kanna-skills")).unwrap();
+        for (name, package) in [("kanna-daemon", "kanna-daemon"), ("kanna-keeper", "kanna-keeper"), ("kanna", "kanna")] {
+            std::fs::copy(sibling(name, package), dir.join(name)).unwrap();
+        }
+        std::fs::write(dir.join("release.json"), release.to_string()).unwrap();
+    }
+
+    fn run(dir: PathBuf, daemon: PathBuf, keeper: PathBuf, port: u16) -> Daemon {
         let log = std::fs::File::create(dir.join("daemon.log")).unwrap();
         let mut command = Command::new(daemon);
         command.env_clear();
@@ -50,7 +72,7 @@ impl Daemon {
             .env("KANNA_AGENT_RULES_URL", "none")
             .env("KANNA_KEEPER_CLOSE_GRACE_MS", "300")
             .env("KANNA_MACHINE_MDNS", "0")
-            .env("KANNA_MACHINE_PORT", "0")
+            .env("KANNA_MACHINE_PORT", port.to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(log)

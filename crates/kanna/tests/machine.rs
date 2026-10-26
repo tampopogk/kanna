@@ -151,3 +151,44 @@ fn an_app_on_another_machine_attaches_over_the_network_and_another_protocol_leav
     assert_eq!(unpaired.code, "unpaired");
     app.quit();
 }
+
+#[test]
+fn an_update_moves_a_machine_to_another_commit_and_its_terminals_carry_on() {
+    let (a, b) = ("a".repeat(40), "b".repeat(40));
+    let (mbp, vm) = (Daemon::start(), Daemon::installed(&a));
+    let app = mbp.app();
+    mbp.kanna(&["machine", "name", "mbp"]).ok();
+    vm.kanna(&["machine", "name", "vm"]).ok();
+    pair(&mbp, &vm);
+    let pid_file = vm.dir.join("shell.pid");
+    vm.kanna(&["open", "--name", "kept", "--no-wait", "--cmd", &format!("echo $$ > {}; exec sleep 600", pid_file.display())]).ok();
+    wait_for("the terminal's shell", || std::fs::read_to_string(&pid_file).is_ok_and(|p| p.ends_with('\n')));
+    let shell: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+    let daemon_pid = std::fs::read_to_string(vm.dir.join("state/daemon.pid")).unwrap();
+
+    let release = |commit: &str| json!({ "commit": commit, "version": "0.1.0", "channel": "dev", "os": std::env::consts::OS, "arch": std::env::consts::ARCH, "protocols": [1, 1] });
+    let stage = vm.dir.join("stage");
+    Daemon::build(&stage.join("kanna"), &release(&b));
+    let tarball = vm.dir.join("Kanna-test.tar.gz");
+    assert!(std::process::Command::new("tar").arg("-czf").arg(&tarball).arg("-C").arg(&stage).arg("kanna").status().unwrap().success());
+
+    let updated = mbp.kanna(&["machine", "update", "--tarball", tarball.to_str().unwrap()]).ok();
+    assert!(updated.contains("vm             updated from aaaaaaaa: sent "), "{updated}");
+    assert_eq!(std::fs::read_link(vm.dir.join("opt/current")).unwrap().to_str(), Some(b.as_str()));
+    assert_eq!(std::fs::read_link(vm.dir.join("opt/previous")).unwrap().to_str(), Some(a.as_str()));
+    let log = std::fs::read_to_string(vm.dir.join("daemon.log")).unwrap();
+    assert!(log.contains(&format!("restarting as {}", vm.dir.join("opt/current/kanna-daemon").display())), "{log}");
+    assert_eq!(std::fs::read_to_string(vm.dir.join("state/daemon.pid")).unwrap(), daemon_pid, "the daemon restarts in place, under the same pid");
+    assert_eq!(unsafe { libc::kill(shell, 0) }, 0, "the terminal's shell kept running");
+    assert!(vm.kanna(&["workspace", "list", "--all"]).ok().contains("kept"));
+    let status = mbp.kanna(&["machine", "list"]).ok();
+    assert!(status.contains("Kanna 0.1.0 (bbbbbbbb)"), "{status}");
+
+    let again = mbp.kanna(&["machine", "update", "vm", "--tarball", tarball.to_str().unwrap()]).ok();
+    assert!(again.contains("vm             already runs it"), "{again}");
+    mbp.kanna(&["machine", "update", "mbp", "--tarball", tarball.to_str().unwrap()]).fails(2, "can't update itself");
+    let mac = vm.kanna(&["machine", "update", "mbp", "--tarball", tarball.to_str().unwrap()]);
+    assert!(mac.out.contains("mbp            failed: mbp refused this machine: mbp's Kanna isn't installed in /opt/kanna"), "{}", mac.out);
+    mac.fails(1, "not every machine took the update");
+    app.quit();
+}
