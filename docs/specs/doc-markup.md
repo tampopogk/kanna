@@ -160,9 +160,11 @@ flowchart LR
     F["thread file<br/>.kanna/docs/PATH.json"]
     subgraph daemon["daemon"]
         T["terminals"]
+        D["thread watches<br/>markup.*"]
     end
     CLI["kanna markup reply / show / …<br/>(from the agent)"]
-    V <-->|"read, write, watch"| F
+    V <-->|"markup.subscribe, markup.post, markup.edit"| D
+    D <-->|"read, write, watch"| F
     V -->|"send: paste + Enter"| T
     CLI --> F
     S --- F[("&lt;repo&gt;/.kanna/docs/")]
@@ -172,7 +174,7 @@ flowchart LR
 - **Sending** uses the daemon's `send`, which delivers the comment as a bracketed paste to an agent that turned bracketed paste on, so a multi-line comment arrives whole, and then presses Return ([kanna send](kanna-send.md)). `kanna markup` passes the pane it runs in (`$KANNA_TERMINAL`, which Kanna sets in every terminal), and the doc remembers it. Comments on or off are the pane's `markup` flag, set by `open` or the `markup` command, which restarts the pane's view as `navigate` does.
 - **The app** adds the thread panel, marks and the comment box to a markdown or web pane with comments on, one shared set of views (`KannaDocs`), and gets thread changes over the app link like any other pane update. A page is worked from a script world of its own (`WKContentWorld`), which the page's scripts can't see or call; its marked-up copy is the web view's own screenshot.
 - **Stored** in `<repo>/.kanna/docs/`, one file per doc, so threads survive restarts.
-- **Built so far:** both panes have the native comment UI, with the [mockup](../../references/mockups/doc-markup.html)'s thread cards and waiting states (e2e `md_comments` drives the markdown pane, `page_comments` a page, and both screenshot it); the panes get the agent's status from the app's `status` notices. Until the daemon's doc store lands, the app reads and writes the reference model's files directly, so the prototype's `kanna-doc reply` and `resolve` (and the skill) work with it unchanged.
+- **Built so far:** both panes have the native comment UI, with the [mockup](../../references/mockups/doc-markup.html)'s thread cards and waiting states (e2e `md_comments` drives the markdown pane, `page_comments` a page, and both screenshot it); the panes get the agent's status from the app's `status` notices. The app reads and writes threads only through the doc's daemon, in the reference model's format, so a remote task's threads work as a local one's ([files and threads](files-and-threads.md)) and the prototype's `kanna-doc reply` and `resolve` (and the skill) work with them unchanged.
 
 ## 7. Glossary
 

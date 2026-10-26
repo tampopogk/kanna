@@ -176,7 +176,7 @@ pub fn post(args: &Value) -> Result<Map, KmuxError> {
         )?;
     }
     let mut out = Map::new();
-    out.insert("id".into(), json!(id));
+    out.insert("thread".into(), json!(id));
     answer(&doc, out)
 }
 
@@ -274,10 +274,10 @@ mod tests {
         std::fs::write(&doc, "# Spec\n").unwrap();
         let thread = json!({ "quote": "Spec", "line": 1, "state": "open", "status": "sent", "messages": [{ "who": "you", "text": "Why?", "at": "2026-10-26T10:00:00" }] });
         let posted = post(&json!({ "path": doc, "thread": thread, "mark": BASE64.encode(b"\x89PNG\r\n\x1a\nrest") })).unwrap();
-        assert_eq!(posted["id"], "c1");
+        assert_eq!(posted["thread"], "c1");
         assert_eq!(posted["record"]["threads"][0]["mark"], ".kanna/docs/marks/docs__spec.md-c1.png");
         assert_eq!(std::fs::read(dir.join(".kanna/docs/marks/docs__spec.md-c1.png")).unwrap(), b"\x89PNG\r\n\x1a\nrest");
-        assert_eq!(post(&json!({ "path": doc, "thread": thread })).unwrap()["id"], "c2");
+        assert_eq!(post(&json!({ "path": doc, "thread": thread })).unwrap()["thread"], "c2");
         let edited = edit(&json!({ "path": doc, "id": "c1", "status": "unsent", "error": "no agent", "message": { "who": "you", "text": "And?", "at": "x" } })).unwrap();
         assert_eq!(edited["record"]["threads"][0]["error"], "no agent");
         assert_eq!(edited["record"]["threads"][0]["messages"].as_array().unwrap().len(), 2);

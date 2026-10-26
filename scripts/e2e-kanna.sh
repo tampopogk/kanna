@@ -3888,18 +3888,17 @@ sys.exit(not (a[1] > b[1] and abs(a[0] - b[0]) < 1 and a[2] == 340))' || { echo 
   check wait_for 2 eval '[[ "$(toasted)" == "d1 " ]]' || { echo "toasts: × didn't close it"; return 1; }
 }
 
-scenario fleet_remote_task M4
-fleet_remote_task() {
+fleet_vm() {
   export KANNA_FLEET_MDNS=0 KANNA_FLEET_PORT=0
-  start_daemon || { echo "fleet_remote_task line $LINENO"; return 1; }
-  local vm="$KANNA_STATE_DIR/fleet-vm"
+  start_daemon || { echo "$1 line $LINENO"; return 1; }
+  vm="$KANNA_STATE_DIR/fleet-vm"
   mkdir -p "$vm/state" && chmod 700 "$vm"
   vmk() { KANNA_SOCKET="$vm/kanna.sock" KANNA_STATE_DIR="$vm/state" "$bin/kanna" "$@"; }
   vraw() { KANNA_SOCKET="$vm/kanna.sock" raw "$@"; }
   KANNA_SOCKET="$vm/kanna.sock" KANNA_STATE_DIR="$vm/state" KANNA_KEEPER="$bin/kanna-keeper" "$bin/kanna-daemon" >>"$out/daemon-vm.log" 2>&1 &
-  local vm_pid=$!
-  wait_for 5 test -S "$vm/kanna.sock" || { echo "fleet_remote_task: the second daemon didn't open its socket"; return 1; }
-  kanna fleet name mbp >/dev/null && vmk fleet name vm >/dev/null || { echo "fleet_remote_task line $LINENO"; return 1; }
+  vm_pid=$!
+  wait_for 5 test -S "$vm/kanna.sock" || { echo "$1: the second daemon didn't open its socket"; return 1; }
+  kanna fleet name mbp >/dev/null && vmk fleet name vm >/dev/null || { echo "$1 line $LINENO"; return 1; }
   python3 - "$KANNA_SOCKET" >"$KANNA_STATE_DIR/confirmed" <<'PY' &
 import json, socket, sys
 s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); f = s.makefile("rw")
@@ -3914,17 +3913,23 @@ PY
   local confirmer=$!
   vmk fleet pair --json >"$KANNA_STATE_DIR/offer" &
   local waiting=$!
-  check wait_for 5 test -s "$KANNA_STATE_DIR/offer" || { echo "fleet_remote_task: no pairing code"; return 1; }
+  check wait_for 5 test -s "$KANNA_STATE_DIR/offer" || { echo "$1: no pairing code"; return 1; }
   local code peer
   code="$(head -1 "$KANNA_STATE_DIR/offer" | field code)"
   peer="$(head -1 "$KANNA_STATE_DIR/offer" | python3 -c 'import json, sys; o = json.load(sys.stdin); print("%s@127.0.0.1:%s" % (o["key"], o["port"]))')"
   expected="added vm to your fleet"; says kanna fleet pair "$code" --peer "$peer" || return 1
   wait "$waiting" "$confirmer"
-  check test "$(cat "$KANNA_STATE_DIR/confirmed")" == vm || { echo "fleet_remote_task: the pairing wasn't confirmed in an app"; return 1; }
-  start_app || { echo "fleet_remote_task line $LINENO"; return 1; }
+  check test "$(cat "$KANNA_STATE_DIR/confirmed")" == vm || { echo "$1: the pairing wasn't confirmed in an app"; return 1; }
+  start_app || { echo "$1 line $LINENO"; return 1; }
   fleet() { raw '{"id":1,"cmd":"debug.fleet"}' | field "$1"; }
-  check wait_for 20 eval '[[ "$(fleet links.0.attached)" == True ]]' || { echo "fleet_remote_task: the app didn't link to vm"; raw '{"id":1,"cmd":"debug.fleet"}'; return 1; }
+  check wait_for 20 eval '[[ "$(fleet links.0.attached)" == True ]]' || { echo "$1: the app didn't link to vm"; raw '{"id":1,"cmd":"debug.fleet"}'; return 1; }
   check test "$(fleet links.0.machine) $(fleet links.0.daemon.machine) $(fleet links.0.path.path)" == "vm vm direct" || { raw '{"id":1,"cmd":"debug.fleet"}'; return 1; }
+}
+
+scenario fleet_remote_task M4
+fleet_remote_task() {
+  local vm vm_pid
+  fleet_vm fleet_remote_task || return 1
 
   local repo="$vm/repo"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first && git -C "$repo" remote add origin https://example.com/team/notes.git || { echo "fleet_remote_task line $LINENO"; return 1; }
@@ -4013,6 +4018,73 @@ assert "local network" in rows[1]["tip"], rows' "$(desk fleet)" || return 1
 
   kanna task list >/dev/null || return 1
   check test "$(kanna task list --json | python3 -c 'import json, sys; print(len(json.load(sys.stdin)["tasks"]))')" == 0 || { echo "fleet_remote_task: vm's task leaked into this Mac's backlog"; return 1; }
+}
+
+scenario fleet_remote_files M4
+fleet_remote_files() {
+  local vm vm_pid
+  fleet_vm fleet_remote_files || return 1
+  local repo="$vm/repo"
+  mkdir -p "$repo/docs" "$repo/src" && git -C "$repo" init -q -b main || return 1
+  printf '# Spec\n\nThe keeper hands terminals over.\n\n![the stack](stack.png)\n\nSee [the other doc](other.md).\n' >"$repo/docs/spec.md"
+  printf '# Other\n\nAnother doc.\n' >"$repo/docs/other.md"
+  printf 'fn main() {\n    println!("remote");\n}\n' >"$repo/src/main.rs"
+  python3 - "$repo/docs/stack.png" <<'PY'
+import struct, sys, zlib
+chunk = lambda kind, data: struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+rows = b"".join(b"\0" + b"\xff\x3b\x30" * 8 for _ in range(8))
+open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 8, 8, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+PY
+  git -C "$repo" add -A && git -C "$repo" -c user.email=e@e -c user.name=e commit -q -m first && git -C "$repo" remote add origin https://example.com/team/specs.git || { echo "fleet_remote_files line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  (cd / && vmk "$repo") >/dev/null || { echo "fleet_remote_files line $LINENO"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"d1\"}}" | field "$1"; }
+  check wait_for 10 eval '[[ "$(desk lead)" == term-*@vm ]]' || { echo "fleet_remote_files: the Desk's planner isn't on vm"; return 1; }
+  local planner; planner="$(desk lead)"
+  (cd "$repo" && KANNA_TERMINAL="${planner%@vm}" vmk task new "Remote spec" "Review the spec") >/dev/null || { echo "fleet_remote_files line $LINENO"; return 1; }
+  local task; task="$(sqlite3 -readonly "$vm/state/kanna.db" "select id from tasks order by rowid limit 1")@vm"
+  check wait_for 10 eval '[[ "$(desk backlog)" == "[\"$task\"]" ]]' || { echo "fleet_remote_files: the Desk's backlog doesn't list vm's task"; return 1; }
+  raw '{"id":1,"cmd":"debug.click","args":{"backlog":"'"$task"'","window":"d1"}}' >/dev/null
+  check wait_for 10 eval '[[ "$(desk shelf.0.title)" == "Remote spec" ]]' || { echo "fleet_remote_files: starting vm's task"; desk shelf; return 1; }
+  local agent; agent="$(desk shelf.0.task)"
+  raw '{"id":1,"cmd":"debug.click","args":{"shelf":"'"$agent"'","window":"d1"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk window.dock.pane)" == "$agent" ]]' || { echo "fleet_remote_files: pulling vm's task"; return 1; }
+  local worktree="$repo/.kanna-worktrees/${task%@vm}"
+  check wait_for 10 test -f "$worktree/docs/spec.md" || { echo "fleet_remote_files: no worktree"; return 1; }
+  printf '# Spec\n\nThe keeper hands terminals over. SENDME to the app.\n\n![the stack](stack.png)\n\nSee [the other doc](other.md).\n' >"$worktree/docs/spec.md"
+  rv() { (cd "$worktree" && KANNA_TERMINAL="${agent%@vm}" vmk "$@"); }
+
+  local spec; spec="$(rv open md docs/spec.md --tab --name spec --json | field pane.id)@vm" || { echo "fleet_remote_files line $LINENO"; return 1; }
+  rv markup spec | grep -qF "comments on in" || { echo "fleet_remote_files: markup on vm's doc"; return 1; }
+  md() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"$spec\"${1:-}}}"; }
+  check wait_for 10 eval 'md | field text | grep -qF "[image]"' || { echo "fleet_remote_files: vm's image didn't show"; md | field text; return 1; }
+  check wait_for 5 eval '[[ "$(md | field name) $(md | field markup) $(md | field agent)" == "docs/spec.md True $agent" ]]' || { echo "fleet_remote_files: the doc's name, comments and agent"; md; return 1; }
+  thread() { md | field threads | python3 -c 'import json, sys
+t = [t for t in json.load(sys.stdin) if t["id"] == sys.argv[1]]
+v = t[0][sys.argv[2]] if t else None
+print(len(v) if isinstance(v, list) else v)' "$1" "$2"; }
+  local at; at="$(md | field text | python3 -c 'import sys; print(sys.stdin.read().index("SENDME"))')"
+  md ",\"select\":[$at,6]" >/dev/null
+  key cmd+return; check wait_for 2 eval '[[ "$(md | field box)" == new ]]' || { echo "fleet_remote_files: no comment box"; md; return 1; }
+  raw '{"id":1,"cmd":"debug.type","args":{"focused":true,"text":"Please fix"}}' >/dev/null
+  key cmd+return
+  check wait_for 5 eval '[[ "$(thread c1 status)" == sent ]]' || { echo "fleet_remote_files: the comment wasn't sent"; md | field threads; return 1; }
+  check test -f "$worktree/.kanna/docs/docs__spec.md.json" || { echo "fleet_remote_files: the thread wasn't saved on vm"; return 1; }
+  check wait_for 5 eval 'vmk read "${agent%@vm}" | tr -d "\\n" | grep -qF "kanna comment c1 · docs/spec.md:3"' || { echo "fleet_remote_files: the comment didn't reach vm's agent"; vmk read "${agent%@vm}"; return 1; }
+  rv markup reply c1 --doc "$worktree/docs/spec.md" "Fixed on vm." >/dev/null || { echo "fleet_remote_files line $LINENO"; return 1; }
+  check wait_for 5 eval '[[ "$(thread c1 messages)" == 2 ]]' || { echo "fleet_remote_files: vm's reply didn't reach the app"; md | field threads; return 1; }
+  sleep 0.5; snap d1 fleet_remote_files >/dev/null
+  local shot; shot="$(rv screenshot spec -o "$vm/spec.png")" || { echo "fleet_remote_files: screenshot from vm: $shot"; return 1; }
+  [[ "$shot" == *"$vm/spec.png"* && "$(head -c 4 "$vm/spec.png" | tail -c 3)" == PNG ]] || { echo "fleet_remote_files: vm's screenshot wasn't written where it asked: $shot"; return 1; }
+  ! rv screenshot spec -o "$vm/spec.png" >/dev/null 2>&1 || { echo "fleet_remote_files: a screenshot replaced a file without --force"; return 1; }
+  md ',"follow":"other.md"' >/dev/null
+  check wait_for 5 eval '[[ "$(md | field name)" == docs/other.md ]] && md | field text | grep -q "Another doc"' || { echo "fleet_remote_files: following a link in vm's doc"; md | field name; return 1; }
+
+  local diffed; diffed="$(rv open md docs/spec.md --diff main --tab --name spec-diff --json | field pane.id)@vm" || { echo "fleet_remote_files line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"$diffed\"}}" | field changes)" == 1 ]]' || { echo "fleet_remote_files: vm's doc against main"; raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"$diffed\"}}"; return 1; }
+  local code; code="$(rv open code src/main.rs --tab --name code --json | field pane.id)@vm" || { echo "fleet_remote_files line $LINENO"; return 1; }
+  check wait_for 10 eval 'raw "{\"id\":1,\"cmd\":\"debug.code\",\"args\":{\"pane\":\"$code\"}}" | field text | grep -qF "println!(\"remote\")"' || { echo "fleet_remote_files: vm's code"; return 1; }
+  rv comment src/main.rs:2 "The print." >/dev/null || { echo "fleet_remote_files: a comment on vm's code needs the app to snap it"; rv comment src/main.rs:2 "The print."; return 1; }
 }
 
 for s in ${only[@]+"${only[@]}"}; do due "$s" >/dev/null || { echo "e2e-kanna: no scenario named $s (see --help)" >&2; exit 2; }; done

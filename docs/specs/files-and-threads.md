@@ -2,6 +2,8 @@
 
 **Status:** built (Fleet 4) · **Part of:** [Machines §7](machines.md#7-terminals-and-panes) · **Builds on:** [file panes](file-panes.md), [one link per machine](machine-links.md) · **Related:** [doc markup](doc-markup.md), [markdown diff](markdown-diff.md)
 
+![A task on vm: its spec with vm's image, a comment typed into vm's agent and the reply it wrote there](files-and-threads.png)
+
 Everything a markdown, code or page pane shows comes over its machine's app link: the file's text, its images, the files its links point at, its comment threads, its diff base. Kanna.app reads nothing of a pane's from its own disk, for a task on this Mac or on another machine alike, so a remote task's spec, code, images and threads show and work as a local one's do. `kanna screenshot` gets the picture back from the app as bytes, and the daemon writes the file where the agent asked, on the agent's machine.
 
 ```mermaid
@@ -43,7 +45,7 @@ On the [app link](app-link.md#2-messages). Requests name the pane as `view` (or 
 | `file.subscribe {view, path, kind: md, diff: REF}` | app | as [file panes](file-panes.md#2-messages), plus the comparison: `base {commit, text?}` against REF's merge base, `old` (text or null) for a range `A..B` (then `text` is B's), or `diff_error` |
 | `markup.subscribe {view, path}` | app | show me this doc's threads. Reply and every change after: `markup {content, path, name, serial, record}`, `name` being the doc's path in its repo, `record` the thread file (empty if there's none) |
 | `markup.unsubscribe {view}` | app | that view is gone |
-| `markup.post {view, path, thread, mark?}` | app | a new thread: the daemon gives it the next ID, saves `mark` (base64 PNG) as its marked-up copy and sets `thread.mark`. Reply `{id, record}` |
+| `markup.post {view, path, thread, mark?}` | app | a new thread: the daemon gives it the next ID, saves `mark` (base64 PNG) as its marked-up copy and sets `thread.mark`. Reply `{thread, record}`, `thread` being its ID |
 | `markup.edit {view, path, id, state?, status?, error?, line?, message?}` | app | change a thread, adding `message` to it. Reply `{record}` |
 | `markup.agent {view, path, agent}` | app | the doc's comments go to `agent`. Reply `{record}` |
 | `threads` | any client | the thread watches, as `files` lists file watches |
@@ -60,7 +62,7 @@ On the [app link](app-link.md#2-messages). Requests name the pane as `view` (or 
 - **What counts as local** is the daemon's to decide: on macOS a path is refused before it is touched if it passes through an automount root (`/net`, `/Network`, `/home`, also under `/private` and `/System/Volumes/Data`) or lands on a filesystem that isn't local, as the renderer refused before; symlinks are followed by hand, at most 32. Linux has no automount roots.
 - **Links.** A link to a markdown file shows it in the pane (`navigate`); to anything else, on this Mac, reveals it in Finder; on another machine, does nothing.
 - **Screenshots** over 12 MiB of PNG are refused by the app (`too_big`), well under the link's 16 MiB line. `--force` replaces a file; without it an existing file is refused, as before.
-- **Offline.** A pane on a machine that isn't linked keeps what it shows; posting a comment there fails with the link's message, shown in the thread as *Not sent*.
+- **Offline.** A pane on a machine that isn't linked keeps what it shows. A comment posted there isn't saved: the toolbar says *Not saved* and why, and the comment has to be written again once the machine is back.
 
 ## 4. How it's built
 
@@ -68,11 +70,11 @@ On the [app link](app-link.md#2-messages). Requests name the pane as `view` (or 
 |---|---|
 | Watches of files and of threads, the diff base | `crates/kanna-daemon/src/files.rs` (`Kind::Threads`, `diff`), one `Files` for each |
 | `file.read`, `markup.*` | `crates/kanna-daemon/src/reads.rs`, on `kanna-threads` |
-| Screenshot files | `crates/kanna-daemon/src/main.rs` (`screenshot`), the app's `Screenshot.swift` returns bytes |
+| Screenshot files | `crates/kanna-daemon/src/screenshot.rs`; the app's `Screenshot.swift` returns the PNG |
 | `app.snap` with text | `crates/kanna-mux/src/core.rs`, `tour.rs`; the app's `AppCommands.swift` |
 | The app's side | `Contents.swift` (`DaemonThreads`, `file.read`), `MarkdownPaneView` (`readFile`, `threads`), `PageMarkupView`, `KannaDocs/DocThreads.swift` (the record and its helpers, no file access) |
 
-**Checks:** `files.rs` and `reads.rs` tests (threads watched and written, marks, the base, refusals); `crates/kanna/tests/cli.rs` for `file.read` and `markup.*` over a fake app; e2e `fleet_remote_files` (a second daemon over iroh loopback: a remote task's spec with an image and a diff base, its code, a comment posted in the app and typed into the remote agent, `kanna markup reply` on the remote machine shown in the app, a link followed, `kanna screenshot` from the remote agent's terminal written on that machine), with `md_comments`, `page_comments`, `markdown_diff`, `file_panes` and `code_tour` unchanged.
+**Checks:** `files.rs` (a doc's threads watched beside it, the base and a range), `reads.rs` (real paths and types, automount refusals, posting, editing and marks as the CLI keeps them) and `screenshot.rs` tests; `crates/kanna/tests/cli.rs` (a fake app reads an image, subscribes to threads, posts one, sees `kanna markup reply`, resolves; screenshots written by the daemon); e2e `fleet_remote_files`, a second daemon over iroh loopback: a remote task's spec shows vm's image, a comment posted in the app is saved on vm and typed into vm's agent, `kanna markup reply` on vm shows in the app, `kanna screenshot` from vm's agent is written on vm (and refused over a file without `--force`), a link opens the other doc, the spec against `main` shows its change, the code shows, and `kanna comment` on vm's code is snapped by the app. `md_comments`, `page_comments`, `markdown_diff`, `file_panes`, `code_pane`, `code_tour`, `code_tour_steps`, `screenshot`, `web_md_ios_panes` and `fleet_remote_task` pass unchanged.
 
 ## 5. Not in this change
 

@@ -400,7 +400,7 @@ final class Contents {
             }
             onCall(cmd, args) { answer in
                 guard answer["ok"]?.bool == true else { return done(DocAnswer(error: answer["error"]?["message"]?.string ?? "the daemon didn't save the comment")) }
-                done(DocAnswer(id: answer["id"]?.string, record: answer["record"].flatMap(Self.record)))
+                done(DocAnswer(id: answer["thread"]?.string, record: answer["record"].flatMap(Self.record)))
             }
         }
     }

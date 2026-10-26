@@ -183,6 +183,44 @@ fn the_daemon_reads_a_subscribed_file_and_sends_it_again_when_it_changes() {
 }
 
 #[test]
+fn an_apps_threads_and_images_come_from_the_daemon_and_the_cli_answers_them() {
+    let daemon = Daemon::start();
+    let app = daemon.app();
+    let repo = daemon.dir.join("repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::create_dir_all(repo.join("docs")).unwrap();
+    let doc = repo.join("docs/spec.md");
+    std::fs::write(&doc, "# Spec\n\nThe keeper hands terminals over.\n").unwrap();
+    std::fs::write(repo.join("docs/a.png"), b"\x89PNG\r\n\x1a\nbytes").unwrap();
+    let path = doc.to_string_lossy().to_string();
+    let answer = |id: u64| app.heard.lock().unwrap().iter().find(|m| m["id"] == id && m.get("ok").is_some()).cloned();
+
+    app.send(json!({"id": 1, "cmd": "file.read", "args": {"view": "file-1", "path": repo.join("docs/../docs/a.png"), "data": true}}));
+    wait_for("the image", || answer(1).is_some());
+    assert_eq!(answer(1).unwrap()["path"], json!(repo.join("docs/a.png")));
+    assert_eq!(answer(1).unwrap()["data"], "iVBORw0KGgpieXRlcw==");
+
+    app.send(json!({"id": 2, "cmd": "markup.subscribe", "args": {"view": "file-1", "path": path}}));
+    let latest = || app.heard.lock().unwrap().iter().rev().find(|m| m.get("record").is_some() && m.get("serial").is_some_and(|s| s.as_u64() > Some(0))).cloned().unwrap_or(json!({}));
+    wait_for("the empty threads", || latest()["serial"] == 1);
+    assert_eq!((latest()["name"].clone(), latest()["record"]["threads"].clone()), (json!("docs/spec.md"), json!([])));
+    let thread = json!({"quote": "keeper", "line": 3, "state": "open", "status": "sent", "messages": [{"who": "you", "text": "Which keeper?", "at": "2026-10-26T09:00:00"}]});
+    app.send(json!({"id": 3, "cmd": "markup.post", "args": {"view": "file-1", "path": path, "thread": thread}}));
+    wait_for("the post", || answer(3).is_some());
+    assert_eq!(answer(3).unwrap()["thread"], "c1");
+    assert_eq!(answer(3).unwrap()["record"]["threads"][0]["quote"], "keeper");
+    daemon.kanna(&["markup", "reply", "c1", "--doc", &path, "The one in the daemon."]).ok();
+    wait_for("the reply from the cli", || latest()["record"]["threads"][0]["messages"].as_array().is_some_and(|m| m.len() == 2));
+    app.send(json!({"id": 4, "cmd": "markup.edit", "args": {"view": "file-1", "path": path, "id": "c1", "state": "resolved"}}));
+    wait_for("the resolve", || answer(4).is_some());
+    assert_eq!(answer(4).unwrap()["record"]["threads"][0]["state"], "resolved");
+    let threads = || daemon.kanna(&["raw", r#"{"cmd":"threads"}"#]).json()["threads"].clone();
+    assert_eq!(threads()[0]["path"], json!(path));
+    app.quit();
+    wait_for("the thread watch stopped with its app", || threads() == json!([]));
+}
+
+#[test]
 fn every_command_works_through_the_daemon_and_the_app() {
     let daemon = Daemon::start();
     let _app = daemon.app();
@@ -249,7 +287,7 @@ fn every_command_works_through_the_daemon_and_the_app() {
     assert_eq!(daemon.kanna(&["markup", "doc", "--off"]).ok(), "comments off in file-1 (doc)");
 
     let capabilities = daemon.kanna(&["capabilities"]).ok();
-    assert!(capabilities.starts_with("pane types: term, web, ios, md, code, diff\ncommands: agents, arrange, backlog, capabilities, close, comment, desk, diffs, files, fleet, focus, list, markup, move, move-tab, navigate, open, projects, quiz, read, rename-pane, rename-tab, resize, restart, screenshot, send, send-key, status, task, toast, tour, window, zoom"), "{capabilities}");
+    assert!(capabilities.starts_with("pane types: term, web, ios, md, code, diff\ncommands: agents, arrange, backlog, capabilities, close, comment, desk, diffs, file.read, files, fleet, focus, list, markup, markup.agent, markup.edit, markup.post, move, move-tab, navigate, open, projects, quiz, read, rename-pane, rename-tab, resize, restart, screenshot, send, send-key, status, task, threads, toast, tour, window, zoom"), "{capabilities}");
     assert!(capabilities.ends_with("Kanna.app: attached"), "{capabilities}");
     assert_eq!(daemon.kanna(&["toast", "Build finished", "it took", "3m"]).ok(), "raised toast-1");
     assert_eq!(daemon.kanna(&["toast", "Messages wait", "--pane", "a", "--key", "k1"]).ok(), "raised toast-2");
@@ -259,8 +297,13 @@ fn every_command_works_through_the_daemon_and_the_app() {
     let raw = daemon.kanna(&["raw", r#"{"cmd":"debug.anything","args":{"pane":"a"}}"#]).json();
     assert_eq!(raw, json!({ "cmd": "debug.anything", "args": { "pane": "term-5" } }));
     let shot = daemon.kanna(&["screenshot", "a", "-o", "shot.png", "--force", "--json"]).json();
-    assert_eq!(shot, json!({ "cmd": "screenshot", "args": { "pane": "term-5", "path": daemon.dir.join("shot.png").to_string_lossy(), "force": true } }));
-    assert_eq!(daemon.kanna(&["screenshot", "--window", "win-1", "--json"]).json()["args"], json!({ "window": "win-1", "dir": std::env::temp_dir().to_string_lossy() }));
+    assert_eq!(shot, json!({ "cmd": "screenshot", "args": { "pane": "term-5" }, "window": "win-1", "path": daemon.dir.join("shot.png").to_string_lossy() }));
+    assert_eq!(std::fs::read(daemon.dir.join("shot.png")).unwrap(), b"\x89PNG\r\n\x1a\n");
+    let window = daemon.kanna(&["screenshot", "--window", "win-1", "--json"]).json();
+    assert_eq!(window["args"], json!({ "window": "win-1" }));
+    let written = window["path"].as_str().unwrap().to_string();
+    assert!(written.starts_with(&format!("{}/kanna-win-1-", std::env::temp_dir().to_string_lossy().trim_end_matches('/'))), "{written}");
+    let _ = std::fs::remove_file(written);
     daemon.kanna(&["screenshot", "a", "--window", "win-1"]).fails(2, "give PANE or --window WINDOW, not both");
     assert_eq!(daemon.kanna(&["raw", r#"{"cmd":"list"}"#]).json()["panes"].as_array().unwrap().len(), 6);
 

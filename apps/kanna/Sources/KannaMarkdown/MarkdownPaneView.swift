@@ -396,7 +396,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         return true
     }
 
-    func follow(_ target: String) {
+    public func follow(_ target: String) {
         switch Self.action(for: target, from: path) {
         case .scroll(let fragment): scroll(toAnchor: fragment)
         case .openWeb(let url): openWeb(url)

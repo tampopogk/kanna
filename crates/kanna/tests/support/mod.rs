@@ -182,7 +182,7 @@ impl App {
                     }
                     continue;
                 }
-                if message["cmd"] == "diff" || message["cmd"] == "file" {
+                if message["cmd"] == "diff" || message["cmd"] == "file" || message["cmd"] == "markup" {
                     heard.lock().unwrap().push(message["args"].clone());
                 } else if message.get("content").is_some() || (message.get("ok").is_some() && message["id"] != 0) {
                     heard.lock().unwrap().push(message.clone());
@@ -214,7 +214,11 @@ impl App {
                     let _ = writeln!(writer, "{}", json!({"id": message["id"], "ok": true, "confirmed": true}));
                 }
                 if message["cmd"].as_str().is_some_and(|c| c.starts_with("debug.") || c == "screenshot") {
-                    let reply = json!({"id": message["id"], "ok": true, "cmd": message["cmd"], "args": message["args"]});
+                    let mut reply = json!({"id": message["id"], "ok": true, "cmd": message["cmd"], "args": message["args"]});
+                    if message["cmd"] == "screenshot" {
+                        reply["png"] = json!("iVBORw0KGgo=");
+                        reply["window"] = message["args"].get("window").cloned().unwrap_or(json!("win-1"));
+                    }
                     let _ = writeln!(writer, "{reply}");
                 }
             }

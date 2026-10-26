@@ -132,6 +132,11 @@ public final class PageMarkupView: NSView {
         guard let changeThreads else { return }
         changeThreads(change) { [weak self] answer in
             guard let self else { return }
+            if let error = answer.error {
+                bar.agent.set("Not saved: \(error)")
+                bar.agent.warn = true
+                bar.needsLayout = true
+            }
             if let record = answer.record { show(threads: record) }
             then?(answer.id)
         }
