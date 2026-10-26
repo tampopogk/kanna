@@ -4,17 +4,17 @@ use kanna_client::Failure;
 use serde_json::{json, Value};
 
 pub fn offer(mux: &mut Session, json_output: bool) -> Result<(), Failure> {
-    let offer = mux.call("fleet", json!({ "action": "offer" }))?;
+    let offer = mux.call("machine", json!({ "action": "offer" }))?;
     if json_output {
         println!("{offer}");
     } else {
         println!("{}", output::offer(&offer));
     }
-    let paired = mux.call("fleet", json!({ "action": "wait" }))?;
+    let paired = mux.call("machine", json!({ "action": "wait" }))?;
     if json_output {
         println!("{paired}");
     } else {
-        println!("paired: {} is in the fleet of {}", offer["name"].as_str().unwrap_or("this machine"), paired["name"].as_str().unwrap_or("?"));
+        println!("paired: {} joined your machines through {}", offer["name"].as_str().unwrap_or("this machine"), paired["name"].as_str().unwrap_or("?"));
     }
     Ok(())
 }

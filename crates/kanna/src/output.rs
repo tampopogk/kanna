@@ -1012,12 +1012,12 @@ pub fn toured(args: &Value, reply: &Value) -> String {
 pub fn offer(offer: &Value) -> String {
     let code = offer["code"].as_str().unwrap_or("?");
     let minutes = offer["expires_in"].as_u64().unwrap_or(300).div_ceil(60);
-    let peer = match crate::fleet::reachable(&offer["addrs"]) {
+    let peer = match crate::machine::reachable(&offer["addrs"]) {
         Some(addr) => format!("{}@{addr}", offer["key"].as_str().unwrap_or("?")),
         None => offer["key"].as_str().unwrap_or("?").to_string(),
     };
     format!(
-        "To add this machine ({}) to your fleet, run on a machine in it, or on the one that starts it:\n  kanna fleet pair {code}\nIt finds this one on the LAN. From another network:\n  kanna fleet pair {code} --peer {peer}\n{}The code works once, for {minutes} minutes. Waiting…",
+        "To add this machine ({}) to your machines, run on one of them, or on the one that starts them:\n  kanna machine pair {code}\nIt finds this one on the LAN. From another network:\n  kanna machine pair {code} --peer {peer}\n{}The code works once, for {minutes} minutes. Waiting…",
         offer["name"].as_str().unwrap_or("?"),
         others(&offer["addrs"])
     )
@@ -1035,9 +1035,9 @@ fn short_key(key: &Value) -> String {
     key.as_str().unwrap_or("?").chars().take(10).collect()
 }
 
-pub fn fleet(request: &Value, reply: &Value) -> String {
+pub fn machine(request: &Value, reply: &Value) -> String {
     match request["action"].as_str() {
-        Some("pair") => format!("added {} to your fleet", reply["name"].as_str().unwrap_or("?")),
+        Some("pair") => format!("added {} to your machines", reply["name"].as_str().unwrap_or("?")),
         Some("name") => format!("this machine is {} now", reply["name"].as_str().unwrap_or("?")),
         Some("addr") => format!("will try {} for {}", reply["addr"].as_str().unwrap_or("?"), request["host"].as_str().unwrap_or("?")),
         Some("sync") => format!("swapped peer logs with {}", reply["name"].as_str().unwrap_or("?")),
@@ -1054,14 +1054,14 @@ pub fn fleet(request: &Value, reply: &Value) -> String {
         _ => {
             let mut out = vec![];
             if let Some(broken) = reply["broken"].as_str() {
-                out.push(format!("fleet disabled: {broken}"));
+                out.push(format!("your machines are off here: {broken}"));
             }
             out.push(format!("{} (this machine)  key {}  UDP port {}", reply["name"].as_str().unwrap_or("?"), reply["key"].as_str().unwrap_or("?"), reply["port"]));
             let peers: Vec<&Value> = reply["peers"].as_array().map(|p| p.iter().filter(|p| p["me"] != true).collect()).unwrap_or_default();
             if reply["paired"] != true {
-                out.push("not paired with any machine: kanna fleet pair".into());
+                out.push("not paired with any machine: kanna machine pair".into());
             } else if peers.is_empty() {
-                out.push("no other machines in the fleet yet".into());
+                out.push("no other machines yet".into());
             }
             for peer in peers {
                 let state = if peer["revoked"] == true {

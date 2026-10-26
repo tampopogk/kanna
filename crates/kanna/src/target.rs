@@ -303,7 +303,7 @@ impl<'a> Session<'a> {
 
     pub fn call(&mut self, cmd: &str, args: Value) -> Result<Value, Failure> {
         if let Some(host) = self.host.clone() {
-            return self.mux.call("fleet", json!({ "action": "call", "host": host, "cmd": cmd, "args": args })).map_err(Failure::from);
+            return self.mux.call("machine", json!({ "action": "call", "host": host, "cmd": cmd, "args": args })).map_err(Failure::from);
         }
         loop {
             match self.mux.call(cmd, args.clone()) {

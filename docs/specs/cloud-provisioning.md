@@ -2,10 +2,10 @@
 
 **Part of:** [Kanna Cloud §3](kanna-cloud.md#3-provisioning)
 
-`scripts/fleet/provision-idrac.sh` takes a Dell PowerEdge (Kanna Cloud's R720s) from powered off to Ubuntu Server you can ssh into, through its iDRAC alone: no monitor, no USB stick, no PXE server. It runs on the operator's Mac. Its files and Keychain items are still named `fleet`, as built. Making users' VMs on the host is the next step ([Cloud §3](kanna-cloud.md#3-provisioning)).
+`scripts/cloud/provision-idrac.sh` takes a Dell PowerEdge (Kanna Cloud's R720s) from powered off to Ubuntu Server you can ssh into, through its iDRAC alone: no monitor, no USB stick, no PXE server. It runs on the operator's Mac. Its files and Keychain items are named `kanna-cloud`; a run moves ones an earlier version named `kanna-fleet` (the folders, the iDRAC key, the Keychain items it uses), and hosts installed before keep their `kanna-fleet-report` unit. Making users' VMs on the host is the next step ([Cloud §3](kanna-cloud.md#3-provisioning)).
 
 ```sh
-scripts/fleet/provision-idrac.sh --idrac 172.16.0.2 --hostname r720-1 --wifi-ssid SSID
+scripts/cloud/provision-idrac.sh --idrac 172.16.0.2 --hostname r720-1 --wifi-ssid SSID
 ```
 
 ## Contents
@@ -27,12 +27,12 @@ sequenceDiagram
     M->>I: storage: keep one RAID 1 across both drives, else create it (job + power cycle)
     M->>M: ISO + nocloud/user-data + grub.cfg (autoinstall, serial console) → install.iso
     M->>M: smbd as the user, read-only guest share, only the iDRAC may connect
-    M->>I: remoteimage -c //mac/kfleet/install.iso · boot once VCD-DVD · power up
+    M->>I: remoteimage -c //mac/kcloud/install.iso · boot once VCD-DVD · power up
     I->>H: boots the installer from virtual media
     M-->>I: console com2 (SOL) → console.log
     H->>H: autoinstall, then power off
     M->>I: remoteimage -d · power up
-    H-->>M: "KANNA-FLEET-READY host ip mac dev" on the serial console
+    H-->>M: "KANNA-CLOUD-READY host ip mac dev" on the serial console
     M->>H: ssh user@ip hostname
 ```
 
@@ -40,11 +40,11 @@ sequenceDiagram
 |---|---|
 | iDRAC password and key | key login already works |
 | RAID 1 | the controller has one RAID 1 volume, Online |
-| Install | the host recorded in `~/Library/Application Support/kanna-fleet/NAME.env` answers ssh as NAME (`--reinstall` forces it) |
+| Install | the host recorded in `~/Library/Application Support/kanna-cloud/NAME.env` answers ssh as NAME (`--reinstall` forces it) |
 
 - **Install:** Ubuntu Server 26.04.1, minimized, OpenSSH, offline from the ISO (`apt: fallback: offline-install`), the whole volume (`layout: direct`), the user with your key, no password, passwordless sudo, `ssh_pwauth: false`. The kernel console is `tty0` and `ttyS0` (the iDRAC's SOL port) in the installer and on the host.
 - **Network (netplan):** every `en*` port and the first `wl*` device with DHCP and the MAC as DHCP client ID; Ethernet at route metric 100 beats Wi-Fi at 600, so it takes over when a cable is plugged in. Both optional, so boot never waits on them. networkd can't match Wi-Fi by pattern, only by name, and a USB dongle's name is `wlx` + its MAC, so the config carries `@WIFI_IFACE@` and an early command in the installer replaces it in `/autoinstall.yaml` with the `wl*` device it finds, before the network is applied.
-- **Finding the host:** a oneshot unit, `kanna-fleet-report`, prints the default route's address and MAC to `ttyS0` at every boot, or `KANNA-FLEET-NONET` with `ip -br link` and `lsusb` when there is no network. The script reads it from the serial console it records in `~/Library/Caches/kanna-fleet/NAME/console.log`.
+- **Finding the host:** a oneshot unit, `kanna-cloud-report`, prints the default route's address and MAC to `ttyS0` at every boot, or `KANNA-CLOUD-NONET` with `ip -br link` and `lsusb` when there is no network. The script reads it from the serial console it records in `~/Library/Caches/kanna-cloud/NAME/console.log`.
 - **Cleanup on exit, success or not:** stops smbd and the console, detaches the virtual media, deletes `install.iso` (it holds the Wi-Fi password) and masks the password in `console.log`.
 - **Erasing:** it asks you to type the hostname before powering off or erasing, unless `--yes`. `--check` only prints the iDRAC, storage and power state.
 
@@ -53,18 +53,18 @@ sequenceDiagram
 | When | What |
 |---|---|
 | Once per Mac | `brew install samba xorriso`; turn off macOS File Sharing while it runs (it needs port 445) |
-| Once per Wi-Fi | `security add-generic-password -s "kanna-fleet wifi" -a SSID -w` (prompts for the password) |
-| Per server | cable the iDRAC's port, find its address (the router's lease list, or the LCD); back up the Keychain item `kanna-fleet idrac NAME` |
+| Once per Wi-Fi | `security add-generic-password -s "kanna-cloud wifi" -a SSID -w` (prompts for the password) |
+| Per server | cable the iDRAC's port, find its address (the router's lease list, or the LCD); back up the Keychain item `kanna-cloud idrac NAME` |
 | After | reserve the reported MAC in the router's DHCP; add `Host NAME` / `HostName IP` to `~/.ssh/config` (nothing on the LAN resolves the name); plug Ethernet into port 1 when there is one |
 
 ## Credentials
 
 | Secret | Where |
 |---|---|
-| iDRAC root password | Keychain, service `kanna-fleet idrac NAME`, account `root`: 20 random letters and digits (iDRAC 7's limit) |
-| iDRAC ssh key | `~/.ssh/kanna-fleet-idrac`: RSA 4096, no passphrase; iDRAC 7 rejects ed25519 |
+| iDRAC root password | Keychain, service `kanna-cloud idrac NAME`, account `root`: 20 random letters and digits (iDRAC 7's limit) |
+| iDRAC ssh key | `~/.ssh/kanna-cloud-idrac`: RSA 4096, no passphrase; iDRAC 7 rejects ed25519 |
 | Host login | your `~/.ssh/id_ed25519.pub` (`--pubkey`) |
-| Wi-Fi password | Keychain (`kanna-fleet wifi`, account SSID) and the host's `/etc/netplan`; never the repo |
+| Wi-Fi password | Keychain (`kanna-cloud wifi`, account SSID) and the host's `/etc/netplan`; never the repo |
 
 ## Choices and why
 
@@ -80,4 +80,4 @@ sequenceDiagram
 
 Installed 2026-10-21: Ubuntu 26.04.1, kernel 7.0.0-30, at 172.16.0.105 over Wi-Fi, MAC e0:d7:68:30:1a:7a (the one to reserve). The run took 22 minutes: 7 for POST and the installer's boot, 15 for the install, 5 for the first boot to report.
 
-When an install stops, the serial console offers a root shell ("An error occurred. Press enter to start a shell"): reach it with `ssh -t -i ~/.ssh/kanna-fleet-idrac root@IDRAC console com2` (end with `Ctrl-\`) once the script has stopped.
+When an install stops, the serial console offers a root shell ("An error occurred. Press enter to start a shell"): reach it with `ssh -t -i ~/.ssh/kanna-cloud-idrac root@IDRAC console com2` (end with `Ctrl-\`) once the script has stopped.

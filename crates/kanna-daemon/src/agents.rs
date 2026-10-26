@@ -76,9 +76,9 @@ pub fn skills() -> Option<PathBuf> {
 }
 
 pub fn keys(support: &Path, state: &Path) -> Vec<String> {
-    let mut keys = vec![support.join("kanna*").join(crate::fleet::KEY)];
+    let mut keys = vec![support.join("kanna*").join(crate::machines::KEY)];
     if state.parent() != Some(support) {
-        keys.push(state.join(crate::fleet::KEY));
+        keys.push(state.join(crate::machines::KEY));
     }
     keys.iter().map(|k| k.to_string_lossy().into_owned()).collect()
 }

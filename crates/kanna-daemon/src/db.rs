@@ -99,6 +99,8 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         id integer primary key check (id = 1),
         doc text not null check (json_valid(doc))
     );
+"), Step::Sql("
+    alter table fleet rename to machines;
 ")];
 
 pub const RECENT: usize = 10;
@@ -480,13 +482,13 @@ impl Db {
         tx.commit()
     }
 
-    pub fn fleet(&self) -> rusqlite::Result<Value> {
-        let doc: Option<String> = self.conn.query_row("select doc from fleet where id = 1", [], |row| row.get(0)).optional()?;
+    pub fn machines(&self) -> rusqlite::Result<Value> {
+        let doc: Option<String> = self.conn.query_row("select doc from machines where id = 1", [], |row| row.get(0)).optional()?;
         Ok(doc.and_then(|doc| serde_json::from_str(&doc).ok()).unwrap_or_else(|| Value::Object(Default::default())))
     }
 
-    pub fn put_fleet(&self, doc: &Value) -> rusqlite::Result<()> {
-        self.conn.execute("insert into fleet (id, doc) values (1, ?1) on conflict (id) do update set doc = excluded.doc", params![doc.to_string()]).map(|_| ())
+    pub fn put_machines(&self, doc: &Value) -> rusqlite::Result<()> {
+        self.conn.execute("insert into machines (id, doc) values (1, ?1) on conflict (id) do update set doc = excluded.doc", params![doc.to_string()]).map(|_| ())
     }
 
     pub fn put_layout(&self, doc: &Value) -> rusqlite::Result<()> {
@@ -1038,14 +1040,35 @@ mod tests {
     }
 
     #[test]
-    fn the_fleet_doc_starts_empty_and_keeps_what_was_put() {
-        let dir = folder("fleet");
+    fn the_machines_doc_starts_empty_and_keeps_what_was_put() {
+        let dir = folder("machines");
         let db = Db::open(&dir);
-        assert_eq!(db.fleet().unwrap(), serde_json::json!({}));
+        assert_eq!(db.machines().unwrap(), serde_json::json!({}));
         let doc = serde_json::json!({ "name": "mbp", "entries": [{ "body": {}, "signature": "00" }] });
-        db.put_fleet(&doc).unwrap();
-        db.put_fleet(&doc).unwrap();
-        assert_eq!(Db::open(&dir).fleet().unwrap(), doc);
+        db.put_machines(&doc).unwrap();
+        db.put_machines(&doc).unwrap();
+        assert_eq!(Db::open(&dir).machines().unwrap(), doc);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_db_with_a_fleet_table_keeps_its_doc_as_machines() {
+        let dir = folder("fleet-migration");
+        let conn = connect(&dir.join(FILE)).unwrap();
+        let rename = MIGRATIONS.iter().position(|s| matches!(s, Step::Sql(sql) if sql.contains("rename to machines"))).unwrap();
+        for step in &MIGRATIONS[..rename] {
+            match step {
+                Step::Sql(sql) => conn.execute_batch(sql).unwrap(),
+                Step::Run(run) => run(&conn).unwrap(),
+            }
+        }
+        conn.pragma_update(None, "user_version", rename as i64).unwrap();
+        conn.execute("insert into fleet (id, doc) values (1, '{\"name\": \"mbp\", \"port\": 7470}')", []).unwrap();
+        drop(conn);
+        let db = Db::open(&dir);
+        assert_eq!(db.machines().unwrap(), serde_json::json!({ "name": "mbp", "port": 7470 }));
+        let fleet: i64 = db.conn.query_row("select count(*) from sqlite_master where name = 'fleet'", [], |r| r.get(0)).unwrap();
+        assert_eq!(fleet, 0);
         let _ = fs::remove_dir_all(&dir);
     }
 

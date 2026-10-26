@@ -2,7 +2,7 @@
 
 **Status:** built (Fleet 3) · **Part of:** [Machines §5–6](machines.md#5-the-app-link-over-the-network) · **Presentation:** [Desks across machines](machines-app.md), [model](../../references/mockups/fleet.html) · **Messages:** [app link](app-link.md)
 
-Kanna.app holds one [app link](app-link.md) per machine: the local daemon's unix socket, and for every trusted peer of that daemon's fleet an iroh connection through `kanna-net`. Each remote link carries the same JSON lines as the local one. The app merges the machines' layouts and backlogs into one set of Desks, keyed by (machine, ID).
+Kanna.app holds one [app link](app-link.md) per machine: the local daemon's unix socket, and for every trusted peer of that daemon an iroh connection through `kanna-net`. Each remote link carries the same JSON lines as the local one. The app merges the machines' layouts and backlogs into one set of Desks, keyed by (machine, ID).
 
 ```mermaid
 flowchart LR
@@ -23,10 +23,10 @@ flowchart LR
 
 ## 1. Making a link
 
-1. **The app's endpoint.** At launch the app opens its own iroh endpoint with `app.key` in its state folder (made once, `0600`). Its key is not a device in the peer log; it is certified: the app asks the local daemon `fleet {action: certify, key}` and gets `{key, device, sig}`, signed by `device.key`.
-2. **Which machines.** Every 10 s the app reads the local daemon's `fleet status`. While this machine is paired and its log isn't broken, each peer that is trusted, not revoked, not in conflict and named gets a link; its addresses are the log's plus any found nearby. A peer that leaves that set loses its link, and its views go (§5).
+1. **The app's endpoint.** At launch the app opens its own iroh endpoint with `app.key` in its state folder (made once, `0600`). Its key is not a device in the peer log; it is certified: the app asks the local daemon `machine {action: certify, key}` and gets `{key, device, sig}`, signed by `device.key`.
+2. **Which machines.** Every 10 s the app reads the local daemon's `machine status`. While this machine is paired and its log isn't broken, each peer that is trusted, not revoked, not in conflict and named gets a link; its addresses are the log's plus any found nearby. A peer that leaves that set loses its link, and its views go (§5).
 3. **The stream.** The app opens a `control` stream whose header carries the certificate: `{"kind": "control", "cert": {key, device, sig}}`. The remote daemon admits the stream if the connection's key is the certificate's `key` and `device` is a trusted, unrevoked peer, else `unpaired` or `revoked`. **Changed** from [identity §1](machine-identity.md#1-keys): the certificate is in the stream header, not the hello, so a refusal comes before any app message.
-4. **The bridge.** A control stream whose first request is `app.hello` becomes an app link: the daemon joins it to a socketpair and serves the other end exactly as an accepted unix connection. On the app side `kanna_fleet_link` returns a socketpair fd joined to the stream, and the app's `DaemonConnection` reads it as it reads the socket. Each side ends the bridge when either half ends. A revocation closes every bridge of the revoked device at once, and every later line is checked against the log.
+4. **The bridge.** A control stream whose first request is `app.hello` becomes an app link: the daemon joins it to a socketpair and serves the other end exactly as an accepted unix connection. On the app side `kanna_machines_link` returns a socketpair fd joined to the stream, and the app's `DaemonConnection` reads it as it reads the socket. Each side ends the bridge when either half ends. A revocation closes every bridge of the revoked device at once, and every later line is checked against the log.
 
 ## 2. The hello
 
@@ -48,7 +48,7 @@ flowchart LR
 - **Qualified at the boundary.** A remote link rewrites every ID it receives to `ID@machine` (`term-41@r720-1`), and strips its own suffix from every ID it sends. Both ways, only strings under ID keys (`id`, `pane`, `terminal`, `workspace`, `window`, `tab`, `task`, `planner`, `agent`, `owner`, `from`, …) that match `(task|ws|win|tab|term|diff|file|page|ios)-[alnum]+` are rewritten, so paths and text are never touched. An ID that already carries another machine's suffix is re-qualified to the sender, so a peer can't name another machine's panes.
 - **Routing.** Input, resize, attach, `diff.subscribe`, `file.subscribe` and app requests go to the link named by the ID's suffix; an unqualified ID is local. A request that names no ID takes `args.machine`. The daemon passes a pane reference containing `@` through to the app unchanged, so `kanna` on one machine can name another's pane through the app.
 - **Merged views.** The app keeps each machine's layout, backlog, panes and folder places separately, and draws their union: workspaces and windows are tagged with their machine, and every view is keyed by (machine, ID).
-- **Local only.** A remote link's `app.fleet.confirm` (signing a peer takes a gesture on this Mac's own daemon) and `app.snap` are refused. A daemon certifies an endpoint (`fleet certify`) only for its own machine's app: a request from another machine, by `fleet call` or over a remote app link, gets `local_only`, since the certificate is signed as this device and would outlive the requester's revocation. A remote daemon can't open an iOS pane, or a web pane other than `http(s)` to a host this Mac can reach (no `file:`, no loopback, which would be this Mac's).
+- **Local only.** A remote link's `app.machine.confirm` (signing a peer takes a gesture on this Mac's own daemon) and `app.snap` are refused. A daemon certifies an endpoint (`machine certify`) only for its own machine's app: a request from another machine, by `machine call` or over a remote app link, gets `local_only`, since the certificate is signed as this device and would outlive the requester's revocation. A remote daemon can't open an iOS pane, or a web pane other than `http(s)` to a host this Mac can reach (no `file:`, no loopback, which would be this Mac's).
 
 ## 4. Projects, Desks and claims
 
@@ -65,7 +65,7 @@ What the user sees follows the [model](../../references/mockups/fleet.html) ([De
 ![The Machines tab: this Mac, a direct LAN peer, a relayed peer and an offline one](machines-page.png)
 
 - **Fixed tabs.** Shelf and Machines are the first two items of every Desk's tab bar, with no close button; choosing one shows its page over the tab area and leaves the agent, its input and the claims as they are; a document tab returns. Next and Previous Tab (⇧⌘] and ⇧⌘[) step through Shelf, Machines and the document tabs, and a focused Shelf or Machines tab takes ← and → and Return or Space.
-- **The path** is `kanna_fleet_path(key)`: `{path: direct|relay, lan, rtt_ms, remote}`, where `lan` means the remote address is private, loopback, link-local or CGNAT. Labels: **This Mac**, **Direct · LAN**, **Direct · internet**, **Relayed**, **Offline**. The Machines tab lists this Mac and each linked machine with its OS and chip, its path, a note (round trip, relay, or last seen) and the explanation as a tooltip. A machine's capabilities (cores, Xcode, display) aren't shown: they are [Kanna Cloud's](kanna-cloud.md#5-directory-and-relays), for placing work, not the user's.
+- **The path** is `kanna_machines_path(key)`: `{path: direct|relay, lan, rtt_ms, remote}`, where `lan` means the remote address is private, loopback, link-local or CGNAT. Labels: **This Mac**, **Direct · LAN**, **Direct · internet**, **Relayed**, **Offline**. The Machines tab lists this Mac and each linked machine with its OS and chip, its path, a note (round trip, relay, or last seen) and the explanation as a tooltip. A machine's capabilities (cores, Xcode, display) aren't shown: they are [Kanna Cloud's](kanna-cloud.md#5-directory-and-relays), for placing work, not the user's.
 - **Tooltips, not badges.** A task card, Shelf row and the agent header put `machine · path` in a tooltip.
 - **Offline.** When a link drops, its machine's tasks keep their place, claims and last view. The agent header says the machine is offline and since when, the Shelf row's dot is hollow red, and input is dropped, not queued. On reconnect the same panes attach again and take input.
 
@@ -74,16 +74,16 @@ What the user sees follows the [model](../../references/mockups/fleet.html) ([De
 | Where | Interface |
 |---|---|
 | `kanna-net` | `Host::app(from, hello, UnixStream)`; `Node::certify(app_key) → cert`; `Client::{start(secret), key, link(key, addrs, cert) → UnixStream, path(key), close}` |
-| `kanna-ffi` (`kanna_fleet.h`) | `kanna_fleet_client(key_path) → {key}`, `kanna_fleet_link(json) → {fd}\|{error}`, `kanna_fleet_path(key)`, `kanna_fleet_free` |
-| daemon | `fleet {action: certify, key}` (local app only); `app.hello` as §2 |
-| app | `Links` (one `DaemonLink` per machine), `MachineIDs` (qualify, strip, route, locations); `debug.fleet` → `{name, links: [{machine, attached, daemon, path, failure}]}` |
+| `kanna-ffi` (`kanna_machines.h`) | `kanna_machines_client(key_path) → {key}`, `kanna_machines_link(json) → {fd}\|{error}`, `kanna_machines_path(key)`, `kanna_machines_free` |
+| daemon | `machine {action: certify, key}` (local app only); `app.hello` as §2 |
+| app | `Links` (one `DaemonLink` per machine), `MachineIDs` (qualify, strip, route, locations); `debug.machines` → `{name, links: [{machine, attached, daemon, path, failure}]}` |
 
 ## 7. Tests
 
 - `kanna-net` `node`: an app certified by a paired machine holds a link until its machine is revoked.
-- `kanna` `fleet`: an app on another machine attaches over the fleet, takes input, is taken over by a local app that then gets its own snapshots; it can't have an endpoint certified, nor can a `fleet call`; another protocol leaves the daemon running; an unpaired key is refused.
+- `kanna` `machine`: an app on another machine attaches over the network, takes input, is taken over by a local app that then gets its own snapshots; it can't have an endpoint certified, nor can a `machine call`; another protocol leaves the daemon running; an unpaired key is refused.
 - `kanna-daemon` `projects`: a project is known by its origin wherever it is cloned, has no identity before its first commit, and takes an origin added later.
-- e2e `fleet_remote_task`: a second daemon paired over iroh loopback; a Desk on its project with its planner there, claimed by `mbp`; a task planned there, started from the Desk's backlog, pulled, typed into through the app, its diff shown; a tab title that looks like an ID kept through the app; the fixed tabs by click and by Next and Previous Tab, the Machines tab and tooltips; the remote daemon killed (offline header, input dropped), the app restarted with its Desk saved, the daemon restarted on its port (the same task takes input again); a clone on this Mac of the same origin brings the Desk forward.
+- e2e `machine_remote_task`: a second daemon paired over iroh loopback; a Desk on its project with its planner there, claimed by `mbp`; a task planned there, started from the Desk's backlog, pulled, typed into through the app, its diff shown; a tab title that looks like an ID kept through the app; the fixed tabs by click and by Next and Previous Tab, the Machines tab and tooltips; the remote daemon killed (offline header, input dropped), the app restarted with its Desk saved, the daemon restarted on its port (the same task takes input again); a clone on this Mac of the same origin brings the Desk forward.
 - **On Linux:** the same flow by hand against `server-setup.sh`'s systemd daemon in an Ubuntu 26.04 arm64 lima VM.
 
 ## 8. Limits

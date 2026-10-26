@@ -8,7 +8,7 @@ usage: scripts/server-setup.sh [options]
 Sets up Kanna on a Linux server (Ubuntu) for the user who runs it, from this checkout:
 packages, Rust, the agent CLIs, the daemon, keeper and CLI built and installed in
 /opt/kanna/<commit> with /opt/kanna/current linked to it, and a systemd user unit that
-runs the daemon at boot (linger). docs/specs/fleet.md §9 says what it sets up and why.
+runs the daemon at boot (linger). docs/specs/machine-setup.md says what it sets up and why.
 Safe to run again: each step is skipped when already done, and an update restarts the
 daemon, whose terminals the keeper keeps.
 

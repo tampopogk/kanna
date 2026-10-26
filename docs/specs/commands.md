@@ -30,7 +30,7 @@ Every command, option, output and error is kmux's CLI's, except where [the CLI's
 | | `kanna workspace list [--all]` | Your workspace (from `$KANNA_TERMINAL`): its dock, tabs and panes, the shown tab, focus and zoom, also off screen; `--all`: every window, workspace and pane ([workspace list](workspace-list.md)). |
 | Information | `kanna capabilities` | Show what the running mux supports (and, for Kanna, whether the app is attached). |
 | | `kanna diagrams check FILE...` | Check that a markdown file's mermaid diagrams draw in Kanna, without the app; `open md` prints the same failures ([diagram check](diagram-check.md)). Kanna's. |
-| | `kanna machine [list\|pair [CODE]\|name\|ping\|addr\|revoke]` | Your machines (shipped as `kanna fleet` until renamed): pair one with a code, list them, check one's link, give it an address, or revoke it ([machine identity](machine-identity.md#5-interfaces)). Kanna's. |
+| | `kanna machine [list\|pair [CODE]\|name\|ping\|addr\|revoke]` | Your machines: pair one with a code, list them, check one's link, give it an address, or revoke it ([machine identity](machine-identity.md#5-interfaces)). Kanna's. |
 | More | `kanna help [COMMAND\|instances\|raw]`, `kanna commands [--json]`, `kanna raw REQUEST` | Help; every command, for scripts; one control-protocol request as JSON. |
 | | `kanna instances [--json]`, `kanna instances prune` | For developing Kanna: list the running instances of every channel, or delete the folders of dev instances whose worktree is gone ([instances](instances.md)). |
 | Planned | `kanna up [FILE]` | Open a whole setup from a file, `kanna.yaml` by default ([layout files](arranging-panes.md#3-layout-files)). |

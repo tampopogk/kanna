@@ -27,7 +27,7 @@ impl Refused {
     pub fn message(&self) -> &'static str {
         match self.code {
             "bad_signature" => "a signature doesn't verify",
-            "wrong_fleet" => "it belongs to another fleet",
+            "wrong_log" => "it belongs to another peer log",
             "untrusted_signer" => "its signer wasn't trusted when it signed",
             "revoked" => "that key is revoked",
             "identity_mismatch" => "that name belongs to another key",

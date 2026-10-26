@@ -1,6 +1,6 @@
 import AppKit
 
-struct FleetMachine: Equatable {
+struct MachineRow: Equatable {
     let name: String
     let detail: String
     let path: String
@@ -17,10 +17,10 @@ struct FleetMachine: Equatable {
 }
 
 @MainActor
-final class FleetPage: NSView {
+final class MachinesPage: NSView {
     private let scroller = NSScrollView()
-    private let document = FleetDocument()
-    private var shown: [FleetMachine]?
+    private let document = MachinesDocument()
+    private var shown: [MachineRow]?
     private(set) var badges: [String: NSRect] = [:]
 
     override init(frame frameRect: NSRect) {
@@ -44,9 +44,9 @@ final class FleetPage: NSView {
 
     private func paint() { layer?.backgroundColor = resolved(.textBackgroundColor) }
 
-    var machines: [FleetMachine] { shown ?? [] }
+    var machines: [MachineRow] { shown ?? [] }
 
-    func show(_ machines: [FleetMachine]) {
+    func show(_ machines: [MachineRow]) {
         guard machines != shown else { return }
         shown = machines
         lay()
@@ -85,13 +85,13 @@ final class FleetPage: NSView {
         }
         y += 22
         for machine in shown ?? [] {
-            document.addSubview(FleetRule(frame: NSRect(x: left, y: y, width: width, height: 1)))
+            document.addSubview(MachinesRule(frame: NSRect(x: left, y: y, width: width, height: 1)))
             y += 14
             let name = label(machine.name, size: 13, weight: .semibold)
             name.frame.origin = NSPoint(x: left, y: y)
             let detail = label(machine.detail, color: .secondaryLabelColor)
             detail.frame = NSRect(x: left, y: y + 22, width: column - left - 16, height: detail.frame.height)
-            let badge = FleetBadge(text: machine.path, tone: machine.tone, explanation: machine.explanation)
+            let badge = MachinesBadge(text: machine.path, tone: machine.tone, explanation: machine.explanation)
             badge.frame.origin = NSPoint(x: column, y: y - 2)
             document.addSubview(badge)
             badges[machine.name] = badge.frame
@@ -99,7 +99,7 @@ final class FleetPage: NSView {
             note.frame = NSRect(x: column, y: y + 26, width: left + width - column, height: note.frame.height)
             y += 56
         }
-        document.addSubview(FleetRule(frame: NSRect(x: left, y: y, width: width, height: 1)))
+        document.addSubview(MachinesRule(frame: NSRect(x: left, y: y, width: width, height: 1)))
         y += 24
         let footer = label("Connections change automatically. Tasks stay where they run when you bring them to a Desk.", color: .secondaryLabelColor)
         footer.frame = NSRect(x: left, y: y, width: width, height: footer.frame.height)
@@ -108,11 +108,11 @@ final class FleetPage: NSView {
     }
 }
 
-private final class FleetDocument: NSView {
+private final class MachinesDocument: NSView {
     override var isFlipped: Bool { true }
 }
 
-private final class FleetRule: NSView {
+private final class MachinesRule: NSView {
     override func draw(_ dirtyRect: NSRect) {
         NSColor.separatorColor.setFill()
         bounds.fill()
@@ -120,7 +120,7 @@ private final class FleetRule: NSView {
 }
 
 @MainActor
-private final class FleetBadge: NSView {
+private final class MachinesBadge: NSView {
     private let text: NSTextField
     private let tone: NSColor
 

@@ -114,7 +114,7 @@ async fn a_paired_machine_takes_commands_and_an_unpaired_or_revoked_one_is_refus
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn pairing_needs_the_code_and_a_yes_and_a_reload_keeps_the_fleet() {
+async fn pairing_needs_the_code_and_a_yes_and_a_reload_keeps_the_log() {
     let (mbp, mbp_host) = machine("mbp", json!({})).await;
     let (vm, vm_host) = machine("linux-vm", json!({})).await;
 
@@ -137,7 +137,7 @@ async fn pairing_needs_the_code_and_a_yes_and_a_reload_keeps_the_fleet() {
     let saved = vm_host.saved.lock().unwrap().clone();
     let (reloaded, _) = machine("ignored", saved.clone()).await;
     assert_eq!(reloaded.status()["name"], "linux-vm");
-    assert_eq!(reloaded.status()["fleet"], vm.status()["fleet"]);
+    assert_eq!(reloaded.status()["log"], vm.status()["log"]);
     let mut forged = saved;
     forged["entries"][0]["signature"] = json!("00".repeat(64));
     let (broken, _) = machine("x", forged).await;
@@ -146,7 +146,7 @@ async fn pairing_needs_the_code_and_a_yes_and_a_reload_keeps_the_fleet() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_third_machine_learns_the_fleet_and_a_revocation_reaches_it() {
+async fn a_third_machine_learns_the_log_and_a_revocation_reaches_it() {
     let (mbp, _) = machine("mbp", json!({})).await;
     let (vm, _) = machine("linux-vm", json!({})).await;
     let (mini, _) = machine("mini", json!({})).await;

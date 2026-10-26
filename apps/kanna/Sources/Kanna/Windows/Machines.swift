@@ -45,10 +45,10 @@ extension AppController {
         return [system, chip].compactMap { $0 }.joined(separator: " · ")
     }
 
-    var fleetMachines: [FleetMachine] {
+    var machineRows: [MachineRow] {
         guard let links else { return [] }
         let local = Self.platform(links.local.daemonInfo?["capabilities"]).map { "This Mac · \($0)" } ?? "This Mac"
-        var rows = [FleetMachine(name: links.name ?? "This Mac", detail: local, path: "This Mac", note: "Its own tasks and planners",
+        var rows = [MachineRow(name: links.name ?? "This Mac", detail: local, path: "This Mac", note: "Its own tasks and planners",
                                  explanation: "Kanna.app's own machine: the app talks to its daemon on this Mac's socket.")]
         for peer in links.peers.sorted(by: { ($0["name"]?.string ?? "") < ($1["name"]?.string ?? "") }) {
             guard let name = peer["name"]?.string, peer["trusted"]?.bool == true, peer["revoked"]?.bool != true else { continue }
@@ -79,7 +79,7 @@ extension AppController {
                 note = rtt.map { "No relay in use · \($0)" } ?? "No relay in use"
                 explanation = "Connected directly on your local network\(remote.map { " (\($0))" } ?? "")."
             }
-            rows.append(FleetMachine(name: name, detail: detail, path: path, note: note, explanation: explanation))
+            rows.append(MachineRow(name: name, detail: detail, path: path, note: note, explanation: explanation))
         }
         return rows
     }

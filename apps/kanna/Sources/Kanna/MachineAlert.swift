@@ -1,7 +1,7 @@
 import AppKit
 
 @MainActor
-enum FleetAlert {
+enum MachineAlert {
     static func confirm(_ args: JSON) async -> Bool {
         let name = args["name"]?.string ?? "a machine"
         let key = args["key"]?.string ?? ""
@@ -9,13 +9,13 @@ enum FleetAlert {
         let addrs = (args["addrs"]?.array ?? []).compactMap(\.string)
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "Add \(name) to Your Fleet?"
+        alert.messageText = "Add \(name) to Your Machines?"
         var details = ["\(name) asked to join with the code you typed. Once added, it can run tasks and commands on your machines, and they on it."]
         details.append("Key: \(key)")
         if !addrs.isEmpty {
             details.append("Addresses: \(addrs.joined(separator: ", "))")
         }
-        details.append("Add it only if you just ran kanna fleet pair on it.")
+        details.append("Add it only if you just ran kanna machine pair on it.")
         alert.informativeText = details.joined(separator: "\n\n")
         alert.addButton(withTitle: "Add Machine")
         alert.addButton(withTitle: "Cancel")

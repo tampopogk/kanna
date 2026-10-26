@@ -24,7 +24,7 @@ mod shell;
 mod status;
 mod status_command;
 mod diffs;
-mod fleet;
+mod machines;
 mod files;
 mod store;
 mod task_scripts;
@@ -103,8 +103,8 @@ pub enum Event {
     AppCaughtUp { conn: u64 },
     AppMessage { conn: u64, message: Value },
     AppGone { conn: u64 },
-    FleetConfirm { question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send> },
-    FleetSave(Value),
+    MachineConfirm { question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send> },
+    MachinesSave(Value),
     Quit(i32),
     Shutdown(String),
 }
@@ -290,12 +290,12 @@ fn run() -> Result<(), String> {
     }));
     let quiz = Rc::new(quiz::Quiz::new(db.clone(), Some(core.weak())));
     quiz.install(&core);
-    let fleet = match fleet::Fleet::start(&state_dir, &db, events.clone()) {
-        Ok(fleet) => {
-            log!("kanna-daemon: {}", fleet.describe());
-            let fleet = Rc::new(fleet);
-            fleet.install(&core);
-            Some(fleet)
+    let machines = match machines::Machines::start(&state_dir, &db, events.clone()) {
+        Ok(machines) => {
+            log!("kanna-daemon: {}", machines.describe());
+            let machines = Rc::new(machines);
+            machines.install(&core);
+            Some(machines)
         }
         Err(reason) => {
             log!("kanna-daemon: {reason}");
@@ -353,9 +353,9 @@ fn run() -> Result<(), String> {
 
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
     let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), files.clone(), layout.clone(), app_timeout, build_id.clone()));
-    if let Some(fleet) = &fleet {
-        let fleet = Rc::downgrade(fleet);
-        *app.machine.borrow_mut() = Some(Box::new(move || fleet.upgrade().map_or(Value::Null, |f| f.machine())));
+    if let Some(machines) = &machines {
+        let machines = Rc::downgrade(machines);
+        *app.machine.borrow_mut() = Some(Box::new(move || machines.upgrade().map_or(Value::Null, |m| m.machine())));
     }
     let view_link = Rc::downgrade(&app);
     *layout.on_view.borrow_mut() = Some(Box::new(move |view| {
@@ -616,7 +616,7 @@ fn run() -> Result<(), String> {
             }
             Event::AppMessage { conn, message } => {
                 if let Some(request) = app.message(conn, message) {
-                    if let Some(refused) = fleet::refuse_remote(&request).filter(|_| !app.attached_here()) {
+                    if let Some(refused) = machines::refuse_remote(&request).filter(|_| !app.attached_here()) {
                         app.answer_app(conn, refused);
                         continue;
                     }
@@ -632,13 +632,13 @@ fn run() -> Result<(), String> {
             }
             Event::AppGone { conn } => app.gone(conn),
             Event::AppCaughtUp { conn } => app.caught_up(conn),
-            Event::FleetConfirm { question, answer } => match &fleet {
-                Some(fleet) => fleet.confirm(&app, question, answer),
-                None => answer(Err("this daemon has no fleet endpoint".into())),
+            Event::MachineConfirm { question, answer } => match &machines {
+                Some(machines) => machines.confirm(&app, question, answer),
+                None => answer(Err("this daemon has no endpoint".into())),
             },
-            Event::FleetSave(doc) => {
-                if let Err(error) = db.put_fleet(&doc) {
-                    log!("kanna-daemon: can't save the fleet in kanna.db: {error}");
+            Event::MachinesSave(doc) => {
+                if let Err(error) = db.put_machines(&doc) {
+                    log!("kanna-daemon: can't save your machines in kanna.db: {error}");
                 }
             }
             Event::Quit(_) => continue,
@@ -650,8 +650,8 @@ fn run() -> Result<(), String> {
     layout.flush();
     layout.save_now();
     terminals.shutdown();
-    if let Some(fleet) = &fleet {
-        fleet.stop();
+    if let Some(machines) = &machines {
+        machines.stop();
     }
     let _ = std::fs::remove_file(&pid_file);
     std::mem::forget(rules_updater);

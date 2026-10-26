@@ -212,7 +212,7 @@ impl AppLink {
         }
         let remote_attached = self.app.borrow().as_ref().filter(|app| app.remote.is_some()).map(|app| app.id);
         if let (Some(old), None) = (remote_attached, &remote) {
-            log!("kanna-daemon: this machine's app takes over from the app attached over the fleet");
+            log!("kanna-daemon: this machine's app takes over from the app attached from another machine");
             if let Some(app) = self.app.borrow().as_ref() {
                 let _ = app.stream.shutdown(Shutdown::Both);
             }
@@ -250,7 +250,7 @@ impl AppLink {
         }
         let pid = args.get("pid").cloned().unwrap_or(Value::Null);
         match (&remote, args.get("client").and_then(Value::as_str)) {
-            (Some(from), client) => log!("kanna-daemon: the app on {} attached over the fleet (pid {pid}, protocol {protocol})", client.unwrap_or(from)),
+            (Some(from), client) => log!("kanna-daemon: the app on {} attached from another machine (pid {pid}, protocol {protocol})", client.unwrap_or(from)),
             (None, _) => log!("kanna-daemon: the app attached (pid {pid})"),
         }
         self.layout.flush();

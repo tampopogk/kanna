@@ -31,7 +31,7 @@ flowchart LR
 ## 2. Host and guest
 
 - The host daemon retains the host's `device.key`. A small VM manager accepts authorized requests from it, selects a tenant-owned guest, and enforces resource limits. Privileged operations are limited to VM and network lifecycle; tenants cannot supply host commands, host paths or a target UID.
-- The guest executor receives a job-scoped capability for its assigned tenant, VM and request. It can receive that job's snapshot and return status/artifacts; it cannot enroll peers, submit another tenant's jobs or request host-side signing. Do not copy the host's private fleet identity or broad owner agent credentials into a guest.
+- The guest executor receives a job-scoped capability for its assigned tenant, VM and request. It can receive that job's snapshot and return status/artifacts; it cannot enroll peers, submit another tenant's jobs or request host-side signing. Do not copy the host's private machine identity or broad owner agent credentials into a guest.
 - Build and UI workers run as a non-admin guest job user. The guest's supervisor and worker separation is defence in depth; the VM is the cross-tenant boundary.
 - The existing snapshot, mirror lock, pinned Xcode, durable status and artifact contracts remain. Mirrors and DerivedData live on tenant-private guest disks. A VM slot advertises guest architecture, Xcode and Simulator runtimes, while host capacity bounds total admission.
 - Start with Apple-silicon macOS virtualization; evaluate Tart or a small Apple Virtualization.framework runner in the model. Do not advertise Intel-host VM support before it is demonstrated with a suitable backend.
