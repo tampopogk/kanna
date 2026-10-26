@@ -17,7 +17,15 @@ pub struct Client {
 
 impl Client {
     pub async fn start(secret: SecretKey) -> Result<Client, String> {
-        let endpoint = Endpoint::builder(presets::Minimal).secret_key(secret).relay_mode(relay_mode()).bind().await.map_err(|e| format!("can't open the app's endpoint: {e}"))?;
+        Client::with(Endpoint::builder(presets::Minimal).secret_key(secret)).await
+    }
+
+    pub async fn start_relay_only(secret: SecretKey) -> Result<Client, String> {
+        Client::with(Endpoint::builder(presets::Minimal).secret_key(secret).clear_ip_transports()).await
+    }
+
+    async fn with(builder: iroh::endpoint::Builder) -> Result<Client, String> {
+        let endpoint = builder.relay_mode(relay_mode()).bind().await.map_err(|e| format!("can't open the app's endpoint: {e}"))?;
         Ok(Client { endpoint, conns: Mutex::default(), relays: Mutex::default() })
     }
 
