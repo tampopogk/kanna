@@ -107,6 +107,8 @@ pub enum Event {
     MachineConfirm { question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send> },
     MachinesSave(Value),
     Restart,
+    PeerRequest { from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send> },
+    AccountBroken(Value),
     Quit(i32),
     Shutdown(String),
 }
@@ -117,6 +119,7 @@ fn main() {
         None => {}
         Some("--uses-keeper") => std::process::exit(0),
         Some(codex_remote::FLAG) if args.len() >= 3 => std::process::exit(codex_remote::run(Path::new(&args[1]), &args[2], &args[3..])),
+        Some(accounts::FLAG) if args.len() >= 3 => std::process::exit(accounts::run_with_account(Path::new(&args[1]), &args[2], &args[3..])),
         Some("-h" | "--help") => return println!("{USAGE}"),
         Some(other) => {
             eprintln!("kanna-daemon: unknown argument {other}\n{USAGE}");
@@ -314,6 +317,12 @@ fn run() -> Result<Option<PathBuf>, String> {
             None
         }
     };
+    let accounts = accounts::Service::start(&state_dir, machines.as_ref().and_then(|m| m.caller()));
+    let broken = events.clone();
+    accounts.on_broken(Box::new(move |account| {
+        let _ = broken.send(Event::AccountBroken(account));
+    }));
+    accounts.install(&core);
     let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone(), agents::keys(&support_folder(), &state_dir));
     agents.refresh();
     agents.install(&core);
@@ -652,6 +661,18 @@ fn run() -> Result<Option<PathBuf>, String> {
             Event::MachinesSave(doc) => {
                 if let Err(error) = db.put_machines(&doc) {
                     log!("kanna-daemon: can't save your machines in kanna.db: {error}");
+                }
+                accounts.changed();
+            }
+            Event::PeerRequest { from, request, reply } => accounts.peer(&from, request, reply),
+            Event::AccountBroken(account) => {
+                let agent = match account["agent"].as_str() {
+                    Some("claude") => "Claude",
+                    _ => "Codex",
+                };
+                let toast = toasts::Toast { title: format!("Sign in to {agent} again"), detail: Some(format!("{}: {}. Add it again with kanna accounts add {}.", account["label"].as_str().unwrap_or(agent), account["why"].as_str().unwrap_or("it stopped working"), account["agent"].as_str().unwrap_or("codex"))), key: Some(format!("account:{}", account["id"].as_str().unwrap_or_default())), ..Default::default() };
+                if let Err(error) = toasts.raise(toast) {
+                    log!("kanna-daemon: can't raise a toast for a broken account: {}", error.message);
                 }
             }
             Event::Restart => match machines.as_ref().and_then(|m| m.install.as_ref()) {

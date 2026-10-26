@@ -29,11 +29,15 @@ pub struct Machines {
 struct DaemonHost(Mutex<Sender<Event>>);
 
 impl Host for DaemonHost {
-    fn request(&self, _from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send>) {
+    fn request(&self, from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send>) {
         if let Some(refused) = refuse_remote(&request) {
             return reply(refused);
         }
-        let _ = self.0.lock().unwrap_or_else(|p| p.into_inner()).send(Event::Request(request, reply));
+        let event = match request.get("cmd").and_then(Value::as_str) == Some(crate::accounts::COMMAND) {
+            true => Event::PeerRequest { from, request, reply },
+            false => Event::Request(request, reply),
+        };
+        let _ = self.0.lock().unwrap_or_else(|p| p.into_inner()).send(event);
     }
 
     fn confirm(&self, question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send>) {
@@ -52,6 +56,35 @@ impl Host for DaemonHost {
         let events = self.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
         let Ok(reader) = stream.try_clone() else { return };
         let _ = std::thread::Builder::new().name("kanna.app.read".into()).spawn(move || crate::app_link::serve(events, hello, std::io::BufReader::new(reader), stream, Some(from)));
+    }
+}
+
+#[derive(Clone)]
+pub struct Caller {
+    handle: tokio::runtime::Handle,
+    node: Node,
+}
+
+const CALL_WAIT: Duration = Duration::from_secs(60);
+
+impl Caller {
+    pub fn key(&self) -> String {
+        self.node.key()
+    }
+
+    pub fn status(&self) -> Value {
+        self.node.status()
+    }
+
+    pub fn call(&self, host: &str, cmd: &str, args: Value) -> Result<Value, KmuxError> {
+        let request = json!({ "id": 1, "cmd": cmd, "args": args });
+        let reply = self.handle.block_on(tokio::time::timeout(CALL_WAIT, self.node.call(host, request)));
+        match reply {
+            Ok(Ok(reply)) if reply["ok"] == true => Ok(reply),
+            Ok(Ok(reply)) => Err(KmuxError::new(reply["error"]["code"].as_str().unwrap_or("failed"), reply["error"]["message"].as_str().unwrap_or("failed"))),
+            Ok(Err(failure)) => Err(error(failure)),
+            Err(_) => Err(KmuxError::new("unreachable", format!("{host} didn't answer in time"))),
+        }
     }
 }
 
@@ -121,6 +154,10 @@ impl Machines {
             runtime.block_on(Node::start(config, Box::new(DaemonHost(Mutex::new(events)))))
         });
         Ok(Machines { runtime, node, state_dir: state_dir.to_path_buf(), install })
+    }
+
+    pub fn caller(&self) -> Option<Caller> {
+        self.node.as_ref().ok().map(|node| Caller { handle: self.runtime.handle().clone(), node: node.clone() })
     }
 
     pub fn describe(&self) -> String {

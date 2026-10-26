@@ -1,9 +1,11 @@
 use kanna_mux::json::{json, string, Map, Value};
-use kanna_mux::KmuxError;
+use crate::machines::Caller;
+use kanna_mux::{CoreHandle, KmuxError, Responder};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -426,6 +428,208 @@ impl Accounts {
                     }
                 }
                 Err(KmuxError::new("broken", why))
+            }
+        }
+    }
+}
+
+pub const COMMAND: &str = "accounts";
+
+const SUPPLY_EVERY: Duration = Duration::from_secs(60);
+
+const BACKOFF_MAX: Duration = Duration::from_secs(900);
+
+pub struct Service {
+    accounts: Arc<Accounts>,
+    caller: Option<Caller>,
+    wake: Mutex<Sender<()>>,
+}
+
+struct Peers {
+    trusted: BTreeSet<String>,
+    me_revoked: bool,
+    names: BTreeMap<String, String>,
+}
+
+fn peers(status: &Value) -> Peers {
+    let mut found = Peers { trusted: BTreeSet::new(), me_revoked: false, names: BTreeMap::new() };
+    for peer in status["peers"].as_array().into_iter().flatten() {
+        let (Some(key), Some(name)) = (string(peer, "key"), string(peer, "name")) else { continue };
+        found.names.insert(key.to_string(), name.to_string());
+        match (peer["me"] == true, peer["revoked"] == true, peer["trusted"] == true) {
+            (true, true, _) => found.me_revoked = true,
+            (false, false, true) => {
+                found.trusted.insert(key.to_string());
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
+fn object(value: Value) -> Result<Map, KmuxError> {
+    match value {
+        Value::Object(map) => Ok(map),
+        other => Ok(Map::from_iter([("value".to_string(), other)])),
+    }
+}
+
+impl Service {
+    pub fn start(state: &Path, caller: Option<Caller>) -> Arc<Service> {
+        let accounts = Arc::new(Accounts::open(state, secrets(state), Box::new(CodexRefresher)));
+        let (wake, woken) = std::sync::mpsc::channel();
+        let service = Arc::new(Service { accounts, caller, wake: Mutex::new(wake) });
+        let supplier = Arc::downgrade(&service);
+        let _ = std::thread::Builder::new().name("kanna.accounts".into()).spawn(move || supply(supplier, woken));
+        service.changed();
+        service
+    }
+
+    pub fn on_broken(&self, report: Box<dyn Fn(Value) + Send>) {
+        self.accounts.on_broken(report);
+    }
+
+    pub fn changed(&self) {
+        let _ = self.wake.lock().unwrap_or_else(|p| p.into_inner()).send(());
+    }
+
+    pub fn install(self: &Arc<Self>, core: &CoreHandle) {
+        let service = self.clone();
+        core.add_command(COMMAND, std::rc::Rc::new(move |args, responder| service.local(args, responder)));
+    }
+
+    fn me(&self) -> String {
+        self.caller.as_ref().map(Caller::key).unwrap_or_default()
+    }
+
+    fn peers(&self) -> Peers {
+        self.caller.as_ref().map(|caller| peers(&caller.status())).unwrap_or(Peers { trusted: BTreeSet::new(), me_revoked: false, names: BTreeMap::new() })
+    }
+
+    fn list(&self) -> Value {
+        let peers = self.peers();
+        let me = self.me();
+        let name = |key: &str| match key == me {
+            true => "this machine".to_string(),
+            false => peers.names.get(key).cloned().unwrap_or_else(|| key.chars().take(10).collect()),
+        };
+        let mut listed = self.accounts.list(&name);
+        listed["machines"] = json!(peers.trusted.iter().map(|k| name(k)).collect::<Vec<_>>());
+        listed
+    }
+
+    fn local(self: &Arc<Self>, args: Value, responder: Responder) {
+        let action = string(&args, "action").unwrap_or("list").to_string();
+        let service = self.clone();
+        let _ = std::thread::Builder::new().name("kanna.accounts.request".into()).spawn(move || {
+            let result = match action.as_str() {
+                "list" => Ok(service.list()),
+                "add" => service.add(&args),
+                "remove" => match string(&args, "account") {
+                    Some(which) => service.accounts.remove(which).inspect(|_| service.changed()),
+                    None => Err(bad("accounts remove needs an ACCOUNT: its ID, or claude or codex")),
+                },
+                "token" => service.token(&args),
+                "supply" => Err(KmuxError::new("refused", "only your other machines supply accounts")),
+                other => Err(bad(format!("unknown accounts action \"{other}\" (list, add, remove or token)"))),
+            };
+            responder.reply(result.and_then(object));
+        });
+    }
+
+    fn add(&self, args: &Value) -> Result<Value, KmuxError> {
+        let kind = string(args, "kind").and_then(Kind::parse).ok_or_else(|| bad(format!("accounts add needs a kind: {}", Kind::ALL.map(Kind::name).join(", "))))?;
+        let secret = string(args, "secret").filter(|s| !s.trim().is_empty()).ok_or_else(|| bad("accounts add needs the account's secret"))?;
+        let mut added = self.accounts.add(kind, secret, string(args, "label"), string(args, "program"), &self.me())?;
+        self.changed();
+        added["machines"] = self.list()["machines"].clone();
+        Ok(added)
+    }
+
+    fn token(&self, args: &Value) -> Result<Value, KmuxError> {
+        let account = match string(args, "account") {
+            Some(account) => account.to_string(),
+            None => match self.accounts.credential("codex") {
+                Some(Credential::CodexHolder { account, .. }) => account,
+                _ => return Err(KmuxError::new("not_found", "no Codex ChatGPT account is set up")),
+            },
+        };
+        let holder = self.accounts.holder_of(&account).ok_or_else(|| KmuxError::new("not_found", format!("no Codex account {account} here: it was removed")))?;
+        let previous = string(args, "previous");
+        let tokens = match (holder == self.me(), &self.caller) {
+            (true, _) => self.accounts.token(&account, previous)?,
+            (false, Some(caller)) => caller.call(&holder, COMMAND, json!({ "action": "token", "account": account, "previous": previous }))?["tokens"].clone(),
+            (false, None) => return Err(KmuxError::new("unreachable", "this machine can't reach the one holding your Codex account")),
+        };
+        Ok(json!({ "tokens": tokens }))
+    }
+
+    pub fn peer(self: &Arc<Self>, from: &str, request: Value, reply: Box<dyn FnOnce(Value) + Send>) {
+        let service = self.clone();
+        let from = from.to_string();
+        let _ = std::thread::Builder::new().name("kanna.accounts.peer".into()).spawn(move || {
+            let id = request.get("id").cloned().unwrap_or(Value::Null);
+            let args = request.get("args").cloned().unwrap_or_else(|| json!({}));
+            let result = match string(&args, "action") {
+                Some("supply") => {
+                    let peers = service.peers();
+                    match peers.names.iter().find(|(key, name)| **name == from && peers.trusted.contains(*key)) {
+                        Some((source, _)) => service.accounts.supply(source, &args),
+                        None => Err(KmuxError::new("unpaired", format!("{from} isn't one of your machines"))),
+                    }
+                }
+                Some("token") => match string(&args, "account") {
+                    Some(account) => service.accounts.token(account, string(&args, "previous")).map(|tokens| json!({ "tokens": tokens })),
+                    None => Err(bad("accounts token needs an account")),
+                },
+                _ => Err(KmuxError::new("refused", "your other machines may only supply accounts or ask for a Codex token")),
+            };
+            reply(match result {
+                Ok(fields) => {
+                    let mut answer = json!({ "id": id, "ok": true });
+                    for (key, value) in fields.as_object().cloned().unwrap_or_default() {
+                        answer[key] = value;
+                    }
+                    answer
+                }
+                Err(error) => json!({ "id": id, "ok": false, "error": { "code": error.code, "message": error.message } }),
+            });
+        });
+    }
+}
+
+fn supply(service: std::sync::Weak<Service>, woken: Receiver<()>) {
+    let mut waits: BTreeMap<String, (Instant, Duration)> = BTreeMap::new();
+    loop {
+        match woken.recv_timeout(SUPPLY_EVERY) {
+            Ok(()) => waits.clear(),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+        let Some(service) = service.upgrade() else { return };
+        let Some(caller) = service.caller.clone() else { continue };
+        let peers = peers(&caller.status());
+        service.accounts.prune(&peers.trusted, peers.me_revoked);
+        if peers.me_revoked || service.accounts.version() == 0 {
+            continue;
+        }
+        for peer in service.accounts.outbox(&peers.trusted) {
+            if waits.get(&peer).is_some_and(|(at, _)| Instant::now() < *at) {
+                continue;
+            }
+            let mut payload = service.accounts.payload();
+            let version = payload["version"].as_u64().unwrap_or(0);
+            payload["action"] = json!("supply");
+            match caller.call(&peer, COMMAND, payload) {
+                Ok(_) => {
+                    service.accounts.delivered(&peer, version);
+                    waits.remove(&peer);
+                }
+                Err(error) => {
+                    let wait = waits.get(&peer).map_or(SUPPLY_EVERY, |(_, wait)| (*wait * 2).min(BACKOFF_MAX));
+                    waits.insert(peer.clone(), (Instant::now() + wait, wait));
+                    eprintln!("kanna-daemon: couldn't supply your agent accounts to {}: {}", peers.names.get(&peer).map_or(peer.as_str(), String::as_str), error.message);
+                }
             }
         }
     }
