@@ -2123,10 +2123,14 @@ impl Backlog {
         let project = repo.and_then(identity);
         let machines = self.machines();
         let replica = self.replica.borrow();
-        let elsewhere = replica
+        let mut records: Vec<&replica::Record> = replica
             .records()
             .filter(|r| r.text("state").is_some_and(|s| s != "done") && r.text("owner").is_some_and(|o| o != replica.me()) && !self.is_open(&r.task))
             .filter(|r| repo.is_none() || (project.is_some() && r.text("project") == project.as_deref()))
+            .collect();
+        records.sort_by_key(|r| r.born());
+        let elsewhere = records
+            .into_iter()
             .map(|r| {
                 let mut value = r.to_value();
                 value["id"] = json!(r.task);
