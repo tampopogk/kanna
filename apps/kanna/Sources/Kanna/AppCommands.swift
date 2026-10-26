@@ -1,10 +1,17 @@
-import Foundation
+import AppKit
 import KannaCode
 
 extension AppController {
     func installAppCommands() {
         commands["app.machine.confirm"] = { args in
             ["confirmed": .bool(await MachineAlert.confirm(args))]
+        }
+        commands["app.open_url"] = { args in
+            guard let text = args["url"]?.string, let url = URL(string: text), url.scheme == "https" else {
+                throw KannaError("bad_request", "app.open_url opens an https address")
+            }
+            await MainActor.run { _ = NSWorkspace.shared.open(url) }
+            return ["opened": .string(text)]
         }
         commands["app.snap"] = { args in
             guard let path = args["path"]?.string, !path.isEmpty, let line = args["line"]?.number.map({ Int($0) }), line > 0 else {

@@ -28,6 +28,13 @@ extension AppController {
             app.addItem(withTitle: "Instance: \(Self.instanceName)", action: nil, keyEquivalent: "")
             app.addItem(.separator())
         }
+        let accounts = app.addItem(withTitle: "Agent Accounts", action: nil, keyEquivalent: "")
+        accounts.submenu = NSMenu(title: accounts.title)
+        for (label, action) in [("Show Accounts", #selector(showAccounts)), ("Add Claude Subscription…", #selector(addClaudeSubscription)), ("Add Anthropic API Key…", #selector(addAnthropicKey)), ("Add Codex (ChatGPT) Account…", #selector(addCodexAccount)), ("Add OpenAI API Key…", #selector(addOpenAIKey)), ("Remove Claude Account", #selector(removeClaudeAccount)), ("Remove Codex Account", #selector(removeCodexAccount))] {
+            if label.hasPrefix("Add Claude") || label.hasPrefix("Remove Claude") { accounts.submenu?.addItem(.separator()) }
+            accounts.submenu?.addItem(withTitle: label, action: action, keyEquivalent: "").target = self
+        }
+        app.addItem(.separator())
         app.addItem(withTitle: "Quit \(KannaBuild.name)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         let file = menu("File", [("New Desk", #selector(newDeskWindow), nil, .cmd("n"))])
         file.addItem(recentMenuItem())
@@ -388,6 +395,18 @@ extension AppController {
             refresh()
         }
         layoutCommand("focus", ["tab": .string(next), "keep": "dock"])
+    }
+
+    @objc func showAccounts() { accountsTerminal("kanna accounts; exec \"${SHELL:-/bin/sh}\" -l") }
+    @objc func addClaudeSubscription() { accountsTerminal("kanna accounts add claude") }
+    @objc func addAnthropicKey() { accountsTerminal("kanna accounts add claude --api-key") }
+    @objc func addCodexAccount() { accountsTerminal("kanna accounts add codex") }
+    @objc func addOpenAIKey() { accountsTerminal("kanna accounts add codex --api-key") }
+    @objc func removeClaudeAccount() { accountsTerminal("kanna accounts remove claude") }
+    @objc func removeCodexAccount() { accountsTerminal("kanna accounts remove codex") }
+
+    private func accountsTerminal(_ command: String) {
+        request("open", ["type": "term", "window": "new", "cmd": .string(command)], on: .some(nil))
     }
 
     @objc func newWindow() {
