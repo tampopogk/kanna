@@ -2002,6 +2002,50 @@ desk_by_path() {
   check wait_for 10 shows "$planner" "No agent Kanna knows is installed" || { kanna read "$planner"; return 1; }
 }
 
+scenario desk_planner_stays M4
+desk_planner_stays() {
+  local repo="$KANNA_STATE_DIR/repo"
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "desk_planner_stays line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  printf '# Notes\n' >"$repo/notes.md"
+  start_daemon || { echo "desk_planner_stays line $LINENO"; return 1; }
+  env -u KANNA_NO_INITIAL_WINDOW KANNA_START_DIR="$repo" "$app" --bg >>"$out/app.log" 2>&1 &
+  app_pid=$!
+  wait_for 10 app_attached || { echo "the app did not attach"; return 1; }
+  desk() { raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}' | field "$1"; }
+  shell() { kanna read "$1" | grep -o 'shell=[0-9][0-9]*' | tail -1; }
+  check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { kanna workspace list --all; return 1; }
+  local planner workspace width pid
+  planner="$(desk lead)"; workspace="$(ws "$planner" id)"; width="$(ws "$planner" dock.width)"
+  check wait_for 10 shows "$planner" "No agent Kanna knows is installed" || { kanna read "$planner"; return 1; }
+  kanna send "$planner" 'echo "shell=$$"' >/dev/null || { echo "desk_planner_stays line $LINENO"; return 1; }
+  check wait_for 5 eval '[[ -n "$(shell "$planner")" ]]' || { kanna read "$planner"; return 1; }
+  pid="$(shell "$planner")"
+  same() {
+    [[ "$(desk lead)" == "$planner" ]] || { echo "desk_planner_stays: $1: the Desk's planning terminal is $(desk lead), not $planner"; kanna workspace list --all; return 1; }
+    [[ "$(ws "$planner" id)" == "$workspace" && "$(ws "$planner" dock.width)" == "$width" ]] || { echo "desk_planner_stays: $1: the planner workspace changed"; kanna workspace list --all --json; return 1; }
+    is "$planner" state running || { echo "desk_planner_stays: $1: the planning terminal stopped"; return 1; }
+    kanna send "$planner" 'clear; echo "shell=$$"' >/dev/null && wait_for 5 eval '[[ "$(shell "$planner")" == "$pid" ]]' || { echo "desk_planner_stays: $1: the planning terminal's shell isn't $pid"; kanna read "$planner"; return 1; }
+  }
+  kanna open md "$repo/notes.md" --window new >/dev/null || { echo "desk_planner_stays line $LINENO"; return 1; }
+  check wait_for 5 eval '[[ "$(shown_windows)" == win-1 ]]' || { kanna workspace list --all; return 1; }
+  rm "$repo/notes.md"
+  stop_app; stop_daemon
+  start_daemon && start_app || { echo "desk_planner_stays line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(desk lead)" == "$planner" && "$(shown_windows)" == win-1 ]]' || { echo "desk_planner_stays: the planning terminal or the doc's window didn't survive the app and daemon's restart"; kanna workspace list --all; return 1; }
+  same "after the restart" || return 1
+  key 'cmd+`'
+  check wait_for 5 eval '[[ "$(dwin d1 key)" == True ]]' || { echo "desk_planner_stays: Next Window didn't bring the Desk forward"; app_view; return 1; }
+  key 'cmd+`'
+  check wait_for 5 eval '[[ "$(dwin win-1 key)" == True ]]' || { echo "desk_planner_stays: Next Window back to the doc's window left $(raw '{"id":1,"cmd":"debug.app"}' | field key) in front"; return 1; }
+  key cmd+w
+  check wait_for 5 eval '[[ -z "$(shown_windows)" ]]' || { echo "desk_planner_stays: Close Pane didn't close the missing doc's window"; kanna workspace list --all; return 1; }
+  sleep 1; same "after Close Pane in the doc's window" || return 1
+  sleep 30; same "after 30s idle" || return 1
+  key cmd+shift+w
+  check wait_for 5 eval '! kanna workspace list --all --json | grep -q "\"$planner\""' || { echo "desk_planner_stays: closing the window left its planning terminal running"; kanna workspace list --all; return 1; }
+}
+
 scenario move_to_backlog M4
 move_to_backlog() {
   start_daemon && start_app || { echo "move_to_backlog line $LINENO"; return 1; }

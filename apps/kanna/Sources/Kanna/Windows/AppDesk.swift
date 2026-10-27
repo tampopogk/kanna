@@ -109,6 +109,13 @@ extension AppController {
         refresh()
     }
 
+    func show(window id: String) {
+        localKey = nil
+        restate()
+        refresh()
+        layoutCommand("focus", ["window": .string(id)])
+    }
+
     func openDesk(project: String?, fresh: Bool) -> (desk: String, project: String?, new: Bool) {
         let root = project.map(rootLocation)
         if !fresh, let root { touchProject(root) }
