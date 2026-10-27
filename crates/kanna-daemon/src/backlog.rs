@@ -210,13 +210,31 @@ pub const QUIZ_ROLE: &str = "You are the Kanna quiz agent, on main: quiz me on w
 
 /// How an agent Kanna starts in a role starts: as you'd start it yourself, with its first message saying its role.
 pub fn started_as(program: &str, role: &str, context: Option<u64>) -> String {
-    let command = match (agent(program).and_then(|a| a.compact), context) {
+    started_in(program, role, context, None)
+}
+
+fn launched(program: &str, context: Option<u64>) -> String {
+    match (agent(program).and_then(|a| a.compact), context) {
         (Some(flag), Some(tokens)) => in_its_terminal(&format!("{} {flag}{tokens}", unprompted(program))),
         _ => in_its_terminal(&unprompted(program)),
-    };
+    }
+}
+
+fn started_in(program: &str, role: &str, context: Option<u64>, session: Option<&str>) -> String {
+    let mut command = launched(program, context);
+    if let Some((session, flag)) = session.zip(agent(program).and_then(|a| a.named)) {
+        command = format!("{command} {flag} {}", quote(session));
+    }
     match agent(program).and_then(|a| a.prompt) {
         Some(flag) => format!("{command} {flag} {}", quote(role)),
         None => format!("{command} {}", quote(role)),
+    }
+}
+
+fn resumed_as(program: &str, context: Option<u64>, session: &str) -> String {
+    match agent(program) {
+        Some(known) => format!("{} {} {}", launched(program, context), known.resume, quote(session)),
+        None => launched(program, context),
     }
 }
 
@@ -254,6 +272,30 @@ pub fn planner_command(script: Option<&str>, context: Option<u64>, zsh: Option<&
     let integrate = zsh.map_or(String::new(), |dir| format!("case \"${{SHELL##*/}}\" in zsh) [ -z \"${{ZDOTDIR+x}}\" ] || export KANNA_ZSH_ZDOTDIR=\"$ZDOTDIR\"; export ZDOTDIR={};; esac; ", quote(dir)));
     let ask = cli.map_or(String::new(), |cli| format!("{cli} agents setup --ask; {cli} agents update --ask; ", cli = quote(cli)));
     format!("{limit}{ask}{integrate}exec \"${{SHELL:-/bin/sh}}\" -l")
+}
+
+fn planner_program(name: &str, context: Option<u64>) -> Option<String> {
+    planner_agents(context).into_iter().find(|(n, _, _)| n == name).map(|(_, program, _)| program)
+}
+
+#[derive(Debug, PartialEq)]
+enum Comeback {
+    Resume(String),
+    Busy,
+    Lost,
+    New,
+}
+
+fn comeback(kept: Option<&Value>, agent: &str, pane: &str, live: impl Fn(&str) -> bool, find: impl FnOnce(SystemTime) -> Option<String>) -> Comeback {
+    let Some(kept) = kept.filter(|k| string(k, "agent") == Some(agent)) else { return Comeback::New };
+    if kept.get("running") == Some(&Value::Bool(true)) && string(kept, "pane").is_some_and(|other| other != pane && live(other)) {
+        return Comeback::Busy;
+    }
+    let started = kept.get("started").and_then(Value::as_f64).map(|at| UNIX_EPOCH + Duration::from_secs_f64(at));
+    match string(kept, "session").map(String::from).or_else(|| started.and_then(find)) {
+        Some(session) => Comeback::Resume(session),
+        None => Comeback::Lost,
+    }
 }
 
 fn cli() -> Option<PathBuf> {
@@ -348,6 +390,52 @@ fn latest_codex_session(sessions: &Path, folder: &Path, since: Option<SystemTime
         }
     }
     None
+}
+
+fn first_session_since(program: &str, folder: &Path, since: SystemTime) -> Option<String> {
+    match agent(program)?.names[0] {
+        "codex" => {
+            let codex = std::env::var_os("CODEX_HOME").filter(|d| !d.is_empty()).map_or_else(|| home().join(".codex"), PathBuf::from);
+            first_codex_session(&codex.join("sessions"), folder, since)
+        }
+        "opencode" => {
+            let data = std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()).map_or_else(|| home().join(".local/share"), PathBuf::from);
+            first_opencode_session(&data.join("opencode/opencode.db"), folder, since)
+        }
+        _ => None,
+    }
+}
+
+fn first_codex_session(sessions: &Path, folder: &Path, since: SystemTime) -> Option<String> {
+    let listed = |dir: &Path| fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).collect::<Vec<_>>();
+    let made = |path: &Path| fs::metadata(path).and_then(|m| m.created().or_else(|_| m.modified())).ok();
+    let touched = |path: &Path| fs::metadata(path).and_then(|m| m.modified()).ok().is_some_and(|at| at >= since);
+    let days = listed(sessions).into_iter().flat_map(|year| listed(&year)).flat_map(|month| listed(&month)).filter(|day| day.is_dir() && touched(day));
+    let mut found: Vec<(SystemTime, String)> = days
+        .flat_map(|day| listed(&day))
+        .filter_map(|rollout| {
+            let name = rollout.file_name()?.to_str()?;
+            (name.starts_with("rollout-") && name.ends_with(".jsonl")).then_some(())?;
+            let at = made(&rollout).filter(|at| *at >= since)?;
+            let meta = serde_json::from_str::<Value>(&first_line(&rollout)?).ok()?;
+            let payload = meta.get("payload").filter(|_| string(&meta, "type") == Some("session_meta"))?;
+            string(payload, "cwd").is_some_and(|cwd| same_folder(Path::new(cwd), folder)).then_some(())?;
+            Some((at, string(payload, "id").filter(|id| !id.is_empty())?.to_string()))
+        })
+        .collect();
+    found.sort();
+    found.into_iter().next().map(|(_, id)| id)
+}
+
+fn first_opencode_session(db: &Path, folder: &Path, since: SystemTime) -> Option<String> {
+    if !db.is_file() {
+        return None;
+    }
+    let after = since.duration_since(UNIX_EPOCH).ok()?.as_millis();
+    let query = format!("select id, directory from session where parent_id is null and time_archived is null and time_created >= {after} order by time_created limit 1000");
+    let out = Command::new("/usr/bin/sqlite3").arg("-readonly").arg("-json").arg(db).arg(query).output().ok().filter(|o| o.status.success())?;
+    let rows = serde_json::from_slice::<Value>(&out.stdout).ok()?;
+    rows.as_array()?.iter().find(|row| string(row, "directory").is_some_and(|dir| same_folder(Path::new(dir), folder))).and_then(|row| string(row, "id")).map(String::from)
 }
 
 fn first_line(file: &Path) -> Option<String> {
@@ -1397,10 +1485,11 @@ impl Backlog {
                     Some("shelve") => this.shelve(&args, responder),
                     Some("defer") => this.defer(&args, responder),
                     Some("plan") => this.plan(&args, responder),
+                    Some("planner") => this.planner(&args, responder),
                     Some("events") => responder.reply(this.events(&args)),
                     Some("send") => responder.reply(this.send(&args)),
                     Some("messages") => responder.reply(this.messages(&args)),
-                    _ => responder.reply(Err(bad("backlog needs an action: new, edit, name, list, resolve, done, start, stop, setup, shelve, defer, plan, events, send or messages"))),
+                    _ => responder.reply(Err(bad("backlog needs an action: new, edit, name, list, resolve, done, start, stop, setup, shelve, defer, plan, planner, events, send or messages"))),
                 }
             }),
         );
@@ -1870,6 +1959,82 @@ impl Backlog {
         core.handle(json!({ "cmd": "open", "args": open }), move |reply| match failed(&reply) {
             Some(error) => responder.reply(Err(error)),
             None => responder.reply(Ok(Map::from_iter([("pane".to_string(), reply.get("pane").and_then(|p| p.get("id")).cloned().unwrap_or(Value::Null)), ("workspace".to_string(), reply.get("workspace").and_then(|w| w.get("id")).cloned().unwrap_or(Value::Null))]))),
+        });
+    }
+
+    fn planner(self: &Rc<Self>, args: &Value, responder: Responder) {
+        match string(args, "step") {
+            Some("start") => responder.reply(self.planner_starts(args)),
+            Some("quit") => self.planner_quit(args, responder),
+            _ => responder.reply(Err(bad("planner needs a step: start or quit"))),
+        }
+    }
+
+    fn planner_in(args: &Value) -> Result<(String, PathBuf, Option<u64>), KmuxError> {
+        let pane = string(args, "pane").filter(|p| !p.is_empty()).ok_or_else(|| bad("say which planning terminal"))?;
+        let folder = string(args, "folder").map(Path::new).filter(|f| f.is_absolute() && f.is_dir()).ok_or_else(|| bad("say the planning terminal's folder"))?;
+        let context = planning_context(&config_files(folder));
+        let project = project(folder.to_str()).unwrap_or_else(|| folder.to_path_buf());
+        Ok((pane.to_string(), project, context))
+    }
+
+    fn planner_starts(&self, args: &Value) -> Result<Map, KmuxError> {
+        let (pane, project, context) = Self::planner_in(args)?;
+        let name = string(args, "agent").ok_or_else(|| bad("say which agent"))?;
+        let program = planner_program(name, context).ok_or_else(|| bad(format!("{name} isn't an agent a planning terminal starts")))?;
+        let key = project.to_string_lossy().to_string();
+        let kept = self.db.planner(&key).ok().flatten();
+        let core = self.core.upgrade();
+        let live = |other: &str| core.as_ref().is_some_and(|core| alive(core, other));
+        let back = comeback(kept.as_ref(), name, &pane, live, |since| first_session_since(&program, &project, since));
+        let label = project.file_name().map_or_else(|| key.clone(), |n| n.to_string_lossy().to_string());
+        let group = string(args, "group").filter(|g| !g.is_empty() && g.bytes().all(|b| b.is_ascii_digit()));
+        let after = kept.as_ref().and_then(|k| string(k, "group")).filter(|before| Some(*before) != group).filter(|_| matches!(back, Comeback::Resume(_))).map(String::from);
+        let (command, session, said) = match back {
+            Comeback::Resume(session) => (resumed_as(&program, context, &session), Some(session), format!("Back to {label}'s planning conversation.")),
+            back => {
+                let new = agent(&program).and_then(|a| a.named).and_then(|_| uuid().ok());
+                let said = match back {
+                    Comeback::Busy => format!("The planner in another window is in {label}'s planning conversation, so this one starts a new one."),
+                    Comeback::Lost => format!("{name} didn't leave a conversation Kanna can find for {label}, so this one starts a new one."),
+                    _ => String::new(),
+                };
+                (started_in(&program, PLANNER_ROLE, context, new.as_deref()), new, said)
+            }
+        };
+        log!("kanna-daemon: the planner in {pane} starts {name} on {key}{}", session.as_deref().map_or(String::new(), |s| format!(" in session {s}")));
+        let doc = json!({ "agent": name, "session": opt(session.as_deref()), "started": num(now()), "pane": pane, "group": opt(group), "running": true });
+        if let Err(error) = self.db.put_planner(&key, &doc) {
+            log!("kanna-daemon: can't keep {key}'s planner: {error}");
+        }
+        Ok(Map::from_iter([("command".to_string(), json!(command)), ("said".to_string(), json!(said)), ("after".to_string(), opt(after.as_deref())), ("project".to_string(), json!(key))]))
+    }
+
+    fn planner_quit(self: &Rc<Self>, args: &Value, responder: Responder) {
+        let (pane, project, context) = match Self::planner_in(args) {
+            Ok(found) => found,
+            Err(error) => return responder.reply(Err(error)),
+        };
+        let key = project.to_string_lossy().to_string();
+        let Some(kept) = self.db.planner(&key).ok().flatten().filter(|k| string(k, "pane") == Some(pane.as_str())) else { return responder.reply(Ok(Map::new())) };
+        let name = string(&kept, "agent").unwrap_or_default().to_string();
+        let Some(program) = planner_program(&name, context) else { return responder.reply(Ok(Map::new())) };
+        let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
+        let this = Rc::downgrade(self);
+        core.handle(json!({ "cmd": "read", "args": { "pane": pane } }), move |reply| {
+            let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
+            let text = string(&reply, "text").unwrap_or_default();
+            let said = kanna_detect::program::known_agent(self::program(&program)).and_then(Quit::of).and_then(|q| q.session_in(text));
+            let started = kept.get("started").and_then(Value::as_f64).map(|at| UNIX_EPOCH + Duration::from_secs_f64(at));
+            let session = said.or_else(|| string(&kept, "session").map(String::from)).or_else(|| started.and_then(|since| first_session_since(&program, &project, since)));
+            let mut doc = kept.clone();
+            doc["session"] = opt(session.as_deref());
+            doc["running"] = json!(false);
+            if let Err(error) = this.db.put_planner(&key, &doc) {
+                log!("kanna-daemon: can't keep {key}'s planner: {error}");
+            }
+            let again = session.map(|session| resumed_as(&program, context, &session));
+            responder.reply(Ok(Map::from_iter([("again".to_string(), opt(again.as_deref()))])))
         });
     }
 
@@ -2638,6 +2803,82 @@ mod tests {
     }
 
     #[test]
+    fn a_planner_starts_in_a_session_of_its_own_and_comes_back_to_it_without_its_first_message() {
+        assert_eq!(started_in("claude", PLANNER_ROLE, None, Some("u-1")), "claude --dangerously-skip-permissions --session-id 'u-1' 'You are the Kanna planning agent.'");
+        assert_eq!(started_in("copilot", PLANNER_ROLE, None, Some("u-1")), "copilot --yolo --session-id 'u-1' -i 'You are the Kanna planning agent.'");
+        assert_eq!(started_in("codex", PLANNER_ROLE, Some(300_000), Some("u-1")), "codex --yolo -c model_auto_compact_token_limit=300000 --no-daemon 'You are the Kanna planning agent.'", "codex takes no session ID");
+        assert_eq!(resumed_as("claude", Some(300_000), "u-1"), "claude --dangerously-skip-permissions --resume 'u-1'");
+        assert_eq!(resumed_as("codex", Some(300_000), "u-1"), "codex --yolo -c model_auto_compact_token_limit=300000 --no-daemon resume 'u-1'");
+        assert_eq!(resumed_as("copilot", None, "u-1"), "copilot --yolo --session-id 'u-1'");
+        assert_eq!(resumed_as("opencode", None, "u-1"), "opencode --session 'u-1'");
+        assert_eq!(resumed_as("/x/bin/claude", None, "u-1"), "/x/bin/claude --dangerously-skip-permissions --resume 'u-1'");
+    }
+
+    #[test]
+    fn a_planner_comes_back_to_its_project_s_conversation_unless_another_window_is_in_it() {
+        let kept = |agent: &str, session: Option<&str>, pane: &str, running: bool| json!({ "agent": agent, "session": opt(session), "started": 1_700_000_000.0, "pane": pane, "running": running });
+        let none = |_: SystemTime| None;
+        let live = |pane: &str| pane == "term-2";
+        assert_eq!(comeback(None, "claude", "term-1", live, none), Comeback::New);
+        assert_eq!(comeback(Some(&kept("claude", Some("s"), "term-9", true)), "claude", "term-1", live, none), Comeback::Resume("s".into()), "its terminal is gone");
+        assert_eq!(comeback(Some(&kept("claude", Some("s"), "term-1", true)), "claude", "term-1", live, none), Comeback::Resume("s".into()), "restarted in the same terminal");
+        assert_eq!(comeback(Some(&kept("claude", Some("s"), "term-2", true)), "claude", "term-1", live, none), Comeback::Busy, "another window's planner is in it");
+        assert_eq!(comeback(Some(&kept("claude", Some("s"), "term-2", false)), "claude", "term-1", live, none), Comeback::Resume("s".into()), "that planner quit its agent");
+        assert_eq!(comeback(Some(&kept("claude", Some("s"), "term-9", true)), "codex", "term-1", live, none), Comeback::New, "another agent's conversation");
+        let found = |since: SystemTime| (since == UNIX_EPOCH + Duration::from_secs(1_700_000_000)).then(|| "found".to_string());
+        assert_eq!(comeback(Some(&kept("codex", None, "term-9", true)), "codex", "term-1", live, found), Comeback::Resume("found".into()), "found from when it started");
+        assert_eq!(comeback(Some(&kept("agy", None, "term-9", true)), "agy", "term-1", live, none), Comeback::Lost);
+    }
+
+    #[test]
+    fn a_codex_planner_s_session_is_the_first_rollout_in_the_project_since_it_started() {
+        let dir = std::env::temp_dir().join(format!("kanna-first-codex-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let day = dir.join("2026/10/28");
+        fs::create_dir_all(&day).unwrap();
+        let (project, other) = (dir.join("app"), dir.join("other"));
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        let rollout = |name: &str, id: &str, cwd: &Path| {
+            fs::write(day.join(format!("rollout-{name}-{id}.jsonl")), format!("{}\n", json!({ "type": "session_meta", "payload": { "id": id, "cwd": cwd } }))).unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        rollout("1", "before", &project);
+        std::thread::sleep(Duration::from_millis(20));
+        let since = SystemTime::now();
+        rollout("2", "elsewhere", &other);
+        rollout("3", "planner", &project);
+        rollout("4", "later", &project);
+        assert_eq!(first_codex_session(&dir, &project, since).as_deref(), Some("planner"));
+        assert_eq!(first_codex_session(&dir, &project, SystemTime::now()), None);
+        assert_eq!(first_codex_session(&dir, &dir.join("none"), since), None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_planner_script_starts_what_the_daemon_says_and_tells_it_the_agent_quit() {
+        let p = planner("comeback", &["claude"]);
+        let repo = p.repo("app");
+        let kanna = p.bin.join("kanna");
+        let asked = p.root.join("asked");
+        stub(&kanna, &format!("[ \"$1\" = raw ] || exit 0\nprintf '%s\\n' \"$2\" >>'{}'\ncase $2 in\n  *'\"start\"'*) echo '{{\"command\":\"claude --resume s-1\",\"said\":\"Back to app'\\''s planning conversation.\",\"after\":\"999999\"}}' ;;\n  *'\"quit\"'*) echo '{{\"again\":\"claude --resume s-2\"}}' ;;\nesac", asked.display()));
+        let out = p.run_in(&repo, "", Some(&kanna), Some("term-7"));
+        assert!(out.contains("Back to app's planning conversation.\n\nclaude in ROOT/app: --resume s-1\n"), "{out}");
+        assert!(out.contains("The planning agent quit. Start it again: claude --resume s-2\n"), "{out}");
+        let mut requests: Vec<Value> = fs::read_to_string(&asked).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        for request in &mut requests {
+            let group = request["args"].as_object_mut().unwrap().remove("group").unwrap();
+            assert!(group.as_str().unwrap().parse::<u32>().is_ok(), "its process group: {group}");
+        }
+        let folder = repo.to_string_lossy();
+        assert_eq!(requests, [json!({ "cmd": "backlog", "args": { "action": "planner", "step": "start", "pane": "term-7", "folder": folder, "agent": "claude" } }), json!({ "cmd": "backlog", "args": { "action": "planner", "step": "quit", "pane": "term-7", "folder": folder, "agent": "claude" } })]);
+
+        stub(&kanna, "exit 1");
+        let out = p.run_in(&repo, "", Some(&kanna), Some("term-7"));
+        assert!(out.contains("claude in ROOT/app: --dangerously-skip-permissions You are the Kanna planning agent.\n"), "without the daemon it starts as before: {out}");
+    }
+
+    #[test]
     fn the_planning_terminal_keeps_claude_to_its_context_and_runs_the_planner_script() {
         let agents = [("claude".to_string(), "claude".to_string(), "claude 'You are the Kanna planning agent.'".to_string())];
         let command = planner_command(Some("/K/planner.sh"), Some(300_000), Some("/S/shell/zsh"), Some("/A/kanna"), Path::new("/H/.kanna-v4/repos"), &agents);
@@ -2700,6 +2941,10 @@ mod tests {
         }
 
         fn run_with(&self, folder: &Path, input: &str, kanna: Option<&Path>) -> String {
+            self.run_in(folder, input, kanna, None)
+        }
+
+        fn run_in(&self, folder: &Path, input: &str, kanna: Option<&Path>, terminal: Option<&str>) -> String {
             let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/kanna/Resources/planner.sh");
             let mut args = vec!["--repos".to_string(), self.home.join(".kanna-v4/repos").to_string_lossy().into_owned()];
             if let Some(kanna) = kanna {
@@ -2718,6 +2963,7 @@ mod tests {
                 .env("HOME", &self.home)
                 .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
                 .env("SHELL", self.bin.join("shell"))
+                .envs(terminal.map(|t| ("KANNA_TERMINAL", t)))
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .spawn()

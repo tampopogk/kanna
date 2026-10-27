@@ -145,9 +145,22 @@ sequenceDiagram
 
 - **The app writes them** (`projects touch`, through `projects.rs`) whenever one of its Desks' project changes; the eleventh drops the oldest. Listing forgets a folder that's gone; `projects clear` empties the table.
 
+## Planners
+
+**Built.** Each project's planning conversation ([planner resume](planner-resume.md)).
+
+**planners**: one row per project.
+
+| Column | Type | Holds |
+|---|---|---|
+| `path` | text, key | the project's folder (the main repo for a worktree) |
+| `doc` | JSON | `agent`, `session` (null until known), `started` (seconds), `pane` (the planning terminal), `running` (its agent not quit) |
+
+- **The daemon writes them** when a planner starts (`backlog` `planner` `start`) and when its agent quits (`quit`); the next planner on the project reads it. Not in `projects`, which keeps only ten and is cleared with `kanna projects clear`.
+
 **Later candidates,** not built: agent session IDs per task over time; agent status history (how long a task waited on you); build timings.
 
-**Checked by** `db.rs`'s tests (a real `backlog.json` imported with every task and the counter; a held task; a change and its event together; unknown doc keys kept; a corrupt, missing or newer db; a `backlog.json` beside the db; a version 1 db taking the quiz tables with its tasks kept; a miss kept until it's asked again), `quiz.rs`'s tests (a round and its answers read back; a bad answer refused), the CLI's tests (`kanna quiz` requests, the history's text), the layout owner's tests (park and pull, a swap, report their moves), e2e `task_history` (import, every event of a task's life with who did it, the app's park, a corrupt db at restart) and e2e `quiz_results` (a round recorded, read back after a restart, a miss asked again).
+**Checked by** `db.rs`'s tests (a real `backlog.json` imported with every task and the counter; a held task; a change and its event together; unknown doc keys kept; a corrupt, missing or newer db; a `backlog.json` beside the db; a version 1 db taking the quiz tables with its tasks kept; a miss kept until it's asked again; a project's planner kept across a restart), `quiz.rs`'s tests (a round and its answers read back; a bad answer refused), the CLI's tests (`kanna quiz` requests, the history's text), the layout owner's tests (park and pull, a swap, report their moves), e2e `task_history` (import, every event of a task's life with who did it, the app's park, a corrupt db at restart) and e2e `quiz_results` (a round recorded, read back after a restart, a miss asked again).
 
 **Why not JSON files and an `events.jsonl`.** Both would work for the first table and one log. The db wins once anything reads history back: the Shelf's history is a query by repo and time, "how long did it wait on me" a join of status changes, and a JSON log means reading the whole file and writing its indexes by hand. A change to a task and its event are one transaction, so they can't disagree after a crash; with two files they can. `backlog.json` is rewritten whole on every change (71 KB today, growing with every first message); a row update is a page or two. Migrations have a number and run in a transaction rather than being guessed from what keys a file has. The cost is one C dependency, compiled in, and a file people can't open in an editor, which the CLI covers. Moving away from JSON is cheap now and dearer with every table.
 
