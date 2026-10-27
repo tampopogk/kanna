@@ -105,7 +105,7 @@ fn accounts_added_on_one_machine_reach_another_and_come_off_with_removal_and_rev
     let added = ask(&mbp, "accounts", json!({ "action": "add", "kind": "claude-api-key", "secret": "sk-ant-api03-for-every-machine" }));
     assert_eq!(added["ok"], true, "{added}");
     let held = ask(&mbp, "accounts", json!({ "action": "add", "kind": "codex-chatgpt", "secret": login, "program": codex }));
-    assert_eq!(held["account"]["holder"], mbp.kanna(&["fleet", "--json"]).json()["key"], "{held}");
+    assert_eq!(held["account"]["holder"], mbp.kanna(&["machine", "--json"]).json()["key"], "{held}");
     assert_eq!(ask(&mbp, "accounts", json!({ "action": "supply", "version": 9, "accounts": [] }))["error"]["code"], "refused", "only another machine supplies accounts");
 
     pair(&mbp, &vm);
@@ -131,7 +131,7 @@ fn accounts_added_on_one_machine_reach_another_and_come_off_with_removal_and_rev
     wait_for("the removal reaches the other machine", || received(&vm).len() == 1);
     assert_eq!(ask(&vm, "accounts", json!({ "action": "token" }))["error"]["code"], "not_found");
 
-    let revoked = mbp.kanna(&["fleet", "revoke", "vm"]).ok();
+    let revoked = mbp.kanna(&["machine", "revoke", "vm"]).ok();
     assert!(revoked.contains("it dropped the agent accounts it was given"), "{revoked}");
     assert!(received(&vm).is_empty());
     assert!(!kept.exists(), "nothing left on the revoked machine");
