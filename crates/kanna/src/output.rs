@@ -701,6 +701,35 @@ pub fn projects(request: &Value, reply: &Value) -> String {
     reply["projects"].as_array().map_or(vec![], |list| list.iter().filter_map(|p| p["path"].as_str()).collect::<Vec<_>>()).join("\n")
 }
 
+pub fn project(_: &Value, reply: &Value) -> String {
+    let list = |key: &str| reply[key].as_array().map_or(vec![], |l| l.iter().filter_map(Value::as_str).map(String::from).collect::<Vec<_>>());
+    let mut out = vec![format!("moved {} to {}", tilde(reply["from"].as_str().unwrap_or("?")), tilde(reply["to"].as_str().unwrap_or("?")))];
+    let sessions = &reply["sessions"];
+    let counted: Vec<String> = [("worktree", &reply["worktrees"]), ("Claude folder", &sessions["claude"]), ("codex session", &sessions["codex"]), ("copilot session", &sessions["copilot"]), ("opencode session", &sessions["opencode"])]
+        .into_iter()
+        .filter_map(|(what, n)| n.as_u64().filter(|n| *n > 0).map(|n| format!("{n} {what}{}", if n == 1 { "" } else { "s" })))
+        .collect();
+    if !counted.is_empty() {
+        out.push(format!("  moved along: {}", counted.join(", ")));
+    }
+    let (tasks, terminals) = (list("tasks"), list("terminals"));
+    if !tasks.is_empty() || !terminals.is_empty() {
+        out.push(format!("  started again there: {}", tasks.into_iter().chain(terminals).collect::<Vec<_>>().join(", ")));
+    }
+    for failed in list("failed") {
+        out.push(format!("  didn't start again: {failed}"));
+    }
+    for kept in sessions["kept"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        out.push(format!("  left where it was: {kept}"));
+    }
+    let mentions = list("mentions");
+    if !mentions.is_empty() {
+        out.push(format!("These still name {}; change them yourself:", tilde(reply["from"].as_str().unwrap_or("?"))));
+        out.extend(mentions.into_iter().map(|m| format!("  {m}")));
+    }
+    out.join("\n")
+}
+
 pub fn quiz(request: &Value, reply: &Value) -> String {
     match request["action"].as_str() {
         Some("open") => format!("{} {} in {}", if reply["opened"] == true { "opened" } else { "brought forward" }, reply["pane"].as_str().unwrap_or("?"), reply["window"].as_str().unwrap_or("?")),

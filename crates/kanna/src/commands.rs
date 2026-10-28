@@ -630,6 +630,29 @@ pub static COMMANDS: &[Command] = &[
         show: output::projects,
     },
     Command {
+        name: "project",
+        group: "Information",
+        summary: "Move a project into ~/.kanna-v4/repos, where Kanna keeps every project at the same place on each of your machines.",
+        usage: "kanna project move PATH [--json]",
+        options: &[("--json", "What moved: from, to, the worktrees repaired, the agents' sessions moved, the tasks and terminals started again, and the files that still name the old path.")],
+        notes: "Kanna opens Desks and runs tasks only for a project at its place in ~/.kanna-v4/repos: OWNER/NAME from its origin remote (github.com/a/app is a/app), or local/NAME with none. move takes the project PATH is in (a worktree's repo) there and leaves nothing at PATH. It stops the project's running tasks and terminals first, and starts them again in the new place, each agent resuming its conversation. It changes everything Kanna keeps that names PATH: the repo's worktrees (git worktree repair), the tasks, messages, recent projects, planners and terminal folders in kanna.db, Claude's conversation and memory folders, and the sessions codex, copilot and opencode keep by folder. Then it lists the files that still name PATH, from a quick search of ~/.claude, ~/.agents, your shell's files and the repo, for you to change. It refuses when another clone of the same remote is at the place already, saying both, and when it runs in a terminal in the project, which it would stop. On another machine, run it there: kanna --host MACHINE project move '~/work/app'.",
+        examples: &[("kanna project move ~/work/app", "Move ~/work/app to ~/.kanna-v4/repos/OWNER/NAME, its tasks and terminals with it."), ("kanna project move '~/work/app'", "The same, with ~ as the daemon's machine has it: with --host MACHINE, that machine's copy.")],
+        parse: |args| {
+            let action = args.positional().ok_or_else(|| usage("project", "say what: move PATH"))?;
+            if action != "move" {
+                return Err(usage("project", &format!("unknown action \"{action}\" (move)")));
+            }
+            let path = args.positional().ok_or_else(|| usage("project", "move needs a PATH: kanna project move PATH"))?;
+            let path = if path.starts_with('~') { path } else { absolute(&path) };
+            let mut out = json!({ "action": "move", "path": path });
+            if let Some(by) = caller() {
+                out["by"] = json!(by);
+            }
+            Ok(out)
+        },
+        show: output::project,
+    },
+    Command {
         name: "machine",
         group: "Information",
         summary: "Your machines: pair one, list them, check one's link, give an address, update them, or revoke one. kanna --host MACHINE COMMAND runs any command on one.",
