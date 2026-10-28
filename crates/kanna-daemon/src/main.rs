@@ -16,6 +16,7 @@ mod lifeline;
 mod pty;
 mod codex_remote;
 mod messages;
+mod project_move;
 mod projects;
 mod quiz;
 mod reader;
@@ -262,6 +263,7 @@ fn run() -> Result<Option<PathBuf>, String> {
     status_commands.install(&core);
     let backlog = Rc::new(backlog::Backlog::open(db.clone(), &state_dir, core.weak(), events.clone()));
     backlog.install(&core);
+    *backlog.repos.borrow_mut() = Some(projects::repos());
     let planners = Rc::downgrade(&layout);
     *backlog.planners.borrow_mut() = Some(Box::new(move || {
         let Some(layout) = planners.upgrade() else { return vec![] };
@@ -425,6 +427,9 @@ fn run() -> Result<Option<PathBuf>, String> {
             let (Some(app), Some(backlog)) = (link.upgrade(), resolving.upgrade()) else { return };
             let Some(task) = args.get("task").and_then(Value::as_str).map(String::from) else {
                 if let Some(folder) = args.get("project").and_then(Value::as_str).filter(|_| args.get("action").and_then(Value::as_str) == Some("desk")) {
+                    if let Err(error) = projects::desk_here(folder) {
+                        return responder.reply(Err(error));
+                    }
                     args["place"] = projects::place(folder);
                 }
                 return app.forward("desk", args, responder);

@@ -616,6 +616,20 @@ impl Db {
     pub fn clear_projects(&self) -> rusqlite::Result<()> {
         self.conn.execute("delete from projects", []).map(|_| ())
     }
+
+    pub fn relocate(&self, from: &str, to: &str) -> rusqlite::Result<usize> {
+        let under = |column: &str| format!("({column} = ?1 or substr({column}, 1, length(?1) + 1) = ?1 || '/')");
+        let moved = |column: &str| format!("?2 || substr({column}, length(?1) + 1)");
+        let tx = self.conn.unchecked_transaction()?;
+        let mut count = 0;
+        for (table, column, verb) in [("tasks", "repo", "update"), ("messages", "repo", "update"), ("quiz_rounds", "repo", "update"), ("projects", "path", "update or replace"), ("planners", "path", "update or replace")] {
+            count += tx.execute(&format!("{verb} {table} set {column} = {} where {}", moved(column), under(column)), [from, to])?;
+        }
+        let folder = "json_extract(doc, '$.folder')";
+        count += tx.execute(&format!("update tasks set doc = json_set(doc, '$.folder', {}) where {}", moved(folder), under(folder)), [from, to])?;
+        tx.commit()?;
+        Ok(count)
+    }
 }
 
 const MESSAGE: &str = "id, recipient, repo, sender, at, delivered, text, mode";

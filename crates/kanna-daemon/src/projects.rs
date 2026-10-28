@@ -119,6 +119,14 @@ pub fn outside(repos: &Path, folder: &Path) -> Result<(), KmuxError> {
     ))
 }
 
+pub fn desk_here(folder: &str) -> Result<(), KmuxError> {
+    let here = canonical(Path::new(folder));
+    if [crate::agents::home()].into_iter().chain(std::env::var_os("HOME").map(PathBuf::from)).any(|home| canonical(&home) == here) {
+        return Ok(());
+    }
+    outside(&repos(), Path::new(folder))
+}
+
 fn first_commit(main: &Path) -> Option<String> {
     let out = std::process::Command::new("git").arg("-C").arg(main).args(["rev-list", "--max-parents=0", "HEAD"]).stderr(std::process::Stdio::null()).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);

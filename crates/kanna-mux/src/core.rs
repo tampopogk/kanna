@@ -315,6 +315,22 @@ impl CoreHandle {
         self.state().panes.get_mut(id).map(f)
     }
 
+    pub fn edit_panes(&self, mut edit: impl FnMut(&mut Pane) -> bool) {
+        let edited = {
+            let mut s = self.state();
+            let mut edited = false;
+            for id in s.panes.ids() {
+                if let Some(pane) = s.panes.get_mut(&id) {
+                    edited |= edit(pane);
+                }
+            }
+            edited
+        };
+        if edited {
+            self.changed();
+        }
+    }
+
     pub fn set_command(&self, id: &str, command: String) {
         if self.with_pane_mut(id, |pane| pane.command = Some(command)).is_some() {
             self.changed();

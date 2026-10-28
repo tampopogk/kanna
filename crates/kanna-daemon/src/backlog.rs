@@ -1,5 +1,6 @@
 use crate::db::{self, Change, Db, Message, Place, Row};
 use crate::messages::{self, Channel, Ready, PLANNER, USER};
+use crate::project_move;
 use crate::task_scripts::{self, Cleanup, Scripts, Setup};
 use crate::Event;
 use kanna_mux::json::{json, num, opt, string, Map, Value};
@@ -686,6 +687,37 @@ pub struct Backlog {
     posting: RefCell<HashMap<u64, (String, Vec<Message>)>>,
     pub on_change: RefCell<Option<Box<dyn Fn(Value)>>>,
     pub claimant: RefCell<String>,
+    pub repos: RefCell<Option<PathBuf>>,
+    moving: RefCell<Option<project_move::Move>>,
+}
+
+#[derive(Clone)]
+struct Join(Rc<(Cell<usize>, RefCell<Vec<String>>, RefCell<Option<Box<dyn FnOnce(Vec<String>)>>>)>);
+
+impl Join {
+    fn new(count: usize, then: impl FnOnce(Vec<String>) + 'static) -> Join {
+        let join = Join(Rc::new((Cell::new(count), RefCell::default(), RefCell::new(Some(Box::new(then))))));
+        if count == 0 {
+            join.finish();
+        }
+        join
+    }
+
+    fn done(&self, error: Option<String>) {
+        self.0 .1.borrow_mut().extend(error);
+        let left = self.0 .0.get().saturating_sub(1);
+        self.0 .0.set(left);
+        if left == 0 {
+            self.finish();
+        }
+    }
+
+    fn finish(&self) {
+        let then = self.0 .2.borrow_mut().take();
+        if let Some(then) = then {
+            then(self.0 .1.take());
+        }
+    }
 }
 
 struct Book(Weak<Backlog>);
@@ -764,6 +796,8 @@ impl Backlog {
             delivering: RefCell::default(),
             posting: RefCell::default(),
             on_change: RefCell::default(),
+            repos: RefCell::default(),
+            moving: RefCell::default(),
         }
     }
 
@@ -948,7 +982,18 @@ impl Backlog {
         })
     }
 
+    fn placed(&self, repo: &str) -> Result<(), KmuxError> {
+        if let Some(moving) = self.moving.borrow().as_ref().filter(|m| m.holds(repo)) {
+            return Err(KmuxError::new("moving", format!("{} is moving to {}: try again once it's there", crate::projects::tilde(&moving.from), crate::projects::tilde(&moving.to))));
+        }
+        match self.repos.borrow().as_deref() {
+            Some(repos) => crate::projects::outside(repos, Path::new(repo)),
+            None => Ok(()),
+        }
+    }
+
     fn ready(&self, entry: &Entry) -> Result<(), KmuxError> {
+        self.placed(&entry.repo)?;
         if entry.folder.is_some() || entry.held.is_some() {
             return Ok(());
         }
@@ -1286,7 +1331,7 @@ impl Backlog {
         let starting: HashSet<String> = self.pending.borrow().values().map(|p| p.entry.id.clone()).chain(self.launching.borrow().iter().cloned()).collect();
         for repo in repos {
             let slots = runners(&config_files(Path::new(repo)));
-            if slots == 0 {
+            if slots == 0 || self.placed(repo).is_err() {
                 continue;
             }
             let mine: Vec<&Entry> = entries.iter().filter(|e| e.repo == repo).collect();
@@ -1493,6 +1538,167 @@ impl Backlog {
                 }
             }),
         );
+        let this = Rc::downgrade(self);
+        core.add_command(
+            "project",
+            Rc::new(move |args, responder| {
+                let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
+                match args.get("action").and_then(Value::as_str) {
+                    Some("move") => this.relocate(&args, responder),
+                    _ => responder.reply(Err(bad("project needs an action: move"))),
+                }
+            }),
+        );
+    }
+
+    fn relocate(self: &Rc<Self>, args: &Value, responder: Responder) {
+        let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
+        let Some(repos) = self.repos.borrow().clone() else { return responder.reply(Err(bad("this Kanna keeps no projects folder"))) };
+        let home = crate::agents::home();
+        let Some(path) = string(args, "path").map(|p| project_move::expand(p, &home)).filter(|p| p.is_absolute()) else { return responder.reply(Err(bad("say which project: kanna project move PATH"))) };
+        let homes: Vec<PathBuf> = std::iter::once(home).chain(std::env::var_os("HOME").map(PathBuf::from)).collect();
+        let plan = match project_move::plan(&repos, &path, &homes) {
+            Ok(plan) => plan,
+            Err(error) => return responder.reply(Err(error)),
+        };
+        let shown = crate::projects::tilde(&plan.from);
+        let starting = self.pending.borrow().values().any(|p| plan.holds(&p.entry.repo)) || self.tearing_down.borrow().values().any(|t| plan.holds(&t.entry.repo)) || self.setting_up.borrow().values().any(|s| plan.holds(&s.worktree.to_string_lossy()));
+        if starting || self.moving.borrow().is_some() {
+            return responder.reply(Err(KmuxError::new("busy", format!("a task in {shown} is starting, setting up or ending, or a project is moving: move it once that's done"))));
+        }
+        let mut tasks: Vec<(String, String)> = self.running.borrow().iter().filter(|r| plan.holds(&r.entry.repo) && alive(&core, &r.pane)).map(|r| (r.entry.id.clone(), r.pane.clone())).collect();
+        tasks.extend(self.entries.borrow().iter().filter(|e| plan.holds(&e.repo)).filter_map(|e| e.held.clone().filter(|pane| alive(&core, pane)).map(|pane| (e.id.clone(), pane))));
+        let caller = string(args, "by").and_then(|by| core.pane(by));
+        let here = |pane: &Pane| [&pane.cwd, &pane.opened_in].into_iter().flatten().any(|folder| plan.holds(folder));
+        if let Some(caller) = caller.as_ref().filter(|c| here(c) || tasks.iter().any(|(_, pane)| *pane == c.id)) {
+            return responder.reply(Err(KmuxError::new("here", format!("{} is in {shown}, and the move stops every terminal there: run kanna project move from a terminal outside it", caller.label()))));
+        }
+        let caller = caller.map(|c| c.id);
+        let by = who(args).map(String::from);
+        *self.moving.borrow_mut() = Some(plan.clone());
+        log!("kanna-daemon: moving {} to {}: stopping {} task(s)", plan.from.display(), plan.to.display(), tasks.len());
+        let this = Rc::downgrade(self);
+        let ids: Vec<String> = tasks.iter().map(|(id, _)| id.clone()).collect();
+        let stopped = Join::new(tasks.len(), move |errors| {
+            let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
+            if !errors.is_empty() {
+                return this.restart_after_move(plan, ids, vec![], by, Err(format!("couldn't stop every task: {}", errors.join("; "))), responder);
+            }
+            this.end_terminals(plan, ids, caller, by, responder);
+        });
+        for (id, _) in tasks {
+            let join = stopped.clone();
+            core.handle(json!({ "cmd": "backlog", "args": { "action": "stop", "task": id, "by": who(args) } }), move |reply| join.done(failed(&reply).map(|e| e.message)));
+        }
+    }
+
+    fn end_terminals(self: &Rc<Self>, plan: project_move::Move, tasks: Vec<String>, caller: Option<String>, by: Option<String>, responder: Responder) {
+        let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
+        let planners = self.planners();
+        let live: Vec<Pane> = core.with_panes(|panes| panes.iter().filter(|p| p.kind == kanna_mux::PaneType::Term && matches!(p.state, PaneState::Starting | PaneState::Running)).cloned().collect());
+        let ending: Vec<String> = live.into_iter().filter(|p| Some(&p.id) != caller.as_ref() && [&p.cwd, &p.opened_in].into_iter().flatten().any(|f| plan.holds(f))).map(|p| p.id).collect();
+        let this = Rc::downgrade(self);
+        let terminals = ending.clone();
+        let ended = Join::new(ending.len(), move |errors| {
+            let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
+            let result = match errors.is_empty() {
+                true => project_move::carry(&plan),
+                false => Err(format!("couldn't stop every terminal: {}", errors.join("; "))),
+            };
+            this.restart_after_move(plan, tasks, terminals, by, result, responder);
+        });
+        for pane in ending {
+            let join = ended.clone();
+            let key = project(core.pane(&pane).and_then(|p| p.cwd).as_deref()).map(|p| p.to_string_lossy().into_owned());
+            let kept = key.filter(|_| planners.contains(&pane)).and_then(|key| self.db.planner(&key).ok().flatten()).filter(|k| k.get("running") == Some(&Value::Bool(true)) && string(k, "pane") == Some(pane.as_str()));
+            let weak = core.weak();
+            let end = move |pane: String| match weak.upgrade() {
+                Some(core) => core.end(&pane, move |ended| join.done(ended.err().map(|e| e.message))),
+                None => join.done(Some("the daemon is stopping".into())),
+            };
+            match kept.as_ref().and_then(|k| string(k, "agent")).and_then(|name| planner_program(name, None)) {
+                Some(program) => {
+                    let id = pane.clone();
+                    self.end_agent(&pane, &program, move |_| end(id));
+                }
+                None => end(pane),
+            }
+        }
+    }
+
+    fn restart_after_move(self: &Rc<Self>, plan: project_move::Move, tasks: Vec<String>, terminals: Vec<String>, by: Option<String>, moved: Result<usize, String>, responder: Responder) {
+        self.moving.borrow_mut().take();
+        let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
+        let mut reply = Map::new();
+        if let Ok(worktrees) = moved {
+            let mut sessions = project_move::Moved::default();
+            for from in plan.froms() {
+                let found = project_move::Stores::here().carry(&from, &plan.to);
+                sessions = project_move::Moved { claude: sessions.claude + found.claude, codex: sessions.codex + found.codex, copilot: sessions.copilot + found.copilot, opencode: sessions.opencode + found.opencode, kept: [sessions.kept, found.kept].concat() };
+                if let Err(error) = self.db.relocate(&from.to_string_lossy(), &plan.to.to_string_lossy()) {
+                    log!("kanna-daemon: couldn't move {}'s records in {}: {error}", from.display(), db::FILE);
+                    sessions.kept.push(format!("{}: {error}", db::FILE));
+                }
+            }
+            self.relocate_entries(&plan);
+            core.edit_panes(|pane| {
+                let mut edited = false;
+                for field in [&mut pane.cwd, &mut pane.opened_in, &mut pane.path] {
+                    if let Some(moved) = field.as_deref().and_then(|f| plan.shifted(f)) {
+                        *field = Some(moved);
+                        edited = true;
+                    }
+                }
+                edited
+            });
+            log!("kanna-daemon: moved {} to {} ({worktrees} worktree(s), {} Claude folder(s), {} codex, {} copilot, {} opencode session(s))", plan.from.display(), plan.to.display(), sessions.claude, sessions.codex, sessions.copilot, sessions.opencode);
+            reply.insert("from".into(), json!(plan.from));
+            reply.insert("to".into(), json!(plan.to));
+            reply.insert("worktrees".into(), json!(worktrees));
+            reply.insert("sessions".into(), sessions.to_value());
+            reply.insert("tasks".into(), json!(tasks));
+            reply.insert("terminals".into(), json!(terminals));
+            reply.insert("mentions".into(), json!(project_move::mentions(&crate::agents::home(), &plan.to, &plan.from)));
+        }
+        let this = Rc::downgrade(self);
+        let failure = moved.err();
+        let restarted = Join::new(tasks.len() + terminals.len(), move |errors| {
+            if let Some(this) = this.upgrade() {
+                this.changed();
+            }
+            match failure {
+                Some(error) => responder.reply(Err(KmuxError::new("failed", if errors.is_empty() { error } else { format!("{error}; and couldn't start again: {}", errors.join("; ")) }))),
+                None => {
+                    reply.insert("failed".into(), json!(errors));
+                    responder.reply(Ok(reply));
+                }
+            }
+        });
+        for id in tasks {
+            let join = restarted.clone();
+            core.handle(json!({ "cmd": "backlog", "args": { "action": "start", "task": id, "by": opt(by.as_deref()) } }), move |reply| join.done(failed(&reply).map(|e| e.message)));
+        }
+        for pane in terminals {
+            let join = restarted.clone();
+            core.handle(json!({ "cmd": "restart", "args": { "pane": pane } }), move |reply| join.done(failed(&reply).map(|e| e.message)));
+        }
+    }
+
+    fn relocate_entries(&self, plan: &project_move::Move) {
+        let fix = |entry: &mut Entry| {
+            let repo = plan.shifted(&entry.repo);
+            let folder = entry.folder.as_deref().and_then(|f| plan.shifted(f));
+            entry.repo = repo.unwrap_or_else(|| entry.repo.clone());
+            entry.folder = folder.or_else(|| entry.folder.clone());
+        };
+        self.entries.borrow_mut().iter_mut().for_each(fix);
+        self.running.borrow_mut().iter_mut().for_each(|r| fix(&mut r.entry));
+        for message in self.waiting.borrow_mut().iter_mut() {
+            if let Some(repo) = plan.shifted(&message.repo) {
+                message.repo = repo;
+            }
+        }
+        self.changed();
     }
 
     fn find(&self, args: &Value) -> Result<Map, KmuxError> {
@@ -1721,6 +1927,7 @@ impl Backlog {
         if git(Path::new(repo), &["rev-parse", "--show-toplevel"]).is_err() {
             return Err(bad(format!("{repo} isn't a git repo: a task works in a worktree of the repo, so set one up first (git init)")));
         }
+        self.placed(repo)?;
         let by = string(args, "by").and_then(|by| self.core.upgrade()?.pane(by)).map(|pane| pane.id);
         let id = self.db.new_id(|id| !taken(Path::new(repo), id)).map_err(|error| {
             log!("kanna-daemon: couldn't save a new task ID in {}: {error}", db::FILE);
@@ -2088,6 +2295,9 @@ impl Backlog {
                 return responder.reply(Err(running(&pane)));
             }
             let entry = this.running.borrow().iter().find(|r| r.pane == pane).map(|r| r.entry.clone());
+            if let Some(Err(error)) = entry.as_ref().map(|e| this.placed(&e.repo)) {
+                return responder.reply(Err(error));
+            }
             let id = entry.as_ref().map_or_else(|| pane.clone(), |e| e.id.clone());
             let again = Rc::downgrade(&this);
             let command = entry.map(|e| this.again(&e));
