@@ -30,11 +30,6 @@ Rules for every agent working here, the planning agent and task agents alike.
 - Start GUI instances in the background (`--bg` or `KANNA_BG=1`; kmux's `--bg` or `KMUX_BG=1`) so windows don't jump in front of the user. The product's default stays foreground.
 - Many agents run at once in parallel worktrees and may share the system `TMPDIR`. Write build and test logs to a path unique to you (in your worktree, or a `mktemp -d` dir), never a fixed name like `$TMPDIR/build.log`.
 
-## Docs
-
-- Each decision or feature gets a short spec of its own in `docs/specs/<topic>.md`, with pictures, not prose. Never add sections to `docs/kanna-spec.md`.
-- How to write them: the `spec-docs` and `reference-driven-design` skills.
-
 ## Rules
 
 - When the user states how work should be done, put it in the skill it belongs to (`.agents/kanna-skills`) or in this file, not in an agent's private memory, and say where it went.
