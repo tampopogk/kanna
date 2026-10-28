@@ -153,6 +153,11 @@ extension AppController {
                 controller.window.setContentSize(NSSize(width: width, height: height))
             }
             if let y = args["scroll"]?.number { controller.shelfPage.scroll(toY: CGFloat(y)) }
+            if let later = args["later"]?.number {
+                ShelfTask.skew = later
+                controller.shelfPage.tick()
+                controller.shelfStrip.tick()
+            }
             let page = controller.shelfPage
             let scrolled: JSON = ["top": .number(Double(page.scrollTop)), "height": .number(Double(page.contentHeight)),
                                   "visible": .number(Double(page.visibleHeight)), "backlog": .array(page.visibleBacklog.map { .string($0) }), "blocked": .array(page.blockedBacklog)]
@@ -167,7 +172,7 @@ extension AppController {
                     "waiting": .string(controller.shelfStrip.waitingText), "stripLayout": controller.shelfStrip.geometry, "note": .string(controller.note), "cheer": .string(controller.cheer),
                     "lead": controller.leadShown.map { .string($0) } ?? .null, "pages": .array(controller.tabBar.pageItems.map { .string($0.title) }),
                     "machinesPage": .bool(!controller.machinesPage.isHidden), "machines": .array(controller.machinesPage.machines.map { ["name": .string($0.name), "detail": .string($0.detail), "path": .string($0.path), "note": .string($0.note), "tip": .string($0.explanation)] }),
-                    "headerTip": controller.agentHeader.toolTip.map { .string($0) } ?? .null, "places": .array(controller.shelf.map { $0.place.map { .string($0) } ?? .null }), "window": window(id) ?? .null, "scroll": scrolled, "search": search,
+                    "headerTip": controller.agentHeader.toolTip.map { .string($0) } ?? .null, "places": .array(controller.shelf.map { $0.place.map { .string($0) } ?? .null }), "window": window(id) ?? .null, "scroll": scrolled, "search": search, "times": page.times,
                     "responder": .string(controller.window.firstResponder.map { String(describing: type(of: $0)) } ?? "")]
         }
         commands["debug.web"] = { [weak self] args in
@@ -377,6 +382,10 @@ extension AppController {
             guard let controller = controllers[id], !controller.agentHeader.isHidden else { throw KannaError("not_found", "\(id) shows no agent header") }
             window = controller.window
             point = controller.agentHeader.parkCenter
+        } else if let id = args["newTab"]?.string {
+            guard let controller = controllers[id], !controller.agentHeader.isHidden, controller.tabless else { throw KannaError("not_found", "\(id) shows no New Tab in its agent header") }
+            window = controller.window
+            point = controller.agentHeader.plusCenter
         } else {
             let id = args["tab"]?.string ?? ""
             guard let state = windowOf(tab: id), let controller = state["id"]?.string.flatMap({ controllers[$0] }),

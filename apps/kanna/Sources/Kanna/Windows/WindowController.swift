@@ -43,6 +43,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     private(set) var desk = false
     private(set) var emptyDesk = false
     private(set) var leadShown: String?
+    private(set) var tabless = false
     var onCloseRequest: (() -> Void)?
     var onBecomeKey: (() -> Void)?
     var onFrameChange: (() -> Void)?
@@ -128,6 +129,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         if deskTask && emptyDesk { cheerAt = (cheerAt + 1) % ShelfPage.cheers.count }
         deskTask = desk && task != nil
         if deskTask, let pulled = task?["pane"]?.string { Clicks.pulled(pulled) }
+        tabless = task != nil && (state["tabs"]?.array ?? []).isEmpty
         let zoomed = state["zoomed"]?.string
         arrange(dock, zoomed: zoomed.map { $0 == docked ? .dock : .tab })
         let visible = Set(ids)
@@ -139,12 +141,13 @@ final class WindowController: NSObject, NSWindowDelegate {
         dividers.forEach { stage.addSubview($0) }
         if let dock, let docked, let view = panes.view(docked, type: dock["type"]?.string ?? "term") {
             if view.superview !== dockStage { dockStage.addSubview(view, positioned: .below, relativeTo: agentHeader) }
-            let headed = self.desk || lead != nil
+            let headed = self.desk || lead != nil || tabless
             let header = headed ? AgentHeader.height : 0
             view.frame = NSRect(x: 0, y: 0, width: dockStage.bounds.width, height: dockStage.bounds.height - header)
             view.autoresizingMask = []
             agentHeader.isHidden = !headed
-            agentHeader.parkable = lead == nil
+            agentHeader.parkable = self.desk && lead == nil
+            agentHeader.newable = tabless
             agentHeader.frame = NSRect(x: 0, y: dockStage.bounds.height - header, width: dockStage.bounds.width, height: header)
             agentHeader.show(headerText, stale: stale)
             agentHeader.toolTip = headerTip
@@ -190,7 +193,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         dockDivider?.removeFromSuperview()
         dockDivider = nil
         if let dock, let pane = dock["pane"]?.string {
-            if zoomed == .dock {
+            if zoomed == .dock || tabless {
                 dockStage.frame = bounds
                 side = .zero
             } else if zoomed != .tab {
@@ -239,7 +242,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         for dock in docks {
             guard let id = dock["task"]?.string, dock["type"]?.string ?? "term" == "term", let view = panes.view(id, type: "term") else { continue }
             if view.superview !== shelfStage { shelfStage.addSubview(view) }
-            let frame = Self.dockFrame(dock, in: desk)
+            let frame = (dock["tabs"]?.array ?? []).isEmpty ? desk : Self.dockFrame(dock, in: desk)
             view.frame = NSRect(x: frame.minX, y: frame.minY, width: frame.width, height: max(0, frame.height - AgentHeader.height))
             view.autoresizingMask = []
             panes.started(id)
