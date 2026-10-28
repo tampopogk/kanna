@@ -1,6 +1,6 @@
 # Tabless Dock
 
-**Status:** built (2026-10-20), in Kanna.app · **Changes:** [docked pane](docked-pane.md) · **Related:** [zoom](zoom.md), [Desk](desk.md), [presentation layers](presentation-layers.md)
+**Status:** built (2026-10-28), in Kanna.app · **Changes:** [docked pane](docked-pane.md) · **Related:** [zoom](zoom.md), [Desk](desk.md), [presentation layers](presentation-layers.md)
 
 A window with a docked pane and no tabs shows no tab area: the docked pane takes the whole window. The tab bar and the divider appear with the first tab and go away with the last. A new task's window used to be its agent at 2/5 beside an empty tab bar and a grey area where tabs would go.
 

@@ -813,6 +813,7 @@ for p in panes:
     m = p.get("marker", {})
     assert p["ink"] > 0 and m.get("found") and m["inked"] == m["glyphs"] > 0, p' "$1" "$2"
 }
+redrawn() { rm -f "$KANNA_STATE_DIR/$2.png"; shot="$(snap "$1" "$2")"; drawn "$shot" "$3"; }
 click_tab() { raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"tab\":\"$1\",\"clicks\":${2:-1}}}" >/dev/null; sleep 0.3; }
 drag() { last_drag="$1 → $(raw "{\"id\":1,\"cmd\":\"debug.drag\",\"args\":$1}")"; sleep 0.3; }
 
@@ -1429,8 +1430,7 @@ docked_pane() {
   [[ "$(kanna workspace list --all)" == *"(agent)  left 2/5  frozen"* ]] || { echo "workspace list should show the dock frozen: $(kanna workspace list --all)"; return 1; }
   KANNA_TERMINAL="$(dwin d1 lead.pane)" kanna task pull agent >/dev/null || return 1
   check wait_for 5 eval '[[ "$(dwin d1 dock.pane)" == "$agent" ]]' || return 1
-  check wait_for 5 eval 'drawn "$(snap d1 docked_pane-tabless)" 1 2>/dev/null' || return 1
-  shot="$(snap d1 docked_pane-tabless)"
+  check wait_for 5 redrawn d1 docked_pane-tabless 1 || return 1
   check python3 -c 'import json, sys; s = json.loads(sys.argv[1]); assert s["panes"][0]["width"] == s["width"], s' "$shot" || return 1
   raw '{"id":1,"cmd":"debug.click","args":{"newTab":"d1"}}' | grep -q '"ok":true' || { echo "the agent header should show New Tab with no tabs"; return 1; }
   check wait_for 5 eval '[[ "$(dwin d1 tabs | count)" == 1 ]]' || return 1
@@ -1438,8 +1438,7 @@ docked_pane() {
   check wait_for 5 eval '[[ "$(dwin d1 tabs)" == "[]" ]]' || return 1
   KANNA_TERMINAL=agent kanna open --name dt4 --tab --cmd "printf 'cargo build\n'; exec sleep 600" >/dev/null || return 1
   check wait_for 5 eval '[[ "$(dwin d1 tabs | count)" == 1 ]]' || return 1
-  check wait_for 5 eval 'drawn "$(snap d1 docked_pane-tab-opened)" 2 2>/dev/null' || return 1
-  shot="$(snap d1 docked_pane-tab-opened)"
+  check wait_for 5 redrawn d1 docked_pane-tab-opened 2 || return 1
   check python3 -c 'import json, sys; s = json.loads(sys.argv[1]); w = [p["width"] for p in s["panes"] if p["id"] == sys.argv[2]][0]; assert abs(w / s["width"] - 0.4) < 0.01, s' "$shot" "$agent" || return 1
   raw '{"id":1,"cmd":"debug.click","args":{"newTab":"d1"}}' | grep -q '"ok":true' && { echo "the agent header should hide New Tab once there's a tab"; return 1; }
   refused="$(kanna move agent --dock right 2>&1)" && { echo "moving a frozen docked pane should fail"; return 1; }
@@ -1452,8 +1451,7 @@ docked_pane() {
   kanna close dt4 >/dev/null || return 1
   check wait_for 5 eval '[[ "$(dwin d1 tabs)" == "[]" ]]' || return 1
   check test "$(dwin d1 dock.pane)" == "$agent" || return 1
-  check wait_for 5 eval 'drawn "$(snap d1 docked_pane-only-dock)" 1 2>/dev/null' || return 1
-  shot="$(snap d1 docked_pane-only-dock)"
+  check wait_for 5 redrawn d1 docked_pane-only-dock 1 || return 1
   check python3 -c 'import json, sys; s = json.loads(sys.argv[1]); assert s["panes"][0]["width"] == s["width"], s' "$shot" || return 1
   kanna focus agent >/dev/null || return 1
   key cmd+shift+return; check test "$(dwin d1 zoomed)" == "$agent" || return 1
