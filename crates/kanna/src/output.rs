@@ -112,18 +112,23 @@ pub fn closed(args: &Value, reply: &Value) -> String {
 
 pub fn focused(args: &Value, reply: &Value) -> String {
     let window = reply["window"].as_str().unwrap_or("?");
-    let place = match whose(reply) {
-        Some((name, tags)) if hidden(reply) => format!(" in {}", tagged(&name, &tags)),
-        Some((name, mut tags)) => {
-            tags.push("key window".into());
+    let front = !reply["front"].is_null();
+    let place = match (whose(reply), reply["window"].as_str()) {
+        (Some((name, mut tags)), _) => {
+            if front {
+                tags.push("in front".into());
+            }
             format!(" in {}", tagged(&name, &tags))
         }
-        None => format!(" (key window {window})"),
+        (None, Some(window)) if front => format!(" in {window} (in front)"),
+        (None, Some(window)) => format!(" in {window}"),
+        (None, None) => String::new(),
     };
     match (args["pane"].as_str(), args["tab"].as_str()) {
         (Some(pane), _) => format!("focused {pane}{place}"),
         (_, Some(tab)) => format!("switched to {tab}{place}"),
-        _ => format!("key window is now {window}"),
+        _ if front => format!("brought {window} forward"),
+        _ => format!("{window} isn't on screen"),
     }
 }
 
@@ -872,9 +877,9 @@ mod workspace_tests {
     fn reply() -> Value {
         json!({
             "windows": [
-                { "id": "win-19", "key": false, "focused": "p157", "zoomed": null, "lead": { "pane": "p157", "width": "46%" }, "workspace": null, "tabs": [] },
-                { "id": "win-40", "key": false, "focused": "p9", "zoomed": null, "workspace": "ws-3", "tabs": [{ "id": "tab-30", "title": "Tab 1", "active": true, "layout": { "pane": "p9" } }] },
-                { "id": "win-45", "key": true, "focused": "notes", "zoomed": null, "workspace": null, "tabs": [{ "id": "tab-247", "title": "notes", "active": true, "layout": { "pane": "notes" } }] }
+                { "id": "win-19", "focused": "p157", "zoomed": null, "lead": { "pane": "p157", "width": "46%" }, "workspace": null, "tabs": [] },
+                { "id": "win-40", "focused": "p9", "zoomed": null, "workspace": "ws-3", "tabs": [{ "id": "tab-30", "title": "Tab 1", "active": true, "layout": { "pane": "p9" } }] },
+                { "id": "win-45", "focused": "notes", "zoomed": null, "workspace": null, "tabs": [{ "id": "tab-247", "title": "notes", "active": true, "layout": { "pane": "notes" } }] }
             ],
             "hiddenWindows": [],
             "workspaces": [
@@ -917,7 +922,7 @@ mod workspace_tests {
 
     #[test]
     fn from_a_window_that_is_no_workspaces_it_is_that_window() {
-        assert_eq!(mine("notes"), "*win-45  free\n  focus: notes\n  *tab-247 \"notes\"  notes");
+        assert_eq!(mine("notes"), " win-45  free\n  focus: notes\n  *tab-247 \"notes\"  notes");
         assert_eq!(mine("p157"), " win-19  free, led by p157\n  focus: p157");
         assert_eq!(mine("p500"), "p500 (logs) isn't in a window or a workspace");
         assert!(scoped(&reply(), "p999").is_none());
@@ -935,7 +940,7 @@ mod workspace_tests {
     #[test]
     fn all_is_every_window_then_every_workspace_then_free_windows_and_panes_in_none() {
         let text = workspace(&json!({ "action": "list", "all": true }), &reply());
-        assert!(text.starts_with("Windows\n win-19  free, led by p157\n win-40  ws-3 (task-22a4, Skills show diffs)'s window\n*win-45  free\n\nWorkspaces\nws-3 (task-22a4, Skills show diffs), on the Shelf\n"), "{text}");
+        assert!(text.starts_with("Windows\n win-19  free, led by p157\n win-40  ws-3 (task-22a4, Skills show diffs)'s window\n win-45  free\n\nWorkspaces\nws-3 (task-22a4, Skills show diffs), on the Shelf\n"), "{text}");
         assert!(text.contains("\nws-1 (task-1dfb, Fix login), on the Shelf\n"), "{text}");
         assert!(text.contains("\nws-4, in the backlog\n  dock: p185  left 2/5\n  focus: p185\nws-5, a Desk's planner\n  dock: p280  left 2/5\n  focus: p280\n\nFree windows\nwin-45\n  focus: notes\n  *tab-247 \"notes\"  notes\n\nUnplaced panes\np500 (logs)"), "{text}");
     }
@@ -946,7 +951,8 @@ mod workspace_tests {
         assert_eq!(opened(&json!({}), &windowless), "opened p5 in ws-3 (task-1dfb, on the Shelf), tab-9: running");
         let windowed = json!({ "pane": { "id": "p5", "state": "running" }, "window": "win-31", "tab": "tab-9", "workspace": { "id": "ws-3", "task": "task-1dfb", "where": { "shelf": "mac" } } });
         assert_eq!(opened(&json!({}), &windowed), "opened p5 in ws-3's win-31 (task-1dfb, on the Shelf), tab-9: running");
-        assert_eq!(focused(&json!({ "pane": "spec" }), &windowed), "focused spec in ws-3's win-31 (task-1dfb, on the Shelf, key window)");
+        assert_eq!(focused(&json!({ "pane": "spec" }), &windowed), "focused spec in ws-3's win-31 (task-1dfb, on the Shelf)");
+        assert_eq!(focused(&json!({ "pane": "spec" }), &json!({ "window": "win-31", "front": "win-31", "workspace": null })), "focused spec in win-31 (in front)");
         assert_eq!(zoomed(&json!({ "pane": "spec" }), &json!({ "zoomed": true, "workspace": windowless["workspace"] })), "spec is zoomed in ws-3 (task-1dfb, on the Shelf; run again to unzoom)");
         let free = json!({ "pane": { "id": "p5", "state": "running" }, "window": "win-4", "tab": "tab-9", "workspace": null });
         assert_eq!(opened(&json!({}), &free), "opened p5 in win-4, tab-9: running");

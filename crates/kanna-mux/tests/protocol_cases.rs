@@ -11,10 +11,10 @@ fn sender(core: Core) -> cases::Send {
 
 #[test]
 fn shared_protocol_cases() {
-    assert_eq!(cases::run_cases("native", &|| sender(make_core().0)), 36);
+    assert_eq!(cases::run_cases("native", &|| sender(make_core().0)), 35);
 }
 
 #[test]
 fn shared_protocol_cases_with_the_layout_in_the_app() {
-    assert_eq!(cases::run_cases("layout in the app", &|| sender(make_remote_core().0)), 36);
+    assert_eq!(cases::run_cases("layout in the app", &|| sender(make_remote_core().0)), 35);
 }

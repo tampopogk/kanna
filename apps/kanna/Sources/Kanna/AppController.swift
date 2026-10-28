@@ -29,10 +29,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let contents = Contents()
     var panes: PaneViews!
     var controllers: [String: WindowController] = [:]
-    private(set) var state: JSON = ["key": nil, "windows": []]
-    private(set) var published: JSON = ["key": nil, "windows": []]
-    private var plain: JSON = ["key": nil, "windows": []]
-    var localKey: String?
+    private(set) var state: JSON = ["windows": []]
+    private(set) var published: JSON = ["windows": []]
+    private var plain: JSON = ["windows": []]
+    private var restoring: [String]?
     var closingPlanners: Set<String> = []
     var givenPlanners: Set<String> = []
     var recentProjects: [RecentProject] = []
@@ -105,6 +105,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         KannaBuild.badgeIcon()
+        restoring = physical.order
         HangWatch.start { hang in FileHandle.standardError.write(Data("kanna: \(HangWatch.line(hang))\n".utf8)) }
         do {
             runtime = try GhosttyRuntime()
@@ -184,7 +185,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         installMenu()
         if !background { NSApp.activate() }
         if echo {
-            render(["key": "win-1", "windows": [["id": "win-1", "tabs": [["id": "tab-1", "title": "Tab 1", "panes": ["term-1"]]], "tab": "tab-1", "title": "Tab 1",
+            render(["windows": [["id": "win-1", "tabs": [["id": "tab-1", "title": "Tab 1", "panes": ["term-1"]]], "tab": "tab-1", "title": "Tab 1",
                                                "focused": "term-1", "root": ["pane": "term-1", "type": "term"]]]])
         }
         daemon?.start()
@@ -249,7 +250,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func viewArrived(_ view: JSON, on machine: String?) {
-        if machine == nil, view["key"] != views[""]?["key"], view["key"]?.string != nil { localKey = nil }
         views[machine ?? ""] = view
         published = merged()
         restate()
@@ -265,7 +265,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             windows += (view["windows"]?.array ?? []).map { Self.tagged($0, tag) }
             workspaces += (view["workspaces"]?.array ?? []).map { Self.tagged($0, tag) }
         }
-        return ["key": views[""]?["key"] ?? .null, "windows": .array(windows), "workspaces": .array(workspaces)]
+        return ["windows": .array(windows), "workspaces": .array(workspaces)]
     }
 
     private static func tagged(_ item: JSON, _ machine: JSON) -> JSON {
@@ -342,7 +342,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func window(_ id: String?) -> JSON? { windows.first { $0["id"]?.string == id } }
-    var keyWindow: JSON? { window(KeyWindow.resolve(appKit: appKitKey, layout: state["key"]?.string, windows: windows.compactMap { $0["id"]?.string })) }
+    var keyWindow: JSON? { window(KeyWindow.resolve(appKit: appKitKey, front: physical.order, windows: windows.compactMap { $0["id"]?.string })) }
     var appKitKey: String? { NSApp.keyWindow.flatMap { key in controllers.first { $0.value.window === key }?.key } }
     var focusedPane: String? { keyWindow?["focused"]?.string }
 
@@ -492,7 +492,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         request("focus", ["pane": .string(pane)]) { [weak self] _ in
             guard let self else { return }
             focusCalls -= 1
-            if focusCalls == 0 { focusing = nil }
+            guard focusCalls == 0 else { return }
+            focusing = nil
+            restate()
+            refresh()
         }
     }
 
@@ -584,8 +587,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             controller.render(window, panes)
             if wantsPlanner(window) { openPlanner(in: id) }
         }
-        if let key = state["key"]?.string, let controller = controllers[key], !controller.window.isKeyWindow {
-            present(controller.window)
+        if views[""] != nil, let order = restoring {
+            restoring = nil
+            for id in order.reversed() {
+                if let controller = controllers[id] { present(controller.window) }
+            }
         }
     }
 
@@ -653,14 +659,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         controller.onBecomeKey = { [weak self, weak controller] in
             guard let self, let controller else { return }
-            if controller.window.isKeyWindow, state["key"]?.string != id {
-                if isDesk(id) {
-                    localKey = id
-                    restate()
-                } else {
-                    show(window: id)
-                }
-            }
+            if controller.window.isKeyWindow { physical.setFront(id) }
             if let window = window(id) { controller.render(window, panes) }
             placeToasts()
         }
@@ -676,6 +675,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func present(_ window: NSWindow) {
+        if let id = controllers.first(where: { $0.value.window === window })?.key { physical.setFront(id) }
         if NSApp.isActive || !background {
             return window.makeKeyAndOrderFront(nil)
         }

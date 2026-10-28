@@ -24,12 +24,6 @@ extension AppController {
         fields["windows"] = .array(windows)
         fields["shelf"] = .array(physical.shelf.filter { !shown.contains($0.workspace) }.compactMap { entry in byID[entry.workspace].map { shelfEntry($0, parkedAt: entry.parkedAt) } })
         fields["held"] = .array(workspaces.filter { $0["where"]?.string == "backlog" }.flatMap { $0["panes"]?.array ?? [] })
-        let ids = Set(windows.compactMap { $0["id"]?.string })
-        if let key = localKey, ids.contains(key) {
-            fields["key"] = .string(key)
-        } else if !(view["key"]?.string.map(ids.contains) ?? false), let desk = physical.desks.last?.id {
-            fields["key"] = .string(desk)
-        }
         return .object(fields)
     }
 
@@ -75,14 +69,14 @@ extension AppController {
     func pullTask(_ task: String, into window: String?, front: Bool = true) -> (moved: Bool, desk: String)? {
         guard let workspace = workspace(ofTask: task) else { return nil }
         if let there = deskShowing(workspace) {
-            show(desk: there.id)
+            show(window: there.id)
             return (false, there.id)
         }
         var desk = window.flatMap { physical.desk($0) } ?? (front ? frontDesk : nil) ?? physical.newDesk(project: nil)
         if let old = desk.shows { physical.park(old) }
         desk.shows = workspace
         physical.setDesk(desk)
-        show(desk: desk.id)
+        show(window: desk.id)
         return (true, desk.id)
     }
 
@@ -93,14 +87,14 @@ extension AppController {
         physical.park(workspace)
         desk.shows = nil
         physical.setDesk(desk)
-        show(desk: id)
+        show(window: id)
         return task
     }
 
     var frontDesk: DeskRecord? { frontmost(physical.desks) }
 
     func frontmost(_ desks: [DeskRecord]) -> DeskRecord? {
-        if let key = localKey, let desk = desks.first(where: { $0.id == key }) { return desk }
+        if let desk = physical.order.lazy.compactMap({ id in desks.first { $0.id == id } }).first { return desk }
         let ordered = NSApp.orderedWindows.compactMap { window in controllers.first { $0.value.window === window }?.key }
         return ordered.lazy.compactMap { id in desks.first { $0.id == id } }.first ?? desks.last
     }
@@ -115,28 +109,31 @@ extension AppController {
         return frontmost(physical.desks.filter { sameProject(controllers[$0.id]?.projectRoot, root) || sameProject($0.project.map(rootLocation), root) })
     }
 
-    func show(desk id: String) {
-        localKey = id
+    func show(window id: String) {
+        let inFront = keyWindow?["id"]?.string == id
+        physical.setFront(id)
         restate()
         refresh()
+        if !inFront, let controller = controllers[id], !controller.window.isKeyWindow { present(controller.window) }
     }
 
-    func show(window id: String) {
-        localKey = nil
-        restate()
-        refresh()
-        layoutCommand("focus", ["window": .string(id)])
+    func front(_ args: JSON) -> String? {
+        let workspace = args["workspace"]?["id"]?.string
+        let shown = workspace.flatMap { ws in physical.desks.first { $0.shows == ws || $0.planner == ws }?.id }
+        guard let id = shown ?? args["window"]?.string, window(id) != nil else { return nil }
+        show(window: id)
+        return id
     }
 
     func openDesk(project: String?, fresh: Bool) -> (desk: String, project: String?, new: Bool) {
         let root = project.map(rootLocation)
         if !fresh, let root { touchProject(root) }
         if !fresh, let found = projectDesk(root) {
-            show(desk: found.id)
+            show(window: found.id)
             return (found.id, found.project.flatMap { sameProject(rootLocation($0), root) ? $0 : nil } ?? project ?? root, false)
         }
         let desk = physical.newDesk(project: project)
-        show(desk: desk.id)
+        show(window: desk.id)
         return (desk.id, project, true)
     }
 
@@ -144,7 +141,7 @@ extension AppController {
         guard let desk = physical.desk(id) else { return }
         if let workspace = desk.shows { physical.park(workspace) }
         physical.closeDesk(id)
-        if localKey == id { localKey = nil }
+        physical.forget(window: id)
         if let planner = desk.planner {
             closingPlanners.insert(planner)
             let pane = published["workspaces"]?.array?.first { $0["id"]?.string == planner }?["dock"]?["pane"]?.string
@@ -155,6 +152,7 @@ extension AppController {
     }
 
     func installDesk() {
+        commands["app.front"] = { [weak self] args in ["front": self?.front(args).map { .string($0) } ?? .null] }
         commands["desk"] = { [weak self] args in
             guard let self else { throw KannaError("gone", "Kanna.app is quitting") }
             switch args["action"]?.string {

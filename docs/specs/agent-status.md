@@ -75,7 +75,7 @@ flowchart LR
 
 - **Settled:** no output for 60 ms and no synchronized update (mode 2026) open; output that never pauses is judged once a second anyway, and a synchronized update open longer than a second is ignored.
 - **Working → idle waits 300 ms:** an idle verdict right after working must still hold 300 ms later, so a frame between two steps of a turn doesn't flash idle. Every other change shows at once.
-- **Unread** (the app's): an agent that goes from working to idle while its pane isn't on screen in Kanna's key window (in its active tab, zoomed pane or dock), with Kanna active, is unread until it is; leaving idle clears it.
+- **Unread** (the app's): an agent that goes from working to idle while its pane isn't on screen in the window Kanna has in front ([physical layout §3](physical-layout.md#3-the-window-in-front-in-the-app)) (in its active tab, zoomed pane or dock), with Kanna active, is unread until it is; leaving idle clears it.
 - **Names on the wire:** `working`, `needs-you`, `idle`, `exited`.
 
 ## 4. The agent's own report (OSC 7501)

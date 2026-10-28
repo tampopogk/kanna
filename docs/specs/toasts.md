@@ -12,7 +12,7 @@ The app's own drawing (`debug.toasts png`), dark; [`toasts-light.png`](toasts-li
 
 ## How it looks and behaves
 
-- **Where:** the front window (the key window, else the Desk the app shows), below the title bar's tab row on the right, 340 points wide. It moves to whichever window becomes key, and stays top-right as the window resizes.
+- **Where:** the window in front: AppKit's key window, else the one the app last had in front ([physical layout §3](physical-layout.md#3-the-window-in-front-in-the-app)), below the title bar's tab row on the right, 340 points wide. It moves to whichever window becomes key, and stays top-right as the window resizes.
 - **Stacking:** newest on top, at most 4; a fifth fades the oldest.
 - **Fading:** after 6 seconds, or 8 when it's about a pane or task, it fades out over 0.4 s. While the pointer is on it, it doesn't fade; leaving it gives it at least 2 more seconds.
 - **Clicking** a toast about a pane or task shows it and closes the toast; clicking one about nothing just closes it. × (shown on hover) closes it.

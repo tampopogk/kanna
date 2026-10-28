@@ -469,7 +469,7 @@ extension AppController {
         guard !ids.isEmpty else { return }
         let at = ids.firstIndex { $0 == keyWindow?["id"]?.string } ?? 0
         let next = ids[((at + step) % ids.count + ids.count) % ids.count]
-        if isDesk(next) { show(desk: next) } else { show(window: next) }
+        show(window: next)
     }
 
     func ghosttyAction(_ pane: String, _ action: ghostty_action_s) -> Bool {

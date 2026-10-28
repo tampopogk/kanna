@@ -76,6 +76,7 @@ flowchart TB
 |---|---|
 | [The kanna CLI](specs/cli.md) | A port of kmux's CLI; where it differs; reaching Kanna; errors and exit codes |
 | [The CLI acts on its caller](specs/cli-caller.md) | A command with no target acts on the terminal it runs in, or is refused; never the front window |
+| [The app owns the physical layout](specs/physical-layout.md) | The daemon keeps the logical layout and no key window; the app keeps which window is in front, the order and frames |
 | [Commands](specs/commands.md) | Every command and option; `send-key` |
 | [kanna send](specs/kanna-send.md) | Return pressed on its own, after a bracketed paste, so agents submit |
 | [Sizing and arranging panes](specs/arranging-panes.md) | Fractions, the layout expression, `kanna.yaml` |

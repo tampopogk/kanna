@@ -1,6 +1,6 @@
 # The CLI acts on its caller
 
-**Status:** built (2026-10-28), in Kanna · **Builds on:** [the kanna CLI](cli.md), [workspaces](workspaces.md#3-commands-target-and-reply) · **Followed by:** the backlog's "App owns the physical layout" · **Why:** which window is in front is the app's (physical) layout, not the daemon's; a CLI command run from an agent's terminal must not land in whatever window the user happens to have in front
+**Status:** built (2026-10-28), in Kanna · **Builds on:** [the kanna CLI](cli.md), [workspaces](workspaces.md#3-commands-target-and-reply) · **Followed by:** [the app owns the physical layout](physical-layout.md) · **Why:** which window is in front is the app's (physical) layout, not the daemon's; a CLI command run from an agent's terminal must not land in whatever window the user happens to have in front
 
 A `kanna` command that needs a window or a pane and isn't given one acts on **its caller**: the Kanna terminal it runs in (`$KANNA_TERMINAL`), and so that terminal's window or workspace. Run from anywhere else, it's refused with the flag to give. It never falls back to the key (front) window.
 
@@ -15,7 +15,7 @@ flowchart TD
     D -->|yes| W["acts on the caller's window or workspace"]
 ```
 
-This is step one of splitting the logical layout (the daemon's: panes, tabs, windows, workspaces) from the physical one (the app's: which window is in front, their order and frames). The daemon still keeps a key window, for kmux's protocol and the app's menus; "App owns the physical layout" removes it.
+This is step one of splitting the logical layout (the daemon's: panes, tabs, windows, workspaces) from the physical one (the app's: which window is in front, their order and frames). Step two, [the app owns the physical layout](physical-layout.md), took the key window out of the daemon.
 
 ## Contents
 
@@ -54,10 +54,9 @@ A Desk's project is its docked task's, else its planning terminal's, else the fo
 
 ## 3. What stays
 
-- **The daemon's key window** and the saved layout's `key`, which `workspace list` marks with `*` and replies name (`key window win-1`). `focus` still makes a window key. "App owns the physical layout" removes these.
-- **kmux's protocol:** a request with no `window` and no `from` (a kmux client, `kanna raw`) still goes to the key window, so kmux's protocol cases pass through the daemon.
-- **The app's menus and shortcuts**, which act on AppKit's key window, and the app's own choices of a Desk (a toast's Pull).
-- **`debug.*`** requests default to the key window: they are the e2e harness's, not commands.
+- **kmux's protocol:** a request with no `window` and no `from` (a kmux client, `kanna raw`) goes to the only window, or is refused when there are several ([physical layout §4](physical-layout.md#4-a-request-that-names-no-window)).
+- **The app's menus and shortcuts**, which act on the window the app has in front, and the app's own choices of a Desk (a toast's Pull).
+- **`debug.*`** requests default to the window the app has in front: they are the e2e harness's, not commands.
 
 ## 4. How it's built
 

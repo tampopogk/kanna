@@ -375,6 +375,7 @@ instance_stop() {
   wait "$app_pid" "$daemon_pid" 2>/dev/null; app_pid="" daemon_pid=""
   check test "$(stat -f %m "$KANNA_STATE_DIR/app-state.json")" -gt "$saved" || { echo "instance_stop: the app didn't save app-state.json as it quit"; return 1; }
   python3 -c 'import json, sys; sys.exit("win-1" not in json.load(open(sys.argv[1]))["frames"])' "$KANNA_STATE_DIR/app-state.json" || { echo "instance_stop: app-state.json has no frame for win-1"; cat "$KANNA_STATE_DIR/app-state.json"; return 1; }
+  python3 -c 'import json, sys; sys.exit(json.load(open(sys.argv[1])).get("order", [None])[0] != "win-1")' "$KANNA_STATE_DIR/app-state.json" || { echo "instance_stop: app-state.json doesn't have win-1 in front"; cat "$KANNA_STATE_DIR/app-state.json"; return 1; }
   start_daemon && start_app || return 1
   check test "$(layout)" == "$before" || return 1
   check is left state exited || return 1
@@ -606,7 +607,7 @@ cli_commands() {
   check test "$(layout)" == '{"children": [{"pane": "cli_commands", "size": "2/3"}, {"pane": "e2e", "size": "1/3"}], "split": "row"}' || return 1
   check wait_for 5 app_text cli_commands "cli_commands READY" || return 1
   [[ "$(kanna workspace list --all)" == *$'Free windows\nwin-1\n  focus: e2e\n  *tab-1 "cli_commands"  cli_commands:2/3 | e2e:1/3'* ]] || { echo "workspace list --all should show the free window: $(kanna workspace list --all)"; return 1; }
-  expected="focused cli_commands (key window win-1)"; says kanna focus cli_commands || return 1
+  expected="focused cli_commands in win-1 (in front)"; says kanna focus cli_commands || return 1
   expected="e2e is zoomed (run again to unzoom)"; says kanna zoom e2e || return 1
   check test "$(kanna workspace list --all --json | field windows.0.zoomed)" == e2e || return 1
   expected="e2e is no longer zoomed"; says kanna zoom e2e || return 1
@@ -616,10 +617,10 @@ cli_commands() {
   expected="opened term-3 (t) in win-1, tab-2: running"; says kanna open --window win-1 --tab --name t || return 1
   expected='tab-2 is now "shells"'; says kanna rename-tab tab-2 shells || return 1
   expected="win-1: tab-2, tab-1"; says kanna move-tab tab-2 --index 0 || return 1
-  expected="switched to tab-1 (key window win-1)"; says kanna focus --tab tab-1 || return 1
+  expected="switched to tab-1 in win-1 (in front)"; says kanna focus --tab tab-1 || return 1
   expected="t"; says kanna move t --window new || return 1
   check test "$(kanna workspace list --all --json | field windows.1.tabs.0.layout)" == '{"pane": "t"}' || return 1
-  expected="key window is now win-1"; says kanna focus --window win-1 || return 1
+  expected="brought win-1 forward"; says kanna focus --window win-1 || return 1
   expected="closed win-2 (panes term-3)"; says kanna close --window win-2 || return 1
   kanna send e2e 'echo cli_commands-$((40+2))' || return 1
   check wait_for 5 shows e2e cli_commands-42 || return 1
@@ -692,7 +693,7 @@ NEEDS
   check test "$(layout)" == '{"children": [{"pane": "cli_without_app", "size": "2/3"}, {"pane": "doc", "size": "1/3"}], "split": "row"}' || return 1
   check test "$(win win-1 tabs.0.title)" == kept || return 1
   check wait_for 5 doc_text doc "cli_without_app DOC" || return 1
-  expected="focused cli_without_app (key window win-1)"; says kanna focus cli_without_app || return 1
+  expected="focused cli_without_app in win-1 (in front)"; says kanna focus cli_without_app || return 1
   stop_app
   check test "$(kanna workspace list --all --json | field windows.0.id)" == win-1
 }
@@ -891,10 +892,10 @@ windows_tabs_ui() {
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"New Window"}}' >/dev/null; sleep 0.3
   check test "$(state | field windows | count)" == 2 || return 1
   check test "$(raw '{"id":1,"cmd":"debug.desk","args":{"window":"win-2"}}' | field desk)" == False || return 1
-  check test "$(win win-2 key)" == True || return 1
+  check test "$(dwin win-2 key)" == True || return 1
   sleep 1
   check drawn "$(snap win-2 windows_tabs_ui-second-window)" 1 || return 1
-  key 'cmd+`'; check test "$(win win-1 key)" == True || return 1
+  key 'cmd+`'; check test "$(dwin win-1 key)" == True || return 1
   key cmd+w; check test "$(win win-1 tabs | count)" == 1 || return 1
   key cmd+shift+w; check test "$(state | field windows | count)" == 1 || return 1
   local menus
@@ -2049,7 +2050,7 @@ desk_planner_stays() {
   key 'cmd+`'
   check wait_for 5 eval '[[ "$(dwin d1 key)" == True ]]' || { echo "desk_planner_stays: Next Window didn't bring the Desk forward"; app_view; return 1; }
   key 'cmd+`'
-  check wait_for 5 eval '[[ "$(dwin win-1 key)" == True ]]' || { echo "desk_planner_stays: Next Window back to the doc's window left $(raw '{"id":1,"cmd":"debug.app"}' | field key) in front"; return 1; }
+  check wait_for 5 eval '[[ "$(dwin win-1 key)" == True ]]' || { echo "desk_planner_stays: Next Window back to the doc's window left $(app_view | field key) in front"; return 1; }
   key cmd+w
   check wait_for 5 eval '[[ -z "$(shown_windows)" ]]' || { echo "desk_planner_stays: Close Pane didn't close the missing doc's window"; kanna workspace list --all; return 1; }
   sleep 1; same "after Close Pane in the doc's window" || return 1
@@ -2479,7 +2480,7 @@ new_desk() {
   repo="$(cd "$repo" && pwd -P)"
   start_daemon && start_app || return 1
   kanna open --window new --name plain >/dev/null || { echo "new_desk line $LINENO"; return 1; }
-  check wait_for 5 eval '[[ "$(win win-1 key)" == True ]]' || { echo "new_desk line $LINENO"; return 1; }
+  check wait_for 5 eval '[[ "$(dwin win-1 key)" == True ]]' || { echo "new_desk line $LINENO"; return 1; }
   desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$2\"}}" | field "$1"; }
   key cmd+n
   check wait_for 5 eval '[[ "$(app_view | field windows | count)" == 2 && "$(dwin d1 key)" == True ]]' || { echo "new_desk: ⌘N opened no window"; kanna workspace list --all; return 1; }
@@ -3528,7 +3529,13 @@ cli_caller() {
   [[ "$refused" == *"term-99 isn't one of this Kanna's panes"*"--window"* ]] || { echo "cli_caller: an unknown caller: $refused"; return 1; }
   expected="opened term-1 (a) in win-1, tab-1: running"; says kanna open --window new --name a || return 1
   expected="opened term-2 (b) in win-2, tab-2: running"; says kanna open --window new --name b || return 1
-  check test "$(state | python3 -c 'import json, sys; print([w["id"] for w in json.load(sys.stdin)["windows"] if w["key"]])')" == "['win-2']" || { echo "cli_caller: win-2 isn't the key window"; return 1; }
+  check wait_for 5 eval '[[ "$(dwin win-2 key)" == True ]]' || { echo "cli_caller: the app doesn't have win-2 in front"; return 1; }
+  check test "$(state | python3 -c 'import json, sys; print([w["id"] for w in json.load(sys.stdin)["windows"] if "key" in w])')" == "[]" || { echo "cli_caller: the daemon names a key window"; return 1; }
+  refused="$(kanna raw '{"cmd":"open","args":{"type":"term"}}' 2>&1)" && { echo "cli_caller: an open naming no window, with two windows, opened: $refused"; return 1; }
+  [[ "$refused" == *"several windows"*"--window"* ]] || { echo "cli_caller: an open naming no window: $refused"; return 1; }
+  expected="focused a in win-1 (in front)"; says kanna focus a || return 1
+  check wait_for 5 eval '[[ "$(dwin win-1 key)" == True ]]' || { echo "cli_caller: focus a didn't bring win-1 forward"; return 1; }
+  kanna focus b >/dev/null || return 1
   local a; a="$(pane a id)"
   expected="opened term-3 (c) in win-1, tab-1: running"; KANNA_TERMINAL="$a" says kanna open --name c || { echo "cli_caller: open from a's terminal"; return 1; }
   local said code
@@ -3544,7 +3551,7 @@ s = json.load(sys.stdin); print(next(w["id"] for w in s["windows"] if any(sys.ar
   check test "$(pane spec type)" == md || return 1
   kanna focus b >/dev/null || return 1
   expected="a:1/2 | c:1/2"; KANNA_TERMINAL="$a" says kanna arrange '{"split":"row","children":[{"pane":"a"},{"pane":"c"}]}' || { echo "cli_caller: arrange from a's terminal"; kanna workspace list --all; return 1; }
-  check test "$(win win-2 tabs.0.layout.pane)" == b || { echo "cli_caller: arrange touched the key window"; return 1; }
+  check test "$(win win-2 tabs.0.layout.pane)" == b || { echo "cli_caller: arrange touched win-2"; return 1; }
 }
 
 scenario recent_projects M4
