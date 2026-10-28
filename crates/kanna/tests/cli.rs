@@ -28,10 +28,10 @@ fn layout(daemon: &Daemon, window: usize, tab: usize) -> String {
 fn a_code_pane_opens_a_file_at_a_line_and_moves_between_lines() {
     let daemon = Daemon::start();
     let _app = daemon.app();
-    daemon.kanna(&["open", "--name", "a", "--cmd", "exec /bin/sh"]).ok();
+    daemon.kanna(&["open", "--window", "new", "--name", "a", "--cmd", "exec /bin/sh"]).ok();
     let source = daemon.dir.join("main.rs");
     std::fs::write(&source, "fn main() {}\n").unwrap();
-    let opened = daemon.kanna(&["open", "code", "main.rs:12", "--name", "src", "--tab"]).ok();
+    let opened = daemon.kanna(&["open", "--window", "win-1", "code", "main.rs:12", "--name", "src", "--tab"]).ok();
     assert_eq!(opened, "opened file-1 (src) in win-1, tab-2: running");
     let listed = daemon.kanna(&["workspace", "list", "--all", "--json"]).json()["panes"][1].clone();
     assert_eq!((listed["type"].clone(), listed["path"].clone(), listed["line"].clone()), (json!("code"), json!(source.to_string_lossy()), json!(12)));
@@ -40,12 +40,12 @@ fn a_code_pane_opens_a_file_at_a_line_and_moves_between_lines() {
     daemon.kanna(&["navigate", "src", "--back"]).ok();
     assert_eq!(daemon.kanna(&["workspace", "list", "--all", "--json"]).json()["panes"][1]["line"], json!(12));
     daemon.kanna(&["focus", "a"]).ok();
-    assert_eq!(daemon.kanna(&["open", "code", "main.rs:30"]).ok(), "opened file-1 (src) in win-1, tab-2: running");
+    assert_eq!(daemon.kanna(&["open", "--window", "win-1", "code", "main.rs:30"]).ok(), "opened file-1 (src) in win-1, tab-2: running");
     assert!(daemon.kanna(&["workspace", "list", "--all"]).ok().contains("\nFree windows\nwin-1\n  focus: src\n"), "{}", daemon.kanna(&["workspace", "list", "--all"]).ok());
-    assert_eq!(daemon.kanna(&["open", "code", "main.rs"]).ok(), "opened file-1 (src) in win-1, tab-2: running");
+    assert_eq!(daemon.kanna(&["open", "--window", "win-1", "code", "main.rs"]).ok(), "opened file-1 (src) in win-1, tab-2: running");
     let panes = daemon.kanna(&["workspace", "list", "--all", "--json"]).json()["panes"].clone();
     assert_eq!((panes.as_array().unwrap().len(), panes[1]["line"].clone()), (2, json!(30)));
-    assert_eq!(daemon.kanna(&["open", "code", "main.rs", "--tab"]).ok(), "opened file-2 in win-1, tab-3: running");
+    assert_eq!(daemon.kanna(&["open", "--window", "win-1", "code", "main.rs", "--tab"]).ok(), "opened file-2 in win-1, tab-3: running");
     assert_eq!(daemon.kanna(&["close", "file-2"]).ok(), "closed file-2");
     assert_eq!(daemon.kanna(&["close", "src"]).ok(), "closed file-1");
     daemon.kanna(&["open", "code"]).fails(2, "open: code panes need a file: kanna open code FILE[:LINE]");
@@ -57,8 +57,8 @@ fn a_code_pane_opens_a_file_at_a_line_and_moves_between_lines() {
 fn a_diff_pane_runs_git_diff_with_the_arguments_it_was_given_in_the_folder_it_was_opened_from() {
     let daemon = Daemon::start();
     let _app = daemon.app();
-    daemon.kanna(&["open", "--name", "a", "--cmd", "exec /bin/sh"]).ok();
-    let opened = daemon.kanna(&["open", "diff", "--merge-base", "main", "-U5", "--name", "changes", "--tab", "--", "src"]).ok();
+    daemon.kanna(&["open", "--window", "new", "--name", "a", "--cmd", "exec /bin/sh"]).ok();
+    let opened = daemon.kanna(&["open", "--window", "win-1", "diff", "--merge-base", "main", "-U5", "--name", "changes", "--tab", "--", "src"]).ok();
     assert_eq!(opened, "opened diff-1 (changes) in win-1, tab-2: running");
     let listed = daemon.kanna(&["workspace", "list", "--all", "--json"]).json()["panes"][1].clone();
     assert_eq!(listed["type"], "diff");
@@ -70,7 +70,7 @@ fn a_diff_pane_runs_git_diff_with_the_arguments_it_was_given_in_the_folder_it_wa
     daemon.kanna(&["navigate", "changes", "diff"]).ok();
     assert_eq!(daemon.kanna(&["workspace", "list", "--all", "--json"]).json()["panes"][1]["args"], json!([]));
     daemon.kanna(&["navigate", "changes", "--back"]).fails(2, "a diff pane keeps no history");
-    assert_eq!(daemon.kanna(&["open", "diff", "--cwd", "/tmp", "--tab"]).ok(), "opened diff-2 in win-1, tab-3: running");
+    assert_eq!(daemon.kanna(&["open", "--window", "win-1", "diff", "--cwd", "/tmp", "--tab"]).ok(), "opened diff-2 in win-1, tab-3: running");
     assert_eq!(daemon.kanna(&["workspace", "list", "--all", "--json"]).json()["panes"][2]["path"], "/tmp");
     daemon.kanna(&["raw", r#"{"cmd":"open","args":{"type":"diff"}}"#]).fails(2, "diff panes need a path: the folder git runs in");
     daemon.kanna(&["raw", r#"{"cmd":"open","args":{"type":"diff","path":"/tmp","args":"--staged"}}"#]).fails(2, "args must be a list of strings");
@@ -186,8 +186,8 @@ fn the_daemon_reads_a_subscribed_file_and_sends_it_again_when_it_changes() {
 fn every_command_works_through_the_daemon_and_the_app() {
     let daemon = Daemon::start();
     let _app = daemon.app();
-    assert_eq!(daemon.kanna(&["open", "--name", "a", "--cmd", "exec /bin/sh"]).ok(), "opened term-1 (a) in win-1, tab-1: running");
-    assert_eq!(daemon.kanna(&["open", "--name", "b", "--split", "right", "--size", "1/3"]).ok(), "opened term-2 (b) in win-1, tab-1: running");
+    assert_eq!(daemon.kanna(&["open", "--window", "new", "--name", "a", "--cmd", "exec /bin/sh"]).ok(), "opened term-1 (a) in win-1, tab-1: running");
+    assert_eq!(daemon.kanna(&["open", "--window", "win-1", "--name", "b", "--split", "right", "--size", "1/3"]).ok(), "opened term-2 (b) in win-1, tab-1: running");
     assert_eq!(layout(&daemon, 0, 0), "a:2/3 | b:1/3");
     assert_eq!(daemon.kanna(&["workspace", "list", "--all"]).ok(), "Windows\n*win-1  free\n\nFree windows\nwin-1\n  focus: b\n  *tab-1 \"a\"  a:2/3 | b:1/3");
     assert_eq!(daemon.kanna_as("term-2", &["workspace", "list"]).ok(), "*win-1  free\n  focus: b\n  *tab-1 \"a\"  a:2/3 | b:1/3");
@@ -201,10 +201,11 @@ fn every_command_works_through_the_daemon_and_the_app() {
     assert_eq!(daemon.kanna(&["resize", "b", "1/4"]).ok(), "a:3/4 | b:1/4");
     assert_eq!(daemon.kanna(&["move", "b", "--to", "a", "--side", "bottom"]).ok(), "a:1/2 / b:1/2");
     assert_eq!(daemon.kanna(&["move", "b", "--to", "a"]).ok(), "b:1/2 / a:1/2");
-    let arranged = daemon.kanna(&["arrange", r#"{"split":"row","children":[{"pane":"a","size":"2/3"},{"pane":"b"}]}"#]).ok();
+    daemon.kanna(&["arrange", r#"{"pane":"a"}"#]).fails(2, "arrange: outside a Kanna terminal there's no window of yours: add --window WINDOW");
+    let arranged = daemon.kanna_as("a", &["arrange", r#"{"split":"row","children":[{"pane":"a","size":"2/3"},{"pane":"b"}]}"#]).ok();
     assert_eq!(arranged, "a:2/3 | b:1/3");
 
-    assert_eq!(daemon.kanna(&["open", "--tab", "--name", "c"]).ok(), "opened term-3 (c) in win-1, tab-2: running");
+    assert_eq!(daemon.kanna(&["open", "--window", "win-1", "--tab", "--name", "c"]).ok(), "opened term-3 (c) in win-1, tab-2: running");
     assert_eq!(daemon.kanna(&["rename-tab", "tab-2", "my", "servers"]).ok(), "tab-2 is now \"my servers\"");
     assert_eq!(daemon.kanna(&["rename-pane", "c", "logs"]).ok(), "term-3 is now \"logs\"");
     assert!(daemon.kanna(&["workspace", "list", "--all"]).ok().contains("\"my servers\"  logs"), "{}", daemon.kanna(&["workspace", "list", "--all"]).ok());
@@ -233,13 +234,13 @@ fn every_command_works_through_the_daemon_and_the_app() {
     let page = daemon.dir.join("page.html");
     std::fs::write(&page, "<p>hi</p>").unwrap();
     let url = format!("file://{}", page.display());
-    assert_eq!(daemon.kanna(&["open", "web", &url, "--name", "site", "--history", "--split", "down"]).ok(), "opened page-1 (site) in win-1, tab-1: running");
+    assert_eq!(daemon.kanna(&["open", "--window", "win-1", "web", &url, "--name", "site", "--history", "--split", "down"]).ok(), "opened page-1 (site) in win-1, tab-1: running");
     assert_eq!(daemon.kanna(&["navigate", "site", "file:///tmp/other.html"]).ok(), "page-1 (site) (file:///tmp/other.html) is running");
     assert_eq!(daemon.kanna(&["navigate", "site", "--back"]).ok(), format!("page-1 (site) ({url}) is running"));
     assert_eq!(daemon.kanna(&["navigate", "site", "--forward"]).ok(), "page-1 (site) (file:///tmp/other.html) is running");
     let doc = daemon.dir.join("doc.md");
     std::fs::write(&doc, "# hi").unwrap();
-    let opened = daemon.kanna(&["open", "md", "doc.md", "--name", "doc", "--tab"]).ok();
+    let opened = daemon.kanna(&["open", "--window", "win-1", "md", "doc.md", "--name", "doc", "--tab"]).ok();
     assert_eq!(opened, "opened file-1 (doc) in win-1, tab-6: running");
     assert_eq!(daemon.kanna(&["workspace", "list", "--all", "--json"]).json()["panes"][5]["path"], json!(doc.to_string_lossy()));
     assert!(daemon.kanna(&["workspace", "list", "--all", "--json"]).json()["panes"][5].get("markup").is_none());
@@ -262,6 +263,8 @@ fn every_command_works_through_the_daemon_and_the_app() {
     assert_eq!(shot, json!({ "cmd": "screenshot", "args": { "pane": "term-5", "path": daemon.dir.join("shot.png").to_string_lossy(), "force": true } }));
     assert_eq!(daemon.kanna(&["screenshot", "--window", "win-1", "--json"]).json()["args"], json!({ "window": "win-1", "dir": std::env::temp_dir().to_string_lossy() }));
     daemon.kanna(&["screenshot", "a", "--window", "win-1"]).fails(2, "give PANE or --window WINDOW, not both");
+    daemon.kanna(&["screenshot"]).fails(2, "screenshot: outside a Kanna terminal there's no window of yours: say PANE or --window WINDOW");
+    assert_eq!(daemon.kanna_as("term-5", &["screenshot", "--json"]).json()["args"]["from"], json!("term-5"));
     assert_eq!(daemon.kanna(&["raw", r#"{"cmd":"list"}"#]).json()["panes"].as_array().unwrap().len(), 6);
 
     assert_eq!(daemon.kanna(&["close", "--window", "win-3"]).ok(), "closed win-3 (panes term-3)");
@@ -306,9 +309,9 @@ fn every_command_works_through_the_daemon_and_the_app() {
 fn errors_exit_as_kmux_says() {
     let daemon = Daemon::start();
     let _app = daemon.app();
-    daemon.kanna(&["open", "--name", "a"]).ok();
+    daemon.kanna(&["open", "--window", "new", "--name", "a"]).ok();
     daemon.kanna(&["close", "nope"]).fails(4, "no pane \"nope\" [not_found]\nRun `kanna workspace list --all` to see pane names and IDs");
-    daemon.kanna(&["open", "--name", "a"]).fails(1, "[");
+    daemon.kanna(&["open", "--window", "win-1", "--name", "a"]).fails(1, "[");
     daemon.kanna(&["zoom"]).fails(2, "zoom: missing PANE");
     let err = daemon.kanna(&["resize", "a", "2"]).fails(2, "more: kanna help resize");
     assert!(err.contains("\nusage: kanna resize PANE FRACTION\n"), "{err}");
@@ -328,7 +331,7 @@ const BYTES: &str = r#"stty raw -echo; printf '\033[?1hREADY\r\n'; while :; do p
 #[test]
 fn send_key_presses_keys_as_the_program_expects_them_without_the_app() {
     let daemon = Daemon::start();
-    daemon.kanna(&["open", "--name", "bytes", "--cmd", BYTES]).ok();
+    daemon.kanna(&["open", "--window", "new", "--name", "bytes", "--cmd", BYTES]).ok();
     wait_for("the program", || daemon.kanna(&["read", "bytes"]).ok().contains("READY"));
     assert_eq!(daemon.kanna(&["send-key", "bytes", "up", "ctrl+c", "return", "shift+tab", "A", "esc"]).ok(), "");
     assert!(daemon.kanna(&["read", "bytes"]).ok().contains("1b 4f 41 03 0d 1b 5b 5a 41 1b"), "{}", daemon.kanna(&["read", "bytes"]).ok());
@@ -337,7 +340,7 @@ fn send_key_presses_keys_as_the_program_expects_them_without_the_app() {
     daemon.kanna(&["send-key", "bytes", "hyper+a"]).fails(2, "hyper+a: modifiers are ctrl, alt and shift");
     daemon.kanna(&["send-key", "nope", "return"]).fails(4, "not_found");
     daemon.kanna(&["raw", r#"{"cmd":"send-key","args":{"pane":"bytes","keys":[]}}"#]).fails(2, "missing keys");
-    daemon.kanna(&["open", "--name", "shell"]).ok();
+    daemon.kanna(&["open", "--window", "win-1", "--name", "shell"]).ok();
     daemon.kanna(&["send", "shell", "sleep 30"]).ok();
     std::thread::sleep(std::time::Duration::from_millis(300));
     daemon.kanna(&["send-key", "shell", "ctrl+c"]).ok();
@@ -349,16 +352,16 @@ fn send_key_presses_keys_as_the_program_expects_them_without_the_app() {
 #[test]
 fn without_the_app_terminals_and_the_layout_work_and_debug_needs_it() {
     let daemon = Daemon::start();
-    assert_eq!(daemon.kanna(&["open", "--name", "a"]).ok(), "opened term-1 (a) in win-1, tab-1: running");
+    assert_eq!(daemon.kanna(&["open", "--window", "new", "--name", "a"]).ok(), "opened term-1 (a) in win-1, tab-1: running");
     assert_eq!(daemon.kanna(&["workspace", "list", "--all"]).ok(), "Windows\n*win-1  free\n\nFree windows\nwin-1\n  focus: a\n  *tab-1 \"a\"  a");
     daemon.kanna(&["send", "a", "echo", "ALONE"]).ok();
     wait_for("the sent line", || daemon.kanna(&["read", "a"]).ok().contains("ALONE"));
     assert_eq!(daemon.kanna(&["restart", "a"]).ok(), "term-2 (a) is running");
     assert!(daemon.kanna(&["capabilities"]).ok().ends_with("Kanna.app: not attached (terminals and the layout work without it; the CLI starts it for commands that need it)"));
-    daemon.kanna(&["open", "--name", "b", "--split", "right"]).ok();
+    daemon.kanna(&["open", "--window", "win-1", "--name", "b", "--split", "right"]).ok();
     for args in [
-        &["open", "--tab"][..],
-        &["open", "md", "/tmp/x.md"],
+        &["open", "--window", "win-1", "--tab"][..],
+        &["open", "--window", "win-1", "md", "/tmp/x.md"],
         &["focus", "a"],
         &["resize", "a", "1/3"],
         &["rename-tab", "tab-1", "x"],
@@ -374,6 +377,20 @@ fn without_the_app_terminals_and_the_layout_work_and_debug_needs_it() {
     let app = daemon.app();
     assert_eq!(layout(&daemon, 0, 0), "a");
     app.quit();
+}
+
+#[test]
+fn outside_a_kanna_terminal_a_command_with_no_target_is_refused_before_it_connects() {
+    let dir = scratch("unplaced");
+    let nowhere = dir.join("nothing.sock");
+    let add = "outside a Kanna terminal there's no window of yours: add --window WINDOW (or --window new)";
+    kanna_at(&dir, Some(&nowhere), &["open", "--name", "x"]).fails(2, &format!("open: {add}"));
+    kanna_at(&dir, Some(&nowhere), &["open", "--tab"]).fails(2, &format!("open: {add}"));
+    kanna_at(&dir, Some(&nowhere), &["comment", "main.rs:3", "Three."]).fails(2, &format!("comment: {add}"));
+    kanna_at(&dir, Some(&nowhere), &["markup", "doc.md"]).fails(2, &format!("markup: {add}"));
+    kanna_at(&dir, Some(&nowhere), &["screenshot"]).fails(2, "screenshot: outside a Kanna terminal there's no window of yours: say PANE or --window WINDOW");
+    kanna_at(&dir, Some(&nowhere), &["task", "park"]).fails(2, "task: park needs a TASK, or run it from the task's terminal");
+    kanna_at(&dir, Some(&nowhere), &["--mux", "kmux", "open", "--name", "x"]).fails(3, "");
 }
 
 #[test]
@@ -464,24 +481,24 @@ fn diagrams_check_needs_no_kanna_and_exits_1_when_one_does_not_draw() {
 fn open_md_says_which_diagrams_do_not_draw_and_still_opens() {
     let daemon = Daemon::start();
     let _app = daemon.app();
-    daemon.kanna(&["open", "--name", "a", "--cmd", "exec /bin/sh"]).ok();
+    daemon.kanna(&["open", "--window", "new", "--name", "a", "--cmd", "exec /bin/sh"]).ok();
     std::fs::write(daemon.dir.join("good.md"), GOOD).unwrap();
     std::fs::write(daemon.dir.join("bad.md"), BAD).unwrap();
-    let run = daemon.kanna(&["open", "md", "good.md", "--tab"]);
+    let run = daemon.kanna(&["open", "--window", "win-1", "md", "good.md", "--tab"]);
     assert_eq!(run.err, "");
     assert_eq!(run.ok(), "opened file-1 in win-1, tab-2: running");
-    let run = daemon.kanna(&["open", "md", "bad.md", "--tab"]);
+    let run = daemon.kanna(&["open", "--window", "win-1", "md", "bad.md", "--tab"]);
     let err = run.err.clone();
     assert_eq!(run.ok(), "opened file-2 in win-1, tab-3: running");
     let lines: Vec<&str> = err.lines().collect();
     assert_eq!(lines[0], ER);
     assert!(lines[1].starts_with("bad.md:15: diagram error: "), "{err}");
-    let reply = daemon.kanna(&["open", "md", "bad.md", "--tab", "--json"]).json();
+    let reply = daemon.kanna(&["open", "--window", "win-1", "md", "bad.md", "--tab", "--json"]).json();
     assert_eq!(reply["pane"]["id"], "file-3");
     let failures = reply["diagrams"].as_array().unwrap();
     assert_eq!(failures.iter().map(|f| f["line"].clone()).collect::<Vec<_>>(), [json!(10), json!(15)]);
     assert_eq!(failures[0]["message"], ER.split_once(": ").unwrap().1);
-    assert_eq!(daemon.kanna(&["open", "md", "good.md", "--tab", "--json"]).json()["diagrams"], json!([]));
+    assert_eq!(daemon.kanna(&["open", "--window", "win-1", "md", "good.md", "--tab", "--json"]).json()["diagrams"], json!([]));
 }
 
 #[test]
@@ -536,7 +553,7 @@ fn instances_are_folders_that_answer() {
 #[test]
 fn instances_stop_quits_the_app_and_waits_for_the_daemon_to_go() {
     let daemon = Daemon::start();
-    daemon.kanna(&["open", "--name", "a", "--cmd", "exec sleep 600"]).ok();
+    daemon.kanna(&["open", "--window", "new", "--name", "a", "--cmd", "exec sleep 600"]).ok();
     let app = daemon.app();
     let shown = format!("default ({})", daemon.socket().display());
     assert_eq!(daemon.kanna(&["instances", "stop"]).ok(), format!("stopped {shown}"));
@@ -583,7 +600,7 @@ fn the_daemon_names_its_instance_and_tells_its_terminals() {
     assert_eq!(capabilities["instance"], "default");
     assert_eq!(capabilities["mux"], "kmux");
     assert_eq!(capabilities["app"], false);
-    daemon.kanna(&["open", "--name", "env", "--cmd", "echo \"I=$KANNA_INSTANCE T=$KANNA_TERMINAL P=${KANNA_PANE-none} S=$KANNA_SOCKET\"; exec sleep 60"]).ok();
+    daemon.kanna(&["open", "--window", "new", "--name", "env", "--cmd", "echo \"I=$KANNA_INSTANCE T=$KANNA_TERMINAL P=${KANNA_PANE-none} S=$KANNA_SOCKET\"; exec sleep 60"]).ok();
     let expected = "I=default T=term-1 P=none S=/";
     std::thread::sleep(std::time::Duration::from_secs(2));
     let screen = daemon.kanna(&["read", "env"]).ok();

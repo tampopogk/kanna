@@ -58,7 +58,7 @@ The right side needs nothing new: the window's own tabs already are a group of t
 
 | Command | Does |
 |---|---|
-| `kanna open … --dock [left\|right]` | Open the pane as the key window's docked pane, on that edge (default left; a docked one already there moves to a new tab) |
+| `kanna open … --dock [left\|right]` | Open the pane docked on that edge (default left) of a new task's workspace, on the Shelf: a docked pane is a task's agent, never a window's, so it needs no window, from a Kanna terminal or not (`--window` is refused) |
 | `kanna open … --dock --frozen` | The same, frozen |
 | `kanna move PANE --dock [left\|right]` | Move a task's agent to the other edge of its workspace; any other pane is refused, as a docked pane is a running [task](tasks.md)'s agent, in its own workspace, never a window's ([each app's Desk and Shelf](app-desk.md)) |
 | `kanna move PANE --tab` | Undock it into a new tab (kmux's own `move`, now also accepting the docked pane) |

@@ -115,7 +115,7 @@ With `KANNA_DEBUG=1`; the daemon passes them to the app, turning a top-level `pa
 
 | Term | Meaning |
 |---|---|
-| **Key window** | The window shortcuts, menus and requests without a `window` act on; the layout model's and AppKit's follow each other. |
+| **Key window** | The window in front: shortcuts and menus act on it, and so do kmux protocol requests with neither a `window` nor a caller; the layout model's and AppKit's follow each other. A CLI command never falls back to it: with no target it acts on its caller, or is refused ([the CLI acts on its caller](cli-caller.md)). |
 | **Tab bar** | The row of tabs under each window's title bar, with × and +. |
 | **Divider** | The line between two panes of a split; dragging it moves the split between them. |
 | **Grip** | The handle at the top of a pane, seen only under the mouse; dragging it moves the pane. |

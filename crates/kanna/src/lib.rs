@@ -145,6 +145,9 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
     if command.name == "workspace" && request["all"] != true && request["pane"].is_null() {
         return Err(commands::usage("workspace", "outside a Kanna terminal there's no workspace of yours: add --all"));
     }
+    if let Some(flags) = unplaced(command.name, &request).filter(|_| target.backend == Backend::Kanna) {
+        return Err(commands::usage(command.name, &format!("outside a Kanna terminal there's no window of yours: {flags}")));
+    }
     if command.name == "diagrams" {
         return diagrams::run(&request, json_output);
     }
@@ -231,6 +234,18 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
         return Err(fail(exit::FAILED, "not every machine took the update"));
     }
     Ok(())
+}
+
+fn unplaced(command: &str, request: &Value) -> Option<&'static str> {
+    let given = |keys: &[&str]| keys.iter().any(|key| !request[*key].is_null());
+    match command {
+        "open" if !given(&["window", "workspace", "dock", "from"]) => Some("add --window WINDOW (or --window new)"),
+        "markup" if !request["type"].is_null() && !given(&["window", "dock", "from"]) => Some("add --window WINDOW (or --window new)"),
+        "comment" if !given(&["window", "from"]) => Some("add --window WINDOW (or --window new)"),
+        "arrange" if !given(&["window", "from"]) => Some("add --window WINDOW"),
+        "screenshot" if !given(&["pane", "window", "from"]) => Some("say PANE or --window WINDOW"),
+        _ => None,
+    }
 }
 
 fn locate(request: &mut Value, mux: &mut Session) -> Result<Option<(String, Vec<(String, String)>)>, Failure> {
@@ -394,7 +409,7 @@ fn instances(target: &Target, json_output: bool, env: Env) -> Result<(), Failure
         return Ok(());
     }
     if running.is_empty() {
-        println!("No Kanna instances are running. Any command starts one, e.g. kanna open or kanna --instance work open.");
+        println!("No Kanna instances are running. Any command starts one, e.g. kanna . or kanna --instance work open --window new.");
         return Ok(());
     }
     let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
