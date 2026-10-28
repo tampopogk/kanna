@@ -15,7 +15,7 @@ Rules for every agent working here, the planning agent and task agents alike.
 
 - No AI attribution in commits: no `Co-Authored-By` trailer for an AI.
 - No PRs: a branch merges straight into main.
-- Unrelated work gets its own branch, even when it comes up mid-task.
+- Unrelated work gets its own task (`kanna task new`), even when it comes up mid-task.
 
 ## Running inside Kanna
 
