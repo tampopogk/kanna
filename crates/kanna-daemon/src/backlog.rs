@@ -1562,6 +1562,9 @@ impl Backlog {
             Err(error) => return responder.reply(Err(error)),
         };
         let shown = crate::projects::tilde(&plan.from);
+        if std::env::current_exe().is_ok_and(|exe| crate::projects::canonical(&exe).starts_with(&plan.from)) {
+            return responder.reply(Err(KmuxError::new("here", format!("this Kanna runs from inside {shown}, and its terminals name its files there: move it with a Kanna built elsewhere"))));
+        }
         let starting = self.pending.borrow().values().any(|p| plan.holds(&p.entry.repo)) || self.tearing_down.borrow().values().any(|t| plan.holds(&t.entry.repo)) || self.setting_up.borrow().values().any(|s| plan.holds(&s.worktree.to_string_lossy()));
         if starting || self.moving.borrow().is_some() {
             return responder.reply(Err(KmuxError::new("busy", format!("a task in {shown} is starting, setting up or ending, or a project is moving: move it once that's done"))));

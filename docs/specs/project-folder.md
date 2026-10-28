@@ -77,7 +77,7 @@ sequenceDiagram
     D-->>C: what moved, what started again, what to change
 ```
 
-- **It refuses** when the place is taken: by another clone of the same remote (`… and … are both clones of github.com/a/app, and a project has one place: keep one of them …`), or by anything else (`… is already there`); when the project is on another disk than `repos`; when a task in it is starting, setting up or ending, or another move runs; and when it's run from a terminal in the project, which it would stop. Nothing has changed then.
+- **It refuses** when the place is taken: by another clone of the same remote (`… and … are both clones of github.com/a/app, and a project has one place: keep one of them …`), or by anything else (`… is already there`); when the project is on another disk than `repos`; when a task in it is starting, setting up or ending, or another move runs; and when it's run from a terminal in the project, which it would stop; and when the Kanna doing it runs from inside the project (a dev build in Kanna's own checkout), whose terminals name its files there. Nothing has changed then.
 - **Running tasks** stop as `kanna task stop` stops them and start again as `kanna task start` does: the agent resumes its conversation ([which agents resume](tasks.md#which-agents-resume)) in the moved worktree, and the task's hung-up terminals run again. A task that was stopped stays stopped.
 - **Other terminals in the project** (plain windows, the Shelf's planning terminal, the quiz agent) end and start again with their own commands, in the new folder. A planning terminal runs the planner script again and comes back to the project's planning conversation ([planner resume](planner-resume.md)).
 - **What it changes:**
