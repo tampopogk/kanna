@@ -4247,11 +4247,62 @@ assert "local network" in rows[1]["tip"], rows' "$(desk machines)" || return 1
 
   local clone="$KANNA_STATE_DIR/clone"
   git clone -q "$repo" "$clone" && git -C "$clone" remote set-url origin git@example.com:team/notes.git || { echo "machine_remote_task line $LINENO"; return 1; }
-  opened="$(cd / && kanna "$clone")"
-  [[ "$opened" == "brought forward d1 on "* ]] || { echo "machine_remote_task: a clone of vm's project on this Mac didn't bring its Desk forward: $opened"; return 1; }
+  opened="$(cd / && kanna "$clone" 2>&1)"
+  [[ "$opened" == *"kanna project move $clone"* ]] || { echo "machine_remote_task: a clone of vm's project outside repos on this Mac: $opened"; return 1; }
 
   kanna task list >/dev/null || return 1
   check test "$(kanna task list --json | python3 -c 'import json, sys; print(len(json.load(sys.stdin)["tasks"]))')" == 0 || { echo "machine_remote_task: vm's task leaked into this Mac's backlog"; return 1; }
+}
+
+scenario project_move M4
+project_move() {
+  start_daemon && start_app || { echo "project_move line $LINENO"; return 1; }
+  local outside="$KANNA_STATE_DIR/work/notes" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/app" agent="$KANNA_STATE_DIR/bin/claude"
+  mkdir -p "$outside" "$repo" "${agent%/*}" && ln -s "$mock_agent" "$agent" || { echo "project_move line $LINENO"; return 1; }
+  for dir in "$outside" "$repo"; do git -C "$dir" init -q -b main && git -C "$dir" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "project_move line $LINENO"; return 1; }; done
+  outside="$(cd "$outside" && pwd -P)"; repo="$(cd "$repo" && pwd -P)"
+  local refused; refused="$(cd "$outside" && kanna task new "Outside" "hi" 2>&1)" && { echo "project_move: a task was made outside repos"; return 1; }
+  [[ "$refused" == *"isn't in "*"move it there with \`kanna project move $outside\` (to "*"/.kanna-v4/repos/local/notes)"* ]] || { echo "project_move: task new outside repos: $refused"; return 1; }
+  refused="$(cd / && kanna "$outside" 2>&1)" && { echo "project_move: a Desk opened outside repos"; return 1; }
+  [[ "$refused" == *"kanna project move $outside"* ]] || { echo "project_move: kanna PATH outside repos: $refused"; return 1; }
+
+  (cd "$repo" && kanna task new "Moving" "say moving" --agent "$agent") >/dev/null || { echo "project_move line $LINENO"; return 1; }
+  [[ "$(kanna task start "$(tid 1)")" == "started $(sid 1) in the backlog: term-"* ]] || { echo "project_move: the task didn't start"; return 1; }
+  check wait_for 5 shows "Moving" "say moving" || { echo "project_move: the agent didn't get its first message"; kanna read "Moving"; return 1; }
+  local task worktree session; task="$(pane "Moving" id)"; worktree="$repo/.kanna-worktrees/$(tid 1)"
+  session="$(kanna read "Moving" | tr -d '\r\n' | sed -n 's/.*--session-id \([0-9a-f-]\{36\}\).*/\1/p')"
+  [[ "$session" =~ ^[0-9a-f-]{36}$ ]] || { echo "project_move: the task started without a session"; kanna read "Moving"; return 1; }
+  local claude="$KANNA_AGENTS_HOME/.claude/projects" encoded; encoded() { tr -c 'A-Za-z0-9\n' - <<<"$1"; }
+  mkdir -p "$claude/$(encoded "$worktree")" "$claude/$(encoded "$repo")/memory" || { echo "project_move line $LINENO"; return 1; }
+  echo '{"said":"moving"}' >"$claude/$(encoded "$worktree")/$session.jsonl" && echo remember >"$claude/$(encoded "$repo")/memory/MEMORY.md" || { echo "project_move line $LINENO"; return 1; }
+  KANNA_TERMINAL="$task" kanna open --name side --cmd 'pwd -P; exec cat' >/dev/null || { echo "project_move line $LINENO"; return 1; }
+  kanna open --window new --name plain --cwd "$repo" --cmd 'pwd -P; exec cat' >/dev/null || { echo "project_move line $LINENO"; return 1; }
+  check wait_for 5 unwrapped side "$worktree" && check wait_for 5 unwrapped plain "$repo" || { kanna read side; kanna read plain; return 1; }
+
+  git -C "$repo" remote add origin https://example.com/team/app.git || return 1
+  refused="$(cd "$repo" && kanna task new "Late" "hi" 2>&1)" && { echo "project_move: a task was made in a project that's out of its place"; return 1; }
+  [[ "$refused" == *"isn't at its place in "*"kanna project move "*"/.kanna-v4/repos/local/app"*"/.kanna-v4/repos/team/app)"* ]] || { echo "project_move: a new origin is a new place: $refused"; return 1; }
+  refused="$(KANNA_TERMINAL="$(pane plain id)" kanna project move "$repo" 2>&1)" && { echo "project_move: the move ran from a terminal it stops"; return 1; }
+  [[ "$refused" == *"run kanna project move from a terminal outside it"* ]] || { echo "project_move: $refused"; return 1; }
+
+  local moved there="$KANNA_AGENTS_HOME/.kanna-v4/repos/team/app"
+  there="$(cd "${there%/team/app}" && pwd -P)/team/app"
+  moved="$(cd / && kanna project move "$repo")" || { echo "project_move: the move failed: $moved"; return 1; }
+  [[ "$moved" == "moved $repo to $there"* && "$moved" == *"1 worktree, 2 Claude folders"* && "$moved" == *"started again there: $(sid 1), term-"* ]] || { echo "project_move: $moved"; return 1; }
+  check test ! -e "$repo" || { echo "project_move: something is left at the old path"; ls -la "$repo"; return 1; }
+  local newtree="$there/.kanna-worktrees/$(tid 1)"
+  git -C "$newtree" status --porcelain >/dev/null || { echo "project_move: the worktree doesn't work in its new place"; return 1; }
+  check test -f "$claude/$(encoded "$newtree")/$session.jsonl" -a ! -e "$claude/$(encoded "$worktree")" || { echo "project_move: Claude's conversation didn't move"; ls "$claude"; return 1; }
+  check test "$(cat "$claude/$(encoded "$there")/memory/MEMORY.md")" == remember || { echo "project_move: Claude's memory didn't move"; ls -R "$claude"; return 1; }
+  check wait_for 10 eval '[[ "$(kanna read Moving | tr -d "\r\n")" == *"resumed $session"* ]]' || { echo "project_move: the agent didn't resume its conversation"; kanna read Moving; return 1; }
+  check test "$(cd "$(pane Moving cwd)" && pwd -P)" == "$newtree" || { echo "project_move: the agent isn't in its new worktree"; pane Moving cwd; return 1; }
+  check wait_for 5 is side state running && check wait_for 5 unwrapped side "$newtree" || { echo "project_move: the task's terminal didn't start again in the new place"; kanna read side; return 1; }
+  check wait_for 5 is plain state running && check wait_for 5 unwrapped plain "$there" || { echo "project_move: the shell didn't start again in the new place"; kanna read plain; return 1; }
+  (cd "$there" && kanna task list) | grep -qE "^$(sid 1) +Moving +Backlog +(idle|working|running)" || { (cd "$there" && kanna task list); return 1; }
+  check test "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select repo || ' ' || json_extract(doc, '$.folder') from tasks")" == "$there $newtree" || { echo "project_move: kanna.db still names the old path"; return 1; }
+  local opened; opened="$(cd / && kanna "$there")" && [[ "$opened" == "opened d"*" on $there" ]] || { echo "project_move: a Desk on the moved project: $opened"; return 1; }
+  (cd "$there" && kanna task new "Next" "hi") >/dev/null || { echo "project_move: a task in the moved project"; return 1; }
+  refused="$(cd / && kanna project move "$there" 2>&1)"; [[ "$refused" == *"is in its place already"* ]] || { echo "project_move: $refused"; return 1; }
 }
 
 for s in ${only[@]+"${only[@]}"}; do due "$s" >/dev/null || { echo "e2e-kanna: no scenario named $s (see --help)" >&2; exit 2; }; done
@@ -4279,54 +4330,3 @@ for s in "${run[@]}"; do
 done
 echo "$passed passed, $failed failed"
 [[ $failed -eq 0 ]]
-
-scenario project_move M4
-project_move() {
-  start_daemon && start_app || { echo "project_move line $LINENO"; return 1; }
-  local outside="$KANNA_STATE_DIR/work/notes" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/app" agent="$KANNA_STATE_DIR/bin/claude"
-  mkdir -p "$outside" "$repo" "${agent%/*}" && ln -s "$mock_agent" "$agent" || { echo "project_move line $LINENO"; return 1; }
-  for dir in "$outside" "$repo"; do git -C "$dir" init -q -b main && git -C "$dir" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "project_move line $LINENO"; return 1; }; done
-  outside="$(cd "$outside" && pwd -P)"; repo="$(cd "$repo" && pwd -P)"
-  local refused; refused="$(cd "$outside" && kanna task new "Outside" "hi" 2>&1)" && { echo "project_move: a task was made outside repos"; return 1; }
-  [[ "$refused" == *"isn't in "*"move it there with \`kanna project move $outside\` (to "*"/.kanna-v4/repos/local/notes)"* ]] || { echo "project_move: task new outside repos: $refused"; return 1; }
-  refused="$(cd / && kanna "$outside" 2>&1)" && { echo "project_move: a Desk opened outside repos"; return 1; }
-  [[ "$refused" == *"kanna project move $outside"* ]] || { echo "project_move: kanna PATH outside repos: $refused"; return 1; }
-
-  (cd "$repo" && kanna task new "Moving" "say moving" --agent "$agent") >/dev/null || { echo "project_move line $LINENO"; return 1; }
-  [[ "$(kanna task start "$(tid 1)")" == "started $(sid 1) in the backlog: term-"* ]] || { echo "project_move: the task didn't start"; return 1; }
-  check wait_for 5 shows "Moving" "say moving" || { echo "project_move: the agent didn't get its first message"; kanna read "Moving"; return 1; }
-  local task worktree session; task="$(pane "Moving" id)"; worktree="$repo/.kanna-worktrees/$(tid 1)"
-  session="$(kanna read "Moving" | tr -d '\r\n' | sed -n 's/.*--session-id \([0-9a-f-]\{36\}\).*/\1/p')"
-  [[ "$session" =~ ^[0-9a-f-]{36}$ ]] || { echo "project_move: the task started without a session"; kanna read "Moving"; return 1; }
-  local claude="$KANNA_AGENTS_HOME/.claude/projects" encoded; encoded() { tr -c 'A-Za-z0-9\n' - <<<"$1"; }
-  mkdir -p "$claude/$(encoded "$worktree")" "$claude/$(encoded "$repo")/memory" || { echo "project_move line $LINENO"; return 1; }
-  echo '{"said":"moving"}' >"$claude/$(encoded "$worktree")/$session.jsonl" && echo remember >"$claude/$(encoded "$repo")/memory/MEMORY.md" || { echo "project_move line $LINENO"; return 1; }
-  KANNA_TERMINAL="$task" kanna open --name side --cmd 'pwd -P; exec cat' >/dev/null || { echo "project_move line $LINENO"; return 1; }
-  (cd "$repo" && kanna open --window new --name plain --cmd 'pwd -P; exec cat') >/dev/null || { echo "project_move line $LINENO"; return 1; }
-  check wait_for 5 shows side "$worktree" && check wait_for 5 shows plain "$repo" || { kanna read side; kanna read plain; return 1; }
-
-  git -C "$repo" remote add origin https://example.com/team/app.git || return 1
-  refused="$(cd "$repo" && kanna task new "Late" "hi" 2>&1)" && { echo "project_move: a task was made in a project that's out of its place"; return 1; }
-  [[ "$refused" == *"kanna project move $repo"*"/.kanna-v4/repos/team/app)"* ]] || { echo "project_move: a new origin is a new place: $refused"; return 1; }
-  refused="$(KANNA_TERMINAL="$(pane plain id)" kanna project move "$repo" 2>&1)" && { echo "project_move: the move ran from a terminal it stops"; return 1; }
-  [[ "$refused" == *"run kanna project move from a terminal outside it"* ]] || { echo "project_move: $refused"; return 1; }
-
-  local moved there="$KANNA_AGENTS_HOME/.kanna-v4/repos/team/app"
-  there="$(cd "${there%/team/app}" && pwd -P)/team/app"
-  moved="$(cd / && kanna project move "$repo")" || { echo "project_move: the move failed: $moved"; return 1; }
-  [[ "$moved" == "moved $repo to $there"* && "$moved" == *"1 worktree"*"1 Claude folder"* && "$moved" == *"started again there: $(tid 1), "* ]] || { echo "project_move: $moved"; return 1; }
-  check test ! -e "$repo" || { echo "project_move: something is left at the old path"; ls -la "$repo"; return 1; }
-  local newtree="$there/.kanna-worktrees/$(tid 1)"
-  git -C "$newtree" status --porcelain >/dev/null || { echo "project_move: the worktree doesn't work in its new place"; return 1; }
-  check test -f "$claude/$(encoded "$newtree")/$session.jsonl" -a ! -e "$claude/$(encoded "$worktree")" || { echo "project_move: Claude's conversation didn't move"; ls "$claude"; return 1; }
-  check test "$(cat "$claude/$(encoded "$there")/memory/MEMORY.md")" == remember || { echo "project_move: Claude's memory didn't move"; ls -R "$claude"; return 1; }
-  check wait_for 10 eval '[[ "$(kanna read Moving | tr -d "\r\n")" == *"resumed $session"* ]]' || { echo "project_move: the agent didn't resume its conversation"; kanna read Moving; return 1; }
-  check test "$(cd "$(pane Moving cwd)" && pwd -P)" == "$newtree" || { echo "project_move: the agent isn't in its new worktree"; pane Moving cwd; return 1; }
-  check wait_for 5 is side state running && check wait_for 5 shows side "$newtree" || { echo "project_move: the task's terminal didn't start again in the new place"; kanna read side; return 1; }
-  check wait_for 5 is plain state running && check wait_for 5 shows plain "$there" || { echo "project_move: the shell didn't start again in the new place"; kanna read plain; return 1; }
-  (cd "$there" && kanna task list) | grep -qE "^$(sid 1) +Moving +Backlog +(idle|working|running)" || { (cd "$there" && kanna task list); return 1; }
-  check test "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select repo || ' ' || json_extract(doc, '$.folder') from tasks")" == "$there $newtree" || { echo "project_move: kanna.db still names the old path"; return 1; }
-  local opened; opened="$(cd / && kanna "$there")" && [[ "$opened" == "opened d"*" on $there" ]] || { echo "project_move: a Desk on the moved project: $opened"; return 1; }
-  (cd "$there" && kanna task new "Next" "hi") >/dev/null || { echo "project_move: a task in the moved project"; return 1; }
-  refused="$(cd / && kanna project move "$there" 2>&1)"; [[ "$refused" == *"is in its place already"* ]] || { echo "project_move: $refused"; return 1; }
-}

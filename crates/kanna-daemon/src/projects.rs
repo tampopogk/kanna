@@ -112,11 +112,12 @@ pub fn misplaced(repos: &Path, folder: &Path) -> Option<(PathBuf, PathBuf)> {
 
 pub fn outside(repos: &Path, folder: &Path) -> Result<(), KmuxError> {
     let Some((main, wanted)) = misplaced(repos, folder) else { return Ok(()) };
-    let shown = tilde(&main);
-    Err(KmuxError::new(
-        "outside",
-        format!("{shown} isn't in {}, where Kanna keeps its projects so each has the same place on every machine: move it there with `kanna project move {shown}` (to {})", tilde(&canonical(repos)), tilde(&wanted)),
-    ))
+    let (shown, root) = (tilde(&main), canonical(repos));
+    let why = match main.starts_with(&root) {
+        true => format!("{shown} isn't at its place in {}, which its origin decides", tilde(&root)),
+        false => format!("{shown} isn't in {}, where Kanna keeps its projects so each has the same place on every machine", tilde(&root)),
+    };
+    Err(KmuxError::new("outside", format!("{why}: move it there with `kanna project move {shown}` (to {})", tilde(&wanted))))
 }
 
 pub fn desk_here(folder: &str) -> Result<(), KmuxError> {
