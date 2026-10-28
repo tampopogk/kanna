@@ -63,20 +63,19 @@ When the user asks you to show them something (a diff, a file, a doc, a page, a 
 - **Refer to it by the ID the reply prints** (`term-5`, `diff-2`). Pane names are unique across Kanna, so a `--name` another task already uses fails with `name_taken`.
 - In the chat, a line saying what the tab shows.
 
-## Message the planner or another task
+## Messages
 
 `kanna task send TASK TEXT` leaves a message for another task's agent, and `kanna task send planner TEXT` for this repo's planning agent. Kanna hands it to their agent once their turn is over, as a prompt `[message from YOUR-TASK "Name"] TEXT`, so it never lands mid-turn, and a stopped backlog task runs for it. Only Claude and Codex agents take messages: for any other, `kanna task send` warns and the message waits.
 
-- **Ask another task directly** when you need something only it knows (is its spec final, which branch has the change), instead of asking the user to relay it. Find it with `kanna task list QUERY`.
-- **Tell the planner** when you're blocked on a decision it should take to the user, or when you're done and there's something to merge.
-- **A message you get** starts with `[message from SENDER]`: answer with `kanna task send SENDER "..."` (or `planner`), not in your chat, which the sender can't see. A message from `user` came from the user: answer in the chat as usual.
+- **Send one only when the user asks you to.** When you're done or need the user, say so in your chat and end your turn: the Shelf shows them the task is done or needs them, and they read your summary there.
+- **A message you get** starts with `[message from SENDER]`: answer it once, briefly, with `kanna task send SENDER "..."` (or `planner`), since the sender can't see your chat. A message from `user` came from the user: answer in the chat as usual.
 - **Keep it to what they need,** in one message: they read it in the middle of their own work.
 
 ## Present your work
 
 Set up the review view **once**, when the work is first ready to show the user. You may have run unattended in the backlog: whatever you leave open, focused and zoomed is what the user sees when they pull the task, maybe hours later. Kanna keeps it through the stop.
 
-Reuse those tabs during review; do not repeat the focus/zoom setup after each reply or revision. **Once the user approves the model or work, leave their tabs, focus and zoom alone** unless they ask for a change. Recording approval, committing and handing off to the planner do not need another presentation setup.
+Reuse those tabs during review; do not repeat the focus/zoom setup after each reply or revision. **Once the user approves the model or work, leave their tabs, focus and zoom alone** unless they ask for a change. Recording approval and committing do not need another presentation setup.
 
 1. **Open what explains the change best,** as tabs ([Show it in a tab](#show-it-in-a-tab)): the spec you changed, with its changes marked (`kanna open md FILE --diff main`; `--diff A..B` for what changed between two commits), the mockup (`kanna open web`), comments on the key code (`kanna comment`, as the `kanna-explain` skill says), a diagram in a doc in `.kanna/tmp/`, the diff (`kanna open diff --merge-base main`: everything the branch changed, committed or not, following the worktree; not a terminal, so it outlasts the stop).
 2. **If you wrote or changed a diagram, check it draws:** fix every `FILE:LINE: message` that `kanna open md` (or `kanna diagrams check FILE`) prints, then take `kanna screenshot PANE` of the doc, look at the PNG, and fix labels that overlap or are cut off.
@@ -103,7 +102,7 @@ If you stop to ask the user something before presenting the work, use that first
 | `kanna task pull TASK` | Bring a task onto the Desk, parking the one there (only when the user asks) |
 | `kanna task park [TASK]` | Move the Desk's task to the Shelf (only when the user asks) |
 | `kanna task defer [TASK]` | Move a task back to the backlog as it is, running or stopped (only when the user asks) |
-| `kanna task send TASK\|planner TEXT` | Leave a message for another task's agent or this repo's planning agent; it gets it when its turn is over |
+| `kanna task send TASK\|planner TEXT` | Leave a message for another task's agent or this repo's planning agent; it gets it when its turn is over (only when the user asks, or to answer a message) |
 | `kanna task messages [TASK]` | A task's messages, sent and received, and whether each was delivered |
 | `kanna task done [TASK]` | End a task, or take it off the backlog; says which blocked tasks can start now |
 
