@@ -4,7 +4,7 @@ Rules for every agent working here, the planning agent and task agents alike.
 
 ## Code
 
-- No code comments, in any language (Rust, Swift, scripts past the shebang): no `//`, `///`, `//!`, `/* */` or `#`. Code explains itself; explanations go in `docs/specs/`.
+- No code comments.
 - Provenance of code copied from kmux (MIT) goes in `NOTICE`, not in file headers.
 
 ## Design
