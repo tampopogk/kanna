@@ -236,10 +236,31 @@ if [ -z "$chosen" ]; then
   echo
 fi
 
+planner() {
+  [ -n "$kanna" ] && [ -n "$KANNA_TERMINAL" ] || return 1
+  group=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
+  request=$(jq -nc --arg pane "$KANNA_TERMINAL" --arg folder "$(pwd -P)" --arg agent "$1" --arg step "$2" --arg group "$group" '{cmd: "backlog", args: {action: "planner", step: $step, pane: $pane, folder: $folder, agent: $agent, group: $group}}') || return 1
+  "$kanna" raw "$request" 2>/dev/null
+}
+
 command=${chosen#*	}
 command=${command%"$nl"}
+name=${chosen%%	*}
+reply=$(planner "$name" start)
+given=$(printf '%s' "$reply" | jq -er '.command // empty' 2>/dev/null) && command=$given
+said=$(printf '%s' "$reply" | jq -r '.said // empty' 2>/dev/null)
+[ -z "$said" ] || { say "$said"; echo; }
+after=$(printf '%s' "$reply" | jq -er '.after // empty' 2>/dev/null) && {
+  waited=0
+  while [ "$waited" -lt 50 ] && kill -0 -- "-$after" 2>/dev/null; do
+    [ "$waited" -eq 5 ] && echo "Waiting for the last planner to end…"
+    sleep 0.2
+    waited=$((waited + 1))
+  done
+}
 trap : INT
 eval "$command"
 echo
+again=$(planner "$name" quit | jq -er '.again // empty' 2>/dev/null) && command=$again
 say "The planning agent quit. Start it again: $command"
 shell

@@ -1,6 +1,6 @@
 # Planning terminal
 
-**Status:** built; Kanna starts the planning agent ([new Desk](new-desk.md)) · **Mockup:** [`references/mockups/desk.html`](../../references/mockups/desk.html) (Park, or Simulate: no tasks, first launch) · **Builds on:** [Desk](desk.md), [tasks](tasks.md), [docked pane](docked-pane.md) · **Tests:** `scripts/e2e-kanna.sh` `desk_backlog`, `desk_by_path`, `desk_planner_stays`
+**Status:** built; Kanna starts the planning agent ([new Desk](new-desk.md)) · **Mockup:** [`references/mockups/desk.html`](../../references/mockups/desk.html) (Park, or Simulate: no tasks, first launch) · **Builds on:** [Desk](desk.md), [tasks](tasks.md), [docked pane](docked-pane.md) · **Tests:** `scripts/e2e-kanna.sh` `desk_backlog`, `desk_by_path`, `desk_planner_stays`, `planner_resumes`
 
 Each Desk window has a **planning terminal**: while no task is on the Desk, it's docked on the left and the full Shelf fills the right. Kanna starts the window's **planning agent** in it ([tasks](tasks.md#2-how-tasks-are-made)), the agent you choose, telling it it's the planner; the settings it gets are in [settings](settings.md).
 
@@ -37,6 +37,7 @@ stateDiagram-v2
 ## 2. What it is
 
 - **Kanna starts the planning agent** when a [new Desk](new-desk.md#2-its-planning-terminal) opens: it asks which agent plans (or uses the project's), starts it with `You are the Kanna planning agent.` as its first message, and leaves you in your shell when you quit it.
+- **It comes back to the project's conversation:** one planning conversation per project, kept in `kanna.db`, which every planner starting on the project resumes (a closed or restarted terminal, a restart of Kanna, a new Desk), unless another window's planner is in it ([planner resume](planner-resume.md)).
 - **It has Kanna's environment** (`KANNA_TERMINAL`, `KANNA_SOCKET`) and the [settings](settings.md) for its agent.
 - **One per window.** A Desk window gets its own the first time it shows no task, and keeps it while tasks come and go. Every window is an independent Desk; there's no shared or cross-window planning terminal. Closing the window ends it.
 - **Not a task.** It isn't on the Shelf, the strip or in `kanna task list`, doesn't take one of the repo's three running slots, can't be parked, pulled, moved or docked elsewhere, and has no Park button. Its header says **Planning**, the terminal's folder and branch.

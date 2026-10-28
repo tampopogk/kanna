@@ -99,6 +99,16 @@ Kanna gives an agent a session ID of its own when it starts, if the agent takes 
 
 **Tested** by e2e `real_agent_tasks` for claude and codex: the real agents run as tasks against a local mock model (`tools/agent-harness`), come back to their conversation after `kanna restart` on their first start (codex's pane by then resuming its own session's UUID), and after Move to Backlog, Stop (by their quit keys) and Start, the mock sees their next message carry the first, with no second start. Copilot and antigravity only talk to their own services, and opencode (which could use the mock as a provider) isn't covered yet, so only their command lines are tested (`backlog.rs`).
 
+**A planning agent** resumes too, one conversation per project rather than per task: it starts the same way with `You are the Kanna planning agent.`, and since the main checkout isn't a folder of its own, a session it takes no ID for is the first one made there since it started, not the newest ([planner resume](planner-resume.md#2-each-agent)).
+
+| Planner | Started with | Resumed with |
+|---|---|---|
+| claude | `claude --session-id UUID 'You are the Kanna planning agent.'` | `claude --resume UUID` |
+| codex | `codex --yolo 'You are …'` | `codex --yolo resume UUID`: the one it said as it quit, else the first rollout since it started whose `cwd` is the main checkout |
+| copilot | `copilot --yolo --session-id UUID -i 'You are …'` | `copilot --yolo --session-id UUID` |
+| opencode | `opencode --prompt 'You are …'` | `opencode --session ID`: the first top-level session since it started whose `directory` is the main checkout |
+| antigravity | `agy --dangerously-skip-permissions -i 'You are …'` | not resumed: a new conversation each time |
+
 An agent not in the table starts again with its first message, its conversation lost; so do copilot and opencode when no session of theirs is found for the folder. Copilot, opencode and antigravity take the first message as a flag (`-i`, `--prompt`), not an argument.
 
 - **Done on a backlog task that's still running** ends its agent and tabs too.

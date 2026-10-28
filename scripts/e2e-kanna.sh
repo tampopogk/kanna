@@ -3296,12 +3296,16 @@ planner_choice() {
   kanna send "$planner" exit >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
   check wait_for 5 shows "$planner" "The planning agent quit. Start it again:" || { kanna read "$planner"; return 1; }
   check is "$planner" state running || { echo "planner_choice: quitting the agent ended the planning terminal"; return 1; }
+  local session; session="$(kanna read "$planner" | tr -d '\r\n' | grep -oE 'codex resume [0-9a-f-]{36}' | head -1 | grep -oE '[0-9a-f-]{36}$')"
+  [[ -n "$session" ]] || { echo "planner_choice: codex didn't say its session"; kanna read "$planner"; return 1; }
+  kanna read "$planner" | tr -d ' \r\n' | grep -q "Startitagain:.*resume'$session'" || { echo "planner_choice: the way to start it again isn't its session"; kanna read "$planner"; return 1; }
   close_desk d1 || { echo "planner_choice line $LINENO"; return 1; }
   local opened w; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "planner_choice line $LINENO: $opened"; return 1; }
   w="${BASH_REMATCH[1]}"
   check wait_for 10 eval '[[ "$(desk lead "$w")" == term-* ]]' || { echo "planner_choice: the next Desk has no planning terminal"; return 1; }
   planner="$(desk lead "$w")"
-  check wait_for 10 spaceless "$planner" "args: -c approval_policy=\"never\" -c sandbox_mode=\"danger-full-access\" -c model_auto_compact_token_limit=300000 You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: the next Desk didn't start the project's planner"; kanna read "$planner"; return 1; }
+  check wait_for 10 shows "$planner" "^resumed $session" || { echo "planner_choice: the next Desk didn't come back to the project's planner"; kanna read "$planner"; return 1; }
+  spaceless "$planner" "Back to repo's planning conversation." && ! spaceless "$planner" "You are the Kanna planning agent." || { echo "planner_choice: the next Desk's planner was told again"; kanna read "$planner"; return 1; }
   ! shows "$planner" "Choose an agent" || { echo "planner_choice: the next Desk asked again"; return 1; }
   key cmd+n
   check wait_for 10 eval '[[ "$(desk lead d3)" == term-* ]]' || { echo "planner_choice: ⌘N opened no Desk"; kanna workspace list --all; return 1; }
@@ -3310,6 +3314,7 @@ planner_choice() {
   kanna send "$planner" "$repo" >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
   check wait_for 10 eval '[[ "$(desk header d3)" == "Planning · "*"${repo#/private} · main" ]]' || { echo "planner_choice: the Desk didn't follow to the folder"; desk header d3; return 1; }
   check wait_for 10 spaceless "$planner" "args: -c approval_policy=\"never\" -c sandbox_mode=\"danger-full-access\" -c model_auto_compact_token_limit=300000 You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: the Desk didn't start the folder's planner"; kanna read "$planner"; return 1; }
+  spaceless "$planner" "The planner in another window is in repo's planning conversation, so this one starts a new one." || { echo "planner_choice: a second Desk on the project didn't say why it starts a new conversation"; kanna read "$planner"; return 1; }
 }
 
 scenario real_agent_planners M4
@@ -3347,6 +3352,71 @@ print(sum(1 for l in lines if l.get("turn") and l["path"].startswith(sys.argv[2]
     close_desk "$w" || { echo "real_agent_planners line $LINENO"; return 1; }
     opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "real_agent_planners line $LINENO: $opened"; return 1; }
     w="${BASH_REMATCH[1]}"
+  done
+  stop_agents
+}
+
+scenario planner_resumes M4
+planner_resumes() {
+  local claude="${KANNA_E2E_CLAUDE:-$(command -v claude)}" codex="${KANNA_E2E_CODEX:-$(command -v codex)}"
+  [[ -x "$claude" ]] || { echo "planner_resumes: claude isn't installed (or set KANNA_E2E_CLAUDE)"; return 1; }
+  [[ -x "$codex" ]] || { echo "planner_resumes: codex isn't installed (or set KANNA_E2E_CODEX)"; return 1; }
+  local agents="$KANNA_STATE_DIR/agents" repo="$KANNA_STATE_DIR/repo" harness="$repo_root/tools/agent-harness"
+  mkdir -p "$agents" "$repo/.kanna" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "planner_resumes line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  python3 -I "$harness/mock_server.py" --log "$agents/mock.jsonl" >"$agents/port" 2>"$agents/mock.log" &
+  check wait_for 10 eval '[[ -s "$agents/port" ]]' || { echo "planner_resumes: the mock model didn't start"; return 1; }
+  local port agent real; port="$(cat "$agents/port")"
+  for agent in claude codex; do
+    [[ $agent == claude ]] && real="$claude" || real="$codex"
+    python3 -I "$harness/isolate.py" --agent $agent --real "$real" --home "$agents/$agent-home" --port "$port" --trust "$repo" --out "$agents/bin/$agent" || { echo "planner_resumes line $LINENO"; return 1; }
+  done
+  asked() { python3 -c 'import json, sys
+lines = [json.loads(l) for l in open(sys.argv[1])]
+print(sum(1 for l in lines if l.get("turn") and l["path"].startswith(sys.argv[2]) and sys.argv[3] in l["prompt"] and (len(sys.argv) < 5 or any(sys.argv[4] in h for h in l["history"]))))' "$agents/mock.jsonl" "$@"; }
+  KANNA_PLANNING_AGENTS="$agents/bin/claude $agents/bin/codex" CODEX_HOME="$agents/codex-home/.codex" start_daemon && start_app || { echo "planner_resumes line $LINENO"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$2\"}}" | field "$1"; }
+  windows() { app_view | python3 -c 'import json, sys; print(" ".join(w["id"] for w in json.load(sys.stdin)["windows"]))'; }
+  local role="You are the Kanna planning agent." path w planner old opened note how n
+  for agent in claude codex; do
+    [[ $agent == claude ]] && path=/v1/messages || path=/v1/responses
+    printf '{"version": 1, "planning": {"agent": "%s"}}\n' "$agent" >"$repo/.kanna/config.json"
+    opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "planner_resumes line $LINENO: $opened"; return 1; }
+    w="${BASH_REMATCH[1]}"
+    check wait_for 10 eval '[[ "$(desk lead "$w")" == term-* ]]' || { echo "planner_resumes: no planning terminal"; kanna workspace list --all; return 1; }
+    planner="$(desk lead "$w")"
+    check wait_for 60 eval '[[ "$(asked "$path" "$role")" == 1 ]]' || { echo "planner_resumes: $agent wasn't told it's the planning agent"; kanna read "$planner"; return 1; }
+    check wait_for 30 shows "$planner" "Agent status probe" || { echo "planner_resumes: $agent didn't answer"; kanna read "$planner"; return 1; }
+    note="PLANNER_NOTE $agent"
+    kanna send "$planner" "$note" >/dev/null && check wait_for 60 eval '[[ "$(asked "$path" "$note" "$role")" -ge 1 ]]' || { echo "planner_resumes: $agent didn't take the note"; kanna read "$planner"; return 1; }
+    sleep 3
+    for how in closed restarted "a new Desk"; do
+      old="$planner"
+      case $how in
+        closed) kanna close "$planner" >/dev/null || { echo "planner_resumes line $LINENO"; return 1; } ;;
+        restarted) kanna restart "$planner" >/dev/null || { echo "planner_resumes line $LINENO"; return 1; } ;;
+        *)
+          close_desk "$w" || { echo "planner_resumes line $LINENO"; return 1; }
+          opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "planner_resumes line $LINENO: $opened"; return 1; }
+          w="${BASH_REMATCH[1]}" ;;
+      esac
+      check wait_for 10 eval '[[ "$(desk lead "$w")" == term-* ]] && { [[ $how == restarted ]] || [[ "$(desk lead "$w")" != "$old" ]]; }' || { echo "planner_resumes: no planning terminal after it was $how"; kanna workspace list --all; return 1; }
+      planner="$(desk lead "$w")"
+      check wait_for 60 shows "$planner" "$note" || { echo "planner_resumes: $agent's conversation isn't on screen once $how"; kanna read "$planner"; return 1; }
+      sleep 3
+      kanna send "$planner" "PLANNER_BACK $agent $how" >/dev/null || { echo "planner_resumes line $LINENO"; return 1; }
+      check wait_for 60 eval '[[ "$(asked "$path" "PLANNER_BACK $agent $how" "$note")" -ge 1 ]]' || { echo "planner_resumes: $agent's next message once $how didn't carry its conversation"; kanna read "$planner"; tail -2 "$agents/mock.jsonl" | cut -c1-400; return 1; }
+      [[ "$(asked "$path" "$role")" == 1 ]] || { echo "planner_resumes: $agent was told it's the planner again once $how"; return 1; }
+    done
+    n="$(windows | wc -w)"
+    key cmd+n
+    check wait_for 10 eval '[[ "$(windows | wc -w)" -gt $n ]]' || { echo "planner_resumes: ⌘N opened no Desk"; return 1; }
+    local second; second="$(windows | tr ' ' '\n' | grep -vxF "$w" | tail -1)"
+    check wait_for 10 eval '[[ "$(desk lead "$second")" == term-* ]]' || { echo "planner_resumes: the second Desk has no planning terminal"; return 1; }
+    check wait_for 10 shows "$(desk lead "$second")" "Folder, repo" || { kanna read "$(desk lead "$second")"; return 1; }
+    kanna send "$(desk lead "$second")" "$repo" >/dev/null || { echo "planner_resumes line $LINENO"; return 1; }
+    check wait_for 60 eval '[[ "$(asked "$path" "$role")" == 2 ]]' || { echo "planner_resumes: a second window on the project didn't start a new conversation"; kanna read "$(desk lead "$second")"; return 1; }
+    close_desk "$second" && close_desk "$w" || { echo "planner_resumes line $LINENO"; return 1; }
   done
   stop_agents
 }
