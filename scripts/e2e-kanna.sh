@@ -2633,6 +2633,25 @@ sys.exit(not (len(items) == 2 and all(i["meta"].startswith("· parked ") for i i
   sleep 0.3; snap d1 desk_scrolls-strip >/dev/null
 }
 
+scenario shelf_times M4
+shelf_times() {
+  local agent="$repo_root/tools/mock-agent/mock-agent" repo="$KANNA_STATE_DIR/repo"
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "shelf_times line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  start_daemon || { echo "shelf_times line $LINENO"; return 1; }
+  env -u KANNA_NO_INITIAL_WINDOW KANNA_START_DIR="$repo" "$app" --bg >>"$out/app.log" 2>&1 &
+  app_pid=$!
+  wait_for 10 app_attached || { echo "the app did not attach"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"d1\"${2:+,$2}}}" | field "$1"; }
+  check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { echo "shelf_times: no planning terminal"; kanna workspace list --all; return 1; }
+  (cd "$repo" && kanna task new "Parked" "hello" --agent "$agent" && kanna task new "Waiting" "hello" --agent "$agent") >/dev/null || { echo "shelf_times line $LINENO"; return 1; }
+  kanna task shelve "$(tid 1)" >/dev/null || { echo "shelf_times line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(desk times)" == *"parked now"*"made just now"* ]]' || { desk times; return 1; }
+  local later; later="$(desk times '"later":7500')"
+  [[ "$later" == *"parked 2h ago"*"made 2h ago"* ]] || { echo "shelf_times: the empty Desk's times didn't move without a new page: $later"; return 1; }
+  desk times '"later":0' >/dev/null
+}
+
 scenario backlog_search M4
 backlog_search() {
   local agent="$repo_root/tools/mock-agent/mock-agent" repo="$KANNA_STATE_DIR/repo"
