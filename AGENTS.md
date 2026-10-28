@@ -20,7 +20,7 @@ Rules for every agent working here, the planning agent and task agents alike.
 
 ## Running inside Kanna
 
-- You're running inside the user's own dev Kanna (`target/Kanna.app`, state in `~/Library/Application Support/kanna-dev/`).
+- You may be running inside one of the user's own Kannas: production, staging or the main checkout's dev build, each with its own folder in `~/Library/Application Support/` (`kanna-prod`, `kanna-staging`, `kanna-dev`; see `docs/specs/build-channels.md`). Your terminal's `KANNA_SOCKET` says which.
 - Never kill or restart `kanna-keeper`: it holds every terminal, the user's sessions included.
 - Never `pkill` or `killall` anything Kanna or kmux. Stop only processes you started, by PID.
 - Plain `kanna` (no `KANNA_SOCKET`) talks to the user's instance. Run tests against a private instance and socket, as `scripts/e2e-kanna.sh` does, never the user's.
