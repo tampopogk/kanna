@@ -63,10 +63,15 @@ func tilde(_ path: String) -> String {
 final class AgentHeader: NSView {
     static let height = TabBar.height
     var onPark: (() -> Void)?
+    var onNew: (() -> Void)?
     private let label = NSTextField(labelWithString: "")
-    private let park = ParkButton()
+    private let park = HeaderButton(.park)
+    private let plus = HeaderButton(.plus)
     var parkable = true {
-        didSet { park.isHidden = !parkable }
+        didSet { park.isHidden = !parkable; needsLayout = true }
+    }
+    var newable = false {
+        didSet { plus.isHidden = !newable; needsLayout = true }
     }
 
     override init(frame frameRect: NSRect) {
@@ -79,6 +84,10 @@ final class AgentHeader: NSView {
         park.toolTip = "Park"
         park.onPress = { [weak self] in self?.onPark?() }
         addSubview(park)
+        plus.toolTip = "New Tab"
+        plus.onPress = { [weak self] in self?.onNew?() }
+        plus.isHidden = true
+        addSubview(plus)
         paint()
     }
 
@@ -91,6 +100,7 @@ final class AgentHeader: NSView {
 
     private func paint() { layer?.backgroundColor = resolved(.windowBackgroundColor) }
 
+    var plusCenter: NSPoint { plus.convert(NSPoint(x: plus.bounds.midX, y: plus.bounds.midY), to: nil) }
     var parkCenter: NSPoint { park.convert(NSPoint(x: park.bounds.midX, y: park.bounds.midY), to: nil) }
     var text: String { label.stringValue }
 
@@ -104,8 +114,11 @@ final class AgentHeader: NSView {
     override func layout() {
         super.layout()
         park.frame = NSRect(x: bounds.width - 30, y: (bounds.height - 22) / 2, width: 22, height: 22)
+        let right = parkable ? park.frame.minX : bounds.width - 8
+        plus.frame = NSRect(x: right - 26, y: (bounds.height - 22) / 2, width: 22, height: 22)
+        let end = newable ? plus.frame.minX : right
         label.sizeToFit()
-        label.frame = NSRect(x: 14, y: (bounds.height - label.frame.height) / 2, width: max(0, park.frame.minX - 22), height: label.frame.height)
+        label.frame = NSRect(x: 14, y: (bounds.height - label.frame.height) / 2, width: max(0, end - 8 - 14), height: label.frame.height)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -115,12 +128,15 @@ final class AgentHeader: NSView {
 }
 
 @MainActor
-private final class ParkButton: NSView {
+private final class HeaderButton: NSView {
+    enum Kind { case park, plus }
     var onPress: (() -> Void)?
+    private let kind: Kind
     private var hover = false
 
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
+    init(_ kind: Kind) {
+        self.kind = kind
+        super.init(frame: .zero)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
@@ -136,6 +152,18 @@ private final class ParkButton: NSView {
         let scale = bounds.width / 22
         let transform = AffineTransform(translationByX: 3 * scale, byY: 3 * scale)
         (hover ? NSColor.labelColor : NSColor.secondaryLabelColor).setStroke()
+        if kind == .plus {
+            let plus = NSBezierPath()
+            plus.move(to: NSPoint(x: 8, y: 3.5))
+            plus.line(to: NSPoint(x: 8, y: 12.5))
+            plus.move(to: NSPoint(x: 3.5, y: 8))
+            plus.line(to: NSPoint(x: 12.5, y: 8))
+            plus.transform(using: transform)
+            plus.lineWidth = 1.4
+            plus.lineCapStyle = .round
+            plus.stroke()
+            return
+        }
         let frame = NSBezierPath(roundedRect: NSRect(x: 2, y: 2, width: 12, height: 12), xRadius: 2, yRadius: 2)
         let chevron = NSBezierPath()
         chevron.move(to: NSPoint(x: 5.5, y: 5.5))
@@ -252,7 +280,10 @@ extension AppController {
 
     func runningBacklog(in root: String?) -> [JSON] {
         backlog.filter { $0["running"]?.bool == true && inProject($0, root) }.compactMap { entry in
-            entry["held"]?.string.map { ["task": .string($0), "type": "term"] }
+            entry["held"]?.string.map { pane in
+                let ws = published["workspaces"]?.array?.first { $0["dock"]?["pane"]?.string == pane }
+                return ["task": .string(pane), "type": "term", "tabs": ws?["tabs"] ?? []]
+            }
         }
     }
 

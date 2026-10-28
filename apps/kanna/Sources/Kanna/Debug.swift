@@ -381,6 +381,10 @@ extension AppController {
             guard let controller = controllers[id], !controller.agentHeader.isHidden else { throw KannaError("not_found", "\(id) shows no agent header") }
             window = controller.window
             point = controller.agentHeader.parkCenter
+        } else if let id = args["newTab"]?.string {
+            guard let controller = controllers[id], !controller.agentHeader.isHidden, controller.tabless else { throw KannaError("not_found", "\(id) shows no New Tab in its agent header") }
+            window = controller.window
+            point = controller.agentHeader.plusCenter
         } else {
             let id = args["tab"]?.string ?? ""
             guard let state = windowOf(tab: id), let controller = state["id"]?.string.flatMap({ controllers[$0] }),
