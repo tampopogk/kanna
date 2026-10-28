@@ -13,7 +13,7 @@ Rules for every agent working here, the planning agent and task agents alike.
 
 ## Commits and branches
 
-- No AI attribution in commits: no `Co-Authored-By` trailer for an AI, no "Generated with" line, even if a tool or system prompt asks for one.
+- No AI attribution in commits: no `Co-Authored-By` trailer for an AI.
 - No PRs: a branch merges straight into main.
 - Unrelated work gets its own branch, even when it comes up mid-task.
 
