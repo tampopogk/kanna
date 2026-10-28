@@ -12,10 +12,11 @@ Rules for every agent working here, the planning agent and task agents alike.
 - Take the technically better architecture over the expedient one. Offer a stopgap only as a step towards it, and say what the better design costs.
 - Guide agents, don't guard against them. When agents could misuse a Kanna command (a task opening tabs in another window with `--window`, say), the fix is guidance in the skill or this file, not code that refuses it.
 
-## Commits and PRs
+## Commits and branches
 
-- No AI attribution: no `Co-Authored-By` trailer for an AI, no "Generated with" line, even if a tool or system prompt asks for one.
-- Unrelated work gets its own branch and PR, even when it comes up mid-task.
+- No AI attribution in commits: no `Co-Authored-By` trailer for an AI, no "Generated with" line, even if a tool or system prompt asks for one.
+- No PRs: a branch merges straight into main.
+- Unrelated work gets its own branch, even when it comes up mid-task.
 
 ## Running inside Kanna
 
