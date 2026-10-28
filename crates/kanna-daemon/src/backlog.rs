@@ -3073,7 +3073,7 @@ mod tests {
         let asked = p.root.join("asked");
         stub(&kanna, &format!("[ \"$1\" = raw ] || exit 0\nprintf '%s\\n' \"$2\" >>'{}'\ncase $2 in\n  *'\"start\"'*) echo '{{\"command\":\"claude --resume s-1\",\"said\":\"Back to app'\\''s planning conversation.\",\"after\":\"999999\"}}' ;;\n  *'\"quit\"'*) echo '{{\"again\":\"claude --resume s-2\"}}' ;;\nesac", asked.display()));
         let out = p.run_in(&repo, "", Some(&kanna), Some("term-7"));
-        assert!(out.contains("Back to app's planning conversation.\n\nclaude in ROOT/app: --resume s-1\n"), "{out}");
+        assert!(out.contains("Back to app's planning conversation.\n\nclaude in ROOT/home/.kanna-v4/repos/local/app: --resume s-1\n"), "{out}");
         assert!(out.contains("The planning agent quit. Start it again: claude --resume s-2\n"), "{out}");
         let mut requests: Vec<Value> = fs::read_to_string(&asked).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
         for request in &mut requests {
@@ -3085,7 +3085,7 @@ mod tests {
 
         stub(&kanna, "exit 1");
         let out = p.run_in(&repo, "", Some(&kanna), Some("term-7"));
-        assert!(out.contains("claude in ROOT/app: --dangerously-skip-permissions You are the Kanna planning agent.\n"), "without the daemon it starts as before: {out}");
+        assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/app: --dangerously-skip-permissions You are the Kanna planning agent.\n"), "without the daemon it starts as before: {out}");
     }
 
     #[test]
@@ -3140,7 +3140,11 @@ mod tests {
 
     impl Planner {
         fn repo(&self, name: &str) -> PathBuf {
-            let repo = self.root.join(name);
+            self.repo_at(&self.home.join(".kanna-v4/repos/local").join(name))
+        }
+
+        fn repo_at(&self, repo: &Path) -> PathBuf {
+            let repo = repo.to_path_buf();
             fs::create_dir_all(&repo).unwrap();
             assert!(Command::new("git").args(["init", "-q"]).current_dir(&repo).status().unwrap().success());
             repo
@@ -3191,19 +3195,19 @@ mod tests {
         let repo = p.repo("app");
         let out = p.run(&repo, "2\ny\n");
         assert!(out.contains("Choose an agent for planning and task creation\n\n  1  claude\n  2  codex\n\nChoose [1]: Make codex the planning agent for app? [y/N] codex plans app from now on (planning.agent in .kanna/config.json).\n"), "{out}");
-        assert!(out.contains("codex in ROOT/app: --yolo --no-daemon You are the Kanna planning agent.\n"), "{out}");
-        assert!(out.contains("The planning agent quit. Start it again: codex --yolo --no-daemon 'You are the Kanna planning agent.'\nshell in ROOT/app\n"), "{out}");
+        assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/local/app: --yolo --no-daemon You are the Kanna planning agent.\n"), "{out}");
+        assert!(out.contains("The planning agent quit. Start it again: codex --yolo --no-daemon 'You are the Kanna planning agent.'\nshell in ROOT/home/.kanna-v4/repos/local/app\n"), "{out}");
         let config: Value = serde_json::from_str(&fs::read_to_string(repo.join(".kanna/config.json")).unwrap()).unwrap();
         assert_eq!(config, json!({ "version": 1, "planning": { "agent": "codex" } }));
         assert_eq!(planning_context(&[repo.join(".kanna/config.json")]), Some(PLANNING_CONTEXT), "the daemon still reads the file");
 
         let out = p.run(&repo, "");
         assert!(!out.contains("Choose"), "the project's planner starts without asking: {out}");
-        assert!(out.contains("codex in ROOT/app: --yolo --no-daemon You are the Kanna planning agent."), "{out}");
+        assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/local/app: --yolo --no-daemon You are the Kanna planning agent."), "{out}");
 
         let other = p.repo("other");
         let out = p.run(&other, "\nn\n");
-        assert!(out.contains("claude in ROOT/other: --dangerously-skip-permissions You are the Kanna planning agent."), "Return takes the first: {out}");
+        assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/other: --dangerously-skip-permissions You are the Kanna planning agent."), "Return takes the first: {out}");
         assert!(!other.join(".kanna").exists(), "no saves nothing");
     }
 
@@ -3221,7 +3225,7 @@ mod tests {
         fs::create_dir_all(cloned.join(".kanna")).unwrap();
         std::os::unix::fs::symlink(p.home.join("elsewhere"), cloned.join(".kanna/config.json")).unwrap();
         let out = p.run(&cloned, "1\ny\n");
-        assert!(out.contains("Couldn't write ROOT/cloned/.kanna/config.json."), "a repo's symlink isn't followed: {out}");
+        assert!(out.contains("Couldn't write ROOT/home/.kanna-v4/repos/local/cloned/.kanna/config.json."), "a repo's symlink isn't followed: {out}");
         assert!(!p.home.join("elsewhere").exists());
         fs::write(cloned.join(".kanna/config.json.real"), "{\"version\": 1, \"planning\": {\"agent\": \"evil\\u001b]0;x\\u0007\"}}").unwrap();
         fs::remove_file(cloned.join(".kanna/config.json")).unwrap();
@@ -3235,39 +3239,60 @@ mod tests {
         let p = planner("one", &["claude"]);
         let repo = p.repo("app");
         let out = p.run(&repo, "");
-        assert!(!out.contains("Choose") && out.contains("claude in ROOT/app: --dangerously-skip-permissions You are the Kanna planning agent."), "{out}");
+        assert!(!out.contains("Choose") && out.contains("claude in ROOT/home/.kanna-v4/repos/local/app: --dangerously-skip-permissions You are the Kanna planning agent."), "{out}");
         let p = planner("none", &[]);
         let repo = p.repo("app");
         let out = p.run(&repo, "");
-        assert_eq!(out, "No agent Kanna knows is installed (claude, codex, copilot, opencode or agy). Install one, then start it here.\nshell in ROOT/app\n");
+        assert_eq!(out, "No agent Kanna knows is installed (claude, codex, copilot, opencode or agy). Install one, then start it here.\nshell in ROOT/home/.kanna-v4/repos/local/app\n");
     }
 
     #[test]
     fn in_home_the_planner_script_asks_where_first() {
         let p = planner("where", &["claude", "codex"]);
         let out = p.run(&p.home, "recipe-box\n2\n");
-        assert!(out.contains("Folder, repo or name: Made ~/.kanna-v4/repos/recipe-box\n"), "{out}");
-        assert!(out.contains("\u{1b}]7;file://localhostROOT/home/.kanna-v4/repos/recipe-box\u{1b}\\"), "the window follows: {out}");
+        assert!(out.contains("Folder, repo or name: Made ~/.kanna-v4/repos/local/recipe-box\n"), "{out}");
+        assert!(out.contains("\u{1b}]7;file://localhostROOT/home/.kanna-v4/repos/local/recipe-box\u{1b}\\"), "the window follows: {out}");
         assert!(!out.contains("Make codex"), "a new project isn't a repo, so nothing is offered: {out}");
-        assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/recipe-box: --yolo --no-daemon You are the Kanna planning agent.") && out.ends_with("shell in ROOT/home/.kanna-v4/repos/recipe-box\n"), "{out}");
+        assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/local/recipe-box: --yolo --no-daemon You are the Kanna planning agent.") && out.ends_with("shell in ROOT/home/.kanna-v4/repos/local/recipe-box\n"), "{out}");
         let out = p.run(&p.home, "recipe-box\n1\n");
-        assert!(out.contains("Opened ~/.kanna-v4/repos/recipe-box\n"), "{out}");
+        assert!(out.contains("Opened ~/.kanna-v4/repos/local/recipe-box\n"), "{out}");
 
-        let repo = p.repo("work/app");
-        let out = p.run(&p.home, "~/nowhere\nbad name!\n../work/app\n1\nn\n");
+        let repo = p.repo("app");
+        p.repo_at(&p.root.join("work/app"));
+        let out = p.run(&p.home, "~/nowhere\nbad name!\n../work/app\n.kanna-v4/repos/local/app\n1\nn\n");
         assert!(out.contains("No folder ~/nowhere.") && out.contains("A project's name is letters, digits"), "{out}");
-        assert!(out.contains(&format!("claude in ROOT/work/app: --dangerously-skip-permissions You are")), "a folder is moved to: {out}");
+        assert!(out.contains("ROOT/work/app isn't in ~/.kanna-v4/repos, where Kanna keeps its projects so each has the same place on every machine.\nMove it there: kanna project move ROOT/work/app\nFolder, repo or name: "), "a folder outside repos is refused: {out}");
+        assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/app: --dangerously-skip-permissions You are"), "a folder is moved to: {out}");
         let out = p.run(&p.home, &format!("{}\n1\nn\n", repo.display()));
-        assert!(out.contains("claude in ROOT/work/app: --dangerously-skip-permissions You are"), "{out}");
+        assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/app: --dangerously-skip-permissions You are"), "{out}");
         let out = p.run(&repo, "1\nn\n");
         assert!(!out.contains("Folder, repo or name"), "only in ~: {out}");
     }
 
     #[test]
+    fn a_planning_terminal_outside_repos_offers_to_move_the_project_there_and_asks_where_meanwhile() {
+        let p = planner("outside", &["claude"]);
+        let app = p.repo_at(&p.root.join("work/app"));
+        let out = p.run(&app, "recipe-box\n");
+        assert!(out.starts_with("\u{1b}]7;file://localhostROOT/home\u{1b}\\ROOT/work/app isn't in ~/.kanna-v4/repos, where Kanna keeps its projects so each has the same place on every machine.\nMove it there: kanna project move ROOT/work/app\n"), "it leaves the project first, so the move doesn't stop it: {out}");
+        assert!(out.contains("Folder, repo or name: Made ~/.kanna-v4/repos/local/recipe-box") && out.contains("claude in ROOT/home/.kanna-v4/repos/local/recipe-box:"), "{out}");
+        let kanna = p.bin.join("kanna");
+        let asked = p.root.join("asked");
+        stub(&kanna, &format!("[ \"$1 $2\" = 'project move' ] || exit 0\necho \"$KANNA_TERMINAL $(pwd -P) $3\" >'{}'\nmkdir -p \"$HOME/.kanna-v4/repos/local\" && mv \"$3\" \"$HOME/.kanna-v4/repos/local/app\" && echo moved", asked.display()));
+        let out = p.run_in(&app, "y\n", Some(&kanna), Some("term-7"));
+        assert!(out.contains("Move it to ~/.kanna-v4/repos/local/app now? [y/N] moved\n"), "{out}");
+        assert_eq!(fs::read_to_string(&asked).unwrap(), "term-7 ROOT/home ROOT/work/app\n".replace("ROOT", p.root.to_str().unwrap()));
+        assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/app:") && !app.exists(), "it starts the agent in the new place: {out}");
+        let other = p.repo_at(&p.root.join("work/other"));
+        let out = p.run_with(&p.home, &format!("{}\nn\nrecipe-box\n", other.display()), Some(&kanna));
+        assert!(out.contains("Move it to ~/.kanna-v4/repos/local/other now? [y/N] Folder, repo or name: Opened"), "no asks again: {out}");
+    }
+
+    #[test]
     fn in_home_the_planner_script_numbers_the_recent_projects_and_return_takes_the_latest() {
         let p = planner("recent", &["claude"]);
-        let (app, tool) = (p.repo("work/app"), p.repo("work/tool"));
-        let gone = p.root.join("work/gone");
+        let (app, tool) = (p.repo("app"), p.repo("tool"));
+        let gone = p.home.join(".kanna-v4/repos/local/gone");
         let kanna = p.bin.join("kanna");
         let list = p.root.join("projects");
         stub(&kanna, &format!("[ \"$1 $2\" = 'projects --json' ] && cat '{}'; exit 0", list.display()));
@@ -3275,21 +3300,21 @@ mod tests {
         listed(&[(&app, "app"), (&tool, "~/work/tool"), (&gone, "gone")]);
         let out = p.run_with(&p.home, "\n", Some(&kanna));
         assert!(out.contains("Recent:\n  1  app\n  2  ~/work/tool\n  3  gone\n\nFolder, repo, name or number [1]: "), "the daemon's labels: {out}");
-        assert!(out.contains("claude in ROOT/work/app: --dangerously-skip-permissions You are"), "Return takes 1: {out}");
-        assert!(out.contains("\u{1b}]7;file://localhostROOT/work/app\u{1b}\\"), "the window follows: {out}");
+        assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/app: --dangerously-skip-permissions You are"), "Return takes 1: {out}");
+        assert!(out.contains("\u{1b}]7;file://localhostROOT/home/.kanna-v4/repos/local/app\u{1b}\\"), "the window follows: {out}");
         let out = p.run_with(&p.home, "4\n0\n3\n2\n", Some(&kanna));
-        assert!(out.contains("Choose 1 to 3, or a folder, repo or name.") && out.contains("No folder ROOT/work/gone."), "{out}");
-        assert!(out.contains("claude in ROOT/work/tool: --dangerously-skip-permissions You are"), "{out}");
+        assert!(out.contains("Choose 1 to 3, or a folder, repo or name.") && out.contains("No folder ~/.kanna-v4/repos/local/gone."), "{out}");
+        assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/tool: --dangerously-skip-permissions You are"), "{out}");
         let out = p.run_with(&p.home, "recipe-box\n", Some(&kanna));
-        assert!(out.contains("Made ~/.kanna-v4/repos/recipe-box") && out.contains("claude in ROOT/home/.kanna-v4/repos/recipe-box"), "a name still works: {out}");
-        let spaced = p.root.join("work/my app");
+        assert!(out.contains("Made ~/.kanna-v4/repos/local/recipe-box") && out.contains("claude in ROOT/home/.kanna-v4/repos/local/recipe-box"), "a name still works: {out}");
+        let spaced = p.home.join(".kanna-v4/repos/local/my app");
         fs::create_dir_all(&spaced).unwrap();
         listed(&[(&spaced, "my app")]);
         let out = p.run_with(&p.home, "1\n", Some(&kanna));
-        assert!(out.contains("claude in ROOT/work/my app: "), "a path with a space: {out}");
+        assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/my app: "), "a path with a space: {out}");
         listed(&[]);
         let out = p.run_with(&p.home, "\nrecipe-box\n", Some(&kanna));
-        assert!(!out.contains("Recent:") && out.contains("Folder, repo or name: Folder, repo or name: Opened ~/.kanna-v4/repos/recipe-box"), "with none it asks as before: {out}");
+        assert!(!out.contains("Recent:") && out.contains("Folder, repo or name: Folder, repo or name: Opened ~/.kanna-v4/repos/local/recipe-box"), "with none it asks as before: {out}");
         let out = p.run_with(&app, "", Some(&kanna));
         assert!(!out.contains("Recent:"), "only in ~: {out}");
     }
@@ -3297,25 +3322,30 @@ mod tests {
     #[test]
     fn in_home_the_planner_script_clones_a_url_or_owner_repo() {
         let p = planner("clone", &["claude", "codex"]);
-        let source = p.repo("source");
+        let source = p.repo_at(&p.root.join("source"));
         assert!(Command::new("git").args(["-c", "user.email=e@e", "-c", "user.name=e", "commit", "-q", "--allow-empty", "-m", "first"]).current_dir(&source).status().unwrap().success());
         let bare = p.root.join("remote/kojo.git");
         assert!(Command::new("git").args(["clone", "-q", "--bare"]).arg(&source).arg(&bare).status().unwrap().success());
         let url = format!("file://{}", bare.display());
         let out = p.run(&p.home, &format!("{url}\n2\nn\n"));
-        assert!(out.contains("Cloning file://ROOT/remote/kojo.git into ~/.kanna-v4/repos/kojo…"), "{out}");
+        assert!(out.contains("Cloning file://ROOT/remote/kojo.git into ~/.kanna-v4/repos/local/kojo…"), "{out}");
         assert!(out.contains("Make codex the planning agent for kojo? [y/N]"), "a clone is a repo: {out}");
-        assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/kojo: --yolo --no-daemon"), "{out}");
+        assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/local/kojo: --yolo --no-daemon"), "{out}");
         let out = p.run(&p.home, &format!("{url}\n2\nn\n"));
-        assert!(out.contains("Opened ~/.kanna-v4/repos/kojo (already cloned)"), "{out}");
+        assert!(out.contains("Opened ~/.kanna-v4/repos/local/kojo (already cloned)"), "{out}");
 
         let out = p.run(&p.home, "someone/tool\nrecipe\n1\n");
-        assert!(out.contains("gh isn't installed: give the repo's URL.") && out.contains("Made ~/.kanna-v4/repos/recipe"), "{out}");
+        assert!(out.contains("gh isn't installed: give the repo's URL.") && out.contains("Made ~/.kanna-v4/repos/local/recipe"), "{out}");
         stub(&p.bin.join("gh"), &format!("[ \"$1 $2 $3\" = \"repo clone someone/tool\" ] && git clone -q {url} \"$4\""));
         let out = p.run(&p.home, "someone/tool\n1\nn\n");
-        assert!(out.contains("Cloning someone/tool into ~/.kanna-v4/repos/tool…") && out.contains("claude in ROOT/home/.kanna-v4/repos/tool: --dangerously-skip-permissions You are"), "{out}");
+        assert!(out.contains("Cloning someone/tool into ~/.kanna-v4/repos/someone/tool…") && out.contains("claude in ROOT/home/.kanna-v4/repos/someone/tool: --dangerously-skip-permissions You are"), "{out}");
+        p.repo_at(&p.home.join(".kanna-v4/repos/other/kojo"));
         let out = p.run(&p.home, "other/kojo\n1\nn\n");
-        assert!(out.contains("~/.kanna-v4/repos/kojo is already there, and isn't a clone of other/kojo."), "{out}");
+        assert!(out.contains("~/.kanna-v4/repos/other/kojo is already there, and isn't a clone of other/kojo."), "{out}");
+        for (url, place) in [("https://example.invalid/team/site.git", "team/site"), ("git@example.invalid:team/site.git", "team/site"), ("ssh://git@example.invalid:22/team/site", "team/site"), ("git@example.invalid:site.git", "example.invalid/site")] {
+            let out = p.run(&p.home, &format!("{url}\nrecipe\n1\n"));
+            assert!(out.contains(&format!("Cloning {url} into ~/.kanna-v4/repos/{place}…")), "{url}: {out}");
+        }
     }
 
     #[test]
@@ -3509,6 +3539,29 @@ mod tests {
         assert!(ids.iter().all(|id| db::is_task_id(id)), "{ids:?}");
         fs::create_dir_all(state.join(WORKTREES).join("task-1dfb12c2")).unwrap();
         assert!(taken(&state, "task-1dfb12c2") && !taken(&state, "task-00c0ffee"));
+        fs::remove_dir_all(&state).unwrap();
+    }
+
+    #[test]
+    fn a_task_is_made_and_started_only_in_a_project_at_its_place_in_repos() {
+        let state = std::env::temp_dir().join(format!("kanna-outside-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        let (outside, inside) = (state.join("work/app"), state.join("repos/local/app"));
+        for repo in [&outside, &inside] {
+            fs::create_dir_all(repo).unwrap();
+            assert!(Command::new("git").arg("-C").arg(repo).args(["init", "-q"]).status().unwrap().success());
+        }
+        let core = kanna_mux::Core::default();
+        let backlog = Backlog::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
+        *backlog.repos.borrow_mut() = Some(state.join("repos"));
+        let refused = backlog.add(&json!({ "repo": outside.to_str().unwrap(), "name": "Out" })).unwrap_err();
+        assert_eq!(refused.code, "outside");
+        assert!(refused.message.contains("`kanna project move ") && refused.message.ends_with("repos/local/app)"), "{}", refused.message);
+        assert!(backlog.add(&json!({ "repo": inside.to_str().unwrap(), "name": "In" })).is_ok());
+        let old = Entry { id: "task-00000001".into(), repo: outside.to_string_lossy().into(), agent: "claude".into(), ..Default::default() };
+        assert_eq!(backlog.ready(&old).unwrap_err().code, "outside", "a task an older Kanna made outside doesn't start");
+        *backlog.moving.borrow_mut() = Some(project_move::Move { from: inside.canonicalize().unwrap(), to: state.join("repos/a/app") });
+        assert_eq!(backlog.add(&json!({ "repo": inside.to_str().unwrap(), "name": "Late" })).unwrap_err().code, "moving");
         fs::remove_dir_all(&state).unwrap();
     }
 

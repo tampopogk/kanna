@@ -52,9 +52,65 @@ origin_is() {
   return 1
 }
 
+place() {
+  url=${1%/}
+  url=${url%.git}
+  name=$2
+  case $url in
+    file://*|/*|.*|'') echo "local/$name"; return ;;
+    *://*) rest=${url#*://}; rest=${rest##*@}; host=${rest%%/*}; path=${rest#*/} ;;
+    *:*) rest=${url##*@}; host=${rest%%:*}; path=${rest#*:} ;;
+    *) echo "local/$name"; return ;;
+  esac
+  host=${host%%:*}
+  case /$path/ in
+    *//*|*/.*) echo "local/$name"; return ;;
+  esac
+  case $path in
+    */*) echo "$path" ;;
+    *) echo "$host/$path" ;;
+  esac
+}
+
+misplaced() {
+  common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  case $common in
+    */.git) main=$(cd "${common%/.git}" && pwd -P) ;;
+    *) main=$(cd "$1" && pwd -P) ;;
+  esac
+  origin=$(git -C "$main" remote get-url origin 2>/dev/null)
+  root=$(cd "$repos" 2>/dev/null && pwd -P) || root=$repos
+  want="$root/$(place "$origin" "$(basename "$main")")"
+  [ "$main" != "$want" ]
+}
+
+offer() {
+  say "$(tilde "$main") isn't in $(tilde "$repos"), where Kanna keeps its projects so each has the same place on every machine."
+  say "Move it there: kanna project move $(tilde "$main")"
+  [ -n "$kanna" ] || return 1
+  ask "Move it to $(tilde "$want") now? [y/N]"
+  case $answer in
+    [yY]*) "$kanna" project move "$main" && cd "$want" ;;
+    *) return 1 ;;
+  esac
+}
+
+go() {
+  if [ "$(cd "$1" && pwd -P)" = "$(cd "$HOME" && pwd -P)" ]; then
+    cd "$1"
+    return
+  fi
+  if misplaced "$1"; then
+    offer
+    return
+  fi
+  cd "$1"
+}
+
 clone() {
   how=$1 from=$2 name=$3
-  dest="$repos/$name"
+  dest="$repos/$(place "$from" "$name")"
+  [ "$how" = gh ] && dest="$repos/$from"
   if [ -e "$dest" ]; then
     if origin_is "$dest" "$from"; then
       say "Opened $(tilde "$dest") (already cloned)"
@@ -63,7 +119,7 @@ clone() {
     say "$(tilde "$dest") is already there, and isn't a clone of $from."
     return 1
   fi
-  mkdir -p "$repos" || return 1
+  mkdir -p "${dest%/*}" || return 1
   say "Cloning $from into $(tilde "$dest")…"
   case $how in
     gh)
@@ -75,7 +131,7 @@ clone() {
 }
 
 where() {
-  say "Open a folder, clone a repo (a URL or owner/repo), or name a new project. Clones and new projects go in $(tilde "$repos")."
+  say "Open a project, clone a repo (a URL or owner/repo), or name a new project. Kanna keeps them in $(tilde "$repos"): a clone as OWNER/NAME, a new project as local/NAME."
   echo
   recent= recents=0
   listed=$([ -n "$kanna" ] && "$kanna" projects --json 2>/dev/null)
@@ -104,8 +160,11 @@ where() {
         *)
           if [ "$answer" -ge 1 ] && [ "$answer" -le "$recents" ]; then
             folder=$(printf '%s\n' "$recent" | sed -n "${answer}p")
-            cd "$folder" 2>/dev/null && break
-            say "No folder $(tilde "$folder")."
+            if [ -d "$folder" ]; then
+              go "$folder" && break
+            else
+              say "No folder $(tilde "$folder")."
+            fi
           else
             say "Choose 1 to $recents, or a folder, repo or name."
           fi
@@ -126,7 +185,8 @@ where() {
       *) folder=$answer ;;
     esac
     if [ -d "$folder" ]; then
-      cd "$folder" && break
+      go "$folder" && break
+      continue
     fi
     case $answer in
       '~'*|.*|/*) say "No folder $answer." ;;
@@ -137,7 +197,7 @@ where() {
         esac ;;
       *[!A-Za-z0-9._-]*|[!A-Za-z0-9]*) echo "A project's name is letters, digits, '.', '-' and '_'." ;;
       *)
-        dest="$repos/$answer"
+        dest="$repos/local/$answer"
         if [ -d "$dest" ]; then
           say "Opened $(tilde "$dest")"
         else
@@ -188,7 +248,19 @@ if [ -n "$kanna" ]; then
   "$kanna" agents update --ask
 fi
 
-[ "$(pwd -P)" = "$(cd "$HOME" && pwd -P)" ] && where
+if [ "$(pwd -P)" = "$(cd "$HOME" && pwd -P)" ]; then
+  where
+elif misplaced .; then
+  cd "$HOME"
+  moved
+  if offer; then
+    echo
+    moved
+  else
+    echo
+    where
+  fi
+fi
 
 if [ -z "$installed" ]; then
   echo "No agent Kanna knows is installed (claude, codex, copilot, opencode or agy). Install one, then start it here."
