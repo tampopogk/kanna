@@ -32,4 +32,4 @@ Rules for every agent working here, the planning agent and task agents alike.
 
 ## Rules
 
-- When the user states how work should be done, put it in the skill it belongs to (`.agents/kanna-skills`) or in this file, not in an agent's private memory, and say where it went.
+- Prefer writing or updating a skill (`.agents/kanna-skills`) or this file to using an agent's memory.
