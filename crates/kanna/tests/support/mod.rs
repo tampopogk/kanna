@@ -92,6 +92,11 @@ impl Daemon {
         Run::from(args, output)
     }
 
+    pub fn kanna_in(&self, folder: &Path, args: &[&str]) -> Run {
+        let output = cli(&self.dir).current_dir(folder).env("KANNA_SOCKET", self.socket()).args(args).output().unwrap();
+        Run::from(args, output)
+    }
+
     pub fn kanna_as(&self, pane: &str, args: &[&str]) -> Run {
         let output = cli(&self.dir).env("KANNA_SOCKET", self.socket()).env("KANNA_TERMINAL", pane).args(args).output().unwrap();
         Run::from(args, output)

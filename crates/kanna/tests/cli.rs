@@ -250,7 +250,7 @@ fn every_command_works_through_the_daemon_and_the_app() {
     assert_eq!(daemon.kanna(&["markup", "doc", "--off"]).ok(), "comments off in file-1 (doc)");
 
     let capabilities = daemon.kanna(&["capabilities"]).ok();
-    assert!(capabilities.starts_with("pane types: term, web, ios, md, code, diff\ncommands: agents, arrange, backlog, capabilities, close, comment, desk, diffs, files, focus, list, machine, markup, move, move-tab, navigate, open, projects, quiz, read, rename-pane, rename-tab, resize, restart, screenshot, send, send-key, status, task, toast, tour, window, zoom"), "{capabilities}");
+    assert!(capabilities.starts_with("pane types: term, web, ios, md, code, diff\ncommands: agents, arrange, backlog, capabilities, close, comment, desk, diffs, files, focus, list, machine, markup, move, move-tab, navigate, open, project, projects, quiz, read, rename-pane, rename-tab, resize, restart, screenshot, send, send-key, status, task, toast, tour, window, zoom"), "{capabilities}");
     assert!(capabilities.ends_with("Kanna.app: attached"), "{capabilities}");
     assert_eq!(daemon.kanna(&["toast", "Build finished", "it took", "3m"]).ok(), "raised toast-1");
     assert_eq!(daemon.kanna(&["toast", "Messages wait", "--pane", "a", "--key", "k1"]).ok(), "raised toast-2");
@@ -414,11 +414,11 @@ fn help_never_starts_anything_and_marks_what_the_running_kanna_lacks() {
     assert!(kanna_at(&dir, Some(&nowhere), &["raw", "--help"]).ok().starts_with("usage: kanna raw REQUEST"));
     kanna_at(&dir, Some(&nowhere), &["help", "nope"]).fails(2, "unknown command \"nope\"");
     let commands = kanna_at(&dir, Some(&nowhere), &["commands"]).ok();
-    assert_eq!(commands.lines().count(), 30);
+    assert_eq!(commands.lines().count(), 31);
     assert!(commands.starts_with("open          Open a terminal"), "{commands}");
     let described = kanna_at(&dir, Some(&nowhere), &["commands", "--json"]).json();
     assert_eq!(described["running"], false);
-    assert_eq!(described["commands"].as_array().unwrap().len(), 30);
+    assert_eq!(described["commands"].as_array().unwrap().len(), 31);
     assert_eq!(described["exitCodes"]["6"], "needs Kanna.app, which isn't attached and wasn't started");
     assert!(described["globalOptions"].as_array().unwrap().iter().any(|o| o["flag"] == "--"));
 
@@ -632,10 +632,13 @@ fn the_kmux_backend_is_kmux_through_kannas_cli() {
 fn a_folder_for_a_command_opens_a_desk_on_its_project_without_a_task() {
     let daemon = Daemon::start();
     let _app = daemon.app();
-    std::fs::create_dir_all(daemon.dir.join("project")).unwrap();
-    let project = daemon.dir.join("project").to_string_lossy().to_string();
-    assert_eq!(daemon.kanna(&["project"]).ok(), format!("opened d1 on {project}"));
-    assert_eq!(daemon.kanna(&["project"]).ok(), format!("brought forward d1 on {project}"));
+    let folder = "home/.kanna-v4/repos/local/notes";
+    std::fs::create_dir_all(daemon.dir.join(folder)).unwrap();
+    let project = format!("~/{}", &folder[5..]);
+    assert_eq!(daemon.kanna(&[folder]).ok(), format!("opened d1 on {project}"));
+    assert_eq!(daemon.kanna(&[folder]).ok(), format!("brought forward d1 on {project}"));
+    std::fs::create_dir_all(daemon.dir.join("elsewhere")).unwrap();
+    daemon.kanna(&["elsewhere"]).fails(1, "kanna project move");
     let list = daemon.kanna(&["workspace", "list", "--all", "--json"]).json();
     assert_eq!((list["panes"].clone(), list["windows"].clone()), (json!([]), json!([])), "a Desk is the app's, and one on a project docks nothing: {list}");
     daemon.kanna(&["nowhere"]).fails(2, "unknown command \"nowhere\"");
@@ -645,10 +648,12 @@ fn a_folder_for_a_command_opens_a_desk_on_its_project_without_a_task() {
 fn a_backlog_task_is_renamed_and_starts_with_its_new_name() {
     let daemon = Daemon::start();
     let _app = daemon.app();
-    let git = |args: &[&str]| assert!(std::process::Command::new("git").args(["-c", "user.email=e@e", "-c", "user.name=e"]).args(args).current_dir(&daemon.dir).status().unwrap().success());
+    let repo = daemon.dir.join("home/.kanna-v4/repos/local/notes");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| assert!(std::process::Command::new("git").args(["-c", "user.email=e@e", "-c", "user.name=e"]).args(args).current_dir(&repo).status().unwrap().success());
     git(&["init", "-q"]);
     git(&["commit", "-q", "--allow-empty", "-m", "first"]);
-    let added = daemon.kanna(&["--json", "task", "new", "Old name", "say hi", "--agent", "/bin/cat"]).json();
+    let added = daemon.kanna_in(&repo, &["--json", "task", "new", "Old name", "say hi", "--agent", "/bin/cat"]).json();
     let id = added["task"]["id"].as_str().unwrap().to_string();
     assert!(id.len() == 13 && id.starts_with("task-") && id[5..].bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()), "{id}");
     let short = &id[5..9];
