@@ -116,7 +116,7 @@ extension AppController {
         if placement.recorded { physical.setFront(id) }
         restate()
         refresh()
-        if !inFront, let controller = controllers[id], !controller.window.isKeyWindow { present(controller.window, placement) }
+        if !inFront, let controller = controllers[id], !controller.window.isKeyWindow { present(controller.window, origin) }
     }
 
     func origin(_ args: JSON) -> Origin { args["user"]?.bool == true ? .user : .agent }
@@ -162,6 +162,9 @@ extension AppController {
     }
 
     func installDesk() {
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.releaseWaiting() }
+        }
         commands["app.front"] = { [weak self] args in self?.front(args) ?? ["front": nil] }
         commands["desk"] = { [weak self] args in
             guard let self else { throw KannaError("gone", "Kanna.app is quitting") }

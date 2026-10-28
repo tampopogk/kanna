@@ -34,6 +34,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var plain: JSON = ["windows": []]
     private var restoring: [String]?
     var awaiting: [String: Origin] = [:]
+    var windowOrder = WindowOrder()
     var closingPlanners: Set<String> = []
     var givenPlanners: Set<String> = []
     var recentProjects: [RecentProject] = []
@@ -554,6 +555,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for (id, controller) in controllers where !ids.contains(id) {
             controller.window.orderOut(nil)
             controllers[id] = nil
+            windowOrder.forget(id)
         }
         panes.keep(placed)
         let tasks = shelfTasks
@@ -591,17 +593,19 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if views[""] != nil, let order = restoring {
             restoring = nil
-            let placement = placement(.agent)
-            if placement.recorded {
+            switch placement(.agent) {
+            case .front, .behindApp:
                 for id in order.reversed() {
-                    if let controller = controllers[id] { present(controller.window, placement) }
+                    if let controller = controllers[id] { present(controller.window, .agent) }
                 }
-            } else {
+            case .behindKanna:
                 var above: NSWindow?
                 for window in order.compactMap({ controllers[$0]?.window }) {
                     if let above { window.order(.below, relativeTo: above.windowNumber) } else { orderBehindFrontApp(window) }
                     above = window
                 }
+            case .waiting:
+                break
             }
         }
     }
@@ -676,7 +680,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         controllers[id] = controller
         recordFrame(id)
-        present(controller.window, placement(awaiting.removeValue(forKey: id) ?? .agent))
+        present(controller.window, awaiting.removeValue(forKey: id) ?? .agent)
         return controller
     }
 
@@ -689,8 +693,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Placement.of(origin, active: NSApp.isActive, background: background)
     }
 
-    func present(_ window: NSWindow, _ placement: Placement) {
-        if placement.recorded, let id = controllers.first(where: { $0.value.window === window })?.key { physical.setFront(id) }
+    func present(_ window: NSWindow, _ origin: Origin) {
+        guard let id = controllers.first(where: { $0.value.window === window })?.key else { return }
+        let placement = windowOrder.place(id, origin, active: NSApp.isActive, background: background)
+        if placement.recorded { physical.setFront(id) }
         switch placement {
         case .front:
             window.makeKeyAndOrderFront(nil)
@@ -704,6 +710,23 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } else {
                 orderBehindFrontApp(window)
             }
+        case .waiting:
+            break
+        }
+    }
+
+    func releaseWaiting() {
+        let kanna = Set(controllers.values.map { ObjectIdentifier($0.window) })
+        var above = NSApp.orderedWindows.first { $0.isVisible && kanna.contains(ObjectIdentifier($0)) }
+        for id in windowOrder.activated(front: physical.order) {
+            guard let window = controllers[id]?.window, !window.isVisible else { continue }
+            if let above {
+                window.order(.below, relativeTo: above.windowNumber)
+            } else {
+                physical.setFront(id)
+                window.makeKeyAndOrderFront(nil)
+            }
+            above = window
         }
     }
 
