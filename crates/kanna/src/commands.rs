@@ -366,7 +366,7 @@ pub static COMMANDS: &[Command] = &[
             ("kanna task name task-3f9a \"Search the backlog\"", "Rename task-3f9a, waiting in the backlog; it starts with that name."),
             ("kanna task defer agent", "Move the task docked as agent back to the backlog; from its terminal, leave out agent."),
             ("kanna task send 71af \"Is your spec at docs/specs/x.md final?\"", "Leave task-71af a message: it gets it when its turn is over, and answers with kanna task send."),
-            ("kanna task send planner \"Done: the PR is up\"", "Tell this repo's planning agent something."),
+            ("kanna task send planner \"The spec is final\"", "Tell this repo's planning agent something, when the user asks you to."),
             ("kanna task messages 71af", "task-71af's messages: sent, received, and whether each was delivered."),
             ("kanna task done agent", "End the task docked as agent: close its agent and tabs."),
             ("kanna task done 3f9a --keep", "End task-3f9a without running the repo's tasks.teardown, keeping its worktree and branch."),

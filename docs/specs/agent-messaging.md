@@ -2,7 +2,7 @@
 
 **Status:** built · **Tested:** e2e `agent_messaging` (the mock agent as `claude` on its socket, as `codex` through its app-server, as `copilot` warned), `cargo test -p kanna-daemon` (messages, codex_remote, db) · **Builds on:** [tasks](tasks.md), [backlog runners](backlog-runners.md), [agent status](agent-status.md), [Codex's app-server](codex-app-server.md) · **Why this design:** [research](../research/agent-messaging.md)
 
-The user, the planning agent and task agents leave each other messages with `kanna task send`. The daemon keeps each one in `kanna.db` and hands it to the recipient's agent through the agent's own door **once its turn is over**: Claude's messaging socket, Codex's app-server. Nothing is typed into a prompt, so a message never lands mid-turn or in your draft, isn't lost while the agent is stopped, and shows in the agent's own terminal. Only Claude and Codex take messages; for any other agent `kanna task send` warns.
+The user, the planning agent and task agents leave each other messages with `kanna task send`. Agents send one only when the user asks them to pass something on, or to answer a message they got. The daemon keeps each one in `kanna.db` and hands it to the recipient's agent through the agent's own door **once its turn is over**: Claude's messaging socket, Codex's app-server. Nothing is typed into a prompt, so a message never lands mid-turn or in your draft, isn't lost while the agent is stopped, and shows in the agent's own terminal. Only Claude and Codex take messages; for any other agent `kanna task send` warns.
 
 ## Contents
 
@@ -26,7 +26,8 @@ flowchart LR
 - **Who to:** a task (any form `kanna task list` takes: `task-71af`, `71af`, its agent's pane), or `planner`, the planning agent of the sender's repo.
 - **Who from:** the task whose terminal runs the command (`$KANNA_TERMINAL`), else `planner` from a planning terminal, else `user`.
 - **What it looks like:** `[message from task-5e2c "Send spec"] Is your spec final?`. Several waiting messages go in one prompt, oldest first, a blank line apart.
-- **Answering** is another `kanna task send`: the skills tell agents to answer the sender that way, and a message from `user` in the chat. Nobody waits on an answer: it comes as a turn of its own.
+- **The user starts them:** the skills tell agents to send a message only when the user asks. A task that's done or needs you says so in its own chat, and the Shelf shows it; the planner never asks a task to report back or sends tasks to talk to each other.
+- **Answering:** a task answers a message once, briefly, with another `kanna task send`, since the sender can't see its chat, and a message from `user` in the chat. The planner tells you in its chat what a task's message means for you, without a back-and-forth with the task. Nobody waits on an answer: it comes as a turn of its own.
 - **A done task takes none:** `kanna task send` says it's done.
 
 ## 2. Delivery
