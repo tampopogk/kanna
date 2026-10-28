@@ -46,6 +46,9 @@ pub fn plan(repos: &Path, path: &Path, homes: &[PathBuf]) -> Result<Move, KmuxEr
         return Err(refused("not_found", format!("no folder {}", path.display())));
     }
     let from = project(path.to_str()).ok_or_else(|| refused("not_found", format!("no folder {}", path.display())))?;
+    if !canonical(path).starts_with(&from) && common_dir(path) != Some(from.join(".git")) {
+        return Err(refused("bad_request", format!("{} names {} as its repo, which git doesn't agree with: give the repo's own folder", tilde(&canonical(path)), tilde(&from))));
+    }
     let repos = canonical(repos);
     if from.parent().is_none() || homes.iter().any(|home| canonical(home) == from) || repos.starts_with(&from) {
         return Err(refused("bad_request", format!("{} isn't a project: give a project's folder", tilde(&from))));
@@ -69,6 +72,11 @@ pub fn plan(repos: &Path, path: &Path, homes: &[PathBuf]) -> Result<Move, KmuxEr
         return Err(refused("other_disk", format!("{} is on another disk than {}, and Kanna moves a project only within one", tilde(&from), tilde(&repos))));
     }
     Ok(Move { from, to })
+}
+
+fn common_dir(path: &Path) -> Option<PathBuf> {
+    let out = Command::new("git").arg("-C").arg(path).args(["rev-parse", "--path-format=absolute", "--git-common-dir"]).output().ok().filter(|o| o.status.success())?;
+    Some(canonical(Path::new(String::from_utf8_lossy(&out.stdout).trim())))
 }
 
 pub fn shift(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
@@ -425,6 +433,11 @@ mod tests {
         git(&app, &["worktree", "add", "-q", "-b", "task-1", ".kanna-worktrees/task-1"]);
         assert_eq!(plan(&repos, &app.join(".kanna-worktrees/task-1"), &homes).unwrap().from, app, "a worktree moves its repo");
         assert_eq!(plan(&repos, &dir.join("nowhere"), &homes).unwrap_err().code, "not_found");
+        let forged = dir.join("forged");
+        fs::create_dir_all(&forged).unwrap();
+        fs::write(forged.join(".git"), format!("gitdir: {}/.git/worktrees/task-1\n", dir.join("victim").display())).unwrap();
+        fs::create_dir_all(dir.join("victim/.git/worktrees/task-1")).unwrap();
+        assert_eq!(plan(&repos, &forged, &homes).unwrap_err().code, "bad_request", "a .git file naming another folder doesn't move that folder");
         fs::create_dir_all(dir.join("home")).unwrap();
         assert_eq!(plan(&repos, &dir.join("home"), &homes).unwrap_err().code, "bad_request", "home isn't a project");
         let other = dir.join("elsewhere/app");
