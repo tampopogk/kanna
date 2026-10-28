@@ -49,7 +49,7 @@ A project is **outside** when its repo's folder (the main repo for a worktree) i
 | `kanna task new` | refused |
 | `kanna task start`, Move to Shelf, a [backlog runner](backlog-runners.md) | refused; runners skip the project |
 | the planner's prompt given a folder or a recent project | says so, offers `Move it to … now? [y/N]` (yes runs the move and opens it there), else asks again |
-| a planning terminal that starts outside (Kanna started from a shell there, a restored Desk) | leaves the folder for `~`, says so and offers the move, else asks where |
+| a planning terminal that starts outside (Kanna started from a shell there, a restored Desk, a task docked there parked) | says so and offers the move: yes steps out to `~` (so the move doesn't stop it), moves the project and starts the agent there; no stays, so the window keeps its project and Shelf |
 | a planning terminal you `cd` outside | the window follows as before: its Shelf shows that folder's tasks, and none of them start |
 | recent projects | an outside one isn't listed or added; it's kept, and comes back when it's moved |
 

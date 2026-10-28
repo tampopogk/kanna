@@ -90,9 +90,21 @@ offer() {
   [ -n "$kanna" ] || return 1
   ask "Move it to $(tilde "$want") now? [y/N]"
   case $answer in
-    [yY]*) "$kanna" project move "$main" && cd "$want" ;;
+    [yY]*) ;;
     *) return 1 ;;
   esac
+  back=$(pwd -P)
+  cd "$HOME" && moved
+  tries=0
+  while :; do
+    said=$("$kanna" project move "$main" 2>&1) && { say "$said"; cd "$want"; return; }
+    case $said in
+      *"from a terminal outside it"*) [ "$tries" -lt 20 ] && { tries=$((tries + 1)); sleep 0.2; continue; } ;;
+    esac
+    say "$said"
+    cd "$back" && moved
+    return 1
+  done
 }
 
 go() {
@@ -251,15 +263,8 @@ fi
 if [ "$(pwd -P)" = "$(cd "$HOME" && pwd -P)" ]; then
   where
 elif misplaced .; then
-  cd "$HOME"
-  moved
-  if offer; then
-    echo
-    moved
-  else
-    echo
-    where
-  fi
+  offer && moved
+  echo
 fi
 
 if [ -z "$installed" ]; then

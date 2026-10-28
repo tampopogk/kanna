@@ -3270,22 +3270,27 @@ mod tests {
     }
 
     #[test]
-    fn a_planning_terminal_outside_repos_offers_to_move_the_project_there_and_asks_where_meanwhile() {
+    fn a_planning_terminal_outside_repos_offers_to_move_the_project_there_and_stays_if_not() {
         let p = planner("outside", &["claude"]);
         let app = p.repo_at(&p.root.join("work/app"));
-        let out = p.run(&app, "recipe-box\n");
-        assert!(out.starts_with("\u{1b}]7;file://localhostROOT/home\u{1b}\\ROOT/work/app isn't in ~/.kanna-v4/repos, where Kanna keeps its projects so each has the same place on every machine.\nMove it there: kanna project move ROOT/work/app\n"), "it leaves the project first, so the move doesn't stop it: {out}");
-        assert!(out.contains("Folder, repo or name: Made ~/.kanna-v4/repos/local/recipe-box") && out.contains("claude in ROOT/home/.kanna-v4/repos/local/recipe-box:"), "{out}");
+        let out = p.run(&app, "");
+        assert!(out.starts_with("ROOT/work/app isn't in ~/.kanna-v4/repos, where Kanna keeps its projects so each has the same place on every machine.\nMove it there: kanna project move ROOT/work/app\n"), "{out}");
+        assert!(!out.contains("Folder, repo or name") && out.contains("claude in ROOT/work/app:"), "without the move it stays, so the window keeps its project: {out}");
         let kanna = p.bin.join("kanna");
         let asked = p.root.join("asked");
         stub(&kanna, &format!("[ \"$1 $2\" = 'project move' ] || exit 0\necho \"$KANNA_TERMINAL $(pwd -P) $3\" >'{}'\nmkdir -p \"$HOME/.kanna-v4/repos/local\" && mv \"$3\" \"$HOME/.kanna-v4/repos/local/app\" && echo moved", asked.display()));
+        let out = p.run_in(&app, "n\n", Some(&kanna), Some("term-7"));
+        assert!(out.contains("Move it to ~/.kanna-v4/repos/local/app now? [y/N] \n") && out.contains("claude in ROOT/work/app:"), "{out}");
         let out = p.run_in(&app, "y\n", Some(&kanna), Some("term-7"));
-        assert!(out.contains("Move it to ~/.kanna-v4/repos/local/app now? [y/N] moved\n"), "{out}");
+        assert!(out.contains("Move it to ~/.kanna-v4/repos/local/app now? [y/N] \u{1b}]7;file://localhostROOT/home\u{1b}\\moved\n"), "it leaves the project first, so the move doesn't stop it: {out}");
         assert_eq!(fs::read_to_string(&asked).unwrap(), "term-7 ROOT/home ROOT/work/app\n".replace("ROOT", p.root.to_str().unwrap()));
         assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/app:") && !app.exists(), "it starts the agent in the new place: {out}");
         let other = p.repo_at(&p.root.join("work/other"));
         let out = p.run_with(&p.home, &format!("{}\nn\nrecipe-box\n", other.display()), Some(&kanna));
-        assert!(out.contains("Move it to ~/.kanna-v4/repos/local/other now? [y/N] Folder, repo or name: Opened"), "no asks again: {out}");
+        assert!(out.contains("Move it to ~/.kanna-v4/repos/local/other now? [y/N] Folder, repo or name: Made"), "in ~, no asks again: {out}");
+        stub(&kanna, "[ \"$1 $2\" = 'project move' ] || exit 0\necho 'kanna: ~/x and ~/y are both clones' >&2; exit 1");
+        let out = p.run_with(&p.home, &format!("{}\ny\nrecipe-box\n", other.display()), Some(&kanna));
+        assert!(out.contains("kanna: ~/x and ~/y are both clones\n\u{1b}]7;file://localhostROOT/home\u{1b}\\Folder, repo or name: Made"), "a refused move says why and asks again: {out}");
     }
 
     #[test]
