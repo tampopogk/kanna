@@ -3,6 +3,7 @@ import GhosttyKit
 import KannaMarkdown
 import KannaPerf
 import KannaStatus
+import KannaWindows
 
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -341,7 +342,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func window(_ id: String?) -> JSON? { windows.first { $0["id"]?.string == id } }
-    var keyWindow: JSON? { window(state["key"]?.string) ?? windows.last }
+    var keyWindow: JSON? { window(KeyWindow.resolve(appKit: appKitKey, layout: state["key"]?.string, windows: windows.compactMap { $0["id"]?.string })) }
+    var appKitKey: String? { NSApp.keyWindow.flatMap { key in controllers.first { $0.value.window === key }?.key } }
     var focusedPane: String? { keyWindow?["focused"]?.string }
 
     func windowOf(tab: String) -> JSON? {
@@ -655,8 +657,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     localKey = id
                     restate()
                 } else {
-                    localKey = nil
-                    layoutCommand("focus", ["window": .string(id)])
+                    show(window: id)
                 }
             }
             if let window = window(id) { controller.render(window, panes) }

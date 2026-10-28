@@ -30,6 +30,8 @@ let package = Package(
         .target(name: "KannaDrop"),
         .target(name: "KannaStatus"),
         .target(name: "KannaMachines"),
+        .target(name: "KannaWindows"),
+        .testTarget(name: "KannaWindowsTests", dependencies: ["KannaWindows"]),
         .testTarget(name: "KannaMachinesTests", dependencies: ["KannaMachines"]),
         .testTarget(name: "KannaStatusTests", dependencies: ["KannaStatus"]),
         .testTarget(name: "KannaDropTests", dependencies: ["KannaDrop"]),
@@ -37,7 +39,7 @@ let package = Package(
         .target(name: "SimBridge", linkerSettings: ["AppKit", "IOSurface", "QuartzCore"].map { .linkedFramework($0) }),
         .executableTarget(
             name: "Kanna",
-            dependencies: ["GhosttyKit", "KannaLayoutC", "KannaMachinesC", "KannaDiagram", "KannaDocs", "KannaMarkdown", "KannaCode", "KannaDiff", "KannaLinks", "KannaDrop", "KannaStatus", "KannaMachines", "KannaPerf", "SimBridge"],
+            dependencies: ["GhosttyKit", "KannaLayoutC", "KannaMachinesC", "KannaDiagram", "KannaDocs", "KannaMarkdown", "KannaCode", "KannaDiff", "KannaLinks", "KannaDrop", "KannaStatus", "KannaMachines", "KannaPerf", "KannaWindows", "SimBridge"],
             linkerSettings: [.linkedLibrary("c++"), kannaFFI]
                 + ["AppKit", "Carbon", "CoreText", "IOSurface", "Metal", "QuartzCore", "Security", "SystemConfiguration", "UniformTypeIdentifiers", "WebKit"].map { .linkedFramework($0) }
         ),

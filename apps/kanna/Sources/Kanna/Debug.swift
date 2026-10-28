@@ -314,7 +314,7 @@ extension AppController {
 
     private func pressKey(_ args: JSON) throws -> [String: JSON] {
         guard let name = args["key"]?.string else { throw KannaError("bad_request", "debug.key needs a key") }
-        var window = state["key"]?.string.flatMap { controllers[$0]?.window }
+        var window = keyWindow?["id"]?.string.flatMap { controllers[$0]?.window }
         if let reference = args["pane"]?.string {
             let view = try terminal(reference)
             window = view.window
