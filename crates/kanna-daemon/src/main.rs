@@ -32,7 +32,7 @@ mod terminals;
 mod toasts;
 
 use app_link::{AppLink, Outbox, APP_ASK, APP_PREFIX, HELLO};
-use kanna_mux::json::Value;
+use kanna_mux::json::{Map, Value};
 use host::Host;
 use kanna_build::Build;
 use kanna_mux::json::json;
@@ -413,6 +413,11 @@ fn run() -> Result<Option<PathBuf>, String> {
             }
         }),
     );
+    let front = link.clone();
+    core.on_front(Rc::new(move |args, responder| match front.upgrade().filter(|app| app.attached()) {
+        Some(app) => app.forward("app.front", args, responder),
+        None => responder.reply(Ok(Map::new())),
+    }));
     let resolving = Rc::downgrade(&backlog);
     core.add_command(
         "desk",

@@ -11,6 +11,7 @@ struct DeskRecord: Equatable {
 final class Physical {
     private(set) var desks: [DeskRecord] = []
     private(set) var shelf: [(workspace: String, parkedAt: Double)] = []
+    private(set) var order: [String] = []
     private var deskCount = 0
     private var frames: [String: NSRect] = [:]
     private var docks: [String: (width: Double, over: Double)] = [:]
@@ -35,6 +36,7 @@ final class Physical {
         desks = (saved["desks"]?.array ?? []).compactMap { desk in
             desk["id"]?.string.map { DeskRecord(id: $0, project: desk["project"]?.string, shows: desk["shows"]?.string, planner: desk["planner"]?.string) }
         }
+        order = (saved["order"]?.array ?? []).compactMap(\.string)
         shelf = (saved["shelf"]?.array ?? []).compactMap { entry in entry["workspace"]?.string.map { ($0, entry["parkedAt"]?.number ?? 0) } }
         deskCount = max(Int(saved["deskCount"]?.number ?? 0), desks.compactMap { Int($0.id.dropFirst()) }.max() ?? 0)
     }
@@ -85,6 +87,19 @@ final class Physical {
 
     func frame(_ window: String) -> NSRect? { frames[window] }
 
+    func setFront(_ window: String) {
+        guard order.first != window else { return }
+        order.removeAll { $0 == window }
+        order.insert(window, at: 0)
+        changed()
+    }
+
+    func forget(window: String) {
+        guard order.contains(window) else { return }
+        order.removeAll { $0 == window }
+        changed()
+    }
+
     func setFrame(_ window: String, _ frame: NSRect) {
         guard frames[window] != frame else { return }
         frames[window] = frame
@@ -112,14 +127,15 @@ final class Physical {
     }
 
     func keep(panes: Set<String>, in view: JSON, on machine: String?) {
-        let before = (docks.count, textSizes.count)
+        let before = (docks.count, textSizes.count, order.count)
         var owners = Set((view["workspaces"]?.array ?? []).compactMap { $0["id"]?.string })
         owners.formUnion((view["windows"]?.array ?? []).compactMap { $0["id"]?.string })
         owners.formUnion(desks.map(\.id))
         let elsewhere = { (id: String) in MachineIDs.machine(of: id) != machine }
         docks = docks.filter { elsewhere($0.key) || owners.contains($0.key) }
         textSizes = textSizes.filter { elsewhere($0.key) || panes.contains($0.key) }
-        if (docks.count, textSizes.count) != before { changed() }
+        order = order.filter { elsewhere($0) || owners.contains($0) }
+        if (docks.count, textSizes.count, order.count) != before { changed() }
     }
 
     func save() {
@@ -134,6 +150,7 @@ final class Physical {
             "desks": .array(desks.map { desk in
                 ["id": .string(desk.id), "project": desk.project.map { .string($0) } ?? .null, "shows": desk.shows.map { .string($0) } ?? .null, "planner": desk.planner.map { .string($0) } ?? .null]
             }),
+            "order": .array(order.map { .string($0) }),
             "shelf": .array(shelf.map { ["workspace": .string($0.workspace), "parkedAt": .number($0.parkedAt)] }),
             "deskCount": .number(Double(deskCount)),
         ]

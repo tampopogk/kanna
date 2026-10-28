@@ -34,7 +34,7 @@ extension AppController {
         commands["debug.type"] = { [weak self] args in
             guard let self else { return [:] }
             if args["focused"]?.bool == true {
-                guard let text = args["text"]?.string, let window = state["key"]?.string.flatMap({ controllers[$0]?.window }) else {
+                guard let text = args["text"]?.string, let window = keyWindow?["id"]?.string.flatMap({ controllers[$0]?.window }) else {
                     throw KannaError("bad_request", "debug.type needs text and a key window")
                 }
                 let events = SyntheticKey.typing(text, window: window)
@@ -113,12 +113,13 @@ extension AppController {
             return reply
         }
         commands["debug.view"] = { [weak self] _ in
-            guard let self, case .object(let view) = state else { return [:] }
+            guard let self, case .object(var view) = state else { return [:] }
+            view["key"] = keyWindow?["id"] ?? .null
             return view
         }
         commands["debug.snapshot"] = { [weak self] args in
             guard let self else { return [:] }
-            let id = args["window"]?.string ?? state["key"]?.string ?? controllers.keys.sorted().first
+            let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? controllers.keys.sorted().first
             guard let id, let controller = controllers[id], let window = window(id) else { throw KannaError("not_found", "no window \"\(args["window"]?.string ?? "")\"") }
             let shown: [(id: String, view: NSView)] = shownPaneViews(window).map { ($0.id, $0.view.terminal ?? $0.view) }
             var reply = try await Snapshot.run(controller.window, id: id, panes: shown, tabBar: controller.tabBar, path: args["path"]?.string, marker: args["marker"]?.string)
@@ -146,7 +147,7 @@ extension AppController {
         }
         commands["debug.desk"] = { [weak self] args in
             guard let self else { return [:] }
-            let id = args["window"]?.string ?? state["key"]?.string ?? ""
+            let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
             guard let controller = controllers[id] else { throw KannaError("not_found", "no window \"\(id)\"") }
             if case .array(let size)? = args["size"], size.count == 2, let width = size[0].number, let height = size[1].number {
                 controller.window.setContentSize(NSSize(width: width, height: height))
@@ -355,20 +356,20 @@ extension AppController {
             window = paneWindow
             point = view.convert(NSPoint(x: at[0], y: view.bounds.height - at[1]), to: nil)
         } else if let task = args["shelf"]?.string {
-            let id = args["window"]?.string ?? state["key"]?.string ?? ""
+            let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
             guard let controller = controllers[id] else { throw KannaError("not_found", "no window \"\(id)\"") }
             let spots = !controller.shelfPage.isHidden ? controller.shelfPage.rows : controller.shelfStrip.items
             guard let spot = spots.first(where: { $0.task == task }) else { throw KannaError("not_found", "\(task) is not on \(id)'s Shelf") }
             window = controller.window
             point = spot.center
         } else if let task = args["backlog"]?.string {
-            let id = args["window"]?.string ?? state["key"]?.string ?? ""
+            let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
             guard let controller = controllers[id], let spot = controller.shelfPage.backlogRows.first(where: { $0.task == task }) else { throw KannaError("not_found", "\(task) is not in \(id)'s backlog") }
             guard controller.shelfPage.visibleBacklog.contains(task) else { throw KannaError("not_found", "\(task) is scrolled out of \(id)'s view") }
             window = controller.window
             point = spot.center
         } else if let page = args["page"]?.string {
-            let id = args["window"]?.string ?? state["key"]?.string ?? ""
+            let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
             guard let controller = controllers[id], let spot = controller.tabBar.pageItems.first(where: { $0.title == page }) else { throw KannaError("not_found", "no \(page) tab on \(id)") }
             window = controller.window
             point = spot.center

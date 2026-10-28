@@ -171,7 +171,7 @@ pub(crate) fn upgrade(state: &Value) -> Value {
     };
     fn walk(value: &Value, key: Option<&str>, id: &dyn Fn(&Value) -> Value) -> Value {
         match value {
-            Value::String(_) if matches!(key, Some("id" | "key" | "active" | "focused" | "zoomed" | "workspace" | "pane" | "lastFocus")) => id(value),
+            Value::String(_) if matches!(key, Some("id" | "active" | "focused" | "zoomed" | "workspace" | "pane" | "lastFocus")) => id(value),
             Value::Array(items) => Value::Array(items.iter().map(|item| walk(item, key, id)).collect()),
             Value::Object(fields) => Value::Object(fields.iter().map(|(k, item)| (k.clone(), walk(item, Some(k), id))).collect()),
             _ => value.clone(),

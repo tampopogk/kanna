@@ -94,6 +94,7 @@ struct Inner {
     on_change: RefCell<Option<Rc<dyn Fn()>>>,
     extra: RefCell<HashMap<String, CommandHandler>>,
     prefixes: RefCell<Vec<(String, PrefixHandler)>>,
+    front: RefCell<Option<CommandHandler>>,
     tasks: RefCell<Option<Rc<dyn TaskBook>>>,
     waiters: RefCell<HashMap<String, Vec<Rc<Signal>>>>,
     renamed: RefCell<Vec<Rc<dyn Fn(&str, &str)>>>,
@@ -141,6 +142,7 @@ impl Core {
             on_change: RefCell::new(None),
             extra: RefCell::new(HashMap::new()),
             prefixes: RefCell::new(vec![]),
+            front: RefCell::new(None),
             tasks: RefCell::new(None),
             waiters: RefCell::new(HashMap::new()),
             renamed: RefCell::new(vec![]),
@@ -162,6 +164,7 @@ impl Drop for Core {
         inner.waiters.borrow_mut().clear();
         inner.extra.borrow_mut().clear();
         inner.prefixes.borrow_mut().clear();
+        inner.front.borrow_mut().take();
         inner.host.borrow_mut().take();
         inner.on_change.borrow_mut().take();
     }
@@ -264,6 +267,25 @@ impl CoreHandle {
             None => {}
         }
         Ok(())
+    }
+
+    pub fn on_front(&self, handler: CommandHandler) {
+        *self.0.front.borrow_mut() = Some(handler);
+    }
+
+    async fn bring_forward(&self, focused: &mut Map, args: &Value) {
+        let Some(handler) = self.0.front.borrow().clone() else { return };
+        let mut request = Value::Object(focused.clone());
+        for key in ["pane", "tab"] {
+            if let Some(value) = args.get(key) {
+                request[key] = value.clone();
+            }
+        }
+        let (responder, answer) = responder();
+        handler(request, responder);
+        if let Ok(mut front) = answer.await {
+            focused.insert("front".into(), front.remove("front").unwrap_or(Value::Null));
+        }
     }
 
     pub fn add_prefix(&self, prefix: &str, handler: PrefixHandler) {
@@ -578,13 +600,19 @@ impl CoreHandle {
                 Ok(reply([("windows", Value::Array(windows)), ("panes", Value::Array(panes))]))
             }
             _ if self.0.layout.commands().contains(&cmd) => {
-                let _turn = self.0.turns.take().await;
-                let mut result = self.layout(json!({ "op": "command", "cmd": cmd, "args": args })).await;
-                if result.is_ok() {
-                    self.changed();
-                }
-                if let (Ok(listed), "task") = (&mut result, cmd) {
-                    self.mark_running(listed);
+                let mut result = {
+                    let _turn = self.0.turns.take().await;
+                    let mut result = self.layout(json!({ "op": "command", "cmd": cmd, "args": args })).await;
+                    if result.is_ok() {
+                        self.changed();
+                    }
+                    if let (Ok(listed), "task") = (&mut result, cmd) {
+                        self.mark_running(listed);
+                    }
+                    result
+                };
+                if let (Ok(focused), "focus") = (&mut result, cmd) {
+                    self.bring_forward(focused, &args).await;
                 }
                 result
             }

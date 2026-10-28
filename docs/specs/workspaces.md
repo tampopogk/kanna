@@ -76,8 +76,8 @@ A pane belongs to the workspace it's in. Moving it to another workspace's window
 |---|---|---|
 | `open` | beside the caller: as asked when on screen; a new tab when hidden | into win-4, as kmux |
 | `open --window new` | a new window of task-1dfb | a new free window |
-| `focus PANE` / `--tab` | that pane's or tab's shown tab and focus; its window becomes key only if on screen | as kmux |
-| `focus --window W` | makes W key; for a hidden window, an error saying where it is | as kmux |
+| `focus PANE` / `--tab` | that pane's or tab's shown tab and focus; the app brings its window forward only if it's on screen ([physical layout §2](physical-layout.md#2-bringing-a-window-forward)) | the same |
+| `focus --window W` | the app brings W forward, if it's on screen | the same |
 | `zoom PANE` | that pane's zoom, on screen or not | as kmux |
 | `comment` | the markdown pane it opens or finds is beside the caller | in win-4 |
 | `arrange` | the caller's shown tab: on screen or not | win-4's shown tab |
@@ -96,7 +96,7 @@ Replies say which workspace and where it is. A window is named when the pane is 
 | open in ws-3's win-40 | `opened term-5 in ws-3's win-40 (task-1dfb, on the Shelf), tab-9: running` |
 | open in a free window | `opened term-5 in win-4, tab-9: running` |
 | focus, in no window | `focused spec in ws-3 (task-1dfb, in the backlog)` |
-| focus, in ws-3's win-40 | `focused spec in ws-3's win-40 (task-1dfb, on the Shelf, key window)` |
+| focus, in ws-3's win-40 | `focused spec in ws-3's win-40 (task-1dfb, on the Shelf, in front)` |
 | zoom, in no window | `spec is zoomed in ws-3 (task-1dfb, on the Shelf; run again to unzoom)` |
 | assign | `assigned win-41 to ws-3 (task-1dfb, on the Shelf)` |
 | free | `win-41 is free (out of ws-3)` |
@@ -117,7 +117,7 @@ Layout replies carry `workspace: {id, where}`, or null in a free window, beside 
 The saved layout (in `kanna.db`, [database](database.md)) is `version: 3`: `windows` holds free windows, and every workspace is in one list with its own windows. The app's Desks are in its `app-state.json` ([each app's Desk and Shelf](app-desk.md)).
 
 ```json
-{ "kmux": "state", "version": 3, "key": "win-4", "counters": { "tab": 12, "window": 41, "workspace": 7 },
+{ "kmux": "state", "version": 3, "counters": { "tab": 12, "window": 41, "workspace": 7 },
   "windows": [
     { "id": "win-4", "tabs": [], "active": "tab-3", "focused": "term-7", "zoomed": null }],
   "workspaces": [
@@ -178,7 +178,7 @@ flowchart LR
 
 - **A kmux workspace** is a named group of windows, shown or hidden, with kmux's own IDs (`ws-1`, apart from `w1`, `t1`, `p1`; a saved `s1` still loads). It has no Desk part: that's Kanna's.
 - **Commands:** `workspace new [NAME]`, `workspace hide S`, `workspace show S` (its windows at their frames, its last one key), `workspace close S` (its windows and panes), `window assign W S`, `window free W`, `workspace list [--all]` (the caller's window and its workspace, from `$KMUX_PANE`; `--all` every window and workspace). The app's Window menu has Assign Window to Workspace (the workspaces, and New Workspace) and Free Window, as Kanna's.
-- **No caller rules:** kmux has no caller, so `open` still goes to the key window or `--window`, and a new window is free. A hidden window is never the key window, and `focus` on it is refused (`hidden`), as in Kanna.
+- **No caller rules:** kmux has no caller, so `open` still goes to the key window or `--window`, and a new window is free. A hidden window is never the key window, and `focus` on it is refused (`hidden`).
 - **Replies** name the workspace as `{id, name, hidden}`: `opened p5 in ws-1's w40 (hidden), tab t9: running`.
 - **Saved state:** kmux's state file, still version 1, gains `workspaces` (`id`, `name`, `hidden`) and each window its `workspace`.
 - **In Kanna,** a task's workspace is a kmux workspace plus its Desk part, with the same `ws-N` IDs; the Shelf and the backlog are both hidden to kmux, so its replies say `hidden` too. Kanna's `window` takes kmux's `workspace` (a `ws-N`, a pane, or a task's ID, which the daemon turns into its workspace's) and passes kmux's `window` case; the cases that make workspaces with `workspace` are skipped, since Kanna's `workspace` command has only `list` (tasks do the rest), as the runner skips any case needing a command Kanna lacks ([kmux is the reference model](kmux-reference.md)). The CLI check counts `workspace list` as kmux's and the rest of `workspace` as kmux's own, and `window` as documented for tasks.

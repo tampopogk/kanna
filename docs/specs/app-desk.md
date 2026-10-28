@@ -44,6 +44,7 @@ flowchart TB
 | A Desk's planner: its planning terminal, with its project | daemon, as a workspace with no task | `kanna.db`, the layout |
 | Which tasks are on this app's Shelf, in what order, parked when | the app, from its claims | `app-state.json` |
 | This app's Desk windows: each one's project, the task it shows, its planner | the app | `app-state.json` |
+| Which window is in front, and the front-to-back order ([physical layout](physical-layout.md)) | the app | `app-state.json` |
 
 ## 2. Rules
 

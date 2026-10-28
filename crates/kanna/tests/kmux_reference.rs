@@ -34,6 +34,8 @@ const EXTENDED: &[(&str, &str)] = &[
 
 const OPTIONS_DIFFER: &[(&str, &str)] = &[("move", "--window WINDOW|new"), ("open", "--window ID|new"), ("arrange", "--window WINDOW")];
 
+const PRINTS_DIFFER: &[(&str, &str)] = &[("focus", "Kanna's daemon keeps no key window: a focus reply says which window the app brought forward")];
+
 const CODE_PANES: &[(&str, &str)] = &[("open", "summary"), ("navigate", "summary")];
 
 fn from_kmux(text: &str) -> String {
@@ -323,7 +325,7 @@ fn replies_print_as_kmux_prints_them() {
         ("window", json!({ "action": "free", "window": "win-2" }), json!({ "window": "win-2", "was": null, "shown": true })),
         ("window", json!({ "action": "free", "window": "win-2" }), json!({ "window": "win-2", "was": { "id": "ws-1", "hidden": false }, "shown": true })),
     ];
-    for (name, args, reply) in cases {
+    for (name, args, reply) in cases.into_iter().filter(|(name, _, _)| !PRINTS_DIFFER.iter().any(|(differs, _)| differs == name)) {
         let kmux = (commands::find(name).unwrap().show)(&args, &reply);
         let kanna = (kanna::commands::find(name).unwrap().show)(&args, &reply);
         assert_eq!(from_kanna(&kanna), from_kmux(&kmux), "{name} {reply}");

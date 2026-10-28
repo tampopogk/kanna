@@ -189,12 +189,12 @@ fn every_command_works_through_the_daemon_and_the_app() {
     assert_eq!(daemon.kanna(&["open", "--window", "new", "--name", "a", "--cmd", "exec /bin/sh"]).ok(), "opened term-1 (a) in win-1, tab-1: running");
     assert_eq!(daemon.kanna(&["open", "--window", "win-1", "--name", "b", "--split", "right", "--size", "1/3"]).ok(), "opened term-2 (b) in win-1, tab-1: running");
     assert_eq!(layout(&daemon, 0, 0), "a:2/3 | b:1/3");
-    assert_eq!(daemon.kanna(&["workspace", "list", "--all"]).ok(), "Windows\n*win-1  free\n\nFree windows\nwin-1\n  focus: b\n  *tab-1 \"a\"  a:2/3 | b:1/3");
-    assert_eq!(daemon.kanna_as("term-2", &["workspace", "list"]).ok(), "*win-1  free\n  focus: b\n  *tab-1 \"a\"  a:2/3 | b:1/3");
+    assert_eq!(daemon.kanna(&["workspace", "list", "--all"]).ok(), "Windows\n win-1  free\n\nFree windows\nwin-1\n  focus: b\n  *tab-1 \"a\"  a:2/3 | b:1/3");
+    assert_eq!(daemon.kanna_as("term-2", &["workspace", "list"]).ok(), " win-1  free\n  focus: b\n  *tab-1 \"a\"  a:2/3 | b:1/3");
     daemon.kanna(&["workspace", "list"]).fails(2, "outside a Kanna terminal there's no workspace of yours: add --all");
     daemon.kanna_as("term-99", &["workspace", "list"]).fails(4, "no pane \"term-99\"");
 
-    assert_eq!(daemon.kanna(&["focus", "a"]).ok(), "focused a (key window win-1)");
+    assert_eq!(daemon.kanna(&["focus", "a"]).ok(), "focused a in win-1");
     assert_eq!(daemon.kanna(&["zoom", "b"]).ok(), "b is zoomed (run again to unzoom)");
     assert_eq!(daemon.kanna_as("a", &["workspace", "list"]).ok().lines().nth(1), Some("  focus: b, zoomed"));
     assert_eq!(daemon.kanna(&["zoom", "b"]).ok(), "b is no longer zoomed");
@@ -214,10 +214,10 @@ fn every_command_works_through_the_daemon_and_the_app() {
     assert_eq!(daemon.kanna(&["rename-pane", "logs", ""]).ok(), "term-3 has no name");
     assert_eq!(daemon.kanna(&["rename-pane", "term-3", "c"]).ok(), "term-3 is now \"c\"");
     assert_eq!(daemon.kanna(&["move-tab", "tab-2", "--index", "0"]).ok(), "win-1: tab-2, tab-1");
-    assert_eq!(daemon.kanna(&["focus", "--tab", "tab-1"]).ok(), "switched to tab-1 (key window win-1)");
+    assert_eq!(daemon.kanna(&["focus", "--tab", "tab-1"]).ok(), "switched to tab-1 in win-1");
     let opened = daemon.kanna(&["open", "--window", "new", "--name", "d", "--no-wait"]).ok();
     assert!(opened.starts_with("opened term-4 (d) in win-2, tab-3: "), "{opened}");
-    assert_eq!(daemon.kanna(&["focus", "--window", "win-1"]).ok(), "key window is now win-1");
+    assert_eq!(daemon.kanna(&["focus", "--window", "win-1"]).ok(), "win-1 isn't on screen");
     assert_eq!(daemon.kanna(&["move", "c", "--window", "win-2"]).ok(), "c");
     assert_eq!(daemon.kanna(&["move", "d", "--to", "c", "--side", "left"]).ok(), "d:1/2 | c:1/2");
     assert_eq!(daemon.kanna(&["move", "c", "--tab", "new", "--window", "win-2"]).ok(), "c");
@@ -230,7 +230,7 @@ fn every_command_works_through_the_daemon_and_the_app() {
     wait_for("--json typed", || daemon.kanna(&["read", "a"]).ok().contains("--json"));
     assert_eq!(daemon.kanna(&["restart", "a"]).ok(), "term-5 (a) (exec /bin/sh) is running");
 
-    assert_eq!(daemon.kanna(&["focus", "b"]).ok(), "focused b (key window win-1)");
+    assert_eq!(daemon.kanna(&["focus", "b"]).ok(), "focused b in win-1");
     let page = daemon.dir.join("page.html");
     std::fs::write(&page, "<p>hi</p>").unwrap();
     let url = format!("file://{}", page.display());
@@ -293,7 +293,7 @@ fn every_command_works_through_the_daemon_and_the_app() {
     assert_eq!(daemon.kanna(&["window", "assign", "win-4", "agent"]).ok(), "assigned win-4 to ws-1 (on the Shelf)");
     let more = daemon.kanna(&["open", "--window", "win-4", "--tab", "--name", "more", "--no-wait"]).ok();
     assert!(more.starts_with("opened term-9 (more) in ws-1's win-4 (on the Shelf), tab-"), "{more}");
-    assert_eq!(daemon.kanna(&["focus", "more"]).ok(), "focused more in ws-1's win-4 (on the Shelf, key window)");
+    assert_eq!(daemon.kanna(&["focus", "more"]).ok(), "focused more in ws-1's win-4 (on the Shelf)");
     assert_eq!(daemon.kanna(&["zoom", "agent"]).ok(), "agent is zoomed in ws-1 (on the Shelf; run again to unzoom)");
     let mine = daemon.kanna_as("agent", &["workspace", "list"]).ok();
     assert!(mine.starts_with("ws-1, on the Shelf\n  dock: term-6 (agent)  left 2/5\n  focus: agent, zoomed\n  *tab-7 \"notes\"  notes\n  win-4\n"), "{mine}");
@@ -353,7 +353,7 @@ fn send_key_presses_keys_as_the_program_expects_them_without_the_app() {
 fn without_the_app_terminals_and_the_layout_work_and_debug_needs_it() {
     let daemon = Daemon::start();
     assert_eq!(daemon.kanna(&["open", "--window", "new", "--name", "a"]).ok(), "opened term-1 (a) in win-1, tab-1: running");
-    assert_eq!(daemon.kanna(&["workspace", "list", "--all"]).ok(), "Windows\n*win-1  free\n\nFree windows\nwin-1\n  focus: a\n  *tab-1 \"a\"  a");
+    assert_eq!(daemon.kanna(&["workspace", "list", "--all"]).ok(), "Windows\n win-1  free\n\nFree windows\nwin-1\n  focus: a\n  *tab-1 \"a\"  a");
     daemon.kanna(&["send", "a", "echo", "ALONE"]).ok();
     wait_for("the sent line", || daemon.kanna(&["read", "a"]).ok().contains("ALONE"));
     assert_eq!(daemon.kanna(&["restart", "a"]).ok(), "term-2 (a) is running");
