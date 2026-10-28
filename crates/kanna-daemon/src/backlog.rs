@@ -3293,7 +3293,7 @@ mod tests {
         assert!(out.contains("Move it to ~/.kanna-v4/repos/local/other now? [y/N] Folder, repo or name: Made"), "in ~, no asks again: {out}");
         stub(&kanna, "[ \"$1 $2\" = 'project move' ] || exit 0\necho 'kanna: ~/x and ~/y are both clones' >&2; exit 1");
         let out = p.run_with(&p.home, &format!("{}\ny\nrecipe-box\n", other.display()), Some(&kanna));
-        assert!(out.contains("kanna: ~/x and ~/y are both clones\n\u{1b}]7;file://localhostROOT/home\u{1b}\\Folder, repo or name: Made"), "a refused move says why and asks again: {out}");
+        assert!(out.contains("kanna: ~/x and ~/y are both clones\n\u{1b}]7;file://localhostROOT/home\u{1b}\\Folder, repo or name: Opened"), "a refused move says why and asks again: {out}");
     }
 
     #[test]
