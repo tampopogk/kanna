@@ -22,16 +22,7 @@ pub fn identity(main: &Path) -> Option<String> {
 }
 
 fn origin(main: &Path) -> Option<String> {
-    let config = std::fs::read_to_string(main.join(".git/config")).ok()?;
-    let mut inside = false;
-    for line in config.lines().map(str::trim) {
-        if line.starts_with('[') {
-            inside = line.replace(' ', "") == "[remote\"origin\"]";
-        } else if let Some(url) = line.strip_prefix("url").map(str::trim_start).and_then(|rest| rest.strip_prefix('=')).filter(|_| inside) {
-            return normalized(url.trim());
-        }
-    }
-    None
+    normalized(&git_origin(main)?)
 }
 
 pub fn normalized(url: &str) -> Option<String> {
@@ -51,6 +42,81 @@ pub fn normalized(url: &str) -> Option<String> {
     let path = path.trim_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
     (!host.is_empty() && !path.is_empty()).then(|| format!("{host}/{path}"))
+}
+
+pub const REPOS: &str = ".kanna-v4/repos";
+
+pub const LOCAL: &str = "local";
+
+pub fn repos() -> PathBuf {
+    crate::agents::home().join(REPOS)
+}
+
+fn segment(part: &str) -> bool {
+    !part.is_empty() && part != "." && part != ".." && !part.starts_with('.') && part.chars().all(|c| !c.is_control() && c != '\\')
+}
+
+pub fn place_of(url: Option<&str>, name: &str) -> PathBuf {
+    let local = || Path::new(LOCAL).join(name);
+    let Some(remote) = url.and_then(normalized) else { return local() };
+    let Some((host, path)) = remote.split_once('/') else { return local() };
+    let parts: Vec<&str> = path.split('/').collect();
+    if !parts.iter().all(|p| segment(p)) {
+        return local();
+    }
+    match parts.as_slice() {
+        [only] if segment(host) => Path::new(host).join(only),
+        [_] => local(),
+        _ => parts.iter().collect(),
+    }
+}
+
+pub fn home_place(main: &Path) -> PathBuf {
+    let name = main.file_name().map_or_else(|| "project".to_string(), |n| n.to_string_lossy().into_owned());
+    let url = git_origin(main);
+    place_of(url.as_deref(), &name)
+}
+
+fn git_origin(main: &Path) -> Option<String> {
+    let config = std::fs::read_to_string(main.join(".git/config")).ok()?;
+    let mut inside = false;
+    for line in config.lines().map(str::trim) {
+        if line.starts_with('[') {
+            inside = line.replace(' ', "") == "[remote\"origin\"]";
+        } else if let Some(url) = line.strip_prefix("url").map(str::trim_start).and_then(|rest| rest.strip_prefix('=')).filter(|_| inside) {
+            return Some(url.trim().to_string());
+        }
+    }
+    None
+}
+
+pub fn tilde(path: &Path) -> String {
+    let home = crate::agents::home();
+    let home = home.canonicalize().unwrap_or(home);
+    match path.strip_prefix(&home) {
+        Ok(inside) if inside.as_os_str().is_empty() => "~".into(),
+        Ok(inside) => format!("~/{}", inside.display()),
+        Err(_) => path.display().to_string(),
+    }
+}
+
+pub fn canonical(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+pub fn misplaced(repos: &Path, folder: &Path) -> Option<(PathBuf, PathBuf)> {
+    let main = project(folder.to_str())?;
+    let wanted = canonical(repos).join(home_place(&main));
+    (main != wanted).then_some((main, wanted))
+}
+
+pub fn outside(repos: &Path, folder: &Path) -> Result<(), KmuxError> {
+    let Some((main, wanted)) = misplaced(repos, folder) else { return Ok(()) };
+    let shown = tilde(&main);
+    Err(KmuxError::new(
+        "outside",
+        format!("{shown} isn't in {}, where Kanna keeps its projects so each has the same place on every machine: move it there with `kanna project move {shown}` (to {})", tilde(&canonical(repos)), tilde(&wanted)),
+    ))
 }
 
 fn first_commit(main: &Path) -> Option<String> {
@@ -87,7 +153,7 @@ fn branch(root: &Path) -> Option<String> {
 pub struct Projects {
     db: Rc<Db>,
     home: Option<PathBuf>,
-    repos: Vec<PathBuf>,
+    repos: Option<PathBuf>,
 }
 
 fn bad(message: impl Into<String>) -> KmuxError {
@@ -100,14 +166,13 @@ fn failed(what: &str, error: rusqlite::Error) -> KmuxError {
 }
 
 impl Projects {
-    pub fn new(db: Rc<Db>, home: Option<PathBuf>, repos: Vec<PathBuf>) -> Projects {
+    pub fn new(db: Rc<Db>, home: Option<PathBuf>, repos: Option<PathBuf>) -> Projects {
         Projects { db, home: home.map(|h| h.canonicalize().unwrap_or(h)), repos }
     }
 
     fn label(&self, path: &Path) -> String {
-        let cloned = path.parent().is_some_and(|parent| self.repos.iter().any(|r| r.canonicalize().as_deref().unwrap_or(r) == parent));
-        if let (true, Some(name)) = (cloned, path.file_name()) {
-            return name.to_string_lossy().into_owned();
+        if let Some(inside) = self.repos.as_deref().map(canonical).and_then(|repos| path.strip_prefix(repos).ok().map(Path::to_path_buf)) {
+            return inside.display().to_string();
         }
         match self.home.as_ref().and_then(|home| path.strip_prefix(home).ok()) {
             Some(inside) => format!("~/{}", inside.display()),
@@ -138,11 +203,15 @@ impl Projects {
         }
     }
 
+    fn misplaced(&self, folder: &Path) -> bool {
+        self.repos.as_deref().is_some_and(|repos| misplaced(repos, folder).is_some())
+    }
+
     fn touch(&self, args: &Value) -> Result<Map, KmuxError> {
         let folder = string(args, "folder").filter(|f| Path::new(f).is_absolute()).ok_or_else(|| bad("say which folder: an absolute path"))?;
         let root = project(Some(folder)).filter(|root| root.is_dir()).ok_or_else(|| KmuxError::new("not_found", format!("no folder {folder}")))?;
         let mut reply = Map::new();
-        if Some(&root) == self.home.as_ref() || root.parent().is_none() {
+        if Some(&root) == self.home.as_ref() || root.parent().is_none() || self.misplaced(&root) {
             reply.insert("project".into(), Value::Null);
             return Ok(reply);
         }
@@ -155,6 +224,9 @@ impl Projects {
     fn list(&self) -> Result<Map, KmuxError> {
         let mut kept = vec![];
         for (path, at) in self.db.projects().map_err(|e| failed("read the recent projects", e))? {
+            if self.misplaced(Path::new(&path)) && Path::new(&path).is_dir() {
+                continue;
+            }
             if Path::new(&path).is_dir() {
                 kept.push(json!({ "path": path, "label": self.label(Path::new(&path)), "at": num(at.floor()), "project": identity(Path::new(&path)) }));
             } else {
@@ -215,9 +287,41 @@ mod tests {
     }
 
     #[test]
+    fn a_project_s_place_in_repos_is_its_origin_s_owner_and_name() {
+        for url in ["https://github.com/tampopogk/kanna.git", "https://github.com/tampopogk/kanna", "ssh://git@github.com:22/tampopogk/kanna.git", "git@github.com:tampopogk/kanna.git", "git@gitlab.example.com:tampopogk/kanna", "https://token@github.com/tampopogk/kanna/"] {
+            assert_eq!(place_of(Some(url), "folder"), Path::new("tampopogk/kanna"), "{url}");
+        }
+        assert_eq!(place_of(Some("https://gitlab.com/group/sub/app.git"), "app"), Path::new("group/sub/app"), "a nested group keeps its path");
+        assert_eq!(place_of(Some("git@myserver:app.git"), "app"), Path::new("myserver/app"), "a remote with no owner goes under its host");
+        for url in [None, Some("/srv/git/app"), Some("../app"), Some("file:///srv/git/app"), Some("https://github.com/../app"), Some("https://github.com/a/.hidden")] {
+            assert_eq!(place_of(url, "app"), Path::new("local/app"), "{url:?}");
+        }
+        let dir = folder("place");
+        let repos = dir.join("home").join(REPOS);
+        let app = dir.join("work/app");
+        fs::create_dir_all(&app).unwrap();
+        git(&app, &["init", "-q", "-b", "main"]);
+        assert_eq!(home_place(&app), Path::new("local/app"));
+        let refused = outside(&repos, &app.join("sub")).unwrap_err();
+        assert_eq!(refused.code, "outside");
+        assert!(refused.message.contains(&format!("move it there with `kanna project move {}`", app.display())) && refused.message.contains("repos/local/app)"), "{}", refused.message);
+        git(&app, &["remote", "add", "origin", "git@github.com:someone/app.git"]);
+        assert_eq!(misplaced(&repos, &app).unwrap().1, repos.join("someone/app"));
+        let there = repos.join("someone/app");
+        fs::create_dir_all(there.parent().unwrap()).unwrap();
+        fs::rename(&app, &there).unwrap();
+        assert!(outside(&repos, &there).is_ok() && outside(&repos, &there.join("src")).is_ok());
+        git(&there, &["worktree", "add", "-q", "-b", "task-1", ".kanna-worktrees/task-1"]);
+        assert!(outside(&repos, &there.join(".kanna-worktrees/task-1")).is_ok(), "a worktree is its repo");
+        git(&there, &["remote", "set-url", "origin", "https://github.com/other/app"]);
+        assert_eq!(outside(&repos, &there).unwrap_err().code, "outside", "a new origin is a new place");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn the_latest_project_comes_first_and_ten_are_kept() {
         let dir = folder("order");
-        let projects = Projects::new(Rc::new(Db::open(&dir.join("state"))), Some(dir.join("home")), vec![]);
+        let projects = Projects::new(Rc::new(Db::open(&dir.join("state"))), Some(dir.join("home")), None);
         let made: Vec<PathBuf> = (0..12).map(|n| dir.join(format!("p{n}"))).collect();
         for p in &made {
             fs::create_dir_all(p).unwrap();
@@ -242,7 +346,7 @@ mod tests {
     fn a_folder_that_is_gone_drops_off_and_home_is_not_a_project() {
         let dir = folder("gone");
         fs::create_dir_all(dir.join("home")).unwrap();
-        let projects = Projects::new(Rc::new(Db::open(&dir.join("state"))), Some(dir.join("home")), vec![]);
+        let projects = Projects::new(Rc::new(Db::open(&dir.join("state"))), Some(dir.join("home")), None);
         let (kept, gone) = (dir.join("kept"), dir.join("gone"));
         fs::create_dir_all(&kept).unwrap();
         fs::create_dir_all(&gone).unwrap();
@@ -259,25 +363,28 @@ mod tests {
     }
 
     #[test]
-    fn a_clone_or_new_project_goes_by_its_name_and_the_rest_by_their_path() {
+    fn a_project_in_repos_goes_by_its_place_and_one_outside_is_left_off() {
         let dir = folder("labels");
         let home = dir.join("home");
-        let (repos, old) = (home.join(".kanna-v4/repos"), home.join(".kanna/repos"));
-        let projects = Projects::new(Rc::new(Db::open(&dir.join("state"))), Some(home.clone()), vec![repos.clone(), old.clone()]);
-        for folder in [repos.join("kojo"), old.join("recipe-box"), home.join("work/app"), dir.join("elsewhere"), repos.join("kojo/sub")] {
+        let repos = home.join(REPOS);
+        let projects = Projects::new(Rc::new(Db::open(&dir.join("state"))), Some(home.clone()), Some(repos.clone()));
+        for folder in [repos.join("local/kojo"), repos.join("local/recipe-box"), home.join("work/app"), dir.join("elsewhere"), repos.join("local/kojo/sub")] {
             fs::create_dir_all(&folder).unwrap();
             touch(&projects, &folder);
         }
         let reply = Value::Object(projects.handle(&json!({})).unwrap());
         let labels: Vec<&str> = reply["projects"].as_array().unwrap().iter().map(|p| p["label"].as_str().unwrap()).collect();
-        assert_eq!(labels, ["~/.kanna-v4/repos/kojo/sub", &dir.join("elsewhere").to_string_lossy(), "~/work/app", "recipe-box", "kojo"]);
+        assert_eq!(labels, ["local/recipe-box", "local/kojo"], "a subfolder of a project that isn't a repo is a project of its own, out of place");
+        projects.db.touch_project(&home.join("work/app").to_string_lossy()).unwrap();
+        assert_eq!(listed(&projects).len(), 2, "an old recent project outside repos is left off the list");
+        assert!(projects.db.projects().unwrap().iter().any(|(p, _)| p.ends_with("work/app")), "but kept, for when it moves there");
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_worktree_or_a_subfolder_is_its_repo() {
         let dir = folder("worktree");
-        let projects = Projects::new(Rc::new(Db::open(&dir.join("state"))), None, vec![]);
+        let projects = Projects::new(Rc::new(Db::open(&dir.join("state"))), None, None);
         let repo = dir.join("app");
         fs::create_dir_all(repo.join("src")).unwrap();
         git(&repo, &["init", "-q"]);
