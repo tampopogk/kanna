@@ -21,6 +21,7 @@ Say back what you understood, in a few lines, before setting anything up.
 
 - **`git init`** only when the user agrees. It's their folder.
 - **A first commit** only when the user agrees, and only of what's there (a README with the sentence from step 1 is a good one). Without one, that's fine: the first task's branch starts empty, and its first commit is the project's.
+- **A remote changes where it lives.** A new project is in `~/.kanna-v4/repos/local/NAME`; once it has an `origin` (`gh repo create`), its place is `OWNER/NAME` and Kanna refuses its tasks until it's moved. Tell the user to run `kanna project move ~/.kanna-v4/repos/local/NAME` from a terminal outside the project: it stops and restarts this planning terminal in the new place, and you come back to this conversation.
 - **Nothing else.** Scaffolding, dependencies and code are the tasks' work, in their worktrees; you stay in the main checkout.
 
 ## 3. Turn the plan into tasks

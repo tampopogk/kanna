@@ -89,6 +89,7 @@ flowchart TB
 | Spec | What it covers |
 |---|---|
 | [Desk](specs/desk.md) · [new Desk](specs/new-desk.md) · [planning terminal](specs/planning-agent.md) · [planner resume](specs/planner-resume.md) | A window showing one task, with the Shelf |
+| [Project folder](specs/project-folder.md) | Every project lives in `~/.kanna-v4/repos/OWNER/NAME`; `kanna project move` puts one there |
 | [Tasks](specs/tasks.md) · [backlog runners](specs/backlog-runners.md) · [backlog search](specs/backlog-search.md) · [blocked tasks](specs/task-dependencies.md) · [task IDs](specs/task-ids.md) · [task scripts](specs/task-scripts.md) · [agent messaging](specs/agent-messaging.md) | One agent in one worktree; the backlog |
 | [Agent status](specs/agent-status.md) | Working, needs you, idle, exited |
 | [Toasts](specs/toasts.md) | Notices the daemon raises in the app, such as messages that wait |

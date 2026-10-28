@@ -51,7 +51,7 @@ A Desk with nothing in it starts here: where it opens and how its planning termi
 
 ## 4. The window's folder
 
-- **It opens where the [new Desk](new-desk.md#1-when-one-opens) does:** where Kanna was started, `~` for File → New Desk, or PATH for `kanna PATH`.
+- **It opens where the [new Desk](new-desk.md#1-when-one-opens) does:** where Kanna was started, `~` for File → New Desk, or PATH for `kanna PATH`. A project outside `~/.kanna-v4/repos` is refused, with its move offered ([project folder](project-folder.md#2-outside-it)).
 - **The window follows the terminal.** `cd` it elsewhere and the header and the Shelf follow, to that folder's repo. With a task on the Desk, the task's repo is the window's.
 
 ## 5. How it's built

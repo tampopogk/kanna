@@ -1873,7 +1873,7 @@ desk_shelf() {
 scenario task_backlog M4
 task_backlog() {
   start_daemon && start_app || { echo "task_backlog line $LINENO"; return 1; }
-  local repo="$KANNA_STATE_DIR/repo" agent="$repo_root/tools/mock-agent/mock-agent"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$repo_root/tools/mock-agent/mock-agent"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "task_backlog line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   in_repo() { (cd "$repo" && kanna "$@"); }
@@ -1919,7 +1919,7 @@ task_backlog() {
 
 scenario desk_backlog M4
 desk_backlog() {
-  local repo="$KANNA_STATE_DIR/repo"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "desk_backlog line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   mkdir -p "$repo/.kanna" && printf '{"planning": {"context": 400000}}\n' >"$repo/.kanna/config.json"
@@ -1983,7 +1983,7 @@ desk_backlog() {
 
 scenario desk_by_path M4
 desk_by_path() {
-  local agent="$repo_root/tools/mock-agent/mock-agent" repo="$KANNA_STATE_DIR/repo" fresh="$KANNA_STATE_DIR/fresh"
+  local agent="$repo_root/tools/mock-agent/mock-agent" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" fresh="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/fresh"
   for dir in "$repo" "$fresh"; do mkdir -p "$dir" && git -C "$dir" init -q -b main || { echo "desk_by_path line $LINENO"; return 1; }; done
   git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "desk_by_path line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"; fresh="$(cd "$fresh" && pwd -P)"
@@ -2017,7 +2017,7 @@ desk_by_path() {
 
 scenario desk_planner_stays M4
 desk_planner_stays() {
-  local repo="$KANNA_STATE_DIR/repo"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "desk_planner_stays line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   printf '# Notes\n' >"$repo/notes.md"
@@ -2062,7 +2062,7 @@ desk_planner_stays() {
 scenario move_to_backlog M4
 move_to_backlog() {
   start_daemon && start_app || { echo "move_to_backlog line $LINENO"; return 1; }
-  local repo="$KANNA_STATE_DIR/repo" agent="$repo_root/tools/mock-agent/mock-agent"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$repo_root/tools/mock-agent/mock-agent"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "move_to_backlog line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   (cd "$repo" && kanna task new "Later" "say hi" --agent "$agent") >/dev/null || { echo "move_to_backlog line $LINENO"; return 1; }
@@ -2093,7 +2093,7 @@ move_to_backlog() {
 scenario backlog_and_back M4
 backlog_and_back() {
   start_daemon && start_app || { echo "backlog_and_back line $LINENO"; return 1; }
-  local repo="$KANNA_STATE_DIR/repo" agent="$repo_root/tools/mock-agent/mock-agent"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$repo_root/tools/mock-agent/mock-agent"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "backlog_and_back line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   local w
@@ -2475,7 +2475,7 @@ sys.exit(0 if ok else 1)'
 
 scenario new_desk M4
 new_desk() {
-  local repo="$KANNA_STATE_DIR/repo"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "new_desk line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   start_daemon && start_app || return 1
@@ -2603,7 +2603,7 @@ bash_completion() {
 
 scenario desk_scrolls M4
 desk_scrolls() {
-  local agent="$repo_root/tools/mock-agent/mock-agent" repo="$KANNA_STATE_DIR/repo"
+  local agent="$repo_root/tools/mock-agent/mock-agent" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "desk_scrolls line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   start_daemon || { echo "desk_scrolls line $LINENO"; return 1; }
@@ -2647,7 +2647,7 @@ sys.exit(not (len(items) == 2 and all(i["meta"].startswith("· parked ") for i i
 
 scenario shelf_times M4
 shelf_times() {
-  local agent="$repo_root/tools/mock-agent/mock-agent" repo="$KANNA_STATE_DIR/repo"
+  local agent="$repo_root/tools/mock-agent/mock-agent" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "shelf_times line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   start_daemon || { echo "shelf_times line $LINENO"; return 1; }
@@ -2666,7 +2666,7 @@ shelf_times() {
 
 scenario backlog_search M4
 backlog_search() {
-  local agent="$repo_root/tools/mock-agent/mock-agent" repo="$KANNA_STATE_DIR/repo"
+  local agent="$repo_root/tools/mock-agent/mock-agent" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "backlog_search line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   start_daemon || { echo "backlog_search line $LINENO"; return 1; }
@@ -2725,7 +2725,7 @@ scenario task_start_stop M4
 task_start_stop() {
   local logged; logged="$(cat "$out/daemon.log" 2>/dev/null | wc -l)"
   start_daemon && start_app || { echo "task_start_stop line $LINENO"; return 1; }
-  local repo="$KANNA_STATE_DIR/repo" agent="$KANNA_STATE_DIR/bin/claude"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude"
   mkdir -p "$repo" "${agent%/*}" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$agent" || { echo "task_start_stop line $LINENO"; return 1; }
   git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "task_start_stop line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
@@ -2772,7 +2772,7 @@ task_start_stop() {
 
 scenario shelve_at_once M4
 shelve_at_once() {
-  local repo="$KANNA_STATE_DIR/repo" agent="$KANNA_STATE_DIR/bin/claude" task seen took card
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude" task seen took card
   mkdir -p "$repo" "${agent%/*}" && ln -s "$mock_agent" "$agent" || { echo "shelve_at_once line $LINENO"; return 1; }
   git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "shelve_at_once line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
@@ -2817,7 +2817,7 @@ print("never")' "$KANNA_SOCKET" "$(tid 1)")"
 
 scenario perf_intervals M4
 perf_intervals() {
-  local repo="$KANNA_STATE_DIR/repo" agent="$KANNA_STATE_DIR/bin/claude" card perf
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude" card perf
   mkdir -p "$repo" "${agent%/*}" && ln -s "$mock_agent" "$agent" || { echo "perf_intervals line $LINENO"; return 1; }
   git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "perf_intervals line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
@@ -2854,7 +2854,7 @@ sys.exit(not any(h[\"ms\"] >= 300 and \"command.debug.hang\" in h[\"open\"] for 
 scenario task_restart_typing M4
 task_restart_typing() {
   start_daemon && start_app || { echo "task_restart_typing line $LINENO"; return 1; }
-  local repo="$KANNA_STATE_DIR/repo" agent="$KANNA_STATE_DIR/bin/claude"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude"
   mkdir -p "$repo" "${agent%/*}" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$agent" || { echo "task_restart_typing line $LINENO"; return 1; }
   git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "task_restart_typing line $LINENO"; return 1; }
   (cd "$repo" && kanna task new Typed "say hi" --agent "$agent") >/dev/null || { echo "task_restart_typing line $LINENO"; return 1; }
@@ -2939,7 +2939,7 @@ real_agent_tasks() {
   local claude="${KANNA_E2E_CLAUDE:-$(command -v claude)}" codex="${KANNA_E2E_CODEX:-$(command -v codex)}"
   [[ -x "$claude" ]] || { echo "real_agent_tasks: claude isn't installed (or set KANNA_E2E_CLAUDE)"; return 1; }
   [[ -x "$codex" ]] || { echo "real_agent_tasks: codex isn't installed (or set KANNA_E2E_CODEX)"; return 1; }
-  local agents="$KANNA_STATE_DIR/agents" repo="$KANNA_STATE_DIR/repo" harness="$repo_root/tools/agent-harness"
+  local agents="$KANNA_STATE_DIR/agents" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" harness="$repo_root/tools/agent-harness"
   CODEX_HOME="$agents/codex-home/.codex" start_daemon && start_app || { echo "real_agent_tasks line $LINENO"; return 1; }
   mkdir -p "$agents" "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "real_agent_tasks line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
@@ -3002,7 +3002,7 @@ real_agent_program_status() {
   [[ -x "$claude" ]] || { echo "real_agent_program_status: claude isn't installed (or set KANNA_E2E_CLAUDE)"; return 1; }
   [[ -x "$codex" ]] || { echo "real_agent_program_status: codex isn't installed (or set KANNA_E2E_CODEX)"; return 1; }
   start_daemon && start_app || { echo "real_agent_program_status line $LINENO"; return 1; }
-  local agents="$KANNA_STATE_DIR/agents" repo="$KANNA_STATE_DIR/repo" harness="$repo_root/tools/agent-harness"
+  local agents="$KANNA_STATE_DIR/agents" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" harness="$repo_root/tools/agent-harness"
   mkdir -p "$agents" "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "real_agent_program_status line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   python3 -I "$harness/mock_server.py" --log "$agents/mock.jsonl" >"$agents/port" 2>"$agents/mock.log" &
@@ -3041,7 +3041,7 @@ send_submits() {
   kanna open --window win-1 --name send_cat --cmd "exec cat" >/dev/null || return 1
   kanna send send_cat send_cat-LINE || return 1
   check wait_for 5 eval '[[ "$(kanna read send_cat | grep -c send_cat-LINE)" == 2 ]]' || { kanna read send_cat; return 1; }
-  local agents="$KANNA_STATE_DIR/agents" repo="$KANNA_STATE_DIR/repo" harness="$repo_root/tools/agent-harness"
+  local agents="$KANNA_STATE_DIR/agents" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" harness="$repo_root/tools/agent-harness"
   mkdir -p "$agents" "$repo" && git -C "$repo" init -q -b main || return 1
   repo="$(cd "$repo" && pwd -P)"
   python3 -I "$harness/mock_server.py" --log "$agents/mock.jsonl" >"$agents/port" 2>"$agents/mock.log" &
@@ -3071,7 +3071,7 @@ print(sum(1 for l in map(json.loads, open(sys.argv[1])) if l.get("turn") and any
 scenario codex_task M4
 codex_task() {
   start_daemon && start_app || { echo "codex_task line $LINENO"; return 1; }
-  local repo="$KANNA_STATE_DIR/repo" fake="$KANNA_STATE_DIR/agents" w folder
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" fake="$KANNA_STATE_DIR/agents" w folder
   mkdir -p "$repo/.kanna" "$fake" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "codex_task line $LINENO"; return 1; }
   ln -s "$mock_agent" "$fake/codex"
   repo="$(cd "$repo" && pwd -P)"
@@ -3104,7 +3104,7 @@ codex_task() {
 
 scenario shelf_zoom M4
 shelf_zoom() {
-  local agent="$repo_root/tools/mock-agent/mock-agent" repo="$KANNA_STATE_DIR/repo" planner task shot log
+  local agent="$repo_root/tools/mock-agent/mock-agent" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" planner task shot log
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "shelf_zoom line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   start_daemon || { echo "shelf_zoom line $LINENO"; return 1; }
@@ -3156,7 +3156,7 @@ shelf_zoom() {
 
 scenario task_history M4
 task_history() {
-  local repo="$KANNA_STATE_DIR/repo" agent="$KANNA_STATE_DIR/bin/claude" state="$KANNA_STATE_DIR"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude" state="$KANNA_STATE_DIR"
   mkdir -p "$repo" "${agent%/*}" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$agent" || { echo "task_history line $LINENO"; return 1; }
   git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "task_history line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
@@ -3192,7 +3192,7 @@ task_history() {
 
 scenario quiz_results M4
 quiz_results() {
-  local repo="$KANNA_STATE_DIR/repo" state="$KANNA_STATE_DIR"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" state="$KANNA_STATE_DIR"
   mkdir -p "$repo/src" && printf 'one\ntwo\nthree\n' >"$repo/src/a.rs" || { echo "quiz_results line $LINENO"; return 1; }
   git -C "$repo" init -q -b main && git -C "$repo" add . && git -C "$repo" -c user.email=e@e -c user.name=e commit -q -m first || { echo "quiz_results line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
@@ -3220,7 +3220,7 @@ print(" ".join(r["round"] + "@" + r["head"] for r in rounds), " ".join(":".join(
 
 scenario quiz_window M4
 quiz_window() {
-  local repo="$KANNA_STATE_DIR/repo" agent="$repo_root/tools/mock-agent/mock-agent"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$repo_root/tools/mock-agent/mock-agent"
   mkdir -p "$repo/src" && printf 'one\ntwo\nthree\n' >"$repo/src/a.rs" || { echo "quiz_window line $LINENO"; return 1; }
   git -C "$repo" init -q -b main && git -C "$repo" add . && git -C "$repo" -c user.email=e@e -c user.name=e commit -q -m first || { echo "quiz_window line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
@@ -3294,7 +3294,7 @@ daemon_upgrade() {
 
 scenario login_shell M4
 login_shell() {
-  local zdot="$KANNA_STATE_DIR/zdot" nvm="$KANNA_STATE_DIR/nvm/bin" repo="$KANNA_STATE_DIR/repo"
+  local zdot="$KANNA_STATE_DIR/zdot" nvm="$KANNA_STATE_DIR/nvm/bin" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
   mkdir -p "$zdot" "$nvm" "$repo" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$nvm/codex" || { echo "login_shell line $LINENO"; return 1; }
   printf 'export login_shell_ZSHRC=from-zshrc\npath=(%q $path)\necho login_shell zshrc says hello\n' "$nvm" >"$zdot/.zshrc"
   git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "login_shell line $LINENO"; return 1; }
@@ -3312,7 +3312,7 @@ login_shell() {
 
 scenario planner_choice M4
 planner_choice() {
-  local fake="$KANNA_STATE_DIR/fake" repo="$KANNA_STATE_DIR/repo"
+  local fake="$KANNA_STATE_DIR/fake" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
   mkdir -p "$fake" "$repo" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/claude" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/codex" || { echo "planner_choice line $LINENO"; return 1; }
   git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "planner_choice line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
@@ -3361,7 +3361,7 @@ real_agent_planners() {
   local claude="${KANNA_E2E_CLAUDE:-$(command -v claude)}" codex="${KANNA_E2E_CODEX:-$(command -v codex)}"
   [[ -x "$claude" ]] || { echo "real_agent_planners: claude isn't installed (or set KANNA_E2E_CLAUDE)"; return 1; }
   [[ -x "$codex" ]] || { echo "real_agent_planners: codex isn't installed (or set KANNA_E2E_CODEX)"; return 1; }
-  local agents="$KANNA_STATE_DIR/agents" repo="$KANNA_STATE_DIR/repo" harness="$repo_root/tools/agent-harness"
+  local agents="$KANNA_STATE_DIR/agents" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" harness="$repo_root/tools/agent-harness"
   mkdir -p "$agents" "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "real_agent_planners line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   python3 -I "$harness/mock_server.py" --log "$agents/mock.jsonl" >"$agents/port" 2>"$agents/mock.log" &
@@ -3400,7 +3400,7 @@ planner_resumes() {
   local claude="${KANNA_E2E_CLAUDE:-$(command -v claude)}" codex="${KANNA_E2E_CODEX:-$(command -v codex)}"
   [[ -x "$claude" ]] || { echo "planner_resumes: claude isn't installed (or set KANNA_E2E_CLAUDE)"; return 1; }
   [[ -x "$codex" ]] || { echo "planner_resumes: codex isn't installed (or set KANNA_E2E_CODEX)"; return 1; }
-  local agents="$KANNA_STATE_DIR/agents" repo="$KANNA_STATE_DIR/repo" harness="$repo_root/tools/agent-harness"
+  local agents="$KANNA_STATE_DIR/agents" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" harness="$repo_root/tools/agent-harness"
   mkdir -p "$agents" "$repo/.kanna" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "planner_resumes line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   python3 -I "$harness/mock_server.py" --log "$agents/mock.jsonl" >"$agents/port" 2>"$agents/mock.log" &
@@ -3463,7 +3463,7 @@ print(sum(1 for l in lines if l.get("turn") and l["path"].startswith(sys.argv[2]
 scenario path_reuses_desk M4
 path_reuses_desk() {
   start_daemon && start_app || { echo "path_reuses_desk line $LINENO"; return 1; }
-  local repo="$KANNA_STATE_DIR/repo" wt="$KANNA_STATE_DIR/wt" other="$KANNA_STATE_DIR/other"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" wt="$KANNA_STATE_DIR/wt" other="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/other"
   for dir in "$repo" "$other"; do mkdir -p "$dir" && git -C "$dir" init -q -b main && git -C "$dir" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "path_reuses_desk line $LINENO"; return 1; }; done
   git -C "$repo" worktree add -q -b side "$wt" && mkdir -p "$repo/sub" "$wt/deep" || { echo "path_reuses_desk line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"; wt="$(cd "$wt" && pwd -P)"; other="$(cd "$other" && pwd -P)"
@@ -3485,7 +3485,7 @@ scenario path_last_in_front M4
 path_last_in_front() {
   start_daemon && start_app || { echo "path_last_in_front line $LINENO"; return 1; }
   desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$2\"}}" | field "$1"; }
-  local repo="$KANNA_STATE_DIR/repo"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "path_last_in_front line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   expected="opened d1 on $repo"; says kanna "$repo" || return 1
@@ -3557,7 +3557,7 @@ s = json.load(sys.stdin); print(next(w["id"] for w in s["windows"] if any(sys.ar
 scenario recent_projects M4
 recent_projects() {
   start_daemon && start_app || { echo "recent_projects line $LINENO"; return 1; }
-  local repo="$KANNA_STATE_DIR/repo" other="$KANNA_STATE_DIR/other"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" other="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/other"
   for dir in "$repo" "$other"; do mkdir -p "$dir" && git -C "$dir" init -q -b main && git -C "$dir" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "recent_projects line $LINENO"; return 1; }; done
   repo="$(cd "$repo" && pwd -P)"; other="$(cd "$other" && pwd -P)"
   desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$2\"}}" | field "$1"; }
@@ -3569,14 +3569,14 @@ recent_projects() {
   check wait_for 10 eval '[[ "$(desk lead d2)" == term-* ]]' || { echo "recent_projects: ⌘N opened no Desk"; kanna workspace list --all; return 1; }
   local planner; planner="$(desk lead d2)"
   check wait_for 10 shows "$planner" "Folder, repo, name or number \[1\]:" || { echo "recent_projects: a Desk in ~ didn't offer the recent projects"; kanna read "$planner"; return 1; }
-  check shows "$planner" "1  ${repo/#$HOME/~}" || { kanna read "$planner"; return 1; }
+  check shows "$planner" "1  local/repo" || { kanna read "$planner"; return 1; }
   kanna send-key "$planner" return || { echo "recent_projects line $LINENO"; return 1; }
   check wait_for 10 eval '[[ "$(desk header d2)" == "Planning · "*"${repo#/private} · main" ]]' || { echo "recent_projects: Return didn't open the latest project"; desk header d2; kanna read "$planner"; return 1; }
   expected="opened d3 on $other"; says kanna "$other" || return 1
   check wait_for 5 eval '[[ "$(kanna projects | head -1)" == "$other" && "$(kanna projects | sed -n 2p)" == "$repo" ]]' || { echo "recent_projects: the latest isn't first"; kanna projects; return 1; }
   check wait_for 5 eval '[[ "$(dwin d3 key)" == True ]]' || { app_view; return 1; }
-  check wait_for 5 eval 'raw "{\"id\":1,\"cmd\":\"debug.menu\"}" | grep -q "\"item\":\"${repo/#$HOME/~}\",\"menu\":\"Open Recent\""' || { echo "recent_projects: Open Recent doesn't list the project"; raw '{"id":1,"cmd":"debug.menu"}'; return 1; }
-  raw "{\"id\":1,\"cmd\":\"debug.menu\",\"args\":{\"item\":\"${repo/#$HOME/~}\"}}" | grep -q '"ok":true' || { echo "recent_projects: Open Recent's item didn't run"; return 1; }
+  check wait_for 5 eval 'raw "{\"id\":1,\"cmd\":\"debug.menu\"}" | grep -q "\"item\":\"local/repo\",\"menu\":\"Open Recent\""' || { echo "recent_projects: Open Recent doesn't list the project"; raw '{"id":1,"cmd":"debug.menu"}'; return 1; }
+  raw "{\"id\":1,\"cmd\":\"debug.menu\",\"args\":{\"item\":\"local/repo\"}}" | grep -q '"ok":true' || { echo "recent_projects: Open Recent's item didn't run"; return 1; }
   check wait_for 5 eval '[[ "$(dwin d2 key)" == True ]]' || { echo "recent_projects: Open Recent didn't bring the project's Desk forward"; app_view; return 1; }
   check test "$(app_view | field windows | count)" == 2 || { echo "recent_projects: Open Recent opened another Desk"; kanna workspace list --all; return 1; }
   check wait_for 5 eval '[[ "$(kanna projects | head -1)" == "$repo" ]]' || { echo "recent_projects: Open Recent didn't move it to the top"; kanna projects; return 1; }
@@ -3587,7 +3587,7 @@ recent_projects() {
 scenario blocked_tasks M4
 blocked_tasks() {
   start_daemon && start_app || { echo "blocked_tasks line $LINENO"; return 1; }
-  local repo="$KANNA_STATE_DIR/repo" agent="$repo_root/tools/mock-agent/mock-agent"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$repo_root/tools/mock-agent/mock-agent"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "blocked_tasks line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   in_repo() { (cd "$repo" && kanna "$@"); }
@@ -3634,7 +3634,7 @@ keeper_upgrade() {
   local claude="${KANNA_E2E_CLAUDE:-$(command -v claude)}"
   [[ -x "$claude" ]] || { echo "keeper_upgrade: claude isn't installed (or set KANNA_E2E_CLAUDE)"; return 1; }
   need "$bin/kanna-daemon" && need "$bin/kanna-keeper" || return 1
-  local old="$KANNA_STATE_DIR/old" agents="$KANNA_STATE_DIR/agents" repo="$KANNA_STATE_DIR/repo" harness="$repo_root/tools/agent-harness"
+  local old="$KANNA_STATE_DIR/old" agents="$KANNA_STATE_DIR/agents" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" harness="$repo_root/tools/agent-harness"
   mkdir -p "$old" "$agents" "$repo" && cp "$bin/kanna-keeper" "$old/kanna-keeper" || { echo "keeper_upgrade line $LINENO"; return 1; }
   codesign -f -s - -i dev.kanna.e2e.old-keeper "$old/kanna-keeper" 2>/dev/null || { echo "keeper_upgrade: can't re-sign a copy of the keeper as an older build"; return 1; }
   [[ "$(shasum -a 256 "$old/kanna-keeper" | cut -d' ' -f1)" != "$(shasum -a 256 "$bin/kanna-keeper" | cut -d' ' -f1)" ]] || { echo "keeper_upgrade: the old keeper is the same build"; return 1; }
@@ -3697,7 +3697,7 @@ print(sum(1 for l in lines if l.get("turn") and sys.argv[2] in l["prompt"] and (
 scenario backlog_runners M4
 backlog_runners() {
   start_daemon && start_app || { echo "backlog_runners line $LINENO"; return 1; }
-  local repo="$KANNA_STATE_DIR/repo" fake="$KANNA_STATE_DIR/agents"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" fake="$KANNA_STATE_DIR/agents"
   mkdir -p "$repo/.kanna" "$fake" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "backlog_runners line $LINENO"; return 1; }
   ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/codex"
   repo="$(cd "$repo" && pwd -P)"
@@ -3807,7 +3807,7 @@ print(len(w["tabs"]), w.get("focused"), w.get("zoomed"))' "$presenter"; }
 scenario agent_messaging M4
 agent_messaging() {
   start_daemon && start_app || { echo "agent_messaging line $LINENO"; return 1; }
-  local repo="$KANNA_STATE_DIR/repo" fake="$KANNA_STATE_DIR/agents"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" fake="$KANNA_STATE_DIR/agents"
   mkdir -p "$repo/.kanna" "$fake" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "agent_messaging line $LINENO"; return 1; }
   ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/codex"
   repo="$(cd "$repo" && pwd -P)"
@@ -3887,7 +3887,7 @@ print(" ".join(t["pane"] + ":" + t["about"] for t in json.load(sys.stdin)["toast
 scenario task_scripts M4
 task_scripts() {
   start_daemon && start_app || { echo "task_scripts line $LINENO"; return 1; }
-  local repo="$KANNA_STATE_DIR/repo" agent="$KANNA_STATE_DIR/agent"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/agent"
   mkdir -p "$repo/.kanna" && git -C "$repo" init -q -b main || { echo "task_scripts line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   printf 'target\nmade-by-setup\n' >"$repo/.gitignore"
@@ -3976,7 +3976,7 @@ TEARDOWN
 
 scenario pane_sizes M4
 pane_sizes() {
-  local repo="$KANNA_STATE_DIR/repo" want
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" want
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "pane_sizes line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   sizer() {
@@ -4030,7 +4030,7 @@ PY
 
 scenario backlog_rename M4
 backlog_rename() {
-  local agent="$repo_root/tools/mock-agent/mock-agent" repo="$KANNA_STATE_DIR/repo"
+  local agent="$repo_root/tools/mock-agent/mock-agent" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
   mkdir -p "$repo/.kanna" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "backlog_rename line $LINENO"; return 1; }
   printf '{"version": 1, "backlog": {"runners": 0}}\n' >"$repo/.kanna/config.json"
   repo="$(cd "$repo" && pwd -P)"
@@ -4053,7 +4053,7 @@ backlog_rename() {
 scenario done_leaves_no_window M4
 done_leaves_no_window() {
   start_daemon && start_app || { echo "done_leaves_no_window line $LINENO"; return 1; }
-  local repo="$KANNA_STATE_DIR/repo" agent="$repo_root/tools/mock-agent/mock-agent"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$repo_root/tools/mock-agent/mock-agent"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "done_leaves_no_window line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   (cd "$repo" && kanna task new "With diff" "say 1" --agent "$agent") >/dev/null || { echo "done_leaves_no_window line $LINENO"; return 1; }
@@ -4069,7 +4069,7 @@ done_leaves_no_window() {
 
 scenario toasts M4
 toasts() {
-  local agent="$repo_root/tools/mock-agent/mock-agent" repo="$KANNA_STATE_DIR/repo"
+  local agent="$repo_root/tools/mock-agent/mock-agent" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "toasts line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   start_daemon || { echo "toasts line $LINENO"; return 1; }
@@ -4152,7 +4152,7 @@ PY
   check wait_for 20 eval '[[ "$(machines links.0.attached)" == True ]]' || { echo "machine_remote_task: the app didn't link to vm"; raw '{"id":1,"cmd":"debug.machines"}'; return 1; }
   check test "$(machines links.0.machine) $(machines links.0.daemon.machine) $(machines links.0.path.path)" == "vm vm direct" || { raw '{"id":1,"cmd":"debug.machines"}'; return 1; }
 
-  local repo="$vm/repo"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/team/notes"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first && git -C "$repo" remote add origin https://example.com/team/notes.git || { echo "machine_remote_task line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   local opened; opened="$(cd / && vmk "$repo")" && [[ "$opened" == "opened d1 on vm:$repo" ]] || { echo "machine_remote_task: a Desk on vm's project: $opened"; return 1; }
@@ -4279,3 +4279,54 @@ for s in "${run[@]}"; do
 done
 echo "$passed passed, $failed failed"
 [[ $failed -eq 0 ]]
+
+scenario project_move M4
+project_move() {
+  start_daemon && start_app || { echo "project_move line $LINENO"; return 1; }
+  local outside="$KANNA_STATE_DIR/work/notes" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/app" agent="$KANNA_STATE_DIR/bin/claude"
+  mkdir -p "$outside" "$repo" "${agent%/*}" && ln -s "$mock_agent" "$agent" || { echo "project_move line $LINENO"; return 1; }
+  for dir in "$outside" "$repo"; do git -C "$dir" init -q -b main && git -C "$dir" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "project_move line $LINENO"; return 1; }; done
+  outside="$(cd "$outside" && pwd -P)"; repo="$(cd "$repo" && pwd -P)"
+  local refused; refused="$(cd "$outside" && kanna task new "Outside" "hi" 2>&1)" && { echo "project_move: a task was made outside repos"; return 1; }
+  [[ "$refused" == *"isn't in "*"move it there with \`kanna project move $outside\` (to "*"/.kanna-v4/repos/local/notes)"* ]] || { echo "project_move: task new outside repos: $refused"; return 1; }
+  refused="$(cd / && kanna "$outside" 2>&1)" && { echo "project_move: a Desk opened outside repos"; return 1; }
+  [[ "$refused" == *"kanna project move $outside"* ]] || { echo "project_move: kanna PATH outside repos: $refused"; return 1; }
+
+  (cd "$repo" && kanna task new "Moving" "say moving" --agent "$agent") >/dev/null || { echo "project_move line $LINENO"; return 1; }
+  [[ "$(kanna task start "$(tid 1)")" == "started $(sid 1) in the backlog: term-"* ]] || { echo "project_move: the task didn't start"; return 1; }
+  check wait_for 5 shows "Moving" "say moving" || { echo "project_move: the agent didn't get its first message"; kanna read "Moving"; return 1; }
+  local task worktree session; task="$(pane "Moving" id)"; worktree="$repo/.kanna-worktrees/$(tid 1)"
+  session="$(kanna read "Moving" | tr -d '\r\n' | sed -n 's/.*--session-id \([0-9a-f-]\{36\}\).*/\1/p')"
+  [[ "$session" =~ ^[0-9a-f-]{36}$ ]] || { echo "project_move: the task started without a session"; kanna read "Moving"; return 1; }
+  local claude="$KANNA_AGENTS_HOME/.claude/projects" encoded; encoded() { tr -c 'A-Za-z0-9\n' - <<<"$1"; }
+  mkdir -p "$claude/$(encoded "$worktree")" "$claude/$(encoded "$repo")/memory" || { echo "project_move line $LINENO"; return 1; }
+  echo '{"said":"moving"}' >"$claude/$(encoded "$worktree")/$session.jsonl" && echo remember >"$claude/$(encoded "$repo")/memory/MEMORY.md" || { echo "project_move line $LINENO"; return 1; }
+  KANNA_TERMINAL="$task" kanna open --name side --cmd 'pwd -P; exec cat' >/dev/null || { echo "project_move line $LINENO"; return 1; }
+  (cd "$repo" && kanna open --window new --name plain --cmd 'pwd -P; exec cat') >/dev/null || { echo "project_move line $LINENO"; return 1; }
+  check wait_for 5 shows side "$worktree" && check wait_for 5 shows plain "$repo" || { kanna read side; kanna read plain; return 1; }
+
+  git -C "$repo" remote add origin https://example.com/team/app.git || return 1
+  refused="$(cd "$repo" && kanna task new "Late" "hi" 2>&1)" && { echo "project_move: a task was made in a project that's out of its place"; return 1; }
+  [[ "$refused" == *"kanna project move $repo"*"/.kanna-v4/repos/team/app)"* ]] || { echo "project_move: a new origin is a new place: $refused"; return 1; }
+  refused="$(KANNA_TERMINAL="$(pane plain id)" kanna project move "$repo" 2>&1)" && { echo "project_move: the move ran from a terminal it stops"; return 1; }
+  [[ "$refused" == *"run kanna project move from a terminal outside it"* ]] || { echo "project_move: $refused"; return 1; }
+
+  local moved there="$KANNA_AGENTS_HOME/.kanna-v4/repos/team/app"
+  there="$(cd "${there%/team/app}" && pwd -P)/team/app"
+  moved="$(cd / && kanna project move "$repo")" || { echo "project_move: the move failed: $moved"; return 1; }
+  [[ "$moved" == "moved $repo to $there"* && "$moved" == *"1 worktree"*"1 Claude folder"* && "$moved" == *"started again there: $(tid 1), "* ]] || { echo "project_move: $moved"; return 1; }
+  check test ! -e "$repo" || { echo "project_move: something is left at the old path"; ls -la "$repo"; return 1; }
+  local newtree="$there/.kanna-worktrees/$(tid 1)"
+  git -C "$newtree" status --porcelain >/dev/null || { echo "project_move: the worktree doesn't work in its new place"; return 1; }
+  check test -f "$claude/$(encoded "$newtree")/$session.jsonl" -a ! -e "$claude/$(encoded "$worktree")" || { echo "project_move: Claude's conversation didn't move"; ls "$claude"; return 1; }
+  check test "$(cat "$claude/$(encoded "$there")/memory/MEMORY.md")" == remember || { echo "project_move: Claude's memory didn't move"; ls -R "$claude"; return 1; }
+  check wait_for 10 eval '[[ "$(kanna read Moving | tr -d "\r\n")" == *"resumed $session"* ]]' || { echo "project_move: the agent didn't resume its conversation"; kanna read Moving; return 1; }
+  check test "$(cd "$(pane Moving cwd)" && pwd -P)" == "$newtree" || { echo "project_move: the agent isn't in its new worktree"; pane Moving cwd; return 1; }
+  check wait_for 5 is side state running && check wait_for 5 shows side "$newtree" || { echo "project_move: the task's terminal didn't start again in the new place"; kanna read side; return 1; }
+  check wait_for 5 is plain state running && check wait_for 5 shows plain "$there" || { echo "project_move: the shell didn't start again in the new place"; kanna read plain; return 1; }
+  (cd "$there" && kanna task list) | grep -qE "^$(sid 1) +Moving +Backlog +(idle|working|running)" || { (cd "$there" && kanna task list); return 1; }
+  check test "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select repo || ' ' || json_extract(doc, '$.folder') from tasks")" == "$there $newtree" || { echo "project_move: kanna.db still names the old path"; return 1; }
+  local opened; opened="$(cd / && kanna "$there")" && [[ "$opened" == "opened d"*" on $there" ]] || { echo "project_move: a Desk on the moved project: $opened"; return 1; }
+  (cd "$there" && kanna task new "Next" "hi") >/dev/null || { echo "project_move: a task in the moved project"; return 1; }
+  refused="$(cd / && kanna project move "$there" 2>&1)"; [[ "$refused" == *"is in its place already"* ]] || { echo "project_move: $refused"; return 1; }
+}
