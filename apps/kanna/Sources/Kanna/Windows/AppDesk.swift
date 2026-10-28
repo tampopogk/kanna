@@ -1,4 +1,5 @@
 import AppKit
+import KannaWindows
 
 extension AppController {
     static let app = "mac"
@@ -66,28 +67,28 @@ extension AppController {
     func deskShowing(_ workspace: String) -> DeskRecord? { physical.desks.first { $0.shows == workspace } }
 
     @discardableResult
-    func pullTask(_ task: String, into window: String?, front: Bool = true) -> (moved: Bool, desk: String)? {
+    func pullTask(_ task: String, into window: String?, front: Bool = true, origin: Origin = .app) -> (moved: Bool, desk: String)? {
         guard let workspace = workspace(ofTask: task) else { return nil }
         if let there = deskShowing(workspace) {
-            show(window: there.id)
+            show(window: there.id, origin: origin)
             return (false, there.id)
         }
         var desk = window.flatMap { physical.desk($0) } ?? (front ? frontDesk : nil) ?? physical.newDesk(project: nil)
         if let old = desk.shows { physical.park(old) }
         desk.shows = workspace
         physical.setDesk(desk)
-        show(window: desk.id)
+        show(window: desk.id, origin: origin)
         return (true, desk.id)
     }
 
     @discardableResult
-    func park(desk id: String) -> String? {
+    func park(desk id: String, origin: Origin = .app) -> String? {
         guard var desk = physical.desk(id), let workspace = desk.shows else { return nil }
         let task = published["workspaces"]?.array?.first { $0["id"]?.string == workspace }?["dock"]?["pane"]?.string
         physical.park(workspace)
         desk.shows = nil
         physical.setDesk(desk)
-        show(window: id)
+        show(window: id, origin: origin)
         return task
     }
 
@@ -109,31 +110,40 @@ extension AppController {
         return frontmost(physical.desks.filter { sameProject(controllers[$0.id]?.projectRoot, root) || sameProject($0.project.map(rootLocation), root) })
     }
 
-    func show(window id: String) {
+    func show(window id: String, origin: Origin = .app) {
         let inFront = keyWindow?["id"]?.string == id
-        physical.setFront(id)
+        let placement = placement(origin)
+        if placement.recorded { physical.setFront(id) }
         restate()
         refresh()
-        if !inFront, let controller = controllers[id], !controller.window.isKeyWindow { present(controller.window) }
+        if !inFront, let controller = controllers[id], !controller.window.isKeyWindow { present(controller.window, placement) }
     }
 
-    func front(_ args: JSON) -> String? {
+    func origin(_ args: JSON) -> Origin { args["user"]?.bool == true ? .user : .agent }
+
+    func front(_ args: JSON) -> [String: JSON] {
         let workspace = args["workspace"]?["id"]?.string
         let shown = workspace.flatMap { ws in physical.desks.first { $0.shows == ws || $0.planner == ws }?.id }
-        guard let id = shown ?? args["window"]?.string, window(id) != nil else { return nil }
-        show(window: id)
-        return id
+        guard let id = shown ?? args["window"]?.string else { return ["front": nil] }
+        let origin = origin(args)
+        if window(id) == nil {
+            guard args["new"]?.bool == true else { return ["front": nil] }
+            awaiting[id] = origin
+        } else {
+            show(window: id, origin: origin)
+        }
+        return placement(origin).recorded ? ["front": .string(id)] : ["front": .string(id), "behind": true]
     }
 
-    func openDesk(project: String?, fresh: Bool) -> (desk: String, project: String?, new: Bool) {
+    func openDesk(project: String?, fresh: Bool, origin: Origin = .app) -> (desk: String, project: String?, new: Bool) {
         let root = project.map(rootLocation)
         if !fresh, let root { touchProject(root) }
         if !fresh, let found = projectDesk(root) {
-            show(window: found.id)
+            show(window: found.id, origin: origin)
             return (found.id, found.project.flatMap { sameProject(rootLocation($0), root) ? $0 : nil } ?? project ?? root, false)
         }
         let desk = physical.newDesk(project: project)
-        show(window: desk.id)
+        show(window: desk.id, origin: origin)
         return (desk.id, project, true)
     }
 
@@ -152,25 +162,25 @@ extension AppController {
     }
 
     func installDesk() {
-        commands["app.front"] = { [weak self] args in ["front": self?.front(args).map { .string($0) } ?? .null] }
+        commands["app.front"] = { [weak self] args in self?.front(args) ?? ["front": nil] }
         commands["desk"] = { [weak self] args in
             guard let self else { throw KannaError("gone", "Kanna.app is quitting") }
             switch args["action"]?.string {
             case "pull":
                 guard let task = args["task"]?.string else { throw KannaError("bad_request", "pull needs a task") }
                 let desk = args["by"]?.string.flatMap { self.desk(of: $0) } ?? projectDesk(projectRoot(task))
-                guard let pulled = pullTask(task, into: desk?.id, front: false) else { throw KannaError("not_found", "\(task) isn't on this app's Shelf") }
+                guard let pulled = pullTask(task, into: desk?.id, front: false, origin: origin(args)) else { throw KannaError("not_found", "\(task) isn't on this app's Shelf") }
                 return ["task": .string(task), "moved": .bool(pulled.moved), "desk": .string(pulled.desk)]
             case "park":
                 guard let task = args["task"]?.string else { throw KannaError("bad_request", "park needs a task") }
                 guard let workspace = workspace(ofTask: task) else { throw KannaError("not_found", "\(task) isn't on this app's Shelf") }
-                guard let desk = deskShowing(workspace), park(desk: desk.id) != nil else { return ["task": .string(task), "parked": false] }
+                guard let desk = deskShowing(workspace), park(desk: desk.id, origin: origin(args)) != nil else { return ["task": .string(task), "parked": false] }
                 return ["task": .string(task), "parked": true, "desk": .string(desk.id)]
             case "desk":
                 let place = args["place"]
                 let project = (place?["main"]?.string ?? args["project"]?.string).map { MachineIDs.location($0, on: args["machine"]?.string) }
                 if let project, let identity = place?["project"]?.string { identities[rootLocation(project)] = identity }
-                let opened = openDesk(project: project, fresh: args["new"]?.bool == true)
+                let opened = openDesk(project: project, fresh: args["new"]?.bool == true, origin: origin(args))
                 return ["desk": .string(opened.desk), "project": opened.project.map { .string($0) } ?? .null, "new": .bool(opened.new)]
             case "close":
                 guard let id = args["desk"]?.string, isDesk(id) else { throw KannaError("not_found", "no Desk \"\(args["desk"]?.string ?? "")\"") }
