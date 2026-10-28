@@ -719,6 +719,10 @@ impl CoreHandle {
             Some(agent) => Some(self.need_pane(Some(agent))?.id),
             None => None,
         };
+        let placed = ["window", "workspace", "dock", "lead", "planner"].iter().any(|key| args.get(*key).is_some_and(|v| !v.is_null() && v != &Value::Bool(false)));
+        if let Some(from) = string(args, "from").filter(|from| !placed && self.state().panes.pane(from).is_none()) {
+            return Err(KmuxError::new("no_caller", format!("{from} isn't one of this Kanna's panes, so there's no window of yours here: say where with --window WINDOW (or --window new)")));
+        }
         let name = string(args, "name").map(String::from);
         let taken = |core: &CoreHandle| match &name {
             Some(name) if core.state().panes.pane(name).is_some() => Err(KmuxError::new("name_taken", format!("a pane named \"{name}\" already exists"))),
@@ -776,8 +780,8 @@ impl CoreHandle {
             _ => None,
         };
 
-        if kind == PaneType::Code && name.is_none() && !new_tab && dock.is_none() && split.is_none() && size.is_none() && args.get("window").is_none() {
-            if let Some(opened) = self.open_again(string(args, "path").unwrap_or_default(), line, string(args, "from")).await? {
+        if kind == PaneType::Code && name.is_none() && !new_tab && dock.is_none() && split.is_none() && size.is_none() {
+            if let Some(opened) = self.open_again(string(args, "path").unwrap_or_default(), line, string(args, "from"), string(args, "window")).await? {
                 return Ok(opened);
             }
         }
@@ -856,18 +860,15 @@ impl CoreHandle {
         Ok(opened(summary, &location, &placed))
     }
 
-    async fn showing(&self, path: &str, from: Option<&str>) -> Result<Option<(String, Map)>, KmuxError> {
-        self.showing_in(PaneType::Code, path, from).await
+    async fn showing(&self, path: &str, from: Option<&str>, window: Option<&str>) -> Result<Option<(String, Map)>, KmuxError> {
+        self.showing_in(PaneType::Code, path, from, window).await
     }
 
-    async fn showing_in(&self, kind: PaneType, path: &str, from: Option<&str>) -> Result<Option<(String, Map)>, KmuxError> {
-        let from = from.and_then(|from| self.state().panes.pane(from).map(|p| p.id.clone()));
-        let window = match from {
-            Some(from) => self.layout(json!({ "op": "location", "pane": from })).await?.remove("window"),
-            None => {
-                let windows = self.layout(json!({ "op": "windows" })).await?.remove("windows").unwrap_or_default();
-                windows.as_array().and_then(|w| w.iter().find(|w| w["key"] == true)).map(|w| w["id"].clone())
-            }
+    async fn showing_in(&self, kind: PaneType, path: &str, from: Option<&str>, window: Option<&str>) -> Result<Option<(String, Map)>, KmuxError> {
+        let window = match (window, from.and_then(|from| self.state().panes.pane(from).map(|p| p.id.clone()))) {
+            (Some(window), _) => Some(Value::String(window.into())),
+            (None, Some(from)) => self.layout(json!({ "op": "location", "pane": from })).await?.remove("window"),
+            (None, None) => None,
         };
         let Some(window) = window.filter(|w| !w.is_null()) else { return Ok(None) };
         let showing: Vec<String> = {
@@ -883,8 +884,8 @@ impl CoreHandle {
         Ok(None)
     }
 
-    async fn open_again(&self, path: &str, line: Option<u64>, from: Option<&str>) -> Result<Option<Map>, KmuxError> {
-        let Some((id, location)) = self.showing(path, from).await? else { return Ok(None) };
+    async fn open_again(&self, path: &str, line: Option<u64>, from: Option<&str>, window: Option<&str>) -> Result<Option<Map>, KmuxError> {
+        let Some((id, location)) = self.showing(path, from, window).await? else { return Ok(None) };
         {
             let _turn = self.0.turns.take().await;
             self.layout(json!({ "op": "command", "cmd": "focus", "args": { "pane": id } })).await?;
@@ -927,9 +928,9 @@ impl CoreHandle {
 
     async fn place_comment(&self, comment: Comment, args: &Value, stop: Option<StopMark>) -> Result<Map, KmuxError> {
         let (path, first, last) = (comment.path.clone(), comment.first, comment.last);
-        let placeless = ["name", "tab", "dock", "split", "size", "window"].iter().all(|key| args.get(*key).is_none());
+        let placeless = ["name", "tab", "dock", "split", "size"].iter().all(|key| args.get(*key).is_none());
         let from = string(args, "from");
-        let found = if placeless { self.showing(&path, from).await? } else { None };
+        let found = if placeless { self.showing(&path, from, string(args, "window")).await? } else { None };
         let (id, location, was_open) = match found {
             Some((id, location)) => {
                 {
@@ -986,11 +987,7 @@ impl CoreHandle {
             Some(from) => from.to_string(),
             None => {
                 let mut listed = self.layout(json!({ "op": "windows" })).await.ok()?;
-                let window = match window {
-                    Some(id) => Some(Value::String(id.into())),
-                    None if workspace.is_none() => listed.get("windows")?.as_array()?.iter().find(|w| w["key"] == true).map(|w| w["id"].clone()),
-                    None => None,
-                };
+                let window = window.map(|id| Value::String(id.into()));
                 let workspaces = listed.remove("workspaces")?;
                 let ws = workspaces.as_array()?.iter().find(|ws| match (&window, workspace) {
                     (_, Some(id)) => ws["id"] == id,

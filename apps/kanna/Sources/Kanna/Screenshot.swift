@@ -43,10 +43,10 @@ extension AppController {
             guard self.window(window) != nil else { throw KannaError("not_found", "no window \"\(window)\"") }
             return (window, nil)
         }
-        if let from, let id = (windows.first { shownPaneViews($0).contains { $0.id == from } } ?? windowOf(pane: from))?["id"]?.string {
-            return (id, nil)
+        guard let from else { throw KannaError("bad_request", "screenshot needs a pane, a window, or the terminal it's run in") }
+        guard let id = (windows.first { shownPaneViews($0).contains { $0.id == from } } ?? windowOf(pane: from))?["id"]?.string else {
+            throw KannaError("not_shown", "\(from) isn't in a window that's showing: say PANE or --window WINDOW")
         }
-        guard let id = keyWindow?["id"]?.string else { throw KannaError("not_found", "no window to capture") }
         return (id, nil)
     }
 

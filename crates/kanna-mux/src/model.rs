@@ -898,11 +898,13 @@ impl Model {
         let mut used = vec![];
         let outside: Vec<String> = self.workspaces.iter().map(|s| s.dock.pane.clone()).collect();
         let root = normalize(build(args.get("layout").unwrap_or(&Value::Null), &mut used, panes, &outside)?);
-        let caller = string(args, "from").filter(|_| args.get("window").is_none()).and_then(|from| panes.need(Some(from)).ok()).and_then(|p| self.holder_of(&p.id));
-        let h = match (caller, string(args, "workspace")) {
-            (_, Some(workspace)) => self.workspace_holder(workspace)?,
-            (Some(h), None) => h,
-            (None, None) => Holder::Window(self.target_window(string(args, "window"))?),
+        let from = string(args, "from").filter(|_| args.get("window").is_none());
+        let caller = from.and_then(|from| panes.need(Some(from)).ok()).and_then(|p| self.holder_of(&p.id));
+        let h = match (caller, string(args, "workspace"), from) {
+            (_, Some(workspace), _) => self.workspace_holder(workspace)?,
+            (Some(h), None, _) => h,
+            (None, None, Some(from)) => return Err(not_found(format!("{from} is in no window or workspace here: say which with --window WINDOW"))),
+            (None, None, None) => Holder::Window(self.target_window(string(args, "window"))?),
         };
         let t = match self.tabs(h).active_index() {
             Some(t) => t,
@@ -1062,7 +1064,11 @@ impl LayoutHost for Model {
                     beside = self.locate(c).map(|l| (l.tab, c.to_string()));
                 }
             }
-            (None, None) => {}
+            (None, None) => {
+                if let Some(c) = at.opener.as_deref().or(at.from.as_deref()) {
+                    return Err(not_found(format!("{c} is in no window or workspace, so there's nowhere beside it: say where with --window WINDOW (or --window new)")));
+                }
+            }
         }
         let h = match h {
             Some(h) => h,

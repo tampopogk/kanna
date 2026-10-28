@@ -161,7 +161,7 @@ impl CoreHandle {
         };
         let mark = StopMark { owner: owner.to_string(), at, of, thread: Some(thread.clone()) };
         let placeless = PLACEMENT.iter().all(|key| *key == "wait" || args.get(*key).is_none());
-        let found = if placeless { self.showing_in(PaneType::Md, &stop.path, Some(owner)).await? } else { None };
+        let found = if placeless { self.showing_in(PaneType::Md, &stop.path, Some(owner), None).await? } else { None };
         let (id, location, opened) = match found {
             Some((id, location)) => {
                 {

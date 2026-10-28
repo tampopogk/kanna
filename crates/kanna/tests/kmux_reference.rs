@@ -32,7 +32,7 @@ const EXTENDED: &[(&str, &str)] = &[
     ("move", "notes"),
 ];
 
-const OPTIONS_DIFFER: &[(&str, &str)] = &[("move", "--window WINDOW|new")];
+const OPTIONS_DIFFER: &[(&str, &str)] = &[("move", "--window WINDOW|new"), ("open", "--window ID|new"), ("arrange", "--window WINDOW")];
 
 const CODE_PANES: &[(&str, &str)] = &[("open", "summary"), ("navigate", "summary")];
 

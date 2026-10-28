@@ -70,7 +70,7 @@ A pane belongs to the workspace it's in. Moving it to another workspace's window
 
 ## 3. Commands: target and reply
 
-**The caller** is the CLI's `$KANNA_TERMINAL`. A command that names a pane or tab acts where *that* pane or tab is. One that names nothing acts where the caller is: its workspace's Desk part, one of its windows, or a free window. `--window W` aims at W, whoever's it is; a task's pane may do that, though it rarely needs to, and the reply names W's workspace so the agent sees where its pane went.
+**The caller** is the CLI's `$KANNA_TERMINAL`. A command that names a pane or tab acts where *that* pane or tab is. One that names nothing acts where the caller is: its workspace's Desk part, one of its windows, or a free window. With no caller (run outside a Kanna terminal, or from a terminal this Kanna doesn't know), it's refused with the flag to give, never sent to the key window ([the CLI acts on its caller](cli-caller.md)). `--window W` aims at W, whoever's it is; a task's pane may do that, though it rarely needs to, and the reply names W's workspace so the agent sees where its pane went.
 
 | Command | From a task's pane (task-1dfb) | From a pane in a free window (win-4) |
 |---|---|---|
@@ -80,6 +80,8 @@ A pane belongs to the workspace it's in. Moving it to another workspace's window
 | `focus --window W` | makes W key; for a hidden window, an error saying where it is | as kmux |
 | `zoom PANE` | that pane's zoom, on screen or not | as kmux |
 | `comment` | the markdown pane it opens or finds is beside the caller | in win-4 |
+| `arrange` | the caller's shown tab: on screen or not | win-4's shown tab |
+| `screenshot` | the caller's window, if it's showing | win-4 |
 | `move PANE --window W` | into W | as kmux |
 | `window assign W TASK\|WORKSPACE` / `window free W` | puts W in that workspace, or frees it ([4](#4-kinds-of-window-and-the-planning-terminal)) | the same |
 | `close` | a pane, a tab, or `--window W` (and its panes) | as kmux |

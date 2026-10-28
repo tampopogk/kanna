@@ -32,7 +32,7 @@ fn a_paired_machine_runs_any_command_on_another_and_an_unpaired_or_revoked_one_i
 
     let here = vm.kanna(&["task", "list"]).ok();
     assert_eq!(mbp.kanna(&["--host", "vm", "task", "list"]).ok(), here);
-    mbp.kanna(&["--host", "vm", "open", "--name", "far", "--no-wait"]).ok();
+    mbp.kanna(&["--host", "vm", "open", "--window", "new", "--name", "far", "--no-wait"]).ok();
     assert!(vm.kanna(&["workspace", "list", "--all"]).ok().contains("far"));
     let listed = cli(&mbp.dir).env("KANNA_SOCKET", mbp.socket()).env("KANNA_HOST", "vm").args(["workspace", "list", "--all"]).output().unwrap();
     assert!(String::from_utf8_lossy(&listed.stdout).contains("far"));
@@ -123,7 +123,7 @@ fn an_app_on_another_machine_attaches_over_the_network_and_another_protocol_leav
     assert_eq!((refused["ok"].clone(), refused["error"]["code"].clone(), refused["mine"].clone()), (json!(false), json!("other_protocol"), json!([1, 1])), "{refused}");
     assert_eq!(vm.kanna(&["machine", "--json"]).json()["name"], "vm", "the daemon keeps running");
 
-    vm.kanna(&["open", "--name", "far", "--no-wait", "--cmd", "/bin/cat"]).ok();
+    vm.kanna(&["open", "--window", "new", "--name", "far", "--no-wait", "--cmd", "/bin/cat"]).ok();
     let (mut far, hello) = link(&runtime, &client, &vm_key, port, &cert, json!({ "pid": 1, "client": "mbp", "protocols": [1, 3], "build": "another", "commit": "abc" }));
     assert_eq!((hello["ok"].clone(), hello["protocol"].clone(), hello["daemon"]["machine"].clone()), (json!(true), json!(1), json!("vm")), "{hello}");
     let terminal = hello["panes"].as_array().unwrap().iter().find(|p| p["name"] == "far").unwrap()["id"].as_str().unwrap().to_string();
@@ -161,7 +161,7 @@ fn an_update_moves_a_machine_to_another_commit_and_its_terminals_carry_on() {
     vm.kanna(&["machine", "name", "vm"]).ok();
     pair(&mbp, &vm);
     let pid_file = vm.dir.join("shell.pid");
-    vm.kanna(&["open", "--name", "kept", "--no-wait", "--cmd", &format!("echo $$ > {}; exec sleep 600", pid_file.display())]).ok();
+    vm.kanna(&["open", "--window", "new", "--name", "kept", "--no-wait", "--cmd", &format!("echo $$ > {}; exec sleep 600", pid_file.display())]).ok();
     wait_for("the terminal's shell", || std::fs::read_to_string(&pid_file).is_ok_and(|p| p.ends_with('\n')));
     let shell: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
     let daemon_pid = std::fs::read_to_string(vm.dir.join("state/daemon.pid")).unwrap();

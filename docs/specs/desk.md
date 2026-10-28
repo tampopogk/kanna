@@ -77,8 +77,8 @@ With no task on the Desk, the window's planning terminal, where you run your pla
 | Command | Does |
 |---|---|
 | `kanna task list [QUERY]` | Every task: ID, name, where it is (the Shelf or the backlog), status; QUERY filters by name and first message |
-| `kanna task pull ID` | Put a task on the app's front Desk (relayed to the app) |
-| `kanna task park [ID]` | Move a task (default: the one on the front Desk) to the Shelf (relayed to the app) |
+| `kanna task pull ID` | Put a task on the caller's Desk, else on a Desk on its project, else a new one (relayed to the app; [the CLI acts on its caller](cli-caller.md)) |
+| `kanna task park [ID]` | Move a task (default: the caller's own; outside a Kanna terminal ID is needed) to the Shelf (relayed to the app) |
 | `kanna task done ID` | End a task: close its panes |
 | `kanna task new`, `start`, `stop`, `shelve`, `defer`, `name` | Make, run, stop, move and name tasks: [tasks](tasks.md#7-cli) |
 
