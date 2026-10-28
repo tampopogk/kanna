@@ -467,9 +467,9 @@ extension AppController {
     private func cycleWindow(_ step: Int) {
         let ids = windows.compactMap { $0["id"]?.string }
         guard !ids.isEmpty else { return }
-        let at = ids.firstIndex { $0 == state["key"]?.string } ?? 0
+        let at = ids.firstIndex { $0 == keyWindow?["id"]?.string } ?? 0
         let next = ids[((at + step) % ids.count + ids.count) % ids.count]
-        if isDesk(next) { show(desk: next) } else { layoutCommand("focus", ["window": .string(next)]) }
+        if isDesk(next) { show(desk: next) } else { show(window: next) }
     }
 
     func ghosttyAction(_ pane: String, _ action: ghostty_action_s) -> Bool {
