@@ -211,12 +211,12 @@ body.picture.menu .menubar { display: flex; }
 <body>
 <main>
   <div class="intro">
-    <h1>Desk: one task per window, the rest on the Shelf</h1>
-    <p>A task is what a Desk holds: its agent, docked on the left, and its tabs. The Desk shows one; the Shelf below holds the project's other tasks, their agents still running. With no task on it, the Desk shows its planning terminal on the left, beside the full Shelf. A new Desk's planning terminal runs Kanna's planner script: it asks which agent plans (in a repo, your choice becomes the project's), then starts it with <code>You are the Kanna planning agent.</code>; quit it (<code>/exit</code>) and it's your shell, where you <code>cd</code> elsewhere (the Shelf follows) or start an agent yourself. Tell the planning agent what you want ("split the login work into three tasks") and it adds tasks to the backlog. Tasks are made only by an agent or by hand with <code>kanna task new "NAME" "FIRST MESSAGE"</code> (type it in an agent's pane), then started from the backlog. ⌘N (File › New Desk) opens another Desk window, its planning terminal in <code>~</code>, asking where: Return takes your latest project, a number another recent one. File › Open Recent opens a recent project's Desk straight away, or brings it forward if it's open. Click a Shelf item to swap, Park to clear the Desk, drag the line between the agent and the tabs, or type a <code>kanna</code> command in the agent's pane as the agent would.</p>
+    <h1>Desk: a project's window, up to three tasks on it, the rest on the Shelf</h1>
+    <p>A task is its agent, docked on the left, and its tabs. A Desk holds up to three of a project's tasks and shows the active one; the strip below holds the Desk's others, their agents still running, and counts the tasks on the Shelf. With no task active, the Desk shows the Desk view: its planning terminal on the left, beside the Desk's tasks and the Shelf. For the Desk view as it is now, with ⌘. toggling between it and the active task, see <a href="desk-view.html">desk-view.html</a>. A new Desk's planning terminal runs Kanna's planner script: it asks which agent plans (in a repo, your choice becomes the project's), then starts it with <code>You are the Kanna planning agent.</code>; quit it (<code>/exit</code>) and it's your shell, where you <code>cd</code> elsewhere (the Desk view follows) or start an agent yourself. Tell the planning agent what you want ("split the login work into three tasks") and it adds tasks to the Shelf. Tasks are made only by an agent or by hand with <code>kanna task new "NAME" "FIRST MESSAGE"</code> (type it in an agent's pane), then started from the Shelf. ⌘N (File › New Desk) opens another Desk window, its planning terminal in <code>~</code>, asking where: Return takes your latest project, a number another recent one. File › Open Recent opens a recent project's Desk straight away, or brings it forward if it's open. Click a Desk task in the strip to make it active, Park (⌘.) to show the Desk view, drag the line between the agent and the tabs, or type a <code>kanna</code> command in the agent's pane as the agent would.</p>
     <div class="controls">
       <button id="theme">Light / dark</button>
-      <button id="ring" title="A parked task's agent stops to ask you something: it moves to the front of the Shelf, needs you">Simulate: a parked agent needs you</button>
-      <button id="long" title="An empty Desk with a dozen tasks in the backlog: search it">Simulate: a long backlog</button>
+      <button id="ring" title="A Desk task that isn't active stops to ask you something: it moves to the front of the strip, needs you">Simulate: a Desk task needs you</button>
+      <button id="long" title="The Desk view with a dozen tasks on the Shelf: search it">Simulate: a long Shelf</button>
       <button id="fresh" title="A window with nothing in it: its planning terminal runs the planner script">Simulate: no tasks</button>
       <button id="first" title="Kanna's first launch: the planner script asks about Kanna's skills before the agent">Simulate: first launch</button>
       <button id="onlyone" title="Which agents your shell finds: with one, the script doesn't ask">Installed: claude, codex</button>
@@ -225,12 +225,12 @@ body.picture.menu .menubar { display: flex; }
     </div>
     <div class="keys">
       <span><kbd>⌘N</kbd> New Desk</span>
-      <span><kbd>⌘1</kbd> <kbd>⌘2</kbd> <kbd>⌘3</kbd> pull the Shelf's 1st, 2nd, 3rd</span>
-      <span><kbd>⌘.</kbd> Park, or pull back the task parked last</span>
+      <span><kbd>⌘1</kbd> <kbd>⌘2</kbd> <kbd>⌘3</kbd> make the Desk's 1st, 2nd, 3rd other task active</span>
+      <span><kbd>⌘.</kbd> the Desk view ⇄ the active task</span>
       <span><kbd>⇧⌘↩</kbd> zoom what's showing: the task's focused pane, or the planning agent; each keeps its own</span>
       <span><kbd>⌘]</kbd> <kbd>⌘[</kbd> next pane (or click one)</span>
-      <span><kbd>⇧⌘A</kbd> the task waiting longest for you</span>
-      <span><kbd>⌘F</kbd> search the backlog (empty Desk): <kbd>↑</kbd> <kbd>↓</kbd> pick, <kbd>↩</kbd> Move to Shelf, <kbd>esc</kbd> clear</span>
+      <span><kbd>⇧⌘A</kbd> the Desk task waiting longest for you</span>
+      <span><kbd>⌘F</kbd> search the Shelf (Desk view): <kbd>↑</kbd> <kbd>↓</kbd> pick, <kbd>↩</kbd> Move to Desk, <kbd>esc</kbd> clear</span>
     </div>
   </div>
   <div class="menubar" id="menubar"></div>
@@ -266,8 +266,8 @@ const initial = () => {
         prompt: "agent_status waits 5s for 'working' after answering the mock agent, but work(1) lasts a second; make the wait follow the status, and run it 20 times" },
       { id: "p9", repo: "~/work/kanna-v4", backlog: true, title: "kanna open infers the pane type", by: "p4", agent: "codex", madeAt: now - 25 * MIN,
         prompt: "kanna open FILE should pick md or web from the file's extension, so TYPE is optional" },
-      { id: "p11", repo: "~/work/kanna-v4", backlog: true, title: "Rename a task from the Shelf", by: "p1", madeAt: now - 5 * MIN,
-        prompt: "Double-click a Shelf item to rename its task, as tabs rename" },
+      { id: "p11", repo: "~/work/kanna-v4", backlog: true, title: "Rename a task from the strip", by: "p1", madeAt: now - 5 * MIN,
+        prompt: "Double-click a Desk task in the strip to rename it, as tabs rename" },
     ],
   };
 };
@@ -369,8 +369,8 @@ addEventListener("resize", fitShelves);
 function windowHTML(w) {
   const t = task(w.desk);
   return `<div class="window ${w.id === s.key && s.windows.length > 1 ? "key" : ""}" id="${w.id}" data-win="${w.id}">
-    <div class="bar"><span class="lights"><i class="close" data-closewin="${w.id}" title="Close window (parks its task)"></i><i></i><i></i></span>
-      <span class="where"><b>${t ? titleOf(t) : "Shelf"}</b></span><span class="spacer"></span><span class="wid">${w.id}</span></div>
+    <div class="bar"><span class="lights"><i class="close" data-closewin="${w.id}" title="Close window (leaves its tasks on the Desk)"></i><i></i><i></i></span>
+      <span class="where"><b>${t ? titleOf(t) : "Desk"}</b></span><span class="spacer"></span><span class="wid">${w.id}</span></div>
     <div style="flex:1;display:flex;flex-direction:column;min-height:0">${t ? deskHTML(t) : emptyHTML(w)}</div>
     <div class="shelf" ${t ? "" : "hidden"}>${shelfHTML(w)}</div>
   </div>`;
@@ -379,9 +379,9 @@ function windowHTML(w) {
 function shelfHTML(w) {
   const waiting = backlog(repoOf(w)).length;
   return shelf(w).map((t, i) => {
-    const meta = t.status === "needs" ? "needs you" : "parked " + ago(t);
+    const meta = t.status === "needs" ? "needs you" : ago(t) + " ago";
     return `<span class="item ${t.status === "needs" ? "needs" : ""}" data-pull="${t.id}" title="${titleOf(t)}"><span class="dot ${t.status}"></span><span class="nm">${titleOf(t)}</span><span class="meta">· ${meta}</span><span class="kb">⌘${i + 1}</span></span>`;
-  }).join("") + (waiting ? `<span class="backlog" title="Park to see the backlog">${waiting} in backlog</span>` : "");
+  }).join("") + (waiting ? `<span class="backlog" title="Park (⌘.) to see the Shelf">${waiting} on the Shelf</span>` : "");
 }
 
 function agentTerm(t) {
@@ -465,7 +465,7 @@ function plannerRun(t, agent, greet) {
   if (!greet) return;
   const r = inRepo(t.repo), b = backlog(t.repo);
   t.log.push(`<span class="p">&gt;</span> ${ROLE}`, ``,
-    `<span class="m">●</span> ${s.made.includes(t.repo) ? `${esc(short(t.repo).split("/").pop())} is a new, empty project. What are we making? Once we agree on it, I'll set it up (git init and a first commit) and make the first tasks.` : t.repo === "~" ? "You're in your home folder, not a project. Which project are we planning, or shall we start a new one?" : `In ${esc(short(t.repo))}: ${r.length ? `${r.length} running (${r.map(x => esc(x.title || "New task") + ", " + statusText[x.status]).join("; ")})` : "nothing running"}, ${b.length} waiting in the backlog. What are we working on?`}`);
+    `<span class="m">●</span> ${s.made.includes(t.repo) ? `${esc(short(t.repo).split("/").pop())} is a new, empty project. What are we making? Once we agree on it, I'll set it up (git init and a first commit) and make the first tasks.` : t.repo === "~" ? "You're in your home folder, not a project. Which project are we planning, or shall we start a new one?" : `In ${esc(short(t.repo))}: ${r.length ? `${r.length} on the Desk (${r.map(x => esc(x.title || "New task") + ", " + statusText[x.status]).join("; ")})` : "nothing on the Desk"}, ${b.length} waiting on the Shelf. What are we working on?`}`);
 }
 function plannerAnswer(t, line) {
   const a = line.trim();
@@ -571,7 +571,7 @@ function deskHTML(t) {
   const only = t.zoom && t.focus, agent = only !== "docs", docs = only !== "agent";
   return `<div class="content ${only ? "zoomed" : ""}" data-content="${t.id}">
     ${agent ? `<div class="agent ${t.focus === "agent" && !only ? "focused" : ""}" data-focus="agent" data-task="${t.id}" style="flex:0 0 ${(t.width * 100).toFixed(1)}%">
-      <div class="head">${esc(folderOf(t))} · ${esc(t.branch)}<span class="spacer"></span><span class="pill icon" data-park="${t.id}" title="Park"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5.5 5.5 8 8l2.5-2.5"/><path d="M5 11h6" stroke-width="2"/></svg></span></div>
+      <div class="head">${esc(folderOf(t))} · ${esc(t.branch)}<span class="spacer"></span><span class="pill icon" data-park="${t.id}" title="Desk view (⌘.)"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5.5 5.5 8 8l2.5-2.5"/><path d="M5 11h6" stroke-width="2"/></svg></span></div>
       <div class="term">${agentTerm(t)}</div>
     </div>` : ""}
     ${agent && docs ? `<div class="grip" data-grip="${t.id}" title="Drag to resize; the width is this task's"></div>` : ""}
@@ -586,7 +586,7 @@ const cheers = [
   "Clear desk, clear mind. Pick what's next.",
   "Nice work. What's next?",
   "One thing at a time, and you're doing great.",
-  "Fresh start. Pull a task when you're ready.",
+  "Fresh start. Pick a task when you're ready.",
   "Good progress today. Keep it going.",
   "Breathe. Then pick the next one.",
 ];
@@ -608,10 +608,10 @@ function shelfPageHTML(w) {
   const list = shelf(w), repo = repoOf(w), count = inRepo(repo).length, waiting = backlog(repo), full = count >= LIMIT;
   const q = w.query || "", found = hits(w), sel = Math.min(w.sel || 0, Math.max(0, found.length - 1));
   return `<div class="empty"><p class="sub">${cheers[cheerAt]}</p>
-    <div class="group"><div class="gh"><span><b>Shelf</b> · ${esc(repo)}</span><span>${count} of ${LIMIT} tasks</span></div>
-      ${list.map((t, i) => `<div class="row" data-pull="${t.id}"><span class="dot ${t.status}"></span><div class="t"><div class="n">${titleOf(t)}</div><div class="s">${t.agent} · ${statusText[t.status]} · parked ${ago(t)} · ${esc(t.branch)}</div></div><span class="go">⌘${i + 1} · Pull →</span></div>`).join("") || `<div class="s" style="color:var(--muted)">Nothing on the Shelf.</div>`}</div>
-    <div class="group"><div class="gh"><span><b>Backlog</b></span>${waiting.length ? `<label class="find"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><input data-find="${w.id}" value="${esc(q)}" placeholder="Search the backlog" spellcheck="false" autocomplete="off">${q ? `<span class="clear" data-clear="${w.id}" title="Clear">✕</span>` : `<kbd>⌘F</kbd>`}</label>` : ""}<span class="count"><span>${q ? `${found.length} of ${waiting.length}` : `${waiting.length} waiting`}</span><span>${waiting.length} waiting</span><span>${waiting.length} of ${waiting.length}</span></span></div>
-      ${found.map((t, i) => `<div class="row waiting ${q && i === sel ? "sel" : ""}" data-promote="${t.id}"><span class="dot"></span><div class="t"><div class="n">${t.title ? marked(t.title, q) : titleOf(t)}</div><div class="s">${marked(t.prompt, q)} · from ${esc(makerOf(t))}, ${ago({ parkedAt: t.madeAt })} ago</div></div><span class="go ${full ? "off" : ""}">${full ? "Shelf full" : q && i === sel ? "↩ Move to Shelf" : "Move to Shelf →"}</span></div>`).join("") || (q ? `<div class="nohit">No backlog task matches “${esc(q)}”.</div>` : `<div class="s" style="color:var(--muted)">Empty. Ask the planning agent for tasks.</div>`)}
+    <div class="group"><div class="gh"><span><b>Desk</b> · ${esc(repo)}</span><span>${count} of ${LIMIT} tasks</span></div>
+      ${list.map((t, i) => `<div class="row" data-pull="${t.id}"><span class="dot ${t.status}"></span><div class="t"><div class="n">${titleOf(t)}</div><div class="s">${t.agent} · ${statusText[t.status]} · ${ago(t)} ago · ${esc(t.branch)}</div></div><span class="go">⌘${i + 1} · Make active →</span></div>`).join("") || `<div class="s" style="color:var(--muted)">Nothing on the Desk. Move a task here from the Shelf.</div>`}</div>
+    <div class="group"><div class="gh"><span><b>Shelf</b></span>${waiting.length ? `<label class="find"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><input data-find="${w.id}" value="${esc(q)}" placeholder="Search the Shelf" spellcheck="false" autocomplete="off">${q ? `<span class="clear" data-clear="${w.id}" title="Clear">✕</span>` : `<kbd>⌘F</kbd>`}</label>` : ""}<span class="count"><span>${q ? `${found.length} of ${waiting.length}` : `${waiting.length} waiting`}</span><span>${waiting.length} waiting</span><span>${waiting.length} of ${waiting.length}</span></span></div>
+      ${found.map((t, i) => `<div class="row waiting ${q && i === sel ? "sel" : ""}" data-promote="${t.id}"><span class="dot"></span><div class="t"><div class="n">${t.title ? marked(t.title, q) : titleOf(t)}</div><div class="s">${marked(t.prompt, q)} · from ${esc(makerOf(t))}, ${ago({ parkedAt: t.madeAt })} ago</div></div><span class="go ${full ? "off" : ""}">${full ? "Desk full" : q && i === sel ? "↩ Move to Desk" : "Move to Desk →"}</span></div>`).join("") || (q ? `<div class="nohit">No Shelf task matches “${esc(q)}”.</div>` : `<div class="s" style="color:var(--muted)">Empty. Ask the planning agent for tasks.</div>`)}
       <p class="note">${esc(s.note)}</p></div></div>`;
 }
 
@@ -635,7 +635,7 @@ function start(t, worktree) {
 function promote(id) {
   const t = task(id);
   if (!t || !t.backlog) return;
-  if (inRepo(t.repo).length >= LIMIT) { s.note = `The Shelf is full: finish a task first`; return render(); }
+  if (inRepo(t.repo).length >= LIMIT) { s.note = `The Desk is full: move a task to the Shelf first`; return render(); }
   start(t, t.worktree !== false);
   s.order.unshift(t.id);
   s.note = "";
@@ -776,7 +776,7 @@ function run(t, line) {
     if (["exit", "/exit", "/quit"].includes(ask.trim())) { plannerQuit(t); return render(); }
     if (/what.*(wait|running)|status/.test(ask)) {
       const r = inRepo(t.repo), b = backlog(t.repo);
-      t.log.push(`<span class="m">●</span> ${r.length} running (${r.map(x => esc(x.title || "New task") + ", " + statusText[x.status]).join("; ") || "none"}), ${b.length} waiting in the backlog.`);
+      t.log.push(`<span class="m">●</span> ${r.length} on the Desk (${r.map(x => esc(x.title || "New task") + ", " + statusText[x.status]).join("; ") || "none"}), ${b.length} waiting on the Shelf.`);
       return render();
     }
     const m = ask.match(/^start (?:the )?(.+?)(?: one| task)?$/);
@@ -787,7 +787,7 @@ function run(t, line) {
     t.log.push(`<span class="m">●</span> kanna task new "${esc(name)}" "${esc(line.trim())} …"${chosen ? " --agent " + chosen.toLowerCase() : ""}`);
     const made = { id: "p" + s.nextPane++, repo: t.repo, backlog: true, title: name, prompt: line.trim(), by: t.id, madeAt: Date.now(), worktree: true, agent: chosen && chosen.toLowerCase() };
     s.tasks.push(made);
-    t.log.push(`<span class="out">added ${made.id} "${esc(name)}" to the backlog of ${esc(t.repo)}</span>`);
+    t.log.push(`<span class="out">added ${made.id} "${esc(name)}" to the Shelf of ${esc(t.repo)}</span>`);
     return render();
   }
   if (words[0] !== "kanna") { say("(typed to the agent)"); if (!t.title) setTimeout(() => agentNames(t, line), 900); return render(); }
@@ -801,43 +801,43 @@ function run(t, line) {
     const made = { id: "p" + s.nextPane++, repo, backlog: true, title: quoted[0], prompt: quoted[1] || quoted[0], by: t.id, madeAt: Date.now(), worktree: !words.includes("--no-worktree"), agent: agentAt > 0 ? words[agentAt + 1] : undefined };
     s.tasks.push(made);
     if (!s.repos.includes(repo)) s.repos.push(repo);
-    say(`added ${made.id} "${made.title}" to ${repo}'s backlog (${backlog(repo).length} waiting)`);
+    say(`added ${made.id} "${made.title}" to the Shelf of ${repo} (${backlog(repo).length} waiting)`);
     return render();
   }
   if (cmd === "task" && sub === "name") {
     const quoted = line.match(/"([^"]*)"/), named = task(words[3]) && (quoted || words.length > 4) ? task(words[3]) : t;
     named.title = quoted ? quoted[1] : words.slice(named === t ? 3 : 4).join(" ");
-    say(`named ${named.id} "${named.title}"${named.backlog ? " in the backlog" : ""}`);
+    say(`named ${named.id} "${named.title}"${named.backlog ? " on the Shelf" : ""}`);
     return render();
   }
   if (cmd === "task" && sub === "list") {
-    say(["ID   WHERE   STATUS     REPO              NAME"].concat(s.tasks.filter(x => matches(x, words.slice(3).join(" "))).map(x => `${x.id.padEnd(4)} ${(x.backlog ? "Backlog" : deskOf(x.id) ? deskOf(x.id).id : "Shelf").padEnd(7)} ${(x.backlog ? "waiting" : statusText[x.status]).padEnd(10)} ${x.repo.replace("~/work/", "").padEnd(17)} ${x.title || "(unnamed)"}`)).join("\n"));
+    say(["ID   WHERE   STATUS     REPO              NAME"].concat(s.tasks.filter(x => matches(x, words.slice(3).join(" "))).map(x => `${x.id.padEnd(4)} ${(x.backlog ? "Shelf" : deskOf(x.id) ? deskOf(x.id).id : "Desk").padEnd(7)} ${(x.backlog ? "waiting" : statusText[x.status]).padEnd(10)} ${x.repo.replace("~/work/", "").padEnd(17)} ${x.title || "(unnamed)"}`)).join("\n"));
     return render();
   }
-  if (cmd === "task" && sub === "pull") {
+  if (cmd === "task" && (sub === "activate" || sub === "pull")) {
     if (!task(arg)) { say(`kanna: no task "${arg || ""}"`); return render(); }
     const into = keyWin(), there = deskOf(arg);
-    say(there && there.id !== into.id ? `${arg} is on ${there.id}'s Desk: brought that window forward` : there ? `${arg} is already on this Desk` : `pulled ${arg} onto ${into.id}'s Desk`);
+    say(there && there.id !== into.id ? `${arg} is on ${there.id}'s Desk; brought it forward` : there ? `${arg} is already active on this Desk` : `${arg} is active on ${into.id}'s Desk`);
     return pull(arg, into.id);
   }
   if (cmd === "task" && sub === "park") {
     const id = arg || t.id;
     if (!task(id)) { say(`kanna: no task "${id}"`); return render(); }
-    say(`parked ${id}`);
+    say(`parked ${id}: its Desk shows the Desk view`);
     return deskOf(id) ? park(id) : render();
   }
   if (cmd === "task" && sub === "done") {
     const id = arg || t.id;
     if (!task(id)) { say(`kanna: no task "${id}"`); return render(); }
     const d = task(id);
-    say(d.backlog ? `done: took ${id} off the backlog` : `done: closed ${id}'s panes${d.worktree ? `; kept its worktree ${folderOf(d)} and branch ${d.branch}` : ""}`);
+    say(d.backlog ? `done: took ${id} off the Shelf` : `done: closed ${id}'s panes${d.worktree ? `; kept its worktree ${folderOf(d)} and branch ${d.branch}` : ""}`);
     return done(id);
   }
   if (cmd === "open" && (sub === "md" || sub === "web") && arg) {
     say(`opened ${arg} in a tab`);
     return openTab(t, arg);
   }
-  say("kanna: try task new \"PROMPT\" [--no-worktree] [--repo PATH]|name \"TITLE\"|list [QUERY]|pull ID|park [ID]|done [ID], open md|web FILE");
+  say("kanna: try task new \"PROMPT\" [--no-worktree] [--repo PATH]|name \"TITLE\"|list [QUERY]|activate ID|park [ID]|done [ID], open md|web FILE");
   render();
 }
 
@@ -956,15 +956,15 @@ const long = () => {
   const now = Date.now(), by = ["p1", "p4", "p1", "p4"];
   [
     ["Fix flaky agent_status e2e", "agent_status waits 5s for 'working' after answering the mock agent, but work(1) lasts a second; make the wait follow the status"],
-    ["Swap keeps the task", "Swapping two Desks' tasks with ⌘1 loses the parked one's width; keep it with the task"],
+    ["Swap keeps the task", "Making a task active with ⌘1 loses the width of the one that was active; keep it with the task"],
     ["Resume every agent's session", "Only claude comes back to its conversation; give codex its own session ID and resume it"],
     ["Upgrade the keeper in place", "Installing a new build restarts the keeper and drops every terminal; hand its sockets over instead"],
     ["Refine the markup thread UI", "Threads in the doc pane's margin overlap on short blocks; stack them and keep the selected one in view"],
     ["Native diff viewer", "Show a task's branch diff in a tab, side by side, with comments like doc markup"],
     ["Ink markup with arrows", "Draw an arrow on a screenshot or mockup tab and send it to the agent as a comment"],
-    ["Start tasks past the Shelf", "Let a fourth task wait to start until a slot frees, instead of refusing it"],
-    ["Task dependencies and base branch", "A backlog task can wait on another and start from its branch"],
-    ["Shelf strip shows parked time", "Show how long ago each Shelf item was parked without hovering"],
+    ["Pick past a full Desk", "Let a fourth task wait to move to the Desk until a slot frees, instead of refusing it"],
+    ["Task dependencies and base branch", "A Shelf task can wait on another and start from its branch"],
+    ["Strip shows time since active", "Show how long ago each Desk task in the strip was last active without hovering"],
     ["Speed up the build", "The app build takes 90s; cache the Rust crates and build Swift incrementally"],
     ["kanna send presses Enter", "kanna send types text into a pane but leaves it unsent; add --enter"],
   ].forEach(([title, prompt], i) => s.tasks.push({ id: "t" + (2 + i * 4), repo: "~/work/kanna-v4", backlog: true, title, prompt, by: by[i % 4], madeAt: now - (12 - i) * 37 * MIN }));

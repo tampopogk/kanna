@@ -189,8 +189,8 @@ const CODE = {
 const SPAN = { "crates/kanna-daemon/src/backlog.rs:160": [160, 165], "crates/kanna-daemon/src/agents.rs:514": [514, 527], "crates/kanna-daemon/src/agents.rs:526": [526, 526] };
 
 const SHELF = [
-  { title: "Swap keeps the task", status: "idle", meta: "parked 53m ago", agent: "claude" },
-  { title: "Resume every agent", status: "working", meta: "parked 12m ago", agent: "codex" },
+  { title: "Swap keeps the task", status: "idle", meta: "53m ago", agent: "claude" },
+  { title: "Resume every agent", status: "working", meta: "12m ago", agent: "codex" },
 ];
 const BACKLOG = [
   ["Upgrade the keeper in place", "Installing a new build restarts the keeper and drops every terminal; hand its sockets over instead"],
@@ -230,7 +230,7 @@ function question(k) {
 function offer() {
   const out = [`<span class="c">kanna-v4</span> <span class="p">❯</span> claude`, ``,
     tool("git log --oneline main --since=1.day", "6dae46b A Codex task starts with --no-daemon, … (3 commits)"),
-    say(tick("Morning. Three tasks landed on main since yesterday: agent setup, `kanna agents`, and Codex's `--no-daemon`. Two more are on the Shelf, three wait in the backlog.")),
+    say(tick("Morning. Three tasks landed on main since yesterday: agent setup, `kanna agents`, and Codex's `--no-daemon`. Two more are on the Desk, three wait on the Shelf.")),
     `  Quiz on today's changes? Five questions, about two minutes.`];
   return wrap(out, `<div class="prompt">&gt; <span class="g">yes · later</span></div>`);
 }
@@ -264,9 +264,9 @@ const wrap = (out, tail) => `<div class="scroll">${out.join("\n")}</div>${tail}`
 function shelfPage() {
   const list = SHELF;
   return `<div class="empty"><p class="sub">Good progress today. Keep it going.</p>
-    <div class="group"><div class="gh"><span><b>Shelf</b> · ~/work/kanna-v4</span><span>${list.length} of 3 tasks</span></div>
+    <div class="group"><div class="gh"><span><b>Desk</b> · ~/work/kanna-v4</span><span>${list.length} of 3 tasks</span></div>
       ${list.map(t => `<div class="row"><span class="dot ${t.status}"></span><div class="t"><div class="n">${esc(t.title)}</div><div class="s">${t.agent} · ${t.status} · ${t.meta}</div></div></div>`).join("")}</div>
-    <div class="group"><div class="gh"><span><b>Backlog</b></span><span>${BACKLOG.length} waiting</span></div>
+    <div class="group"><div class="gh"><span><b>Shelf</b></span><span>${BACKLOG.length} waiting</span></div>
       ${BACKLOG.map(([n, p]) => `<div class="row waiting"><span class="dot"></span><div class="t"><div class="n">${esc(n)}</div><div class="s">${esc(p)}</div></div></div>`).join("")}</div></div>`;
 }
 
@@ -292,7 +292,7 @@ function codeTab() {
 function render() {
   const onEmpty = s.step === "offer";
   document.getElementById("stage").innerHTML = onEmpty ? `<div class="window">
-    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="where">Shelf</span></div>
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="where">Desk</span></div>
     <div class="content"><div class="agent"><div class="head">Planning · ~/work/kanna-v4 · main</div><div class="term">${offer()}</div></div>
       <div class="docs">${shelfPage()}</div></div></div>` : `<div class="window">
     <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="where">Quiz</span></div>
