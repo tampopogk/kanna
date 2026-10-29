@@ -36,7 +36,7 @@ flowchart LR
     W -->|"yes"| J["folder, repo or name?<br/>cd there (a repo: clone it,<br/>a name: make it, in ~/.kanna-v4/repos)"] --> P
     W -->|"no"| P{"planning.agent set,<br/>or one agent installed?"}
     P -->|"yes"| A["the agent, first message:<br/>You are the Kanna planning agent."]
-    P -->|"no"| Q["which agent plans?"] --> O["make it the project's?<br/>(in a git repo)"] --> A
+    P -->|"no"| Q["which agent plans?"] --> O["saved as the project's<br/>(in a git repo)"] --> A
     A -->|"you quit it"| SH["your shell"]
 ```
 
@@ -57,7 +57,7 @@ flowchart LR
 - **A new project isn't a repo yet:** Kanna makes only the folder. The planning agent sees an empty folder and, with the kanna-new-project skill, decides with you what it is, then runs `git init` and a first commit when you agree ([tasks](tasks.md#1-what-a-task-is)).
 - **The agents to choose from** are the agents Kanna knows that your shell finds, in the `AGENTS` table's order; Return takes the first.
 - **No question** when the folder's `planning.agent` is set ([settings](settings.md)) or only one agent is installed. With none, it says so and you're in your shell.
-- **Make it the project's:** yes writes `planning.agent` to the repo's `.kanna/config.json`, part of the repo, so every new Desk on the project, yours or anyone's, starts that agent. Not offered outside a git repo (`~`). No saves nothing, and the next Desk asks again.
+- **Your choice is the project's:** choosing writes `planning.agent` to the repo's `.kanna/config.json` straight away, with no second question, and says so (`codex plans app from now on (planning.agent in .kanna/config.json).`). The file is part of the repo, so every new Desk on the project, yours or anyone's, starts that agent. It sets `planning.agent` only, never `tasks.agent`. Outside a git repo (`~`, a new project) nothing is saved, and the next Desk asks again.
 - **The agent starts as you'd start it,** in the terminal's folder, resuming the project's planning conversation ([planner resume](planner-resume.md)), else new with `You are the Kanna planning agent.` as its first message, so it answers at once with what's running and waiting (in `~`, which new project). It doesn't ask permission, as a task's agent doesn't. Codex runs with `--no-daemon` ([tasks](tasks.md#8-how-its-built)).
 - **Quit it and you're in your shell,** with a line giving the command that starts it again, resuming its conversation. Anything you start there is yours.
 
@@ -75,8 +75,8 @@ flowchart LR
 
 ## 4. Tests
 
-- **Unit (`backlog.rs`):** the planning terminal's command for each agent; `planner.sh` run with stand-in agents: asks where only in `~`, moves to a folder, clones a URL (a local bare repo) and `owner/repo` (a stand-in `gh`), makes a named project, all under a stand-in `~/.kanna-v4/repos`, refuses a missing folder, asks which agent with two, not with one or with `planning.agent` set, writes the setting on yes and keeps the file's other keys, says so with none.
-- **e2e (`scripts/e2e-kanna.sh`):** `planner_choice`: a new Desk asks, yes makes the agent the project's, the next new Desk starts it straight away, quitting leaves the shell, and a ⌘N Desk in `~` moves to a folder and starts it there. `real_agent_planners`: the real claude and codex against the mock model (`tools/agent-harness`) each receive `You are the Kanna planning agent.` as their first message. `desk_backlog`, `desk_by_path`, `new_desk`: setup, then where, in `~`. `path_reuses_desk`: `kanna PATH` twice gives one window, a subfolder and a folder in a worktree find it, another project opens another, and the found Desk is key. `path_last_in_front`: with two Desks on one project, `kanna PATH` brings forward the one last in front, each time.
+- **Unit (`backlog.rs`):** the planning terminal's command for each agent; `planner.sh` run with stand-in agents: asks where only in `~`, moves to a folder, clones a URL (a local bare repo) and `owner/repo` (a stand-in `gh`), makes a named project, all under a stand-in `~/.kanna-v4/repos`, refuses a missing folder, asks which agent with two, not with one or with `planning.agent` set, writes the setting as you choose and keeps the file's other keys, says so with none.
+- **e2e (`scripts/e2e-kanna.sh`):** `planner_choice`: a new Desk asks, the choice becomes the project's, the next new Desk starts it straight away, quitting leaves the shell, and a ⌘N Desk in `~` moves to a folder and starts it there. `real_agent_planners`: the real claude and codex against the mock model (`tools/agent-harness`) each receive `You are the Kanna planning agent.` as their first message. `desk_backlog`, `desk_by_path`, `new_desk`: setup, then where, in `~`. `path_reuses_desk`: `kanna PATH` twice gives one window, a subfolder and a folder in a worktree find it, another project opens another, and the found Desk is key. `path_last_in_front`: with two Desks on one project, `kanna PATH` brings forward the one last in front, each time.
 
 ## 5. Rejected
 

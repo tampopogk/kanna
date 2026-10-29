@@ -3212,11 +3212,11 @@ mod tests {
     }
 
     #[test]
-    fn the_planner_script_asks_which_agent_offers_to_make_it_the_project_s_and_starts_it() {
+    fn the_planner_script_asks_which_agent_saves_it_as_the_project_s_and_starts_it() {
         let p = planner("ask", &["claude", "codex"]);
         let repo = p.repo("app");
-        let out = p.run(&repo, "2\ny\n");
-        assert!(out.contains("Choose an agent for planning and task creation\n\n  1  claude\n  2  codex\n\nChoose [1]: Make codex the planning agent for app? [Y/n] codex plans app from now on (planning.agent in .kanna/config.json).\n"), "{out}");
+        let out = p.run(&repo, "2\n");
+        assert!(out.contains("Choose an agent for planning and task creation\n\n  1  claude\n  2  codex\n\nChoose [1]: codex plans app from now on (planning.agent in .kanna/config.json).\n"), "{out}");
         assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/local/app: --yolo --no-daemon You are the Kanna planning agent.\n"), "{out}");
         assert!(out.contains("The planning agent quit. Start it again: codex --yolo --no-daemon 'You are the Kanna planning agent.'\nshell in ROOT/home/.kanna-v4/repos/local/app\n"), "{out}");
         let config: Value = serde_json::from_str(&fs::read_to_string(repo.join(".kanna/config.json")).unwrap()).unwrap();
@@ -3228,20 +3228,11 @@ mod tests {
         assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/local/app: --yolo --no-daemon You are the Kanna planning agent."), "{out}");
 
         let other = p.repo("other");
-        let out = p.run(&other, "\nn\n");
-        assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/other: --dangerously-skip-permissions You are the Kanna planning agent."), "Return takes the first: {out}");
-        assert!(!other.join(".kanna").exists(), "no saves nothing");
-
-        let enter = p.repo("enter");
-        let out = p.run(&enter, "2\n\n");
-        assert!(out.contains("Make codex the planning agent for enter? [Y/n] codex plans enter from now on"), "Return saves: {out}");
-        let config: Value = serde_json::from_str(&fs::read_to_string(enter.join(".kanna/config.json")).unwrap()).unwrap();
-        assert_eq!(config, json!({ "version": 1, "planning": { "agent": "codex" } }));
-
-        let declined = p.repo("declined");
-        let out = p.run(&declined, "2\nN\n");
-        assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/local/declined: --yolo") && !out.contains("codex plans declined"), "N declines: {out}");
-        assert!(!declined.join(".kanna").exists(), "N saves nothing");
+        let out = p.run(&other, "\n");
+        assert!(out.contains("Choose [1]: claude plans other from now on (planning.agent in .kanna/config.json).\n"), "Return takes the first and saves it: {out}");
+        assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/other: --dangerously-skip-permissions You are the Kanna planning agent."), "{out}");
+        let config: Value = serde_json::from_str(&fs::read_to_string(other.join(".kanna/config.json")).unwrap()).unwrap();
+        assert_eq!(config, json!({ "version": 1, "planning": { "agent": "claude" } }));
     }
 
     #[test]
@@ -3250,20 +3241,20 @@ mod tests {
         let repo = p.repo("app");
         fs::create_dir_all(repo.join(".kanna")).unwrap();
         fs::write(repo.join(".kanna/config.json"), r#"{"$schema": "x", "version": 1, "planning": {"context": 400000}}"#).unwrap();
-        p.run(&repo, "1\ny\n");
+        p.run(&repo, "1\n");
         let config: Value = serde_json::from_str(&fs::read_to_string(repo.join(".kanna/config.json")).unwrap()).unwrap();
         assert_eq!(config, json!({ "$schema": "x", "version": 1, "planning": { "context": 400000, "agent": "claude" } }));
 
         let cloned = p.repo("cloned");
         fs::create_dir_all(cloned.join(".kanna")).unwrap();
         std::os::unix::fs::symlink(p.home.join("elsewhere"), cloned.join(".kanna/config.json")).unwrap();
-        let out = p.run(&cloned, "1\ny\n");
+        let out = p.run(&cloned, "1\n");
         assert!(out.contains("Couldn't write ROOT/home/.kanna-v4/repos/local/cloned/.kanna/config.json."), "a repo's symlink isn't followed: {out}");
         assert!(!p.home.join("elsewhere").exists());
         fs::write(cloned.join(".kanna/config.json.real"), "{\"version\": 1, \"planning\": {\"agent\": \"evil\\u001b]0;x\\u0007\"}}").unwrap();
         fs::remove_file(cloned.join(".kanna/config.json")).unwrap();
         fs::rename(cloned.join(".kanna/config.json.real"), cloned.join(".kanna/config.json")).unwrap();
-        let out = p.run(&cloned, "1\nn\n");
+        let out = p.run(&cloned, "1\n");
         assert!(out.contains("planning.agent is evil]0;x, which isn't installed.") && !out.contains('\u{7}'), "a repo's text can't drive the terminal: {out:?}");
     }
 
@@ -3285,20 +3276,20 @@ mod tests {
         let out = p.run(&p.home, "recipe-box\n2\n");
         assert!(out.contains("Folder, repo or name: Made ~/.kanna-v4/repos/local/recipe-box\n"), "{out}");
         assert!(out.contains("\u{1b}]7;file://localhostROOT/home/.kanna-v4/repos/local/recipe-box\u{1b}\\"), "the window follows: {out}");
-        assert!(!out.contains("Make codex"), "a new project isn't a repo, so nothing is offered: {out}");
+        assert!(!out.contains("plans recipe-box"), "a new project isn't a repo, so nothing is saved: {out}");
         assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/local/recipe-box: --yolo --no-daemon You are the Kanna planning agent.") && out.ends_with("shell in ROOT/home/.kanna-v4/repos/local/recipe-box\n"), "{out}");
         let out = p.run(&p.home, "recipe-box\n1\n");
         assert!(out.contains("Opened ~/.kanna-v4/repos/local/recipe-box\n"), "{out}");
 
         let repo = p.repo("app");
         p.repo_at(&p.root.join("work/app"));
-        let out = p.run(&p.home, "~/nowhere\nbad name!\n../work/app\n.kanna-v4/repos/local/app\n1\nn\n");
+        let out = p.run(&p.home, "~/nowhere\nbad name!\n../work/app\n.kanna-v4/repos/local/app\n1\n");
         assert!(out.contains("No folder ~/nowhere.") && out.contains("A project's name is letters, digits"), "{out}");
         assert!(out.contains("ROOT/work/app isn't in ~/.kanna-v4/repos, where Kanna keeps its projects so each has the same place on every machine.\nImport a copy there: kanna project import ROOT/work/app\nFolder, repo or name: "), "a folder outside repos is refused: {out}");
         assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/app: --dangerously-skip-permissions You are"), "a folder is moved to: {out}");
-        let out = p.run(&p.home, &format!("{}\n1\nn\n", repo.display()));
+        let out = p.run(&p.home, &format!("{}\n1\n", repo.display()));
         assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/app: --dangerously-skip-permissions You are"), "{out}");
-        let out = p.run(&repo, "1\nn\n");
+        let out = p.run(&repo, "1\n");
         assert!(!out.contains("Folder, repo or name"), "only in ~: {out}");
     }
 
@@ -3382,20 +3373,20 @@ mod tests {
         let bare = p.root.join("remote/kojo.git");
         assert!(Command::new("git").args(["clone", "-q", "--bare"]).arg(&source).arg(&bare).status().unwrap().success());
         let url = format!("file://{}", bare.display());
-        let out = p.run(&p.home, &format!("{url}\n2\nn\n"));
+        let out = p.run(&p.home, &format!("{url}\n2\n"));
         assert!(out.contains("Cloning file://ROOT/remote/kojo.git into ~/.kanna-v4/repos/local/kojo…"), "{out}");
-        assert!(out.contains("Make codex the planning agent for kojo? [Y/n]"), "a clone is a repo: {out}");
+        assert!(out.contains("codex plans kojo from now on"), "a clone is a repo: {out}");
         assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/local/kojo: --yolo --no-daemon"), "{out}");
-        let out = p.run(&p.home, &format!("{url}\n2\nn\n"));
+        let out = p.run(&p.home, &format!("{url}\n2\n"));
         assert!(out.contains("Opened ~/.kanna-v4/repos/local/kojo (already cloned)"), "{out}");
 
         let out = p.run(&p.home, "someone/tool\nrecipe\n1\n");
         assert!(out.contains("gh isn't installed: give the repo's URL.") && out.contains("Made ~/.kanna-v4/repos/local/recipe"), "{out}");
         stub(&p.bin.join("gh"), &format!("[ \"$1 $2 $3\" = \"repo clone someone/tool\" ] && git clone -q {url} \"$4\""));
-        let out = p.run(&p.home, "someone/tool\n1\nn\n");
+        let out = p.run(&p.home, "someone/tool\n1\n");
         assert!(out.contains("Cloning someone/tool into ~/.kanna-v4/repos/someone/tool…") && out.contains("claude in ROOT/home/.kanna-v4/repos/someone/tool: --dangerously-skip-permissions You are"), "{out}");
         p.repo_at(&p.home.join(".kanna-v4/repos/other/kojo"));
-        let out = p.run(&p.home, "other/kojo\n1\nn\n");
+        let out = p.run(&p.home, "other/kojo\n1\n");
         assert!(out.contains("~/.kanna-v4/repos/other/kojo is already there, and isn't a clone of other/kojo."), "{out}");
         for (url, place) in [("https://example.invalid/team/site.git", "team/site"), ("git@example.invalid:team/site.git", "team/site"), ("ssh://git@example.invalid:22/team/site", "team/site"), ("git@example.invalid:site.git", "example.invalid/site")] {
             let out = p.run(&p.home, &format!("{url}\nrecipe\n1\n"));
