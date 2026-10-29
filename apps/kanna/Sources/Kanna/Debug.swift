@@ -17,6 +17,7 @@ extension AppController {
             case "light": NSApp.appearance = NSAppearance(named: .aqua)
             default: break
             }
+            if args["keyview"]?.bool == true { pickKeyViewsAsActive() }
             var reply: [String: JSON] = [
                 "app": "kanna", "pid": .number(Double(ProcessInfo.processInfo.processIdentifier)),
                 "bundle": .string(Bundle.main.bundleIdentifier ?? ""),
@@ -334,6 +335,25 @@ extension AppController {
         }
         window.sendEvent(event)
         return ["characters": .string(event.characters ?? ""), "charactersIgnoringModifiers": .string(event.charactersIgnoringModifiers ?? "")]
+    }
+
+    private static var keyViewPicker: CFRunLoopObserver?
+    private static var keyViewsPicked = Set<String>()
+
+    private func pickKeyViewsAsActive() {
+        guard Self.keyViewPicker == nil else { return }
+        Self.keyViewsPicked = Set(controllers.keys)
+        let observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeTimers.rawValue | CFRunLoopActivity.beforeWaiting.rawValue, true, 0) { [weak self] _, _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                for (id, controller) in self.controllers where Self.keyViewsPicked.insert(id).inserted && controller.window.firstResponder === controller.window {
+                    controller.window.recalculateKeyViewLoop()
+                    controller.window.selectNextKeyView(nil)
+                }
+            }
+        }
+        CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+        Self.keyViewPicker = observer
     }
 
     private static func performResponderItem(_ event: NSEvent, in window: NSWindow) -> Bool {

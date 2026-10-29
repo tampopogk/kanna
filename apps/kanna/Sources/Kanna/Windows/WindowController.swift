@@ -1,6 +1,7 @@
 import AppKit
 import KannaMarkdown
 import KannaPerf
+import KannaWindows
 
 @MainActor
 final class WindowController: NSObject, NSWindowDelegate {
@@ -44,6 +45,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     private(set) var emptyDesk = false
     private(set) var leadShown: String?
     private(set) var tabless = false
+    private var keyed = false
     var onCloseRequest: (() -> Void)?
     var onBecomeKey: (() -> Void)?
     var onFrameChange: (() -> Void)?
@@ -163,12 +165,18 @@ final class WindowController: NSObject, NSWindowDelegate {
             view.focused = many && id == focusedID && window.isKeyWindow
             view.grip.isHidden = id == docked && dock?["frozen"]?.bool == true
         }
-        let responder = window.firstResponder
-        if let focusedID, let target = panes.keyView(focusedID), responder !== target,
-           responder == nil || responder === window || responder is TerminalSurfaceView || responder is FocusReportingWebView
-           || responder is MarkdownTextView || responder is IosPaneView {
-            window.makeFirstResponder(target)
+        if let focusedID, let target = panes.keyView(focusedID) {
+            if Keyboard.moves(from: holder(of: target), keyed: keyed) { window.makeFirstResponder(target) }
+            keyed = keyed || window.firstResponder === target
         }
+    }
+
+    private func holder(of target: NSView) -> Keyboard.Holder {
+        let responder = window.firstResponder
+        if responder === target { return .target }
+        if responder == nil || responder === window { return .nothing }
+        if responder is TerminalSurfaceView || responder is FocusReportingWebView || responder is MarkdownTextView || responder is IosPaneView { return .pane }
+        return responder is NSText ? .text : .other
     }
 
     private enum Zoom { case dock, tab }

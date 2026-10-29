@@ -2482,6 +2482,7 @@ new_desk() {
   kanna open --window new --name plain >/dev/null || { echo "new_desk line $LINENO"; return 1; }
   check wait_for 5 eval '[[ "$(dwin win-1 key)" == True ]]' || { echo "new_desk line $LINENO"; return 1; }
   desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$2\"}}" | field "$1"; }
+  raw '{"id":1,"cmd":"debug.app","args":{"keyview":true}}' >/dev/null || { echo "new_desk line $LINENO"; return 1; }
   key cmd+n
   check wait_for 5 eval '[[ "$(app_view | field windows | count)" == 2 && "$(dwin d1 key)" == True ]]' || { echo "new_desk: ⌘N opened no window"; kanna workspace list --all; return 1; }
   check test "$(desk desk d1)" == True || { echo "new_desk: ⌘N opened a window that isn't a Desk"; return 1; }
@@ -2493,6 +2494,11 @@ new_desk() {
   check wait_for 5 is "$planner" state running || { echo "new_desk: the planning terminal isn't running"; kanna workspace list --all; return 1; }
   check test "$(cd "$(pane "$planner" cwd)" && pwd -P)" == "$(cd ~ && pwd -P)" || { echo "new_desk: the planning terminal isn't in ~"; return 1; }
   check wait_for 10 shows "$planner" "Folder, repo or name:" || { kanna read "$planner"; return 1; }
+  check wait_for 5 eval '[[ "$(desk responder d1)" == TerminalSurfaceView ]]' || { echo "new_desk: the keyboard is on $(desk responder d1), not the planning terminal"; return 1; }
+  local typed; typed="$(raw '{"id":1,"cmd":"debug.type","args":{"focused":true,"text":"typedkeys"}}' | field responder)"
+  check test "$typed" == TerminalSurfaceView || { echo "new_desk: typed keys went to $typed"; return 1; }
+  check wait_for 5 shows "$planner" "typedkeys" || { echo "new_desk: typed keys didn't reach the planning terminal"; kanna read "$planner"; return 1; }
+  kanna send-key "$planner" ctrl+u >/dev/null || { echo "new_desk line $LINENO"; return 1; }
   check test "$(kanna task list | grep -c "$planner")" == 0 || { echo "new_desk: the planning terminal is listed as a task"; return 1; }
   check test "$(raw '{"id":1,"cmd":"debug.stats"}' | field pid)" == "$app_pid" || { echo "new_desk: the new Desk is in another instance"; return 1; }
   kanna send "$planner" "$repo" >/dev/null || { echo "new_desk line $LINENO"; return 1; }
@@ -2503,6 +2509,8 @@ new_desk() {
   check wait_for 5 eval '[[ "$(app_view | field windows | count)" == 3 && "$(desk desk d2)" == True ]]' || { echo "new_desk: New Desk opened no Desk"; kanna workspace list --all; return 1; }
   check wait_for 10 eval '[[ "$(desk lead d2)" == term-* ]]' || { echo "new_desk line $LINENO"; return 1; }
   check test "$(cd "$(pane "$(desk lead d2)" cwd)" && pwd -P)" == "$(cd ~ && pwd -P)" || { echo "new_desk: the second new Desk isn't in ~"; return 1; }
+  check wait_for 10 shows "$(desk lead d2)" "Folder, repo" || { kanna read "$(desk lead d2)"; return 1; }
+  check wait_for 5 eval '[[ "$(desk responder d2)" == TerminalSurfaceView ]]' || { echo "new_desk: New Desk's keyboard is on $(desk responder d2), not the planning terminal"; return 1; }
 }
 
 png_size() { python3 -c 'import struct, sys
