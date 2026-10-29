@@ -19,7 +19,7 @@ extension AppController {
         }
         let byID = Dictionary(workspaces.compactMap { ws in ws["id"]?.string.map { ($0, ws) } }, uniquingKeysWith: { first, _ in first })
         let shown = Set(physical.desks.compactMap(\.shows))
-        var windows: [JSON] = physical.desks.map { desk in deskWindow(desk, task: desk.shows.flatMap { byID[$0] }, planner: desk.planner.flatMap { byID[$0] }) }
+        var windows: [JSON] = physical.desks.map { desk in deskWindow(desk, task: desk.shows.flatMap { byID[$0] }, planner: desk.planner.flatMap { byID[$0] }, active: desk.active.flatMap { byID[$0] }) }
         windows += (view["windows"]?.array ?? []).filter { window in window["workspace"]?.string.map(shown.contains) ?? true }
         fields["windows"] = .array(windows)
         fields["shelf"] = .array(physical.shelf.filter { !shown.contains($0.workspace) }.compactMap { entry in byID[entry.workspace].map { shelfEntry($0, parkedAt: entry.parkedAt) } })
@@ -27,7 +27,7 @@ extension AppController {
         return .object(fields)
     }
 
-    private func deskWindow(_ desk: DeskRecord, task: JSON?, planner: JSON?) -> JSON {
+    private func deskWindow(_ desk: DeskRecord, task: JSON?, planner: JSON?, active: JSON?) -> JSON {
         var out: [String: JSON] = ["tabs": [], "tab": nil, "title": nil, "focused": nil, "zoomed": nil, "root": nil]
         for key in ["tabs", "tab", "title", "focused", "zoomed", "root"] {
             if let value = (task ?? planner)?[key] { out[key] = value }
@@ -38,6 +38,7 @@ extension AppController {
         out["shows"] = task?["id"] ?? .null
         out["lead"] = planner?["dock"] ?? .null
         out["planner"] = planner?["id"] ?? .null
+        out["active"] = active?["dock"]?["pane"] ?? .null
         out["project"] = desk.project.map { .string($0) } ?? .null
         out["workspace"] = .null
         return .object(out)
@@ -72,9 +73,10 @@ extension AppController {
             show(window: there.id)
             return (false, there.id)
         }
-        var desk = window.flatMap { physical.desk($0) } ?? (front ? frontDesk : nil) ?? physical.newDesk(project: nil)
+        var desk = physical.desks.first { $0.active == workspace } ?? window.flatMap { physical.desk($0) } ?? (front ? frontDesk : nil) ?? physical.newDesk(project: nil)
         if let old = desk.shows { physical.park(old) }
         desk.shows = workspace
+        desk.active = workspace
         physical.setDesk(desk)
         show(window: desk.id)
         return (true, desk.id)
@@ -159,11 +161,11 @@ extension AppController {
             case "pull":
                 guard let task = args["task"]?.string else { throw KannaError("bad_request", "pull needs a task") }
                 let desk = args["by"]?.string.flatMap { self.desk(of: $0) } ?? projectDesk(projectRoot(task))
-                guard let pulled = pullTask(task, into: desk?.id, front: false) else { throw KannaError("not_found", "\(task) isn't on this app's Shelf") }
+                guard let pulled = pullTask(task, into: desk?.id, front: false) else { throw KannaError("not_found", "\(task) isn't on this app's Desk") }
                 return ["task": .string(task), "moved": .bool(pulled.moved), "desk": .string(pulled.desk)]
             case "park":
                 guard let task = args["task"]?.string else { throw KannaError("bad_request", "park needs a task") }
-                guard let workspace = workspace(ofTask: task) else { throw KannaError("not_found", "\(task) isn't on this app's Shelf") }
+                guard let workspace = workspace(ofTask: task) else { throw KannaError("not_found", "\(task) isn't on this app's Desk") }
                 guard let desk = deskShowing(workspace), park(desk: desk.id) != nil else { return ["task": .string(task), "parked": false] }
                 return ["task": .string(task), "parked": true, "desk": .string(desk.id)]
             case "desk":

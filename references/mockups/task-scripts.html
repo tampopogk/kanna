@@ -70,7 +70,7 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
     <div class="controls" id="controls"></div>
   </div>
   <div class="window">
-    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><b>Search the backlog</b><span class="branch">task-3f9a1c2e · backlog-search</span></div>
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><b>Search the Shelf</b><span class="branch">task-3f9a1c2e · shelf-search</span></div>
     <div class="content">
       <div class="agent">
         <div class="head"><span>claude · ~/work/kanna-v4/.kanna-worktrees/task-3f9a1c2e</span></div>
@@ -94,8 +94,8 @@ const SETUP = [
 ];
 const AGENT = [
   ``, `<span class="m">✻</span> Welcome to Claude Code`, ``,
-  `<span class="p">&gt;</span> You're a task's agent in Kanna. Your task: search the backlog by name and first message`,
-  `<span class="m">●</span> I'll add a filter to the backlog's list and a search field above it.`,
+  `<span class="p">&gt;</span> You're a task's agent in Kanna. Your task: search the Shelf by name and first message`,
+  `<span class="m">●</span> I'll add a filter to the Shelf's list and a search field above it.`,
   `<span class="m">●</span> Edit crates/kanna-daemon/src/backlog.rs`,
   `<span class="m">●</span> Bash cargo test -p kanna-daemon`,
   `  <span class="out">test result: ok. 79 passed; 0 failed</span>`,
@@ -126,7 +126,7 @@ function render() {
   document.getElementById("controls").innerHTML = Object.entries(STATES).map(([k, v]) => `<button data-k="${k}" class="${k === shown ? "on" : ""}">${v.label}</button>`).join("") + `<button id="theme">Light / dark</button>`;
   document.getElementById("term").innerHTML = (shown === "tearing" || shown === "teardownFailed" ? s.lines : shown === "working" ? [...s.lines, ...DONE.slice(0, 2)] : s.lines).join("\n");
   document.getElementById("tabs").innerHTML = s.tabs
-    ? `<div class="tabbar"><span class="tab on">diff --merge-base main</span><span class="tab">backlog-search.md</span><span class="tab">cargo test</span></div><div class="view">${DIFF}</div>`
+    ? `<div class="tabbar"><span class="tab on">diff --merge-base main</span><span class="tab">shelf-search.md</span><span class="tab">cargo test</span></div><div class="view">${DIFF}</div>`
     : `<div class="empty"></div>`;
 }
 document.addEventListener("click", e => {

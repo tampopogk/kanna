@@ -2,14 +2,14 @@
 
 **Status:** model approved by user; built in Machines 3 ([one link per machine](machine-links.md)) · **Part of:** [machines §6](machines.md#6-one-app-several-machines) · **Model:** [fleet.html](../../references/mockups/fleet.html) · **Run and scope:** [README](../../references/mockups/fleet/README.md) · **Before:** Machines 3
 
-A Desk belongs to a project. Pulling a task changes what the app shows, while its agent and jobs keep running where they are. The model follows the existing [Desk](../../references/mockups/desk.html) style.
+A Desk belongs to a project. Making a task active changes what the app shows, while its agent and jobs keep running where they are. The model follows the existing [Desk](../../references/mockups/desk.html) style.
 
-## 1. Project, Shelf and backlog
+## 1. Project, Desk and Shelf
 
-![One project Desk with direct, relayed and offline tasks on its three-place Shelf, and a backlog spanning machines](machines-desk.png)
+![One project Desk with direct, relayed and offline tasks among its three Desk tasks, and a Shelf spanning machines](machines-desk.png)
 
-- **A Desk is on a project,** whichever machines its tasks run on. A project is known across machines by its remote URL or first commit ([tasks §4](machine-tasks.md#4-repos-and-credentials)). Its planning terminal runs on a machine that has the project, placed like a task, and its backlog page lists the project's tasks from every machine. The new-Desk prompt and Open Recent show projects, not paths on a machine. Opening an already-open project brings its existing Desk forward.
-- **The Shelf stays the app's:** claims in its order, three per project including the task on the Desk, keyed by (machine, task) in `app-state.json`. Pulling and parking preserve claims, order and ownership. Task cards, the Shelf, agent headers and build summaries put the machine and connection path in a tooltip, available on hover or keyboard focus. No host names or Relayed / Offline badges appear in their normal presentation.
+- **A Desk is on a project,** whichever machines its tasks run on. A project is known across machines by its remote URL or first commit ([tasks §4](machine-tasks.md#4-repos-and-credentials)). Its planning terminal runs on a machine that has the project, placed like a task, and its Shelf lists the project's tasks from every machine. The new-Desk prompt and Open Recent show projects, not paths on a machine. Opening an already-open project brings its existing Desk forward.
+- **The Desk's tasks stay the app's:** claims in its order, three per project including the active task, keyed by (machine, task) in `app-state.json`. ⌘. and making a task active preserve claims, order and ownership. Task cards, the strip, agent headers and build summaries put the machine and connection path in a tooltip, available on hover or keyboard focus. No host names or Relayed / Offline badges appear in their normal presentation.
 - **Claim records name the device:** `claimed by: mbp` (the hello's `client`) replaces `mac` in the protocol. This is internal bookkeeping, not a label in the UI: users work on tasks without tracking the claiming device or execution machine. Runners leave claimed tasks alone, as today.
 - **Toasts** held while no app was attached arrive when the app connects, so five servers' finished tasks show up when you open the lid. Toast delivery is outside this model; use the [toast reference](../../references/mockups/toasts.html) for its presentation.
 - **A job on another machine:** the model's **Keep terminal output** agent runs on `dev-1`, and its macOS UI test job runs on `mbp`, shown in the task's UI tests pane with its machine in a tooltip, without another task or claim. That's a [Kanna Cloud build Mac](build-macs.md) scene; Machines 3 doesn't depend on it.
@@ -22,7 +22,7 @@ The mockup still labels this tab **Fleet**; the product calls it **Machines**.
 
 The Machines tab is app-wide: each peer's path **from this Mac** and connection state. It has no Work column; task and job details stay with the task. A host such as r720-1 is context for a VM, not an additional peer. The relay is a path, not a task-running machine.
 
-Each row distinguishes **This Mac**, **Direct · LAN**, **Direct · internet**, **Relayed**, and **Offline**. Shelf and Machines are fixed, non-closeable tabs at the start of the empty Desk's right-hand tab strip. Shelf shows the project’s Shelf and backlog; Machines shows the machine inventory. A task's Desk has neither: its tab strip holds only the task's document tabs, and the Shelf strip along the bottom shows the Shelf. Switching tabs preserves the planning agent, input and claims. Hovering or keyboard-focusing a path indicator within Machines reveals its connection explanation as a tooltip. There is no persistent connection-detail panel. Select Shelf or the task’s document tab to return.
+Each row distinguishes **This Mac**, **Direct · LAN**, **Direct · internet**, **Relayed**, and **Offline**. Desk and Machines are fixed, non-closeable tabs at the start of the Desk view's right-hand tab strip. Desk shows the project's Desk tasks and Shelf; Machines shows the machine inventory. The active task has neither: its tab strip holds only the task's document tabs, and the strip along the bottom shows the Desk's other tasks. Switching tabs preserves the planning agent, input and claims. Hovering or keyboard-focusing a path indicator within Machines reveals its connection explanation as a tooltip. There is no persistent connection-detail panel. Select Desk or the task’s document tab to return.
 
 Machines offers no machine picker or manual path switch; the switches above the window are model controls only.
 
@@ -34,15 +34,15 @@ A relay-to-direct transition updates the task's tooltip automatically. It does n
 
 ![A relayed task remains usable with no visible host or path badge](machines-relay.png)
 
-A relayed task remains interactive. Hover or focus its card, Shelf item or agent header to see **tests-1 · Relayed**. An offline task’s tooltip says **tools-1 · Offline**; direct and local tasks expose their machine and path the same way. Escape dismisses the tooltip. Connectivity is separate from the agent’s working / needs-you state.
+A relayed task remains interactive. Hover or focus its card, strip item or agent header to see **tests-1 · Relayed**. An offline task’s tooltip says **tools-1 · Offline**; direct and local tasks expose their machine and path the same way. Escape dismisses the tooltip. Connectivity is separate from the agent’s working / needs-you state.
 
 ![Hovering a task reveals its machine and connection path in a tooltip](machines-tooltip.png)
 
 ![An offline task retains its last view and claim; input is disabled and the received output is marked stale](machines-offline.png)
 
-An offline machine's task remains on the Shelf. **View last state** opens its last received workspace; output and task state are explicitly stale and input is disabled. There is no implicit restart, transfer or typed-input queue. The user can still park it and work on another task. An offline owner's backlog tasks wait for that owner ([tasks §2](machine-tasks.md#2-owners-and-grants)).
+An offline machine's task remains on the Desk. **View last state** opens its last received workspace; output and task state are explicitly stale and input is disabled. There is no implicit restart, transfer or typed-input queue. The user can still make another task active and work on it. An offline owner's Shelf tasks wait for that owner ([tasks §2](machine-tasks.md#2-owners-and-grants)).
 
-On reconnection, the same task and panes become interactive again. The claim, Shelf order and Desk selection survive. Each pane is keyed by (machine, content ID); the model deliberately gives its three claimed tasks the same daemon-local terminal ID to expose accidental cross-machine reuse.
+On reconnection, the same task and panes become interactive again. The claim, the Desk's order and which task is active survive. Each pane is keyed by (machine, content ID); the model deliberately gives its three claimed tasks the same daemon-local terminal ID to expose accidental cross-machine reuse.
 
 ## 4. What Machines 3 should copy
 
@@ -50,13 +50,13 @@ Compare the product against these scenes and transitions, using the model's fixt
 
 | Scene / action | Expected result |
 |---|---|
-| Default / `#picture` | One Kanna Desk, three claims across three peers; one merged project backlog; no machine picker, visible host/path badges or claim-device labels |
-| Shelf → Machines, then pull a task | Fixed tabs stay first on the empty Desk and have no close controls; agent, input and claims are unchanged; arrow keys switch tabs; the pulled task's Desk shows only its own tabs |
+| Default / `#picture` | One Kanna Desk, three claims across three peers; one merged project Shelf; no machine picker, visible host/path badges or claim-device labels |
+| Desk → Machines, then make a task active | Fixed tabs stay first in the Desk view and have no close controls; agent, input and claims are unchanged; arrow keys switch tabs; the active task shows only its own tabs |
 | File → New Desk / Open Recent → Kanna twice | Existing project Desk comes forward; its task selection survives; no duplicate Desk |
-| Open Recipe Box, then Kanna | Separate project Desks with their own Shelf and selection; names, not clone paths |
-| Pull **Keep terminal output** then **Review build output** | Correct agent and tabs despite matching terminal IDs; task input cannot leak between peers |
+| Open Recipe Box, then Kanna | Separate project Desks with their own tasks and active task; names, not clone paths |
+| Make **Keep terminal output** then **Review build output** active | Correct agent and tabs despite matching terminal IDs; task input cannot leak between peers |
 | `#picture,fleet` | Machine and path columns only; last-seen information; no task or job listing |
-| `#picture,relay-task`, hover or focus its header | Tooltip gives the machine and Relayed state; no persistent badge; no Shelf or Machines tab on the task's Desk |
+| `#picture,relay-task`, hover or focus its header | Tooltip gives the machine and Relayed state; no persistent badge; no Desk or Machines tab beside the active task |
 | `#picture,offline-task` | Retained claim and last view; stale labels; disabled input; other tasks remain available |
 | Mixed paths → All on LAN | Tooltip changes to Direct · LAN; input returns; task, owner, claim count and order unchanged |
 | Internet direct | Direct internet path in Machines; updated tooltip, no connection badge on the task card |

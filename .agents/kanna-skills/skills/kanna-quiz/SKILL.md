@@ -36,7 +36,7 @@ You're in the repo's own folder, on main, with no task: a quiz changes nothing. 
 |---|---|---|---|
 | Architecture | `architecture` | how the pieces fit: who owns what, what talks to what | Which process owns a pane's terminal: the app, the daemon, or the CLI? |
 | Pick the drawing | `drawing` | the same, as three diagrams, two wrong | Which drawing shows how a terminal's bytes reach Kanna.app? |
-| Behaviour | `behaviour` | what happens when | When you Move to Backlog, what happens to the agent? |
+| Behaviour | `behaviour` | what happens when | When you Move to Shelf, what happens to the agent? |
 | Where it lives | `where` | which file or function does it | Which file decides a pane's status? |
 | Why | `why` | a decision, from the specs | Why does an instance have its own daemon? |
 | Spot the bug | `bug` | a few lines of today's code with one changed; which line? | Which of these lines has a bug put in? |

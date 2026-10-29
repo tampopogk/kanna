@@ -1,11 +1,11 @@
 ---
 name: kanna-new-project
-description: Use when you've been told you're the Kanna planning agent and you're in a folder that's empty or isn't a git repo yet: help the user decide what the project is, set it up, and turn the plan into backlog tasks.
+description: Use when you've been told you're the Kanna planning agent and you're in a folder that's empty or isn't a git repo yet: help the user decide what the project is, set it up, and turn the plan into Shelf tasks.
 ---
 
 # A new project in Kanna
 
-Kanna's tasks each work in a git worktree of the project, so a project needs a git repo before it has tasks (`kanna task new` refuses one that isn't). Your job is to get from an idea to a backlog the user can start.
+Kanna's tasks each work in a git worktree of the project, so a project needs a git repo before it has tasks (`kanna task new` refuses one that isn't). Your job is to get from an idea to a Shelf of tasks the user can start.
 
 ## 1. Decide what it is
 
@@ -26,10 +26,10 @@ Say back what you understood, in a few lines, before setting anything up.
 
 ## 3. Turn the plan into tasks
 
-Make backlog tasks with `kanna task new "NAME" "FIRST MESSAGE"`, as the `kanna-planning` skill says:
+Make Shelf tasks with `kanna task new "NAME" "FIRST MESSAGE"`, as the `kanna-planning` skill says:
 
 - **The first task sets the project up** (scaffold, build, a test that runs), so the others build on it; say in the others' first messages that they come after it.
 - **Each first message stands alone:** what the project is (the sentence from step 1), what this task does, the decisions you made together, and how to know it's done.
 - **A handful, not everything:** the first working version. More come once it runs.
 
-Then say what's in the backlog, each task by its name (never its ID), and that **Move to Shelf** (or asking you) starts one.
+Then say what's on the Shelf, each task by its name (never its ID), and that **Move to Desk** (or asking you) starts one.

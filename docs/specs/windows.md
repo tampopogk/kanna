@@ -68,14 +68,14 @@ sequenceDiagram
 | State | Kept | Laid over the view |
 |---|---|---|
 | Window frames | by window ID; a window goes back to its frame if that is still on a screen, and a new one cascades from the frontmost | `frame` |
-| The docked pane's width, when dragged | by workspace (a lead's by its window), with the layout's width it was dragged from, so it outlives the agent's terminal starting again | `dock.width`, `lead.width`, a Shelf agent's `width`, while the layout's width is still the one it was dragged from |
+| The docked pane's width, when dragged | by workspace (a lead's by its window), with the layout's width it was dragged from, so it outlives the agent's terminal starting again | `dock.width`, `lead.width`, a Desk task's agent's `width`, while the layout's width is still the one it was dragged from |
 | Which window is in front, and the order | by window ID, newest in front, as `order`; after a restart the windows come forward in that order ([the app owns the physical layout](physical-layout.md)) | the app's key window |
 | Text size | by pane, for markdown, code and diff panes (1 isn't kept) | the pane's view opens at it |
-| Its Desks and Shelf | each Desk's ID (`d1`, …), project, the workspace it shows and its planner; the Shelf's order and parked times; the next Desk number ([each app's Desk and Shelf](app-desk.md)) | the app composes a Desk window from them |
+| Its Desks and their tasks | each Desk's ID (`d1`, …), project, the workspace it shows and its planner; the order of the Desk's tasks and when each was last active; the next Desk number ([each app's Desks](app-desk.md)) | the app composes a Desk window from them |
 
 `app-state.json` is in the daemon's state folder (`$KANNA_STATE_DIR`, or the socket's folder), saved half a second after a change and on quit, written atomically with mode 0600; `--fresh` starts without it and `KANNA_NO_STATE=1` neither reads nor writes it. Entries for panes, workspaces and windows the daemon no longer has are dropped when the app attaches.
 
-The `layout` view is `{windows: [{id, title, tab, tabs: [{id, title, panes}], focused, zoomed, root, lead, workspace}], workspaces: [{id, where, dock, parkedAt, windows, panes, title, tab, tabs, focused, zoomed, root}]}`: every window and every workspace, their tabs and panes, the tree to draw (the zoomed pane alone when zoomed; nothing when the docked pane is) with each split's shares and pane types, and a workspace's docked pane (`{pane, type, edge, width, name}`). The app adds its Desks, as windows with `desk`, `dock`, `shows`, `planner` and `project`, and the Shelf strip, from its own records. It's what to draw, not what a client sees (`list` shows names and fractions).
+The `layout` view is `{windows: [{id, title, tab, tabs: [{id, title, panes}], focused, zoomed, root, lead, workspace}], workspaces: [{id, where, dock, parkedAt, windows, panes, title, tab, tabs, focused, zoomed, root}]}`: every window and every workspace, their tabs and panes, the tree to draw (the zoomed pane alone when zoomed; nothing when the docked pane is) with each split's shares and pane types, and a workspace's docked pane (`{pane, type, edge, width, name}`). The app adds its Desks, as windows with `desk`, `dock`, `shows`, `planner` and `project`, and the strip, from its own records. It's what to draw, not what a client sees (`list` shows names and fractions).
 
 ## 3. Windows, tabs, panes
 
@@ -89,7 +89,7 @@ The `layout` view is `{windows: [{id, title, tab, tabs: [{id, title, panes}], fo
 
 ## 4. Terminal views
 
-A terminal's surface is made the first time its pane is on screen, and stays (attached to the daemon, drawing its output) until the pane leaves the layout, so switching tabs shows a live screen at once; a terminal in a tab never shown since launch keeps the size its pty has. A Desk window also holds, hidden and attached, the agent of each of its project's tasks on the Shelf or running in the backlog, at the size it would have on the Desk, so it runs at that size ([pane sizes](pane-sizes.md)). Web, markdown and iOS views start when the daemon says `start` ([app panes](app-panes.md)) and are placed when shown. How the surfaces behave: [terminal](terminal.md).
+A terminal's surface is made the first time its pane is on screen, and stays (attached to the daemon, drawing its output) until the pane leaves the layout, so switching tabs shows a live screen at once; a terminal in a tab never shown since launch keeps the size its pty has. A Desk window also holds, hidden and attached, the agent of each of its project's tasks on the Desk but not active, or running on the Shelf, at the size it would have on the Desk, so it runs at that size ([pane sizes](pane-sizes.md)). Web, markdown and iOS views start when the daemon says `start` ([app panes](app-panes.md)) and are placed when shown. How the surfaces behave: [terminal](terminal.md).
 
 ## 5. Debug commands
 

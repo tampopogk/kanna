@@ -165,7 +165,7 @@ extension AppController {
                                 "found": .array(page.found.map { .string($0) }), "selected": .number(Double(page.selected)),
                                 "left": .number(Double(page.searchFrame.minX)), "right": .number(Double(page.searchFrame.maxX))]
             let tasks = controller.shelf.map { task -> JSON in ["task": .string(task.id), "title": .string(task.title), "status": task.status.map { .string($0) } ?? .null, "agent": task.agent.map { .string($0) } ?? .null] }
-            return ["desk": .bool(controller.desk), "empty": .bool(controller.emptyDesk), "shelf": .array(tasks),
+            return ["desk": .bool(controller.desk), "empty": .bool(controller.emptyDesk), "shelf": .array(tasks), "active": controller.active.map { .string($0) } ?? .null,
                     "strip": .bool(!controller.shelfStrip.isHidden), "page": .bool(!controller.shelfPage.isHidden), "title": .string(controller.window.title),
                     "header": controller.agentHeader.isHidden ? .null : .string(controller.agentHeader.text),
                     "backlog": .array(controller.backlog.map { .string($0.id) }), "agents": .array(controller.backlog.map { $0.agent.map { .string($0) } ?? .null }), "running": .number(Double(controller.running)),

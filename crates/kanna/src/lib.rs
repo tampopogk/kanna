@@ -250,13 +250,16 @@ fn unplaced(command: &str, request: &Value) -> Option<&'static str> {
 
 fn locate(request: &mut Value, mux: &mut Session) -> Result<Option<(String, Vec<(String, String)>)>, Failure> {
     let action = request["action"].as_str().unwrap_or("").to_string();
-    let Some(reference) = request["task"].as_str().filter(|_| ["park", "pull", "done", "name"].contains(&action.as_str())).map(String::from) else { return Ok(None) };
+    let Some(reference) = request["task"].as_str().filter(|_| ["park", "pull", "defer", "done", "name"].contains(&action.as_str())).map(String::from) else { return Ok(None) };
     let found = match mux.call("backlog", json!({ "action": "resolve", "task": reference })) {
         Ok(found) => Some(found["task"].clone()),
         Err(failure) if failure.message.ends_with("[ambiguous]") => return Err(failure),
         Err(_) => None,
     };
     let backlog = found.as_ref().is_some_and(|t| t["place"] == "backlog");
+    if action == "defer" && backlog {
+        return Err(fail(exit::FAILED, format!("{reference} is on the Shelf: `kanna task pick {reference}` moves it to the Desk")));
+    }
     let pane = found.as_ref().and_then(|t| t["pane"].as_str()).map(String::from);
     let id = found.as_ref().and_then(|t| t["id"].as_str()).map(String::from);
     match (action.as_str(), id.as_deref()) {
@@ -335,7 +338,7 @@ const COMPLETIONS_HELP: &str = "usage: kanna completions zsh|bash\n\nPrints the 
 
 pub const CONFIG_SCHEMA: &str = include_str!("../../../schemas/config.schema.json");
 
-const CONFIG_HELP: &str = "usage: kanna config schema\n\nKanna's settings are ~/.kanna-v4/config.json, overridden key by key by a repo's .kanna/config.json, e.g.\n  { \"version\": 1, \"planning\": { \"context\": 300000 }, \"tasks\": { \"agent\": \"codex\" }, \"backlog\": { \"runners\": 3 } }\n\n`kanna config schema` prints their JSON Schema: every key, its type, default and what it does.";
+const CONFIG_HELP: &str = "usage: kanna config schema\n\nKanna's settings are ~/.kanna-v4/config.json, overridden key by key by a repo's .kanna/config.json, e.g.\n  { \"version\": 1, \"planning\": { \"context\": 300000 }, \"tasks\": { \"agent\": \"codex\" }, \"shelf\": { \"runners\": 3 } }\n\n`kanna config schema` prints their JSON Schema: every key, its type, default and what it does.";
 
 const RAW_HELP: &str = "usage: kanna raw REQUEST\n\nSends one control-protocol request as JSON and prints the reply, e.g.\n  kanna raw '{\"cmd\":\"list\"}'\n  kanna raw '{\"cmd\":\"open\",\"args\":{\"type\":\"term\",\"name\":\"a\"}}'";
 
@@ -866,10 +869,10 @@ mod tests {
             "panes": [{ "id": "p1", "name": "agent", "type": "term", "state": "running", "cmd": "claude" }, { "id": "p2", "name": null, "type": "term", "state": "running" }]
         });
         let text = output::workspace(&all, &reply);
-        assert!(text.contains("\nws-1, on the Shelf\n  dock: p1 (agent)  left 2/5  frozen\n  focus: agent\n  *tab-1 \"Tab 1\"  p2"), "{text}");
+        assert!(text.contains("\nws-1, on the Desk\n  dock: p1 (agent)  left 2/5  frozen\n  focus: agent\n  *tab-1 \"Tab 1\"  p2"), "{text}");
         let opened = json!({ "pane": { "id": "p1", "name": "agent", "state": "running" }, "window": null, "tab": null, "dock": "left", "workspace": { "id": "ws-1", "where": { "shelf": "mac" } } });
-        assert_eq!(output::opened(&json!({}), &opened), "opened p1 (agent) docked left in ws-1 (on the Shelf): running");
-        assert_eq!(output::opened(&json!({ "frozen": true }), &opened), "opened p1 (agent) docked left, frozen, in ws-1 (on the Shelf): running");
+        assert_eq!(output::opened(&json!({}), &opened), "opened p1 (agent) docked left in ws-1 (on the Desk): running");
+        assert_eq!(output::opened(&json!({ "frozen": true }), &opened), "opened p1 (agent) docked left, frozen, in ws-1 (on the Desk): running");
         let moved = json!({ "window": null, "workspace": { "id": "ws-1" }, "dock": { "pane": "agent", "edge": "right", "width": "1/3" } });
         assert_eq!(output::moved(&moved), "agent is docked right in ws-1 (width 1/3)");
     }

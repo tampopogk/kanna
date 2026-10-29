@@ -182,7 +182,13 @@ const RUNNERS_MAX: usize = 10;
 
 pub fn runners(files: &[PathBuf]) -> usize {
     let read = |value: &Value| value.as_u64().map(|n| n as usize).filter(|n| *n <= RUNNERS_MAX);
-    configured(files, "backlog", "runners", read, "a number of tasks from 0 to 10").unwrap_or(RUNNERS)
+    files
+        .iter()
+        .find_map(|file| {
+            let file = std::slice::from_ref(file);
+            configured(file, "shelf", "runners", read, "a number of tasks from 0 to 10").or_else(|| configured(file, "backlog", "runners", read, "a number of tasks from 0 to 10"))
+        })
+        .unwrap_or(RUNNERS)
 }
 
 pub fn scripts(files: &[PathBuf]) -> Scripts {
@@ -516,7 +522,7 @@ fn started_here(task: &str, pane: &str, place: &str) -> Map {
 }
 
 fn not_found(id: &str) -> KmuxError {
-    KmuxError::new("not_found", format!("no task \"{id}\" in the backlog"))
+    KmuxError::new("not_found", format!("no task \"{id}\" on the Shelf"))
 }
 
 fn failed(value: &Value) -> Option<KmuxError> {
@@ -752,7 +758,7 @@ impl Backlog {
                     let entry = Entry::from_row(row);
                     let back = Change::new("deferred").moved(row.place, Place::Backlog).by(Some("daemon"));
                     if let Err(error) = db.put(&entry.row(Place::Backlog, None), Some(&back)) {
-                        log!("kanna-daemon: couldn't put {} back on the backlog: {error}", entry.id);
+                        log!("kanna-daemon: couldn't put {} back on the Shelf: {error}", entry.id);
                     }
                     entries.push(entry);
                 }
@@ -1009,7 +1015,7 @@ impl Backlog {
     fn edit(&self, args: &Value) -> Result<Map, KmuxError> {
         let reference = string(args, "task").ok_or_else(|| bad("say which task"))?;
         let Some(mut entry) = self.entries.borrow().iter().find(|e| e.id == reference).cloned() else {
-            return Err(KmuxError::new("not_found", format!("no backlog task \"{reference}\"")));
+            return Err(KmuxError::new("not_found", format!("no Shelf task \"{reference}\"")));
         };
         if entry.folder.is_some() {
             return Err(KmuxError::new("started", format!("{} has started: its branch is made, and nothing holds it back now", self.short(reference))));
@@ -1033,7 +1039,7 @@ impl Backlog {
         let waiting = self.entries.borrow().iter().find(|e| e.id == reference).cloned();
         let Some(entry) = waiting else {
             let running = self.running.borrow().iter().find(|r| r.entry.id == reference).map(|r| r.pane.clone());
-            let Some(pane) = running else { return responder.reply(Err(KmuxError::new("not_found", format!("no task \"{reference}\" in the backlog or on the Shelf")))) };
+            let Some(pane) = running else { return responder.reply(Err(KmuxError::new("not_found", format!("no task \"{reference}\" on the Shelf or on the Desk")))) };
             let id = reference.to_string();
             return core.handle(json!({ "cmd": "rename-pane", "args": { "pane": pane, "name": name } }), move |reply| match failed(&reply) {
                 Some(error) => responder.reply(Err(error)),
@@ -1345,7 +1351,7 @@ impl Backlog {
                     break;
                 }
                 busy += 1;
-                log!("kanna-daemon: {} has a message, so it runs in the backlog ({busy} of {slots} in {repo})", entry.id);
+                log!("kanna-daemon: {} has a message, so it runs on the Shelf ({busy} of {slots} in {repo})", entry.id);
                 self.wake(core, (*entry).clone());
             }
             let mut waiting: Vec<&&Entry> = mine.iter().filter(|e| e.folder.is_none() && e.held.is_none() && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && self.waits(e).is_empty()).collect();
@@ -1356,10 +1362,10 @@ impl Backlog {
                 }
                 busy += 1;
                 let (this, id) = (Rc::downgrade(self), entry.id.clone());
-                log!("kanna-daemon: {id} runs in the backlog ({busy} of {slots} in {repo})");
+                log!("kanna-daemon: {id} runs on the Shelf ({busy} of {slots} in {repo})");
                 self.prepare((*entry).clone(), None, Some("daemon".into()), Answer::Then(Box::new(move |result| {
                     if let (Err(error), Some(this)) = (result, this.upgrade()) {
-                        log!("kanna-daemon: {id} couldn't run in the backlog: {}", error.message);
+                        log!("kanna-daemon: {id} couldn't run on the Shelf: {}", error.message);
                         this.failed.borrow_mut().insert(id);
                     }
                 })));
@@ -2390,7 +2396,7 @@ impl Backlog {
                 return then(Err(error));
             }
             let listed = reply.get("tasks").and_then(Value::as_array).is_some_and(|tasks| tasks.iter().any(|t| string(t, "id") == Some(pane.as_str())));
-            then(if listed { Ok(pane) } else { Err(KmuxError::new("not_a_task", format!("{reference} isn't a task: a task is an agent docked on a Desk or the Shelf, or in the backlog"))) })
+            then(if listed { Ok(pane) } else { Err(KmuxError::new("not_a_task", format!("{reference} isn't a task: a task is an agent docked on a Desk, or on the Shelf"))) })
         });
     }
 
@@ -2638,7 +2644,7 @@ impl Backlog {
                 core.with_panes(|panes| ids.iter().filter_map(|id| panes.get(id)).filter(|p| project(p.cwd.as_deref()) == here).count())
             });
             if running >= TASKS_PER_PROJECT {
-                return responder.reply(Err(KmuxError::new("task_limit", format!("{} has {TASKS_PER_PROJECT} tasks on the Shelf: move one to the backlog with `kanna task defer TASK` first", entry.repo))));
+                return responder.reply(Err(KmuxError::new("task_limit", format!("{} has {TASKS_PER_PROJECT} tasks on the Desk: move one to the Shelf with `kanna task shelve TASK` first", entry.repo))));
             }
             this.prepare(entry, Some(app), by, responder);
         });
@@ -2794,7 +2800,7 @@ impl Backlog {
             let Some(command) = command else {
                 return this.with_branch(shelved.map(|_| Self::reply_out(&id, &pane, Some(&folder), Some(&app))), &folder, None, responder);
             };
-            log!("kanna-daemon: {id} is on {app}'s Shelf, and its agent and tabs start");
+            log!("kanna-daemon: {id} is on {app}'s Desk, and its agent and tabs start");
             let again = Rc::downgrade(&this);
             this.after_this_turn(move || {
                 let Some(this) = again.upgrade() else { return responder.reply(Err(gone())) };
@@ -2803,7 +2809,7 @@ impl Backlog {
                     let Some(this) = again.upgrade() else { return };
                     match &result {
                         Ok(_) => log!("kanna-daemon: {id}'s agent and tabs started"),
-                        Err(error) => log!("kanna-daemon: {id} is on the Shelf, but its agent didn't start: {}", error.message),
+                        Err(error) => log!("kanna-daemon: {id} is on the Desk, but its agent didn't start: {}", error.message),
                     }
                     let out = shelved.and(result).map(|pane| Self::reply_out(&id, &pane, Some(&folder), Some(&app)));
                     this.with_branch(out, &folder, None, responder);
@@ -3407,10 +3413,12 @@ mod tests {
         assert_eq!(keys, ["agent", "context"], "a key in the schema Kanna doesn't read, or the other way round");
         let names: Vec<&str> = AGENTS.iter().map(|a| a.names[0]).collect();
         assert_eq!(schema["properties"]["planning"]["properties"]["agent"]["enum"], json!(names), "planning.agent names the agents a planning terminal offers");
-        let runners = &schema["properties"]["backlog"]["properties"]["runners"];
-        assert_eq!((runners["default"].clone(), runners["minimum"].clone(), runners["maximum"].clone()), (json!(RUNNERS), json!(0), json!(RUNNERS_MAX)));
-        let keys: Vec<&String> = schema["properties"]["backlog"]["properties"].as_object().unwrap().keys().collect();
-        assert_eq!(keys, ["runners"]);
+        for section in ["shelf", "backlog"] {
+            let runners = &schema["properties"][section]["properties"]["runners"];
+            assert_eq!((runners["default"].clone(), runners["minimum"].clone(), runners["maximum"].clone()), (json!(RUNNERS), json!(0), json!(RUNNERS_MAX)));
+            let keys: Vec<&String> = schema["properties"][section]["properties"].as_object().unwrap().keys().collect();
+            assert_eq!(keys, ["runners"]);
+        }
         let tasks = &schema["properties"]["tasks"]["properties"];
         assert_eq!((tasks["timeout"]["default"].clone(), tasks["timeout"]["minimum"].clone(), tasks["timeout"]["maximum"].clone()), (json!(task_scripts::TIMEOUT), json!(1), json!(task_scripts::TIMEOUT_MAX)));
         let keys: Vec<&String> = tasks.as_object().unwrap().keys().collect();
@@ -3454,7 +3462,7 @@ mod tests {
     }
 
     #[test]
-    fn backlog_runners_come_from_the_repos_config_then_yours() {
+    fn shelf_runners_come_from_the_repos_config_then_yours() {
         let dir = std::env::temp_dir().join(format!("kanna-runners-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
@@ -3469,6 +3477,11 @@ mod tests {
         assert_eq!(runners(&files), 0, "a bad value leaves it to the next file");
         fs::write(&repo, r#"{"backlog": {"runners": -1}}"#).unwrap();
         assert_eq!(runners(&[repo.clone()]), RUNNERS);
+        fs::write(&repo, r#"{"shelf": {"runners": 2}, "backlog": {"runners": 5}}"#).unwrap();
+        assert_eq!(runners(&files), 2, "shelf.runners wins over its old name in the same file");
+        fs::write(&repo, r#"{"backlog": {"runners": 4}}"#).unwrap();
+        fs::write(&mine, r#"{"shelf": {"runners": 1}}"#).unwrap();
+        assert_eq!(runners(&files), 4, "the repo's old name wins over your new one");
         fs::remove_dir_all(&dir).unwrap();
     }
 

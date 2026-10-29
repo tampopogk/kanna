@@ -570,6 +570,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if window["desk"]?.bool == true, let root = controller.projectRoot { deskMoved(id, to: root) }
             let mine = controller.projectRoot.map { root in tasks.filter { sameProject(projectRoot($0.id), root) } } ?? tasks
             controller.shelf = mine
+            controller.active = docked == nil ? window["active"]?.string : nil
             let ours = Set(mine.map(\.id))
             let docks = window["desk"]?.bool == true
                 ? (shelfEntries.filter { $0["task"]?.string.map(ours.contains) == true } + runningBacklog(in: controller.projectRoot)).filter { $0["task"]?.string.map(held.contains) == false }
@@ -647,6 +648,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.pullTask(task, into: id)
         }
         controller.agentHeader.onPark = { [weak self] in self?.park(desk: id) }
+        controller.shelfStrip.onDesk = { [weak self] in self?.park(desk: id) }
         controller.agentHeader.onNew = { [weak self] in self?.newTab(in: id) }
         controller.shelfPage.onPull = { [weak self] task in
             Clicks.pull(task)
