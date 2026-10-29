@@ -1,6 +1,6 @@
 # Presenting
 
-**Status:** built · **Tested:** e2e `backlog_runners`, `cargo test -p kanna-mux` (held windows) · **Builds on:** [tasks](tasks.md), [backlog runners](backlog-runners.md), [code tour](code-tour.md), [doc markup](doc-markup.md), [zoom](zoom.md)
+**Status:** built · **Tested:** e2e `shelf_runners`, `cargo test -p kanna-mux` (held windows) · **Builds on:** [tasks](tasks.md), [backlog runners](backlog-runners.md), [code tour](code-tour.md), [doc markup](doc-markup.md), [zoom](zoom.md)
 
 Every task presents its work. When it's done, before its turn ends, its agent sets up its Desk to show you what it changed and why: the spec (its changes marked, [markdown diff](markdown-diff.md)), the mockup, a diff, comments on the key code. Kanna keeps that layout through a stop, so a task that ran unattended in the backlog shows it when you pull it hours later.
 
@@ -50,7 +50,7 @@ sequenceDiagram
   - the app keeps the content of a held window's markdown, web, code and diff panes (the layout's `held` list), so they start and stay while hidden.
 - **Stopping** (`Backlog::stop`, and `Backlog::quit` when a runner's turn ends) asks the core to hang up the task's terminals (`CoreHandle::hang_up`): each running one is marked `hungUp`, saved with the terminals, and hung up; then the agent quits or is hung up. Nothing is closed.
 - **Starting** (`Backlog::revive`, for start, Move to Shelf and pull back from the backlog) restarts the agent, then the task's `hungUp` terminals (`CoreHandle::wake`). Restarting a terminal any other way clears its mark.
-- **Tested** by e2e `backlog_runners`: the mock agent opens a markdown tab with a comment, a terminal running a long command and one that exits at once, focuses the markdown tab and zooms, and ends its turn; once Kanna stops it, the held window still has its three tabs, focused and zoomed on the markdown, both terminals exited; Move to Shelf runs the long one again and leaves the other exited, and pulled, the Desk shows the same layout.
+- **Tested** by e2e `shelf_runners`: the mock agent opens a markdown tab with a comment, a terminal running a long command and one that exits at once, focuses the markdown tab and zooms, and ends its turn; once Kanna stops it, the held window still has its three tabs, focused and zoomed on the markdown, both terminals exited; Move to Shelf runs the long one again and leaves the other exited, and pulled, the Desk shows the same layout.
 
 ## 4. Glossary
 

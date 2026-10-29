@@ -1,6 +1,6 @@
 # Agent Setup
 
-**Status:** built; agents are told in their first message, not a hook (2026-10-14) · **Tests:** `crates/kanna-daemon/src/agents.rs` and `backlog.rs` (unit), `scripts/e2e-kanna.sh` `desk_backlog`, `real_agent_tasks`, `real_agent_planners` · **Part of:** [tasks](tasks.md)
+**Status:** built; agents are told in their first message, not a hook (2026-10-14) · **Tests:** `crates/kanna-daemon/src/agents.rs` and `backlog.rs` (unit), `scripts/e2e-kanna.sh` `desk_shelf`, `real_agent_tasks`, `real_agent_planners` · **Part of:** [tasks](tasks.md)
 
 Kanna's skills teach an agent how to work in Kanna: name its branch, add tasks to the backlog, plan, answer review comments. They live in this repo (`.agents/kanna-skills`), so today only agents working on Kanna itself have them. **Agent setup** puts them where Claude and Codex find them in any repo, once you agree.
 
@@ -110,4 +110,4 @@ An agent picks a skill by its description, from what's in its context, so it has
 - **The planning terminal asks** by running `kanna agents setup --ask; kanna agents update --ask` before it asks which agent plans (`planner.sh`), with the `kanna` beside the daemon (Kanna.app carries it in `Contents/Helpers`). Each asks at most once per launch, in the first planning terminal that opens, and says nothing when there's nothing to ask.
 - **The merge editor runs in that terminal:** `kanna` makes a scratch git repo with the three versions as a real merge conflict and runs `git mergetool` on it, so any tool git knows works; what you save is copied over your file.
 - **The skills come from the app bundle,** copied there from `.agents/kanna-skills` by `scripts/build-kanna-app.sh`.
-- **For tests only:** `KANNA_AGENTS_HOME` stands in for your home folder and `KANNA_AGENT_SKILLS` for the bundle's skills; unset, Kanna uses yours. The end-to-end tests (`app_starts_daemon`, `desk_backlog`) set both, so they never touch your home; the app passes `KANNA_AGENTS_HOME` on to the daemon it starts.
+- **For tests only:** `KANNA_AGENTS_HOME` stands in for your home folder and `KANNA_AGENT_SKILLS` for the bundle's skills; unset, Kanna uses yours. The end-to-end tests (`app_starts_daemon`, `desk_shelf`) set both, so they never touch your home; the app passes `KANNA_AGENTS_HOME` on to the daemon it starts.

@@ -1,6 +1,6 @@
 # New Desk
 
-**Status:** built (2026-10-14) · **Tests:** `crates/kanna-daemon/src/backlog.rs` (unit), `scripts/e2e-kanna.sh` `desk_backlog`, `desk_by_path`, `new_desk`, `planner_choice`, `real_agent_planners`, `path_reuses_desk` · **Mockup:** [`references/mockups/desk.html`](../../references/mockups/desk.html) (Simulate: no tasks, first launch, Installed, Forget the project's planner; ⌘N) · **Part of:** [Desk](desk.md), [planning terminal](planning-agent.md) · **Builds on:** [agent setup](agent-setup.md), [settings](settings.md), [tasks](tasks.md#which-agents-resume)
+**Status:** built (2026-10-14) · **Tests:** `crates/kanna-daemon/src/backlog.rs` (unit), `scripts/e2e-kanna.sh` `desk_shelf`, `desk_by_path`, `new_desk`, `planner_choice`, `real_agent_planners`, `path_reuses_desk` · **Mockup:** [`references/mockups/desk.html`](../../references/mockups/desk.html) (Simulate: no tasks, first launch, Installed, Forget the project's planner; ⌘N) · **Part of:** [Desk](desk.md), [planning terminal](planning-agent.md) · **Builds on:** [agent setup](agent-setup.md), [settings](settings.md), [tasks](tasks.md#which-agents-resume)
 
 What happens when a Desk window opens with nothing in it: where it opens, and how its planning terminal gets you to a planning agent, in the right project.
 
@@ -76,7 +76,7 @@ flowchart LR
 ## 4. Tests
 
 - **Unit (`backlog.rs`):** the planning terminal's command for each agent; `planner.sh` run with stand-in agents: asks where only in `~`, moves to a folder, clones a URL (a local bare repo) and `owner/repo` (a stand-in `gh`), makes a named project, all under a stand-in `~/.kanna-v4/repos`, refuses a missing folder, asks which agent with two, not with one or with `planning.agent` set, writes the setting as you choose and keeps the file's other keys, says so with none.
-- **e2e (`scripts/e2e-kanna.sh`):** `planner_choice`: a new Desk asks, the choice becomes the project's, the next new Desk starts it straight away, quitting leaves the shell, and a ⌘N Desk in `~` moves to a folder and starts it there. `real_agent_planners`: the real claude and codex against the mock model (`tools/agent-harness`) each receive `You are the Kanna planning agent.` as their first message. `desk_backlog`, `desk_by_path`, `new_desk`: setup, then where, in `~`. `path_reuses_desk`: `kanna PATH` twice gives one window, a subfolder and a folder in a worktree find it, another project opens another, and the found Desk is key. `path_last_in_front`: with two Desks on one project, `kanna PATH` brings forward the one last in front, each time.
+- **e2e (`scripts/e2e-kanna.sh`):** `planner_choice`: a new Desk asks, the choice becomes the project's, the next new Desk starts it straight away, quitting leaves the shell, and a ⌘N Desk in `~` moves to a folder and starts it there. `real_agent_planners`: the real claude and codex against the mock model (`tools/agent-harness`) each receive `You are the Kanna planning agent.` as their first message. `desk_shelf`, `desk_by_path`, `new_desk`: setup, then where, in `~`. `path_reuses_desk`: `kanna PATH` twice gives one window, a subfolder and a folder in a worktree find it, another project opens another, and the found Desk is key. `path_last_in_front`: with two Desks on one project, `kanna PATH` brings forward the one last in front, each time.
 
 ## 5. Rejected
 

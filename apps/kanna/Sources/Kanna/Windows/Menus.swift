@@ -162,8 +162,8 @@ extension AppController {
 
     func choose(menuItem title: String) throws {
         for menu in allMenus {
-            guard let at = menu.items.firstIndex(where: { $0.title == title }) else { continue }
             menu.update()
+            guard let at = menu.items.firstIndex(where: { $0.title == title }) else { continue }
             guard menu.items[at].isEnabled else { throw KannaError("disabled", "\(title) is disabled") }
             menu.performActionForItem(at: at)
             return

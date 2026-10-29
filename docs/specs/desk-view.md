@@ -88,7 +88,7 @@ stateDiagram-v2
 | Specs | 52 files (`rg -il 'backlog\|shelf\|park\|pull' docs/specs`) | desk, tasks, app-desk, backlog-runners, backlog-search, menus, settings, cli, planning-agent, task-dependencies, zoom, toasts, workspaces, workspace-list, presenting, machine-*, quiz and the rest the grep finds; screenshots desk.png, desk-empty.png, zoom-desk-*.png, backlog-search*.png, task-blocked.png |
 | Spec files | renamed | `backlog-runners.md` → `shelf-runners.md`, `backlog-search.md` → `shelf-search.md` (and its pictures), `shelve-latency.md` → `move-to-desk-latency.md`; links updated |
 | Mockups | `desk.html`, `blocked-tasks.html`, `toasts.html`, `task-scripts.html`, `quiz.html`, `doc-markup.html`, `diff.html`, `page-marks.html`, `fleet.html` | their visible words; `desk.html` keeps its own scenes (planner, recent projects) and points to `desk-view.html` for the Desk view |
-| e2e | `scripts/e2e-kanna.sh` | the checks of words, and the scenario names: `desk_backlog`, `backlog_and_back`, `move_to_backlog`, `task_backlog`, `backlog_rename`, `backlog_runners`, `backlog_search`, `desk_shelf`, `shelf_times`, `shelf_zoom` → their new words |
+| e2e | `scripts/e2e-kanna.sh` | the checks of words, and the scenario names: `desk_shelf`, `shelf_and_back`, `move_to_shelf`, `task_shelf`, `shelf_rename`, `shelf_runners`, `shelf_search`, `desk_tasks`, `desk_times`, `desk_zoom` → their new words |
 | Not changed | `agent-rules/corpus` (recorded terminals), `README.md` ("git pull") | |
 
 ## 5. Internal names

@@ -1,6 +1,6 @@
 # Planning terminal
 
-**Status:** built; Kanna starts the planning agent ([new Desk](new-desk.md)) · **Mockup:** [`references/mockups/desk.html`](../../references/mockups/desk.html) (Park, or Simulate: no tasks, first launch) · **Builds on:** [Desk](desk.md), [tasks](tasks.md), [docked pane](docked-pane.md) · **Tests:** `scripts/e2e-kanna.sh` `desk_backlog`, `desk_by_path`, `desk_planner_stays`, `planner_resumes`
+**Status:** built; Kanna starts the planning agent ([new Desk](new-desk.md)) · **Mockup:** [`references/mockups/desk.html`](../../references/mockups/desk.html) (Park, or Simulate: no tasks, first launch) · **Builds on:** [Desk](desk.md), [tasks](tasks.md), [docked pane](docked-pane.md) · **Tests:** `scripts/e2e-kanna.sh` `desk_shelf`, `desk_by_path`, `desk_planner_stays`, `planner_resumes`
 
 Each Desk window has a **planning terminal**: while no task is on the Desk, it's docked on the left and the full Shelf fills the right. Kanna starts the window's **planning agent** in it ([tasks](tasks.md#2-how-tasks-are-made)), the agent you choose, telling it it's the planner; the settings it gets are in [settings](settings.md).
 

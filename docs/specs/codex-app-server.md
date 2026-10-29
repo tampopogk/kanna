@@ -1,6 +1,6 @@
 # Codex's app-server
 
-**Status:** built · **Tested:** `cargo test -p kanna-daemon` (codex_remote, messages), e2e `agent_messaging`, `planner_choice`, `backlog_runners` (the mock agent as `codex`) · **Builds on:** [tasks](tasks.md), [agent messaging](agent-messaging.md) · **Why:** [research](../research/agent-messaging.md), checked against Codex 0.163.0
+**Status:** built · **Tested:** `cargo test -p kanna-daemon` (codex_remote, messages), e2e `agent_messaging`, `planner_choice`, `shelf_runners` (the mock agent as `codex`) · **Builds on:** [tasks](tasks.md), [agent messaging](agent-messaging.md) · **Why:** [research](../research/agent-messaging.md), checked against Codex 0.163.0
 
 Kanna starts every Codex, a task's, the planner's or a quiz's, with an **app-server of its own**, and the Codex TUI attached to it. The server is Codex's door for [agent messaging](agent-messaging.md): Kanna starts a turn on it instead of typing into the prompt.
 

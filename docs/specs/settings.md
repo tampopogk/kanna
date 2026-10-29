@@ -1,6 +1,6 @@
 # Settings
 
-**Status:** built · **Builds on:** [planning terminal](planning-agent.md) · **Tests:** `crates/kanna-daemon/src/backlog.rs` (unit), `scripts/e2e-kanna.sh` `desk_backlog`, `desk_by_path`, `planner_choice`, `backlog_runners`, `task_scripts`, `codex_task`
+**Status:** built · **Builds on:** [planning terminal](planning-agent.md) · **Tests:** `crates/kanna-daemon/src/backlog.rs` (unit), `scripts/e2e-kanna.sh` `desk_shelf`, `desk_by_path`, `planner_choice`, `shelf_runners`, `task_scripts`, `codex_task`
 
 Kanna's own settings, in two JSON files: yours, and a repo's override. They're defined by a versioned JSON Schema, [`schemas/config.schema.json`](../../schemas/config.schema.json), that agents read with `kanna config schema`. For now: which agent plans, which agent a task runs, how big a planning agent's context gets, how many backlog tasks run at once, where task worktrees build, and what a task runs as it's set up and torn down.
 

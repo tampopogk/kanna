@@ -54,7 +54,7 @@ sequenceDiagram
 ## 4. Tested
 
 - **Daemon** (`backlog.rs`, `a_stopped_task_is_on_the_shelf_before_its_agent_has_started_again`): a stopped task held in the backlog is shelved while its agent's terminal is kept starting; it's off the backlog, on the Shelf and claimed by the app, while the agent is still starting and the reply is still waiting, which comes once the agent runs.
-- **e2e `shelve_at_once`:** a stopped task with two terminal tabs, clicked in the app's backlog, is on the app's Shelf within 200ms (about 50ms here). Its card, pulled at once, puts it on the Desk with its agent resuming and both tabs running, and no note. daemon.log's lines carry the time.
+- **e2e `pick_at_once`:** a stopped task with two terminal tabs, clicked in the app's backlog, is on the app's Shelf within 200ms (about 50ms here). Its card, pulled at once, puts it on the Desk with its agent resuming and both tabs running, and no note. daemon.log's lines carry the time.
 - With the mock agent, restarting an agent and two tabs takes about 8ms on a quiet machine, so the e2e also passes on the old order. The daemon test is what pins the order.
 
 ## 5. Not yet

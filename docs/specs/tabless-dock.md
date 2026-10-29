@@ -31,4 +31,4 @@ stateDiagram-v2
 - **Physical presentation only** ([presentation layers](presentation-layers.md)): the daemon, the layout and the dock's saved width don't change. The app draws a window whose view has a `dock` and an empty `tabs` the way it draws a zoomed docked pane: the docked pane on the whole window, no tab bar, no divider (`WindowController.arrange`).
 - **The header's +** is the agent header's own button, shown only while the window has no tabs; it sends the same `open --tab` as ⌘T.
 - **The Shelf holds a parked agent at the size it'll have:** full width for a task with no tabs, its dock width otherwise, so pulling it doesn't resize it.
-- **Checked by** e2e `docked_pane`: a frozen docked pane pulled with no tabs fills the window, the header's + opens a tab, `kanna open --tab` puts it at 2/5, and closing the tab fills the window again; `shelf_zoom` and the desk scenarios pass unchanged.
+- **Checked by** e2e `docked_pane`: a frozen docked pane pulled with no tabs fills the window, the header's + opens a tab, `kanna open --tab` puts it at 2/5, and closing the tab fills the window again; `desk_zoom` and the desk scenarios pass unchanged.
