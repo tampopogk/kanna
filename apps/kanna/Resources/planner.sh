@@ -84,20 +84,31 @@ misplaced() {
   [ "$main" != "$want" ]
 }
 
+project() {
+  [ -n "$kanna" ] || return 1
+  request=$(jq -nc --arg action "$1" --arg path "$main" '{cmd: "project", args: {action: $action, path: $path}}') || return 1
+  "$kanna" raw "$request" 2>/dev/null
+}
+
 offer() {
   say "$(tilde "$main") isn't in $(tilde "$repos"), where Kanna keeps its projects so each has the same place on every machine."
-  say "Move it there: kanna project move $(tilde "$main")"
+  say "Import a copy there: kanna project import $(tilde "$main")"
   [ -n "$kanna" ] || return 1
-  ask "Move it to $(tilde "$want") now? [y/N]"
+  choices="y/N"
+  [ "$1" = never ] && choices="y/N/never"
+  ask "Import it into $(tilde "$want") now? [$choices]"
   case $answer in
     [yY]*) ;;
+    [nN][eE][vV][eE][rR])
+      [ "$1" = never ] && project never >/dev/null && say "Kanna won't ask again for $(tilde "$main"). Import it any time: kanna project import $(tilde "$main")"
+      return 1 ;;
     *) return 1 ;;
   esac
   back=$(pwd -P)
   cd "$HOME" && moved
   tries=0
   while :; do
-    said=$("$kanna" project move "$main" 2>&1) && { say "$said"; cd "$want"; return; }
+    said=$("$kanna" project import "$main" 2>&1) && { say "$said"; cd "$want"; return; }
     case $said in
       *"from a terminal outside it"*) [ "$tries" -lt 20 ] && { tries=$((tries + 1)); sleep 0.2; continue; } ;;
     esac
@@ -263,7 +274,11 @@ fi
 if [ "$(pwd -P)" = "$(cd "$HOME" && pwd -P)" ]; then
   where
 elif misplaced .; then
-  offer && moved
+  if project asked | jq -e '.never == true' >/dev/null 2>&1; then
+    say "$(tilde "$main") is outside $(tilde "$repos"), so its tasks don't start. Import it: kanna project import $(tilde "$main")"
+  else
+    offer never && moved
+  fi
   echo
 fi
 

@@ -28,7 +28,7 @@ Reopen a project you've had open without setting it up again.
 | a Desk moves to it | its planning terminal's folder changes, a task from it is pulled onto the Desk |
 
 - **A project is its repo's folder**: the main repo for a worktree, a subfolder's repo (`project()`). `~` never is.
-- **Shown by its place in `~/.kanna-v4/repos`** (`tampopogk/kanna`, `local/recipe-box`); one outside it isn't listed until it's moved there ([project folder](project-folder.md#2-outside-it)). The menu item's tooltip has the full path. The daemon gives each its label (`label` in `kanna projects --json`), so the menu and the prompt agree.
+- **Shown by its place in `~/.kanna-v4/repos`** (`tampopogk/kanna`, `local/recipe-box`); one outside it isn't added. The planner's prompt also lists, after the others, each outside project with a recent entry or tasks not done, labelled `~/work/app (outside)` (`outside: true` and its `place` in `kanna projects --json`), and choosing one offers the import ([project folder](project-folder.md#3-the-offer)); Open Recent leaves those off. The menu item's tooltip has the full path. The daemon gives each its label (`label` in `kanna projects --json`), so the menu and the prompt agree.
 - **Ten are kept;** a folder that's gone drops off when the list is read.
 - **One list for every app and Desk,** in the daemon.
 

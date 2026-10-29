@@ -3283,7 +3283,7 @@ mod tests {
         p.repo_at(&p.root.join("work/app"));
         let out = p.run(&p.home, "~/nowhere\nbad name!\n../work/app\n.kanna-v4/repos/local/app\n1\nn\n");
         assert!(out.contains("No folder ~/nowhere.") && out.contains("A project's name is letters, digits"), "{out}");
-        assert!(out.contains("ROOT/work/app isn't in ~/.kanna-v4/repos, where Kanna keeps its projects so each has the same place on every machine.\nMove it there: kanna project move ROOT/work/app\nFolder, repo or name: "), "a folder outside repos is refused: {out}");
+        assert!(out.contains("ROOT/work/app isn't in ~/.kanna-v4/repos, where Kanna keeps its projects so each has the same place on every machine.\nImport a copy there: kanna project import ROOT/work/app\nFolder, repo or name: "), "a folder outside repos is refused: {out}");
         assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/app: --dangerously-skip-permissions You are"), "a folder is moved to: {out}");
         let out = p.run(&p.home, &format!("{}\n1\nn\n", repo.display()));
         assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/app: --dangerously-skip-permissions You are"), "{out}");
@@ -3292,27 +3292,44 @@ mod tests {
     }
 
     #[test]
-    fn a_planning_terminal_outside_repos_offers_to_move_the_project_there_and_stays_if_not() {
+    fn a_planning_terminal_outside_repos_offers_to_import_the_project_and_stays_if_not() {
         let p = planner("outside", &["claude"]);
         let app = p.repo_at(&p.root.join("work/app"));
         let out = p.run(&app, "");
-        assert!(out.starts_with("ROOT/work/app isn't in ~/.kanna-v4/repos, where Kanna keeps its projects so each has the same place on every machine.\nMove it there: kanna project move ROOT/work/app\n"), "{out}");
-        assert!(!out.contains("Folder, repo or name") && out.contains("claude in ROOT/work/app:"), "without the move it stays, so the window keeps its project: {out}");
+        assert!(out.starts_with("ROOT/work/app isn't in ~/.kanna-v4/repos, where Kanna keeps its projects so each has the same place on every machine.\nImport a copy there: kanna project import ROOT/work/app\n"), "{out}");
+        assert!(!out.contains("Folder, repo or name") && out.contains("claude in ROOT/work/app:"), "without the import it stays, so the window keeps its project: {out}");
         let kanna = p.bin.join("kanna");
-        let asked = p.root.join("asked");
-        stub(&kanna, &format!("[ \"$1 $2\" = 'project move' ] || exit 0\necho \"$KANNA_TERMINAL $(pwd -P) $3\" >'{}'\nmkdir -p \"$HOME/.kanna-v4/repos/local\" && mv \"$3\" \"$HOME/.kanna-v4/repos/local/app\" && echo moved", asked.display()));
-        let out = p.run_in(&app, "n\n", Some(&kanna), Some("term-7"));
-        assert!(out.contains("Move it to ~/.kanna-v4/repos/local/app now? [y/N] \n") && out.contains("claude in ROOT/work/app:"), "{out}");
+        let (asked, never) = (p.root.join("asked"), p.root.join("never"));
+        stub(
+            &kanna,
+            &format!(
+                "case \"$1 $2\" in\n'project import') echo \"$KANNA_TERMINAL $(pwd -P) $3\" >'{asked}'; mkdir -p \"$HOME/.kanna-v4/repos/local\" && cp -R \"$3\" \"$HOME/.kanna-v4/repos/local/${{3##*/}}\" && echo imported; exit ;;\nesac\ncase \"$1 $2\" in\n*'\"never\"'*) echo \"$2\" >'{never}'; echo '{{\"never\":true}}' ;;\n*'\"asked\"'*) [ -e '{never}' ] && echo '{{\"never\":true}}' || echo '{{\"never\":false}}' ;;\nesac\nexit 0",
+                asked = asked.display(),
+                never = never.display()
+            ),
+        );
+        for _ in 0..2 {
+            let out = p.run_in(&app, "n\n", Some(&kanna), Some("term-7"));
+            assert!(out.contains("Import it into ~/.kanna-v4/repos/local/app now? [y/N/never] \n") && out.contains("claude in ROOT/work/app:"), "no stays, and asks again next time: {out}");
+        }
         let out = p.run_in(&app, "y\n", Some(&kanna), Some("term-7"));
-        assert!(out.contains("Move it to ~/.kanna-v4/repos/local/app now? [y/N] \u{1b}]7;file://localhostROOT/home\u{1b}\\moved\n"), "it leaves the project first, so the move doesn't stop it: {out}");
+        assert!(out.contains("Import it into ~/.kanna-v4/repos/local/app now? [y/N/never] \u{1b}]7;file://localhostROOT/home\u{1b}\\imported\n"), "it leaves the project first, so the import doesn't stop it: {out}");
         assert_eq!(fs::read_to_string(&asked).unwrap(), "term-7 ROOT/home ROOT/work/app\n".replace("ROOT", p.root.to_str().unwrap()));
-        assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/app:") && !app.exists(), "it starts the agent in the new place: {out}");
+        assert!(out.contains("\u{1b}]7;file://localhostROOT/home/.kanna-v4/repos/local/app\u{1b}\\") && out.contains("claude in ROOT/home/.kanna-v4/repos/local/app:"), "it starts the agent in the copy, and the window follows: {out}");
+        assert!(app.join(".git").is_dir(), "the original stays");
+
         let other = p.repo_at(&p.root.join("work/other"));
+        let out = p.run_in(&other, "never\n", Some(&kanna), Some("term-7"));
+        assert!(out.contains("[y/N/never] Kanna won't ask again for ROOT/work/other. Import it any time: kanna project import ROOT/work/other\n") && out.contains("claude in ROOT/work/other:"), "{out}");
+        let remembered: Value = serde_json::from_str(&fs::read_to_string(&never).unwrap()).unwrap();
+        assert_eq!(remembered, json!({ "cmd": "project", "args": { "action": "never", "path": other } }), "the daemon remembers it");
+        let out = p.run_in(&other, "", Some(&kanna), Some("term-7"));
+        assert!(out.starts_with("ROOT/work/other is outside ~/.kanna-v4/repos, so its tasks don't start. Import it: kanna project import ROOT/work/other\n") && !out.contains("[y/N") && out.contains("claude in ROOT/work/other:"), "never: a line, no question: {out}");
         let out = p.run_with(&p.home, &format!("{}\nn\nrecipe-box\n", other.display()), Some(&kanna));
-        assert!(out.contains("Move it to ~/.kanna-v4/repos/local/other now? [y/N] Folder, repo or name: Made"), "in ~, no asks again: {out}");
-        stub(&kanna, "[ \"$1 $2\" = 'project move' ] || exit 0\necho 'kanna: ~/x and ~/y are both clones' >&2; exit 1");
+        assert!(out.contains("Import it into ~/.kanna-v4/repos/local/other now? [y/N] Folder, repo or name: Made"), "chosen in ~, it's asked without never, and no asks again: {out}");
+        stub(&kanna, "[ \"$1 $2\" = 'project import' ] || exit 0\necho 'kanna: ~/x and ~/y are both clones' >&2; exit 1");
         let out = p.run_with(&p.home, &format!("{}\ny\nrecipe-box\n", other.display()), Some(&kanna));
-        assert!(out.contains("kanna: ~/x and ~/y are both clones\n\u{1b}]7;file://localhostROOT/home\u{1b}\\Folder, repo or name: Opened"), "a refused move says why and asks again: {out}");
+        assert!(out.contains("kanna: ~/x and ~/y are both clones\n\u{1b}]7;file://localhostROOT/home\u{1b}\\Folder, repo or name: Opened"), "a refused import says why and asks again: {out}");
     }
 
     #[test]

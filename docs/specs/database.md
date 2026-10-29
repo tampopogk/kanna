@@ -158,6 +158,19 @@ sequenceDiagram
 
 - **The daemon writes them** when a planner starts (`backlog` `planner` `start`) and when its agent quits (`quit`); the next planner on the project reads it. Not in `projects`, which keeps only ten and is cleared with `kanna projects clear`.
 
+## Never import
+
+**Built.** Outside projects whose planner shouldn't offer the import at startup ([project folder](project-folder.md#3-the-offer)).
+
+**never_import**: one row per project.
+
+| Column | Type | Holds |
+|---|---|---|
+| `path` | text, key | the outside project's folder (the main repo for a worktree) |
+| `at` | real | when you answered never |
+
+- **The daemon writes them** (`project` `never`, from `planner.sh`) and reads them (`project` `asked`); importing the project deletes its row.
+
 **Later candidates,** not built: agent session IDs per task over time; agent status history (how long a task waited on you); build timings.
 
 **Checked by** `db.rs`'s tests (a real `backlog.json` imported with every task and the counter; a held task; a change and its event together; unknown doc keys kept; a corrupt, missing or newer db; a `backlog.json` beside the db; a version 1 db taking the quiz tables with its tasks kept; a miss kept until it's asked again; a project's planner kept across a restart), `quiz.rs`'s tests (a round and its answers read back; a bad answer refused), the CLI's tests (`kanna quiz` requests, the history's text), the layout owner's tests (park and pull, a swap, report their moves), e2e `task_history` (import, every event of a task's life with who did it, the app's park, a corrupt db at restart) and e2e `quiz_results` (a round recorded, read back after a restart, a miss asked again).

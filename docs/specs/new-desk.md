@@ -46,11 +46,12 @@ flowchart LR
   | You type | It |
   |---|---|
   | a git URL (`https://…`, `git@…`, `ssh://…`) | clones it into its place, `~/.kanna-v4/repos/OWNER/NAME`, or opens that clone if it's there |
-  | an existing folder (`~/.kanna-v4/repos/a/app`, `../app`) | moves there; a project outside `repos` is refused, with the move offered ([project folder](project-folder.md#2-outside-it)) |
+  | an existing folder (`~/.kanna-v4/repos/a/app`, `../app`) | moves there; for a project outside `repos` it offers the import, `Import it into … now? [y/N]`: yes imports a copy and moves to the copy, no asks again ([project folder](project-folder.md#3-the-offer)) |
   | `owner/repo` that isn't a folder | clones it from GitHub with `gh repo clone` into `repos/owner/repo`; without `gh`, it says to give the URL |
   | a name (letters, digits, `.`, `-`, `_`) | makes `~/.kanna-v4/repos/local/NAME`, empty, or opens it if it's there |
 
-  A clone that fails, a missing folder or a `NAME` in `repos` that's another repo is said, and it asks again. Then the terminal moves, the header and Shelf follow, and the agent and the shell you're left in are there. Anywhere else (`kanna PATH`, a shell's folder), it doesn't ask.
+  A clone that fails, a missing folder or a `NAME` in `repos` that's another repo is said, and it asks again. Then the terminal moves, the header and Shelf follow, and the agent and the shell you're left in are there. Anywhere else (`kanna PATH`, a shell's folder), it doesn't ask where.
+- **Started in a project outside `repos`** (a restored Desk, a task docked there parked), it offers the import first, `Import it into … now? [y/N/never]`, or says in a line that it's outside if you answered never before ([project folder](project-folder.md#3-the-offer)).
 - **Where projects live:** [project folder](project-folder.md).
 - **A clone is a project like any other:** its own `.kanna/config.json` may already set `planning.agent`, and then nothing is asked. It clones with your git and `gh`, so their credentials apply.
 - **A new project isn't a repo yet:** Kanna makes only the folder. The planning agent sees an empty folder and, with the kanna-new-project skill, decides with you what it is, then runs `git init` and a first commit when you agree ([tasks](tasks.md#1-what-a-task-is)).
