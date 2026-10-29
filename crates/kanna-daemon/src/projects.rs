@@ -117,7 +117,7 @@ pub fn outside(repos: &Path, folder: &Path) -> Result<(), KmuxError> {
         true => format!("{shown} isn't at its place in {}, which its origin decides", tilde(&root)),
         false => format!("{shown} isn't in {}, where Kanna keeps its projects so each has the same place on every machine", tilde(&root)),
     };
-    Err(KmuxError::new("outside", format!("{why}: move it there with `kanna project move {shown}` (to {})", tilde(&wanted))))
+    Err(KmuxError::new("outside", format!("{why}: import a copy there with `kanna project import {shown}` (to {})", tilde(&wanted))))
 }
 
 pub fn desk_here(folder: &str) -> Result<(), KmuxError> {
@@ -231,18 +231,33 @@ impl Projects {
     }
 
     fn list(&self) -> Result<Map, KmuxError> {
-        let mut kept = vec![];
+        let (mut kept, mut outside) = (vec![], vec![]);
         for (path, at) in self.db.projects().map_err(|e| failed("read the recent projects", e))? {
-            if self.misplaced(Path::new(&path)) && Path::new(&path).is_dir() {
-                continue;
-            }
-            if Path::new(&path).is_dir() {
-                kept.push(json!({ "path": path, "label": self.label(Path::new(&path)), "at": num(at.floor()), "project": identity(Path::new(&path)) }));
-            } else {
+            if !Path::new(&path).is_dir() {
                 self.db.forget_project(&path).map_err(|e| failed("forget a recent project", e))?;
+            } else if let Some(entry) = self.outside(&path, Some(at)) {
+                outside.push(entry);
+            } else {
+                kept.push(json!({ "path": path, "label": self.label(Path::new(&path)), "at": num(at.floor()), "project": identity(Path::new(&path)) }));
             }
         }
+        let mut repos: Vec<String> = self.db.tasks().map_err(|e| failed("read the tasks", e))?.into_iter().filter(|t| t.place != db::Place::Done).map(|t| t.repo).collect();
+        repos.sort();
+        repos.dedup();
+        for repo in repos {
+            let known = |entry: &Value| entry["path"].as_str() == Some(repo.as_str());
+            if Path::new(&repo).is_dir() && !outside.iter().any(known) {
+                outside.extend(self.outside(&repo, None));
+            }
+        }
+        kept.extend(outside);
         Ok(Map::from_iter([("projects".to_string(), Value::Array(kept))]))
+    }
+
+    fn outside(&self, path: &str, at: Option<f64>) -> Option<Value> {
+        let (main, wanted) = misplaced(self.repos.as_deref()?, Path::new(path))?;
+        let at = at.map_or(Value::Null, |at| num(at.floor()));
+        Some(json!({ "path": main, "label": format!("{} (outside)", self.label(&main)), "at": at, "project": identity(&main), "outside": true, "place": wanted }))
     }
 }
 
@@ -313,7 +328,7 @@ mod tests {
         assert_eq!(home_place(&app), Path::new("local/app"));
         let refused = outside(&repos, &app.join("sub")).unwrap_err();
         assert_eq!(refused.code, "outside");
-        assert!(refused.message.contains(&format!("move it there with `kanna project move {}`", app.display())) && refused.message.contains("repos/local/app)"), "{}", refused.message);
+        assert!(refused.message.contains(&format!("import a copy there with `kanna project import {}`", app.display())) && refused.message.contains("repos/local/app)"), "{}", refused.message);
         git(&app, &["remote", "add", "origin", "git@github.com:someone/app.git"]);
         assert_eq!(misplaced(&repos, &app).unwrap().1, repos.join("someone/app"));
         let there = repos.join("someone/app");
@@ -372,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn a_project_in_repos_goes_by_its_place_and_one_outside_is_left_off() {
+    fn a_project_in_repos_goes_by_its_place_and_one_outside_with_work_in_kanna_comes_last_marked_outside() {
         let dir = folder("labels");
         let home = dir.join("home");
         let repos = home.join(REPOS);
@@ -385,8 +400,21 @@ mod tests {
         let labels: Vec<&str> = reply["projects"].as_array().unwrap().iter().map(|p| p["label"].as_str().unwrap()).collect();
         assert_eq!(labels, ["local/recipe-box", "local/kojo"], "a subfolder of a project that isn't a repo is a project of its own, out of place");
         projects.db.touch_project(&home.join("work/app").to_string_lossy()).unwrap();
-        assert_eq!(listed(&projects).len(), 2, "an old recent project outside repos is left off the list");
-        assert!(projects.db.projects().unwrap().iter().any(|(p, _)| p.ends_with("work/app")), "but kept, for when it moves there");
+        let row = |id: &str, repo: &Path, place: db::Place| db::Row { id: id.into(), repo: repo.to_string_lossy().into(), place, terminal: None, made_at: 1.0, doc: json!({}) };
+        for (id, repo, place) in [("task-00000001", dir.join("elsewhere"), db::Place::Backlog), ("task-00000002", dir.join("elsewhere"), db::Place::Shelf), ("task-00000003", home.join("work/app"), db::Place::Backlog), ("task-00000004", dir.join("finished"), db::Place::Done)] {
+            fs::create_dir_all(&repo).unwrap();
+            projects.db.put(&row(id, &repo, place), None).unwrap();
+        }
+        let reply = Value::Object(projects.handle(&json!({})).unwrap());
+        let shown: Vec<(String, Value, Value)> = reply["projects"].as_array().unwrap().iter().map(|p| (p["label"].as_str().unwrap().to_string(), p["outside"].clone(), p["place"].clone())).collect();
+        let elsewhere = dir.join("elsewhere").display().to_string();
+        let wanted = [
+            ("local/recipe-box".to_string(), Value::Null, Value::Null),
+            ("local/kojo".to_string(), Value::Null, Value::Null),
+            ("~/work/app (outside)".to_string(), json!(true), json!(repos.join("local/app"))),
+            (format!("{elsewhere} (outside)"), json!(true), json!(repos.join("local/elsewhere"))),
+        ];
+        assert_eq!(shown, wanted, "an outside project with a recent entry or open tasks is listed once, after the rest, with its place; a done task's isn't");
         fs::remove_dir_all(&dir).unwrap();
     }
 

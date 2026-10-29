@@ -1,6 +1,6 @@
 use crate::db::{self, Change, Db, Message, Place, Row};
 use crate::messages::{self, Channel, Ready, PLANNER, USER};
-use crate::project_move;
+use crate::project_import;
 use crate::task_scripts::{self, Cleanup, Scripts, Setup};
 use crate::Event;
 use kanna_mux::json::{json, num, opt, string, Map, Value};
@@ -688,7 +688,7 @@ pub struct Backlog {
     pub on_change: RefCell<Option<Box<dyn Fn(Value)>>>,
     pub claimant: RefCell<String>,
     pub repos: RefCell<Option<PathBuf>>,
-    moving: RefCell<Option<project_move::Move>>,
+    importing: RefCell<Option<project_import::Import>>,
 }
 
 #[derive(Clone)]
@@ -797,7 +797,7 @@ impl Backlog {
             posting: RefCell::default(),
             on_change: RefCell::default(),
             repos: RefCell::default(),
-            moving: RefCell::default(),
+            importing: RefCell::default(),
         }
     }
 
@@ -983,8 +983,8 @@ impl Backlog {
     }
 
     fn placed(&self, repo: &str) -> Result<(), KmuxError> {
-        if let Some(moving) = self.moving.borrow().as_ref().filter(|m| m.holds(repo)) {
-            return Err(KmuxError::new("moving", format!("{} is moving to {}: try again once it's there", crate::projects::tilde(&moving.from), crate::projects::tilde(&moving.to))));
+        if let Some(importing) = self.importing.borrow().as_ref().filter(|m| m.holds(repo)) {
+            return Err(KmuxError::new("importing", format!("{} is being imported to {}: try again once it's there", crate::projects::tilde(&importing.from), crate::projects::tilde(&importing.to))));
         }
         match self.repos.borrow().as_deref() {
             Some(repos) => crate::projects::outside(repos, Path::new(repo)),
@@ -1544,48 +1544,66 @@ impl Backlog {
             Rc::new(move |args, responder| {
                 let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
                 match args.get("action").and_then(Value::as_str) {
-                    Some("move") => this.relocate(&args, responder),
-                    _ => responder.reply(Err(bad("project needs an action: move"))),
+                    Some("import") => this.import(&args, responder),
+                    Some("asked") => responder.reply(this.asked(&args)),
+                    Some("never") => responder.reply(this.never(&args)),
+                    _ => responder.reply(Err(bad("project needs an action: import, asked or never"))),
                 }
             }),
         );
     }
 
-    fn relocate(self: &Rc<Self>, args: &Value, responder: Responder) {
+    fn outside_project(&self, args: &Value) -> Result<PathBuf, KmuxError> {
+        let repos = self.repos.borrow().clone().ok_or_else(|| bad("this Kanna keeps no projects folder"))?;
+        let path = string(args, "path").map(|p| project_import::expand(p, &crate::agents::home())).filter(|p| p.is_absolute()).ok_or_else(|| bad("say which project: an absolute path"))?;
+        let (main, _) = crate::projects::misplaced(&repos, &path).ok_or_else(|| KmuxError::new("in_place", format!("{} is in its place already", crate::projects::tilde(&path))))?;
+        Ok(main)
+    }
+
+    fn asked(&self, args: &Value) -> Result<Map, KmuxError> {
+        let main = self.outside_project(args)?;
+        let never = self.db.never_imports(&main.to_string_lossy()).map_err(|e| KmuxError::new("failed", format!("couldn't read {}: {e}", db::FILE)))?;
+        Ok(Map::from_iter([("path".to_string(), json!(main)), ("never".to_string(), json!(never))]))
+    }
+
+    fn never(&self, args: &Value) -> Result<Map, KmuxError> {
+        let main = self.outside_project(args)?;
+        self.db.never_import(&main.to_string_lossy()).map_err(|e| KmuxError::new("failed", format!("couldn't write {}: {e}", db::FILE)))?;
+        log!("kanna-daemon: {} won't be offered for import again", main.display());
+        Ok(Map::from_iter([("path".to_string(), json!(main)), ("never".to_string(), json!(true))]))
+    }
+
+    fn import(self: &Rc<Self>, args: &Value, responder: Responder) {
         let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
         let Some(repos) = self.repos.borrow().clone() else { return responder.reply(Err(bad("this Kanna keeps no projects folder"))) };
         let home = crate::agents::home();
-        let Some(path) = string(args, "path").map(|p| project_move::expand(p, &home)).filter(|p| p.is_absolute()) else { return responder.reply(Err(bad("say which project: kanna project move PATH"))) };
+        let Some(path) = string(args, "path").map(|p| project_import::expand(p, &home)).filter(|p| p.is_absolute()) else { return responder.reply(Err(bad("say which project: kanna project import PATH"))) };
         let homes: Vec<PathBuf> = std::iter::once(home).chain(std::env::var_os("HOME").map(PathBuf::from)).collect();
-        let plan = match project_move::plan(&repos, &path, &homes) {
+        let plan = match project_import::plan(&repos, &path, &homes) {
             Ok(plan) => plan,
             Err(error) => return responder.reply(Err(error)),
         };
         let shown = crate::projects::tilde(&plan.from);
-        if std::env::current_exe().is_ok_and(|exe| crate::projects::canonical(&exe).starts_with(&plan.from)) {
-            return responder.reply(Err(KmuxError::new("here", format!("this Kanna runs from inside {shown}, and its terminals name its files there: move it with a Kanna built elsewhere"))));
-        }
         let starting = self.pending.borrow().values().any(|p| plan.holds(&p.entry.repo)) || self.tearing_down.borrow().values().any(|t| plan.holds(&t.entry.repo)) || self.setting_up.borrow().values().any(|s| plan.holds(&s.worktree.to_string_lossy()));
-        if starting || self.moving.borrow().is_some() {
-            return responder.reply(Err(KmuxError::new("busy", format!("a task in {shown} is starting, setting up or ending, or a project is moving: move it once that's done"))));
+        if starting || self.importing.borrow().is_some() {
+            return responder.reply(Err(KmuxError::new("busy", format!("a task in {shown} is starting, setting up or ending, or a project is being imported: import it once that's done"))));
         }
         let mut tasks: Vec<(String, String)> = self.running.borrow().iter().filter(|r| plan.holds(&r.entry.repo) && alive(&core, &r.pane)).map(|r| (r.entry.id.clone(), r.pane.clone())).collect();
         tasks.extend(self.entries.borrow().iter().filter(|e| plan.holds(&e.repo)).filter_map(|e| e.held.clone().filter(|pane| alive(&core, pane)).map(|pane| (e.id.clone(), pane))));
         let caller = string(args, "by").and_then(|by| core.pane(by));
-        let here = |pane: &Pane| [&pane.cwd, &pane.opened_in].into_iter().flatten().any(|folder| plan.holds(folder));
-        if let Some(caller) = caller.as_ref().filter(|c| here(c) || tasks.iter().any(|(_, pane)| *pane == c.id)) {
-            return responder.reply(Err(KmuxError::new("here", format!("{} is in {shown}, and the move stops every terminal there: run kanna project move from a terminal outside it", caller.label()))));
+        if let Some(caller) = caller.as_ref().filter(|c| c.cwd.as_deref().is_some_and(|cwd| plan.holds(cwd)) || tasks.iter().any(|(_, pane)| *pane == c.id)) {
+            return responder.reply(Err(KmuxError::new("here", format!("{} is in {shown}, and the import stops every terminal there: run kanna project import from a terminal outside it", caller.label()))));
         }
         let caller = caller.map(|c| c.id);
         let by = who(args).map(String::from);
-        *self.moving.borrow_mut() = Some(plan.clone());
-        log!("kanna-daemon: moving {} to {}: stopping {} task(s)", plan.from.display(), plan.to.display(), tasks.len());
+        *self.importing.borrow_mut() = Some(plan.clone());
+        log!("kanna-daemon: importing {} to {}: stopping {} task(s)", plan.from.display(), plan.to.display(), tasks.len());
         let this = Rc::downgrade(self);
         let ids: Vec<String> = tasks.iter().map(|(id, _)| id.clone()).collect();
         let stopped = Join::new(tasks.len(), move |errors| {
             let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
             if !errors.is_empty() {
-                return this.restart_after_move(plan, ids, vec![], by, Err(format!("couldn't stop every task: {}", errors.join("; "))), responder);
+                return this.restart_after_import(plan, ids, vec![], by, Err(format!("couldn't stop every task: {}", errors.join("; "))), responder);
             }
             this.end_terminals(plan, ids, caller, by, responder);
         });
@@ -1595,7 +1613,7 @@ impl Backlog {
         }
     }
 
-    fn end_terminals(self: &Rc<Self>, plan: project_move::Move, tasks: Vec<String>, caller: Option<String>, by: Option<String>, responder: Responder) {
+    fn end_terminals(self: &Rc<Self>, plan: project_import::Import, tasks: Vec<String>, caller: Option<String>, by: Option<String>, responder: Responder) {
         let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
         let planners = self.planners();
         let live: Vec<Pane> = core.with_panes(|panes| panes.iter().filter(|p| p.kind == kanna_mux::PaneType::Term && matches!(p.state, PaneState::Starting | PaneState::Running)).cloned().collect());
@@ -1605,10 +1623,10 @@ impl Backlog {
         let ended = Join::new(ending.len(), move |errors| {
             let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
             let result = match errors.is_empty() {
-                true => project_move::carry(&plan),
+                true => project_import::copy(&plan),
                 false => Err(format!("couldn't stop every terminal: {}", errors.join("; "))),
             };
-            this.restart_after_move(plan, tasks, terminals, by, result, responder);
+            this.restart_after_import(plan, tasks, terminals, by, result, responder);
         });
         for pane in ending {
             let join = ended.clone();
@@ -1629,17 +1647,17 @@ impl Backlog {
         }
     }
 
-    fn restart_after_move(self: &Rc<Self>, plan: project_move::Move, tasks: Vec<String>, terminals: Vec<String>, by: Option<String>, moved: Result<usize, String>, responder: Responder) {
-        self.moving.borrow_mut().take();
+    fn restart_after_import(self: &Rc<Self>, plan: project_import::Import, tasks: Vec<String>, terminals: Vec<String>, by: Option<String>, copied: Result<project_import::Copied, String>, responder: Responder) {
+        self.importing.borrow_mut().take();
         let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
         let mut reply = Map::new();
-        if let Ok(worktrees) = moved {
-            let mut sessions = project_move::Moved::default();
+        if let Ok(copied) = &copied {
+            let mut sessions = project_import::Carried::default();
             for from in plan.froms() {
-                let found = project_move::Stores::here().carry(&from, &plan.to);
-                sessions = project_move::Moved { claude: sessions.claude + found.claude, codex: sessions.codex + found.codex, copilot: sessions.copilot + found.copilot, opencode: sessions.opencode + found.opencode, kept: [sessions.kept, found.kept].concat() };
+                let found = project_import::Stores::here().carry(&from, &plan.to);
+                sessions = project_import::Carried { claude: sessions.claude + found.claude, codex: sessions.codex + found.codex, copilot: sessions.copilot + found.copilot, opencode: sessions.opencode + found.opencode, kept: [sessions.kept, found.kept].concat() };
                 if let Err(error) = self.db.relocate(&from.to_string_lossy(), &plan.to.to_string_lossy()) {
-                    log!("kanna-daemon: couldn't move {}'s records in {}: {error}", from.display(), db::FILE);
+                    log!("kanna-daemon: couldn't point {}'s records at {} in {}: {error}", from.display(), plan.to.display(), db::FILE);
                     sessions.kept.push(format!("{}: {error}", db::FILE));
                 }
             }
@@ -1647,24 +1665,25 @@ impl Backlog {
             core.edit_panes(|pane| {
                 let mut edited = false;
                 for field in [&mut pane.cwd, &mut pane.opened_in, &mut pane.path] {
-                    if let Some(moved) = field.as_deref().and_then(|f| plan.shifted(f)) {
-                        *field = Some(moved);
+                    if let Some(shifted) = field.as_deref().and_then(|f| plan.shifted(f)) {
+                        *field = Some(shifted);
                         edited = true;
                     }
                 }
                 edited
             });
-            log!("kanna-daemon: moved {} to {} ({worktrees} worktree(s), {} Claude folder(s), {} codex, {} copilot, {} opencode session(s))", plan.from.display(), plan.to.display(), sessions.claude, sessions.codex, sessions.copilot, sessions.opencode);
+            log!("kanna-daemon: imported {} to {} ({} worktree(s), {} left with the original, {} Claude folder(s), {} codex, {} copilot, {} opencode session(s))", plan.from.display(), plan.to.display(), copied.worktrees, copied.outside.len(), sessions.claude, sessions.codex, sessions.copilot, sessions.opencode);
             reply.insert("from".into(), json!(plan.from));
             reply.insert("to".into(), json!(plan.to));
-            reply.insert("worktrees".into(), json!(worktrees));
+            reply.insert("worktrees".into(), json!(copied.worktrees));
+            reply.insert("outside".into(), json!(copied.outside));
             reply.insert("sessions".into(), sessions.to_value());
             reply.insert("tasks".into(), json!(tasks));
             reply.insert("terminals".into(), json!(terminals));
-            reply.insert("mentions".into(), json!(project_move::mentions(&crate::agents::home(), &plan.to, &plan.from)));
+            reply.insert("mentions".into(), json!(project_import::mentions(&crate::agents::home(), &plan.to, &plan.from)));
         }
         let this = Rc::downgrade(self);
-        let failure = moved.err();
+        let failure = copied.err();
         let restarted = Join::new(tasks.len() + terminals.len(), move |errors| {
             if let Some(this) = this.upgrade() {
                 this.changed();
@@ -1687,7 +1706,7 @@ impl Backlog {
         }
     }
 
-    fn relocate_entries(&self, plan: &project_move::Move) {
+    fn relocate_entries(&self, plan: &project_import::Import) {
         let fix = |entry: &mut Entry| {
             let repo = plan.shifted(&entry.repo);
             let folder = entry.folder.as_deref().and_then(|f| plan.shifted(f));
@@ -3564,12 +3583,12 @@ mod tests {
         *backlog.repos.borrow_mut() = Some(state.join("repos"));
         let refused = backlog.add(&json!({ "repo": outside.to_str().unwrap(), "name": "Out" })).unwrap_err();
         assert_eq!(refused.code, "outside");
-        assert!(refused.message.contains("`kanna project move ") && refused.message.ends_with("repos/local/app)"), "{}", refused.message);
+        assert!(refused.message.contains("`kanna project import ") && refused.message.ends_with("repos/local/app)"), "{}", refused.message);
         assert!(backlog.add(&json!({ "repo": inside.to_str().unwrap(), "name": "In" })).is_ok());
         let old = Entry { id: "task-00000001".into(), repo: outside.to_string_lossy().into(), agent: "claude".into(), ..Default::default() };
         assert_eq!(backlog.ready(&old).unwrap_err().code, "outside", "a task an older Kanna made outside doesn't start");
-        *backlog.moving.borrow_mut() = Some(project_move::Move { from: inside.canonicalize().unwrap(), to: state.join("repos/a/app") });
-        assert_eq!(backlog.add(&json!({ "repo": inside.to_str().unwrap(), "name": "Late" })).unwrap_err().code, "moving");
+        *backlog.importing.borrow_mut() = Some(project_import::Import { from: inside.canonicalize().unwrap(), to: state.join("repos/a/app") });
+        assert_eq!(backlog.add(&json!({ "repo": inside.to_str().unwrap(), "name": "Late" })).unwrap_err().code, "importing");
         fs::remove_dir_all(&state).unwrap();
     }
 

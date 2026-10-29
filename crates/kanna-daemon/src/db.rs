@@ -107,6 +107,11 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         path text primary key,
         doc text not null check (json_valid(doc))
     );
+"), Step::Sql("
+    create table never_import (
+        path text primary key,
+        at real not null
+    );
 ")];
 
 pub const RECENT: usize = 10;
@@ -617,6 +622,14 @@ impl Db {
         self.conn.execute("delete from projects", []).map(|_| ())
     }
 
+    pub fn never_import(&self, path: &str) -> rusqlite::Result<()> {
+        self.conn.execute("insert or replace into never_import (path, at) values (?1, ?2)", params![path, now()]).map(|_| ())
+    }
+
+    pub fn never_imports(&self, path: &str) -> rusqlite::Result<bool> {
+        self.conn.prepare("select 1 from never_import where path = ?1")?.exists([path])
+    }
+
     pub fn relocate(&self, from: &str, to: &str) -> rusqlite::Result<usize> {
         let under = |column: &str| format!("({column} = ?1 or substr({column}, 1, length(?1) + 1) = ?1 || '/')");
         let moved = |column: &str| format!("?2 || substr({column}, length(?1) + 1)");
@@ -627,6 +640,7 @@ impl Db {
         }
         let folder = "json_extract(doc, '$.folder')";
         count += tx.execute(&format!("update tasks set doc = json_set(doc, '$.folder', {}) where {}", moved(folder), under(folder)), [from, to])?;
+        tx.execute(&format!("delete from never_import where {}", under("path")), [from])?;
         tx.commit()?;
         Ok(count)
     }

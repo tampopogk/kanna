@@ -2,17 +2,16 @@ use crate::projects::{canonical, home_place, identity, tilde};
 use kanna_mux::json::{json, Value};
 use kanna_mux::{project, KmuxError};
 use std::fs;
-use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Move {
+pub struct Import {
     pub from: PathBuf,
     pub to: PathBuf,
 }
 
-impl Move {
+impl Import {
     pub fn froms(&self) -> Vec<PathBuf> {
         let mut froms = vec![self.from.clone()];
         if let Ok(rest) = self.from.strip_prefix("/private") {
@@ -28,6 +27,11 @@ impl Move {
     pub fn holds(&self, text: &str) -> bool {
         self.shifted(text).is_some()
     }
+
+    fn shift(&self, path: &Path) -> Option<PathBuf> {
+        let found = self.froms().iter().find_map(|from| shift(path, from, &self.to));
+        found.or_else(|| path.canonicalize().ok().and_then(|real| shift(&real, &self.from, &self.to)))
+    }
 }
 
 fn refused(code: &str, message: String) -> KmuxError {
@@ -41,7 +45,7 @@ pub fn expand(path: &str, home: &Path) -> PathBuf {
     }
 }
 
-pub fn plan(repos: &Path, path: &Path, homes: &[PathBuf]) -> Result<Move, KmuxError> {
+pub fn plan(repos: &Path, path: &Path, homes: &[PathBuf]) -> Result<Import, KmuxError> {
     if !path.is_dir() {
         return Err(refused("not_found", format!("no folder {}", path.display())));
     }
@@ -62,16 +66,12 @@ pub fn plan(repos: &Path, path: &Path, homes: &[PathBuf]) -> Result<Move, KmuxEr
         return Err(match identity(&from).filter(|mine| mine.starts_with("url:") && Some(mine) == theirs.as_ref()) {
             Some(same) => refused(
                 "clash",
-                format!("{} and {} are both clones of {}, and a project has one place: keep one of them (remove the other, or give it another origin), then move again", tilde(&from), tilde(&to), &same[4..]),
+                format!("{} and {} are both clones of {}, and a project has one place: keep one of them (remove the other, or give it another origin), then import again", tilde(&from), tilde(&to), &same[4..]),
             ),
             None => refused("taken", format!("{} is already there, and isn't {}: move it away first", tilde(&to), tilde(&from))),
         });
     }
-    let disk = to.ancestors().find_map(|dir| fs::metadata(dir).ok()).map(|m| m.dev());
-    if disk.is_some_and(|dev| fs::metadata(&from).map(|m| m.dev()).ok() != Some(dev)) {
-        return Err(refused("other_disk", format!("{} is on another disk than {}, and Kanna moves a project only within one", tilde(&from), tilde(&repos))));
-    }
-    Ok(Move { from, to })
+    Ok(Import { from, to })
 }
 
 fn common_dir(path: &Path) -> Option<PathBuf> {
@@ -88,27 +88,101 @@ pub fn shifted(text: &str, from: &Path, to: &Path) -> Option<String> {
     shift(Path::new(text), from, to).map(|p| p.to_string_lossy().into_owned())
 }
 
-pub fn worktrees(repo: &Path) -> Vec<PathBuf> {
-    let Ok(out) = Command::new("git").arg("-C").arg(repo).args(["worktree", "list", "--porcelain"]).output() else { return vec![] };
-    let text = String::from_utf8_lossy(&out.stdout);
-    text.lines().filter_map(|l| l.strip_prefix("worktree ")).map(PathBuf::from).filter(|w| canonical(w) != canonical(repo)).collect()
+#[derive(Debug, Default, PartialEq)]
+pub struct Copied {
+    pub worktrees: usize,
+    pub outside: Vec<PathBuf>,
 }
 
-pub fn carry(plan: &Move) -> Result<usize, String> {
-    let others = worktrees(&plan.from);
-    if let Some(parent) = plan.to.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("couldn't make {}: {e}", tilde(parent)))?;
+pub fn copy(plan: &Import) -> Result<Copied, String> {
+    let parent = plan.to.parent().ok_or_else(|| format!("{} has no folder to go in", tilde(&plan.to)))?;
+    fs::create_dir_all(parent).map_err(|e| format!("couldn't make {}: {e}", tilde(parent)))?;
+    let name = plan.to.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let staging = parent.join(format!(".{name}.importing"));
+    let _ = fs::remove_dir_all(&staging);
+    if let Err(error) = clone_tree(&plan.from, &staging) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(format!("couldn't copy {} to {}: {error}", tilde(&plan.from), tilde(&plan.to)));
     }
-    fs::rename(&plan.from, &plan.to).map_err(|e| format!("couldn't move {} to {}: {e}", tilde(&plan.from), tilde(&plan.to)))?;
-    if others.is_empty() {
-        return Ok(0);
+    if let Err(error) = fs::rename(&staging, &plan.to) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(format!("couldn't put the copy at {}: {error}", tilde(&plan.to)));
     }
-    let moved: Vec<PathBuf> = others.iter().map(|w| shift(w, &plan.from, &plan.to).unwrap_or_else(|| w.clone())).collect();
-    let out = Command::new("git").arg("-C").arg(&plan.to).args(["worktree", "repair"]).args(&moved).output().map_err(|e| format!("couldn't run git worktree repair: {e}"))?;
+    rejoin(plan).inspect_err(|_| {
+        let _ = fs::remove_dir_all(&plan.to);
+    })
+}
+
+pub fn clone_tree(from: &Path, to: &Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let src = std::ffi::CString::new(from.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
+        let dst = std::ffi::CString::new(to.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
+        if unsafe { libc::clonefile(src.as_ptr(), dst.as_ptr(), 0) } == 0 {
+            return Ok(());
+        }
+        let _ = fs::remove_dir_all(to);
+    }
+    let how: &[&str] = if cfg!(target_os = "macos") { &["-Rp"] } else { &["-a", "--reflink=auto"] };
+    let out = Command::new("cp").args(how).arg(from).arg(to).output().map_err(|e| format!("couldn't run cp: {e}"))?;
+    match out.status.success() {
+        true => Ok(()),
+        false => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+    }
+}
+
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn rejoin(plan: &Import) -> Result<Copied, String> {
+    let mut copied = Copied::default();
+    let Ok(listed) = fs::read_dir(plan.to.join(".git/worktrees")) else { return Ok(copied) };
+    let mut repair = vec![];
+    for entry in listed.flatten() {
+        let Ok(text) = fs::read_to_string(entry.path().join("gitdir")) else { continue };
+        let dotgit = lexical(&plan.from.join(".git/worktrees").join(entry.file_name()).join(text.trim()));
+        let Some(tree) = dotgit.parent().map(Path::to_path_buf) else { continue };
+        match plan.shift(&tree) {
+            Some(moved) if moved.is_dir() => {
+                let file = moved.join(".git");
+                if let Some(pointed) = fs::read_to_string(&file).ok().and_then(|t| t.strip_prefix("gitdir: ").map(|p| p.trim().to_string())) {
+                    if let Some(admin) = plan.shift(Path::new(&pointed)) {
+                        fs::write(&file, format!("gitdir: {}\n", admin.display())).map_err(|e| format!("couldn't write {}: {e}", tilde(&file)))?;
+                    }
+                }
+                repair.push(moved);
+            }
+            Some(_) => {}
+            None => {
+                fs::remove_dir_all(entry.path()).map_err(|e| format!("couldn't leave {} out of the copy: {e}", tilde(&tree)))?;
+                if tree.is_dir() {
+                    copied.outside.push(tree);
+                }
+            }
+        }
+    }
+    copied.outside.sort();
+    if repair.is_empty() {
+        return Ok(copied);
+    }
+    let out = Command::new("git").arg("-C").arg(&plan.to).args(["worktree", "repair"]).args(&repair).output().map_err(|e| format!("couldn't run git worktree repair: {e}"))?;
     if !out.status.success() {
         return Err(format!("git worktree repair failed in {}: {}", tilde(&plan.to), String::from_utf8_lossy(&out.stderr).trim()));
     }
-    Ok(moved.len())
+    copied.worktrees = repair.len();
+    Ok(copied)
 }
 
 #[derive(Clone, Debug)]
@@ -120,7 +194,7 @@ pub struct Stores {
 }
 
 #[derive(Debug, Default, PartialEq)]
-pub struct Moved {
+pub struct Carried {
     pub claude: usize,
     pub codex: usize,
     pub copilot: usize,
@@ -128,7 +202,7 @@ pub struct Moved {
     pub kept: Vec<String>,
 }
 
-impl Moved {
+impl Carried {
     pub fn to_value(&self) -> Value {
         json!({ "claude": self.claude, "codex": self.codex, "copilot": self.copilot, "opencode": self.opencode, "kept": self.kept })
     }
@@ -143,31 +217,31 @@ impl Stores {
         Stores { claude: dir("CLAUDE_CONFIG_DIR", ".claude"), codex: dir("CODEX_HOME", ".codex"), copilot: dir("COPILOT_HOME", ".copilot"), opencode: dir("XDG_DATA_HOME", ".local/share").join("opencode") }
     }
 
-    pub fn carry(&self, from: &Path, to: &Path) -> Moved {
-        let mut moved = Moved::default();
-        self.claude_folders(from, to, &mut moved);
-        moved.codex = self.codex_rollouts(from, to);
-        moved.copilot = self.copilot_sessions(from, to);
-        moved.opencode = self.opencode_sessions(from, to).unwrap_or_else(|error| {
-            moved.kept.push(format!("opencode's sessions in {}: {error}", tilde(&self.opencode)));
+    pub fn carry(&self, from: &Path, to: &Path) -> Carried {
+        let mut carried = Carried::default();
+        self.claude_folders(from, to, &mut carried);
+        carried.codex = self.codex_rollouts(from, to);
+        carried.copilot = self.copilot_sessions(from, to);
+        carried.opencode = self.opencode_sessions(from, to).unwrap_or_else(|error| {
+            carried.kept.push(format!("opencode's sessions in {}: {error}", tilde(&self.opencode)));
             0
         });
-        moved
+        carried
     }
 
-    fn claude_folders(&self, from: &Path, to: &Path, moved: &mut Moved) {
+    fn claude_folders(&self, from: &Path, to: &Path, carried: &mut Carried) {
         let projects = self.claude.join("projects");
         let (old, new) = (claude_name(from), claude_name(to));
         let Ok(listed) = fs::read_dir(&projects) else { return };
-        for found in listed.flatten() {
-            let name = found.file_name().to_string_lossy().into_owned();
+        let names: Vec<String> = listed.flatten().filter(|e| e.path().is_dir()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        for name in names {
             let ours = name == old || name.strip_prefix(&old).and_then(|rest| rest.strip_prefix('-')).is_some_and(|rest| rest.starts_with("-kanna-worktrees-") || descendant(to, rest));
-            if !ours || !found.path().is_dir() {
+            if !ours {
                 continue;
             }
             let target = projects.join(format!("{new}{}", &name[old.len()..]));
-            merge(&found.path(), &target, &mut moved.kept);
-            moved.claude += 1;
+            copy_into(&projects.join(&name), &target, &mut carried.kept);
+            carried.claude += 1;
         }
     }
 
@@ -237,9 +311,9 @@ fn descendant(dir: &Path, rest: &str) -> bool {
     })
 }
 
-fn merge(from: &Path, to: &Path, kept: &mut Vec<String>) {
+fn copy_into(from: &Path, to: &Path, kept: &mut Vec<String>) {
     if fs::symlink_metadata(to).is_err() {
-        if let Err(error) = fs::rename(from, to) {
+        if let Err(error) = clone_tree(from, to) {
             kept.push(format!("{}: {error}", tilde(from)));
         }
         return;
@@ -249,9 +323,8 @@ fn merge(from: &Path, to: &Path, kept: &mut Vec<String>) {
         return;
     }
     for entry in fs::read_dir(from).into_iter().flatten().flatten() {
-        merge(&entry.path(), &to.join(entry.file_name()), kept);
+        copy_into(&entry.path(), &to.join(entry.file_name()), kept);
     }
-    let _ = fs::remove_dir(from);
 }
 
 fn files_under(root: &Path, depth: usize) -> Vec<PathBuf> {
@@ -403,7 +476,7 @@ mod tests {
     use crate::projects::REPOS;
 
     fn folder(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("kanna-move-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("kanna-import-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir.canonicalize().unwrap()
@@ -423,21 +496,21 @@ mod tests {
     }
 
     #[test]
-    fn a_project_moves_to_its_place_unless_another_clone_has_it() {
+    fn a_project_is_imported_to_its_place_unless_another_clone_has_it() {
         let dir = folder("plan");
         let repos = dir.join("home").join(REPOS);
         let app = dir.join("work/app");
         repo(&app, Some("git@github.com:someone/app.git"));
         let homes = [dir.join("home")];
-        assert_eq!(plan(&repos, &app.join("src").parent().unwrap().join("."), &homes).unwrap(), Move { from: app.clone(), to: repos.join("someone/app") });
+        assert_eq!(plan(&repos, &app.join("src").parent().unwrap().join("."), &homes).unwrap(), Import { from: app.clone(), to: repos.join("someone/app") });
         git(&app, &["worktree", "add", "-q", "-b", "task-1", ".kanna-worktrees/task-1"]);
-        assert_eq!(plan(&repos, &app.join(".kanna-worktrees/task-1"), &homes).unwrap().from, app, "a worktree moves its repo");
+        assert_eq!(plan(&repos, &app.join(".kanna-worktrees/task-1"), &homes).unwrap().from, app, "a worktree imports its repo");
         assert_eq!(plan(&repos, &dir.join("nowhere"), &homes).unwrap_err().code, "not_found");
         let forged = dir.join("forged");
         fs::create_dir_all(&forged).unwrap();
         fs::write(forged.join(".git"), format!("gitdir: {}/.git/worktrees/task-1\n", dir.join("victim").display())).unwrap();
         fs::create_dir_all(dir.join("victim/.git/worktrees/task-1")).unwrap();
-        assert_eq!(plan(&repos, &forged, &homes).unwrap_err().code, "bad_request", "a .git file naming another folder doesn't move that folder");
+        assert_eq!(plan(&repos, &forged, &homes).unwrap_err().code, "bad_request", "a .git file naming another folder doesn't import that folder");
         fs::create_dir_all(dir.join("home")).unwrap();
         assert_eq!(plan(&repos, &dir.join("home"), &homes).unwrap_err().code, "bad_request", "home isn't a project");
         let other = dir.join("elsewhere/app");
@@ -457,28 +530,73 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    fn snapshot(at: &Path) -> String {
+        let out = Command::new("sh").arg("-c").arg("find . -print0 | sort -z | xargs -0 stat -f '%N %p %z %m' && find . -type f -print0 | sort -z | xargs -0 shasum").current_dir(at).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    fn said(at: &Path, args: &[&str]) -> String {
+        String::from_utf8_lossy(&Command::new("git").arg("-C").arg(at).args(args).output().unwrap().stdout).trim().to_string()
+    }
+
     #[test]
-    fn the_move_takes_the_worktrees_along_and_leaves_nothing_behind() {
-        let dir = folder("carry");
+    fn the_copy_has_everything_and_the_original_is_left_as_it_was() {
+        let dir = folder("copy");
         let app = dir.join("work/app");
         repo(&app, None);
+        fs::write(app.join("kept.txt"), "one\n").unwrap();
+        git(&app, &["add", "kept.txt"]);
+        git(&app, &["commit", "-q", "-m", "kept"]);
+        fs::write(app.join("kept.txt"), "stashed\n").unwrap();
+        git(&app, &["stash", "-q"]);
+        git(&app, &["branch", "side-branch"]);
+        fs::write(app.join("kept.txt"), "uncommitted\n").unwrap();
+        fs::write(app.join("new.txt"), "untracked\n").unwrap();
+        std::os::unix::fs::symlink("kept.txt", app.join("link")).unwrap();
         git(&app, &["worktree", "add", "-q", "-b", "task-1", ".kanna-worktrees/task-1"]);
-        git(&app, &["worktree", "add", "-q", "-b", "side", dir.join("side").to_str().unwrap()]);
+        fs::write(app.join(".kanna-worktrees/task-1/wip.txt"), "task work\n").unwrap();
+        let side = dir.join("side");
+        git(&app, &["worktree", "add", "-q", "-b", "elsewhere", side.to_str().unwrap()]);
+        let before = (snapshot(&app), snapshot(&side));
         let to = dir.join("repos/local/app");
-        assert_eq!(carry(&Move { from: app.clone(), to: to.clone() }), Ok(2));
-        assert!(!app.exists() && fs::symlink_metadata(&app).is_err(), "no link is left at the old path");
-        let listed = |at: &Path| String::from_utf8_lossy(&Command::new("git").arg("-C").arg(at).args(["worktree", "list", "--porcelain"]).output().unwrap().stdout).to_string();
-        let found = listed(&to);
-        assert!(found.contains(&format!("worktree {}", to.join(".kanna-worktrees/task-1").display())) && !found.contains("prunable"), "{found}");
-        for at in [to.join(".kanna-worktrees/task-1"), dir.join("side")] {
-            let status = Command::new("git").arg("-C").arg(&at).args(["status", "--porcelain"]).output().unwrap();
-            assert!(status.status.success(), "{} works after the move: {}", at.display(), String::from_utf8_lossy(&status.stderr));
-        }
+        let copied = copy(&Import { from: app.clone(), to: to.clone() }).unwrap();
+        assert_eq!(copied, Copied { worktrees: 1, outside: vec![side.clone()] });
+        assert_eq!((snapshot(&app), snapshot(&side)), before, "the original and its worktrees are as they were, byte for byte");
+        assert_eq!(said(&to, &["status", "--porcelain"]), said(&app, &["status", "--porcelain"]));
+        assert_eq!(fs::read_to_string(to.join("kept.txt")).unwrap(), "uncommitted\n");
+        assert_eq!(fs::read_to_string(to.join("new.txt")).unwrap(), "untracked\n");
+        assert_eq!(fs::read_link(to.join("link")).unwrap(), Path::new("kept.txt"), "a link stays a link");
+        assert_eq!(said(&to, &["rev-parse", "HEAD", "stash@{0}", "side-branch"]), said(&app, &["rev-parse", "HEAD", "stash@{0}", "side-branch"]), "HEAD, the stash and local branches");
+        let tree = to.join(".kanna-worktrees/task-1");
+        assert_eq!(fs::read_to_string(tree.join("wip.txt")).unwrap(), "task work\n");
+        assert_eq!(said(&tree, &["rev-parse", "--path-format=absolute", "--git-common-dir"]), to.join(".git").display().to_string(), "the copied worktree belongs to the copy");
+        assert_eq!(said(&tree, &["status", "--porcelain"]), "?? wip.txt");
+        let listed = said(&to, &["worktree", "list", "--porcelain"]);
+        assert!(listed.contains(&format!("worktree {}", tree.display())) && !listed.contains(&side.display().to_string()) && !listed.contains("prunable"), "a worktree outside stays with the original: {listed}");
+        let original = said(&app, &["worktree", "list", "--porcelain"]);
+        assert!(original.contains(&format!("worktree {}", app.join(".kanna-worktrees/task-1").display())) && original.contains(&format!("worktree {}", side.display())), "{original}");
+        assert_eq!(said(&side, &["rev-parse", "--path-format=absolute", "--git-common-dir"]), app.join(".git").display().to_string());
+        assert!(!dir.join("repos/local/.app.importing").exists());
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn each_agent_finds_its_conversations_in_the_new_place() {
+    fn a_copy_that_fails_leaves_nothing_at_the_place() {
+        let dir = folder("fail");
+        let app = dir.join("work/app");
+        repo(&app, None);
+        let blocked = dir.join("repos/local");
+        fs::create_dir_all(&blocked).unwrap();
+        fs::set_permissions(&blocked, std::os::unix::fs::PermissionsExt::from_mode(0o555)).unwrap();
+        let to = blocked.join("app");
+        assert!(copy(&Import { from: app.clone(), to: to.clone() }).is_err());
+        assert!(fs::symlink_metadata(&to).is_err() && fs::read_dir(&blocked).unwrap().next().is_none());
+        fs::set_permissions(&blocked, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn each_agent_finds_its_conversations_in_the_copy() {
         let dir = folder("sessions");
         let (from, to) = (dir.join("work/app"), dir.join("repos/a/app"));
         fs::create_dir_all(to.join(".kanna-worktrees/task-1")).unwrap();
@@ -508,18 +626,22 @@ mod tests {
         let db = rusqlite::Connection::open(stores.opencode.join("opencode.db")).unwrap();
         db.execute_batch(&format!("create table session (id text, directory text); insert into session values ('o1', '{}'), ('o2', '{}-old'), ('o3', '{}/sub');", from.display(), from.display(), from.display())).unwrap();
         drop(db);
-        let moved = stores.carry(&from, &to);
-        assert_eq!((moved.claude, moved.codex, moved.copilot, moved.opencode), (4, 1, 1, 2), "{moved:?}");
+        let carried = stores.carry(&from, &to);
+        assert_eq!((carried.claude, carried.codex, carried.copilot, carried.opencode), (4, 1, 1, 2), "{carried:?}");
         let mut names: Vec<String> = fs::read_dir(&projects).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         names.sort();
         let new = claude_name(&to);
-        let mut wanted = vec![new.clone(), format!("{new}--kanna-worktrees-task-1"), format!("{new}--kanna-worktrees-task-gone"), format!("{new}-docs-specs"), old.clone(), format!("{old}-old")];
+        let mut wanted = vec![new.clone(), format!("{new}--kanna-worktrees-task-1"), format!("{new}--kanna-worktrees-task-gone"), format!("{new}-docs-specs"), old.clone(), format!("{old}--kanna-worktrees-task-1"), format!("{old}--kanna-worktrees-task-gone"), format!("{old}-docs-specs"), format!("{old}-old")];
         wanted.sort();
-        assert_eq!(names, wanted, "a sibling folder whose name starts the same isn't the project's");
-        assert_eq!(files_under(&projects.join(&old), 2), [projects.join(&old).join("memory/MEMORY.md")], "only what clashed stays behind");
+        assert_eq!(names, wanted, "a sibling folder whose name starts the same isn't the project's, and the original's stay");
+        let mut originals = files_under(&projects.join(&old), 2);
+        originals.sort();
+        assert_eq!(originals, [projects.join(&old).join("memory/MEMORY.md"), projects.join(&old).join("memory/notes.md"), projects.join(&old).join("s.jsonl")], "the original's folders are copied, not moved");
+        assert_eq!(fs::read_to_string(projects.join(&old).join("memory/MEMORY.md")).unwrap(), "old\n");
+        assert_eq!(fs::read_to_string(projects.join(format!("{new}--kanna-worktrees-task-1")).join("s.jsonl")).unwrap(), "{}\n", "a conversation is copied");
         assert_eq!(fs::read_to_string(projects.join(&new).join("memory/MEMORY.md")).unwrap(), "kept\n", "a file already there is kept");
-        assert_eq!(fs::read_to_string(projects.join(&new).join("memory/notes.md")).unwrap(), "notes\n", "and the rest is merged in");
-        assert_eq!(moved.kept.len(), 1, "{:?}", moved.kept);
+        assert_eq!(fs::read_to_string(projects.join(&new).join("memory/notes.md")).unwrap(), "notes\n", "and the rest is copied in");
+        assert_eq!(carried.kept.len(), 1, "{:?}", carried.kept);
         let rollout = fs::read_to_string(day.join("rollout-1.jsonl")).unwrap();
         assert_eq!(rollout, ours.replace(&from.display().to_string(), &to.display().to_string()));
         assert_eq!(fs::metadata(day.join("rollout-1.jsonl")).unwrap().modified().unwrap(), before, "the rollout keeps its time, which the session lookups go by");
@@ -532,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn kanna_db_follows_the_project() {
+    fn kanna_db_follows_the_copy() {
         let dir = folder("db");
         let db = Db::open(&dir);
         let row = |id: &str, repo: &str, folder: &str| crate::db::Row { id: id.into(), repo: repo.into(), place: crate::db::Place::Backlog, terminal: None, made_at: 1.0, doc: json!({ "name": id, "folder": folder }) };
@@ -542,6 +664,9 @@ mod tests {
         db.touch_project("/w/app").unwrap();
         db.touch_project("/r/a/app").unwrap();
         db.put_planner("/w/app", &json!({ "agent": "claude", "session": "s" })).unwrap();
+        db.never_import("/w/app").unwrap();
+        db.never_import("/w/app-old").unwrap();
+        assert!(db.never_imports("/w/app").unwrap() && !db.never_imports("/w/other").unwrap());
         db.relocate("/w/app", "/r/a/app").unwrap();
         let tasks = db.tasks().unwrap();
         let of = |id: &str| tasks.iter().find(|t| t.id == id).cloned().unwrap();
@@ -552,6 +677,7 @@ mod tests {
         assert_eq!(db.projects().unwrap().iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["/r/a/app"], "the project's recent entry replaces a stale one at its place");
         assert_eq!(db.planner("/r/a/app").unwrap(), Some(json!({ "agent": "claude", "session": "s" })), "the planner comes back to its conversation");
         assert_eq!(db.planner("/w/app").unwrap(), None);
+        assert!(!db.never_imports("/w/app").unwrap() && db.never_imports("/w/app-old").unwrap(), "importing clears never");
         fs::remove_dir_all(&dir).unwrap();
     }
 

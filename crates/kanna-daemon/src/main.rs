@@ -16,7 +16,7 @@ mod lifeline;
 mod pty;
 mod codex_remote;
 mod messages;
-mod project_move;
+mod project_import;
 mod projects;
 mod quiz;
 mod reader;

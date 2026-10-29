@@ -638,7 +638,7 @@ fn a_folder_for_a_command_opens_a_desk_on_its_project_without_a_task() {
     assert_eq!(daemon.kanna(&[folder]).ok(), format!("opened d1 on {project}"));
     assert_eq!(daemon.kanna(&[folder]).ok(), format!("brought forward d1 on {project}"));
     std::fs::create_dir_all(daemon.dir.join("elsewhere")).unwrap();
-    daemon.kanna(&["elsewhere"]).fails(1, "kanna project move");
+    daemon.kanna(&["elsewhere"]).fails(1, "kanna project import");
     let list = daemon.kanna(&["workspace", "list", "--all", "--json"]).json();
     assert_eq!((list["panes"].clone(), list["windows"].clone()), (json!([]), json!([])), "a Desk is the app's, and one on a project docks nothing: {list}");
     daemon.kanna(&["nowhere"]).fails(2, "unknown command \"nowhere\"");
