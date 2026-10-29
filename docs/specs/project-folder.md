@@ -98,7 +98,7 @@ sequenceDiagram
     D->>D: end its other terminals (a planner's agent quits first)
     D->>F: clone the folder to its place (APFS clone, else a copy)
     D->>F: in the copy: repair worktrees inside, drop those outside
-    D->>F: copy Claude's folders; point codex, copilot, opencode sessions at the copy
+    D->>F: copy Claude's folders, point codex, copilot and opencode sessions at the copy
     D->>D: kanna.db and the pane table: PATH becomes the copy
     D->>D: start the tasks and terminals again in the copy
     D->>F: search for files that still name PATH
