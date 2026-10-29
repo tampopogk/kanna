@@ -809,7 +809,7 @@ impl CoreHandle {
             return Err(bad_request("claim is for a docked pane or a planner, and backlog for a docked pane"));
         }
         if backlog && claimed.is_some() {
-            return Err(bad_request("a task is in the backlog or on an app's Shelf, not both"));
+            return Err(bad_request("a task is on the Shelf or on an app's Desk, not both"));
         }
         let lead = is_true(args, "lead");
         if lead && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || string(args, "window").is_none()) {

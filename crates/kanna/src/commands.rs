@@ -367,7 +367,7 @@ pub static COMMANDS: &[Command] = &[
             ("kanna task park agent", "Show the Desk view of the Desk the task docked as agent is active on; it stays active. From its terminal, leave out agent."),
             ("kanna task activate agent", "Make the task docked as agent the active one on your Desk (the one your terminal is on), else on its project's Desk."),
             ("kanna task name agent \"Tab bar light mode\"", "Name the task docked as agent; from its terminal, leave out agent."),
-            ("kanna task name task-3f9a \"Search the backlog\"", "Rename task-3f9a, waiting on the Shelf; it starts with that name."),
+            ("kanna task name task-3f9a \"Search the Shelf\"", "Rename task-3f9a, waiting on the Shelf; it starts with that name."),
             ("kanna task shelve agent", "Move the task docked as agent back to the Shelf; from its terminal, leave out agent."),
             ("kanna task send 71af \"Is your spec at docs/specs/x.md final?\"", "Leave task-71af a message: it gets it when its turn is over, and answers with kanna task send."),
             ("kanna task send planner \"The spec is final\"", "Tell this repo's planning agent something, when the user asks you to."),
