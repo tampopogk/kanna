@@ -81,7 +81,7 @@ final class AgentHeader: NSView {
         label.textColor = .secondaryLabelColor
         label.lineBreakMode = .byTruncatingMiddle
         addSubview(label)
-        park.toolTip = "Park"
+        park.toolTip = "Desk view (⌘.)"
         park.onPress = { [weak self] in self?.onPark?() }
         addSubview(park)
         plus.toolTip = "New Tab"
@@ -230,7 +230,7 @@ extension AppController {
     }
 
     func projectName(_ tasks: [String]) -> String {
-        tasks.lazy.compactMap(projectRoot).first.map(displayName) ?? "Shelf"
+        tasks.lazy.compactMap(projectRoot).first.map(displayName) ?? "no project"
     }
 
     func taskDetail(_ pane: String) -> String {

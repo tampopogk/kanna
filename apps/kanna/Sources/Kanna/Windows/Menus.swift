@@ -88,14 +88,14 @@ extension AppController {
             ("Actual Size", #selector(actualSize), "reset_font_size", .cmd("0")),
         ])
         _ = menu("Task", [
-            ("Park", #selector(parkTask), nil, .cmd(".")),
-            ("Move to Backlog", #selector(deferTask), nil, nil),
+            ("Show Desk", #selector(parkTask), nil, .cmd(".")),
+            ("Move to Shelf", #selector(deferTask), nil, nil),
             nil,
             ("Task Waiting Longest", #selector(pullWaitingTask), nil, .shiftCmd("A")),
             nil,
-            ("Pull Shelf Task 1", #selector(pullShelf1), "goto_tab:1", .cmd("1")),
-            ("Pull Shelf Task 2", #selector(pullShelf2), "goto_tab:2", .cmd("2")),
-            ("Pull Shelf Task 3", #selector(pullShelf3), "goto_tab:3", .cmd("3")),
+            ("Desk Task 1", #selector(pullShelf1), "goto_tab:1", .cmd("1")),
+            ("Desk Task 2", #selector(pullShelf2), "goto_tab:2", .cmd("2")),
+            ("Desk Task 3", #selector(pullShelf3), "goto_tab:3", .cmd("3")),
         ])
         let windowMenu = menu("Window", [
             ("New Window", #selector(newWindow), nil, nil),
@@ -278,8 +278,8 @@ extension AppController {
         case #selector(newTabInKeyWindow), #selector(splitRight), #selector(splitDown), #selector(webRight), #selector(webDown),
              #selector(iosRight), #selector(iosDown), #selector(markdownRight), #selector(markdownDown): return !onShelf
         case #selector(parkTask):
-            item.title = lastParked == nil ? "Park" : "Unpark"
-            return keyWindow?["dock"]?["pane"] != nil || lastParked != nil
+            item.title = keyWindow?["dock"]?["pane"] != nil || deskBack == nil ? "Show Desk" : "Show Active Task"
+            return keyWindow?["dock"]?["pane"] != nil || deskBack != nil
         case #selector(deferTask): return keyWindow?["dock"]?["pane"] != nil
         case #selector(pullWaitingTask): return waitingTask != nil
         case #selector(pullShelf1): return shelfPull(1) != nil
@@ -411,7 +411,7 @@ extension AppController {
     }
 
     @objc func parkTask() {
-        if let (task, window) = lastParked {
+        if let (task, window) = deskBack {
             pullTask(task, into: window)
             return
         }
@@ -419,14 +419,12 @@ extension AppController {
         park(desk: window)
     }
 
-    private var lastParked: (task: String, window: String)? {
-        guard let window = keyWindow, window["desk"]?.bool == true, window["dock"]?["pane"] == nil,
-              let id = window["id"]?.string, let tasks = controllers[id]?.shelf,
-              let task = tasks.max(by: { ($0.parkedAt ?? 0) < ($1.parkedAt ?? 0) }) else { return nil }
-        return (task.id, id)
+    private var deskBack: (task: String, window: String)? {
+        guard let window = keyWindow, window["desk"]?.bool == true, window["dock"]?["pane"] == nil, let id = window["id"]?.string else { return nil }
+        if let active = controllers[id]?.active { return (active, id) }
+        return shelfPull(1)
     }
 
-    /// Puts the Desk's task back on its repo's backlog, its agent and tabs still running until it's started again.
     @objc func deferTask() {
         guard let window = keyWindow?["id"]?.string, let pane = keyWindow?["dock"]?["pane"]?.string else { return }
         request("backlog", ["action": "defer", "task": .string(pane)]) { [weak self] reply in
@@ -441,7 +439,7 @@ extension AppController {
     @objc func pullShelf3() { pullShelf(3) }
 
     private var waitingTask: (task: String, window: String)? {
-        guard let (_, window) = shelfPull(1), let tasks = controllers[window]?.shelf,
+        guard let window = keyWindow, window["desk"]?.bool == true, let window = window["id"]?.string, let tasks = controllers[window]?.shelf,
               let task = agentStatuses.waitingLongest(among: tasks.map(\.id)) else { return nil }
         return (task, window)
     }
@@ -452,7 +450,7 @@ extension AppController {
     }
 
     private func shelfPull(_ place: Int) -> (task: String, window: String)? {
-        guard let window = keyWindow, window["desk"]?.bool == true, let id = window["id"]?.string, let tasks = controllers[id]?.shelf else { return nil }
+        guard let window = keyWindow, window["desk"]?.bool == true, let id = window["id"]?.string, let tasks = controllers[id]?.others else { return nil }
         return place <= tasks.count ? (tasks[place - 1].id, id) : nil
     }
 
