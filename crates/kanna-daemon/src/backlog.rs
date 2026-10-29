@@ -3216,7 +3216,7 @@ mod tests {
         let p = planner("ask", &["claude", "codex"]);
         let repo = p.repo("app");
         let out = p.run(&repo, "2\ny\n");
-        assert!(out.contains("Choose an agent for planning and task creation\n\n  1  claude\n  2  codex\n\nChoose [1]: Make codex the planning agent for app? [y/N] codex plans app from now on (planning.agent in .kanna/config.json).\n"), "{out}");
+        assert!(out.contains("Choose an agent for planning and task creation\n\n  1  claude\n  2  codex\n\nChoose [1]: Make codex the planning agent for app? [Y/n] codex plans app from now on (planning.agent in .kanna/config.json).\n"), "{out}");
         assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/local/app: --yolo --no-daemon You are the Kanna planning agent.\n"), "{out}");
         assert!(out.contains("The planning agent quit. Start it again: codex --yolo --no-daemon 'You are the Kanna planning agent.'\nshell in ROOT/home/.kanna-v4/repos/local/app\n"), "{out}");
         let config: Value = serde_json::from_str(&fs::read_to_string(repo.join(".kanna/config.json")).unwrap()).unwrap();
@@ -3231,6 +3231,17 @@ mod tests {
         let out = p.run(&other, "\nn\n");
         assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/other: --dangerously-skip-permissions You are the Kanna planning agent."), "Return takes the first: {out}");
         assert!(!other.join(".kanna").exists(), "no saves nothing");
+
+        let enter = p.repo("enter");
+        let out = p.run(&enter, "2\n\n");
+        assert!(out.contains("Make codex the planning agent for enter? [Y/n] codex plans enter from now on"), "Return saves: {out}");
+        let config: Value = serde_json::from_str(&fs::read_to_string(enter.join(".kanna/config.json")).unwrap()).unwrap();
+        assert_eq!(config, json!({ "version": 1, "planning": { "agent": "codex" } }));
+
+        let declined = p.repo("declined");
+        let out = p.run(&declined, "2\nN\n");
+        assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/local/declined: --yolo") && !out.contains("codex plans declined"), "N declines: {out}");
+        assert!(!declined.join(".kanna").exists(), "N saves nothing");
     }
 
     #[test]
@@ -3310,23 +3321,23 @@ mod tests {
         );
         for _ in 0..2 {
             let out = p.run_in(&app, "n\n", Some(&kanna), Some("term-7"));
-            assert!(out.contains("Import it into ~/.kanna-v4/repos/local/app now? [y/N/never] \n") && out.contains("claude in ROOT/work/app:"), "no stays, and asks again next time: {out}");
+            assert!(out.contains("Import it into ~/.kanna-v4/repos/local/app now? [Y/n/never] \n") && out.contains("claude in ROOT/work/app:"), "no stays, and asks again next time: {out}");
         }
-        let out = p.run_in(&app, "y\n", Some(&kanna), Some("term-7"));
-        assert!(out.contains("Import it into ~/.kanna-v4/repos/local/app now? [y/N/never] \u{1b}]7;file://localhostROOT/home\u{1b}\\imported\n"), "it leaves the project first, so the import doesn't stop it: {out}");
+        let out = p.run_in(&app, "\n", Some(&kanna), Some("term-7"));
+        assert!(out.contains("Import it into ~/.kanna-v4/repos/local/app now? [Y/n/never] \u{1b}]7;file://localhostROOT/home\u{1b}\\imported\n"), "Return imports, and it leaves the project first, so the import doesn't stop it: {out}");
         assert_eq!(fs::read_to_string(&asked).unwrap(), "term-7 ROOT/home ROOT/work/app\n".replace("ROOT", p.root.to_str().unwrap()));
         assert!(out.contains("\u{1b}]7;file://localhostROOT/home/.kanna-v4/repos/local/app\u{1b}\\") && out.contains("claude in ROOT/home/.kanna-v4/repos/local/app:"), "it starts the agent in the copy, and the window follows: {out}");
         assert!(app.join(".git").is_dir(), "the original stays");
 
         let other = p.repo_at(&p.root.join("work/other"));
         let out = p.run_in(&other, "never\n", Some(&kanna), Some("term-7"));
-        assert!(out.contains("[y/N/never] Kanna won't ask again for ROOT/work/other. Import it any time: kanna project import ROOT/work/other\n") && out.contains("claude in ROOT/work/other:"), "{out}");
+        assert!(out.contains("[Y/n/never] Kanna won't ask again for ROOT/work/other. Import it any time: kanna project import ROOT/work/other\n") && out.contains("claude in ROOT/work/other:"), "{out}");
         let remembered: Value = serde_json::from_str(&fs::read_to_string(&never).unwrap()).unwrap();
         assert_eq!(remembered, json!({ "cmd": "project", "args": { "action": "never", "path": other } }), "the daemon remembers it");
         let out = p.run_in(&other, "", Some(&kanna), Some("term-7"));
-        assert!(out.starts_with("ROOT/work/other is outside ~/.kanna-v4/repos, so its tasks don't start. Import it: kanna project import ROOT/work/other\n") && !out.contains("[y/N") && out.contains("claude in ROOT/work/other:"), "never: a line, no question: {out}");
+        assert!(out.starts_with("ROOT/work/other is outside ~/.kanna-v4/repos, so its tasks don't start. Import it: kanna project import ROOT/work/other\n") && !out.contains("[Y/n") && out.contains("claude in ROOT/work/other:"), "never: a line, no question: {out}");
         let out = p.run_with(&p.home, &format!("{}\nn\nrecipe-box\n", other.display()), Some(&kanna));
-        assert!(out.contains("Import it into ~/.kanna-v4/repos/local/other now? [y/N] Folder, repo or name: Made"), "chosen in ~, it's asked without never, and no asks again: {out}");
+        assert!(out.contains("Import it into ~/.kanna-v4/repos/local/other now? [Y/n] Folder, repo or name: Made"), "chosen in ~, it's asked without never, and no asks again: {out}");
         stub(&kanna, "[ \"$1 $2\" = 'project import' ] || exit 0\necho 'kanna: ~/x and ~/y are both clones' >&2; exit 1");
         let out = p.run_with(&p.home, &format!("{}\ny\nrecipe-box\n", other.display()), Some(&kanna));
         assert!(out.contains("kanna: ~/x and ~/y are both clones\n\u{1b}]7;file://localhostROOT/home\u{1b}\\Folder, repo or name: Opened"), "a refused import says why and asks again: {out}");
@@ -3373,7 +3384,7 @@ mod tests {
         let url = format!("file://{}", bare.display());
         let out = p.run(&p.home, &format!("{url}\n2\nn\n"));
         assert!(out.contains("Cloning file://ROOT/remote/kojo.git into ~/.kanna-v4/repos/local/kojo…"), "{out}");
-        assert!(out.contains("Make codex the planning agent for kojo? [y/N]"), "a clone is a repo: {out}");
+        assert!(out.contains("Make codex the planning agent for kojo? [Y/n]"), "a clone is a repo: {out}");
         assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/local/kojo: --yolo --no-daemon"), "{out}");
         let out = p.run(&p.home, &format!("{url}\n2\nn\n"));
         assert!(out.contains("Opened ~/.kanna-v4/repos/local/kojo (already cloned)"), "{out}");

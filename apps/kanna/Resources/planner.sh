@@ -94,15 +94,14 @@ offer() {
   say "$(tilde "$main") isn't in $(tilde "$repos"), where Kanna keeps its projects so each has the same place on every machine."
   say "Import a copy there: kanna project import $(tilde "$main")"
   [ -n "$kanna" ] || return 1
-  choices="y/N"
-  [ "$1" = never ] && choices="y/N/never"
+  choices="Y/n"
+  [ "$1" = never ] && choices="Y/n/never"
   ask "Import it into $(tilde "$want") now? [$choices]"
   case $answer in
-    [yY]*) ;;
     [nN][eE][vV][eE][rR])
       [ "$1" = never ] && project never >/dev/null && say "Kanna won't ask again for $(tilde "$main"). Import it any time: kanna project import $(tilde "$main")"
       return 1 ;;
-    *) return 1 ;;
+    [nN]*) return 1 ;;
   esac
   back=$(pwd -P)
   cd "$HOME" && moved
@@ -315,9 +314,10 @@ if [ -z "$chosen" ]; then
   name=${chosen%%	*}
   top=$(git rev-parse --show-toplevel 2>/dev/null)
   if [ -n "$top" ]; then
-    ask "Make $name the planning agent for $(basename "$top")? [y/N]"
+    ask "Make $name the planning agent for $(basename "$top")? [Y/n]"
     case $answer in
-      [yY]*)
+      [nN]*) ;;
+      *)
         if save "$top" "$name"; then
           say "$name plans $(basename "$top") from now on (planning.agent in .kanna/config.json)."
         else

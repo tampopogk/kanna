@@ -524,12 +524,12 @@ function plannerAnswer(t, line) {
   }
   if (t.ask === "save") {
     t.log.push(`${esc(saveQuestion(t))} ${esc(a)}`);
-    if (/^y/i.test(a)) { s.config[t.repo] = t.chosen; t.log.push(out(`${t.chosen} plans ${short(t.repo)} from now on (planning.agent in .kanna/config.json).`)); }
+    if (!/^n/i.test(a)) { s.config[t.repo] = t.chosen; t.log.push(out(`${t.chosen} plans ${short(t.repo)} from now on (planning.agent in .kanna/config.json).`)); }
     t.log.push(``);
     return plannerRun(t, t.chosen, true);
   }
 }
-const saveQuestion = t => `Make ${t.chosen} the planning agent for ${short(t.repo).split("/").pop()}? [y/N]`;
+const saveQuestion = t => `Make ${t.chosen} the planning agent for ${short(t.repo).split("/").pop()}? [Y/n]`;
 function plannerQuit(t) {
   const agent = t.agent;
   t.agent = null;
@@ -991,7 +991,7 @@ if (location.hash.includes("empty")) {
   s.windows[0].desk = null;
   planners();
   const p = s.windows[0].planner; p.log = []; p.ask = null; p.repo = "~/work/kanna-v4";
-  p.log.push("Choose an agent for planning and task creation", "", "  1  claude", "  2  codex", "", "Choose [1]: 2", "Make codex the planning agent for kanna-v4? [y/N] y", out("codex plans kanna-v4 from now on (planning.agent in .kanna/config.json)."), "");
+  p.log.push("Choose an agent for planning and task creation", "", "  1  claude", "  2  codex", "", "Choose [1]: 2", "Make codex the planning agent for kanna-v4? [Y/n] y", out("codex plans kanna-v4 from now on (planning.agent in .kanna/config.json)."), "");
   p.chosen = "codex"; s.config[p.repo] = "codex"; plannerRun(p, "codex", true);
 }
 if (location.hash.includes("fresh")) fresh();

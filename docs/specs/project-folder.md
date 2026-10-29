@@ -65,20 +65,20 @@ Each planner offers the import when it starts outside, in the window's planning 
 ```
 ~/work/app isn't in ~/.kanna-v4/repos, where Kanna keeps its projects so each has the same place on every machine.
 Import a copy there: kanna project import ~/work/app
-Import it into ~/.kanna-v4/repos/tampopogk/app now? [y/N/never]
+Import it into ~/.kanna-v4/repos/tampopogk/app now? [Y/n/never]
 ```
 
 | Answer | Then |
 |---|---|
-| `y` | the planner steps out to `~` (so the import doesn't stop it), runs `kanna project import`, prints what it says, and starts the agent in the copy; the window's Desk and Shelf follow it there |
-| `N` (or Return) | it stays on the original, whose tasks don't start, and asks again the next time a planner starts there; nothing is remembered |
+| `Y` (or Return, or anything not starting with n or N) | the planner steps out to `~` (so the import doesn't stop it), runs `kanna project import`, prints what it says, and starts the agent in the copy; the window's Desk and Shelf follow it there |
+| `n` (or anything else starting with n or N) | it stays on the original, whose tasks don't start, and asks again the next time a planner starts there; nothing is remembered |
 | `never` | the daemon remembers the project (`never_import` in [kanna.db](database.md#never-import)); its planners stop asking at startup and say instead, in a line: |
 
 ```
 ~/work/app is outside ~/.kanna-v4/repos, so its tasks don't start. Import it: kanna project import ~/work/app
 ```
 
-- **Choosing it still asks.** In the planner's where prompt ([new Desk](new-desk.md#2-its-planning-terminal)), a folder outside, or an outside project from the recent list, asks `Import it into … now? [y/N]` whatever never says: you named it. No asks for a folder again.
+- **Choosing it still asks.** In the planner's where prompt ([new Desk](new-desk.md#2-its-planning-terminal)), a folder outside, or an outside project from the recent list, asks `Import it into … now? [Y/n]` whatever never says: you named it. No asks for a folder again.
 - **Outside projects Kanna has work in are listed:** an outside project with a recent-projects entry or tasks not done comes after the others in the where prompt, labelled `~/work/app (outside)` (`outside` and `place` in `kanna projects --json`). File → Open Recent leaves them off, since it can only open a Desk.
 - **Importing clears never,** whether from the offer or `kanna project import`.
 - **A refused import** (the place is taken, a task is starting) prints why; the planner stays on the original, or asks for a folder again in `~`.
