@@ -164,6 +164,7 @@ body.picture .cmd input::placeholder { color: transparent; }
 .keys kbd { font: 11px var(--mono); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; background: var(--panel2); }
 .nowin { color: var(--muted); padding: 40px; text-align: center; border: 1px dashed var(--line); border-radius: 10px; }
 .shelf .item.needs { color: var(--warn); }
+.shelf .item.hint { opacity: .75; margin-right: 6px; }
 .row.waiting .t .n { font-weight: 500; }
 .row.waiting .dot { background: transparent; border: 1.5px solid var(--muted); width: 9px; height: 9px; }
 .row .go.off { color: var(--muted); }
@@ -278,7 +279,7 @@ const win = id => s.windows.find(w => w.id === id);
 const deskOf = id => s.windows.find(w => w.desk === id);
 const keyWin = () => win(s.key) || s.windows[0];
 const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const ago = t => { const m = Math.max(0, Math.round((Date.now() - t.parkedAt) / MIN)); return m < 1 ? "now" : m < 60 ? m + "m" : Math.round(m / 60) + "h"; };
+const ago = t => { const m = Math.max(0, Math.round((Date.now() - t.parkedAt) / MIN)); return m < 1 ? "just now" : m < 60 ? m + "m ago" : Math.round(m / 60) + "h ago"; };
 
 const repoOf = w => (w && task(w.desk) ? task(w.desk).repo : w && w.repo) || s.repos[0];
 const folderOf = t => t.worktree ? `${t.repo}/.kanna-worktrees/${t.id}` : t.repo;
@@ -378,10 +379,10 @@ function windowHTML(w) {
 
 function shelfHTML(w) {
   const waiting = backlog(repoOf(w)).length;
-  return shelf(w).map((t, i) => {
-    const meta = t.status === "needs" ? "needs you" : ago(t) + " ago";
+  return `<span class="item hint" data-park="${w.desk}" title="The Desk view: the planning agent, the Desk's tasks and the Shelf"><span class="nm">⌘. Desk</span></span>` + shelf(w).map((t, i) => {
+    const meta = t.status === "needs" ? "needs you" : ago(t);
     return `<span class="item ${t.status === "needs" ? "needs" : ""}" data-pull="${t.id}" title="${titleOf(t)}"><span class="dot ${t.status}"></span><span class="nm">${titleOf(t)}</span><span class="meta">· ${meta}</span><span class="kb">⌘${i + 1}</span></span>`;
-  }).join("") + (waiting ? `<span class="backlog" title="Park (⌘.) to see the Shelf">${waiting} on the Shelf</span>` : "");
+  }).join("") + (waiting ? `<span class="backlog" title="⌘. Desk to see the Shelf">${waiting} on the Shelf</span>` : "");
 }
 
 function agentTerm(t) {
@@ -609,9 +610,9 @@ function shelfPageHTML(w) {
   const q = w.query || "", found = hits(w), sel = Math.min(w.sel || 0, Math.max(0, found.length - 1));
   return `<div class="empty"><p class="sub">${cheers[cheerAt]}</p>
     <div class="group"><div class="gh"><span><b>Desk</b> · ${esc(repo)}</span><span>${count} of ${LIMIT} tasks</span></div>
-      ${list.map((t, i) => `<div class="row" data-pull="${t.id}"><span class="dot ${t.status}"></span><div class="t"><div class="n">${titleOf(t)}</div><div class="s">${t.agent} · ${statusText[t.status]} · ${ago(t)} ago · ${esc(t.branch)}</div></div><span class="go">⌘${i + 1} · Make active →</span></div>`).join("") || `<div class="s" style="color:var(--muted)">Nothing on the Desk. Move a task here from the Shelf.</div>`}</div>
+      ${list.map((t, i) => `<div class="row" data-pull="${t.id}"><span class="dot ${t.status}"></span><div class="t"><div class="n">${titleOf(t)}</div><div class="s">${t.agent} · ${statusText[t.status]} · ${ago(t)} · ${esc(t.branch)}</div></div><span class="go">⌘${i + 1} · Make active →</span></div>`).join("") || `<div class="s" style="color:var(--muted)">Nothing on the Desk. Move a task here from the Shelf.</div>`}</div>
     <div class="group"><div class="gh"><span><b>Shelf</b></span>${waiting.length ? `<label class="find"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><input data-find="${w.id}" value="${esc(q)}" placeholder="Search the Shelf" spellcheck="false" autocomplete="off">${q ? `<span class="clear" data-clear="${w.id}" title="Clear">✕</span>` : `<kbd>⌘F</kbd>`}</label>` : ""}<span class="count"><span>${q ? `${found.length} of ${waiting.length}` : `${waiting.length} waiting`}</span><span>${waiting.length} waiting</span><span>${waiting.length} of ${waiting.length}</span></span></div>
-      ${found.map((t, i) => `<div class="row waiting ${q && i === sel ? "sel" : ""}" data-promote="${t.id}"><span class="dot"></span><div class="t"><div class="n">${t.title ? marked(t.title, q) : titleOf(t)}</div><div class="s">${marked(t.prompt, q)} · from ${esc(makerOf(t))}, ${ago({ parkedAt: t.madeAt })} ago</div></div><span class="go ${full ? "off" : ""}">${full ? "Desk full" : q && i === sel ? "↩ Move to Desk" : "Move to Desk →"}</span></div>`).join("") || (q ? `<div class="nohit">No Shelf task matches “${esc(q)}”.</div>` : `<div class="s" style="color:var(--muted)">Empty. Ask the planning agent for tasks.</div>`)}
+      ${found.map((t, i) => `<div class="row waiting ${q && i === sel ? "sel" : ""}" data-promote="${t.id}"><span class="dot"></span><div class="t"><div class="n">${t.title ? marked(t.title, q) : titleOf(t)}</div><div class="s">${marked(t.prompt, q)} · from ${esc(makerOf(t))}, ${ago({ parkedAt: t.madeAt })}</div></div><span class="go ${full ? "off" : ""}">${full ? "Desk full" : q && i === sel ? "↩ Move to Desk" : "Move to Desk →"}</span></div>`).join("") || (q ? `<div class="nohit">No Shelf task matches “${esc(q)}”.</div>` : `<div class="s" style="color:var(--muted)">Empty. Ask the planning agent for tasks.</div>`)}
       <p class="note">${esc(s.note)}</p></div></div>`;
 }
 

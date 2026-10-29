@@ -1,12 +1,12 @@
 # Shelf search
 
-**Status:** built · **Mockup:** [`references/mockups/desk.html`](../../references/mockups/desk.html) (Simulate: a long Shelf, then ⌘F; or `#empty&long&q=shelf`) · **Builds on:** [tasks](tasks.md#3-the-shelf), [Desk](desk.md), [Desk view](desk-view.md)
+**Status:** built · **Mockup:** [`references/mockups/desk.html`](../../references/mockups/desk.html) and [`desk-view.html`](../../references/mockups/desk-view.html) (`#desk&q=flaky`, the pictures) · **Builds on:** [tasks](tasks.md#3-the-shelf), [Desk](desk.md), [Desk view](desk-view.md)
 
 Find a Shelf task by typing part of its name or first message, and start it from the keyboard. A task's ID is `task-` and 8 hex digits ([task IDs](task-ids.md)); `kanna task list` shows it for every task, and commands take any unique start of it.
 
-![Searching the Shelf for "shelf": two of twelve tasks, the first selected](shelf-search.png)
+![Searching the Shelf for "flaky": two of four tasks, the first selected, the second blocked](shelf-search.png)
 
-![Two words, in light mode: only the task with both](shelf-search-light.png)
+![The same search in light mode](shelf-search-light.png)
 
 ## In the app
 

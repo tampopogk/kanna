@@ -354,6 +354,8 @@ if (location.hash.includes("light")) document.documentElement.dataset.theme = "l
 if (location.hash.includes("full")) moveToDesk("p9");
 if (location.hash.includes("needs")) { task("p4").status = "needs"; task("p4").needsAt = Date.now(); }
 if (location.hash.includes("desk")) s.view = "desk";
+const asked = location.hash.match(/q=([^&]*)/);
+if (asked) { s.query = decodeURIComponent(asked[1]); s.finding = true; }
 if (location.hash.includes("menu")) { document.body.classList.add("menu"); s.menu = true; }
 setInterval(() => { if (!s.finding) render(); }, 30000);
 render();
