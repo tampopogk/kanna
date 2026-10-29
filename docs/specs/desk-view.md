@@ -26,7 +26,7 @@ Kanna's task words say where a task is from the user's side. The **Desk** holds 
 | Backlog | Shelf |
 | the Shelf (strip and full page), "on the Shelf" | the Desk's tasks, "on the Desk" |
 | the empty Desk / Shelf view, title bar "Shelf" | Desk view, title bar "Desk" |
-| Park (⌘.), pull / click to swap | ⌘. toggle; make a task active |
+| Park (⌘.), pull / click to swap | ⌘. toggle (`park`); make a task active (`activate`) |
 | Move to Shelf / Move to Backlog | Move to Desk / Move to Shelf |
 | "Shelf full" | "Desk full" |
 | "parked 12m" (strip, rows, `task list`) | "12m ago": since it was last active |
@@ -59,13 +59,13 @@ stateDiagram-v2
 
 | Old | New | Does |
 |---|---|---|
-| `kanna task shelve TASK` | `kanna task move TASK desk` | Shelf → Desk, starting it if it's stopped; three per project |
-| `kanna task defer [TASK]` | `kanna task move [TASK] shelf` | Desk → Shelf, as it is, running or stopped |
+| `kanna task shelve TASK` | `kanna task pick TASK` | Pick a task off the Shelf onto the Desk, starting it if it's stopped; three per project |
+| `kanna task defer [TASK]` | `kanna task shelve [TASK]` | Desk → Shelf, as it is, running or stopped |
 | `kanna task pull TASK` | `kanna task activate TASK` | Make a Desk task active and show it (relayed to the app) |
-| `kanna task park [TASK]` | `kanna task desk [TASK]` | Show the Desk view of TASK's Desk; TASK stays active |
+| `kanna task park [TASK]` | `kanna task park [TASK]` | ⌘.: show the Desk view of TASK's Desk; TASK stays active |
 
-- **One `move` verb with the place** mirrors the menus (Move to Desk / Move to Shelf) and avoids `shelve`, whose meaning would flip (today it puts a task on the Desk's side).
-- **Recommended: keep the four old verbs as hidden aliases** (not in help or completion). They're unambiguous now, and agents that loaded the old skills mid-conversation, and users' habits, keep working. They cost four lines in the parser.
+- **`defer` and `pull` stay as hidden aliases** (not in help or completion), so agents that loaded the old skills mid-conversation, and users' habits, keep working.
+- **`shelve` changes meaning**, so it can't be an alias: run on a Shelf task (the old use) it's refused with "TASK is on the Shelf: `kanna task pick TASK` moves it to the Desk", and nothing moves.
 - Everything else keeps its name; only the words change: `kanna task new` "added X to the Shelf of REPO", `start` "started X on the Shelf", `done` "took X off the Shelf", `task list`'s WHERE column `Desk` / `Shelf`.
 
 ## 4. Where each name appears
