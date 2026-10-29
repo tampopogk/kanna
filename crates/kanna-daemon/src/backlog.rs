@@ -1557,7 +1557,7 @@ impl Backlog {
         let repos = self.repos.borrow().clone().ok_or_else(|| bad("this Kanna keeps no projects folder"))?;
         let path = string(args, "path").map(|p| project_import::expand(p, &crate::agents::home())).filter(|p| p.is_absolute()).ok_or_else(|| bad("say which project: an absolute path"))?;
         let (main, _) = crate::projects::misplaced(&repos, &path).ok_or_else(|| KmuxError::new("in_place", format!("{} is in its place already", crate::projects::tilde(&path))))?;
-        Ok(main)
+        Ok(crate::projects::canonical(&main))
     }
 
     fn asked(&self, args: &Value) -> Result<Map, KmuxError> {
@@ -3604,6 +3604,12 @@ mod tests {
         assert!(backlog.add(&json!({ "repo": inside.to_str().unwrap(), "name": "In" })).is_ok());
         let old = Entry { id: "task-00000001".into(), repo: outside.to_string_lossy().into(), agent: "claude".into(), ..Default::default() };
         assert_eq!(backlog.ready(&old).unwrap_err().code, "outside", "a task an older Kanna made outside doesn't start");
+        let asked = |path: &Path| backlog.asked(&json!({ "path": path })).map(|r| r["never"].clone());
+        fs::create_dir_all(outside.join("sub")).unwrap();
+        assert_eq!(asked(&outside.join("sub")), Ok(json!(false)));
+        assert_eq!(backlog.never(&json!({ "path": outside.join("sub") })).unwrap()["path"], json!(outside.canonicalize().unwrap()), "never is the project's, not the subfolder's");
+        assert_eq!(asked(&outside), Ok(json!(true)));
+        assert_eq!(asked(&inside).unwrap_err().code, "in_place");
         *backlog.importing.borrow_mut() = Some(project_import::Import { from: inside.canonicalize().unwrap(), to: state.join("repos/a/app") });
         assert_eq!(backlog.add(&json!({ "repo": inside.to_str().unwrap(), "name": "Late" })).unwrap_err().code, "importing");
         fs::remove_dir_all(&state).unwrap();
