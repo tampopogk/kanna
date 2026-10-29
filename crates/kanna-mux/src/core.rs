@@ -1124,7 +1124,7 @@ impl CoreHandle {
             return Ok(());
         }
         let place = here.map_or("this project".to_string(), |p| p.display().to_string());
-        Err(KmuxError::new("task_limit", format!("{place} has {TASKS_PER_PROJECT} tasks on the Shelf already ({}): move one to the backlog with `kanna task defer TASK` first", same.join(", "))))
+        Err(KmuxError::new("task_limit", format!("{place} has {TASKS_PER_PROJECT} tasks on the Desk already ({}): move one to the Shelf with `kanna task shelve TASK` first", same.join(", "))))
     }
 
     fn forget_pane(&self, id: &str) {

@@ -11,14 +11,19 @@ struct ShelfTask: Equatable {
     var place: String?
     var offline = false
 
-    @MainActor var meta: String { offline ? "offline" : status == "needs-you" ? "needs you" : Self.ago(parkedAt) }
+    @MainActor var meta: String { offline ? "offline" : status == "needs-you" ? "needs you" : Self.since(parkedAt) }
 
     @MainActor var sub: String {
         let status = status.map { $0 == "needs-you" ? "needs you" : $0 }.map { offline ? "last known: \($0)" : $0 }
-        return [status, detail.isEmpty ? nil : detail, offline ? "offline" : Self.ago(parkedAt)].compactMap { $0 }.joined(separator: " · ")
+        return [status, detail.isEmpty ? nil : detail, offline ? "offline" : Self.since(parkedAt)].compactMap { $0 }.joined(separator: " · ")
     }
 
     @MainActor static var skew: Double = 0
+
+    @MainActor static func since(_ at: Double?) -> String {
+        let ago = ago(at)
+        return ago == "now" ? "just now" : ago
+    }
 
     @MainActor static func ago(_ at: Double?) -> String {
         guard let at else { return "now" }
