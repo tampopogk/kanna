@@ -2,7 +2,7 @@
 
 **Status:** built · **Builds on:** [workspaces](workspaces.md), [presenting](presenting.md), [task IDs](task-ids.md), [CLI](cli.md) · **Replaces:** `kanna list`
 
-**An agent presenting its work needs to see its own workspace:** its tabs, the panes in each, which tab is shown, what's focused and whether it's zoomed, as the user will see it when they pull the task. `kanna workspace list` prints that, for the caller's pane (`$KANNA_TERMINAL`, which every Kanna terminal has), with no argument. `kanna list` goes: nobody read its text, and it had no clear purpose.
+**An agent presenting its work needs to see its own workspace:** its tabs, the panes in each, which tab is shown, what's focused and whether it's zoomed, as the user will see it when they make the task active. `kanna workspace list` prints that, for the caller's pane (`$KANNA_TERMINAL`, which every Kanna terminal has), with no argument. `kanna list` goes: nobody read its text, and it had no clear purpose.
 
 ```mermaid
 flowchart LR
@@ -33,14 +33,14 @@ flowchart LR
 - **A workspace has an ID of its own,** `ws-1`, `ws-2`, …, made by the layout. The dash keeps it from being read as a window (`win-1`).
 - **The task's record names its workspace** (a `workspace` key in its `doc` in `kanna.db`, so no migration). The daemon sets it from the workspace a start makes, and keeps it right from each listing, by the workspace its agent is docked in. The layout knows nothing of tasks: no `task` field, no lookup by a task's ID; the daemon turns a task given to `window assign` into its workspace.
 - **A workspace can have no task,** as a docked agent's (`kanna open --dock`) does.
-- **Replies** name the workspace by its ID; the daemon adds the task and its name (`task`, `name`) when one has it: `opened term-5 in ws-3 (task-1dfb, on the Shelf), tab-9: running`.
+- **Replies** name the workspace by its ID; the daemon adds the task and its name (`task`, `name`) when one has it: `opened term-5 in ws-3 (task-1dfb, on the Desk), tab-9: running`.
 
 ## The output
 
 `kanna workspace list`, from a task's agent or any pane of its workspace:
 
 ```text
-ws-3 (task-1dfb, Fix login), in the backlog
+ws-3 (task-1dfb, Fix login), on the Shelf
   dock: term-407 (Fix login)  left 2/5  frozen
   focus: diff, zoomed
   *tab-211 "diff"  diff
@@ -66,7 +66,7 @@ Windows
 *win-45  free
 
 Workspaces
-ws-3 (task-1dfb, Fix login), in the backlog
+ws-3 (task-1dfb, Fix login), on the Shelf
   …
 ws-5, a Desk's planner
   dock: term-280  left 2/5

@@ -1,8 +1,8 @@
 # Desk view
 
-**Status:** proposal, for review · **Mockup:** [`references/mockups/desk-view.html`](../../references/mockups/desk-view.html) · **Changes:** [desk](desk.md), [tasks](tasks.md), [each app's Desk and Shelf](app-desk.md) and the specs below
+**Status:** built · **Mockup:** [`references/mockups/desk-view.html`](../../references/mockups/desk-view.html) · **Changes:** [desk](desk.md), [tasks](tasks.md), [each app's Desks](app-desk.md) and the specs below
 
-Kanna's task words say where a task is from the user's side. The **Desk** holds up to three of a project's tasks, one of them **active**. The **Shelf** holds the tasks Kanna has brought in that wait, run a few at a time in the background. The **Desk view** shows the planning agent, the Desk's tasks and the Shelf; **⌘.** toggles between it and the active task. Only the names change, and ⌘., which becomes a toggle: layouts, limits and what each view shows stay as they are.
+Kanna's task words say where a task is from the user's side. The **Desk** holds up to three of a project's tasks, one of them **active**. The **Shelf** holds the tasks Kanna has brought in that wait, run a few at a time in the background. The **Desk view** shows the planning agent, the Desk's tasks and the Shelf; **⌘.** toggles between it and the active task. Only the names changed, and ⌘., which became a toggle: layouts, limits and what each view shows stayed as they were.
 
 | Desk view | The active task |
 |---|---|
@@ -47,13 +47,13 @@ stateDiagram-v2
 ```
 
 - **⌘. toggles.** From the active task it shows the Desk view; the task stays active and running, its tabs, focus and zoom as they were. From the Desk view it shows the active task again. Task menu: **Show Desk** / **Show Active Task** (⌘.), named for where it goes.
-- **"Pull back the task parked last" becomes "the active task".** With none active (it was Done or moved to the Shelf), ⌘. makes the Desk's first task active: the one left last, or one that needs you, as the strip orders them. That's today's "task parked last", so the key does what it does now.
-- **Making a task active** (click, ⌘1 … ⌘3, ⇧⌘A, `kanna task activate`) leaves the one active before on the Desk, not active, as pulling parks it today.
-- **⌘1 … ⌘3 number the Desk's tasks other than the active one**, in the strip and in the Desk view alike, so a task keeps its key in both. In the Desk view the active task comes first, marked *active* and "⌘. · Back to it". (Today's empty Desk numbers all three; with one active, the others are ⌘1 and ⌘2, as on today's strip.)
+- **"Pull back the task parked last" becomes "the active task".** With none active (it was Done or moved to the Shelf), ⌘. makes the Desk's first task active: the one left last, or one that needs you, as the strip orders them. That was the old "task parked last", so the key does what it did.
+- **Making a task active** (click, ⌘1 … ⌘3, ⇧⌘A, `kanna task activate`) leaves the one active before on the Desk, not active, as pulling parked it before.
+- **⌘1 … ⌘3 number the Desk's tasks other than the active one**, in the strip and in the Desk view alike, so a task keeps its key in both. In the Desk view the active task comes first, marked *active* and "⌘. · Back to it". (The old empty Desk numbered all three; with one active, the others are ⌘1 and ⌘2, as on the strip.)
 - **The strip** starts with a muted "⌘. Desk" that shows the Desk view when clicked, then the Desk's other tasks as today, then "N on the Shelf".
 - **The agent header's Park button** stays, with the tooltip "Desk view (⌘.)".
-- **The encouraging line** moves on each time the Desk view shows (today: each time the Desk is cleared).
-- **Closing a Desk window** leaves its tasks on the Desk, none active (today: it parks its task).
+- **The encouraging line** moves on each time the Desk view shows (before: each time the Desk was cleared).
+- **Closing a Desk window** leaves its tasks on the Desk, none active (before: it parked its task).
 
 ## 3. CLI verbs
 
@@ -85,15 +85,15 @@ stateDiagram-v2
 | Planner script | `Resources/planner.sh` | nothing user-visible (it sends the internal `backlog` command) |
 | Skills | `.agents/kanna-skills`: kanna-tasks (27), kanna-planning (23), kanna-new-project (4), kanna-quiz (1), kanna-explain (1), README (3) | every Shelf/backlog/shelve/park/pull/defer; the planning skill's description. A subtree: push upstream after merge |
 | Repo | `AGENTS.md` | "The Desk, Shelf and focus": stays right as words; reread |
-| Specs | 52 files (`rg -il 'backlog\|shelf\|park\|pull' docs/specs`) | desk, tasks, app-desk, backlog-runners, backlog-search, menus, settings, cli, planning-agent, task-dependencies, zoom, toasts, workspaces, workspace-list, presenting, machine-*, quiz and the rest the grep finds; screenshots desk.png, desk-empty.png, zoom-desk-*.png, backlog-search*.png, task-blocked.png |
-| Spec files | renamed | `backlog-runners.md` → `shelf-runners.md`, `backlog-search.md` → `shelf-search.md` (and its pictures), `shelve-latency.md` → `move-to-desk-latency.md`; links updated |
+| Specs | 52 files (`rg -il 'backlog\|shelf\|park\|pull' docs/specs`) | desk, tasks, app-desk, shelf-runners, shelf-search, menus, settings, cli, planning-agent, task-dependencies, zoom, toasts, workspaces, workspace-list, presenting, machine-*, quiz and the rest the grep finds; screenshots desk.png, desk-empty.png, zoom-desk-*.png, shelf-search*.png, task-blocked.png |
+| Spec files | renamed | `backlog-runners.md` → [`shelf-runners.md`](shelf-runners.md), `backlog-search.md` → [`shelf-search.md`](shelf-search.md) (and its pictures), `shelve-latency.md` → [`move-to-desk-latency.md`](move-to-desk-latency.md); links updated |
 | Mockups | `desk.html`, `blocked-tasks.html`, `toasts.html`, `task-scripts.html`, `quiz.html`, `doc-markup.html`, `diff.html`, `page-marks.html`, `fleet.html` | their visible words; `desk.html` keeps its own scenes (planner, recent projects) and points to `desk-view.html` for the Desk view |
-| e2e | `scripts/e2e-kanna.sh` | the checks of words, and the scenario names: `desk_shelf`, `shelf_and_back`, `move_to_shelf`, `task_shelf`, `shelf_rename`, `shelf_runners`, `shelf_search`, `desk_tasks`, `desk_times`, `desk_zoom` → their new words |
+| e2e | `scripts/e2e-kanna.sh` | the checks of words, and the scenario names: `desk_shelf` → `desk_tasks`, `desk_backlog` → `desk_shelf`, `backlog_and_back` → `shelf_and_back`, `move_to_backlog` → `move_to_shelf`, `task_backlog` → `task_shelf`, `backlog_rename` → `shelf_rename`, `backlog_runners` → `shelf_runners`, `backlog_search` → `shelf_search`, `shelf_times` → `desk_times`, `shelf_zoom` → `desk_zoom`, `shelve_at_once` → `pick_at_once` |
 | Not changed | `agent-rules/corpus` (recorded terminals), `README.md` ("git pull") | |
 
 ## 5. Internal names
 
-**Recommended: leave them**, and keep a mapping (below) in [database](database.md) and [app-desk](app-desk.md). In every one "shelf" would flip meaning (the old Shelf is the new Desk, the old backlog the new Shelf), stored data and the app–daemon protocol would need migrations, and in-flight tasks across nearly every file would conflict, for no change anyone sees.
+**Kept as they were**, with a mapping (below) in [database](database.md) and [app-desk](app-desk.md). In every one "shelf" would flip meaning (the old Shelf is the new Desk, the old backlog the new Shelf), stored data and the app–daemon protocol would need migrations, and in-flight tasks across nearly every file would conflict, for no change anyone sees.
 
 | Internal (kept) | Means now |
 |---|---|
