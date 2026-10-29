@@ -14,7 +14,7 @@ A layer diagram answers three questions at a glance: **what sits on what**, **wh
 3. **Clients aren't layers.** CLIs, agents and other callers sit on top, as peers of the UI, and point *down* into the layer they call. Never draw a client below the thing it calls, even to dodge a line crossing a box title.
 4. **Colour by owner, with a key.** One colour per owner (our code, a library we use, a third party, the OS, clients). Add a one-line key under the first diagram. Use mid-tone fills with white text so the diagram reads in both light and dark mode.
 5. **Only real connections, labelled with how.** Label each line with its mechanism: `socket`, `reads, writes`, `creates`. Where a layer is skipped (the daemon writes the pty itself, a view reads pixels straight from a device), draw that line. Don't let one arrow down the stack imply everything passes through every layer.
-6. **Put each thing where it actually lives.** For each box ask: which process runs it, and does it *have* to live there? Keep a server to what must outlive its clients. Things that are just state to reopen (a URL, a file path, a device) are layout state and belong with the app.
+6. **Put each thing where it actually lives.** For each box ask: which process runs it?
 7. **Compare stacks with the same numbers.** When two systems share layers, keep the numbering and leave gaps for missing layers (kmux: 1, 3, 4, 6; Kanna: 1–6). Follow with a table: layer | system A | system B | process.
 
 ## Template (Mermaid)
