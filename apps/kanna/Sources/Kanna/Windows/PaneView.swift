@@ -6,7 +6,7 @@ final class PaneView: NSView {
     let type: String
     private(set) var content: NSView
     private let notice = NSTextField(labelWithString: "")
-    private let spinner = NSProgressIndicator()
+    private let spinner = Spinner()
     private let outline = Outline()
     let grip = PaneGrip(frame: NSRect(origin: .zero, size: PaneGrip.size))
 
@@ -80,6 +80,10 @@ final class PaneView: NSView {
         spinner.frame = NSRect(x: ((bounds.width - 16) / 2).rounded(), y: ((bounds.height - 16) / 2).rounded(), width: 16, height: 16)
         grip.frame.origin = NSPoint(x: ((bounds.width - PaneGrip.size.width) / 2).rounded(), y: bounds.height - PaneGrip.size.height)
     }
+}
+
+private final class Spinner: NSProgressIndicator {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 private final class Outline: NSView {

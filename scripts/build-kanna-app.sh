@@ -61,7 +61,7 @@ fi
 if [[ "$KANNA_CHANNEL" == dev ]]; then configuration="${KANNA_CONFIGURATION:-debug}"; else configuration="${KANNA_CONFIGURATION:-release}"; fi
 while IFS='=' read -r key value; do
   case "$key" in
-    channel) channel="$value" ;; name) app_name="$value" ;; bundle_id) bundle_id="$value" ;; instance) instance="$value" ;; folder) folder="$value" ;; version) version="$value" ;;
+    channel) channel="$value" ;; name) app_name="$value" ;; bundle_id) bundle_id="$value" ;; instance) instance="$value" ;; folder) folder="$value" ;; version) version="$value" ;; commit) commit="$value" ;;
   esac
 done < <("$repo_root/target/release/kanna-build")
 build_number="$(git -C "$repo_root" rev-list --count HEAD 2>/dev/null || echo 0)"
@@ -95,11 +95,14 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <key>CFBundleDisplayName</key><string>$app_name</string>
 <key>KannaChannel</key><string>$channel</string>
 <key>KannaInstance</key><string>$instance</string>
+<key>KannaCommit</key><string>$commit</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>${version%%-*}</string>
 <key>CFBundleVersion</key><string>$build_number</string>
 <key>NSAppleEventsUsageDescription</key><string>A program running in Kanna would like to use AppleScript.</string>
 <key>NSMicrophoneUsageDescription</key><string>A program running in Kanna would like to use your microphone.</string>
+<key>NSLocalNetworkUsageDescription</key><string>Kanna connects to your other machines on this network to run and show their tasks.</string>
+<key>NSBonjourServices</key><array><string>_kanna._udp</string></array>
 <key>LSMinimumSystemVersion</key><string>$macos_target</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>

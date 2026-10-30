@@ -53,6 +53,9 @@ pub fn pane_record(pane: &Pane) -> Map {
             if pane.markup {
                 out.insert("markup".into(), Value::Bool(true));
             }
+            if let Some(base) = &pane.diff_base {
+                out.insert("diff".into(), Value::String(base.clone()));
+            }
             if let Some(agent) = &pane.agent {
                 out.insert("agent".into(), Value::String(agent.clone()));
             }
@@ -112,6 +115,7 @@ pub fn read_record(item: &Value, id: &str, kind: PaneType) -> Pane {
             pane.path = field("path");
             pane.agent = field("agent");
             pane.markup = is_true(item, "markup");
+            pane.diff_base = field("diff");
             pane.history = Some(History::default());
         }
         PaneType::Code => {
@@ -167,7 +171,7 @@ pub(crate) fn upgrade(state: &Value) -> Value {
     };
     fn walk(value: &Value, key: Option<&str>, id: &dyn Fn(&Value) -> Value) -> Value {
         match value {
-            Value::String(_) if matches!(key, Some("id" | "key" | "active" | "focused" | "zoomed" | "workspace" | "pane" | "lastFocus")) => id(value),
+            Value::String(_) if matches!(key, Some("id" | "active" | "focused" | "zoomed" | "workspace" | "pane" | "lastFocus")) => id(value),
             Value::Array(items) => Value::Array(items.iter().map(|item| walk(item, key, id)).collect()),
             Value::Object(fields) => Value::Object(fields.iter().map(|(k, item)| (k.clone(), walk(item, Some(k), id))).collect()),
             _ => value.clone(),

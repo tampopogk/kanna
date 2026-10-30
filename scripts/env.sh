@@ -4,8 +4,10 @@ KANNA_GHOSTTY_BRANCH="kanna4"
 KANNA_GHOSTTY_COMMIT="5d812e4e4378f6af4a5f94bca73b99a17ac8e634"
 
 KANNA_ZIG_VERSION="0.16.0"
-KANNA_ZIG_SHA256_aarch64="b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489"
-KANNA_ZIG_SHA256_x86_64="0387557ed1877bc6a2e1802c8391953baddba76081876301c522f52977b52ba7"
+KANNA_ZIG_SHA256_aarch64_macos="b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489"
+KANNA_ZIG_SHA256_x86_64_macos="0387557ed1877bc6a2e1802c8391953baddba76081876301c522f52977b52ba7"
+KANNA_ZIG_SHA256_aarch64_linux="ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17"
+KANNA_ZIG_SHA256_x86_64_linux="70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
 
 kanna_macos_target() {
   cargo_target="$(sed -n 's/^MACOSX_DEPLOYMENT_TARGET *= *{ *value *= *"\([0-9.]*\)".*/\1/p' "$1/.cargo/config.toml" 2>/dev/null)"
@@ -66,10 +68,12 @@ kanna_zig() {
     return
   fi
   arch="$(uname -m)"; [ "$arch" = arm64 ] && arch=aarch64
+  case "$(uname -s)" in Darwin) os=macos ;; Linux) os=linux ;; *) echo "no Zig download for $(uname -s)" >&2; return 1 ;; esac
   dir="$1/target/zig-$KANNA_ZIG_VERSION"
   if [ ! -x "$dir/zig" ]; then
-    name="zig-$arch-macos-$KANNA_ZIG_VERSION"
-    eval "sum=\$KANNA_ZIG_SHA256_$arch"
+    name="zig-$arch-$os-$KANNA_ZIG_VERSION"
+    eval "sum=\${KANNA_ZIG_SHA256_${arch}_$os:-}"
+    [ -n "$sum" ] || { echo "no Zig download for $arch-$os" >&2; return 1; }
     echo "Downloading Zig $KANNA_ZIG_VERSION ($(zig version 2>/dev/null || echo "no zig") on PATH)" >&2
     mkdir -p "$1/target"
     curl -fsSL "https://ziglang.org/download/$KANNA_ZIG_VERSION/$name.tar.xz" -o "$1/target/$name.tar.xz" || return 1
@@ -138,7 +142,7 @@ kanna_targets() {
   if main="$(kanna_main_checkout "$1")"; then worktree=1; else main="$1"; worktree=""; fi
   config="${KANNA_AGENTS_HOME:-$HOME}/.kanna-v4/config.json"
   root=""
-  if [ -f "$config" ] && [ "$(plutil -extract version raw -o - "$config" 2>/dev/null || echo 1)" -le 1 ] 2>/dev/null; then
+  if [ -f "$config" ] && command -v plutil >/dev/null 2>&1 && [ "$(plutil -extract version raw -o - "$config" 2>/dev/null || echo 1)" -le 1 ] 2>/dev/null; then
     root="$(plutil -extract build.targets raw -o - "$config" 2>/dev/null)" || root=""
   fi
   root="${root%/}"

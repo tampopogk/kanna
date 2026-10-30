@@ -63,10 +63,15 @@ func tilde(_ path: String) -> String {
 final class AgentHeader: NSView {
     static let height = TabBar.height
     var onPark: (() -> Void)?
+    var onNew: (() -> Void)?
     private let label = NSTextField(labelWithString: "")
-    private let park = ParkButton()
+    private let park = HeaderButton(.park)
+    private let plus = HeaderButton(.plus)
     var parkable = true {
-        didSet { park.isHidden = !parkable }
+        didSet { park.isHidden = !parkable; needsLayout = true }
+    }
+    var newable = false {
+        didSet { plus.isHidden = !newable; needsLayout = true }
     }
 
     override init(frame frameRect: NSRect) {
@@ -76,9 +81,13 @@ final class AgentHeader: NSView {
         label.textColor = .secondaryLabelColor
         label.lineBreakMode = .byTruncatingMiddle
         addSubview(label)
-        park.toolTip = "Park"
+        park.toolTip = "Desk view (⌘.)"
         park.onPress = { [weak self] in self?.onPark?() }
         addSubview(park)
+        plus.toolTip = "New Tab"
+        plus.onPress = { [weak self] in self?.onNew?() }
+        plus.isHidden = true
+        addSubview(plus)
         paint()
     }
 
@@ -91,19 +100,25 @@ final class AgentHeader: NSView {
 
     private func paint() { layer?.backgroundColor = resolved(.windowBackgroundColor) }
 
+    var plusCenter: NSPoint { plus.convert(NSPoint(x: plus.bounds.midX, y: plus.bounds.midY), to: nil) }
     var parkCenter: NSPoint { park.convert(NSPoint(x: park.bounds.midX, y: park.bounds.midY), to: nil) }
     var text: String { label.stringValue }
 
-    func show(_ text: String) {
-        if label.stringValue != text { label.stringValue = text }
+    func show(_ text: String, stale: String? = nil) {
+        let shown = stale.map { "\($0) · \(text)" } ?? text
+        if label.stringValue != shown { label.stringValue = shown }
+        label.textColor = stale == nil ? .secondaryLabelColor : .systemRed
         needsLayout = true
     }
 
     override func layout() {
         super.layout()
         park.frame = NSRect(x: bounds.width - 30, y: (bounds.height - 22) / 2, width: 22, height: 22)
+        let right = parkable ? park.frame.minX : bounds.width - 8
+        plus.frame = NSRect(x: right - 26, y: (bounds.height - 22) / 2, width: 22, height: 22)
+        let end = newable ? plus.frame.minX : right
         label.sizeToFit()
-        label.frame = NSRect(x: 14, y: (bounds.height - label.frame.height) / 2, width: max(0, park.frame.minX - 22), height: label.frame.height)
+        label.frame = NSRect(x: 14, y: (bounds.height - label.frame.height) / 2, width: max(0, end - 8 - 14), height: label.frame.height)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -113,12 +128,15 @@ final class AgentHeader: NSView {
 }
 
 @MainActor
-private final class ParkButton: NSView {
+private final class HeaderButton: NSView {
+    enum Kind { case park, plus }
     var onPress: (() -> Void)?
+    private let kind: Kind
     private var hover = false
 
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
+    init(_ kind: Kind) {
+        self.kind = kind
+        super.init(frame: .zero)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
@@ -134,6 +152,18 @@ private final class ParkButton: NSView {
         let scale = bounds.width / 22
         let transform = AffineTransform(translationByX: 3 * scale, byY: 3 * scale)
         (hover ? NSColor.labelColor : NSColor.secondaryLabelColor).setStroke()
+        if kind == .plus {
+            let plus = NSBezierPath()
+            plus.move(to: NSPoint(x: 8, y: 3.5))
+            plus.line(to: NSPoint(x: 8, y: 12.5))
+            plus.move(to: NSPoint(x: 3.5, y: 8))
+            plus.line(to: NSPoint(x: 12.5, y: 8))
+            plus.transform(using: transform)
+            plus.lineWidth = 1.4
+            plus.lineCapStyle = .round
+            plus.stroke()
+            return
+        }
         let frame = NSBezierPath(roundedRect: NSRect(x: 2, y: 2, width: 12, height: 12), xRadius: 2, yRadius: 2)
         let chevron = NSBezierPath()
         chevron.move(to: NSPoint(x: 5.5, y: 5.5))
@@ -163,20 +193,44 @@ extension AppController {
 
     func place(of pane: String) -> (folder: String, git: GitPlace?)? {
         guard let folder = folders[pane] else { return nil }
-        return (folder, GitPlace.of(folder))
+        guard MachineIDs.machine(of: pane) != nil else { return (folder, GitPlace.of(folder)) }
+        guard let place = places[pane], let root = place["root"]?.string, let main = place["main"]?.string else { return (folder, nil) }
+        return (folder, GitPlace(root: root, branch: place["branch"]?.string, main: main))
     }
 
     func headerText(_ pane: String) -> String {
         guard let place = place(of: pane) else { return "" }
-        return [tilde(place.folder), place.git?.branch].compactMap { $0 }.joined(separator: " · ")
+        return [MachineIDs.machine(of: pane) == nil ? tilde(place.folder) : place.folder, place.git?.branch].compactMap { $0 }.joined(separator: " · ")
     }
 
     func projectRoot(_ pane: String) -> String? {
-        place(of: pane).map { canonical($0.git?.main ?? $0.folder) }
+        let machine = MachineIDs.machine(of: pane)
+        return place(of: pane).map { place in
+            let path = place.git?.main ?? place.folder
+            return machine == nil ? canonical(path) : MachineIDs.location(path, on: machine)
+        }
+    }
+
+    func rootLocation(_ location: String) -> String {
+        let (machine, path) = MachineIDs.split(location: location)
+        return machine == nil ? canonical(GitPlace.of(path)?.main ?? path) : location
+    }
+
+    func sameProject(_ a: String?, _ b: String?) -> Bool {
+        guard let a, let b else { return false }
+        if a == b { return true }
+        guard MachineIDs.split(location: a).machine != MachineIDs.split(location: b).machine, let one = identities[a] else { return false }
+        return one == identities[b]
+    }
+
+    func displayName(_ location: String) -> String {
+        let (machine, path) = MachineIDs.split(location: location)
+        guard machine != nil else { return tilde(path) }
+        return recentProjects.first { $0.path == location }?.label ?? (path as NSString).lastPathComponent
     }
 
     func projectName(_ tasks: [String]) -> String {
-        tasks.lazy.compactMap(projectRoot).first.map(tilde) ?? "Shelf"
+        tasks.lazy.compactMap(projectRoot).first.map(displayName) ?? "no project"
     }
 
     func taskDetail(_ pane: String) -> String {
@@ -185,9 +239,33 @@ extension AppController {
 }
 
 extension AppController {
-    func backlogChanged(_ tasks: [JSON]) {
-        backlog = tasks
+    func made(_ pane: String) -> Int {
+        deskMade[MachineIDs.machine(of: pane) ?? ""]?[pane] ?? .max
+    }
+
+    func backlogChanged(_ tasks: [JSON], desk: [JSON], on machine: String?) {
+        deskMade[machine ?? ""] = Dictionary(desk.enumerated().compactMap { at, entry in entry["pane"]?.string.map { ($0, at) } }, uniquingKeysWith: { first, _ in first })
+        let tag: JSON = machine.map { .string($0) } ?? .null
+        backlogs[machine ?? ""] = tasks.map { entry in
+            guard case .object(var fields) = entry else { return entry }
+            fields["machine"] = tag
+            return .object(fields)
+        }
+        for entry in backlogs[machine ?? ""] ?? [] {
+            if let location = location(ofEntry: entry), let project = entry["project"]?.string { identities[location] = project }
+        }
+        backlog = backlogs.keys.sorted().flatMap { backlogs[$0] ?? [] }
         refresh()
+    }
+
+    func location(ofEntry entry: JSON) -> String? {
+        guard let repo = entry["repo"]?.string else { return nil }
+        let machine = entry["machine"]?.string
+        return machine == nil ? canonical(repo) : MachineIDs.location(repo, on: machine)
+    }
+
+    private func inProject(_ entry: JSON, _ root: String?) -> Bool {
+        root == nil || sameProject(location(ofEntry: entry), root)
     }
 
     private func taskName(_ pane: String) -> String? {
@@ -197,7 +275,7 @@ extension AppController {
     }
 
     func backlogTasks(in root: String?) -> [BacklogTask] {
-        backlog.filter { root == nil || $0["repo"]?.string.map(canonical) == root }.compactMap { entry in
+        backlog.filter { inProject($0, root) }.compactMap { entry in
             guard let id = entry["id"]?.string, let name = entry["name"]?.string else { return nil }
             var waits: [String] = []
             if case .array(let blockers)? = entry["waits"] { waits = blockers.compactMap { $0["name"]?.string ?? $0["id"]?.string } }
@@ -206,14 +284,17 @@ extension AppController {
     }
 
     func runningBacklog(in root: String?) -> [JSON] {
-        backlog.filter { $0["running"]?.bool == true && (root == nil || $0["repo"]?.string.map(canonical) == root) }.compactMap { entry in
-            entry["held"]?.string.map { ["task": .string($0), "type": "term"] }
+        backlog.filter { $0["running"]?.bool == true && inProject($0, root) }.compactMap { entry in
+            entry["held"]?.string.map { pane in
+                let ws = published["workspaces"]?.array?.first { $0["dock"]?["pane"]?.string == pane }
+                return ["task": .string(pane), "type": "term", "tabs": ws?["tabs"] ?? []]
+            }
         }
     }
 
     func runningTasks(in root: String?) -> Int {
         let docked = windows.compactMap { $0["dock"]?["pane"]?.string } + shelfEntries.compactMap { $0["task"]?.string }
-        return docked.filter { root == nil || projectRoot($0) == root }.count
+        return docked.filter { root == nil || sameProject(projectRoot($0), root) }.count
     }
 
     private func noted(_ window: String, _ reply: JSON) {
@@ -224,7 +305,11 @@ extension AppController {
 
     func startTask(_ task: String, from window: String) {
         controllers[window]?.note = ""
-        request("backlog", ["action": "shelve", "task": .string(task)]) { [weak self] reply in self?.noted(window, reply) }
+        let click = Clicks.shelve(task, shelf: controllers[window]?.shelf.map(\.id) ?? [])
+        request("backlog", ["action": "shelve", "task": .string(task)], reply: { [weak self] reply in
+            if reply["ok"]?.bool != true { Clicks.failed(task) }
+            self?.noted(window, reply)
+        }, sent: Clicks.sent(click))
     }
 
     func newDesk() {
@@ -233,11 +318,14 @@ extension AppController {
 
     func openPlanner(in window: String) {
         guard !starting.contains(window), let controller = controllers[window] else { return }
+        let location = self.window(window)?["project"]?.string ?? controller.projectRoot
+        let (machine, folder) = location.map(MachineIDs.split(location:)) ?? (nil, "")
+        guard links?.link(machine)?.attached == true else { return }
         starting.insert(window)
-        var args: [String: JSON] = ["action": "plan", "app": .string(Self.app)]
-        if let folder = self.window(window)?["project"]?.string ?? controller.projectRoot { args["folder"] = .string(folder) }
+        var args: [String: JSON] = ["action": "plan", "app": .string(claimName(machine))]
+        if location != nil { args["folder"] = .string(folder) }
         if let script = Bundle.main.url(forResource: "planner", withExtension: "sh") { args["script"] = .string(script.path) }
-        request("backlog", args) { [weak self] reply in
+        request("backlog", args, on: .some(machine)) { [weak self] reply in
             guard let self else { return }
             if reply["ok"]?.bool == true, let planner = reply["workspace"]?.string, var desk = physical.desk(window) {
                 if published["workspaces"]?.array?.contains(where: { $0["id"]?.string == planner }) != true { givenPlanners.insert(planner) }
