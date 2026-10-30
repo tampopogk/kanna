@@ -3603,7 +3603,8 @@ path_reuses_desk() {
   check test "$(app_view | field windows | count)" == 1 || { echo "path_reuses_desk: more than one window"; kanna workspace list --all; return 1; }
   expected="opened d2 on $other"; says kanna "$other" || { echo "path_reuses_desk: another project didn't open a new Desk"; return 1; }
   check wait_for 5 eval '[[ "$(dwin d2 key)" == True ]]' || { app_view; return 1; }
-  expected="brought forward d1 on $repo"; says kanna "$repo" || return 1
+  local said; said="$(kanna "$repo")"
+  [[ "$said" == "brought forward d1 on "*"${repo#/private}" ]] || { echo "stays_behind: kanna PATH said: $said"; return 1; }
   check wait_for 5 eval '[[ "$(dwin d1 key)" == True ]]' || { echo "path_reuses_desk: the project's Desk isn't the key window"; app_view; return 1; }
   check test "$(app_view | field windows | count)" == 2 || { kanna workspace list --all; return 1; }
 }
@@ -3635,6 +3636,32 @@ path_last_in_front() {
   check wait_for 5 eval '[[ "$(dwin d1 key)" == True ]]' || { app_view; return 1; }
   expected="parked $(sid 2): d2 shows the Desk view, and $(sid 2) stays active"; KANNA_TERMINAL="$(pane t2 id)" says kanna task park || { echo "path_last_in_front: park from a task's terminal"; return 1; }
   check test "$(app_view | field windows | count)" == 2 || { kanna workspace list --all; return 1; }
+}
+
+scenario stays_behind M4
+stays_behind() {
+  start_daemon && start_app || { echo "stays_behind line $LINENO"; return 1; }
+  front() { app_view | field key; }
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "stays_behind line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  expected="opened term-1 (a) in win-1, tab-1: running"; says kanna open --window new --name a || return 1
+  check wait_for 5 eval '[[ "$(front)" == win-1 ]]' || { echo "stays_behind: the user's new window isn't in front"; return 1; }
+  local a; a="$(pane a id)"
+  expected="opened term-2 (b) in win-2, tab-2: running"; KANNA_TERMINAL="$a" says kanna open --window new --name b || return 1
+  check wait_for 5 eval '[[ "$(app_view | field windows | count)" == 2 ]]' || { echo "stays_behind: win-2 never came"; return 1; }
+  sleep 0.5; check test "$(front)" == win-1 || { echo "stays_behind: a new window from a Kanna terminal came forward: $(front)"; return 1; }
+  expected="focused b in win-2 (behind the app you're in)"; KANNA_TERMINAL="$a" says kanna focus b || return 1
+  sleep 0.5; check test "$(front)" == win-1 || { echo "stays_behind: kanna focus from a Kanna terminal brought $(front) forward"; return 1; }
+  expected="opened d1 on $repo"; KANNA_TERMINAL="$a" says kanna "$repo" || return 1
+  check wait_for 5 eval '[[ "$(app_view | field windows | count)" == 3 ]]' || { echo "stays_behind: d1 never came"; return 1; }
+  sleep 0.5; check test "$(front)" == win-1 || { echo "stays_behind: a Desk opened from a Kanna terminal came forward: $(front)"; return 1; }
+  expected="focused b in win-2 (in front)"; says kanna focus b || return 1
+  check wait_for 5 eval '[[ "$(front)" == win-2 ]]' || { echo "stays_behind: the user's kanna focus didn't bring win-2 forward"; return 1; }
+  local said; said="$(kanna "$repo")"
+  [[ "$said" == "brought forward d1 on "*"${repo#/private}" ]] || { echo "stays_behind: kanna PATH said: $said"; return 1; }
+  check wait_for 5 eval '[[ "$(front)" == d1 ]]' || { echo "stays_behind: the user's kanna PATH didn't bring d1 forward"; return 1; }
+  check wait_for 5 python3 -c 'import json, sys; sys.exit(json.load(open(sys.argv[1])).get("order", [None])[:3] != ["d1", "win-2", "win-1"])' "$KANNA_STATE_DIR/app-state.json" || { echo "stays_behind: app-state.json doesn't have d1, win-2, win-1 in front"; cat "$KANNA_STATE_DIR/app-state.json"; return 1; }
 }
 
 scenario cli_caller M4
