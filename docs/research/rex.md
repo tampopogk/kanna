@@ -47,7 +47,7 @@ flowchart LR
 ```
 
 - **Sessions → windows → layers → blocks.** A window holds one tiled layer (a binary split tree with ratios and normalised rects) and any number of floating layers. A **block** is made by a **creator** (`com.superlogical.terminal`, `com.superlogical.onboarding`) in one of its flavors, and offers its own methods, events and actions. `--block-dir` loads executable block plugins (`sdk/blockexec`, `sdk/blockremote`).
-- **Detached blocks** (`session.detach_block`, `session.new_block`) leave every window but keep running; `session.list_blocks` shows `placement: detached` and `session.move_block` puts one back. It's the same idea as a Kanna task's workspace off screen on the Shelf or in the backlog, at the level of one pane.
+- **Detached blocks** (`session.detach_block`, `session.new_block`) leave every window but keep running; `session.list_blocks` shows `placement: detached` and `session.move_block` puts one back. It's the same idea as a Kanna task that is on the Desk but not active, or on the Shelf, at the level of one pane.
 - **Ownership.** Each terminal block has one owning client; only its size counts. `size` reports the owner and every client's last requested size; a non-owner's `resize` or `set_theme` waits until it becomes the owner. `session.own_block {mode: take|request}` and `disown_block` move it; the log shows `terminal ownership changed … reason=create`. This is how several clients view one session at once.
 - **IDs** are typed UUIDv7s (`session:01a1842a-…`, `block:…`, `client:…`), addressable by label, one-based position, or an ID suffix; `target.resolve` says whether a query matched one, none or several.
 - **Limits** are flags: 64 sessions, 1024 blocks, 64 windows per session, 64 panes per window.
@@ -85,7 +85,7 @@ The server owns the ptys. There's no third process, so **when the server stops, 
 - The app: "Updating restarts the server and ends everything running in your sessions." Its `AutomaticRestartPolicy` restarts the local server onto a new version **only when it's idle**, with `server.stop {if_idle}` ("Automatically restarting idle Rex server"; "Skipped an automatic restart because the Rex server is too old to stop only when idle").
 - Linux (docs, *Upgrading*): "Upgrading ends every session on a running shared server." Account servers under the login server and personal servers keep running the old version until their sessions end; a personal server started by a `rex` command stops itself once idle (`--exit-empty`) and picks up the new version then.
 
-So Rex survives the **app** (a LaunchAgent, not the app's child) but not its own upgrade. The `internal/backlog` package is an output buffer (`Writer.Attach/Detach/Buffered`), and `server.eventBacklog` is the 8 MiB per-client event limit: there are no tasks or backlog in Rex.
+So Rex survives the **app** (a LaunchAgent, not the app's child) but not its own upgrade. The `internal/backlog` package is an output buffer (`Writer.Attach/Detach/Buffered`), and `server.eventBacklog` is the 8 MiB per-client event limit: there are no tasks in Rex.
 
 ### 1.6 CLI, API, Lua, client actions
 
@@ -167,11 +167,11 @@ flowchart LR
             KCLI["kanna CLI · agents"]
         end
         subgraph KAPP["Kanna.app"]
-            K1["1 · UI<br/>Desk · Shelf · review"]
+            K1["1 · UI<br/>Desk view · Desk · Shelf · review"]
             K2["2 · Views<br/>GhosttyKit surfaces<br/>web · markdown · iOS"]
         end
         subgraph KD["daemon"]
-            K3["3 · Logical presentation<br/>workspaces · tabs · Shelf"]
+            K3["3 · Logical presentation<br/>workspaces · tabs · Desk"]
             K4["4 · Work<br/>tasks · agents · worktrees<br/>terminals: libghostty-vt"]
         end
         subgraph KK["keeper"]
@@ -203,9 +203,9 @@ Pink is Rex's code, green Kanna's, grey the OS, orange the clients.
 | Layer | Rex | Kanna | Process |
 |---|---|---|---|
 | clients | `rex` CLI, Lua scripts (`rex do`), agents, the web client, other devices' apps; each is a *client* with an ID | `kanna` CLI, agents | their own |
-| 1 · UI | sessions, tabs, palette, 88 client actions | Desk, Shelf, review, editor | app |
+| 1 · UI | sessions, tabs, palette, 88 client actions | Desk view, Desk, Shelf, review, editor | app |
 | 2 · Views | swift-ghostty, its own Metal renderer | GhosttyKit (Kanna's fork), web, markdown, iOS | app |
-| 3 · Presentation | sessions, windows, tiled and floating layers, splits, per-block owners | workspaces, tabs, Shelf, logical windows | server / daemon |
+| 3 · Presentation | sessions, windows, tiled and floating layers, splits, per-block owners | workspaces, tabs, the Desk, logical windows | server / daemon |
 | 4 · Work | blocks (terminal, onboarding, plugins); libghostty per terminal; **the ptys** | tasks, agents, worktrees, terminals (libghostty-vt), diffs, files, pages | server / daemon |
 | 5 · Keeper | — | holds the ptys across daemon restarts and upgrades | keeper |
 | 6 · OS | ptys through `/usr/bin/login` | ptys, WebKit, iOS Simulator | — |
@@ -220,14 +220,14 @@ Pink is Rex's code, green Kanna's, grey the OS, orange the clients.
 | **Search** | `client.find.*` | none, as kmux | Rex |
 | **Restart and upgrade** | server owns the ptys; an update ends every program; the app restarts it only when idle | keeper re-execs itself in place; terminals outlive daemon restarts and keeper upgrades ([keeper upgrade](../specs/keeper-upgrade.md), [daemon restart](../specs/daemon-restart.md)) | **Kanna, clearly** |
 | **Saved screens** | sealed with a per-process key, swept when the process is gone: gone after a crash | `<terminal>.snap` reloaded by the next daemon | Kanna |
-| **Layout model** | sessions of tabs of splits plus floating layers; detached blocks; many clients, one owner per block | one project, one Desk; a task's workspace with a docked agent; Shelf and backlog; one app per daemon ([workspaces](../specs/workspaces.md)) | different aims; Rex for several viewers |
+| **Layout model** | sessions of tabs of splits plus floating layers; detached blocks; many clients, one owner per block | one project, one Desk of up to three tasks, one active; a task's workspace with a docked agent; the Shelf; one app per daemon ([workspaces](../specs/workspaces.md)) | different aims; Rex for several viewers |
 | **CLI targets** | `-s`, `-b`, env, else the focused block of the default window; client actions go to the only app | the caller (`$KANNA_TERMINAL`), else refused; never the key window ([CLI caller](../specs/cli-caller.md)) | Kanna: stricter |
 | **Waiting, events** | `wait` (exit status), `run --wait`, `--keep-open`, `events --json` | `open --cmd`; no exit-status wait, no event stream ([commands](../specs/commands.md)) | Rex |
 | **API description** | schemas, examples, notes per method; revisions bridged by the newer side | `commands --json`, `raw`; `protocols: [min, max]` in the hello ([machine links §2](../specs/machine-links.md#2-the-hello)) | Rex |
 | **Scripting** | Lua 5.1 config and scripts, events, other hosts | none; agents and the CLI; layout files planned (`kanna up`) | Rex has more; see 3.3 |
 | **Agent status** | OSC 7501 only; tab spinners, session picker | OSC 7501 first, then per-agent screen rules for agents that don't report ([agent status](../specs/agent-status.md)) | Kanna |
 | **Agent skills** | thin skill that reads its guide from the binary; a session-start hook; Claude, Codex, OpenCode, Pi | Kanna's skills copied and three-way merged; told in the first message, no hooks ([agent setup](../specs/agent-setup.md)) | each has a point; see 3.1 |
-| **Tasks, backlog, runners, planner** | none | tasks with worktrees, backlog runners, a planning agent per Desk ([tasks](../specs/tasks.md), [backlog runners](../specs/backlog-runners.md), [planning agent](../specs/planning-agent.md)) | Kanna; Rex names "coding agents" and "background jobs" as next |
+| **Tasks, Shelf, runners, planner** | none | tasks with worktrees, Shelf runners, a planning agent per Desk ([tasks](../specs/tasks.md), [Shelf runners](../specs/shelf-runners.md), [planning agent](../specs/planning-agent.md)) | Kanna; Rex names "coding agents" and "background jobs" as next |
 | **Remote machines** | embedded Tailscale or the host's; trust by connection; hosts on a home server | iroh, device keys, a signed peer log, pairing by code, LAN first, own relay ([machines](../specs/machines.md), [machine links](../specs/machine-links.md)) | Kanna for your own machines |
 | **Several people** | login server with PAM, per-account servers; shared server | out of scope ("Yours alone") | Rex |
 | **Web client** | `rex.superlogical.com` (not checked) | none | Rex |
@@ -258,7 +258,7 @@ Ranked by what each buys for what it costs. Where it would go names the spec; no
 |---|---|---|
 | **The keeper.** Terminals outlive a daemon restart, and the keeper upgrades itself by `execve` in place. | Rex's update "ends everything running in your sessions", so it waits for an idle server; with agents always running, a Rex server is rarely idle. The keeper is Kanna's strongest difference: keep it, and keep its tests (`keeper_upgrade`). | §1.5 vs [keeper upgrade](../specs/keeper-upgrade.md) |
 | **Screens saved for the next daemon.** | Rex's sealed snapshots die with the process that sealed them; a crash loses every screen. | §1.4 vs [daemon restart](../specs/daemon-restart.md) |
-| **Tasks, worktrees, the backlog, runners, the planning agent.** | Rex has none; agents in Rex are programs in panes. Superlogical names coding agents and background jobs as where it's going, so this is the gap to watch. | §1.5; superlogical.com |
+| **Tasks, worktrees, the Shelf, runners, the planning agent.** | Rex has none; agents in Rex are programs in panes. Superlogical names coding agents and background jobs as where it's going, so this is the gap to watch. | §1.5; superlogical.com |
 | **Agent status without the agent's help.** | Rex shows nothing for an agent that doesn't send OSC 7501 (OpenCode, Copilot, older releases); Kanna's rules cover them. | §1.7 vs [agent status §3](../specs/agent-status.md#3-detection-rules) |
 | **The caller rule.** | `rex capture` with no block falls back to "the focused block of the default window", the fallback Kanna removed because an agent's command landed where the user happened to be looking. | `rex capture --help` vs [CLI caller](../specs/cli-caller.md) |
 | **Trust between your machines.** | Rex trusts by connection until "a full authentication and authorization system" exists; Kanna pins device keys in a signed peer log and pairs by code. | §1.8 vs [machine identity](../specs/machine-identity.md) |
