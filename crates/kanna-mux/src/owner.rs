@@ -3,7 +3,7 @@ use crate::json::{encode, json, num, string, Map, Value};
 use crate::layout::{read_pane_table, serve, LayoutHost, Placement};
 use crate::model::{Model, Node};
 use crate::pane::{Pane, PaneType, Panes};
-use crate::saved::LAYOUT_VERSION;
+use crate::saved::{self, LAYOUT_VERSION};
 use crate::state::{self, number_in};
 use crate::state_file::{Contents, StateFile};
 use std::collections::{HashMap, HashSet};
@@ -33,8 +33,8 @@ impl LayoutOwner {
         let problem = match file.load() {
             Contents::None => None,
             Contents::Refused(why) => Some(why),
-            Contents::State(state) => match state::import_versions(&state, &[1, 2, LAYOUT_VERSION], "Kanna reads") {
-                Ok(_) => {
+            Contents::State(state) => match state::import_versions(&state, &[1, 2, 3, LAYOUT_VERSION], "Kanna reads").map(|_| saved::upgrade(&state)) {
+                Ok(state) => {
                     owner.panes.note_numbers(&content_counters(&state));
                     owner.saved = Some(state);
                     None
@@ -47,7 +47,8 @@ impl LayoutOwner {
     }
 
     pub fn restoring(state: Value) -> Result<LayoutOwner, KmuxError> {
-        state::import_versions(&state, &[1, 2, LAYOUT_VERSION], "Kanna reads")?;
+        state::import_versions(&state, &[1, 2, 3, LAYOUT_VERSION], "Kanna reads")?;
+        let state = saved::upgrade(&state);
         let mut owner = LayoutOwner::default();
         owner.panes.note_numbers(&content_counters(&state));
         owner.saved = Some(state);
@@ -123,7 +124,7 @@ impl LayoutOwner {
 
     pub fn records(&self) -> Vec<Pane> {
         match &self.saved {
-            Some(saved) => state::import_versions(saved, &[1, 2, LAYOUT_VERSION], "Kanna reads").map(|(panes, _)| panes).unwrap_or_default(),
+            Some(saved) => state::import_versions(saved, &[1, 2, 3, LAYOUT_VERSION], "Kanna reads").map(|(panes, _)| panes).unwrap_or_default(),
             None => {
                 let placed: HashSet<String> = self.placed().into_iter().collect();
                 self.panes.iter().filter(|p| placed.contains(&p.id)).cloned().collect()
@@ -210,7 +211,7 @@ impl LayoutOwner {
                 out.insert("where".into(), ws.place.to_json());
                 out.insert("dock".into(), self.dock(&ws.dock));
                 out.insert("agent".into(), self.panes.get(&ws.dock.pane).and_then(|p| p.program()).map_or(Value::Null, Value::String));
-                out.insert("parkedAt".into(), ws.parked_at.map_or(Value::Null, num));
+                out.insert("leftAt".into(), ws.left_at.map_or(Value::Null, num));
                 out.insert("windows".into(), model.workspace_windows(&ws.id).iter().map(|w| w.id.clone()).collect::<Vec<_>>().into());
                 out.insert("panes".into(), model.workspace_panes(s).into());
                 Value::Object(out)
@@ -467,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn a_parked_tasks_tabs_are_named_after_their_panes() {
+    fn a_hidden_tasks_tabs_are_named_after_their_panes() {
         let mut owner = LayoutOwner::new();
         owner.handle(&json!({ "call": "attach", "panes": [] }));
         open(&mut owner, json!({ "id": "p1", "name": null, "type": "term" }), json!({ "dock": "left" }));
@@ -638,7 +639,7 @@ mod tests {
     }
 
     #[test]
-    fn a_task_is_claimed_by_an_app_held_in_the_backlog_and_claimed_again_across_a_relaunch() {
+    fn a_task_is_claimed_by_an_app_held_on_the_shelf_and_claimed_again_across_a_relaunch() {
         let dir = folder("claim");
         let file = StateFile::new(&dir.join("layout.json").to_string_lossy());
         let (mut owner, _) = LayoutOwner::open(Some(file.clone()), false);
@@ -648,26 +649,26 @@ mod tests {
         place(&mut owner, "p3", json!({ "from": "p1" }));
         let workspace = |owner: &LayoutOwner| owner.view()["workspaces"][0].clone();
         let before = workspace(&owner);
-        assert_eq!((before["id"].clone(), before["where"].clone(), owner.view()["windows"].clone()), (json!("ws-1"), json!({ "shelf": "mac" }), json!([])), "a task's workspace is in no window");
+        assert_eq!((before["id"].clone(), before["where"].clone(), owner.view()["windows"].clone()), (json!("ws-1"), json!({ "desk": "mac" }), json!([])), "a task's workspace is in no window");
         assert_eq!(before["tabs"].as_array().map(Vec::len), Some(2));
         let listed = command(&mut owner, "task", json!({ "action": "list" }));
-        assert_eq!((listed["tasks"][0]["id"].clone(), listed["tasks"][0]["where"].clone()), (json!("p1"), json!({ "shelf": "mac" })), "{listed}");
+        assert_eq!((listed["tasks"][0]["id"].clone(), listed["tasks"][0]["where"].clone()), (json!("p1"), json!({ "desk": "mac" })), "{listed}");
         assert_eq!(command(&mut owner, "task", json!({ "action": "list", "app": "ios" }))["tasks"], json!([]), "another app's Shelf is its own");
 
         let held = command(&mut owner, "task", json!({ "action": "hold", "task": "p1" }));
-        assert_eq!((held["task"].clone(), held["was"].clone()), (json!("p1"), json!({ "shelf": "mac" })), "{held}");
-        assert_eq!(workspace(&owner)["where"], "backlog");
+        assert_eq!((held["task"].clone(), held["was"].clone()), (json!("p1"), json!({ "desk": "mac" })), "{held}");
+        assert_eq!(workspace(&owner)["where"], "shelf");
         assert_eq!(command(&mut owner, "task", json!({ "action": "list" }))["tasks"], json!([]));
         assert_eq!(command(&mut owner, "task", json!({ "action": "claim", "task": "p1" }))["error"]["code"], "bad_request");
         let claimed = command(&mut owner, "task", json!({ "action": "claim", "task": "ws-1", "app": "ios" }));
-        assert_eq!((claimed["task"].clone(), claimed["workspace"].clone(), claimed["was"].clone()), (json!("p1"), json!("ws-1"), json!("backlog")), "{claimed}");
+        assert_eq!((claimed["task"].clone(), claimed["workspace"].clone(), claimed["was"].clone()), (json!("p1"), json!("ws-1"), json!("shelf")), "{claimed}");
         assert_eq!(owner.handle(&json!({ "call": "attach", "panes": table(&["p1", "p2", "p3"]) }))["placed"], json!([]));
         owner.save().unwrap();
 
         let (mut again, _) = LayoutOwner::open(Some(file), false);
         assert_eq!(again.handle(&json!({ "call": "attach", "panes": table(&["p1", "p2", "p3"]) }))["placed"], json!([]));
         let after = workspace(&again);
-        assert_eq!(after["where"], json!({ "shelf": "ios" }));
+        assert_eq!(after["where"], json!({ "desk": "ios" }));
         for field in ["dock", "tabs", "tab", "root", "focused"] {
             assert_eq!(after[field], before[field], "{field}");
         }
@@ -683,7 +684,7 @@ mod tests {
         place(&mut owner, "p2", json!({ "from": "p1" }));
         place(&mut owner, "p3", json!({ "from": "p2" }));
         let opened = serve_place(&mut owner, "p4", json!({ "workspace": "ws-1", "tab": true }));
-        assert_eq!((opened["window"].clone(), opened["workspace"].clone()), (Value::Null, json!({ "id": "ws-1", "where": { "shelf": "mac" } })), "{opened}");
+        assert_eq!((opened["window"].clone(), opened["workspace"].clone()), (Value::Null, json!({ "id": "ws-1", "where": { "desk": "mac" } })), "{opened}");
         let workspace = |owner: &LayoutOwner| owner.view()["workspaces"][0].clone();
         assert_eq!(workspace(&owner)["panes"], json!(["p2", "p3", "p4", "p1"]));
         assert_eq!(command(&mut owner, "focus", json!({ "pane": "p3" }))["ok"], true);
@@ -733,7 +734,7 @@ mod tests {
         let (mut owner, _) = LayoutOwner::open(Some(file.clone()), false);
         owner.handle(&json!({ "call": "attach", "panes": [] }));
         let reply = owner.handle(&json!({ "call": "serve", "request": { "op": "place", "pane": { "id": "p1", "name": "agent", "type": "term" }, "at": { "dock": "left" } } }));
-        assert_eq!(reply, json!({ "ok": true, "window": null, "tab": null, "dock": "left", "workspace": { "id": "ws-1", "where": { "shelf": "mac" } } }));
+        assert_eq!(reply, json!({ "ok": true, "window": null, "tab": null, "dock": "left", "workspace": { "id": "ws-1", "where": { "desk": "mac" } } }));
         let workspace = |owner: &LayoutOwner| owner.view()["workspaces"][0].clone();
         assert_eq!((workspace(&owner)["title"].clone(), workspace(&owner)["tabs"].clone(), workspace(&owner)["root"].clone()), (json!("agent"), json!([]), Value::Null));
         assert_eq!(command(&mut owner, "zoom", json!({ "pane": "p1" }))["zoomed"], true);
@@ -799,7 +800,7 @@ mod tests {
 
         let window = |owner: &mut LayoutOwner, args: Value| command(owner, "window", args);
         let assigned = window(&mut owner, json!({ "action": "assign", "window": "win-2", "workspace": "p1" }));
-        assert_eq!((assigned["window"].clone(), assigned["workspace"].clone()), (json!("win-2"), json!({ "id": "ws-1", "where": { "shelf": "mac" } })), "{assigned}");
+        assert_eq!((assigned["window"].clone(), assigned["workspace"].clone()), (json!("win-2"), json!({ "id": "ws-1", "where": { "desk": "mac" } })), "{assigned}");
         let freed = window(&mut owner, json!({ "action": "free", "window": "win-2" }));
         assert_eq!((freed["workspace"].clone(), freed["was"]["id"].clone()), (Value::Null, json!("ws-1")), "{freed}");
         assert_eq!(window(&mut owner, json!({ "action": "assign", "window": "win-3", "workspace": "ws-1" }))["error"]["code"], "lead");
@@ -813,7 +814,7 @@ mod tests {
     }
 
     #[test]
-    fn a_version_1_layout_loads_into_workspaces_and_saves_as_version_3() {
+    fn a_version_1_layout_loads_into_workspaces_and_saves_as_version_4() {
         let dir = folder("v1");
         let path = dir.join("layout.json");
         let v1 = json!({ "kmux": "state", "version": 1, "key": "w1", "counters": { "pane": 6, "tab": 4, "window": 2 },
@@ -833,11 +834,11 @@ mod tests {
         let view = owner.view();
         assert_eq!(ids(&view), [json!("win-2")], "a Desk window is the app's now");
         let workspaces: Vec<(Value, Value, Value)> = view["workspaces"].as_array().unwrap().iter().map(|s| (s["id"].clone(), s["dock"]["pane"].clone(), s["where"].clone())).collect();
-        assert_eq!(workspaces, [(json!("ws-1"), json!("p1"), json!({ "shelf": "mac" })), (json!("ws-2"), json!("p4"), json!({ "shelf": "mac" })), (json!("ws-3"), json!("p6"), json!({ "planner": "mac" }))], "its lead is a planner");
+        assert_eq!(workspaces, [(json!("ws-1"), json!("p1"), json!({ "desk": "mac" })), (json!("ws-2"), json!("p4"), json!({ "desk": "mac" })), (json!("ws-3"), json!("p6"), json!({ "planner": "mac" }))], "its lead is a planner");
         assert_eq!((view["workspaces"][0]["focused"].clone(), view["workspaces"][2]["zoomed"].clone()), (json!("p2"), json!("p6")));
         owner.save().unwrap();
         let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!((saved["version"].clone(), saved.get("key")), (json!(3), None), "an older layout's key is dropped");
+        assert_eq!((saved["version"].clone(), saved.get("key")), (json!(4), None), "an older layout's key is dropped");
         assert_eq!(saved["workspaces"][2]["where"], json!({ "planner": "mac" }));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -859,9 +860,32 @@ mod tests {
         assert_eq!(problem, None);
         assert_eq!(owner.handle(&json!({ "call": "attach", "panes": table(&["p1", "p2", "p3", "p4"]) }))["placed"], json!([]));
         let saved = owner.export();
-        assert_eq!((saved["workspaces"][0]["id"].clone(), saved["workspaces"][0].get("task").cloned(), saved["workspaces"][0]["where"].clone(), saved["workspaces"][0]["windows"][0]["id"].clone()), (json!("ws-1"), None, json!({ "shelf": "mac" }), json!("win-3")), "{saved}");
+        assert_eq!((saved["workspaces"][0]["id"].clone(), saved["workspaces"][0].get("task").cloned(), saved["workspaces"][0]["where"].clone(), saved["workspaces"][0]["windows"][0]["id"].clone()), (json!("ws-1"), None, json!({ "desk": "mac" }), json!("win-3")), "{saved}");
         assert_eq!((saved["workspaces"][1]["where"].clone(), saved["counters"]["workspace"].clone()), (json!({ "planner": "mac" }), json!(2)));
         assert_eq!(owner.view()["windows"][0]["workspace"], "ws-1", "its window follows");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_version_3_layout_s_old_place_names_read_as_the_desk_and_the_shelf() {
+        let dir = folder("v3");
+        let path = dir.join("layout.json");
+        let v3 = json!({ "kmux": "state", "version": 3, "counters": { "pane": 3, "tab": 2, "window": 0, "workspace": 3 },
+            "panes": [{ "id": "p1", "type": "term" }, { "id": "p2", "type": "term" }, { "id": "p3", "type": "term" }],
+            "windows": [],
+            "workspaces": [
+                { "id": "ws-1", "where": { "shelf": "ios" }, "parkedAt": 100, "dock": { "pane": "p1", "edge": "left", "width": 0.4 }, "tabs": [], "windows": [] },
+                { "id": "ws-2", "where": "backlog", "dock": { "pane": "p2", "edge": "left", "width": 0.4 }, "tabs": [], "windows": [] },
+                { "id": "ws-3", "where": { "planner": "mac" }, "dock": { "pane": "p3", "edge": "left", "width": 0.4 }, "tabs": [], "windows": [] }] });
+        std::fs::write(&path, crate::json::encode(&v3)).unwrap();
+        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+        let (mut owner, problem) = LayoutOwner::open(Some(StateFile::new(&path.to_string_lossy())), false);
+        assert_eq!(problem, None);
+        assert_eq!(owner.handle(&json!({ "call": "attach", "panes": table(&["p1", "p2", "p3"]) }))["placed"], json!([]));
+        let saved = owner.export();
+        let places: Vec<(Value, Value)> = saved["workspaces"].as_array().unwrap().iter().map(|s| (s["where"].clone(), s.get("leftAt").cloned().unwrap_or(Value::Null))).collect();
+        assert_eq!(places, [(json!({ "desk": "ios" }), json!(100)), (json!("shelf"), Value::Null), (json!({ "planner": "mac" }), Value::Null)]);
+        assert_eq!(saved["version"], json!(4));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -11,7 +11,7 @@ struct DeskRecord: Equatable {
 @MainActor
 final class Physical {
     private(set) var desks: [DeskRecord] = []
-    private(set) var shelf: [(workspace: String, parkedAt: Double)] = []
+    private(set) var deskTasks: [(workspace: String, leftAt: Double)] = []
     private(set) var order: [String] = []
     private var deskCount = 0
     private var frames: [String: NSRect] = [:]
@@ -40,7 +40,8 @@ final class Physical {
             desk["id"]?.string.map { DeskRecord(id: $0, project: desk["project"]?.string, shows: desk["shows"]?.string, planner: desk["planner"]?.string, active: desk["active"]?.string ?? desk["shows"]?.string) }
         }
         order = (saved["order"]?.array ?? []).compactMap(\.string)
-        shelf = (saved["shelf"]?.array ?? []).compactMap { entry in entry["workspace"]?.string.map { ($0, entry["parkedAt"]?.number ?? 0) } }
+        deskTasks = (saved["deskTasks"]?.array ?? []).compactMap { entry in entry["workspace"]?.string.map { ($0, entry["leftAt"]?.number ?? 0) } }
+        if saved["deskTasks"] == nil { deskTasks = (saved["shelf"]?.array ?? []).compactMap { entry in entry["workspace"]?.string.map { ($0, entry["leftAt"]?.number ?? 0) } } }
         deskCount = max(Int(saved["deskCount"]?.number ?? 0), desks.compactMap { Int($0.id.dropFirst()) }.max() ?? 0)
     }
 
@@ -65,26 +66,26 @@ final class Physical {
         changed()
     }
 
-    func park(_ workspace: String) {
-        shelf.removeAll { $0.workspace == workspace }
-        shelf.insert((workspace, Date().timeIntervalSince1970.rounded(.down)), at: 0)
+    func leave(_ workspace: String) {
+        deskTasks.removeAll { $0.workspace == workspace }
+        deskTasks.insert((workspace, Date().timeIntervalSince1970.rounded(.down)), at: 0)
         changed()
     }
 
-    func keep(shelf claimed: [(workspace: String, parkedAt: Double?)], planners given: Set<String>, present: Set<String>) {
+    func keep(deskTasks claimed: [(workspace: String, leftAt: Double?)], planners given: Set<String>, present: Set<String>) {
         let absent = { (id: String) in !present.contains(MachineIDs.machine(of: id) ?? "") }
-        let ids = Set(claimed.map(\.workspace)).union(shelf.map(\.workspace).filter(absent)).union(desks.compactMap(\.shows).filter(absent)).union(desks.compactMap(\.active).filter(absent))
+        let ids = Set(claimed.map(\.workspace)).union(deskTasks.map(\.workspace).filter(absent)).union(desks.compactMap(\.shows).filter(absent)).union(desks.compactMap(\.active).filter(absent))
         let planners = given.union(desks.compactMap(\.planner).filter(absent))
-        var kept = shelf.filter { ids.contains($0.workspace) }
+        var kept = deskTasks.filter { ids.contains($0.workspace) }
         for entry in claimed where !kept.contains(where: { $0.workspace == entry.workspace }) {
-            kept.insert((entry.workspace, entry.parkedAt ?? Date().timeIntervalSince1970.rounded(.down)), at: 0)
+            kept.insert((entry.workspace, entry.leftAt ?? Date().timeIntervalSince1970.rounded(.down)), at: 0)
         }
         let desksKept = desks.map { desk in
             DeskRecord(id: desk.id, project: desk.project, shows: desk.shows.flatMap { ids.contains($0) ? $0 : nil }, planner: desk.planner.flatMap { planners.contains($0) ? $0 : nil },
                        active: desk.active.flatMap { ids.contains($0) ? $0 : nil })
         }
-        guard kept.map(\.workspace) != shelf.map(\.workspace) || desksKept != desks else { return }
-        shelf = kept
+        guard kept.map(\.workspace) != deskTasks.map(\.workspace) || desksKept != desks else { return }
+        deskTasks = kept
         desks = desksKept
         changed()
     }
@@ -132,7 +133,7 @@ final class Physical {
     func applied(_ view: JSON) -> JSON {
         guard case .object(var fields) = view else { return view }
         if case .array(let windows)? = fields["windows"] { fields["windows"] = .array(windows.map(apply)) }
-        if case .array(let shelf)? = fields["shelf"] { fields["shelf"] = .array(shelf.map { widened($0, $0["workspace"]?.string) }) }
+        if case .array(let tasks)? = fields["deskTasks"] { fields["deskTasks"] = .array(tasks.map { widened($0, $0["workspace"]?.string) }) }
         return .object(fields)
     }
 
@@ -162,7 +163,7 @@ final class Physical {
                 ["id": .string(desk.id), "project": desk.project.map { .string($0) } ?? .null, "shows": desk.shows.map { .string($0) } ?? .null, "planner": desk.planner.map { .string($0) } ?? .null, "active": desk.active.map { .string($0) } ?? .null]
             }),
             "order": .array(order.map { .string($0) }),
-            "shelf": .array(shelf.map { ["workspace": .string($0.workspace), "parkedAt": .number($0.parkedAt)] }),
+            "deskTasks": .array(deskTasks.map { ["workspace": .string($0.workspace), "leftAt": .number($0.leftAt)] }),
             "deskCount": .number(Double(deskCount)),
         ]
         let temporary = path + ".new"
@@ -201,7 +202,7 @@ final class Physical {
             if window["dock"]?["pane"]?.string == pane, let owner = owner(ofDockIn: window), let width = window["dock"]?["width"]?.number { return (owner, width) }
             if window["lead"]?["pane"]?.string == pane, let id = window["id"]?.string, let width = window["lead"]?["width"]?.number { return (id, width) }
         }
-        for entry in view["shelf"]?.array ?? [] where entry["task"]?.string == pane {
+        for entry in view["deskTasks"]?.array ?? [] where entry["task"]?.string == pane {
             if let owner = entry["workspace"]?.string, let width = entry["width"]?.number { return (owner, width) }
         }
         return nil

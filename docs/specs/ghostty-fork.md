@@ -40,6 +40,7 @@ git -C ~/work/ghostty push origin kanna4-merge:kanna4
 
 - **Merge, don't cherry-pick:** one merge of `main` brings the change Kanna wants with everything it was built on, and the next merge doesn't conflict with a copy of it.
 - **A merge that doesn't build is fixed in the merge commit,** so every `kanna4` commit builds. Where upstream adds a field Kanna's own code must fill (a snapshot load's stream handler, say), the merge fills it as upstream's own code does.
+- **Zig follows Ghostty:** `KANNA_ZIG_VERSION` and its four SHA256s in `scripts/env.sh` match the merge's `minimum_zig_version` in `build.zig.zon`, moved in the same Kanna commit as the pin. Ghostty 1.4 needs Zig 0.17.
 - **Push only after Kanna passes** against the merge: `cargo test` and the e2e scenarios, since a new Ghostty changes every terminal. `kanna4` only moves forward (no force-push): a pinned commit must stay fetchable.
 - **Kanna's commits on `kanna4` are for Kanna;** what upstream should have goes upstream as a Ghostty PR.
 - **`zig build test` on a Mac without Xcode's package access** fails only at Ghostty's own macOS app (xcodebuild), which Kanna doesn't build; the Zig tests are what count.

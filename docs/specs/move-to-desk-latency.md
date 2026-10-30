@@ -2,9 +2,9 @@
 
 **Status:** built · **Changes:** [tasks](tasks.md#8-how-its-built), [each app's Desks](app-desk.md) · **Builds on:** [presentation layers](presentation-layers.md)
 
-Clicking a stopped task on the Shelf (Move to Desk, `kanna task pick`, the socket's `backlog shelve`) moves it to the Desk **the moment it's clicked**, and its card can be made active right away. Its agent and tabs start behind it. Before, the Desk changed only once the daemon had restarted the agent and every tab terminal and run `git branch --show-current` on its main thread, so a stopped task with tabs took a noticeable while to appear.
+Clicking a stopped task on the Shelf (Move to Desk, `kanna task pick`, the socket's `tasks pick`) moves it to the Desk **the moment it's clicked**, and its card can be made active right away. Its agent and tabs start behind it. Before, the Desk changed only once the daemon had restarted the agent and every tab terminal and run `git branch --show-current` on its main thread, so a stopped task with tabs took a noticeable while to appear.
 
-In the daemon, the Shelf is still `backlog` and the Desk's tasks `shelf` ([internal names](desk-view.md#5-internal-names)).
+In the daemon, the Shelf is `shelf` and the Desk's tasks `desk`, as everywhere ([internal names](internal-names.md)).
 
 ## Contents
 
@@ -22,10 +22,10 @@ sequenceDiagram
     participant D as daemon (main thread)
     participant G as git thread
     participant K as keeper
-    A->>D: backlog shelve {task}
+    A->>D: tasks pick {task}
     D->>D: Desk limit, claim for the app
     D->>D: off the Shelf, on the Desk (kanna.db)
-    D-->>A: backlog and layout notices: the card is on the Desk
+    D-->>A: tasks and layout notices: the card is on the Desk
     Note over A: the card is clickable, and an active pane shows a spinner
     D->>K: next turn: restart the agent, then its tabs
     K-->>D: running
@@ -55,7 +55,7 @@ sequenceDiagram
 
 ## 4. Tested
 
-- **Daemon** (`backlog.rs`, `a_stopped_task_is_on_the_shelf_before_its_agent_has_started_again`): a stopped task held on the Shelf is moved to the Desk while its agent's terminal is kept starting; it's off the Shelf, on the Desk and claimed by the app, while the agent is still starting and the reply is still waiting, which comes once the agent runs.
+- **Daemon** (`tasks.rs`, `a_stopped_task_is_on_the_desk_before_its_agent_has_started_again`): a stopped task held on the Shelf is moved to the Desk while its agent's terminal is kept starting; it's off the Shelf, on the Desk and claimed by the app, while the agent is still starting and the reply is still waiting, which comes once the agent runs.
 - **e2e `pick_at_once`:** a stopped task with two terminal tabs, clicked on the app's Shelf, is on the app's Desk within 200ms (about 50ms here). Its card, made active at once, shows it with its agent resuming and both tabs running, and no note. daemon.log's lines carry the time.
 - With the mock agent, restarting an agent and two tabs takes about 8ms on a quiet machine, so the e2e also passes on the old order. The daemon test is what pins the order.
 

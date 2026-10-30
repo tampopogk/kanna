@@ -91,13 +91,13 @@ extension AppController {
             ("Overview", #selector(toggleOverview), nil, nil),
         ])
         _ = menu("Task", [
-            ("Show Desk", #selector(parkTask), nil, .cmd(".")),
+            ("Show Desk", #selector(toggleDeskView), nil, .cmd(".")),
             ("Move to Shelf", #selector(deferTask), nil, nil),
             nil,
-            ("Task Waiting Longest", #selector(pullWaitingTask), nil, .shiftCmd("A")),
+            ("Task Waiting Longest", #selector(activateWaitingTask), nil, .shiftCmd("A")),
             nil,
-            ("Desk Task 1", #selector(pullShelf1), "goto_tab:1", .cmd("1")),
-            ("Desk Task 2", #selector(pullShelf2), "goto_tab:2", .cmd("2")),
+            ("Desk Task 1", #selector(activateDeskTask1), "goto_tab:1", .cmd("1")),
+            ("Desk Task 2", #selector(activateDeskTask2), "goto_tab:2", .cmd("2")),
         ])
         let windowMenu = menu("Window", [
             ("New Window", #selector(newWindow), nil, nil),
@@ -121,9 +121,9 @@ extension AppController {
     var startedTasks: [(pane: String, title: String)] {
         let root = keyWindow?["id"]?.string.flatMap { controllers[$0]?.projectRoot }
         let desks = windows.compactMap { window in window["dock"]?["pane"]?.string.map { ($0, window["dock"]?["name"]?.string) } }
-        let shelf = shelfEntries.compactMap { entry in entry["task"]?.string.map { ($0, entry["name"]?.string) } }
-        let held = backlog.filter { $0["running"]?.bool == true }.compactMap { entry in entry["held"]?.string.map { ($0, entry["name"]?.string) } }
-        return (desks + shelf + held).filter { root == nil || sameProject(projectRoot($0.0), root) }.map { (pane: $0.0, title: taskTitle($0.0, name: $0.1)) }
+        let onDesk = deskEntries.compactMap { entry in entry["task"]?.string.map { ($0, entry["name"]?.string) } }
+        let held = shelf.filter { $0["running"]?.bool == true }.compactMap { entry in entry["held"]?.string.map { ($0, entry["name"]?.string) } }
+        return (desks + onDesk + held).filter { root == nil || sameProject(projectRoot($0.0), root) }.map { (pane: $0.0, title: taskTitle($0.0, name: $0.1)) }
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -149,7 +149,7 @@ extension AppController {
     }
 
     private func workspaceOf(_ pane: String) -> String? {
-        shelfEntries.first { $0["task"]?.string == pane }?["workspace"]?.string ?? windows.first { $0["dock"]?["pane"]?.string == pane }?["shows"]?.string
+        deskEntries.first { $0["task"]?.string == pane }?["workspace"]?.string ?? windows.first { $0["dock"]?["pane"]?.string == pane }?["shows"]?.string
     }
 
     @objc func assignWindow(_ item: NSMenuItem) {
@@ -202,7 +202,7 @@ extension AppController {
     @objc func markdownDown() { openMarkdown("down") }
 
     private func split(_ direction: String, type: String = "term") {
-        guard !onShelf else { return NSSound.beep() }
+        guard !showingDeskView else { return NSSound.beep() }
         var args: [String: JSON] = switch type {
         case "web": ["type": "web", "url": "http://localhost:3000"]
         case "ios": ["type": "ios", "app": "com.apple.Preferences", "wait": false]
@@ -220,7 +220,7 @@ extension AppController {
     }
 
     private func openMarkdown(_ direction: String) {
-        guard !onShelf else { return NSSound.beep() }
+        guard !showingDeskView else { return NSSound.beep() }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = ["md", "markdown", "mdown"].compactMap { UTType(filenameExtension: $0) }
         panel.allowsOtherFileTypes = true
@@ -281,14 +281,14 @@ extension AppController {
         case #selector(nextWindow), #selector(previousWindow): return windows.count > 1
         case #selector(freeWindow): return keyWindow?["workspace"]?.string != nil
         case #selector(newTabInKeyWindow), #selector(splitRight), #selector(splitDown), #selector(webRight), #selector(webDown),
-             #selector(iosRight), #selector(iosDown), #selector(markdownRight), #selector(markdownDown): return !onShelf
-        case #selector(parkTask):
+             #selector(iosRight), #selector(iosDown), #selector(markdownRight), #selector(markdownDown): return !showingDeskView
+        case #selector(toggleDeskView):
             item.title = keyWindow?["dock"]?["pane"] != nil || deskBack == nil ? "Show Desk" : "Show Active Task"
             return keyWindow?["dock"]?["pane"] != nil || deskBack != nil
         case #selector(deferTask): return keyWindow?["dock"]?["pane"] != nil
-        case #selector(pullWaitingTask): return waitingTask != nil
-        case #selector(pullShelf1): return shelfPull(1) != nil
-        case #selector(pullShelf2): return shelfPull(2) != nil
+        case #selector(activateWaitingTask): return waitingTask != nil
+        case #selector(activateDeskTask1): return keyedDeskTask(1) != nil
+        case #selector(activateDeskTask2): return keyedDeskTask(2) != nil
         default: return true
         }
     }
@@ -360,11 +360,11 @@ extension AppController {
     func closeTab(_ tab: String) { request("close", ["tab": .string(tab)]) }
 
     @objc func newTabInKeyWindow() {
-        guard !onShelf else { return NSSound.beep() }
+        guard !showingDeskView else { return NSSound.beep() }
         newTab(in: keyWindow?["id"]?.string)
     }
 
-    var onShelf: Bool { keyWindow?["desk"]?.bool == true && keyWindow?["dock"]?["pane"]?.string == nil }
+    var showingDeskView: Bool { keyWindow?["desk"]?.bool == true && keyWindow?["dock"]?["pane"]?.string == nil }
 
     func newTab(in window: String?) {
         var args: [String: JSON] = ["type": "term", "tab": true]
@@ -421,52 +421,52 @@ extension AppController {
         }
     }
 
-    @objc func parkTask() {
+    @objc func toggleDeskView() {
         if let (task, window) = deskBack {
-            pullTask(task, into: window)
+            activateTask(task, into: window)
             return
         }
         guard let window = keyWindow?["id"]?.string else { return }
-        park(desk: window)
+        showDeskView(desk: window)
     }
 
     private var deskBack: (task: String, window: String)? {
         guard let window = keyWindow, window["desk"]?.bool == true, window["dock"]?["pane"] == nil, let id = window["id"]?.string else { return nil }
         if let active = controllers[id]?.active { return (active, id) }
-        return shelfPull(1)
+        return keyedDeskTask(1)
     }
 
     @objc func deferTask() {
         guard let window = keyWindow?["id"]?.string, let pane = keyWindow?["dock"]?["pane"]?.string else { return }
-        request("backlog", ["action": "defer", "task": .string(pane)]) { [weak self] reply in
+        request("tasks", ["action": "shelve", "task": .string(pane)]) { [weak self] reply in
             guard let self, reply["ok"]?.bool != true, let controller = controllers[window] else { return }
             controller.note = reply["error"]?["message"]?.string ?? "it didn't move"
             refresh()
         }
     }
 
-    @objc func pullShelf1() { pullShelf(1) }
-    @objc func pullShelf2() { pullShelf(2) }
+    @objc func activateDeskTask1() { activateDeskTask(1) }
+    @objc func activateDeskTask2() { activateDeskTask(2) }
 
     private var waitingTask: (task: String, window: String)? {
-        guard let window = keyWindow, window["desk"]?.bool == true, let window = window["id"]?.string, let tasks = controllers[window]?.shelf,
+        guard let window = keyWindow, window["desk"]?.bool == true, let window = window["id"]?.string, let tasks = controllers[window]?.deskTasks,
               let task = agentStatuses.waitingLongest(among: tasks.map(\.id)) else { return nil }
         return (task, window)
     }
 
-    @objc func pullWaitingTask() {
+    @objc func activateWaitingTask() {
         guard let (task, window) = waitingTask else { return }
-        pullTask(task, into: window)
+        activateTask(task, into: window)
     }
 
-    private func shelfPull(_ place: Int) -> (task: String, window: String)? {
+    private func keyedDeskTask(_ place: Int) -> (task: String, window: String)? {
         guard let window = keyWindow, window["desk"]?.bool == true, let id = window["id"]?.string, let tasks = controllers[id]?.others else { return nil }
         return place <= tasks.count ? (tasks[place - 1].id, id) : nil
     }
 
-    private func pullShelf(_ place: Int) {
-        guard let (task, window) = shelfPull(place) else { return }
-        pullTask(task, into: window)
+    private func activateDeskTask(_ place: Int) {
+        guard let (task, window) = keyedDeskTask(place) else { return }
+        activateTask(task, into: window)
     }
 
     @objc func nextWindow() { cycleWindow(1) }
@@ -495,7 +495,7 @@ extension AppController {
             let target = action.action.goto_tab
             let place = Int(target.rawValue)
             perform = target == GHOSTTY_GOTO_TAB_PREVIOUS ? previousTab : target == GHOSTTY_GOTO_TAB_NEXT ? nextTab
-                : (1...2).contains(place) && shelfPull(place) != nil ? { [weak self] in self?.pullShelf(place) } : nil
+                : (1...2).contains(place) && keyedDeskTask(place) != nil ? { [weak self] in self?.activateDeskTask(place) } : nil
         case GHOSTTY_ACTION_NEW_WINDOW: perform = newWindow
         case GHOSTTY_ACTION_CLOSE_WINDOW: perform = closeWindow
         case GHOSTTY_ACTION_GOTO_WINDOW:

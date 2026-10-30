@@ -35,7 +35,7 @@ fn shutdown_quits_the_app_hangs_up_every_terminal_stops_the_keeper_and_removes_t
     let refused = request(&instance.socket(), json!({"id": 1, "cmd": "list"}));
     assert_eq!(refused["error"]["code"], "stopping", "{refused}");
     let mut late = App::raw(&instance.socket());
-    late.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1}}));
+    late.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "protocols": kanna_build::PROTOCOLS}}));
     assert_eq!(late.next().unwrap()["error"]["code"], "stopping");
     assert!(instance.socket().exists() && alive(pid), "nothing stops before the app has gone");
     drop(app);

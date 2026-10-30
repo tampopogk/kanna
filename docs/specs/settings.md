@@ -1,6 +1,6 @@
 # Settings
 
-**Status:** built · **Builds on:** [planning terminal](planning-agent.md) · **Tests:** `crates/kanna-daemon/src/backlog.rs` (unit), `scripts/e2e-kanna.sh` `desk_shelf`, `desk_by_path`, `planner_choice`, `shelf_runners`, `task_scripts`, `codex_task`
+**Status:** built · **Builds on:** [planning terminal](planning-agent.md) · **Tests:** `crates/kanna-daemon/src/tasks.rs` (unit), `scripts/e2e-kanna.sh` `desk_shelf`, `desk_by_path`, `planner_choice`, `shelf_runners`, `task_scripts`, `codex_task`
 
 Kanna's own settings, in two JSON files: yours, and a repo's override. They're defined by a versioned JSON Schema, [`schemas/config.schema.json`](../../schemas/config.schema.json), that agents read with `kanna config schema`. For now: which agent plans, which agent a task runs, how big a planning agent's context gets, how many Shelf tasks run at once, where task worktrees build, and what a task runs as it's set up and torn down.
 
@@ -59,7 +59,7 @@ flowchart LR
 - **`shelf.runners`** is read for each repo with Shelf tasks every 2s, and as a task's turn ends, so a change applies within seconds.
 - **`build.targets`** isn't read by the daemon: `kanna_targets` in `scripts/env.sh` reads it from your file with `plutil` each time a build script runs.
 - **`tasks.setup`, `tasks.teardown` and `tasks.timeout`** are read as a task's worktree is set up and as it's Done, for its repo.
-- **`planning.context`** is read as the daemon builds a planning terminal's command, for the folder it opens in, and becomes an `export` in that command, and a `-c model_auto_compact_token_limit` in codex's start (the `compact` flag in `AGENTS`, `backlog.rs`), which Kanna's codex wrapper hands to codex's app-server, where compaction happens, as it does every `-c`. Checked against the mock model through the wrapper: with a limit below a turn, codex compacts before its next one.
+- **`planning.context`** is read as the daemon builds a planning terminal's command, for the folder it opens in, and becomes an `export` in that command, and a `-c model_auto_compact_token_limit` in codex's start (the `compact` flag in `AGENTS`, `tasks.rs`), which Kanna's codex wrapper hands to codex's app-server, where compaction happens, as it does every `-c`. Checked against the mock model through the wrapper: with a limit below a turn, codex compacts before its next one.
 
 ## 5. Rejected
 

@@ -375,9 +375,8 @@ pub static COMMANDS: &[Command] = &[
         parse: |args| {
             let action = args.positional().ok_or_else(|| usage("task", "say what: new, edit, start, stop, setup, pick, shelve, list, activate, park, name, send, messages or done"))?;
             let action = match action.as_str() {
-                "pick" => "shelve".to_string(),
-                "shelve" => "defer".to_string(),
-                "activate" => "pull".to_string(),
+                "defer" => "shelve".to_string(),
+                "pull" => "activate".to_string(),
                 _ => action.clone(),
             };
             let agent = args.option("--agent")?;
@@ -419,7 +418,7 @@ pub static COMMANDS: &[Command] = &[
                     out["task"] = json!(args.positional().ok_or_else(|| usage("task", "edit needs a TASK from the Shelf (see `kanna task list`)"))?);
                     out["after"] = json!(after.ok_or_else(|| usage("task", "edit needs --after TASK,... or --after none"))?);
                 }
-                "shelve" => out["task"] = json!(args.positional().ok_or_else(|| usage("task", "pick needs a TASK from the Shelf (see `kanna task list`)"))?),
+                "pick" => out["task"] = json!(args.positional().ok_or_else(|| usage("task", "pick needs a TASK from the Shelf (see `kanna task list`)"))?),
                 "stop" => {
                     let task = args.positional().or_else(|| caller());
                     out["task"] = json!(task.ok_or_else(|| usage("task", "stop needs a TASK, or run it from the task's terminal"))?);
@@ -432,8 +431,8 @@ pub static COMMANDS: &[Command] = &[
                     let task = args.positional().or_else(|| caller());
                     out["task"] = json!(task.ok_or_else(|| usage("task", "park needs a TASK, or run it from the task's terminal"))?);
                 }
-                "pull" => out["task"] = json!(args.positional().ok_or_else(|| usage("task", "activate needs a TASK (see `kanna task list`)"))?),
-                "defer" => {
+                "activate" => out["task"] = json!(args.positional().ok_or_else(|| usage("task", "activate needs a TASK (see `kanna task list`)"))?),
+                "shelve" => {
                     let task = args.positional().or_else(|| caller());
                     out["task"] = json!(task.ok_or_else(|| usage("task", "shelve needs a TASK, or run it from the task's terminal"))?);
                 }
@@ -470,7 +469,7 @@ pub static COMMANDS: &[Command] = &[
                 }
                 other => return Err(usage("task", &format!("unknown action \"{other}\" (new, edit, start, stop, setup, pick, shelve, list, activate, park, name, send, messages or done)"))),
             }
-            if ["edit", "start", "stop", "setup", "shelve", "defer", "done", "park", "pull"].contains(&action.as_str()) || (action == "name" && out.get("task").is_some()) {
+            if ["edit", "start", "stop", "setup", "pick", "shelve", "done", "park", "activate"].contains(&action.as_str()) || (action == "name" && out.get("task").is_some()) {
                 if let Some(by) = caller() {
                     out["by"] = json!(by);
                 }

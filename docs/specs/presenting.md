@@ -48,8 +48,8 @@ sequenceDiagram
   - opening sends the caller as the `opener` (the CLI's `$KANNA_TERMINAL`) unless `--window` is given; a pane whose opener is in a held window, or a Desk task's that isn't shown, goes into a new tab of that window, whatever `--tab`, `--split` or `--size` say, and one whose opener is in a shown window goes into that window rather than the front one;
   - focus and zoom of a pane, and focus of a tab, in a hidden window set that window's shown tab, focus and zoom without bringing anything to the front;
   - the app keeps the content of a held window's markdown, web, code and diff panes (the layout's `held` list), so they start and stay while hidden.
-- **Stopping** (`Backlog::stop`, and `Backlog::quit` when a runner's turn ends) asks the core to hang up the task's terminals (`CoreHandle::hang_up`): each running one is marked `hungUp`, saved with the terminals, and hung up; then the agent quits or is hung up. Nothing is closed.
-- **Starting** (`Backlog::revive`, for start and Move to Desk) restarts the agent, then the task's `hungUp` terminals (`CoreHandle::wake`). Restarting a terminal any other way clears its mark.
+- **Stopping** (`Tasks::stop`, and `Tasks::quit` when a runner's turn ends) asks the core to hang up the task's terminals (`CoreHandle::hang_up`): each running one is marked `hungUp`, saved with the terminals, and hung up; then the agent quits or is hung up. Nothing is closed.
+- **Starting** (`Tasks::revive`, for start and Move to Desk) restarts the agent, then the task's `hungUp` terminals (`CoreHandle::wake`). Restarting a terminal any other way clears its mark.
 - **Tested** by e2e `shelf_runners`: the mock agent opens a markdown tab with a comment, a terminal running a long command and one that exits at once, focuses the markdown tab and zooms, and ends its turn; once Kanna stops it, the held window still has its three tabs, focused and zoomed on the markdown, both terminals exited; Move to Desk runs the long one again and leaves the other exited, and made active, the Desk shows the same layout.
 
 ## 4. Glossary
