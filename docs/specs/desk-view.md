@@ -56,7 +56,7 @@ stateDiagram-v2
 - **The agent header's Park button** stays, with the tooltip "Desk view (⌘.)".
 - **The encouraging line** moves on each time the Desk view shows (before: each time the Desk was cleared).
 - **Closing a Desk window** leaves its tasks on the Desk, none active (before: it parked its task).
-- **How the order is built.** The daemon's `backlog` notice to the app lists the Desk's tasks under `desk` (`id`, `pane`, `madeAt`) beside the Shelf's `tasks`, oldest first, two made in the same second in the order they were made, as the Shelf breaks ties. The app lists rows and strip items in that order and numbers keys from its own record of which task was left last (`KannaWindows/DeskOrder.swift`; tested in `DeskOrderTests`, the daemon's `the_view_lists_the_desk_s_tasks_with_when_each_was_made` and e2e `desk_shelf`).
+- **How the order is built.** The daemon's `tasks` notice to the app lists the Desk's tasks under `desk` (`id`, `pane`, `madeAt`) beside the Shelf's under `shelf`, oldest first, two made in the same second in the order they were made, as the Shelf breaks ties. The app lists rows and strip items in that order and numbers keys from its own record of which task was left last (`KannaWindows/DeskOrder.swift`; tested in `DeskOrderTests`, the daemon's `the_view_lists_the_desk_s_tasks_with_when_each_was_made` and e2e `desk_shelf`).
 
 ## 3. CLI verbs
 
@@ -75,17 +75,17 @@ stateDiagram-v2
 
 | Place | Files | What changes |
 |---|---|---|
-| App UI | `Windows/Shelf.swift` | strip: "N in backlog" → "N on the Shelf", "parked" → "ago", the "⌘. Desk" hint; Desk view: headers Shelf → Desk and Backlog → Shelf, "Nothing on the Shelf.", "Search the backlog", "No backlog task matches", "Move to Shelf", "Shelf full", "Pull →" → "Make active →", the cheer "Pull a task" |
+| App UI | `Windows/DeskView.swift` | strip: "N in backlog" → "N on the Shelf", "parked" → "ago", the "⌘. Desk" hint; Desk view: headers Shelf → Desk and Backlog → Shelf, "Nothing on the Shelf.", "Search the backlog", "No backlog task matches", "Move to Shelf", "Shelf full", "Pull →" → "Make active →", the cheer "Pull a task" |
 | | `Windows/Desk.swift`, `WindowController.swift` | Park tooltip; title bar "Shelf" → "Desk"; the fixed tab "Shelf" (beside Machines) → "Desk" |
 | | `Windows/Machines.swift` | "keep their places on the Shelf" → "on the Desk" |
 | Menus | `Windows/Menus.swift` | Task menu: Park/Unpark → Show Desk / Show Active Task (⌘.), Move to Backlog → Move to Shelf, Pull Shelf Task N → Desk Task N; ⌘. becomes the toggle |
 | Toasts | `Windows/Toasts.swift` | none visible; a click makes a Desk task active, or moves a Shelf task to the Desk |
 | CLI help | `crates/kanna/src/commands.rs` | `task` summary, usage, notes, examples; `workspace` and `open` notes ("on a Desk, on the Shelf or in the backlog") |
 | CLI output | `crates/kanna/src/output.rs` | `task list` WHERE and time; `task` replies (§3); workspace places "on the Shelf" → "on the Desk", "in the backlog" → "on the Shelf" |
-| Errors | `crates/kanna-daemon/src/backlog.rs`, `AppDesk.swift`, `lib.rs` | "N tasks on the Shelf: move one to the backlog with `kanna task defer`", "isn't on this app's Shelf", "no backlog task", "isn't a task: … a Desk or the Shelf, or in the backlog" |
-| Daemon log | `backlog.rs` | "runs in the backlog", "is on mac's Shelf" |
-| Config | `schemas/config.schema.json`, `backlog.rs` `runners()`, `lib.rs` `CONFIG_HELP` | `shelf.runners`, described as the Shelf's; `backlog.runners` stays in the schema marked as the old name and is read when `shelf.runners` isn't set in that file; the planning terminal's description |
-| Planner script | `Resources/planner.sh` | nothing user-visible (it sends the internal `backlog` command) |
+| Errors | `crates/kanna-daemon/src/tasks.rs`, `AppDesk.swift`, `lib.rs` | "N tasks on the Shelf: move one to the backlog with `kanna task defer`", "isn't on this app's Shelf", "no backlog task", "isn't a task: … a Desk or the Shelf, or in the backlog" |
+| Daemon log | `tasks.rs` | "runs in the backlog", "is on mac's Shelf" |
+| Config | `schemas/config.schema.json`, `tasks.rs` `runners()`, `lib.rs` `CONFIG_HELP` | `shelf.runners`, described as the Shelf's; `backlog.runners` stays in the schema marked as the old name and is read when `shelf.runners` isn't set in that file; the planning terminal's description |
+| Planner script | `Resources/planner.sh` | nothing user-visible (it sends the internal `tasks` command) |
 | Skills | `.agents/kanna-skills`: kanna-tasks (27), kanna-planning (23), kanna-new-project (4), kanna-quiz (1), kanna-explain (1), README (3) | every Shelf/backlog/shelve/park/pull/defer; the planning skill's description. A subtree: push upstream after merge |
 | Repo | `AGENTS.md` | "The Desk, Shelf and focus": stays right as words; reread |
 | Specs | 52 files (`rg -il 'backlog\|shelf\|park\|pull' docs/specs`) | desk, tasks, app-desk, shelf-runners, shelf-search, menus, settings, cli, planning-agent, task-dependencies, zoom, toasts, workspaces, workspace-list, presenting, machine-*, quiz and the rest the grep finds; screenshots desk.png, desk-empty.png, zoom-desk-*.png, shelf-search*.png, task-blocked.png |
@@ -96,17 +96,7 @@ stateDiagram-v2
 
 ## 5. Internal names
 
-**Kept as they were**, with a mapping (below) in [database](database.md) and [app-desk](app-desk.md). In every one "shelf" would flip meaning (the old Shelf is the new Desk, the old backlog the new Shelf), stored data and the app–daemon protocol would need migrations, and in-flight tasks across nearly every file would conflict, for no change anyone sees.
-
-| Internal (kept) | Means now |
-|---|---|
-| Rust `Backlog`, `backlog.rs`, the socket command `backlog`, `Place::Backlog`, `Where::Backlog`, DB `tasks.place = 'backlog'` | the Shelf |
-| `Place::Shelf`, `Where::Shelf(app)`, `place = 'shelf'`, the app's claim `shelf`, Swift `ShelfTask`, `ShelfStrip`, `ShelfPage` | on the Desk |
-| `parkedAt`, Swift `park`, `pullTask`, the `desk` command's `park` / `pull` | last left / show the Desk view, make active |
-| `debug.*` keys (`shelf`, `backlog`, `park`), Perf span names | as above |
-| `--json` replies: `where: "backlog" \| {"shelf": app}`, `backlog`, `parkedAt` | documented in [cli](cli.md) as the internal names |
-
-New code for the toggle uses the new words (`active`, `deskView`). The better end state is one vocabulary throughout; it's a later task of its own when few tasks are in flight: a DB migration (`backlog` → `shelf`, `shelf` → `desk`; note `Place::parse` already reads an old `desk` as today's Shelf), a protocol version, `--json` fields, then identifiers.
+**Done:** the code, `kanna.db`, the app–daemon protocol (version 2), `--json`, `debug.*` keys and Perf spans now use the same words as the UI: `desk` for the Desk's tasks, `shelf` for the Shelf, `leftAt` for when a task was last active, `activate` for making it active. [Internal names](internal-names.md) has the mapping and how older data is read.
 
 ## 6. Glossary
 
