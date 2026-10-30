@@ -33,7 +33,7 @@ Needs `claude` and `codex` on `PATH`, Python 3.9+, and permission to open a pty 
 ## What it records
 
 - `out/<dir>/<agent>-<terminal>-<setting>-<focus>.jsonl`: one line per event: `o` (output bytes, base64), `i` (keys sent), `answer` (replies to terminal queries: DA1, cursor position, XTVERSION as Ghostty, kitty keyboard, DECRQM, OSC 10/11 colours, window size), `mark` (the phases above), `matched` / `timeout`, `exit`. `t` is seconds since start.
-- `out/<dir>/mock-requests.jsonl`: every request the agents made to the mock, with its last user message (`prompt`) and every user message in it (`history`).
+- `out/<dir>/mock-requests.jsonl`: every request the agents made to the mock, with its last user message (`prompt`) and every user message in it (`history`), leaving out `<system-reminder>` blocks. `turn` is what the mock answered an agent's turn with; it's null for a request that offers no tools, such as codex's task title, whose prompt quotes the user's message.
 - `out/<dir>/runs/<name>/`: the run's HOME, working folder and script.
 
 Codex starts a detached `codex app-server --managed-daemon` from its CODEX_HOME that outlives the TUI; `run.py` stops any process running from the run's HOME when the run ends.

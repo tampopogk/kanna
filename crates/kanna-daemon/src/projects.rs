@@ -401,7 +401,7 @@ mod tests {
         assert_eq!(labels, ["local/recipe-box", "local/kojo"], "a subfolder of a project that isn't a repo is a project of its own, out of place");
         projects.db.touch_project(&home.join("work/app").to_string_lossy()).unwrap();
         let row = |id: &str, repo: &Path, place: db::Place| db::Row { id: id.into(), repo: repo.to_string_lossy().into(), place, terminal: None, made_at: 1.0, doc: json!({}) };
-        for (id, repo, place) in [("task-00000001", dir.join("elsewhere"), db::Place::Backlog), ("task-00000002", dir.join("elsewhere"), db::Place::Shelf), ("task-00000003", home.join("work/app"), db::Place::Backlog), ("task-00000004", dir.join("finished"), db::Place::Done)] {
+        for (id, repo, place) in [("task-00000001", dir.join("elsewhere"), db::Place::Shelf), ("task-00000002", dir.join("elsewhere"), db::Place::Desk), ("task-00000003", home.join("work/app"), db::Place::Shelf), ("task-00000004", dir.join("finished"), db::Place::Done)] {
             fs::create_dir_all(&repo).unwrap();
             projects.db.put(&row(id, &repo, place), None).unwrap();
         }
