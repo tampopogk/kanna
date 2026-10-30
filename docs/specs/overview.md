@@ -56,20 +56,18 @@ The **overview** is a thumbnail of the whole file down the right edge of a pane:
 
 ```mermaid
 flowchart TB
-    S{"View › Overview on?"} -->|no| H1["hidden"]
-    S -->|yes| F{"the whole file fits<br/>the pane's height?"}
-    F -->|yes| H2["hidden"]
-    F -->|no| C{"text beside it keeps<br/>≥ 80 columns at<br/>the pane's font size?"}
-    C -->|no| H3["hidden"]
-    C -->|yes| SH["shown"]
-    SH --> L{"diff pane: file list's own rule<br/>and ≥ 80 columns beside<br/>list and overview?"}
-    L -->|yes| LS["list shown too"]
-    L -->|no| LH["list hidden first"]
+    S{"View › Overview on,<br/>and the file doesn't fit?"} -->|no| A1["the overview isn't wanted:<br/>the list alone keeps<br/>110 columns beside it"]
+    S -->|yes| L{"≥ 110 columns beside<br/>the list and the overview?"}
+    L -->|yes| B["list and overview"]
+    L -->|no| O{"≥ 80 columns beside<br/>the overview?"}
+    O -->|yes| C["overview only:<br/>the list went first"]
+    O -->|no| D["neither"]
 ```
 
 - **It fits:** the file's lines, without the room left for scrolling past the end, fit the pane's height.
-- **80 columns:** the text's width (the pane, less its gutter, less the overview) holds at least 80 of the font's characters at the pane's current size; zooming in can hide it, zooming out bring it back. In Split each side must keep 80.
-- **The file list gives way first.** It shows when its own rule allows (640 pt wide today; another task makes it hide sooner) and, while the overview shows, the text keeps 80 columns beside both. When the overview is hidden (off, the file fits, too narrow) the list follows its own rule alone.
+- **Side panels, one rule.** The overview is one of the pane's side panels, with the diff pane's file list ([`DiffAside`](diff-viewer.md#2-rules)). Each panel wants a number of columns of text beside all the panels shown: the file list 110, the overview 80, counted in the font's character width at the pane's current size, so it follows zoom. While any shown panel lacks its columns, the first in order is dropped: the file list, then the overview.
+- **Narrowing only hides.** While the overview is wanted, the list counts the overview's width even when the overview itself is too narrow to show, so the list never comes back as the overview goes: from wide to narrow it's list and overview, the overview alone, then neither.
+- **In Split** the columns are counted across both sides, as the file list's are.
 - **View › Overview** turns it off and on for every pane at once, and is kept across relaunches with the app's other view state ([what the app keeps](windows.md#2-what-the-app-keeps)): `app-state.json` gets `"overview": false` while it's off.
 
 ![The pane is too narrow for 80 columns beside the overview, so it's hidden and the text has the room](overview-narrow.png)
@@ -87,13 +85,13 @@ flowchart LR
         PIC["picture: tiles, drawn once per content"]
         BOX["box, scroll thumb"]
         MK["marks column"]
-        LAY["OverviewLayout: shows? list?"]
+        LAY["OverviewLayout: wanted? width, columns"]
     end
     T -->|"content: lines or an image"| PIC
     T -->|"marks"| MK
     T -->|"viewport, on every scroll"| BOX
     O -->|"scroll to y"| T
-    P -->|"widths, font advance, heights"| LAY
+    P -->|"heights, on or off"| LAY
 ```
 
 Everything is in the pane's **document coordinates**: points down the full height of its laid-out content.
@@ -107,7 +105,7 @@ Everything is in the pane's **document coordinates**: points down the full heigh
 | The overview gives | |
 |---|---|
 | `onScroll(y)` | the document `y` to put at the top of the pane; the pane scrolls itself |
-| `OverviewLayout.decide(...)` | whether the overview shows and whether a side list keeps its room, from the pane's width, gutter, font advance, list width and heights |
+| `OverviewLayout.decide(...)` | whether the overview is wanted (on, and the content doesn't fit); which side panels show is then the pane's one rule over its panels, with the overview's width and its 80 columns |
 | `debugState` | for `debug.code` and `debug.diff`: shown or why hidden, the thumbnail's offset, the box's `y` and height, the number of marks |
 
 The mapping between the pane and the thumbnail is `OverviewGeometry`, a value with no AppKit in it, so the click and drag mapping and the layout are unit-tested on their own.
@@ -117,8 +115,9 @@ The mapping between the pane and the thumbnail is `OverviewGeometry`, a value wi
 - **A new Swift target, `KannaOverview`** (`apps/kanna/Sources/KannaOverview`), AppKit only; `KannaCode` and `KannaDiff` depend on it, and `KannaMarkdown` will.
 - **Fast on large files.** The picture is drawn once per content, font-size or appearance change, into tiles of 512 lines that are made as they come into view and kept; a scroll only moves the thumbnail and the box. Marks are drawn into their own layer when they change. Code and diff build their `OverviewLine`s from the spans they already have.
 - **Glyphs:** each character is a block one point wide in its run's colour, letters and digits stronger than punctuation, as the mockup draws; spaces are gaps, so indentation and line shapes read as in VS Code.
+- **Side panels:** the overview's rule joins the diff pane's `DiffAside` as one rule for every pane's side panels, moved to `KannaOverview` so the code pane (overview only) and later the markdown pane use it too.
 - **The setting** is the app's (`Physical`, beside the text sizes); View › Overview is a checked menu item, and every overview listens for the change.
-- **Checks:** `swift test` for `OverviewLayout` (fits, the 80-column cutoff at several font sizes, the list giving way first) and `OverviewGeometry` (click to centre, drag across a short and a tall file, the marks column's mapping); e2e: the code and diff scenarios in `scripts/e2e-kanna.sh` read `overview` from `debug.code` and `debug.diff` (shown, box), scroll and read the box again, narrow the pane and see it hide, and snapshot it light and dark.
+- **Checks:** `swift test` for `OverviewLayout` and the side-panel rule (fits, the 80-column cutoff at several font sizes, the list giving way first, and a sweep from wide to narrow that only ever hides) and `OverviewGeometry` (click to centre, drag across a short and a tall file, the marks column's mapping); e2e: the code and diff scenarios in `scripts/e2e-kanna.sh` read `overview` from `debug.code` and `debug.diff` (shown, box), scroll and read the box again, narrow the pane and see it hide, and snapshot it light and dark.
 
 ## 6. Glossary
 

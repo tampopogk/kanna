@@ -122,7 +122,7 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
 <main>
   <div class="intro">
     <h1>Overview: a thumbnail of the whole file down the right edge of code and diff panes</h1>
-    <p>As VS Code's minimap (<code>overview-vscode.png</code>): every line as tiny glyphs in the pane's colours, the part on screen as a box (shown while the pointer is over it), and a thin column of marks (changes, comments, find hits) that maps the whole file to the pane's height and carries the scroll thumb. Click the thumbnail to jump, drag the box to scroll. It's hidden when the file fits, and when the text beside it would keep fewer than 80 columns at the pane's font size; in a diff pane the file list gives way first. <b>View › Overview</b> turns it off for every pane.</p>
+    <p>As VS Code's minimap (<code>overview-vscode.png</code>): every line as tiny glyphs in the pane's colours, the part on screen as a box (shown while the pointer is over it), and a thin column of marks (changes, comments, find hits) that maps the whole file to the pane's height and carries the scroll thumb. Click the thumbnail to jump, drag the box to scroll. It's hidden when the file fits, and when the text beside it would keep fewer than 80 columns at the pane's font size; in a diff pane the file list (which wants 110 columns beside it) gives way first, and stays hidden while the overview is too narrow to show. <b>View › Overview</b> turns it off for every pane.</p>
     <div class="controls">
       <button data-scene="code" class="on">Code pane: fdpass.rs</button>
       <button data-scene="short">Code pane: a file that fits</button>
@@ -438,21 +438,20 @@ function charWidth() {
 }
 function decide() {
   const paneW = paneEl.clientWidth, cw = charWidth();
-  const gutter = state.scene === "diff" ? 44 + 44 + 18 : 52;
-  const ovW = OV.thumb + OV.marks + 2;
-  const cols = w => Math.floor((w - gutter - 24) / cw);
-  const visibleH = bodyEl.clientHeight;
+  const cols = w => Math.floor(w / cw);
   const docH = contentHeight();
-  const fits = docH - (state.scene === "diff" ? 0 : 0.6 * innerHeight) <= visibleH;
-  const roomWithout = cols(paneW - ovW);
+  const fits = docH - (state.scene === "diff" ? 0 : 0.6 * innerHeight) <= bodyEl.clientHeight;
   const want = state.enabled && !fits;
-  const shown = want && roomWithout >= OV.minCols;
-  let list = false;
-  if (state.scene === "diff") {
-    const listRule = paneW >= 640;
-    list = listRule && (!shown || cols(paneW - ovW - 230) >= OV.minCols);
-  }
-  return { paneW, cw, cols: cols(paneW - (shown ? ovW : 0) - (list ? 230 : 0)), roomWithout, fits, shown, want, list };
+  const wanted = [...(state.scene === "diff" ? [{ name: "list", width: 231, columns: 110 }] : []), ...(want ? [{ name: "overview", width: OV.thumb + OV.marks + 2, columns: OV.minCols }] : [])];
+  const shown = asides(wanted, paneW, cw);
+  const has = n => shown.some(a => a.name === n);
+  return { paneW, cw, cols: cols(paneW - shown.reduce((t, a) => t + a.width, 0)), roomWithout: cols(paneW - OV.thumb - OV.marks - 2), fits, shown: has("overview"), want, list: has("list") };
+}
+function asides(wanted, paneW, cw) {
+  const shown = wanted.slice();
+  const beside = () => paneW - shown.reduce((t, a) => t + a.width, 0);
+  while (shown.length && shown.some(a => beside() < a.columns * cw)) shown.shift();
+  return shown;
 }
 function contentHeight() {
   const inner = scroller.firstElementChild;
