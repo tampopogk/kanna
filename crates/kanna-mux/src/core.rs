@@ -278,18 +278,33 @@ impl CoreHandle {
     }
 
     async fn bring_forward(&self, focused: &mut Map, args: &Value) {
-        let Some(handler) = self.0.front.borrow().clone() else { return };
-        let mut request = Value::Object(focused.clone());
-        for key in ["pane", "tab"] {
+        if let Some(mut front) = self.ask_front(focused, args).await {
+            focused.insert("front".into(), front.remove("front").unwrap_or(Value::Null));
+            if let Some(behind) = front.remove("behind") {
+                focused.insert("behind".into(), behind);
+            }
+        }
+    }
+
+    async fn bring_new_window(&self, placed: &Map, args: &Value) {
+        if is_true(args, "user") && string(args, "window") == Some("new") {
+            let mut request = placed.clone();
+            request.insert("new".into(), Value::Bool(true));
+            self.ask_front(&request, args).await;
+        }
+    }
+
+    async fn ask_front(&self, placed: &Map, args: &Value) -> Option<Map> {
+        let handler = self.0.front.borrow().clone()?;
+        let mut request = Value::Object(placed.clone());
+        for key in ["pane", "tab", "user"] {
             if let Some(value) = args.get(key) {
                 request[key] = value.clone();
             }
         }
         let (responder, answer) = responder();
         handler(request, responder);
-        if let Ok(mut front) = answer.await {
-            focused.insert("front".into(), front.remove("front").unwrap_or(Value::Null));
-        }
+        answer.await.ok()
     }
 
     pub fn add_prefix(&self, prefix: &str, handler: PrefixHandler) {
@@ -591,7 +606,13 @@ impl CoreHandle {
     async fn run(&self, cmd: &str, args: Value) -> Result<Map, KmuxError> {
         match cmd {
             "capabilities" => Ok(self.capabilities()),
-            "open" => self.open(&args).await,
+            "open" => {
+                let opened = self.open(&args).await;
+                if let Ok(placed) = &opened {
+                    self.bring_new_window(placed, &args).await;
+                }
+                opened
+            }
             "list" => self.list().await,
             "close" => self.close(&args).await,
             "restart" => self.restart(&args).await,
@@ -631,8 +652,10 @@ impl CoreHandle {
                     }
                     result
                 };
-                if let (Ok(focused), "focus") = (&mut result, cmd) {
-                    self.bring_forward(focused, &args).await;
+                match (&mut result, cmd) {
+                    (Ok(focused), "focus") => self.bring_forward(focused, &args).await,
+                    (Ok(moved), "move" | "move-tab") => self.bring_new_window(moved, &args).await,
+                    _ => {}
                 }
                 result
             }

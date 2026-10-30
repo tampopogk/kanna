@@ -35,6 +35,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private(set) var published: JSON = ["windows": []]
     private var plain: JSON = ["windows": []]
     private var restoring: [String]?
+    var awaiting: [String: Origin] = [:]
+    var windowOrder = WindowOrder()
     var closingPlanners: Set<String> = []
     var givenPlanners: Set<String> = []
     var recentProjects: [RecentProject] = []
@@ -142,6 +144,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 links?.link(for: pane)?.update(pane, fields)
             }
             contents.onRequest = { [weak self] cmd, args in self?.request(cmd, args) }
+            contents.portOpen = { [weak links] port, machine in links?.portOpen(port, on: machine) ?? .failure(KannaError("unavailable", "\(machine) isn't linked")) }
             contents.onNotice = { [weak links] cmd, args in links?.link(MachineIDs.machine(in: .object(args)))?.notice(cmd, args) }
             contents.onCall = { [weak self] cmd, args, reply in
                 guard let self else { return reply(["ok": false, "error": ["message": "not connected to the daemon"]]) }
@@ -186,7 +189,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         watchOwner()
         installMenu()
-        if !background { NSApp.activate() }
         if echo {
             render(["windows": [["id": "win-1", "tabs": [["id": "tab-1", "title": "Tab 1", "panes": ["term-1"]]], "tab": "tab-1", "title": "Tab 1",
                                                "focused": "term-1", "root": ["pane": "term-1", "type": "term"]]]])
@@ -226,7 +228,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        openTerminalIfEmpty()
+        openTerminalIfEmpty(.app)
         return true
     }
 
@@ -304,7 +306,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             links?.start()
             if wantsFirstTerminal {
                 wantsFirstTerminal = false
-                openTerminalIfEmpty()
+                openTerminalIfEmpty(.agent)
             }
         } else {
             seen(machine)
@@ -426,9 +428,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return ids
     }
 
-    func openTerminalIfEmpty() {
+    func openTerminalIfEmpty(_ origin: Origin) {
         guard windows.isEmpty, daemon?.attached == true else { return }
-        _ = openDesk(project: Self.startFolder, fresh: Self.startFolder == nil)
+        _ = openDesk(project: Self.startFolder, fresh: Self.startFolder == nil, origin: origin)
     }
 
     private func startContent(_ pane: JSON) {
@@ -463,6 +465,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func paneID(named name: String) -> String? { names[name] }
 
     func request(_ cmd: String, _ args: [String: JSON], on machine: String?? = nil, reply: ((JSON) -> Void)? = nil, sent: (@Sendable () -> Void)? = nil) {
+        var args = args
+        if ["focus", "open", "move", "move-tab"].contains(cmd) { args["user"] = true }
         route(cmd, args, on: machine, reply: { answer in
             if answer["ok"]?.bool != true {
                 FileHandle.standardError.write(Data("kanna: \(cmd): \(answer["error"]?["message"]?.string ?? "failed")\n".utf8))
@@ -559,6 +563,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for (id, controller) in controllers where !ids.contains(id) {
             controller.window.orderOut(nil)
             controllers[id] = nil
+            windowOrder.forget(id)
         }
         panes.keep(placed)
         let tasks = deskTasks
@@ -597,8 +602,19 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if views[""] != nil, let order = restoring {
             restoring = nil
-            for id in order.reversed() {
-                if let controller = controllers[id] { present(controller.window) }
+            switch placement(.agent) {
+            case .front, .behindApp:
+                for id in order.reversed() {
+                    if let controller = controllers[id] { present(controller.window, .agent) }
+                }
+            case .behindKanna:
+                var above: NSWindow?
+                for window in order.compactMap({ controllers[$0]?.window }) {
+                    if let above { window.order(.below, relativeTo: above.windowNumber) } else { orderBehindFrontApp(window) }
+                    above = window
+                }
+            case .waiting:
+                break
             }
         }
     }
@@ -674,7 +690,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         controllers[id] = controller
         recordFrame(id)
-        present(controller.window)
+        present(controller.window, awaiting.removeValue(forKey: id) ?? .agent)
         return controller
     }
 
@@ -683,12 +699,48 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         physical.setFrame(id, rect)
     }
 
-    func present(_ window: NSWindow) {
-        if let id = controllers.first(where: { $0.value.window === window })?.key { physical.setFront(id) }
-        if NSApp.isActive || !background {
-            return window.makeKeyAndOrderFront(nil)
+    func placement(_ origin: Origin) -> Placement {
+        Placement.of(origin, active: NSApp.isActive, background: background)
+    }
+
+    func present(_ window: NSWindow, _ origin: Origin) {
+        guard let id = controllers.first(where: { $0.value.window === window })?.key else { return }
+        let placement = windowOrder.place(id, origin, active: NSApp.isActive, background: background)
+        if placement.recorded { physical.setFront(id) }
+        switch placement {
+        case .front:
+            window.makeKeyAndOrderFront(nil)
+        case .behindApp:
+            window.makeKey()
+            orderBehindFrontApp(window)
+        case .behindKanna:
+            let kanna = Set(controllers.values.map { ObjectIdentifier($0.window) })
+            if let top = NSApp.orderedWindows.first(where: { $0 !== window && $0.isVisible && kanna.contains(ObjectIdentifier($0)) }) {
+                window.order(.below, relativeTo: top.windowNumber)
+            } else {
+                orderBehindFrontApp(window)
+            }
+        case .waiting:
+            break
         }
-        window.makeKey()
+    }
+
+    func releaseWaiting() {
+        let kanna = Set(controllers.values.map { ObjectIdentifier($0.window) })
+        var above = NSApp.orderedWindows.first { $0.isVisible && kanna.contains(ObjectIdentifier($0)) }
+        for id in windowOrder.activated(front: physical.order) {
+            guard let window = controllers[id]?.window, !window.isVisible else { continue }
+            if let above {
+                window.order(.below, relativeTo: above.windowNumber)
+            } else {
+                physical.setFront(id)
+                window.makeKeyAndOrderFront(nil)
+            }
+            above = window
+        }
+    }
+
+    func orderBehindFrontApp(_ window: NSWindow) {
         let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
         let front = windows.first { ($0[kCGWindowOwnerPID as String] as? pid_t) == pid && ($0[kCGWindowLayer as String] as? Int) == 0 }
