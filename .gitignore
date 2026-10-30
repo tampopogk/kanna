@@ -3,5 +3,6 @@
 target/
 /target
 .worktrees/
-.kanna/
+/.kanna/*
+!/.kanna/config.json
 .DS_Store
