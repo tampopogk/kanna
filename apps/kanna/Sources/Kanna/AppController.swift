@@ -142,6 +142,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 links?.link(for: pane)?.update(pane, fields)
             }
             contents.onRequest = { [weak self] cmd, args in self?.request(cmd, args) }
+            contents.portOpen = { [weak links] port, machine in links?.portOpen(port, on: machine) ?? .failure(KannaError("unavailable", "\(machine) isn't linked")) }
             contents.onNotice = { [weak links] cmd, args in links?.link(MachineIDs.machine(in: .object(args)))?.notice(cmd, args) }
             contents.onCall = { [weak self] cmd, args, reply in
                 guard let self else { return reply(["ok": false, "error": ["message": "not connected to the daemon"]]) }
