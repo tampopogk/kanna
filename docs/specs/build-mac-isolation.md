@@ -1,6 +1,6 @@
 # Isolation on Shared Build Macs
 
-**Status:** required, not yet modelled · **Part of:** [build Macs](build-macs.md) · **Model:** `references/prototypes/build-mac-isolation/` (to be built)
+**Status:** required, not yet modelled · **Part of:** [build Macs](build-macs.md), in [Kanna Cloud](kanna-cloud.md) · **Model:** `references/prototypes/build-mac-isolation/` (to be built)
 
 Several mutually untrusted users may use the same physical Mac. Every remote build runs inside a macOS VM assigned exclusively to one tenant. Separate host accounts and serialized host UI tests do not meet this requirement. The owner-account shim experiment demonstrated transport and build behaviour only.
 
@@ -16,22 +16,22 @@ Several mutually untrusted users may use the same physical Mac. Every remote bui
 
 ```mermaid
 flowchart LR
-    A["Tenant A's Linux task"] --> H["Mac host: trusted fleet broker + VM manager"]
+    A["Tenant A's Linux task"] --> H["Mac host: trusted Kanna broker + VM manager"]
     B["Tenant B's Linux task"] --> H
     H --> VA["macOS VM A<br/>A's source, caches, credentials<br/>A's GUI + Simulator"]
     H --> VB["macOS VM B<br/>B's source, caches, credentials<br/>B's GUI + Simulator"]
 ```
 
-- The host OS, hypervisor, administrator and fleet broker are trusted. Tenant repositories, build phases, plugins, tests and their outputs are untrusted. A malicious host administrator is outside this boundary.
+- The host OS, hypervisor, administrator and Kanna broker are trusted. Tenant repositories, build phases, plugins, tests and their outputs are untrusted. A malicious host administrator is outside this boundary.
 - A VM never contains two tenants' workloads or private state. A tenant may have multiple VMs. Tenant means an authenticated user or explicitly shared trust domain, never a caller-supplied username.
-- Guest compromise, including guest root, must not grant access to the host's fleet identity, personal account, other guests or host management APIs. Hypervisor escape remains a platform risk requiring supported, patched software; a VM is not a claim of absolute security.
+- Guest compromise, including guest root, must not grant access to the host's `device.key`, personal account, other guests or host management APIs. Hypervisor escape remains a platform risk requiring supported, patched software; a VM is not a claim of absolute security.
 - Same-tenant jobs may share warm caches. Mutually untrusted repositories within a tenant require separate disposable VMs too; per-task mirror locks are not isolation.
 - The physical host never executes submitted project code, including Git hooks, package resolution or archive extraction helpers. There is no automatic fallback to host execution when VM capacity is exhausted.
 
 ## 2. Host and guest
 
 - The host daemon retains the host's `device.key`. A small VM manager accepts authorized requests from it, selects a tenant-owned guest, and enforces resource limits. Privileged operations are limited to VM and network lifecycle; tenants cannot supply host commands, host paths or a target UID.
-- The guest executor receives a job-scoped capability for its assigned tenant, VM and request. It can receive that job's snapshot and return status/artifacts; it cannot enroll peers, submit another tenant's jobs or request host-side signing. Do not copy the host's private fleet identity or broad owner agent credentials into a guest.
+- The guest executor receives a job-scoped capability for its assigned tenant, VM and request. It can receive that job's snapshot and return status/artifacts; it cannot enroll peers, submit another tenant's jobs or request host-side signing. Do not copy the host's private machine identity or broad owner agent credentials into a guest.
 - Build and UI workers run as a non-admin guest job user. The guest's supervisor and worker separation is defence in depth; the VM is the cross-tenant boundary.
 - The existing snapshot, mirror lock, pinned Xcode, durable status and artifact contracts remain. Mirrors and DerivedData live on tenant-private guest disks. A VM slot advertises guest architecture, Xcode and Simulator runtimes, while host capacity bounds total admission.
 - Start with Apple-silicon macOS virtualization; evaluate Tart or a small Apple Virtualization.framework runner in the model. Do not advertise Intel-host VM support before it is demonstrated with a suitable backend.
@@ -53,7 +53,7 @@ flowchart LR
 
 ## 5. Proof before product
 
-Build a disposable model in `references/prototypes/build-mac-isolation/` before Fleet 7 and 12. Reuse the shim fixture and contracts, not its unrestricted host executor. Demonstrate on this Mac first if resources and required setup permit:
+Build a disposable model in `references/prototypes/build-mac-isolation/` before Cloud 7 and 12. Reuse the shim fixture and contracts, not its unrestricted host executor. Demonstrate on this Mac first if resources and required setup permit:
 
 | Probe | Required evidence |
 |---|---|

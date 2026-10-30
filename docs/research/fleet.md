@@ -1,6 +1,6 @@
 # Kanna v4 across machines: one Mac, five Linux servers, a Mac mini, a relay
 
-> 2026-10-21. Research and a proposal, nothing built; no repo was changed. Builds on [multi-machine-and-people.md](./multi-machine-and-people.md) (scenarios A–H, principles 1–9) and doesn't repeat it. `kanna2/…` paths are Kanna v2's, under `~/.kanna/repos/kanna2`. Copied from the planner's scratchpad into the repo on 2026-10-21; the [fleet spec](../specs/fleet.md) is what was decided.
+> 2026-10-21. Research and a proposal, nothing built; no repo was changed. Builds on [multi-machine-and-people.md](./multi-machine-and-people.md) (scenarios A–H, principles 1–9) and doesn't repeat it. `kanna2/…` paths are Kanna v2's, under `~/.kanna/repos/kanna2`. Copied from the planner's scratchpad into the repo on 2026-10-21; the [fleet spec](../specs/machines.md) is what was decided.
 
 ## Contents
 

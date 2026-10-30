@@ -210,6 +210,7 @@ pub struct Pane {
     pub view: Option<String>,
     pub agent: Option<String>,
     pub markup: bool,
+    pub diff_base: Option<String>,
     pub history: Option<History>,
     pub session: Option<String>,
     pub pid: Option<i64>,
@@ -243,6 +244,7 @@ impl Pane {
             view: None,
             agent: None,
             markup: false,
+            diff_base: None,
             history: None,
             session: None,
             pid: None,
@@ -321,6 +323,9 @@ impl Pane {
                 out.insert("agent".into(), opt(self.agent.as_deref()));
                 if self.markup {
                     out.insert("markup".into(), Value::Bool(true));
+                }
+                if let Some(base) = &self.diff_base {
+                    out.insert("diff".into(), Value::String(base.clone()));
                 }
             }
             PaneType::Code => {

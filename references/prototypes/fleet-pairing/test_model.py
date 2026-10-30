@@ -204,6 +204,19 @@ class LogTests(unittest.TestCase):
             with self.assertRaisesRegex(Refused, "^untrusted_endpoint$"):
                 device.log.accept_endpoint(self.b.key)
 
+    def test_adds_a_revoked_key_signs_on_a_branch_its_revoker_never_saw_count_for_nothing(self):
+        past = list(self.b.log.events)
+        x, y = Device("x"), Device("y")
+        stale = self.b.entry("add", x.descriptor(), parents=past)
+        x.log = copy.deepcopy(self.b.log)
+        x.log.merge([stale])
+        laundered = x.entry("add", y.descriptor())
+        self.c.revoke(self.b.key)
+        self.a.log.sync(self.c.log.export())
+        self.a.log.merge([stale, laundered])
+        self.assertFalse({x.key, y.key} & self.a.log.view().trusted)
+        self.assertIn(self.c.key, self.a.log.view().trusted)
+
     def test_offline_revocation_takes_effect_when_delivered(self):
         self.a.revoke(self.b.key)
         self.assertIn(self.b.key, self.c.log.view().trusted)

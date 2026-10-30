@@ -16,6 +16,7 @@ mod lifeline;
 mod pty;
 mod codex_remote;
 mod messages;
+mod project_import;
 mod projects;
 mod quiz;
 mod reader;
@@ -24,13 +25,15 @@ mod shell;
 mod status;
 mod status_command;
 mod diffs;
+mod machines;
+mod files;
 mod store;
 mod task_scripts;
 mod terminals;
 mod toasts;
 
 use app_link::{AppLink, Outbox, APP_ASK, APP_PREFIX, HELLO};
-use kanna_mux::json::Value;
+use kanna_mux::json::{Map, Value};
 use host::Host;
 use kanna_build::Build;
 use kanna_mux::json::json;
@@ -93,13 +96,17 @@ pub enum Event {
     Finished { task: String, changes: Vec<db::Change> },
     Diff { id: String, diff: Value },
     DiffUpdating { id: String },
+    File { id: String, read: files::Read },
     KeeperReadable,
     KeeperExits,
     KeeperLost(String),
-    AppHello { conn: u64, hello: Value, out: Outbox, stream: UnixStream },
+    AppHello { conn: u64, hello: Value, out: Outbox, stream: UnixStream, remote: Option<String> },
     AppCaughtUp { conn: u64 },
     AppMessage { conn: u64, message: Value },
     AppGone { conn: u64 },
+    MachineConfirm { question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send> },
+    MachinesSave(Value),
+    Restart,
     Quit(i32),
     Shutdown(String),
 }
@@ -121,9 +128,19 @@ fn main() {
         eprint!("{} ", stamp());
         unstamped(info)
     }));
-    if let Err(message) = run() {
-        log!("kanna-daemon: {message}");
-        std::process::exit(1);
+    match run() {
+        Ok(Some(daemon)) => {
+            use std::os::unix::process::CommandExt;
+            log!("kanna-daemon: restarting as {}", daemon.display());
+            let error = std::process::Command::new(&daemon).args(&args).exec();
+            log!("kanna-daemon: can't restart as {}: {error}", daemon.display());
+            std::process::exit(1);
+        }
+        Ok(None) => {}
+        Err(message) => {
+            log!("kanna-daemon: {message}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -151,7 +168,7 @@ fn app_socket() -> PathBuf {
     support_folder().join("kanna/kanna.sock")
 }
 
-fn run() -> Result<(), String> {
+fn run() -> Result<Option<PathBuf>, String> {
     let _ = Brand::set_current(Brand::new("kanna", "Kanna"));
     let build_id = kanna_build::own_build_id();
     let build = Build::current();
@@ -161,7 +178,7 @@ fn run() -> Result<(), String> {
     }
     if let Some(owner) = lifeline::owner().filter(|pid| lifeline::gone(*pid)) {
         log!("kanna-daemon: its owner (pid {owner}, {}) is gone; not starting", lifeline::OWNER);
-        return Ok(());
+        return Ok(None);
     }
     let state_dir = env_path("KANNA_STATE_DIR").unwrap_or_else(|| socket.parent().map(Path::to_path_buf).unwrap_or_default());
     if let Ok(helper) = std::env::current_exe() {
@@ -173,7 +190,7 @@ fn run() -> Result<(), String> {
     let marker = state_dir.join(SHUTDOWN_MARKER);
     if waited && marker.exists() {
         log!("kanna-daemon: the daemon before it shut this Kanna down while it waited; not starting");
-        return Ok(());
+        return Ok(None);
     }
     let _ = std::fs::remove_file(&marker);
     let _ = std::fs::write(state_dir.join(kanna_build::RECORD), format!("{:#}\n", build.record(app_bundle().as_deref())));
@@ -246,6 +263,7 @@ fn run() -> Result<(), String> {
     status_commands.install(&core);
     let backlog = Rc::new(backlog::Backlog::open(db.clone(), &state_dir, core.weak(), events.clone()));
     backlog.install(&core);
+    *backlog.repos.borrow_mut() = Some(projects::repos());
     let planners = Rc::downgrade(&layout);
     *backlog.planners.borrow_mut() = Some(Box::new(move || {
         let Some(layout) = planners.upgrade() else { return vec![] };
@@ -270,7 +288,7 @@ fn run() -> Result<(), String> {
     *backlog.line_mode.borrow_mut() = Some(Box::new(move |pane| modes.upgrade().is_some_and(|detector| detector.line_mode(pane))));
     let argvs = Rc::downgrade(&detector);
     *backlog.permissions.borrow_mut() = Some(Box::new(move |pane| messages::permissions(&argvs.upgrade()?.argv(pane))));
-    let projects = Rc::new(projects::Projects::new(db.clone(), std::env::var_os("HOME").map(std::path::PathBuf::from), [".kanna-v4/repos", ".kanna/repos"].map(|r| agents::home().join(r)).to_vec()));
+    let projects = Rc::new(projects::Projects::new(db.clone(), std::env::var_os("HOME").map(std::path::PathBuf::from), Some(projects::repos())));
     projects.install(&core);
     let toasts = Rc::new(toasts::Toasts::new(core.weak()));
     toasts.connect_backlog(&backlog);
@@ -283,13 +301,27 @@ fn run() -> Result<(), String> {
             log!("kanna-daemon: can't raise a toast for {pane}: {}", error.message);
         }
     }));
-    let quiz = Rc::new(quiz::Quiz::new(db, Some(core.weak())));
+    let quiz = Rc::new(quiz::Quiz::new(db.clone(), Some(core.weak())));
     quiz.install(&core);
-    let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone());
+    let machines = match machines::Machines::start(&state_dir, &db, events.clone()) {
+        Ok(machines) => {
+            log!("kanna-daemon: {}", machines.describe());
+            let machines = Rc::new(machines);
+            machines.install(&core);
+            Some(machines)
+        }
+        Err(reason) => {
+            log!("kanna-daemon: {reason}");
+            None
+        }
+    };
+    let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone(), agents::keys(&support_folder(), &state_dir));
     agents.refresh();
     agents.install(&core);
     let diffs = Rc::new(diffs::Diffs::new(events.clone()));
     diffs.install(&core);
+    let files = Rc::new(files::Files::new(events.clone()));
+    files.install(&core);
     let host = Rc::new(Host::new(terminals.clone()));
     core.set_host(Some(host.clone()));
     let on_change = Rc::downgrade(&terminals);
@@ -333,7 +365,11 @@ fn run() -> Result<(), String> {
     }
 
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
-    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), layout.clone(), app_timeout, build_id.clone()));
+    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), files.clone(), layout.clone(), app_timeout, build_id.clone()));
+    if let Some(machines) = &machines {
+        let machines = Rc::downgrade(machines);
+        *app.machine.borrow_mut() = Some(Box::new(move || machines.upgrade().map_or(Value::Null, |m| m.machine())));
+    }
     let view_link = Rc::downgrade(&app);
     *layout.on_view.borrow_mut() = Some(Box::new(move |view| {
         if let Some(app) = view_link.upgrade() {
@@ -357,6 +393,12 @@ fn run() -> Result<(), String> {
             app.diff(views, payload);
         }
     }));
+    let file_link = Rc::downgrade(&app);
+    *files.on_file.borrow_mut() = Some(Box::new(move |views, payload| {
+        if let Some(app) = file_link.upgrade() {
+            app.file(views, payload);
+        }
+    }));
     let on_start = Rc::downgrade(&app);
     *terminals.on_start.borrow_mut() = Some(Box::new(move |pane| {
         if let Some(app) = on_start.upgrade() {
@@ -373,12 +415,25 @@ fn run() -> Result<(), String> {
             }
         }),
     );
+    let front = link.clone();
+    core.on_front(Rc::new(move |args, responder| match front.upgrade().filter(|app| app.attached()) {
+        Some(app) => app.forward("app.front", args, responder),
+        None => responder.reply(Ok(Map::new())),
+    }));
     let resolving = Rc::downgrade(&backlog);
     core.add_command(
         "desk",
         Rc::new(move |mut args, responder| {
             let (Some(app), Some(backlog)) = (link.upgrade(), resolving.upgrade()) else { return };
-            let Some(task) = args.get("task").and_then(Value::as_str).map(String::from) else { return app.forward("desk", args, responder) };
+            let Some(task) = args.get("task").and_then(Value::as_str).map(String::from) else {
+                if let Some(folder) = args.get("project").and_then(Value::as_str).filter(|_| args.get("action").and_then(Value::as_str) == Some("desk")) {
+                    if let Err(error) = projects::desk_here(folder) {
+                        return responder.reply(Err(error));
+                    }
+                    args["place"] = projects::place(folder);
+                }
+                return app.forward("desk", args, responder);
+            };
             backlog.agent(&task, move |found| match found {
                 Ok(pane) => {
                     args["task"] = Value::String(pane);
@@ -425,6 +480,7 @@ fn run() -> Result<(), String> {
     drop(events);
 
     let mut failure = None;
+    let mut restart = None;
     let mut shutdown: Option<Shutdown> = None;
     let begin = |why: &str, shutdown: &mut Option<Shutdown>| {
         if shutdown.is_some() {
@@ -541,6 +597,7 @@ fn run() -> Result<(), String> {
             Event::Finished { task, changes } => backlog.finished(&task, changes),
             Event::Diff { id, diff } => diffs.loaded(&id, diff),
             Event::DiffUpdating { id } => diffs.updating(&id),
+            Event::File { id, read } => files.loaded(&id, read),
             Event::KeeperReadable | Event::KeeperExits => {
                 let exits = keeper.take_exits();
                 if matches!(event, Event::KeeperReadable) {
@@ -573,14 +630,18 @@ fn run() -> Result<(), String> {
                 failure = Some(reason);
                 break;
             }
-            Event::AppHello { conn, hello, out, stream } => {
-                if app.hello(conn, hello, out, stream) {
+            Event::AppHello { conn, hello, out, stream, remote } => {
+                if app.hello(conn, hello, out, stream, remote) {
                     break;
                 }
                 toasts.attached();
             }
             Event::AppMessage { conn, message } => {
                 if let Some(request) = app.message(conn, message) {
+                    if let Some(refused) = machines::refuse_remote(&request).filter(|_| !app.attached_here()) {
+                        app.answer_app(conn, refused);
+                        continue;
+                    }
                     let link = Rc::downgrade(&app);
                     timed(request_name(&request), "the app", || {
                         core.handle(request, move |reply| {
@@ -593,6 +654,23 @@ fn run() -> Result<(), String> {
             }
             Event::AppGone { conn } => app.gone(conn),
             Event::AppCaughtUp { conn } => app.caught_up(conn),
+            Event::MachineConfirm { question, answer } => match &machines {
+                Some(machines) => machines.confirm(&app, question, answer),
+                None => answer(Err("this daemon has no endpoint".into())),
+            },
+            Event::MachinesSave(doc) => {
+                if let Err(error) = db.put_machines(&doc) {
+                    log!("kanna-daemon: can't save your machines in kanna.db: {error}");
+                }
+            }
+            Event::Restart => match machines.as_ref().and_then(|m| m.install.as_ref()) {
+                Some(install) if shutdown.is_none() => {
+                    log!("kanna-daemon: updated to {}; restarting, and the keeper keeps the terminals", install.current().unwrap_or_default());
+                    restart = Some(install.daemon());
+                    break;
+                }
+                _ => {}
+            },
             Event::Quit(_) => continue,
             Event::Shutdown(why) => begin(&why, &mut shutdown),
         }
@@ -602,12 +680,15 @@ fn run() -> Result<(), String> {
     layout.flush();
     layout.save_now();
     terminals.shutdown();
+    if let Some(machines) = &machines {
+        machines.stop();
+    }
     let _ = std::fs::remove_file(&pid_file);
     std::mem::forget(rules_updater);
     server.stop();
     match failure {
         Some(reason) => Err(format!("{reason}; stopping")),
-        None => Ok(()),
+        None => Ok(restart),
     }
 }
 

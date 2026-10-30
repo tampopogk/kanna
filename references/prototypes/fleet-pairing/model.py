@@ -118,15 +118,30 @@ class PeerLog:
         self.pending = {}
 
     def view(self, ids=None):
+        ids = list(self.events if ids is None else ids)
         names = {self.anchor["name"]: {self.anchor["key"]}}
-        revoked = set()
-        for event_id in self.events if ids is None else ids:
+        revoked, seen = set(), {}
+        for event_id in ids:
             body = self.events[event_id]["body"]
-            payload = body["payload"]
             if body["kind"] == "revoke":
-                revoked.add(payload["key"])
-            else:
+                revoked.add(body["payload"]["key"])
+                seen.setdefault(body["payload"]["key"], set()).update(self._ancestors(body["parents"]))
+        # An add counts only through a chain of adds from the anchor; one signed
+        # by a revoked key on a branch its revoker never saw counts for nothing.
+        signers, adds = {self.anchor["key"]}, [i for i in ids if self.events[i]["body"]["kind"] == "add"]
+        while True:
+            left = []
+            for event_id in adds:
+                body = self.events[event_id]["body"]
+                signer, payload = body["signer"], body["payload"]
+                if signer not in signers or (signer in revoked and event_id not in seen.get(signer, set())):
+                    left.append(event_id)
+                    continue
+                signers.add(payload["key"])
                 names.setdefault(payload["name"], set()).add(payload["key"])
+            if len(left) == len(adds):
+                break
+            adds = left
         return View(names, revoked)
 
     def _ancestors(self, parents):

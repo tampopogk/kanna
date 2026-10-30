@@ -1,7 +1,7 @@
 # Fleet backlog model
 
-Reference for [Fleet 10](../../../docs/specs/fleet.md#10-build-order), implementing
-[tasks §1–2](../../../docs/specs/fleet-tasks.md). Python 3.9+; standard library only.
+Reference for [Fleet 10](../../../docs/specs/machines.md#10-build-order), implementing
+[tasks §1–2](../../../docs/specs/machine-tasks.md). Python 3.9+; standard library only.
 Run on this Mac or Linux; all machines and partitions are simulated. No SSH,
 cloud access, accounts, agent processes or secrets are needed.
 

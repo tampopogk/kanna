@@ -520,9 +520,10 @@ mod tests {
     #[test]
     fn options_come_from_the_command() {
         let options = words(&at("open md -"));
-        for flag in ["--name", "--split", "--dock", "--json", "--history", "--tab"] {
+        for flag in ["--name", "--split", "--json", "--history", "--tab"] {
             assert!(options.contains(&flag.to_string()), "{options:?}");
         }
+        assert!(!options.contains(&"--dock".into()), "{options:?}");
         let nav = words(&at("navigate p1 -"));
         assert!(nav.contains(&"--back".into()) && nav.contains(&"--forward".into()), "{nav:?}");
     }
@@ -558,8 +559,7 @@ mod tests {
         let after = at("move p1 --tab ");
         assert!(after.contains(&Want::Tabs), "{after:?}");
         assert!(words(&after).contains(&"new".into()), "{after:?}");
-        assert_eq!(words(&at("open --dock ")), ["left", "right", "term", "web", "md", "ios", "code", "diff"]);
-        assert_eq!(at("open --dock left md "), [Want::Files(MARKDOWN)]);
+        assert_eq!(words(&at("move p1 --dock ")), ["left", "right"]);
     }
 
     #[test]
