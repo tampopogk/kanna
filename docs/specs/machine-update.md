@@ -113,7 +113,7 @@ Once the reply is sent, the daemon leaves its main loop the way a SIGTERM does (
 
 | Which side | Note | Tooltip |
 |---|---|---|
-| the machine is older | `linux-1 runs an older Kanna` | `kanna machine update linux-1 updates it. It runs 4.0.1 (d7cb0a1e), protocol 1; this Kanna speaks 2–3. Until then, linux-1's tasks keep their places on the Shelf.` |
+| the machine is older | `linux-1 runs an older Kanna` | `kanna machine update linux-1 updates it. It runs 4.0.1 (d7cb0a1e), protocol 1; this Kanna speaks 2–3. Until then, linux-1's tasks keep their places on the Desk.` |
 | this Kanna is older | `linux-1 runs a newer Kanna` | `Update this Kanna, or run kanna machine update on linux-1. It runs …` |
 
 ## 7. Not yet

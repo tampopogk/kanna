@@ -1,6 +1,7 @@
 import AppKit
 import GhosttyKit
 import KannaDocs
+import KannaOverview
 import KannaPerf
 
 extension AppController {
@@ -17,6 +18,7 @@ extension AppController {
             case "light": NSApp.appearance = NSAppearance(named: .aqua)
             default: break
             }
+            if args["keyview"]?.bool == true { pickKeyViewsAsActive() }
             var reply: [String: JSON] = [
                 "app": "kanna", "pid": .number(Double(ProcessInfo.processInfo.processIdentifier)),
                 "bundle": .string(Bundle.main.bundleIdentifier ?? ""),
@@ -165,14 +167,14 @@ extension AppController {
                                 "found": .array(page.found.map { .string($0) }), "selected": .number(Double(page.selected)),
                                 "left": .number(Double(page.searchFrame.minX)), "right": .number(Double(page.searchFrame.maxX))]
             let tasks = controller.shelf.map { task -> JSON in ["task": .string(task.id), "title": .string(task.title), "status": task.status.map { .string($0) } ?? .null, "agent": task.agent.map { .string($0) } ?? .null] }
-            return ["desk": .bool(controller.desk), "empty": .bool(controller.emptyDesk), "shelf": .array(tasks),
+            return ["desk": .bool(controller.desk), "empty": .bool(controller.emptyDesk), "shelf": .array(tasks), "active": controller.active.map { .string($0) } ?? .null,
                     "strip": .bool(!controller.shelfStrip.isHidden), "page": .bool(!controller.shelfPage.isHidden), "title": .string(controller.window.title),
                     "header": controller.agentHeader.isHidden ? .null : .string(controller.agentHeader.text),
                     "backlog": .array(controller.backlog.map { .string($0.id) }), "agents": .array(controller.backlog.map { $0.agent.map { .string($0) } ?? .null }), "running": .number(Double(controller.running)),
                     "waiting": .string(controller.shelfStrip.waitingText), "stripLayout": controller.shelfStrip.geometry, "note": .string(controller.note), "cheer": .string(controller.cheer),
                     "lead": controller.leadShown.map { .string($0) } ?? .null, "pages": .array(controller.tabBar.pageItems.map { .string($0.title) }),
                     "machinesPage": .bool(!controller.machinesPage.isHidden), "machines": .array(controller.machinesPage.machines.map { ["name": .string($0.name), "detail": .string($0.detail), "path": .string($0.path), "note": .string($0.note), "tip": .string($0.explanation)] }),
-                    "headerTip": controller.agentHeader.toolTip.map { .string($0) } ?? .null, "places": .array(controller.shelf.map { $0.place.map { .string($0) } ?? .null }), "window": window(id) ?? .null, "scroll": scrolled, "search": search, "times": page.times,
+                    "headerTip": controller.agentHeader.toolTip.map { .string($0) } ?? .null, "places": .array(controller.shelf.map { $0.place.map { .string($0) } ?? .null }), "window": window(id) ?? .null, "scroll": scrolled, "search": search, "times": page.times, "rows": page.deskRows,
                     "responder": .string(controller.window.firstResponder.map { String(describing: type(of: $0)) } ?? "")]
         }
         commands["debug.web"] = { [weak self] args in
@@ -251,7 +253,9 @@ extension AppController {
             if case .array(let pick)? = args["select"], pick.count == 3, let line = pick[0].number, let column = pick[1].number, let length = pick[2].number {
                 code.select(line: Int(line), column: Int(column), length: Int(length))
             }
+            let overview = self.overview(code.overview, wanted: code.overviewWanted, args: args)
             var out: [String: JSON] = code.debugNumbers.mapValues { .number($0) }
+            out["overview"] = overview
             out["text"] = .string(code.file.text)
             out["path"] = .string(code.path)
             out["language"] = code.language.map { .string($0) } ?? .null
@@ -273,6 +277,7 @@ extension AppController {
             if let step = args["zoom"]?.number { diff.zoom(by: Int(step)) }
             if let path = args["fold"]?.string { diff.toggle(file: path, all: false) }
             if let path = args["show"]?.string { diff.showFolded(path) }
+            let overview = self.overview(diff.overview, wanted: diff.overviewWanted, args: args)
             let rows: [JSON] = diff.debugRows.map { row in
                 .object(row.mapValues { value in
                     if let text = value as? String { return .string(text) }
@@ -287,9 +292,9 @@ extension AppController {
             return ["command": .string(diff.result?.command ?? ""), "error": diff.result?.error.map { .string($0) } ?? .null, "files": .array(files), "rows": .array(rows),
                     "current": diff.current.map { .number(Double($0)) } ?? .null, "view": .string(diff.view.rawValue), "updating": .bool(diff.updating),
                     "serial": .number(Double(diff.serial)), "fresh": .array(diff.fresh.sorted().map { .number(Double($0)) }), "zoom": .number(Double(diff.zoom)),
-                    "highlighted": .number(Double(diff.highlightedFiles)), "list": .bool(diff.listShown),
+                    "highlighted": .number(Double(diff.highlightedFiles)), "list": .bool(diff.listShown), "width": .number(diff.bounds.width),
                     "selected": diff.selectedFile.map { .string($0) } ?? .null, "sticky": diff.stickyFile.map { .string($0) } ?? .null,
-                    "columns": .array(diff.debugColumns.map { .object($0.mapValues { .number($0) }) }),
+                    "columns": .array(diff.debugColumns.map { .object($0.mapValues { .number($0) }) }), "overview": overview,
                     "colors": .array((args["colors"]?.number).map { diff.colors(atRow: Int($0)).map { .string($0) } } ?? [])]
         }
         commands["debug.ios"] = { [weak self] args in
@@ -302,6 +307,31 @@ extension AppController {
             if args["home"]?.bool == true { screen.pressHome() }
             return ["width": .number(screen.pixelSize.width), "height": .number(screen.pixelSize.height)]
         }
+    }
+
+    private func overview(_ view: OverviewView, wanted: @autoclosure () -> Bool, args: JSON) -> JSON {
+        if let on = args["overview_enabled"]?.bool { setOverview(on) }
+        if let hover = args["overview_hover"]?.bool { view.hover(hover) }
+        if let y = args["overview_click"]?.number {
+            view.press(at: NSPoint(x: 20, y: y))
+            view.release()
+        }
+        if let y = args["overview_marks_click"]?.number {
+            view.press(at: NSPoint(x: OverviewMetrics.width - 4, y: y))
+            view.release()
+        }
+        if case .array(let drag)? = args["overview_drag"], drag.count == 2, let from = drag[0].number, let to = drag[1].number {
+            view.press(at: NSPoint(x: 20, y: from))
+            view.move(to: NSPoint(x: 20, y: to))
+            if args["overview_hold"]?.bool != true { view.release() }
+        }
+        view.superview?.layoutSubtreeIfNeeded()
+        var out: [String: JSON] = view.debugState.mapValues { .number($0) }
+        out["shown"] = .bool(!view.isHidden)
+        out["wanted"] = .bool(wanted())
+        out["enabled"] = .bool(OverviewSetting.enabled)
+        out["marks_by_kind"] = .object(view.debugMarks.mapValues { .number(Double($0)) })
+        return .object(out)
     }
 
     private static func boxParts(_ parts: [String: NSRect]?) -> JSON {
@@ -334,6 +364,25 @@ extension AppController {
         }
         window.sendEvent(event)
         return ["characters": .string(event.characters ?? ""), "charactersIgnoringModifiers": .string(event.charactersIgnoringModifiers ?? "")]
+    }
+
+    private static var keyViewPicker: CFRunLoopObserver?
+    private static var keyViewsPicked = Set<String>()
+
+    private func pickKeyViewsAsActive() {
+        guard Self.keyViewPicker == nil else { return }
+        Self.keyViewsPicked = Set(controllers.keys)
+        let observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeTimers.rawValue | CFRunLoopActivity.beforeWaiting.rawValue, true, 0) { [weak self] _, _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                for (id, controller) in self.controllers where Self.keyViewsPicked.insert(id).inserted && controller.window.firstResponder === controller.window {
+                    controller.window.recalculateKeyViewLoop()
+                    controller.window.selectNextKeyView(nil)
+                }
+            }
+        }
+        CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+        Self.keyViewPicker = observer
     }
 
     private static func performResponderItem(_ event: NSEvent, in window: NSWindow) -> Bool {

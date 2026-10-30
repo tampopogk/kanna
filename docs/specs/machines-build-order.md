@@ -17,7 +17,7 @@ The first milestone: your own machines, LAN first, your own relay or a fixed add
 | iroh's reach and speed | [fleet-net](../../references/prototypes/fleet-net/README.md): two endpoints in Rust, LAN discovery, a relay on the e2-micro, `kanna/1` streams of each kind | a direct path on the LAN, hole punching from away, relay fallback; echo delay and throughput for each, the standard slice 8 is held to | 2, 3, 8 |
 | Pairing and the peer log | `fleet-pairing`: Python, a PAKE over a code, a signed log between three simulated devices | a forged key refused; mutual revocation; a revoked key never re-added | 2 |
 | Desks across machines | `references/mockups/fleet.html` | a Desk per project with tasks on several machines; the Machines tab; a card on a relayed or offline machine | 3 |
-| The replicated backlog | `fleet-backlog`: Python, N simulated daemons with partitions | the store chosen; two runners asking at once; an owner going away; a scheduler taking over | 10 |
+| The replicated Shelf | `fleet-backlog`: Python, N simulated daemons with partitions | the store chosen; two runners asking at once; an owner going away; a scheduler taking over | 10 |
 | Transfer | `fleet-transfer`: a script between two home folders | bundle, `reset --soft`, the transcript moved, Claude and Codex carrying on | 11 |
 | Shared agent accounts | `agent-sign-in`: probes on two VMs | one setup token on many machines at once; Codex on access tokens from a holder | S1 |
 
@@ -31,7 +31,7 @@ The first milestone: your own machines, LAN first, your own relay or a fixed add
 | 6 | Machines 6: Machine update | **Built** ([updates](machine-update.md); tested from this Mac to an Ubuntu 26.04 VM): the Linux tarball, `/opt/kanna/<commit>`, `kanna machine update`, the app's `other_protocol` message. **Changed:** a range of protocols, not one, so mixed versions work. | 1, 2 |
 | 6b | Machines: daemons update themselves | A daemon updates itself from a peer's release or the release site ([setup §4](machine-setup.md#4-joining-and-updates)). | 6 |
 | 8 | Machines 8: Remote terminals measured | Bounded snapshots, reconnect by offset, an echo-delay table from the LAN and through the relay. **Changed:** also sets up the user's own `iroh-relay` on the GCP e2-micro and the setting that names it ([machines §3](machines.md#3-reach-lan-first-relay-second)). | 3 |
-| 10 | Machines 10: A replicated backlog | [tasks §1–2](machine-tasks.md): every daemon holds every record (iroh-docs, per the model), hybrid-clock order, owners that grant, placement preferences. Done: two daemons share a backlog; two runners asking at once and an owner going away are tested. **Changed:** it needs only 3. | 3 |
+| 10 | Machines 10: A replicated Shelf | [tasks §1–2](machine-tasks.md): every daemon holds every record (iroh-docs, per the model), hybrid-clock order, owners that grant, placement preferences. Done: two daemons share a Shelf; two runners asking at once and an owner going away are tested. **Changed:** it needs only 3. | 3 |
 | 11 | Machines 11: Task transfer | [tasks §3](machine-tasks.md#3-transfer): between any daemons, Mac included; a git bundle over the link, not a push; no `/kanna/repos`; resume by session ID; durable on both ends. Done: a stopped claude task and a stopped codex task each move between two machines with different home folders and carry on their conversation. | 10 |
 | S1 | Machines: agent sign-in | [Agent sign-in](agent-sign-in.md) for your own machines: accounts added on the Mac, a lasting token supplied on joining, the Codex holder over app-server or the per-machine fallback, removal and rotation. Split out of slice 9. | 3 |
 
@@ -56,4 +56,4 @@ After your machines' first milestone. Its first stage has the operator as the on
 | C2 | Cloud: placement by capability | A task's `needs:` against the capabilities in each machine's peer log entry, for runners asking and the scheduler ([Cloud §5](kanna-cloud.md#5-directory-and-relays)). | 10, C1 |
 | C3 | *(not yet a task)* Cloud: other tenants | The host-enforced tenant network, quotas, billing. | 9, C1, Linux tenant model |
 
-**Later, not yet tasks:** the encrypted backlog copy, push, the phone away from the LAN.
+**Later, not yet tasks:** the encrypted Shelf copy, push, the phone away from the LAN.

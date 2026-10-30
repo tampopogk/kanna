@@ -128,7 +128,7 @@ body.picture .window { height:100vh; border:0; border-radius:0; box-shadow:none;
 <main>
   <div class="intro">
     <h1>Fleet: one Desk per project</h1>
-    <p>Interactive reference model · simulated machines and work. Pull a task, inspect its path in Fleet, or open a project from File. Scenario controls change connectivity without moving tasks. No sign-in or server needed.</p>
+    <p>Interactive reference model · simulated machines and work. Make a task active, inspect its path in Fleet, or open a project from File. Scenario controls change connectivity without moving tasks. No sign-in or server needed.</p>
     <div class="controls" aria-label="Model controls">
       <span class="label">Simulate</span>
       <button data-scenario="mixed">Mixed paths</button><button data-scenario="lan">All on LAN</button>
@@ -181,7 +181,7 @@ function badge(machine) {
   return `<span class="path ${p==='lan'||p==='internet'?'direct':p}" tabindex="0" data-path="${machine}" data-tooltip="${esc(detail(machine))}">${label[p]}</span>`;
 }
 function card(t,backlog=false) {
-  return `<div class="task" data-task="${key(t)}" tabindex="0" data-tooltip="${tip(t.machine)}">${dot(t)}<div class="text"><div class="name">${t.name}</div><div class="meta">${t.agent} · ${status(t)}</div>${!t.claimed && isOffline(t)?'<div class="meta">Waiting for connection.</div>':''}</div>${backlog?'<span class="muted">'+(isOffline(t)?'Unavailable':tasks.filter(x=>x.project===t.project&&x.claimed).length===3?'Shelf full':'In backlog')+'</span>':`<button class="go" data-pull="${key(t)}">${isOffline(t)?'View last state':'Pull to Desk'} →</button>`}</div>`;
+  return `<div class="task" data-task="${key(t)}" tabindex="0" data-tooltip="${tip(t.machine)}">${dot(t)}<div class="text"><div class="name">${t.name}</div><div class="meta">${t.agent} · ${status(t)}</div>${!t.claimed && isOffline(t)?'<div class="meta">Waiting for connection.</div>':''}</div>${backlog?'<span class="muted">'+(isOffline(t)?'Unavailable':tasks.filter(x=>x.project===t.project&&x.claimed).length===3?'Desk full':'On the Shelf')+'</span>':`<button class="go" data-pull="${key(t)}">${isOffline(t)?'View last state':'Make active'} →</button>`}</div>`;
 }
 function terminal(project,t) {
   const machine=t?t.machine:(project.id==='kanna'?'dev-1':'mbp'), off=path(machine)==='off';
@@ -191,16 +191,16 @@ function terminal(project,t) {
     t2:'The build output is ready to review.\n\nWarnings now link to the file and line in your worktree. Should I keep the summary expanded?',
     t3:'The tabs are restored in their previous order.\n\nI’m checking that the focused pane comes back too.',
     t7:'Favorites are saved. I’m checking the empty state.'
-  }[t.id] : `The ${project.name} backlog is up to date.\n\n${project.id==='kanna'?'Three tasks are out on your Shelf. Keep terminal output is running its macOS UI tests.\n\nPolish project search is running in the backlog.':'Save favorite recipes is on your Shelf. Test recipe import is running in the backlog.'}`;
+  }[t.id] : `The ${project.name} Shelf is up to date.\n\n${project.id==='kanna'?'Three tasks are on your Desk. Keep terminal output is running its macOS UI tests.\n\nPolish project search is running on the Shelf.':'Save favorite recipes is on your Desk. Test recipe import is running on the Shelf.'}`;
   return `<aside class="agent" data-pane="${paneKey}"><div class="head" tabindex="0" data-tooltip="${tip(machine)}">${t?dot(t):`<span class="dot ${off?'offline':''}"></span>`}<span>${t?t.agent:'Planning agent'}</span><span class="spacer"></span></div>${off?`<div class="notice offline">Last received 4 min ago.<br><span class="muted">Input is unavailable. Reconnecting automatically.</span></div>`:''}<div class="terminal"><p class="muted">${t?t.branch:project.name+' · planning'}</p><p><span class="lead">●</span> ${esc(log).replace(/\n/g,'<br>')}</p>${off?'<p class="muted">Last received output · current agent state unknown.</p>':''}<div class="sent">${(s.input[paneKey]||[]).map(x=>`<p>› ${esc(x)}</p>`).join('')}</div><form class="prompt" data-input="${paneKey}"><span class="muted">›</span><input value="${esc(s.drafts[paneKey]||'')}" aria-label="Message ${t?t.agent:'planning agent'}" placeholder="${off?'Waiting for connection…':'Message the agent…'}" ${off?'disabled':''}></form></div></aside>`;
 }
 function overview(project) {
   const mine=tasks.filter(t=>t.project===project.id);
-  return `<div class="page"><h2>${project.name}</h2><p class="sub">Your tasks.</p><div class="group"><div class="grouphead"><b>Shelf</b><span>${mine.filter(t=>t.claimed).length} of 3 tasks</span></div>${mine.filter(t=>t.claimed).map(t=>card(t)).join('')}</div><div class="group backlog"><div class="grouphead"><b>Backlog</b><span>${mine.filter(t=>!t.claimed).length} tasks</span></div>${mine.filter(t=>!t.claimed).map(t=>card(t,true)).join('')}</div></div>`;
+  return `<div class="page"><h2>${project.name}</h2><p class="sub">Your tasks.</p><div class="group"><div class="grouphead"><b>Desk</b><span>${mine.filter(t=>t.claimed).length} of 3 tasks</span></div>${mine.filter(t=>t.claimed).map(t=>card(t)).join('')}</div><div class="group backlog"><div class="grouphead"><b>Shelf</b><span>${mine.filter(t=>!t.claimed).length} tasks</span></div>${mine.filter(t=>!t.claimed).map(t=>card(t,true)).join('')}</div></div>`;
 }
 function workspace(t) {
   const off=isOffline(t);
-  return `${off?'<div class="notice muted">Last received view · 4 min ago · read-only</div>':''}<div class="page"><h2>${t.name}</h2><p class="sub">${off?'Last known: ':''}${t.state} · ${t.agent}</p><ul class="checklist"><li><span class="ok">✓</span> Changes ready on the task branch</li><li><span class="ok">✓</span> Focused checks passed</li><li>${t.id==='t1'?'◌ macOS UI tests in progress':t.id==='t3'?'◌ Checking focused-pane restoration':'Review the result with you'}</li></ul>${t.id==='t1'?'<div class="job" tabindex="0" data-tooltip="'+tip('mbp')+'"><b>macOS UI tests</b><p class="muted">'+(off?'Last known: running · current job state unknown':'Running')+'</p><span class="mono muted">'+(off?'Last received: 18 / 24 checks passed':'18 / 24 checks passed')+'</span></div>':'<p class="muted">'+(off?'This view will resume when the connection returns. The task keeps its place on your Shelf.':'Your branch and tabs stay with this task when you park it.')+'</p>'}</div>`;
+  return `${off?'<div class="notice muted">Last received view · 4 min ago · read-only</div>':''}<div class="page"><h2>${t.name}</h2><p class="sub">${off?'Last known: ':''}${t.state} · ${t.agent}</p><ul class="checklist"><li><span class="ok">✓</span> Changes ready on the task branch</li><li><span class="ok">✓</span> Focused checks passed</li><li>${t.id==='t1'?'◌ macOS UI tests in progress':t.id==='t3'?'◌ Checking focused-pane restoration':'Review the result with you'}</li></ul>${t.id==='t1'?'<div class="job" tabindex="0" data-tooltip="'+tip('mbp')+'"><b>macOS UI tests</b><p class="muted">'+(off?'Last known: running · current job state unknown':'Running')+'</p><span class="mono muted">'+(off?'Last received: 18 / 24 checks passed':'18 / 24 checks passed')+'</span></div>':'<p class="muted">'+(off?'This view will resume when the connection returns. The task keeps its place on your Desk.':'Your branch and tabs stay with this task while the Desk view shows.')+'</p>'}</div>`;
 }
 function detail(machine) {
   const p=path(machine), messages={
@@ -208,7 +208,7 @@ function detail(machine) {
     lan:['Direct on the LAN','The app connects directly to this machine. Traffic is not using a relay.'],
     internet:['Direct over the internet','The app reaches this machine directly through the internet. Traffic is not using a relay.'],
     relay:['Relayed · your relay','A direct path is unavailable. Traffic is end-to-end encrypted through your relay. Kanna switches to a direct path automatically when one is available.'],
-    off:['Offline · last seen 4 min ago','Current task state is unknown. Last received views stay available, with input disabled. Tasks keep their place on your Shelf. Waiting tasks stay queued until the connection returns.']
+    off:['Offline · last seen 4 min ago','Current task state is unknown. Last received views stay available, with input disabled. Tasks keep their place on your Desk. Waiting tasks stay queued until the connection returns.']
   };
   return `${machine} · ${messages[p][0]}\n${messages[p][1]}`;
 }
@@ -219,7 +219,7 @@ function fleet() {
   }).join('')}</tbody></table><p class="muted">Connections change automatically. Tasks stay where they run when you bring them to a Desk.</p></div></section>`;
 }
 function navigation(w,t,projectId) {
-  const tabs=t?[['task',t.id==='t1'?'UI tests':'Review notes']]:[['shelf','Shelf'],['fleet','Fleet']];
+  const tabs=t?[['task',t.id==='t1'?'UI tests':'Review notes']]:[['shelf','Desk'],['fleet','Fleet']];
   return `<div class="tabs" role="tablist" aria-label="Desk tabs">${tabs.map(([view,name])=>`<button role="tab" id="${projectId}-${view}-tab" aria-controls="${projectId}-panel" aria-selected="${w.view===view}" tabindex="${w.view===view?0:-1}" data-view="${view}" class="${view==='task'?'task-tab':'fixed-tab'}">${name}</button>`).join('')}</div>`;
 }
 function render() {
@@ -227,7 +227,7 @@ function render() {
   document.querySelectorAll('[data-scenario]').forEach(b=>{b.classList.toggle('on',b.dataset.scenario===s.scenario);b.setAttribute('aria-pressed',b.dataset.scenario===s.scenario);});
   document.getElementById('stage').innerHTML=Object.entries(s.windows).map(([id,w])=>{
     const project=projects.find(p=>p.id===id), t=tasks.find(t=>key(t)===w.task), mine=tasks.filter(t=>t.project===id && t.claimed);
-    return `<section class="window" data-project="${id}" ${id===s.current?'':'hidden'}><header class="bar"><span class="lights"><i></i><i></i><i></i></span><details class="menu"><summary>File</summary><div class="drop"><button data-new>New Desk…</button><div class="muted">Open Recent</div>${projects.map(p=>`<button data-project-open="${p.id}">${p.name}${s.windows[p.id]?' · open':''}</button>`).join('')}</div></details><span class="where"><b>${project.name}</b> · ${t?t.name:'Planning'}</span><span class="spacer"></span>${t?'<button class="ghost" data-park>Park</button>':''}</header><div class="content">${terminal(project,t)}<section class="docs">${navigation(w,t,id)}<div class="tabbody" role="tabpanel" id="${id}-panel" aria-labelledby="${id}-${w.view}-tab">${w.view==='fleet'?fleet():w.view==='task'&&t?workspace(t):overview(project)}</div></section></div><footer class="shelf">${mine.map(task=>`<button data-pull="${key(task)}" data-tooltip="${tip(task.machine)}" class="${w.task===key(task)?'on':''}">${dot(task)}<span class="title">${task.name}</span></button>`).join('')}<span class="count">${mine.length}/3 out</span></footer></section>`;
+    return `<section class="window" data-project="${id}" ${id===s.current?'':'hidden'}><header class="bar"><span class="lights"><i></i><i></i><i></i></span><details class="menu"><summary>File</summary><div class="drop"><button data-new>New Desk…</button><div class="muted">Open Recent</div>${projects.map(p=>`<button data-project-open="${p.id}">${p.name}${s.windows[p.id]?' · open':''}</button>`).join('')}</div></details><span class="where"><b>${project.name}</b> · ${t?t.name:'Planning'}</span><span class="spacer"></span>${t?'<button class="ghost" data-park title="Desk view (⌘.)">Park</button>':''}</header><div class="content">${terminal(project,t)}<section class="docs">${navigation(w,t,id)}<div class="tabbody" role="tabpanel" id="${id}-panel" aria-labelledby="${id}-${w.view}-tab">${w.view==='fleet'?fleet():w.view==='task'&&t?workspace(t):overview(project)}</div></section></div><footer class="shelf">${mine.map(task=>`<button data-pull="${key(task)}" data-tooltip="${tip(task.machine)}" class="${w.task===key(task)?'on':''}">${dot(task)}<span class="title">${task.name}</span></button>`).join('')}<span class="count">${mine.length}/3 on the Desk</span></footer></section>`;
   }).join('');
 }
 // A shared tooltip escapes the scrolling Shelf and is available on keyboard focus.

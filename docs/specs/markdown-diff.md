@@ -88,6 +88,8 @@ flowchart LR
 - **Rendering:** the renderer walks the new doc with the diff's entries; a removed block is rendered from the old doc where it was, a changed one from both, merged word by word. Every changed block carries a `kanna.change` attribute (added, removed, changed); the bars and the count read it.
 - **Tests:** `MarkdownDiffTests` (added, removed and reworded paragraphs, list items, table rows, headings, a changed diagram, a new file, the word diff, a range's two versions); `markdown_diff` in `scripts/e2e-kanna.sh` (a doc changed on a branch, the count before and after an edit, `]c` `[c`, `HEAD`, a new file, outside a repo, a bad REF, a range: B's text, no reload, no comments, a doc new in B, one missing from B).
 
+The pane's [overview](markdown-overview.md) marks the changes down its right edge, in the bars' colours.
+
 Separate from the [diff viewer](diff-viewer.md) (`kanna open diff`), whose `.md` files may later open in this mode.
 
 ## 5. Glossary

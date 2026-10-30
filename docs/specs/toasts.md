@@ -24,9 +24,9 @@ The app's own drawing (`debug.toasts png`), dark; [`toasts-light.png`](toasts-li
 
 | The toast is about | A click |
 |---|---|
-| a pane of a task on the Shelf (or on a Desk) | brings that task onto the front Desk (as clicking it on the Shelf does) and focuses the pane |
+| a pane of a task on a Desk | makes that task active on the front Desk (as clicking it in the strip does) and focuses the pane |
 | a pane of a planning terminal | shows that planner's Desk and focuses the pane |
-| a task in the backlog, running or stopped | moves it to the Shelf (`backlog shelve`, starting it if it's stopped), then brings it onto the Desk and focuses its agent; if the Shelf is full, the Desk's note says why |
+| a task on the Shelf, running or stopped | moves it to the Desk (the internal `backlog shelve`, starting it if it's stopped), makes it active and focuses its agent; if the Desk is full, the Desk's note says why |
 | a pane in a plain window | focuses it |
 
 ## Raising one

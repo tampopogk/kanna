@@ -22,7 +22,7 @@ final class DaemonLink: TerminalLink {
     var onSnapshot: ((String) -> Void)?
     var onStatus: ((String, String?) -> Void)?
     var onFolder: ((String, String, JSON?) -> Void)?
-    var onBacklog: (([JSON]) -> Void)?
+    var onBacklog: (([JSON], [JSON]) -> Void)?
     var onDiff: ((String, JSON) -> Void)?
     var onToast: ((JSON) -> Void)?
     var onQuit: (() -> Void)?
@@ -181,7 +181,7 @@ final class DaemonLink: TerminalLink {
         case "file":
             if let content = args["content"]?.string { onFile?(content, args) }
         case "backlog":
-            if case .array(let tasks)? = args["tasks"] { onBacklog?(tasks) }
+            if case .array(let tasks)? = args["tasks"] { onBacklog?(tasks, args["desk"]?.array ?? []) }
         case "toast":
             onToast?(args)
         case "quit":

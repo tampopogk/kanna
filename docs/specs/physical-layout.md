@@ -1,6 +1,6 @@
 # The app owns the physical layout
 
-**Status:** built (2026-10-28), in Kanna · **Builds on:** [the CLI acts on its caller](cli-caller.md), [windows](windows.md), [each app's Desk and Shelf](app-desk.md) · **Why:** two copies of which window is in front, the daemon's key window and AppKit's, drifted apart on 2026-10-28 and ⌘W closed a pane in the wrong window
+**Status:** built (2026-10-28), in Kanna · **Builds on:** [the CLI acts on its caller](cli-caller.md), [windows](windows.md), [each app's Desks](app-desk.md) · **Why:** two copies of which window is in front, the daemon's key window and AppKit's, drifted apart on 2026-10-28 and ⌘W closed a pane in the wrong window
 
 The layout has two owners. The **daemon** owns the **logical layout**: windows, tabs, panes, workspaces, splits and docks, and which pane is focused in each tab. The **app** owns the **physical layout**: which window is in front, the front-to-back order, and each window's frame. Each fact has one owner, so there's nothing to keep in step.
 
@@ -41,7 +41,7 @@ flowchart LR
 
 ## 2. Bringing a window forward
 
-`kanna focus` changes the logical focus and then asks the app to bring its window forward, the way `task park` and `task pull` are relayed to the app.
+`kanna focus` changes the logical focus and then asks the app to bring its window forward, the way `task park` and `task activate` are relayed to the app.
 
 ```mermaid
 sequenceDiagram
@@ -56,8 +56,8 @@ sequenceDiagram
     D-->>C: {window, workspace, front: d1}
 ```
 
-- **The app picks the window:** the Desk showing (or planning in) the pane's workspace, else the window the daemon named, if it has one on screen. A workspace in the backlog or on the Shelf has none: `front` is null and nothing moves.
-- **The reply says so:** `focused spec in win-1 (in front)`, `focused spec in ws-3 (task-1dfb, on the Shelf)`, `brought win-1 forward`; with nothing to show, `win-1 isn't on screen`.
+- **The app picks the window:** the Desk showing (or planning in) the pane's workspace, else the window the daemon named, if it has one on screen. A workspace on the Shelf, or on the Desk but not active, has none: `front` is null and nothing moves.
+- **The reply says so:** `focused spec in win-1 (in front)`, `focused spec in ws-3 (task-1dfb, on the Desk)`, `brought win-1 forward`; with nothing to show, `win-1 isn't on screen`.
 - **With no app attached** the logical focus still happens and the command succeeds; nothing is brought forward. An app that attaches later draws that tab and focus.
 - **The app's own focus requests** (a click on a pane, Next Pane, a toast) come back as `app.front` too; a window the app already has in front isn't brought forward again.
 - **Nothing else brings a window forward on the daemon's say.** `open`, `move` and `arrange` into a window behind leave it there. A new window (`open`, `move` or `move-tab` with `--window new`) is relayed as `app.front {window, new: true}` when the request was the user's, so the app brings it forward even if its view comes later.
@@ -77,7 +77,7 @@ A request that needs a window and names none, with no caller (a kmux client, `ka
 
 ## 5. Kanna comes in front of another app only when you ask
 
-Only your own actions bring Kanna forward: clicking a Kanna window, the Dock icon, ⌘Tab, and `kanna` commands you run from a terminal outside Kanna (no `$KANNA_TERMINAL`), such as `kanna PATH` or `kanna focus`. Anything an agent or the daemon does (a new window, `kanna open`, `kanna focus` or `kanna task pull` from a Kanna terminal, a task starting, a Desk opened for a planner, windows restored after a restart, state updates) changes nothing on screen while you're in another app: it doesn't activate Kanna, take the keyboard, or move a Kanna window among the other app's windows. Even a window ordered just behind the other app's front window would hide that app's other windows (Safari's main window behind its Settings), so such a window isn't ordered at all until Kanna is active. While Kanna is the active app, everything comes forward inside it as before.
+Only your own actions bring Kanna forward: clicking a Kanna window, the Dock icon, ⌘Tab, and `kanna` commands you run from a terminal outside Kanna (no `$KANNA_TERMINAL`), such as `kanna PATH` or `kanna focus`. Anything an agent or the daemon does (a new window, `kanna open`, `kanna focus` or `kanna task activate` from a Kanna terminal, a task starting, a Desk opened for a planner, windows restored after a restart, state updates) changes nothing on screen while you're in another app: it doesn't activate Kanna, take the keyboard, or move a Kanna window among the other app's windows. Even a window ordered just behind the other app's front window would hide that app's other windows (Safari's main window behind its Settings), so such a window isn't ordered at all until Kanna is active. While Kanna is the active app, everything comes forward inside it as before.
 
 **Why:** until 2026-10-28 every render re-presented the daemon's key window whenever AppKit had none, which is always while Kanna isn't active. Each daemon update (agent status, the Shelf, machine pings) then ordered a Kanna window just below the active app's front window, every few seconds.
 
@@ -92,7 +92,7 @@ Every window the app orders goes through one decision, `Placement.of(origin, act
 - **In front, or just behind the front app's window,** the window becomes the app's window in front: it goes first in the record ([§3](#3-the-window-in-front-in-the-app)).
 - **Waits** leaves the screen, the record and the key window alone. A waiting window that isn't on screen yet (a new one, or one restored after a restart) comes in when Kanna is next active, just below the Kanna window in front; if Kanna has none on screen, the first in the saved order comes in front and the rest below it. One that's already on screen stays where it is. So when you come back to Kanna, the window you left in front is still in front.
 - **Behind Kanna's front window** is only for a `--bg` app (tests), which is never active: the window goes just below whichever Kanna window is highest, or just behind the front app's window if Kanna has none on screen, so e2e can still draw it. It leaves the record alone.
-- **The origin travels with the request.** The CLI adds `user: true` to `focus`, `open`, `move`, `move-tab` and `task` Desk requests (`kanna PATH`, `task pull`, `task park`) when it has no `$KANNA_TERMINAL`; the app adds it to its own. The daemon passes it on in `app.front` and `desk`. A request without it is an agent's.
+- **The origin travels with the request.** The CLI adds `user: true` to `focus`, `open`, `move`, `move-tab` and `task` Desk requests (`kanna PATH`, `task activate`, `task park`) when it has no `$KANNA_TERMINAL`; the app adds it to its own. The daemon passes it on in `app.front` and `desk`. A request without it is an agent's.
 - **Starting the app:** the CLI starts Kanna.app with `open -g` when it runs in a Kanna terminal, so an agent's command doesn't activate a closed Kanna. The app never activates itself at launch: macOS does that when you open it. After a restart, windows restored without you wait until you come to Kanna, then come in their saved order.
 - **Still activates:** the confirmation that adds a machine you're pairing (`kanna machine pair CODE`) is an alert you asked for, so it comes in front.
 
