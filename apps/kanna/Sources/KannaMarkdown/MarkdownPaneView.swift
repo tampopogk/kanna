@@ -14,7 +14,8 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     public var startScrollY: CGFloat?
     public var contextMenu: (() -> NSMenu?)? { didSet { textView.contextMenu = contextMenu } }
     public let path: String
-    public let markup: Bool
+    public private(set) var markup: Bool
+    public private(set) var loads = 0
     public let diffBase: String?
     public private(set) var diffError: String?
     public private(set) var changes: [NSRange] = []
@@ -87,19 +88,11 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         scrollView.magnification = zoom
         scrollView.backgroundColor = MarkdownTheme.background
         addSubview(scrollView)
-        if markup || diff != nil {
-            addSubview(bar)
-            bar.path.stringValue = store.relativeName
-            bar.agent.isHidden = !self.markup
-            bar.threads.isHidden = !self.markup
-            bar.diff.isHidden = diff == nil
-            bar.diff.onPress = { [weak self] in self?.jump(by: 1) }
-            textView.onChangeKey = diff == nil ? nil : { [weak self] step in self?.jump(by: step) }
-        }
-        if self.markup {
-            addSubview(panel)
-            setUpComments()
-        }
+        bar.path.stringValue = store.relativeName
+        bar.diff.isHidden = diff == nil
+        bar.diff.onPress = { [weak self] in self?.jump(by: 1) }
+        textView.onChangeKey = diff == nil ? nil : { [weak self] step in self?.jump(by: step) }
+        showComments()
         textView.delegate = self
         scrollView.onSwipe = { [weak self] back in self?.onHistory?(back) }
         magnifyObserver = NotificationCenter.default.addObserver(forName: NSScrollView.didEndLiveMagnifyNotification, object: scrollView, queue: .main) { [weak self] _ in
@@ -128,6 +121,35 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         textView.selectedTextAttributes = [.backgroundColor: NSColor.selectedTextBackgroundColor]
         textView.usesFindBar = true
         textView.isIncrementalSearchingEnabled = true
+    }
+
+    public func set(markup on: Bool) {
+        let on = on && diffRange == nil
+        guard on != markup else { return }
+        let position = readingPosition()
+        markup = on
+        showComments()
+        layoutSubtreeIfNeeded()
+        if let position { restoreReadingPosition(position) }
+    }
+
+    private func showComments() {
+        if markup || diffBase != nil {
+            if bar.superview == nil { addSubview(bar) }
+        } else {
+            bar.removeFromSuperview()
+        }
+        bar.agent.isHidden = !markup
+        bar.threads.isHidden = !markup
+        if markup {
+            if panel.superview == nil { addSubview(panel) }
+            setUpComments()
+            refreshMarks()
+        } else {
+            tearDownComments()
+            panel.removeFromSuperview()
+        }
+        needsLayout = true
     }
 
     func showHeld() {
@@ -218,6 +240,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
             }
         }
         source = text
+        loads += 1
         let start = Date()
         document = Document(parsing: MarkdownRenderer.fencingFrontMatter(text), options: [.disableSmartOpts])
         entries = nil

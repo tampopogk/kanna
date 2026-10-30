@@ -15,6 +15,17 @@ extension MarkdownPaneView {
         agentChanged()
     }
 
+    func tearDownComments() {
+        closeBox()
+        active = nil
+        anchors = [:]
+        textView.onCommentKey = nil
+        textView.onCommandClick = nil
+        textView.onPlainClick = nil
+        layoutManager.marks = []
+        textView.needsDisplay = true
+    }
+
     func agentChanged() {
         guard markup else { return }
         bar.agent.set(agent.map { "Agent: \($0)" } ?? "No agent: comments are saved, not sent")

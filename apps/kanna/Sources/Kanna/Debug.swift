@@ -193,7 +193,8 @@ extension AppController {
             }
             let text = try? await web.webView.evaluateJavaScript("document.body ? document.body.innerText : ''") as? String
             var reply: [String: JSON] = ["url": web.webView.url.map { .string($0.absoluteString) } ?? .null, "text": .string(text ?? ""), "zoom": .number(Double(web.zoom)),
-                                         "notice": web.shownNotice.map { .string($0) } ?? .null]
+                                         "notice": web.shownNotice.map { .string($0) } ?? .null, "markup": .bool(web.markable),
+                                         "view": .string(Self.identity(web)), "web_view": .string(Self.identity(web.webView)), "loads": .number(Double(web.loads))]
             guard let markup = web.markup else { return reply }
             let point = { (rect: NSRect) -> JSON in [.number(Double(rect.midX)), .number(Double(markup.bounds.height - rect.midY))] }
             if let selector = args["find"]?.string {
@@ -248,7 +249,7 @@ extension AppController {
                     "layout_width": .number(Double(markdown.layoutWidth)), "threads": .array(threads),
                     "box": markdown.commentBoxThread.map { .string($0) } ?? .null, "box_text": markdown.commentBoxText.map { .string($0) } ?? .null,
                     "active": markdown.activeThread.map { .string($0) } ?? .null, "agent": markdown.agent.map { .string($0) } ?? .null,
-                    "markup": .bool(markdown.markup), "diff": markdown.diffBase.map { .string($0) } ?? .null,
+                    "markup": .bool(markdown.markup), "view": .string(Self.identity(markdown)), "loads": .number(Double(markdown.loads)), "diff": markdown.diffBase.map { .string($0) } ?? .null,
                     "changes": markdown.diffBase == nil ? .null : .number(Double(markdown.changes.count)), "diff_error": markdown.diffError.map { .string($0) } ?? .null,
                     "box_parts": Self.boxParts(markdown.commentBoxParts), "box_shown": .bool(markdown.commentBoxShown),
                     "cards": .object(markdown.cards.mapValues { ["typing": .bool($0.typing), "waiting": $0.waiting.map { .string($0) } ?? .null, "reply": .bool($0.reply)] }),
@@ -341,6 +342,8 @@ extension AppController {
         out["marks_by_kind"] = .object(view.debugMarks.mapValues { .number(Double($0)) })
         return .object(out)
     }
+
+    private static func identity(_ object: AnyObject) -> String { String(UInt(bitPattern: ObjectIdentifier(object).hashValue), radix: 16) }
 
     private static func boxParts(_ parts: [String: NSRect]?) -> JSON {
         guard let parts else { return .null }
