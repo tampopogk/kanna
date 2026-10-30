@@ -146,8 +146,9 @@ stop_jobs() {
 }
 run_scenario() {
   trap 'exit 143' TERM
-  trap 'stop_instances; stop_jobs' EXIT
+  trap 'stop_instances; stop_agents; stop_jobs' EXIT
   "$1"
+  exit
 }
 cleanup() {
   if [[ -n "$scenario_pid" ]]; then
@@ -3146,7 +3147,7 @@ real_agent_program_status() {
     check wait_for 60 shows "$pane" "for shortcuts\\|shift+tab" || { echo "real_agent_program_status: $agent didn't start"; kanna read "$pane"; return 1; }
     kanna send "$pane" "PLAIN_TURN" || { echo "real_agent_program_status line $LINENO"; return 1; }
     check wait_for 30 eval '[[ "$(reported "$pane")" == "osc7501 working working" ]]' || { echo "real_agent_program_status: $agent's turn wasn't working from OSC 7501 but $(reported "$pane")"; kanna status explain "$pane"; kanna read "$pane"; tail -2 "$agents/mock.jsonl" | cut -c1-300; return 1; }
-    kanna status explain "$pane" | grep -qF "source: OSC 7501" || { kanna status explain "$pane"; return 1; }
+    [[ "$(kanna status explain "$pane")" == *"source: OSC 7501"* ]] || { kanna status explain "$pane"; return 1; }
     check wait_for 60 eval '[[ "$(reported "$pane")" =~ ^"osc7501 "(idle|done)" idle"$ ]]' || { echo "real_agent_program_status: $agent's turn didn't end idle from OSC 7501 but $(reported "$pane")"; kanna status explain "$pane"; kanna read "$pane"; return 1; }
     shows "$pane" "slow streamed answer" || { echo "real_agent_program_status: $agent didn't show the mock's answer"; kanna read "$pane"; return 1; }
   done
@@ -3433,7 +3434,7 @@ login_shell() {
   local id; id="$(cd "$repo" && kanna task new "Codex from nvm" "login_shell first message" --agent codex | sed -n 's/^added \(task-[0-9a-f]*\).*/\1/p')"
   [[ "$id" =~ ^task-[0-9a-f]{4,8}$ ]] || { echo "login_shell: the task wasn't added"; return 1; }
   kanna task start "$id" >/dev/null || { echo "login_shell: the task didn't start"; return 1; }
-  check wait_for 10 shows "Codex from nvm" "Your task: login_shell first message" || { echo "login_shell: codex from .zshrc's PATH didn't start"; kanna read "Codex from nvm"; return 1; }
+  check wait_for 10 unwrapped "Codex from nvm" "Your task: login_shell first message" || { echo "login_shell: codex from .zshrc's PATH didn't start"; kanna read "Codex from nvm"; return 1; }
   kanna read "Codex from nvm" | grep -q "command not found" && { echo "login_shell: the task's shell didn't find codex"; return 1; }
   return 0
 }
@@ -4373,6 +4374,7 @@ assert "local network" in rows[1]["tip"], rows' "$(desk machines)" || return 1
 
   local clone="$KANNA_STATE_DIR/clone"
   git clone -q "$repo" "$clone" && git -C "$clone" remote set-url origin git@example.com:team/notes.git || { echo "machine_remote_task line $LINENO"; return 1; }
+  clone="$(cd "$clone" && pwd -P)"
   opened="$(cd / && kanna "$clone" 2>&1)"
   [[ "$opened" == *"kanna project import $clone"* ]] || { echo "machine_remote_task: a clone of vm's project outside repos on this Mac: $opened"; return 1; }
 
