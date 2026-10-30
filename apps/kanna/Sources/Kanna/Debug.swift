@@ -143,7 +143,8 @@ extension AppController {
             let remotes = links.remotes.keys.sorted().map { machine -> JSON in
                 let link = links.remotes[machine]
                 return ["machine": .string(machine), "attached": .bool(link?.attached == true), "path": links.path(of: machine),
-                        "failure": links.failure(of: machine) ?? .null, "daemon": link?.daemonInfo ?? .null]
+                        "failure": links.failure(of: machine) ?? .null, "daemon": link?.daemonInfo ?? .null,
+                        "ports": .object(Dictionary(uniqueKeysWithValues: (links.ports[machine] ?? [:]).map { (String($0.key), JSON.number(Double($0.value))) }))]
             }
             return ["name": links.name.map { .string($0) } ?? .null, "links": .array(remotes)]
         }
@@ -184,8 +185,15 @@ extension AppController {
                 let data = value.flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.fragmentsAllowed]) }
                 return ["value": .string(data.map { String(decoding: $0, as: UTF8.self) } ?? "null"), "magnification": .number(Double(web.webView.magnification))]
             }
+            if let edit = args["edit"]?.string {
+                web.editURL()
+                let shown = web.editing ?? ""
+                web.submit(edit.replacingOccurrences(of: "{shown}", with: shown))
+                return ["editor": .string(shown)]
+            }
             let text = try? await web.webView.evaluateJavaScript("document.body ? document.body.innerText : ''") as? String
-            var reply: [String: JSON] = ["url": web.webView.url.map { .string($0.absoluteString) } ?? .null, "text": .string(text ?? ""), "zoom": .number(Double(web.zoom))]
+            var reply: [String: JSON] = ["url": web.webView.url.map { .string($0.absoluteString) } ?? .null, "text": .string(text ?? ""), "zoom": .number(Double(web.zoom)),
+                                         "notice": web.shownNotice.map { .string($0) } ?? .null]
             guard let markup = web.markup else { return reply }
             let point = { (rect: NSRect) -> JSON in [.number(Double(rect.midX)), .number(Double(markup.bounds.height - rect.midY))] }
             if let selector = args["find"]?.string {

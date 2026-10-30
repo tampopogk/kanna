@@ -11,6 +11,8 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
     var onTitleChange: ((String) -> Void)?
     private var titled: NSKeyValueObservation?
     private(set) var url: URL?
+    var waitingFor: String?
+    var unmap: (URL) -> URL = { $0 }
     private let notice = NSTextField(wrappingLabelWithString: "")
     private var editor: NSTextField?
     private var retry: Timer?
@@ -22,10 +24,10 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
 
     let markable: Bool
 
-    init(url: String, markup: Bool = false) {
+    init(url: String, markup: Bool = false, store: WKWebsiteDataStore = .default()) {
         markable = markup
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
+        configuration.websiteDataStore = store
         relay = PageMarkupView.install(on: configuration)
         webView = FocusReportingWebView(frame: .zero, configuration: configuration)
         super.init(frame: .zero)
@@ -129,8 +131,9 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
         if error.domain == NSURLErrorDomain, error.code == NSURLErrorCancelled { return }
         guard let url else { return }
         let refused = error.domain == NSURLErrorDomain && [NSURLErrorCannotConnectToHost, NSURLErrorNetworkConnectionLost, NSURLErrorTimedOut].contains(error.code)
-        if refused, ["localhost", "127.0.0.1", "::1"].contains(url.host ?? "") {
-            show("Waiting for \(url.host ?? "")\(url.port.map { ":\($0)" } ?? "")…\nKanna keeps retrying until the server responds.")
+        let lost = waitingFor != nil && error.domain == NSURLErrorDomain && [NSURLErrorZeroByteResource, NSURLErrorBadServerResponse].contains(error.code)
+        if refused || lost, ["localhost", "127.0.0.1", "::1"].contains(url.host ?? "") {
+            show("Waiting for \(waitingFor ?? "\(url.host ?? "")\(url.port.map { ":\($0)" } ?? "")")…\nKanna keeps retrying until the server responds.")
             retry = Timer.scheduledTimer(withTimeInterval: 1, repeats: false) { [weak self] _ in
                 MainActor.assumeIsolated { if let self, let url = self.url { self.webView.load(URLRequest(url: url)) } }
             }
@@ -144,7 +147,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
             window?.makeFirstResponder(editor)
             return
         }
-        let field = NSTextField(string: url?.absoluteString ?? "")
+        let field = NSTextField(string: url.map(unmap)?.absoluteString ?? "")
         field.font = .systemFont(ofSize: 13)
         field.bezelStyle = .roundedBezel
         field.delegate = self
@@ -159,9 +162,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         switch selector {
         case #selector(NSResponder.insertNewline(_:)):
-            let text = control.stringValue.trimmingCharacters(in: .whitespaces)
-            closeEditor()
-            if !text.isEmpty { onNavigate?(text) }
+            submit(control.stringValue)
             return true
         case #selector(NSResponder.cancelOperation(_:)):
             closeEditor()
@@ -169,6 +170,16 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
         default:
             return false
         }
+    }
+
+    var editing: String? { editor?.stringValue }
+
+    var shownNotice: String? { notice.isHidden ? nil : notice.stringValue }
+
+    func submit(_ text: String) {
+        let text = text.trimmingCharacters(in: .whitespaces)
+        closeEditor()
+        if !text.isEmpty { onNavigate?(text) }
     }
 
     func controlTextDidEndEditing(_ notification: Notification) { closeEditor() }
