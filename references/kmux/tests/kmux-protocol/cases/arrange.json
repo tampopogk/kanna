@@ -6,10 +6,10 @@
       { "send": { "cmd": "open", "args": { "type": "term", "name": "b" } } },
       { "send": { "cmd": "open", "args": { "type": "term", "name": "c" } } },
       { "send": { "cmd": "arrange", "args": { "layout": { "split": "column", "children": [ { "pane": "c", "size": "1/2" }, { "pane": "a" }, { "pane": "b" } ] } } },
-        "expect": { "window": "w1", "layout": { "split": "column", "children": [ { "pane": "c", "size": "1/2" }, { "pane": "a", "size": "1/4" }, { "pane": "b", "size": "1/4" } ] } } },
+        "expect": { "window": "win-1", "layout": { "split": "column", "children": [ { "pane": "c", "size": "1/2" }, { "pane": "a", "size": "1/4" }, { "pane": "b", "size": "1/4" } ] } } },
       { "send": { "cmd": "arrange", "args": { "layout": { "split": "row", "children": [ { "pane": "a", "size": "1/3" }, { "pane": "b", "size": "1/3" } ] } } },
         "expect": { "layout": { "split": "row", "children": [ { "pane": "a", "size": "1/2" }, { "pane": "b", "size": "1/2" } ] } } },
-      { "send": { "cmd": "list" }, "expect": { "windows": [ { "tabs": [ { "id": "t1", "active": true }, { "title": "unarranged", "active": false, "layout": { "pane": "c" } } ] } ] } }
+      { "send": { "cmd": "list" }, "expect": { "windows": [ { "tabs": [ { "id": "tab-1", "active": true }, { "title": "unarranged", "active": false, "layout": { "pane": "c" } } ] } ] } }
     ]
   },
   {

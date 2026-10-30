@@ -85,14 +85,14 @@ func makeCore() -> (Core, FakeHost) {
         #expect(core.model.windows.count == 2)
 
         let closed = await core.handle(["cmd": "close", "args": ["pane": "solo"]])
-        #expect(closed["closed"] == ["p3"])
-        #expect(core.model.windows.map(\.id) == ["w1"])
-        #expect(core.model.key == "w1")
+        #expect(closed["closed"] == ["term-3"])
+        #expect(core.model.windows.map(\.id) == ["win-1"])
+        #expect(core.model.key == "win-1")
 
         _ = await core.handle(["cmd": "close", "args": ["pane": "a"]])
         #expect(core.model.tree(core.model.windows[0].tabs[0].root) == ["pane": "b"])
-        #expect(core.model.windows[0].focused == "p2")
-        #expect(host.stopped == ["p3", "p1"])
+        #expect(core.model.windows[0].focused == "term-2")
+        #expect(host.stopped == ["term-3", "term-1"])
     }
 
     @Test func focusZoomAndCycling() async {
@@ -101,43 +101,48 @@ func makeCore() -> (Core, FakeHost) {
         _ = await core.handle(["cmd": "open", "args": ["type": "term", "name": "t2", "tab": true]])
         let window = core.model.windows[0]
         #expect(window.tabs.count == 2)
-        #expect(core.cycleTab(in: window, by: 1) == "t1")
+        #expect(core.cycleTab(in: window, by: 1) == "tab-1")
 
-        _ = await core.handle(["cmd": "focus", "args": ["tab": "t1"]])
-        #expect(window.active == "t1")
-        #expect(window.focused == "p3")
-        #expect(core.cyclePane(in: window, by: 1) == "p1")
-        #expect(core.cyclePane(in: window, by: -1) == "p2")
+        _ = await core.handle(["cmd": "focus", "args": ["tab": "tab-1"]])
+        #expect(window.active == "tab-1")
+        #expect(window.focused == "term-3")
+        #expect(core.cyclePane(in: window, by: 1) == "term-1")
+        #expect(core.cyclePane(in: window, by: -1) == "term-2")
 
         let zoomed = await core.handle(["cmd": "zoom", "args": ["pane": "a"]])
         #expect(zoomed["zoomed"] == true)
-        #expect(window.zoomed == "p1")
+        #expect(window.zoomed == "term-1")
         _ = await core.handle(["cmd": "focus", "args": ["pane": "b"]])
-        #expect(window.zoomed == "p2")
-        #expect(window.focused == "p2")
+        #expect(window.zoomed == "term-2")
+        #expect(window.focused == "term-2")
         _ = await core.handle(["cmd": "focus", "args": ["pane": .string(core.cyclePane(in: window, by: 1)!)]])
-        #expect(window.zoomed == "p3")
+        #expect(window.zoomed == "term-3")
         _ = await core.handle(["cmd": "focus", "args": ["pane": "t2"]])
-        #expect(window.zoomed == "p4")
-        _ = await core.handle(["cmd": "focus", "args": ["tab": "t1"]])
-        #expect(window.zoomed == "p3")
+        #expect(window.zoomed == "term-4")
+        _ = await core.handle(["cmd": "focus", "args": ["tab": "tab-1"]])
+        #expect(window.zoomed == "term-3")
         _ = await core.handle(["cmd": "zoom", "args": ["pane": "a"]])
-        #expect(window.zoomed == "p1")
+        #expect(window.zoomed == "term-1")
         _ = await core.handle(["cmd": "zoom", "args": ["pane": "a"]])
         #expect(window.zoomed == nil)
-        #expect(window.focused == "p1")
+        #expect(window.focused == "term-1")
 
         let missing = await core.handle(["cmd": "focus"])
         #expect(missing["error"]?["code"] == "bad_request")
     }
 
-    @Test func restartStopsAndStartsAgain() async {
+    @Test func restartStartsANewTerminalInItsPlace() async {
         let (core, host) = makeCore()
         _ = await core.handle(["cmd": "open", "args": ["type": "term", "name": "a"]])
-        core.update("p1", state: .exited, exitCode: 0)
+        core.update("term-1", state: .exited, exitCode: 0)
         let reply = await core.handle(["cmd": "restart", "args": ["pane": "a"]])
+        #expect(reply["pane"]?["id"] == "term-2")
         #expect(reply["pane"]?["state"] == "running")
-        #expect(host.stopped == ["p1"])
+        #expect(reply["pane"]?["exitCode"] == nil)
+        #expect(host.stopped == ["term-1"])
+        #expect(core.model.paneOrder == ["term-2"])
+        #expect(core.model.windows[0].focused == "term-2")
+        #expect(core.model.tree(core.model.windows[0].tabs[0].root) == ["pane": "a"])
     }
 
     @Test func dockedPaneCyclesInReadingOrder() async {
@@ -146,29 +151,29 @@ func makeCore() -> (Core, FakeHost) {
         _ = await core.handle(["cmd": "open", "args": ["type": "term", "name": "b", "split": "right"]])
         _ = await core.handle(["cmd": "open", "args": ["type": "term", "name": "agent", "dock": "left"]])
         let window = core.model.windows[0]
-        #expect(window.shownPanes == ["p3", "p1", "p2"])
-        #expect(core.cyclePane(in: window, by: 1) == "p1")
-        #expect(core.cyclePane(in: window, by: -1) == "p2")
+        #expect(window.shownPanes == ["term-3", "term-1", "term-2"])
+        #expect(core.cyclePane(in: window, by: 1) == "term-1")
+        #expect(core.cyclePane(in: window, by: -1) == "term-2")
         _ = await core.handle(["cmd": "move", "args": ["pane": "agent", "dock": "right"]])
-        #expect(window.shownPanes == ["p1", "p2", "p3"])
-        #expect(core.cyclePane(in: window, by: 1) == "p1")
+        #expect(window.shownPanes == ["term-1", "term-2", "term-3"])
+        #expect(core.cyclePane(in: window, by: 1) == "term-1")
         _ = await core.handle(["cmd": "focus", "args": ["pane": "b"]])
-        #expect(core.cyclePane(in: window, by: 1) == "p3")
+        #expect(core.cyclePane(in: window, by: 1) == "term-3")
     }
 
     @Test func dockedPaneStaysWhenItsProgramExits() async {
         let (core, host) = makeCore()
         _ = await core.handle(["cmd": "open", "args": ["type": "term", "name": "agent", "dock": "left"]])
-        core.update("p1", state: .exited, exitCode: 2)
-        #expect(core.model.windows.first?.dock?.pane == "p1")
+        core.update("term-1", state: .exited, exitCode: 2)
+        #expect(core.model.windows.first?.dock?.pane == "term-1")
         #expect(core.model.pane("agent")?.state == .exited)
         let reply = await core.handle(["cmd": "restart", "args": ["pane": "agent"]])
         #expect(reply["pane"]?["state"] == "running")
-        #expect(core.model.windows.first?.dock == Dock(pane: "p1", edge: .left, width: 0.4))
-        #expect(host.stopped == ["p1"])
+        #expect(core.model.windows.first?.dock == Dock(pane: "term-2", edge: .left, width: 0.4))
+        #expect(host.stopped == ["term-1"])
     }
 
-    @Test func workspacesSavedWithOldIDsStillLoad() async {
+    @Test func workspacesSavedWithOldIDsLoadRenamed() async {
         let (core, _) = makeCore()
         let state: JSON = ["kmux": "state", "version": 1, "panes": [], "windows": [], "workspaces": [["id": "s2", "name": "old", "hidden": false]]]
         #expect(await core.handle(["cmd": "debug.restoreState", "args": ["state": state]])["ok"] == true)
@@ -176,7 +181,7 @@ func makeCore() -> (Core, FakeHost) {
         #expect(made["workspace"]?["id"] == "ws-3")
         let list = await core.handle(["cmd": "list"])
         if case .array(let workspaces) = list["workspaces"] {
-            #expect(workspaces.compactMap { $0["id"]?.string } == ["s2", "ws-3"])
+            #expect(workspaces.compactMap { $0["id"]?.string } == ["ws-2", "ws-3"])
         } else {
             Issue.record("no workspaces in \(list)")
         }

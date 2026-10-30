@@ -49,8 +49,7 @@ final class DiffColumn {
         textView.autoresizingMask = []
         textView.textContainerInset = NSSize(width: 0, height: 0)
         textView.selectedTextAttributes = [.backgroundColor: NSColor.selectedTextBackgroundColor]
-        textView.usesFindBar = true
-        textView.isIncrementalSearchingEnabled = true
+        textView.usesFindBar = false
         scrollView.documentView = textView
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = true
@@ -61,6 +60,7 @@ final class DiffColumn {
         scrollView.hasVerticalRuler = true
         scrollView.rulersVisible = true
         scrollView.contentView.postsBoundsChangedNotifications = true
+        textView.startFinder(in: scrollView)
     }
 
     func show(_ rows: [DiffRow], files: [DiffFile], text: NSAttributedString, size: CGFloat) {
@@ -77,8 +77,15 @@ final class DiffColumn {
         }
         textView.starts = starts
         textView.font = CodeTheme.font(size: size)
+        textView.finder.noteClientStringWillChange()
         textView.textStorage?.setAttributedString(text)
         gutter.needsDisplay = true
+    }
+
+    var usedHeight: CGFloat {
+        guard let container = textView.textContainer else { return 0 }
+        layoutManager.ensureLayout(for: container)
+        return layoutManager.usedRect(for: container).height
     }
 
     func size(minimumHeight: CGFloat, font: NSFont) {
@@ -117,8 +124,42 @@ final class DiffTextView: NSTextView {
     var onHeader: ((Int, Bool) -> Void)?
     var onLink: ((String) -> Void)?
     var contextMenu: (() -> NSMenu?)?
+    var onMatches: (() -> Void)?
+    let finder = NSTextFinder()
+    private lazy var finderClient = CodeFinderClient(textView: self)
+    private var matchObserver: NSKeyValueObservation?
 
     var starts: [Int] = []
+
+    func startFinder(in container: NSScrollView) {
+        finder.client = finderClient
+        finder.findBarContainer = container
+        finder.isIncrementalSearchingEnabled = true
+        finder.incrementalSearchingShouldDimContentView = false
+        matchObserver = finder.observe(\.incrementalMatchRanges) { [weak self] _, _ in
+            DispatchQueue.main.async {
+                self?.needsDisplay = true
+                self?.onMatches?()
+            }
+        }
+    }
+
+    var matches: [NSRange] { finder.incrementalMatchRanges.map(\.rangeValue) }
+
+    override func performTextFinderAction(_ sender: Any?) {
+        guard let tag = (sender as? NSValidatedUserInterfaceItem)?.tag, let action = NSTextFinder.Action(rawValue: tag) else { return }
+        finder.performAction(action)
+    }
+
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(performTextFinderAction(_:)) { return NSTextFinder.Action(rawValue: item.tag).map(finder.validateAction) ?? false }
+        return super.validateUserInterfaceItem(item)
+    }
+
+    override func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(performTextFinderAction(_:)) { return validateUserInterfaceItem(item) }
+        return super.validateMenuItem(item)
+    }
 
     func start(ofRow row: Int) -> Int {
         guard !starts.isEmpty else { return 0 }
@@ -191,6 +232,19 @@ final class DiffTextView: NSTextView {
             if fresh.contains(index) {
                 DiffTheme.accent.setFill()
                 NSRect(x: 0, y: fragment.minY, width: 3, height: fragment.height).fill()
+            }
+        }
+        drawMatches(in: rect)
+    }
+
+    private func drawMatches(in rect: NSRect) {
+        guard let manager = layoutManager, let container = textContainer else { return }
+        let glyphs = manager.glyphRange(forBoundingRect: rect, in: container)
+        let visible = manager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+        for match in matches where NSIntersectionRange(match, visible).length > 0 {
+            manager.enumerateEnclosingRects(forGlyphRange: manager.glyphRange(forCharacterRange: match, actualCharacterRange: nil),
+                                            withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0), in: container) { box, _ in
+                NSTextFinder.drawIncrementalMatchHighlight(in: box)
             }
         }
     }
