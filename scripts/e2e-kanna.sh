@@ -1977,6 +1977,26 @@ desk_shelf() {
   raw '{"id":1,"cmd":"debug.click","args":{"backlog":"'"$(tid 3)"'","window":"d1"}}' >/dev/null
   check wait_for 10 eval '[[ "$(desk running)" == 3 && "$(desk backlog)" == "[\"$(tid 4)\"]" ]]' || { desk running; desk backlog; return 1; }
   check test "$(desk window.dock)" == None || { echo "desk_shelf: starting a backlog task docked it"; return 1; }
+  local first second third; first="$(pane First id)"; second="$(pane Second id)"; third="$(pane Third id)"
+  rows() { desk rows | python3 -c 'import json, sys
+print(" ".join(r["task"] + (":active" if r["active"] else "") + (":lit" if r["highlit"] else "") + (":" + r["go"] if r["goShown"] else "") for r in json.load(sys.stdin)))'; }
+  strip() { desk stripLayout | python3 -c 'import json, sys; print(" ".join(i["task"] + ":" + str(i["key"]) for i in json.load(sys.stdin)["items"]))'; }
+  check wait_for 5 eval '[[ "$(rows)" == "$first:active:lit $second $third" ]]' || { echo "desk_shelf: the Desk view lists its tasks oldest first, the active one in its place, with no hint until hovered"; rows; return 1; }
+  docked() { [[ "$(desk window.dock.pane)" == "$1" ]]; }
+  key cmd+1
+  check wait_for 5 docked "$third" || { echo "desk_shelf: ⌘1 isn't the task that came to the Desk last"; return 1; }
+  check wait_for 5 eval '[[ "$(strip)" == "$first:⌘1 $second:⌘2" ]]' || { echo "desk_shelf: the strip lists the others oldest first, keyed by recency"; strip; return 1; }
+  key cmd+1
+  check wait_for 5 docked "$first" || { echo "desk_shelf: ⌘1 twice didn't go back to the first task"; return 1; }
+  check wait_for 5 eval '[[ "$(strip)" == "$second:⌘2 $third:⌘1" ]]' || { echo "desk_shelf: the strip's keys don't follow recency"; strip; return 1; }
+  key cmd+2
+  check wait_for 5 docked "$second" || { echo "desk_shelf: ⌘2 (1)"; return 1; }
+  key cmd+2
+  check wait_for 5 docked "$third" || { echo "desk_shelf: ⌘2 (2)"; return 1; }
+  key cmd+2
+  check wait_for 5 docked "$first" || { echo "desk_shelf: ⌘2 three times didn't visit every task"; return 1; }
+  key cmd+.
+  check wait_for 5 eval '[[ "$(desk page)" == True && "$(rows)" == "$first:active:lit $second $third" ]]' || { echo "desk_shelf: the active task moved in the Desk view"; rows; return 1; }
   raw '{"id":1,"cmd":"debug.click","args":{"backlog":"'"$(tid 4)"'","window":"d1"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk note)" == *"3 tasks on the Desk"* ]]' || { desk note; return 1; }
   stop_app; start_app || { echo "desk_shelf line $LINENO"; return 1; }

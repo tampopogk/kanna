@@ -71,9 +71,11 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
 .row .t .n { font-weight: 600; }
 .row .t .s { color: var(--muted); font-size: 12px; }
 .row .go { color: var(--accent); white-space: nowrap; visibility: hidden; }
-.row:hover .go { visibility: visible; }
-.row.active .go { visibility: visible; color: var(--muted); }
-.row.active .tag { font: 11px var(--sans); color: var(--accent); border: 1px solid var(--accent); border-radius: 5px; padding: 0 5px; margin-left: 6px; font-weight: 500; }
+.row:hover .go, .row.hover .go { visibility: visible; }
+.row.hover { background: var(--panel); }
+.row.active { background: color-mix(in srgb, var(--panel) 55%, transparent); }
+.row.active:hover { background: var(--panel); }
+.row.active .go { color: var(--muted); }
 .row.waiting .t .n { font-weight: 500; }
 .row.waiting .dot { background: transparent; border: 1.5px solid var(--muted); width: 9px; height: 9px; }
 .row.waiting .go { visibility: visible; color: var(--muted); }
@@ -119,7 +121,7 @@ body.menu .menubar { display: flex; margin: 0; border-radius: 0; border-width: 0
 <main>
   <div class="intro">
     <h1>Desk view: the planner, the Desk's three tasks, the Shelf below</h1>
-    <p>The Desk holds up to three of a project's tasks, one of them active. The Desk view shows the planning agent on the left and, on the right, the Desk's tasks and, below them, the Shelf: the tasks Kanna has brought in, waiting and run a few at a time in the background. Make a Desk task active (click it, ⌘1 … ⌘3, ⇧⌘A) to see it as it was: its agent docked, its tabs, and the strip of the Desk's other tasks below. ⌘. toggles between the Desk view and the active task, which stays active (and running) while the Desk view shows. Move a Shelf task to the Desk from its row; Task › Move to Shelf moves the active task back.</p>
+    <p>The Desk holds up to three of a project's tasks, one of them active. The Desk view shows the planning agent on the left and, on the right, the Desk's tasks and, below them, the Shelf: the tasks Kanna has brought in, waiting and run a few at a time in the background. The Desk's tasks are listed oldest first, by when each was made, the active one in its place; hover a row for its key. Make a Desk task active (click it, ⌘1 … ⌘3, ⇧⌘A) to see it as it was: its agent docked, its tabs, and the strip of the Desk's other tasks below. ⌘. toggles between the Desk view and the active task, which stays active (and running) while the Desk view shows. Move a Shelf task to the Desk from its row; Task › Move to Shelf moves the active task back.</p>
     <div class="controls">
       <button id="theme">Light / dark</button>
       <button id="ring" title="A Desk task that isn't active stops to ask you something">Simulate: a Desk task needs you</button>
@@ -127,7 +129,7 @@ body.menu .menubar { display: flex; margin: 0; border-radius: 0; border-width: 0
     </div>
     <div class="keys">
       <span><kbd>⌘.</kbd> the Desk view ⇄ the active task</span>
-      <span><kbd>⌘1</kbd> <kbd>⌘2</kbd> <kbd>⌘3</kbd> make the Desk's 1st, 2nd, 3rd other task active</span>
+      <span><kbd>⌘1</kbd> <kbd>⌘2</kbd> <kbd>⌘3</kbd> the Desk's other tasks, the one left last first: <kbd>⌘1</kbd> again flips back, <kbd>⌘2</kbd> again cycles through all three</span>
       <span><kbd>⇧⌘A</kbd> the Desk task waiting longest for you</span>
       <span><kbd>⌘F</kbd> search the Shelf (Desk view): <kbd>↑</kbd> <kbd>↓</kbd> pick, <kbd>↩</kbd> Move to Desk, <kbd>esc</kbd> clear</span>
     </div>
@@ -147,9 +149,11 @@ const initial = () => {
     menu: false,
     query: "", sel: 0, finding: false, note: "",
     tasks: [
-      { id: "p1", place: "desk", title: "Doc markup reference model", branch: "task-doc-markup", agent: "claude", status: "working", leftAt: now - 2 * MIN,
+      { id: "p1", place: "desk", title: "Doc markup reference model", branch: "task-doc-markup", agent: "claude", status: "working", leftAt: now - 2 * MIN, madeAt: now - 50 * MIN,
         tabs: ["doc-markup.md", "doc-markup.html", "tests"] },
-      { id: "p4", place: "desk", title: "Tab bar follows light mode", branch: "tab-bar-light", agent: "codex", status: "idle", leftAt: now - 12 * MIN,
+      { id: "p3", place: "desk", title: "Tidy the e2e helpers", branch: "e2e-helpers", agent: "claude", status: "idle", leftAt: now - 30 * MIN, madeAt: now - 90 * MIN,
+        tabs: ["scripts/e2e-kanna.sh"] },
+      { id: "p4", place: "desk", title: "Tab bar follows light mode", branch: "tab-bar-light", agent: "codex", status: "idle", leftAt: now - 12 * MIN, madeAt: now - 45 * MIN,
         tabs: ["localhost:5173", "s36-2-light.png"] },
       { id: "p8", place: "shelf", title: "agent_status e2e is flaky", by: "the planning agent", madeAt: now - 40 * MIN,
         prompt: "agent_status waits 5s for 'working' after answering the mock agent; make the wait follow the status" },
@@ -163,6 +167,7 @@ const initial = () => {
   };
 };
 let s = initial();
+let hovered = null;
 const cheers = ["Clear desk, clear mind. Pick what's next.", "Nice work. What's next?", "Fresh start. Pick a task when you're ready.", "Breathe. Then pick the next one."];
 let cheerAt = location.hash.includes("picture") ? 0 : Math.floor(Math.random() * cheers.length);
 const statusText = { working: "working", needs: "needs you", idle: "idle" };
@@ -172,10 +177,12 @@ const ago = at => { const m = Math.max(0, Math.round((Date.now() - at) / MIN)); 
 const onDesk = () => s.tasks.filter(t => t.place === "desk");
 const shelf = () => s.tasks.filter(t => t.place === "shelf");
 const active = () => task(s.active);
+const byAge = list => list.slice().sort((a, b) => a.madeAt - b.madeAt);
 const others = () => {
   const rest = onDesk().filter(t => t.id !== s.active).sort((a, b) => b.leftAt - a.leftAt);
   return rest.filter(t => t.status === "needs").concat(rest.filter(t => t.status !== "needs"));
 };
+const keyOf = t => { const i = others().indexOf(t); return i >= 0 && i < 3 ? "⌘" + (i + 1) : ""; };
 const words = q => q.toLowerCase().split(/\s+/).filter(Boolean);
 const matches = (t, q) => { const hay = (t.title + "\n" + t.prompt).toLowerCase(); return words(q).every(x => hay.includes(x)); };
 const hits = () => shelf().filter(t => matches(t, s.query));
@@ -222,7 +229,7 @@ function taskHTML(t) {
 function stripHTML() {
   const waiting = shelf().length;
   return `<span class="hint" data-toggle title="The Desk view: the planner, the Desk's tasks and the Shelf"><kbd>⌘.</kbd> Desk</span>${others().length ? `<span class="sep"></span>` : ""}` +
-    others().map((t, i) => `<span class="item ${t.status === "needs" ? "needs" : ""}" data-activate="${t.id}" title="${esc(t.title)}"><span class="dot ${t.status}"></span><span class="nm">${esc(t.title)}</span><span class="meta">· ${t.status === "needs" ? "needs you" : ago(t.leftAt) + " ago"}</span><span class="kb">⌘${i + 1}</span></span>`).join("") +
+    byAge(others()).map(t => `<span class="item ${t.status === "needs" ? "needs" : ""}" data-activate="${t.id}" title="${esc(t.title)}"><span class="dot ${t.status}"></span><span class="nm">${esc(t.title)}</span><span class="meta">· ${t.status === "needs" ? "needs you" : ago(t.leftAt) + " ago"}</span><span class="kb">${keyOf(t)}</span></span>`).join("") +
     (waiting ? `<span class="count">${waiting} on the Shelf</span>` : "");
 }
 
@@ -235,13 +242,13 @@ function plannerLog() {
 }
 
 function deskViewHTML() {
-  const a = active(), rest = others(), full = onDesk().length >= LIMIT, found = hits(), sel = Math.min(s.sel, Math.max(0, found.length - 1)), q = s.query;
-  const deskRow = (t, key, isActive) => `<div class="row ${isActive ? "active" : ""}" data-activate="${t.id}"><span class="dot ${t.status}"></span><div class="t"><div class="n">${esc(t.title)}${isActive ? `<span class="tag">active</span>` : ""}</div><div class="s">${t.agent} · ${statusText[t.status]}${isActive ? "" : ` · ${ago(t.leftAt)} ago`} · ${esc(t.branch)}</div></div><span class="go">${isActive ? "⌘. · Back to it" : `${key} · Make active →`}</span></div>`;
+  const full = onDesk().length >= LIMIT, found = hits(), sel = Math.min(s.sel, Math.max(0, found.length - 1)), q = s.query;
+  const deskRow = (t, key, isActive) => `<div class="row ${isActive ? "active" : ""} ${t.id === hovered ? "hover" : ""}" data-activate="${t.id}"><span class="dot ${t.status}"></span><div class="t"><div class="n">${esc(t.title)}</div><div class="s">${t.agent} · ${statusText[t.status]}${isActive ? "" : ` · ${ago(t.leftAt)} ago`} · ${esc(t.branch)}</div></div><span class="go">${isActive ? "⌘. · Back to it" : `${key ? key + " · " : ""}Make active →`}</span></div>`;
   return `<div class="content">
     <div class="agent"><div class="head">Planning · ${esc(s.repo)} · main</div><div class="term">${plannerLog()}</div></div>
     <div class="docs"><div class="empty"><p class="sub">${cheers[cheerAt]}</p>
       <div class="group"><div class="gh"><span><b>Desk</b> · ${esc(s.repo)}</span><span>${onDesk().length} of ${LIMIT} tasks</span></div>
-        ${(a ? deskRow(a, "", true) : "") + rest.map((t, i) => deskRow(t, "⌘" + (i + 1), false)).join("") || `<div class="s" style="color:var(--muted)">Nothing on the Desk. Move a task here from the Shelf.</div>`}</div>
+        ${byAge(onDesk()).map(t => deskRow(t, keyOf(t), t.id === s.active)).join("") || `<div class="s" style="color:var(--muted)">Nothing on the Desk. Move a task here from the Shelf.</div>`}</div>
       <div class="group"><div class="gh"><span><b>Shelf</b></span>${shelf().length ? `<label class="find"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><input data-find value="${esc(q)}" placeholder="Search the Shelf" spellcheck="false" autocomplete="off"><kbd>⌘F</kbd></label>` : ""}<span>${q ? `${found.length} of ${shelf().length}` : `${shelf().length} waiting`}</span></div>
         ${found.map((t, i) => `<div class="row waiting ${q && i === sel ? "sel" : ""}" data-move="${t.id}"><span class="dot"></span><div class="t"><div class="n">${marked(t.title, q)}</div><div class="s">${t.waits ? `waits for ${esc(t.waits)} · ` : ""}${marked(t.prompt, q)} · from ${esc(t.by)}, ${ago(t.madeAt)} ago</div></div><span class="go ${full || t.waits ? "off" : ""}">${t.waits ? "Blocked" : full ? "Desk full" : q && i === sel ? "↩ Move to Desk" : "Move to Desk →"}</span></div>`).join("") || (q ? `<div class="nohit">No Shelf task matches “${esc(q)}”.</div>` : `<div class="s" style="color:var(--muted)">Empty. Ask the planning agent for tasks.</div>`)}
         <p class="note">${esc(s.note)}</p></div>
@@ -351,9 +358,11 @@ document.getElementById("reset").onclick = () => { s = initial(); render(); };
 document.getElementById("ring").onclick = () => { const t = others().find(t => t.status !== "needs"); if (t) { t.status = "needs"; t.needsAt = Date.now(); render(); } };
 if (location.hash.includes("picture")) document.body.classList.add("picture");
 if (location.hash.includes("light")) document.documentElement.dataset.theme = "light";
-if (location.hash.includes("full")) moveToDesk("p9");
+if (location.hash.includes("full")) { task("p3").place = "shelf"; task("p3").by = "the planning agent"; task("p3").prompt = "Fold the repeated desk() helpers into one"; moveToDesk("p9"); }
 if (location.hash.includes("needs")) { task("p4").status = "needs"; task("p4").needsAt = Date.now(); }
 if (location.hash.includes("desk")) s.view = "desk";
+const pointed = location.hash.match(/hover=([^&]*)/);
+if (pointed) hovered = pointed[1];
 const asked = location.hash.match(/q=([^&]*)/);
 if (asked) { s.query = decodeURIComponent(asked[1]); s.finding = true; }
 if (location.hash.includes("menu")) { document.body.classList.add("menu"); s.menu = true; }

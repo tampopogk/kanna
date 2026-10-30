@@ -74,7 +74,7 @@ extension AppController {
             return (false, there.id)
         }
         var desk = physical.desks.first { $0.active == workspace } ?? window.flatMap { physical.desk($0) } ?? (front ? frontDesk : nil) ?? physical.newDesk(project: nil)
-        if let old = desk.shows { physical.park(old) }
+        if let old = desk.shows ?? desk.active, old != workspace { physical.park(old) }
         desk.shows = workspace
         desk.active = workspace
         physical.setDesk(desk)

@@ -438,6 +438,12 @@ impl Db {
         rows.collect()
     }
 
+    pub fn made_order(&self) -> rusqlite::Result<Vec<String>> {
+        let mut statement = self.conn.prepare("select id from tasks where place != 'done' order by made_at, rowid")?;
+        let ids = statement.query_map([], |r| r.get(0))?;
+        ids.collect()
+    }
+
     pub fn task(&self, id: &str) -> rusqlite::Result<Option<Row>> {
         self.conn
             .query_row("select id, repo, place, terminal, made_at, doc from tasks where id = ?1", [id], |r| {
