@@ -1,17 +1,17 @@
 # Machines: Tasks Across Machines
 
-**Status:** §1–2 built (slice 10), §3–4 planned · **Tested:** `cargo test -p kanna --test machines_backlog` (two and three daemons), `-p kanna-daemon replica` · **Part of:** [your machines](machines.md) · **Builds on:** [backlog runners](backlog-runners.md), [tasks](tasks.md), [each app's Desk and Shelf](app-desk.md)
+**Status:** §1–2 built (slice 10), §3–4 planned · **Tested:** `cargo test -p kanna --test machines_shelf` (two and three daemons), `-p kanna-daemon replica` · **Part of:** [your machines](machines.md) · **Builds on:** [Shelf runners](shelf-runners.md), [tasks](tasks.md), [each app's Desks](app-desk.md)
 
-Where a task runs when you have several machines: one backlog replicated to all of them, exactly one machine allowed to start each task, and tasks moving between any two daemons at a boundary. All of it works on your own machines with no account; [Kanna Cloud](kanna-cloud.md#5-directory-and-relays) adds an always-on copy.
+Where a task runs when you have several machines: one Shelf replicated to all of them, exactly one machine allowed to start each task, and tasks moving between any two daemons at a boundary. All of it works on your own machines with no account; [Kanna Cloud](kanna-cloud.md#5-directory-and-relays) adds an always-on copy.
 
 ## Contents
 
-1. [The replicated backlog](#1-the-replicated-backlog)
+1. [The replicated Shelf](#1-the-replicated-shelf)
 2. [Owners and grants](#2-owners-and-grants)
 3. [Transfer](#3-transfer)
 4. [Repos and credentials](#4-repos-and-credentials)
 
-## 1. The replicated backlog
+## 1. The replicated Shelf
 
 Every one of your daemons holds every task's record, synced peer to peer over iroh, LAN first.
 
@@ -23,7 +23,7 @@ Every one of your daemons holds every task's record, synced peer to peer over ir
 - **The record is a log of field writes** in `kanna.db`: `record_ops (device, ms, n, task, birth, field, value)`, one row per write, never changed. A field's value is its write with the largest `(ms, n, device)`, so every daemon that has the same rows shows the same record, whatever order they came in. `device` is the daemon's endpoint key.
 - **The clock** is a hybrid logical clock kept in `meta` (`hlc`): wall-clock milliseconds, a counter for writes in the same millisecond, raised past every write it reads and never back across a restart.
 - **A task's birth** is the clock reading when it was made (`ms.n.device`); runners take tasks oldest birth first. Tasks made before slice 10 get a birth from when they were made.
-- **State** is `waiting` (in the backlog, never started), `started` or `done`. `project` is the repo's identity (its origin URL, else its first commit, [machines-app §1](machines-app.md)), so the same project matches across clones at different paths.
+- **State** is `waiting` (on the Shelf, never started), `started` or `done`. `project` is the repo's identity (its origin URL, else its first commit, [machines-app §1](machines-app.md)), so the same project matches across clones at different paths.
 - **Sync:** every 3 s, and at once after a change, each daemon opens a `sync` stream to each trusted machine and sends its **version vector** (the latest `(ms, n)` it has from each device). The other replies with every write after it, up to 2000, and its own vector; the first sends back what the other lacks. A device's writes always arrive as an unbroken run in clock order, so the vector says exactly what's missing.
 
 ```mermaid
@@ -40,7 +40,7 @@ sequenceDiagram
 - A grant gives up the owner's permission, queues the grant to send and writes the new owner in **one transaction**, which needs them in one database; iroh-docs keeps its records in its own redb store.
 - iroh-docs speaks its own ALPNs (docs, blobs, gossip) beside `kanna/1`, which would skip the [peer log's admission](machine-identity.md#3-the-peer-log) unless gated again; a `sync` stream is admitted like every other `kanna/1` stream, and only a daemon (no app certificate) may open one.
 - It needs a namespace secret handed out at pairing, and a redb store and a blob store on every daemon.
-- The cost is a small sync protocol of our own, without range-based set reconciliation, which backlogs this size don't need. Old writes are never compacted yet.
+- The cost is a small sync protocol of our own, without range-based set reconciliation, which Shelves this size don't need. Old writes are never compacted yet.
 
 ## 2. Owners and grants
 
@@ -51,25 +51,25 @@ sequenceDiagram
     participant X as runner on r720-2
     R4->>O: ask for task-1dfb
     X->>O: ask for task-1dfb
-    O->>O: one transaction: permission sent (epoch 1, to r720-4), owner r720-4, off its backlog
+    O->>O: one transaction: permission sent (epoch 1, to r720-4), owner r720-4, off its Shelf
     O-->>R4: granted: epoch 1
     O-->>X: refused: not_owner
-    R4->>R4: permission ready (epoch 1), owner r720-4, into its backlog
+    R4->>R4: permission ready (epoch 1), owner r720-4, onto its Shelf
     R4->>O: ack
-    Note over R4: worktree, agent, workspace, as any backlog task
+    Note over R4: worktree, agent, workspace, as any Shelf task
 ```
 
 - **A task starts on its owner,** at first the machine where it was made. Who grants is a policy too: a scheduler (a load balancer over many machines, or [Kanna Cloud's](kanna-cloud.md#5-directory-and-relays)) can own every waiting task and assign them centrally ([machines §2](machines.md#2-machines-and-roles)).
-- **Asking:** each repo's runners ([backlog runners](backlog-runners.md)) count tasks they started and asks in flight against `backlog.runners` of the clone here, and fill free places from one list, oldest birth first: their own waiting tasks, which they start, and other machines' waiting tasks in the same project, which they ask the owner for. A task waiting for others, or with `on` that doesn't name this machine, is skipped. The owner grants it to exactly one runner, and that runner becomes the owner.
+- **Asking:** each repo's runners ([Shelf runners](shelf-runners.md)) count tasks they started and asks in flight against `shelf.runners` of the clone here, and fill free places from one list, oldest birth first: their own waiting tasks, which they start, and other machines' waiting tasks in the same project, which they ask the owner for. A task waiting for others, or with `on` that doesn't name this machine, is skipped. The owner grants it to exactly one runner, and that runner becomes the owner.
 - **Permission is not the owner field.** Each machine keeps its own `authority (task, birth, epoch, permit, recipient)`: `ready` (may start or grant), `running` (started here), `sent` (granted at the next epoch, until the receiver acks), `acked`. A daemon starts a task only from `ready` or `running`, and grants only from `ready`, so knowing a record never allows a start; two owners can't both hold it.
 - **The owner checks each ask** against what it knows: still `ready`, not starting, not waiting for others, `on` names the asker, the ID not made twice. The asker takes the grant in one transaction, `ready` at the grant's epoch only if it's newer than any it had, so a grant delivered twice, or an old one replayed after the task came back, gives nothing.
 - **A grant lost on the way is sent again:** the owner keeps `sent` grants and resends each every 3 s to its machine until it's acked, the same epoch to the same machine. While the receiver is away, nobody can run the task: that gap is the price of never running it twice.
 - **An offline owner's tasks wait.** An ask that can't reach the owner skips its tasks for 10 s, then asks again; a refused task is skipped 10 s. Leases that expire would allow a double start, so add them only if waiting hurts.
-- **Placement preferences:** `kanna task new … --on mini,r720-1` names the machines a task may run on, its owner included, whether a runner or `kanna task start` or `shelve` starts it (`not_here`); without it, any machine with a clone of the project and a free runner. Matching a task's `needs:` to machines' capabilities is [Kanna Cloud's](kanna-cloud.md#5-directory-and-relays).
-- **A machine's clones** are the repos of its tasks and its recent projects (`projects touch`, as opening a folder does), matched by project identity. A task granted here goes into the backlog of that clone, made from its record.
-- **Two meanings, two words:** "ask" and "grant" are between machines. A **claim** stays what it is in [app-desk](app-desk.md): an app having a task out on its Shelf, now named by its device (`claimed by: mbp`).
+- **Placement preferences:** `kanna task new … --on mini,r720-1` names the machines a task may run on, its owner included, whether a runner or `kanna task start` or `pick` starts it (`not_here`); without it, any machine with a clone of the project and a free runner. Matching a task's `needs:` to machines' capabilities is [Kanna Cloud's](kanna-cloud.md#5-directory-and-relays).
+- **A machine's clones** are the repos of its tasks and its recent projects (`projects touch`, as opening a folder does), matched by project identity. A task granted here goes onto the Shelf of that clone, made from its record.
+- **Two meanings, two words:** "ask" and "grant" are between machines. A **claim** stays what it is in [app-desk](app-desk.md): an app having a task on its Desk, now named by its device (`claimed by: mbp`).
 - **Task IDs** stay random 32 bits ([task IDs](task-ids.md)). Apps key views by (machine, ID). An ID already in the replica is refused when a task is made; one two machines make at once, before they've synced, stays two births, and neither is started or granted (`ambiguous`).
-- **What the app sees:** each daemon's backlog is the tasks it owns, so a granted task moves from the owner's backlog to the runner's in the Desk's merged backlog. `kanna task list` also lists other machines' waiting and started tasks, `on vm` in WHERE.
+- **What the app sees:** each daemon's Shelf is the tasks it owns, so a granted task moves from the owner's Shelf to the runner's in the Desk view's merged Shelf. `kanna task list` also lists other machines' waiting and started tasks, `on vm` in WHERE.
 
 | Request (`replica` on a `sync` stream) | Reply |
 |---|---|

@@ -25,7 +25,7 @@ The file opens in a code tab beside you, those lines tinted and the rest dimmed,
 For how parts fit together (object hierarchies, class or layer stacks, who calls whom, how data flows), write a short markdown doc with a diagram in `.kanna/tmp/` in your worktree and comment on it. Kanna keeps that folder out of git, and it goes when the worktree does: leave the docs there.
 
 ```sh
-kanna comment .kanna/tmp/backlog.md:3 "The daemon owns the backlog; the app only shows it."
+kanna comment .kanna/tmp/shelf.md:3 "The daemon owns the Shelf; the app only shows it."
 ```
 
 - **A diagram, not prose:** a mermaid `classDiagram` for a hierarchy, a `flowchart` for who calls whom, a `sequenceDiagram` for a flow, a `stateDiagram-v2` for states, a `gitGraph` for branches and merges, a layer diagram for a stack (the `layer-diagrams` skill), a table for a set of parallel things. A heading and the diagram; at most a line of text under it.

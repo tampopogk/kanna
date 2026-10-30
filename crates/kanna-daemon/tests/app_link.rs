@@ -318,3 +318,21 @@ fn every_debug_command_goes_to_the_app_with_pane_names_resolved() {
     assert_eq!(capabilities["instance"], "default");
     assert!(capabilities["commands"].as_array().unwrap().contains(&json!("read")));
 }
+
+#[test]
+fn an_app_of_another_protocol_is_told_so_and_the_daemon_keeps_running() {
+    let instance = Instance::start();
+    let mut other = App::raw(&instance.socket());
+    other.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "protocols": [7, 9]}}));
+    let reply = other.next().unwrap();
+    assert_eq!(reply["error"]["code"], "other_protocol", "{reply}");
+    assert_eq!(reply["mine"], json!([1, 1]), "{reply}");
+    assert!(reply["version"].is_string() && reply["commit"].is_string(), "{reply}");
+    assert_eq!(instance.call("capabilities", json!({}))["ok"], true);
+
+    let mut app = App::raw(&instance.socket());
+    app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 2, "protocols": [1, 4]}}));
+    let reply = app.next().unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(reply["daemon"]["protocols"], json!([1, 1]), "{reply}");
+}

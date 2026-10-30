@@ -140,12 +140,12 @@ pub struct Peer {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Machines {
+pub struct Roster {
     pub me: Peer,
     pub peers: Vec<Peer>,
 }
 
-impl Machines {
+impl Roster {
     pub fn name_of(&self, key: &str) -> String {
         std::iter::once(&self.me).chain(&self.peers).find(|p| p.key == key).map_or_else(|| key.chars().take(10).collect(), |p| p.name.clone())
     }

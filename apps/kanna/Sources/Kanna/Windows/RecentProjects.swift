@@ -38,7 +38,7 @@ extension AppController {
     private func recentLoaded(_ reply: JSON, on machine: String?) {
         guard reply["ok"]?.bool == true else { return }
         recentBy[machine ?? ""] = (reply["projects"]?.array ?? []).compactMap { p in
-            guard let path = p["path"]?.string else { return nil }
+            guard let path = p["path"]?.string, p["outside"]?.bool != true else { return nil }
             let location = MachineIDs.location(path, on: machine)
             if let project = p["project"]?.string { identities[location] = project }
             return RecentProject(path: location, label: p["label"]?.string ?? (machine == nil ? tilde(path) : path))

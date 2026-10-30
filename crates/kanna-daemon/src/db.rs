@@ -100,6 +100,19 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         doc text not null check (json_valid(doc))
     );
 "), Step::Sql("
+    alter table fleet rename to machines;
+    update machines set doc = json_remove(doc, '$.anchor', '$.entries');
+"), Step::Sql("
+    create table planners (
+        path text primary key,
+        doc text not null check (json_valid(doc))
+    );
+"), Step::Sql("
+    create table never_import (
+        path text primary key,
+        at real not null
+    );
+"), Step::Sql("
     create table record_ops (
         device text not null,
         ms integer not null,
@@ -444,6 +457,12 @@ impl Db {
         rows.collect()
     }
 
+    pub fn made_order(&self) -> rusqlite::Result<Vec<String>> {
+        let mut statement = self.conn.prepare("select id from tasks where place != 'done' order by made_at, rowid")?;
+        let ids = statement.query_map([], |r| r.get(0))?;
+        ids.collect()
+    }
+
     pub fn task(&self, id: &str) -> rusqlite::Result<Option<Row>> {
         self.conn
             .query_row("select id, repo, place, terminal, made_at, doc from tasks where id = ?1", [id], |r| {
@@ -504,17 +523,26 @@ impl Db {
         tx.commit()
     }
 
-    pub fn fleet(&self) -> rusqlite::Result<Value> {
-        let doc: Option<String> = self.conn.query_row("select doc from fleet where id = 1", [], |row| row.get(0)).optional()?;
+    pub fn machines(&self) -> rusqlite::Result<Value> {
+        let doc: Option<String> = self.conn.query_row("select doc from machines where id = 1", [], |row| row.get(0)).optional()?;
         Ok(doc.and_then(|doc| serde_json::from_str(&doc).ok()).unwrap_or_else(|| Value::Object(Default::default())))
     }
 
-    pub fn put_fleet(&self, doc: &Value) -> rusqlite::Result<()> {
-        self.conn.execute("insert into fleet (id, doc) values (1, ?1) on conflict (id) do update set doc = excluded.doc", params![doc.to_string()]).map(|_| ())
+    pub fn put_machines(&self, doc: &Value) -> rusqlite::Result<()> {
+        self.conn.execute("insert into machines (id, doc) values (1, ?1) on conflict (id) do update set doc = excluded.doc", params![doc.to_string()]).map(|_| ())
     }
 
     pub fn put_layout(&self, doc: &Value) -> rusqlite::Result<()> {
         put_layout(&self.conn, doc)
+    }
+
+    pub fn planner(&self, path: &str) -> rusqlite::Result<Option<Value>> {
+        let doc: Option<String> = self.conn.query_row("select doc from planners where path = ?1", [path], |row| row.get(0)).optional()?;
+        Ok(doc.and_then(|doc| serde_json::from_str(&doc).ok()))
+    }
+
+    pub fn put_planner(&self, path: &str, doc: &Value) -> rusqlite::Result<()> {
+        self.conn.execute("insert into planners (path, doc) values (?1, ?2) on conflict (path) do update set doc = excluded.doc", params![path, doc.to_string()]).map(|_| ())
     }
 
     pub fn log(&self, task: &str, change: &Change) -> rusqlite::Result<()> {
@@ -622,6 +650,29 @@ impl Db {
 
     pub fn clear_projects(&self) -> rusqlite::Result<()> {
         self.conn.execute("delete from projects", []).map(|_| ())
+    }
+
+    pub fn never_import(&self, path: &str) -> rusqlite::Result<()> {
+        self.conn.execute("insert or replace into never_import (path, at) values (?1, ?2)", params![path, now()]).map(|_| ())
+    }
+
+    pub fn never_imports(&self, path: &str) -> rusqlite::Result<bool> {
+        self.conn.prepare("select 1 from never_import where path = ?1")?.exists([path])
+    }
+
+    pub fn relocate(&self, from: &str, to: &str) -> rusqlite::Result<usize> {
+        let under = |column: &str| format!("({column} = ?1 or substr({column}, 1, length(?1) + 1) = ?1 || '/')");
+        let moved = |column: &str| format!("?2 || substr({column}, length(?1) + 1)");
+        let tx = self.conn.unchecked_transaction()?;
+        let mut count = 0;
+        for (table, column, verb) in [("tasks", "repo", "update"), ("messages", "repo", "update"), ("quiz_rounds", "repo", "update"), ("projects", "path", "update or replace"), ("planners", "path", "update or replace")] {
+            count += tx.execute(&format!("{verb} {table} set {column} = {} where {}", moved(column), under(column)), [from, to])?;
+        }
+        let folder = "json_extract(doc, '$.folder')";
+        count += tx.execute(&format!("update tasks set doc = json_set(doc, '$.folder', {}) where {}", moved(folder), under(folder)), [from, to])?;
+        tx.execute(&format!("delete from never_import where {}", under("path")), [from])?;
+        tx.commit()?;
+        Ok(count)
     }
 }
 
@@ -1074,14 +1125,49 @@ mod tests {
     }
 
     #[test]
-    fn the_fleet_doc_starts_empty_and_keeps_what_was_put() {
-        let dir = folder("fleet");
+    fn the_machines_doc_starts_empty_and_keeps_what_was_put() {
+        let dir = folder("machines");
         let db = Db::open(&dir);
-        assert_eq!(db.fleet().unwrap(), serde_json::json!({}));
+        assert_eq!(db.machines().unwrap(), serde_json::json!({}));
         let doc = serde_json::json!({ "name": "mbp", "entries": [{ "body": {}, "signature": "00" }] });
-        db.put_fleet(&doc).unwrap();
-        db.put_fleet(&doc).unwrap();
-        assert_eq!(Db::open(&dir).fleet().unwrap(), doc);
+        db.put_machines(&doc).unwrap();
+        db.put_machines(&doc).unwrap();
+        assert_eq!(Db::open(&dir).machines().unwrap(), doc);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_project_s_planner_is_kept_across_a_restart_and_replaced_by_the_next() {
+        let dir = folder("planners");
+        let db = Db::open(&dir);
+        assert_eq!(db.planner("/w/app").unwrap(), None);
+        db.put_planner("/w/app", &serde_json::json!({ "agent": "claude", "session": "s1" })).unwrap();
+        db.put_planner("/w/tool", &serde_json::json!({ "agent": "codex" })).unwrap();
+        db.put_planner("/w/app", &serde_json::json!({ "agent": "claude", "session": "s2" })).unwrap();
+        let db = Db::open(&dir);
+        assert_eq!(db.planner("/w/app").unwrap(), Some(serde_json::json!({ "agent": "claude", "session": "s2" })));
+        assert_eq!(db.planner("/w/tool").unwrap(), Some(serde_json::json!({ "agent": "codex" })));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_db_with_a_fleet_table_keeps_its_name_and_port_as_machines_and_drops_the_old_log() {
+        let dir = folder("fleet-migration");
+        let conn = connect(&dir.join(FILE)).unwrap();
+        let rename = MIGRATIONS.iter().position(|s| matches!(s, Step::Sql(sql) if sql.contains("rename to machines"))).unwrap();
+        for step in &MIGRATIONS[..rename] {
+            match step {
+                Step::Sql(sql) => conn.execute_batch(sql).unwrap(),
+                Step::Run(run) => run(&conn).unwrap(),
+            }
+        }
+        conn.pragma_update(None, "user_version", rename as i64).unwrap();
+        conn.execute("insert into fleet (id, doc) values (1, '{\"name\": \"mbp\", \"port\": 7470, \"addrs\": {\"k\": [\"10.0.0.5:7470\"]}, \"anchor\": {\"key\": \"k\"}, \"entries\": [{\"body\": {}}]}')", []).unwrap();
+        drop(conn);
+        let db = Db::open(&dir);
+        assert_eq!(db.machines().unwrap(), serde_json::json!({ "name": "mbp", "port": 7470, "addrs": { "k": ["10.0.0.5:7470"] } }));
+        let fleet: i64 = db.conn.query_row("select count(*) from sqlite_master where name = 'fleet'", [], |r| r.get(0)).unwrap();
+        assert_eq!(fleet, 0);
         let _ = fs::remove_dir_all(&dir);
     }
 

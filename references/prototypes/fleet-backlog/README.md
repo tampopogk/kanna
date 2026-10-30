@@ -36,7 +36,7 @@ iroh-docs. A grant's retired permission, outbox and owner write then commit in
 one transaction; the records go through the same peer-log admission as every
 `kanna/1` stream; and no namespace secret, redb or blob store is needed. The cost
 is a small sync protocol of our own. See
-[machine tasks §1](../../../docs/specs/machine-tasks.md#1-the-replicated-backlog).
+[machine tasks §1](../../../docs/specs/machine-tasks.md#1-the-replicated-shelf).
 The comparison below is the model's original reasoning.
 
 Choose **iroh-docs** for Fleet 10. It provides replicas with entries identified by

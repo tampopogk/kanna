@@ -1,4 +1,5 @@
 import Foundation
+import KannaMachines
 import KannaPerf
 
 @MainActor
@@ -21,7 +22,7 @@ final class DaemonLink: TerminalLink {
     var onSnapshot: ((String) -> Void)?
     var onStatus: ((String, String?) -> Void)?
     var onFolder: ((String, String, JSON?) -> Void)?
-    var onBacklog: (([JSON]) -> Void)?
+    var onBacklog: (([JSON], [JSON]) -> Void)?
     var onDiff: ((String, JSON) -> Void)?
     var onToast: ((JSON) -> Void)?
     var onQuit: (() -> Void)?
@@ -33,8 +34,8 @@ final class DaemonLink: TerminalLink {
 
     var socketPath: String { connection.path }
 
-    static let protocols: [JSON] = [1, 1]
-    static let localOnly: Set<String> = ["app.fleet.confirm", "app.snap"]
+    static let protocols: [JSON] = Protocols.mine.map { .number(Double($0)) }
+    static let localOnly: Set<String> = ["app.machine.confirm", "app.snap"]
 
     init(socketPath: String, commands: Commands, starter: DaemonStarter? = nil, machine: String? = nil, dial: (@Sendable () -> Int32?)? = nil) {
         self.commands = commands
@@ -180,7 +181,7 @@ final class DaemonLink: TerminalLink {
         case "file":
             if let content = args["content"]?.string { onFile?(content, args) }
         case "backlog":
-            if case .array(let tasks)? = args["tasks"] { onBacklog?(tasks) }
+            if case .array(let tasks)? = args["tasks"] { onBacklog?(tasks, args["desk"]?.array ?? []) }
         case "toast":
             onToast?(args)
         case "quit":

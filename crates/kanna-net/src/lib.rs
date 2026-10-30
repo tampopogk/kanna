@@ -2,10 +2,12 @@ mod client;
 pub mod log;
 mod node;
 pub mod pair;
+pub mod update;
 
 pub use iroh::SecretKey;
 pub use client::Client;
 pub use node::{Config, Failure, Host, Node, DEFAULT_PORT, PEER};
+pub use update::{Install, Tarball};
 
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -13,6 +15,8 @@ use sha2::{Digest, Sha256};
 pub const ALPN: &[u8] = b"kanna/1";
 
 pub const KINDS: &[&str] = &["control", "file", "port", "sync", "job", "transfer"];
+
+pub const UPDATE: &str = "update";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Refused {
@@ -27,7 +31,7 @@ impl Refused {
     pub fn message(&self) -> &'static str {
         match self.code {
             "bad_signature" => "a signature doesn't verify",
-            "wrong_fleet" => "it belongs to another fleet",
+            "wrong_log" => "it belongs to another peer log",
             "untrusted_signer" => "its signer wasn't trusted when it signed",
             "revoked" => "that key is revoked",
             "identity_mismatch" => "that name belongs to another key",
