@@ -301,12 +301,13 @@ final class ToastView: NSView {
 }
 
 extension AppController {
+    func toastArrived(_ record: JSON) {
+        guard let toast = Toast(record) else { return }
+        toasts.show(toast)
+        placeToasts()
+    }
+
     func installToasts() {
-        daemon?.onToast = { [weak self] record in
-            guard let self, let toast = Toast(record) else { return }
-            toasts.show(toast)
-            placeToasts()
-        }
         toasts.onOpen = { [weak self] toast in self?.open(toast) }
         guard debugCommands else { return }
         commands["debug.toasts"] = { [weak self] args in
@@ -337,7 +338,7 @@ extension AppController {
     }
 
     func placeToasts() {
-        let key = controllers.values.first { $0.window.isKeyWindow } ?? state["key"]?.string.flatMap { controllers[$0] }
+        let key = keyWindow?["id"]?.string.flatMap { controllers[$0] }
         guard let controller = key ?? controllers.values.first(where: { $0.window.isVisible }), let content = controller.window.contentView else { return }
         if toasts.superview !== content || content.subviews.last !== toasts {
             content.addSubview(toasts, positioned: .above, relativeTo: nil)
@@ -354,11 +355,11 @@ extension AppController {
 
     func open(_ toast: Toast) {
         let ws = toast.pane.flatMap(workspace(holding:))
-        if let ws, Self.claimed(ws, as: "shelf"), let task = ws["dock"]?["pane"]?.string {
+        if let ws, claimed(ws, as: "shelf"), let task = ws["dock"]?["pane"]?.string {
             pullTask(task, into: frontDesk?.id)
             if let pane = toast.pane { layoutCommand("focus", ["pane": .string(pane)]) }
-        } else if let ws, Self.claimed(ws, as: "planner"), let desk = physical.desks.first(where: { $0.planner == ws["id"]?.string }) {
-            show(desk: desk.id)
+        } else if let ws, claimed(ws, as: "planner"), let desk = physical.desks.first(where: { $0.planner == ws["id"]?.string }) {
+            show(window: desk.id)
             if let pane = toast.pane { layoutCommand("focus", ["pane": .string(pane)]) }
         } else if let task = toast.task, ws == nil || ws?["where"]?.string == "backlog" {
             let desk = frontDesk?.id
@@ -380,7 +381,7 @@ extension AppController {
     }
 
     func showToastPane() {
-        guard let (pane, desk) = toastShowing, let ws = workspace(holding: pane), Self.claimed(ws, as: "shelf"), let task = ws["dock"]?["pane"]?.string else { return }
+        guard let (pane, desk) = toastShowing, let ws = workspace(holding: pane), claimed(ws, as: "shelf"), let task = ws["dock"]?["pane"]?.string else { return }
         toastShowing = nil
         pullTask(task, into: desk)
         layoutCommand("focus", ["pane": .string(pane)])

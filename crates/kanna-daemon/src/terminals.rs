@@ -334,6 +334,28 @@ impl Terminals {
         }))
     }
 
+    pub fn hang_up_all(&self) -> usize {
+        let Some(core) = self.core.borrow().as_ref().and_then(WeakCore::upgrade) else { return 0 };
+        let code = 128 + libc::SIGHUP;
+        let mut hung_up = 0;
+        for (id, terminal) in self.live.borrow_mut().iter_mut().filter(|(_, t)| t.exit_code.is_none() && t.pty.is_some()) {
+            terminal.exit_code = Some(code);
+            terminal.exit_reported = true;
+            if let Some(detector) = self.detector.borrow().as_ref() {
+                detector.forget(id, terminal.serial);
+            }
+            core.with_pane_mut(&terminal.pane, |pane| {
+                pane.hung_up = true;
+                pane.state = PaneState::Exited;
+                pane.exit_code = Some(code as i64);
+            });
+            hung_up += 1;
+        }
+        self.changed.set(true);
+        self.save_if_changed();
+        hung_up
+    }
+
     pub fn shutdown(&self) {
         let mut live = self.live.borrow_mut();
         for pty in live.values().filter_map(|t| t.pty.as_ref()) {

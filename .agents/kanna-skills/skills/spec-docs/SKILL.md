@@ -19,5 +19,7 @@ Write in plain English.
 Start with what it is and why, in a few lines, so a reader sees the high-level items at a glance and can dig further in for the details.
 Include a table of contents when the spec has more than a few sections.
 Include non-common technical terms in a glossary.
-Make use of graphics. Use common image generation tools (mermaid etc) to include diagrams showing relationships, structure, states etc.
+Make use of graphics. Use common image generation tools (mermaid etc) to include diagrams showing relationships, structure, states etc. In Kanna, only `flowchart`, `sequenceDiagram`, `stateDiagram-v2`, `classDiagram` and `gitGraph` draw; anything else (`erDiagram`, `gantt`, `pie`, …) shows as unsupported.
+After writing or changing a diagram, check it draws: in Kanna, `kanna open md FILE` (or `kanna diagrams check FILE`) prints `FILE:LINE: message` for each diagram that won't; fix every one.
+Then look at it before you present it: take a screenshot of the rendered doc (`kanna screenshot PANE` in Kanna), read the image, and fix labels that overlap or are cut off.
 Don't describe what something looks like (colours, sizes, layout, styling) in words. That's what pictures are for: put in a screenshot of the mockup, and keep the words for behaviour, rules and interfaces, the things a picture can't show. When you edit a spec that already describes looks in words, replace the description with the picture; don't amend it.

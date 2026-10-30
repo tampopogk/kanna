@@ -12,7 +12,6 @@ struct Restored {
     windows: Vec<Window>,
     workspaces: Vec<Workspace>,
     orphans: Vec<Tabs>,
-    key: Option<String>,
     counters: (usize, usize, usize),
 }
 
@@ -92,7 +91,7 @@ impl Model {
                 Value::Object(out)
             })
             .collect();
-        let mut out = reply([("key", opt(self.key.as_deref())), ("counters", counters(self)), ("windows", Value::Array(windows))]);
+        let mut out = reply([("counters", counters(self)), ("windows", Value::Array(windows))]);
         if !parked.is_empty() {
             out.insert("parked".into(), Value::Array(parked));
         }
@@ -117,7 +116,7 @@ impl Model {
                 Value::Object(out)
             })
             .collect();
-        reply([("key", opt(self.key.as_deref())), ("counters", counters(self)), ("windows", Value::Array(windows)), ("workspaces", Value::Array(workspaces))])
+        reply([("counters", counters(self)), ("windows", Value::Array(windows)), ("workspaces", Value::Array(workspaces))])
     }
 }
 
@@ -227,7 +226,7 @@ fn settle(tabs: &mut Tabs, item: &Value, side: Option<&String>) {
 
 fn renamed(value: &Value, key: Option<&str>) -> Value {
     match value {
-        Value::String(id) if matches!(key, Some("id" | "active" | "key" | "windows")) => {
+        Value::String(id) if matches!(key, Some("id" | "active" | "windows")) => {
             let legacy = |prefix: &str, to: &str| number_in(id, prefix).map(|n| Value::String(format!("{to}{n}")));
             legacy("t", "tab-").or_else(|| legacy("w", "win-")).unwrap_or_else(|| value.clone())
         }
@@ -342,9 +341,8 @@ pub fn read(state: &Value, panes: &HashSet<String>) -> Result<SavedLayout, KmuxE
     }
     reader.counters.2 = next;
     windows.retain(|w: &Window| !w.tabs.tabs.is_empty() || w.lead.is_some());
-    let key = string(state, "key").filter(|k| windows.iter().any(|w| w.id == *k)).map(String::from).or_else(|| windows.last().map(|w| w.id.clone()));
     let counters = reader.counters;
-    Ok(SavedLayout { placed: reader.placed, layout: Box::new(Restored { windows, workspaces, orphans, key, counters }) })
+    Ok(SavedLayout { placed: reader.placed, layout: Box::new(Restored { windows, workspaces, orphans, counters }) })
 }
 
 pub fn install(model: &mut Model, saved: SavedLayout) {
@@ -352,9 +350,6 @@ pub fn install(model: &mut Model, saved: SavedLayout) {
     model.windows = restored.windows;
     model.workspaces = restored.workspaces;
     model.counters = (model.counters.0.max(restored.counters.0), model.counters.1.max(restored.counters.1), model.counters.2.max(restored.counters.2));
-    for tabs in restored.orphans {
-        model.orphans.push((tabs, false));
-    }
-    model.set_key(restored.key);
+    model.orphans.extend(restored.orphans);
     model.drop_empty();
 }

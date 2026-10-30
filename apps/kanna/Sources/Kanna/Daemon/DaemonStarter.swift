@@ -7,10 +7,11 @@ final class DaemonStarter: @unchecked Sendable {
     private var everConnected = false
     private var unreachableSince: Date?
     private var lastStart: Date?
+    private var quit = false
 
     private static let graceAfterLoss: TimeInterval = 2
     private static let startInterval: TimeInterval = 10
-    private static let passedThrough: Set<String> = ["KANNA_STATE_DIR", "KANNA_DEBUG", "KANNA_AGENTS_HOME", "KANNA_NO_STATE", "KANNA_FRESH"]
+    private static let passedThrough: Set<String> = ["KANNA_STATE_DIR", "KANNA_DEBUG", "KANNA_AGENTS_HOME", "KANNA_NO_STATE", "KANNA_FRESH", "KANNA_E2E_OWNER"]
 
     init(socketPath: String) {
         self.socketPath = socketPath
@@ -25,6 +26,10 @@ final class DaemonStarter: @unchecked Sendable {
         }
     }
 
+    func quitting() {
+        lock.withLock { quit = true }
+    }
+
     func replacing() {
         lock.withLock { everConnected = false }
     }
@@ -32,6 +37,7 @@ final class DaemonStarter: @unchecked Sendable {
     func unreachable() {
         let now = Date()
         let due = lock.withLock { () -> Bool in
+            if quit { return false }
             let since = unreachableSince ?? now
             unreachableSince = since
             if everConnected && now.timeIntervalSince(since) < Self.graceAfterLoss { return false }

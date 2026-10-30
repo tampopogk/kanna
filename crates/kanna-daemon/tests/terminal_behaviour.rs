@@ -69,20 +69,26 @@ fn the_shells_folder_is_the_panes_cwd() {
 fn a_new_terminal_in_a_task_window_starts_in_the_tasks_folder() {
     let instance = Instance::start();
     let _answering = instance.app().answering();
-    let folder = std::env::temp_dir().join(format!("kanna-task-{}", std::process::id()));
-    std::fs::create_dir_all(folder.join("sub")).unwrap();
-    let folder = folder.canonicalize().unwrap();
-    let opened = instance.call("open", json!({"type": "term", "name": "task", "dock": "left", "cwd": folder, "cmd": "cd sub; printf '\\033]7;file://localhost/usr\\007'; exec cat"}));
-    assert_eq!(opened["ok"], true, "{opened}");
-    wait_for("the printed folder", || instance.pane("task")["cwd"] == "/usr");
-    let workspace = opened["workspace"]["id"].clone();
-    let window = instance.call("open", json!({"type": "term", "window": "new", "from": opened["pane"]["id"], "cmd": "exec cat"}))["window"].clone();
+    let repo = instance.dir.join("home/.kanna-v4/repos/local/task");
+    std::fs::create_dir_all(repo.join("sub")).unwrap();
+    std::fs::write(repo.join("sub/.keep"), "").unwrap();
+    let repo = repo.canonicalize().unwrap();
+    let git = |args: &[&str]| assert!(std::process::Command::new("git").args(["-c", "user.email=e@e", "-c", "user.name=e"]).args(args).current_dir(&repo).status().unwrap().success());
+    git(&["init", "-q"]);
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "first"]);
+    let added = instance.call("backlog", json!({"action": "new", "name": "task", "repo": repo, "agent": "cd sub; printf '\\033]7;file://localhost/usr\\007'; exec cat #"}));
+    assert_eq!(added["ok"], true, "{added}");
+    let folder = repo.join(".kanna-worktrees").join(added["task"]["id"].as_str().unwrap());
+    wait_for("the task, started by itself on the Shelf", || instance.pane("task")["cwd"] == "/usr");
+    let agent = instance.pane("task")["id"].clone();
+    let workspace = instance.call("task", json!({"action": "find", "task": agent}))["workspace"].clone();
+    let window = instance.call("open", json!({"type": "term", "window": "new", "from": agent, "cmd": "exec cat"}))["window"].clone();
     for at in [json!({"split": "right", "workspace": workspace}), json!({"tab": true, "workspace": workspace}), json!({"tab": true, "window": window})] {
         let mut args = json!({"type": "term", "cmd": "pwd; exec cat"});
         args.as_object_mut().unwrap().extend(at.as_object().unwrap().clone());
         let beside = instance.call("open", args);
         let beside = beside["pane"]["id"].as_str().unwrap_or_else(|| panic!("{beside}")).to_string();
-        wait_for("the task's folder", || instance.screen(&beside).lines().any(|line| line == folder.to_string_lossy()));
+        wait_for("the task's folder", || instance.screen(&beside).replace('\n', "").contains(&*folder.to_string_lossy()));
     }
-    std::fs::remove_dir_all(&folder).unwrap();
 }
