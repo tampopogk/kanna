@@ -242,6 +242,7 @@ extension AppController {
                  "status": thread.status.map { .string($0) } ?? .null, "error": thread.error.map { .string($0) } ?? .null,
                  "messages": .array(thread.messages.map { .string("\($0.who): \($0.text)") })]
             }
+            let overview = self.overview(markdown.overview, wanted: markdown.overviewWanted, args: args)
             let diagrams: [JSON] = markdown.drawnDiagrams.map { ["type": .string($0.type), "labels": .array($0.labels.map { .string($0) })] }
             return ["text": .string(markdown.text), "zoom": .number(Double(markdown.zoom)), "diagrams": .array(diagrams),
                     "render_ms": .number(markdown.renderMs), "parse_ms": .number(markdown.parseMs), "scroll": .number(Double(markdown.scrollTop)),
@@ -252,7 +253,8 @@ extension AppController {
                     "changes": markdown.diffBase == nil ? .null : .number(Double(markdown.changes.count)), "diff_error": markdown.diffError.map { .string($0) } ?? .null,
                     "box_parts": Self.boxParts(markdown.commentBoxParts), "box_shown": .bool(markdown.commentBoxShown),
                     "cards": .object(markdown.cards.mapValues { ["typing": .bool($0.typing), "waiting": $0.waiting.map { .string($0) } ?? .null, "reply": .bool($0.reply)] }),
-                    "tour": footer, "pressed": pressed]
+                    "tour": footer, "pressed": pressed, "overview": overview, "pictures": .number(Double(markdown.pictures)),
+                    "threads_shown": .bool(markdown.threadsShown), "width": .number(Double(markdown.bounds.width))]
         }
         commands["debug.code"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let code = contents.code(id) else { throw KannaError("wrong_type", "not a running code pane") }

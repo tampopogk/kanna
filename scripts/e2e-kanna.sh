@@ -598,6 +598,127 @@ markdown_diff() {
   check grep -q "fresh.md isn't in work" <<<"$failed" || { echo "markdown_diff: a doc missing at B: $failed"; return 1; }
 }
 
+scenario markdown_overview M4
+markdown_overview() {
+  start_daemon && start_app || return 1
+  local dir="$KANNA_STATE_DIR/mdov" pictures top
+  mkdir -p "$dir/.git" "$dir/.kanna/docs"
+  {
+    printf '# Login\n\nHow sign-in works, from the button to the session.\n\n## The redirect\n\nThe app sends you to the provider and waits for the redirect back.\n\n'
+    printf '| Step | Who | What |\n|---|---|---|\n| 1 | app | opens the sign-in sheet |\n| 2 | provider | asks for the password |\n| 3 | app | reads the redirect |\n\n'
+    printf '```swift\nfunc signIn() async throws {\n    let url = try await provider.start()\n    try await session.open(url)\n}\n```\n\n'
+    printf '> The redirect must land on an allowed host.\n\n- Check it against the allow list.\n- Refuse anything else.\n\n'
+    printf '```mermaid\nflowchart LR\n    A[app] --> P[provider] --> R[redirect] --> S[session]\n```\n\n'
+    for i in $(seq 70); do printf '## Section %s\n\nParagraph %s about the session, the token and how the redirect is checked before the app trusts it.\n\n' "$i" "$i"; done
+  } >"$dir/login.md"
+  cat >"$dir/.kanna/docs/login.md.json" <<JSON
+{"file": "$dir/login.md", "agent": null, "socket": null, "next": 3, "threads": [
+ {"id": "c1", "quote": "allow list", "prefix": "", "suffix": "", "line": 22, "state": "open", "status": "unsent", "messages": [{"who": "you", "text": "Where does the allow list live?", "at": "2026-10-10T12:00:00"}], "error": null},
+ {"id": "c2", "quote": "Paragraph 40 about the session", "prefix": "", "suffix": "", "line": 200, "state": "resolved", "status": "replied", "messages": [{"who": "you", "text": "Fine.", "at": "2026-10-10T12:00:00"}], "error": null}]}
+JSON
+  printf '# Release\n\nA short note that fits.\n' >"$dir/release.md"
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null
+  kanna open --window new md "$dir/login.md" --name longdoc >/dev/null || return 1
+  mdo() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"${3:-longdoc}\"${2:-}}}" | field "$1"; }
+  mdwin() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"win-1\",\"size\":[$1,700]}}" >/dev/null; }
+  mdshot() { raw "{\"id\":1,\"cmd\":\"debug.snapshot\",\"args\":{\"path\":\"$1.png\"}}" >/dev/null; cp "$KANNA_STATE_DIR/$1.png" "$out/" 2>/dev/null; }
+  mdwin 1200
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == True ]]' || { echo "no overview: wanted $(mdo overview.wanted), width $(mdo width)"; return 1; }
+  check eval '(( $(mdo overview.box_height | cut -d. -f1) > 10 ))' || { echo "box $(mdo overview.box_y) $(mdo overview.box_height)"; return 1; }
+  check eval '(( $(mdo pictures) >= 1 ))' || return 1
+  pictures="$(mdo pictures)"
+  mdo scroll ',"scroll":2000' >/dev/null
+  check wait_for 5 eval '[[ "$(mdo overview.top | cut -d. -f1)" == 2000 ]]' || { echo "the box didn't follow the scroll: top $(mdo overview.top)"; return 1; }
+  sleep 0.3
+  check test "$(mdo pictures)" == "$pictures" || { echo "a scroll drew the picture again: $pictures, then $(mdo pictures)"; return 1; }
+  mdo zoom ',"zoom":1' >/dev/null; sleep 0.3
+  check test "$(mdo pictures)" == "$pictures" || { echo "a zoom drew the picture again: $pictures, then $(mdo pictures)"; return 1; }
+  mdo zoom ',"zoom":0' >/dev/null
+  mdo scroll ',"overview_click":3' >/dev/null
+  check wait_for 5 eval '[[ "$(mdo scroll)" == 0* ]]' || { echo "a click at the top of the thumbnail left the scroll at $(mdo scroll)"; return 1; }
+  mdo scroll ',"overview_marks_click":690' >/dev/null
+  check wait_for 5 eval '(( $(mdo scroll | cut -d. -f1) > 2000 ))' || { echo "a click at the foot of the marks left the scroll at $(mdo scroll)"; return 1; }
+  mdo scroll ',"overview_drag":[10,-400]' >/dev/null
+  check wait_for 5 eval '[[ "$(mdo scroll)" == 0* ]]' || { echo "dragging the box up left the scroll at $(mdo scroll)"; return 1; }
+  raw '{"id":1,"cmd":"debug.click","args":{"pane":"longdoc","at":[300,300]}}' >/dev/null; sleep 0.3
+  key cmd+f
+  raw '{"id":1,"cmd":"debug.type","args":{"focused":true,"text":"redirect"}}' >/dev/null
+  check wait_for 5 eval '(( $(mdo overview.marks_by_kind.hit 2>/dev/null || echo 0) > 3 ))' || { echo "find hits not marked: $(mdo overview.marks_by_kind)"; return 1; }
+  check test "$(mdo pictures)" == "$pictures" || { echo "a find drew the picture again: $pictures, then $(mdo pictures)"; return 1; }
+  mdo scroll ',"scroll":0' >/dev/null
+  mdo overview.shown ',"overview_hover":true' >/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.5
+  check wait_for 5 eval '(( $(mdo pictures) > pictures ))' || { echo "the appearance change didn't draw a picture"; return 1; }
+  mdshot markdown_overview-light
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null; sleep 0.5
+  mdshot markdown_overview-dark
+  mdo overview.shown ',"overview_hover":false' >/dev/null
+  key escape
+  check test "$(mdo overview.shown ',"overview_enabled":false')" == False || { echo "View › Overview off left it shown"; return 1; }
+  check test "$(mdo overview.shown ',"overview_enabled":true')" == True || { echo "View › Overview on didn't bring it back"; return 1; }
+  pictures="$(mdo pictures)"
+  mdwin 1000
+  check wait_for 5 eval '(( $(mdo pictures) > pictures ))' || { echo "a width change didn't draw a picture"; return 1; }
+  mdwin 700
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == False && "$(mdo overview.wanted)" == True ]]' || { echo "at 700 pt: shown $(mdo overview.shown)"; return 1; }
+  mdwin 1200
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == True ]]' || { echo "not back at 1200 pt"; return 1; }
+  kanna open --window win-1 md "$dir/release.md" --name shortdoc --tab >/dev/null || return 1
+  check wait_for 5 eval 'doc_text shortdoc "fits"' || return 1
+  check test "$(mdo overview.wanted '' shortdoc)" == False || { echo "a doc that fits wants the overview"; return 1; }
+  check test "$(mdo overview.shown '' shortdoc)" == False || return 1
+  kanna close shortdoc >/dev/null
+  kanna markup longdoc >/dev/null || return 1
+  mdwin 1500
+  check wait_for 5 eval '[[ "$(mdo markup)" == True && "$(mdo overview.shown)" == True && "$(mdo threads_shown)" == True ]]' || { echo "at 1500 pt with comments: overview $(mdo overview.shown), list $(mdo threads_shown)"; return 1; }
+  check wait_for 5 eval '[[ "$(mdo overview.marks_by_kind.comment)" == 1 ]]' || { echo "comment marks: $(mdo overview.marks_by_kind)"; return 1; }
+  mdo overview.shown ',"overview_hover":true' >/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.5
+  mdshot markdown_overview-threads-light
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null; sleep 0.5
+  mdshot markdown_overview-threads-dark
+  mdo overview.shown ',"overview_hover":false' >/dev/null
+  mdwin 1000
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == False && "$(mdo threads_shown)" == True ]]' || { echo "at 1000 pt the overview should go first: overview $(mdo overview.shown), list $(mdo threads_shown)"; return 1; }
+  mdshot markdown_overview-narrow
+  mdwin 500
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == False && "$(mdo threads_shown)" == False ]]' || { echo "at 500 pt: overview $(mdo overview.shown), list $(mdo threads_shown)"; return 1; }
+}
+
+scenario markdown_diff_overview M4
+markdown_diff_overview() {
+  start_daemon && start_app || return 1
+  local repo="$KANNA_STATE_DIR/mddiffov" git=(git -C "$KANNA_STATE_DIR/mddiffov" -c user.name=e2e -c user.email=e2e@example.invalid) pictures
+  mkdir -p "$repo" && "${git[@]}" init -q -b main || return 1
+  {
+    printf '# Login\n\nHow sign-in works.\n\n'
+    for i in $(seq 25); do printf 'Opening paragraph %s stays as it is.\n\n' "$i"; done
+    printf -- '- check the host\n- keep the old fallback\n- open the session\n\n'
+    for i in $(seq 25); do printf 'Middle paragraph %s stays as it is.\n\n' "$i"; done
+    printf '| Step | What |\n|---|---|\n| 1 | open the sheet |\n| 2 | read the token |\n\n'
+    for i in $(seq 25); do printf 'Closing paragraph %s stays as it is.\n\n' "$i"; done
+  } >"$repo/login.md"
+  "${git[@]}" add login.md && "${git[@]}" commit -qm base || return 1
+  perl -0pi -e 's/- keep the old fallback\n//; s/\| 2 \| read the token \|/| 2 | read and check the token |/; s/(Middle paragraph 10 stays as it is\.\n\n)/$1## A new section\n\nAdded under the middle.\n\n/' "$repo/login.md"
+  mdo() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"diffov\"${2:-}}}" | field "$1"; }
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null
+  kanna open --window new md "$repo/login.md" --name diffov --diff main >/dev/null || return 1
+  raw '{"id":1,"cmd":"debug.desk","args":{"window":"win-1","size":[1200,700]}}' >/dev/null
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == True ]]' || { echo "no overview on the diff: wanted $(mdo overview.wanted)"; return 1; }
+  check wait_for 5 eval '(( $(mdo overview.marks_by_kind.added) >= 1 && $(mdo overview.marks_by_kind.removed) >= 1 && $(mdo overview.marks_by_kind.changed) >= 1 ))' || { echo "diff marks: $(mdo overview.marks_by_kind), changes $(mdo changes)"; return 1; }
+  local added; added="$(mdo overview.marks_by_kind.added)"
+  mdo overview.shown ',"overview_hover":true' >/dev/null
+  mdo scroll ',"scroll":600' >/dev/null; sleep 0.4
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"markdown_diff_overview-dark.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/markdown_diff_overview-dark.png" "$out/" 2>/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.5
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"markdown_diff_overview-light.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/markdown_diff_overview-light.png" "$out/" 2>/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null
+  mdo overview.shown ',"overview_hover":false' >/dev/null
+  pictures="$(mdo pictures)"
+  perl -0pi -e 's/(Closing paragraph 20 stays as it is\.\n\n)/$1A paragraph added near the end.\n\n/' "$repo/login.md"
+  check wait_for 5 eval '(( $(mdo overview.marks_by_kind.added) > added && $(mdo pictures) > pictures ))' || { echo "the marks didn't follow the edit: $(mdo overview.marks_by_kind), pictures $pictures then $(mdo pictures)"; return 1; }
+}
+
 scenario cli_commands M4
 cli_commands() {
   start_daemon && start_app || return 1
