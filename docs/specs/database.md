@@ -4,24 +4,17 @@
 
 **The daemon keeps Kanna's records in one SQLite file, `kanna.db`, in its state folder; nothing else opens it.** Tasks move into it from `backlog.json`, and every change to a task's place or state is written as an event, so Kanna can show what happened over time (the Desk's and the Shelf's history first). The layout (the logical presentation: workspaces, windows, tabs, where each is) is kept beside the tasks ([presentation layers](presentation-layers.md)).
 
-**Stored names are the ones from before the [Desk view rename](desk-view.md#5-internal-names)**, kept so no data or protocol needs migrating:
-
-| Stored | Means now |
-|---|---|
-| `place = 'backlog'`, the `backlog` command, `backlog.rs`, `backlog.json` | the Shelf |
-| `place = 'shelf'` (an old `desk` reads as `shelf`), the app's claim | on the Desk |
-| events `shelved` / `deferred` (older `pulled` / `parked`) | moved to the Desk / to the Shelf (made active / left) |
-| `parkedAt` | when a task was last active |
+**Stored names are the ones users see:** `place = 'shelf'` is the Shelf and `place = 'desk'` the Desk; events say `picked` and `shelved` for moving to the Desk and back. Migration 13 renamed what older Kannas stored ([internal names](internal-names.md)); `backlog.json` keeps its name, as the file an older Kanna wrote.
 
 ```mermaid
 flowchart LR
-    CLI["kanna CLI, agents"] -->|"socket: backlog …"| D
+    CLI["kanna CLI, agents"] -->|"socket: tasks …"| D
     CLI -->|"socket: quiz …"| Q
     APP["Kanna app<br/>Desks, Desk view, menus"] -->|"socket: commands"| OWN
     subgraph DP["Kanna daemon (the only writer)"]
-        D["backlog.rs<br/>tasks · events"] --> DB["db.rs<br/>migrations · recovery"]
+        D["tasks.rs<br/>tasks · events"] --> DB["db.rs<br/>migrations · recovery"]
         Q["quiz.rs<br/>rounds · answers"] --> DB
-        OWN["layout.rs<br/>park · pull · hold · release"] -->|"moved: task, from, to, by"| D
+        OWN["layout.rs<br/>park · activate · hold · release"] -->|"moved: task, from, to, by"| D
         OWN --> DB
     end
     DB --> F[("kanna.db<br/>WAL")]
@@ -41,7 +34,7 @@ flowchart LR
 |---|---|---|
 | `id` | text, key | `task-1dfb12c2` ([task IDs](task-ids.md)) |
 | `repo` | text | the repo's folder |
-| `place` | text | `backlog` (the Shelf), `shelf` (on a Desk; an old `desk` reads as this) or `done` |
+| `place` | text | `shelf` (the Shelf), `desk` (on a Desk) or `done`; the check still allows an older Kanna's `backlog` |
 | `terminal` | text | its agent's terminal (`term-41`), while it has one |
 | `made_at` | real | when it was made |
 | `doc` | JSON | name, first message, by, agent, worktree folder, session, its workspace (`ws-3`, [workspace list](workspace-list.md)), … |
@@ -70,19 +63,20 @@ flowchart LR
 | `delivered` | real | when it was typed into the recipient's terminal; empty while it waits |
 | `text` | text | the message |
 
-**layout**: one row (`id` 1), `doc`: the layout in kmux's state file format, Kanna's version 3 ([workspaces](workspaces.md#5-saved-state)). The daemon writes it half a second after a change and when it stops, and with a task's row when the task is done, in the same transaction, so a done task's workspace doesn't come back. On first run it imports `layout.json` and renames it `layout.json.imported`.
+**layout**: one row (`id` 1), `doc`: the layout in kmux's state file format, Kanna's version 4 ([workspaces](workspaces.md#5-saved-state)). The daemon writes it half a second after a change and when it stops, and with a task's row when the task is done, in the same transaction, so a done task's workspace doesn't come back. On first run it imports `layout.json` and renames it `layout.json.imported`.
 
 **meta**: `key`, `value`. (It held `next_task`, the counter for the old `t` IDs, until migration 3.)
 
 - **SQLite through `rusqlite` with its bundled SQLite** (`features = ["bundled"]`): one C file compiled by `cc` like the tree-sitter grammars, built for the app's macOS ([deployment target](deployment-target.md)), no server and no system library. WAL mode, `synchronous = NORMAL`, a busy timeout, foreign keys on; file mode 0600 as the rest of the state folder.
 - **Columns for what's queried, a JSON doc for the rest.** A table's columns are what Kanna sorts, filters or joins on (a task's ID, repo, place and terminal; an event's task, time, kind, places and who); everything else is a JSON `doc` (a task's name, first message, agent, worktree, session; an event's window or exit code). A new field is a new doc key, with no migration; a key the daemon doesn't know is kept when it updates the row (`json_patch`), so an older Kanna doesn't drop a newer one's fields. A doc field becomes a column, by a migration, when something starts to query it.
-- **The daemon is the only writer.** The CLI and agents keep asking the daemon (`backlog …` on its socket), and so does the app. Tests and people read it with `sqlite3 -readonly`.
+- **The daemon is the only writer.** The CLI and agents keep asking the daemon (`tasks …` on its socket), and so does the app. Tests and people read it with `sqlite3 -readonly`.
 - **Migration 3 renumbers the tasks** from `t134` to `task-XXXXXXXX`, with their events and blockers ([task IDs](task-ids.md#the-migration)); a migration step is SQL or, like this one, a Rust function.
+- **Migration 13 names places as users see them:** `shelf` becomes `desk` and `backlog` becomes `shelf`, in `tasks.place` and the events' `from_place` and `to_place`, and the events `shelved`, `deferred`, `pulled` and `parked` become `picked`, `shelved`, `activated` and `left` ([internal names](internal-names.md)).
 - **Migrations by a number:** `PRAGMA user_version` is the schema's version; on open the daemon runs each step above it in one transaction. A db from a newer Kanna (a higher version) isn't touched: the daemon moves it aside as `kanna.db.newer` and says so in its log, as settings files from a newer Kanna are skipped.
 - **One row per task, for its whole life.** A task keeps its ID ([task IDs](task-ids.md)) from made to done, on the Shelf or a Desk: `place` and `terminal` say where it is and which terminal is its agent (`term-152`); a start gives the agent a new terminal, and the row follows it. `kanna task done` sets `place = done` instead of deleting the row, so its events keep their task. A new ID is random and checked against every row, done ones too, so an ID is never handed out twice.
-- **Every change of place or state writes an event,** in the same transaction as the change. The daemon writes the ones it makes: made, started, stopped, shelved, deferred and done from `backlog` commands; exited when an agent's terminal ends without a stop; renamed and done when it sees a task's pane renamed or closed (`kanna task name`, `kanna task done` on the Desk, ⌘W). `by` is the terminal the CLI ran in (`$KANNA_TERMINAL`), else `user`; `daemon` for what it noticed itself. Which task is active and showing the Desk view are each app's and aren't recorded ([each app's Desks](app-desk.md)); a shelved event names the app that claimed the task (`app`).
+- **Every change of place or state writes an event,** in the same transaction as the change. The daemon writes the ones it makes: made, started, stopped, picked, shelved and done from `tasks` commands; exited when an agent's terminal ends without a stop; renamed and done when it sees a task's pane renamed or closed (`kanna task name`, `kanna task done` on the Desk, ⌘W). `by` is the terminal the CLI ran in (`$KANNA_TERMINAL`), else `user`; `daemon` for what it noticed itself. Which task is active and showing the Desk view are each app's and aren't recorded ([each app's Desks](app-desk.md)); a picked event names the app that claimed the task (`app`).
 - **A task the daemon didn't make** (an agent docked by hand) gets an ID the first time it's moved, as it does when it's moved to the Shelf.
-- **Reading it:** `backlog events TASK` (an ID, a unique start of one, or the agent's terminal) answers the task's events, oldest first; the Desk's and the Shelf's history builds on it.
+- **Reading it:** `tasks events TASK` (an ID, a unique start of one, or the agent's terminal) answers the task's events, oldest first; the Desk's and the Shelf's history builds on it.
 - **On first run** the daemon imports `backlog.json` (tasks, the running list, the counter) in one transaction, with a `made` event for each task at its `madeAt`, then renames the file `backlog.json.imported` and never reads it again.
 - **Recovery.** On open the daemon runs `PRAGMA quick_check`. A file it can't open or that fails the check is moved aside as `kanna.db.bad-TIME`, with its `-wal`; the daemon then restores the last good copy (`kanna.db.bak`, written with SQLite's backup API at each start once the db checks out) and logs what it did and that changes since that start are lost. With no good copy it imports `backlog.json.imported` if there is one, else starts empty, and says which in its log. A missing `kanna.db` with a `kanna.db.bak` or `backlog.json.imported` beside it is restored the same way. A `backlog.json` found beside a working db (written by an older Kanna run since) adds the tasks the db lacks. A write that fails is logged and the command fails; one after the change has happened (an agent already started) still fails the command, and memory keeps what happened. A db file that can't be made at all is logged and the tasks are kept in memory until the daemon restarts.
 
@@ -133,7 +127,7 @@ sequenceDiagram
 | `doc` | JSON | `line`, `last`, question, choices, the pick, the right choice, explanation, … |
 
 - **The quiz agent writes them** with `kanna quiz start`, `answer` and `history`, through the daemon's `quiz` command (`quiz.rs`) like every other write. This replaces the quiz spec's "nothing is kept" rule and its rejected `kanna quiz` command.
-- **One db, shared:** the daemon opens `kanna.db` once at start and hands it to `backlog.rs` (the Shelf) and the quiz.
+- **One db, shared:** the daemon opens `kanna.db` once at start and hands it to `tasks.rs` (the Shelf) and the quiz.
 - **A round** is on the repo's own folder (the main checkout, as a task's `repo`) and main's commit when it starts, which the CLI reads with git; it's shown as `r12`, an answer as `a7`. `--json DOC` is a JSON object kept as the row's doc, with the daemon adding the asking pane (`by`) to a round's.
 - **An answer** has a kind (`architecture`, `drawing`, `behaviour`, `where`, `why`, `bug`; the daemon refuses others), the file and lines it's about (`FILE:LINE[-LAST]`, kept relative to the repo, the lines in the doc), and right or wrong.
 - **A miss stays a miss until it's asked again:** `history --misses` answers the wrong answers that no later answer names as `again`. A miss asked again and missed is a new miss, standing for the old one. `again` is a column because that query joins on it; an answer from another repo's quiz is refused.
@@ -165,7 +159,7 @@ sequenceDiagram
 | `path` | text, key | the project's folder (the main repo for a worktree) |
 | `doc` | JSON | `agent`, `session` (null until known), `started` (seconds), `pane` (the planning terminal), `running` (its agent not quit) |
 
-- **The daemon writes them** when a planner starts (`backlog` `planner` `start`) and when its agent quits (`quit`); the next planner on the project reads it. Not in `projects`, which keeps only ten and is cleared with `kanna projects clear`.
+- **The daemon writes them** when a planner starts (`tasks` `planner` `start`) and when its agent quits (`quit`); the next planner on the project reads it. Not in `projects`, which keeps only ten and is cleared with `kanna projects clear`.
 
 ## Never import
 

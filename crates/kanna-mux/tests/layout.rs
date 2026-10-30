@@ -67,7 +67,7 @@ fn move_docks_only_a_task_and_moves_its_agent_to_the_other_edge_of_its_workspace
     assert_eq!(elsewhere["error"]["code"], "bad_request", "a task's agent stays in its workspace: {elsewhere}");
 }
 
-fn shelved_task_with_a_tab() -> Core {
+fn desk_task_with_a_tab() -> Core {
     let (core, _) = make_core();
     let task = send(&core, json!({ "cmd": "open", "args": { "type": "term", "name": "agent", "dock": "left", "task": "task-1" } }));
     assert_eq!(task["ok"], true, "{task}");
@@ -81,8 +81,8 @@ fn everything(core: &Core) -> Value {
 }
 
 #[test]
-fn closing_a_shelved_task_closes_its_tabs_and_leaves_no_window() {
-    let core = shelved_task_with_a_tab();
+fn closing_a_desk_task_closes_its_tabs_and_leaves_no_window() {
+    let core = desk_task_with_a_tab();
     let closed = send(&core, json!({ "cmd": "close", "args": { "task": "agent" } }));
     assert_eq!(closed["closed"], json!(["p1", "p2"]), "{closed}");
     let list = everything(&core);
@@ -118,7 +118,7 @@ fn closing_a_tab_of_panes_the_daemon_doesnt_know_removes_the_tab() {
 
 #[test]
 fn closing_a_task_closes_its_workspace_and_its_windows() {
-    let core = shelved_task_with_a_tab();
+    let core = desk_task_with_a_tab();
     let window = send(&core, json!({ "cmd": "open", "args": { "type": "term", "name": "own", "window": "new", "from": "agent" } }));
     assert_eq!(window["ok"], true, "{window}");
     let closed = send(&core, json!({ "cmd": "close", "args": { "task": "agent" } }));

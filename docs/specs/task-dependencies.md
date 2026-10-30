@@ -55,13 +55,13 @@ kanna task edit 3f9a --after none        # waits for nothing
 flowchart LR
     CLI["kanna task new / edit --after"] --> D["daemon: the Shelf<br/>after: [ids]<br/>in the task's doc in kanna.db"]
     D -->|"start, pick: refused while a blocker isn't Done"| W["the task's worktree"]
-    D -->|"backlog message: open blockers"| APP["Kanna.app: Shelf rows"]
+    D -->|"tasks message: open blockers"| APP["Kanna.app: Shelf rows"]
 ```
 
 - **Kept in the task's row** in `kanna.db` ([database](database.md)): `after`, a list of task IDs, in its JSON doc, so no new table or migration. An `edited` event records each change.
-- **A blocker is open** while the daemon still has it, on the Shelf or running; any other task is Done. So a task freed by Done needs no event: the next `backlog` message (the Shelf's, pushed to the app) shows it startable, and the daemon pushes when a task's agent closes.
+- **A blocker is open** while the daemon still has it, on the Shelf or running; any other task is Done. So a task freed by Done needs no event: the next `tasks` message (the Shelf's, pushed to the app) shows it startable, and the daemon pushes when a task's agent closes.
 - **Start and Move to Desk check blockers first** (error `blocked`, with what it waits for). Neither applies to a task that has a worktree already, since blockers can't change once it has started.
-- **The `backlog` message and `backlog list`** give each Shelf task its open blockers' IDs, names and panes. **`kanna task done`** reads the Shelf before ending the task and names those whose only open blocker it was.
+- **The `tasks` message and `tasks list`** give each Shelf task its open blockers' IDs, names and panes. **`kanna task done`** reads the Shelf before ending the task and names those whose only open blocker it was.
 
 ## Rejected
 

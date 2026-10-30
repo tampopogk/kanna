@@ -3,7 +3,7 @@ import os
 import Synchronization
 
 public enum PerfArea: String, Sendable, CaseIterable {
-    case click, daemon, render, shelf, markdown, commands, hang
+    case click, daemon, render, desk, markdown, commands, hang
 }
 
 public struct PerfSpan: @unchecked Sendable {
