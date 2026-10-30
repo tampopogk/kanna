@@ -17,6 +17,7 @@ mod lifeline;
 mod pty;
 mod codex_remote;
 mod messages;
+mod project_import;
 mod projects;
 mod quiz;
 mod reader;
@@ -33,7 +34,7 @@ mod terminals;
 mod toasts;
 
 use app_link::{AppLink, Outbox, APP_ASK, APP_PREFIX, HELLO};
-use kanna_mux::json::Value;
+use kanna_mux::json::{Map, Value};
 use host::Host;
 use kanna_build::Build;
 use kanna_mux::json::json;
@@ -266,6 +267,7 @@ fn run() -> Result<Option<PathBuf>, String> {
     status_commands.install(&core);
     let backlog = Rc::new(backlog::Backlog::open(db.clone(), &state_dir, core.weak(), events.clone()));
     backlog.install(&core);
+    *backlog.repos.borrow_mut() = Some(projects::repos());
     let planners = Rc::downgrade(&layout);
     *backlog.planners.borrow_mut() = Some(Box::new(move || {
         let Some(layout) = planners.upgrade() else { return vec![] };
@@ -290,7 +292,7 @@ fn run() -> Result<Option<PathBuf>, String> {
     *backlog.line_mode.borrow_mut() = Some(Box::new(move |pane| modes.upgrade().is_some_and(|detector| detector.line_mode(pane))));
     let argvs = Rc::downgrade(&detector);
     *backlog.permissions.borrow_mut() = Some(Box::new(move |pane| messages::permissions(&argvs.upgrade()?.argv(pane))));
-    let projects = Rc::new(projects::Projects::new(db.clone(), std::env::var_os("HOME").map(std::path::PathBuf::from), [".kanna-v4/repos", ".kanna/repos"].map(|r| agents::home().join(r)).to_vec()));
+    let projects = Rc::new(projects::Projects::new(db.clone(), std::env::var_os("HOME").map(std::path::PathBuf::from), Some(projects::repos())));
     projects.install(&core);
     let toasts = Rc::new(toasts::Toasts::new(core.weak()));
     toasts.connect_backlog(&backlog);
@@ -427,6 +429,11 @@ fn run() -> Result<Option<PathBuf>, String> {
             }
         }),
     );
+    let front = link.clone();
+    core.on_front(Rc::new(move |args, responder| match front.upgrade().filter(|app| app.attached()) {
+        Some(app) => app.forward("app.front", args, responder),
+        None => responder.reply(Ok(Map::new())),
+    }));
     let resolving = Rc::downgrade(&backlog);
     core.add_command(
         "desk",
@@ -434,6 +441,9 @@ fn run() -> Result<Option<PathBuf>, String> {
             let (Some(app), Some(backlog)) = (link.upgrade(), resolving.upgrade()) else { return };
             let Some(task) = args.get("task").and_then(Value::as_str).map(String::from) else {
                 if let Some(folder) = args.get("project").and_then(Value::as_str).filter(|_| args.get("action").and_then(Value::as_str) == Some("desk")) {
+                    if let Err(error) = projects::desk_here(folder) {
+                        return responder.reply(Err(error));
+                    }
                     args["place"] = projects::place(folder);
                 }
                 return app.forward("desk", args, responder);

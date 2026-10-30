@@ -1,4 +1,5 @@
 import AppKit
+import KannaOverview
 
 @MainActor
 public final class CodePaneView: NSView {
@@ -21,6 +22,12 @@ public final class CodePaneView: NSView {
     let textView: CodeTextView
     let gutter: CodeGutter
     let sticky = CodeStickyView()
+    public let overview = OverviewView()
+    public private(set) var overviewShown = false
+    public private(set) var overviewWanted = false
+    private var overviewStale = true
+    private var overviewQueued = false
+    private var settingObserver: NSObjectProtocol?
     private let layoutManager = NSLayoutManager()
     private var fontSize = CodeTheme.fontSize
     private var scrollObserver: NSObjectProtocol?
@@ -72,6 +79,7 @@ public final class CodePaneView: NSView {
         textView.onMarks = { [weak self] in
             self?.gutter.needsDisplay = true
             self?.updateSticky()
+            self?.updateOverviewMarks()
         }
         scrollView.documentView = textView
         scrollView.hasVerticalScroller = true
@@ -87,10 +95,20 @@ public final class CodePaneView: NSView {
             MainActor.assumeIsolated {
                 self?.gutter.needsDisplay = true
                 self?.updateSticky()
+                self?.updateOverviewViewport()
             }
         }
         textView.startFinder(in: scrollView)
         addSubview(scrollView)
+        overview.background = CodeTheme.background
+        overview.edge = CodeTheme.line
+        overview.scrollTarget = scrollView
+        overview.onScroll = { [weak self] top in self?.scrollOverview(to: top) }
+        overview.isHidden = true
+        addSubview(overview)
+        settingObserver = NotificationCenter.default.addObserver(forName: OverviewSetting.changed, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.needsLayout = true }
+        }
         sticky.onPick = { [weak self] line in self?.reveal(line: line, toTop: true) }
         scrollView.onTile = { [weak self] in self?.updateSticky() }
         textView.onMove = { [weak self] move in self?.perform(move) }
@@ -100,11 +118,13 @@ public final class CodePaneView: NSView {
     public func stop() {
         scrollObserver.map(NotificationCenter.default.removeObserver)
         scrollObserver = nil
+        settingObserver.map(NotificationCenter.default.removeObserver)
+        settingObserver = nil
     }
 
     public override func layout() {
         super.layout()
-        scrollView.frame = bounds
+        placeOverview()
         sizeText()
         placeComment()
         updateSticky()
@@ -112,6 +132,84 @@ public final class CodePaneView: NSView {
             pendingLine = nil
             if comment != nil { revealComment() } else { reveal(line: line) }
         }
+        updateOverviewViewport()
+    }
+
+    private func placeOverview() {
+        var viewport = overviewViewport
+        viewport.height = bounds.height - scrollView.contentView.contentInsets.top
+        overviewWanted = loaded && failure == nil && OverviewLayout.wanted(enabled: OverviewSetting.enabled, viewport: viewport)
+        overviewShown = overviewWanted && !OverviewLayout.shown([.overview], width: bounds.width, columnWidth: OverviewLayout.columnWidth(CodeTheme.font(size: fontSize))).isEmpty
+        let width = overviewShown ? OverviewMetrics.width : 0
+        scrollView.frame = NSRect(x: 0, y: 0, width: bounds.width - width, height: bounds.height)
+        scrollView.hasVerticalScroller = !overviewShown
+        overview.frame = NSRect(x: bounds.width - OverviewMetrics.width, y: 0, width: OverviewMetrics.width, height: bounds.height)
+        overview.isHidden = !overviewShown
+        if overviewShown, overviewStale { updateOverviewContent() }
+    }
+
+    private var overviewViewport: OverviewViewport {
+        let clip = scrollView.contentView
+        let used = layoutManager.usedRect(for: textView.textContainer!).height + textView.textContainerInset.height * 2
+        return OverviewViewport(documentHeight: textView.frame.height, contentHeight: used, top: clip.bounds.minY + clip.contentInsets.top,
+                                height: clip.bounds.height - clip.contentInsets.top)
+    }
+
+    private func updateOverviewViewport() {
+        guard overviewShown else { return }
+        overview.viewport = overviewViewport
+    }
+
+    private func overviewChanged() {
+        overviewStale = true
+        guard !overviewQueued else { return }
+        overviewQueued = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            overviewQueued = false
+            if overviewShown, overviewStale { updateOverviewContent() } else { needsLayout = true }
+        }
+    }
+
+    private func updateOverviewContent() {
+        guard let storage = textView.textStorage else { return }
+        overviewStale = false
+        let string = NSAttributedString(attributedString: storage)
+        var lines: [OverviewLine] = []
+        lines.reserveCapacity(file.lineCount)
+        for line in 1...max(1, file.lineCount) {
+            guard let rect = textView.rect(forLine: line) else { continue }
+            var range = textView.range(ofLine: line)
+            if range.length > 0, (string.string as NSString).character(at: NSMaxRange(range) - 1) == 0x0a { range.length -= 1 }
+            lines.append(OverviewLine(y: rect.minY, height: rect.height, range: range, background: textView.comment?.contains(line) == true ? CodeTheme.tint : nil))
+        }
+        overview.content = .text([OverviewText(string: string, lines: lines)], lineHeight: lineHeight)
+        updateOverviewMarks()
+        updateOverviewViewport()
+    }
+
+    private func updateOverviewMarks() {
+        guard overviewShown else { return }
+        var marks: [OverviewMark] = []
+        func add(_ line: Int, _ kind: OverviewMarkKind, _ color: NSColor) {
+            guard let rect = textView.rect(forLine: line) else { return }
+            marks.append(OverviewMark(y: rect.minY, height: rect.height, kind: kind, color: color))
+        }
+        for line in textView.changed.sorted() { add(line, .changed, CodeTheme.changed) }
+        if let comment = textView.comment, comment.first <= file.lineCount { for line in comment.first...min(comment.last, file.lineCount) { add(line, .comment, CodeTheme.tintEdge) } }
+        var last = 0
+        for match in textView.matches {
+            let line = file.line(at: match.location)
+            if line != last { add(line, .hit, CodeTheme.hit) }
+            last = line
+        }
+        overview.marks = OverviewMark.runs(marks)
+    }
+
+    private func scrollOverview(to top: CGFloat) {
+        let clip = scrollView.contentView
+        clip.scroll(to: NSPoint(x: clip.bounds.minX, y: top - clip.contentInsets.top))
+        scrollView.reflectScrolledClipView(clip)
     }
 
     static let smallest: CGFloat = 9
@@ -137,6 +235,8 @@ public final class CodePaneView: NSView {
             scrollView.reflectScrolledClipView(scrollView.contentView)
         }
         gutter.needsDisplay = true
+        overviewChanged()
+        needsLayout = true
         onZoom?()
     }
 
@@ -184,6 +284,8 @@ public final class CodePaneView: NSView {
         applyComment()
         sizeText()
         highlight()
+        overviewChanged()
+        needsLayout = true
     }
 
     private func applyComment() {
@@ -213,6 +315,7 @@ public final class CodePaneView: NSView {
             storage.endEditing()
             textView.gap = gap
             sizeText()
+            overviewChanged()
         }
         placeBox()
         textView.needsDisplay = true
@@ -263,6 +366,7 @@ public final class CodePaneView: NSView {
             if span.capture.hasPrefix("comment") { storage.addAttribute(.font, value: italic, range: span.range) }
         }
         storage.endEditing()
+        overviewChanged()
         if commentUnrevealed, bounds.height > 0, pendingLine == nil {
             commentUnrevealed = false
             revealComment()
@@ -304,7 +408,7 @@ public final class CodePaneView: NSView {
         let clip = scrollView.contentView
         let height = CGFloat(rows.count) * lineHeight
         let edge = convert(clip.frame, from: scrollView).maxY - clip.contentInsets.top
-        sticky.frame = NSRect(x: 0, y: edge - height, width: bounds.width, height: height)
+        sticky.frame = NSRect(x: 0, y: edge - height, width: scrollView.frame.width, height: height)
         sticky.isHidden = rows.isEmpty
         sticky.gutterWidth = gutter.ruleThickness
         sticky.textX = clip.frame.minX - clip.bounds.minX + textView.textContainerInset.width

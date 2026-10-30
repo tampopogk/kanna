@@ -60,6 +60,7 @@ sequenceDiagram
 | `input {terminal, data}` | app | bytes the view wrote: keys, paste, mouse and focus reports |
 | `resize {terminal, cols, rows, width, height}` | app | the view now fits this many cells (and pixels) |
 | `settings {foreground, background, cursor, palette, scheme, cursorStyle, cursorBlink, graphemes}` | app | the terminal settings from the app's Ghostty config, sent before any attach and again when the config or appearance changes ([terminal](terminal.md#2-the-config)) |
+| `app.front {window, workspace, pane?, tab?}` (with an `id`) | daemon | bring this focused pane's window forward, after a `focus`: the Desk showing the workspace, else the window; the reply's `front` is the window brought forward, or null ([physical layout §2](physical-layout.md#2-bringing-a-window-forward)) |
 | `debug.*` (with an `id`) | daemon | a request from a client, passed on; the app's reply is the client's |
 | `start`, `stop`, `pane`; `update`; the app's own requests | both | web, markdown and iOS panes ([app panes](app-panes.md)); `pane` also tells the app a terminal pane's new `terminal` when it starts again, and the app makes a new view for it |
 | `diff.subscribe {view, path, args}` (with an `id`), `diff.show {view, show}`, `diff.unsubscribe {view}` | app | this view shows the diff of that folder and git arguments; the reply has its content ID and latest diff ([diff viewer](diff-viewer.md#5-how-its-built)) |

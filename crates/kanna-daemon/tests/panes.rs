@@ -114,12 +114,12 @@ fn a_comment_opens_its_file_once_and_stays_on_the_pane() {
     assert_eq!(first["pane"]["line"], 5, "{first}");
     assert_eq!(first["pane"]["comment"], json!({"path": "/tmp/tour.rs", "first": 5, "last": 7, "text": "Queues the message."}), "{first}");
 
-    let again = instance.call("comment", json!({"path": "/tmp/tour.rs", "line": 20, "last": 24, "text": "Sends it."}));
+    let again = instance.call("comment", json!({"path": "/tmp/tour.rs", "line": 20, "last": 24, "text": "Sends it.", "window": "win-1"}));
     assert_eq!((again["opened"].clone(), again["pane"]["id"].clone()), (json!(false), json!(id)), "{again}");
     assert_eq!((again["first"].clone(), again["last"].clone(), again["pane"]["line"].clone()), (json!(20), json!(24), json!(20)), "{again}");
     assert_eq!(again["pane"]["comment"]["text"], "Sends it.", "{again}");
 
-    let other = instance.call("comment", json!({"path": "/tmp/other.rs", "line": 1, "text": "The other side."}));
+    let other = instance.call("comment", json!({"path": "/tmp/other.rs", "line": 1, "text": "The other side.", "window": "win-1"}));
     assert_eq!(other["opened"], true, "{other}");
     assert_ne!(other["pane"]["id"], json!(id), "{other}");
     let placed = instance.call("comment", json!({"path": "/tmp/tour.rs", "line": 1, "text": "Again.", "tab": true}));

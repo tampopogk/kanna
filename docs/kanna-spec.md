@@ -75,6 +75,8 @@ flowchart TB
 | Spec | What it covers |
 |---|---|
 | [The kanna CLI](specs/cli.md) | A port of kmux's CLI; where it differs; reaching Kanna; errors and exit codes |
+| [The CLI acts on its caller](specs/cli-caller.md) | A command with no target acts on the terminal it runs in, or is refused; never the front window |
+| [The app owns the physical layout](specs/physical-layout.md) | The daemon keeps the logical layout and no key window; the app keeps which window is in front, the order and frames |
 | [Commands](specs/commands.md) | Every command and option; `send-key` |
 | [kanna send](specs/kanna-send.md) | Return pressed on its own, after a bracketed paste, so agents submit |
 | [Sizing and arranging panes](specs/arranging-panes.md) | Fractions, the layout expression, `kanna.yaml` |
@@ -86,8 +88,9 @@ flowchart TB
 
 | Spec | What it covers |
 |---|---|
-| [Desk](specs/desk.md) · [new Desk](specs/new-desk.md) · [planning terminal](specs/planning-agent.md) | A window showing one task, with the Shelf |
-| [Tasks](specs/tasks.md) · [backlog runners](specs/backlog-runners.md) · [backlog search](specs/backlog-search.md) · [blocked tasks](specs/task-dependencies.md) · [task IDs](specs/task-ids.md) · [task scripts](specs/task-scripts.md) · [agent messaging](specs/agent-messaging.md) | One agent in one worktree; the backlog |
+| [Desk](specs/desk.md) · [Desk view](specs/desk-view.md) · [new Desk](specs/new-desk.md) · [planning terminal](specs/planning-agent.md) · [planner resume](specs/planner-resume.md) | A window holding up to three tasks, one active; ⌘. shows the Desk view |
+| [Project folder](specs/project-folder.md) | Every project lives in `~/.kanna-v4/repos/OWNER/NAME`; `kanna project import` copies one there |
+| [Tasks](specs/tasks.md) · [Shelf runners](specs/shelf-runners.md) · [Shelf search](specs/shelf-search.md) · [blocked tasks](specs/task-dependencies.md) · [task IDs](specs/task-ids.md) · [task scripts](specs/task-scripts.md) · [agent messaging](specs/agent-messaging.md) | One agent in one worktree; the Shelf |
 | [Agent status](specs/agent-status.md) | Working, needs you, idle, exited |
 | [Toasts](specs/toasts.md) | Notices the daemon raises in the app, such as messages that wait |
 | [Agent setup](specs/agent-setup.md) | Kanna's skills where agents find them |
