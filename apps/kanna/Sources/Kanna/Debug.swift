@@ -288,7 +288,7 @@ extension AppController {
             return ["command": .string(diff.result?.command ?? ""), "error": diff.result?.error.map { .string($0) } ?? .null, "files": .array(files), "rows": .array(rows),
                     "current": diff.current.map { .number(Double($0)) } ?? .null, "view": .string(diff.view.rawValue), "updating": .bool(diff.updating),
                     "serial": .number(Double(diff.serial)), "fresh": .array(diff.fresh.sorted().map { .number(Double($0)) }), "zoom": .number(Double(diff.zoom)),
-                    "highlighted": .number(Double(diff.highlightedFiles)), "list": .bool(diff.listShown),
+                    "highlighted": .number(Double(diff.highlightedFiles)), "list": .bool(diff.listShown), "width": .number(diff.bounds.width),
                     "selected": diff.selectedFile.map { .string($0) } ?? .null, "sticky": diff.stickyFile.map { .string($0) } ?? .null,
                     "columns": .array(diff.debugColumns.map { .object($0.mapValues { .number($0) }) }),
                     "colors": .array((args["colors"]?.number).map { diff.colors(atRow: Int($0)).map { .string($0) } } ?? [])]
