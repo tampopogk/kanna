@@ -105,14 +105,15 @@ fn a_replica_misses_nothing_and_repeats_nothing() {
 #[test]
 fn a_snapshot_mid_sequence_waits_for_more_output() {
     let instance = Instance::start();
-    let pane = instance.open("apc", Some("printf 'before\\n\\033_a\\235'; read line; printf '\\033\\\\after\\n'; exec cat"));
+    let osc = format!("python3 -c 'import sys; sys.stdout.buffer.write(b\"\\033]2;\" + b\"x\" * {})'", kanna_vt::MAX_UNFINISHED_SEQUENCE_BYTES + 1);
+    let pane = instance.open("osc", Some(&format!("printf 'before\\n'; {osc}; read line; printf '\\007after\\n'; exec cat")));
     wait_for("the output", || instance.screen(&pane).contains("before"));
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(Duration::from_millis(500));
     let mut app = instance.app();
     app.tell("attach", json!({"terminal": pane}));
     app.stream.set_read_timeout(Some(Duration::from_millis(700))).unwrap();
     while let Some(message) = app.next() {
-        assert!(!is(&message, "snapshot", &pane) && !is(&message, "output", &pane), "sent mid-APC: {message}");
+        assert!(!is(&message, "snapshot", &pane) && !is(&message, "output", &pane), "sent mid-sequence: {message}");
     }
     app.stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     instance.call("send", json!({"pane": pane, "text": "go"}));
@@ -188,7 +189,7 @@ fn a_request_the_app_never_answers_times_out() {
     let request = app.until("the request", |m| m["cmd"] == "debug.app");
     app.send(json!({"id": request["id"], "ok": true, "late": true}));
     let mut second = App::raw(&instance.socket());
-    second.send(json!({"id": 0, "cmd": "app.hello", "args": {}}));
+    second.send(json!({"id": 0, "cmd": "app.hello", "args": {"protocols": kanna_build::PROTOCOLS}}));
     assert_eq!(second.next().unwrap()["error"]["code"], "app_attached");
 }
 
@@ -326,7 +327,7 @@ fn an_app_of_another_protocol_is_told_so_and_the_daemon_keeps_running() {
     other.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "protocols": [7, 9]}}));
     let reply = other.next().unwrap();
     assert_eq!(reply["error"]["code"], "other_protocol", "{reply}");
-    assert_eq!(reply["mine"], json!([1, 1]), "{reply}");
+    assert_eq!(reply["mine"], json!(kanna_build::PROTOCOLS), "{reply}");
     assert!(reply["version"].is_string() && reply["commit"].is_string(), "{reply}");
     assert_eq!(instance.call("capabilities", json!({}))["ok"], true);
 
@@ -334,5 +335,5 @@ fn an_app_of_another_protocol_is_told_so_and_the_daemon_keeps_running() {
     app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 2, "protocols": [1, 4]}}));
     let reply = app.next().unwrap();
     assert_eq!(reply["ok"], true, "{reply}");
-    assert_eq!(reply["daemon"]["protocols"], json!([1, 1]), "{reply}");
+    assert_eq!(reply["daemon"]["protocols"], json!(kanna_build::PROTOCOLS), "{reply}");
 }

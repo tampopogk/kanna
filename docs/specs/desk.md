@@ -118,8 +118,8 @@ flowchart TB
 - **The daemon keeps workspaces** (a task's dock with its width, its tabs, its windows, where it is), saved in `kanna.db` ([layout](layout.md), [workspaces](workspaces.md)). Nothing there knows about Desks.
 - **The app keeps its Desks** ([each app's Desks](app-desk.md)): which workspace each Desk shows, its project and planner, its active task and its tasks' order. It draws a Desk window from the workspace it shows: the dock on the left, the tabs on the right.
 - **Making a task active, or showing the Desk view,** changes only which workspace the Desk shows; the panes keep their IDs, and their terminals never notice. The workspace keeps its focus and zoom, and the planner its own ([zoom](zoom.md#4-how-its-built)).
-- **The planning terminal is the Desk's planner**: a workspace with no task, shown on the left only in the Desk view. The app asks the daemon for one (the internal `backlog` command's `plan`) when a Desk shows the Desk view and has none; the daemon makes its command and opens it with the `planner` placement.
-- **`kanna task activate` and `park`** are relayed to the app by the daemon (the `desk` command, whose `pull` and `park` keep their internal names), which starts the app if it's closed.
+- **The planning terminal is the Desk's planner**: a workspace with no task, shown on the left only in the Desk view. The app asks the daemon for one (the internal `tasks` command's `plan`) when a Desk shows the Desk view and has none; the daemon makes its command and opens it with the `planner` placement.
+- **`kanna task activate` and `park`** are relayed to the app by the daemon (the `desk` command's `activate` and `park`), which starts the app if it's closed.
 
 ## 7. Rejected
 
