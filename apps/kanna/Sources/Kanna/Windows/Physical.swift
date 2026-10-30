@@ -17,6 +17,7 @@ final class Physical {
     private var frames: [String: NSRect] = [:]
     private var docks: [String: (width: Double, over: Double)] = [:]
     private var textSizes: [String: Double] = [:]
+    private(set) var overview = true
     private let path: String?
     private var pending: DispatchWorkItem?
 
@@ -34,6 +35,7 @@ final class Physical {
             docks = list.compactMapValues { dock in dock["width"]?.number.flatMap { width in dock["over"]?.number.map { (width, $0) } } }
         }
         if case .object(let list)? = saved["textSizes"] { textSizes = list.compactMapValues(\.number) }
+        overview = saved["overview"]?.bool ?? true
         desks = (saved["desks"]?.array ?? []).compactMap { desk in
             desk["id"]?.string.map { DeskRecord(id: $0, project: desk["project"]?.string, shows: desk["shows"]?.string, planner: desk["planner"]?.string, active: desk["active"]?.string ?? desk["shows"]?.string) }
         }
@@ -116,6 +118,12 @@ final class Physical {
         changed()
     }
 
+    func setOverview(_ on: Bool) {
+        guard overview != on else { return }
+        overview = on
+        changed()
+    }
+
     func setDock(_ pane: String, width: Double, in view: JSON) {
         guard let (key, over) = Self.dock(of: pane, in: view) else { return }
         docks[key] = (width, over)
@@ -150,6 +158,7 @@ final class Physical {
             "frames": .object(frames.mapValues { ["x": .number($0.minX), "y": .number($0.minY), "w": .number($0.width), "h": .number($0.height)] }),
             "docks": .object(docks.mapValues { ["width": .number($0.width), "over": .number($0.over)] }),
             "textSizes": .object(textSizes.mapValues { .number($0) }),
+            "overview": .bool(overview),
             "desks": .array(desks.map { desk in
                 ["id": .string(desk.id), "project": desk.project.map { .string($0) } ?? .null, "shows": desk.shows.map { .string($0) } ?? .null, "planner": desk.planner.map { .string($0) } ?? .null, "active": desk.active.map { .string($0) } ?? .null]
             }),

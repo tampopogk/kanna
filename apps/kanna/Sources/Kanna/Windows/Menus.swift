@@ -1,5 +1,6 @@
 import AppKit
 import GhosttyKit
+import KannaOverview
 import UniformTypeIdentifiers
 
 extension AppController {
@@ -86,6 +87,8 @@ extension AppController {
             ("Zoom In", #selector(zoomIn), "increase_font_size:1", .cmd("=")),
             ("Zoom Out", #selector(zoomOut), "decrease_font_size:1", .cmd("-")),
             ("Actual Size", #selector(actualSize), "reset_font_size", .cmd("0")),
+            nil,
+            ("Overview", #selector(toggleOverview), nil, nil),
         ])
         _ = menu("Task", [
             ("Show Desk", #selector(toggleDeskView), nil, .cmd(".")),
@@ -262,6 +265,9 @@ extension AppController {
         switch item.action {
         case #selector(zoomIn), #selector(zoomOut), #selector(actualSize): return panes.terminal(pane) != nil || contents.markdown(pane) != nil || contents.web(pane) != nil || contents.code(pane) != nil
         case #selector(pressHome): return contents.ios(pane)?.screen != nil
+        case #selector(toggleOverview):
+            item.state = OverviewSetting.enabled ? .on : .off
+            return true
         case #selector(openURL), #selector(reloadPane): return contents.web(pane) != nil
         case #selector(toggleComments):
             item.state = commentsOn(pane) ? .on : .off
@@ -296,6 +302,13 @@ extension AppController {
         guard !ids.isEmpty else { return }
         let at = window["focused"]?.string.flatMap { ids.firstIndex(of: $0) } ?? 0
         layoutCommand("focus", ["pane": .string(ids[((at + step) % ids.count + ids.count) % ids.count])])
+    }
+
+    @objc func toggleOverview() { setOverview(!OverviewSetting.enabled) }
+
+    func setOverview(_ on: Bool) {
+        OverviewSetting.enabled = on
+        physical.setOverview(on)
     }
 
     @objc func toggleZoom() {

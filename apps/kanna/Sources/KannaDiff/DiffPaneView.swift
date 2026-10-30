@@ -1,5 +1,6 @@
 import AppKit
 import KannaCode
+import KannaOverview
 
 @MainActor
 public final class DiffPaneView: NSView {
@@ -23,6 +24,13 @@ public final class DiffPaneView: NSView {
     let fileList = DiffFileList()
     private let fileScroll = NSScrollView()
     let sticky = DiffStickyHeader()
+    public let overview = OverviewView()
+    public private(set) var overviewShown = false
+    public private(set) var overviewWanted = false
+    public private(set) var listShown = false
+    private var overviewStale = true
+    private var overviewQueued = false
+    private var settingObserver: NSObjectProtocol?
     private var columns: [DiffColumn] = []
     private var fontSize = CodeTheme.fontSize
     private var shown: Set<String> = []
@@ -52,6 +60,14 @@ public final class DiffPaneView: NSView {
         addSubview(fileScroll)
         fileList.onPick = { [weak self] file in self?.go(toFile: file) }
         sticky.onClick = { [weak self] all in self?.foldTop(all: all) }
+        overview.background = DiffTheme.background
+        overview.edge = DiffTheme.line
+        overview.onScroll = { [weak self] top in self?.scrollOverview(to: top) }
+        overview.isHidden = true
+        addSubview(overview)
+        settingObserver = NotificationCenter.default.addObserver(forName: OverviewSetting.changed, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.needsLayout = true }
+        }
         makeColumns()
     }
 
@@ -61,6 +77,8 @@ public final class DiffPaneView: NSView {
         highlightTask?.cancel()
         observers.forEach(NotificationCenter.default.removeObserver)
         observers = []
+        settingObserver.map(NotificationCenter.default.removeObserver)
+        settingObserver = nil
     }
 
     static func clamp(_ size: CGFloat) -> CGFloat { min(max(size, 9), 32) }
@@ -77,6 +95,7 @@ public final class DiffPaneView: NSView {
             column.textView.onKey = { [weak self] key in self?.press(key) ?? false }
             column.textView.onClickRow = { [weak self] row in self?.setCurrent(row, scroll: false) }
             column.textView.onMarks = { [weak self] in self?.columns.forEach { $0.gutter.needsDisplay = true } }
+            column.textView.onMatches = { [weak self] in self?.updateOverviewMarks() }
             column.textView.contextMenu = contextMenu
             column.textView.onHeader = { [weak self] row, all in self?.foldRow(row, all: all) }
             column.textView.onLink = { [weak self] link in self?.follow(link: link) }
@@ -86,10 +105,12 @@ public final class DiffPaneView: NSView {
                     self?.follow(index)
                     self?.columns[index].gutter.needsDisplay = true
                     self?.updateSticky()
+                    if index == 0 { self?.updateOverviewViewport() }
                 }
             })
         }
         if first { window?.makeFirstResponder(columns[0].textView) }
+        overview.scrollTarget = columns[0].scrollView
         addSubview(sticky, positioned: .above, relativeTo: nil)
         addSubview(header, positioned: .above, relativeTo: nil)
     }
@@ -102,9 +123,6 @@ public final class DiffPaneView: NSView {
         }
     }
 
-    public var listShown: Bool {
-        (result?.files.count ?? 0) > 0 && DiffAside.shown([.files], width: bounds.width, font: CodeTheme.font(size: fontSize)).contains(.files)
-    }
     public var selectedFile: String? { fileList.selected.flatMap { result?.files[safe: $0]?.path } }
     public var stickyFile: String? { sticky.isHidden ? nil : sticky.file?.path }
 
@@ -167,6 +185,7 @@ public final class DiffPaneView: NSView {
         header.frame = NSRect(x: 0, y: bounds.height - headerHeight, width: bounds.width, height: headerHeight)
         var body = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height - headerHeight)
         needsDisplay = true
+        placeAsides(height: body.height)
         fileScroll.isHidden = !listShown
         if listShown {
             fileScroll.frame = NSRect(x: 0, y: 0, width: DiffFileList.width, height: body.height)
@@ -175,14 +194,128 @@ public final class DiffPaneView: NSView {
             body.origin.x = DiffFileList.width + 1
             body.size.width -= DiffFileList.width + 1
         }
+        if overviewShown { body.size.width -= OverviewMetrics.width }
+        overview.frame = NSRect(x: bounds.width - OverviewMetrics.width, y: 0, width: OverviewMetrics.width, height: body.height)
+        overview.isHidden = !overviewShown
         let width = (body.width / CGFloat(columns.count)).rounded(.down)
         for (index, column) in columns.enumerated() {
             let x = body.minX + CGFloat(index) * width
             column.scrollView.frame = NSRect(x: x, y: 0, width: index == columns.count - 1 ? body.maxX - x : width - 1, height: body.height)
+            column.scrollView.hasVerticalScroller = !overviewShown
             column.size(minimumHeight: body.height / 2, font: CodeTheme.font(size: fontSize))
         }
         message.frame = NSRect(x: body.minX + 20, y: body.height / 2 - 40, width: body.width - 40, height: 60)
         updateSticky()
+        if overviewShown, overviewStale { updateOverviewContent() }
+        updateOverviewViewport()
+    }
+
+    private func placeAsides(height: CGFloat) {
+        let hasFiles = (result?.files.count ?? 0) > 0
+        var viewport = overviewViewport
+        viewport.height = height - columns[0].scrollView.contentView.contentInsets.top
+        overviewWanted = hasFiles && OverviewLayout.wanted(enabled: OverviewSetting.enabled, viewport: viewport)
+        let shown = DiffAside.shown((hasFiles ? [.files] : []) + (overviewWanted ? [.overview] : []), width: bounds.width, font: CodeTheme.font(size: fontSize))
+        listShown = shown.contains(.files)
+        overviewShown = shown.contains(.overview)
+    }
+
+    private var overviewViewport: OverviewViewport {
+        let column = columns[0]
+        let clip = column.scrollView.contentView
+        return OverviewViewport(documentHeight: column.textView.frame.height, contentHeight: column.usedHeight, top: clip.bounds.minY + clip.contentInsets.top,
+                                height: clip.bounds.height - clip.contentInsets.top)
+    }
+
+    private func updateOverviewViewport() {
+        guard overviewShown else { return }
+        overview.viewport = overviewViewport
+    }
+
+    private func overviewChanged() {
+        overviewStale = true
+        guard !overviewQueued else { return }
+        overviewQueued = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            overviewQueued = false
+            if overviewShown, overviewStale { updateOverviewContent() } else { needsLayout = true }
+        }
+    }
+
+    private func updateOverviewContent() {
+        overviewStale = false
+        var lineHeight: CGFloat = 0
+        let sides: [OverviewText] = columns.map { column in
+            let text = column.textView
+            let string = NSAttributedString(attributedString: text.textStorage ?? NSTextStorage())
+            let length = string.length
+            var lines: [OverviewLine] = []
+            lines.reserveCapacity(text.rows.count)
+            for (index, row) in text.rows.enumerated() {
+                guard let rect = text.rect(ofRow: index) else { continue }
+                if row.kind == .context || row.kind == .added || row.kind == .removed { lineHeight = rect.height }
+                let start = min(text.start(ofRow: index), length)
+                let end = index + 1 < text.rows.count ? max(start, min(text.start(ofRow: index + 1) - 1, length)) : length
+                lines.append(OverviewLine(y: rect.minY, height: rect.height, range: NSRange(location: start, length: end - start), background: Self.overviewBackground(row.kind)))
+            }
+            return OverviewText(string: string, lines: lines)
+        }
+        if lineHeight == 0 { lineHeight = NSLayoutManager().defaultLineHeight(for: CodeTheme.font(size: fontSize)) }
+        overview.content = .text(sides, lineHeight: lineHeight)
+        updateOverviewMarks()
+        updateOverviewViewport()
+    }
+
+    static func overviewBackground(_ kind: DiffRowKind) -> NSColor? {
+        switch kind {
+        case .added: DiffTheme.addedLine
+        case .removed: DiffTheme.removedLine
+        case .header: DiffTheme.panel
+        case .fold, .note, .blank: DiffTheme.fold
+        case .context: nil
+        }
+    }
+
+    private func updateOverviewMarks() {
+        guard overviewShown, let text = columns.first?.textView else { return }
+        var marks: [OverviewMark] = []
+        let count = document.rows.count
+        var index = 0
+        while index < count {
+            let kinds = Set(document.columns.map { $0[index].kind })
+            guard kinds.contains(.added) || kinds.contains(.removed) else { index += 1; continue }
+            var end = index
+            var all = kinds
+            while end + 1 < count {
+                let next = Set(document.columns.map { $0[end + 1].kind })
+                guard next.contains(.added) || next.contains(.removed) else { break }
+                all.formUnion(next)
+                end += 1
+            }
+            if let first = text.rect(ofRow: index), let last = text.rect(ofRow: end) {
+                let both = all.contains(.added) && all.contains(.removed)
+                marks.append(OverviewMark(y: first.minY, height: last.maxY - first.minY, kind: both ? .changed : all.contains(.added) ? .added : .removed,
+                                          color: both ? DiffTheme.warn : all.contains(.added) ? DiffTheme.ok : DiffTheme.bad))
+            }
+            index = end + 1
+        }
+        for column in columns {
+            var last = -1
+            for match in column.textView.matches {
+                let row = column.textView.row(at: match.location)
+                guard row != last, let rect = column.textView.rect(ofRow: row) else { continue }
+                last = row
+                marks.append(OverviewMark(y: rect.minY, height: rect.height, kind: .hit, color: CodeTheme.hit))
+            }
+        }
+        overview.marks = OverviewMark.runs(marks)
+    }
+
+    private func scrollOverview(to top: CGFloat) {
+        let clip = columns[0].scrollView.contentView
+        clip.scroll(to: NSPoint(x: clip.bounds.minX, y: top - clip.contentInsets.top))
+        columns[0].scrollView.reflectScrolledClipView(clip)
     }
 
     public override func draw(_ dirtyRect: NSRect) {
@@ -249,6 +382,7 @@ public final class DiffPaneView: NSView {
         for (index, column) in columns.enumerated() {
             column.show(document.columns[index], files: result.files, text: text(for: document.columns[index], files: result.files), size: fontSize)
         }
+        overviewStale = true
         needsLayout = true
         layoutSubtreeIfNeeded()
     }
@@ -366,6 +500,7 @@ public final class DiffPaneView: NSView {
             }
             storage.endEditing()
         }
+        overviewChanged()
     }
 
     private func switchView(to next: DiffView) {
