@@ -118,5 +118,34 @@ kanna_running_paths() { return 1; }
 [[ -d "$repo/task-held" ]] || fail "evict: removed a folder without knowing what runs"
 grep -q "removing nothing" "$dir/said" || fail "evict: didn't say why it removed nothing: $(cat "$dir/said")"
 
+builds=0
+cargo() {
+  [[ "$1" == build ]] && builds=$((builds + 1)) && echo built >>"$dir/cargo-builds"
+  mkdir -p "$CARGO_TARGET_DIR/debug/.fingerprint/dep-x" "$CARGO_TARGET_DIR/debug/.fingerprint/kanna-daemon-1" "$CARGO_TARGET_DIR/debug/deps" "$CARGO_TARGET_DIR/debug/incremental/kanna"
+  echo dep >"$CARGO_TARGET_DIR/debug/deps/libdep_x.rlib"; echo ours >"$CARGO_TARGET_DIR/debug/deps/libkanna_mux.rlib"; echo bin >"$CARGO_TARGET_DIR/debug/kanna-daemon"
+}
+printf 'lock 1\n' >"$main/Cargo.lock" && printf '[workspace]\n' >"$main/Cargo.toml"
+git -C "$main" add Cargo.lock Cargo.toml && git -C "$main" -c user.email=e@e -c user.name=e commit -q -m lock
+config "$root"
+seeded="$(worktree task-seeded)" && (kanna_targets "$seeded") 2>/dev/null
+rm -f "$dir/cargo-builds"
+kanna_cargo_seed "$seeded" "" 15.0 2>/dev/null
+[[ "$(wc -l <"$dir/cargo-builds" | tr -d ' ')" == 1 ]] || fail "seed: main's Cargo.lock didn't build one"
+[[ -f "$seeded/target/debug/deps/libdep_x.rlib" && -d "$seeded/target/debug/.fingerprint/dep-x" ]] || fail "seed: the worktree didn't get the dependencies"
+[[ ! -e "$seeded/target/debug/deps/libkanna_mux.rlib" && ! -e "$seeded/target/debug/.fingerprint/kanna-daemon-1" && ! -e "$seeded/target/debug/incremental" && ! -e "$seeded/target/debug/kanna-daemon" ]] || fail "seed: carried our own crates: $(ls -R "$seeded/target/debug")"
+[[ "$(cat "$seeded/target/debug/macos-deployment-target")" == 15.0 && -w "$seeded/target/debug/deps/libdep_x.rlib" ]] || fail "seed: no stamp, or read-only"
+second="$(worktree task-second)" && (kanna_targets "$second") 2>/dev/null
+kanna_cargo_seed "$second" "" 15.0 2>/dev/null
+[[ "$(wc -l <"$dir/cargo-builds" | tr -d ' ')" == 1 && -f "$second/target/debug/deps/libdep_x.rlib" ]] || fail "seed: a second worktree built again, or got nothing"
+bumped="$(worktree task-bumped)" && (kanna_targets "$bumped") 2>/dev/null && printf 'lock 2\n' >"$bumped/Cargo.lock"
+kanna_cargo_seed "$bumped" "" 15.0 2>/dev/null
+[[ "$(wc -l <"$dir/cargo-builds" | tr -d ' ')" == 1 ]] || fail "seed: a worktree's own Cargo.lock built a seed"
+[[ -f "$bumped/target/debug/deps/libdep_x.rlib" ]] || fail "seed: a worktree's own Cargo.lock didn't start from main's seed"
+echo mine >"$second/target/debug/deps/libdep_x.rlib"
+kanna_cargo_seed "$second" "" 15.0 2>/dev/null
+[[ "$(cat "$second/target/debug/deps/libdep_x.rlib")" == mine ]] || fail "seed: replaced a worktree's own build"
+kanna_cargo_seed "$main" "" 15.0 2>/dev/null
+[[ ! -e "$main/target/debug" && ! -e "$main/target/release" ]] || fail "seed: seeded the main checkout"
+
 [[ $failed == 0 ]] && echo "store: ok"
 exit "$failed"

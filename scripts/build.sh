@@ -35,6 +35,7 @@ kanna_ghostty_vt "$repo_root" "$triple"
 kanna_ghosttykit "$repo_root"
 
 echo "==> kanna, kanna-daemon, kanna-keeper, libkanna_ffi (cargo build --workspace --profile $cargo_profile into ${rust_dir#"$repo_root/"})"
+kanna_cargo_seed "$repo_root" "$triple" "$macos_target"
 kanna_cargo_stamp "$repo_root" "$macos_target" "$triple"
 if [[ "$triple" == "$host" ]]; then
   cargo build --manifest-path "$repo_root/Cargo.toml" --workspace --profile "$cargo_profile"

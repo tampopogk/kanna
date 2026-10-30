@@ -204,3 +204,61 @@ kanna_targets_ready() {
   [ -n "${SCCACHE_DIR:-}" ] || { SCCACHE_DIR="$(kanna_store_root "$1")/sccache"; export SCCACHE_DIR; }
   kanna_evict "$1"
 }
+
+kanna_cargo_family() {
+  kanna_store_key "$(rustc -vV)" "$2" "$(kanna_cargo_profile "$1")" | cut -c1-8
+}
+
+kanna_cargo_inputs() {
+  for file in Cargo.lock Cargo.toml .cargo/config.toml; do
+    if [ -n "${2:-}" ]; then git -C "$1" show "HEAD:$file" 2>/dev/null; else cat "$1/$file" 2>/dev/null; fi
+    echo "--- $file"
+  done
+}
+
+kanna_cargo_seed_build() {
+  out="$1" repo="$2" triple="$3" macos="$4"
+  profile="$(kanna_cargo_profile "$repo")"
+  [ "$profile" = dev ] && folder=debug || folder="$profile"
+  [ "$triple" = "$(kanna_host_triple)" ] || folder="$triple/$folder"
+  set -- --manifest-path "$repo/Cargo.toml" --workspace --profile "$profile"
+  [ "$triple" = "$(kanna_host_triple)" ] || set -- "$@" --target "$triple"
+  (cd "$repo" && CARGO_TARGET_DIR="$out" cargo build "$@" && CARGO_TARGET_DIR="$out" cargo test --no-run "$@") || return 1
+  dir="$out/$folder"
+  [ -d "$dir/.fingerprint" ] || { echo "no $dir/.fingerprint" >&2; return 1; }
+  rm -rf "$dir/incremental" "$dir/examples" "$dir/.fingerprint"/kanna-* "$dir/build"/kanna-* "$dir/deps"/*kanna*
+  find "$dir" -maxdepth 1 -type f -delete
+  echo "$macos" > "$dir/macos-deployment-target"
+  echo "$folder" > "$out/seed"
+}
+
+kanna_cargo_seed() {
+  kanna_main_checkout "$1" >/dev/null || return 0
+  triple="${2:-$(kanna_host_triple)}"
+  here="$(kanna_rust_dir "$1" "$triple")" || return 1
+  [ -e "$here" ] && return 0
+  store="$(kanna_store_root "$1")"
+  family="$(kanna_cargo_family "$1" "$triple")"
+  key="$family-$(kanna_cargo_inputs "$1" | shasum -a 256 | cut -c1-8)"
+  main="$(kanna_main_checkout "$1")" || main="$1"
+  if [ -d "$store/cargo/$key" ]; then
+    entry="$(kanna_store "$1" cargo "$key" kanna_cargo_seed_build "$1" "$triple" "$3")" || return 0
+  elif [ "$(kanna_cargo_inputs "$1")" = "$(kanna_cargo_inputs "$main" head)" ]; then
+    echo "==> Building the Rust dependencies' seed for main's Cargo.lock ($key)" >&2
+    entry="$(kanna_store "$1" cargo "$key" kanna_cargo_seed_build "$1" "$triple" "$3")" || return 0
+  else
+    entry="$(cd "$store/cargo" 2>/dev/null && ls -dt "$family"-* 2>/dev/null | grep -v '\.' | head -1)"
+    [ -n "$entry" ] && entry="$store/cargo/$entry"
+    [ -n "$entry" ] || return 0
+    touch "$entry" 2>/dev/null
+  fi
+  from="$entry/$(cat "$entry/seed" 2>/dev/null)"
+  [ -f "$entry/seed" ] && [ -d "$from" ] || return 0
+  mkdir -p "$(dirname "$here")" || return 1
+  if kanna_clone "$from" "$here.seeding" && chmod -R u+w "$here.seeding"; then
+    mv "$here.seeding" "$here"
+    echo "==> Started ${here#"$1/"} from the store's $(basename "$entry")" >&2
+  else
+    kanna_store_writable "$here.seeding"
+  fi
+}

@@ -62,7 +62,7 @@ The main checkout keeps its `release/` profile and real, internal copies of Ghos
 | Name | Key from | Holds |
 |---|---|---|
 | `zig` | Zig version, host OS and architecture | the toolchain |
-| `ghostty-source` | fork URL, pinned commit | a checkout at the commit |
+| `ghostty-source` | fork URL, pinned commit, Zig version | a checkout at the commit, with every Zig package it can need fetched into `zig-pkg/` (the entry is read-only, so Zig can't fetch later) |
 | `ghosttykit` | pinned commit, Zig version, `KANNA_GHOSTTY_OPTIMIZE`, `build-ghosttykit.sh` | `GhosttyKit.xcframework`, `ghostty.rev` |
 | `ghostty-vt` | the same with `build-ghostty-vt.sh`, and the Rust triple | `include/`, `lib/libghostty-vt.a`, `ghostty.rev` |
 
@@ -75,17 +75,17 @@ sequenceDiagram
     A->>S: mkdir KEY.lock (pid A)
     B->>S: KEY exists? no
     B->>S: mkdir KEY.lock: taken by pid A (alive), wait
-    A->>S: build into KEY.tmp-A, chmod -R a-w
-    A->>S: mv KEY.tmp-A KEY (atomic), rm KEY.lock
+    A->>S: build into KEY.tmp-A, make its contents read-only
+    A->>S: mv KEY.tmp-A KEY (atomic), chmod a-w KEY, rm KEY.lock
     B->>S: lock free, KEY exists: use it
     A->>A: ln -s _shared/ghosttykit/KEY target/ghosttykit
     B->>B: ln -s _shared/ghosttykit/KEY target/ghosttykit
 ```
 
 - **Built once, under a lock:** `kanna_store NAME KEY BUILDER` in `scripts/store.sh` returns the entry, building it first if it's missing. The lock is a folder, `KEY.lock`, made with `mkdir` (atomic) and holding the builder's pid. Others wait for it, saying who they wait for, then look again. A lock whose pid is dead is stale and is taken over.
-- **Atomic publish:** the builder writes `KEY.tmp-PID`, the entry is made read-only, and one `mv` makes it `KEY`. A failed build removes its temp folder and the lock and exits non-zero; nothing half-built is ever at `KEY`.
+- **Atomic publish:** the builder writes `KEY.tmp-PID`, its contents are made read-only, one `mv` makes it `KEY`, then `KEY` itself is made read-only (macOS won't rename a folder you can't write). A failed build removes its temp folder and the lock and exits non-zero; nothing half-built is ever at `KEY`.
 - **Worktrees link** `target/ghosttykit` and `target/ghostty-vt/TRIPLE` to their entries, and `touch` an entry each time they use it. The main checkout clones them into real folders instead, marked with the key. Zig and the source aren't linked: only the store's builders use them.
-- **Read-only:** entries are `chmod -R a-w`, so a build can't change what other worktrees use. A worktree that builds Ghostty from its own source (`GHOSTTY_SOURCE_DIR`) builds into its own `target/`, as before.
+- **Read-only:** entries are `a-w`, so a build can't change what other worktrees use. A worktree that builds Ghostty from its own source (`GHOSTTY_SOURCE_DIR`) builds into its own `target/`, as before.
 - **Pruned** in the eviction pass ([§5](#5-eviction)): an entry no link under `ROOT` points to and unused for a day is deleted, under its lock. `sccache/` is never pruned; it bounds itself.
 
 ## 3. One Rust profile per worktree
@@ -94,13 +94,13 @@ sequenceDiagram
 |---|---|---|---|
 | task worktree | `dev` (`target/debug`) | same profile | same profile |
 | main checkout | `release` | `dev` | `release` |
-| `scripts/release.sh` | `release`, no compile cache | | |
+| `scripts/release.sh` | `release`, without the compile cache | | `release` |
 
 - **`kanna_rust_profile`** in `scripts/env.sh` says which: `debug` in a worktree, `release` in the main checkout; `KANNA_RUST_PROFILE=release|debug` overrides it. `kanna_rust_dir` is its folder (`target/[TRIPLE/]PROFILE`), which `build.sh`, `build-kanna-app.sh` (as `KANNA_RUST_DIR` for SwiftPM), `e2e-kanna.sh` and `run-kanna.sh` use instead of `target/release`.
 - **The `dev` profile is tuned** in `Cargo.toml` so one profile serves both: our crates at `opt-level = 1` with line tables, dependencies at `opt-level = 3` with no debug info. Debug assertions stay on, which the keeper's test hooks need.
 - **`Package.swift`** links `libkanna_ffi.a` from `KANNA_RUST_DIR`, or else `target/debug` in a worktree and `target/release` in the main checkout, so `swift test` works in both.
 - **Borrowing** ([build speed](build-speed.md#1-what-a-fresh-worktree-borrows)) clones the main checkout's folder of the same profile, when it has one.
-- **Release builds stay clean:** `release.sh` sets `KANNA_RUST_PROFILE=release` and `KANNA_SCCACHE=0`, and builds in the main checkout, whose Ghostty copies are real folders.
+- **Release builds stay clean:** `release.sh` sets `KANNA_RUST_PROFILE=release` and an empty `RUSTC_WRAPPER` (which overrides `.cargo/config.toml`), so every crate is compiled by `rustc` itself, and builds in the main checkout, whose Ghostty copies are real folders.
 
 ## 4. The compile cache
 

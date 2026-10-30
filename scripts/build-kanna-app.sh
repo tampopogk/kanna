@@ -45,10 +45,12 @@ if [[ -z "${KANNA_GHOSTTY_VT_DIR:-}" ]]; then
   fi
 fi
 
+kanna_cargo_seed "$repo_root" "" "$macos_target"
 kanna_cargo_stamp "$repo_root" "$macos_target"
 if [[ "$triple" == "$host" ]]; then
   (cd "$repo_root" && cargo build --profile "$cargo_profile" -p kanna-ffi -p kanna-daemon -p kanna-keeper -p kanna -p kanna-build)
 else
+  kanna_cargo_seed "$repo_root" "$triple" "$macos_target"
   kanna_cargo_stamp "$repo_root" "$macos_target" "$triple"
   (cd "$repo_root" && cargo build --profile "$cargo_profile" -p kanna-build &&
     cargo build --profile "$cargo_profile" --target "$triple" -p kanna-ffi -p kanna-daemon -p kanna-keeper -p kanna)
