@@ -326,7 +326,7 @@ fn freed_lines(reply: &Value) -> String {
 }
 
 fn place(reply: &Value) -> &'static str {
-    if reply["place"] == "backlog" { " on the Shelf" } else { "" }
+    if reply["place"] == "shelf" { " on the Shelf" } else { "" }
 }
 
 pub fn name_out(reply: &mut Value, out: &Value) {

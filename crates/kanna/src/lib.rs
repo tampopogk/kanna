@@ -256,7 +256,7 @@ fn locate(request: &mut Value, mux: &mut Session) -> Result<Option<(String, Vec<
         Err(failure) if failure.message.ends_with("[ambiguous]") => return Err(failure),
         Err(_) => None,
     };
-    let backlog = found.as_ref().is_some_and(|t| t["place"] == "backlog");
+    let backlog = found.as_ref().is_some_and(|t| t["place"] == "shelf");
     if action == "defer" && backlog {
         return Err(fail(exit::FAILED, format!("{reference} is on the Shelf: `kanna task pick {reference}` moves it to the Desk")));
     }
