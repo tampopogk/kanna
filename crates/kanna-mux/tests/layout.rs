@@ -40,15 +40,25 @@ fn resizing_a_pane_that_had_the_whole_split_shares_the_rest_equally() {
 }
 
 #[test]
+fn open_docks_only_a_task_s_agent() {
+    let (core, _) = make_core();
+    let refused = send(&core, json!({ "cmd": "open", "args": { "type": "term", "name": "agent", "dock": "left" } }));
+    assert_eq!(refused["error"]["code"], "not_a_task", "{refused}");
+    assert_eq!(refused["error"]["message"], "a docked pane is a task's agent, and only a task docks: make one with `kanna task new`, then `kanna task pick` or `kanna task start`");
+    assert_eq!(send(&core, json!({ "cmd": "list", "args": { "all": true } }))["panes"], json!([]));
+    assert_eq!(send(&core, json!({ "cmd": "open", "args": { "type": "term", "name": "agent", "dock": "left", "task": "task-1" } }))["ok"], true);
+}
+
+#[test]
 fn move_docks_only_a_task_and_moves_its_agent_to_the_other_edge_of_its_workspace() {
     let (core, _) = make_core();
-    for args in [json!({ "type": "term", "name": "a" }), json!({ "type": "term", "name": "agent", "dock": "left" })] {
+    for args in [json!({ "type": "term", "name": "a" }), json!({ "type": "term", "name": "agent", "dock": "left", "task": "task-1" })] {
         assert_eq!(send(&core, json!({ "cmd": "open", "args": args }))["ok"], true);
     }
     let refused = send(&core, json!({ "cmd": "move", "args": { "pane": "a", "dock": "left" } }));
     assert_eq!(refused["error"]["code"], "not_a_task", "{refused}");
     assert_eq!(refused["error"]["message"], "a isn't a task, and only a task's agent docks: start one with `kanna task new` and `kanna task start`");
-    let windowed = send(&core, json!({ "cmd": "open", "args": { "type": "term", "name": "other", "dock": "left", "window": "win-1" } }));
+    let windowed = send(&core, json!({ "cmd": "open", "args": { "type": "term", "name": "other", "dock": "left", "task": "task-2", "window": "win-1" } }));
     assert_eq!(windowed["error"]["code"], "bad_request", "{windowed}");
 
     let flipped = send(&core, json!({ "cmd": "move", "args": { "pane": "agent", "dock": "right" } }));
@@ -57,9 +67,9 @@ fn move_docks_only_a_task_and_moves_its_agent_to_the_other_edge_of_its_workspace
     assert_eq!(elsewhere["error"]["code"], "bad_request", "a task's agent stays in its workspace: {elsewhere}");
 }
 
-fn shelved_task_with_a_tab() -> Core {
+fn desk_task_with_a_tab() -> Core {
     let (core, _) = make_core();
-    let task = send(&core, json!({ "cmd": "open", "args": { "type": "term", "name": "agent", "dock": "left" } }));
+    let task = send(&core, json!({ "cmd": "open", "args": { "type": "term", "name": "agent", "dock": "left", "task": "task-1" } }));
     assert_eq!(task["ok"], true, "{task}");
     let tab = send(&core, json!({ "cmd": "open", "args": { "type": "term", "name": "side", "tab": true, "from": "agent" } }));
     assert_eq!(tab["ok"], true, "{tab}");
@@ -71,8 +81,8 @@ fn everything(core: &Core) -> Value {
 }
 
 #[test]
-fn closing_a_shelved_task_closes_its_tabs_and_leaves_no_window() {
-    let core = shelved_task_with_a_tab();
+fn closing_a_desk_task_closes_its_tabs_and_leaves_no_window() {
+    let core = desk_task_with_a_tab();
     let closed = send(&core, json!({ "cmd": "close", "args": { "task": "agent" } }));
     assert_eq!(closed["closed"], json!(["p1", "p2"]), "{closed}");
     let list = everything(&core);
@@ -108,7 +118,7 @@ fn closing_a_tab_of_panes_the_daemon_doesnt_know_removes_the_tab() {
 
 #[test]
 fn closing_a_task_closes_its_workspace_and_its_windows() {
-    let core = shelved_task_with_a_tab();
+    let core = desk_task_with_a_tab();
     let window = send(&core, json!({ "cmd": "open", "args": { "type": "term", "name": "own", "window": "new", "from": "agent" } }));
     assert_eq!(window["ok"], true, "{window}");
     let closed = send(&core, json!({ "cmd": "close", "args": { "task": "agent" } }));

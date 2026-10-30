@@ -169,13 +169,13 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
     }
     let mut request = request;
     let located = if command.name == "task" { locate(&mut request, &mut mux)? } else { None };
-    let waiting = if command.name == "task" && request["action"] == "done" { mux.call("backlog", serde_json::json!({ "action": "list" })).ok() } else { None };
+    let waiting = if command.name == "task" && request["action"] == "done" { mux.call("tasks", serde_json::json!({ "action": "list" })).ok() } else { None };
     let (mut shorts, mut listed) = (located.as_ref().map(|(_, known)| known.clone()).unwrap_or_default(), false);
     let mut reply = match mux.call(wire(command, &request), request.clone()) {
         Ok(reply) => reply,
         Err(mut failure) => {
             if failure.message.contains("task-") {
-                let shorts = mux.call("backlog", json!({ "action": "list" })).map(|b| output::shorts(&b)).unwrap_or_default();
+                let shorts = mux.call("tasks", json!({ "action": "list" })).map(|b| output::shorts(&b)).unwrap_or_default();
                 failure.message = output::short_text(&failure.message, &shorts);
             }
             return Err(explain(command, failure, &mut mux, &target));
@@ -185,12 +185,12 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
         reply["freed"] = serde_json::Value::Array(output::freed(&waiting, done));
     }
     if command.name == "task" && request["action"] == "list" {
-        if let Ok(backlog) = mux.call("backlog", serde_json::json!({ "action": "list" })) {
-            reply["backlog"] = backlog["tasks"].clone();
-            output::name_out(&mut reply, &backlog["out"]);
-            shorts.extend(output::shorts(&backlog));
+        if let Ok(found) = mux.call("tasks", serde_json::json!({ "action": "list" })) {
+            reply["shelf"] = found["shelf"].clone();
+            output::name_out(&mut reply, &found["desk"]);
+            shorts.extend(output::shorts(&found));
             listed = true;
-            reply["script"] = backlog["script"].clone();
+            reply["script"] = found["script"].clone();
         }
         if let Some(query) = request["query"].as_str() {
             output::keep_matching(&mut reply, query);
@@ -217,7 +217,7 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
             }
         }
         if !listed && (request.to_string().contains("task-") || reply.to_string().contains("task-")) {
-            shorts.extend(mux.call("backlog", json!({ "action": "list" })).map(|b| output::shorts(&b)).unwrap_or_default());
+            shorts.extend(mux.call("tasks", json!({ "action": "list" })).map(|b| output::shorts(&b)).unwrap_or_default());
         }
         shorts.extend(output::shorts(&reply));
         output::shorten(&mut request, &shorts);
@@ -239,8 +239,8 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
 fn unplaced(command: &str, request: &Value) -> Option<&'static str> {
     let given = |keys: &[&str]| keys.iter().any(|key| !request[*key].is_null());
     match command {
-        "open" if !given(&["window", "workspace", "dock", "from"]) => Some("add --window WINDOW (or --window new)"),
-        "markup" if !request["type"].is_null() && !given(&["window", "dock", "from"]) => Some("add --window WINDOW (or --window new)"),
+        "open" if !given(&["window", "workspace", "from"]) => Some("add --window WINDOW (or --window new)"),
+        "markup" if !request["type"].is_null() && !given(&["window", "from"]) => Some("add --window WINDOW (or --window new)"),
         "comment" if !given(&["window", "from"]) => Some("add --window WINDOW (or --window new)"),
         "arrange" if !given(&["window", "from"]) => Some("add --window WINDOW"),
         "screenshot" if !given(&["pane", "window", "from"]) => Some("say PANE or --window WINDOW"),
@@ -250,13 +250,16 @@ fn unplaced(command: &str, request: &Value) -> Option<&'static str> {
 
 fn locate(request: &mut Value, mux: &mut Session) -> Result<Option<(String, Vec<(String, String)>)>, Failure> {
     let action = request["action"].as_str().unwrap_or("").to_string();
-    let Some(reference) = request["task"].as_str().filter(|_| ["park", "pull", "done", "name"].contains(&action.as_str())).map(String::from) else { return Ok(None) };
-    let found = match mux.call("backlog", json!({ "action": "resolve", "task": reference })) {
+    let Some(reference) = request["task"].as_str().filter(|_| ["park", "activate", "shelve", "done", "name"].contains(&action.as_str())).map(String::from) else { return Ok(None) };
+    let found = match mux.call("tasks", json!({ "action": "resolve", "task": reference })) {
         Ok(found) => Some(found["task"].clone()),
         Err(failure) if failure.message.ends_with("[ambiguous]") => return Err(failure),
         Err(_) => None,
     };
-    let backlog = found.as_ref().is_some_and(|t| t["place"] == "backlog");
+    let on_shelf = found.as_ref().is_some_and(|t| t["place"] == "shelf");
+    if action == "shelve" && on_shelf {
+        return Err(fail(exit::FAILED, format!("{reference} is on the Shelf: `kanna task pick {reference}` moves it to the Desk")));
+    }
     let pane = found.as_ref().and_then(|t| t["pane"].as_str()).map(String::from);
     let id = found.as_ref().and_then(|t| t["id"].as_str()).map(String::from);
     match (action.as_str(), id.as_deref()) {
@@ -265,7 +268,7 @@ fn locate(request: &mut Value, mux: &mut Session) -> Result<Option<(String, Vec<
             request.as_object_mut().map(|r| r.remove("task"));
             request["pane"] = json!(reference);
         }
-        ("done", Some(id)) if backlog => request["task"] = json!(id),
+        ("done", Some(id)) if on_shelf => request["task"] = json!(id),
         (_, Some(_)) => request["task"] = json!(pane.unwrap_or(reference)),
         (_, None) => {}
     }
@@ -305,11 +308,11 @@ fn explain(command: &Command, mut failure: Failure, mux: &mut Session, target: &
 fn wire(command: &Command, request: &Value) -> &'static str {
     match command.name {
         "markup" if request.get("type").is_some() => "open",
-        "task" if ["new", "edit", "start", "stop", "setup", "shelve", "defer", "send", "messages"].contains(&request["action"].as_str().unwrap_or("")) => "backlog",
-        "task" if request["action"] == "done" => "backlog",
-        "task" if request["action"] == "name" && request.get("task").is_some() => "backlog",
+        "task" if ["new", "edit", "start", "stop", "setup", "pick", "shelve", "send", "messages"].contains(&request["action"].as_str().unwrap_or("")) => "tasks",
+        "task" if request["action"] == "done" => "tasks",
+        "task" if request["action"] == "name" && request.get("task").is_some() => "tasks",
         "task" if request["action"] == "name" => "rename-pane",
-        "task" if ["park", "pull", "desk"].contains(&request["action"].as_str().unwrap_or("")) => "desk",
+        "task" if ["park", "activate", "desk"].contains(&request["action"].as_str().unwrap_or("")) => "desk",
         "workspace" => "list",
         name => name,
     }
@@ -335,7 +338,7 @@ const COMPLETIONS_HELP: &str = "usage: kanna completions zsh|bash\n\nPrints the 
 
 pub const CONFIG_SCHEMA: &str = include_str!("../../../schemas/config.schema.json");
 
-const CONFIG_HELP: &str = "usage: kanna config schema\n\nKanna's settings are ~/.kanna-v4/config.json, overridden key by key by a repo's .kanna/config.json, e.g.\n  { \"version\": 1, \"planning\": { \"context\": 300000 }, \"tasks\": { \"agent\": \"codex\" }, \"backlog\": { \"runners\": 3 } }\n\n`kanna config schema` prints their JSON Schema: every key, its type, default and what it does.";
+const CONFIG_HELP: &str = "usage: kanna config schema\n\nKanna's settings are ~/.kanna-v4/config.json, overridden key by key by a repo's .kanna/config.json, e.g.\n  { \"version\": 1, \"planning\": { \"context\": 300000 }, \"tasks\": { \"agent\": \"codex\" }, \"shelf\": { \"runners\": 3 } }\n\n`kanna config schema` prints their JSON Schema: every key, its type, default and what it does.";
 
 const RAW_HELP: &str = "usage: kanna raw REQUEST\n\nSends one control-protocol request as JSON and prints the reply, e.g.\n  kanna raw '{\"cmd\":\"list\"}'\n  kanna raw '{\"cmd\":\"open\",\"args\":{\"type\":\"term\",\"name\":\"a\"}}'";
 
@@ -785,11 +788,6 @@ mod tests {
             ("kanna send-key p3 up up shift+tab ctrl+c", json!({ "pane": "p3", "keys": ["up", "up", "shift+tab", "ctrl+c"] })),
             ("kanna send p1 echo -- --mux -x", json!({ "pane": "p1", "text": "echo --mux -x" })),
             ("kanna open --cwd /tmp", json!({ "type": "term", "cwd": "/tmp" })),
-            ("kanna open --name agent --dock", json!({ "type": "term", "name": "agent", "dock": "left" })),
-            ("kanna open --name agent --dock --frozen", json!({ "type": "term", "name": "agent", "dock": "left", "frozen": true })),
-            ("kanna open --dock right --cmd claude", json!({ "type": "term", "dock": "right", "cmd": "claude" })),
-            ("kanna open --dock md /tmp/a.md", json!({ "type": "md", "dock": "left", "path": "/tmp/a.md" })),
-            ("kanna open web a.test --dock=right --window new", json!({ "type": "web", "url": "a.test", "dock": "right", "window": "new" })),
             ("kanna move agent --dock", json!({ "pane": "agent", "dock": "left" })),
             ("kanna move agent --dock right --window win-2", json!({ "pane": "agent", "dock": "right", "window": "win-2" })),
             ("kanna move agent --tab", json!({ "pane": "agent", "tab": "new" })),
@@ -829,8 +827,11 @@ mod tests {
             ("kanna read p1 --lines 0", "--lines needs a whole number"),
             ("kanna open ios", "need an app"),
             ("kanna open --app x", "only for iOS panes"),
-            ("kanna open --dock --split right", "--dock goes on its own"),
-            ("kanna open --dock --tab", "--dock goes on its own"),
+            ("kanna open --name agent --dock", "make a task with `kanna task new`"),
+            ("kanna open --dock right --cmd claude", "a docked pane is a task's agent"),
+            ("kanna open web a.test --dock=right --window new", "a docked pane is a task's agent"),
+            ("kanna open --frozen", "a docked pane is a task's agent"),
+            ("kanna markup a.md --dock", "a docked pane is a task's agent"),
             ("kanna move agent --dock --tab", "--dock goes on its own"),
             ("kanna move agent --dock --to b", "--dock goes on its own"),
         ] {
@@ -861,15 +862,15 @@ mod tests {
         let all = json!({ "action": "list", "all": true });
         let reply = json!({
             "windows": [],
-            "workspaces": [{ "id": "ws-1", "where": { "shelf": "mac" }, "dock": { "pane": "agent", "id": "p1", "edge": "left", "width": "2/5", "frozen": true }, "focused": "agent",
+            "workspaces": [{ "id": "ws-1", "where": { "desk": "mac" }, "dock": { "pane": "agent", "id": "p1", "edge": "left", "width": "2/5", "frozen": true }, "focused": "agent",
                              "tabs": [{ "id": "tab-1", "title": "Tab 1", "active": true, "layout": { "pane": "p2" } }], "windows": [], "panes": ["p2", "p1"] }],
             "panes": [{ "id": "p1", "name": "agent", "type": "term", "state": "running", "cmd": "claude" }, { "id": "p2", "name": null, "type": "term", "state": "running" }]
         });
         let text = output::workspace(&all, &reply);
-        assert!(text.contains("\nws-1, on the Shelf\n  dock: p1 (agent)  left 2/5  frozen\n  focus: agent\n  *tab-1 \"Tab 1\"  p2"), "{text}");
-        let opened = json!({ "pane": { "id": "p1", "name": "agent", "state": "running" }, "window": null, "tab": null, "dock": "left", "workspace": { "id": "ws-1", "where": { "shelf": "mac" } } });
-        assert_eq!(output::opened(&json!({}), &opened), "opened p1 (agent) docked left in ws-1 (on the Shelf): running");
-        assert_eq!(output::opened(&json!({ "frozen": true }), &opened), "opened p1 (agent) docked left, frozen, in ws-1 (on the Shelf): running");
+        assert!(text.contains("\nws-1, on the Desk\n  dock: p1 (agent)  left 2/5  frozen\n  focus: agent\n  *tab-1 \"Tab 1\"  p2"), "{text}");
+        let opened = json!({ "pane": { "id": "p1", "name": "agent", "state": "running" }, "window": null, "tab": null, "dock": "left", "workspace": { "id": "ws-1", "where": { "desk": "mac" } } });
+        assert_eq!(output::opened(&json!({}), &opened), "opened p1 (agent) docked left in ws-1 (on the Desk): running");
+        assert_eq!(output::opened(&json!({ "frozen": true }), &opened), "opened p1 (agent) docked left, frozen, in ws-1 (on the Desk): running");
         let moved = json!({ "window": null, "workspace": { "id": "ws-1" }, "dock": { "pane": "agent", "edge": "right", "width": "1/3" } });
         assert_eq!(output::moved(&moved), "agent is docked right in ws-1 (width 1/3)");
     }

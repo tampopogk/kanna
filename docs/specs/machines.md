@@ -1,8 +1,8 @@
 # Your Machines
 
-**Status:** planned · **Parts:** [identity and pairing](machine-identity.md), [tasks across machines](machine-tasks.md), [Desks across machines](machines-app.md), [one link per machine](machine-links.md), [setting up a Linux machine](machine-setup.md), [agent sign-in](agent-sign-in.md), [build order](machines-build-order.md) · **Builds on:** [architecture](architecture.md), [app link](app-link.md), [each app's Desk and Shelf](app-desk.md), [backlog runners](backlog-runners.md) · **Built on by:** [Kanna Cloud](kanna-cloud.md) · **Research:** [fleet](../research/fleet.md)
+**Status:** planned · **Parts:** [identity and pairing](machine-identity.md), [tasks across machines](machine-tasks.md), [Desks across machines](machines-app.md), [one link per machine](machine-links.md), [setting up a Linux machine](machine-setup.md), [agent sign-in](agent-sign-in.md), [build order](machines-build-order.md) · **Builds on:** [architecture](architecture.md), [app link](app-link.md), [each app's Desks](app-desk.md), [Shelf runners](shelf-runners.md) · **Built on by:** [Kanna Cloud](kanna-cloud.md) · **Research:** [fleet](../research/fleet.md)
 
-**Your machines** are the machines your daemons trust: paired by code, listed in your signed peer log, connected over iroh, sharing your backlog and passing tasks between them. A MacBook Pro is usually the client; a Mac mini at home, a Linux box, or a VM Kanna Cloud made for you runs tasks too. Once a machine has joined, it's a peer like any other, whoever runs it. Kanna develops any project, not only Kanna.
+**Your machines** are the machines your daemons trust: paired by code, listed in your signed peer log, connected over iroh, sharing your Shelf and passing tasks between them. A MacBook Pro is usually the client; a Mac mini at home, a Linux box, or a VM Kanna Cloud made for you runs tasks too. Once a machine has joined, it's a peer like any other, whoever runs it. Kanna develops any project, not only Kanna.
 
 It's free and open source, with no account and no server of Kanna's: on the LAN, and from away through a relay of your own or an address you give. [Kanna Cloud](kanna-cloud.md) is a service that hands you machines; what it makes joins your machines, and the line between the two is enrollment.
 
@@ -67,7 +67,7 @@ flowchart LR
 
 **Placement: where work goes.**
 
-- **Placement is a policy, not a place.** By default, any machine with free slots asks for the oldest waiting task, so a mini and ten Linux boxes share one backlog without a scheduler ([tasks §2](machine-tasks.md#2-owners-and-grants)). Preferences narrow who asks (e2e on the mini, this project's agents on those machines).
+- **Placement is a policy, not a place.** By default, any machine with free slots asks for the oldest waiting task, so a mini and ten Linux boxes share one Shelf without a scheduler ([tasks §2](machine-tasks.md#2-owners-and-grants)). Preferences narrow who asks (e2e on the mini, this project's agents on those machines).
 - **A task runs whole on one machine.** A task that needs macOS goes to a Mac by preference.
 - **Taking a task to the Desk doesn't move it.** It stays where it runs and is shown over the link.
 
@@ -122,7 +122,7 @@ sequenceDiagram
 
 ## 6. One app, several machines
 
-See [Desks across machines](machines-app.md) for project identity, the app's Shelf and claims, and the [mockup](../../references/mockups/fleet.html) with screenshots and the Machines 3 comparison cases.
+See [Desks across machines](machines-app.md) for project identity, each app's Desk tasks and claims, and the [mockup](../../references/mockups/fleet.html) with screenshots and the Machines 3 comparison cases.
 
 ## 7. Terminals and panes
 
@@ -145,7 +145,7 @@ See [Desks across machines](machines-app.md) for project identity, the app's She
 
 In short ([detail](machine-tasks.md)):
 
-- **The backlog is replicated** to every one of your daemons, eventually consistent, ordered oldest first by a hybrid logical clock.
+- **The Shelf is replicated** to every one of your daemons, eventually consistent, ordered oldest first by a hybrid logical clock.
 - **Each task has one owner.** A runner elsewhere with free slots, within the task's preferences, asks for it, and the owner grants it to exactly one.
 - **Transfer** moves a task between any two daemons at a boundary. The branch goes as a git bundle over the link, the transcript is copied, and the agent resumes by session ID at the receiver's own paths.
 

@@ -5,14 +5,14 @@ description: Use when you've been told you're a task's agent in Kanna, as soon a
 
 # Kanna tasks
 
-In Kanna, each agent's work is a **task**: one agent in one repo, shown on a Desk. Every task is made with a name (`kanna task new NAME`), and that name is what the user sees in the title bar, on the Shelf and in the backlog: keep it.
+In Kanna, each agent's work is a **task**: one agent in one repo, shown on a Desk. Every task is made with a name (`kanna task new NAME`), and that name is what the user sees in the title bar, on the Desk and on the Shelf: keep it.
 
 ## One project, one Desk
 
-A project (a repo) has **one Desk**: its window. The Desk shows one task at a time, its agent docked on the left and its tabs on the right; the project's other tasks wait on the **Shelf** along the bottom of the same window, still running. "The Desk" always means that window.
+A project (a repo) has **one Desk**: its window, which holds up to three of the project's tasks, one of them **active**. The active task shows with its agent docked on the left and its tabs on the right; the Desk's other tasks wait in the strip along the bottom of the same window, still running. ⌘. toggles between the active task and the **Desk view**: the planning agent, the Desk's tasks, and the **Shelf**, where the project's other tasks wait.
 
-- **New tasks go in the backlog** (`kanna task new`). Running and place are separate: `kanna task start` runs a task where it is (a backlog task gets its agent and stays in the backlog, and any number can run there), `kanna task stop` ends its agent and leaves it where it is, and `kanna task shelve` moves a backlog task to the Shelf, starting it if it's stopped. Shelve one when the Shelf has room (three tasks per project, counting the Desk's) or when the user asks. When the user asks and the Shelf is full, make room by moving a Shelf task back to the backlog (`kanna task defer TASK`; it stays as it is, running or stopped). The user brings a Shelf task onto the Desk when they want it.
-- `kanna task pull TASK` swaps a task onto the Desk, parking the one there; `kanna task park` moves the Desk's task to the Shelf. Only when the user asks.
+- **New tasks go on the Shelf** (`kanna task new`). Running and place are separate: `kanna task start` runs a task where it is (a Shelf task gets its agent and stays on the Shelf, and any number can run there), `kanna task stop` ends its agent and leaves it where it is, and `kanna task pick` moves a Shelf task to the Desk, starting it if it's stopped. Pick one when the Desk has room (three tasks per project) or when the user asks. When the user asks and the Desk is full, make room by moving a Desk task back to the Shelf (`kanna task shelve TASK`; it stays as it is, running or stopped). The user makes a Desk task active when they want it.
+- `kanna task activate TASK` makes a Desk task the active one; `kanna task park` shows the Desk view (the task stays active). Only when the user asks.
 - Never make another Desk for a project (`--window new`): there's one.
 - **The Desk, Shelf and focus are shared:** the user may change them at the same time as you, so don't assume a change was yours, and don't undo one you didn't make; ask.
 
@@ -30,21 +30,21 @@ git branch -m fix-login-redirect
 - **Only the branch:** leave the worktree's folder where it is, since you and your terminals are in it.
 - **Before you push,** so the remote branch has the real name.
 
-## Add tasks to the backlog
+## Add tasks to the Shelf
 
-When you and the user plan work, or you find work that belongs in its own task, add it to this repo's backlog rather than doing it now:
+When you and the user plan work, or you find work that belongs in its own task, add it to this repo's Shelf rather than doing it now:
 
 ```sh
 kanna task new "Add rate limiting" "Add rate limiting to the login endpoint: ..."
 ```
 
 - **The first message stands alone.** The agent that gets it starts fresh in its own worktree and hasn't seen this conversation: say what to do, why, where (files, functions), and how to know it's done.
-- **Its first message can't change.** Only a backlog task's name can (`kanna task name TASK NAME`). To change what it says, make a new task and take the old one off with `kanna task done TASK`.
+- **Its first message can't change.** Only a Shelf task's name can (`kanna task name TASK NAME`). To change what it says, make a new task and take the old one off with `kanna task done TASK`.
 - **The agent is the user's default** (`tasks.agent`, `claude` unless set). When the user asks for another one for a task ("give that to codex"), add `--agent codex` (or `claude`, `copilot`, `opencode`, `agy`).
-- **It starts by itself.** Backlog tasks run unattended, a few at a time (`backlog.runners`, 3 by default), oldest first, so write a first message an agent can do in one go: settle the open decisions with the user before you make it, name the files and how to test it, and say what to do when stuck. When it needs the user, it asks and ends its turn: Kanna stops it there, and the user resumes it on the Shelf.
-- **Say what it waits for.** If it can't start until other tasks are done (it builds on their merged work), add `--after TASK,...` (IDs from `kanna task list`, like `task-3f9a`; yours too: your pane works). It's **blocked**: it can't start until those tasks are done, and its backlog row shows it so. It starts from main, so it gets their work only once they're merged and done.
-- **Call a task by its name, never its ID:** Kanna shows no task or pane IDs (`task-1dfb`, `term-5`), so tell the user "Add rate limiting" waits for "Fix login redirect", not for task-1dfb. IDs are only for commands (`--after task-3f9a`), and a command you show may keep them. When two tasks' names are alike, say where each one is (the Desk, the Shelf, the backlog).
-- **Start or shelve one only when the user asks, or shelve when there's room.** `kanna task shelve` puts it on the Shelf if the project has fewer than three tasks out (the Desk's and the Shelf's); otherwise leave it in the backlog, unless the user asks, and then make room by deferring a Shelf task they're not using. `kanna task start` runs it in the backlog instead, with no limit.
+- **It starts by itself.** Shelf tasks run by themselves, unattended, a few at a time (`shelf.runners`, 3 by default), oldest first, so write a first message an agent can do in one go: settle the open decisions with the user before you make it, name the files and how to test it, and say what to do when stuck. When it needs the user, it asks and ends its turn: Kanna stops it there, and the user resumes it on the Desk.
+- **Say what it waits for.** If it can't start until other tasks are done (it builds on their merged work), add `--after TASK,...` (IDs from `kanna task list`, like `task-3f9a`; yours too: your pane works). It's **blocked**: it can't start until those tasks are done, and its Shelf row shows it. It starts from main, so it gets their work only once they're merged and done.
+- **Call a task by its name, never its ID:** Kanna shows no task or pane IDs (`task-1dfb`, `term-5`), so tell the user "Add rate limiting" waits for "Fix login redirect", not for task-1dfb. IDs are only for commands (`--after task-3f9a`), and a command you show may keep them. When two tasks' names are alike, say where each one is (the Desk, the Shelf).
+- **Start or pick one only when the user asks, or pick when there's room.** `kanna task pick` moves it to the Desk if the project has fewer than three tasks there; otherwise leave it on the Shelf, unless the user asks, and then make room by moving a Desk task they're not using to the Shelf (`kanna task shelve`). `kanna task start` runs it on the Shelf instead, with no limit.
 
 ## Show it in a tab
 
@@ -58,7 +58,7 @@ When the user asks you to show them something (a diff, a file, a doc, a page, a 
 | A source file | `kanna open code FILE[:LINE] --tab` |
 | A page | `kanna open web URL --tab` |
 
-- **Run it from your own terminal, without `--window`:** the tab opens in your task's workspace, even while it's hidden in the backlog or on the Shelf, and the reply names your task and where it is (`opened term-5 in ws-3 (task-1dfb, on the Shelf), tab-9: running`). `--window new` opens a window of your task's, shown and hidden with it.
+- **Run it from your own terminal, without `--window`:** the tab opens in your task's workspace, even while it's hidden on the Shelf or on the Desk but not active, and the reply names your task and where it is (`opened term-5 in ws-3 (task-1dfb, on the Desk), tab-9: running`). `--window new` opens a window of your task's, shown and hidden with it.
 - **Don't put a mermaid diagram in the chat when the chat is a terminal:** it shows there as source. A diagram, or an explanation longer than a few lines, goes in a markdown doc in `.kanna/tmp/` that you open in a tab, as the `kanna-explain` skill says.
 - **A tab, not a split or a new window,** so your pane keeps its size.
 - **Refer to it by the ID the reply prints** (`term-5`, `diff-2`). Pane names are unique across Kanna, so a `--name` another task already uses fails with `name_taken`.
@@ -66,22 +66,22 @@ When the user asks you to show them something (a diff, a file, a doc, a page, a 
 
 ## Messages
 
-`kanna task send TASK TEXT` leaves a message for another task's agent, and `kanna task send planner TEXT` for this repo's planning agent. Kanna hands it to their agent once their turn is over, as a prompt `[message from YOUR-TASK "Name"] TEXT`, so it never lands mid-turn, and a stopped backlog task runs for it. Only Claude and Codex agents take messages: for any other, `kanna task send` warns and the message waits.
+`kanna task send TASK TEXT` leaves a message for another task's agent, and `kanna task send planner TEXT` for this repo's planning agent. Kanna hands it to their agent once their turn is over, as a prompt `[message from YOUR-TASK "Name"] TEXT`, so it never lands mid-turn, and a stopped Shelf task runs for it. Only Claude and Codex agents take messages: for any other, `kanna task send` warns and the message waits.
 
-- **Send one only when the user asks you to.** When you're done or need the user, say so in your chat and end your turn: the Shelf shows them the task is done or needs them, and they read your summary there.
+- **Send one only when the user asks you to.** When you're done or need the user, say so in your chat and end your turn: the Desk shows them the task is done or needs them, and they read your summary there.
 - **A message you get** starts with `[message from SENDER]`: answer it once, briefly, with `kanna task send SENDER "..."` (or `planner`), since the sender can't see your chat. A message from `user` came from the user: answer in the chat as usual.
 - **Keep it to what they need,** in one message: they read it in the middle of their own work.
 
 ## Present your work
 
-Set up the review view **once**, when the work is first ready to show the user. You may have run unattended in the backlog: whatever you leave open, focused and zoomed is what the user sees when they pull the task, maybe hours later. Kanna keeps it through the stop.
+Set up the review view **once**, when the work is first ready to show the user. You may have run unattended on the Shelf: whatever you leave open, focused and zoomed is what the user sees when they make the task active, maybe hours later. Kanna keeps it through the stop.
 
 Reuse those tabs during review; do not repeat the focus/zoom setup after each reply or revision. **Once the user approves the model or work, leave their tabs, focus and zoom alone** unless they ask for a change. Recording approval and committing do not need another presentation setup.
 
 1. **Open what explains the change best,** as tabs ([Show it in a tab](#show-it-in-a-tab)): the spec you changed, with its changes marked (`kanna open md FILE --diff main`; `--diff A..B` for what changed between two commits), or a new one plain (`kanna open md FILE`), since a diff of a new file only marks every line, the mockup (`kanna open web`), comments on the key code (`kanna comment`, as the `kanna-explain` skill says), a diagram in a doc in `.kanna/tmp/`, the diff (`kanna open diff --merge-base main`: everything the branch changed, committed or not, following the worktree; not a terminal, so it outlasts the stop).
 2. **If you wrote or changed a diagram, check it draws:** fix every `FILE:LINE: message` that `kanna open md` (or `kanna diagrams check FILE`) prints, then take `kanna screenshot PANE` of the doc, look at the PNG, and fix labels that overlap or are cut off.
 3. **Close tabs that don't help** (`kanna close PANE`): scratch shells, finished builds.
-4. **Then focus the tab the user should see first** (`kanna focus PANE`), and zoom it if one pane says it all (`kanna zoom PANE`). Do it last: otherwise the tab you opened last is what shows when the task comes onto the Desk. It works the same from the backlog or the Shelf.
+4. **Then focus the tab the user should see first** (`kanna focus PANE`), and zoom it if one pane says it all (`kanna zoom PANE`). Do it last: otherwise the tab you opened last is what shows when the task is made active. It works the same from the Shelf or the Desk.
 5. **Check it with `kanna workspace list`:** your workspace's tabs and panes, the shown tab, what's focused and zoomed, as the user will see it.
 6. **End your turn with a short summary in the chat:** what changed, why, what's in the tabs, and what's left for the user (merge, a decision, a check).
 
@@ -93,18 +93,18 @@ If you stop to ask the user something before presenting the work, use that first
 
 | Command | Does |
 |---|---|
-| `kanna task name [TASK] NAME` | Rename a task, running or waiting in the backlog (only when the user asks) |
-| `kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...]` | Add a task to this repo's backlog; `--agent`: run this agent (`codex`, …) instead of `tasks.agent`; `--after`: it can't start until those tasks are done |
-| `kanna task edit TASK --after TASK,...\|none` | Change what a backlog task waits for (only when the user asks to unblock it) |
-| `kanna task list [QUERY]` | Every task: ID, name, where (a Desk, the Shelf, the backlog), state (working, idle, needs you, stopped, or blocked, with what it waits for), agent, repo; QUERY keeps those whose name or first message has every word |
-| `kanna task start TASK` | Run a task where it is: a backlog task gets its worktree, branch and agent with the first message, and stays in the backlog; a stopped task resumes its conversation |
+| `kanna task name [TASK] NAME` | Rename a task, running or waiting on the Shelf (only when the user asks) |
+| `kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...]` | Add a task to this repo's Shelf; `--agent`: run this agent (`codex`, …) instead of `tasks.agent`; `--after`: it can't start until those tasks are done |
+| `kanna task edit TASK --after TASK,...\|none` | Change what a Shelf task waits for (only when the user asks to unblock it) |
+| `kanna task list [QUERY]` | Every task: ID, name, where (a Desk, the Shelf), state (working, idle, needs you, stopped, or blocked, with what it waits for), agent, repo; QUERY keeps those whose name or first message has every word |
+| `kanna task start TASK` | Run a task where it is: a Shelf task gets its worktree, branch and agent with the first message, and stays on the Shelf; a stopped task resumes its conversation |
 | `kanna task stop [TASK]` | End a task's agent and hang up its terminals, leaving it where it is with its tabs as they are (only when the user asks) |
-| `kanna task shelve TASK` | Move a backlog task to the Shelf, starting it if it's stopped (three per project) |
-| `kanna task pull TASK` | Bring a task onto the Desk, parking the one there (only when the user asks) |
-| `kanna task park [TASK]` | Move the Desk's task to the Shelf (only when the user asks) |
-| `kanna task defer [TASK]` | Move a task back to the backlog as it is, running or stopped (only when the user asks) |
+| `kanna task pick TASK` | Move a Shelf task to the Desk, starting it if it's stopped (three per project; refused when the Desk is full) |
+| `kanna task activate TASK` | Make a Desk task the active one and show it (only when the user asks) |
+| `kanna task park [TASK]` | Show the Desk view of the task's Desk; the task stays active (only when the user asks) |
+| `kanna task shelve [TASK]` | Move a Desk task back to the Shelf as it is, running or stopped (only when the user asks) |
 | `kanna task send TASK\|planner TEXT` | Leave a message for another task's agent or this repo's planning agent; it gets it when its turn is over (only when the user asks, or to answer a message) |
 | `kanna task messages [TASK]` | A task's messages, sent and received, and whether each was delivered |
-| `kanna task done [TASK]` | End a task, or take it off the backlog; says which blocked tasks can start now |
+| `kanna task done [TASK]` | End a task, or take it off the Shelf; says which blocked tasks can start now |
 
 Run them from your own terminal, in the repo: a new task belongs to the repo you're in.

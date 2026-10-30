@@ -1,17 +1,17 @@
 # Machines: Tasks Across Machines
 
-**Status:** planned · **Part of:** [your machines](machines.md) · **Builds on:** [backlog runners](backlog-runners.md), [tasks](tasks.md), [each app's Desk and Shelf](app-desk.md)
+**Status:** planned · **Part of:** [your machines](machines.md) · **Builds on:** [Shelf runners](shelf-runners.md), [tasks](tasks.md), [each app's Desks](app-desk.md)
 
-Where a task runs when you have several machines: one backlog replicated to all of them, exactly one machine allowed to start each task, and tasks moving between any two daemons at a boundary. All of it works on your own machines with no account; [Kanna Cloud](kanna-cloud.md#5-directory-and-relays) adds an always-on copy.
+Where a task runs when you have several machines: one Shelf replicated to all of them, exactly one machine allowed to start each task, and tasks moving between any two daemons at a boundary. All of it works on your own machines with no account; [Kanna Cloud](kanna-cloud.md#5-directory-and-relays) adds an always-on copy.
 
 ## Contents
 
-1. [The replicated backlog](#1-the-replicated-backlog)
+1. [The replicated Shelf](#1-the-replicated-shelf)
 2. [Owners and grants](#2-owners-and-grants)
 3. [Transfer](#3-transfer)
 4. [Repos and credentials](#4-repos-and-credentials)
 
-## 1. The replicated backlog
+## 1. The replicated Shelf
 
 Every one of your daemons holds every task's record, synced peer to peer over iroh, LAN first.
 
@@ -39,7 +39,7 @@ sequenceDiagram
 
 - **A task starts on its owner,** at first the machine where it was made. Who grants is a policy too: a scheduler (a load balancer over many machines, or [Kanna Cloud's](kanna-cloud.md#5-directory-and-relays)) can own every waiting task and assign them centrally ([machines §2](machines.md#2-machines-and-roles)).
 - **Asking:** a runner with free slots, within the task's placement preferences, asks the owner for the oldest task waiting. Matching a task's `needs:` to machines' capabilities is [Kanna Cloud's](kanna-cloud.md#5-directory-and-relays). The owner grants it to exactly one runner, and that runner becomes the owner.
-- **Two meanings, two words:** "ask" and "grant" are between machines. A **claim** stays what it is in [app-desk](app-desk.md): an app having a task out on its Shelf, now named by its device (`claimed by: mbp`).
+- **Two meanings, two words:** "ask" and "grant" are between machines. A **claim** stays what it is in [app-desk](app-desk.md): an app having a task on its Desk, now named by its device (`claimed by: mbp`).
 - **An offline owner's tasks wait.** Leases that expire would allow a double start, so add them only if waiting hurts.
 - **Task IDs** stay random 32 bits ([task IDs](task-ids.md)). Apps key views by (machine, ID), and an ID that collides with one in the replica is refused when the task is made.
 
@@ -51,7 +51,7 @@ A task moves between any two daemons, Macs included, at a boundary: not started,
 sequenceDiagram
     participant S as sender
     participant R as receiver
-    S->>S: agent quits by its keys (Backlog::end_agent), session ID kept
+    S->>S: agent quits by its keys (Tasks::end_agent), session ID kept
     S->>S: WIP commit on the task's branch
     S->>R: git bundle of the branch (objects the receiver lacks)
     S->>R: the transcript, from where the agent keeps it

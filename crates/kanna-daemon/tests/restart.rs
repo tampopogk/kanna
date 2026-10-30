@@ -218,14 +218,14 @@ fn an_app_from_another_build_stops_the_daemon_and_the_next_keeps_its_terminals()
     assert_eq!(build.len(), 64, "{build}");
 
     let mut same = App::raw(&instance.socket());
-    same.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "build": build, "panes": []}}));
+    same.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "build": build, "protocols": kanna_build::PROTOCOLS, "panes": []}}));
     let hello = same.next().unwrap();
     assert_eq!((hello["ok"].as_bool(), hello["daemon"]["build"].as_str()), (Some(true), Some(build.as_str())), "{hello}");
     drop(same);
 
     let mut other = App::raw(&instance.socket());
     wait_for("the first app to go", || {
-        other.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 2, "build": "0000", "panes": []}}));
+        other.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 2, "build": "0000", "protocols": kanna_build::PROTOCOLS, "panes": []}}));
         let reply = other.next().unwrap();
         if reply["error"]["code"] == "app_attached" {
             other = App::raw(&instance.socket());

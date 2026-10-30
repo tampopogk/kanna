@@ -1,8 +1,8 @@
 # Project folder
 
-**Status:** built (2026-10-29) · **Tests:** `crates/kanna-daemon/src/projects.rs`, `project_import.rs`, `backlog.rs` (unit, the planner's offer), `scripts/e2e-kanna.sh` `project_import` · **Builds on:** [your machines](machines.md), [tasks](tasks.md), [new Desk](new-desk.md) · **Code:** `projects.rs` (places, the refusal), `project_import.rs` (the copy and what follows it), `backlog.rs` (`relocate`)
+**Status:** built (2026-10-29) · **Tests:** `crates/kanna-daemon/src/projects.rs`, `project_import.rs`, `tasks.rs` (unit, the planner's offer), `scripts/e2e-kanna.sh` `project_import` · **Builds on:** [your machines](machines.md), [tasks](tasks.md), [new Desk](new-desk.md) · **Code:** `projects.rs` (places, the refusal), `project_import.rs` (the copy and what follows it), `tasks.rs` (`relocate`)
 
-Every project Kanna works on lives in `~/.kanna-v4/repos`, at a place named after its origin remote. The projects stay tidy, and a project has the same path from `~` on each of your [machines](machines.md), so a replicated backlog or a task sent to another machine finds its repo there. Kanna opens Desks and runs tasks only for a project in its place; `kanna project import` puts a copy of one there, and each planner offers it when it starts in a project outside.
+Every project Kanna works on lives in `~/.kanna-v4/repos`, at a place named after its origin remote. The projects stay tidy, and a project has the same path from `~` on each of your [machines](machines.md), so a replicated Shelf or a task sent to another machine finds its repo there. Kanna opens Desks and runs tasks only for a project in its place; `kanna project import` puts a copy of one there, and each planner offers it when it starts in a project outside.
 
 ## Contents
 
@@ -48,10 +48,10 @@ A project is **outside** when its repo's folder (the main repo for a worktree) i
 |---|---|
 | `kanna PATH`, `task desk` | refused; `kanna ~` (and ⌘N) still opens a Desk in `~` |
 | `kanna task new` | refused |
-| `kanna task start`, Move to Shelf, a [backlog runner](backlog-runners.md) | refused; runners skip the project |
-| a planning terminal that starts outside (Kanna started from a shell there, a restored Desk, a task docked there parked) | offers the import ([3](#3-the-offer)) |
+| `kanna task start`, Move to Shelf, a [Shelf runner](shelf-runners.md) | refused; runners skip the project |
+| a planning terminal that starts outside (Kanna started from a shell there, a restored Desk, a Desk task docked there) | offers the import ([3](#3-the-offer)) |
 | the planner's prompt given a folder or a recent project | offers the import, without never ([3](#3-the-offer)) |
-| a planning terminal you `cd` outside | the window follows as before: its Shelf shows that folder's tasks, and none of them start |
+| a planning terminal you `cd` outside | the window follows as before: its Desk view shows that folder's tasks, and none of them start |
 | recent projects | an outside one isn't added; one already there, or one with tasks, is listed last in the planner's prompt, marked outside ([3](#3-the-offer)); File → Open Recent leaves it off |
 
 - **What already runs keeps running.** Tasks and terminals an older Kanna started in an outside project (restored from its saved state) run as they were; Kanna imports nothing by itself. Once one stops, it starts again only in the copy.
@@ -65,20 +65,20 @@ Each planner offers the import when it starts outside, in the window's planning 
 ```
 ~/work/app isn't in ~/.kanna-v4/repos, where Kanna keeps its projects so each has the same place on every machine.
 Import a copy there: kanna project import ~/work/app
-Import it into ~/.kanna-v4/repos/tampopogk/app now? [y/N/never]
+Import it into ~/.kanna-v4/repos/tampopogk/app now? [Y/n/never]
 ```
 
 | Answer | Then |
 |---|---|
-| `y` | the planner steps out to `~` (so the import doesn't stop it), runs `kanna project import`, prints what it says, and starts the agent in the copy; the window's Desk and Shelf follow it there |
-| `N` (or Return) | it stays on the original, whose tasks don't start, and asks again the next time a planner starts there; nothing is remembered |
+| `Y` (or Return, or anything not starting with n or N) | the planner steps out to `~` (so the import doesn't stop it), runs `kanna project import`, prints what it says, and starts the agent in the copy; the window's Desk and Shelf follow it there |
+| `n` (or anything else starting with n or N) | it stays on the original, whose tasks don't start, and asks again the next time a planner starts there; nothing is remembered |
 | `never` | the daemon remembers the project (`never_import` in [kanna.db](database.md#never-import)); its planners stop asking at startup and say instead, in a line: |
 
 ```
 ~/work/app is outside ~/.kanna-v4/repos, so its tasks don't start. Import it: kanna project import ~/work/app
 ```
 
-- **Choosing it still asks.** In the planner's where prompt ([new Desk](new-desk.md#2-its-planning-terminal)), a folder outside, or an outside project from the recent list, asks `Import it into … now? [y/N]` whatever never says: you named it. No asks for a folder again.
+- **Choosing it still asks.** In the planner's where prompt ([new Desk](new-desk.md#2-its-planning-terminal)), a folder outside, or an outside project from the recent list, asks `Import it into … now? [Y/n]` whatever never says: you named it. No asks for a folder again.
 - **Outside projects Kanna has work in are listed:** an outside project with a recent-projects entry or tasks not done comes after the others in the where prompt, labelled `~/work/app (outside)` (`outside` and `place` in `kanna projects --json`). File → Open Recent leaves them off, since it can only open a Desk.
 - **Importing clears never,** whether from the offer or `kanna project import`.
 - **A refused import** (the place is taken, a task is starting) prints why; the planner stays on the original, or asks for a folder again in `~`.
@@ -90,7 +90,7 @@ Import it into ~/.kanna-v4/repos/tampopogk/app now? [y/N/never]
 ```mermaid
 sequenceDiagram
     participant C as kanna project import
-    participant D as daemon (backlog.rs)
+    participant D as daemon (tasks.rs)
     participant F as files
     C->>D: project import PATH
     D->>D: plan: its place, not taken
@@ -109,7 +109,7 @@ sequenceDiagram
 - **Worktrees inside the folder** (`.kanna-worktrees`) come with it: each one's `.git` file is pointed at the copy and `git worktree repair` fixes the copy's `.git/worktrees` entry. **Worktrees outside it** stay with the original: their entries are dropped from the copy, and the import lists them.
 - **It refuses** when the place is taken: by another clone of the same remote (`… and … are both clones of github.com/a/app, and a project has one place: keep one of them …, then import again`), or by anything else (`… is already there`); when a task in it is starting, setting up or ending, or another import runs; and when it's run from a terminal in the project, which it would stop. Nothing has changed then.
 - **Running tasks** stop as `kanna task stop` stops them and start again as `kanna task start` does: the agent resumes its conversation ([which agents resume](tasks.md#which-agents-resume)) in the copy's worktree, and the task's hung-up terminals run again. A task that was stopped stays stopped.
-- **Other terminals in the project** (plain windows, the Shelf's planning terminal, the quiz agent) end and start again with their own commands, in the copy. A planning terminal runs the planner script again and comes back to the project's planning conversation ([planner resume](planner-resume.md)).
+- **Other terminals in the project** (plain windows, the Desk's planning terminal, the quiz agent) end and start again with their own commands, in the copy. A planning terminal runs the planner script again and comes back to the project's planning conversation ([planner resume](planner-resume.md)).
 - **What follows the copy:**
   - in `kanna.db`: tasks' repo and worktree, messages, recent projects, planners, quiz rounds, and never (deleted); in the pane table (saved with the layout): terminals' folders and file panes' paths;
   - Claude's per-folder conversation and memory folders (`~/.claude/projects/<the folder, every non-alphanumeric a ->`) for the repo, its worktrees (also removed ones) and subfolders, **copied** to the copy's names, so the original's stay; into a folder that's there already, a file there already is kept, and the import says which it didn't copy;
@@ -134,8 +134,8 @@ These still name ~/work/app; change them yourself:
 
 ## 5. How it's built
 
-- **`projects.rs`:** `home_place` reads `origin` from the repo's `.git/config` and maps it (`place_of`); `outside` is the refusal. The backlog (`placed`, from `ready` and `mint`) and the `desk` command call it; `Backlog.repos` is set by `main.rs`, so tests run without it. Its `projects list` adds the outside projects with work in Kanna, marked `outside`.
-- **`project import`** is the daemon's `project` command (`import`, `path`, `by`), in `backlog.rs` (`import`), with the file work in `project_import.rs` (`plan`, `copy`, `Stores::carry`, `mentions`). While it runs, the backlog refuses to make or start a task in the project (`importing`). The same command's `asked` and `never` (`path`) read and set never, for `planner.sh`.
+- **`projects.rs`:** `home_place` reads `origin` from the repo's `.git/config` and maps it (`place_of`); `outside` is the refusal. The Shelf (`tasks.rs`: `placed`, from `ready` and `mint`) and the `desk` command call it; `Tasks.repos` is set by `main.rs`, so tests run without it. Its `projects list` adds the outside projects with work in Kanna, marked `outside`.
+- **`project import`** is the daemon's `project` command (`import`, `path`, `by`), in `tasks.rs` (`import`), with the file work in `project_import.rs` (`plan`, `copy`, `Stores::carry`, `mentions`). While it runs, the Shelf refuses to make or start a task in the project (`importing`). The same command's `asked` and `never` (`path`) read and set never, for `planner.sh`.
 - **The agents' folders** are under `KANNA_AGENTS_HOME` when it's set, else `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`, `XDG_DATA_HOME` or their defaults in `~`. Rewritten files keep their modification time, which the session lookups go by.
 - **`planner.sh`** works out a place the same way (`place`, `misplaced`), so it can say where without the daemon, asks the daemon for never (`kanna raw`), and runs `kanna project import` when you say yes.
 

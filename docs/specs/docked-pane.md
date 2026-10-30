@@ -2,7 +2,7 @@
 
 **Status:** built (2026-10-10), in kmux and Kanna · **Used by:** [Desk](desk.md) · **Mockup:** the Desk's ([`references/mockups/desk.html`](../../references/mockups/desk.html)), whose agent is a docked pane
 
-A **docked pane** belongs to a window, not to any of its tabs: it sits along the window's left or right edge and stays put while you switch tabs, with the tab bar and the tabs beside it. It's a mux-layer primitive, so any window can have one; the Desk uses it for the agent, with the task's docs as the window's tabs.
+A **docked pane** belongs to a window, not to any of its tabs: it sits along the window's left or right edge and stays put while you switch tabs, with the tab bar and the tabs beside it. It's a mux-layer primitive; in Kanna only a task's agent docks ([every task starts on the Shelf](tasks-start-on-the-shelf.md)), with the task's docs as the window's tabs.
 
 ![The agent on the left is docked; the tabs (a doc, a page, an image, a terminal) switch beside it](desk.png)
 
@@ -46,7 +46,7 @@ The right side needs nothing new: the window's own tabs already are a group of t
 - **Focus:** Next/Previous Pane go from the docked pane into the shown tab's panes and back. Next/Previous Tab (⇧⌘] and ⇧⌘[, or Ghostty's `goto_tab` previous/next) from the docked pane switch the shown tab and leave focus in the docked pane, so the user flips through the task's tabs while typing to its agent; the shown tab keeps its own last-focused pane for when focus goes there. From a tab's pane they move focus into the new tab. The app asks for this with `command focus {tab, keep: "dock"}`; clicking a tab, ⌘1–9 and `kanna focus` still focus the tab. Zoom on any pane fills the window: a zoomed tab's pane covers the docked pane and fills the window under the tab bar, which then spans the window, a zoomed docked pane covers the tabs and the tab bar, and zooming it again brings both sides back. Zoom is the window's mode ([zoom](zoom.md)).
 - **Docking where one is already docked** moves the old one into a new tab, not shown; the new one keeps the window's width.
 - **Beside it is not a place:** moving a pane beside the docked pane is refused; dropping a pane on it swaps the two.
-- **Frozen:** a pane opened with `open --dock --frozen` is frozen for good. It doesn't move (no `move` of it, edge and window included; no drag, as it has no ⋯ grip; no Move Pane to New Window), and nothing lands on it: no drop, swap or pane beside it, and no `move --dock` or `open --dock` into its window. `resize` still sets its width, and it closes with its window. A [task](tasks.md)'s agent is frozen.
+- **Frozen:** a [task](tasks.md)'s agent is docked frozen for good, and only a task's agent docks ([every task starts on the Shelf](tasks-start-on-the-shelf.md)). It doesn't move (no `move` of it, edge and window included; no drag, as it has no ⋯ grip; no Move Pane to New Window), and nothing lands on it: no drop, swap or pane beside it, and no `move --dock` into its window. `resize` still sets its width, and it closes with its window.
 - **Errors** use the code `docked` for every refusal (close, `arrange` naming it, moving beside it), and `frozen` for a frozen one's.
 
 ## 3. Keys and mouse
@@ -59,9 +59,8 @@ The right side needs nothing new: the window's own tabs already are a group of t
 
 | Command | Does |
 |---|---|
-| `kanna open … --dock [left\|right]` | Open the pane docked on that edge (default left) of a new task's workspace, on the Shelf: a docked pane is a task's agent, never a window's, so it needs no window, from a Kanna terminal or not (`--window` is refused) |
-| `kanna open … --dock --frozen` | The same, frozen |
-| `kanna move PANE --dock [left\|right]` | Move a task's agent to the other edge of its workspace; any other pane is refused, as a docked pane is a running [task](tasks.md)'s agent, in its own workspace, never a window's ([each app's Desk and Shelf](app-desk.md)) |
+| `kanna task new`, then `kanna task pick` or `kanna task start` | The only way to a docked pane: the daemon docks the task's agent, frozen, in the task's own workspace ([every task starts on the Shelf](tasks-start-on-the-shelf.md)). `open` has no `--dock` or `--frozen` |
+| `kanna move PANE --dock [left\|right]` | Refused for every pane: a task's agent is frozen, and any other pane isn't a task (`not_a_task`), as a docked pane is a running [task](tasks.md)'s agent, in its own workspace, never a window's ([each app's Desks](app-desk.md)) |
 | `kanna move PANE --tab` | Undock it into a new tab (kmux's own `move`, now also accepting the docked pane) |
 | `kanna resize PANE …` | On the docked pane, sets its width |
 | `kanna workspace list` | Shows the workspace's docked pane on its own line: `dock: term-1 (agent)  left 2/5`, with `frozen` after a frozen one |
@@ -76,17 +75,17 @@ The right side needs nothing new: the window's own tabs already are a group of t
 
 | Does | Step |
 |---|---|
-| `open --dock` | `place {pane, at: {dock, frozen?, window?}}`, answered `{window, tab: null, dock}` |
+| a task's start (the daemon's `open {dock, frozen, task}`) | `place {pane, at: {dock, frozen}}`, answered `{window, tab: null, dock}` |
 | dock, change edge, undock (`move`) | `command move`, kmux's arguments |
 | set the width (`resize`) | `command resize`; the divider is the app's own |
 | refuse `close` on it | `location {pane}` first, which answers `dock` for a docked pane |
 | close it with its window | `panes-in {window}` lists it |
 
-- **With Kanna.app closed** the daemon has no layout, so it can't know which pane is docked: `open --dock` and `move --dock` start the app (`no_app`), and `close` on a docked terminal closes it; the app then drops it from the window when it attaches, as any pane that's gone.
+- **With Kanna.app closed** the daemon has no layout, so it can't know which pane is docked: `move --dock` starts the app (`no_app`), and `close` on a docked terminal closes it; the app then drops it from the window when it attaches, as any pane that's gone.
 - **The app** splits the window's content view: the docked pane's view on its edge, the tab bar and the shown tab beside it. The model's `view` gives each window its `dock {pane, type, edge, width}`; with the docked pane zoomed, `root` is empty and the docked pane fills the window; with a tab's pane zoomed, `root` is that pane and the app hides the docked pane and lays the tab bar across the window above it; with no tabs, the docked pane fills the window ([tabless dock](tabless-dock.md)). The divider drag is a layout-only action, `command resize` on the app's own model, as focus is.
 - **Saved** in the saved layout on the window; a file without one loads as before, and a dock whose pane the daemon no longer has is dropped on attach.
 - **kmux parity** holds: both have docked panes, and a window without one behaves as before in both.
-- **Checked by** kmux's dock protocol cases but the three that dock a pane that isn't docked (Kanna's own test of `move --dock` stands in for them), run three ways as all of kmux's ([layout](layout.md)), the layout owner's tests (drawing, saving, a dock whose pane is gone), the CLI's tests against kmux's own, and `docked_pane` of `scripts/e2e-kanna.sh`: `open --dock`, ⇧⌘[ and ⇧⌘], `close` refused, ⌘W, focus, zoom of the docked pane (no tab bar) and of a tab's pane (it fills the window under the tab bar, through clicks on tabs), `move --dock right`, the divider, moving a tab away, undocking, `move --dock` refused for a pane that isn't docked, a frozen docked pane refusing `move`, a swap and a drag either way, a window with only its docked pane, and `layout.json` across a relaunch, with screenshots; and `dock_keeps_focus_through_tabs`: on a Desk, ⇧⌘] and ⇧⌘[ from the docked pane switch the tab while keys still reach the agent, and from a tab's pane focus follows.
+- **Checked by** kmux's dock protocol cases but the three that dock a pane that isn't docked (Kanna's own test of `move --dock` stands in for them), run three ways as all of kmux's ([layout](layout.md)), the layout owner's tests (drawing, saving, a dock whose pane is gone), the CLI's tests against kmux's own, and `docked_pane` of `scripts/e2e-kanna.sh`: `open --dock` refused, a task picked onto the Desk, ⇧⌘[ and ⇧⌘], `close` refused, ⌘W, focus, zoom of the docked pane (no tab bar) and of a tab's pane (it fills the window under the tab bar, through clicks on tabs), `move --dock right` refused as frozen, the divider, moving a tab away, `move --dock` refused for a pane that isn't docked, a swap and a drag either way refused, a window with only its docked pane, and the layout across a relaunch, with screenshots; and `dock_keeps_focus_through_tabs`: on a Desk, ⇧⌘] and ⇧⌘[ from the docked pane switch the tab while keys still reach the agent, and from a tab's pane focus follows.
 
 ## 6. Glossary
 

@@ -60,6 +60,7 @@ sequenceDiagram
 - **Languages**, by file extension (and a `#!` line for scripts): Rust, Swift, TypeScript and JavaScript (React's `.tsx` and `.jsx` too), Python, Go, C, C++, Shell, JSON, TOML, YAML, HTML, CSS, and Vue and Svelte components (their markup, script and style each highlighted as its own language). Any other text file shows plain, with line numbers and indent guides but no sticky scope.
 - **Find** (⌘F) opens a find bar over the code: every match is highlighted, the current one scrolled into view; ⌘G and ⇧⌘G go to the next and previous match, Esc closes it. It searches the text as written, case-insensitive unless the search has a capital.
 - **Zoom** (⌘= ⌘− ⌘0) changes the font size, as in a terminal, from 9 to 32 pt, kept with the pane.
+- **Overview** down the right edge: the whole file as a thumbnail, with its changed lines, comment and find hits ([overview](overview.md)).
 - **Files it won't show:** a missing file fails with "No such file: …", a folder with "… is a folder, not a file", a binary file (a NUL byte in its first 8 KB) with "… isn't a text file". **[Assumption]** A file over 5 MB shows plain, without highlighting or scopes.
 
 ## 3. Keys and mouse

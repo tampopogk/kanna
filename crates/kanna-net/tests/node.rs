@@ -139,7 +139,7 @@ async fn a_paired_machine_takes_commands_and_an_unpaired_or_revoked_one_is_refus
 
     let reply = mbp.call("linux-vm", json!({ "id": 7, "cmd": "list", "args": {} })).await.unwrap();
     assert_eq!(reply, json!({ "id": 7, "ok": true, "cmd": "list", "from": "mbp" }));
-    let reply = vm.call("mbp", json!({ "id": 1, "cmd": "backlog", "args": {} })).await.unwrap();
+    let reply = vm.call("mbp", json!({ "id": 1, "cmd": "tasks", "args": {} })).await.unwrap();
     assert_eq!(reply["from"], "linux-vm");
 
     let ping = mbp.ping("linux-vm").await.unwrap();

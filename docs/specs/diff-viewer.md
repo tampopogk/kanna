@@ -50,7 +50,7 @@ sequenceDiagram
 | `kanna open diff -- crates/kanna` | any of these, for some paths only |
 
 - **Plus untracked files.** When the diff's new side is the worktree (no `--staged` or `--cached`, and at most one commit named), files git doesn't track yet and doesn't ignore are shown too, as added. An agent's new files are often most of its work, and plain `git diff` leaves them out.
-- It takes `open`'s placement options; with none, from a task's terminal it opens a tab on the task's Desk, as `open code` does. Kanna reads its own options (`--tab`, `--split`, `--size`, `--dock`, `--window`, `--name`) and passes everything else to git.
+- It takes `open`'s placement options; with none, from a task's terminal it opens a tab on the task's Desk, as `open code` does. Kanna reads its own options (`--tab`, `--split`, `--size`, `--window`, `--name`; `--dock` is refused, as for any `open`) and passes everything else to git.
 - The tab is named after the command (`diff --merge-base main`); the header shows the git command, the files and the lines added and removed.
 
 ## 2. Rules
@@ -60,7 +60,10 @@ sequenceDiagram
 
 ![Split: old on the left, new on the right; a change's missing side is hatched](diff-viewer-split.png)
 
-- **Files list** on the left (when the pane is at least 640 pt wide), grouped by folder: each file's status (`M` modified, `A` added or untracked, `D` deleted, `R` renamed) and its lines added and removed. Clicking one scrolls to it; it follows the current line.
+- **Files list** on the left, grouped by folder: each file's status (`M` modified, `A` added or untracked, `D` deleted, `R` renamed) and its lines added and removed. Clicking one scrolls to it; it follows the current line.
+- **The list shows only when the diff text keeps 110 columns beside it,** at the pane's font size, so it follows zoom: a split diff is two columns of text, and the code matters more than the list. At the default 12.5 pt that's a pane at least 1,081 pt wide: a Desk filling a 1512 or 1728 pt MacBook screen with its agent at 2/5 leaves the tabs 907 or 1,036 pt, and hides it. Hidden, nothing else changes: the file headers, `[` and `]` and the current file work as before, and the list comes back when the pane grows. The cutoff is one rule over the pane's side panels (`DiffAside`), which drops them in order until the text has its columns; the file list goes first.
+
+![A Desk at 1400 pt with the agent docked: the diff pane keeps its text and hides the list](diff-viewer-narrow.png)
 - **Each file has a header** that stays at the top while you're in it, with its path, status and counts. Clicking it folds the file; ⌥-click folds or unfolds them all.
 - **Unchanged lines between changes** fold to one row naming how many and the function or block the next change is in, as git's hunk header names it.
 - **Highlighting** as in the code pane, by file extension, in light and dark; the words that changed in a changed line are marked more strongly.
@@ -77,6 +80,7 @@ sequenceDiagram
 
 - **Nothing to show:** "No changes", with the command.
 - **Zoom** (⌘= ⌘− ⌘0), 9 to 32 pt, kept with the pane, as in a code pane.
+- **Overview** down the right edge: the whole diff as a thumbnail, with its changes and find hits; the file list gives way to it first ([overview](overview.md)).
 
 ## 3. Keys and mouse
 
@@ -91,7 +95,7 @@ sequenceDiagram
 | Click a line | makes it the current line |
 | Click a file in the list | goes to it |
 | Click, ⌥-click a file's header | folds it, folds or unfolds every file |
-| ⌘F, ⌘G, ⇧⌘G, Esc | find, as in a code pane |
+| ⌘F, ⌘G, ⇧⌘G, Esc | find, as in a code pane (each column owns an `NSTextFinder`, so its matches can be marked in the overview) |
 | ⌘= ⌘− ⌘0 | font size |
 
 ## 4. CLI
@@ -176,7 +180,7 @@ flowchart TB
 - **The line a change is in** (the "⋯ 17 unchanged lines `pub enum PaneType {`" row) is git's own hunk header context, as `git diff` prints it.
 - **Highlighting** is `kanna-syntax` on each side of each change (its context, removed and added lines, as old and new text), coloured by the code pane's theme. **[Assumption]** Highlighting a change's lines alone is close enough; if it colours wrongly, highlight the whole old and new file instead.
 - **Not in kmux**, as the code pane isn't: `open diff` is Kanna's.
-- **Checks:** `crates/kanna-diff` tests for the parser and folds, and against real scratch repos (untracked files, `--staged`, two commits, pathspecs, git's errors, ignored paths); `crates/kanna/tests/cli.rs` for passing git's arguments through, and for the daemon diffing a subscribed scratch repo and diffing again when a file changes but not when an ignored one does, two views sharing one watcher, and the watcher stopping when its app goes; `KannaDiffTests` for laying out rows; an e2e scenario (`diff_pane`) that opens a diff in a scratch repo, reads `debug.diff`, edits a file and adds an untracked one and sees both arrive, switches to Split, opens a second view of the same diff (one watcher) and closes it, restarts the daemon (the pane still updates), relaunches the app, and navigates to a diff git refuses (the pane shows git's error).
+- **Checks:** `crates/kanna-diff` tests for the parser and folds, and against real scratch repos (untracked files, `--staged`, two commits, pathspecs, git's errors, ignored paths); `crates/kanna/tests/cli.rs` for passing git's arguments through, and for the daemon diffing a subscribed scratch repo and diffing again when a file changes but not when an ignored one does, two views sharing one watcher, and the watcher stopping when its app goes; `KannaDiffTests` for laying out rows and the list's cutoff (columns, zoom, the MacBook Desks); an e2e scenario (`diff_pane`) that opens a diff in a scratch repo, reads `debug.diff`, edits a file and adds an untracked one and sees both arrive, switches to Split, opens a second view of the same diff (one watcher) and closes it, restarts the daemon (the pane still updates), relaunches the app, navigates to a diff git refuses (the pane shows git's error), and checks the list by `debug.diff`'s `list` and `width`: shown at 1400 pt, hidden zoomed in and at 960 pt (`[` and `]` still move between files), hidden on a 1728 pt Desk with the agent at 2/5 (a 1,036 pt pane) and back with the agent at 1/5.
 
 ## 6. Glossary
 

@@ -1,6 +1,7 @@
 import AppKit
 import GhosttyKit
 import KannaMarkdown
+import KannaOverview
 import KannaPerf
 import KannaStatus
 import KannaWindows
@@ -13,7 +14,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var daemon: DaemonLink?
     var links: Links?
     var views: [String: JSON] = [:]
-    var backlogs: [String: [JSON]] = [:]
+    var shelves: [String: [JSON]] = [:]
+    var deskMade: [String: [String: Int]] = [:]
     var paneSets: [String: Set<String>] = [:]
     var places: [String: JSON] = [:]
     var identities: [String: String] = [:]
@@ -48,7 +50,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var folders: [String: String] = [:]
     private var terminalIDs: [String: String] = [:]
     private var names: [String: String] = [:]
-    var backlog: [JSON] = []
+    var shelf: [JSON] = []
     var starting: Set<String> = []
     let toasts = ToastStack()
     var toastShowing: (pane: String, desk: String?)?
@@ -157,6 +159,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         contents.onFocus = { [weak self] pane in self?.userFocused(pane) }
         contents.textSize = { [weak self] pane in self?.physical.textSize(pane) }
         contents.onTextSize = { [weak self] pane, size in self?.physical.setTextSize(pane, size) }
+        OverviewSetting.enabled = physical.overview
         contents.agentStatus = { [weak self] pane in self?.agentStatuses.statuses[pane] }
         contents.contextMenu = { [weak self] in self?.paneMenu?.copy() as? NSMenu }
         runtime.onAction = { [weak self] view, action in
@@ -244,7 +247,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         link.onStatus = { [weak self] pane, status in self?.statusChanged(pane, status) }
         link.onFolder = { [weak self] pane, cwd, place in self?.folderChanged(pane, cwd, place) }
-        link.onBacklog = { [weak self] tasks in self?.backlogChanged(tasks, on: machine) }
+        link.onShelf = { [weak self] tasks, desk in self?.shelfChanged(tasks, desk: desk, on: machine) }
         link.onToast = { [weak self] record in self?.toastArrived(record) }
         link.onLost = { [weak self] in self?.linkLost(machine) }
     }
@@ -317,8 +320,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func machineGone(_ machine: String) {
         views.removeValue(forKey: machine)
-        backlogs.removeValue(forKey: machine)
-        backlog = backlogs.keys.sorted().flatMap { backlogs[$0] ?? [] }
+        shelves.removeValue(forKey: machine)
+        deskMade.removeValue(forKey: machine)
+        shelf = shelves.keys.sorted().flatMap { shelves[$0] ?? [] }
         published = merged()
         restate()
         layoutChanged()
@@ -383,20 +387,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return nil
     }
 
-    var shelfEntries: [JSON] {
-        guard case .array(let list)? = state["shelf"] else { return [] }
+    var deskEntries: [JSON] {
+        guard case .array(let list)? = state["deskTasks"] else { return [] }
         return list
     }
 
-    var shelfTasks: [ShelfTask] {
-        let tasks = shelfEntries.compactMap { entry -> ShelfTask? in
+    var deskTasks: [DeskTask] {
+        let tasks = deskEntries.compactMap { entry -> DeskTask? in
             guard let id = entry["task"]?.string else { return nil }
-            return ShelfTask(id: id, title: taskTitle(id, name: entry["name"]?.string), parkedAt: entry["parkedAt"]?.number, status: agentStatuses.statuses[id], detail: taskDetail(id), agent: entry["agent"]?.string,
-                             place: placeText(id), offline: offline(MachineIDs.machine(of: id)))
+            return DeskTask(id: id, title: taskTitle(id, name: entry["name"]?.string), leftAt: entry["leftAt"]?.number, status: agentStatuses.statuses[id], detail: taskDetail(id), agent: entry["agent"]?.string,
+                             place: placeText(id), offline: offline(MachineIDs.machine(of: id)), made: made(id))
         }
-        let waiting: [ShelfTask] = tasks.filter { $0.status == "needs-you" }
-        let rest: [ShelfTask] = tasks.filter { $0.status != "needs-you" }
-        return waiting + rest
+        return DeskOrder.byRecency(tasks) { $0.status == "needs-you" }
     }
 
     func taskTitle(_ id: String, name: String?) -> String {
@@ -406,9 +408,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private var placed: Set<String> {
-        var ids = Set(runningBacklog(in: nil).compactMap { $0["task"]?.string })
+        var ids = Set(runningOnShelf(in: nil).compactMap { $0["task"]?.string })
         if case .array(let held)? = state["held"] { ids.formUnion(held.compactMap(\.string)) }
-        for entry in shelfEntries {
+        for entry in deskEntries {
             guard case .array(let list)? = entry["panes"] else { continue }
             ids.formUnion(list.compactMap(\.string))
         }
@@ -477,7 +479,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         var args = args
-        if machine != nil, cmd == "backlog", ["shelve", "plan"].contains(args["action"]?.string), args["app"] == nil {
+        if machine != nil, cmd == "tasks", ["pick", "plan"].contains(args["action"]?.string), args["app"] == nil {
             args["app"] = .string(claimName(machine))
         }
         link.request(cmd, args, reply: reply, sent: sent)
@@ -554,7 +556,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             controllers[id] = nil
         }
         panes.keep(placed)
-        let tasks = shelfTasks
+        let tasks = deskTasks
         let rows = machineRows
         var held = Set<String>()
         for window in windows {
@@ -569,14 +571,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             if window["desk"]?.bool == true, let root = controller.projectRoot { deskMoved(id, to: root) }
             let mine = controller.projectRoot.map { root in tasks.filter { sameProject(projectRoot($0.id), root) } } ?? tasks
-            controller.shelf = mine
+            controller.deskTasks = mine
+            controller.active = docked == nil ? window["active"]?.string : nil
             let ours = Set(mine.map(\.id))
             let docks = window["desk"]?.bool == true
-                ? (shelfEntries.filter { $0["task"]?.string.map(ours.contains) == true } + runningBacklog(in: controller.projectRoot)).filter { $0["task"]?.string.map(held.contains) == false }
+                ? (deskEntries.filter { $0["task"]?.string.map(ours.contains) == true } + runningOnShelf(in: controller.projectRoot)).filter { $0["task"]?.string.map(held.contains) == false }
                 : []
             held.formUnion(docks.compactMap { $0["task"]?.string })
-            controller.shelfDocks = docks
-            controller.backlog = backlogTasks(in: controller.projectRoot)
+            controller.deskDocks = docks
+            controller.shelf = shelfTasks(in: controller.projectRoot)
             controller.running = runningTasks(in: controller.projectRoot)
             controller.project = controller.projectRoot.map(displayName) ?? projectName(mine.map(\.id))
             controller.taskTitle = docked.map { taskTitle($0, name: window["dock"]?["name"]?.string) }
@@ -642,18 +645,19 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         controller.tabBar.onRename = { [weak self] tab, title in self?.layoutCommand("rename-tab", ["tab": .string(tab), "title": .string(title)]) }
         controller.onCloseRequest = { [weak self] in self?.close(window: id) }
-        controller.shelfStrip.onPull = { [weak self] task in
-            Clicks.pull(task)
-            self?.pullTask(task, into: id)
+        controller.deskStrip.onActivate = { [weak self] task in
+            Clicks.activate(task)
+            self?.activateTask(task, into: id)
         }
-        controller.agentHeader.onPark = { [weak self] in self?.park(desk: id) }
+        controller.agentHeader.onDeskView = { [weak self] in self?.showDeskView(desk: id) }
+        controller.deskStrip.onDesk = { [weak self] in self?.showDeskView(desk: id) }
         controller.agentHeader.onNew = { [weak self] in self?.newTab(in: id) }
-        controller.shelfPage.onPull = { [weak self] task in
-            Clicks.pull(task)
-            self?.pullTask(task, into: id)
+        controller.deskView.onActivate = { [weak self] task in
+            Clicks.activate(task)
+            self?.activateTask(task, into: id)
         }
-        controller.shelfPage.onStart = { [weak self] task in self?.startTask(task, from: id) }
-        controller.shelfPage.onLeaveSearch = { [weak self, weak controller] in
+        controller.deskView.onStart = { [weak self] task in self?.startTask(task, from: id) }
+        controller.deskView.onLeaveSearch = { [weak self, weak controller] in
             guard let self, let controller, let lead = controller.leadShown, let view = panes.keyView(lead) else { return }
             controller.window.makeFirstResponder(view)
         }

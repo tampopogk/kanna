@@ -17,7 +17,7 @@ the harness never saw (a timeout), are left out.
 
 --turns replays each recording through its agent's bundled rules and the
 daemon's status tracker every 20 ms, and prints, for each settle time a
-backlog task might wait, when its turn would be judged over: during a turn
+Shelf task might wait, when its turn would be judged over: during a turn
 the harness marked as the agent's (too early), or after it.";
 
 const STEP: f64 = 0.25;

@@ -112,6 +112,12 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         path text primary key,
         at real not null
     );
+"), Step::Sql("
+    update tasks set place = case place when 'shelf' then 'desk' when 'backlog' then 'shelf' else place end;
+    update task_events set
+        from_place = case from_place when 'shelf' then 'desk' when 'backlog' then 'shelf' else from_place end,
+        to_place = case to_place when 'shelf' then 'desk' when 'backlog' then 'shelf' else to_place end,
+        what = case what when 'shelved' then 'picked' when 'deferred' then 'shelved' when 'pulled' then 'activated' when 'parked' then 'left' else what end;
 ")];
 
 pub const RECENT: usize = 10;
@@ -122,25 +128,22 @@ pub fn version() -> i64 {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Place {
-    Backlog,
     Shelf,
+    Desk,
     Done,
 }
 
 impl Place {
     pub fn as_str(self) -> &'static str {
         match self {
-            Place::Backlog => "backlog",
             Place::Shelf => "shelf",
+            Place::Desk => "desk",
             Place::Done => "done",
         }
     }
 
     pub fn parse(text: &str) -> Option<Place> {
-        match text {
-            "desk" => Some(Place::Shelf),
-            text => [Place::Backlog, Place::Shelf, Place::Done].into_iter().find(|p| p.as_str() == text),
-        }
+        [Place::Shelf, Place::Desk, Place::Done].into_iter().find(|p| p.as_str() == text)
     }
 }
 
@@ -403,8 +406,8 @@ impl Db {
     pub fn import(&self, saved: &Value) -> rusqlite::Result<usize> {
         let tx = self.conn.unchecked_transaction()?;
         let mut count = 0;
-        let tasks = saved.get("tasks").and_then(Value::as_array).into_iter().flatten().map(|t| (t, Place::Backlog, t.get("held")));
-        let running = saved.get("running").and_then(Value::as_array).into_iter().flatten().map(|t| (t, Place::Shelf, t.get("pane")));
+        let tasks = saved.get("tasks").and_then(Value::as_array).into_iter().flatten().map(|t| (t, Place::Shelf, t.get("held")));
+        let running = saved.get("running").and_then(Value::as_array).into_iter().flatten().map(|t| (t, Place::Desk, t.get("pane")));
         for (task, place, pane) in tasks.chain(running) {
             let Some(row) = row_from_saved(task, place, pane.and_then(Value::as_str)) else { continue };
             if tx.query_row("select 1 from task_events where what = 'renumbered' and json_extract(doc, '$.from') = ?1", [&row.id], |_| Ok(())).optional()?.is_some() {
@@ -415,10 +418,10 @@ impl Db {
                 params![row.id, row.repo, row.place.as_str(), row.terminal, row.made_at, row.doc.to_string()],
             )?;
             if added == 1 {
-                let made = Change { at: Some(row.made_at), by: row.doc.get("by").and_then(Value::as_str).map(String::from), to: Some(Place::Backlog), ..Change::new("made") };
+                let made = Change { at: Some(row.made_at), by: row.doc.get("by").and_then(Value::as_str).map(String::from), to: Some(Place::Shelf), ..Change::new("made") };
                 log(&tx, &row.id, &made)?;
-                if place == Place::Shelf {
-                    log(&tx, &row.id, &Change::new("imported").moved(Place::Backlog, Place::Shelf).by(Some("daemon")))?;
+                if place == Place::Desk {
+                    log(&tx, &row.id, &Change::new("imported").moved(Place::Shelf, Place::Desk).by(Some("daemon")))?;
                 }
                 count += 1;
             }
@@ -433,9 +436,15 @@ impl Db {
         let rows = statement.query_map([], |r| {
             let place: String = r.get(2)?;
             let doc: String = r.get(5)?;
-            Ok(Row { id: r.get(0)?, repo: r.get(1)?, place: Place::parse(&place).unwrap_or(Place::Backlog), terminal: r.get(3)?, made_at: r.get(4)?, doc: serde_json::from_str(&doc).unwrap_or(Value::Null) })
+            Ok(Row { id: r.get(0)?, repo: r.get(1)?, place: Place::parse(&place).unwrap_or(Place::Shelf), terminal: r.get(3)?, made_at: r.get(4)?, doc: serde_json::from_str(&doc).unwrap_or(Value::Null) })
         })?;
         rows.collect()
+    }
+
+    pub fn made_order(&self) -> rusqlite::Result<Vec<String>> {
+        let mut statement = self.conn.prepare("select id from tasks where place != 'done' order by made_at, rowid")?;
+        let ids = statement.query_map([], |r| r.get(0))?;
+        ids.collect()
     }
 
     pub fn task(&self, id: &str) -> rusqlite::Result<Option<Row>> {
@@ -443,7 +452,7 @@ impl Db {
             .query_row("select id, repo, place, terminal, made_at, doc from tasks where id = ?1", [id], |r| {
                 let place: String = r.get(2)?;
                 let doc: String = r.get(5)?;
-                Ok(Row { id: r.get(0)?, repo: r.get(1)?, place: Place::parse(&place).unwrap_or(Place::Backlog), terminal: r.get(3)?, made_at: r.get(4)?, doc: serde_json::from_str(&doc).unwrap_or(Value::Null) })
+                Ok(Row { id: r.get(0)?, repo: r.get(1)?, place: Place::parse(&place).unwrap_or(Place::Shelf), terminal: r.get(3)?, made_at: r.get(4)?, doc: serde_json::from_str(&doc).unwrap_or(Value::Null) })
             })
             .optional()
     }
@@ -820,9 +829,9 @@ mod tests {
         }
         for task in running {
             let row = rows.iter().find(|r| r.id == new[task["id"].as_str().unwrap()]).unwrap();
-            assert_eq!((row.place, row.terminal.as_deref()), (Place::Shelf, task["pane"].as_str()));
+            assert_eq!((row.place, row.terminal.as_deref()), (Place::Desk, task["pane"].as_str()));
         }
-        assert!(rows.iter().filter(|r| r.place == Place::Backlog).all(|r| r.terminal.is_none()));
+        assert!(rows.iter().filter(|r| r.place == Place::Shelf).all(|r| r.terminal.is_none()));
         drop(db);
         let again = Db::open(&dir);
         assert_eq!(again.tasks().unwrap().len(), rows.len(), "nothing is imported twice");
@@ -851,7 +860,7 @@ mod tests {
         fs::write(dir.join(BACKLOG), saved.to_string()).unwrap();
         let rows = Db::open(&dir).tasks().unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!((rows[0].place, rows[0].terminal.as_deref()), (Place::Backlog, Some("p9")));
+        assert_eq!((rows[0].place, rows[0].terminal.as_deref()), (Place::Shelf, Some("p9")));
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -861,18 +870,18 @@ mod tests {
         let db = Db::open(&dir);
         let id = db.new_id(|_| true).unwrap();
         assert!(is_task_id(&id), "{id}");
-        let mut row = Row { id: id.clone(), repo: "/r".into(), place: Place::Backlog, terminal: None, made_at: 1.0, doc: json!({ "name": "A", "later": "kept" }) };
+        let mut row = Row { id: id.clone(), repo: "/r".into(), place: Place::Shelf, terminal: None, made_at: 1.0, doc: json!({ "name": "A", "later": "kept" }) };
         db.put(&row, Some(&Change::new("made").by(Some("p1")))).unwrap();
-        row.place = Place::Shelf;
+        row.place = Place::Desk;
         row.terminal = Some("term-7".into());
         row.doc = json!({ "name": "B", "session": null });
-        db.put(&row, Some(&Change::new("shelved").moved(Place::Backlog, Place::Shelf).with("window", json!("w2")))).unwrap();
+        db.put(&row, Some(&Change::new("picked").moved(Place::Shelf, Place::Desk).with("window", json!("w2")))).unwrap();
         let stored = db.tasks().unwrap().remove(0);
         assert_eq!(stored.doc, json!({ "name": "B", "later": "kept" }));
-        assert_eq!((stored.place, stored.terminal.as_deref()), (Place::Shelf, Some("term-7")));
+        assert_eq!((stored.place, stored.terminal.as_deref()), (Place::Desk, Some("term-7")));
         let events = db.events(&id).unwrap();
-        assert_eq!(events.iter().map(|e| e.what.as_str()).collect::<Vec<_>>(), ["made", "shelved"]);
-        assert_eq!((events[1].from, events[1].to, events[1].doc["window"].as_str()), (Some(Place::Backlog), Some(Place::Shelf), Some("w2")));
+        assert_eq!(events.iter().map(|e| e.what.as_str()).collect::<Vec<_>>(), ["made", "picked"]);
+        assert_eq!((events[1].from, events[1].to, events[1].doc["window"].as_str()), (Some(Place::Shelf), Some(Place::Desk), Some("w2")));
         assert_eq!(events[0].by.as_deref(), Some("p1"));
         assert!(db.log("task-00000404", &Change::new("made")).is_err(), "an event needs its task");
         fs::remove_dir_all(&dir).unwrap();
@@ -884,7 +893,7 @@ mod tests {
         let db = Db::open(&dir);
         assert_eq!(db.layout().unwrap(), None);
         db.saves_layout_with_done(|| Some(json!({ "workspaces": [] })));
-        let mut row = Row { id: db.new_id(|_| true).unwrap(), repo: "/r".into(), place: Place::Shelf, terminal: Some("term-1".into()), made_at: 1.0, doc: json!({}) };
+        let mut row = Row { id: db.new_id(|_| true).unwrap(), repo: "/r".into(), place: Place::Desk, terminal: Some("term-1".into()), made_at: 1.0, doc: json!({}) };
         db.put(&row, None).unwrap();
         assert_eq!(db.layout().unwrap(), None, "only a done task writes the layout");
         row.place = Place::Done;
@@ -981,11 +990,12 @@ mod tests {
         let waits = db.task(&new["t2"]).unwrap().unwrap();
         assert_eq!(waits.doc["after"], json!([new["t1"], new["t3"]]));
         let events = |id: &str| db.events(id).unwrap().into_iter().map(|e| e.what).collect::<Vec<_>>();
-        assert_eq!(events(&new["t1"]), ["made", "shelved", "renumbered"]);
+        assert_eq!(events(&new["t1"]), ["made", "picked", "renumbered"]);
         assert_eq!(db.events(&new["t2"]).unwrap()[1].doc["after"], json!([new["t1"], new["t3"]]));
         assert_eq!(events(&new["t3"]), ["made", "done", "renumbered"]);
-        let shelf = db.task(&new["t1"]).unwrap().unwrap();
-        assert_eq!((shelf.place, shelf.terminal.as_deref()), (Place::Shelf, Some("p4")));
+        let desk = db.task(&new["t1"]).unwrap().unwrap();
+        assert_eq!((desk.place, desk.terminal.as_deref()), (Place::Desk, Some("p4")));
+        assert_eq!([db.task(&new["t2"]).unwrap().unwrap().place, db.task(&new["t5"]).unwrap().unwrap().place], [Place::Shelf, Place::Desk]);
         let next: Option<String> = db.conn.query_row("select value from meta where key = 'next_task'", [], |r| r.get(0)).optional().unwrap();
         assert_eq!(next, None);
         let dangling: i64 = db.conn.query_row("select count(*) from task_events where task not in (select id from tasks)", [], |r| r.get(0)).unwrap();
@@ -1013,7 +1023,7 @@ mod tests {
         for (id, repo, place, pane, made_at, doc, count) in &old {
             let row = db.task(&new[id]).unwrap().unwrap_or_else(|| panic!("{id} lost"));
             let doc: Value = serde_json::from_str(doc).unwrap();
-            assert_eq!((&row.repo, row.place.as_str(), &row.terminal, row.made_at), (repo, place.as_str(), pane, *made_at), "{id}");
+            assert_eq!((&row.repo, row.place.as_str(), &row.terminal, row.made_at), (repo, match place.as_str() { "shelf" | "desk" => "desk", "backlog" => "shelf", place => place }, pane, *made_at), "{id}");
             for key in ["name", "message", "by", "agent", "folder", "session", "stopped"] {
                 assert_eq!(row.doc.get(key), doc.get(key), "{id} {key}");
             }
@@ -1035,6 +1045,46 @@ mod tests {
         if let Ok(out) = std::env::var("KANNA_REAL_DB_OUT") {
             fs::copy(dir.join(FILE), out).unwrap();
         }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_db_from_before_the_desk_and_shelf_names_moves_each_task_and_event_to_the_place_it_was_in() {
+        let dir = folder("place-names");
+        let conn = connect(&dir.join(FILE)).unwrap();
+        for step in &MIGRATIONS[..MIGRATIONS.len() - 1] {
+            match step {
+                Step::Sql(sql) => conn.execute_batch(sql).unwrap(),
+                Step::Run(run) => run(&conn).unwrap(),
+            }
+        }
+        conn.pragma_update(None, "user_version", version() - 1).unwrap();
+        conn.execute_batch(r#"
+            insert into tasks (id, repo, place, terminal, made_at, doc) values
+                ('task-00000001', '/r', 'shelf', 'term-4', 1.0, '{"name": "On the Desk"}'),
+                ('task-00000002', '/r', 'backlog', null, 2.0, '{"name": "On the Shelf"}'),
+                ('task-00000003', '/r', 'done', null, 3.0, '{"name": "Done"}');
+            insert into task_events (task, at, what, from_place, to_place, by) values
+                ('task-00000001', 1.0, 'made', null, 'backlog', 'user'),
+                ('task-00000001', 2.0, 'shelved', 'backlog', 'shelf', 'user'),
+                ('task-00000001', 3.0, 'parked', 'shelf', 'shelf', 'user'),
+                ('task-00000001', 4.0, 'pulled', 'shelf', 'shelf', 'user'),
+                ('task-00000002', 2.0, 'made', null, 'backlog', 'user'),
+                ('task-00000002', 3.0, 'shelved', 'backlog', 'shelf', 'user'),
+                ('task-00000002', 4.0, 'deferred', 'shelf', 'backlog', 'user'),
+                ('task-00000003', 3.0, 'done', 'desk', 'done', 'user');
+        "#).unwrap();
+        drop(conn);
+        let db = Db::open(&dir);
+        let place = |id: &str| db.task(id).unwrap().unwrap().place;
+        assert_eq!([place("task-00000001"), place("task-00000002"), place("task-00000003")], [Place::Desk, Place::Shelf, Place::Done]);
+        let events = |id: &str| db.events(id).unwrap().into_iter().map(|e| (e.what, e.from, e.to)).collect::<Vec<_>>();
+        assert_eq!(events("task-00000001").into_iter().map(|e| e.0).collect::<Vec<_>>(), ["made", "picked", "left", "activated"]);
+        assert_eq!(events("task-00000001")[..2], [("made".into(), None, Some(Place::Shelf)), ("picked".into(), Some(Place::Shelf), Some(Place::Desk))]);
+        assert_eq!(events("task-00000002")[1..], [("picked".into(), Some(Place::Shelf), Some(Place::Desk)), ("shelved".into(), Some(Place::Desk), Some(Place::Shelf))]);
+        assert_eq!(events("task-00000003"), [("done".into(), Some(Place::Desk), Some(Place::Done))]);
+        let stored: Vec<String> = db.conn.prepare("select distinct place from tasks order by place").unwrap().query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        assert_eq!(stored, ["desk", "done", "shelf"]);
         fs::remove_dir_all(&dir).unwrap();
     }
 

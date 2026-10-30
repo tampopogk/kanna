@@ -43,6 +43,10 @@ pub trait TaskBook {
     fn sync(&self, workspaces: &[Value]) {
         let _ = workspaces;
     }
+    fn starting(&self, task: &str) -> bool {
+        let _ = task;
+        true
+    }
 }
 
 pub type CommandHandler = Rc<dyn Fn(Value, Responder)>;
@@ -792,6 +796,9 @@ impl CoreHandle {
         if dock.is_some() && (args.get("split").is_some() || args.get("size").is_some() || new_tab) {
             return Err(bad_request("a docked pane takes no split, size or tab"));
         }
+        if dock.is_some() && !string(args, "task").is_some_and(|task| self.book().is_none_or(|book| book.starting(task))) {
+            return Err(KmuxError::new("not_a_task", "a docked pane is a task's agent, and only a task docks: make one with `kanna task new`, then `kanna task pick` or `kanna task start`"));
+        }
         if args.get("frozen").is_some_and(|f| !f.is_null() && !f.is_boolean()) {
             return Err(bad_request("frozen must be true or false"));
         }
@@ -799,17 +806,17 @@ impl CoreHandle {
         if frozen && dock.is_none() {
             return Err(bad_request("only a docked pane is frozen"));
         }
-        let backlog = is_true(args, "backlog");
+        let shelf = is_true(args, "shelf");
         let claimed = string(args, "claim").map(String::from);
         let planner = is_true(args, "planner");
         if dock.is_some() && args.get("window").is_some() {
             return Err(bad_request("a docked pane is a task's agent, in its own workspace, not in a window"));
         }
-        if backlog && dock.is_none() || claimed.is_some() && dock.is_none() && !planner {
-            return Err(bad_request("claim is for a docked pane or a planner, and backlog for a docked pane"));
+        if shelf && dock.is_none() || claimed.is_some() && dock.is_none() && !planner {
+            return Err(bad_request("claim is for a docked pane or a planner, and shelf for a docked pane"));
         }
-        if backlog && claimed.is_some() {
-            return Err(bad_request("a task is in the backlog or on an app's Shelf, not both"));
+        if shelf && claimed.is_some() {
+            return Err(bad_request("a task is on the Shelf or on an app's Desk, not both"));
         }
         let lead = is_true(args, "lead");
         if lead && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || string(args, "window").is_none()) {
@@ -818,7 +825,7 @@ impl CoreHandle {
         if planner && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || args.get("window").is_some()) {
             return Err(bad_request("a planner is a terminal of its own, with no dock, split, size, tab or window"));
         }
-        let app = match (dock, backlog) {
+        let app = match (dock, shelf) {
             (Some(_), false) => Some(claimed.unwrap_or_else(|| MAC_APP.into())),
             _ if planner => Some(claimed.unwrap_or_else(|| MAC_APP.into())),
             _ => None,
@@ -854,7 +861,7 @@ impl CoreHandle {
             from,
             opener,
             app,
-            backlog,
+            shelf,
             lead,
             planner,
         };
@@ -1124,7 +1131,7 @@ impl CoreHandle {
             return Ok(());
         }
         let place = here.map_or("this project".to_string(), |p| p.display().to_string());
-        Err(KmuxError::new("task_limit", format!("{place} has {TASKS_PER_PROJECT} tasks on the Shelf already ({}): move one to the backlog with `kanna task defer TASK` first", same.join(", "))))
+        Err(KmuxError::new("task_limit", format!("{place} has {TASKS_PER_PROJECT} tasks on the Desk already ({}): move one to the Shelf with `kanna task shelve TASK` first", same.join(", "))))
     }
 
     fn forget_pane(&self, id: &str) {

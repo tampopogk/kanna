@@ -1,6 +1,7 @@
 import AppKit
 import KannaMarkdown
 import KannaPerf
+import KannaWindows
 
 @MainActor
 final class WindowController: NSObject, NSWindowDelegate {
@@ -11,14 +12,14 @@ final class WindowController: NSObject, NSWindowDelegate {
     private let stage = StageView()
     private let content = StageView()
     private let dockStage = NSView()
-    private let shelfStage = NSView()
+    private let deskStage = NSView()
     private(set) var dockDivider: DockDividerView?
     var relayout: (() -> Void)? { didSet { content.onLayout = relayout } }
     let tabBar = TabBar()
-    let shelfStrip = ShelfStrip()
-    let shelfPage = ShelfPage()
+    let deskStrip = DeskStrip()
+    let deskView = DeskView()
     let machinesPage = MachinesPage()
-    static let pages = ["Shelf", "Machines"]
+    static let pages = ["Desk", "Machines"]
     var page: String?
     var machines: [MachineRow] = []
     var stale: String?
@@ -27,15 +28,18 @@ final class WindowController: NSObject, NSWindowDelegate {
     var shownPage: String? { pageShown }
     private(set) var pages: [String] = []
     private var dockedTask: String?
+    var deskTasks: [DeskTask] = []
+    var active: String?
+    var others: [DeskTask] { deskTasks.filter { $0.id != active } }
+    var keys: [String: String] { DeskOrder.keys(others.map(\.id)) }
+    var deskDocks: [JSON] = []
     var shelf: [ShelfTask] = []
-    var shelfDocks: [JSON] = []
-    var backlog: [BacklogTask] = []
     var running = 0
     var note = ""
     var project = ""
     var projectRoot: String?
-    private var cheerAt = Int.random(in: 0..<ShelfPage.cheers.count)
-    var cheer: String { ShelfPage.cheers[cheerAt] }
+    private var cheerAt = Int.random(in: 0..<DeskView.cheers.count)
+    var cheer: String { DeskView.cheers[cheerAt] }
     private var deskTask = false
     let agentHeader = AgentHeader()
     var headerText = ""
@@ -44,6 +48,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     private(set) var emptyDesk = false
     private(set) var leadShown: String?
     private(set) var tabless = false
+    private var keyed = false
     var onCloseRequest: (() -> Void)?
     var onBecomeKey: (() -> Void)?
     var onFrameChange: (() -> Void)?
@@ -72,13 +77,13 @@ final class WindowController: NSObject, NSWindowDelegate {
         content.addSubview(tabBar)
         content.addSubview(dockStage)
         dockStage.addSubview(agentHeader)
-        content.addSubview(shelfStrip)
-        content.addSubview(shelfPage)
+        content.addSubview(deskStrip)
+        content.addSubview(deskView)
         content.addSubview(machinesPage)
-        content.addSubview(shelfStage)
-        shelfStage.isHidden = true
-        shelfStrip.isHidden = true
-        shelfPage.isHidden = true
+        content.addSubview(deskStage)
+        deskStage.isHidden = true
+        deskStrip.isHidden = true
+        deskView.isHidden = true
         machinesPage.isHidden = true
         window.contentView = content
         if let previous {
@@ -108,7 +113,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         tab = state["tab"]?.string
         let instance = AppController.instanceName
         desk = state["desk"]?.bool == true
-        let named = desk ? taskTitle ?? "Shelf" : state["lead"]?["name"]?.string ?? "\(state["title"]?.string ?? "Kanna") — \(id)"
+        let named = desk ? taskTitle ?? "Desk" : state["lead"]?["name"]?.string ?? "\(state["title"]?.string ?? "Kanna") — \(id)"
         window.title = named + (instance == "default" ? "" : " · \(instance)")
         let root = state["root"] ?? .null
         let task = Self.side(state["dock"])
@@ -126,9 +131,9 @@ final class WindowController: NSObject, NSWindowDelegate {
         pages = desk && task == nil ? Self.pages : []
         pageShown = pages.isEmpty ? nil : emptyDesk ? page ?? pages[0] : page
         tabBar.show(state, pages: pages, page: pageShown)
-        if deskTask && emptyDesk { cheerAt = (cheerAt + 1) % ShelfPage.cheers.count }
+        if deskTask && emptyDesk { cheerAt = (cheerAt + 1) % DeskView.cheers.count }
         deskTask = desk && task != nil
-        if deskTask, let pulled = task?["pane"]?.string { Clicks.pulled(pulled) }
+        if deskTask, let activated = task?["pane"]?.string { Clicks.activated(activated) }
         tabless = task != nil && (state["tabs"]?.array ?? []).isEmpty
         let zoomed = state["zoomed"]?.string
         arrange(dock, zoomed: zoomed.map { $0 == docked ? .dock : .tab })
@@ -146,13 +151,13 @@ final class WindowController: NSObject, NSWindowDelegate {
             view.frame = NSRect(x: 0, y: 0, width: dockStage.bounds.width, height: dockStage.bounds.height - header)
             view.autoresizingMask = []
             agentHeader.isHidden = !headed
-            agentHeader.parkable = self.desk && lead == nil
+            agentHeader.canShowDeskView = self.desk && lead == nil
             agentHeader.newable = tabless
             agentHeader.frame = NSRect(x: 0, y: dockStage.bounds.height - header, width: dockStage.bounds.width, height: header)
             agentHeader.show(headerText, stale: stale)
             agentHeader.toolTip = headerTip
         }
-        hold(shelfDocks, panes)
+        hold(deskDocks, panes)
         window.invalidateCursorRects(for: content)
         let focusedID = state["focused"]?.string
         let visibleIDs = ids + (docked.map { [$0] } ?? [])
@@ -163,12 +168,18 @@ final class WindowController: NSObject, NSWindowDelegate {
             view.focused = many && id == focusedID && window.isKeyWindow
             view.grip.isHidden = id == docked && dock?["frozen"]?.bool == true
         }
-        let responder = window.firstResponder
-        if let focusedID, let target = panes.keyView(focusedID), responder !== target,
-           responder == nil || responder === window || responder is TerminalSurfaceView || responder is FocusReportingWebView
-           || responder is MarkdownTextView || responder is IosPaneView {
-            window.makeFirstResponder(target)
+        if let focusedID, let target = panes.keyView(focusedID) {
+            if Keyboard.moves(from: holder(of: target), keyed: keyed) { window.makeFirstResponder(target) }
+            keyed = keyed || window.firstResponder === target
         }
+    }
+
+    private func holder(of target: NSView) -> Keyboard.Holder {
+        let responder = window.firstResponder
+        if responder === target { return .target }
+        if responder == nil || responder === window { return .nothing }
+        if responder is TerminalSurfaceView || responder is FocusReportingWebView || responder is MarkdownTextView || responder is IosPaneView { return .pane }
+        return responder is NSText ? .text : .other
     }
 
     private enum Zoom { case dock, tab }
@@ -176,18 +187,18 @@ final class WindowController: NSObject, NSWindowDelegate {
     private func arrange(_ dock: JSON?, zoomed: Zoom?) {
         var bounds = content.bounds
         let taskless = desk && leadShown != nil || emptyDesk
-        let showsShelf = pageShown == Self.pages[0]
-        if shelfPage.isHidden == showsShelf {
-            shelfPage.isHidden = !showsShelf
-            if !showsShelf { shelfPage.clearSearch() }
+        let showsDeskView = pageShown == Self.pages[0]
+        if deskView.isHidden == showsDeskView {
+            deskView.isHidden = !showsDeskView
+            if !showsDeskView { deskView.clearSearch() }
         }
         machinesPage.isHidden = pageShown != Self.pages[1]
-        if shelfStrip.isHidden == (desk && !taskless) { shelfStrip.isHidden = !desk || taskless }
+        if deskStrip.isHidden == (desk && !taskless) { deskStrip.isHidden = !desk || taskless }
         if taskless {
         } else if desk {
-            shelfStrip.frame = NSRect(x: 0, y: 0, width: bounds.width, height: ShelfStrip.height)
-            shelfStrip.show(shelf, waiting: backlog.count)
-            bounds = NSRect(x: 0, y: ShelfStrip.height, width: bounds.width, height: bounds.height - ShelfStrip.height)
+            deskStrip.frame = NSRect(x: 0, y: 0, width: bounds.width, height: DeskStrip.height)
+            deskStrip.show(DeskOrder.byAge(others, made: \.made), keys: keys, waiting: shelf.count)
+            bounds = NSRect(x: 0, y: DeskStrip.height, width: bounds.width, height: bounds.height - DeskStrip.height)
         }
         var side = bounds
         dockDivider?.removeFromSuperview()
@@ -214,9 +225,9 @@ final class WindowController: NSObject, NSWindowDelegate {
         let bar = tabBar.isHidden ? 0 : TabBar.height
         tabBar.frame = NSRect(x: side.minX, y: side.maxY - TabBar.height, width: side.width, height: TabBar.height)
         let below = NSRect(x: side.minX, y: side.minY, width: side.width, height: max(0, side.height - bar))
-        if showsShelf {
-            shelfPage.frame = below
-            shelfPage.show(DeskPage(tasks: shelf, backlog: backlog, running: running, project: project, cheer: cheer, note: note))
+        if showsDeskView {
+            deskView.frame = below
+            deskView.show(DeskPage(active: active, tasks: DeskOrder.byAge(deskTasks, made: \.made), keys: keys, shelf: shelf, running: running, project: project, cheer: cheer, note: note))
         } else if pageShown != nil {
             machinesPage.frame = below
             machinesPage.show(machines)
@@ -235,13 +246,13 @@ final class WindowController: NSObject, NSWindowDelegate {
 
     private func hold(_ docks: [JSON], _ panes: PaneViews) {
         let held = Set(docks.compactMap { $0["task"]?.string })
-        for case let view as PaneView in shelfStage.subviews where !held.contains(view.id) { view.removeFromSuperview() }
+        for case let view as PaneView in deskStage.subviews where !held.contains(view.id) { view.removeFromSuperview() }
         let bounds = content.bounds
-        shelfStage.frame = bounds
-        let desk = NSRect(x: 0, y: ShelfStrip.height, width: bounds.width, height: max(0, bounds.height - ShelfStrip.height))
+        deskStage.frame = bounds
+        let desk = NSRect(x: 0, y: DeskStrip.height, width: bounds.width, height: max(0, bounds.height - DeskStrip.height))
         for dock in docks {
             guard let id = dock["task"]?.string, dock["type"]?.string ?? "term" == "term", let view = panes.view(id, type: "term") else { continue }
-            if view.superview !== shelfStage { shelfStage.addSubview(view) }
+            if view.superview !== deskStage { deskStage.addSubview(view) }
             let frame = (dock["tabs"]?.array ?? []).isEmpty ? desk : Self.dockFrame(dock, in: desk)
             view.frame = NSRect(x: frame.minX, y: frame.minY, width: frame.width, height: max(0, frame.height - AgentHeader.height))
             view.autoresizingMask = []
@@ -252,13 +263,13 @@ final class WindowController: NSObject, NSWindowDelegate {
     private(set) var dividers: [DividerView] = []
 
     @objc func performTextFinderAction(_ sender: Any?) {
-        guard !shelfPage.isHidden, (sender as? NSMenuItem)?.tag == NSTextFinder.Action.showFindInterface.rawValue else { return }
-        shelfPage.focusSearch()
+        guard !deskView.isHidden, (sender as? NSMenuItem)?.tag == NSTextFinder.Action.showFindInterface.rawValue else { return }
+        deskView.focusSearch()
     }
 
     @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
         guard item.action == #selector(performTextFinderAction(_:)) else { return true }
-        return !shelfPage.isHidden && shelfPage.searchShown && item.tag == NSTextFinder.Action.showFindInterface.rawValue
+        return !deskView.isHidden && deskView.searchShown && item.tag == NSTextFinder.Action.showFindInterface.rawValue
     }
 
     static func shownPanes(_ window: JSON) -> [String] {

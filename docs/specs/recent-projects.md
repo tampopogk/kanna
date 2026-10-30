@@ -1,6 +1,6 @@
 # Recent projects
 
-**Status:** built (2026-10-19) · **Tests:** `crates/kanna-daemon/src/projects.rs` (unit), `backlog.rs` (`planner.sh`), `scripts/e2e-kanna.sh` `recent_projects` · **Mockup:** [`references/mockups/desk.html`](../../references/mockups/desk.html) (the File menu; File › New Desk ⌘N) · **Part of:** [New Desk](new-desk.md), [menus](menus.md) · **Kept in:** [the database](database.md#recent-projects), [architecture](architecture.md#2-what-the-daemon-keeps-what-the-apps-keep)
+**Status:** built (2026-10-19) · **Tests:** `crates/kanna-daemon/src/projects.rs` (unit), `tasks.rs` (`planner.sh`), `scripts/e2e-kanna.sh` `recent_projects` · **Mockup:** [`references/mockups/desk.html`](../../references/mockups/desk.html) (the File menu; File › New Desk ⌘N) · **Part of:** [New Desk](new-desk.md), [menus](menus.md) · **Kept in:** [the database](database.md#recent-projects), [architecture](architecture.md#2-what-the-daemon-keeps-what-the-apps-keep)
 
 Reopen a project you've had open without setting it up again.
 
@@ -25,7 +25,7 @@ Reopen a project you've had open without setting it up again.
 | A project moves to the top when | |
 |---|---|
 | a Desk opens on it | `kanna PATH`, Open Recent (also when its Desk is brought forward) |
-| a Desk moves to it | its planning terminal's folder changes, a task from it is pulled onto the Desk |
+| a Desk moves to it | its planning terminal's folder changes, a task from it is made active on the Desk |
 
 - **A project is its repo's folder**: the main repo for a worktree, a subfolder's repo (`project()`). `~` never is.
 - **Shown by its place in `~/.kanna-v4/repos`** (`tampopogk/kanna`, `local/recipe-box`); one outside it isn't added. The planner's prompt also lists, after the others, each outside project with a recent entry or tasks not done, labelled `~/work/app (outside)` (`outside: true` and its `place` in `kanna projects --json`), and choosing one offers the import ([project folder](project-folder.md#3-the-offer)); Open Recent leaves those off. The menu item's tooltip has the full path. The daemon gives each its label (`label` in `kanna projects --json`), so the menu and the prompt agree.

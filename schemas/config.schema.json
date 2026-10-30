@@ -15,12 +15,18 @@
       "default": 1
     },
     "planning": {
-      "description": "The planning terminal: the terminal docked beside the full Shelf while no task is on a Desk.",
+      "description": "The planning terminal: the terminal docked in the Desk view, beside the Desk's tasks and the Shelf.",
       "type": "object",
       "properties": {
         "agent": {
           "description": "The agent a new Desk's planning terminal starts as the planning agent. Unset, it asks which (unless one agent is installed) and offers to write the answer to the repo's .kanna/config.json. Read by the planning terminal when it starts.",
-          "enum": ["claude", "codex", "copilot", "opencode", "agy"]
+          "enum": [
+            "claude",
+            "codex",
+            "copilot",
+            "opencode",
+            "agy"
+          ]
         },
         "context": {
           "description": "Tokens a claude agent's context grows to in the planning terminal before it compacts (CLAUDE_CODE_AUTO_COMPACT_WINDOW), or \"auto\" for claude's own. Read when a planning terminal is made.",
@@ -39,12 +45,26 @@
       },
       "additionalProperties": false
     },
-    "backlog": {
-      "description": "A repo's backlog: the tasks off the Shelf.",
+    "shelf": {
+      "description": "A repo's Shelf: the tasks Kanna has brought in that aren't on the Desk.",
       "type": "object",
       "properties": {
         "runners": {
-          "description": "How many of a repo's backlog tasks run at once. Waiting tasks start by themselves, oldest first, skipping blocked ones, and Kanna stops each when its agent's turn ends (it asks you something or it's finished), freeing its place for the next; move a stopped task to the Shelf to resume it. 0 turns this off: Kanna starts and stops none. Read every few seconds.",
+          "description": "How many of a repo's Shelf tasks run at once. Waiting tasks start by themselves, oldest first, skipping blocked ones, and Kanna stops each when its agent's turn ends (it asks you something or it's finished), freeing its place for the next; move a stopped task to the Desk to resume it. 0 turns this off: Kanna starts and stops none. Read every few seconds.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10,
+          "default": 3
+        }
+      },
+      "additionalProperties": false
+    },
+    "backlog": {
+      "description": "The old name of shelf, still read: shelf.runners, if set in the same file, wins.",
+      "type": "object",
+      "properties": {
+        "runners": {
+          "description": "The old name of shelf.runners.",
           "type": "integer",
           "minimum": 0,
           "maximum": 10,
@@ -74,7 +94,13 @@
           "type": "string",
           "minLength": 1,
           "default": "claude",
-          "examples": ["claude", "codex", "copilot", "opencode", "agy"]
+          "examples": [
+            "claude",
+            "codex",
+            "copilot",
+            "opencode",
+            "agy"
+          ]
         },
         "setup": {
           "description": "A shell command (or a script path from the repo's root, such as .kanna/setup.sh) run in a new task's worktree, in its agent's terminal, before the agent starts; once per worktree. If it fails, the task stops, and `kanna task start` starts the agent anyway or `kanna task setup` runs it again.",

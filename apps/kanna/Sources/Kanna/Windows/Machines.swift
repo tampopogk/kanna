@@ -29,7 +29,7 @@ extension AppController {
 
     func staleText(_ id: String?) -> String? {
         guard let machine = id.flatMap(MachineIDs.machine(of:)), offline(machine) else { return nil }
-        let since = lastSeen[machine].map { " \(ShelfTask.ago($0.timeIntervalSince1970))" } ?? ""
+        let since = lastSeen[machine].map { " \(DeskTask.ago($0.timeIntervalSince1970))" } ?? ""
         return "Last received\(since) · input is unavailable · reconnecting"
     }
 
@@ -70,10 +70,10 @@ extension AppController {
                 if failure?["code"]?.string == "other_protocol", let refusal = link?.refusal {
                     let message = Protocols.otherProtocol(machine: name, protocols: refusal["mine"]?.array?.compactMap { $0.number.map(Int.init) }, version: refusal["version"]?.string, commit: refusal["commit"]?.string)
                     note = message.title
-                    explanation = "\(message.detail) Until then, \(name)'s tasks keep their places on the Shelf."
+                    explanation = "\(message.detail) Until then, \(name)'s tasks keep their places on the Desk."
                 } else {
-                    note = lastSeen[name].map { "Last seen \(ShelfTask.ago($0.timeIntervalSince1970))" } ?? "Not reached since Kanna started"
-                    explanation = "Kanna can't reach \(name) now\(failure?["message"]?.string.map { ": \($0)" } ?? ""). It keeps trying, and \(name)'s tasks keep their places on the Shelf."
+                    note = lastSeen[name].map { "Last seen \(DeskTask.ago($0.timeIntervalSince1970))" } ?? "Not reached since Kanna started"
+                    explanation = "Kanna can't reach \(name) now\(failure?["message"]?.string.map { ": \($0)" } ?? ""). It keeps trying, and \(name)'s tasks keep their places on the Desk."
                 }
             case "Direct · internet":
                 note = rtt ?? "No relay in use"

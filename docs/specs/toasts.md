@@ -24,16 +24,16 @@ The app's own drawing (`debug.toasts png`), dark; [`toasts-light.png`](toasts-li
 
 | The toast is about | A click |
 |---|---|
-| a pane of a task on the Shelf (or on a Desk) | brings that task onto the front Desk (as clicking it on the Shelf does) and focuses the pane |
+| a pane of a task on a Desk | makes that task active on the front Desk (as clicking it in the strip does) and focuses the pane |
 | a pane of a planning terminal | shows that planner's Desk and focuses the pane |
-| a task in the backlog, running or stopped | moves it to the Shelf (`backlog shelve`, starting it if it's stopped), then brings it onto the Desk and focuses its agent; if the Shelf is full, the Desk's note says why |
+| a task on the Shelf, running or stopped | moves it to the Desk (the internal `tasks pick`, starting it if it's stopped), makes it active and focuses its agent; if the Desk is full, the Desk's note says why |
 | a pane in a plain window | focuses it |
 
 ## Raising one
 
 ```mermaid
 sequenceDiagram
-    participant W as daemon code (Backlog::warn, …)
+    participant W as daemon code (Tasks::warn, …)
     participant C as kanna toast
     participant T as Toasts (daemon)
     participant A as Kanna.app
@@ -64,7 +64,7 @@ sequenceDiagram
 
 ## Its first user: messages that wait
 
-In [agent messaging](agent-messaging.md), a message waits when its recipient can't take it: an agent other than claude or codex, a Claude without a messaging socket, a Codex not attached to its app-server. `Backlog::warn` logs `kanna-daemon: warning: the messages for PANE wait: WHY` when the pane's reason is new, and calls the Backlog's `on_warn` hook, which `main.rs` points at the toasts:
+In [agent messaging](agent-messaging.md), a message waits when its recipient can't take it: an agent other than claude or codex, a Claude without a messaging socket, a Codex not attached to its app-server. `Tasks::warn` logs `kanna-daemon: warning: the messages for PANE wait: WHY` when the pane's reason is new, and calls the Backlog's `on_warn` hook, which `main.rs` points at the toasts:
 
 | Field | Value |
 |---|---|

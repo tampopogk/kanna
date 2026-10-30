@@ -85,7 +85,7 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
 
 .dbody { flex: 1; min-height: 0; display: flex; }
 .files { flex: 0 0 230px; min-width: 0; overflow: auto; border-right: 1px solid var(--line); padding: 6px 0; font-size: 12px; background: var(--bg); }
-.files.hidden { display: none; }
+.files.hidden, .files.narrow { display: none; }
 .files .dir { color: var(--muted); padding: 6px 12px 2px; font: 11px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .files .f { display: flex; align-items: center; gap: 7px; padding: 3px 10px 3px 12px; cursor: pointer; white-space: nowrap; }
 .files .f:hover { background: var(--panel); }
@@ -194,7 +194,7 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
         <div class="diff" id="diff"></div>
       </div>
     </div>
-    <div class="shelf"><span class="item"><span class="dot idle"></span>Pinch zoom in web panes</span><span class="item"><span class="dot idle"></span>Tab bar follows light mode</span><span class="backlog">Backlog 4</span></div>
+    <div class="shelf"><span class="item"><span class="dot idle"></span>Pinch zoom in web panes</span><span class="item"><span class="dot idle"></span>Tab bar follows light mode</span><span class="backlog">4 on the Shelf</span></div>
   </div>
 </main>
 <script>
@@ -442,7 +442,17 @@ function render() {
   }).join("");
   el.innerHTML = head + `<div class="dbody">${list}<div class="scroller" id="scroller">${body}</div></div>`;
   bind();
+  fitList();
 }
+const TEXT_COLUMNS = 110;
+function fitList() {
+  const el = document.getElementById("diff"), files = el.querySelector(".files"), rows = el.querySelector(".rows");
+  if (!files || !rows) return;
+  const ctx = document.createElement("canvas").getContext("2d");
+  ctx.font = getComputedStyle(rows).font;
+  files.classList.toggle("narrow", el.clientWidth - 231 < TEXT_COLUMNS * ctx.measureText("M").width);
+}
+new ResizeObserver(fitList).observe(document.getElementById("diff"));
 function bind() {
   document.querySelectorAll("#mode span").forEach(s => s.onclick = () => { state.mode = s.dataset.v; render(); });
   document.querySelectorAll(".files .f").forEach(f => f.onclick = () => { state.sel = +f.dataset.i; render(); const t = document.getElementById("file" + state.sel); document.getElementById("scroller").scrollTop = t.offsetTop; });

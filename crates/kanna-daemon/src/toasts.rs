@@ -1,4 +1,4 @@
-use crate::backlog::Backlog;
+use crate::tasks::Tasks;
 use kanna_mux::json::{json, string, Map, Value};
 use kanna_mux::{CoreHandle, KmuxError, Responder, WeakCore};
 use std::cell::{Cell, RefCell};
@@ -25,7 +25,7 @@ pub struct Toast {
 
 pub struct Toasts {
     core: WeakCore,
-    backlog: RefCell<Weak<Backlog>>,
+    tasks: RefCell<Weak<Tasks>>,
     next: Cell<u64>,
     keys: RefCell<HashSet<String>>,
     held: RefCell<VecDeque<(Instant, Value)>>,
@@ -47,11 +47,11 @@ fn clean(text: &str, max: usize) -> String {
 
 impl Toasts {
     pub fn new(core: WeakCore) -> Toasts {
-        Toasts { core, backlog: RefCell::default(), next: Cell::new(0), keys: RefCell::default(), held: RefCell::default(), on_toast: RefCell::default() }
+        Toasts { core, tasks: RefCell::default(), next: Cell::new(0), keys: RefCell::default(), held: RefCell::default(), on_toast: RefCell::default() }
     }
 
-    pub fn connect_backlog(&self, backlog: &Rc<Backlog>) {
-        *self.backlog.borrow_mut() = Rc::downgrade(backlog);
+    pub fn connect_tasks(&self, tasks: &Rc<Tasks>) {
+        *self.tasks.borrow_mut() = Rc::downgrade(tasks);
     }
 
     pub fn raise(&self, toast: Toast) -> Result<Option<(String, bool)>, KmuxError> {
@@ -91,7 +91,7 @@ impl Toasts {
     }
 
     fn about(&self, pane: Option<&str>, task: Option<&str>) -> Result<(Option<String>, Option<String>, Option<String>), KmuxError> {
-        let backlog = self.backlog.borrow().upgrade();
+        let tasks = self.tasks.borrow().upgrade();
         let (mut pane_id, mut label) = (None, None);
         if let Some(reference) = pane {
             let core = self.core.upgrade().ok_or_else(|| KmuxError::new("app_gone", "the daemon is stopping"))?;
@@ -99,10 +99,10 @@ impl Toasts {
             label = Some(found.name.clone().unwrap_or_else(|| found.id.clone()));
             pane_id = Some(found.id);
         }
-        let task = match (task, &pane_id, &backlog) {
-            (Some(reference), _, Some(backlog)) => Some(backlog.about(reference)?),
+        let task = match (task, &pane_id, &tasks) {
+            (Some(reference), _, Some(tasks)) => Some(tasks.about(reference)?),
             (Some(reference), _, None) => return Err(KmuxError::new("not_found", format!("no task \"{reference}\""))),
-            (None, Some(pane), Some(backlog)) => backlog.task_of(pane).and_then(|id| backlog.about(&id).ok()),
+            (None, Some(pane), Some(tasks)) => tasks.task_of(pane).and_then(|id| tasks.about(&id).ok()),
             (None, _, _) => None,
         };
         let Some((id, name, agent)) = task else { return Ok((pane_id, None, label)) };
