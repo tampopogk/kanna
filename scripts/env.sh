@@ -254,3 +254,18 @@ kanna_borrow_swiftpm() {
     rm -rf "$here.borrowing"
   fi
 }
+
+kanna_dev_identity() {
+  security find-identity -p codesigning 2>/dev/null | sed -n 's/^ *[0-9]*) \([0-9A-F]\{40\}\) "Kanna Dev Signing".*/\1/p' | head -1
+}
+
+kanna_sign_app() {
+  sign_root="$1" sign_app="$2" sign_identity="$3"
+  shift 3
+  sign_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$sign_app/Contents/Info.plist")" || return 1
+  for sign_helper in "$sign_app"/Contents/Helpers/*; do
+    file -b "$sign_helper" | grep -q Mach-O || continue
+    codesign --force --sign "$sign_identity" --identifier "$sign_bundle_id.$(basename "$sign_helper")" "$@" "$sign_helper" || return 1
+  done
+  codesign --force --sign "$sign_identity" --identifier "$sign_bundle_id" "$@" --entitlements "$sign_root/apps/kanna/Resources/Kanna.entitlements" "$sign_app"
+}

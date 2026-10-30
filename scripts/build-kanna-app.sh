@@ -104,4 +104,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
-echo "Built $app: $app_name $version ($bundle_id), $channel channel, $(kanna_triple_arch "$triple"), instance $instance in $folder"
+identity="$(kanna_dev_identity)"
+if [[ -n "$identity" ]]; then signed="signed as Kanna Dev Signing"; else identity=-; signed="ad-hoc signed: macOS asks for privacy permissions again after each build; scripts/dev-signing-identity.sh makes an identity that keeps them"; fi
+kanna_sign_app "$repo_root" "$app" "$identity"
+echo "Built $app: $app_name $version ($bundle_id), $channel channel, $(kanna_triple_arch "$triple"), instance $instance in $folder, $signed"
