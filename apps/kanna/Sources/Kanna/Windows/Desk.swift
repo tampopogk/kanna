@@ -239,7 +239,12 @@ extension AppController {
 }
 
 extension AppController {
-    func backlogChanged(_ tasks: [JSON], on machine: String?) {
+    func made(_ pane: String) -> Int? {
+        deskMade[MachineIDs.machine(of: pane) ?? ""]?[pane]
+    }
+
+    func backlogChanged(_ tasks: [JSON], desk: [JSON], on machine: String?) {
+        deskMade[machine ?? ""] = Dictionary(desk.enumerated().compactMap { at, entry in entry["pane"]?.string.map { ($0, at) } }, uniquingKeysWith: { first, _ in first })
         let tag: JSON = machine.map { .string($0) } ?? .null
         backlogs[machine ?? ""] = tasks.map { entry in
             guard case .object(var fields) = entry else { return entry }

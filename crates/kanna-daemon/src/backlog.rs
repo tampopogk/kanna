@@ -809,7 +809,11 @@ impl Backlog {
 
     pub fn view(&self) -> Value {
         let tasks = self.entries.borrow().clone().iter().map(|e| self.described(e)).collect();
-        json!({ "tasks": Value::Array(tasks) })
+        let order = self.db.made_order().unwrap_or_default();
+        let mut running: Vec<(usize, String, String, f64)> = self.running.borrow().iter().map(|r| (order.iter().position(|id| *id == r.entry.id).unwrap_or(usize::MAX), r.entry.id.clone(), r.pane.clone(), r.entry.made_at)).collect();
+        running.sort_by_key(|r| r.0);
+        let desk = running.into_iter().map(|(_, id, pane, made_at)| json!({ "id": id, "pane": pane, "madeAt": num(made_at) })).collect();
+        json!({ "tasks": Value::Array(tasks), "desk": Value::Array(desk) })
     }
 
     fn workspace_of(&self, reference: &str) -> Option<Result<String, KmuxError>> {
@@ -3656,6 +3660,28 @@ mod tests {
         assert_eq!(found("task-"), Ok(None));
         assert_eq!(found("beef"), Ok(None));
         assert_eq!(found("t134"), Ok(None), "an old ID names nothing");
+        fs::remove_dir_all(&state).unwrap();
+    }
+
+    #[test]
+    fn the_view_lists_the_desk_s_tasks_with_when_each_was_made() {
+        let state = std::env::temp_dir().join(format!("kanna-desk-made-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(&state).unwrap();
+        let core = kanna_mux::Core::default();
+        let backlog = Backlog::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
+        let task = |id: &str, made_at: f64| Entry { id: id.into(), repo: "/r".into(), agent: "claude".into(), made_at, ..Default::default() };
+        backlog.entries.borrow_mut().push(task("task-0000aaaa", 1.0));
+        for (id, made_at) in [("task-0000dddd", 20.0), ("task-0000bbbb", 30.0), ("task-0000cccc", 20.0)] {
+            backlog.store(&task(id, made_at), Place::Shelf, None, None).unwrap();
+        }
+        for (pane, id, made_at) in [("p7", "task-0000bbbb", 30.0), ("p9", "task-0000cccc", 20.0), ("p8", "task-0000dddd", 20.0)] {
+            backlog.running.borrow_mut().push(Running { pane: pane.into(), entry: task(id, made_at), place: Place::Shelf });
+        }
+        let view = backlog.view();
+        assert_eq!(view["tasks"].as_array().map(Vec::len), Some(1), "the Shelf's tasks");
+        let desk: Vec<(&str, f64)> = view["desk"].as_array().unwrap().iter().map(|t| (t["pane"].as_str().unwrap(), t["madeAt"].as_f64().unwrap())).collect();
+        assert_eq!(desk, vec![("p8", 20.0), ("p9", 20.0), ("p7", 30.0)], "oldest first, a tie in the order they were made");
         fs::remove_dir_all(&state).unwrap();
     }
 

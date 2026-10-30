@@ -95,7 +95,6 @@ extension AppController {
             nil,
             ("Desk Task 1", #selector(pullShelf1), "goto_tab:1", .cmd("1")),
             ("Desk Task 2", #selector(pullShelf2), "goto_tab:2", .cmd("2")),
-            ("Desk Task 3", #selector(pullShelf3), "goto_tab:3", .cmd("3")),
         ])
         let windowMenu = menu("Window", [
             ("New Window", #selector(newWindow), nil, nil),
@@ -284,7 +283,6 @@ extension AppController {
         case #selector(pullWaitingTask): return waitingTask != nil
         case #selector(pullShelf1): return shelfPull(1) != nil
         case #selector(pullShelf2): return shelfPull(2) != nil
-        case #selector(pullShelf3): return shelfPull(3) != nil
         default: return true
         }
     }
@@ -436,7 +434,6 @@ extension AppController {
 
     @objc func pullShelf1() { pullShelf(1) }
     @objc func pullShelf2() { pullShelf(2) }
-    @objc func pullShelf3() { pullShelf(3) }
 
     private var waitingTask: (task: String, window: String)? {
         guard let window = keyWindow, window["desk"]?.bool == true, let window = window["id"]?.string, let tasks = controllers[window]?.shelf,
@@ -485,7 +482,7 @@ extension AppController {
             let target = action.action.goto_tab
             let place = Int(target.rawValue)
             perform = target == GHOSTTY_GOTO_TAB_PREVIOUS ? previousTab : target == GHOSTTY_GOTO_TAB_NEXT ? nextTab
-                : (1...3).contains(place) && shelfPull(place) != nil ? { [weak self] in self?.pullShelf(place) } : nil
+                : (1...2).contains(place) && shelfPull(place) != nil ? { [weak self] in self?.pullShelf(place) } : nil
         case GHOSTTY_ACTION_NEW_WINDOW: perform = newWindow
         case GHOSTTY_ACTION_CLOSE_WINDOW: perform = closeWindow
         case GHOSTTY_ACTION_GOTO_WINDOW:
