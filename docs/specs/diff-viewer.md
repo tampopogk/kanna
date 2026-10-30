@@ -80,6 +80,7 @@ sequenceDiagram
 
 - **Nothing to show:** "No changes", with the command.
 - **Zoom** (⌘= ⌘− ⌘0), 9 to 32 pt, kept with the pane, as in a code pane.
+- **Overview** down the right edge: the whole diff as a thumbnail, with its changes and find hits; the file list gives way to it first ([overview](overview.md)).
 
 ## 3. Keys and mouse
 
@@ -94,7 +95,7 @@ sequenceDiagram
 | Click a line | makes it the current line |
 | Click a file in the list | goes to it |
 | Click, ⌥-click a file's header | folds it, folds or unfolds every file |
-| ⌘F, ⌘G, ⇧⌘G, Esc | find, as in a code pane |
+| ⌘F, ⌘G, ⇧⌘G, Esc | find, as in a code pane (each column owns an `NSTextFinder`, so its matches can be marked in the overview) |
 | ⌘= ⌘− ⌘0 | font size |
 
 ## 4. CLI

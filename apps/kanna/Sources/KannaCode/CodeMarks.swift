@@ -63,32 +63,32 @@ public struct CodeMarks: Equatable, Sendable {
 }
 
 @MainActor
-final class CodeFinderClient: NSObject, @preconcurrency NSTextFinderClient {
+public final class CodeFinderClient: NSObject, @preconcurrency NSTextFinderClient {
     weak var textView: NSTextView?
 
-    init(textView: NSTextView) {
+    public init(textView: NSTextView) {
         self.textView = textView
     }
 
-    var string: String { textView?.string ?? "" }
-    var isSelectable: Bool { true }
-    var isEditable: Bool { false }
-    var allowsMultipleSelection: Bool { false }
-    var firstSelectedRange: NSRange { textView?.selectedRange() ?? NSRange(location: 0, length: 0) }
+    public var string: String { textView?.string ?? "" }
+    public var isSelectable: Bool { true }
+    public var isEditable: Bool { false }
+    public var allowsMultipleSelection: Bool { false }
+    public var firstSelectedRange: NSRange { textView?.selectedRange() ?? NSRange(location: 0, length: 0) }
 
-    var selectedRanges: [NSValue] {
+    public var selectedRanges: [NSValue] {
         get { textView?.selectedRanges ?? [] }
         set { textView?.selectedRanges = newValue }
     }
 
-    func scrollRangeToVisible(_ range: NSRange) { textView?.scrollRangeToVisible(range) }
+    public func scrollRangeToVisible(_ range: NSRange) { textView?.scrollRangeToVisible(range) }
 
-    func contentView(at index: Int, effectiveCharacterRange outRange: NSRangePointer) -> NSView {
+    public func contentView(at index: Int, effectiveCharacterRange outRange: NSRangePointer) -> NSView {
         outRange.pointee = NSRange(location: 0, length: (string as NSString).length)
         return textView ?? NSView()
     }
 
-    func rects(forCharacterRange range: NSRange) -> [NSValue]? {
+    public func rects(forCharacterRange range: NSRange) -> [NSValue]? {
         guard let textView, let manager = textView.layoutManager, let container = textView.textContainer else { return nil }
         let origin = textView.textContainerOrigin
         var rects: [NSValue] = []
@@ -99,14 +99,14 @@ final class CodeFinderClient: NSObject, @preconcurrency NSTextFinderClient {
         return rects
     }
 
-    var visibleCharacterRanges: [NSValue] {
+    public var visibleCharacterRanges: [NSValue] {
         guard let textView, let manager = textView.layoutManager, let container = textView.textContainer else { return [] }
         let origin = textView.textContainerOrigin
         let glyphs = manager.glyphRange(forBoundingRect: textView.visibleRect.offsetBy(dx: -origin.x, dy: -origin.y), in: container)
         return [NSValue(range: manager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil))]
     }
 
-    func drawCharacters(in range: NSRange, forContentView view: NSView) {
+    public func drawCharacters(in range: NSRange, forContentView view: NSView) {
         guard let textView, let manager = textView.layoutManager else { return }
         manager.drawGlyphs(forGlyphRange: manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil), at: textView.textContainerOrigin)
     }

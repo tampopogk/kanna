@@ -1,6 +1,7 @@
 import AppKit
 import GhosttyKit
 import KannaDocs
+import KannaOverview
 import KannaPerf
 
 extension AppController {
@@ -252,7 +253,9 @@ extension AppController {
             if case .array(let pick)? = args["select"], pick.count == 3, let line = pick[0].number, let column = pick[1].number, let length = pick[2].number {
                 code.select(line: Int(line), column: Int(column), length: Int(length))
             }
+            let overview = self.overview(code.overview, wanted: code.overviewWanted, args: args)
             var out: [String: JSON] = code.debugNumbers.mapValues { .number($0) }
+            out["overview"] = overview
             out["text"] = .string(code.file.text)
             out["path"] = .string(code.path)
             out["language"] = code.language.map { .string($0) } ?? .null
@@ -274,6 +277,7 @@ extension AppController {
             if let step = args["zoom"]?.number { diff.zoom(by: Int(step)) }
             if let path = args["fold"]?.string { diff.toggle(file: path, all: false) }
             if let path = args["show"]?.string { diff.showFolded(path) }
+            let overview = self.overview(diff.overview, wanted: diff.overviewWanted, args: args)
             let rows: [JSON] = diff.debugRows.map { row in
                 .object(row.mapValues { value in
                     if let text = value as? String { return .string(text) }
@@ -290,7 +294,7 @@ extension AppController {
                     "serial": .number(Double(diff.serial)), "fresh": .array(diff.fresh.sorted().map { .number(Double($0)) }), "zoom": .number(Double(diff.zoom)),
                     "highlighted": .number(Double(diff.highlightedFiles)), "list": .bool(diff.listShown), "width": .number(diff.bounds.width),
                     "selected": diff.selectedFile.map { .string($0) } ?? .null, "sticky": diff.stickyFile.map { .string($0) } ?? .null,
-                    "columns": .array(diff.debugColumns.map { .object($0.mapValues { .number($0) }) }),
+                    "columns": .array(diff.debugColumns.map { .object($0.mapValues { .number($0) }) }), "overview": overview,
                     "colors": .array((args["colors"]?.number).map { diff.colors(atRow: Int($0)).map { .string($0) } } ?? [])]
         }
         commands["debug.ios"] = { [weak self] args in
@@ -303,6 +307,31 @@ extension AppController {
             if args["home"]?.bool == true { screen.pressHome() }
             return ["width": .number(screen.pixelSize.width), "height": .number(screen.pixelSize.height)]
         }
+    }
+
+    private func overview(_ view: OverviewView, wanted: @autoclosure () -> Bool, args: JSON) -> JSON {
+        if let on = args["overview_enabled"]?.bool { setOverview(on) }
+        if let hover = args["overview_hover"]?.bool { view.hover(hover) }
+        if let y = args["overview_click"]?.number {
+            view.press(at: NSPoint(x: 20, y: y))
+            view.release()
+        }
+        if let y = args["overview_marks_click"]?.number {
+            view.press(at: NSPoint(x: OverviewMetrics.width - 4, y: y))
+            view.release()
+        }
+        if case .array(let drag)? = args["overview_drag"], drag.count == 2, let from = drag[0].number, let to = drag[1].number {
+            view.press(at: NSPoint(x: 20, y: from))
+            view.move(to: NSPoint(x: 20, y: to))
+            if args["overview_hold"]?.bool != true { view.release() }
+        }
+        view.superview?.layoutSubtreeIfNeeded()
+        var out: [String: JSON] = view.debugState.mapValues { .number($0) }
+        out["shown"] = .bool(!view.isHidden)
+        out["wanted"] = .bool(wanted())
+        out["enabled"] = .bool(OverviewSetting.enabled)
+        out["marks_by_kind"] = .object(view.debugMarks.mapValues { .number(Double($0)) })
+        return .object(out)
     }
 
     private static func boxParts(_ parts: [String: NSRect]?) -> JSON {

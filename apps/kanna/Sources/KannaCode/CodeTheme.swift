@@ -8,6 +8,7 @@ public enum CodeTheme {
     public static let currentLine = color(dark: 0x1b1e24, light: 0xf4f5f7)
     public static let flash = color(dark: 0x2a3a5c, light: 0xd6e2fa)
     public static let changed = color(dark: 0x5fcf93, light: 0x1f9d5c)
+    public static let hit = color(dark: 0xe2c541, light: 0xc9a400)
     public static let guide = color(dark: 0x2a2f37, light: 0xe4e7eb)
     public static let line = color(dark: 0x2c313a, light: 0xd8dce2)
     public static let tint = color(dark: 0x1e2433, light: 0xeef3fc)
