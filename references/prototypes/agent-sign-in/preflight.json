@@ -1,0 +1,38 @@
+{
+  "checked_at": "2026-10-24T12:37:00.814678+00:00",
+  "status": "awaiting-user-sign-in",
+  "live_inference_verified": false,
+  "host": "jeremyhale@172.16.0.105",
+  "machines": [
+    {
+      "machine": "agent-sign-in-a",
+      "virtualization": "kvm",
+      "architecture": "x86_64",
+      "claude_version": "2.1.310 (Claude Code)",
+      "clock_synchronized": true,
+      "synthetic_transport_result": {
+        "provider": "codex",
+        "version": "codex-cli 0.163.0",
+        "login_ok": false,
+        "inference_ok": false,
+        "refresh_credential_present": false,
+        "login_error_kind": "agent_identity_jwt"
+      }
+    },
+    {
+      "machine": "agent-sign-in-b",
+      "virtualization": "kvm",
+      "architecture": "x86_64",
+      "claude_version": "2.1.310 (Claude Code)",
+      "clock_synchronized": true,
+      "synthetic_transport_result": {
+        "provider": "codex",
+        "version": "codex-cli 0.163.0",
+        "login_ok": false,
+        "inference_ok": false,
+        "refresh_credential_present": false,
+        "login_error_kind": "agent_identity_jwt"
+      }
+    }
+  ]
+}

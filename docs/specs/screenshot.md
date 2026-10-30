@@ -20,7 +20,7 @@ Both pictures were taken by the command, of a window in the background (`--bg`).
 
 - **A pane** is that pane alone, cut from its window's capture by its frame. It must be showing, else `not_shown` ("term-4 is in tab-2, which isn't showing"): the command never changes what's on screen.
 - **A window** (`--window`) is all of it: title bar, tab bar, every pane showing and the gaps between them.
-- **No target:** the window of the terminal it's run in (`$KANNA_TERMINAL`), else the key window.
+- **No target:** the window of the terminal it's run in (`$KANNA_TERMINAL`), if it's showing (else `not_shown`). Run outside a Kanna terminal, it's refused: `say PANE or --window WINDOW`; it never shoots the key window ([the CLI acts on its caller](cli-caller.md)).
 - **`--out FILE`** (`-o`) is made absolute against the folder kanna runs in. An existing file is refused (`exists`) unless `--force`.
 - **No `--out`:** a new file in the caller's `$TMPDIR`, named for the pane or window and the time, `kanna-w1-20261012-142301.png`, with `-2`, `-3` … if taken.
 - **Readable only by you** (mode 0600), since a terminal can show anything.
@@ -34,7 +34,7 @@ Both pictures were taken by the command, of a window in the background (`--bg`).
 
 | Command | Does |
 |---|---|
-| `kanna screenshot` | The caller's window (or the key window) to `$TMPDIR`; prints the path |
+| `kanna screenshot` | The caller's window to `$TMPDIR`; prints the path (refused outside a Kanna terminal) |
 | `kanna screenshot PANE` | That pane alone |
 | `kanna screenshot --window WINDOW` | That whole window |
 | `-o FILE`, `--out FILE` | Write to FILE; with `--force`, replace it |
@@ -63,4 +63,4 @@ sequenceDiagram
 - **Capture is `CGWindowListCreateImage`**, looked up at run time: obsoleted in the macOS 15 SDK but still exported, and an app may capture its own windows without the screen-recording permission ScreenCaptureKit needs. It copies what the window server has.
 - **Hidden terminals are drawn first.** A window behind others (every `--bg` window, or one you've covered) is occluded, so its terminals are hidden from Ghostty, which stops drawing them: one resized while hidden (by a split) holds a frame never drawn, and comes out as blocks of colour. Before capturing, each such terminal is shown to Ghostty until its layer has a new frame (at most 1 s), and hidden again after.
 - **`debug.snapshot` shares the capture** (`Snapshot.swift`), for the tests: every pane of a window as its own PNG.
-- **Checked by** `crates/kanna/tests/cli.rs` (the request each form sends, usage errors, `capabilities`), the kmux conformance test (a Kanna-only command), and e2e `screenshot`: with the app started without `KANNA_DEBUG` or `KANNA_IGNORE_OCCLUSION`, a pane and a window shot and their PNG sizes, a legible terminal, `exists` and `--force`, a hidden pane, and the caller's window.
+- **Checked by** `crates/kanna/tests/cli.rs` (the request each form sends, usage errors, `capabilities`), the kmux conformance test (a Kanna-only command), and e2e `screenshot`: with the app started without `KANNA_DEBUG` or `KANNA_IGNORE_OCCLUSION`, a pane and a window shot and their PNG sizes, a legible terminal, `exists` and `--force`, a hidden pane, the caller's window while another window is in front, and the refusals with no target outside Kanna and from an unknown terminal.

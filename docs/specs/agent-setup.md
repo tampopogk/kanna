@@ -1,10 +1,10 @@
 # Agent Setup
 
-**Status:** built; agents are told in their first message, not a hook (2026-10-14) · **Tests:** `crates/kanna-daemon/src/agents.rs` and `backlog.rs` (unit), `scripts/e2e-kanna.sh` `desk_backlog`, `real_agent_tasks`, `real_agent_planners` · **Part of:** [tasks](tasks.md)
+**Status:** built; agents are told in their first message, not a hook (2026-10-14) · **Tests:** `crates/kanna-daemon/src/agents.rs` and `backlog.rs` (unit), `scripts/e2e-kanna.sh` `desk_shelf`, `real_agent_tasks`, `real_agent_planners` · **Part of:** [tasks](tasks.md)
 
-Kanna's skills teach an agent how to work in Kanna: name its branch, add tasks to the backlog, plan, answer review comments. They live in this repo (`.agents/kanna-skills`), so today only agents working on Kanna itself have them. **Agent setup** puts them where Claude and Codex find them in any repo, once you agree.
+Kanna's skills teach an agent how to work in Kanna: name its branch, add tasks to the Shelf, plan, answer review comments. They live in this repo (`.agents/kanna-skills`), so today only agents working on Kanna itself have them. **Agent setup** puts them where Claude and Codex find them in any repo, once you agree.
 
-**Done when** the agents Kanna starts in another repo use their skills, with Claude and with Codex: the planner kanna-planning, a task's agent kanna-tasks (names its branch, adds follow-up work to the backlog), the quiz's kanna-quiz.
+**Done when** the agents Kanna starts in another repo use their skills, with Claude and with Codex: the planner kanna-planning, a task's agent kanna-tasks (names its branch, adds follow-up work to the Shelf), the quiz's kanna-quiz.
 
 ## Contents
 
@@ -22,12 +22,13 @@ flowchart LR
     APP["Kanna.app/Contents/Resources/kanna-skills"] -->|"you agree; again for each new Kanna"| D["daemon"]
     D -->|"copy"| A["~/.agents/skills/kanna-*<br/>(Codex)"]
     D -->|"link"| C["~/.claude/skills/kanna-*<br/>(Claude)"]
-    D -->|"add Kanna's socket"| S["~/.claude/settings.json<br/>sandbox.network.allowUnixSockets"]
+    D -->|"add Kanna's socket, deny its keys"| S["~/.claude/settings.json<br/>sandbox.network.allowUnixSockets<br/>sandbox.filesystem.denyRead, permissions.deny"]
     D -->|"copy of each file as installed"| R["~/.kanna-v4/agents/"]
 ```
 
 - **The skills:** `kanna-tasks`, `kanna-planning`, `kanna-new-project`, `kanna-markup`, `kanna-explain`, `kanna-quiz`, copied to `~/.agents/skills/` and linked from `~/.claude/skills/` (`../../.agents/skills/NAME`), the layout `install.sh --global` uses.
 - **The socket entry** lets an agent in Claude's sandbox run `kanna`. That lets it control Kanna's terminals, which run outside the sandbox, as the kmux socket entry in a repo's own settings did; the prompt says so. The rest of `settings.json` stays as it was, keys in their order and its permissions kept. A `settings.json` Kanna had to make is deleted again by remove.
+- **The key deny entries** keep agents from reading the daemons' signing keys ([machine identity](machine-identity.md#4-risks)): `//SUPPORT/kanna*/device.key` in `sandbox.filesystem.denyRead`, and `Read(//SUPPORT/kanna*/device.key)` in `permissions.deny`, where SUPPORT is the application support folder ([instances](instances.md#1-the-folders)); a daemon whose state folder is elsewhere (`KANNA_STATE_DIR`) adds its own key too. Like the socket, each entry is recorded, kept on each launch and taken out by remove, leaving yours.
 - **No hooks.** Kanna tells the agents it starts that they're in Kanna in their first message ([2](#2-how-an-agent-knows-its-in-kanna)). Setup and update remove the `SessionStart` hooks earlier Kannas added to `~/.claude/settings.json` and `~/.codex/hooks.json` (their command ends `# kanna agents setup`), leaving yours.
 - **Nothing else.**
 
@@ -109,4 +110,4 @@ An agent picks a skill by its description, from what's in its context, so it has
 - **The planning terminal asks** by running `kanna agents setup --ask; kanna agents update --ask` before it asks which agent plans (`planner.sh`), with the `kanna` beside the daemon (Kanna.app carries it in `Contents/Helpers`). Each asks at most once per launch, in the first planning terminal that opens, and says nothing when there's nothing to ask.
 - **The merge editor runs in that terminal:** `kanna` makes a scratch git repo with the three versions as a real merge conflict and runs `git mergetool` on it, so any tool git knows works; what you save is copied over your file.
 - **The skills come from the app bundle,** copied there from `.agents/kanna-skills` by `scripts/build-kanna-app.sh`.
-- **For tests only:** `KANNA_AGENTS_HOME` stands in for your home folder and `KANNA_AGENT_SKILLS` for the bundle's skills; unset, Kanna uses yours. The end-to-end tests (`app_starts_daemon`, `desk_backlog`) set both, so they never touch your home; the app passes `KANNA_AGENTS_HOME` on to the daemon it starts.
+- **For tests only:** `KANNA_AGENTS_HOME` stands in for your home folder and `KANNA_AGENT_SKILLS` for the bundle's skills; unset, Kanna uses yours. The end-to-end tests (`app_starts_daemon`, `desk_shelf`) set both, so they never touch your home; the app passes `KANNA_AGENTS_HOME` on to the daemon it starts.
