@@ -17,20 +17,20 @@ Signposts and the hang detector are in every build (they cost a few nanoseconds 
 
 ## 1. What is measured
 
-Each interval is an `OSSignposter` interval (subsystem `dev.kanna.app`, a category per area) and a sample in `debug.perf`, under the name in the table. A label (a message type, a command's name) is part of the name in `debug.perf` and the signpost's message in Instruments. The names keep the old words ([internal names](desk-view.md#5-internal-names)): `shelve` is a move to the Desk, `pull` making a task active, `ShelfPage` the Desk view's right side.
+Each interval is an `OSSignposter` interval (subsystem `dev.kanna.app`, a category per area) and a sample in `debug.perf`, under the name in the table. A label (a message type, a command's name) is part of the name in `debug.perf` and the signpost's message in Instruments.
 
 | Name in `debug.perf` | Category | From → to |
 |---|---|---|
-| `click.shelve.wait` | click | a click on a Shelf task (the mouse event's time) → the app handling it |
-| `click.shelve.sent` | click | the click → its `backlog shelve` request written to the daemon's socket |
-| `click.shelve.shown` | click | the click → the Desk's tasks drawn with the task among them and off the Shelf |
-| `click.shelve.failed` | click | the click → the daemon refusing it |
-| `click.pull.wait`, `click.pull.shown` | click | a click on a Desk task's card (strip or Desk view) → handled; → the Desk drawn showing it active |
-| `message.TYPE` | daemon | handling one daemon message: `layout`, `backlog`, `status`, `diff`, `output`, `reply`, … |
+| `click.pick.wait` | click | a click on a Shelf task (the mouse event's time) → the app handling it |
+| `click.pick.sent` | click | the click → its `tasks pick` request written to the daemon's socket |
+| `click.pick.shown` | click | the click → the Desk's tasks drawn with the task among them and off the Shelf |
+| `click.pick.failed` | click | the click → the daemon refusing it |
+| `click.activate.wait`, `click.activate.shown` | click | a click on a Desk task's card (strip or Desk view) → handled; → the Desk drawn showing it active |
+| `message.TYPE` | daemon | handling one daemon message: `layout`, `tasks`, `status`, `diff`, `output`, `reply`, … |
 | `command.NAME` | commands | one app command (`Commands.handle`), from the CLI or the daemon, e.g. `command.debug.click` |
 | `refresh`, `render` | render | `AppController.refresh` and its `render` of every window |
 | `WindowController.render` | render | one window's render |
-| `ShelfPage.lay` | shelf | rebuilding the Desk view's tasks and Shelf; its detail is the row count (`42 rows`) |
+| `DeskView.lay` | desk | rebuilding the Desk view's tasks and Shelf; its detail is the row count (`42 rows`) |
 | `markdown.check`, `markdown.load` | markdown | a markdown pane's comments check (every 0.5s) and drawing the text the daemon sent ([file panes](file-panes.md)) |
 | `hang` (event) | hang | a main-thread hang, with what was open |
 
@@ -43,12 +43,12 @@ sequenceDiagram
     participant W as write queue
     participant D as daemon
     U->>M: mouse event (timestamp = start)
-    Note over M: click.shelve.wait
-    M->>W: backlog shelve
-    W->>D: written (click.shelve.sent)
-    D-->>M: layout, backlog messages (message.layout, message.backlog)
-    M->>M: refresh → render → ShelfPage.lay
-    Note over M: next beforeWaiting: click.shelve.shown
+    Note over M: click.pick.wait
+    M->>W: tasks pick
+    W->>D: written (click.pick.sent)
+    D-->>M: layout, tasks messages (message.layout, message.tasks)
+    M->>M: refresh → render → DeskView.lay
+    Note over M: next beforeWaiting: click.pick.shown
 ```
 
 ## 2. Hangs
@@ -61,10 +61,10 @@ The main thread **hangs** when one stretch of work between two run-loop transiti
 - Each hang is logged to `os_log` (category `hang`, an error), to the app's stderr (`app.log` in e2e runs), and is kept in `debug.perf`'s last 20 hangs.
 
 ```
-kanna: the main thread hung 312ms; open: message.layout, refresh, render; ran: ShelfPage.lay (40 rows) 290ms
+kanna: the main thread hung 312ms; open: message.layout, refresh, render; ran: DeskView.lay (40 rows) 290ms
 ```
 
-**The daemon** logs each request (from a client or the app) whose handling on its main loop takes over 50ms, to `daemon.log`: `kanna-daemon: backlog shelve from the app took 72ms`. Work the request hands to other threads isn't counted.
+**The daemon** logs each request (from a client or the app) whose handling on its main loop takes over 50ms, to `daemon.log`: `kanna-daemon: tasks pick from the app took 72ms`. Work the request hands to other threads isn't counted.
 
 ## 3. Reading it
 
@@ -76,7 +76,7 @@ kanna raw '{"cmd":"debug.perf"}'
 kanna raw '{"cmd":"debug.hang","args":{"ms":300}}'      # a hang on purpose
 ```
 
-**Instruments:** profile Kanna.app with the *os_signpost* instrument (or *Logging* with signposts); intervals show as lanes per category under `dev.kanna.app`, so a click lines up against the messages, renders and `ShelfPage.lay` it waited for. *Hangs* and *Time Profiler* show the same window's stacks.
+**Instruments:** profile Kanna.app with the *os_signpost* instrument (or *Logging* with signposts); intervals show as lanes per category under `dev.kanna.app`, so a click lines up against the messages, renders and `DeskView.lay` it waited for. *Hangs* and *Time Profiler* show the same window's stacks.
 
 **Log stream:**
 
@@ -88,15 +88,15 @@ log show --last 10m --signpost --predicate 'subsystem == "dev.kanna.app" AND cat
 ## 4. How it's built
 
 - **`KannaPerf`** (Swift module, used by the app and `KannaMarkdown`): `Perf.begin/end/mark/measure` make signpost intervals and record samples in a `Book` behind a `Mutex`: one ring of 200 samples per name, the open intervals, the last 20 hangs. Nothing is computed until `debug.perf` asks. `HangWatch` holds the observers and the watchdog.
-- **Clicks** (`Clicks.swift`): a Shelf click remembers the Desk's tasks at that moment; it's shown at the first `ShelfPage.lay` where the task is off the Shelf and a new task is on the Desk (a Desk card's ID is its agent's pane, not the task's). Making a task active is shown when a window renders with that task docked.
+- **Clicks** (`Clicks.swift`): a Shelf click remembers the Desk's tasks at that moment; it's shown at the first `DeskView.lay` where the task is off the Shelf and a new task is on the Desk (a Desk card's ID is its agent's pane, not the task's). Making a task active is shown when a window renders with that task docked.
 - **Sent** is a callback the daemon connection's write queue runs after writing the request.
 - **The daemon** times each request's handling in its main loop (`timed` in `main.rs`).
 
 ## 5. Tested
 
 - `KannaPerfTests`: percentiles and the ring, a hang naming what was open and what ran, a hang the watchdog missed.
-- First reading (2026-10-21, dev build, 40 Shelf tasks with 82k characters of first messages, one `debug.click` on a Shelf task): `click.shelve.sent` 0.2ms, `click.shelve.shown` 141ms; in between `message.layout` 14ms, `message.backlog` 14ms and `message.status` 40ms, each a full `refresh` that ran `ShelfPage.lay` (40 rows, 12–33ms) again; no hang over 100ms.
-- e2e `perf_intervals`: a Shelf click records `click.shelve.wait`, `.sent` and `.shown` with the messages, renders and `ShelfPage.lay`; a Desk card click records `click.pull.shown`; `debug.hang` 300ms shows in `debug.perf` and in the app's log with `command.debug.hang` open.
+- First reading (2026-10-21, dev build, 40 Shelf tasks with 82k characters of first messages, one `debug.click` on a Shelf task): `click.pick.sent` 0.2ms, `click.pick.shown` 141ms; in between `message.layout` 14ms, `message.tasks` 14ms and `message.status` 40ms, each a full `refresh` that ran `DeskView.lay` (40 rows, 12–33ms) again; no hang over 100ms.
+- e2e `perf_intervals`: a Shelf click records `click.pick.wait`, `.sent` and `.shown` with the messages, renders and `DeskView.lay`; a Desk card click records `click.activate.shown`; `debug.hang` 300ms shows in `debug.perf` and in the app's log with `command.debug.hang` open.
 
 ## 6. Glossary
 
