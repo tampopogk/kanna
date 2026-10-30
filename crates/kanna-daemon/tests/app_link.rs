@@ -158,15 +158,18 @@ fn exited_comes_after_the_last_output() {
         let pane = instance.open(&name, Some("sleep 0.3; head -c 2000000 /dev/zero | tr '\\0' x; printf END; (exit 7)"));
         let mut app = instance.app();
         app.tell("attach", json!({"terminal": pane}));
-        let mut seen = Vec::new();
+        let mut replica: Option<Terminal> = None;
         let exited = app.until("the exit", |m| {
-            if is(m, "output", &pane) {
-                seen.extend(data(m));
+            if is(m, "snapshot", &pane) {
+                replica = Some(Terminal::from_snapshot(&data(m)).unwrap());
+            } else if is(m, "output", &pane) {
+                replica.as_mut().expect("output before the snapshot").write(&data(m));
             }
             is(m, "exited", &pane)
         });
         assert_eq!(exited["args"]["code"], 7, "{exited}");
-        assert!(seen.ends_with(b"END"), "round {round}: exited came before the last output ({} bytes, ending {:?})", seen.len(), String::from_utf8_lossy(&seen[seen.len().saturating_sub(20)..]));
+        let screen = replica.expect("no snapshot").text(Lines::Screen);
+        assert!(screen.ends_with("END"), "round {round}: exited came before the last output (the screen ends {:?})", &screen[screen.len().saturating_sub(20)..]);
         drop(app);
         instance.call("close", json!({"pane": pane}));
     }
@@ -314,4 +317,22 @@ fn every_debug_command_goes_to_the_app_with_pane_names_resolved() {
     assert_eq!(capabilities["mux"], "kmux");
     assert_eq!(capabilities["instance"], "default");
     assert!(capabilities["commands"].as_array().unwrap().contains(&json!("read")));
+}
+
+#[test]
+fn an_app_of_another_protocol_is_told_so_and_the_daemon_keeps_running() {
+    let instance = Instance::start();
+    let mut other = App::raw(&instance.socket());
+    other.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "protocols": [7, 9]}}));
+    let reply = other.next().unwrap();
+    assert_eq!(reply["error"]["code"], "other_protocol", "{reply}");
+    assert_eq!(reply["mine"], json!([1, 1]), "{reply}");
+    assert!(reply["version"].is_string() && reply["commit"].is_string(), "{reply}");
+    assert_eq!(instance.call("capabilities", json!({}))["ok"], true);
+
+    let mut app = App::raw(&instance.socket());
+    app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 2, "protocols": [1, 4]}}));
+    let reply = app.next().unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(reply["daemon"]["protocols"], json!([1, 1]), "{reply}");
 }

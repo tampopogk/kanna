@@ -59,13 +59,13 @@ sequenceDiagram
 ## 2. Rules
 
 - **The planning agent offers, the quiz agent asks.** The planning agent checks what's merged into main in the last day when its session starts, and offers a round once per session if anything has. It never asks the questions itself.
-- **The Quiz window** is laid out like a Desk: the quiz agent docked on the left, running in the repo's own folder on main, and what it opens (`kanna comment`, `kanna open md`) as tabs on the right, wherever you are. **The docked agent isn't a task,** like the [planning terminal](planning-agent.md#2-what-it-is): it's not on the Shelf or in `kanna task list`, takes none of the project's three places, and can't be parked, pulled, deferred or moved; nothing docks in its place. It's the window's **lead**, as the planning terminal is a Desk's ([how it's built](planning-agent.md#5-how-its-built)), and it closes with its window. There's no worktree, since a quiz changes nothing. **One per repo:** `kanna quiz open` brings the repo's Quiz window forward when one is open, instead of opening another.
+- **The Quiz window** is laid out like a Desk: the quiz agent docked on the left, running in the repo's own folder on main, and what it opens (`kanna comment`, `kanna open md`) as tabs on the right, wherever you are. **The docked agent isn't a task,** like the [planning terminal](planning-agent.md#2-what-it-is): it's not on the Desk or the Shelf or in `kanna task list`, takes none of the Desk's three places, and can't be made active, shelved or moved; nothing docks in its place. It's the window's **lead**, as the planning terminal is a Desk's ([how it's built](planning-agent.md#5-how-its-built)), and it closes with its window. There's no worktree, since a quiz changes nothing. **One per repo:** `kanna quiz open` brings the repo's Quiz window forward when one is open, instead of opening another.
 - **Written when you start,** by the quiz agent, from what's on main: no background agent, nothing runs between quizzes. It asks the first question as soon as it's written, and writes each next one while you read the explanation.
 - **A round is five questions, one at a time,** about two minutes once started. The quiz agent asks each with its multiple-choice tool: Claude's question tool, or a numbered list for an agent without one.
 - **Every answer gets a short explanation** and an offer to open the code. **A miss opens it straight away:** `kanna comment FILE:LINE "why"`, so the code shows beside the agent with the explanation on its lines ([code tour](code-tour.md)). A comment on the same file reuses that tab; the tabs stay until the round ends, so you can still read one when the next question comes.
 - **Pausing is leaving.** Close the window or go back to your Desk.
 - **Every round and answer is kept** in Kanna's database ([quiz results](database.md#quiz-results)): the quiz agent records them with `kanna quiz start` and `kanna quiz answer`, and reads them back with `kanna quiz history`, so a round covers what's new since the last one and misses come back in a later round.
-- **Nothing interrupts a round.** A task that needs you shows on the Shelf in your Desk window, as always; the quiz doesn't stop for it.
+- **Nothing interrupts a round.** A task that needs you shows on the Desk in your Desk window, as always; the quiz doesn't stop for it.
 - **No score to protect.** No streaks, no totals over time: the end of a round says what you knew of *these* changes ("You knew 4 of 5 about today's changes"). The kept answers are for the agent picking questions, never shown to you as a score.
 - **Light and dark** follow the system, as every pane does.
 
@@ -77,7 +77,7 @@ sequenceDiagram
 |---|---|---|
 | **Architecture** | Which process owns a pane's terminal: the app, the daemon, or the CLI? | the code's structure (crates, modules, who calls whom) and the specs' diagrams |
 | **Pick the drawing** | Which drawing shows how a terminal's bytes reach Kanna.app? | the same as architecture, drawn three ways, two of them wrong |
-| **Behaviour** | When you Move to Backlog, what happens to the agent? | the code and commit messages |
+| **Behaviour** | When you Move to Shelf, what happens to the agent? | the code and commit messages |
 | **Where it lives** | Which file decides a pane's status? | the code |
 | **Why** | Why does an instance have its own daemon? | the specs and docs |
 | **Spot the bug** | Which of these lines from today's merge has a bug put in? | a few lines from recently merged code, one changed |
@@ -136,10 +136,10 @@ flowchart LR
 
 - **A quiz pane** (its own pane type, with buttons): the quiz is a conversation, and the agent can answer your follow-up questions; a pane can't.
 - **An offer on the Desk page:** the planning agent offers it in its chat.
-- **A quiz task:** a quiz changes nothing, so it needs no worktree, branch or place on the Shelf.
-- **The quiz agent as the window's only tab pane,** with what it opens split beside it (before): the code got squeezed into a split, and the window didn't look like the rest of Kanna. Docking it as the planning terminal is docked, outside the task rules, keeps it off the Shelf and out of the project's three.
-- **A quiz-only mark on the dock** (a docked pane flagged as not a task, or a Quiz window kind): every rule that keeps a pane out of the task rules (the Shelf, the list, the three, park, pull, move) would need a second check for it. The planning terminal already was a window's agent outside those rules, so it became the window's lead, for any window: a Desk's is its planning terminal, a plain window's is its quiz agent.
-- **Stepping aside when a task needs you:** the Shelf already shows it; the quiz never interrupts.
+- **A quiz task:** a quiz changes nothing, so it needs no worktree, branch or place on the Desk.
+- **The quiz agent as the window's only tab pane,** with what it opens split beside it (before): the code got squeezed into a split, and the window didn't look like the rest of Kanna. Docking it as the planning terminal is docked, outside the task rules, keeps it off the Desk and out of its three.
+- **A quiz-only mark on the dock** (a docked pane flagged as not a task, or a Quiz window kind): every rule that keeps a pane out of the task rules (the Desk, the Shelf, the list, the three, ⌘., making active, moving) would need a second check for it. The planning terminal already was a window's agent outside those rules, so it became the window's lead, for any window: a Desk's is its planning terminal, a plain window's is its quiz agent.
+- **Stepping aside when a task needs you:** the Desk already shows it; the quiz never interrupts.
 - **Preparing questions in the background after main moves:** it costs agent runs for quizzes you never take, and needs something watching every repo.
 - **A question writer in the daemon,** writing rounds ahead for `kanna quiz` to hand out: the quiz agent writes better questions from what it just read, and answers follow questions. `kanna quiz` only keeps rounds and answers, which the agent writes; it was rejected at first, when nothing read them back, and came back once misses had to return ([quiz results](database.md#quiz-results)).
 

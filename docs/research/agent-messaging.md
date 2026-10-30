@@ -79,7 +79,7 @@ sequenceDiagram
 
 ## 4. The end of a turn
 
-Delivery (B), the [backlog runners](../specs/backlog-runners.md) and agent status all hang on one signal: the turn has ended, and did it end idle or asking you? Kanna has two ways to know today, and hooks would be a third.
+Delivery (B), the [Shelf runners](../specs/shelf-runners.md) and agent status all hang on one signal: the turn has ended, and did it end idle or asking you? Kanna has two ways to know today, and hooks would be a third.
 
 | Signal | claude | codex | copilot, opencode, antigravity | Tells needs you from idle | Setup | Delay |
 |---|---|---|---|---|---|---|

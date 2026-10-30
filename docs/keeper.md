@@ -78,6 +78,7 @@ One connection per daemon on `$KANNA_STATE_DIR/keeper.sock`. Each message is one
 | `{"op":"adopt"}` | one `{"req":..,"pty":{"id","pid","cmd","cwd","exit"?},"fds":1}` + master per pty, then `{"ok":true,"ptys":N}` | `exit` is present for an exited pty not yet acknowledged |
 | `{"op":"close","id":ID}` | `{"ok":true}` | ends the process group ([6](#6-exits-and-close)); the id is free at once |
 | `{"op":"ack","id":ID}` | `{"ok":true}` | forgets an exited pty; an error if it's still running |
+| `{"op":"stop"}` | `{"ok":true}` | closes every pty as `close` does, unlinks the socket, refuses spawns, and exits once every closed process is reaped (at most 5 s) ([stopping an instance](specs/instance-stop.md)) |
 | `{"op":"upgrade","binary":PATH}` | `{"ok":true,"pid":P,"build":B,"from":OLD}`, sent by the new code | the keeper re-execs itself as `PATH` ([upgrading](specs/keeper-upgrade.md)); an error leaves the old code running |
 | — (event) | `{"exited":ID,"pid":P,"code":N}` or `{..,"signal":S}` | sent to every connection when a process exits, and on connect for every exit not yet acknowledged |
 
@@ -149,8 +150,8 @@ stateDiagram-v2
 | **Client gone** | Nothing happens: the processes and the keeper's copies stay. |
 | **Idle exit** | After 60 s with no live process, no client and nothing being closed. Unacknowledged exits don't keep it. It first unlinks the socket, so no one else can connect, then accepts whoever connected meanwhile; if anyone did, it listens again and carries on. |
 | **Descriptors** | At start it raises its soft `RLIMIT_NOFILE` to the hard limit (10240 if the hard limit is unlimited), since a Finder-launched app gets 256; spawned processes get the original limit back. |
-| **Signals** | It unblocks SIGCHLD, SIGTERM and SIGINT at start: the daemon that starts it blocks the signals it waits for, and children inherit that. |
-| **SIGTERM / SIGINT** | It exits without signalling anyone. Its copies close; a pty with no other copy hangs up, and its processes get SIGHUP from the kernel. |
+| **Signals** | It unblocks SIGCHLD, SIGTERM, SIGINT and SIGALRM at start: the daemon that starts it blocks the signals it waits for, and children inherit that. |
+| **SIGTERM / SIGINT** | It exits without signalling anyone. Its copies close; a pty with no other copy hangs up, and its processes get SIGHUP from the kernel. The signal also sets `alarm(5)`: a keeper whose loop is stuck still ends 5 s later, on SIGALRM. |
 
 ## 8. The Client (for the Daemon)
 

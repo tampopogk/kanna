@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Markdown Overview Mockup</title>
+<style>
+:root {
+  --page: #111214; --ctl: #2a2c31; --ctl-line: #3a3d44; --ctl-text: #e6e6e6; --ctl-dim: #8b8f98; --ctl-accent: #3478f6;
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+.window.dark {
+  --bg: #14161a; --panel: #1b1e24; --panel2: #22262d; --line: #2c313a; --fg: #e6e8eb; --muted: #8b93a0; --accent: #7aa2ff;
+  --termbg: #16181c; --function: #7aa2ff; --type: #e5c07b; --keyword: #c792ea;
+  --added-tint: #1d4428; --added-bar: #3fb950; --removed: #f47067; --changed-bar: #d29922; --hit: #e2c541;
+  --bar: #202226; --card: #23252b; --edge: #3a3d44; --dim: #8b8f98; --doc-accent: #3478f6;
+  --tint: rgba(52,120,246,.2); --resolved: rgba(128,128,128,.16);
+  --ov-box: rgba(255,255,255,.12); --ov-box-on: rgba(255,255,255,.2); --ov-thumb: rgba(255,255,255,.22); --ov-edge: #2c313a;
+}
+.window.light {
+  --bg: #ffffff; --panel: #f4f5f7; --panel2: #eaecf0; --line: #d8dce2; --fg: #1d2026; --muted: #6b7280; --accent: #2f63d8;
+  --termbg: #fbfbfc; --function: #2f63d8; --type: #a15c00; --keyword: #8839c4;
+  --added-tint: #ccf2d4; --added-bar: #1a7f37; --removed: #cf222e; --changed-bar: #bf8700; --hit: #c9a400;
+  --bar: #f4f4f6; --card: #ffffff; --edge: #c9cbd1; --dim: #7a7e87; --doc-accent: #2f6fe4;
+  --tint: rgba(47,111,228,.16); --resolved: rgba(128,128,128,.16);
+  --ov-box: rgba(0,0,0,.1); --ov-box-on: rgba(0,0,0,.16); --ov-thumb: rgba(0,0,0,.2); --ov-edge: #e4e7eb;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ctl-text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro { display: none; }
+h1.t { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--ctl-dim); margin: 0 0 12px; max-width: 940px; }
+.intro code { font: 12px var(--mono); }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; align-items: center; }
+.controls .sep { width: 1px; height: 18px; background: var(--ctl-line); margin: 0 4px; }
+.controls label { color: var(--ctl-dim); font-size: 12px; display: flex; align-items: center; gap: 6px; }
+button { font: 12px var(--sans); color: var(--ctl-text); background: var(--ctl); border: 1px solid var(--ctl-line); border-radius: 5px; padding: 4px 9px; cursor: pointer; }
+button:hover { border-color: var(--ctl-accent); }
+button.on { background: var(--ctl-accent); border-color: var(--ctl-accent); }
+.readout { font: 12px var(--mono); color: var(--ctl-dim); margin: 0 0 12px; min-height: 18px; }
+.readout b { color: var(--ctl-text); font-weight: 500; }
+
+.window { border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: 0 20px 50px rgba(0,0,0,.5); background: var(--bg); color: var(--fg); height: 700px; display: flex; flex-direction: column; }
+body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 100vh; }
+.wbar { height: 36px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 12px; }
+.lights { display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: var(--line); display: block; }
+.wbar b { font-weight: 600; font-size: 13px; }
+.content { flex: 1; display: flex; min-height: 0; }
+.agent { flex: none; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
+.agent .head { flex: none; height: 34px; padding: 0 14px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); white-space: nowrap; overflow: hidden; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--function); flex: none; }
+.term { flex: 1; min-height: 0; background: var(--termbg); font: 12px/1.6 var(--mono); padding: 10px 12px; white-space: pre-wrap; overflow: hidden; color: var(--fg); }
+.term .c { color: var(--function); } .term .p { color: var(--type); } .term .a { color: var(--keyword); }
+.docs { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.dtabs { height: 34px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--line); overflow: hidden; }
+.dtab { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; color: var(--muted); white-space: nowrap; cursor: pointer; }
+.dtab.on { color: var(--fg); }
+
+.pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.mbar { height: 34px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 12px; background: var(--bar); border-bottom: 1px solid var(--line); font-size: 12px; color: var(--dim); white-space: nowrap; overflow: hidden; }
+.mbar code { font: 12px var(--mono); color: var(--fg); }
+.mbar .chip { border: 1px solid var(--edge); border-radius: 5px; padding: 2px 8px; color: var(--fg); }
+.mbar .chip.on { border-color: var(--doc-accent); }
+.mbar .sp { flex: 1; }
+.body { flex: 1; min-height: 0; display: flex; position: relative; }
+.scroller { flex: 1; min-width: 0; overflow: auto; position: relative; scrollbar-width: none; }
+.scroller::-webkit-scrollbar { display: none; }
+.body.no-ov .scroller { scrollbar-width: auto; }
+.body.no-ov .scroller::-webkit-scrollbar { display: initial; }
+.threads { flex: 0 0 280px; background: var(--bar); border-left: 1px solid var(--line); padding: 10px; display: flex; flex-direction: column; gap: 8px; font-size: 12px; overflow: hidden; }
+.threads .top { color: var(--dim); }
+.threads .card { background: var(--card); border: 1px solid var(--edge); border-radius: 6px; padding: 8px 10px; }
+.threads .card .q { color: var(--dim); font-style: italic; margin-bottom: 4px; }
+.body.no-threads .threads { display: none; }
+
+.doc { padding: calc(22px * var(--z)) 0 0; }
+.page { margin: 0 auto; font-size: calc(14px * var(--z)); line-height: 1.55; }
+.page > * { position: relative; }
+.page h1, .page h2, .page h3 { font-weight: 650; line-height: 1.25; margin: 1.1em 0 .45em; }
+.page h1 { font-size: calc(26px * var(--z)); margin-top: 0; }
+.page h2 { font-size: calc(21px * var(--z)); }
+.page h3 { font-size: calc(17.5px * var(--z)); }
+.page p { margin: 0 0 .8em; }
+.page ul, .page ol { margin: 0 0 .8em; padding-left: 1.6em; }
+.page li { position: relative; margin: .2em 0; }
+.page code { font: calc(12.5px * var(--z)) var(--mono); background: var(--panel2); border-radius: 3px; padding: 0 3px; }
+.page pre { font: calc(12.5px * var(--z))/1.5 var(--mono); background: var(--panel); border-radius: 6px; padding: 8px 12px; margin: 0 0 .9em; white-space: pre; overflow: hidden; }
+.page pre code { background: none; padding: 0; }
+.page table { border-collapse: collapse; width: 100%; margin: 0 0 .9em; }
+.page th, .page td { border: 1px solid var(--line); padding: .35em .7em; text-align: left; }
+.page th { background: var(--panel); }
+.page tr { position: relative; }
+.page blockquote { margin: 0 0 .8em; padding-left: 1em; border-left: 3px solid var(--line); color: var(--muted); }
+.page hr { border: 0; border-top: 1px solid var(--line); margin: 1.2em 0; }
+.page .fig { display: flex; justify-content: center; margin: .4em 0 1em; }
+.page .fig svg { width: min(70%, calc(480px * var(--z))); height: auto; }
+.page .shot { height: calc(220px * var(--z)); border-radius: 6px; border: 1px solid var(--line); background: linear-gradient(135deg, var(--panel) 0 30%, var(--panel2) 30% 34%, var(--panel) 34% 100%); margin: .4em 0 1em; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+.page .label { font-weight: 600; font-size: .92em; margin: .2em 0; }
+.page .label.before { color: var(--removed); } .page .label.after { color: var(--added-bar); }
+.mark { background: var(--tint); border-bottom: 1.5px solid var(--doc-accent); }
+.mark.resolved { background: var(--resolved); border-bottom: 0; }
+.hit { background: var(--hit); color: #000; border-radius: 2px; }
+
+.plain del, .plain [data-ch="del"], .plain .label, .plain .old { display: none; }
+.plain ins { text-decoration: none; }
+.diff ins { text-decoration: none; background: var(--added-tint); }
+.diff del { color: var(--removed); text-decoration: line-through; }
+.diff [data-ch="del"] { color: var(--removed); text-decoration: line-through; }
+.diff [data-ch="add"] { background: var(--added-tint); }
+.diff [data-ch="add"] :is(code, th, td) { background: transparent; }
+.diff [data-ch]::before { content: ""; position: absolute; left: -16px; top: 0; bottom: 0; width: 3px; }
+.diff li[data-ch]::before { left: calc(-16px - 1.6em); }
+.diff tr[data-ch] > td:first-child { position: relative; }
+.diff tr[data-ch]::before { display: none; }
+.diff tr[data-ch] > td:first-child::before { content: ""; position: absolute; left: -17px; top: 0; bottom: 0; width: 3px; }
+.diff [data-ch="add"]::before, .diff tr[data-ch="add"] > td:first-child::before { background: var(--added-bar); }
+.diff [data-ch="del"]::before, .diff tr[data-ch="del"] > td:first-child::before { background: var(--removed); }
+.diff [data-ch="chg"]::before, .diff tr[data-ch="chg"] > td:first-child::before { background: var(--changed-bar); }
+
+.ov { flex: none; display: flex; position: relative; border-left: 1px solid var(--ov-edge); background: var(--bg); }
+.body.no-ov .ov { display: none; }
+.ov .thumb { position: relative; width: 84px; overflow: hidden; }
+.ov .shot-wrap { position: absolute; left: 0; top: 0; transform-origin: 0 0; pointer-events: none; }
+.ov .box { position: absolute; left: 0; width: 84px; display: none; pointer-events: none; }
+.ov.hover .box, .ov.drag .box { display: block; background: var(--ov-box); }
+.ov.drag .box { background: var(--ov-box-on); }
+.ov canvas.marks { display: block; border-left: 1px solid var(--ov-edge); }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1 class="t">Markdown overview: the code pane's overview on the markdown pane and its diff mode</h1>
+    <p>The same <code>OverviewView</code> as code and diff panes, given a picture of the <b>rendered page</b>: the text column (from the change bars to its right edge) shrunk to the thumbnail's 84 pt width, so headings, code panels, tables, diagrams and images keep their shape. The picture is drawn when the doc reloads, re-lays out (its width changes) or changes look (appearance, a comment's tint), never on scroll: the readout counts the pictures drawn. Marks as in code and diff: the diff's added, removed and changed blocks in the colours of its change bars, open comments, find hits. Hidden when the doc fits or when the text column beside it would keep fewer than 80 columns of the body font at the pane's zoom; the comment list stays and the overview gives way first.</p>
+    <div class="controls">
+      <button data-scene="md" class="on">Markdown pane</button>
+      <button data-scene="diff">Markdown diff (vs main)</button>
+      <button data-scene="short">A doc that fits</button>
+      <span class="sep"></span>
+      <label>Agent column <input id="agentW" type="range" min="160" max="900" value="380"></label>
+      <button id="zoomOut">⌘−</button><button id="zoomIn">⌘=</button>
+      <span class="sep"></span>
+      <button id="find">Find “redirect”</button>
+      <button id="comment">Comment on “allow list”</button>
+      <button id="threads">Comments list</button>
+      <button id="edit">Agent edits the doc</button>
+      <span class="sep"></span>
+      <button id="toggle" class="on">View › Overview</button>
+      <button id="theme">Light / dark</button>
+    </div>
+    <div class="readout" id="readout"></div>
+  </div>
+  <div class="window dark" id="window">
+    <div class="wbar"><span class="lights"><i></i><i></i><i></i></span><b>Markdown overview</b></div>
+    <div class="content">
+      <div class="agent" id="agent">
+        <div class="head"><span class="dot"></span>~/work/kanna-v4 · login</div>
+        <div class="term"><span class="c">~/work/kanna-v4</span> <span class="p">❯</span> claude
+<span class="a">●</span> I rewrote the redirect section and
+  added Sessions. Opened the spec with
+  its changes marked:
+  kanna open md docs/login.md --diff main
+</div>
+      </div>
+      <div class="docs">
+        <div class="dtabs" id="dtabs"></div>
+        <div class="pane" id="pane"></div>
+      </div>
+    </div>
+  </div>
+</main>
+<script>
+const LOREM = [
+  "The app keeps one session per device, stored in the keychain and refreshed in the background while the app is open.",
+  "Tokens are short-lived; a refresh that fails twice in a row signs the device out and shows the sign-in sheet again.",
+  "Every redirect is checked against the allow list before the app follows it, so a crafted link can't send you elsewhere.",
+  "Sign-in errors are shown inline under the field that caused them, never as a modal, and are cleared as you type.",
+  "The server answers within 300 ms at the 95th percentile; past two seconds the app shows a spinner on the button.",
+];
+const para = i => `<p>${LOREM[i % LOREM.length]} ${LOREM[(i + 2) % LOREM.length]}</p>`;
+const DIAG_OLD = `<svg viewBox="0 0 400 70"><g fill="none" stroke="currentColor" stroke-width="1.5"><rect x="40" y="15" width="120" height="40"/><rect x="240" y="15" width="120" height="40"/><path d="M160 35h76"/></g><g fill="currentColor" font-size="14" text-anchor="middle"><text x="100" y="40">Login</text><text x="300" y="40">Home</text></g></svg>`;
+const DIAG_NEW = `<svg viewBox="0 0 400 140"><g fill="none" stroke="currentColor" stroke-width="1.5"><rect x="10" y="50" width="100" height="40"/><path d="M200 20l60 50-60 50-60-50z"/><rect x="300" y="15" width="90" height="36"/><rect x="300" y="89" width="90" height="36"/><path d="M110 70h30M260 70h20v-37h20M280 70v37h20"/></g><g fill="currentColor" font-size="13" text-anchor="middle"><text x="60" y="75">Login</text><text x="200" y="75">allowed?</text><text x="345" y="38">Next</text><text x="345" y="112">Home</text></g></svg>`;
+
+function docHTML(edited) {
+  return `
+<h1>Sign-in and sessions</h1>
+<p data-ch="chg">After signing in, the app sends you <ins>back</ins> to the <del>home </del>page <ins>you came from</ins>. This spec covers the sign-in sheet, the redirect, and how long a session lasts.</p>
+${para(0)}
+<h2>Steps</h2>
+<ol>
+<li>Read the <code>next</code> parameter.</li>
+<li>Check it against the <span class="cm-target">allow list</span>.</li>
+<li data-ch="del">Log the visit.</li>
+<li data-ch="chg" value="3">Redirect to <ins><code>next</code>, or to </ins>the home page<ins> if it isn't allowed</ins>.</li>
+</ol>
+<table>
+<tr><th>Case</th><th>Goes to</th></tr>
+<tr><td>no <code>next</code></td><td>home</td></tr>
+<tr data-ch="chg"><td><code>next</code> on our site</td><td><del>home</del><ins><code>next</code></ins></td></tr>
+<tr data-ch="add"><td><code>next</code> elsewhere</td><td>home, with a warning logged</td></tr>
+</table>
+<div data-ch="chg"><div class="label before">Before</div><div class="fig old">${DIAG_OLD}</div><div class="label after">After</div><div class="fig">${DIAG_NEW}</div></div>
+<h2>The sign-in sheet</h2>
+${para(1)}
+<div class="shot">screenshot: the sign-in sheet</div>
+${para(3)}
+<ul><li>Email first, then the password field slides in.</li><li>Passkeys are offered when the device has one.</li><li>“Forgot password” opens the reset flow in the browser.</li></ul>
+${para(4)}
+<h2>Tokens</h2>
+${para(2)}
+<pre><code>struct Session {
+    let token: String
+    let refresh: String
+    let expires: Date
+}
+
+func refresh(_ s: Session) async throws -> Session {
+    let reply = try await api.post("/session/refresh", s.refresh)
+    return Session(token: reply.token, refresh: reply.refresh, expires: reply.expires)
+}</code></pre>
+${para(0)}
+<blockquote>Refreshing on a timer was tried and dropped: devices asleep for a week came back signed out.</blockquote>
+<h3>Expiry</h3>
+<table><tr><th>Token</th><th>Lasts</th><th>Refreshed</th></tr><tr><td>access</td><td>15 min</td><td>on use, past 10 min</td></tr><tr><td>refresh</td><td>30 days</td><td>on every refresh</td></tr><tr><td>device</td><td>until signed out</td><td>never</td></tr></table>
+${para(1)}
+<h2>Errors</h2>
+${para(3)}
+<ul><li>Wrong password: shown under the password field.</li><li>No network: a banner at the top of the sheet, with Retry.</li><li>Locked account: a link to support.</li></ul>
+<p data-ch="del">Errors are logged with the email address so support can find them.</p>
+${para(4)}
+<hr>
+<h2 data-ch="add">Sessions on other devices</h2>
+<p data-ch="add">Settings lists every device signed in, with where and when it was last used. Signing one out revokes its refresh token at once; its access token runs out within 15 minutes.</p>
+<ul data-ch="add"><li>The current device is first and can't be signed out from here.</li><li>“Sign out everywhere else” revokes all the others.</li></ul>
+${edited ? `<h2 data-ch="add">Audit log</h2><p data-ch="add">${LOREM[2]} ${LOREM[0]}</p><pre data-ch="add"><code>audit.record(.signIn, device: id, at: now)</code></pre><p data-ch="add">${LOREM[4]}</p>` : ""}
+${["Passkeys", "Rate limits", "Accounts", "Support"].map((t, i) => `<h2>${t}</h2>${para(i)}${para(i + 1)}<ul><li>${LOREM[(i + 3) % 5]}</li><li>${LOREM[(i + 4) % 5]}</li></ul>${i % 2 ? `<pre><code>let limit = RateLimit(per: .minute, max: 5)\nguard limit.allow(ip) else { throw SignInError.tooMany }</code></pre>` : `<table><tr><th>When</th><th>What</th></tr><tr><td>first try</td><td>${LOREM[i]}</td></tr><tr><td>after five</td><td>locked for a minute</td></tr></table>`}${para(i + 2)}`).join("")}
+<h2>Why</h2>
+${para(2)}
+${para(0)}`;
+}
+const SHORT_DOC = `<h1>Release notes</h1><p>${LOREM[0]}</p><ul><li>Faster sign-in.</li><li>Passkeys.</li></ul>`;
+
+const OV = { thumb: 84, marks: 12, minCols: 80, threads: 280, maxText: 860 };
+const state = { scene: "md", zoom: 1, find: false, comment: true, threads: false, edited: false, enabled: true, hover: false, drag: null, scrolledAt: 0, pictures: 0, key: "" };
+const win = document.getElementById("window");
+const paneEl = document.getElementById("pane");
+const agentEl = document.getElementById("agent");
+const agentW = document.getElementById("agentW");
+let scroller, bodyEl, ovEl, thumbEl, marksCv, boxEl, picture;
+
+function render() {
+  const top = scroller ? scroller.scrollTop : 0;
+  const tabs = [["login.md", "md"], ["login.md · vs main", "diff"], ["release.md", "short"]];
+  document.getElementById("dtabs").innerHTML = tabs.map(([n, s]) => `<div class="dtab ${s === state.scene ? "on" : ""}" data-scene="${s}">${n}</div>`).join("");
+  const diff = state.scene === "diff";
+  const changes = diff ? (state.edited ? 6 : 5) : 0;
+  const bar = `<div class="mbar"><code>docs/${state.scene === "short" ? "release" : "login"}.md</code>${diff ? `<span class="chip">vs main · ${changes} changes</span>` : ""}<span class="sp"></span><span class="chip ${state.threads ? "on" : ""}">Comments ${state.comment ? 1 : 0}</span></div>`;
+  const threads = `<div class="threads"><div class="top">1 open</div>${state.comment ? `<div class="card"><div class="q">“allow list”</div>Where does the allow list live: a setting, or the server's config?</div>` : ""}</div>`;
+  paneEl.innerHTML = `${bar}<div class="body" id="body"><div class="scroller" id="scroller"><div class="doc" id="doc"><div class="page ${diff ? "diff" : "plain"}" id="page">${state.scene === "short" ? SHORT_DOC : docHTML(state.edited)}</div></div><div class="tail" id="tail"></div></div><div class="ov" id="ov"><div class="thumb" id="thumb"><div class="shot-wrap" id="shot"></div><div class="box" id="box"></div></div><canvas class="marks" id="marksCv"></canvas></div>${threads}</div>`;
+  scroller = document.getElementById("scroller"); bodyEl = document.getElementById("body");
+  ovEl = document.getElementById("ov"); thumbEl = document.getElementById("thumb"); marksCv = document.getElementById("marksCv"); boxEl = document.getElementById("box");
+  const page = document.getElementById("page");
+  const target = page.querySelector(".cm-target");
+  if (target && state.comment) target.classList.add("mark");
+  if (state.find) highlight(page, "redirect");
+  scroller.scrollTop = top;
+  scroller.addEventListener("scroll", () => { state.scrolledAt = performance.now(); drawOverview(); setTimeout(drawOverview, 1100); });
+  state.key = "";
+  wireOverview();
+  layout();
+}
+function highlight(root, word) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = []; while (walker.nextNode()) nodes.push(walker.currentNode);
+  const re = new RegExp(word, "gi");
+  for (const n of nodes) {
+    if (!re.test(n.data) || n.parentElement.closest("svg")) continue;
+    const span = document.createElement("span");
+    span.innerHTML = n.data.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(re, m => `<span class="hit">${m}</span>`);
+    n.replaceWith(...span.childNodes);
+  }
+}
+
+function charWidth() {
+  const probe = document.createElement("span");
+  probe.style.cssText = `font:${14 * state.zoom}px var(--sans);position:absolute;visibility:hidden;white-space:pre`;
+  probe.textContent = "0".repeat(100); document.body.appendChild(probe);
+  const w = probe.getBoundingClientRect().width / 100; probe.remove(); return w;
+}
+function columnWidth(room) { return Math.min(OV.maxText * state.zoom, room - 2 * 28); }
+function decide() {
+  const paneW = paneEl.clientWidth, cw = charWidth();
+  const viewH = bodyEl.clientHeight;
+  const contentH = document.getElementById("doc").offsetHeight;
+  const fits = contentH <= viewH;
+  const want = state.enabled && !fits;
+  const ovW = OV.thumb + OV.marks + 2;
+  const wanted = [...(want ? [{ name: "overview", width: ovW, columns: OV.minCols }] : []), ...(state.threads ? [{ name: "threads", width: OV.threads, columns: OV.threads / cw }] : [])];
+  const shown = wanted.slice();
+  const room = () => paneW - shown.reduce((t, a) => t + a.width, 0);
+  const lacks = a => a.name === "overview" ? columnWidth(room()) < a.columns * cw : room() < a.columns * cw;
+  while (shown.length && shown.some(lacks)) shown.shift();
+  const has = n => shown.some(a => a.name === n);
+  const col = columnWidth(room());
+  return { paneW, cw, col, cols: Math.floor(col / cw), colsWith: Math.floor(columnWidth(paneW - ovW - (has("threads") ? OV.threads : 0)) / cw), fits, want, shown: has("overview"), threads: has("threads") };
+}
+function layout() {
+  agentEl.style.width = agentW.value + "px";
+  win.style.setProperty("--z", state.zoom);
+  bodyEl.classList.remove("no-ov", "no-threads");
+  const d = decide();
+  bodyEl.classList.toggle("no-ov", !d.shown);
+  bodyEl.classList.toggle("no-threads", !d.threads);
+  document.getElementById("tail").style.height = Math.round(bodyEl.clientHeight * 0.4) + "px";
+  const room = scroller.clientWidth;
+  const col = columnWidth(room);
+  document.getElementById("page").style.width = col + "px";
+  const why = !state.enabled ? "off (View › Overview)" : d.fits ? "hidden: the whole doc fits" : d.shown ? "shown" : `hidden: the column would keep ${d.colsWith} columns (< ${OV.minCols})`;
+  if (d.shown) { buildPicture(col); sizeCanvases(); drawOverview(); }
+  document.getElementById("readout").innerHTML = `pane <b>${d.paneW}pt</b> · ${d.cw.toFixed(2)}pt a column at ${Math.round(state.zoom * 100)}% · text column <b>${Math.round(col)}pt, ${Math.floor(col / d.cw)} columns</b> · overview <b>${why}</b>` + (state.threads ? ` · comments list <b>${d.threads ? "shown" : "hidden"}</b>` : "") + ` · pictures drawn <b>${state.pictures}</b>`;
+}
+
+function cssVar(name) { return getComputedStyle(win).getPropertyValue(name).trim(); }
+function buildPicture(col) {
+  const doc = document.getElementById("doc"), page = document.getElementById("page");
+  const gutter = 20, width = col + gutter;
+  const scale = OV.thumb / width;
+  const key = [state.scene, state.edited, state.comment, state.find, Math.round(col), state.zoom, win.className].join("|");
+  if (key !== state.key) {
+    state.key = key; state.pictures++;
+    const shot = document.getElementById("shot");
+    const clone = doc.cloneNode(true);
+    clone.removeAttribute("id");
+    clone.querySelector(".page").style.cssText = `width:${col}px;margin:0 0 0 ${gutter}px`;
+    clone.querySelectorAll(".hit").forEach(h => h.classList.remove("hit"));
+    shot.replaceChildren(clone);
+    shot.style.width = width + "px";
+    shot.style.transform = `scale(${scale})`;
+  }
+  const base = doc.getBoundingClientRect().top;
+  const marks = [];
+  const at = el => { const r = el.getBoundingClientRect(); return { y: r.top - base, h: r.height }; };
+  const kinds = { add: "added", del: "removed", chg: "changed" };
+  if (state.scene === "diff") page.querySelectorAll("[data-ch]").forEach(el => marks.push({ ...at(el), kind: kinds[el.dataset.ch], lane: 0 }));
+  page.querySelectorAll(".mark:not(.resolved)").forEach(el => marks.push({ ...at(el), kind: "comment", lane: 1 }));
+  page.querySelectorAll(".hit").forEach(el => marks.push({ ...at(el), kind: "hit", lane: 1 }));
+  picture = { scale, docH: scroller.scrollHeight, contentH: doc.offsetHeight, marks };
+}
+function sizeCanvases() {
+  const dpr = devicePixelRatio || 1, h = bodyEl.clientHeight;
+  thumbEl.style.height = h + "px";
+  marksCv.width = OV.marks * dpr; marksCv.height = h * dpr; marksCv.style.width = OV.marks + "px"; marksCv.style.height = h + "px";
+}
+function geometry() {
+  const viewH = scroller.clientHeight, ovH = bodyEl.clientHeight;
+  const docH = picture.docH, scale = picture.scale;
+  const thumbH = picture.contentH * scale;
+  const maxScroll = Math.max(0, docH - viewH);
+  const frac = maxScroll ? scroller.scrollTop / maxScroll : 0;
+  const offset = Math.max(0, thumbH - ovH) * frac;
+  const boxH = viewH * scale;
+  const boxY = scroller.scrollTop * scale - offset;
+  return { viewH, ovH, docH, scale, thumbH, maxScroll, offset, boxH, boxY };
+}
+function drawOverview() {
+  if (!picture || bodyEl.classList.contains("no-ov")) return;
+  const dpr = devicePixelRatio || 1, G = geometry();
+  document.getElementById("shot").style.transform = `translateY(${-G.offset}px) scale(${G.scale})`;
+  boxEl.style.top = G.boxY + "px"; boxEl.style.height = G.boxH + "px";
+  ovEl.classList.toggle("hover", state.hover); ovEl.classList.toggle("drag", !!state.drag);
+  const m = marksCv.getContext("2d");
+  m.setTransform(1, 0, 0, 1, 0, 0); m.clearRect(0, 0, marksCv.width, marksCv.height); m.scale(dpr, dpr);
+  const k = G.ovH / Math.max(G.docH, G.viewH);
+  const tone = { added: "--added-bar", removed: "--removed", changed: "--changed-bar", comment: "--doc-accent", hit: "--hit" };
+  for (const mk of picture.marks) {
+    m.fillStyle = cssVar(tone[mk.kind]);
+    const lane = mk.lane ? [OV.marks / 2, OV.marks / 2 - 1] : [1, OV.marks / 2 - 1];
+    m.fillRect(lane[0], mk.y * k, lane[1], Math.max(2, mk.h * k));
+  }
+  if (state.hover || state.drag || performance.now() - state.scrolledAt < 1000) {
+    m.fillStyle = cssVar("--ov-thumb");
+    m.fillRect(1, scroller.scrollTop * k, OV.marks - 2, Math.max(8, G.viewH * k));
+  }
+}
+
+function wireOverview() {
+  ovEl.addEventListener("mouseenter", () => { state.hover = true; drawOverview(); });
+  ovEl.addEventListener("mouseleave", () => { state.hover = false; drawOverview(); });
+  ovEl.addEventListener("wheel", e => { scroller.scrollTop += e.deltaY; e.preventDefault(); }, { passive: false });
+  thumbEl.addEventListener("mousedown", e => {
+    const G = geometry(), y = e.clientY - thumbEl.getBoundingClientRect().top;
+    if (y < G.boxY || y > G.boxY + G.boxH) {
+      const docY = (y + G.offset) / G.scale;
+      scroller.scrollTop = Math.min(G.maxScroll, Math.max(0, docY - G.viewH / 2));
+    }
+    const G2 = geometry();
+    const track = Math.min(G2.thumbH, G2.ovH) - G2.boxH;
+    state.drag = { y0: e.clientY, top0: scroller.scrollTop, perPx: track > 0 ? G2.maxScroll / track : 0 };
+    drawOverview(); e.preventDefault();
+  });
+  marksCv.addEventListener("mousedown", e => {
+    const G = geometry(), k = G.ovH / Math.max(G.docH, G.viewH);
+    scroller.scrollTop = Math.min(G.maxScroll, Math.max(0, e.offsetY / k - G.viewH / 2));
+    state.drag = { y0: e.clientY, top0: scroller.scrollTop, perPx: 1 / k };
+    e.preventDefault();
+  });
+}
+addEventListener("mousemove", e => {
+  if (!state.drag) return;
+  scroller.scrollTop = state.drag.top0 + (e.clientY - state.drag.y0) * state.drag.perPx;
+});
+addEventListener("mouseup", () => { if (state.drag) { state.drag = null; drawOverview(); } });
+addEventListener("resize", layout);
+
+document.querySelectorAll("[data-scene]").forEach(b => b.onclick = () => setScene(b.dataset.scene));
+document.getElementById("dtabs").addEventListener("click", e => { const t = e.target.closest("[data-scene]"); if (t) setScene(t.dataset.scene); });
+function setScene(s) {
+  state.scene = s; if (scroller) scroller.scrollTop = 0;
+  document.querySelectorAll(".controls [data-scene]").forEach(b => b.classList.toggle("on", b.dataset.scene === s));
+  render();
+}
+agentW.oninput = layout;
+document.getElementById("zoomIn").onclick = () => { state.zoom = Math.min(3, +(state.zoom * 1.1).toFixed(3)); layout(); };
+document.getElementById("zoomOut").onclick = () => { state.zoom = Math.max(0.5, +(state.zoom / 1.1).toFixed(3)); layout(); };
+document.getElementById("find").onclick = e => { state.find = !state.find; e.target.classList.toggle("on", state.find); render(); };
+document.getElementById("comment").onclick = e => { state.comment = !state.comment; e.target.classList.toggle("on", state.comment); render(); };
+document.getElementById("threads").onclick = e => { state.threads = !state.threads; e.target.classList.toggle("on", state.threads); render(); };
+document.getElementById("edit").onclick = e => { state.edited = !state.edited; e.target.classList.toggle("on", state.edited); render(); };
+document.getElementById("toggle").onclick = e => { state.enabled = !state.enabled; e.target.classList.toggle("on", state.enabled); layout(); };
+document.getElementById("theme").onclick = () => { win.classList.toggle("dark"); win.classList.toggle("light"); layout(); };
+
+const params = new URLSearchParams(location.search);
+if (params.has("picture")) document.body.classList.add("picture");
+if (params.has("light")) { win.classList.remove("dark"); win.classList.add("light"); }
+if (params.has("agent")) agentW.value = params.get("agent");
+if (params.has("scene")) state.scene = params.get("scene");
+if (params.has("find")) state.find = true;
+if (params.has("threads")) state.threads = true;
+if (params.has("edited")) state.edited = true;
+if (params.has("zoom")) state.zoom = +params.get("zoom");
+document.getElementById("comment").classList.toggle("on", state.comment);
+document.getElementById("find").classList.toggle("on", state.find);
+document.getElementById("threads").classList.toggle("on", state.threads);
+document.querySelectorAll(".controls [data-scene]").forEach(b => b.classList.toggle("on", b.dataset.scene === state.scene));
+render();
+if (params.has("top")) { scroller.scrollTop = +params.get("top"); }
+if (params.has("hover")) { state.hover = true; }
+if (params.has("drag")) { state.hover = true; state.drag = { y0: 0, top0: scroller.scrollTop, perPx: 0 }; }
+drawOverview();
+</script>
+</body>
+</html>

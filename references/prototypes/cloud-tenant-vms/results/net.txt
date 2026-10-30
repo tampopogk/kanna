@@ -1,0 +1,33 @@
+ident {"ctv-a": {"mac": "10:66:6a:b5:95:95", "v4": "10.231.0.2", "v6": "fd5a:1c3e:7a10:1:1266:6aff:feb5:9595", "ll": "fe80::1266:6aff:feb5:9595", "gw_mac": "10:66:6a:1c:04:ab"}, "ctv-b": {"mac": "10:66:6a:6e:3d:24", "v4": "10.231.0.3", "v6": "fd5a:1c3e:7a10:1:1266:6aff:fe6e:3d24", "ll": "fe80::1266:6aff:fe6e:3d24", "gw_mac": "10:66:6a:1c:04:ab"}}
+PASS addresses: ctv-a 10.231.0.2 fd5a:1c3e:7a10:1:1266:6aff:feb5:9595, ctv-b 10.231.0.3 fd5a:1c3e:7a10:1:1266:6aff:fe6e:3d24
+PASS ctv-a->internet_v4: https HTTP/1.1 200 OK, ping reply
+PASS ctv-a->dns: 172.66.147.243
+PASS ctv-a->ipv6_to_gateway: [fd5a:1c3e:7a10:1::1]:53 open
+PASS ctv-a->iroh_relay: relay.kanna.build:8443 HTTP/1.1 200 OK
+PASS ctv-a->no_peer_host_lan_idrac: 25 probes all dropped (peer v4/v6/link-local, gateway v4/v6/link-local :22/:8443, host 172.16.0.105, iDRAC 172.16.0.2, router, 10.199.64.1, metadata)
+PASS ctv-a->link_local_neighbours: 1 answer ff02::1 (the gateway at most)
+  info internet_v6: error:101
+PASS ctv-b->internet_v4: https HTTP/1.1 200 OK, ping reply
+PASS ctv-b->dns: 172.66.147.243
+PASS ctv-b->ipv6_to_gateway: [fd5a:1c3e:7a10:1::1]:53 open
+PASS ctv-b->iroh_relay: relay.kanna.build:8443 HTTP/1.1 200 OK
+PASS ctv-b->no_peer_host_lan_idrac: 25 probes all dropped (peer v4/v6/link-local, gateway v4/v6/link-local :22/:8443, host 172.16.0.105, iDRAC 172.16.0.2, router, 10.199.64.1, metadata)
+PASS ctv-b->link_local_neighbours: 1 answer ff02::1 (the gateway at most)
+  info internet_v6: error:101
+spoof {"frames_sent": 45, "mac_changed_internet": "none", "mac_as_peer_internet": "none", "v4_other_addr_internet": "none", "v4_peer_addr_internet": "none", "v4_gateway_addr_peer": "none", "v6_other_addr_gateway_dns": "none", "v6_other_ll_gateway_ping": "none", "restored_internet": "reply"}
+PASS l2_nothing_from_a_reaches_b: 45 forged frames sent (ARP, NA, RA, DHCP offer, VLAN-tagged, peer-MAC, routed via gateway); 0 seen on ctv-b []
+PASS arp_spoof_host_table: host's ARP for ctv-b 10:66:6a:6e:3d:24 -> 10:66:6a:6e:3d:24 -> 10:66:6a:6e:3d:24
+PASS nd_spoof_host_table: host's ND for ctv-b 10:66:6a:6e:3d:24 -> 10:66:6a:6e:3d:24 -> 10:66:6a:6e:3d:24
+PASS arp_nd_spoof_peer_table: ctv-a's MAC 10:66:6a:b5:95:95 in none of ctv-b's neighbour entries (gateway v4, v6, link-local)
+PASS rogue_ra_dhcp: ctv-b rogue prefixes 0, default default via 10.231.0.1 dev enp5s0 proto dhcp src 10.231.0.3 metric 100
+PASS spoof_mac_changed_internet: none
+PASS spoof_mac_as_peer_internet: none
+PASS spoof_v4_other_addr_internet: none
+PASS spoof_v4_peer_addr_internet: none
+PASS spoof_v4_gateway_addr_peer: none
+PASS spoof_v6_other_addr_gateway_dns: none
+PASS spoof_v6_other_ll_gateway_ping: none
+PASS spoof_restored: ctv-a back online: reply
+PASS control_isolation_off_is_seen: with tap103b3cb4 isolation off for 12 s, ctv-b saw 5 of ctv-a's ARP requests; isolation back on
+PASS enforced_on_host: bridge incus fwd.<vm>.eth0 (MAC/IP/RA filters) and inet incus acl.ctv0 on the host; port isolation: isolated on
+28/28 passed
