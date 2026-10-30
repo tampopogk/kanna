@@ -1,8 +1,8 @@
 # Spawns Without Waiting
 
-**Status:** built · **Changes:** [the keeper's client](../keeper.md#8-the-client-for-the-daemon), [architecture](architecture.md) · **Builds on:** [shelving at once](shelve-latency.md)
+**Status:** built · **Changes:** [the keeper's client](../keeper.md#8-the-client-for-the-daemon), [architecture](architecture.md) · **Builds on:** [moving to the Desk at once](move-to-desk-latency.md)
 
-The daemon starts a terminal by **sending** the keeper a spawn request and going back to its loop. The keeper's reply comes back later, read from the keeper's socket like an exit, and finishes the start then. While a busy or paused keeper is spawning, the daemon keeps answering the app, the CLI and the Shelf. Before, `Terminals::start` waited on the reply on the daemon's main thread (up to its 10 s reply timeout), and nothing else on the daemon ran meanwhile.
+The daemon starts a terminal by **sending** the keeper a spawn request and going back to its loop. The keeper's reply comes back later, read from the keeper's socket like an exit, and finishes the start then. While a busy or paused keeper is spawning, the daemon keeps answering the app, the CLI and the Desk. Before, `Terminals::start` waited on the reply on the daemon's main thread (up to its 10 s reply timeout), and nothing else on the daemon ran meanwhile.
 
 ## Contents
 
@@ -20,7 +20,7 @@ sequenceDiagram
     participant D as daemon (main thread)
     participant W as keeper watch thread
     participant K as keeper
-    C->>D: open, restart, task start, shelve …
+    C->>D: open, restart, task start, pick …
     D-)K: spawn {req: 7, id: term-12, …}
     Note over D: the pane is Starting; the request waits in core (settled)
     C->>D: task list, debug.desk, attach …
@@ -33,7 +33,7 @@ sequenceDiagram
 
 ## 2. Rules
 
-- **The daemon never waits on a spawn.** A start sends the request and returns; the pane stays `Starting` until the reply. Requests that wait for a pane to start (`open`, a task's start, a shelve's reply) wait in core (`settled`), not on the main thread.
+- **The daemon never waits on a spawn.** A start sends the request and returns; the pane stays `Starting` until the reply. Requests that wait for a pane to start (`open`, a task's start, a pick's reply) wait in core (`settled`), not on the main thread.
 - **In order with exits.** Spawn replies and exits are read from the one socket and handled in the order the keeper sent them, so a program that exits at once is started before its exit is seen.
 - **A failed spawn** fails the pane with the keeper's error (`could not start CMD: cannot run …`), as before.
 - **Ten seconds:** a pane still `Starting` after core's start timeout (10 s) fails (`did not start within 10 seconds`). A reply that comes later still starts the terminal and reports it running.
@@ -53,7 +53,7 @@ sequenceDiagram
 
 - **Keeper** (`tests/keeper.rs`, `spawns_sent_together_answer_in_turn_while_other_requests_are_answered`): three spawns sent at once and a `hello` between them; the `hello` is answered, the three replies come back by tag (one an `exists` error), and the first program's exit comes after its reply.
 - **Daemon** (`terminals.rs`, `a_spawn_whose_reply_is_held_doesnt_hold_up_other_commands`): a fake keeper holds a spawn's reply; `list` is answered meanwhile, the pane is `Starting` and the `open` still waits; once the reply (with a real pty) comes, the `open` answers and the pane runs with the keeper's pid.
-- **e2e `shelve_keeper_paused`:** the run's own keeper (the pid in `$KANNA_STATE_DIR/keeper.pid`, checked to be this run's) is paused with `SIGSTOP`; a stopped task with a tab, clicked in the app's backlog, is on the app's Shelf within 200 ms (about 35 ms here), and `kanna task list` answers within 200 ms with it on the Shelf. After `SIGCONT` its agent resumes, its tab runs, there's no note and the daemon is still running. Before, the daemon waited on the paused keeper.
+- **e2e `pick_keeper_paused`:** the run's own keeper (the pid in `$KANNA_STATE_DIR/keeper.pid`, checked to be this run's) is paused with `SIGSTOP`; a stopped task with a tab, clicked on the app's Shelf, is on the app's Desk within 200 ms (about 35 ms here), and `kanna task list` answers within 200 ms with it on the Desk. After `SIGCONT` its agent resumes, its tab runs, there's no note and the daemon is still running. Before, the daemon waited on the paused keeper.
 
 ## 5. Not yet
 

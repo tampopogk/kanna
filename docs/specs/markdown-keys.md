@@ -23,6 +23,7 @@ A markdown pane is a preview, so its keys are free for moving around. With the p
 | `]]` `[[` | next, previous heading |
 | `/` `?` | find forward, back |
 | `n` `N` | next, previous match |
+| `]c` `[c` | next, previous change, in a doc opened with `--diff` ([markdown diff](markdown-diff.md)) |
 | `Esc` | stop finding, clear the matches |
 
 ## 2. Rules

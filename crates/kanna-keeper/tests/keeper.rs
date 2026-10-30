@@ -1032,3 +1032,21 @@ fn spawns_sent_together_answer_in_turn_while_other_requests_are_answered() {
     let (exit, out) = exit_reading(&mut c, &one.master);
     assert_eq!((exit.id.as_str(), exit.status), ("t1", ExitStatus::Code(4)), "{out}");
 }
+
+#[test]
+fn stop_closes_every_pty_and_exits_once_they_are_gone() {
+    let mut f = Fixture::new();
+    let mut c = f.client();
+    let (sh, kid) = group(&mut c, "plain", "sleep 60 & echo \"kid:$!\"; wait");
+    let (sh2, kid2) = group(&mut c, "stubborn", "trap '' HUP; sleep 60 & echo \"kid:$!\"; wait");
+    c.spawn(&SpawnRequest::command("done", "true")).unwrap();
+    assert_eq!(next_exit(&mut c).status, ExitStatus::Code(0));
+    c.stop().unwrap();
+    assert!(!f.socket().exists(), "a stopping keeper takes no new clients");
+    assert!(c.spawn(&SpawnRequest::command("late", "true")).is_err());
+    wait_for("the keeper to exit", || f.keeper_exited());
+    for pid in [sh, kid, sh2, kid2] {
+        assert!(!alive(pid), "{pid} outlived its keeper");
+    }
+    assert!(!f.state().join("keeper.pid").exists());
+}

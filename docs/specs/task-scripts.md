@@ -1,6 +1,6 @@
 # Task scripts
 
-**Status:** built · **Tested:** e2e `task_scripts`, `cargo test -p kanna-daemon` (settings, scripts, cleanup) · **Mockup:** [`references/mockups/task-scripts.html`](../../references/mockups/task-scripts.html) (`#setupFailed`, `#teardownFailed`, …) · **Builds on:** [tasks](tasks.md), [settings](settings.md), [backlog runners](backlog-runners.md)
+**Status:** built · **Tested:** e2e `task_scripts`, `cargo test -p kanna-daemon` (settings, scripts, cleanup) · **Mockup:** [`references/mockups/task-scripts.html`](../../references/mockups/task-scripts.html) (`#setupFailed`, `#teardownFailed`, …) · **Builds on:** [tasks](tasks.md), [settings](settings.md), [Shelf runners](shelf-runners.md)
 
 A repo says what a task needs before its agent starts (**setup**: install dependencies, copy `.env` files, borrow builds) and what to do once it's Done (**teardown**). Kanna runs them, so agents stop doing setup by hand, and a merged task's worktree and branch go away on Done instead of piling up.
 
@@ -70,7 +70,7 @@ stateDiagram-v2
 
 ![Teardown failed in the agent's pane: its tabs are closed, and the task isn't Done](task-scripts-teardown-failed.png)
 
-- **Done runs teardown in the agent's own pane:** the task's tabs close, its agent ends, and teardown runs where the agent was, so you watch it as you watched setup. `kanna task list` shows `tearing down`. Stop and Move to Backlog don't run it.
+- **Done runs teardown in the agent's own pane:** the task's tabs close, its agent ends, and teardown runs where the agent was, so you watch it as you watched setup. `kanna task list` shows `tearing down`. Stop and Move to Shelf don't run it.
 - **When it succeeds, the pane closes and the task is Done.** When it fails, the task isn't Done: it stays where it is, its pane showing the output and `teardown failed (exit N)` (or `teardown timed out after Ns`), and `kanna task list` says so. `kanna task done` runs it again; `kanna task done --keep` ends the task without it, keeping its worktree and branch; `kanna task start` brings the agent back.
 - **With no pane to run in** (the agent's pane was closed by hand), teardown runs in the background as the task goes, its output in the daemon's log.
 - **Then Kanna cleans up a finished task:** when the worktree has no changes (`git status` is empty: ignored files such as builds don't count) and its branch is merged into the repo's checked-out branch, Kanna removes the worktree (`git worktree remove`) and deletes the branch (`git branch -d`).

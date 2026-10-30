@@ -12,9 +12,11 @@ mod host;
 mod keeper;
 mod content_ids;
 mod layout;
+mod lifeline;
 mod pty;
 mod codex_remote;
 mod messages;
+mod project_import;
 mod projects;
 mod quiz;
 mod reader;
@@ -23,12 +25,15 @@ mod shell;
 mod status;
 mod status_command;
 mod diffs;
+mod machines;
+mod files;
 mod store;
 mod task_scripts;
 mod terminals;
+mod toasts;
 
 use app_link::{AppLink, Outbox, APP_ASK, APP_PREFIX, HELLO};
-use kanna_mux::json::Value;
+use kanna_mux::json::{Map, Value};
 use host::Host;
 use kanna_build::Build;
 use kanna_mux::json::json;
@@ -62,6 +67,21 @@ const APP_TIMEOUT: Duration = Duration::from_secs(10);
 
 const LOCK_WAIT: Duration = Duration::from_secs(5);
 
+const STOP_GRACE: libc::c_uint = 5;
+const SLOW_REQUEST: Duration = Duration::from_millis(50);
+
+const SHUTDOWN_MARKER: &str = "daemon.shutdown";
+
+const APP_QUIT_WAIT: Duration = Duration::from_secs(5);
+
+const KEEPER_STOP_WAIT: Duration = Duration::from_secs(8);
+
+enum Shutdown {
+    App(Instant),
+    Keeper(Instant),
+    Done,
+}
+
 pub enum Event {
     Request(Value, Box<dyn FnOnce(Value) + Send>),
     Wake,
@@ -76,14 +96,19 @@ pub enum Event {
     Finished { task: String, changes: Vec<db::Change> },
     Diff { id: String, diff: Value },
     DiffUpdating { id: String },
+    File { id: String, read: files::Read },
     KeeperReadable,
     KeeperHeard,
     KeeperLost(String),
-    AppHello { conn: u64, hello: Value, out: Outbox, stream: UnixStream },
+    AppHello { conn: u64, hello: Value, out: Outbox, stream: UnixStream, remote: Option<String> },
     AppCaughtUp { conn: u64 },
     AppMessage { conn: u64, message: Value },
     AppGone { conn: u64 },
+    MachineConfirm { question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send> },
+    MachinesSave(Value),
+    Restart,
     Quit(i32),
+    Shutdown(String),
 }
 
 fn main() {
@@ -103,9 +128,19 @@ fn main() {
         eprint!("{} ", stamp());
         unstamped(info)
     }));
-    if let Err(message) = run() {
-        log!("kanna-daemon: {message}");
-        std::process::exit(1);
+    match run() {
+        Ok(Some(daemon)) => {
+            use std::os::unix::process::CommandExt;
+            log!("kanna-daemon: restarting as {}", daemon.display());
+            let error = std::process::Command::new(&daemon).args(&args).exec();
+            log!("kanna-daemon: can't restart as {}: {error}", daemon.display());
+            std::process::exit(1);
+        }
+        Ok(None) => {}
+        Err(message) => {
+            log!("kanna-daemon: {message}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -133,7 +168,7 @@ fn app_socket() -> PathBuf {
     support_folder().join("kanna/kanna.sock")
 }
 
-fn run() -> Result<(), String> {
+fn run() -> Result<Option<PathBuf>, String> {
     let _ = Brand::set_current(Brand::new("kanna", "Kanna"));
     let build_id = kanna_build::own_build_id();
     let build = Build::current();
@@ -141,17 +176,31 @@ fn run() -> Result<(), String> {
     if socket.to_string_lossy().to_lowercase() == app_socket().to_string_lossy().to_lowercase() {
         return Err(format!("{} belongs to Kanna.app; use another KANNA_SOCKET", socket.display()));
     }
+    if let Some(owner) = lifeline::owner().filter(|pid| lifeline::gone(*pid)) {
+        log!("kanna-daemon: its owner (pid {owner}, {}) is gone; not starting", lifeline::OWNER);
+        return Ok(None);
+    }
     let state_dir = env_path("KANNA_STATE_DIR").unwrap_or_else(|| socket.parent().map(Path::to_path_buf).unwrap_or_default());
     if let Ok(helper) = std::env::current_exe() {
         backlog::serve_codex_remotely(&helper, &state_dir);
     }
     std::fs::create_dir_all(&state_dir).map_err(|e| format!("can't make {}: {e}", state_dir.display()))?;
     let socket_path = socket.to_string_lossy().into_owned();
-    let _lock = lock(&state_dir)?;
+    let (_lock, waited) = lock(&state_dir)?;
+    let marker = state_dir.join(SHUTDOWN_MARKER);
+    if waited && marker.exists() {
+        log!("kanna-daemon: the daemon before it shut this Kanna down while it waited; not starting");
+        return Ok(None);
+    }
+    let _ = std::fs::remove_file(&marker);
     let _ = std::fs::write(state_dir.join(kanna_build::RECORD), format!("{:#}\n", build.record(app_bundle().as_deref())));
 
     let stop_signals = signal_set(&[libc::SIGTERM, libc::SIGINT, libc::SIGHUP]);
-    unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &stop_signals, std::ptr::null_mut()) };
+    unsafe {
+        libc::pthread_sigmask(libc::SIG_BLOCK, &stop_signals, std::ptr::null_mut());
+        libc::signal(libc::SIGALRM, libc::SIG_DFL);
+        libc::pthread_sigmask(libc::SIG_UNBLOCK, &signal_set(&[libc::SIGALRM]), std::ptr::null_mut());
+    }
 
     let (events, inbox) = mpsc::channel::<Event>();
     let db = Rc::new(db::Db::open(&state_dir));
@@ -207,13 +256,14 @@ fn run() -> Result<(), String> {
         }
     }));
     let rules = kanna_detect::Store::new(status_command::rules_config(&state_dir));
-    let _rules_updater = rules.start();
+    let rules_updater = rules.start();
     let detector = Rc::new(status::Detector::start(rules, events.clone()));
     *terminals.detector.borrow_mut() = Some(detector.clone());
     let status_commands = Rc::new(status_command::StatusCommand::new(detector.clone(), events.clone()));
     status_commands.install(&core);
     let backlog = Rc::new(backlog::Backlog::open(db.clone(), &state_dir, core.weak(), events.clone()));
     backlog.install(&core);
+    *backlog.repos.borrow_mut() = Some(projects::repos());
     let planners = Rc::downgrade(&layout);
     *backlog.planners.borrow_mut() = Some(Box::new(move || {
         let Some(layout) = planners.upgrade() else { return vec![] };
@@ -238,15 +288,40 @@ fn run() -> Result<(), String> {
     *backlog.line_mode.borrow_mut() = Some(Box::new(move |pane| modes.upgrade().is_some_and(|detector| detector.line_mode(pane))));
     let argvs = Rc::downgrade(&detector);
     *backlog.permissions.borrow_mut() = Some(Box::new(move |pane| messages::permissions(&argvs.upgrade()?.argv(pane))));
-    let projects = Rc::new(projects::Projects::new(db.clone(), std::env::var_os("HOME").map(std::path::PathBuf::from), [".kanna-v4/repos", ".kanna/repos"].map(|r| agents::home().join(r)).to_vec()));
+    let projects = Rc::new(projects::Projects::new(db.clone(), std::env::var_os("HOME").map(std::path::PathBuf::from), Some(projects::repos())));
     projects.install(&core);
-    let quiz = Rc::new(quiz::Quiz::new(db, Some(core.weak())));
+    let toasts = Rc::new(toasts::Toasts::new(core.weak()));
+    toasts.connect_backlog(&backlog);
+    toasts.install(&core);
+    let warnings = Rc::downgrade(&toasts);
+    *backlog.on_warn.borrow_mut() = Some(Box::new(move |pane, name, why| {
+        let Some(toasts) = warnings.upgrade() else { return };
+        let toast = toasts::Toast { title: format!("Messages wait for {name}"), detail: Some(why.to_string()), pane: Some(pane.to_string()), task: None, key: Some(format!("messages:{pane}:{why}")) };
+        if let Err(error) = toasts.raise(toast) {
+            log!("kanna-daemon: can't raise a toast for {pane}: {}", error.message);
+        }
+    }));
+    let quiz = Rc::new(quiz::Quiz::new(db.clone(), Some(core.weak())));
     quiz.install(&core);
-    let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone());
+    let machines = match machines::Machines::start(&state_dir, &db, events.clone()) {
+        Ok(machines) => {
+            log!("kanna-daemon: {}", machines.describe());
+            let machines = Rc::new(machines);
+            machines.install(&core);
+            Some(machines)
+        }
+        Err(reason) => {
+            log!("kanna-daemon: {reason}");
+            None
+        }
+    };
+    let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone(), agents::keys(&support_folder(), &state_dir));
     agents.refresh();
     agents.install(&core);
     let diffs = Rc::new(diffs::Diffs::new(events.clone()));
     diffs.install(&core);
+    let files = Rc::new(files::Files::new(events.clone()));
+    files.install(&core);
     let host = Rc::new(Host::new(terminals.clone()));
     core.set_host(Some(host.clone()));
     let on_change = Rc::downgrade(&terminals);
@@ -290,7 +365,11 @@ fn run() -> Result<(), String> {
     }
 
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
-    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), layout.clone(), app_timeout, build_id.clone()));
+    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), files.clone(), layout.clone(), app_timeout, build_id.clone()));
+    if let Some(machines) = &machines {
+        let machines = Rc::downgrade(machines);
+        *app.machine.borrow_mut() = Some(Box::new(move || machines.upgrade().map_or(Value::Null, |m| m.machine())));
+    }
     let view_link = Rc::downgrade(&app);
     *layout.on_view.borrow_mut() = Some(Box::new(move |view| {
         if let Some(app) = view_link.upgrade() {
@@ -305,11 +384,19 @@ fn run() -> Result<(), String> {
             app.folder(to, &cwd);
         }
     }));
+    let toast_link = Rc::downgrade(&app);
+    *toasts.on_toast.borrow_mut() = Some(Box::new(move |record| toast_link.upgrade().is_some_and(|app| app.toast(record))));
     host.connect(&app);
     let diff_link = Rc::downgrade(&app);
     *diffs.on_diff.borrow_mut() = Some(Box::new(move |views, payload| {
         if let Some(app) = diff_link.upgrade() {
             app.diff(views, payload);
+        }
+    }));
+    let file_link = Rc::downgrade(&app);
+    *files.on_file.borrow_mut() = Some(Box::new(move |views, payload| {
+        if let Some(app) = file_link.upgrade() {
+            app.file(views, payload);
         }
     }));
     let on_start = Rc::downgrade(&app);
@@ -328,12 +415,25 @@ fn run() -> Result<(), String> {
             }
         }),
     );
+    let front = link.clone();
+    core.on_front(Rc::new(move |args, responder| match front.upgrade().filter(|app| app.attached()) {
+        Some(app) => app.forward("app.front", args, responder),
+        None => responder.reply(Ok(Map::new())),
+    }));
     let resolving = Rc::downgrade(&backlog);
     core.add_command(
         "desk",
         Rc::new(move |mut args, responder| {
             let (Some(app), Some(backlog)) = (link.upgrade(), resolving.upgrade()) else { return };
-            let Some(task) = args.get("task").and_then(Value::as_str).map(String::from) else { return app.forward("desk", args, responder) };
+            let Some(task) = args.get("task").and_then(Value::as_str).map(String::from) else {
+                if let Some(folder) = args.get("project").and_then(Value::as_str).filter(|_| args.get("action").and_then(Value::as_str) == Some("desk")) {
+                    if let Err(error) = projects::desk_here(folder) {
+                        return responder.reply(Err(error));
+                    }
+                    args["place"] = projects::place(folder);
+                }
+                return app.forward("desk", args, responder);
+            };
             backlog.agent(&task, move |found| match found {
                 Ok(pane) => {
                     args["task"] = Value::String(pane);
@@ -367,26 +467,73 @@ fn run() -> Result<(), String> {
         .spawn(move || loop {
             let mut signal = 0;
             if unsafe { libc::sigwait(&stop_signals, &mut signal) } == 0 {
+                unsafe { libc::alarm(STOP_GRACE) };
                 stop.store(signal, Ordering::SeqCst);
                 let _ = quit.send(Event::Quit(signal));
                 return;
             }
         })
         .map_err(|e| e.to_string())?;
+    if let Some(owner) = lifeline::watch(events.clone()) {
+        log!("kanna-daemon: stops when its owner (pid {owner}, {}) exits", lifeline::OWNER);
+    }
     drop(events);
 
     let mut failure = None;
+    let mut restart = None;
+    let mut shutdown: Option<Shutdown> = None;
+    let begin = |why: &str, shutdown: &mut Option<Shutdown>| {
+        if shutdown.is_some() {
+            return;
+        }
+        log!("kanna-daemon: shutting down: {why}");
+        let _ = std::fs::write(state_dir.join(SHUTDOWN_MARKER), format!("{why}\n"));
+        *shutdown = Some(Shutdown::App(Instant::now() + APP_QUIT_WAIT));
+        app.quit();
+    };
     loop {
         let signal = stopping.load(Ordering::SeqCst);
         if signal != 0 {
             log!("kanna-daemon: stopping (signal {signal})");
             break;
         }
+        if let Some(Shutdown::App(by)) = shutdown {
+            if !app.attached() || Instant::now() >= by {
+                if app.attached() {
+                    log!("kanna-daemon: the app didn't quit in {}s; going on without it", APP_QUIT_WAIT.as_secs());
+                    app.close();
+                }
+                let hung_up = terminals.hang_up_all();
+                match keeper.stop() {
+                    Ok(()) => {
+                        log!("kanna-daemon: hung up {hung_up} terminal(s); the keeper is stopping");
+                        shutdown = Some(Shutdown::Keeper(Instant::now() + KEEPER_STOP_WAIT));
+                    }
+                    Err(error) => {
+                        log!("kanna-daemon: the keeper (pid {}) didn't take stop: {error}", keeper.pid());
+                        shutdown = Some(Shutdown::Done);
+                    }
+                }
+            }
+        }
+        match shutdown {
+            Some(Shutdown::Keeper(by)) if Instant::now() >= by => {
+                log!("kanna-daemon: the keeper (pid {}) didn't stop in {}s", keeper.pid(), KEEPER_STOP_WAIT.as_secs());
+                break;
+            }
+            Some(Shutdown::Done) => break,
+            _ => {}
+        }
         app.expire(Instant::now());
         terminals.save_if_changed();
-        backlog.sweep();
         layout.flush();
-        let deadline = [core.poll(), app.next_deadline(), backlog.tick(), layout.next_deadline()].into_iter().flatten().min();
+        let ticks = if shutdown.is_none() {
+            backlog.sweep();
+            backlog.tick()
+        } else {
+            Some(Instant::now() + Duration::from_millis(100))
+        };
+        let deadline = [core.poll(), app.next_deadline(), ticks, layout.next_deadline()].into_iter().flatten().min();
         let event = match deadline {
             Some(at) => inbox.recv_timeout(at.saturating_duration_since(Instant::now())),
             None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
@@ -397,8 +544,15 @@ fn run() -> Result<(), String> {
             Err(RecvTimeoutError::Disconnected) => break,
         };
         match event {
-            Event::Request(request, reply) => match () {
-                () if request.get("cmd").and_then(Value::as_str) == Some("capabilities") => {
+            Event::Request(request, reply) => timed(request_name(&request), "a client", || match request.get("cmd").and_then(Value::as_str) {
+                Some("shutdown") => {
+                    begin("asked to", &mut shutdown);
+                    reply(json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": true, "stopping": true, "pid": std::process::id() }))
+                }
+                _ if shutdown.is_some() => {
+                    reply(json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": false, "error": { "code": "stopping", "message": "this Kanna is stopping" } }))
+                }
+                Some("capabilities") => {
                     let attached = app.attached();
                     let build = build_id.clone();
                     core.handle(request, move |mut answer| {
@@ -409,8 +563,8 @@ fn run() -> Result<(), String> {
                         reply(answer)
                     })
                 }
-                () => core.handle(request, reply),
-            },
+                _ => core.handle(request, reply),
+            }),
             Event::Wake => {}
             Event::Output { terminal, serial } => {
                 let (taken, cwd) = terminals.output(&terminal, serial);
@@ -443,6 +597,7 @@ fn run() -> Result<(), String> {
             Event::Finished { task, changes } => backlog.finished(&task, changes),
             Event::Diff { id, diff } => diffs.loaded(&id, diff),
             Event::DiffUpdating { id } => diffs.updating(&id),
+            Event::File { id, read } => files.loaded(&id, read),
             Event::KeeperReadable | Event::KeeperHeard => {
                 let heard = keeper.take();
                 if matches!(event, Event::KeeperReadable) {
@@ -454,46 +609,100 @@ fn run() -> Result<(), String> {
                             ended(&terminals, &backlog, &app, &terminal, code);
                         }
                     }
+                    Err(_) if matches!(shutdown, Some(Shutdown::Keeper(_))) => {
+                        log!("kanna-daemon: the keeper stopped");
+                        break;
+                    }
                     Err(reason) => {
                         failure = Some(reason);
                         break;
                     }
                 }
             }
+            Event::KeeperLost(_) if matches!(shutdown, Some(Shutdown::Keeper(_))) => {
+                log!("kanna-daemon: the keeper stopped");
+                break;
+            }
             Event::KeeperLost(reason) => {
                 failure = Some(reason);
                 break;
             }
-            Event::AppHello { conn, hello, out, stream } => {
-                if app.hello(conn, hello, out, stream) {
+            Event::AppHello { conn, hello, out, stream, remote } => {
+                if app.hello(conn, hello, out, stream, remote) {
                     break;
                 }
+                toasts.attached();
             }
             Event::AppMessage { conn, message } => {
                 if let Some(request) = app.message(conn, message) {
+                    if let Some(refused) = machines::refuse_remote(&request).filter(|_| !app.attached_here()) {
+                        app.answer_app(conn, refused);
+                        continue;
+                    }
                     let link = Rc::downgrade(&app);
-                    core.handle(request, move |reply| {
-                        if let Some(link) = link.upgrade() {
-                            link.answer_app(conn, reply);
-                        }
+                    timed(request_name(&request), "the app", || {
+                        core.handle(request, move |reply| {
+                            if let Some(link) = link.upgrade() {
+                                link.answer_app(conn, reply);
+                            }
+                        })
                     });
                 }
             }
             Event::AppGone { conn } => app.gone(conn),
             Event::AppCaughtUp { conn } => app.caught_up(conn),
+            Event::MachineConfirm { question, answer } => match &machines {
+                Some(machines) => machines.confirm(&app, question, answer),
+                None => answer(Err("this daemon has no endpoint".into())),
+            },
+            Event::MachinesSave(doc) => {
+                if let Err(error) = db.put_machines(&doc) {
+                    log!("kanna-daemon: can't save your machines in kanna.db: {error}");
+                }
+            }
+            Event::Restart => match machines.as_ref().and_then(|m| m.install.as_ref()) {
+                Some(install) if shutdown.is_none() => {
+                    log!("kanna-daemon: updated to {}; restarting, and the keeper keeps the terminals", install.current().unwrap_or_default());
+                    restart = Some(install.daemon());
+                    break;
+                }
+                _ => {}
+            },
             Event::Quit(_) => continue,
+            Event::Shutdown(why) => begin(&why, &mut shutdown),
         }
     }
 
-    server.stop();
     app.close();
     layout.flush();
     layout.save_now();
     terminals.shutdown();
+    if let Some(machines) = &machines {
+        machines.stop();
+    }
     let _ = std::fs::remove_file(&pid_file);
+    std::mem::forget(rules_updater);
+    server.stop();
     match failure {
         Some(reason) => Err(format!("{reason}; stopping")),
-        None => Ok(()),
+        None => Ok(restart),
+    }
+}
+
+fn timed(name: String, from: &str, handle: impl FnOnce()) {
+    let started = Instant::now();
+    handle();
+    let took = started.elapsed();
+    if took > SLOW_REQUEST {
+        log!("kanna-daemon: {name} from {from} took {}ms", took.as_millis());
+    }
+}
+
+fn request_name(request: &Value) -> String {
+    let cmd = request.get("cmd").and_then(Value::as_str).unwrap_or("?");
+    match request.get("args").and_then(|args| args.get("action")).and_then(Value::as_str) {
+        Some(action) => format!("{cmd} {action}"),
+        None => cmd.to_string(),
     }
 }
 
@@ -518,7 +727,7 @@ fn app_bundle() -> Option<PathBuf> {
     (helpers.file_name()? == "Helpers" && contents.file_name()? == "Contents" && app.extension()? == "app").then(|| app.to_path_buf())
 }
 
-fn lock(state_dir: &Path) -> Result<std::fs::File, String> {
+fn lock(state_dir: &Path) -> Result<(std::fs::File, bool), String> {
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::OpenOptionsExt;
     let path = state_dir.join("daemon.lock");
@@ -532,14 +741,16 @@ fn lock(state_dir: &Path) -> Result<std::fs::File, String> {
         .open(&path)
         .map_err(|e| format!("can't open {}: {e}", path.display()))?;
     let deadline = Instant::now() + LOCK_WAIT;
+    let mut waited = false;
     while unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         if Instant::now() >= deadline {
             let other = std::fs::read_to_string(state_dir.join("daemon.pid")).unwrap_or_default();
             return Err(format!("another daemon (pid {}) uses {}", other.trim(), state_dir.display()));
         }
+        waited = true;
         std::thread::sleep(Duration::from_millis(50));
     }
-    Ok(file)
+    Ok((file, waited))
 }
 
 fn signal_set(signals: &[libc::c_int]) -> libc::sigset_t {

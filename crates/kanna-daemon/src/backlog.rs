@@ -1,5 +1,6 @@
 use crate::db::{self, Change, Db, Message, Place, Row};
 use crate::messages::{self, Channel, Ready, PLANNER, USER};
+use crate::project_import;
 use crate::task_scripts::{self, Cleanup, Scripts, Setup};
 use crate::Event;
 use kanna_mux::json::{json, num, opt, string, Map, Value};
@@ -181,7 +182,13 @@ const RUNNERS_MAX: usize = 10;
 
 pub fn runners(files: &[PathBuf]) -> usize {
     let read = |value: &Value| value.as_u64().map(|n| n as usize).filter(|n| *n <= RUNNERS_MAX);
-    configured(files, "backlog", "runners", read, "a number of tasks from 0 to 10").unwrap_or(RUNNERS)
+    files
+        .iter()
+        .find_map(|file| {
+            let file = std::slice::from_ref(file);
+            configured(file, "shelf", "runners", read, "a number of tasks from 0 to 10").or_else(|| configured(file, "backlog", "runners", read, "a number of tasks from 0 to 10"))
+        })
+        .unwrap_or(RUNNERS)
 }
 
 pub fn scripts(files: &[PathBuf]) -> Scripts {
@@ -210,13 +217,31 @@ pub const QUIZ_ROLE: &str = "You are the Kanna quiz agent, on main: quiz me on w
 
 /// How an agent Kanna starts in a role starts: as you'd start it yourself, with its first message saying its role.
 pub fn started_as(program: &str, role: &str, context: Option<u64>) -> String {
-    let command = match (agent(program).and_then(|a| a.compact), context) {
+    started_in(program, role, context, None)
+}
+
+fn launched(program: &str, context: Option<u64>) -> String {
+    match (agent(program).and_then(|a| a.compact), context) {
         (Some(flag), Some(tokens)) => in_its_terminal(&format!("{} {flag}{tokens}", unprompted(program))),
         _ => in_its_terminal(&unprompted(program)),
-    };
+    }
+}
+
+fn started_in(program: &str, role: &str, context: Option<u64>, session: Option<&str>) -> String {
+    let mut command = launched(program, context);
+    if let Some((session, flag)) = session.zip(agent(program).and_then(|a| a.named)) {
+        command = format!("{command} {flag} {}", quote(session));
+    }
     match agent(program).and_then(|a| a.prompt) {
         Some(flag) => format!("{command} {flag} {}", quote(role)),
         None => format!("{command} {}", quote(role)),
+    }
+}
+
+fn resumed_as(program: &str, context: Option<u64>, session: &str) -> String {
+    match agent(program) {
+        Some(known) => format!("{} {} {}", launched(program, context), known.resume, quote(session)),
+        None => launched(program, context),
     }
 }
 
@@ -256,6 +281,30 @@ pub fn planner_command(script: Option<&str>, context: Option<u64>, zsh: Option<&
     format!("{limit}{ask}{integrate}exec \"${{SHELL:-/bin/sh}}\" -l")
 }
 
+fn planner_program(name: &str, context: Option<u64>) -> Option<String> {
+    planner_agents(context).into_iter().find(|(n, _, _)| n == name).map(|(_, program, _)| program)
+}
+
+#[derive(Debug, PartialEq)]
+enum Comeback {
+    Resume(String),
+    Busy,
+    Lost,
+    New,
+}
+
+fn comeback(kept: Option<&Value>, agent: &str, pane: &str, live: impl Fn(&str) -> bool, find: impl FnOnce(SystemTime) -> Option<String>) -> Comeback {
+    let Some(kept) = kept.filter(|k| string(k, "agent") == Some(agent)) else { return Comeback::New };
+    if kept.get("running") == Some(&Value::Bool(true)) && string(kept, "pane").is_some_and(|other| other != pane && live(other)) {
+        return Comeback::Busy;
+    }
+    let started = kept.get("started").and_then(Value::as_f64).map(|at| UNIX_EPOCH + Duration::from_secs_f64(at));
+    match string(kept, "session").map(String::from).or_else(|| started.and_then(find)) {
+        Some(session) => Comeback::Resume(session),
+        None => Comeback::Lost,
+    }
+}
+
 fn cli() -> Option<PathBuf> {
     std::env::current_exe().ok()?.parent().map(|dir| dir.join("kanna")).filter(|cli| cli.is_file())
 }
@@ -278,7 +327,7 @@ struct Agent {
 
 const AGENTS: &[Agent] = &[
     Agent { names: &["claude"], unprompted: Some("--dangerously-skip-permissions"), prompt: None, named: Some("--session-id"), resume: "--resume", latest: Some("--continue"), find: None, compact: None },
-    Agent { names: &["codex"], unprompted: Some("--yolo"), prompt: None, named: None, resume: "resume", latest: Some("resume --last"), find: None, compact: Some("-c model_auto_compact_token_limit=") },
+    Agent { names: &["codex"], unprompted: Some("--yolo"), prompt: None, named: None, resume: "resume", latest: Some("resume --last"), find: Some(codex_session), compact: Some("-c model_auto_compact_token_limit=") },
     Agent { names: &["copilot"], unprompted: Some("--yolo"), prompt: Some("-i"), named: Some("--session-id"), resume: "--session-id", latest: None, find: Some(copilot_session), compact: None },
     Agent { names: &["opencode"], unprompted: None, prompt: Some("--prompt"), named: None, resume: "--session", latest: None, find: Some(opencode_session), compact: None },
     Agent { names: &["agy", "antigravity"], unprompted: Some("--dangerously-skip-permissions"), prompt: Some("-i"), named: None, resume: "--conversation", latest: Some("--continue"), find: None, compact: None },
@@ -317,6 +366,90 @@ fn latest_copilot_session(state: &Path, folder: &Path) -> Option<String> {
         .collect();
     sessions.sort();
     sessions.pop().map(|(_, id)| id)
+}
+
+fn codex_session(folder: &Path) -> Option<String> {
+    let codex = std::env::var_os("CODEX_HOME").filter(|d| !d.is_empty()).map_or_else(|| home().join(".codex"), PathBuf::from);
+    latest_codex_session(&codex.join("sessions"), folder, fs::metadata(folder).and_then(|m| m.created()).ok())
+}
+
+fn latest_codex_session(sessions: &Path, folder: &Path, since: Option<SystemTime>) -> Option<String> {
+    let newest_first = |dir: &Path| {
+        let mut paths: Vec<PathBuf> = fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).collect();
+        paths.sort_by(|a, b| b.cmp(a));
+        paths
+    };
+    let days = newest_first(sessions).into_iter().flat_map(|year| newest_first(&year)).flat_map(|month| newest_first(&month)).filter(|day| day.is_dir());
+    let before = |path: &Path| since.zip(fs::metadata(path).and_then(|m| m.modified()).ok()).is_some_and(|(since, at)| at < since);
+    for day in days.take_while(|day| !before(day)) {
+        for rollout in newest_first(&day) {
+            let name = rollout.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if !(name.starts_with("rollout-") && name.ends_with(".jsonl")) || before(&rollout) {
+                continue;
+            }
+            let Some(meta) = first_line(&rollout).and_then(|line| serde_json::from_str::<Value>(&line).ok()) else { continue };
+            let Some(payload) = meta.get("payload").filter(|_| string(&meta, "type") == Some("session_meta")) else { continue };
+            if string(payload, "cwd").is_some_and(|cwd| same_folder(Path::new(cwd), folder)) {
+                if let Some(id) = string(payload, "id").filter(|id| !id.is_empty()) {
+                    return Some(id.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn first_session_since(program: &str, folder: &Path, since: SystemTime) -> Option<String> {
+    match agent(program)?.names[0] {
+        "codex" => {
+            let codex = std::env::var_os("CODEX_HOME").filter(|d| !d.is_empty()).map_or_else(|| home().join(".codex"), PathBuf::from);
+            first_codex_session(&codex.join("sessions"), folder, since)
+        }
+        "opencode" => {
+            let data = std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()).map_or_else(|| home().join(".local/share"), PathBuf::from);
+            first_opencode_session(&data.join("opencode/opencode.db"), folder, since)
+        }
+        _ => None,
+    }
+}
+
+fn first_codex_session(sessions: &Path, folder: &Path, since: SystemTime) -> Option<String> {
+    let listed = |dir: &Path| fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).collect::<Vec<_>>();
+    let made = |path: &Path| fs::metadata(path).and_then(|m| m.created().or_else(|_| m.modified())).ok();
+    let touched = |path: &Path| fs::metadata(path).and_then(|m| m.modified()).ok().is_some_and(|at| at >= since);
+    let days = listed(sessions).into_iter().flat_map(|year| listed(&year)).flat_map(|month| listed(&month)).filter(|day| day.is_dir() && touched(day));
+    let mut found: Vec<(SystemTime, String)> = days
+        .flat_map(|day| listed(&day))
+        .filter_map(|rollout| {
+            let name = rollout.file_name()?.to_str()?;
+            (name.starts_with("rollout-") && name.ends_with(".jsonl")).then_some(())?;
+            let at = made(&rollout).filter(|at| *at >= since)?;
+            let meta = serde_json::from_str::<Value>(&first_line(&rollout)?).ok()?;
+            let payload = meta.get("payload").filter(|_| string(&meta, "type") == Some("session_meta"))?;
+            string(payload, "cwd").is_some_and(|cwd| same_folder(Path::new(cwd), folder)).then_some(())?;
+            Some((at, string(payload, "id").filter(|id| !id.is_empty())?.to_string()))
+        })
+        .collect();
+    found.sort();
+    found.into_iter().next().map(|(_, id)| id)
+}
+
+fn first_opencode_session(db: &Path, folder: &Path, since: SystemTime) -> Option<String> {
+    if !db.is_file() {
+        return None;
+    }
+    let after = since.duration_since(UNIX_EPOCH).ok()?.as_millis();
+    let query = format!("select id, directory from session where parent_id is null and time_archived is null and time_created >= {after} order by time_created limit 1000");
+    let out = Command::new("/usr/bin/sqlite3").arg("-readonly").arg("-json").arg(db).arg(query).output().ok().filter(|o| o.status.success())?;
+    let rows = serde_json::from_slice::<Value>(&out.stdout).ok()?;
+    rows.as_array()?.iter().find(|row| string(row, "directory").is_some_and(|dir| same_folder(Path::new(dir), folder))).and_then(|row| string(row, "id")).map(String::from)
+}
+
+fn first_line(file: &Path) -> Option<String> {
+    use std::io::{BufRead, Read};
+    let mut line = String::new();
+    std::io::BufReader::new(fs::File::open(file).ok()?.take(4 << 20)).read_line(&mut line).ok()?;
+    Some(line)
 }
 
 fn opencode_session(folder: &Path) -> Option<String> {
@@ -389,7 +522,7 @@ fn started_here(task: &str, pane: &str, place: &str) -> Map {
 }
 
 fn not_found(id: &str) -> KmuxError {
-    KmuxError::new("not_found", format!("no task \"{id}\" in the backlog"))
+    KmuxError::new("not_found", format!("no task \"{id}\" on the Shelf"))
 }
 
 fn failed(value: &Value) -> Option<KmuxError> {
@@ -552,12 +685,45 @@ pub struct Backlog {
     ready: RefCell<HashMap<String, Ready>>,
     pub planners: RefCell<Option<Box<dyn Fn() -> Vec<String>>>>,
     pub channel: RefCell<Option<Box<dyn Fn(&str) -> Option<Channel>>>>,
+    pub on_warn: RefCell<Option<Box<dyn Fn(&str, &str, &str)>>>,
     pub permissions: RefCell<Option<Box<dyn Fn(&str) -> Option<&'static str>>>>,
     pub line_mode: RefCell<Option<Box<dyn Fn(&str) -> bool>>>,
     warned: RefCell<HashMap<String, String>>,
     delivering: RefCell<HashSet<String>>,
     posting: RefCell<HashMap<u64, (String, Vec<Message>)>>,
     pub on_change: RefCell<Option<Box<dyn Fn(Value)>>>,
+    pub claimant: RefCell<String>,
+    pub repos: RefCell<Option<PathBuf>>,
+    importing: RefCell<Option<project_import::Import>>,
+}
+
+#[derive(Clone)]
+struct Join(Rc<(Cell<usize>, RefCell<Vec<String>>, RefCell<Option<Box<dyn FnOnce(Vec<String>)>>>)>);
+
+impl Join {
+    fn new(count: usize, then: impl FnOnce(Vec<String>) + 'static) -> Join {
+        let join = Join(Rc::new((Cell::new(count), RefCell::default(), RefCell::new(Some(Box::new(then))))));
+        if count == 0 {
+            join.finish();
+        }
+        join
+    }
+
+    fn done(&self, error: Option<String>) {
+        self.0 .1.borrow_mut().extend(error);
+        let left = self.0 .0.get().saturating_sub(1);
+        self.0 .0.set(left);
+        if left == 0 {
+            self.finish();
+        }
+    }
+
+    fn finish(&self) {
+        let then = self.0 .2.borrow_mut().take();
+        if let Some(then) = then {
+            then(self.0 .1.take());
+        }
+    }
 }
 
 struct Book(Weak<Backlog>);
@@ -576,6 +742,10 @@ impl TaskBook for Book {
             backlog.sync_workspaces(workspaces);
         }
     }
+
+    fn starting(&self, task: &str) -> bool {
+        self.0.upgrade().is_some_and(|backlog| backlog.launching.borrow().contains(task))
+    }
 }
 
 impl Backlog {
@@ -592,7 +762,7 @@ impl Backlog {
                     let entry = Entry::from_row(row);
                     let back = Change::new("deferred").moved(row.place, Place::Backlog).by(Some("daemon"));
                     if let Err(error) = db.put(&entry.row(Place::Backlog, None), Some(&back)) {
-                        log!("kanna-daemon: couldn't put {} back on the backlog: {error}", entry.id);
+                        log!("kanna-daemon: couldn't put {} back on the Shelf: {error}", entry.id);
                     }
                     entries.push(entry);
                 }
@@ -616,6 +786,7 @@ impl Backlog {
             branching: RefCell::default(),
             turns_away: RefCell::default(),
             next: Cell::new(0),
+            claimant: RefCell::new(MAC_APP.into()),
             turns: RefCell::default(),
             quitting: RefCell::default(),
             launching: RefCell::default(),
@@ -630,16 +801,23 @@ impl Backlog {
             channel: RefCell::default(),
             permissions: RefCell::default(),
             line_mode: RefCell::default(),
+            on_warn: RefCell::default(),
             warned: RefCell::default(),
             delivering: RefCell::default(),
             posting: RefCell::default(),
             on_change: RefCell::default(),
+            repos: RefCell::default(),
+            importing: RefCell::default(),
         }
     }
 
     pub fn view(&self) -> Value {
         let tasks = self.entries.borrow().clone().iter().map(|e| self.described(e)).collect();
-        json!({ "tasks": Value::Array(tasks) })
+        let order = self.db.made_order().unwrap_or_default();
+        let mut running: Vec<(usize, String, String, f64)> = self.running.borrow().iter().map(|r| (order.iter().position(|id| *id == r.entry.id).unwrap_or(usize::MAX), r.entry.id.clone(), r.pane.clone(), r.entry.made_at)).collect();
+        running.sort_by_key(|r| r.0);
+        let desk = running.into_iter().map(|(_, id, pane, made_at)| json!({ "id": id, "pane": pane, "madeAt": num(made_at) })).collect();
+        json!({ "tasks": Value::Array(tasks), "desk": Value::Array(desk) })
     }
 
     fn workspace_of(&self, reference: &str) -> Option<Result<String, KmuxError>> {
@@ -726,6 +904,13 @@ impl Backlog {
         });
     }
 
+    pub fn about(&self, reference: &str) -> Result<(String, Option<String>, Option<String>), KmuxError> {
+        let id = self.resolve(reference)?.ok_or_else(|| KmuxError::new("not_found", format!("no task \"{reference}\"")))?;
+        let running = self.running.borrow().iter().find(|r| r.entry.id == id).map(|r| r.pane.clone());
+        let pane = running.or_else(|| self.entries.borrow().iter().find(|e| e.id == id).and_then(|e| e.held.clone()));
+        Ok((id.clone(), self.known(&id).and_then(|e| e.name), pane))
+    }
+
     fn short(&self, id: &str) -> String {
         db::short_id(id, self.open_tasks().iter().map(|e| e.id.as_str()))
     }
@@ -784,6 +969,7 @@ impl Backlog {
         value["script"] = opt(self.script_said(entry, entry.held.as_deref(), running).as_deref());
         let waits = self.waits(entry).iter().map(|id| json!({ "id": id, "name": opt(self.known(id).and_then(|e| e.name).as_deref()), "pane": opt(self.pane_of(id).as_deref()) })).collect();
         value["waits"] = Value::Array(waits);
+        value["project"] = opt(kanna_mux::project(Some(&entry.repo)).and_then(|main| crate::projects::identity(&main)).as_deref());
         value
     }
 
@@ -810,7 +996,18 @@ impl Backlog {
         })
     }
 
+    fn placed(&self, repo: &str) -> Result<(), KmuxError> {
+        if let Some(importing) = self.importing.borrow().as_ref().filter(|m| m.holds(repo)) {
+            return Err(KmuxError::new("importing", format!("{} is being imported to {}: try again once it's there", crate::projects::tilde(&importing.from), crate::projects::tilde(&importing.to))));
+        }
+        match self.repos.borrow().as_deref() {
+            Some(repos) => crate::projects::outside(repos, Path::new(repo)),
+            None => Ok(()),
+        }
+    }
+
     fn ready(&self, entry: &Entry) -> Result<(), KmuxError> {
+        self.placed(&entry.repo)?;
         if entry.folder.is_some() || entry.held.is_some() {
             return Ok(());
         }
@@ -826,7 +1023,7 @@ impl Backlog {
     fn edit(&self, args: &Value) -> Result<Map, KmuxError> {
         let reference = string(args, "task").ok_or_else(|| bad("say which task"))?;
         let Some(mut entry) = self.entries.borrow().iter().find(|e| e.id == reference).cloned() else {
-            return Err(KmuxError::new("not_found", format!("no backlog task \"{reference}\"")));
+            return Err(KmuxError::new("not_found", format!("no Shelf task \"{reference}\"")));
         };
         if entry.folder.is_some() {
             return Err(KmuxError::new("started", format!("{} has started: its branch is made, and nothing holds it back now", self.short(reference))));
@@ -850,7 +1047,7 @@ impl Backlog {
         let waiting = self.entries.borrow().iter().find(|e| e.id == reference).cloned();
         let Some(entry) = waiting else {
             let running = self.running.borrow().iter().find(|r| r.entry.id == reference).map(|r| r.pane.clone());
-            let Some(pane) = running else { return responder.reply(Err(KmuxError::new("not_found", format!("no task \"{reference}\" in the backlog or on the Shelf")))) };
+            let Some(pane) = running else { return responder.reply(Err(KmuxError::new("not_found", format!("no task \"{reference}\" on the Shelf or on the Desk")))) };
             let id = reference.to_string();
             return core.handle(json!({ "cmd": "rename-pane", "args": { "pane": pane, "name": name } }), move |reply| match failed(&reply) {
                 Some(error) => responder.reply(Err(error)),
@@ -897,7 +1094,7 @@ impl Backlog {
         }
     }
 
-    fn task_of(&self, pane: &str) -> Option<String> {
+    pub fn task_of(&self, pane: &str) -> Option<String> {
         let running = self.running.borrow().iter().find(|r| r.pane == pane).map(|r| r.entry.id.clone());
         running.or_else(|| self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).map(|e| e.id.clone()))
     }
@@ -944,6 +1141,27 @@ impl Backlog {
             } else {
                 turn.see(status, Instant::now());
             }
+        }
+        self.find_session(pane);
+    }
+
+    fn find_session(&self, pane: &str) {
+        let found = |entry: &Entry| Some(entry).filter(|e| e.session.is_none() && e.folder.is_some()).map(|e| e.clone().resumable()).filter(|e| e.session.is_some());
+        let running = self.running.borrow().iter().find(|r| r.pane == pane).map(|r| (r.entry.clone(), r.place));
+        let (entry, place) = match running {
+            Some((entry, place)) => (found(&entry), place),
+            None => (self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).and_then(found), Place::Backlog),
+        };
+        let Some(entry) = entry else { return };
+        let _ = self.store(&entry, place, Some(pane), Some(Change::new("session").by(Some("daemon")).with("session", opt(entry.session.as_deref()))));
+        if let Some(r) = self.running.borrow_mut().iter_mut().find(|r| r.pane == pane) {
+            r.entry.session = entry.session.clone();
+        }
+        if let Some(found) = self.entries.borrow_mut().iter_mut().find(|e| e.id == entry.id) {
+            found.session = entry.session.clone();
+        }
+        if let Some(core) = self.core.upgrade() {
+            core.set_command(pane, entry.command(None));
         }
     }
 
@@ -1127,7 +1345,7 @@ impl Backlog {
         let starting: HashSet<String> = self.pending.borrow().values().map(|p| p.entry.id.clone()).chain(self.launching.borrow().iter().cloned()).collect();
         for repo in repos {
             let slots = runners(&config_files(Path::new(repo)));
-            if slots == 0 {
+            if slots == 0 || self.placed(repo).is_err() {
                 continue;
             }
             let mine: Vec<&Entry> = entries.iter().filter(|e| e.repo == repo).collect();
@@ -1141,7 +1359,7 @@ impl Backlog {
                     break;
                 }
                 busy += 1;
-                log!("kanna-daemon: {} has a message, so it runs in the backlog ({busy} of {slots} in {repo})", entry.id);
+                log!("kanna-daemon: {} has a message, so it runs on the Shelf ({busy} of {slots} in {repo})", entry.id);
                 self.wake(core, (*entry).clone());
             }
             let mut waiting: Vec<&&Entry> = mine.iter().filter(|e| e.folder.is_none() && e.held.is_none() && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && self.waits(e).is_empty()).collect();
@@ -1152,10 +1370,10 @@ impl Backlog {
                 }
                 busy += 1;
                 let (this, id) = (Rc::downgrade(self), entry.id.clone());
-                log!("kanna-daemon: {id} runs in the backlog ({busy} of {slots} in {repo})");
+                log!("kanna-daemon: {id} runs on the Shelf ({busy} of {slots} in {repo})");
                 self.prepare((*entry).clone(), None, Some("daemon".into()), Answer::Then(Box::new(move |result| {
                     if let (Err(error), Some(this)) = (result, this.upgrade()) {
-                        log!("kanna-daemon: {id} couldn't run in the backlog: {}", error.message);
+                        log!("kanna-daemon: {id} couldn't run on the Shelf: {}", error.message);
                         this.failed.borrow_mut().insert(id);
                     }
                 })));
@@ -1242,14 +1460,6 @@ impl Backlog {
         }
     }
 
-    fn mint_for(&self, pane: &Pane) -> Result<Entry, KmuxError> {
-        let Some(folder) = pane.opened_in.clone().or(pane.cwd.clone()) else { return Err(bad(format!("{} has no folder to come back to", pane.id))) };
-        let repo = project(Some(&folder)).map(|r| r.to_string_lossy().to_string()).unwrap_or_default();
-        let agent = pane.command.as_deref().map(program).filter(|p| !p.is_empty()).map(String::from);
-        let args = json!({ "repo": repo, "agent": opt(agent.as_deref()) });
-        Ok(Entry { folder: Some(folder), ..self.mint(&args, pane.name.clone(), None)? })
-    }
-
     fn renamed(&self, from: &str, to: &str) {
         fn rekey<T>(map: &RefCell<HashMap<String, T>>, from: &str, to: &str) {
             let moved = map.borrow_mut().remove(from);
@@ -1326,13 +1536,197 @@ impl Backlog {
                     Some("shelve") => this.shelve(&args, responder),
                     Some("defer") => this.defer(&args, responder),
                     Some("plan") => this.plan(&args, responder),
+                    Some("planner") => this.planner(&args, responder),
                     Some("events") => responder.reply(this.events(&args)),
                     Some("send") => responder.reply(this.send(&args)),
                     Some("messages") => responder.reply(this.messages(&args)),
-                    _ => responder.reply(Err(bad("backlog needs an action: new, edit, name, list, resolve, done, start, stop, setup, shelve, defer, plan, events, send or messages"))),
+                    _ => responder.reply(Err(bad("backlog needs an action: new, edit, name, list, resolve, done, start, stop, setup, shelve, defer, plan, planner, events, send or messages"))),
                 }
             }),
         );
+        let this = Rc::downgrade(self);
+        core.add_command(
+            "project",
+            Rc::new(move |args, responder| {
+                let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
+                match args.get("action").and_then(Value::as_str) {
+                    Some("import") => this.import(&args, responder),
+                    Some("asked") => responder.reply(this.asked(&args)),
+                    Some("never") => responder.reply(this.never(&args)),
+                    _ => responder.reply(Err(bad("project needs an action: import, asked or never"))),
+                }
+            }),
+        );
+    }
+
+    fn outside_project(&self, args: &Value) -> Result<PathBuf, KmuxError> {
+        let repos = self.repos.borrow().clone().ok_or_else(|| bad("this Kanna keeps no projects folder"))?;
+        let path = string(args, "path").map(|p| project_import::expand(p, &crate::agents::home())).filter(|p| p.is_absolute()).ok_or_else(|| bad("say which project: an absolute path"))?;
+        let (main, _) = crate::projects::misplaced(&repos, &path).ok_or_else(|| KmuxError::new("in_place", format!("{} is in its place already", crate::projects::tilde(&path))))?;
+        Ok(crate::projects::canonical(&main))
+    }
+
+    fn asked(&self, args: &Value) -> Result<Map, KmuxError> {
+        let main = self.outside_project(args)?;
+        let never = self.db.never_imports(&main.to_string_lossy()).map_err(|e| KmuxError::new("failed", format!("couldn't read {}: {e}", db::FILE)))?;
+        Ok(Map::from_iter([("path".to_string(), json!(main)), ("never".to_string(), json!(never))]))
+    }
+
+    fn never(&self, args: &Value) -> Result<Map, KmuxError> {
+        let main = self.outside_project(args)?;
+        self.db.never_import(&main.to_string_lossy()).map_err(|e| KmuxError::new("failed", format!("couldn't write {}: {e}", db::FILE)))?;
+        log!("kanna-daemon: {} won't be offered for import again", main.display());
+        Ok(Map::from_iter([("path".to_string(), json!(main)), ("never".to_string(), json!(true))]))
+    }
+
+    fn import(self: &Rc<Self>, args: &Value, responder: Responder) {
+        let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
+        let Some(repos) = self.repos.borrow().clone() else { return responder.reply(Err(bad("this Kanna keeps no projects folder"))) };
+        let home = crate::agents::home();
+        let Some(path) = string(args, "path").map(|p| project_import::expand(p, &home)).filter(|p| p.is_absolute()) else { return responder.reply(Err(bad("say which project: kanna project import PATH"))) };
+        let homes: Vec<PathBuf> = std::iter::once(home).chain(std::env::var_os("HOME").map(PathBuf::from)).collect();
+        let plan = match project_import::plan(&repos, &path, &homes) {
+            Ok(plan) => plan,
+            Err(error) => return responder.reply(Err(error)),
+        };
+        let shown = crate::projects::tilde(&plan.from);
+        let starting = self.pending.borrow().values().any(|p| plan.holds(&p.entry.repo)) || self.tearing_down.borrow().values().any(|t| plan.holds(&t.entry.repo)) || self.setting_up.borrow().values().any(|s| plan.holds(&s.worktree.to_string_lossy()));
+        if starting || self.importing.borrow().is_some() {
+            return responder.reply(Err(KmuxError::new("busy", format!("a task in {shown} is starting, setting up or ending, or a project is being imported: import it once that's done"))));
+        }
+        let mut tasks: Vec<(String, String)> = self.running.borrow().iter().filter(|r| plan.holds(&r.entry.repo) && alive(&core, &r.pane)).map(|r| (r.entry.id.clone(), r.pane.clone())).collect();
+        tasks.extend(self.entries.borrow().iter().filter(|e| plan.holds(&e.repo)).filter_map(|e| e.held.clone().filter(|pane| alive(&core, pane)).map(|pane| (e.id.clone(), pane))));
+        let caller = string(args, "by").and_then(|by| core.pane(by));
+        if let Some(caller) = caller.as_ref().filter(|c| c.cwd.as_deref().is_some_and(|cwd| plan.holds(cwd)) || tasks.iter().any(|(_, pane)| *pane == c.id)) {
+            return responder.reply(Err(KmuxError::new("here", format!("{} is in {shown}, and the import stops every terminal there: run kanna project import from a terminal outside it", caller.label()))));
+        }
+        let caller = caller.map(|c| c.id);
+        let by = who(args).map(String::from);
+        *self.importing.borrow_mut() = Some(plan.clone());
+        log!("kanna-daemon: importing {} to {}: stopping {} task(s)", plan.from.display(), plan.to.display(), tasks.len());
+        let this = Rc::downgrade(self);
+        let ids: Vec<String> = tasks.iter().map(|(id, _)| id.clone()).collect();
+        let stopped = Join::new(tasks.len(), move |errors| {
+            let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
+            if !errors.is_empty() {
+                return this.restart_after_import(plan, ids, vec![], by, Err(format!("couldn't stop every task: {}", errors.join("; "))), responder);
+            }
+            this.end_terminals(plan, ids, caller, by, responder);
+        });
+        for (id, _) in tasks {
+            let join = stopped.clone();
+            core.handle(json!({ "cmd": "backlog", "args": { "action": "stop", "task": id, "by": who(args) } }), move |reply| join.done(failed(&reply).map(|e| e.message)));
+        }
+    }
+
+    fn end_terminals(self: &Rc<Self>, plan: project_import::Import, tasks: Vec<String>, caller: Option<String>, by: Option<String>, responder: Responder) {
+        let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
+        let planners = self.planners();
+        let live: Vec<Pane> = core.with_panes(|panes| panes.iter().filter(|p| p.kind == kanna_mux::PaneType::Term && matches!(p.state, PaneState::Starting | PaneState::Running)).cloned().collect());
+        let ending: Vec<String> = live.into_iter().filter(|p| Some(&p.id) != caller.as_ref() && [&p.cwd, &p.opened_in].into_iter().flatten().any(|f| plan.holds(f))).map(|p| p.id).collect();
+        let this = Rc::downgrade(self);
+        let terminals = ending.clone();
+        let ended = Join::new(ending.len(), move |errors| {
+            let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
+            let result = match errors.is_empty() {
+                true => project_import::copy(&plan),
+                false => Err(format!("couldn't stop every terminal: {}", errors.join("; "))),
+            };
+            this.restart_after_import(plan, tasks, terminals, by, result, responder);
+        });
+        for pane in ending {
+            let join = ended.clone();
+            let key = project(core.pane(&pane).and_then(|p| p.cwd).as_deref()).map(|p| p.to_string_lossy().into_owned());
+            let kept = key.filter(|_| planners.contains(&pane)).and_then(|key| self.db.planner(&key).ok().flatten()).filter(|k| k.get("running") == Some(&Value::Bool(true)) && string(k, "pane") == Some(pane.as_str()));
+            let weak = core.weak();
+            let end = move |pane: String| match weak.upgrade() {
+                Some(core) => core.end(&pane, move |ended| join.done(ended.err().map(|e| e.message))),
+                None => join.done(Some("the daemon is stopping".into())),
+            };
+            match kept.as_ref().and_then(|k| string(k, "agent")).and_then(|name| planner_program(name, None)) {
+                Some(program) => {
+                    let id = pane.clone();
+                    self.end_agent(&pane, &program, move |_| end(id));
+                }
+                None => end(pane),
+            }
+        }
+    }
+
+    fn restart_after_import(self: &Rc<Self>, plan: project_import::Import, tasks: Vec<String>, terminals: Vec<String>, by: Option<String>, copied: Result<project_import::Copied, String>, responder: Responder) {
+        self.importing.borrow_mut().take();
+        let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
+        let mut reply = Map::new();
+        if let Ok(copied) = &copied {
+            let mut sessions = project_import::Carried::default();
+            for from in plan.froms() {
+                let found = project_import::Stores::here().carry(&from, &plan.to);
+                sessions = project_import::Carried { claude: sessions.claude + found.claude, codex: sessions.codex + found.codex, copilot: sessions.copilot + found.copilot, opencode: sessions.opencode + found.opencode, kept: [sessions.kept, found.kept].concat() };
+                if let Err(error) = self.db.relocate(&from.to_string_lossy(), &plan.to.to_string_lossy()) {
+                    log!("kanna-daemon: couldn't point {}'s records at {} in {}: {error}", from.display(), plan.to.display(), db::FILE);
+                    sessions.kept.push(format!("{}: {error}", db::FILE));
+                }
+            }
+            self.relocate_entries(&plan);
+            core.edit_panes(|pane| {
+                let mut edited = false;
+                for field in [&mut pane.cwd, &mut pane.opened_in, &mut pane.path] {
+                    if let Some(shifted) = field.as_deref().and_then(|f| plan.shifted(f)) {
+                        *field = Some(shifted);
+                        edited = true;
+                    }
+                }
+                edited
+            });
+            log!("kanna-daemon: imported {} to {} ({} worktree(s), {} left with the original, {} Claude folder(s), {} codex, {} copilot, {} opencode session(s))", plan.from.display(), plan.to.display(), copied.worktrees, copied.outside.len(), sessions.claude, sessions.codex, sessions.copilot, sessions.opencode);
+            reply.insert("from".into(), json!(plan.from));
+            reply.insert("to".into(), json!(plan.to));
+            reply.insert("worktrees".into(), json!(copied.worktrees));
+            reply.insert("outside".into(), json!(copied.outside));
+            reply.insert("sessions".into(), sessions.to_value());
+            reply.insert("tasks".into(), json!(tasks));
+            reply.insert("terminals".into(), json!(terminals));
+            reply.insert("mentions".into(), json!(project_import::mentions(&crate::agents::home(), &plan.to, &plan.from)));
+        }
+        let this = Rc::downgrade(self);
+        let failure = copied.err();
+        let restarted = Join::new(tasks.len() + terminals.len(), move |errors| {
+            if let Some(this) = this.upgrade() {
+                this.changed();
+            }
+            match failure {
+                Some(error) => responder.reply(Err(KmuxError::new("failed", if errors.is_empty() { error } else { format!("{error}; and couldn't start again: {}", errors.join("; ")) }))),
+                None => {
+                    reply.insert("failed".into(), json!(errors));
+                    responder.reply(Ok(reply));
+                }
+            }
+        });
+        for id in tasks {
+            let join = restarted.clone();
+            core.handle(json!({ "cmd": "backlog", "args": { "action": "start", "task": id, "by": opt(by.as_deref()) } }), move |reply| join.done(failed(&reply).map(|e| e.message)));
+        }
+        for pane in terminals {
+            let join = restarted.clone();
+            core.handle(json!({ "cmd": "restart", "args": { "pane": pane } }), move |reply| join.done(failed(&reply).map(|e| e.message)));
+        }
+    }
+
+    fn relocate_entries(&self, plan: &project_import::Import) {
+        let fix = |entry: &mut Entry| {
+            let repo = plan.shifted(&entry.repo);
+            let folder = entry.folder.as_deref().and_then(|f| plan.shifted(f));
+            entry.repo = repo.unwrap_or_else(|| entry.repo.clone());
+            entry.folder = folder.or_else(|| entry.folder.clone());
+        };
+        self.entries.borrow_mut().iter_mut().for_each(fix);
+        self.running.borrow_mut().iter_mut().for_each(|r| fix(&mut r.entry));
+        for message in self.waiting.borrow_mut().iter_mut() {
+            if let Some(repo) = plan.shifted(&message.repo) {
+                message.repo = repo;
+            }
+        }
+        self.changed();
     }
 
     fn find(&self, args: &Value) -> Result<Map, KmuxError> {
@@ -1499,6 +1893,10 @@ impl Backlog {
     fn warn(&self, pane: &str, why: String) {
         if self.warned.borrow().get(pane) != Some(&why) {
             log!("kanna-daemon: warning: the messages for {pane} wait: {why}");
+            if let Some(on_warn) = self.on_warn.borrow().as_ref() {
+                let name = self.task_of(pane).and_then(|id| self.known(&id)).and_then(|e| e.name).unwrap_or_else(|| pane.to_string());
+                on_warn(pane, &name, &why);
+            }
             self.warned.borrow_mut().insert(pane.to_string(), why);
         }
     }
@@ -1557,6 +1955,7 @@ impl Backlog {
         if git(Path::new(repo), &["rev-parse", "--show-toplevel"]).is_err() {
             return Err(bad(format!("{repo} isn't a git repo: a task works in a worktree of the repo, so set one up first (git init)")));
         }
+        self.placed(repo)?;
         let by = string(args, "by").and_then(|by| self.core.upgrade()?.pane(by)).map(|pane| pane.id);
         let id = self.db.new_id(|id| !taken(Path::new(repo), id)).map_err(|error| {
             log!("kanna-daemon: couldn't save a new task ID in {}: {error}", db::FILE);
@@ -1781,11 +2180,13 @@ impl Backlog {
 
     fn plan(&self, args: &Value, responder: Responder) {
         let Some(core) = self.core.upgrade() else { return responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))) };
-        let app = string(args, "app").unwrap_or(MAC_APP);
+        let claimant = self.claimant.borrow().clone();
+        let app = string(args, "app").unwrap_or(&claimant);
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
         let folder = string(args, "folder").filter(|f| Path::new(f).is_absolute() && Path::new(f).is_dir()).unwrap_or(&home);
         let zsh = Some(self.state.join("shell/zsh")).filter(|dir| dir.join(".zshenv").is_file());
-        let script = string(args, "script").filter(|s| Path::new(s).is_file());
+        let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("planner.sh"))).filter(|s| s.is_file());
+        let script = string(args, "script").filter(|s| Path::new(s).is_file()).or(beside.as_deref().and_then(Path::to_str));
         let repos = crate::agents::home().join(".kanna-v4/repos");
         let context = planning_context(&config_files(Path::new(folder)));
         let cmd = planner_command(script, context, zsh.as_deref().and_then(Path::to_str), cli().as_deref().and_then(Path::to_str), &repos, &planner_agents(context));
@@ -1793,6 +2194,82 @@ impl Backlog {
         core.handle(json!({ "cmd": "open", "args": open }), move |reply| match failed(&reply) {
             Some(error) => responder.reply(Err(error)),
             None => responder.reply(Ok(Map::from_iter([("pane".to_string(), reply.get("pane").and_then(|p| p.get("id")).cloned().unwrap_or(Value::Null)), ("workspace".to_string(), reply.get("workspace").and_then(|w| w.get("id")).cloned().unwrap_or(Value::Null))]))),
+        });
+    }
+
+    fn planner(self: &Rc<Self>, args: &Value, responder: Responder) {
+        match string(args, "step") {
+            Some("start") => responder.reply(self.planner_starts(args)),
+            Some("quit") => self.planner_quit(args, responder),
+            _ => responder.reply(Err(bad("planner needs a step: start or quit"))),
+        }
+    }
+
+    fn planner_in(args: &Value) -> Result<(String, PathBuf, Option<u64>), KmuxError> {
+        let pane = string(args, "pane").filter(|p| !p.is_empty()).ok_or_else(|| bad("say which planning terminal"))?;
+        let folder = string(args, "folder").map(Path::new).filter(|f| f.is_absolute() && f.is_dir()).ok_or_else(|| bad("say the planning terminal's folder"))?;
+        let context = planning_context(&config_files(folder));
+        let project = project(folder.to_str()).unwrap_or_else(|| folder.to_path_buf());
+        Ok((pane.to_string(), project, context))
+    }
+
+    fn planner_starts(&self, args: &Value) -> Result<Map, KmuxError> {
+        let (pane, project, context) = Self::planner_in(args)?;
+        let name = string(args, "agent").ok_or_else(|| bad("say which agent"))?;
+        let program = planner_program(name, context).ok_or_else(|| bad(format!("{name} isn't an agent a planning terminal starts")))?;
+        let key = project.to_string_lossy().to_string();
+        let kept = self.db.planner(&key).ok().flatten();
+        let core = self.core.upgrade();
+        let live = |other: &str| core.as_ref().is_some_and(|core| alive(core, other));
+        let back = comeback(kept.as_ref(), name, &pane, live, |since| first_session_since(&program, &project, since));
+        let label = project.file_name().map_or_else(|| key.clone(), |n| n.to_string_lossy().to_string());
+        let group = string(args, "group").filter(|g| !g.is_empty() && g.bytes().all(|b| b.is_ascii_digit()));
+        let after = kept.as_ref().and_then(|k| string(k, "group")).filter(|before| Some(*before) != group).filter(|_| matches!(back, Comeback::Resume(_))).map(String::from);
+        let (command, session, said) = match back {
+            Comeback::Resume(session) => (resumed_as(&program, context, &session), Some(session), format!("Back to {label}'s planning conversation.")),
+            back => {
+                let new = agent(&program).and_then(|a| a.named).and_then(|_| uuid().ok());
+                let said = match back {
+                    Comeback::Busy => format!("The planner in another window is in {label}'s planning conversation, so this one starts a new one."),
+                    Comeback::Lost => format!("{name} didn't leave a conversation Kanna can find for {label}, so this one starts a new one."),
+                    _ => String::new(),
+                };
+                (started_in(&program, PLANNER_ROLE, context, new.as_deref()), new, said)
+            }
+        };
+        log!("kanna-daemon: the planner in {pane} starts {name} on {key}{}", session.as_deref().map_or(String::new(), |s| format!(" in session {s}")));
+        let doc = json!({ "agent": name, "session": opt(session.as_deref()), "started": num(now()), "pane": pane, "group": opt(group), "running": true });
+        if let Err(error) = self.db.put_planner(&key, &doc) {
+            log!("kanna-daemon: can't keep {key}'s planner: {error}");
+        }
+        Ok(Map::from_iter([("command".to_string(), json!(command)), ("said".to_string(), json!(said)), ("after".to_string(), opt(after.as_deref())), ("project".to_string(), json!(key))]))
+    }
+
+    fn planner_quit(self: &Rc<Self>, args: &Value, responder: Responder) {
+        let (pane, project, context) = match Self::planner_in(args) {
+            Ok(found) => found,
+            Err(error) => return responder.reply(Err(error)),
+        };
+        let key = project.to_string_lossy().to_string();
+        let Some(kept) = self.db.planner(&key).ok().flatten().filter(|k| string(k, "pane") == Some(pane.as_str())) else { return responder.reply(Ok(Map::new())) };
+        let name = string(&kept, "agent").unwrap_or_default().to_string();
+        let Some(program) = planner_program(&name, context) else { return responder.reply(Ok(Map::new())) };
+        let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
+        let this = Rc::downgrade(self);
+        core.handle(json!({ "cmd": "read", "args": { "pane": pane } }), move |reply| {
+            let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
+            let text = string(&reply, "text").unwrap_or_default();
+            let said = kanna_detect::program::known_agent(self::program(&program)).and_then(Quit::of).and_then(|q| q.session_in(text));
+            let started = kept.get("started").and_then(Value::as_f64).map(|at| UNIX_EPOCH + Duration::from_secs_f64(at));
+            let session = said.or_else(|| string(&kept, "session").map(String::from)).or_else(|| started.and_then(|since| first_session_since(&program, &project, since)));
+            let mut doc = kept.clone();
+            doc["session"] = opt(session.as_deref());
+            doc["running"] = json!(false);
+            if let Err(error) = this.db.put_planner(&key, &doc) {
+                log!("kanna-daemon: can't keep {key}'s planner: {error}");
+            }
+            let again = session.map(|session| resumed_as(&program, context, &session));
+            responder.reply(Ok(Map::from_iter([("again".to_string(), opt(again.as_deref()))])))
         });
     }
 
@@ -1805,7 +2282,8 @@ impl Backlog {
         if let Err(error) = self.ready(&entry) {
             return responder.reply(Err(error));
         }
-        self.room(entry, string(args, "app").unwrap_or(MAC_APP).to_string(), who(args).map(String::from), Answer::To(responder));
+        let app = string(args, "app").map_or_else(|| self.claimant.borrow().clone(), String::from);
+        self.room(entry, app, who(args).map(String::from), Answer::To(responder));
     }
 
     fn start(self: &Rc<Self>, args: &Value, responder: Responder) {
@@ -1845,6 +2323,9 @@ impl Backlog {
                 return responder.reply(Err(running(&pane)));
             }
             let entry = this.running.borrow().iter().find(|r| r.pane == pane).map(|r| r.entry.clone());
+            if let Some(Err(error)) = entry.as_ref().map(|e| this.placed(&e.repo)) {
+                return responder.reply(Err(error));
+            }
             let id = entry.as_ref().map_or_else(|| pane.clone(), |e| e.id.clone());
             let again = Rc::downgrade(&this);
             let command = entry.map(|e| this.again(&e));
@@ -1915,7 +2396,7 @@ impl Backlog {
                 return then(Err(error));
             }
             let listed = reply.get("tasks").and_then(Value::as_array).is_some_and(|tasks| tasks.iter().any(|t| string(t, "id") == Some(pane.as_str())));
-            then(if listed { Ok(pane) } else { Err(KmuxError::new("not_a_task", format!("{reference} isn't a task: a task is an agent docked on a Desk or the Shelf, or in the backlog"))) })
+            then(if listed { Ok(pane) } else { Err(KmuxError::new("not_a_task", format!("{reference} isn't a task: a task is an agent docked on a Desk, or on the Shelf"))) })
         });
     }
 
@@ -2163,7 +2644,7 @@ impl Backlog {
                 core.with_panes(|panes| ids.iter().filter_map(|id| panes.get(id)).filter(|p| project(p.cwd.as_deref()) == here).count())
             });
             if running >= TASKS_PER_PROJECT {
-                return responder.reply(Err(KmuxError::new("task_limit", format!("{} has {TASKS_PER_PROJECT} tasks on the Shelf: move one to the backlog with `kanna task defer TASK` first", entry.repo))));
+                return responder.reply(Err(KmuxError::new("task_limit", format!("{} has {TASKS_PER_PROJECT} tasks on the Desk: move one to the Shelf with `kanna task shelve TASK` first", entry.repo))));
             }
             this.prepare(entry, Some(app), by, responder);
         });
@@ -2209,14 +2690,8 @@ impl Backlog {
         let Some(core) = self.core.upgrade() else { return responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))) };
         let Some(reference) = string(args, "task") else { return responder.reply(Err(bad("say which running task"))) };
         let Some(pane) = core.pane(&self.pane_or(reference)) else { return responder.reply(Err(KmuxError::new("not_found", format!("no running task \"{reference}\"")))) };
-        let recorded = self.running.borrow().iter().find(|r| r.pane == pane.id).map(|r| (r.entry.clone(), Some(r.place)));
-        let (entry, from) = match recorded {
-            Some(found) => found,
-            None => match self.mint_for(&pane) {
-                Ok(entry) => (entry, None),
-                Err(error) => return responder.reply(Err(error)),
-            },
-        };
+        let recorded = self.running.borrow().iter().find(|r| r.pane == pane.id).map(|r| (r.entry.clone(), r.place));
+        let Some((entry, from)) = recorded else { return responder.reply(Err(KmuxError::new("not_found", format!("no running task \"{reference}\"")))) };
         let by = who(args).map(String::from);
         let this = Rc::downgrade(self);
         let id = pane.id.clone();
@@ -2227,12 +2702,8 @@ impl Backlog {
             }
             this.running.borrow_mut().retain(|r| r.pane != id);
             let entry = Entry { held: Some(id.clone()), ..entry };
-            let made = match from {
-                Some(_) => Ok(()),
-                None => this.store(&entry, Place::Backlog, Some(&id), Some(Change::new("made").by(Some("daemon")))),
-            };
-            let change = Change { from, to: Some(Place::Backlog), ..Change::new("deferred") }.by(by.as_deref());
-            let saved = made.and_then(|_| this.store(&entry, Place::Backlog, Some(&id), Some(change)));
+            let change = Change { from: Some(from), to: Some(Place::Backlog), ..Change::new("deferred") }.by(by.as_deref());
+            let saved = this.store(&entry, Place::Backlog, Some(&id), Some(change));
             let value = entry.to_value();
             this.entries.borrow_mut().push(entry);
             this.changed();
@@ -2319,7 +2790,7 @@ impl Backlog {
             let Some(command) = command else {
                 return this.with_branch(shelved.map(|_| Self::reply_out(&id, &pane, Some(&folder), Some(&app))), &folder, None, responder);
             };
-            log!("kanna-daemon: {id} is on {app}'s Shelf, and its agent and tabs start");
+            log!("kanna-daemon: {id} is on {app}'s Desk, and its agent and tabs start");
             let again = Rc::downgrade(&this);
             this.after_this_turn(move || {
                 let Some(this) = again.upgrade() else { return responder.reply(Err(gone())) };
@@ -2328,7 +2799,7 @@ impl Backlog {
                     let Some(this) = again.upgrade() else { return };
                     match &result {
                         Ok(_) => log!("kanna-daemon: {id}'s agent and tabs started"),
-                        Err(error) => log!("kanna-daemon: {id} is on the Shelf, but its agent didn't start: {}", error.message),
+                        Err(error) => log!("kanna-daemon: {id} is on the Desk, but its agent didn't start: {}", error.message),
                     }
                     let out = shelved.and(result).map(|pane| Self::reply_out(&id, &pane, Some(&folder), Some(&app)));
                     this.with_branch(out, &folder, None, responder);
@@ -2452,13 +2923,32 @@ mod tests {
     }
 
     #[test]
-    fn a_codex_task_resumes_the_latest_session_in_its_worktree() {
+    fn a_codex_task_resumes_its_own_session_and_the_latest_only_until_it_s_found() {
         let mut entry = started("codex");
         assert_eq!(entry.command(Some("u")), format!("codex --yolo --no-daemon {}", told_task(Some("go"))), "codex can't be given a session ID");
         entry.folder = Some("/r/.kanna-worktrees/task-0000c0de".into());
         assert_eq!(entry.command(None), "codex --yolo --no-daemon resume --last");
-        entry.session = Some("019f".into());
-        assert_eq!(entry.command(None), "codex --yolo --no-daemon resume '019f'");
+        entry.session = Some("01a13ca7-c348-70f2-82e8-f27af07b17f5".into());
+        assert_eq!(entry.command(None), "codex --yolo --no-daemon resume '01a13ca7-c348-70f2-82e8-f27af07b17f5'");
+    }
+
+    #[test]
+    fn codex_sessions_are_found_by_worktree_newest_first() {
+        let dir = std::env::temp_dir().join(format!("kanna-codex-sessions-{}", std::process::id()));
+        let (here, there, sessions) = (dir.join("here"), dir.join("there"), dir.join("sessions"));
+        fs::create_dir_all(&here).unwrap();
+        for (day, at, id, cwd) in [("2026/09/30", "2026-09-30T23-00-00", "old", &here), ("2026/10/02", "2026-10-02T08-00-00", "new", &here), ("2026/10/02", "2026-10-02T09-00-00", "other", &there)] {
+            fs::create_dir_all(sessions.join(day)).unwrap();
+            let meta = json!({ "timestamp": at, "type": "session_meta", "payload": { "id": id, "cwd": cwd, "base_instructions": { "text": "x".repeat(50_000) } } });
+            fs::write(sessions.join(day).join(format!("rollout-{at}-{id}.jsonl")), format!("{meta}\n{{\"type\":\"event_msg\"}}\n")).unwrap();
+        }
+        fs::write(sessions.join("2026/10/02/notes.txt"), "").unwrap();
+        assert_eq!(latest_codex_session(&sessions, &here, None), Some("new".into()));
+        assert_eq!(latest_codex_session(&sessions, &there, None), Some("other".into()));
+        assert_eq!(latest_codex_session(&sessions, &dir.join("nowhere"), None), None);
+        let later = SystemTime::now() + Duration::from_secs(60);
+        assert_eq!(latest_codex_session(&sessions, &here, Some(later)), None, "a session older than the worktree isn't its");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -2541,6 +3031,82 @@ mod tests {
     }
 
     #[test]
+    fn a_planner_starts_in_a_session_of_its_own_and_comes_back_to_it_without_its_first_message() {
+        assert_eq!(started_in("claude", PLANNER_ROLE, None, Some("u-1")), "claude --dangerously-skip-permissions --session-id 'u-1' 'You are the Kanna planning agent.'");
+        assert_eq!(started_in("copilot", PLANNER_ROLE, None, Some("u-1")), "copilot --yolo --session-id 'u-1' -i 'You are the Kanna planning agent.'");
+        assert_eq!(started_in("codex", PLANNER_ROLE, Some(300_000), Some("u-1")), "codex --yolo -c model_auto_compact_token_limit=300000 --no-daemon 'You are the Kanna planning agent.'", "codex takes no session ID");
+        assert_eq!(resumed_as("claude", Some(300_000), "u-1"), "claude --dangerously-skip-permissions --resume 'u-1'");
+        assert_eq!(resumed_as("codex", Some(300_000), "u-1"), "codex --yolo -c model_auto_compact_token_limit=300000 --no-daemon resume 'u-1'");
+        assert_eq!(resumed_as("copilot", None, "u-1"), "copilot --yolo --session-id 'u-1'");
+        assert_eq!(resumed_as("opencode", None, "u-1"), "opencode --session 'u-1'");
+        assert_eq!(resumed_as("/x/bin/claude", None, "u-1"), "/x/bin/claude --dangerously-skip-permissions --resume 'u-1'");
+    }
+
+    #[test]
+    fn a_planner_comes_back_to_its_project_s_conversation_unless_another_window_is_in_it() {
+        let kept = |agent: &str, session: Option<&str>, pane: &str, running: bool| json!({ "agent": agent, "session": opt(session), "started": 1_700_000_000.0, "pane": pane, "running": running });
+        let none = |_: SystemTime| None;
+        let live = |pane: &str| pane == "term-2";
+        assert_eq!(comeback(None, "claude", "term-1", live, none), Comeback::New);
+        assert_eq!(comeback(Some(&kept("claude", Some("s"), "term-9", true)), "claude", "term-1", live, none), Comeback::Resume("s".into()), "its terminal is gone");
+        assert_eq!(comeback(Some(&kept("claude", Some("s"), "term-1", true)), "claude", "term-1", live, none), Comeback::Resume("s".into()), "restarted in the same terminal");
+        assert_eq!(comeback(Some(&kept("claude", Some("s"), "term-2", true)), "claude", "term-1", live, none), Comeback::Busy, "another window's planner is in it");
+        assert_eq!(comeback(Some(&kept("claude", Some("s"), "term-2", false)), "claude", "term-1", live, none), Comeback::Resume("s".into()), "that planner quit its agent");
+        assert_eq!(comeback(Some(&kept("claude", Some("s"), "term-9", true)), "codex", "term-1", live, none), Comeback::New, "another agent's conversation");
+        let found = |since: SystemTime| (since == UNIX_EPOCH + Duration::from_secs(1_700_000_000)).then(|| "found".to_string());
+        assert_eq!(comeback(Some(&kept("codex", None, "term-9", true)), "codex", "term-1", live, found), Comeback::Resume("found".into()), "found from when it started");
+        assert_eq!(comeback(Some(&kept("agy", None, "term-9", true)), "agy", "term-1", live, none), Comeback::Lost);
+    }
+
+    #[test]
+    fn a_codex_planner_s_session_is_the_first_rollout_in_the_project_since_it_started() {
+        let dir = std::env::temp_dir().join(format!("kanna-first-codex-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let day = dir.join("2026/10/28");
+        fs::create_dir_all(&day).unwrap();
+        let (project, other) = (dir.join("app"), dir.join("other"));
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        let rollout = |name: &str, id: &str, cwd: &Path| {
+            fs::write(day.join(format!("rollout-{name}-{id}.jsonl")), format!("{}\n", json!({ "type": "session_meta", "payload": { "id": id, "cwd": cwd } }))).unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        rollout("1", "before", &project);
+        std::thread::sleep(Duration::from_millis(20));
+        let since = SystemTime::now();
+        rollout("2", "elsewhere", &other);
+        rollout("3", "planner", &project);
+        rollout("4", "later", &project);
+        assert_eq!(first_codex_session(&dir, &project, since).as_deref(), Some("planner"));
+        assert_eq!(first_codex_session(&dir, &project, SystemTime::now()), None);
+        assert_eq!(first_codex_session(&dir, &dir.join("none"), since), None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_planner_script_starts_what_the_daemon_says_and_tells_it_the_agent_quit() {
+        let p = planner("comeback", &["claude"]);
+        let repo = p.repo("app");
+        let kanna = p.bin.join("kanna");
+        let asked = p.root.join("asked");
+        stub(&kanna, &format!("[ \"$1\" = raw ] || exit 0\nprintf '%s\\n' \"$2\" >>'{}'\ncase $2 in\n  *'\"start\"'*) echo '{{\"command\":\"claude --resume s-1\",\"said\":\"Back to app'\\''s planning conversation.\",\"after\":\"999999\"}}' ;;\n  *'\"quit\"'*) echo '{{\"again\":\"claude --resume s-2\"}}' ;;\nesac", asked.display()));
+        let out = p.run_in(&repo, "", Some(&kanna), Some("term-7"));
+        assert!(out.contains("Back to app's planning conversation.\n\nclaude in ROOT/home/.kanna-v4/repos/local/app: --resume s-1\n"), "{out}");
+        assert!(out.contains("The planning agent quit. Start it again: claude --resume s-2\n"), "{out}");
+        let mut requests: Vec<Value> = fs::read_to_string(&asked).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        for request in &mut requests {
+            let group = request["args"].as_object_mut().unwrap().remove("group").unwrap();
+            assert!(group.as_str().unwrap().parse::<u32>().is_ok(), "its process group: {group}");
+        }
+        let folder = repo.to_string_lossy();
+        assert_eq!(requests, [json!({ "cmd": "backlog", "args": { "action": "planner", "step": "start", "pane": "term-7", "folder": folder, "agent": "claude" } }), json!({ "cmd": "backlog", "args": { "action": "planner", "step": "quit", "pane": "term-7", "folder": folder, "agent": "claude" } })]);
+
+        stub(&kanna, "exit 1");
+        let out = p.run_in(&repo, "", Some(&kanna), Some("term-7"));
+        assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/app: --dangerously-skip-permissions You are the Kanna planning agent.\n"), "without the daemon it starts as before: {out}");
+    }
+
+    #[test]
     fn the_planning_terminal_keeps_claude_to_its_context_and_runs_the_planner_script() {
         let agents = [("claude".to_string(), "claude".to_string(), "claude 'You are the Kanna planning agent.'".to_string())];
         let command = planner_command(Some("/K/planner.sh"), Some(300_000), Some("/S/shell/zsh"), Some("/A/kanna"), Path::new("/H/.kanna-v4/repos"), &agents);
@@ -2592,7 +3158,11 @@ mod tests {
 
     impl Planner {
         fn repo(&self, name: &str) -> PathBuf {
-            let repo = self.root.join(name);
+            self.repo_at(&self.home.join(".kanna-v4/repos/local").join(name))
+        }
+
+        fn repo_at(&self, repo: &Path) -> PathBuf {
+            let repo = repo.to_path_buf();
             fs::create_dir_all(&repo).unwrap();
             assert!(Command::new("git").args(["init", "-q"]).current_dir(&repo).status().unwrap().success());
             repo
@@ -2603,6 +3173,10 @@ mod tests {
         }
 
         fn run_with(&self, folder: &Path, input: &str, kanna: Option<&Path>) -> String {
+            self.run_in(folder, input, kanna, None)
+        }
+
+        fn run_in(&self, folder: &Path, input: &str, kanna: Option<&Path>, terminal: Option<&str>) -> String {
             let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/kanna/Resources/planner.sh");
             let mut args = vec!["--repos".to_string(), self.home.join(".kanna-v4/repos").to_string_lossy().into_owned()];
             if let Some(kanna) = kanna {
@@ -2621,6 +3195,7 @@ mod tests {
                 .env("HOME", &self.home)
                 .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
                 .env("SHELL", self.bin.join("shell"))
+                .envs(terminal.map(|t| ("KANNA_TERMINAL", t)))
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .spawn()
@@ -2633,25 +3208,27 @@ mod tests {
     }
 
     #[test]
-    fn the_planner_script_asks_which_agent_offers_to_make_it_the_project_s_and_starts_it() {
+    fn the_planner_script_asks_which_agent_saves_it_as_the_project_s_and_starts_it() {
         let p = planner("ask", &["claude", "codex"]);
         let repo = p.repo("app");
-        let out = p.run(&repo, "2\ny\n");
-        assert!(out.contains("Choose an agent for planning and task creation\n\n  1  claude\n  2  codex\n\nChoose [1]: Make codex the planning agent for app? [y/N] codex plans app from now on (planning.agent in .kanna/config.json).\n"), "{out}");
-        assert!(out.contains("codex in ROOT/app: --yolo --no-daemon You are the Kanna planning agent.\n"), "{out}");
-        assert!(out.contains("The planning agent quit. Start it again: codex --yolo --no-daemon 'You are the Kanna planning agent.'\nshell in ROOT/app\n"), "{out}");
+        let out = p.run(&repo, "2\n");
+        assert!(out.contains("Choose an agent for planning and task creation\n\n  1  claude\n  2  codex\n\nChoose [1]: codex plans app from now on (planning.agent in .kanna/config.json).\n"), "{out}");
+        assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/local/app: --yolo --no-daemon You are the Kanna planning agent.\n"), "{out}");
+        assert!(out.contains("The planning agent quit. Start it again: codex --yolo --no-daemon 'You are the Kanna planning agent.'\nshell in ROOT/home/.kanna-v4/repos/local/app\n"), "{out}");
         let config: Value = serde_json::from_str(&fs::read_to_string(repo.join(".kanna/config.json")).unwrap()).unwrap();
         assert_eq!(config, json!({ "version": 1, "planning": { "agent": "codex" } }));
         assert_eq!(planning_context(&[repo.join(".kanna/config.json")]), Some(PLANNING_CONTEXT), "the daemon still reads the file");
 
         let out = p.run(&repo, "");
         assert!(!out.contains("Choose"), "the project's planner starts without asking: {out}");
-        assert!(out.contains("codex in ROOT/app: --yolo --no-daemon You are the Kanna planning agent."), "{out}");
+        assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/local/app: --yolo --no-daemon You are the Kanna planning agent."), "{out}");
 
         let other = p.repo("other");
-        let out = p.run(&other, "\nn\n");
-        assert!(out.contains("claude in ROOT/other: --dangerously-skip-permissions You are the Kanna planning agent."), "Return takes the first: {out}");
-        assert!(!other.join(".kanna").exists(), "no saves nothing");
+        let out = p.run(&other, "\n");
+        assert!(out.contains("Choose [1]: claude plans other from now on (planning.agent in .kanna/config.json).\n"), "Return takes the first and saves it: {out}");
+        assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/other: --dangerously-skip-permissions You are the Kanna planning agent."), "{out}");
+        let config: Value = serde_json::from_str(&fs::read_to_string(other.join(".kanna/config.json")).unwrap()).unwrap();
+        assert_eq!(config, json!({ "version": 1, "planning": { "agent": "claude" } }));
     }
 
     #[test]
@@ -2660,20 +3237,20 @@ mod tests {
         let repo = p.repo("app");
         fs::create_dir_all(repo.join(".kanna")).unwrap();
         fs::write(repo.join(".kanna/config.json"), r#"{"$schema": "x", "version": 1, "planning": {"context": 400000}}"#).unwrap();
-        p.run(&repo, "1\ny\n");
+        p.run(&repo, "1\n");
         let config: Value = serde_json::from_str(&fs::read_to_string(repo.join(".kanna/config.json")).unwrap()).unwrap();
         assert_eq!(config, json!({ "$schema": "x", "version": 1, "planning": { "context": 400000, "agent": "claude" } }));
 
         let cloned = p.repo("cloned");
         fs::create_dir_all(cloned.join(".kanna")).unwrap();
         std::os::unix::fs::symlink(p.home.join("elsewhere"), cloned.join(".kanna/config.json")).unwrap();
-        let out = p.run(&cloned, "1\ny\n");
-        assert!(out.contains("Couldn't write ROOT/cloned/.kanna/config.json."), "a repo's symlink isn't followed: {out}");
+        let out = p.run(&cloned, "1\n");
+        assert!(out.contains("Couldn't write ROOT/home/.kanna-v4/repos/local/cloned/.kanna/config.json."), "a repo's symlink isn't followed: {out}");
         assert!(!p.home.join("elsewhere").exists());
         fs::write(cloned.join(".kanna/config.json.real"), "{\"version\": 1, \"planning\": {\"agent\": \"evil\\u001b]0;x\\u0007\"}}").unwrap();
         fs::remove_file(cloned.join(".kanna/config.json")).unwrap();
         fs::rename(cloned.join(".kanna/config.json.real"), cloned.join(".kanna/config.json")).unwrap();
-        let out = p.run(&cloned, "1\nn\n");
+        let out = p.run(&cloned, "1\n");
         assert!(out.contains("planning.agent is evil]0;x, which isn't installed.") && !out.contains('\u{7}'), "a repo's text can't drive the terminal: {out:?}");
     }
 
@@ -2682,39 +3259,82 @@ mod tests {
         let p = planner("one", &["claude"]);
         let repo = p.repo("app");
         let out = p.run(&repo, "");
-        assert!(!out.contains("Choose") && out.contains("claude in ROOT/app: --dangerously-skip-permissions You are the Kanna planning agent."), "{out}");
+        assert!(!out.contains("Choose") && out.contains("claude in ROOT/home/.kanna-v4/repos/local/app: --dangerously-skip-permissions You are the Kanna planning agent."), "{out}");
         let p = planner("none", &[]);
         let repo = p.repo("app");
         let out = p.run(&repo, "");
-        assert_eq!(out, "No agent Kanna knows is installed (claude, codex, copilot, opencode or agy). Install one, then start it here.\nshell in ROOT/app\n");
+        assert_eq!(out, "No agent Kanna knows is installed (claude, codex, copilot, opencode or agy). Install one, then start it here.\nshell in ROOT/home/.kanna-v4/repos/local/app\n");
     }
 
     #[test]
     fn in_home_the_planner_script_asks_where_first() {
         let p = planner("where", &["claude", "codex"]);
         let out = p.run(&p.home, "recipe-box\n2\n");
-        assert!(out.contains("Folder, repo or name: Made ~/.kanna-v4/repos/recipe-box\n"), "{out}");
-        assert!(out.contains("\u{1b}]7;file://localhostROOT/home/.kanna-v4/repos/recipe-box\u{1b}\\"), "the window follows: {out}");
-        assert!(!out.contains("Make codex"), "a new project isn't a repo, so nothing is offered: {out}");
-        assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/recipe-box: --yolo --no-daemon You are the Kanna planning agent.") && out.ends_with("shell in ROOT/home/.kanna-v4/repos/recipe-box\n"), "{out}");
+        assert!(out.contains("Folder, repo or name: Made ~/.kanna-v4/repos/local/recipe-box\n"), "{out}");
+        assert!(out.contains("\u{1b}]7;file://localhostROOT/home/.kanna-v4/repos/local/recipe-box\u{1b}\\"), "the window follows: {out}");
+        assert!(!out.contains("plans recipe-box"), "a new project isn't a repo, so nothing is saved: {out}");
+        assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/local/recipe-box: --yolo --no-daemon You are the Kanna planning agent.") && out.ends_with("shell in ROOT/home/.kanna-v4/repos/local/recipe-box\n"), "{out}");
         let out = p.run(&p.home, "recipe-box\n1\n");
-        assert!(out.contains("Opened ~/.kanna-v4/repos/recipe-box\n"), "{out}");
+        assert!(out.contains("Opened ~/.kanna-v4/repos/local/recipe-box\n"), "{out}");
 
-        let repo = p.repo("work/app");
-        let out = p.run(&p.home, "~/nowhere\nbad name!\n../work/app\n1\nn\n");
+        let repo = p.repo("app");
+        p.repo_at(&p.root.join("work/app"));
+        let out = p.run(&p.home, "~/nowhere\nbad name!\n../work/app\n.kanna-v4/repos/local/app\n1\n");
         assert!(out.contains("No folder ~/nowhere.") && out.contains("A project's name is letters, digits"), "{out}");
-        assert!(out.contains(&format!("claude in ROOT/work/app: --dangerously-skip-permissions You are")), "a folder is moved to: {out}");
-        let out = p.run(&p.home, &format!("{}\n1\nn\n", repo.display()));
-        assert!(out.contains("claude in ROOT/work/app: --dangerously-skip-permissions You are"), "{out}");
-        let out = p.run(&repo, "1\nn\n");
+        assert!(out.contains("ROOT/work/app isn't in ~/.kanna-v4/repos, where Kanna keeps its projects so each has the same place on every machine.\nImport a copy there: kanna project import ROOT/work/app\nFolder, repo or name: "), "a folder outside repos is refused: {out}");
+        assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/app: --dangerously-skip-permissions You are"), "a folder is moved to: {out}");
+        let out = p.run(&p.home, &format!("{}\n1\n", repo.display()));
+        assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/app: --dangerously-skip-permissions You are"), "{out}");
+        let out = p.run(&repo, "1\n");
         assert!(!out.contains("Folder, repo or name"), "only in ~: {out}");
+    }
+
+    #[test]
+    fn a_planning_terminal_outside_repos_offers_to_import_the_project_and_stays_if_not() {
+        let p = planner("outside", &["claude"]);
+        let app = p.repo_at(&p.root.join("work/app"));
+        let out = p.run(&app, "");
+        assert!(out.starts_with("ROOT/work/app isn't in ~/.kanna-v4/repos, where Kanna keeps its projects so each has the same place on every machine.\nImport a copy there: kanna project import ROOT/work/app\n"), "{out}");
+        assert!(!out.contains("Folder, repo or name") && out.contains("claude in ROOT/work/app:"), "without the import it stays, so the window keeps its project: {out}");
+        let kanna = p.bin.join("kanna");
+        let (asked, never) = (p.root.join("asked"), p.root.join("never"));
+        stub(
+            &kanna,
+            &format!(
+                "case \"$1 $2\" in\n'project import') echo \"$KANNA_TERMINAL $(pwd -P) $3\" >'{asked}'; mkdir -p \"$HOME/.kanna-v4/repos/local\" && cp -R \"$3\" \"$HOME/.kanna-v4/repos/local/${{3##*/}}\" && echo imported; exit ;;\nesac\ncase \"$1 $2\" in\n*'\"never\"'*) echo \"$2\" >'{never}'; echo '{{\"never\":true}}' ;;\n*'\"asked\"'*) [ -e '{never}' ] && echo '{{\"never\":true}}' || echo '{{\"never\":false}}' ;;\nesac\nexit 0",
+                asked = asked.display(),
+                never = never.display()
+            ),
+        );
+        for _ in 0..2 {
+            let out = p.run_in(&app, "n\n", Some(&kanna), Some("term-7"));
+            assert!(out.contains("Import it into ~/.kanna-v4/repos/local/app now? [Y/n/never] \n") && out.contains("claude in ROOT/work/app:"), "no stays, and asks again next time: {out}");
+        }
+        let out = p.run_in(&app, "\n", Some(&kanna), Some("term-7"));
+        assert!(out.contains("Import it into ~/.kanna-v4/repos/local/app now? [Y/n/never] \u{1b}]7;file://localhostROOT/home\u{1b}\\imported\n"), "Return imports, and it leaves the project first, so the import doesn't stop it: {out}");
+        assert_eq!(fs::read_to_string(&asked).unwrap(), "term-7 ROOT/home ROOT/work/app\n".replace("ROOT", p.root.to_str().unwrap()));
+        assert!(out.contains("\u{1b}]7;file://localhostROOT/home/.kanna-v4/repos/local/app\u{1b}\\") && out.contains("claude in ROOT/home/.kanna-v4/repos/local/app:"), "it starts the agent in the copy, and the window follows: {out}");
+        assert!(app.join(".git").is_dir(), "the original stays");
+
+        let other = p.repo_at(&p.root.join("work/other"));
+        let out = p.run_in(&other, "never\n", Some(&kanna), Some("term-7"));
+        assert!(out.contains("[Y/n/never] Kanna won't ask again for ROOT/work/other. Import it any time: kanna project import ROOT/work/other\n") && out.contains("claude in ROOT/work/other:"), "{out}");
+        let remembered: Value = serde_json::from_str(&fs::read_to_string(&never).unwrap()).unwrap();
+        assert_eq!(remembered, json!({ "cmd": "project", "args": { "action": "never", "path": other } }), "the daemon remembers it");
+        let out = p.run_in(&other, "", Some(&kanna), Some("term-7"));
+        assert!(out.starts_with("ROOT/work/other is outside ~/.kanna-v4/repos, so its tasks don't start. Import it: kanna project import ROOT/work/other\n") && !out.contains("[Y/n") && out.contains("claude in ROOT/work/other:"), "never: a line, no question: {out}");
+        let out = p.run_with(&p.home, &format!("{}\nn\nrecipe-box\n", other.display()), Some(&kanna));
+        assert!(out.contains("Import it into ~/.kanna-v4/repos/local/other now? [Y/n] Folder, repo or name: Made"), "chosen in ~, it's asked without never, and no asks again: {out}");
+        stub(&kanna, "[ \"$1 $2\" = 'project import' ] || exit 0\necho 'kanna: ~/x and ~/y are both clones' >&2; exit 1");
+        let out = p.run_with(&p.home, &format!("{}\ny\nrecipe-box\n", other.display()), Some(&kanna));
+        assert!(out.contains("kanna: ~/x and ~/y are both clones\n\u{1b}]7;file://localhostROOT/home\u{1b}\\Folder, repo or name: Opened"), "a refused import says why and asks again: {out}");
     }
 
     #[test]
     fn in_home_the_planner_script_numbers_the_recent_projects_and_return_takes_the_latest() {
         let p = planner("recent", &["claude"]);
-        let (app, tool) = (p.repo("work/app"), p.repo("work/tool"));
-        let gone = p.root.join("work/gone");
+        let (app, tool) = (p.repo("app"), p.repo("tool"));
+        let gone = p.home.join(".kanna-v4/repos/local/gone");
         let kanna = p.bin.join("kanna");
         let list = p.root.join("projects");
         stub(&kanna, &format!("[ \"$1 $2\" = 'projects --json' ] && cat '{}'; exit 0", list.display()));
@@ -2722,21 +3342,21 @@ mod tests {
         listed(&[(&app, "app"), (&tool, "~/work/tool"), (&gone, "gone")]);
         let out = p.run_with(&p.home, "\n", Some(&kanna));
         assert!(out.contains("Recent:\n  1  app\n  2  ~/work/tool\n  3  gone\n\nFolder, repo, name or number [1]: "), "the daemon's labels: {out}");
-        assert!(out.contains("claude in ROOT/work/app: --dangerously-skip-permissions You are"), "Return takes 1: {out}");
-        assert!(out.contains("\u{1b}]7;file://localhostROOT/work/app\u{1b}\\"), "the window follows: {out}");
+        assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/app: --dangerously-skip-permissions You are"), "Return takes 1: {out}");
+        assert!(out.contains("\u{1b}]7;file://localhostROOT/home/.kanna-v4/repos/local/app\u{1b}\\"), "the window follows: {out}");
         let out = p.run_with(&p.home, "4\n0\n3\n2\n", Some(&kanna));
-        assert!(out.contains("Choose 1 to 3, or a folder, repo or name.") && out.contains("No folder ROOT/work/gone."), "{out}");
-        assert!(out.contains("claude in ROOT/work/tool: --dangerously-skip-permissions You are"), "{out}");
+        assert!(out.contains("Choose 1 to 3, or a folder, repo or name.") && out.contains("No folder ~/.kanna-v4/repos/local/gone."), "{out}");
+        assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/tool: --dangerously-skip-permissions You are"), "{out}");
         let out = p.run_with(&p.home, "recipe-box\n", Some(&kanna));
-        assert!(out.contains("Made ~/.kanna-v4/repos/recipe-box") && out.contains("claude in ROOT/home/.kanna-v4/repos/recipe-box"), "a name still works: {out}");
-        let spaced = p.root.join("work/my app");
+        assert!(out.contains("Made ~/.kanna-v4/repos/local/recipe-box") && out.contains("claude in ROOT/home/.kanna-v4/repos/local/recipe-box"), "a name still works: {out}");
+        let spaced = p.home.join(".kanna-v4/repos/local/my app");
         fs::create_dir_all(&spaced).unwrap();
         listed(&[(&spaced, "my app")]);
         let out = p.run_with(&p.home, "1\n", Some(&kanna));
-        assert!(out.contains("claude in ROOT/work/my app: "), "a path with a space: {out}");
+        assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/my app: "), "a path with a space: {out}");
         listed(&[]);
         let out = p.run_with(&p.home, "\nrecipe-box\n", Some(&kanna));
-        assert!(!out.contains("Recent:") && out.contains("Folder, repo or name: Folder, repo or name: Opened ~/.kanna-v4/repos/recipe-box"), "with none it asks as before: {out}");
+        assert!(!out.contains("Recent:") && out.contains("Folder, repo or name: Folder, repo or name: Opened ~/.kanna-v4/repos/local/recipe-box"), "with none it asks as before: {out}");
         let out = p.run_with(&app, "", Some(&kanna));
         assert!(!out.contains("Recent:"), "only in ~: {out}");
     }
@@ -2744,25 +3364,30 @@ mod tests {
     #[test]
     fn in_home_the_planner_script_clones_a_url_or_owner_repo() {
         let p = planner("clone", &["claude", "codex"]);
-        let source = p.repo("source");
+        let source = p.repo_at(&p.root.join("source"));
         assert!(Command::new("git").args(["-c", "user.email=e@e", "-c", "user.name=e", "commit", "-q", "--allow-empty", "-m", "first"]).current_dir(&source).status().unwrap().success());
         let bare = p.root.join("remote/kojo.git");
         assert!(Command::new("git").args(["clone", "-q", "--bare"]).arg(&source).arg(&bare).status().unwrap().success());
         let url = format!("file://{}", bare.display());
-        let out = p.run(&p.home, &format!("{url}\n2\nn\n"));
-        assert!(out.contains("Cloning file://ROOT/remote/kojo.git into ~/.kanna-v4/repos/kojo…"), "{out}");
-        assert!(out.contains("Make codex the planning agent for kojo? [y/N]"), "a clone is a repo: {out}");
-        assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/kojo: --yolo --no-daemon"), "{out}");
-        let out = p.run(&p.home, &format!("{url}\n2\nn\n"));
-        assert!(out.contains("Opened ~/.kanna-v4/repos/kojo (already cloned)"), "{out}");
+        let out = p.run(&p.home, &format!("{url}\n2\n"));
+        assert!(out.contains("Cloning file://ROOT/remote/kojo.git into ~/.kanna-v4/repos/local/kojo…"), "{out}");
+        assert!(out.contains("codex plans kojo from now on"), "a clone is a repo: {out}");
+        assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/local/kojo: --yolo --no-daemon"), "{out}");
+        let out = p.run(&p.home, &format!("{url}\n2\n"));
+        assert!(out.contains("Opened ~/.kanna-v4/repos/local/kojo (already cloned)"), "{out}");
 
         let out = p.run(&p.home, "someone/tool\nrecipe\n1\n");
-        assert!(out.contains("gh isn't installed: give the repo's URL.") && out.contains("Made ~/.kanna-v4/repos/recipe"), "{out}");
+        assert!(out.contains("gh isn't installed: give the repo's URL.") && out.contains("Made ~/.kanna-v4/repos/local/recipe"), "{out}");
         stub(&p.bin.join("gh"), &format!("[ \"$1 $2 $3\" = \"repo clone someone/tool\" ] && git clone -q {url} \"$4\""));
-        let out = p.run(&p.home, "someone/tool\n1\nn\n");
-        assert!(out.contains("Cloning someone/tool into ~/.kanna-v4/repos/tool…") && out.contains("claude in ROOT/home/.kanna-v4/repos/tool: --dangerously-skip-permissions You are"), "{out}");
-        let out = p.run(&p.home, "other/kojo\n1\nn\n");
-        assert!(out.contains("~/.kanna-v4/repos/kojo is already there, and isn't a clone of other/kojo."), "{out}");
+        let out = p.run(&p.home, "someone/tool\n1\n");
+        assert!(out.contains("Cloning someone/tool into ~/.kanna-v4/repos/someone/tool…") && out.contains("claude in ROOT/home/.kanna-v4/repos/someone/tool: --dangerously-skip-permissions You are"), "{out}");
+        p.repo_at(&p.home.join(".kanna-v4/repos/other/kojo"));
+        let out = p.run(&p.home, "other/kojo\n1\n");
+        assert!(out.contains("~/.kanna-v4/repos/other/kojo is already there, and isn't a clone of other/kojo."), "{out}");
+        for (url, place) in [("https://example.invalid/team/site.git", "team/site"), ("git@example.invalid:team/site.git", "team/site"), ("ssh://git@example.invalid:22/team/site", "team/site"), ("git@example.invalid:site.git", "example.invalid/site")] {
+            let out = p.run(&p.home, &format!("{url}\nrecipe\n1\n"));
+            assert!(out.contains(&format!("Cloning {url} into ~/.kanna-v4/repos/{place}…")), "{url}: {out}");
+        }
     }
 
     #[test]
@@ -2778,10 +3403,12 @@ mod tests {
         assert_eq!(keys, ["agent", "context"], "a key in the schema Kanna doesn't read, or the other way round");
         let names: Vec<&str> = AGENTS.iter().map(|a| a.names[0]).collect();
         assert_eq!(schema["properties"]["planning"]["properties"]["agent"]["enum"], json!(names), "planning.agent names the agents a planning terminal offers");
-        let runners = &schema["properties"]["backlog"]["properties"]["runners"];
-        assert_eq!((runners["default"].clone(), runners["minimum"].clone(), runners["maximum"].clone()), (json!(RUNNERS), json!(0), json!(RUNNERS_MAX)));
-        let keys: Vec<&String> = schema["properties"]["backlog"]["properties"].as_object().unwrap().keys().collect();
-        assert_eq!(keys, ["runners"]);
+        for section in ["shelf", "backlog"] {
+            let runners = &schema["properties"][section]["properties"]["runners"];
+            assert_eq!((runners["default"].clone(), runners["minimum"].clone(), runners["maximum"].clone()), (json!(RUNNERS), json!(0), json!(RUNNERS_MAX)));
+            let keys: Vec<&String> = schema["properties"][section]["properties"].as_object().unwrap().keys().collect();
+            assert_eq!(keys, ["runners"]);
+        }
         let tasks = &schema["properties"]["tasks"]["properties"];
         assert_eq!((tasks["timeout"]["default"].clone(), tasks["timeout"]["minimum"].clone(), tasks["timeout"]["maximum"].clone()), (json!(task_scripts::TIMEOUT), json!(1), json!(task_scripts::TIMEOUT_MAX)));
         let keys: Vec<&String> = tasks.as_object().unwrap().keys().collect();
@@ -2825,7 +3452,7 @@ mod tests {
     }
 
     #[test]
-    fn backlog_runners_come_from_the_repos_config_then_yours() {
+    fn shelf_runners_come_from_the_repos_config_then_yours() {
         let dir = std::env::temp_dir().join(format!("kanna-runners-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
@@ -2840,6 +3467,11 @@ mod tests {
         assert_eq!(runners(&files), 0, "a bad value leaves it to the next file");
         fs::write(&repo, r#"{"backlog": {"runners": -1}}"#).unwrap();
         assert_eq!(runners(&[repo.clone()]), RUNNERS);
+        fs::write(&repo, r#"{"shelf": {"runners": 2}, "backlog": {"runners": 5}}"#).unwrap();
+        assert_eq!(runners(&files), 2, "shelf.runners wins over its old name in the same file");
+        fs::write(&repo, r#"{"backlog": {"runners": 4}}"#).unwrap();
+        fs::write(&mine, r#"{"shelf": {"runners": 1}}"#).unwrap();
+        assert_eq!(runners(&files), 4, "the repo's old name wins over your new one");
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2960,6 +3592,35 @@ mod tests {
     }
 
     #[test]
+    fn a_task_is_made_and_started_only_in_a_project_at_its_place_in_repos() {
+        let state = std::env::temp_dir().join(format!("kanna-outside-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        let (outside, inside) = (state.join("work/app"), state.join("repos/local/app"));
+        for repo in [&outside, &inside] {
+            fs::create_dir_all(repo).unwrap();
+            assert!(Command::new("git").arg("-C").arg(repo).args(["init", "-q"]).status().unwrap().success());
+        }
+        let core = kanna_mux::Core::default();
+        let backlog = Backlog::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
+        *backlog.repos.borrow_mut() = Some(state.join("repos"));
+        let refused = backlog.add(&json!({ "repo": outside.to_str().unwrap(), "name": "Out" })).unwrap_err();
+        assert_eq!(refused.code, "outside");
+        assert!(refused.message.contains("`kanna project import ") && refused.message.ends_with("repos/local/app)"), "{}", refused.message);
+        assert!(backlog.add(&json!({ "repo": inside.to_str().unwrap(), "name": "In" })).is_ok());
+        let old = Entry { id: "task-00000001".into(), repo: outside.to_string_lossy().into(), agent: "claude".into(), ..Default::default() };
+        assert_eq!(backlog.ready(&old).unwrap_err().code, "outside", "a task an older Kanna made outside doesn't start");
+        let asked = |path: &Path| backlog.asked(&json!({ "path": path })).map(|r| r["never"].clone());
+        fs::create_dir_all(outside.join("sub")).unwrap();
+        assert_eq!(asked(&outside.join("sub")), Ok(json!(false)));
+        assert_eq!(backlog.never(&json!({ "path": outside.join("sub") })).unwrap()["path"], json!(outside.canonicalize().unwrap()), "never is the project's, not the subfolder's");
+        assert_eq!(asked(&outside), Ok(json!(true)));
+        assert_eq!(asked(&inside).unwrap_err().code, "in_place");
+        *backlog.importing.borrow_mut() = Some(project_import::Import { from: inside.canonicalize().unwrap(), to: state.join("repos/a/app") });
+        assert_eq!(backlog.add(&json!({ "repo": inside.to_str().unwrap(), "name": "Late" })).unwrap_err().code, "importing");
+        fs::remove_dir_all(&state).unwrap();
+    }
+
+    #[test]
     fn a_task_is_found_by_its_id_its_pane_or_a_unique_start_of_its_id() {
         let state = std::env::temp_dir().join(format!("kanna-prefix-{}", std::process::id()));
         let _ = fs::remove_dir_all(&state);
@@ -2985,6 +3646,28 @@ mod tests {
         assert_eq!(found("task-"), Ok(None));
         assert_eq!(found("beef"), Ok(None));
         assert_eq!(found("t134"), Ok(None), "an old ID names nothing");
+        fs::remove_dir_all(&state).unwrap();
+    }
+
+    #[test]
+    fn the_view_lists_the_desk_s_tasks_with_when_each_was_made() {
+        let state = std::env::temp_dir().join(format!("kanna-desk-made-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(&state).unwrap();
+        let core = kanna_mux::Core::default();
+        let backlog = Backlog::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
+        let task = |id: &str, made_at: f64| Entry { id: id.into(), repo: "/r".into(), agent: "claude".into(), made_at, ..Default::default() };
+        backlog.entries.borrow_mut().push(task("task-0000aaaa", 1.0));
+        for (id, made_at) in [("task-0000dddd", 20.0), ("task-0000bbbb", 30.0), ("task-0000cccc", 20.0)] {
+            backlog.store(&task(id, made_at), Place::Shelf, None, None).unwrap();
+        }
+        for (pane, id, made_at) in [("p7", "task-0000bbbb", 30.0), ("p9", "task-0000cccc", 20.0), ("p8", "task-0000dddd", 20.0)] {
+            backlog.running.borrow_mut().push(Running { pane: pane.into(), entry: task(id, made_at), place: Place::Shelf });
+        }
+        let view = backlog.view();
+        assert_eq!(view["tasks"].as_array().map(Vec::len), Some(1), "the Shelf's tasks");
+        let desk: Vec<(&str, f64)> = view["desk"].as_array().unwrap().iter().map(|t| (t["pane"].as_str().unwrap(), t["madeAt"].as_f64().unwrap())).collect();
+        assert_eq!(desk, vec![("p8", 20.0), ("p9", 20.0), ("p7", 30.0)], "oldest first, a tie in the order they were made");
         fs::remove_dir_all(&state).unwrap();
     }
 
@@ -3203,7 +3886,7 @@ mod tests {
         }
 
         fn agent_with(&self, agent: &str, place: Place, session: Option<&str>) -> (String, Entry) {
-            let opened = self.core.handle_blocking(json!({ "cmd": "open", "args": { "type": "term", "cmd": agent, "dock": "left" } }));
+            let opened = self.core.handle_blocking(json!({ "cmd": "open", "args": { "type": "term", "cmd": agent, "dock": "left", "task": "task-1dfb12c2" } }));
             let pane = opened["pane"]["id"].as_str().unwrap_or_else(|| panic!("{opened}")).to_string();
             self.settle(|| alive(&self.core, &pane));
             let entry = Entry { id: "task-1dfb12c2".into(), repo: "/r".into(), agent: agent.into(), session: session.map(String::from), folder: Some("/r".into()), ..Default::default() };
