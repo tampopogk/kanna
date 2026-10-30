@@ -8,6 +8,7 @@
 flowchart LR
     subgraph S["build store (ROOT/_shared)"]
         G["ghosttykit/KEY, ghostty-vt/KEY"]
+        D["cargo/FAMILY-KEY<br/>(main's dependencies)"]
         C["sccache/<br/>(compiled dependencies)"]
     end
     subgraph M["main checkout's target/"]
@@ -19,18 +20,20 @@ flowchart LR
         K2["kanna-build/<br/>Swift compiled here"]
     end
     G -->|"symlink"| G2
-    C -->|"sccache hits"| R2
+    D -->|"APFS clone"| R2
+    C -->|"sccache hits, for the rest"| R2
     K -->|"APFS clone, workspace-state paths rewritten"| K2
 ```
 
 | From | How | Saves |
 |---|---|---|
 | Ghostty's builds, Zig and source ([build store](build-store.md#2-the-store)) | built once per pin, then a symlink | the Zig build, cloning the fork |
-| Rust dependencies ([compile cache](build-store.md#4-the-compile-cache)) | `sccache` as `rustc`'s wrapper | compiling ~270 registry crates |
+| Rust dependencies ([seed](build-store.md#2-the-store)) | `cp -c` of the store's dev-profile build of main's `Cargo.lock`, without our crates | compiling ~270 registry crates |
+| Dependencies that differ from main's ([compile cache](build-store.md#4-the-compile-cache)) | `sccache` as `rustc`'s wrapper | recompiling them in every worktree |
 | SwiftPM's packages (`kanna_borrow_swiftpm`) | `cp -c -R -p` of `repositories/` and `checkouts/`; `workspace-state.json` with the main checkout's path replaced by the worktree's | package resolve 3.5s → 0.2s |
 
 - **One Rust profile.** A worktree builds `target/debug` for its app and its tests alike; the main checkout builds `release` ([build store](build-store.md#3-one-rust-profile-per-worktree)).
-- **Our crates always compile in the worktree,** from its own source; the cache serves only crates whose inputs are the same.
+- **Our crates always compile in the worktree,** from its own source: the seed carries none of their artifacts or fingerprints, and sccache doesn't cache incremental crates.
 - **Only resolution state from SwiftPM.** Its build products record absolute paths (the module cache refuses to load from a different path), so a whole clone of `kanna-build` fails to build; the Swift modules compile in the worktree.
 
 ## 2. Dev builds the Swift app in debug
