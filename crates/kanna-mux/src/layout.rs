@@ -171,7 +171,7 @@ pub fn place_request(pane: &Pane, at: &Placement) -> Value {
         out.insert("frozen".into(), Value::Bool(true));
     }
     if at.backlog {
-        out.insert("backlog".into(), Value::Bool(true));
+        out.insert("shelf".into(), Value::Bool(true));
     }
     if at.lead {
         out.insert("lead".into(), Value::Bool(true));
@@ -271,7 +271,7 @@ pub fn placement(at: &Value) -> Result<Placement, KmuxError> {
         Some(size) => size.as_f64().filter(|s| *s > 0.0 && *s < 1.0).ok_or_else(|| bad("size must be a fraction between 0 and 1"))?,
     };
     let dock = Edge::read(at.get("dock")).map_err(|_| bad("dock must be left or right"))?;
-    Ok(Placement { window: string(at, "window").map(String::from), workspace: string(at, "workspace").map(String::from), split, size, new_tab: at.get("tab") == Some(&Value::Bool(true)), dock, frozen: at.get("frozen") == Some(&Value::Bool(true)), from: string(at, "from").map(String::from), opener: string(at, "opener").map(String::from), app: string(at, "app").map(String::from), backlog: at.get("backlog") == Some(&Value::Bool(true)), lead: at.get("lead") == Some(&Value::Bool(true)), planner: at.get("planner") == Some(&Value::Bool(true)) })
+    Ok(Placement { window: string(at, "window").map(String::from), workspace: string(at, "workspace").map(String::from), split, size, new_tab: at.get("tab") == Some(&Value::Bool(true)), dock, frozen: at.get("frozen") == Some(&Value::Bool(true)), from: string(at, "from").map(String::from), opener: string(at, "opener").map(String::from), app: string(at, "app").map(String::from), backlog: at.get("shelf") == Some(&Value::Bool(true)), lead: at.get("lead") == Some(&Value::Bool(true)), planner: at.get("planner") == Some(&Value::Bool(true)) })
 }
 
 fn spot(reply: &mut Map, spot: Option<Spot>, window: Option<String>) {

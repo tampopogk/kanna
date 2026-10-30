@@ -817,7 +817,7 @@ impl Backlog {
         let mut running: Vec<(usize, String, String, f64)> = self.running.borrow().iter().map(|r| (order.iter().position(|id| *id == r.entry.id).unwrap_or(usize::MAX), r.entry.id.clone(), r.pane.clone(), r.entry.made_at)).collect();
         running.sort_by_key(|r| r.0);
         let desk = running.into_iter().map(|(_, id, pane, made_at)| json!({ "id": id, "pane": pane, "madeAt": num(made_at) })).collect();
-        json!({ "tasks": Value::Array(tasks), "desk": Value::Array(desk) })
+        json!({ "shelf": Value::Array(tasks), "desk": Value::Array(desk) })
     }
 
     fn workspace_of(&self, reference: &str) -> Option<Result<String, KmuxError>> {
@@ -1512,7 +1512,7 @@ impl Backlog {
         core.set_tasks(Rc::new(Book(Rc::downgrade(self))));
         let this = Rc::downgrade(self);
         core.add_command(
-            "backlog",
+            "tasks",
             Rc::new(move |args, responder| {
                 let Some(this) = this.upgrade() else { return responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))) };
                 let mut args = args;
@@ -1533,14 +1533,14 @@ impl Backlog {
                     Some("start") => this.start(&args, responder),
                     Some("stop") => this.stop(&args, responder),
                     Some("setup") => this.setup(&args, responder),
-                    Some("shelve") => this.shelve(&args, responder),
-                    Some("defer") => this.defer(&args, responder),
+                    Some("pick") => this.shelve(&args, responder),
+                    Some("shelve") => this.defer(&args, responder),
                     Some("plan") => this.plan(&args, responder),
                     Some("planner") => this.planner(&args, responder),
                     Some("events") => responder.reply(this.events(&args)),
                     Some("send") => responder.reply(this.send(&args)),
                     Some("messages") => responder.reply(this.messages(&args)),
-                    _ => responder.reply(Err(bad("backlog needs an action: new, edit, name, list, resolve, done, start, stop, setup, shelve, defer, plan, planner, events, send or messages"))),
+                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, name, list, resolve, done, start, stop, setup, pick, shelve, plan, planner, events, send or messages"))),
                 }
             }),
         );
@@ -1615,7 +1615,7 @@ impl Backlog {
         });
         for (id, _) in tasks {
             let join = stopped.clone();
-            core.handle(json!({ "cmd": "backlog", "args": { "action": "stop", "task": id, "by": who(args) } }), move |reply| join.done(failed(&reply).map(|e| e.message)));
+            core.handle(json!({ "cmd": "tasks", "args": { "action": "stop", "task": id, "by": who(args) } }), move |reply| join.done(failed(&reply).map(|e| e.message)));
         }
     }
 
@@ -1704,7 +1704,7 @@ impl Backlog {
         });
         for id in tasks {
             let join = restarted.clone();
-            core.handle(json!({ "cmd": "backlog", "args": { "action": "start", "task": id, "by": opt(by.as_deref()) } }), move |reply| join.done(failed(&reply).map(|e| e.message)));
+            core.handle(json!({ "cmd": "tasks", "args": { "action": "start", "task": id, "by": opt(by.as_deref()) } }), move |reply| join.done(failed(&reply).map(|e| e.message)));
         }
         for pane in terminals {
             let join = restarted.clone();
@@ -2012,7 +2012,7 @@ impl Backlog {
                 self.script_said(&r.entry, Some(&r.pane), running).map(|said| (r.pane.clone(), json!(said)))
             })
             .collect();
-        Map::from_iter([("tasks".to_string(), Value::Array(tasks)), ("out".to_string(), Value::Array(out)), ("script".to_string(), Value::Object(shelf))])
+        Map::from_iter([("shelf".to_string(), Value::Array(tasks)), ("desk".to_string(), Value::Array(out)), ("script".to_string(), Value::Object(shelf))])
 
     }
 
@@ -2729,7 +2729,7 @@ impl Backlog {
         }
         match &app {
             Some(app) => args["claim"] = json!(app),
-            None => args["backlog"] = json!(true),
+            None => args["shelf"] = json!(true),
         }
         let this = Rc::downgrade(self);
         let weak = self.core.clone();
@@ -3099,7 +3099,7 @@ mod tests {
             assert!(group.as_str().unwrap().parse::<u32>().is_ok(), "its process group: {group}");
         }
         let folder = repo.to_string_lossy();
-        assert_eq!(requests, [json!({ "cmd": "backlog", "args": { "action": "planner", "step": "start", "pane": "term-7", "folder": folder, "agent": "claude" } }), json!({ "cmd": "backlog", "args": { "action": "planner", "step": "quit", "pane": "term-7", "folder": folder, "agent": "claude" } })]);
+        assert_eq!(requests, [json!({ "cmd": "tasks", "args": { "action": "planner", "step": "start", "pane": "term-7", "folder": folder, "agent": "claude" } }), json!({ "cmd": "tasks", "args": { "action": "planner", "step": "quit", "pane": "term-7", "folder": folder, "agent": "claude" } })]);
 
         stub(&kanna, "exit 1");
         let out = p.run_in(&repo, "", Some(&kanna), Some("term-7"));
@@ -3665,7 +3665,7 @@ mod tests {
             backlog.running.borrow_mut().push(Running { pane: pane.into(), entry: task(id, made_at), place: Place::Desk });
         }
         let view = backlog.view();
-        assert_eq!(view["tasks"].as_array().map(Vec::len), Some(1), "the Shelf's tasks");
+        assert_eq!(view["shelf"].as_array().map(Vec::len), Some(1), "the Shelf's tasks");
         let desk: Vec<(&str, f64)> = view["desk"].as_array().unwrap().iter().map(|t| (t["pane"].as_str().unwrap(), t["madeAt"].as_f64().unwrap())).collect();
         assert_eq!(desk, vec![("p8", 20.0), ("p9", 20.0), ("p7", 30.0)], "oldest first, a tie in the order they were made");
         fs::remove_dir_all(&state).unwrap();

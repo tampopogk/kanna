@@ -806,14 +806,14 @@ impl CoreHandle {
         if frozen && dock.is_none() {
             return Err(bad_request("only a docked pane is frozen"));
         }
-        let backlog = is_true(args, "backlog");
+        let backlog = is_true(args, "shelf");
         let claimed = string(args, "claim").map(String::from);
         let planner = is_true(args, "planner");
         if dock.is_some() && args.get("window").is_some() {
             return Err(bad_request("a docked pane is a task's agent, in its own workspace, not in a window"));
         }
         if backlog && dock.is_none() || claimed.is_some() && dock.is_none() && !planner {
-            return Err(bad_request("claim is for a docked pane or a planner, and backlog for a docked pane"));
+            return Err(bad_request("claim is for a docked pane or a planner, and shelf for a docked pane"));
         }
         if backlog && claimed.is_some() {
             return Err(bad_request("a task is on the Shelf or on an app's Desk, not both"));

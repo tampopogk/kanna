@@ -14,21 +14,30 @@ pub enum Where {
 impl Where {
     pub fn to_json(&self) -> Value {
         match self {
-            Where::Shelf(app) => json!({ "shelf": app }),
-            Where::Backlog => "backlog".into(),
+            Where::Shelf(app) => json!({ "desk": app }),
+            Where::Backlog => "shelf".into(),
             Where::Planner(app) => json!({ "planner": app }),
         }
     }
 
     pub fn read(value: Option<&Value>) -> Option<Where> {
         match value? {
-            Value::String(place) if place == "shelf" => Some(Where::Shelf(MAC_APP.into())),
-            Value::String(place) if place == "backlog" => Some(Where::Backlog),
+            Value::String(place) if place == "shelf" => Some(Where::Backlog),
             Value::Object(place) => {
                 let app = |key: &str| place.get(key).and_then(Value::as_str).map(String::from);
-                app("shelf").map(Where::Shelf).or_else(|| app("planner").map(Where::Planner)).or_else(|| place.contains_key("desk").then(|| Where::Shelf(MAC_APP.into())))
+                app("desk").map(Where::Shelf).or_else(|| app("planner").map(Where::Planner))
             }
             _ => None,
+        }
+    }
+
+    pub fn upgrade(value: &Value) -> Value {
+        match value {
+            Value::String(place) if place == "shelf" => json!({ "desk": MAC_APP }),
+            Value::String(place) if place == "backlog" => "shelf".into(),
+            Value::Object(place) if place.contains_key("shelf") => json!({ "desk": place.get("shelf").cloned().unwrap_or(Value::Null) }),
+            Value::Object(place) if place.contains_key("desk") => json!({ "desk": MAC_APP }),
+            _ => value.clone(),
         }
     }
 

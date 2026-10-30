@@ -477,7 +477,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         var args = args
-        if machine != nil, cmd == "backlog", ["shelve", "plan"].contains(args["action"]?.string), args["app"] == nil {
+        if machine != nil, cmd == "tasks", ["pick", "plan"].contains(args["action"]?.string), args["app"] == nil {
             args["app"] = .string(claimName(machine))
         }
         link.request(cmd, args, reply: reply, sent: sent)

@@ -5,11 +5,11 @@ extension AppController {
 
     func composed(_ view: JSON) -> JSON {
         guard case .object(var fields) = view, let workspaces = view["workspaces"]?.array else { return view }
-        let mine = workspaces.filter { claimed($0, as: "shelf") }
+        let mine = workspaces.filter { claimed($0, as: "desk") }
         let planners = workspaces.filter { claimed($0, as: "planner") }
         let listed = Set(planners.compactMap { $0["id"]?.string })
         givenPlanners.subtract(listed)
-        physical.keep(shelf: mine.compactMap { ws in ws["id"]?.string.map { ($0, ws["parkedAt"]?.number) } }, planners: listed.union(givenPlanners), present: Set(views.keys))
+        physical.keep(shelf: mine.compactMap { ws in ws["id"]?.string.map { ($0, ws["leftAt"]?.number) } }, planners: listed.union(givenPlanners), present: Set(views.keys))
         let known = Set(physical.desks.compactMap(\.planner)).union(closingPlanners)
         for planner in planners where starting.isEmpty {
             guard let id = planner["id"]?.string, !known.contains(id) else { continue }
@@ -23,7 +23,7 @@ extension AppController {
         windows += (view["windows"]?.array ?? []).filter { window in window["workspace"]?.string.map(shown.contains) ?? true }
         fields["windows"] = .array(windows)
         fields["shelf"] = .array(physical.shelf.filter { !shown.contains($0.workspace) }.compactMap { entry in byID[entry.workspace].map { shelfEntry($0, parkedAt: entry.parkedAt) } })
-        fields["held"] = .array(workspaces.filter { $0["where"]?.string == "backlog" }.flatMap { $0["panes"]?.array ?? [] })
+        fields["held"] = .array(workspaces.filter { $0["where"]?.string == "shelf" }.flatMap { $0["panes"]?.array ?? [] })
         return .object(fields)
     }
 
@@ -61,7 +61,7 @@ extension AppController {
     }
 
     func workspace(ofTask pane: String) -> String? {
-        published["workspaces"]?.array?.first { claimed($0, as: "shelf") && $0["dock"]?["pane"]?.string == pane }?["id"]?.string
+        published["workspaces"]?.array?.first { claimed($0, as: "desk") && $0["dock"]?["pane"]?.string == pane }?["id"]?.string
     }
 
     func deskShowing(_ workspace: String) -> DeskRecord? { physical.desks.first { $0.shows == workspace } }
@@ -158,8 +158,8 @@ extension AppController {
         commands["desk"] = { [weak self] args in
             guard let self else { throw KannaError("gone", "Kanna.app is quitting") }
             switch args["action"]?.string {
-            case "pull":
-                guard let task = args["task"]?.string else { throw KannaError("bad_request", "pull needs a task") }
+            case "activate":
+                guard let task = args["task"]?.string else { throw KannaError("bad_request", "activate needs a task") }
                 let desk = args["by"]?.string.flatMap { self.desk(of: $0) } ?? projectDesk(projectRoot(task))
                 guard let pulled = pullTask(task, into: desk?.id, front: false) else { throw KannaError("not_found", "\(task) isn't on this app's Desk") }
                 return ["task": .string(task), "moved": .bool(pulled.moved), "desk": .string(pulled.desk)]
@@ -179,7 +179,7 @@ extension AppController {
                 closeDesk(id)
                 return ["desk": .string(id)]
             default:
-                throw KannaError("bad_request", "desk needs an action: pull, park, desk or close")
+                throw KannaError("bad_request", "desk needs an action: activate, park, desk or close")
             }
         }
     }

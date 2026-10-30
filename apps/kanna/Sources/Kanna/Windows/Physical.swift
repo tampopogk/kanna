@@ -38,7 +38,8 @@ final class Physical {
             desk["id"]?.string.map { DeskRecord(id: $0, project: desk["project"]?.string, shows: desk["shows"]?.string, planner: desk["planner"]?.string, active: desk["active"]?.string ?? desk["shows"]?.string) }
         }
         order = (saved["order"]?.array ?? []).compactMap(\.string)
-        shelf = (saved["shelf"]?.array ?? []).compactMap { entry in entry["workspace"]?.string.map { ($0, entry["parkedAt"]?.number ?? 0) } }
+        shelf = (saved["deskTasks"]?.array ?? []).compactMap { entry in entry["workspace"]?.string.map { ($0, entry["leftAt"]?.number ?? 0) } }
+        if saved["deskTasks"] == nil { shelf = (saved["shelf"]?.array ?? []).compactMap { entry in entry["workspace"]?.string.map { ($0, entry["parkedAt"]?.number ?? 0) } } }
         deskCount = max(Int(saved["deskCount"]?.number ?? 0), desks.compactMap { Int($0.id.dropFirst()) }.max() ?? 0)
     }
 
@@ -153,7 +154,7 @@ final class Physical {
                 ["id": .string(desk.id), "project": desk.project.map { .string($0) } ?? .null, "shows": desk.shows.map { .string($0) } ?? .null, "planner": desk.planner.map { .string($0) } ?? .null, "active": desk.active.map { .string($0) } ?? .null]
             }),
             "order": .array(order.map { .string($0) }),
-            "shelf": .array(shelf.map { ["workspace": .string($0.workspace), "parkedAt": .number($0.parkedAt)] }),
+            "deskTasks": .array(shelf.map { ["workspace": .string($0.workspace), "leftAt": .number($0.parkedAt)] }),
             "deskCount": .number(Double(deskCount)),
         ]
         let temporary = path + ".new"

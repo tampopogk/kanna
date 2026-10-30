@@ -6,7 +6,7 @@ use crate::state::{bad, number_in, quoted, whole};
 use crate::workspace::{Where, Workspace, MAC_APP};
 use std::collections::HashSet;
 
-pub const LAYOUT_VERSION: u32 = 3;
+pub const LAYOUT_VERSION: u32 = 4;
 
 struct Restored {
     windows: Vec<Window>,
@@ -60,7 +60,7 @@ fn window_json(window: &Window, tabs: &Tabs) -> Map {
 fn put_workspace(out: &mut Map, ws: &Workspace) {
     out.insert("dock".into(), dock_json(&ws.dock));
     if let Some(at) = ws.parked_at {
-        out.insert("parkedAt".into(), num(at));
+        out.insert("leftAt".into(), num(at));
     }
 }
 
@@ -236,9 +236,27 @@ fn renamed(value: &Value, key: Option<&str>) -> Value {
     }
 }
 
+pub fn upgrade(state: &Value) -> Value {
+    if state.get("version").and_then(Value::as_f64).is_some_and(|v| v >= LAYOUT_VERSION as f64) {
+        return state.clone();
+    }
+    let mut out = old_names(state, None);
+    out["version"] = num(LAYOUT_VERSION as f64);
+    out
+}
+
+fn old_names(value: &Value, key: Option<&str>) -> Value {
+    match value {
+        _ if key == Some("where") => Where::upgrade(value),
+        Value::Array(items) => Value::Array(items.iter().map(|item| old_names(item, key)).collect()),
+        Value::Object(fields) => Value::Object(fields.iter().map(|(k, item)| (if k == "parkedAt" { "leftAt".into() } else { k.clone() }, old_names(item, Some(k)))).collect()),
+        _ => value.clone(),
+    }
+}
+
 fn read_workspace(id: &str, item: &Value, dock: Dock, tabs: Tabs, place: Where) -> Workspace {
     let mut ws = Workspace::new(id.into(), dock, place);
-    ws.parked_at = item.get("parkedAt").and_then(Value::as_f64);
+    ws.parked_at = item.get("leftAt").and_then(Value::as_f64);
     ws.tabs = tabs;
     let side = Some(ws.dock.pane.clone());
     settle(&mut ws.tabs, item, side.as_ref());

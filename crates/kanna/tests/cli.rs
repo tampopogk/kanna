@@ -250,7 +250,7 @@ fn every_command_works_through_the_daemon_and_the_app() {
     assert_eq!(daemon.kanna(&["markup", "doc", "--off"]).ok(), "comments off in file-1 (doc)");
 
     let capabilities = daemon.kanna(&["capabilities"]).ok();
-    assert!(capabilities.starts_with("pane types: term, web, ios, md, code, diff\ncommands: agents, arrange, backlog, capabilities, close, comment, desk, diffs, files, focus, list, machine, markup, move, move-tab, navigate, open, project, projects, quiz, read, rename-pane, rename-tab, resize, restart, screenshot, send, send-key, status, task, toast, tour, window, zoom"), "{capabilities}");
+    assert!(capabilities.starts_with("pane types: term, web, ios, md, code, diff\ncommands: agents, arrange, capabilities, close, comment, desk, diffs, files, focus, list, machine, markup, move, move-tab, navigate, open, project, projects, quiz, read, rename-pane, rename-tab, resize, restart, screenshot, send, send-key, status, task, tasks, toast, tour, window, zoom"), "{capabilities}");
     assert!(capabilities.ends_with("Kanna.app: attached"), "{capabilities}");
     assert_eq!(daemon.kanna(&["toast", "Build finished", "it took", "3m"]).ok(), "raised toast-1");
     assert_eq!(daemon.kanna(&["toast", "Messages wait", "--pane", "a", "--key", "k1"]).ok(), "raised toast-2");
@@ -669,17 +669,17 @@ fn a_backlog_task_is_renamed_and_starts_with_its_new_name() {
     assert!(id.len() == 13 && id.starts_with("task-") && id[5..].bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()), "{id}");
     let short = &id[5..9];
     assert_eq!(daemon.kanna(&["task", "name", short, "New name"]).ok(), format!("named task-{short} \"New name\""), "a start of its ID, without task-, and shown as its first 4 hex digits");
-    let listed = daemon.kanna(&["--json", "task", "list"]).json()["backlog"][0].clone();
+    let listed = daemon.kanna(&["--json", "task", "list"]).json()["shelf"][0].clone();
     assert_eq!((listed["name"].clone(), listed["message"].clone()), (json!("New name"), json!("say hi")));
     daemon.kanna(&["task", "name", "t9", "x"]).fails(4, "t9");
     daemon.kanna(&["task", "name", &id, " "]).fails(2, "a task needs a name");
     let started = daemon.kanna(&["--json", "task", "start", &format!("task-{short}")]).json();
     assert_eq!(started["task"], json!(id), "{started}");
-    let folder = daemon.kanna(&["--json", "task", "list"]).json()["backlog"][0]["folder"].clone();
+    let folder = daemon.kanna(&["--json", "task", "list"]).json()["shelf"][0]["folder"].clone();
     assert!(folder.as_str().is_some_and(|f| f.ends_with(&format!(".kanna-worktrees/{id}"))), "its worktree is named after it: {folder}");
     let pane = started["pane"].as_str().unwrap().to_string();
     wait_for("the started task's pane", || daemon.kanna(&["workspace", "list", "--all", "--json"]).json()["panes"].as_array().unwrap().iter().any(|p| p["id"] == pane.as_str() && p["name"] == "New name"));
     assert_eq!(daemon.kanna(&["task", "name", &id, "Newer name"]).ok(), format!("named task-{short} \"Newer name\""));
     assert!(daemon.kanna(&["workspace", "list", "--all", "--json"]).json()["panes"].as_array().unwrap().iter().any(|p| p["id"] == pane.as_str() && p["name"] == "Newer name"));
-    assert_eq!(daemon.kanna(&["--json", "task", "list"]).json()["backlog"][0]["name"], json!("Newer name"));
+    assert_eq!(daemon.kanna(&["--json", "task", "list"]).json()["shelf"][0]["name"], json!("Newer name"));
 }

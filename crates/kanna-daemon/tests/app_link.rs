@@ -188,7 +188,7 @@ fn a_request_the_app_never_answers_times_out() {
     let request = app.until("the request", |m| m["cmd"] == "debug.app");
     app.send(json!({"id": request["id"], "ok": true, "late": true}));
     let mut second = App::raw(&instance.socket());
-    second.send(json!({"id": 0, "cmd": "app.hello", "args": {}}));
+    second.send(json!({"id": 0, "cmd": "app.hello", "args": {"protocols": kanna_build::PROTOCOLS}}));
     assert_eq!(second.next().unwrap()["error"]["code"], "app_attached");
 }
 
@@ -326,7 +326,7 @@ fn an_app_of_another_protocol_is_told_so_and_the_daemon_keeps_running() {
     other.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "protocols": [7, 9]}}));
     let reply = other.next().unwrap();
     assert_eq!(reply["error"]["code"], "other_protocol", "{reply}");
-    assert_eq!(reply["mine"], json!([1, 1]), "{reply}");
+    assert_eq!(reply["mine"], json!(kanna_build::PROTOCOLS), "{reply}");
     assert!(reply["version"].is_string() && reply["commit"].is_string(), "{reply}");
     assert_eq!(instance.call("capabilities", json!({}))["ok"], true);
 
@@ -334,5 +334,5 @@ fn an_app_of_another_protocol_is_told_so_and_the_daemon_keeps_running() {
     app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 2, "protocols": [1, 4]}}));
     let reply = app.next().unwrap();
     assert_eq!(reply["ok"], true, "{reply}");
-    assert_eq!(reply["daemon"]["protocols"], json!([1, 1]), "{reply}");
+    assert_eq!(reply["daemon"]["protocols"], json!(kanna_build::PROTOCOLS), "{reply}");
 }

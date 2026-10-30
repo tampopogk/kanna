@@ -306,7 +306,7 @@ extension AppController {
     func startTask(_ task: String, from window: String) {
         controllers[window]?.note = ""
         let click = Clicks.shelve(task, shelf: controllers[window]?.shelf.map(\.id) ?? [])
-        request("backlog", ["action": "shelve", "task": .string(task)], reply: { [weak self] reply in
+        request("tasks", ["action": "pick", "task": .string(task)], reply: { [weak self] reply in
             if reply["ok"]?.bool != true { Clicks.failed(task) }
             self?.noted(window, reply)
         }, sent: Clicks.sent(click))
@@ -325,7 +325,7 @@ extension AppController {
         var args: [String: JSON] = ["action": "plan", "app": .string(claimName(machine))]
         if location != nil { args["folder"] = .string(folder) }
         if let script = Bundle.main.url(forResource: "planner", withExtension: "sh") { args["script"] = .string(script.path) }
-        request("backlog", args, on: .some(machine)) { [weak self] reply in
+        request("tasks", args, on: .some(machine)) { [weak self] reply in
             guard let self else { return }
             if reply["ok"]?.bool == true, let planner = reply["workspace"]?.string, var desk = physical.desk(window) {
                 if published["workspaces"]?.array?.contains(where: { $0["id"]?.string == planner }) != true { givenPlanners.insert(planner) }

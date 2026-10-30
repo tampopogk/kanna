@@ -36,7 +36,7 @@ fn whose(reply: &Value) -> Option<(String, Vec<String>)> {
 
 fn place_of(place: &Value) -> &'static str {
     match place {
-        Value::String(place) if place == "backlog" => "on the Shelf",
+        Value::String(place) if place == "shelf" => "on the Shelf",
         place if place.get("planner").is_some() => "a Desk's planner",
         _ => "on the Desk",
     }
@@ -178,7 +178,7 @@ pub fn task(request: &Value, reply: &Value) -> String {
     match request["action"].as_str() {
         Some("list") => {
             let tasks = reply["tasks"].as_array().cloned().unwrap_or_default();
-            let waiting = reply["backlog"].as_array().cloned().unwrap_or_default();
+            let waiting = reply["shelf"].as_array().cloned().unwrap_or_default();
             if let (true, Some(query)) = (tasks.is_empty() && waiting.is_empty(), request["query"].as_str()) {
                 return format!("no task matches \"{query}\"");
             }
@@ -199,7 +199,7 @@ pub fn task(request: &Value, reply: &Value) -> String {
                 .iter()
                 .map(|t| {
                     let place = "Desk".to_string();
-                    let parked = t["parkedAt"].as_f64().map_or(String::new(), |at| ago(now - at));
+                    let parked = t["leftAt"].as_f64().map_or(String::new(), |at| ago(now - at));
                     [t["task"].as_str().or(t["id"].as_str()).unwrap_or("?").into(), t["name"].as_str().unwrap_or("").into(), place, state(t), agent(t), parked]
                 })
                 .chain(waiting.iter().map(|t| {
@@ -219,8 +219,8 @@ pub fn task(request: &Value, reply: &Value) -> String {
         }
         Some("park") if reply["parked"] == Value::Bool(true) => format!("parked {id}: {} shows the Desk view, and {id} stays active", reply["desk"].as_str().unwrap_or("its Desk")),
         Some("park") => format!("{id} isn't shown: its Desk shows the Desk view already"),
-        Some("pull") if reply["moved"] == Value::Bool(true) => format!("{id} is active on {}", reply["desk"].as_str().unwrap_or("the Desk")),
-        Some("pull") => format!("{id} is on {}; brought it forward", reply["desk"].as_str().unwrap_or("a Desk")),
+        Some("activate") if reply["moved"] == Value::Bool(true) => format!("{id} is active on {}", reply["desk"].as_str().unwrap_or("the Desk")),
+        Some("activate") => format!("{id} is on {}; brought it forward", reply["desk"].as_str().unwrap_or("a Desk")),
         Some("new") => format!(
             "added {} \"{}\" to the Shelf of {}{}",
             reply["task"]["id"].as_str().unwrap_or("?"),
@@ -243,7 +243,7 @@ pub fn task(request: &Value, reply: &Value) -> String {
         Some("setup") if reply["tab"].is_string() => format!("{id}'s setup runs again in {} (a Setup tab)", reply["pane"].as_str().unwrap_or("?")),
         Some("setup") => format!("{id}'s setup runs again in {}, then its agent", reply["pane"].as_str().unwrap_or("?")),
         Some("stop") => format!("stopped {}{}; `kanna task start {}` starts it again", reply["task"].as_str().unwrap_or("?"), place(reply), reply["task"].as_str().unwrap_or("?")),
-        Some("shelve") => format!(
+        Some("pick") => format!(
             "moved {} to the Desk: {} in {}{}",
             reply["task"].as_str().unwrap_or("?"),
             reply["pane"].as_str().unwrap_or("?"),
@@ -253,7 +253,7 @@ pub fn task(request: &Value, reply: &Value) -> String {
         Some("done") if reply["teardown"] == Value::Bool(true) => format!("{}'s teardown runs in {}: it's done when that succeeds, and kanna task list says if it fails", reply["task"].as_str().unwrap_or("?"), reply["pane"].as_str().unwrap_or("?")),
         Some("done") if reply.get("closed").is_none() => format!("took {} off the Shelf{}", reply["task"]["id"].as_str().unwrap_or("?"), freed_lines(reply)),
         Some("desk") => format!("{} {} on {}", if reply["new"] == Value::Bool(false) { "brought forward" } else { "opened" }, reply["desk"].as_str().unwrap_or("the Desk"), tilde(reply["project"].as_str().unwrap_or("?"))),
-        Some("defer") => format!(
+        Some("shelve") => format!(
             "moved {} to the Shelf as {}, {}: `kanna task pick {}` brings it back",
             reply["pane"].as_str().unwrap_or("?"),
             reply["task"]["id"].as_str().unwrap_or("?"),
@@ -312,7 +312,7 @@ fn ids(list: &Value) -> String {
 }
 
 pub fn freed(backlog: &Value, done: &str) -> Vec<Value> {
-    let tasks = backlog["tasks"].as_array().cloned().unwrap_or_default();
+    let tasks = backlog["shelf"].as_array().cloned().unwrap_or_default();
     tasks
         .into_iter()
         .filter(|t| matches!(t["waits"].as_array().map(Vec::as_slice), Some([only]) if only["id"] == done || only["pane"] == done))
@@ -380,7 +380,7 @@ pub fn keep_matching(reply: &mut Value, query: &str) {
         let text = [&task["name"], &task["message"]].iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("\n").to_lowercase();
         words.iter().all(|word| text.contains(word.as_str()))
     };
-    for list in ["tasks", "backlog"] {
+    for list in ["tasks", "shelf"] {
         if let Some(tasks) = reply[list].as_array_mut() {
             tasks.retain(matches);
         }
@@ -891,12 +891,12 @@ mod blocked_tests {
 
     #[test]
     fn a_blocked_task_lists_as_blocked_with_what_it_waits_for_and_done_names_what_it_frees() {
-        let backlog = json!({ "tasks": [
+        let backlog = json!({ "shelf": [
             { "id": "t13", "name": "Diff viewer", "repo": "/r", "running": false, "waits": [{ "id": "t12", "pane": "p40" }] },
             { "id": "t14", "name": "Release notes", "repo": "/r", "running": false, "waits": [{ "id": "t8" }, { "id": "t12", "pane": "p40" }] },
             { "id": "t15", "name": "Free", "repo": "/r", "running": false, "waits": [] }
         ] });
-        let text = task(&json!({ "action": "list" }), &json!({ "tasks": [], "backlog": backlog["tasks"] }));
+        let text = task(&json!({ "action": "list" }), &json!({ "tasks": [], "shelf": backlog["shelf"] }));
         assert!(text.contains("t13   Diff viewer    Shelf  blocked") && text.contains("waits for t12"), "{text}");
         assert!(text.contains("waits for t8, t12"), "{text}");
         assert!(text.contains("t15   Free           Shelf  stopped"), "{text}");
@@ -922,13 +922,13 @@ mod workspace_tests {
             ],
             "hiddenWindows": [],
             "workspaces": [
-                { "id": "ws-3", "task": "task-22a4", "name": "Skills show diffs", "where": { "shelf": "mac" }, "dock": { "pane": "Skills show diffs", "id": "p401", "edge": "left", "width": "2/5", "frozen": true },
+                { "id": "ws-3", "task": "task-22a4", "name": "Skills show diffs", "where": { "desk": "mac" }, "dock": { "pane": "Skills show diffs", "id": "p401", "edge": "left", "width": "2/5", "frozen": true },
                   "focused": "p406", "zoomed": null, "tabs": [{ "id": "tab-246", "title": "diff --merge-base main", "active": true, "layout": { "pane": "p406" }, "panes": ["p406"] }], "windows": ["win-40"], "panes": ["p406", "p9", "p401"] },
-                { "id": "ws-1", "task": "task-1dfb", "name": "Fix login", "where": { "shelf": "mac" }, "dock": { "pane": "Fix login", "id": "p407", "edge": "left", "width": "2/5", "frozen": true },
+                { "id": "ws-1", "task": "task-1dfb", "name": "Fix login", "where": { "desk": "mac" }, "dock": { "pane": "Fix login", "id": "p407", "edge": "left", "width": "2/5", "frozen": true },
                   "focused": "diff", "zoomed": "diff",
                   "tabs": [{ "id": "tab-211", "title": "diff", "active": true, "layout": { "pane": "diff" }, "panes": ["diff"] }, { "id": "tab-212", "title": "login.md", "active": false, "layout": { "split": "row", "children": [{ "pane": "p5", "size": "1/2" }, { "pane": "p6", "size": "1/2" }] }, "panes": ["p5", "p6"] }],
                   "windows": [], "panes": ["p400", "p5", "p6", "p407"] },
-                { "id": "ws-4", "where": "backlog", "dock": { "pane": "p185", "id": "p185", "edge": "left", "width": "2/5" }, "focused": "p185", "zoomed": null, "tabs": [], "windows": [], "panes": ["p185"] },
+                { "id": "ws-4", "where": "shelf", "dock": { "pane": "p185", "id": "p185", "edge": "left", "width": "2/5" }, "focused": "p185", "zoomed": null, "tabs": [], "windows": [], "panes": ["p185"] },
                 { "id": "ws-5", "where": { "planner": "mac" }, "dock": { "pane": "p280", "id": "p280", "edge": "left", "width": "2/5" }, "focused": "p280", "zoomed": null, "tabs": [], "windows": [], "panes": ["p280"] }
             ],
             "panes": [
@@ -986,9 +986,9 @@ mod workspace_tests {
 
     #[test]
     fn replies_name_the_workspace_then_its_task_and_where_it_is() {
-        let windowless = json!({ "pane": { "id": "p5", "state": "running" }, "window": null, "tab": "tab-9", "workspace": { "id": "ws-3", "task": "task-1dfb", "where": { "shelf": "mac" } } });
+        let windowless = json!({ "pane": { "id": "p5", "state": "running" }, "window": null, "tab": "tab-9", "workspace": { "id": "ws-3", "task": "task-1dfb", "where": { "desk": "mac" } } });
         assert_eq!(opened(&json!({}), &windowless), "opened p5 in ws-3 (task-1dfb, on the Desk), tab-9: running");
-        let windowed = json!({ "pane": { "id": "p5", "state": "running" }, "window": "win-31", "tab": "tab-9", "workspace": { "id": "ws-3", "task": "task-1dfb", "where": { "shelf": "mac" } } });
+        let windowed = json!({ "pane": { "id": "p5", "state": "running" }, "window": "win-31", "tab": "tab-9", "workspace": { "id": "ws-3", "task": "task-1dfb", "where": { "desk": "mac" } } });
         assert_eq!(opened(&json!({}), &windowed), "opened p5 in ws-3's win-31 (task-1dfb, on the Desk), tab-9: running");
         assert_eq!(focused(&json!({ "pane": "spec" }), &windowed), "focused spec in ws-3's win-31 (task-1dfb, on the Desk)");
         assert_eq!(focused(&json!({ "pane": "spec" }), &json!({ "window": "win-31", "front": "win-31", "workspace": null })), "focused spec in win-31 (in front)");

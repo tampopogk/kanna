@@ -281,7 +281,7 @@ impl AppLink {
         }
         let tasks = self.backlog.borrow().as_ref().and_then(|b| b.upgrade()).map(|b| b.view());
         if let Some(tasks) = tasks {
-            self.notify("backlog", tasks);
+            self.notify("tasks", tasks);
         }
         if let Some(core) = self.core.upgrade() {
             core.handle(json!({ "cmd": "list" }), |_| {});
@@ -294,7 +294,7 @@ impl AppLink {
         let link = Rc::downgrade(self);
         *backlog.on_change.borrow_mut() = Some(Box::new(move |tasks| {
             if let Some(link) = link.upgrade() {
-                link.notify("backlog", tasks);
+                link.notify("tasks", tasks);
             }
         }));
     }

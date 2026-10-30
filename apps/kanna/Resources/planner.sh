@@ -326,7 +326,7 @@ fi
 planner() {
   [ -n "$kanna" ] && [ -n "$KANNA_TERMINAL" ] || return 1
   group=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
-  request=$(jq -nc --arg pane "$KANNA_TERMINAL" --arg folder "$(pwd -P)" --arg agent "$1" --arg step "$2" --arg group "$group" '{cmd: "backlog", args: {action: "planner", step: $step, pane: $pane, folder: $folder, agent: $agent, group: $group}}') || return 1
+  request=$(jq -nc --arg pane "$KANNA_TERMINAL" --arg folder "$(pwd -P)" --arg agent "$1" --arg step "$2" --arg group "$group" '{cmd: "tasks", args: {action: "planner", step: $step, pane: $pane, folder: $folder, agent: $agent, group: $group}}') || return 1
   "$kanna" raw "$request" 2>/dev/null
 }
 
