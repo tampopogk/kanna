@@ -209,7 +209,7 @@ final class Contents {
             var unmap: (URL) -> URL = { $0 }
             var waitingFor: String?
             if let machine = MachineIDs.machine(of: id), let tunnel = PortTunnelURL(url) {
-                switch portOpen?(tunnel.port, machine) ?? .failure(KannaError("unavailable", "this Mac has no fleet endpoint")) {
+                switch portOpen?(tunnel.port, machine) ?? .failure(KannaError("unavailable", "this Mac has no machines endpoint")) {
                 case .success(let local):
                     url = tunnel.local(local).absoluteString
                     unmap = { tunnel.remote($0, local: local) }
