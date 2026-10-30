@@ -1,13 +1,13 @@
 #!/bin/sh
 KANNA_GHOSTTY_FORK="${KANNA_GHOSTTY_FORK:-https://github.com/jemdiggity/ghostty.git}"
 KANNA_GHOSTTY_BRANCH="kanna4"
-KANNA_GHOSTTY_COMMIT="5d812e4e4378f6af4a5f94bca73b99a17ac8e634"
+KANNA_GHOSTTY_COMMIT="4e28443e32fe8b0f88934d6a1159c42561f1931a"
 
-KANNA_ZIG_VERSION="0.16.0"
-KANNA_ZIG_SHA256_aarch64_macos="b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489"
-KANNA_ZIG_SHA256_x86_64_macos="0387557ed1877bc6a2e1802c8391953baddba76081876301c522f52977b52ba7"
-KANNA_ZIG_SHA256_aarch64_linux="ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17"
-KANNA_ZIG_SHA256_x86_64_linux="70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
+KANNA_ZIG_VERSION="0.17.0"
+KANNA_ZIG_SHA256_aarch64_macos="b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
+KANNA_ZIG_SHA256_x86_64_macos="4f9a1c5269aa17ebda5e6d3c2b89d6cbf36f7d2b22a0306e9ab98f25f95529c6"
+KANNA_ZIG_SHA256_aarch64_linux="9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8"
+KANNA_ZIG_SHA256_x86_64_linux="1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026"
 
 kanna_macos_target() {
   cargo_target="$(sed -n 's/^MACOSX_DEPLOYMENT_TARGET *= *{ *value *= *"\([0-9.]*\)".*/\1/p' "$1/.cargo/config.toml" 2>/dev/null)"
@@ -138,27 +138,43 @@ kanna_main_checkout() {
   echo "$main"
 }
 
-kanna_targets() {
-  if main="$(kanna_main_checkout "$1")"; then worktree=1; else main="$1"; worktree=""; fi
-  config="${KANNA_AGENTS_HOME:-$HOME}/.kanna-v4/config.json"
+kanna_targets_config() {
+  echo "${KANNA_AGENTS_HOME:-$HOME}/.kanna-v4/config.json"
+}
+
+kanna_targets_root() {
+  config="$(kanna_targets_config)"
   root=""
   if [ -f "$config" ] && command -v plutil >/dev/null 2>&1 && [ "$(plutil -extract version raw -o - "$config" 2>/dev/null || echo 1)" -le 1 ] 2>/dev/null; then
     root="$(plutil -extract build.targets raw -o - "$config" 2>/dev/null)" || root=""
   fi
-  root="${root%/}"
-  case "$root" in
-    ""|/*) ;;
-    *) echo "==> build.targets in $config is $root, not an absolute folder: building in target/" >&2; root="" ;;
-  esac
-  case "$root" in
+  echo "${root%/}"
+}
+
+kanna_targets_unmounted() {
+  case "$1" in
     /Volumes/*)
-      volume="${root#/Volumes/}"; volume="/Volumes/${volume%%/*}"
+      volume="${1#/Volumes/}"; volume="/Volumes/${volume%%/*}"
       if [ ! -d "$volume" ] || [ "$(stat -L -f %d "$volume")" = "$(stat -f %d /Volumes)" ]; then
-        echo "==> The volume ${volume#/Volumes/} isn't mounted: building in target/ on this disk until it is" >&2
-        root=""
+        echo "${volume#/Volumes/}"
+        return 0
       fi
       ;;
   esac
+  return 1
+}
+
+kanna_targets() {
+  if main="$(kanna_main_checkout "$1")"; then worktree=1; else main="$1"; worktree=""; fi
+  root="$(kanna_targets_root)"
+  case "$root" in
+    ""|/*) ;;
+    *) echo "==> build.targets in $(kanna_targets_config) is $root, not an absolute folder: building in target/" >&2; root="" ;;
+  esac
+  if [ -n "$root" ] && volume="$(kanna_targets_unmounted "$root")"; then
+    echo "==> The volume $volume isn't mounted: building in target/ on this disk until it is" >&2
+    root=""
+  fi
   repo="$root/$(basename "$main")"
   if [ -n "$worktree" ]; then
     kanna_target_link "$1/target" "$repo/$(basename "$1")" "$root"

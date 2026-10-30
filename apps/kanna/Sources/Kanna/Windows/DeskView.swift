@@ -2,10 +2,10 @@ import AppKit
 import KannaPerf
 import KannaWindows
 
-struct ShelfTask: Equatable {
+struct DeskTask: Equatable {
     let id: String
     let title: String
-    let parkedAt: Double?
+    let leftAt: Double?
     let status: String?
     let detail: String
     var agent: String?
@@ -13,11 +13,11 @@ struct ShelfTask: Equatable {
     var offline = false
     var made = 0
 
-    @MainActor var meta: String { offline ? "offline" : status == "needs-you" ? "needs you" : Self.since(parkedAt) }
+    @MainActor var meta: String { offline ? "offline" : status == "needs-you" ? "needs you" : Self.since(leftAt) }
 
     @MainActor var sub: String {
         let status = status.map { $0 == "needs-you" ? "needs you" : $0 }.map { offline ? "last known: \($0)" : $0 }
-        return [status, detail.isEmpty ? nil : detail, offline ? "offline" : Self.since(parkedAt)].compactMap { $0 }.joined(separator: " · ")
+        return [status, detail.isEmpty ? nil : detail, offline ? "offline" : Self.since(leftAt)].compactMap { $0 }.joined(separator: " · ")
     }
 
     @MainActor static var skew: Double = 0
@@ -34,7 +34,7 @@ struct ShelfTask: Equatable {
     }
 
     @MainActor
-    static func dot(_ task: ShelfTask, in rect: NSRect) {
+    static func dot(_ task: DeskTask, in rect: NSRect) {
         guard task.offline else {
             color(task.status).setFill()
             return NSBezierPath(ovalIn: rect).fill()
@@ -55,7 +55,7 @@ struct ShelfTask: Equatable {
     }
 }
 
-struct BacklogTask: Equatable {
+struct ShelfTask: Equatable {
     let id: String
     let name: String
     let message: String?
@@ -72,7 +72,7 @@ struct BacklogTask: Equatable {
     var blocked: Bool { !waits.isEmpty }
 
     @MainActor var after: String {
-        let made = "made " + ShelfTask.ago(madeAt).replacingOccurrences(of: "now", with: "just now")
+        let made = "made " + DeskTask.ago(madeAt).replacingOccurrences(of: "now", with: "just now")
         return [from.map { "from \($0)" }, made].compactMap { $0 }.joined(separator: " · ")
     }
 
@@ -100,9 +100,9 @@ struct BacklogTask: Equatable {
 
 struct DeskPage: Equatable {
     var active: String?
-    var tasks: [ShelfTask] = []
+    var tasks: [DeskTask] = []
     var keys: [String: String] = [:]
-    var backlog: [BacklogTask] = []
+    var shelf: [ShelfTask] = []
     var running = 0
     var project = ""
     var cheer = ""
@@ -114,12 +114,12 @@ struct DeskPage: Equatable {
 }
 
 @MainActor
-final class ShelfStrip: NSView {
+final class DeskStrip: NSView {
     static let height: CGFloat = 30
     static let titleFloor: CGFloat = 60
-    var onPull: ((String) -> Void)?
+    var onActivate: ((String) -> Void)?
     var onDesk: (() -> Void)?
-    private var shown: [ShelfTask] = []
+    private var shown: [DeskTask] = []
     private var keys: [String: String] = [:]
     private var waiting = 0
     private let count = NSTextField(labelWithString: "")
@@ -159,19 +159,19 @@ final class ShelfStrip: NSView {
 
     private func paint() { layer?.backgroundColor = resolved(.windowBackgroundColor) }
 
-    private var shelfItems: [ShelfItem] { subviews.compactMap { $0 as? ShelfItem } }
+    private var stripItems: [DeskStripItem] { subviews.compactMap { $0 as? DeskStripItem } }
 
     var items: [(task: String, center: NSPoint)] {
-        shelfItems.map { ($0.task.id, $0.convert(NSPoint(x: 20, y: $0.bounds.midY), to: nil)) }
+        stripItems.map { ($0.task.id, $0.convert(NSPoint(x: 20, y: $0.bounds.midY), to: nil)) }
     }
 
     var geometry: JSON {
         ["width": .number(Double(bounds.width)),
          "hint": .string(hint.text), "hintRight": .number(Double(hint.frame.maxX)),
-         "items": .array(shelfItems.map { ["task": .string($0.task.id), "meta": .string($0.metaText), "right": .number(Double($0.frame.maxX)), "key": $0.keyText.map { .string($0) } ?? .null] })]
+         "items": .array(stripItems.map { ["task": .string($0.task.id), "meta": .string($0.metaText), "right": .number(Double($0.frame.maxX)), "key": $0.keyText.map { .string($0) } ?? .null] })]
     }
 
-    func show(_ tasks: [ShelfTask], keys: [String: String], waiting: Int) {
+    func show(_ tasks: [DeskTask], keys: [String: String], waiting: Int) {
         guard tasks != shown || keys != self.keys || waiting != self.waiting else { return }
         shown = tasks
         self.keys = keys
@@ -182,8 +182,8 @@ final class ShelfStrip: NSView {
         addSubview(count)
         addSubview(hint)
         for task in tasks {
-            let item = ShelfItem(task: task, key: keys[task.id])
-            item.onPress = { [weak self] in self?.onPull?(task.id) }
+            let item = DeskStripItem(task: task, key: keys[task.id])
+            item.onPress = { [weak self] in self?.onActivate?(task.id) }
             item.onHover = { [weak self] in self?.relayout() }
             addSubview(item)
         }
@@ -191,12 +191,12 @@ final class ShelfStrip: NSView {
     }
 
     func tick() {
-        shelfItems.forEach { $0.refresh() }
+        stripItems.forEach { $0.refresh() }
         relayout()
     }
 
     fileprivate func relayout() {
-        let items = shelfItems
+        let items = stripItems
         let gaps = CGFloat(max(0, items.count - 1)) * 4
         let chrome = items.reduce(0) { $0 + $1.chrome }
         let metas = items.map(\.metaWidth)
@@ -233,7 +233,7 @@ final class ShelfStrip: NSView {
     override func draw(_ dirtyRect: NSRect) {
         NSColor.separatorColor.setFill()
         NSRect(x: 0, y: bounds.height - 1, width: bounds.width, height: 1).fill()
-        if !shelfItems.isEmpty { NSRect(x: hint.frame.maxX + 4, y: (Self.height - 14) / 2, width: 1, height: 14).fill() }
+        if !stripItems.isEmpty { NSRect(x: hint.frame.maxX + 4, y: (Self.height - 14) / 2, width: 1, height: 14).fill() }
     }
 }
 
@@ -277,8 +277,8 @@ private final class DeskHint: NSView {
 }
 
 @MainActor
-private final class ShelfItem: NSView {
-    let task: ShelfTask
+private final class DeskStripItem: NSView {
+    let task: DeskTask
     var onPress: (() -> Void)?
     var onHover: (() -> Void)?
     private let title: NSTextField
@@ -288,7 +288,7 @@ private final class ShelfItem: NSView {
     private(set) var titleWidth: CGFloat = 0
     private(set) var metaWidth: CGFloat = 0
 
-    init(task: ShelfTask, key: String?) {
+    init(task: DeskTask, key: String?) {
         self.task = task
         title = NSTextField(labelWithString: task.title)
         meta = NSTextField(labelWithString: "")
@@ -338,7 +338,7 @@ private final class ShelfItem: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        ShelfTask.dot(task, in: NSRect(x: 9, y: bounds.midY - 4, width: 8, height: 8))
+        DeskTask.dot(task, in: NSRect(x: 9, y: bounds.midY - 4, width: 8, height: 8))
     }
 
     override func mouseEntered(with event: NSEvent) { setHover(true) }
@@ -358,7 +358,7 @@ private final class ShelfItem: NSView {
     override func mouseDown(with event: NSEvent) { onPress?() }
 }
 @MainActor
-final class ShelfPage: NSView, NSSearchFieldDelegate {
+final class DeskView: NSView, NSSearchFieldDelegate {
     static let cheers = [
         "Clear desk, clear mind. Pick what's next.",
         "Nice work. What's next?",
@@ -367,7 +367,7 @@ final class ShelfPage: NSView, NSSearchFieldDelegate {
         "Good progress today. Keep it going.",
         "Breathe. Then pick the next one.",
     ]
-    var onPull: ((String) -> Void)?
+    var onActivate: ((String) -> Void)?
     var onStart: ((String) -> Void)?
     var onLeaveSearch: (() -> Void)?
     private var shown: DeskPage?
@@ -403,7 +403,7 @@ final class ShelfPage: NSView, NSSearchFieldDelegate {
         search.delegate = self
         search.target = self
         search.action = #selector(searched)
-        search.identifier = NSUserInterfaceItemIdentifier("backlog-search")
+        search.identifier = NSUserInterfaceItemIdentifier("shelf-search")
         searchKey.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         searchKey.textColor = .tertiaryLabelColor
         searchKey.sizeToFit()
@@ -420,20 +420,20 @@ final class ShelfPage: NSView, NSSearchFieldDelegate {
     private func paint() { layer?.backgroundColor = resolved(.textBackgroundColor) }
 
     var rows: [(task: String, center: NSPoint)] {
+        document.subviews.compactMap { $0 as? DeskRow }.map { ($0.task.id, $0.convert(NSPoint(x: 20, y: $0.bounds.midY), to: nil)) }
+    }
+
+    var shelfRows: [(task: String, center: NSPoint)] {
         document.subviews.compactMap { $0 as? ShelfRow }.map { ($0.task.id, $0.convert(NSPoint(x: 20, y: $0.bounds.midY), to: nil)) }
     }
 
-    var backlogRows: [(task: String, center: NSPoint)] {
-        document.subviews.compactMap { $0 as? BacklogRow }.map { ($0.task.id, $0.convert(NSPoint(x: 20, y: $0.bounds.midY), to: nil)) }
+    var blockedShelf: [JSON] {
+        document.subviews.compactMap { $0 as? ShelfRow }.filter(\.task.blocked).map { ["task": .string($0.task.id), "waits": .array($0.task.waits.map { .string($0) }), "go": .string($0.label)] }
     }
 
-    var blockedBacklog: [JSON] {
-        document.subviews.compactMap { $0 as? BacklogRow }.filter(\.task.blocked).map { ["task": .string($0.task.id), "waits": .array($0.task.waits.map { .string($0) }), "go": .string($0.label)] }
-    }
-
-    var visibleBacklog: [String] {
+    var visibleShelf: [String] {
         let seen = document.visibleRect
-        return document.subviews.compactMap { $0 as? BacklogRow }.filter { seen.contains($0.frame) }.map(\.task.id)
+        return document.subviews.compactMap { $0 as? ShelfRow }.filter { seen.contains($0.frame) }.map(\.task.id)
     }
 
     var scrollTop: CGFloat { scroller.contentView.bounds.minY }
@@ -445,7 +445,7 @@ final class ShelfPage: NSView, NSSearchFieldDelegate {
         scroller.reflectScrolledClipView(scroller.contentView)
     }
 
-    var found: [String] { shown.map { page in page.backlog.filter { $0.matches(query) }.map(\.id) } ?? [] }
+    var found: [String] { shown.map { page in page.shelf.filter { $0.matches(query) }.map(\.id) } ?? [] }
 
     var searching: Bool { search.currentEditor() != nil && window?.firstResponder === search.currentEditor() }
 
@@ -488,7 +488,7 @@ final class ShelfPage: NSView, NSSearchFieldDelegate {
             guard !hits.isEmpty else { return true }
             selected = max(0, min(hits.count - 1, selected + (selector == #selector(NSResponder.moveDown(_:)) ? 1 : -1)))
             if let shown { lay(shown, top: scrollTop) }
-            if let row = document.subviews.compactMap({ $0 as? BacklogRow }).first(where: { $0.selected }) { document.scrollToVisible(row.frame) }
+            if let row = document.subviews.compactMap({ $0 as? ShelfRow }).first(where: { $0.selected }) { document.scrollToVisible(row.frame) }
             return true
         case #selector(NSResponder.insertNewline(_:)):
             guard !query.isEmpty, !hits.isEmpty else { return true }
@@ -527,19 +527,19 @@ final class ShelfPage: NSView, NSSearchFieldDelegate {
     }
 
     func tick() {
-        document.subviews.forEach { ($0 as? ShelfRow)?.refresh() ?? ($0 as? BacklogRow)?.refresh() }
+        document.subviews.forEach { ($0 as? DeskRow)?.refresh() ?? ($0 as? ShelfRow)?.refresh() }
     }
 
     var times: JSON {
         .array(document.subviews.compactMap { view -> JSON? in
+            if let row = view as? DeskRow { return ["task": .string(row.task.id), "sub": .string(row.subText)] }
             if let row = view as? ShelfRow { return ["task": .string(row.task.id), "sub": .string(row.subText)] }
-            if let row = view as? BacklogRow { return ["task": .string(row.task.id), "sub": .string(row.subText)] }
             return nil
         })
     }
 
     var deskRows: JSON {
-        .array(document.subviews.compactMap { $0 as? ShelfRow }.map { row in
+        .array(document.subviews.compactMap { $0 as? DeskRow }.map { row in
             ["task": .string(row.task.id), "go": .string(row.goText), "goShown": .bool(row.goShown), "active": .bool(row.active), "highlit": .bool(row.highlit)]
         })
     }
@@ -547,12 +547,12 @@ final class ShelfPage: NSView, NSSearchFieldDelegate {
     func show(_ page: DeskPage) {
         if page == shown { return }
         shown = page
-        if let started, !page.backlog.contains(where: { $0.id == started }) { clearSearch() }
+        if let started, !page.shelf.contains(where: { $0.id == started }) { clearSearch() }
         lay(page, top: scrollTop)
     }
 
     private func lay(_ page: DeskPage, top: CGFloat) {
-        let span = Perf.begin(.shelf, "ShelfPage.lay")
+        let span = Perf.begin(.desk, "DeskView.lay")
         document.subviews.filter { $0 !== search && $0 !== searchKey }.forEach { $0.removeFromSuperview() }
         let left: CGFloat = 48, width = min(760, scroller.contentSize.width - left * 2)
         var y: CGFloat = 40
@@ -566,20 +566,20 @@ final class ShelfPage: NSView, NSSearchFieldDelegate {
             y += none.frame.height + 12
         }
         for task in page.tasks {
-            let row = ShelfRow(task: task, key: page.keys[task.id], width: width + 20, active: task.id == page.active)
-            row.onPress = { [weak self] in self?.onPull?(task.id) }
+            let row = DeskRow(task: task, key: page.keys[task.id], width: width + 20, active: task.id == page.active)
+            row.onPress = { [weak self] in self?.onActivate?(task.id) }
             row.frame.origin = NSPoint(x: left - 10, y: y)
             document.addSubview(row)
             y += row.frame.height
         }
         y += 28
-        let hits = page.backlog.filter { $0.matches(query) }
+        let hits = page.shelf.filter { $0.matches(query) }
         selected = min(selected, max(0, hits.count - 1))
-        let head = header("Shelf", detail: nil, count: query.isEmpty ? "\(page.backlog.count) waiting" : "\(hits.count) of \(page.backlog.count)", y: y, left: left, width: width)
-        let widest = ["\(page.backlog.count) waiting", "\(page.backlog.count) of \(page.backlog.count)"].map { ($0 as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12)]).width }.max() ?? 0
-        placeSearch(shown: !page.backlog.isEmpty, right: head.tally.maxX - ceil(widest), middle: head.tally.midY, left: left)
+        let head = header("Shelf", detail: nil, count: query.isEmpty ? "\(page.shelf.count) waiting" : "\(hits.count) of \(page.shelf.count)", y: y, left: left, width: width)
+        let widest = ["\(page.shelf.count) waiting", "\(page.shelf.count) of \(page.shelf.count)"].map { ($0 as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12)]).width }.max() ?? 0
+        placeSearch(shown: !page.shelf.isEmpty, right: head.tally.maxX - ceil(widest), middle: head.tally.midY, left: left)
         y = head.bottom
-        if page.backlog.isEmpty {
+        if page.shelf.isEmpty {
             let none = label("Empty. Ask the planning agent for tasks.", color: .secondaryLabelColor)
             none.frame.origin = NSPoint(x: left, y: y + 4)
             y += none.frame.height + 12
@@ -589,7 +589,7 @@ final class ShelfPage: NSView, NSSearchFieldDelegate {
             y += none.frame.height + 12
         }
         for (index, task) in hits.enumerated() {
-            let row = BacklogRow(task: task, full: page.full, width: width + 20, query: query, selected: !query.isEmpty && index == selected)
+            let row = ShelfRow(task: task, full: page.full, width: width + 20, query: query, selected: !query.isEmpty && index == selected)
             row.onPress = { [weak self] in self?.start(task.id) }
             row.frame.origin = NSPoint(x: left - 10, y: y)
             document.addSubview(row)
@@ -601,7 +601,7 @@ final class ShelfPage: NSView, NSSearchFieldDelegate {
         document.frame = NSRect(x: 0, y: 0, width: scroller.contentSize.width, height: y + 8 + note.frame.height + 40)
         scroll(toY: top)
         Perf.end(span, "\(page.tasks.count + hits.count) rows")
-        Clicks.laid(shelf: page.tasks.map(\.id), backlog: page.backlog.map(\.id))
+        Clicks.laid(desk: page.tasks.map(\.id), shelf: page.shelf.map(\.id))
     }
 
     private func placeSearch(shown: Bool, right edge: CGFloat, middle: CGFloat, left: CGFloat) {
@@ -646,8 +646,8 @@ private final class FlippedView: NSView {
 }
 
 @MainActor
-private final class BacklogRow: NSView {
-    let task: BacklogTask
+private final class ShelfRow: NSView {
+    let task: ShelfTask
     let selected: Bool
     var onPress: (() -> Void)?
     private let go: NSTextField
@@ -657,7 +657,7 @@ private final class BacklogRow: NSView {
 
     override var isFlipped: Bool { true }
 
-    init(task: BacklogTask, full: Bool, width: CGFloat, query: String, selected: Bool) {
+    init(task: ShelfTask, full: Bool, width: CGFloat, query: String, selected: Bool) {
         self.task = task
         self.full = full
         self.selected = selected
@@ -666,7 +666,7 @@ private final class BacklogRow: NSView {
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: 52))
         wantsLayer = true
         layer?.cornerRadius = 8
-        let name = NSTextField(labelWithAttributedString: BacklogTask.marked(task.name, query, font: .systemFont(ofSize: 13, weight: .medium), color: .labelColor))
+        let name = NSTextField(labelWithAttributedString: ShelfTask.marked(task.name, query, font: .systemFont(ofSize: 13, weight: .medium), color: .labelColor))
         name.lineBreakMode = .byTruncatingTail
         name.frame = NSRect(x: 30, y: 8, width: width - 160, height: 18)
         refresh()
@@ -688,7 +688,7 @@ private final class BacklogRow: NSView {
     func refresh() {
         let small = NSFont.systemFont(ofSize: 12)
         let detail = NSMutableAttributedString(string: task.waits.isEmpty ? "" : "waits for " + task.waits.joined(separator: ", ") + " · ", attributes: [.font: small, .foregroundColor: NSColor.systemOrange])
-        detail.append(BacklogTask.marked(task.message.map { $0 + " · " } ?? "", query, font: small, color: .secondaryLabelColor))
+        detail.append(ShelfTask.marked(task.message.map { $0 + " · " } ?? "", query, font: small, color: .secondaryLabelColor))
         detail.append(NSAttributedString(string: task.after, attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
         sub.attributedStringValue = detail
     }
@@ -729,8 +729,8 @@ private final class BacklogRow: NSView {
 }
 
 @MainActor
-private final class ShelfRow: NSView {
-    let task: ShelfTask
+private final class DeskRow: NSView {
+    let task: DeskTask
     var onPress: (() -> Void)?
     private let go: NSTextField
     private let sub = NSTextField(labelWithString: "")
@@ -739,7 +739,7 @@ private final class ShelfRow: NSView {
 
     let active: Bool
 
-    init(task: ShelfTask, key: String?, width: CGFloat, active: Bool) {
+    init(task: DeskTask, key: String?, width: CGFloat, active: Bool) {
         self.task = task
         self.active = active
         go = NSTextField(labelWithString: active ? "⌘. · Back to it" : (key.map { "\($0) · " } ?? "") + "Make active →")
@@ -789,7 +789,7 @@ private final class ShelfRow: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        ShelfTask.dot(task, in: NSRect(x: 10, y: bounds.midY - 4, width: 8, height: 8))
+        DeskTask.dot(task, in: NSRect(x: 10, y: bounds.midY - 4, width: 8, height: 8))
     }
 
     override func mouseEntered(with event: NSEvent) {
