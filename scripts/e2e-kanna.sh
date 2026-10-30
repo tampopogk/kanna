@@ -2998,7 +2998,7 @@ pick_keeper_paused() {
   KANNA_TERMINAL="$task" kanna open --tab --name lines --cmd 'exec cat' >/dev/null || { echo "pick_keeper_paused line $LINENO"; return 1; }
   kanna task stop $(tid 1) >/dev/null || { echo "pick_keeper_paused line $LINENO"; return 1; }
   check wait_for 5 is "Line tables" state exited && check is lines state exited || { echo "pick_keeper_paused: the task didn't stop"; return 1; }
-  check wait_for 5 eval '[[ "$(desk backlog)" == "[\"$(tid 1)\"]" ]]' || { desk backlog; return 1; }
+  check wait_for 5 eval '[[ "$(desk shelf)" == "[\"$(tid 1)\"]" ]]' || { desk shelf; return 1; }
   keeper="$(cat "$KANNA_STATE_DIR/keeper.pid")"
   [[ "$keeper" =~ ^[0-9]+$ ]] && [[ "$(ps -o command= -p "$keeper")" == *"$KANNA_STATE_DIR"* ]] || { echo "pick_keeper_paused: $keeper isn't this run's keeper"; return 1; }
   kill -STOP "$keeper"
@@ -3008,11 +3008,11 @@ def ask(cmd, args):
     s.sendall(json.dumps({"id": 1, "cmd": cmd, "args": args}).encode() + b"\n")
     return json.loads(s.makefile().readline())
 start = time.monotonic()
-ask("debug.click", {"backlog": sys.argv[2], "window": "d1"})
+ask("debug.click", {"shelf": sys.argv[2], "window": "d1"})
 while time.monotonic() - start < 10:
     d = ask("debug.desk", {"window": "d1"})
     d = d.get("result", d)
-    if not d["backlog"] and [t["title"] for t in d["shelf"]] == ["Line tables"]:
+    if not d["shelf"] and [t["title"] for t in d["tasks"]] == ["Line tables"]:
         took = round((time.monotonic() - start) * 1000)
         asked = time.monotonic()
         try:
@@ -3026,7 +3026,7 @@ print("never")' "$KANNA_SOCKET" "$(tid 1)" "$bin/kanna")"
   sleep 0.5
   kill -CONT "$keeper"
   took="${seen%% *}" listed="${seen#* }"
-  [[ "$took" =~ ^[0-9]+$ ]] || { echo "pick_keeper_paused: with the keeper paused, the task never reached the Desk"; desk shelf; desk note; return 1; }
+  [[ "$took" =~ ^[0-9]+$ ]] || { echo "pick_keeper_paused: with the keeper paused, the task never reached the Desk"; desk tasks; desk note; return 1; }
   echo "pick_keeper_paused: on the Desk ${took}ms after the click, the keeper paused; task list (ms, row): $listed"
   (( took <= 200 )) || { echo "pick_keeper_paused: the task took ${took}ms to reach the Desk"; return 1; }
   [[ "$listed" =~ ^([0-9]+)\ .*Desk ]] && (( BASH_REMATCH[1] <= 200 )) || { echo "pick_keeper_paused: task list, asked while the keeper was paused, answered (ms, where) $listed"; return 1; }
