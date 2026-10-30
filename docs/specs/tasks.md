@@ -78,7 +78,7 @@ stateDiagram-v2
 
 - **Done ends the task:** its agent and tabs close, or it leaves the Shelf.
 - **Done quits the agent, runs the repo's teardown in its pane, then cleans up a merged task:** the task is Done once teardown succeeds (if it fails, the task stays, its pane saying why); its worktree and branch go when its branch is merged and the worktree has no changes; otherwise they stay, and its events say why ([task scripts](task-scripts.md#3-teardown-and-cleanup)).
-- **Move to Shelf puts a task back** (Task menu, or `kanna task shelve`), freeing its place on the Desk: it leaves the Desk and waits on the Shelf again, under its old ID if Kanna started it.
+- **Move to Shelf puts a task back** (Task menu, or `kanna task shelve`), freeing its place on the Desk: it leaves the Desk and waits on the Shelf again, under its ID.
 - **It stays as it is there,** running or stopped. A running agent carries on with whatever it was doing, and its tabs stay as they were.
 - **Moving it to the Desk again brings it back as it is:** the same agent and tabs, with no restart (a stopped one starts).
 - **If its agent's pane closed meanwhile,** starting it opens a new agent in its worktree (a new worktree only if that's gone too), and the agent comes back to its conversation.
@@ -150,14 +150,14 @@ flowchart TB
     CLI["kanna task new / start / name"] --> D
     APP["Kanna.app: Desk view"] --> D
     APP -->|"plan: the window's planning terminal"| D
-    D["daemon: the Shelf<br/>ID · name · repo · first message · maker"] -->|"start: git worktree add, open --dock on the Shelf or claimed"| L["layout: workspaces"]
+    D["daemon: the Shelf<br/>ID · name · repo · first message · maker"] -->|"start: git worktree add, the agent docked on the Shelf or claimed"| L["layout: workspaces"]
 ```
 
 - **The daemon keeps the Shelf** (`Backlog` in `backlog.rs`, an internal name kept from before the [rename](desk-view.md#5-internal-names)) in `kanna.db` ([database](database.md)), with every task from made to done and each change of its place or state as an event, so agents add tasks with or without the app.
 - **The daemon opens planning terminals** (`backlog` `plan`): it makes the command (the context limit, agent setup, the planner script, then your shell) and opens it as a Desk's planner (a workspace with no task) in its folder ([new Desk](new-desk.md#3-how-its-built)).
 - **A running task is its docked agent pane**, as on the [Desk](desk.md): its name is the pane's name, its repo the pane's folder.
-- **Only a task's agent docks.** `kanna move PANE --dock` refuses any pane that isn't docked (`not_a_task`), so a task starts only by starting one and the limit holds.
-- **A task's agent is frozen** ([docked pane](docked-pane.md#2-rules)): the daemon opens it with `open --dock --frozen`, so it stays in its dock, and nothing is dropped, swapped or docked in its place, which would make another pane the task.
+- **Only a task's agent docks, and every task starts on the Shelf** ([every task starts on the Shelf](tasks-start-on-the-shelf.md)). The daemon docks a task's agent when it starts the task; `open` has no `--dock`, and `kanna move PANE --dock` refuses any pane that isn't docked (`not_a_task`), so a task starts only by starting one, every task has a record and a creation time, and the limit holds.
+- **A task's agent is frozen** ([docked pane](docked-pane.md#2-rules)): the daemon opens it docked and frozen (`open {dock, frozen, task}`), so it stays in its dock, and nothing is dropped, swapped or docked in its place, which would make another pane the task.
 - **A task running on the Shelf is hidden, not closed:** starting a Shelf task opens its agent docked straight onto the Shelf, outside the limit, and a task moved there keeps its window. The layout keeps its workspace (agent docked, tabs, its windows) on the Shelf, saved with the rest, so its panes keep running and survive a relaunch; the Desk, the limit and `activate` skip it. Its Shelf entry names its agent's pane, and moving it to the Desk clears the mark.
 - **Moving a task to the Desk** checks the limit, runs `git worktree add` if it has no worktree, opens the agent docked straight onto the Desk in that folder with the first message (or releases its window from the Shelf, starting a stopped agent), names the pane, and drops the Shelf entry. A held task is on the Desk before its agent and tabs start again ([Move to Desk latency](move-to-desk-latency.md)).
 - **Stopping** closes nothing: it hangs up the task's running terminals, marking each to run again, then its agent's (SIGHUP to its process group), keeping the panes exited, saved with the rest ([presenting](presenting.md#3-how-its-built)). **Starting a stopped task** restarts the agent's pane with the command that resumes it ([which agents resume](#which-agents-resume)), so it keeps its ID and place, then the marked terminals with their own commands and folders.
