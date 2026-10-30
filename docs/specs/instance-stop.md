@@ -80,8 +80,10 @@ The variable reaches every process that could keep an instance alive:
 | a daemon the app starts | the app passes `KANNA_E2E_OWNER` through to the daemons it starts |
 | an app the CLI starts with `open` | the CLI adds `--env KANNA_E2E_OWNER=…` |
 | shells and agents | inherited from the daemon, so a CLI in a terminal passes it on |
+| a keeper the daemon starts | inherited from the daemon |
+| a daemon `crates/kanna-daemon/tests` starts | `Instance` sets it to the test binary's pid, unless the test names another owner |
 
-**The app watches it too** (a `DispatchSource` for the process's exit), and quits as on `quit`. Without that, an app started after its owner died would start a daemon every 10 s, and each daemon would exit at once. Keepers need nothing: they follow their daemon.
+**The app watches it too** (a `DispatchSource` for the process's exit), and quits as on `quit`. Without that, an app started after its owner died would start a daemon every 10 s, and each daemon would exit at once. **The keeper watches it when it's orphaned.** A daemon stopped by a signal leaves its keeper running on purpose, for the next daemon to take its terminals back ([restarting the daemon](daemon-restart.md)). When a whole test run is killed, an agent's tool timeout SIGTERMing the process tree, the daemon gets that signal at the same moment its owner dies, exits without running the shutdown, and the keeper (its own session, parent pid 1) would hold its terminals forever. So a keeper with no daemon connected checks `kill(PID, 0)` on each turn of its loop (at least once a second), and when the owner is gone it stops as on the `stop` op: it hangs up every pty, kills what's left after the close grace, and exits. While a daemon is connected the keeper leaves the shutdown to it, so a daemon whose owner exits still hangs up its terminals and marks them before the keeper goes.
 
 The variable is for tests. It's never set in a user's Kanna.
 
@@ -98,7 +100,8 @@ The variable is for tests. It's never set in a user's Kanna.
 ## 6. Checked by
 
 - `crates/kanna-daemon/tests/shutdown.rs`: a shutdown sends the app `quit`, refuses requests and hellos while it runs, ends the terminal and keeper, removes `daemon.pid` and then the socket, and leaves the terminal `exited` and `hungUp` for the next daemon. A daemon whose owner is SIGKILLed shuts down even though its app ignores `quit`, and one whose owner is already gone doesn't start. A daemon queued on the lock during a shutdown doesn't start.
-- `crates/kanna-keeper/tests/keeper.rs` (`stop_closes_every_pty_and_exits_once_they_are_gone`).
+  A keeper left by a SIGTERMed daemon idles, then stops with its terminal when its owner exits (`a_keeper_left_by_a_sigtermed_daemon_stops_when_their_owner_exits`).
+- `crates/kanna-keeper/tests/keeper.rs` (`stop_closes_every_pty_and_exits_once_they_are_gone`, `a_keeper_stops_its_ptys_and_exits_when_its_owner_exits`).
 - `crates/kanna/tests/cli.rs` (`instances_stop_quits_the_app_and_waits_for_the_daemon_to_go`).
 - `instance_stop` (the app, daemon, keeper and a shell all exit; `app-state.json` keeps the window's frame; the next start has the same layout, with the terminal exited), `instances` and `app_starts_daemon` (a killed daemon is still replaced by its app) of `scripts/e2e-kanna.sh`, and every scenario's cleanup ([e2e cleanup](e2e-cleanup.md)).
 
