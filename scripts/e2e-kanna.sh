@@ -36,8 +36,8 @@ USAGE
 }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-bin="$repo_root/target/release"
 app="${KANNA_E2E_APP:-$repo_root/target/Kanna.app}/Contents/MacOS/Kanna"
+bin="${app%/MacOS/Kanna}/Helpers"
 out="$repo_root/target/e2e-kanna"
 mkdir -p "$out"
 
@@ -481,8 +481,8 @@ web_md_ios_panes() {
 scenario cli_starts_app M1
 cli_starts_app() {
   local home="$KANNA_STATE_DIR/home" socket folder instance
-  folder="$("$bin/kanna-build" | sed -n 's/^folder=//p')"
-  instance="$("$bin/kanna-build" | sed -n 's/^instance=//p')"
+  folder="$("$repo_root/target/release/kanna-build" | sed -n 's/^folder=//p')"
+  instance="$("$repo_root/target/release/kanna-build" | sed -n 's/^instance=//p')"
   [[ "$instance" == default ]] || folder="$folder-$instance"
   socket="$home/Library/Application Support/$folder/kanna.sock"
   mkdir -p "$(dirname "$socket")"

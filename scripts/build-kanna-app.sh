@@ -73,11 +73,24 @@ product_dir="$("${build[@]}" --show-bin-path)"
 [[ "$release/libkanna_ffi.a" -nt "$product_dir/Kanna" ]] && rm -f "$product_dir/Kanna"
 "${build[@]}"
 
+identity="$(kanna_dev_identity)"
+if [[ -n "$identity" ]]; then signing="signed as Kanna Dev Signing"; else identity=-; signing="ad-hoc signed: macOS asks for privacy permissions again after each build; scripts/dev-signing-identity.sh makes an identity that keeps them"; fi
+signed="$arch_dir/signed"
+mkdir -p "$signed"
+for helper in kanna-daemon kanna-keeper kanna; do
+  stamp="$(shasum -a 256 "$release/$helper" | cut -d' ' -f1) $bundle_id.$helper $identity"
+  if [[ ! -f "$signed/$helper" || "$(cat "$signed/$helper.stamp" 2>/dev/null)" != "$stamp" ]]; then
+    cp "$release/$helper" "$signed/$helper"
+    kanna_sign_helper "$bundle_id" "$identity" "$signed/$helper"
+    echo "$stamp" >"$signed/$helper.stamp"
+  fi
+done
+
 app="$arch_dir/Kanna.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Resources"
 cp "$product_dir/Kanna" "$app/Contents/MacOS/Kanna"
-cp "$release/kanna-daemon" "$release/kanna-keeper" "$release/kanna" "$app/Contents/Helpers/"
+cp "$signed/kanna-daemon" "$signed/kanna-keeper" "$signed/kanna" "$app/Contents/Helpers/"
 cp "$repo_root/assets/Kanna.icns" "$app/Contents/Resources/Kanna.icns"
 cp "$repo_root/LICENSE" "$app/Contents/Resources/"
 install -m 755 "$repo_root/apps/kanna/Resources/planner.sh" "$app/Contents/Resources/"
@@ -107,7 +120,5 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
-identity="$(kanna_dev_identity)"
-if [[ -n "$identity" ]]; then signed="signed as Kanna Dev Signing"; else identity=-; signed="ad-hoc signed: macOS asks for privacy permissions again after each build; scripts/dev-signing-identity.sh makes an identity that keeps them"; fi
 kanna_sign_app "$repo_root" "$app" "$identity"
-echo "Built $app: $app_name $version ($bundle_id), $channel channel, $(kanna_triple_arch "$triple"), instance $instance in $folder, $signed"
+echo "Built $app: $app_name $version ($bundle_id), $channel channel, $(kanna_triple_arch "$triple"), instance $instance in $folder, $signing"
