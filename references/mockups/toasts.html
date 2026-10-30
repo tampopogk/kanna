@@ -65,7 +65,7 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
 <main>
   <div class="intro">
     <h1>Toasts: a notice the daemon raises in the front window</h1>
-    <p>A toast stacks below the title bar on the right, newest on top, and fades after 6 seconds (8 with a pane or task), unless the pointer is on it. Clicking one about a pane or task shows that task on the Desk and focuses the pane; × closes it. The daemon raises a keyed toast once: <code>kanna toast "Messages wait for Lint fixes" "aider can't take messages" --pane term-12 --key m:term-12:aider</code> raised twice shows one.</p>
+    <p>A toast stacks below the title bar on the right, newest on top, and fades after 6 seconds (8 with a pane or task), unless the pointer is on it. Clicking one about a pane or task makes that task active (moving a Shelf task to the Desk) and focuses the pane; × closes it. The daemon raises a keyed toast once: <code>kanna toast "Messages wait for Lint fixes" "aider can't take messages" --pane term-12 --key m:term-12:aider</code> raised twice shows one.</p>
     <div class="controls">
       <button id="wait">A message waits (agent messaging)</button>
       <button id="again">The same again (keyed: no second toast)</button>

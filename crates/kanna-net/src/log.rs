@@ -3,7 +3,7 @@ use iroh::{PublicKey, SecretKey, Signature};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-pub const DOMAIN: &str = "kanna/fleet/1";
+pub const DOMAIN: &str = "kanna/machines/1";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct View {
@@ -41,7 +41,7 @@ impl View {
 #[derive(Clone, Debug)]
 pub struct PeerLog {
     anchor: Value,
-    fleet: String,
+    id: String,
     events: BTreeMap<String, Value>,
     pending: BTreeMap<String, Value>,
 }
@@ -66,16 +66,16 @@ pub fn certificate(secret: &SecretKey, app_key: &str) -> Value {
 
 impl PeerLog {
     pub fn new(anchor: Value) -> PeerLog {
-        let fleet = digest(&anchor);
-        PeerLog { anchor, fleet, events: BTreeMap::new(), pending: BTreeMap::new() }
+        let id = digest(&anchor);
+        PeerLog { anchor, id, events: BTreeMap::new(), pending: BTreeMap::new() }
     }
 
     pub fn anchor(&self) -> &Value {
         &self.anchor
     }
 
-    pub fn fleet(&self) -> &str {
-        &self.fleet
+    pub fn id(&self) -> &str {
+        &self.id
     }
 
     pub fn pending(&self) -> usize {
@@ -174,8 +174,8 @@ impl PeerLog {
         for entry in entries {
             let body = &entry["body"];
             verify(body["signer"].as_str().unwrap_or_default(), entry["signature"].as_str().unwrap_or_default(), &canonical(body))?;
-            if body["domain"] != DOMAIN || body["fleet"] != self.fleet {
-                return Err(Refused::new("wrong_fleet"));
+            if body["domain"] != DOMAIN || body["machines"] != self.id {
+                return Err(Refused::new("wrong_log"));
             }
             if !body["parents"].is_array() {
                 return Err(Refused::new("bad_entry"));
@@ -212,7 +212,7 @@ impl PeerLog {
 
     pub fn sync(&mut self, envelope: &Value) -> Result<usize, Refused> {
         if envelope["anchor"] != self.anchor {
-            return Err(Refused::new("wrong_fleet"));
+            return Err(Refused::new("wrong_log"));
         }
         self.merge(envelope["entries"].as_array().map(Vec::as_slice).unwrap_or_default())
     }
@@ -227,7 +227,7 @@ impl PeerLog {
         parents.sort();
         let body = json!({
             "domain": DOMAIN,
-            "fleet": self.fleet,
+            "machines": self.id,
             "kind": kind,
             "signer": secret.public().to_string(),
             "parents": parents,
@@ -320,7 +320,7 @@ pub mod tests {
         }
     }
 
-    pub fn fleet() -> (Device, Device, Device) {
+    pub fn machines() -> (Device, Device, Device) {
         let (mut a, mut b, mut c) = (Device::new("mbp"), Device::new("linux-vm"), Device::new("build-mac"));
         a.bootstrap();
         a.add(&b);
@@ -339,7 +339,7 @@ pub mod tests {
 
     #[test]
     fn three_devices_trust_each_other() {
-        let (a, b, c) = fleet();
+        let (a, b, c) = machines();
         let all: BTreeSet<String> = [a.key(), b.key(), c.key()].into();
         for d in [&a, &b, &c] {
             assert_eq!(d.log.as_ref().unwrap().view().trusted(), all);
@@ -348,7 +348,7 @@ pub mod tests {
 
     #[test]
     fn a_forged_signature_and_an_unsigned_peer_are_refused() {
-        let (a, _, mut c) = fleet();
+        let (a, _, mut c) = machines();
         let attacker = Device::new("directory");
         let mut entry = a.entry("add", attacker.descriptor());
         entry["signature"] = json!(sign(&attacker.secret, &canonical(&entry["body"])));
@@ -360,7 +360,7 @@ pub mod tests {
 
     #[test]
     fn a_valid_signature_from_an_untrusted_signer_is_refused() {
-        let (a, _, mut c) = fleet();
+        let (a, _, mut c) = machines();
         let mut attacker = Device::new("directory");
         attacker.log = a.log.clone();
         for (kind, payload) in [("add", attacker.descriptor()), ("revoke", json!({ "key": a.key() }))] {
@@ -371,7 +371,7 @@ pub mod tests {
 
     #[test]
     fn tampered_metadata_is_refused_on_sync() {
-        let (mut a, _, mut c) = fleet();
+        let (mut a, _, mut c) = machines();
         let mut entry = a.log().entries()[0].clone();
         entry["body"]["payload"]["addrs"] = json!(["attacker.invalid:1234"]);
         assert_eq!(code(c.log().merge(&[entry])), "bad_signature");
@@ -379,7 +379,7 @@ pub mod tests {
 
     #[test]
     fn a_name_with_another_key_is_not_a_key_rotation() {
-        let (mut a, b, mut c) = fleet();
+        let (mut a, b, mut c) = machines();
         let replacement = Device::new(&b.name);
         let entry = a.entry("add", replacement.descriptor());
         assert_eq!(code(a.log().merge(&[entry])), "identity_mismatch");
@@ -387,12 +387,12 @@ pub mod tests {
     }
 
     #[test]
-    fn another_fleets_entries_are_refused() {
-        let (mut a, _, _) = fleet();
+    fn another_logs_entries_are_refused() {
+        let (mut a, _, _) = machines();
         let mut other = Device::new("other-root");
         other.bootstrap();
         let entries = a.log().entries();
-        assert_eq!(code(other.log().merge(&entries)), "wrong_fleet");
+        assert_eq!(code(other.log().merge(&entries)), "wrong_log");
     }
 
     fn permutations(items: &[Value]) -> Vec<Vec<Value>> {
@@ -413,7 +413,7 @@ pub mod tests {
 
     #[test]
     fn mutual_revocation_converges_in_all_24_delivery_orders() {
-        let (mut a, mut b, c) = fleet();
+        let (mut a, mut b, c) = machines();
         let (a_key, b_key) = (a.key(), b.key());
         a.revoke(&b_key, i64::MAX);
         b.revoke(&a_key, i64::MIN);
@@ -448,7 +448,7 @@ pub mod tests {
 
     #[test]
     fn a_revoked_author_cannot_sign_after_it_knows_of_its_revocation() {
-        let (mut a, _, mut c) = fleet();
+        let (mut a, _, mut c) = machines();
         c.revoke(&a.key(), 0);
         let export = c.log().export();
         a.log().sync(&export).unwrap();
@@ -458,7 +458,7 @@ pub mod tests {
 
     #[test]
     fn a_revoked_key_never_returns_by_name_replay_or_stale_branch() {
-        let (mut a, mut b, mut c) = fleet();
+        let (mut a, mut b, mut c) = machines();
         let past: Vec<String> = a.log().frontier();
         c.revoke(&b.key(), 0);
         let export = c.log().export();
@@ -488,7 +488,7 @@ pub mod tests {
 
     #[test]
     fn what_a_revoked_key_adds_on_a_branch_its_revoker_never_saw_counts_for_nothing() {
-        let (mut a, mut b, mut c) = fleet();
+        let (mut a, mut b, mut c) = machines();
         let past = b.log().frontier();
         let (x, y) = (Device::new("x"), Device::new("y"));
         let stale = b.log.as_ref().unwrap().entry(&b.secret, "add", x.descriptor(), Some(past), 0);
@@ -507,7 +507,7 @@ pub mod tests {
 
     #[test]
     fn an_offline_revocation_takes_effect_when_delivered() {
-        let (mut a, b, mut c) = fleet();
+        let (mut a, b, mut c) = machines();
         a.revoke(&b.key(), 0);
         assert!(c.log().view().trusted().contains(&b.key()));
         let export = a.log().export();
@@ -517,7 +517,7 @@ pub mod tests {
 
     #[test]
     fn missing_history_never_authorizes() {
-        let (mut a, mut b, _) = fleet();
+        let (mut a, mut b, _) = machines();
         let revoke = b.revoke(&a.key(), 0);
         let mut log = PeerLog::new(a.log().anchor().clone());
         log.merge(&[revoke]).unwrap();
@@ -530,7 +530,7 @@ pub mod tests {
 
     #[test]
     fn a_certificate_is_bound_to_its_endpoint_and_dies_with_its_device() {
-        let (_, b, mut c) = fleet();
+        let (_, b, mut c) = machines();
         let app = Device::new("app");
         let cert = certificate(&b.secret, &app.key());
         c.log().accept_endpoint(&app.key(), Some(&cert)).unwrap();
@@ -541,7 +541,7 @@ pub mod tests {
 
     #[test]
     fn a_certificate_cannot_launder_a_revoked_key() {
-        let (a, b, mut c) = fleet();
+        let (a, b, mut c) = machines();
         c.revoke(&b.key(), 0);
         let cert = certificate(&a.secret, &b.key());
         assert_eq!(c.log().accept_endpoint(&b.key(), Some(&cert)).unwrap_err().code, "untrusted_endpoint");
@@ -549,7 +549,7 @@ pub mod tests {
 
     #[test]
     fn concurrent_adds_of_one_name_fail_closed_in_both_orders() {
-        let (a, b, c) = fleet();
+        let (a, b, c) = machines();
         let (x, y) = (Device::new("duplicate"), Device::new("duplicate"));
         let (left, right) = (a.entry("add", x.descriptor()), b.entry("add", y.descriptor()));
         for order in [[left.clone(), right.clone()], [right, left]] {
@@ -566,7 +566,7 @@ pub mod tests {
 
     #[test]
     fn a_reload_verifies_every_signature_and_keeps_tombstones() {
-        let (mut a, b, mut c) = fleet();
+        let (mut a, b, mut c) = machines();
         c.revoke(&b.key(), 0);
         let saved = c.log().export();
         let mut loaded = PeerLog::new(saved["anchor"].clone());

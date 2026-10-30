@@ -26,7 +26,7 @@ It is open source like the rest of Kanna. **A self-hosted Kanna Cloud is the sam
 - **Trust still comes from your devices.** The directory can withhold entries but can't forge one; adding a peer still takes a signature from one of your own devices and a gesture in the app.
 - **Kanna-run machines can't add to your machines.** A VM Kanna runs is marked `hosted` in your peer log; its key admits no one (§8).
 - **Tenants are isolated by VMs,** Linux and macOS alike, with the network enforced on the host. Host accounts are never the boundary.
-- **Cloud covers only what needs servers:** Kanna-run VMs, the directory and relays, placement by capability, build Macs, and later the phone away from the LAN, push and an always-on backlog copy. Everything else is your machines' own, and free.
+- **Cloud covers only what needs servers:** Kanna-run VMs, the directory and relays, placement by capability, build Macs, and later the phone away from the LAN, push and an always-on Shelf copy. Everything else is your machines' own, and free.
 
 ## 2. What Cloud runs
 
@@ -70,7 +70,7 @@ flowchart LR
 
 Operator work, in two steps:
 
-1. **The host:** `scripts/fleet/provision-idrac.sh` installs Ubuntu Server on an R720 through its iDRAC ([provisioning a host](cloud-provisioning.md)); then Incus.
+1. **The host:** `scripts/cloud/provision-idrac.sh` installs Ubuntu Server on an R720 through its iDRAC ([provisioning a host](cloud-provisioning.md)); then Incus.
 2. **A user's VM:** `kanna cloud provision` makes an Incus VM (Ubuntu 26.04, stock cloud image) for one user, runs [server setup](machine-setup.md) in it with the user's enrollment token, and enrolls it (§4). Git credentials for its repos are made per VM: a deploy key or a fine-grained token ([tasks §4](machine-tasks.md#4-repos-and-credentials)).
 
 - **Networking:** a tenant VM reaches the internet and Kanna's relays, never another tenant's VM, the host's management or the operator's LAN; enforced on the host, IPv4 and IPv6. Users reach their VMs through iroh: direct over the internet when it can punch through, else relayed.
@@ -104,7 +104,7 @@ sequenceDiagram
 
 - **The directory** holds each account's published peer log (signed by your devices, so it can withhold but not forge), each peer's relay URL and last addresses, and relays the PAKE for machines not on one LAN.
 - **Relays** are `iroh-relay`, as for your own relay; Kanna's are run for all tenants.
-- **Later, on the directory:** an always-on copy of the backlog, encrypted with your keys, so a task added on a closed laptop reaches your VMs; push notifications; the phone away from the LAN. About $5 a month, as decided before; VM and build-Mac time are priced with billing.
+- **Later, on the directory:** an always-on copy of the Shelf, encrypted with your keys, so a task added on a closed laptop reaches your VMs; push notifications; the phone away from the LAN. About $5 a month, as decided before; VM and build-Mac time are priced with billing.
 - **A scheduler** can own every waiting task of a user's VMs and assign them centrally instead of runners asking ([tasks §2](machine-tasks.md#2-owners-and-grants)).
 - **Placement by capability.** Each machine advertises its capabilities (OS, architecture, cores, RAM, Xcode versions, display) in its peer log entry ([identity §3](machine-identity.md#3-the-peer-log)). A task's `needs:` (`needs: xcode`, `needs: linux`) is matched against them, by a runner before it asks or by the scheduler, so a task goes only where it can run. It's Cloud's infrastructure: the app doesn't show capabilities ([links §5](machine-links.md#5-paths-the-machines-tab-and-offline)).
 

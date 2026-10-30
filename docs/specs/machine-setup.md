@@ -34,7 +34,7 @@ WantedBy=default.target
 
 ## 3. Running the setup
 
-As the user Kanna runs as (with sudo), until releases have a Linux tarball (slice 6):
+As the user Kanna runs as (with sudo); `--tarball FILE` installs a Linux tarball ([updates §1](machine-update.md#1-the-linux-tarball)) instead of building (step 2):
 
 ```sh
 sudo apt-get install -y git       # a stock cloud image has none
@@ -52,9 +52,9 @@ kanna task list                    # ~/.local/bin/kanna, on PATH from the next l
 
 The daemon logs to the journal (`journalctl --user -u kanna-daemon`).
 
-**Tested** on r720-1 (Ubuntu 26.04.1 on the host, x86_64; a first run takes about 5 minutes) and in an Ubuntu 26.04 lima VM on an Apple Silicon Mac (arm64, and x86_64 cross-built with `gcc-x86-64-linux-gnu` and `libc6-dev-amd64-cross`, run under Rosetta): a backlog runner starts a task in a worktree, `kanna task start` and `stop` work, real claude tasks commit their work and are stopped when their turn ends (claude asks once per machine to trust the project and to accept bypass mode), a working claude carries on through a daemon restart, a terminal's process and screen survive `systemctl --user restart kanna-daemon` and each update, and re-runs restart the daemon only when its binary or unit changed (A → B → B keeps A as `previous`; a dirty rebuild installed with `--no-start` is started by the next run). r720-1 is Kanna Cloud's first host; here it only stood in for a Linux machine of the user's.
+**Tested** on r720-1 (Ubuntu 26.04.1 on the host, x86_64; a first run takes about 5 minutes) and in an Ubuntu 26.04 lima VM on an Apple Silicon Mac (arm64, and x86_64 cross-built with `gcc-x86-64-linux-gnu` and `libc6-dev-amd64-cross`, run under Rosetta): a Shelf runner starts a task in a worktree, `kanna task start` and `stop` work, real claude tasks commit their work and are stopped when their turn ends (claude asks once per machine to trust the project and to accept bypass mode), a working claude carries on through a daemon restart, a terminal's process and screen survive `systemctl --user restart kanna-daemon` and each update, and re-runs restart the daemon only when its binary or unit changed (A → B → B keeps A as `previous`; a dirty rebuild installed with `--no-start` is started by the next run). r720-1 is Kanna Cloud's first host; here it only stood in for a Linux machine of the user's.
 
 ## 4. Joining and updates
 
 - **Joining:** you pair the machine by code ([identity §2](machine-identity.md#2-pairing)), set up its git credentials ([tasks §4](machine-tasks.md#4-repos-and-credentials)), then give it your agent accounts ([agent sign-in](agent-sign-in.md)). A Kanna Cloud VM joins by token instead ([Cloud §4](kanna-cloud.md#4-enrollment-by-token)).
-- **Updates:** `scripts/release.sh` also builds a Linux tarball (x86_64, `baseline` CPU, so older Xeons such as the R720s' Ivy Bridge run it). A daemon updates itself when a newer release is out (fetched from a peer that has it, or the release site): it switches `current`, runs `kanna-keeper --upgrade` ([keeper upgrade](keeper-upgrade.md)) and restarts; terminals survive ([restarting](daemon-restart.md)). `kanna fleet update` does it now, everywhere. No order is needed while versions overlap.
+- **Updates** ([detail](machine-update.md)): `scripts/release.sh` also builds a Linux tarball (x86_64, `baseline` CPU, so older Xeons such as the R720s' Ivy Bridge run it). `kanna machine update` sends it to every Linux machine; each daemon installs it in `/opt/kanna/<commit>`, switches `current` and restarts itself in place, upgrading the keeper when its build differs ([keeper upgrade](keeper-upgrade.md)); terminals survive ([restarting](daemon-restart.md)). No order is needed while versions overlap. A daemon updating itself when a newer release is out (fetched from a peer that has it, or the release site) is slice 6b.

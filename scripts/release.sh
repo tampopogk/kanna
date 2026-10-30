@@ -190,6 +190,13 @@ for arch in "${archs[@]}"; do
   dmgs+=("$dmg")
 done
 
+step "Linux tarball (x86_64)"
+KANNA_VERSION="$version" "$repo_root/scripts/build-linux.sh" "$channel" --arch x86_64 --out "$dist"
+linux="$dist/$dmg_prefix-$version-linux-x86_64.tar.gz"
+[[ -f "$linux" ]] || fail "build-linux.sh didn't make $linux"
+[[ "$(tar -xzOf "$linux" kanna/release.json | jq -r .commit)" == "$head" ]] || fail "$(basename "$linux") isn't built from $head"
+dmgs+=("$linux")
+
 step "Release notes"
 if [[ -n "$last_tag" ]]; then range="$last_tag..HEAD"; else range="HEAD"; fi
 subjects="$(git log --merges --first-parent --pretty=format:'%s' "$range")"

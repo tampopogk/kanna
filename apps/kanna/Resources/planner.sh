@@ -52,9 +52,87 @@ origin_is() {
   return 1
 }
 
+place() {
+  url=${1%/}
+  url=${url%.git}
+  name=$2
+  case $url in
+    file://*|/*|.*|'') echo "local/$name"; return ;;
+    *://*) rest=${url#*://}; rest=${rest##*@}; host=${rest%%/*}; path=${rest#*/} ;;
+    *:*) rest=${url##*@}; host=${rest%%:*}; path=${rest#*:} ;;
+    *) echo "local/$name"; return ;;
+  esac
+  host=${host%%:*}
+  case /$path/ in
+    *//*|*/.*) echo "local/$name"; return ;;
+  esac
+  case $path in
+    */*) echo "$path" ;;
+    *) echo "$host/$path" ;;
+  esac
+}
+
+misplaced() {
+  common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  case $common in
+    */.git) main=$(cd "${common%/.git}" && pwd -P) ;;
+    *) main=$(cd "$1" && pwd -P) ;;
+  esac
+  origin=$(git -C "$main" remote get-url origin 2>/dev/null)
+  root=$(cd "$repos" 2>/dev/null && pwd -P) || root=$repos
+  want="$root/$(place "$origin" "$(basename "$main")")"
+  [ "$main" != "$want" ]
+}
+
+project() {
+  [ -n "$kanna" ] || return 1
+  request=$(jq -nc --arg action "$1" --arg path "$main" '{cmd: "project", args: {action: $action, path: $path}}') || return 1
+  "$kanna" raw "$request" 2>/dev/null
+}
+
+offer() {
+  say "$(tilde "$main") isn't in $(tilde "$repos"), where Kanna keeps its projects so each has the same place on every machine."
+  say "Import a copy there: kanna project import $(tilde "$main")"
+  [ -n "$kanna" ] || return 1
+  choices="Y/n"
+  [ "$1" = never ] && choices="Y/n/never"
+  ask "Import it into $(tilde "$want") now? [$choices]"
+  case $answer in
+    [nN][eE][vV][eE][rR])
+      [ "$1" = never ] && project never >/dev/null && say "Kanna won't ask again for $(tilde "$main"). Import it any time: kanna project import $(tilde "$main")"
+      return 1 ;;
+    [nN]*) return 1 ;;
+  esac
+  back=$(pwd -P)
+  cd "$HOME" && moved
+  tries=0
+  while :; do
+    said=$("$kanna" project import "$main" 2>&1) && { say "$said"; cd "$want"; return; }
+    case $said in
+      *"from a terminal outside it"*) [ "$tries" -lt 20 ] && { tries=$((tries + 1)); sleep 0.2; continue; } ;;
+    esac
+    say "$said"
+    cd "$back" && moved
+    return 1
+  done
+}
+
+go() {
+  if [ "$(cd "$1" && pwd -P)" = "$(cd "$HOME" && pwd -P)" ]; then
+    cd "$1"
+    return
+  fi
+  if misplaced "$1"; then
+    offer
+    return
+  fi
+  cd "$1"
+}
+
 clone() {
   how=$1 from=$2 name=$3
-  dest="$repos/$name"
+  dest="$repos/$(place "$from" "$name")"
+  [ "$how" = gh ] && dest="$repos/$from"
   if [ -e "$dest" ]; then
     if origin_is "$dest" "$from"; then
       say "Opened $(tilde "$dest") (already cloned)"
@@ -63,7 +141,7 @@ clone() {
     say "$(tilde "$dest") is already there, and isn't a clone of $from."
     return 1
   fi
-  mkdir -p "$repos" || return 1
+  mkdir -p "${dest%/*}" || return 1
   say "Cloning $from into $(tilde "$dest")…"
   case $how in
     gh)
@@ -75,7 +153,7 @@ clone() {
 }
 
 where() {
-  say "Open a folder, clone a repo (a URL or owner/repo), or name a new project. Clones and new projects go in $(tilde "$repos")."
+  say "Open a project, clone a repo (a URL or owner/repo), or name a new project. Kanna keeps them in $(tilde "$repos"): a clone as OWNER/NAME, a new project as local/NAME."
   echo
   recent= recents=0
   listed=$([ -n "$kanna" ] && "$kanna" projects --json 2>/dev/null)
@@ -104,8 +182,11 @@ where() {
         *)
           if [ "$answer" -ge 1 ] && [ "$answer" -le "$recents" ]; then
             folder=$(printf '%s\n' "$recent" | sed -n "${answer}p")
-            cd "$folder" 2>/dev/null && break
-            say "No folder $(tilde "$folder")."
+            if [ -d "$folder" ]; then
+              go "$folder" && break
+            else
+              say "No folder $(tilde "$folder")."
+            fi
           else
             say "Choose 1 to $recents, or a folder, repo or name."
           fi
@@ -126,7 +207,8 @@ where() {
       *) folder=$answer ;;
     esac
     if [ -d "$folder" ]; then
-      cd "$folder" && break
+      go "$folder" && break
+      continue
     fi
     case $answer in
       '~'*|.*|/*) say "No folder $answer." ;;
@@ -137,7 +219,7 @@ where() {
         esac ;;
       *[!A-Za-z0-9._-]*|[!A-Za-z0-9]*) echo "A project's name is letters, digits, '.', '-' and '_'." ;;
       *)
-        dest="$repos/$answer"
+        dest="$repos/local/$answer"
         if [ -d "$dest" ]; then
           say "Opened $(tilde "$dest")"
         else
@@ -188,7 +270,16 @@ if [ -n "$kanna" ]; then
   "$kanna" agents update --ask
 fi
 
-[ "$(pwd -P)" = "$(cd "$HOME" && pwd -P)" ] && where
+if [ "$(pwd -P)" = "$(cd "$HOME" && pwd -P)" ]; then
+  where
+elif misplaced .; then
+  if project asked | jq -e '.never == true' >/dev/null 2>&1; then
+    say "$(tilde "$main") is outside $(tilde "$repos"), so its tasks don't start. Import it: kanna project import $(tilde "$main")"
+  else
+    offer never && moved
+  fi
+  echo
+fi
 
 if [ -z "$installed" ]; then
   echo "No agent Kanna knows is installed (claude, codex, copilot, opencode or agy). Install one, then start it here."
@@ -223,23 +314,40 @@ if [ -z "$chosen" ]; then
   name=${chosen%%	*}
   top=$(git rev-parse --show-toplevel 2>/dev/null)
   if [ -n "$top" ]; then
-    ask "Make $name the planning agent for $(basename "$top")? [y/N]"
-    case $answer in
-      [yY]*)
-        if save "$top" "$name"; then
-          say "$name plans $(basename "$top") from now on (planning.agent in .kanna/config.json)."
-        else
-          say "Couldn't write $top/.kanna/config.json."
-        fi ;;
-    esac
+    if save "$top" "$name"; then
+      say "$name plans $(basename "$top") from now on (planning.agent in .kanna/config.json)."
+    else
+      say "Couldn't write $top/.kanna/config.json."
+    fi
   fi
   echo
 fi
 
+planner() {
+  [ -n "$kanna" ] && [ -n "$KANNA_TERMINAL" ] || return 1
+  group=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
+  request=$(jq -nc --arg pane "$KANNA_TERMINAL" --arg folder "$(pwd -P)" --arg agent "$1" --arg step "$2" --arg group "$group" '{cmd: "backlog", args: {action: "planner", step: $step, pane: $pane, folder: $folder, agent: $agent, group: $group}}') || return 1
+  "$kanna" raw "$request" 2>/dev/null
+}
+
 command=${chosen#*	}
 command=${command%"$nl"}
+name=${chosen%%	*}
+reply=$(planner "$name" start)
+given=$(printf '%s' "$reply" | jq -er '.command // empty' 2>/dev/null) && command=$given
+said=$(printf '%s' "$reply" | jq -r '.said // empty' 2>/dev/null)
+[ -z "$said" ] || { say "$said"; echo; }
+after=$(printf '%s' "$reply" | jq -er '.after // empty' 2>/dev/null) && {
+  waited=0
+  while [ "$waited" -lt 50 ] && kill -0 -- "-$after" 2>/dev/null; do
+    [ "$waited" -eq 5 ] && echo "Waiting for the last planner to end…"
+    sleep 0.2
+    waited=$((waited + 1))
+  done
+}
 trap : INT
 eval "$command"
 echo
+again=$(planner "$name" quit | jq -er '.again // empty' 2>/dev/null) && command=$again
 say "The planning agent quit. Start it again: $command"
 shell

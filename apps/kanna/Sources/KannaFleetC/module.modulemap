@@ -1,5 +1,0 @@
-module KannaFleetC {
-    header "../../../../crates/kanna-ffi/include/kanna_fleet.h"
-    link "kanna_ffi"
-    export *
-}

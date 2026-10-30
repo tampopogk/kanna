@@ -1,8 +1,10 @@
 import AppKit
 import GhosttyKit
 import KannaMarkdown
+import KannaOverview
 import KannaPerf
 import KannaStatus
+import KannaWindows
 
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -13,6 +15,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var links: Links?
     var views: [String: JSON] = [:]
     var backlogs: [String: [JSON]] = [:]
+    var deskMade: [String: [String: Int]] = [:]
     var paneSets: [String: Set<String>] = [:]
     var places: [String: JSON] = [:]
     var identities: [String: String] = [:]
@@ -28,10 +31,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let contents = Contents()
     var panes: PaneViews!
     var controllers: [String: WindowController] = [:]
-    private(set) var state: JSON = ["key": nil, "windows": []]
-    private(set) var published: JSON = ["key": nil, "windows": []]
-    private var plain: JSON = ["key": nil, "windows": []]
-    var localKey: String?
+    private(set) var state: JSON = ["windows": []]
+    private(set) var published: JSON = ["windows": []]
+    private var plain: JSON = ["windows": []]
+    private var restoring: [String]?
     var closingPlanners: Set<String> = []
     var givenPlanners: Set<String> = []
     var recentProjects: [RecentProject] = []
@@ -104,6 +107,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         KannaBuild.badgeIcon()
+        restoring = physical.order
         HangWatch.start { hang in FileHandle.standardError.write(Data("kanna: \(HangWatch.line(hang))\n".utf8)) }
         do {
             runtime = try GhosttyRuntime()
@@ -155,6 +159,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         contents.onFocus = { [weak self] pane in self?.userFocused(pane) }
         contents.textSize = { [weak self] pane in self?.physical.textSize(pane) }
         contents.onTextSize = { [weak self] pane, size in self?.physical.setTextSize(pane, size) }
+        OverviewSetting.enabled = physical.overview
         contents.agentStatus = { [weak self] pane in self?.agentStatuses.statuses[pane] }
         contents.contextMenu = { [weak self] in self?.paneMenu?.copy() as? NSMenu }
         runtime.onAction = { [weak self] view, action in
@@ -183,7 +188,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         installMenu()
         if !background { NSApp.activate() }
         if echo {
-            render(["key": "win-1", "windows": [["id": "win-1", "tabs": [["id": "tab-1", "title": "Tab 1", "panes": ["term-1"]]], "tab": "tab-1", "title": "Tab 1",
+            render(["windows": [["id": "win-1", "tabs": [["id": "tab-1", "title": "Tab 1", "panes": ["term-1"]]], "tab": "tab-1", "title": "Tab 1",
                                                "focused": "term-1", "root": ["pane": "term-1", "type": "term"]]]])
         }
         daemon?.start()
@@ -243,13 +248,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         link.onStatus = { [weak self] pane, status in self?.statusChanged(pane, status) }
         link.onFolder = { [weak self] pane, cwd, place in self?.folderChanged(pane, cwd, place) }
-        link.onBacklog = { [weak self] tasks in self?.backlogChanged(tasks, on: machine) }
+        link.onBacklog = { [weak self] tasks, desk in self?.backlogChanged(tasks, desk: desk, on: machine) }
         link.onToast = { [weak self] record in self?.toastArrived(record) }
         link.onLost = { [weak self] in self?.linkLost(machine) }
     }
 
     private func viewArrived(_ view: JSON, on machine: String?) {
-        if machine == nil, view["key"] != views[""]?["key"], view["key"]?.string != nil { localKey = nil }
         views[machine ?? ""] = view
         published = merged()
         restate()
@@ -265,7 +269,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             windows += (view["windows"]?.array ?? []).map { Self.tagged($0, tag) }
             workspaces += (view["workspaces"]?.array ?? []).map { Self.tagged($0, tag) }
         }
-        return ["key": views[""]?["key"] ?? .null, "windows": .array(windows), "workspaces": .array(workspaces)]
+        return ["windows": .array(windows), "workspaces": .array(workspaces)]
     }
 
     private static func tagged(_ item: JSON, _ machine: JSON) -> JSON {
@@ -318,6 +322,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func machineGone(_ machine: String) {
         views.removeValue(forKey: machine)
         backlogs.removeValue(forKey: machine)
+        deskMade.removeValue(forKey: machine)
         backlog = backlogs.keys.sorted().flatMap { backlogs[$0] ?? [] }
         published = merged()
         restate()
@@ -342,7 +347,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func window(_ id: String?) -> JSON? { windows.first { $0["id"]?.string == id } }
-    var keyWindow: JSON? { window(state["key"]?.string) ?? windows.last }
+    var keyWindow: JSON? { window(KeyWindow.resolve(appKit: appKitKey, front: physical.order, windows: windows.compactMap { $0["id"]?.string })) }
+    var appKitKey: String? { NSApp.keyWindow.flatMap { key in controllers.first { $0.value.window === key }?.key } }
     var focusedPane: String? { keyWindow?["focused"]?.string }
 
     func windowOf(tab: String) -> JSON? {
@@ -391,11 +397,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let tasks = shelfEntries.compactMap { entry -> ShelfTask? in
             guard let id = entry["task"]?.string else { return nil }
             return ShelfTask(id: id, title: taskTitle(id, name: entry["name"]?.string), parkedAt: entry["parkedAt"]?.number, status: agentStatuses.statuses[id], detail: taskDetail(id), agent: entry["agent"]?.string,
-                             place: placeText(id), offline: offline(MachineIDs.machine(of: id)))
+                             place: placeText(id), offline: offline(MachineIDs.machine(of: id)), made: made(id))
         }
-        let waiting: [ShelfTask] = tasks.filter { $0.status == "needs-you" }
-        let rest: [ShelfTask] = tasks.filter { $0.status != "needs-you" }
-        return waiting + rest
+        return DeskOrder.byRecency(tasks) { $0.status == "needs-you" }
     }
 
     func taskTitle(_ id: String, name: String?) -> String {
@@ -491,7 +495,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         request("focus", ["pane": .string(pane)]) { [weak self] _ in
             guard let self else { return }
             focusCalls -= 1
-            if focusCalls == 0 { focusing = nil }
+            guard focusCalls == 0 else { return }
+            focusing = nil
+            restate()
+            refresh()
         }
     }
 
@@ -551,7 +558,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         panes.keep(placed)
         let tasks = shelfTasks
-        let fleet = fleetMachines
+        let rows = machineRows
         var held = Set<String>()
         for window in windows {
             guard let id = window["id"]?.string else { continue }
@@ -566,6 +573,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if window["desk"]?.bool == true, let root = controller.projectRoot { deskMoved(id, to: root) }
             let mine = controller.projectRoot.map { root in tasks.filter { sameProject(projectRoot($0.id), root) } } ?? tasks
             controller.shelf = mine
+            controller.active = docked == nil ? window["active"]?.string : nil
             let ours = Set(mine.map(\.id))
             let docks = window["desk"]?.bool == true
                 ? (shelfEntries.filter { $0["task"]?.string.map(ours.contains) == true } + runningBacklog(in: controller.projectRoot)).filter { $0["task"]?.string.map(held.contains) == false }
@@ -577,14 +585,17 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             controller.project = controller.projectRoot.map(displayName) ?? projectName(mine.map(\.id))
             controller.taskTitle = docked.map { taskTitle($0, name: window["dock"]?["name"]?.string) }
             controller.headerText = docked.map(headerText) ?? leadHeader(window, controller.projectRoot)
-            controller.fleet = fleet
+            controller.machines = rows
             controller.stale = staleText(docked ?? lead)
             controller.headerTip = (docked ?? lead).map(placeText)
             controller.render(window, panes)
             if wantsPlanner(window) { openPlanner(in: id) }
         }
-        if let key = state["key"]?.string, let controller = controllers[key], !controller.window.isKeyWindow {
-            present(controller.window)
+        if views[""] != nil, let order = restoring {
+            restoring = nil
+            for id in order.reversed() {
+                if let controller = controllers[id] { present(controller.window) }
+            }
         }
     }
 
@@ -640,6 +651,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.pullTask(task, into: id)
         }
         controller.agentHeader.onPark = { [weak self] in self?.park(desk: id) }
+        controller.shelfStrip.onDesk = { [weak self] in self?.park(desk: id) }
+        controller.agentHeader.onNew = { [weak self] in self?.newTab(in: id) }
         controller.shelfPage.onPull = { [weak self] task in
             Clicks.pull(task)
             self?.pullTask(task, into: id)
@@ -651,15 +664,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         controller.onBecomeKey = { [weak self, weak controller] in
             guard let self, let controller else { return }
-            if controller.window.isKeyWindow, state["key"]?.string != id {
-                if isDesk(id) {
-                    localKey = id
-                    restate()
-                } else {
-                    localKey = nil
-                    layoutCommand("focus", ["window": .string(id)])
-                }
-            }
+            if controller.window.isKeyWindow { physical.setFront(id) }
             if let window = window(id) { controller.render(window, panes) }
             placeToasts()
         }
@@ -675,6 +680,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func present(_ window: NSWindow) {
+        if let id = controllers.first(where: { $0.value.window === window })?.key { physical.setFront(id) }
         if NSApp.isActive || !background {
             return window.makeKeyAndOrderFront(nil)
         }

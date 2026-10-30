@@ -3,7 +3,7 @@ pub mod args;
 pub mod commands;
 pub mod complete;
 pub mod diagrams;
-pub mod fleet;
+pub mod machine;
 pub mod output;
 pub mod target;
 pub mod threads;
@@ -145,13 +145,16 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
     if command.name == "workspace" && request["all"] != true && request["pane"].is_null() {
         return Err(commands::usage("workspace", "outside a Kanna terminal there's no workspace of yours: add --all"));
     }
+    if let Some(flags) = unplaced(command.name, &request).filter(|_| target.backend == Backend::Kanna) {
+        return Err(commands::usage(command.name, &format!("outside a Kanna terminal there's no window of yours: {flags}")));
+    }
     if command.name == "diagrams" {
         return diagrams::run(&request, json_output);
     }
     let mut mux = Session::connect(&target, env)?;
     mux.host = host;
-    if command.name == "fleet" && request["action"] == "offer" {
-        return fleet::offer(&mut mux, json_output);
+    if command.name == "machine" && request["action"] == "offer" {
+        return machine::offer(&mut mux, json_output);
     }
     if command.name == "comment" && request["doc"] == true {
         return threads::comment(&request, &mut mux, json_output);
@@ -227,18 +230,36 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
             eprintln!("{}", diagrams::line(failure));
         }
     }
+    if command.name == "machine" && request["action"] == "update" && reply["machines"].as_array().is_some_and(|m| m.iter().any(|m| m["ok"] == false)) {
+        return Err(fail(exit::FAILED, "not every machine took the update"));
+    }
     Ok(())
+}
+
+fn unplaced(command: &str, request: &Value) -> Option<&'static str> {
+    let given = |keys: &[&str]| keys.iter().any(|key| !request[*key].is_null());
+    match command {
+        "open" if !given(&["window", "workspace", "from"]) => Some("add --window WINDOW (or --window new)"),
+        "markup" if !request["type"].is_null() && !given(&["window", "from"]) => Some("add --window WINDOW (or --window new)"),
+        "comment" if !given(&["window", "from"]) => Some("add --window WINDOW (or --window new)"),
+        "arrange" if !given(&["window", "from"]) => Some("add --window WINDOW"),
+        "screenshot" if !given(&["pane", "window", "from"]) => Some("say PANE or --window WINDOW"),
+        _ => None,
+    }
 }
 
 fn locate(request: &mut Value, mux: &mut Session) -> Result<Option<(String, Vec<(String, String)>)>, Failure> {
     let action = request["action"].as_str().unwrap_or("").to_string();
-    let Some(reference) = request["task"].as_str().filter(|_| ["park", "pull", "done", "name"].contains(&action.as_str())).map(String::from) else { return Ok(None) };
+    let Some(reference) = request["task"].as_str().filter(|_| ["park", "pull", "defer", "done", "name"].contains(&action.as_str())).map(String::from) else { return Ok(None) };
     let found = match mux.call("backlog", json!({ "action": "resolve", "task": reference })) {
         Ok(found) => Some(found["task"].clone()),
         Err(failure) if failure.message.ends_with("[ambiguous]") => return Err(failure),
         Err(_) => None,
     };
     let backlog = found.as_ref().is_some_and(|t| t["place"] == "backlog");
+    if action == "defer" && backlog {
+        return Err(fail(exit::FAILED, format!("{reference} is on the Shelf: `kanna task pick {reference}` moves it to the Desk")));
+    }
     let pane = found.as_ref().and_then(|t| t["pane"].as_str()).map(String::from);
     let id = found.as_ref().and_then(|t| t["id"].as_str()).map(String::from);
     match (action.as_str(), id.as_deref()) {
@@ -273,7 +294,7 @@ fn lookup(name: &str) -> Result<&'static Command, Failure> {
 
 fn explain(command: &Command, mut failure: Failure, mux: &mut Session, target: &Target) -> Failure {
     match failure.code {
-        exit::NOT_FOUND if !failure.message.contains("your fleet") => failure.message += "\nRun `kanna workspace list --all` to see pane names and IDs (term-1, file-1, …), tabs (tab-1, …) and windows (win-1, …).",
+        exit::NOT_FOUND if !failure.message.contains("your machines") => failure.message += "\nRun `kanna workspace list --all` to see pane names and IDs (term-1, file-1, …), tabs (tab-1, …) and windows (win-1, …).",
         exit::UNSUPPORTED => {
             let supported = mux.call("capabilities", json!({})).map(|c| output::join(&c["commands"])).unwrap_or_default();
             failure.message = format!("the running {} doesn't support `{}` yet. It supports: {supported}", target.name(), command.name);
@@ -317,7 +338,7 @@ const COMPLETIONS_HELP: &str = "usage: kanna completions zsh|bash\n\nPrints the 
 
 pub const CONFIG_SCHEMA: &str = include_str!("../../../schemas/config.schema.json");
 
-const CONFIG_HELP: &str = "usage: kanna config schema\n\nKanna's settings are ~/.kanna-v4/config.json, overridden key by key by a repo's .kanna/config.json, e.g.\n  { \"version\": 1, \"planning\": { \"context\": 300000 }, \"tasks\": { \"agent\": \"codex\" }, \"backlog\": { \"runners\": 3 } }\n\n`kanna config schema` prints their JSON Schema: every key, its type, default and what it does.";
+const CONFIG_HELP: &str = "usage: kanna config schema\n\nKanna's settings are ~/.kanna-v4/config.json, overridden key by key by a repo's .kanna/config.json, e.g.\n  { \"version\": 1, \"planning\": { \"context\": 300000 }, \"tasks\": { \"agent\": \"codex\" }, \"shelf\": { \"runners\": 3 } }\n\n`kanna config schema` prints their JSON Schema: every key, its type, default and what it does.";
 
 const RAW_HELP: &str = "usage: kanna raw REQUEST\n\nSends one control-protocol request as JSON and prints the reply, e.g.\n  kanna raw '{\"cmd\":\"list\"}'\n  kanna raw '{\"cmd\":\"open\",\"args\":{\"type\":\"term\",\"name\":\"a\"}}'";
 
@@ -391,7 +412,7 @@ fn instances(target: &Target, json_output: bool, env: Env) -> Result<(), Failure
         return Ok(());
     }
     if running.is_empty() {
-        println!("No Kanna instances are running. Any command starts one, e.g. kanna open or kanna --instance work open.");
+        println!("No Kanna instances are running. Any command starts one, e.g. kanna . or kanna --instance work open --window new.");
         return Ok(());
     }
     let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
@@ -767,11 +788,6 @@ mod tests {
             ("kanna send-key p3 up up shift+tab ctrl+c", json!({ "pane": "p3", "keys": ["up", "up", "shift+tab", "ctrl+c"] })),
             ("kanna send p1 echo -- --mux -x", json!({ "pane": "p1", "text": "echo --mux -x" })),
             ("kanna open --cwd /tmp", json!({ "type": "term", "cwd": "/tmp" })),
-            ("kanna open --name agent --dock", json!({ "type": "term", "name": "agent", "dock": "left" })),
-            ("kanna open --name agent --dock --frozen", json!({ "type": "term", "name": "agent", "dock": "left", "frozen": true })),
-            ("kanna open --dock right --cmd claude", json!({ "type": "term", "dock": "right", "cmd": "claude" })),
-            ("kanna open --dock md /tmp/a.md", json!({ "type": "md", "dock": "left", "path": "/tmp/a.md" })),
-            ("kanna open web a.test --dock=right --window new", json!({ "type": "web", "url": "a.test", "dock": "right", "window": "new" })),
             ("kanna move agent --dock", json!({ "pane": "agent", "dock": "left" })),
             ("kanna move agent --dock right --window win-2", json!({ "pane": "agent", "dock": "right", "window": "win-2" })),
             ("kanna move agent --tab", json!({ "pane": "agent", "tab": "new" })),
@@ -811,8 +827,11 @@ mod tests {
             ("kanna read p1 --lines 0", "--lines needs a whole number"),
             ("kanna open ios", "need an app"),
             ("kanna open --app x", "only for iOS panes"),
-            ("kanna open --dock --split right", "--dock goes on its own"),
-            ("kanna open --dock --tab", "--dock goes on its own"),
+            ("kanna open --name agent --dock", "make a task with `kanna task new`"),
+            ("kanna open --dock right --cmd claude", "a docked pane is a task's agent"),
+            ("kanna open web a.test --dock=right --window new", "a docked pane is a task's agent"),
+            ("kanna open --frozen", "a docked pane is a task's agent"),
+            ("kanna markup a.md --dock", "a docked pane is a task's agent"),
             ("kanna move agent --dock --tab", "--dock goes on its own"),
             ("kanna move agent --dock --to b", "--dock goes on its own"),
         ] {
@@ -848,10 +867,10 @@ mod tests {
             "panes": [{ "id": "p1", "name": "agent", "type": "term", "state": "running", "cmd": "claude" }, { "id": "p2", "name": null, "type": "term", "state": "running" }]
         });
         let text = output::workspace(&all, &reply);
-        assert!(text.contains("\nws-1, on the Shelf\n  dock: p1 (agent)  left 2/5  frozen\n  focus: agent\n  *tab-1 \"Tab 1\"  p2"), "{text}");
+        assert!(text.contains("\nws-1, on the Desk\n  dock: p1 (agent)  left 2/5  frozen\n  focus: agent\n  *tab-1 \"Tab 1\"  p2"), "{text}");
         let opened = json!({ "pane": { "id": "p1", "name": "agent", "state": "running" }, "window": null, "tab": null, "dock": "left", "workspace": { "id": "ws-1", "where": { "shelf": "mac" } } });
-        assert_eq!(output::opened(&json!({}), &opened), "opened p1 (agent) docked left in ws-1 (on the Shelf): running");
-        assert_eq!(output::opened(&json!({ "frozen": true }), &opened), "opened p1 (agent) docked left, frozen, in ws-1 (on the Shelf): running");
+        assert_eq!(output::opened(&json!({}), &opened), "opened p1 (agent) docked left in ws-1 (on the Desk): running");
+        assert_eq!(output::opened(&json!({ "frozen": true }), &opened), "opened p1 (agent) docked left, frozen, in ws-1 (on the Desk): running");
         let moved = json!({ "window": null, "workspace": { "id": "ws-1" }, "dock": { "pane": "agent", "edge": "right", "width": "1/3" } });
         assert_eq!(output::moved(&moved), "agent is docked right in ws-1 (width 1/3)");
     }

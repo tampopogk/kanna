@@ -43,6 +43,10 @@ pub trait TaskBook {
     fn sync(&self, workspaces: &[Value]) {
         let _ = workspaces;
     }
+    fn starting(&self, task: &str) -> bool {
+        let _ = task;
+        true
+    }
 }
 
 pub type CommandHandler = Rc<dyn Fn(Value, Responder)>;
@@ -94,6 +98,7 @@ struct Inner {
     on_change: RefCell<Option<Rc<dyn Fn()>>>,
     extra: RefCell<HashMap<String, CommandHandler>>,
     prefixes: RefCell<Vec<(String, PrefixHandler)>>,
+    front: RefCell<Option<CommandHandler>>,
     tasks: RefCell<Option<Rc<dyn TaskBook>>>,
     waiters: RefCell<HashMap<String, Vec<Rc<Signal>>>>,
     renamed: RefCell<Vec<Rc<dyn Fn(&str, &str)>>>,
@@ -141,6 +146,7 @@ impl Core {
             on_change: RefCell::new(None),
             extra: RefCell::new(HashMap::new()),
             prefixes: RefCell::new(vec![]),
+            front: RefCell::new(None),
             tasks: RefCell::new(None),
             waiters: RefCell::new(HashMap::new()),
             renamed: RefCell::new(vec![]),
@@ -162,6 +168,7 @@ impl Drop for Core {
         inner.waiters.borrow_mut().clear();
         inner.extra.borrow_mut().clear();
         inner.prefixes.borrow_mut().clear();
+        inner.front.borrow_mut().take();
         inner.host.borrow_mut().take();
         inner.on_change.borrow_mut().take();
     }
@@ -282,6 +289,25 @@ impl CoreHandle {
         Ok(())
     }
 
+    pub fn on_front(&self, handler: CommandHandler) {
+        *self.0.front.borrow_mut() = Some(handler);
+    }
+
+    async fn bring_forward(&self, focused: &mut Map, args: &Value) {
+        let Some(handler) = self.0.front.borrow().clone() else { return };
+        let mut request = Value::Object(focused.clone());
+        for key in ["pane", "tab"] {
+            if let Some(value) = args.get(key) {
+                request[key] = value.clone();
+            }
+        }
+        let (responder, answer) = responder();
+        handler(request, responder);
+        if let Ok(mut front) = answer.await {
+            focused.insert("front".into(), front.remove("front").unwrap_or(Value::Null));
+        }
+    }
+
     pub fn add_prefix(&self, prefix: &str, handler: PrefixHandler) {
         self.0.prefixes.borrow_mut().push((prefix.into(), handler));
     }
@@ -307,6 +333,22 @@ impl CoreHandle {
 
     pub fn with_pane_mut<R>(&self, id: &str, f: impl FnOnce(&mut Pane) -> R) -> Option<R> {
         self.state().panes.get_mut(id).map(f)
+    }
+
+    pub fn edit_panes(&self, mut edit: impl FnMut(&mut Pane) -> bool) {
+        let edited = {
+            let mut s = self.state();
+            let mut edited = false;
+            for id in s.panes.ids() {
+                if let Some(pane) = s.panes.get_mut(&id) {
+                    edited |= edit(pane);
+                }
+            }
+            edited
+        };
+        if edited {
+            self.changed();
+        }
     }
 
     pub fn set_command(&self, id: &str, command: String) {
@@ -594,13 +636,19 @@ impl CoreHandle {
                 Ok(reply([("windows", Value::Array(windows)), ("panes", Value::Array(panes))]))
             }
             _ if self.0.layout.commands().contains(&cmd) => {
-                let _turn = self.0.turns.take().await;
-                let mut result = self.layout(json!({ "op": "command", "cmd": cmd, "args": args })).await;
-                if result.is_ok() {
-                    self.changed();
-                }
-                if let (Ok(listed), "task") = (&mut result, cmd) {
-                    self.mark_running(listed);
+                let mut result = {
+                    let _turn = self.0.turns.take().await;
+                    let mut result = self.layout(json!({ "op": "command", "cmd": cmd, "args": args })).await;
+                    if result.is_ok() {
+                        self.changed();
+                    }
+                    if let (Ok(listed), "task") = (&mut result, cmd) {
+                        self.mark_running(listed);
+                    }
+                    result
+                };
+                if let (Ok(focused), "focus") = (&mut result, cmd) {
+                    self.bring_forward(focused, &args).await;
                 }
                 result
             }
@@ -735,6 +783,10 @@ impl CoreHandle {
             Some(agent) => Some(self.need_pane(Some(agent))?.id),
             None => None,
         };
+        let placed = ["window", "workspace", "dock", "lead", "planner"].iter().any(|key| args.get(*key).is_some_and(|v| !v.is_null() && v != &Value::Bool(false)));
+        if let Some(from) = string(args, "from").filter(|from| !placed && self.state().panes.pane(from).is_none()) {
+            return Err(KmuxError::new("no_caller", format!("{from} isn't one of this Kanna's panes, so there's no window of yours here: say where with --window WINDOW (or --window new)")));
+        }
         let name = string(args, "name").map(String::from);
         let taken = |core: &CoreHandle| match &name {
             Some(name) if core.state().panes.pane(name).is_some() => Err(KmuxError::new("name_taken", format!("a pane named \"{name}\" already exists"))),
@@ -760,6 +812,9 @@ impl CoreHandle {
         if dock.is_some() && (args.get("split").is_some() || args.get("size").is_some() || new_tab) {
             return Err(bad_request("a docked pane takes no split, size or tab"));
         }
+        if dock.is_some() && !string(args, "task").is_some_and(|task| self.book().is_none_or(|book| book.starting(task))) {
+            return Err(KmuxError::new("not_a_task", "a docked pane is a task's agent, and only a task docks: make one with `kanna task new`, then `kanna task pick` or `kanna task start`"));
+        }
         if args.get("frozen").is_some_and(|f| !f.is_null() && !f.is_boolean()) {
             return Err(bad_request("frozen must be true or false"));
         }
@@ -777,7 +832,7 @@ impl CoreHandle {
             return Err(bad_request("claim is for a docked pane or a planner, and backlog for a docked pane"));
         }
         if backlog && claimed.is_some() {
-            return Err(bad_request("a task is in the backlog or on an app's Shelf, not both"));
+            return Err(bad_request("a task is on the Shelf or on an app's Desk, not both"));
         }
         let lead = is_true(args, "lead");
         if lead && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || string(args, "window").is_none()) {
@@ -792,8 +847,8 @@ impl CoreHandle {
             _ => None,
         };
 
-        if kind == PaneType::Code && name.is_none() && !new_tab && dock.is_none() && split.is_none() && size.is_none() && args.get("window").is_none() {
-            if let Some(opened) = self.open_again(string(args, "path").unwrap_or_default(), line, string(args, "from")).await? {
+        if kind == PaneType::Code && name.is_none() && !new_tab && dock.is_none() && split.is_none() && size.is_none() {
+            if let Some(opened) = self.open_again(string(args, "path").unwrap_or_default(), line, string(args, "from"), string(args, "window")).await? {
                 return Ok(opened);
             }
         }
@@ -872,18 +927,15 @@ impl CoreHandle {
         Ok(opened(summary, &location, &placed))
     }
 
-    async fn showing(&self, path: &str, from: Option<&str>) -> Result<Option<(String, Map)>, KmuxError> {
-        self.showing_in(PaneType::Code, path, from).await
+    async fn showing(&self, path: &str, from: Option<&str>, window: Option<&str>) -> Result<Option<(String, Map)>, KmuxError> {
+        self.showing_in(PaneType::Code, path, from, window).await
     }
 
-    async fn showing_in(&self, kind: PaneType, path: &str, from: Option<&str>) -> Result<Option<(String, Map)>, KmuxError> {
-        let from = from.and_then(|from| self.state().panes.pane(from).map(|p| p.id.clone()));
-        let window = match from {
-            Some(from) => self.layout(json!({ "op": "location", "pane": from })).await?.remove("window"),
-            None => {
-                let windows = self.layout(json!({ "op": "windows" })).await?.remove("windows").unwrap_or_default();
-                windows.as_array().and_then(|w| w.iter().find(|w| w["key"] == true)).map(|w| w["id"].clone())
-            }
+    async fn showing_in(&self, kind: PaneType, path: &str, from: Option<&str>, window: Option<&str>) -> Result<Option<(String, Map)>, KmuxError> {
+        let window = match (window, from.and_then(|from| self.state().panes.pane(from).map(|p| p.id.clone()))) {
+            (Some(window), _) => Some(Value::String(window.into())),
+            (None, Some(from)) => self.layout(json!({ "op": "location", "pane": from })).await?.remove("window"),
+            (None, None) => None,
         };
         let Some(window) = window.filter(|w| !w.is_null()) else { return Ok(None) };
         let showing: Vec<String> = {
@@ -899,8 +951,8 @@ impl CoreHandle {
         Ok(None)
     }
 
-    async fn open_again(&self, path: &str, line: Option<u64>, from: Option<&str>) -> Result<Option<Map>, KmuxError> {
-        let Some((id, location)) = self.showing(path, from).await? else { return Ok(None) };
+    async fn open_again(&self, path: &str, line: Option<u64>, from: Option<&str>, window: Option<&str>) -> Result<Option<Map>, KmuxError> {
+        let Some((id, location)) = self.showing(path, from, window).await? else { return Ok(None) };
         {
             let _turn = self.0.turns.take().await;
             self.layout(json!({ "op": "command", "cmd": "focus", "args": { "pane": id } })).await?;
@@ -943,9 +995,9 @@ impl CoreHandle {
 
     async fn place_comment(&self, comment: Comment, args: &Value, stop: Option<StopMark>) -> Result<Map, KmuxError> {
         let (path, first, last) = (comment.path.clone(), comment.first, comment.last);
-        let placeless = ["name", "tab", "dock", "split", "size", "window"].iter().all(|key| args.get(*key).is_none());
+        let placeless = ["name", "tab", "dock", "split", "size"].iter().all(|key| args.get(*key).is_none());
         let from = string(args, "from");
-        let found = if placeless { self.showing(&path, from).await? } else { None };
+        let found = if placeless { self.showing(&path, from, string(args, "window")).await? } else { None };
         let (id, location, was_open) = match found {
             Some((id, location)) => {
                 {
@@ -1002,11 +1054,7 @@ impl CoreHandle {
             Some(from) => from.to_string(),
             None => {
                 let mut listed = self.layout(json!({ "op": "windows" })).await.ok()?;
-                let window = match window {
-                    Some(id) => Some(Value::String(id.into())),
-                    None if workspace.is_none() => listed.get("windows")?.as_array()?.iter().find(|w| w["key"] == true).map(|w| w["id"].clone()),
-                    None => None,
-                };
+                let window = window.map(|id| Value::String(id.into()));
                 let workspaces = listed.remove("workspaces")?;
                 let ws = workspaces.as_array()?.iter().find(|ws| match (&window, workspace) {
                     (_, Some(id)) => ws["id"] == id,
@@ -1099,7 +1147,7 @@ impl CoreHandle {
             return Ok(());
         }
         let place = here.map_or("this project".to_string(), |p| p.display().to_string());
-        Err(KmuxError::new("task_limit", format!("{place} has {TASKS_PER_PROJECT} tasks on the Shelf already ({}): move one to the backlog with `kanna task defer TASK` first", same.join(", "))))
+        Err(KmuxError::new("task_limit", format!("{place} has {TASKS_PER_PROJECT} tasks on the Desk already ({}): move one to the Shelf with `kanna task shelve TASK` first", same.join(", "))))
     }
 
     fn forget_pane(&self, id: &str) {

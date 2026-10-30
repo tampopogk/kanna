@@ -1,6 +1,6 @@
 # Files and Threads through the Daemon
 
-**Status:** built (Fleet 4) · **Part of:** [Machines §7](machines.md#7-terminals-and-panes) · **Builds on:** [file panes](file-panes.md), [one link per machine](machine-links.md) · **Related:** [doc markup](doc-markup.md), [markdown diff](markdown-diff.md)
+**Status:** built (Machines 4) · **Part of:** [Machines §7](machines.md#7-terminals-and-panes) · **Builds on:** [file panes](file-panes.md), [one link per machine](machine-links.md) · **Related:** [doc markup](doc-markup.md), [markdown diff](markdown-diff.md)
 
 ![A task on vm: its spec with vm's image, a comment typed into vm's agent and the reply it wrote there](files-and-threads.png)
 
@@ -74,9 +74,9 @@ On the [app link](app-link.md#2-messages). Requests name the pane as `view` (or 
 | `app.snap` with text | `crates/kanna-mux/src/core.rs`, `tour.rs`; the app's `AppCommands.swift` |
 | The app's side | `Contents.swift` (`DaemonThreads`, `file.read`), `MarkdownPaneView` (`readFile`, `threads`), `PageMarkupView`, `KannaDocs/DocThreads.swift` (the record and its helpers, no file access) |
 
-**Checks:** `files.rs` (a doc's threads watched beside it, the base and a range), `reads.rs` (real paths and types, automount refusals, posting, editing and marks as the CLI keeps them) and `screenshot.rs` tests; `crates/kanna/tests/cli.rs` (a fake app reads an image, subscribes to threads, posts one, sees `kanna markup reply`, resolves; screenshots written by the daemon); e2e `fleet_remote_files`, a second daemon over iroh loopback: a remote task's spec shows vm's image, a comment posted in the app is saved on vm and typed into vm's agent, `kanna markup reply` on vm shows in the app, `kanna screenshot` from vm's agent is written on vm (and refused over a file without `--force`), a link opens the other doc, the spec against `main` shows its change, the code shows, and `kanna comment` on vm's code is snapped by the app. `md_comments`, `page_comments`, `markdown_diff`, `file_panes`, `code_pane`, `code_tour`, `code_tour_steps`, `screenshot`, `web_md_ios_panes` and `fleet_remote_task` pass unchanged.
+**Checks:** `files.rs` (a doc's threads watched beside it, the base and a range), `reads.rs` (real paths and types, automount refusals, posting, editing and marks as the CLI keeps them) and `screenshot.rs` tests; `crates/kanna/tests/cli.rs` (a fake app reads an image, subscribes to threads, posts one, sees `kanna markup reply`, resolves; screenshots written by the daemon); e2e `machine_remote_files`, a second daemon over iroh loopback: a remote task's spec shows vm's image, a comment posted in the app is saved on vm and typed into vm's agent, `kanna markup reply` on vm shows in the app, `kanna screenshot` from vm's agent is written on vm (and refused over a file without `--force`), a link opens the other doc, the spec against `main` shows its change, the code shows, and `kanna comment` on vm's code is snapped by the app. `md_comments`, `page_comments`, `markdown_diff`, `file_panes`, `code_pane`, `code_tour`, `code_tour_steps`, `screenshot`, `web_md_ios_panes` and `machine_remote_task` pass unchanged.
 
 ## 5. Not in this change
 
-- **Web pages of another machine** need port tunnels ([Fleet 5](machines-build-order.md)); until then a remote task's web pane is refused as before, so page comments are this Mac's only.
+- **Web pages of another machine** need port tunnels ([Machines 5](machines-build-order.md)); until then a remote task's web pane is refused as before, so page comments are this Mac's only.
 - **A Desk's branch** for a folder on this Mac is still read from `.git/HEAD` by the app; a remote checkout's branch comes with its folder notices ([machine links §8](machine-links.md#8-limits)).
