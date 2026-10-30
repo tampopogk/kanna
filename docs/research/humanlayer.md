@@ -2,11 +2,13 @@
 
 > 2026-10-25. Research only: nothing was built and no code or spec was changed. Written by a task's agent from a shallow clone of HumanLayer's repos at that day's `main` (humanlayer `4e22fd0`, 2026-10-24), their docs and blog, and Kanna's own specs. `HL:` paths are in the humanlayer repo; `K:` paths are Kanna's. Where a verdict is a judgement call it says so.
 
+> **Verdict, 2026-10-31, after review with the user:** nothing from HumanLayer is adopted. The comparison in §2 and the items in §3 stay as the record of what was considered and why it isn't taken: the parts where HL is ahead are either what Kanna's architecture already does differently on purpose (the keeper, the agent's own TUI, runners and the turn boundary), small polish Kanna can reach on its own, or process-as-prompt-text that the kojo-based factory language replaces.
+
 ## Contents
 
 1. [What's open now](#1-whats-open-now): 1.1 two generations · 1.2 the stack · 1.3 the daemon and hosts · 1.4 worktrees and workspaces · 1.5 approvals · 1.6 agent integrations · 1.7 workflows and skills · 1.8 essays · 1.9 side repos · 1.10 timeline
 2. [Kanna and HumanLayer, part by part](#2-kanna-and-humanlayer-part-by-part)
-3. [Recommendations, ranked](#3-recommendations-ranked): 3.1 copy · 3.2 Kanna already does better · 3.3 avoid · 3.4 what this changes in the specs
+3. [Recommendations, ranked](#3-recommendations-ranked): 3.1 considered, not taken · 3.2 Kanna already does better · 3.3 avoid · 3.4 what this changes in the specs
 4. [What didn't load](#4-what-didnt-load)
 5. [Sources](#5-sources)
 
@@ -282,7 +284,9 @@ flowchart LR
 
 ## 3. Recommendations, ranked
 
-### 3.1 Copy, in this order
+Reviewed 2026-10-31: none of these is taken (see the verdict at the top). They are kept, ranked as they were proposed, so the reasoning isn't lost if one comes up again.
+
+### 3.1 Considered, not taken
 
 1. **A source ref for worktrees; copying stays in the setup script.** Every HL worktree copies `.env`, `.env.local`, `.claude/settings.local.json` and the workspace files (`copyGlobs`), and starts from `origin/main` (`sourceRef`). Kanna's tasks start "from the repo's checked-out commit" and setup is one command. **Decision:** no `copyGlobs` in Kanna: the `tasks.setup` script copies whatever the repo's users need, and a glob list in config would be a second, weaker way to say the same thing. What remains worth taking is `tasks.source` (a ref, default the checkout) in [task scripts](../specs/task-scripts.md) §1, so a task can start from `origin/main` on a machine whose checkout is behind. **Where:** `task-scripts.md`, `tasks.rs`. **Judgement:** small; do it when the fleet makes stale checkouts common.
 2. **Named failures for the branch the receiver already has.** Kanna's transfer ([machine tasks §3](../specs/machine-tasks.md#3-transfer)) already reuses the receiver's clone and branch: the bundle is fetched into it, and git fast-forwards a branch the receiver has from an earlier run, or refuses one that doesn't fast-forward. HL does the same and adds three explicit cases (`create-or-adopt-worktree.ts:105-227`): a branch of that name that isn't this task's (the source commit isn't an ancestor) is refused with a message, a diverged copy is refused with both tips named instead of git's bare error, and an existing worktree folder is **adopted** after probing it's the right one rather than recreated. **Where:** the transfer slice, `machine-tasks.md` §3, as the error cases of "fetch into its own clone". **Judgement:** small; the mechanism is already right, only the failure reporting is missing.
