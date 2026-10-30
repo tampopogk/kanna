@@ -112,7 +112,7 @@ Only the input differs, so the recognition, the anchors and the thread format ar
 ## 6. How it's built
 
 - **A thread with marks.** An ink thread is a Doc Markup thread whose target is a list of marks instead of a quote; each mark has its kind, its strokes (points relative to the block or part it's anchored to) and what it points at. The same thread file, CLI and skill.
-- **Recognition runs where you draw** (the app, later the iPad), from the stroke alone plus what's under it; the label you correct wins.
+- **Recognition runs where you draw** (the app, later the iPad), from the stroke alone plus what's under it; the kind you correct wins.
 - **The picture** is the pane's own capture with the ink layer on, the same as [`kanna screenshot`](screenshot.md).
 - **Not yet decided:** whether the thread store moves to the daemon first (task-4053), which this would follow.
 
