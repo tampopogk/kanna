@@ -319,12 +319,12 @@ final class Contents {
     private func subscribe(diff view: DiffPaneView, _ id: String) {
         guard let source = diffSources[id] else { return }
         let args: [String: JSON] = ["view": .string(id), "path": .string(source.path), "args": .array(source.args.map { .string($0) })]
-        guard let onCall else { return view.show(DiffResult.failed(folder: source.path, args: source.args, error: "Kanna.app isn't connected to its daemon"), serial: 0) }
+        guard let onCall else { return view.receive(DiffResult.failed(folder: source.path, args: source.args, error: "Kanna.app isn't connected to its daemon"), serial: 0) }
         onCall("diff.subscribe", args) { [weak self, weak view] answer in
             guard let self, let view, slots[id]?.content === view else { return }
             guard answer["ok"]?.bool == true, let content = answer["content"]?.string else {
                 let message = answer["error"]?["message"]?.string ?? "The daemon couldn't show this diff"
-                return view.show(DiffResult.failed(folder: source.path, args: source.args, error: message), serial: 0)
+                return view.receive(DiffResult.failed(folder: source.path, args: source.args, error: message), serial: 0)
             }
             diffContents[id] = content
             let latest = diffLatest[content]
@@ -344,7 +344,7 @@ final class Contents {
             if let updating = message["updating"]?.bool { view.setUpdating(updating) }
             return
         }
-        view.show(found.encoded(), serial: Int(message["serial"]?.number ?? 0))
+        view.receive(found.encoded(), serial: Int(message["serial"]?.number ?? 0))
         if message["updating"]?.bool == true { view.setUpdating(true) }
     }
 
