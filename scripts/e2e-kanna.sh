@@ -4195,7 +4195,7 @@ done_leaves_no_window() {
 
 scenario restart_while_desk_opens M4
 restart_while_desk_opens() {
-  local repo="$KANNA_STATE_DIR/repo"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "restart_while_desk_opens line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   "$app" --bg >>"$out/app.log" 2>&1 &
