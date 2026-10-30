@@ -2183,15 +2183,47 @@ code_pane() {
   check is src line 80 || return 1
   check test "$(code src language)" == rust || return 1
   check wait_for 5 eval '(( $(code src spans) > 300 ))' || { echo "spans $(code src spans)"; return 1; }
+  ov() { raw "{\"id\":1,\"cmd\":\"debug.code\",\"args\":{\"pane\":\"src\"${2:-}}}" | field "overview.$1"; }
+  codewin() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"win-1\",\"size\":[$1,700]}}" >/dev/null; }
+  codewin 1200
+  check wait_for 5 eval '[[ "$(ov shown)" == True ]]' || { echo "no overview: wanted $(ov wanted), clip $(code src clip_width) pt"; return 1; }
+  check eval '(( $(ov box_height | cut -d. -f1) > 10 && $(ov top | cut -d. -f1) > 0 ))' || { echo "box $(ov box_y) $(ov box_height), top $(ov top)"; return 1; }
+  check test "$(code src clip_width | cut -d. -f1)" -le "$((1200 - 98))" || { echo "the text runs under the overview: $(code src clip_width)"; return 1; }
+  local tiles; tiles="$(ov rendered_tiles)"
+  ov top ',"overview_click":3' >/dev/null
+  check wait_for 5 eval '[[ "$(ov top)" == 0* ]]' || { echo "a click at the top left top at $(ov top)"; return 1; }
+  ov top ',"overview_drag":[10,60]' >/dev/null
+  check wait_for 5 eval '(( $(ov top | cut -d. -f1) > 200 ))' || { echo "dragging the box left top at $(ov top)"; return 1; }
+  ov top ',"overview_marks_click":690' >/dev/null
+  check wait_for 5 eval '(( $(code src top) > 90 ))' || { echo "a click at the foot of the marks left line $(code src top) at the top"; return 1; }
+  check test "$(ov rendered_tiles)" == "$tiles" || { echo "tiles drawn again on scroll: $tiles, then $(ov rendered_tiles)"; return 1; }
+  raw '{"id":1,"cmd":"debug.code","args":{"pane":"src","pick":40}}' >/dev/null
+  ov shown ',"overview_hover":true' >/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.4
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"code_pane-overview-light.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/code_pane-overview-light.png" "$out/" 2>/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null; sleep 0.4
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"code_pane-overview-dark.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/code_pane-overview-dark.png" "$out/" 2>/dev/null
+  ov shown ',"overview_hover":false' >/dev/null
+  check test "$(ov shown ',"overview_enabled":false')" == False || { echo "View › Overview off left it shown"; return 1; }
+  check test "$(ov enabled)" == False || return 1
+  check test "$(ov shown ',"overview_enabled":true')" == True || { echo "View › Overview on didn't bring it back"; return 1; }
+  codewin 700
+  check wait_for 5 eval '[[ "$(ov shown)" == False && "$(ov wanted)" == True ]]' || { echo "at 700 pt: shown $(ov shown)"; return 1; }
+  codewin 1200
+  check wait_for 5 eval '[[ "$(ov shown)" == True ]]' || { echo "not back at 1200 pt"; return 1; }
+  raw '{"id":1,"cmd":"debug.code","args":{"pane":"src","reveal":80}}' >/dev/null
   echo 'let code_pane_edit = 1;' >>"$file"
   check wait_for 5 eval 'code src text | grep -q code_pane_edit' || return 1
   check wait_for 5 eval '[[ "$(code src changed)" == 121 ]]' || { echo "changed $(code src changed)"; return 1; }
+  check wait_for 5 eval '[[ "$(ov marks_by_kind.changed)" == 1* ]]' || { echo "no changed mark: $(ov marks_by_kind)"; return 1; }
   raw '{"id":1,"cmd":"debug.click","args":{"pane":"src","at":[120,200]}}' >/dev/null; sleep 0.3
   key() { raw "{\"id\":1,\"cmd\":\"debug.key\",\"args\":{\"key\":\"$1\"}}" >/dev/null; }
   key cmd+shift+=; key cmd+shift+=
   key cmd+f
   check wait_for 5 eval '[[ "$(code src find_bar)" == 1 ]]' || return 1
-  raw '{"id":1,"cmd":"debug.type","args":{"focused":true,"text":"line_77 "}}' >/dev/null; key return
+  raw '{"id":1,"cmd":"debug.type","args":{"focused":true,"text":"line_77 "}}' >/dev/null
+  check wait_for 5 eval '[[ "$(ov marks_by_kind.hit)" == 1* ]]' || { echo "no find hit mark: $(ov marks_by_kind)"; return 1; }
+  key return
   check wait_for 5 eval '[[ "$(code src selection_line)" == 77 && "$(code src selection_length)" == 8 ]]' || { echo "found at $(code src selection_line)"; return 1; }
   key escape
   check wait_for 5 eval '[[ "$(code src font_size)" == 14.5 ]]' || { echo "font $(code src font_size)"; return 1; }
@@ -2316,6 +2348,29 @@ assert rows[current]["kind"] in ("added", "removed") and rows[current]["text"].s
   diffwin() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"win-1\",\"size\":[$1,700]}}" >/dev/null; }
   diffwin 1400
   check wait_for 5 eval '[[ "$(diffpane list)" == True ]]' || { echo "no files list at $(diffpane width) pt"; return 1; }
+  dov() { diffpane "overview.$1" "${2:-}"; }
+  raw '{"id":1,"cmd":"debug.desk","args":{"window":"win-1","size":[1400,320]}}' >/dev/null
+  check wait_for 5 eval '[[ "$(dov shown)" == True && "$(diffpane list)" == True ]]' || { echo "short window: overview $(dov shown) wanted $(dov wanted), list $(diffpane list)"; return 1; }
+  check eval '(( $(dov box_height | cut -d. -f1) > 5 ))' || { echo "box $(dov box_height)"; return 1; }
+  check python3 -c 'import json, sys
+marks = json.loads(sys.argv[1])
+assert marks.get("changed", 0) >= 2 and marks.get("added", 0) >= 1, marks' "$(dov marks_by_kind)" || return 1
+  dov top ',"overview_click":200' >/dev/null
+  check wait_for 5 eval '(( $(dov top | cut -d. -f1) > 0 ))' || { echo "a click in the diff overview left top at $(dov top)"; return 1; }
+  dov top ',"overview_drag":[1,-300]' >/dev/null
+  check wait_for 5 eval '[[ "$(dov top)" == 0* ]]' || { echo "dragging up left top at $(dov top)"; return 1; }
+  dov shown ',"overview_hover":true' >/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.4
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"diff_pane-overview-light.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/diff_pane-overview-light.png" "$out/" 2>/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null; sleep 0.4
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"diff_pane-overview-dark.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/diff_pane-overview-dark.png" "$out/" 2>/dev/null
+  dov shown ',"overview_hover":false' >/dev/null
+  raw '{"id":1,"cmd":"debug.desk","args":{"window":"win-1","size":[1000,320]}}' >/dev/null
+  check wait_for 5 eval '[[ "$(dov shown)" == True && "$(diffpane list)" == False ]]' || { echo "at 1000 pt the list should go first: overview $(dov shown), list $(diffpane list)"; return 1; }
+  raw '{"id":1,"cmd":"debug.desk","args":{"window":"win-1","size":[640,320]}}' >/dev/null
+  check wait_for 5 eval '[[ "$(dov shown)" == False && "$(diffpane list)" == False ]]' || { echo "at 640 pt: overview $(dov shown), list $(diffpane list)"; return 1; }
+  diffwin 1400
+  check wait_for 5 eval '[[ "$(diffpane list)" == True ]]' || { echo "no files list back at $(diffpane width) pt"; return 1; }
   diffpane view ',"zoom":6' >/dev/null
   check wait_for 5 eval '[[ "$(diffpane list)" == False ]]' || { echo "files list zoomed in at $(diffpane width) pt"; return 1; }
   diffpane view ',"zoom":0' >/dev/null
