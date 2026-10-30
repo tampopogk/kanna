@@ -217,7 +217,6 @@ impl LayoutOwner {
             })
             .collect();
         let mut view = Map::new();
-        view.insert("key".into(), model.key_window().map_or(Value::Null, |w| w.id.clone().into()));
         view.insert("windows".into(), Value::Array(windows));
         view.insert("workspaces".into(), Value::Array(workspaces));
         view
@@ -493,24 +492,25 @@ mod tests {
     }
 
     #[test]
-    fn an_open_from_a_terminal_goes_beside_it_in_its_window_not_the_key_one() {
+    fn an_open_from_a_terminal_goes_beside_it_in_its_window_and_the_view_has_no_key_window() {
         let (mut owner, _) = LayoutOwner::open(None, false);
         owner.handle(&json!({ "call": "attach", "panes": [] }));
         place(&mut owner, "p1", json!({}));
         place(&mut owner, "p2", json!({ "window": "new" }));
-        assert_eq!(owner.view()["key"], "win-2");
         place(&mut owner, "p3", json!({ "from": "p1" }));
         let view = Value::Object(owner.view());
-        assert_eq!(view["key"], "win-1");
+        assert_eq!(view.get("key"), None);
         assert_eq!(view["windows"][0]["tabs"][0]["panes"], json!(["p1", "p3"]));
         assert_eq!(view["windows"][0]["focused"], "p3");
         assert_eq!(view["windows"][1]["tabs"][0]["panes"], json!(["p2"]));
         place(&mut owner, "p4", json!({ "window": "win-2" }));
         place(&mut owner, "p5", json!({ "tab": true, "opener": "p1" }));
         let view = Value::Object(owner.view());
-        assert_eq!((view["key"].clone(), view["windows"][0]["tabs"][1]["panes"].clone()), (json!("win-1"), json!(["p5"])), "a tab opened from a pane goes in that pane's window");
+        assert_eq!(view["windows"][0]["tabs"][1]["panes"], json!(["p5"]), "a tab opened from a pane goes in that pane's window");
         place(&mut owner, "p6", json!({ "window": "win-2", "tab": true, "opener": "p1" }));
         assert_eq!(owner.view()["windows"][1]["tabs"][1]["panes"], json!(["p6"]), "a window it's asked for wins");
+        let nowhere = owner.handle(&json!({ "call": "serve", "request": { "op": "place", "pane": { "id": "p7", "name": null, "type": "term" }, "at": {} } }));
+        assert_eq!(nowhere["error"]["code"], "bad_request", "with several windows and none named there's no window to pick: {nowhere}");
     }
 
     #[test]
@@ -535,7 +535,7 @@ mod tests {
         let view = again.view();
         assert_eq!(
             Value::Object(view),
-            json!({ "key": "win-1", "workspaces": [], "windows": [{ "id": "win-1", "lead": null, "tabs": [{ "id": "tab-1", "title": "Tab 1", "panes": ["p1", "p3", "p4"] }], "tab": "tab-1", "title": "Tab 1",
+            json!({ "workspaces": [], "windows": [{ "id": "win-1", "lead": null, "tabs": [{ "id": "tab-1", "title": "Tab 1", "panes": ["p1", "p3", "p4"] }], "tab": "tab-1", "title": "Tab 1",
                 "focused": "p4", "zoomed": null, "workspace": null, "root": { "split": "row", "children": [
                 { "pane": "p1", "type": "term", "size": 0.75 },
                 { "split": "column", "size": 0.25, "children": [{ "pane": "p3", "type": "term", "size": 0.5 }, { "pane": "p4", "type": "term", "size": 0.5 }] }
@@ -623,7 +623,6 @@ mod tests {
         place(&mut owner, "p2", json!({ "lead": true, "window": "new" }));
         let led = |owner: &LayoutOwner| owner.view()["windows"][1].clone();
         assert_eq!((led(&owner)["id"].clone(), led(&owner)["lead"]["pane"].clone(), led(&owner)["focused"].clone(), led(&owner)["title"].clone()), (json!("win-2"), json!("p2"), json!("p2"), json!("p2")));
-        assert_eq!(owner.view()["key"], "win-2");
 
         place(&mut owner, "p3", json!({ "from": "p2" }));
         place(&mut owner, "p4", json!({ "from": "p2" }));
@@ -838,7 +837,7 @@ mod tests {
         assert_eq!((view["workspaces"][0]["focused"].clone(), view["workspaces"][2]["zoomed"].clone()), (json!("p2"), json!("p6")));
         owner.save().unwrap();
         let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(saved["version"], 3);
+        assert_eq!((saved["version"].clone(), saved.get("key")), (json!(3), None), "an older layout's key is dropped");
         assert_eq!(saved["workspaces"][2]["where"], json!({ "planner": "mac" }));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -909,7 +908,6 @@ mod tests {
         assert_eq!(mv(&mut owner, json!({ "pane": "p2", "window": "win-2" }))["ok"], true);
         assert_eq!(tabs(&owner, 1), (vec![json!(["p3", "p4"]), json!(["p2"])], json!("tab-3"), json!("p2")), "a new tab at the end of the window, focused, not a split of its active tab");
         assert_eq!(tabs(&owner, 0).0, vec![json!(["p1"])], "the pane left behind keeps the whole tab");
-        assert_eq!(owner.view()["key"], "win-2");
         let before = Value::Object(owner.view());
         assert_eq!(mv(&mut owner, json!({ "pane": "p2", "window": "win-2" }))["ok"], true);
         assert_eq!(Value::Object(owner.view()), before, "a pane alone in its tab, moved to its own window, stays as it is");

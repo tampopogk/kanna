@@ -11,6 +11,8 @@ const GRACE: Duration = Duration::from_secs(5);
 
 const UNPROMPTED: &[&str] = &["--yolo", "--dangerously-bypass-approvals-and-sandbox"];
 
+const UNPROMPTED_CONFIG: [&str; 4] = ["-c", "approval_policy=\"never\"", "-c", "sandbox_mode=\"danger-full-access\""];
+
 pub fn command(helper: &str, dir: &str, agent: &str) -> String {
     format!("{helper} {FLAG} {dir} {agent}")
 }
@@ -47,8 +49,8 @@ fn short_dir() -> PathBuf {
 
 pub fn server_args(args: &[String], listen: &str) -> Vec<String> {
     let mut server = vec!["app-server".to_string()];
-    if args.iter().any(|a| UNPROMPTED.contains(&a.as_str())) {
-        server.extend(["-c", "approval_policy=\"never\"", "-c", "sandbox_mode=\"danger-full-access\""].map(String::from));
+    if unprompted(args) {
+        server.extend(UNPROMPTED_CONFIG.map(String::from));
     }
     for pair in args.windows(2).filter(|pair| pair[0] == "-c" || pair[0] == "--config") {
         server.extend(["-c".to_string(), pair[1].clone()]);
@@ -58,9 +60,31 @@ pub fn server_args(args: &[String], listen: &str) -> Vec<String> {
 }
 
 pub fn tui_args(args: &[String], listen: &str) -> Vec<String> {
-    let mut tui: Vec<String> = args.iter().filter(|a| !UNPROMPTED.contains(&a.as_str()) && *a != "--no-daemon").cloned().collect();
+    let mut tui: Vec<String> = Vec::new();
+    if unprompted(args) && !resuming(args) {
+        tui.extend(UNPROMPTED_CONFIG.map(String::from));
+    }
+    tui.extend(args.iter().filter(|a| !UNPROMPTED.contains(&a.as_str()) && *a != "--no-daemon").cloned());
     tui.extend(["--remote".to_string(), listen.to_string()]);
     tui
+}
+
+fn unprompted(args: &[String]) -> bool {
+    args.iter().any(|a| UNPROMPTED.contains(&a.as_str()))
+}
+
+fn resuming(args: &[String]) -> bool {
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-c" | "--config" => {
+                args.next();
+            }
+            flag if flag.starts_with('-') => {}
+            command => return command == "resume",
+        }
+    }
+    false
 }
 
 pub fn run(dir: &Path, program: &str, args: &[String]) -> i32 {
@@ -175,6 +199,18 @@ mod tests {
         assert_eq!(server_args(&args("-a on-request"), listen), args("app-server --listen unix:///s/codex-7.sock"), "a codex that asks keeps asking");
         assert_eq!(server_args(&args("--yolo -c model_auto_compact_token_limit=300000 hi"), listen), args("app-server -c approval_policy=\"never\" -c sandbox_mode=\"danger-full-access\" -c model_auto_compact_token_limit=300000 --listen unix:///s/codex-7.sock"), "the app-server compacts, so it gets the settings");
         assert_eq!(tui_args(&args("-a on-request --no-daemon"), listen), args("-a on-request --remote unix:///s/codex-7.sock"));
+    }
+
+    #[test]
+    fn a_new_session_gets_its_permissions_from_the_tui_and_a_resumed_one_keeps_its_own() {
+        let args = |line: &str| line.split(' ').map(String::from).collect::<Vec<_>>();
+        let listen = "unix:///s/codex-7.sock";
+        assert_eq!(tui_args(&args("--yolo hi"), listen), args("-c approval_policy=\"never\" -c sandbox_mode=\"danger-full-access\" hi --remote unix:///s/codex-7.sock"), "the TUI starts the thread with its own config, a trusted folder's on-request and workspace-write");
+        assert_eq!(tui_args(&args("--yolo -c model_auto_compact_token_limit=300000 hi"), listen), args("-c approval_policy=\"never\" -c sandbox_mode=\"danger-full-access\" -c model_auto_compact_token_limit=300000 hi --remote unix:///s/codex-7.sock"));
+        assert_eq!(tui_args(&args("--yolo --no-daemon resume --last"), listen), args("resume --last --remote unix:///s/codex-7.sock"), "a remote resume refuses permission overrides");
+        assert_eq!(tui_args(&args("--yolo -c model_auto_compact_token_limit=300000 resume 019f"), listen), args("-c model_auto_compact_token_limit=300000 resume 019f --remote unix:///s/codex-7.sock"));
+        assert_eq!(tui_args(&args("--yolo -c resume=x resume"), listen), args("-c resume=x resume --remote unix:///s/codex-7.sock"));
+        assert_eq!(tui_args(&args("-a on-request hi"), listen), args("-a on-request hi --remote unix:///s/codex-7.sock"), "a codex that asks keeps asking");
     }
 
     #[test]
