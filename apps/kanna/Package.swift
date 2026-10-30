@@ -22,9 +22,11 @@ let package = Package(
         .target(name: "KannaMarkdown", dependencies: ["KannaDocs", "KannaPerf", "KannaDiagram", .product(name: "Markdown", package: "swift-markdown")],
                 linkerSettings: ["AppKit"].map { .linkedFramework($0) }),
         .testTarget(name: "KannaMarkdownTests", dependencies: ["KannaMarkdown"]),
-        .target(name: "KannaCode", dependencies: ["KannaSyntaxC"], linkerSettings: [kannaFFI] + ["AppKit"].map { .linkedFramework($0) }),
+        .target(name: "KannaOverview", linkerSettings: ["AppKit"].map { .linkedFramework($0) }),
+        .testTarget(name: "KannaOverviewTests", dependencies: ["KannaOverview"]),
+        .target(name: "KannaCode", dependencies: ["KannaSyntaxC", "KannaOverview"], linkerSettings: [kannaFFI] + ["AppKit"].map { .linkedFramework($0) }),
         .testTarget(name: "KannaCodeTests", dependencies: ["KannaCode"]),
-        .target(name: "KannaDiff", dependencies: ["KannaCode"], linkerSettings: ["AppKit"].map { .linkedFramework($0) }),
+        .target(name: "KannaDiff", dependencies: ["KannaCode", "KannaOverview"], linkerSettings: ["AppKit"].map { .linkedFramework($0) }),
         .testTarget(name: "KannaDiffTests", dependencies: ["KannaDiff"]),
         .target(name: "KannaLinks"),
         .target(name: "KannaDrop"),
@@ -39,7 +41,7 @@ let package = Package(
         .target(name: "SimBridge", linkerSettings: ["AppKit", "IOSurface", "QuartzCore"].map { .linkedFramework($0) }),
         .executableTarget(
             name: "Kanna",
-            dependencies: ["GhosttyKit", "KannaLayoutC", "KannaMachinesC", "KannaDiagram", "KannaDocs", "KannaMarkdown", "KannaCode", "KannaDiff", "KannaLinks", "KannaDrop", "KannaStatus", "KannaMachines", "KannaPerf", "KannaWindows", "SimBridge"],
+            dependencies: ["GhosttyKit", "KannaLayoutC", "KannaMachinesC", "KannaDiagram", "KannaDocs", "KannaMarkdown", "KannaCode", "KannaDiff", "KannaOverview", "KannaLinks", "KannaDrop", "KannaStatus", "KannaMachines", "KannaPerf", "KannaWindows", "SimBridge"],
             linkerSettings: [.linkedLibrary("c++"), kannaFFI]
                 + ["AppKit", "Carbon", "CoreText", "IOSurface", "Metal", "QuartzCore", "Security", "SystemConfiguration", "UniformTypeIdentifiers", "WebKit"].map { .linkedFramework($0) }
         ),

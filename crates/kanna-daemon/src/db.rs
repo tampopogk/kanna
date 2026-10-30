@@ -107,6 +107,11 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         path text primary key,
         doc text not null check (json_valid(doc))
     );
+"), Step::Sql("
+    create table never_import (
+        path text primary key,
+        at real not null
+    );
 ")];
 
 pub const RECENT: usize = 10;
@@ -433,6 +438,12 @@ impl Db {
         rows.collect()
     }
 
+    pub fn made_order(&self) -> rusqlite::Result<Vec<String>> {
+        let mut statement = self.conn.prepare("select id from tasks where place != 'done' order by made_at, rowid")?;
+        let ids = statement.query_map([], |r| r.get(0))?;
+        ids.collect()
+    }
+
     pub fn task(&self, id: &str) -> rusqlite::Result<Option<Row>> {
         self.conn
             .query_row("select id, repo, place, terminal, made_at, doc from tasks where id = ?1", [id], |r| {
@@ -615,6 +626,29 @@ impl Db {
 
     pub fn clear_projects(&self) -> rusqlite::Result<()> {
         self.conn.execute("delete from projects", []).map(|_| ())
+    }
+
+    pub fn never_import(&self, path: &str) -> rusqlite::Result<()> {
+        self.conn.execute("insert or replace into never_import (path, at) values (?1, ?2)", params![path, now()]).map(|_| ())
+    }
+
+    pub fn never_imports(&self, path: &str) -> rusqlite::Result<bool> {
+        self.conn.prepare("select 1 from never_import where path = ?1")?.exists([path])
+    }
+
+    pub fn relocate(&self, from: &str, to: &str) -> rusqlite::Result<usize> {
+        let under = |column: &str| format!("({column} = ?1 or substr({column}, 1, length(?1) + 1) = ?1 || '/')");
+        let moved = |column: &str| format!("?2 || substr({column}, length(?1) + 1)");
+        let tx = self.conn.unchecked_transaction()?;
+        let mut count = 0;
+        for (table, column, verb) in [("tasks", "repo", "update"), ("messages", "repo", "update"), ("quiz_rounds", "repo", "update"), ("projects", "path", "update or replace"), ("planners", "path", "update or replace")] {
+            count += tx.execute(&format!("{verb} {table} set {column} = {} where {}", moved(column), under(column)), [from, to])?;
+        }
+        let folder = "json_extract(doc, '$.folder')";
+        count += tx.execute(&format!("update tasks set doc = json_set(doc, '$.folder', {}) where {}", moved(folder), under(folder)), [from, to])?;
+        tx.execute(&format!("delete from never_import where {}", under("path")), [from])?;
+        tx.commit()?;
+        Ok(count)
     }
 }
 

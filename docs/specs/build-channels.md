@@ -28,7 +28,7 @@ The dev build in the main checkout is the Kanna that came before channels: same 
 └── kanna-dev-task-7c01d4aa/     another worktree's
 ```
 
-Each folder is a whole Kanna (daemon, keeper, terminals, layout, backlog), so nothing is shared between them. Instance names are per channel: `--instance work` in a staging build is `kanna-staging-work`.
+Each folder is a whole Kanna (daemon, keeper, terminals, layout, Shelf), so nothing is shared between them. Instance names are per channel: `--instance work` in a staging build is `kanna-staging-work`.
 
 ## 2. How a build knows what it is
 
@@ -71,7 +71,7 @@ So in production's terminals every `kanna` talks to production; to reach the wor
 
 Any build can run with `KANNA_DEBUG=1` (the planner's dev Kanna does): it answers `debug.*` and shows **Debug** in its title bars, and is otherwise the same, its clipboard included ([terminal](terminal.md#5-debug-mode)).
 
-Production is the build that goes in /Applications (`ditto target/Kanna.app /Applications/Kanna.app`); its folder starts empty. To carry the main checkout's dev Kanna over (layout, backlog, terminals), quit it, stop its keeper (`kill $(cat ~/Library/Application\ Support/kanna-dev/keeper.pid)`, which ends its terminals) and move `kanna-dev` to `kanna-prod`.
+Production is the build that goes in /Applications (`ditto target/Kanna.app /Applications/Kanna.app`); its folder starts empty. To carry the main checkout's dev Kanna over (layout, Shelf, terminals), quit it, stop its keeper (`kill $(cat ~/Library/Application\ Support/kanna-dev/keeper.pid)`, which ends its terminals) and move `kanna-dev` to `kanna-prod`.
 
 ## 5. Open questions
 

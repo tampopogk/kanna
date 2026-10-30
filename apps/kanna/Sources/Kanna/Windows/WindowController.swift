@@ -1,6 +1,7 @@
 import AppKit
 import KannaMarkdown
 import KannaPerf
+import KannaWindows
 
 @MainActor
 final class WindowController: NSObject, NSWindowDelegate {
@@ -18,7 +19,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     let shelfStrip = ShelfStrip()
     let shelfPage = ShelfPage()
     let machinesPage = MachinesPage()
-    static let pages = ["Shelf", "Machines"]
+    static let pages = ["Desk", "Machines"]
     var page: String?
     var machines: [MachineRow] = []
     var stale: String?
@@ -28,6 +29,9 @@ final class WindowController: NSObject, NSWindowDelegate {
     private(set) var pages: [String] = []
     private var dockedTask: String?
     var shelf: [ShelfTask] = []
+    var active: String?
+    var others: [ShelfTask] { shelf.filter { $0.id != active } }
+    var keys: [String: String] { DeskOrder.keys(others.map(\.id)) }
     var shelfDocks: [JSON] = []
     var backlog: [BacklogTask] = []
     var running = 0
@@ -44,6 +48,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     private(set) var emptyDesk = false
     private(set) var leadShown: String?
     private(set) var tabless = false
+    private var keyed = false
     var onCloseRequest: (() -> Void)?
     var onBecomeKey: (() -> Void)?
     var onFrameChange: (() -> Void)?
@@ -108,7 +113,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         tab = state["tab"]?.string
         let instance = AppController.instanceName
         desk = state["desk"]?.bool == true
-        let named = desk ? taskTitle ?? "Shelf" : state["lead"]?["name"]?.string ?? "\(state["title"]?.string ?? "Kanna") — \(id)"
+        let named = desk ? taskTitle ?? "Desk" : state["lead"]?["name"]?.string ?? "\(state["title"]?.string ?? "Kanna") — \(id)"
         window.title = named + (instance == "default" ? "" : " · \(instance)")
         let root = state["root"] ?? .null
         let task = Self.side(state["dock"])
@@ -163,12 +168,18 @@ final class WindowController: NSObject, NSWindowDelegate {
             view.focused = many && id == focusedID && window.isKeyWindow
             view.grip.isHidden = id == docked && dock?["frozen"]?.bool == true
         }
-        let responder = window.firstResponder
-        if let focusedID, let target = panes.keyView(focusedID), responder !== target,
-           responder == nil || responder === window || responder is TerminalSurfaceView || responder is FocusReportingWebView
-           || responder is MarkdownTextView || responder is IosPaneView {
-            window.makeFirstResponder(target)
+        if let focusedID, let target = panes.keyView(focusedID) {
+            if Keyboard.moves(from: holder(of: target), keyed: keyed) { window.makeFirstResponder(target) }
+            keyed = keyed || window.firstResponder === target
         }
+    }
+
+    private func holder(of target: NSView) -> Keyboard.Holder {
+        let responder = window.firstResponder
+        if responder === target { return .target }
+        if responder == nil || responder === window { return .nothing }
+        if responder is TerminalSurfaceView || responder is FocusReportingWebView || responder is MarkdownTextView || responder is IosPaneView { return .pane }
+        return responder is NSText ? .text : .other
     }
 
     private enum Zoom { case dock, tab }
@@ -186,7 +197,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         if taskless {
         } else if desk {
             shelfStrip.frame = NSRect(x: 0, y: 0, width: bounds.width, height: ShelfStrip.height)
-            shelfStrip.show(shelf, waiting: backlog.count)
+            shelfStrip.show(DeskOrder.byAge(others, made: \.made), keys: keys, waiting: backlog.count)
             bounds = NSRect(x: 0, y: ShelfStrip.height, width: bounds.width, height: bounds.height - ShelfStrip.height)
         }
         var side = bounds
@@ -216,7 +227,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         let below = NSRect(x: side.minX, y: side.minY, width: side.width, height: max(0, side.height - bar))
         if showsShelf {
             shelfPage.frame = below
-            shelfPage.show(DeskPage(tasks: shelf, backlog: backlog, running: running, project: project, cheer: cheer, note: note))
+            shelfPage.show(DeskPage(active: active, tasks: DeskOrder.byAge(shelf, made: \.made), keys: keys, backlog: backlog, running: running, project: project, cheer: cheer, note: note))
         } else if pageShown != nil {
             machinesPage.frame = below
             machinesPage.show(machines)

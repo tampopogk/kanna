@@ -1,6 +1,6 @@
 # Presentation Layers
 
-**Status:** approved, being built (diffs, terminal IDs, the daemon-owned layout saved in kanna.db, frames, dock widths and text size in the app, and content IDs in place of pane IDs are built; each app's own Desk and Shelf are next) · **Changes:** [architecture](architecture.md#2-what-the-daemon-keeps-what-the-apps-keep), [layout](layout.md), [app link](app-link.md), [workspaces](workspaces.md) · **Related:** [tasks](tasks.md), [diff viewer](diff-viewer.md), [restarting the daemon](daemon-restart.md)
+**Status:** approved, being built (diffs, terminal IDs, the daemon-owned layout saved in kanna.db, frames, dock widths and text size in the app, and content IDs in place of pane IDs are built; each app's own Desks are next) · **Changes:** [architecture](architecture.md#2-what-the-daemon-keeps-what-the-apps-keep), [layout](layout.md), [app link](app-link.md), [workspaces](workspaces.md) · **Related:** [tasks](tasks.md), [diff viewer](diff-viewer.md), [restarting the daemon](daemon-restart.md)
 
 Kanna's daemon runs headless, and any number of apps (the Mac app now, others such as iOS later) connect to it to view tasks and their workspaces. So what a task *is* and how it's *presented* are split into three layers: the **work** and the **logical presentation** live in the daemon and work with no app; the **physical presentation** lives in each app. Today the layers are mixed, and that's caused real bugs: diff panes go blank after a daemon restart, a restarted task's terminal couldn't be typed into, and Done left ghost windows.
 
@@ -53,7 +53,7 @@ Green: Kanna's code. Grey: the OS. Orange: clients. Clients and apps send the sa
 
 | Layer | Lives in | What's in it |
 |---|---|---|
-| **1 · Physical presentation** | each app | **Windows**: where each of a workspace's windows is, and how the app spreads tabs across windows; the app's own **Desk** (which Shelf task it shows) and **Shelf** (the tasks it claims, in its order); **panes** as views of content; sizes, **text size** (⌘+ and ⌘−, a page's or a terminal's scale), font, first responder, the dock's width. |
+| **1 · Physical presentation** | each app | **Windows**: where each of a workspace's windows is, and how the app spreads tabs across windows; the app's own **Desks** (the tasks on each, which it claims, in its order, and which one is active); **panes** as views of content; sizes, **text size** (⌘+ and ⌘−, a page's or a terminal's scale), font, first responder, the dock's width. |
 | **2 · Logical presentation** | daemon | Each task's **workspace**: its docked agent and its tabs, and any **extra windows** it asked for, each with tabs of its own; what each tab shows, by content ID; the arrangement as structure (this beside that, a ratio only as a hint); what the task is presenting: the shown tab, the focused content, and the **zoomed** content (`kanna zoom`: one content fills its tab); which app has each task out (its claim); a **planner workspace** per Desk for its planning terminal. |
 | **3 · Work** | daemon | **Tasks** as units of work: worktree, branch, agent, turns, runners, scripts, history, and whether it's queued, running, stopped or done. **Content**, each with an ID of its own: terminals, diffs, files, pages ([4](#4-content)). |
 
@@ -61,17 +61,17 @@ Green: Kanna's code. Grey: the OS. Orange: clients. Clients and apps send the sa
 - **Every logical command works with no app.** A task opens a tab, shows a diff, focuses its spec, all in the daemon; an app that opens later shows the workspace as the task left it.
 - **Logical windows, physical windows.** A task may ask for an extra window (`open --window new`); that's logical, so every app shows it, and the app realizes it at a default position that the user can then move. Independently, an app may spread a workspace's tabs across more windows of its own (a tab torn off): that's physical, and the task neither sees nor cares.
 - **Physical state never leaves the app.** Pane and window IDs, frames, sizes and focus are the app's; the daemon never stores them and the CLI never sees them.
-- **Each app has its own Desk and Shelf** ([each app's Desk and Shelf](app-desk.md)). Pulling a task onto the Desk in one app doesn't move it in another. The backlog is shared: a task an app moves to its Shelf is that app's claim, kept in the daemon.
+- **Each app has its own Desks** ([each app's Desks](app-desk.md)). Making a task active in one app doesn't change another. The Shelf is shared: a task an app moves to its Desk is that app's claim, kept in the daemon.
 
 ## 2. Who changes what
 
 | Change | Made by | How |
 |---|---|---|
 | Start, stop, done, a turn, a runner, a script | the daemon, on a command from the CLI, an agent or an app | work |
-| Open a tab, close it, rename it, move it to another workspace, focus or zoom content, shelve or defer a task | any client: the CLI, an agent, or an app (a drag, ⌘W) | a logical command, the same one the CLI sends |
-| Window frames and positions, tabs torn off into windows, splits' sizes, text size, which Shelf task the Desk shows, the Shelf's order, first responder | the app alone | local; saved by the app |
-| Pull a task onto the Desk, park it | the user in an app, or `kanna task pull` and `park` | physical, in one app: the CLI's instance's app (`KANNA_INSTANCE`), started if none is running, as the CLI starts Kanna.app today |
-| Move a task to the Shelf or back to the backlog | the user in an app, or `kanna task shelve` and `defer` | work: the task's claim, for one app |
+| Open a tab, close it, rename it, move it to another workspace, focus or zoom content, pick or shelve a task | any client: the CLI, an agent, or an app (a drag, ⌘W) | a logical command, the same one the CLI sends |
+| Window frames and positions, tabs torn off into windows, splits' sizes, text size, which of the Desk's tasks is active, their order, first responder | the app alone | local; saved by the app |
+| Make a task active, show the Desk view | the user in an app, or `kanna task activate` and `park` | physical, in one app: the CLI's instance's app (`KANNA_INSTANCE`), started if none is running, as the CLI starts Kanna.app today |
+| Move a task to the Desk or back to the Shelf | the user in an app, or `kanna task pick` and `shelve` | work: the task's claim, for one app |
 | A terminal's grid size | the app that last resized it (as tmux's `latest`) | `resize`, a work command; with no app it keeps its size |
 
 - **An app is a client like any other** for work and logical presentation: dragging a tab to another workspace sends the `move` the CLI would, and the app redraws when the change comes back.
@@ -128,13 +128,13 @@ flowchart LR
 
 1. **The daemon runs headless** and publishes every change to work and logical presentation; apps subscribe and render.
 2. **Three layers** as in [1](#1-the-three-layers); an app changes work and logical presentation only through commands, like any client.
-3. **Each app has its own Desk and Shelf;** the backlog is shared, and a task on an app's Shelf is claimed by that app ([each app's Desk and Shelf](app-desk.md)).
+3. **Each app has its own Desks;** the Shelf is shared, and a task on an app's Desk is claimed by that app ([each app's Desks](app-desk.md)).
 4. **Terminals:** a restart makes a new terminal with a new ID; `KANNA_TERMINAL` replaces `KANNA_PANE`.
 5. **Diffs:** one watcher per folder + git args, shared, stopped when the last subscriber leaves.
 6. **CLI:** content commands take content IDs, layout commands act on logical presentation with no app and take its IDs (`ws-3`, `win-2`, `tab-9`); the only app ID the CLI sees is a Desk's (`d1`), in replies about it.
 7. **Stop and Start** hang up and rerun a task's tab terminals from its workspace; **Done** closes it.
 8. **Ruled out:** the app as the only owner of layout (a task could then open tabs only by starting the app); the daemon storing workspaces as an opaque app blob (something still has to understand a layout to change it); a grace period for diff watchers.
-9. **`kanna task pull` and `park`** act on the CLI's instance's app, starting it if none runs.
+9. **`kanna task activate` and `park`** act on the CLI's instance's app, starting it if none runs.
 10. **kmux gets the same layers** ([6](#6-kmux)).
 11. **A workspace has logical windows** (`win-N`, asked for by a task, realized by each app at a default position, then moved freely); an app may also spread tabs across windows of its own without the task knowing.
 12. **Logical state is saved in `kanna.db`** with the tasks, so Done closes a task and its workspace in one transaction.

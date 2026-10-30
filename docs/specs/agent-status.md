@@ -1,10 +1,10 @@
 # Agent Status
 
-**Status:** built (no dots yet: the Desk isn't built) · **Tested:** e2e `agent_status`, `real_agent_program_status`; `cargo test -p kanna-vt`, `-p kanna-daemon` · **Used by:** [Desk](desk.md) (the agent header and the Shelf) · **Mockup:** the Desk's ([`references/mockups/desk.html`](../../references/mockups/desk.html)), the dots beside each task · **From:** kanna v2/v3's detection rules (`kanna3-detect`) and herdr's agent-detection manifests
+**Status:** built (no dots yet: the Desk isn't built) · **Tested:** e2e `agent_status`, `real_agent_program_status`; `cargo test -p kanna-vt`, `-p kanna-daemon` · **Used by:** [Desk](desk.md) (the agent header, the strip and the [Desk view](desk-view.md)) · **Mockup:** the Desk's ([`references/mockups/desk.html`](../../references/mockups/desk.html)), the dots beside each task · **From:** kanna v2/v3's detection rules (`kanna3-detect`) and herdr's agent-detection manifests
 
 **Agent status** tells you at a glance whether an agent is busy, waiting for you, or done, so you can leave it running and come back when it needs you. An agent that reports its own status ([OSC 7501](#4-the-agents-own-report-osc-7501), as Claude Code does) is taken at its word. For the others, Kanna reads the bottom of the agent's screen and matches it against **rules**: patterns for each agent, kept as data that Kanna updates on its own, so a new Claude Code or Codex release never needs a new Kanna.
 
-![The dots: the task on the Desk is working (blue); on the Shelf, one needs you (amber) and one is idle (green)](desk.png)
+![The dots: the active task is working (blue); of the Desk's other tasks, one needs you (amber) and one is idle (green)](desk.png)
 
 ## Contents
 
@@ -99,7 +99,7 @@ flowchart LR
 - **Only the daemon's terminal answers the probe,** so the agent gets one answer; the app's Ghostty parses the reports and ignores them.
 - **Records** are kept per pane, one per id, each report replacing its record whole (children such as `build/test` too; `state=clear` removes a record and those beneath it; one without an `app` takes its nearest ancestor's). At most 256; the one updated longest ago goes.
 - **When records go:** working and blocked ones when a new prompt starts (OSC 133 A) or the program ends (another process group takes the terminal's foreground, or the pane exits); all of them at a full reset (RIS). A record counts only while the process group that reported it is in the foreground, so a `done` left by one program never speaks for the next.
-- **A turn's end:** a record going from working to idle or done ends a [backlog task's turn](backlog-runners.md) at once, alongside the 3s rule.
+- **A turn's end:** a record going from working to idle or done ends a [Shelf task's turn](shelf-runners.md) at once, alongside the 3s rule.
 - **Untrusted text:** `msg`, `title` and `app` are shown only by `kanna status explain`, with control and invisible formatting characters taken out, and never sent back to the program.
 
 ## 5. CLI

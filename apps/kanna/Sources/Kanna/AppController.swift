@@ -1,6 +1,7 @@
 import AppKit
 import GhosttyKit
 import KannaMarkdown
+import KannaOverview
 import KannaPerf
 import KannaStatus
 import KannaWindows
@@ -14,6 +15,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var links: Links?
     var views: [String: JSON] = [:]
     var backlogs: [String: [JSON]] = [:]
+    var deskMade: [String: [String: Int]] = [:]
     var paneSets: [String: Set<String>] = [:]
     var places: [String: JSON] = [:]
     var identities: [String: String] = [:]
@@ -157,6 +159,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         contents.onFocus = { [weak self] pane in self?.userFocused(pane) }
         contents.textSize = { [weak self] pane in self?.physical.textSize(pane) }
         contents.onTextSize = { [weak self] pane, size in self?.physical.setTextSize(pane, size) }
+        OverviewSetting.enabled = physical.overview
         contents.agentStatus = { [weak self] pane in self?.agentStatuses.statuses[pane] }
         contents.contextMenu = { [weak self] in self?.paneMenu?.copy() as? NSMenu }
         runtime.onAction = { [weak self] view, action in
@@ -244,7 +247,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         link.onStatus = { [weak self] pane, status in self?.statusChanged(pane, status) }
         link.onFolder = { [weak self] pane, cwd, place in self?.folderChanged(pane, cwd, place) }
-        link.onBacklog = { [weak self] tasks in self?.backlogChanged(tasks, on: machine) }
+        link.onBacklog = { [weak self] tasks, desk in self?.backlogChanged(tasks, desk: desk, on: machine) }
         link.onToast = { [weak self] record in self?.toastArrived(record) }
         link.onLost = { [weak self] in self?.linkLost(machine) }
     }
@@ -318,6 +321,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func machineGone(_ machine: String) {
         views.removeValue(forKey: machine)
         backlogs.removeValue(forKey: machine)
+        deskMade.removeValue(forKey: machine)
         backlog = backlogs.keys.sorted().flatMap { backlogs[$0] ?? [] }
         published = merged()
         restate()
@@ -392,11 +396,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let tasks = shelfEntries.compactMap { entry -> ShelfTask? in
             guard let id = entry["task"]?.string else { return nil }
             return ShelfTask(id: id, title: taskTitle(id, name: entry["name"]?.string), parkedAt: entry["parkedAt"]?.number, status: agentStatuses.statuses[id], detail: taskDetail(id), agent: entry["agent"]?.string,
-                             place: placeText(id), offline: offline(MachineIDs.machine(of: id)))
+                             place: placeText(id), offline: offline(MachineIDs.machine(of: id)), made: made(id))
         }
-        let waiting: [ShelfTask] = tasks.filter { $0.status == "needs-you" }
-        let rest: [ShelfTask] = tasks.filter { $0.status != "needs-you" }
-        return waiting + rest
+        return DeskOrder.byRecency(tasks) { $0.status == "needs-you" }
     }
 
     func taskTitle(_ id: String, name: String?) -> String {
@@ -570,6 +572,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if window["desk"]?.bool == true, let root = controller.projectRoot { deskMoved(id, to: root) }
             let mine = controller.projectRoot.map { root in tasks.filter { sameProject(projectRoot($0.id), root) } } ?? tasks
             controller.shelf = mine
+            controller.active = docked == nil ? window["active"]?.string : nil
             let ours = Set(mine.map(\.id))
             let docks = window["desk"]?.bool == true
                 ? (shelfEntries.filter { $0["task"]?.string.map(ours.contains) == true } + runningBacklog(in: controller.projectRoot)).filter { $0["task"]?.string.map(held.contains) == false }
@@ -647,6 +650,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.pullTask(task, into: id)
         }
         controller.agentHeader.onPark = { [weak self] in self?.park(desk: id) }
+        controller.shelfStrip.onDesk = { [weak self] in self?.park(desk: id) }
         controller.agentHeader.onNew = { [weak self] in self?.newTab(in: id) }
         controller.shelfPage.onPull = { [weak self] task in
             Clicks.pull(task)

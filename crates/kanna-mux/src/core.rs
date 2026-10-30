@@ -43,6 +43,10 @@ pub trait TaskBook {
     fn sync(&self, workspaces: &[Value]) {
         let _ = workspaces;
     }
+    fn starting(&self, task: &str) -> bool {
+        let _ = task;
+        true
+    }
 }
 
 pub type CommandHandler = Rc<dyn Fn(Value, Responder)>;
@@ -313,6 +317,22 @@ impl CoreHandle {
 
     pub fn with_pane_mut<R>(&self, id: &str, f: impl FnOnce(&mut Pane) -> R) -> Option<R> {
         self.state().panes.get_mut(id).map(f)
+    }
+
+    pub fn edit_panes(&self, mut edit: impl FnMut(&mut Pane) -> bool) {
+        let edited = {
+            let mut s = self.state();
+            let mut edited = false;
+            for id in s.panes.ids() {
+                if let Some(pane) = s.panes.get_mut(&id) {
+                    edited |= edit(pane);
+                }
+            }
+            edited
+        };
+        if edited {
+            self.changed();
+        }
     }
 
     pub fn set_command(&self, id: &str, command: String) {
@@ -776,6 +796,9 @@ impl CoreHandle {
         if dock.is_some() && (args.get("split").is_some() || args.get("size").is_some() || new_tab) {
             return Err(bad_request("a docked pane takes no split, size or tab"));
         }
+        if dock.is_some() && !string(args, "task").is_some_and(|task| self.book().is_none_or(|book| book.starting(task))) {
+            return Err(KmuxError::new("not_a_task", "a docked pane is a task's agent, and only a task docks: make one with `kanna task new`, then `kanna task pick` or `kanna task start`"));
+        }
         if args.get("frozen").is_some_and(|f| !f.is_null() && !f.is_boolean()) {
             return Err(bad_request("frozen must be true or false"));
         }
@@ -793,7 +816,7 @@ impl CoreHandle {
             return Err(bad_request("claim is for a docked pane or a planner, and backlog for a docked pane"));
         }
         if backlog && claimed.is_some() {
-            return Err(bad_request("a task is in the backlog or on an app's Shelf, not both"));
+            return Err(bad_request("a task is on the Shelf or on an app's Desk, not both"));
         }
         let lead = is_true(args, "lead");
         if lead && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || string(args, "window").is_none()) {
@@ -1108,7 +1131,7 @@ impl CoreHandle {
             return Ok(());
         }
         let place = here.map_or("this project".to_string(), |p| p.display().to_string());
-        Err(KmuxError::new("task_limit", format!("{place} has {TASKS_PER_PROJECT} tasks on the Shelf already ({}): move one to the backlog with `kanna task defer TASK` first", same.join(", "))))
+        Err(KmuxError::new("task_limit", format!("{place} has {TASKS_PER_PROJECT} tasks on the Desk already ({}): move one to the Shelf with `kanna task shelve TASK` first", same.join(", "))))
     }
 
     fn forget_pane(&self, id: &str) {
