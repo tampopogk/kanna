@@ -1,5 +1,5 @@
 public enum Protocols {
-    public static let mine: [Int] = [1, 1]
+    public static let mine: [Int] = [2, 2]
 
     public static func common(_ mine: [Int], _ theirs: [Int]) -> Int? {
         guard mine.count == 2, theirs.count == 2 else { return nil }
