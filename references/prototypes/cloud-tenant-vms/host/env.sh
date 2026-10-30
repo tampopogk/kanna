@@ -1,0 +1,15 @@
+NET=ctv0
+POOL=ctv
+ACL=ctv-tenant
+PROFILE=ctv-tenant
+IMAGE=images:ubuntu/26.04/cloud
+V4=10.231.0.1/24
+V6=fd5a:1c3e:7a10:1::1/64
+GW4=10.231.0.1
+GW6=fd5a:1c3e:7a10:1::1
+HOST_LAN4=172.16.0.105
+IDRAC4=172.16.0.2
+LAN4=172.16.0.0/22
+RELAY=relay.kanna.build:8443
+ROLLBACK_MIN=${ROLLBACK_MIN:-90}
+DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
