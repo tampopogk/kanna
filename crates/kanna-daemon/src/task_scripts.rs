@@ -1,4 +1,4 @@
-use crate::backlog::git;
+use crate::tasks::git;
 use std::fs;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -246,7 +246,7 @@ mod tests {
         fs::create_dir_all(&repo).unwrap();
         let repo = fs::canonicalize(&repo).unwrap();
         sh(&repo, "git init -q -b main && printf 'target\\n' > .gitignore && git add .gitignore && git -c user.email=e@e -c user.name=e commit -q -m first");
-        let (folder, _) = crate::backlog::make_worktree(&repo, "task-1dfb12c2").unwrap();
+        let (folder, _) = crate::tasks::make_worktree(&repo, "task-1dfb12c2").unwrap();
         (fs::canonicalize(dir).unwrap(), PathBuf::from(folder))
     }
 

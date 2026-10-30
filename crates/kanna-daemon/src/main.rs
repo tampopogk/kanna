@@ -6,7 +6,7 @@ macro_rules! log {
 
 mod agents;
 mod app_link;
-mod backlog;
+mod tasks;
 mod db;
 mod host;
 mod keeper;
@@ -182,7 +182,7 @@ fn run() -> Result<Option<PathBuf>, String> {
     }
     let state_dir = env_path("KANNA_STATE_DIR").unwrap_or_else(|| socket.parent().map(Path::to_path_buf).unwrap_or_default());
     if let Ok(helper) = std::env::current_exe() {
-        backlog::serve_codex_remotely(&helper, &state_dir);
+        tasks::serve_codex_remotely(&helper, &state_dir);
     }
     std::fs::create_dir_all(&state_dir).map_err(|e| format!("can't make {}: {e}", state_dir.display()))?;
     let socket_path = socket.to_string_lossy().into_owned();
@@ -261,18 +261,18 @@ fn run() -> Result<Option<PathBuf>, String> {
     *terminals.detector.borrow_mut() = Some(detector.clone());
     let status_commands = Rc::new(status_command::StatusCommand::new(detector.clone(), events.clone()));
     status_commands.install(&core);
-    let backlog = Rc::new(backlog::Backlog::open(db.clone(), &state_dir, core.weak(), events.clone()));
-    backlog.install(&core);
-    *backlog.repos.borrow_mut() = Some(projects::repos());
+    let tasks = Rc::new(tasks::Tasks::open(db.clone(), &state_dir, core.weak(), events.clone()));
+    tasks.install(&core);
+    *tasks.repos.borrow_mut() = Some(projects::repos());
     let planners = Rc::downgrade(&layout);
-    *backlog.planners.borrow_mut() = Some(Box::new(move || {
+    *tasks.planners.borrow_mut() = Some(Box::new(move || {
         let Some(layout) = planners.upgrade() else { return vec![] };
         let view = layout.view();
         let workspaces = view["workspaces"].as_array().cloned().unwrap_or_default();
         workspaces.iter().filter(|w| w["where"].get("planner").is_some()).filter_map(|w| w["dock"]["pane"].as_str().map(String::from)).collect()
     }));
     let programs = Rc::downgrade(&detector);
-    *backlog.channel.borrow_mut() = Some(Box::new(move |pane| {
+    *tasks.channel.borrow_mut() = Some(Box::new(move |pane| {
         let detector = programs.upgrade()?;
         let program = detector.program(pane)?;
         Some(match program.agent.as_str() {
@@ -285,16 +285,16 @@ fn run() -> Result<Option<PathBuf>, String> {
         })
     }));
     let modes = Rc::downgrade(&detector);
-    *backlog.line_mode.borrow_mut() = Some(Box::new(move |pane| modes.upgrade().is_some_and(|detector| detector.line_mode(pane))));
+    *tasks.line_mode.borrow_mut() = Some(Box::new(move |pane| modes.upgrade().is_some_and(|detector| detector.line_mode(pane))));
     let argvs = Rc::downgrade(&detector);
-    *backlog.permissions.borrow_mut() = Some(Box::new(move |pane| messages::permissions(&argvs.upgrade()?.argv(pane))));
+    *tasks.permissions.borrow_mut() = Some(Box::new(move |pane| messages::permissions(&argvs.upgrade()?.argv(pane))));
     let projects = Rc::new(projects::Projects::new(db.clone(), std::env::var_os("HOME").map(std::path::PathBuf::from), Some(projects::repos())));
     projects.install(&core);
     let toasts = Rc::new(toasts::Toasts::new(core.weak()));
-    toasts.connect_backlog(&backlog);
+    toasts.connect_tasks(&tasks);
     toasts.install(&core);
     let warnings = Rc::downgrade(&toasts);
-    *backlog.on_warn.borrow_mut() = Some(Box::new(move |pane, name, why| {
+    *tasks.on_warn.borrow_mut() = Some(Box::new(move |pane, name, why| {
         let Some(toasts) = warnings.upgrade() else { return };
         let toast = toasts::Toast { title: format!("Messages wait for {name}"), detail: Some(why.to_string()), pane: Some(pane.to_string()), task: None, key: Some(format!("messages:{pane}:{why}")) };
         if let Err(error) = toasts.raise(toast) {
@@ -325,7 +325,7 @@ fn run() -> Result<Option<PathBuf>, String> {
     let host = Rc::new(Host::new(terminals.clone()));
     core.set_host(Some(host.clone()));
     let on_change = Rc::downgrade(&terminals);
-    let tasks_changed = Rc::downgrade(&backlog);
+    let tasks_changed = Rc::downgrade(&tasks);
     let layout_changed = Rc::downgrade(&layout);
     core.set_on_change(Some(Rc::new(move || {
         if let Some(terminals) = on_change.upgrade() {
@@ -334,8 +334,8 @@ fn run() -> Result<Option<PathBuf>, String> {
         if let Some(layout) = layout_changed.upgrade() {
             layout.panes_changed();
         }
-        if let Some(backlog) = tasks_changed.upgrade() {
-            backlog.mark_changed();
+        if let Some(tasks) = tasks_changed.upgrade() {
+            tasks.mark_changed();
         }
     })));
     let adopted = match keeper.adopt() {
@@ -376,7 +376,7 @@ fn run() -> Result<Option<PathBuf>, String> {
             app.layout(view);
         }
     }));
-    app.connect_backlog(&backlog);
+    app.connect_tasks(&tasks);
     let (folder_link, folder_core) = (Rc::downgrade(&app), core.weak());
     core.on_renamed(Rc::new(move |_, to| {
         let cwd = folder_core.upgrade().and_then(|core| core.pane(to)).and_then(|pane| pane.cwd);
@@ -420,11 +420,11 @@ fn run() -> Result<Option<PathBuf>, String> {
         Some(app) => app.forward("app.front", args, responder),
         None => responder.reply(Ok(Map::new())),
     }));
-    let resolving = Rc::downgrade(&backlog);
+    let resolving = Rc::downgrade(&tasks);
     core.add_command(
         "desk",
         Rc::new(move |mut args, responder| {
-            let (Some(app), Some(backlog)) = (link.upgrade(), resolving.upgrade()) else { return };
+            let (Some(app), Some(tasks)) = (link.upgrade(), resolving.upgrade()) else { return };
             let Some(task) = args.get("task").and_then(Value::as_str).map(String::from) else {
                 if let Some(folder) = args.get("project").and_then(Value::as_str).filter(|_| args.get("action").and_then(Value::as_str) == Some("desk")) {
                     if let Err(error) = projects::desk_here(folder) {
@@ -434,7 +434,7 @@ fn run() -> Result<Option<PathBuf>, String> {
                 }
                 return app.forward("desk", args, responder);
             };
-            backlog.agent(&task, move |found| match found {
+            tasks.agent(&task, move |found| match found {
                 Ok(pane) => {
                     args["task"] = Value::String(pane);
                     app.forward("desk", args, responder);
@@ -528,8 +528,8 @@ fn run() -> Result<Option<PathBuf>, String> {
         terminals.save_if_changed();
         layout.flush();
         let ticks = if shutdown.is_none() {
-            backlog.sweep();
-            backlog.tick()
+            tasks.sweep();
+            tasks.tick()
         } else {
             Some(Instant::now() + Duration::from_millis(100))
         };
@@ -579,22 +579,22 @@ fn run() -> Result<Option<PathBuf>, String> {
             }
             Event::Drained { terminal, serial } => {
                 if let Some(code) = terminals.drained(&terminal, serial) {
-                    ended(&terminals, &backlog, &app, &terminal, code);
+                    ended(&terminals, &tasks, &app, &terminal, code);
                 }
             }
             Event::Status { terminal, serial, status, ended } => {
                 if let Some(pane) = terminals.pane_of(&terminal).filter(|_| terminals.current(&terminal, serial)) {
                     core.with_pane_mut(&pane, |p| p.status = status.map(String::from));
                     app.status(&pane, status);
-                    backlog.status(&pane, status, ended);
+                    tasks.status(&pane, status, ended);
                 }
             }
             Event::RulesUpdated { token, report } => status_commands.updated(token, report),
-            Event::Worktree { token, result } => backlog.worktree_made(token, result),
-            Event::Branch { token, branch } => backlog.branch_found(token, branch),
-            Event::Turn { token } => backlog.next_turn(token),
-            Event::Posted { token, result } => backlog.posted(token, result),
-            Event::Finished { task, changes } => backlog.finished(&task, changes),
+            Event::Worktree { token, result } => tasks.worktree_made(token, result),
+            Event::Branch { token, branch } => tasks.branch_found(token, branch),
+            Event::Turn { token } => tasks.next_turn(token),
+            Event::Posted { token, result } => tasks.posted(token, result),
+            Event::Finished { task, changes } => tasks.finished(&task, changes),
             Event::Diff { id, diff } => diffs.loaded(&id, diff),
             Event::DiffUpdating { id } => diffs.updating(&id),
             Event::File { id, read } => files.loaded(&id, read),
@@ -608,7 +608,7 @@ fn run() -> Result<Option<PathBuf>, String> {
                         for exit in exits {
                             let code = exit.status.shell_status();
                             if let Some((terminal, code)) = terminals.exited(&exit.id, exit.pid, code) {
-                                ended(&terminals, &backlog, &app, &terminal, code);
+                                ended(&terminals, &tasks, &app, &terminal, code);
                             }
                         }
                     }
@@ -709,10 +709,10 @@ fn request_name(request: &Value) -> String {
     }
 }
 
-fn ended(terminals: &Terminals, backlog: &Rc<backlog::Backlog>, app: &AppLink, terminal: &str, code: i32) {
+fn ended(terminals: &Terminals, tasks: &Rc<tasks::Tasks>, app: &AppLink, terminal: &str, code: i32) {
     app.exited(terminal, code);
     if let Some(pane) = terminals.pane_of(terminal) {
-        backlog.exited(&pane, code);
+        tasks.exited(&pane, code);
         app.status(&pane, Some("exited"));
     }
 }

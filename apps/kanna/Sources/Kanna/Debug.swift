@@ -161,7 +161,7 @@ extension AppController {
             }
             let page = controller.deskView
             let scrolled: JSON = ["top": .number(Double(page.scrollTop)), "height": .number(Double(page.contentHeight)),
-                                  "visible": .number(Double(page.visibleHeight)), "backlog": .array(page.visibleBacklog.map { .string($0) }), "blocked": .array(page.blockedBacklog)]
+                                  "visible": .number(Double(page.visibleHeight)), "shelf": .array(page.visibleShelf.map { .string($0) }), "blocked": .array(page.blockedShelf)]
             let search: JSON = ["shown": .bool(page.searchShown), "focused": .bool(page.searching), "query": .string(page.query),
                                 "found": .array(page.found.map { .string($0) }), "selected": .number(Double(page.selected)),
                                 "left": .number(Double(page.searchFrame.minX)), "right": .number(Double(page.searchFrame.maxX))]
@@ -169,7 +169,7 @@ extension AppController {
             return ["desk": .bool(controller.desk), "empty": .bool(controller.emptyDesk), "tasks": .array(tasks), "active": controller.active.map { .string($0) } ?? .null,
                     "strip": .bool(!controller.deskStrip.isHidden), "page": .bool(!controller.deskView.isHidden), "title": .string(controller.window.title),
                     "header": controller.agentHeader.isHidden ? .null : .string(controller.agentHeader.text),
-                    "backlog": .array(controller.backlog.map { .string($0.id) }), "agents": .array(controller.backlog.map { $0.agent.map { .string($0) } ?? .null }), "running": .number(Double(controller.running)),
+                    "shelf": .array(controller.shelf.map { .string($0.id) }), "agents": .array(controller.shelf.map { $0.agent.map { .string($0) } ?? .null }), "running": .number(Double(controller.running)),
                     "waiting": .string(controller.deskStrip.waitingText), "stripLayout": controller.deskStrip.geometry, "note": .string(controller.note), "cheer": .string(controller.cheer),
                     "lead": controller.leadShown.map { .string($0) } ?? .null, "pages": .array(controller.tabBar.pageItems.map { .string($0.title) }),
                     "machinesPage": .bool(!controller.machinesPage.isHidden), "machines": .array(controller.machinesPage.machines.map { ["name": .string($0.name), "detail": .string($0.detail), "path": .string($0.path), "note": .string($0.note), "tip": .string($0.explanation)] }),
@@ -387,10 +387,10 @@ extension AppController {
             guard let spot = spots.first(where: { $0.task == task }) else { throw KannaError("not_found", "\(task) is not on \(id)'s Desk") }
             window = controller.window
             point = spot.center
-        } else if let task = args["backlog"]?.string {
+        } else if let task = args["shelf"]?.string {
             let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
-            guard let controller = controllers[id], let spot = controller.deskView.backlogRows.first(where: { $0.task == task }) else { throw KannaError("not_found", "\(task) is not in \(id)'s backlog") }
-            guard controller.deskView.visibleBacklog.contains(task) else { throw KannaError("not_found", "\(task) is scrolled out of \(id)'s view") }
+            guard let controller = controllers[id], let spot = controller.deskView.shelfRows.first(where: { $0.task == task }) else { throw KannaError("not_found", "\(task) isn't on \(id)'s Shelf") }
+            guard controller.deskView.visibleShelf.contains(task) else { throw KannaError("not_found", "\(task) is scrolled out of \(id)'s view") }
             window = controller.window
             point = spot.center
         } else if let page = args["page"]?.string {

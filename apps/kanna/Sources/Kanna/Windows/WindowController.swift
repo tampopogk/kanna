@@ -33,7 +33,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     var others: [DeskTask] { deskTasks.filter { $0.id != active } }
     var keys: [String: String] { DeskOrder.keys(others.map(\.id)) }
     var deskDocks: [JSON] = []
-    var backlog: [BacklogTask] = []
+    var shelf: [ShelfTask] = []
     var running = 0
     var note = ""
     var project = ""
@@ -197,7 +197,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         if taskless {
         } else if desk {
             deskStrip.frame = NSRect(x: 0, y: 0, width: bounds.width, height: DeskStrip.height)
-            deskStrip.show(DeskOrder.byAge(others, made: \.made), keys: keys, waiting: backlog.count)
+            deskStrip.show(DeskOrder.byAge(others, made: \.made), keys: keys, waiting: shelf.count)
             bounds = NSRect(x: 0, y: DeskStrip.height, width: bounds.width, height: bounds.height - DeskStrip.height)
         }
         var side = bounds
@@ -227,7 +227,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         let below = NSRect(x: side.minX, y: side.minY, width: side.width, height: max(0, side.height - bar))
         if showsDeskView {
             deskView.frame = below
-            deskView.show(DeskPage(active: active, tasks: DeskOrder.byAge(deskTasks, made: \.made), keys: keys, backlog: backlog, running: running, project: project, cheer: cheer, note: note))
+            deskView.show(DeskPage(active: active, tasks: DeskOrder.byAge(deskTasks, made: \.made), keys: keys, shelf: shelf, running: running, project: project, cheer: cheer, note: note))
         } else if pageShown != nil {
             machinesPage.frame = below
             machinesPage.show(machines)

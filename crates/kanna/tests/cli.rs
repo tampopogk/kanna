@@ -656,7 +656,7 @@ fn a_folder_for_a_command_opens_a_desk_on_its_project_without_a_task() {
 }
 
 #[test]
-fn a_backlog_task_is_renamed_and_starts_with_its_new_name() {
+fn a_shelf_task_is_renamed_and_starts_with_its_new_name() {
     let daemon = Daemon::start();
     let _app = daemon.app();
     let repo = daemon.dir.join("home/.kanna-v4/repos/local/notes");

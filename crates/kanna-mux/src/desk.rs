@@ -12,7 +12,7 @@ fn now() -> f64 {
 
 impl Model {
     pub fn held(&self) -> impl Iterator<Item = usize> + '_ {
-        (0..self.workspaces.len()).filter(|&s| self.workspaces[s].place == Where::Backlog)
+        (0..self.workspaces.len()).filter(|&s| self.workspaces[s].place == Where::Shelf)
     }
 
     pub(crate) fn dock_workspace(&mut self, pane: &str, edge: Edge, place: Where, frozen: bool) -> usize {
@@ -70,7 +70,7 @@ impl Model {
                 let reference = string("task").ok_or_else(|| bad_request("hold needs a task"))?;
                 let s = self.task_workspace(reference, panes)?;
                 let was = self.workspaces[s].place.to_json();
-                self.workspaces[s].place = Where::Backlog;
+                self.workspaces[s].place = Where::Shelf;
                 Ok(reply([("task", self.agent(s).into()), ("was", was)]))
             }
             "find" => {

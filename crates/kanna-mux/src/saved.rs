@@ -301,7 +301,7 @@ pub fn read(state: &Value, panes: &HashSet<String>) -> Result<SavedLayout, KmuxE
         let tabs = reader.tabs(item)?;
         let place = match Where::read(item.get("where")) {
             Some(place) => place,
-            None if item.get("backlog").and_then(Value::as_bool) == Some(true) => Where::Backlog,
+            None if item.get("backlog").and_then(Value::as_bool) == Some(true) => Where::Shelf,
             None => Where::Desk(MAC_APP.into()),
         };
         let ws_id = string(item, "workspace").unwrap_or(id);

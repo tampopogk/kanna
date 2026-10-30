@@ -26,8 +26,8 @@ enum Clicks {
 
     static func sent(_ span: PerfSpan) -> @Sendable () -> Void { { Perf.mark(span, "sent") } }
 
-    static func laid(desk: [String], backlog: [String]) {
-        for (task, click) in picking where !backlog.contains(task) && !Set(desk).isSubset(of: click.before) {
+    static func laid(desk: [String], shelf: [String]) {
+        for (task, click) in picking where !shelf.contains(task) && !Set(desk).isSubset(of: click.before) {
             picking[task] = nil
             HangWatch.afterDrawing { Perf.end(click.span, as: "shown") }
         }

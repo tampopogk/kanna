@@ -243,18 +243,18 @@ extension AppController {
         deskMade[MachineIDs.machine(of: pane) ?? ""]?[pane] ?? .max
     }
 
-    func backlogChanged(_ tasks: [JSON], desk: [JSON], on machine: String?) {
+    func shelfChanged(_ tasks: [JSON], desk: [JSON], on machine: String?) {
         deskMade[machine ?? ""] = Dictionary(desk.enumerated().compactMap { at, entry in entry["pane"]?.string.map { ($0, at) } }, uniquingKeysWith: { first, _ in first })
         let tag: JSON = machine.map { .string($0) } ?? .null
-        backlogs[machine ?? ""] = tasks.map { entry in
+        shelves[machine ?? ""] = tasks.map { entry in
             guard case .object(var fields) = entry else { return entry }
             fields["machine"] = tag
             return .object(fields)
         }
-        for entry in backlogs[machine ?? ""] ?? [] {
+        for entry in shelves[machine ?? ""] ?? [] {
             if let location = location(ofEntry: entry), let project = entry["project"]?.string { identities[location] = project }
         }
-        backlog = backlogs.keys.sorted().flatMap { backlogs[$0] ?? [] }
+        shelf = shelves.keys.sorted().flatMap { shelves[$0] ?? [] }
         refresh()
     }
 
@@ -274,17 +274,17 @@ extension AppController {
         return nil
     }
 
-    func backlogTasks(in root: String?) -> [BacklogTask] {
-        backlog.filter { inProject($0, root) }.compactMap { entry in
+    func shelfTasks(in root: String?) -> [ShelfTask] {
+        shelf.filter { inProject($0, root) }.compactMap { entry in
             guard let id = entry["id"]?.string, let name = entry["name"]?.string else { return nil }
             var waits: [String] = []
             if case .array(let blockers)? = entry["waits"] { waits = blockers.compactMap { $0["name"]?.string ?? $0["id"]?.string } }
-            return BacklogTask(id: id, name: name, message: entry["message"]?.string, from: entry["by"]?.string.flatMap(taskName), madeAt: entry["madeAt"]?.number, waits: waits, agent: BacklogTask.program(entry["agent"]?.string))
+            return ShelfTask(id: id, name: name, message: entry["message"]?.string, from: entry["by"]?.string.flatMap(taskName), madeAt: entry["madeAt"]?.number, waits: waits, agent: ShelfTask.program(entry["agent"]?.string))
         }
     }
 
-    func runningBacklog(in root: String?) -> [JSON] {
-        backlog.filter { $0["running"]?.bool == true && inProject($0, root) }.compactMap { entry in
+    func runningOnShelf(in root: String?) -> [JSON] {
+        shelf.filter { $0["running"]?.bool == true && inProject($0, root) }.compactMap { entry in
             entry["held"]?.string.map { pane in
                 let ws = published["workspaces"]?.array?.first { $0["dock"]?["pane"]?.string == pane }
                 return ["task": .string(pane), "type": "term", "tabs": ws?["tabs"] ?? []]

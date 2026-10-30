@@ -119,7 +119,7 @@ extension AppController {
         let root = keyWindow?["id"]?.string.flatMap { controllers[$0]?.projectRoot }
         let desks = windows.compactMap { window in window["dock"]?["pane"]?.string.map { ($0, window["dock"]?["name"]?.string) } }
         let onDesk = deskEntries.compactMap { entry in entry["task"]?.string.map { ($0, entry["name"]?.string) } }
-        let held = backlog.filter { $0["running"]?.bool == true }.compactMap { entry in entry["held"]?.string.map { ($0, entry["name"]?.string) } }
+        let held = shelf.filter { $0["running"]?.bool == true }.compactMap { entry in entry["held"]?.string.map { ($0, entry["name"]?.string) } }
         return (desks + onDesk + held).filter { root == nil || sameProject(projectRoot($0.0), root) }.map { (pane: $0.0, title: taskTitle($0.0, name: $0.1)) }
     }
 

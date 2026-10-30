@@ -28,11 +28,11 @@ pub struct Entry {
     pub by: Option<String>,
     pub made_at: f64,
     pub agent: String,
-    /// The worktree of a task moved back to the backlog, where it starts again.
+    /// The worktree of a task moved back to the Shelf, where it starts again.
     pub folder: Option<String>,
     /// The agent's session there, which it resumes when it starts again.
     pub session: Option<String>,
-    /// The agent's pane of a task moved back to the backlog, still running, which comes back when it starts again.
+    /// The agent's pane of a task moved back to the Shelf, still running, which comes back when it starts again.
     pub held: Option<String>,
     pub after: Vec<String>,
     pub stopped: Option<String>,
@@ -633,7 +633,7 @@ struct TearingDown {
     entry: Entry,
     worktree: PathBuf,
     timeout: u64,
-    backlog: bool,
+    on_shelf: bool,
     by: Option<String>,
 }
 
@@ -660,7 +660,7 @@ fn gone() -> KmuxError {
     KmuxError::new("app_gone", "the daemon is stopping")
 }
 
-pub struct Backlog {
+pub struct Tasks {
     state: PathBuf,
     db: Rc<Db>,
     entries: RefCell<Vec<Entry>>,
@@ -726,7 +726,7 @@ impl Join {
     }
 }
 
-struct Book(Weak<Backlog>);
+struct Book(Weak<Tasks>);
 
 impl TaskBook for Book {
     fn workspace_of(&self, reference: &str) -> Option<Result<String, KmuxError>> {
@@ -738,18 +738,18 @@ impl TaskBook for Book {
     }
 
     fn sync(&self, workspaces: &[Value]) {
-        if let Some(backlog) = self.0.upgrade() {
-            backlog.sync_workspaces(workspaces);
+        if let Some(tasks) = self.0.upgrade() {
+            tasks.sync_workspaces(workspaces);
         }
     }
 
     fn starting(&self, task: &str) -> bool {
-        self.0.upgrade().is_some_and(|backlog| backlog.launching.borrow().contains(task))
+        self.0.upgrade().is_some_and(|tasks| tasks.launching.borrow().contains(task))
     }
 }
 
-impl Backlog {
-    pub fn open(db: Rc<Db>, state_dir: &Path, core: WeakCore, events: Sender<Event>) -> Backlog {
+impl Tasks {
+    pub fn open(db: Rc<Db>, state_dir: &Path, core: WeakCore, events: Sender<Event>) -> Tasks {
         let rows = db.tasks().unwrap_or_else(|error| {
             log!("kanna-daemon: can't read the tasks in {}: {error}", state_dir.join(db::FILE).display());
             vec![]
@@ -773,7 +773,7 @@ impl Backlog {
             log!("kanna-daemon: can't read the waiting messages in {}: {error}", state_dir.join(db::FILE).display());
             vec![]
         });
-        Backlog {
+        Tasks {
             state: state_dir.to_path_buf(),
             db,
             entries: RefCell::new(entries),
@@ -1169,14 +1169,14 @@ impl Backlog {
         self.fill_at.set(Some(Instant::now()));
     }
 
-    fn running_in_backlog(&self, core: &CoreHandle) -> Vec<(String, Entry)> {
+    fn running_on_shelf(&self, core: &CoreHandle) -> Vec<(String, Entry)> {
         self.entries.borrow().iter().filter_map(|e| e.held.clone().filter(|pane| alive(core, pane)).map(|pane| (pane, e.clone()))).collect()
     }
 
     pub fn tick(self: &Rc<Self>) -> Option<Instant> {
         let now = Instant::now();
         let core = self.core.upgrade()?;
-        let running = self.running_in_backlog(&core);
+        let running = self.running_on_shelf(&core);
         {
             let mut turns = self.turns.borrow_mut();
             let quitting = self.quitting.borrow();
@@ -1534,7 +1534,7 @@ impl Backlog {
                     Some("stop") => this.stop(&args, responder),
                     Some("setup") => this.setup(&args, responder),
                     Some("pick") => this.pick(&args, responder),
-                    Some("shelve") => this.defer(&args, responder),
+                    Some("shelve") => this.shelve(&args, responder),
                     Some("plan") => this.plan(&args, responder),
                     Some("planner") => this.planner(&args, responder),
                     Some("events") => responder.reply(this.events(&args)),
@@ -2071,7 +2071,7 @@ impl Backlog {
         }
     }
 
-    /// Takes a task off the backlog, ending its agent and tabs if it was moved there still running.
+    /// Takes a task off the Shelf, ending its agent and tabs if it was moved there still running.
     fn take_off(self: &Rc<Self>, entry: Entry, by: Option<String>, responder: Answer) {
         if let Err(error) = self.store(&entry, Place::Done, None, Some(Change::new("done").moved(Place::Shelf, Place::Done).by(by.as_deref()))) {
             return responder.reply(Err(error));
@@ -2105,11 +2105,11 @@ impl Backlog {
         }
     }
 
-    fn teardown_of(&self, entry: &Entry, backlog: bool, by: Option<String>) -> Option<TearingDown> {
+    fn teardown_of(&self, entry: &Entry, on_shelf: bool, by: Option<String>) -> Option<TearingDown> {
         let worktree = entry.folder.clone().map(PathBuf::from).filter(|f| f.is_dir() && task_scripts::is_linked(f))?;
         let scripts = scripts(&config_files(Path::new(&entry.repo)));
         scripts.teardown.as_ref()?;
-        Some(TearingDown { entry: entry.clone(), worktree, timeout: scripts.timeout, backlog, by })
+        Some(TearingDown { entry: entry.clone(), worktree, timeout: scripts.timeout, on_shelf, by })
     }
 
     fn tear_down(self: &Rc<Self>, pane: &str, tearing: TearingDown, responder: Responder) {
@@ -2171,7 +2171,7 @@ impl Backlog {
             core.set_command(pane, tearing.entry.clone().resumable().command(None));
             return;
         }
-        if !tearing.backlog {
+        if !tearing.on_shelf {
             return core.handle(json!({ "cmd": "close", "args": { "task": pane } }), |_| {});
         }
         let Some(entry) = self.entries.borrow().iter().find(|e| e.id == id).cloned() else { return };
@@ -2349,14 +2349,14 @@ impl Backlog {
             if !alive(&core, &pane) {
                 return responder.reply(Err(KmuxError::new("stopped", format!("{task} is stopped: start it with `kanna task start {task}`"))));
             }
-            let (weak, backlog) = (core.weak(), Rc::downgrade(&this));
+            let (weak, tasks) = (core.weak(), Rc::downgrade(&this));
             let agent = this.pane_entry(&pane).map_or_else(|| core.pane(&pane).and_then(|p| p.command).unwrap_or_default(), |e| e.agent);
             this.end_agent(&pane.clone(), &agent, move |session| {
-                let (Some(backlog), Some(core)) = (backlog.upgrade(), weak.upgrade()) else { return responder.reply(Err(gone())) };
-                backlog.keep_session(&pane, session);
-                let session = backlog.pane_entry(&pane).and_then(|e| e.session);
-                backlog.note(&pane, Change::new("stopped").by(by.as_deref()).with("session", opt(session.as_deref())));
-                backlog.refill();
+                let (Some(tasks), Some(core)) = (tasks.upgrade(), weak.upgrade()) else { return responder.reply(Err(gone())) };
+                tasks.keep_session(&pane, session);
+                let session = tasks.pane_entry(&pane).and_then(|e| e.session);
+                tasks.note(&pane, Change::new("stopped").by(by.as_deref()).with("session", opt(session.as_deref())));
+                tasks.refill();
                 let out = Map::from_iter([("task".to_string(), json!(task)), ("pane".to_string(), json!(pane)), ("place".to_string(), json!(place))]);
                 core.hang_up(&pane.clone(), move |hung_up| responder.reply(hung_up.map(|_| out)));
             });
@@ -2684,9 +2684,9 @@ impl Backlog {
         running.push(Running { pane: pane.to_string(), entry, place });
     }
 
-    /// Move to Backlog: takes a running task off its Desk or the Shelf and puts it back on its repo's backlog,
+    /// Move to Shelf: takes a running task off its Desk and puts it back on its repo's Shelf,
     /// its agent and tabs still running, so starting it again brings them back as they are.
-    fn defer(self: &Rc<Self>, args: &Value, responder: Responder) {
+    fn shelve(self: &Rc<Self>, args: &Value, responder: Responder) {
         let Some(core) = self.core.upgrade() else { return responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))) };
         let Some(reference) = string(args, "task") else { return responder.reply(Err(bad("say which running task"))) };
         let Some(pane) = core.pane(&self.pane_or(reference)) else { return responder.reply(Err(KmuxError::new("not_found", format!("no running task \"{reference}\"")))) };
@@ -2766,7 +2766,7 @@ impl Backlog {
         });
     }
 
-    /// Brings a task held in the backlog back to the Shelf, its agent and tabs as they were, or starts it again
+    /// Brings a task held on the Shelf back to the Desk, its agent and tabs as they were, or starts it again
     /// in its worktree when its agent's pane is gone.
     fn release(self: &Rc<Self>, pane: String, entry: Entry, app: String, by: Option<String>, responder: Answer) {
         let Some(core) = self.core.upgrade() else { return responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))) };
@@ -2907,7 +2907,7 @@ mod tests {
     }
 
     #[test]
-    fn a_claude_task_gets_a_session_and_resumes_it_when_it_comes_back_from_the_backlog() {
+    fn a_claude_task_gets_a_session_and_resumes_it_when_it_comes_back_from_the_shelf() {
         let mut entry = Entry { id: "task-1dfb12c2".into(), name: None, message: Some("go".into()), repo: "/r".into(), by: None, made_at: 0.0, agent: "/bin/claude".into(), folder: None, session: None, held: None, ..Default::default() };
         let id = uuid().unwrap();
         assert!(id.len() == 36 && id.chars().nth(14) == Some('4'), "{id}");
@@ -3535,12 +3535,12 @@ mod tests {
         let entry = Entry { id: "task-0000c0de".into(), name: Some("Fix it".into()), message: None, repo: "/r".into(), by: Some("p2".into()), made_at: 5.0, agent: "codex".into(), folder: Some("/r/.kanna-worktrees/task-0000c0de".into()), session: Some("s".into()), held: Some("p3".into()), after: vec!["task-00000002".into()], stopped: Some("needs-you".into()), workspace: None };
         assert_eq!(Entry::from_row(&entry.row(Place::Shelf, Some("p3"))), entry);
         assert_eq!(Entry::from_row(&entry.row(Place::Desk, Some("p3"))).held, None, "a task on the Shelf isn't held");
-        assert_eq!(Entry::from_row(&entry.row(Place::Desk, Some("p3"))).stopped, None, "nor stopped by the backlog");
+        assert_eq!(Entry::from_row(&entry.row(Place::Desk, Some("p3"))).stopped, None, "nor stopped by the Shelf");
     }
 
     #[test]
     fn a_worktree_gets_its_own_branch_and_is_kept_out_of_git_status() {
-        let dir = std::env::temp_dir().join(format!("kanna-backlog-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("kanna-tasks-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let git = |args: &[&str]| assert!(Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap().status.success(), "git {args:?}");
@@ -3582,8 +3582,8 @@ mod tests {
         fs::create_dir_all(&state).unwrap();
         assert!(Command::new("git").arg("-C").arg(&state).args(["init", "-q"]).status().unwrap().success());
         let core = kanna_mux::Core::default();
-        let backlog = Backlog::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
-        let ids: HashSet<String> = (0..50).map(|_| backlog.mint(&json!({ "repo": state.to_str().unwrap() }), None, None).unwrap().id).collect();
+        let tasks = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
+        let ids: HashSet<String> = (0..50).map(|_| tasks.mint(&json!({ "repo": state.to_str().unwrap() }), None, None).unwrap().id).collect();
         assert_eq!(ids.len(), 50);
         assert!(ids.iter().all(|id| db::is_task_id(id)), "{ids:?}");
         fs::create_dir_all(state.join(WORKTREES).join("task-1dfb12c2")).unwrap();
@@ -3601,22 +3601,22 @@ mod tests {
             assert!(Command::new("git").arg("-C").arg(repo).args(["init", "-q"]).status().unwrap().success());
         }
         let core = kanna_mux::Core::default();
-        let backlog = Backlog::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
-        *backlog.repos.borrow_mut() = Some(state.join("repos"));
-        let refused = backlog.add(&json!({ "repo": outside.to_str().unwrap(), "name": "Out" })).unwrap_err();
+        let tasks = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
+        *tasks.repos.borrow_mut() = Some(state.join("repos"));
+        let refused = tasks.add(&json!({ "repo": outside.to_str().unwrap(), "name": "Out" })).unwrap_err();
         assert_eq!(refused.code, "outside");
         assert!(refused.message.contains("`kanna project import ") && refused.message.ends_with("repos/local/app)"), "{}", refused.message);
-        assert!(backlog.add(&json!({ "repo": inside.to_str().unwrap(), "name": "In" })).is_ok());
+        assert!(tasks.add(&json!({ "repo": inside.to_str().unwrap(), "name": "In" })).is_ok());
         let old = Entry { id: "task-00000001".into(), repo: outside.to_string_lossy().into(), agent: "claude".into(), ..Default::default() };
-        assert_eq!(backlog.ready(&old).unwrap_err().code, "outside", "a task an older Kanna made outside doesn't start");
-        let asked = |path: &Path| backlog.asked(&json!({ "path": path })).map(|r| r["never"].clone());
+        assert_eq!(tasks.ready(&old).unwrap_err().code, "outside", "a task an older Kanna made outside doesn't start");
+        let asked = |path: &Path| tasks.asked(&json!({ "path": path })).map(|r| r["never"].clone());
         fs::create_dir_all(outside.join("sub")).unwrap();
         assert_eq!(asked(&outside.join("sub")), Ok(json!(false)));
-        assert_eq!(backlog.never(&json!({ "path": outside.join("sub") })).unwrap()["path"], json!(outside.canonicalize().unwrap()), "never is the project's, not the subfolder's");
+        assert_eq!(tasks.never(&json!({ "path": outside.join("sub") })).unwrap()["path"], json!(outside.canonicalize().unwrap()), "never is the project's, not the subfolder's");
         assert_eq!(asked(&outside), Ok(json!(true)));
         assert_eq!(asked(&inside).unwrap_err().code, "in_place");
-        *backlog.importing.borrow_mut() = Some(project_import::Import { from: inside.canonicalize().unwrap(), to: state.join("repos/a/app") });
-        assert_eq!(backlog.add(&json!({ "repo": inside.to_str().unwrap(), "name": "Late" })).unwrap_err().code, "importing");
+        *tasks.importing.borrow_mut() = Some(project_import::Import { from: inside.canonicalize().unwrap(), to: state.join("repos/a/app") });
+        assert_eq!(tasks.add(&json!({ "repo": inside.to_str().unwrap(), "name": "Late" })).unwrap_err().code, "importing");
         fs::remove_dir_all(&state).unwrap();
     }
 
@@ -3626,23 +3626,23 @@ mod tests {
         let _ = fs::remove_dir_all(&state);
         fs::create_dir_all(&state).unwrap();
         let core = kanna_mux::Core::default();
-        let backlog = Backlog::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
+        let tasks = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
         let task = |id: &str, name: &str| Entry { id: id.into(), name: Some(name.into()), repo: "/r".into(), agent: "claude".into(), ..Default::default() };
         for (id, name) in [("task-1dfb12c2", "One"), ("task-1d0e44aa", "Two")] {
-            backlog.store(&task(id, name), Place::Shelf, None, None).unwrap();
-            backlog.entries.borrow_mut().push(task(id, name));
+            tasks.store(&task(id, name), Place::Shelf, None, None).unwrap();
+            tasks.entries.borrow_mut().push(task(id, name));
         }
-        backlog.running.borrow_mut().push(Running { pane: "p7".into(), entry: task("task-c0ffee00", "Out"), place: Place::Desk });
-        let found = |reference: &str| backlog.resolve(reference).map_err(|e| (e.code, e.message));
+        tasks.running.borrow_mut().push(Running { pane: "p7".into(), entry: task("task-c0ffee00", "Out"), place: Place::Desk });
+        let found = |reference: &str| tasks.resolve(reference).map_err(|e| (e.code, e.message));
         assert_eq!(found("task-1dfb12c2"), Ok(Some("task-1dfb12c2".into())));
         assert_eq!(found("1dfb"), Ok(Some("task-1dfb12c2".into())));
         assert_eq!(found("task-1DF"), Ok(Some("task-1dfb12c2".into())));
         assert_eq!(found("c0f"), Ok(Some("task-c0ffee00".into())), "a task on the Shelf");
-        assert_eq!(backlog.pane_or("task-c0ffee00"), "p7");
+        assert_eq!(tasks.pane_or("task-c0ffee00"), "p7");
         let (code, message) = found("task-1d").unwrap_err();
         assert_eq!(code, "ambiguous");
         assert!(message.contains("task-1dfb \"One\"") && message.contains("task-1d0e \"Two\""), "{message}");
-        assert_eq!(backlog.short("task-c0ffee00"), "task-c0ff");
+        assert_eq!(tasks.short("task-c0ffee00"), "task-c0ff");
         assert_eq!(found("task-"), Ok(None));
         assert_eq!(found("beef"), Ok(None));
         assert_eq!(found("t134"), Ok(None), "an old ID names nothing");
@@ -3655,16 +3655,16 @@ mod tests {
         let _ = fs::remove_dir_all(&state);
         fs::create_dir_all(&state).unwrap();
         let core = kanna_mux::Core::default();
-        let backlog = Backlog::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
+        let tasks = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
         let task = |id: &str, made_at: f64| Entry { id: id.into(), repo: "/r".into(), agent: "claude".into(), made_at, ..Default::default() };
-        backlog.entries.borrow_mut().push(task("task-0000aaaa", 1.0));
+        tasks.entries.borrow_mut().push(task("task-0000aaaa", 1.0));
         for (id, made_at) in [("task-0000dddd", 20.0), ("task-0000bbbb", 30.0), ("task-0000cccc", 20.0)] {
-            backlog.store(&task(id, made_at), Place::Desk, None, None).unwrap();
+            tasks.store(&task(id, made_at), Place::Desk, None, None).unwrap();
         }
         for (pane, id, made_at) in [("p7", "task-0000bbbb", 30.0), ("p9", "task-0000cccc", 20.0), ("p8", "task-0000dddd", 20.0)] {
-            backlog.running.borrow_mut().push(Running { pane: pane.into(), entry: task(id, made_at), place: Place::Desk });
+            tasks.running.borrow_mut().push(Running { pane: pane.into(), entry: task(id, made_at), place: Place::Desk });
         }
-        let view = backlog.view();
+        let view = tasks.view();
         assert_eq!(view["shelf"].as_array().map(Vec::len), Some(1), "the Shelf's tasks");
         let desk: Vec<(&str, f64)> = view["desk"].as_array().unwrap().iter().map(|t| (t["pane"].as_str().unwrap(), t["madeAt"].as_f64().unwrap())).collect();
         assert_eq!(desk, vec![("p8", 20.0), ("p9", 20.0), ("p7", 30.0)], "oldest first, a tie in the order they were made");
@@ -3677,23 +3677,23 @@ mod tests {
         let _ = fs::remove_dir_all(&state);
         fs::create_dir_all(&state).unwrap();
         let core = kanna_mux::Core::default();
-        let backlog = Backlog::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
+        let tasks = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
         let task = |id: &str, name: &str| Entry { id: id.into(), name: Some(name.into()), repo: "/r".into(), agent: "claude".into(), ..Default::default() };
-        backlog.store(&task("task-1dfb12c2", "Waiting"), Place::Shelf, None, None).unwrap();
-        backlog.entries.borrow_mut().push(task("task-1dfb12c2", "Waiting"));
+        tasks.store(&task("task-1dfb12c2", "Waiting"), Place::Shelf, None, None).unwrap();
+        tasks.entries.borrow_mut().push(task("task-1dfb12c2", "Waiting"));
         let out = task("task-c0ffee00", "Out");
-        backlog.store(&out, Place::Desk, Some("p7"), None).unwrap();
-        backlog.running.borrow_mut().push(Running { pane: "p7".into(), entry: out, place: Place::Desk });
-        let of = |reference: &str| backlog.workspace_of(reference).map(|r| r.map_err(|e| (e.code, e.message)));
+        tasks.store(&out, Place::Desk, Some("p7"), None).unwrap();
+        tasks.running.borrow_mut().push(Running { pane: "p7".into(), entry: out, place: Place::Desk });
+        let of = |reference: &str| tasks.workspace_of(reference).map(|r| r.map_err(|e| (e.code, e.message)));
         assert_eq!(of("ws-3"), None, "a workspace's own ID goes to the layout as it is");
         assert_eq!(of("c0ff"), Some(Err(("not_started".into(), "task-c0ff hasn't started, so it has no workspace yet".into()))));
-        assert_eq!(backlog.task_in("ws-3"), None);
-        backlog.sync_workspaces(&[json!({ "id": "ws-3", "dock": { "id": "p7", "pane": "Out" } }), json!({ "id": "ws-4", "dock": { "id": "p9" } })]);
+        assert_eq!(tasks.task_in("ws-3"), None);
+        tasks.sync_workspaces(&[json!({ "id": "ws-3", "dock": { "id": "p7", "pane": "Out" } }), json!({ "id": "ws-4", "dock": { "id": "p9" } })]);
         assert_eq!(of("task-c0ffee00"), Some(Ok("ws-3".into())));
-        assert_eq!(backlog.task_in("ws-3"), Some(("task-c0ffee00".into(), Some("Out".into()))));
-        assert_eq!(backlog.task_in("ws-4"), None, "a workspace with no task's agent docked has no task");
+        assert_eq!(tasks.task_in("ws-3"), Some(("task-c0ffee00".into(), Some("Out".into()))));
+        assert_eq!(tasks.task_in("ws-4"), None, "a workspace with no task's agent docked has no task");
         assert_eq!(of("task-1dfb"), Some(Err(("not_started".into(), "task-1dfb hasn't started, so it has no workspace yet".into()))));
-        let again = Backlog::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
+        let again = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
         assert_eq!(again.task_in("ws-3"), Some(("task-c0ffee00".into(), Some("Out".into()))), "the task's workspace survives a restart");
         fs::remove_dir_all(&state).unwrap();
     }
@@ -3710,20 +3710,20 @@ mod tests {
         agent.state = PaneState::Running;
         agent.status = Some("idle".into());
         core.install_panes(vec![agent], 0, 7);
-        let backlog = Rc::new(Backlog::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0));
+        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0));
         let entry = Entry { id: "task-1dfb12c2".into(), repo: state.to_str().unwrap().into(), agent: "claude".into(), held: Some("term-7".into()), ..Default::default() };
-        backlog.entries.borrow_mut().push(entry);
-        backlog.turns.borrow_mut().insert("term-7".into(), Turn::underway());
-        backlog.status("term-7", Some("idle"), true);
+        tasks.entries.borrow_mut().push(entry);
+        tasks.turns.borrow_mut().insert("term-7".into(), Turn::underway());
+        tasks.status("term-7", Some("idle"), true);
         for _ in 0..2 {
-            let due = backlog.tick();
+            let due = tasks.tick();
             assert!(due.is_some_and(|at| at > Instant::now()), "nothing is overdue, so the daemon sleeps");
-            assert_eq!(backlog.turns.borrow()["term-7"].ended(Instant::now() + TURN_SETTLE, TURN_SETTLE), None, "the ended turn came back");
-            assert!(backlog.quitting.borrow().is_empty(), "runners 0 stops none");
+            assert_eq!(tasks.turns.borrow()["term-7"].ended(Instant::now() + TURN_SETTLE, TURN_SETTLE), None, "the ended turn came back");
+            assert!(tasks.quitting.borrow().is_empty(), "runners 0 stops none");
         }
-        backlog.status("term-7", Some("working"), false);
-        backlog.status("term-7", Some("idle"), true);
-        assert!(backlog.turns.borrow()["term-7"].ended(Instant::now(), TURN_SETTLE).is_some(), "its next turn is tracked again");
+        tasks.status("term-7", Some("working"), false);
+        tasks.status("term-7", Some("idle"), true);
+        assert!(tasks.turns.borrow()["term-7"].ended(Instant::now(), TURN_SETTLE).is_some(), "its next turn is tracked again");
         fs::remove_dir_all(&state).unwrap();
     }
 
@@ -3735,10 +3735,10 @@ mod tests {
         assert!(Command::new("git").arg("-C").arg(&state).args(["init", "-q"]).status().unwrap().success());
         let core = kanna_mux::Core::default();
         let args = json!({ "repo": state.to_str().unwrap() });
-        let backlog = Backlog::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
+        let tasks = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
         let ran = Entry { id: "task-00000009".into(), name: Some("Ran".into()), message: None, repo: "/r".into(), by: None, made_at: 0.0, agent: "claude".into(), folder: Some("/r/w".into()), session: Some("s".into()), held: None, ..Default::default() };
-        backlog.store(&ran, Place::Desk, Some("p4"), Some(Change::new("picked"))).unwrap();
-        let again = Backlog::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
+        tasks.store(&ran, Place::Desk, Some("p4"), Some(Change::new("picked"))).unwrap();
+        let again = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
         assert_eq!(*again.running.borrow(), vec![Running { pane: "p4".into(), entry: ran, place: Place::Desk }], "a running task's way back survives a restart");
         let ids: HashSet<String> = (0..20).map(|_| again.mint(&args, None, None).unwrap().id).collect();
         assert!(!ids.contains("task-00000009"), "and its ID isn't handed out again");
@@ -3752,24 +3752,24 @@ mod tests {
         fs::create_dir_all(&state).unwrap();
         assert!(Command::new("git").arg("-C").arg(&state).args(["init", "-q"]).status().unwrap().success());
         let core = kanna_mux::Core::default();
-        let backlog = Backlog::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
+        let tasks = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
         let repo = state.to_str().unwrap();
-        let made = |args: Value| backlog.add(&args).map(|m| string(&m["task"], "id").unwrap().to_string());
+        let made = |args: Value| tasks.add(&args).map(|m| string(&m["task"], "id").unwrap().to_string());
         let first = made(json!({ "repo": repo, "name": "First" })).unwrap();
         let second = made(json!({ "repo": repo, "name": "Second", "after": [first] })).unwrap();
         let third = made(json!({ "repo": repo, "name": "Third", "after": [second] })).unwrap();
-        let entry = |id: &str| backlog.entries.borrow().iter().find(|e| e.id == id).cloned().unwrap();
-        assert_eq!(backlog.ready(&entry(&second)).unwrap_err().code, "blocked");
-        assert_eq!(backlog.edit(&json!({ "task": first, "after": [third] })).unwrap_err().code, "cycle");
+        let entry = |id: &str| tasks.entries.borrow().iter().find(|e| e.id == id).cloned().unwrap();
+        assert_eq!(tasks.ready(&entry(&second)).unwrap_err().code, "blocked");
+        assert_eq!(tasks.edit(&json!({ "task": first, "after": [third] })).unwrap_err().code, "cycle");
         assert!(made(json!({ "repo": repo, "name": "Fourth", "after": ["task-00000099"] })).is_err(), "an unknown blocker");
-        let gone = backlog.take(&first).unwrap();
-        backlog.store(&gone, Place::Done, None, None).unwrap();
-        assert!(backlog.ready(&entry(&second)).is_ok(), "its blocker is done");
+        let gone = tasks.take(&first).unwrap();
+        tasks.store(&gone, Place::Done, None, None).unwrap();
+        assert!(tasks.ready(&entry(&second)).is_ok(), "its blocker is done");
         assert!(made(json!({ "repo": repo, "name": "Fifth", "after": [first] })).is_err(), "a done task holds nothing back");
-        backlog.edit(&json!({ "task": third, "after": [] })).unwrap();
+        tasks.edit(&json!({ "task": third, "after": [] })).unwrap();
         assert!(entry(&third).after.is_empty());
-        assert!(backlog.ready(&entry(&third)).is_ok(), "a task with its blockers taken off can start");
-        let again = Backlog::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
+        assert!(tasks.ready(&entry(&third)).is_ok(), "a task with its blockers taken off can start");
+        let again = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
         assert_eq!(again.entries.borrow().iter().find(|e| e.id == second).unwrap().after, vec![first.clone()], "blockers survive a restart");
         fs::remove_dir_all(&state).unwrap();
     }
@@ -3796,7 +3796,7 @@ mod tests {
     #[derive(Default)]
     struct Agents {
         core: RefCell<Option<WeakCore>>,
-        backlog: RefCell<Weak<Backlog>>,
+        tasks: RefCell<Weak<Tasks>>,
         deaf: Cell<bool>,
         slow: Cell<bool>,
         starting: RefCell<Vec<String>>,
@@ -3809,11 +3809,11 @@ mod tests {
 
     impl Agents {
         fn exit(&self, pane: &Pane) {
-            let (Some(core), backlog, id) = (self.core.borrow().as_ref().and_then(WeakCore::upgrade), self.backlog.borrow().clone(), pane.id.clone()) else { return };
+            let (Some(core), tasks, id) = (self.core.borrow().as_ref().and_then(WeakCore::upgrade), self.tasks.borrow().clone(), pane.id.clone()) else { return };
             core.clone().later(move || {
                 core.update(&id, PaneState::Exited, Some(0), None);
-                if let Some(backlog) = backlog.upgrade() {
-                    backlog.exited(&id, 0);
+                if let Some(tasks) = tasks.upgrade() {
+                    tasks.exited(&id, 0);
                 }
             });
         }
@@ -3856,7 +3856,7 @@ mod tests {
         state: PathBuf,
         core: kanna_mux::Core,
         agents: Rc<Agents>,
-        backlog: Rc<Backlog>,
+        tasks: Rc<Tasks>,
         events: std::sync::mpsc::Receiver<Event>,
     }
 
@@ -3876,9 +3876,9 @@ mod tests {
             *agents.core.borrow_mut() = Some(core.weak());
             core.set_host(Some(agents.clone()));
             let (sender, events) = std::sync::mpsc::channel();
-            let backlog = Rc::new(Backlog::open(Rc::new(Db::open(&state)), &state, core.weak(), sender));
-            *agents.backlog.borrow_mut() = Rc::downgrade(&backlog);
-            Stopping { state, core, agents, backlog, events }
+            let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), sender));
+            *agents.tasks.borrow_mut() = Rc::downgrade(&tasks);
+            Stopping { state, core, agents, tasks, events }
         }
 
         fn agent(&self, agent: &str, place: Place) -> (String, Entry) {
@@ -3891,8 +3891,8 @@ mod tests {
             self.settle(|| alive(&self.core, &pane));
             let entry = Entry { id: "task-1dfb12c2".into(), repo: "/r".into(), agent: agent.into(), session: session.map(String::from), folder: Some("/r".into()), ..Default::default() };
             match place {
-                Place::Shelf => self.backlog.entries.borrow_mut().push(Entry { held: Some(pane.clone()), ..entry.clone() }),
-                place => self.backlog.running.borrow_mut().push(Running { pane: pane.clone(), entry: entry.clone(), place }),
+                Place::Shelf => self.tasks.entries.borrow_mut().push(Entry { held: Some(pane.clone()), ..entry.clone() }),
+                place => self.tasks.running.borrow_mut().push(Running { pane: pane.clone(), entry: entry.clone(), place }),
             }
             (pane, entry)
         }
@@ -3906,9 +3906,9 @@ mod tests {
             }
         }
 
-        fn answer(&self, ask: impl FnOnce(&Rc<Backlog>, Responder)) -> Result<Map, KmuxError> {
+        fn answer(&self, ask: impl FnOnce(&Rc<Tasks>, Responder)) -> Result<Map, KmuxError> {
             let (responder, reply) = kanna_mux::responder();
-            ask(&self.backlog, responder);
+            ask(&self.tasks, responder);
             let mut reply = Box::pin(reply);
             let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
             let by = Instant::now() + Duration::from_secs(5);
@@ -3924,18 +3924,18 @@ mod tests {
 
         fn pump(&self) {
             self.core.poll();
-            self.backlog.tick();
+            self.tasks.tick();
             while let Ok(event) = self.events.try_recv() {
                 match event {
-                    Event::Branch { token, branch } => self.backlog.branch_found(token, branch),
-                    Event::Turn { token } => self.backlog.next_turn(token),
+                    Event::Branch { token, branch } => self.tasks.branch_found(token, branch),
+                    Event::Turn { token } => self.tasks.next_turn(token),
                     _ => {}
                 }
             }
         }
 
         fn session(&self, pane: &str) -> Option<String> {
-            self.backlog.pane_entry(pane).and_then(|e| e.session)
+            self.tasks.pane_entry(pane).and_then(|e| e.session)
         }
     }
 
@@ -3945,11 +3945,11 @@ mod tests {
     fn a_turn_s_end_quits_the_agent_with_its_keys_and_keeps_the_session_it_says() {
         let t = Stopping::new("turn");
         let (pane, entry) = t.agent("claude", Place::Shelf);
-        t.backlog.quit(&pane, &entry, Status::NeedsYou);
-        t.settle(|| t.backlog.pane_entry(&pane).and_then(|e| e.stopped).is_some());
+        t.tasks.quit(&pane, &entry, Status::NeedsYou);
+        t.settle(|| t.tasks.pane_entry(&pane).and_then(|e| e.stopped).is_some());
         assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: ctrl+c"), format!("{pane}: ctrl+c")], "claude asks for a second ctrl+c");
         assert!(t.agents.hung_up.borrow().is_empty(), "claude quit, so it isn't hung up");
-        assert_eq!(t.backlog.pane_entry(&pane).and_then(|e| e.stopped).as_deref(), Some("needs-you"));
+        assert_eq!(t.tasks.pane_entry(&pane).and_then(|e| e.stopped).as_deref(), Some("needs-you"));
         assert_eq!(t.session(&pane).as_deref(), Some("given"), "the session Kanna gave claude stays its own");
     }
 
@@ -3957,30 +3957,30 @@ mod tests {
     fn kanna_task_stop_quits_the_agent_with_its_keys_and_keeps_the_session_it_says() {
         let t = Stopping::new("stop");
         let (pane, entry) = t.agent_with("codex", Place::Desk, None);
-        let stopped = t.answer(|backlog, responder| backlog.stop(&json!({ "task": entry.id }), responder)).unwrap();
+        let stopped = t.answer(|tasks, responder| tasks.stop(&json!({ "task": entry.id }), responder)).unwrap();
         assert_eq!(stopped["place"], "desk");
         assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: ctrl+c")], "codex quit on the first, so it isn't typed the second");
         assert!(t.agents.hung_up.borrow().is_empty(), "codex quit, so it isn't hung up");
         assert!(!alive(&t.core, &pane));
         assert_eq!(t.session(&pane).as_deref(), Some(SAID), "codex takes no ID, so the one it said is kept");
-        assert_eq!(Backlog::open(t.backlog.db.clone(), &t.state, t.core.weak(), std::sync::mpsc::channel().0).running.borrow()[0].entry.session.as_deref(), Some(SAID), "the session is saved");
+        assert_eq!(Tasks::open(t.tasks.db.clone(), &t.state, t.core.weak(), std::sync::mpsc::channel().0).running.borrow()[0].entry.session.as_deref(), Some(SAID), "the session is saved");
     }
 
     #[test]
     fn done_quits_the_agent_with_its_keys_before_it_ends_the_task() {
         let t = Stopping::new("done");
         let (pane, entry) = t.agent("claude", Place::Shelf);
-        t.answer(|backlog, responder| backlog.done(&json!({ "task": entry.id }), responder)).unwrap();
+        t.answer(|tasks, responder| tasks.done(&json!({ "task": entry.id }), responder)).unwrap();
         assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: ctrl+c"), format!("{pane}: ctrl+c")], "claude asks for a second ctrl+c");
         assert!(t.agents.hung_up.borrow().is_empty(), "claude quit, so it isn't hung up");
-        assert!(t.backlog.entries.borrow().is_empty(), "it's done");
+        assert!(t.tasks.entries.borrow().is_empty(), "it's done");
     }
 
     #[test]
     fn an_agent_without_quit_keys_is_hung_up() {
         let t = Stopping::new("nokeys");
         let (pane, entry) = t.agent("mock-agent", Place::Desk);
-        t.answer(|backlog, responder| backlog.stop(&json!({ "task": entry.id }), responder)).unwrap();
+        t.answer(|tasks, responder| tasks.stop(&json!({ "task": entry.id }), responder)).unwrap();
         assert!(t.agents.typed.borrow().is_empty());
         assert_eq!(*t.agents.hung_up.borrow(), [pane.as_str()]);
         assert_eq!(t.session(&pane).as_deref(), Some("given"), "with nothing said, the session it had is kept");
@@ -3990,10 +3990,10 @@ mod tests {
     fn an_agent_that_left_raw_mode_is_quitting_so_it_isnt_pressed_again() {
         let t = Stopping::new("leaving");
         t.agents.deaf.set(true);
-        *t.backlog.line_mode.borrow_mut() = Some(Box::new(|_| true));
+        *t.tasks.line_mode.borrow_mut() = Some(Box::new(|_| true));
         let (pane, entry) = t.agent("claude", Place::Shelf);
-        t.backlog.quit(&pane, &entry, Status::Idle);
-        t.settle(|| t.backlog.quitting.borrow().get(&pane).is_some_and(|q| q.keys.is_empty() && q.next.is_none()));
+        t.tasks.quit(&pane, &entry, Status::Idle);
+        t.settle(|| t.tasks.quitting.borrow().get(&pane).is_some_and(|q| q.keys.is_empty() && q.next.is_none()));
         assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: ctrl+c")], "a second ctrl+c in line mode would interrupt it as it says its session");
         assert!(t.agents.hung_up.borrow().is_empty(), "it has 5s to quit");
     }
@@ -4003,12 +4003,12 @@ mod tests {
         let t = Stopping::new("deaf");
         t.agents.deaf.set(true);
         let (pane, entry) = t.agent("claude", Place::Shelf);
-        t.backlog.quit(&pane, &entry, Status::Idle);
+        t.tasks.quit(&pane, &entry, Status::Idle);
         t.settle(|| t.agents.typed.borrow().len() == 2);
         assert!(t.agents.hung_up.borrow().is_empty(), "it has 5s to quit");
-        t.backlog.quitting.borrow_mut().get_mut(&pane).unwrap().by = Instant::now();
-        t.backlog.tick();
-        t.settle(|| t.backlog.pane_entry(&pane).and_then(|e| e.stopped).is_some());
+        t.tasks.quitting.borrow_mut().get_mut(&pane).unwrap().by = Instant::now();
+        t.tasks.tick();
+        t.settle(|| t.tasks.pane_entry(&pane).and_then(|e| e.stopped).is_some());
         assert_eq!(*t.agents.hung_up.borrow(), [pane.as_str()]);
         assert_eq!(t.session(&pane).as_deref(), Some("given"));
     }
@@ -4018,18 +4018,18 @@ mod tests {
         let t = Stopping::new("pick");
         let (pane, entry) = t.agent("claude", Place::Shelf);
         let folder = t.state.to_string_lossy().to_string();
-        t.backlog.entries.borrow_mut()[0] = Entry { folder: Some(folder.clone()), repo: folder, stopped: Some("idle".into()), ..entry.clone() };
+        t.tasks.entries.borrow_mut()[0] = Entry { folder: Some(folder.clone()), repo: folder, stopped: Some("idle".into()), ..entry.clone() };
         t.core.handle_blocking(json!({ "cmd": "task", "args": { "action": "hold", "task": pane } }));
         t.core.update(&pane, PaneState::Exited, Some(0), None);
         t.agents.slow.set(true);
         let (responder, reply) = kanna_mux::responder();
-        t.backlog.pick(&json!({ "task": entry.id }), responder);
+        t.tasks.pick(&json!({ "task": entry.id }), responder);
         t.pump();
-        assert!(t.backlog.entries.borrow().is_empty(), "it's off the backlog at once");
-        let desk = t.backlog.running.borrow().iter().map(|r| (r.entry.id.clone(), r.place)).collect::<Vec<_>>();
+        assert!(t.tasks.entries.borrow().is_empty(), "it's off the Shelf at once");
+        let desk = t.tasks.running.borrow().iter().map(|r| (r.entry.id.clone(), r.place)).collect::<Vec<_>>();
         assert_eq!(desk, [(entry.id.clone(), Place::Desk)]);
         let claimed = t.core.handle_blocking(json!({ "cmd": "task", "args": { "action": "list", "app": MAC_APP } }));
-        let agent = t.backlog.running.borrow()[0].pane.clone();
+        let agent = t.tasks.running.borrow()[0].pane.clone();
         assert!(claimed["tasks"].as_array().unwrap().iter().any(|task| task["id"] == agent.as_str()), "the app's Shelf has it: {claimed}");
         assert_eq!(*t.agents.starting.borrow(), [agent.clone()], "its agent is still starting");
         assert_eq!(t.core.pane(&agent).map(|p| p.state), Some(PaneState::Starting));

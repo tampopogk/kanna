@@ -7,7 +7,7 @@ pub const MAC_APP: &str = "mac";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Where {
     Desk(String),
-    Backlog,
+    Shelf,
     Planner(String),
 }
 
@@ -15,14 +15,14 @@ impl Where {
     pub fn to_json(&self) -> Value {
         match self {
             Where::Desk(app) => json!({ "desk": app }),
-            Where::Backlog => "shelf".into(),
+            Where::Shelf => "shelf".into(),
             Where::Planner(app) => json!({ "planner": app }),
         }
     }
 
     pub fn read(value: Option<&Value>) -> Option<Where> {
         match value? {
-            Value::String(place) if place == "shelf" => Some(Where::Backlog),
+            Value::String(place) if place == "shelf" => Some(Where::Shelf),
             Value::Object(place) => {
                 let app = |key: &str| place.get(key).and_then(Value::as_str).map(String::from);
                 app("desk").map(Where::Desk).or_else(|| app("planner").map(Where::Planner))
@@ -44,7 +44,7 @@ impl Where {
     pub fn app(&self) -> Option<&str> {
         match self {
             Where::Desk(app) | Where::Planner(app) => Some(app),
-            Where::Backlog => None,
+            Where::Shelf => None,
         }
     }
 }

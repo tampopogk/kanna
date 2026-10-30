@@ -13,7 +13,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var daemon: DaemonLink?
     var links: Links?
     var views: [String: JSON] = [:]
-    var backlogs: [String: [JSON]] = [:]
+    var shelves: [String: [JSON]] = [:]
     var deskMade: [String: [String: Int]] = [:]
     var paneSets: [String: Set<String>] = [:]
     var places: [String: JSON] = [:]
@@ -49,7 +49,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var folders: [String: String] = [:]
     private var terminalIDs: [String: String] = [:]
     private var names: [String: String] = [:]
-    var backlog: [JSON] = []
+    var shelf: [JSON] = []
     var starting: Set<String> = []
     let toasts = ToastStack()
     var toastShowing: (pane: String, desk: String?)?
@@ -245,7 +245,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         link.onStatus = { [weak self] pane, status in self?.statusChanged(pane, status) }
         link.onFolder = { [weak self] pane, cwd, place in self?.folderChanged(pane, cwd, place) }
-        link.onBacklog = { [weak self] tasks, desk in self?.backlogChanged(tasks, desk: desk, on: machine) }
+        link.onShelf = { [weak self] tasks, desk in self?.shelfChanged(tasks, desk: desk, on: machine) }
         link.onToast = { [weak self] record in self?.toastArrived(record) }
         link.onLost = { [weak self] in self?.linkLost(machine) }
     }
@@ -318,9 +318,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func machineGone(_ machine: String) {
         views.removeValue(forKey: machine)
-        backlogs.removeValue(forKey: machine)
+        shelves.removeValue(forKey: machine)
         deskMade.removeValue(forKey: machine)
-        backlog = backlogs.keys.sorted().flatMap { backlogs[$0] ?? [] }
+        shelf = shelves.keys.sorted().flatMap { shelves[$0] ?? [] }
         published = merged()
         restate()
         layoutChanged()
@@ -406,7 +406,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private var placed: Set<String> {
-        var ids = Set(runningBacklog(in: nil).compactMap { $0["task"]?.string })
+        var ids = Set(runningOnShelf(in: nil).compactMap { $0["task"]?.string })
         if case .array(let held)? = state["held"] { ids.formUnion(held.compactMap(\.string)) }
         for entry in deskEntries {
             guard case .array(let list)? = entry["panes"] else { continue }
@@ -573,11 +573,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             controller.active = docked == nil ? window["active"]?.string : nil
             let ours = Set(mine.map(\.id))
             let docks = window["desk"]?.bool == true
-                ? (deskEntries.filter { $0["task"]?.string.map(ours.contains) == true } + runningBacklog(in: controller.projectRoot)).filter { $0["task"]?.string.map(held.contains) == false }
+                ? (deskEntries.filter { $0["task"]?.string.map(ours.contains) == true } + runningOnShelf(in: controller.projectRoot)).filter { $0["task"]?.string.map(held.contains) == false }
                 : []
             held.formUnion(docks.compactMap { $0["task"]?.string })
             controller.deskDocks = docks
-            controller.backlog = backlogTasks(in: controller.projectRoot)
+            controller.shelf = shelfTasks(in: controller.projectRoot)
             controller.running = runningTasks(in: controller.projectRoot)
             controller.project = controller.projectRoot.map(displayName) ?? projectName(mine.map(\.id))
             controller.taskTitle = docked.map { taskTitle($0, name: window["dock"]?["name"]?.string) }

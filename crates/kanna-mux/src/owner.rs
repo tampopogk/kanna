@@ -639,7 +639,7 @@ mod tests {
     }
 
     #[test]
-    fn a_task_is_claimed_by_an_app_held_in_the_backlog_and_claimed_again_across_a_relaunch() {
+    fn a_task_is_claimed_by_an_app_held_on_the_shelf_and_claimed_again_across_a_relaunch() {
         let dir = folder("claim");
         let file = StateFile::new(&dir.join("layout.json").to_string_lossy());
         let (mut owner, _) = LayoutOwner::open(Some(file.clone()), false);

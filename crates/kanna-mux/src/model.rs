@@ -1007,7 +1007,7 @@ impl LayoutHost for Model {
             return Ok(None);
         }
         if let Some(edge) = at.dock {
-            let place = if at.backlog { Where::Backlog } else { Where::Desk(at.app.clone().unwrap_or_else(|| MAC_APP.into())) };
+            let place = if at.shelf { Where::Shelf } else { Where::Desk(at.app.clone().unwrap_or_else(|| MAC_APP.into())) };
             self.dock_workspace(pane, edge, place, at.frozen);
             return Ok(None);
         }

@@ -185,12 +185,12 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
         reply["freed"] = serde_json::Value::Array(output::freed(&waiting, done));
     }
     if command.name == "task" && request["action"] == "list" {
-        if let Ok(backlog) = mux.call("tasks", serde_json::json!({ "action": "list" })) {
-            reply["shelf"] = backlog["shelf"].clone();
-            output::name_out(&mut reply, &backlog["desk"]);
-            shorts.extend(output::shorts(&backlog));
+        if let Ok(found) = mux.call("tasks", serde_json::json!({ "action": "list" })) {
+            reply["shelf"] = found["shelf"].clone();
+            output::name_out(&mut reply, &found["desk"]);
+            shorts.extend(output::shorts(&found));
             listed = true;
-            reply["script"] = backlog["script"].clone();
+            reply["script"] = found["script"].clone();
         }
         if let Some(query) = request["query"].as_str() {
             output::keep_matching(&mut reply, query);
@@ -256,8 +256,8 @@ fn locate(request: &mut Value, mux: &mut Session) -> Result<Option<(String, Vec<
         Err(failure) if failure.message.ends_with("[ambiguous]") => return Err(failure),
         Err(_) => None,
     };
-    let backlog = found.as_ref().is_some_and(|t| t["place"] == "shelf");
-    if action == "shelve" && backlog {
+    let on_shelf = found.as_ref().is_some_and(|t| t["place"] == "shelf");
+    if action == "shelve" && on_shelf {
         return Err(fail(exit::FAILED, format!("{reference} is on the Shelf: `kanna task pick {reference}` moves it to the Desk")));
     }
     let pane = found.as_ref().and_then(|t| t["pane"].as_str()).map(String::from);
@@ -268,7 +268,7 @@ fn locate(request: &mut Value, mux: &mut Session) -> Result<Option<(String, Vec<
             request.as_object_mut().map(|r| r.remove("task"));
             request["pane"] = json!(reference);
         }
-        ("done", Some(id)) if backlog => request["task"] = json!(id),
+        ("done", Some(id)) if on_shelf => request["task"] = json!(id),
         (_, Some(_)) => request["task"] = json!(pane.unwrap_or(reference)),
         (_, None) => {}
     }

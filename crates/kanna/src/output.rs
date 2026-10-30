@@ -311,8 +311,8 @@ fn ids(list: &Value) -> String {
     list.as_array().map_or(vec![], |l| l.iter().filter_map(|w| w["id"].as_str()).collect::<Vec<_>>()).join(", ")
 }
 
-pub fn freed(backlog: &Value, done: &str) -> Vec<Value> {
-    let tasks = backlog["shelf"].as_array().cloned().unwrap_or_default();
+pub fn freed(listed: &Value, done: &str) -> Vec<Value> {
+    let tasks = listed["shelf"].as_array().cloned().unwrap_or_default();
     tasks
         .into_iter()
         .filter(|t| matches!(t["waits"].as_array().map(Vec::as_slice), Some([only]) if only["id"] == done || only["pane"] == done))
@@ -891,18 +891,18 @@ mod blocked_tests {
 
     #[test]
     fn a_blocked_task_lists_as_blocked_with_what_it_waits_for_and_done_names_what_it_frees() {
-        let backlog = json!({ "shelf": [
+        let listed = json!({ "shelf": [
             { "id": "t13", "name": "Diff viewer", "repo": "/r", "running": false, "waits": [{ "id": "t12", "pane": "p40" }] },
             { "id": "t14", "name": "Release notes", "repo": "/r", "running": false, "waits": [{ "id": "t8" }, { "id": "t12", "pane": "p40" }] },
             { "id": "t15", "name": "Free", "repo": "/r", "running": false, "waits": [] }
         ] });
-        let text = task(&json!({ "action": "list" }), &json!({ "tasks": [], "shelf": backlog["shelf"] }));
+        let text = task(&json!({ "action": "list" }), &json!({ "tasks": [], "shelf": listed["shelf"] }));
         assert!(text.contains("t13   Diff viewer    Shelf  blocked") && text.contains("waits for t12"), "{text}");
         assert!(text.contains("waits for t8, t12"), "{text}");
         assert!(text.contains("t15   Free           Shelf  stopped"), "{text}");
-        assert_eq!(freed(&backlog, "p40"), vec![json!({ "id": "t13", "name": "Diff viewer" })], "by its pane, and only where it was the last blocker");
-        assert_eq!(freed(&backlog, "t12").len(), 1);
-        let done = task(&json!({ "action": "done", "task": "p40" }), &json!({ "closed": ["p40"], "freed": freed(&backlog, "p40") }));
+        assert_eq!(freed(&listed, "p40"), vec![json!({ "id": "t13", "name": "Diff viewer" })], "by its pane, and only where it was the last blocker");
+        assert_eq!(freed(&listed, "t12").len(), 1);
+        let done = task(&json!({ "action": "done", "task": "p40" }), &json!({ "closed": ["p40"], "freed": freed(&listed, "p40") }));
         assert_eq!(done, "p40 is done: closed p40\nt13 \"Diff viewer\" can start now: nothing it waits for is left");
         assert_eq!(task(&json!({ "action": "edit" }), &json!({ "task": { "id": "t14", "waits": [] } })), "t14 waits for nothing: it can start");
     }
