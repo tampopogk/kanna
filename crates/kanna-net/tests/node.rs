@@ -363,7 +363,15 @@ async fn a_port_on_a_paired_machines_loopback_opens_on_the_apps_loopback_until_i
     assert_eq!(client.ports_of(&vm.key()), []);
     let after = tokio::time::timeout(std::time::Duration::from_secs(10), tcp.read(&mut buf)).await.unwrap().unwrap_or(0);
     assert_eq!(after, 0, "closing a machine's ports ends its open tunnels");
-    assert!(tokio::net::TcpStream::connect(("127.0.0.1", local)).await.is_err(), "a closed machine's ports stop listening");
+    let mut listening = true;
+    for _ in 0..100 {
+        listening = tokio::net::TcpStream::connect(("127.0.0.1", local)).await.is_ok();
+        if !listening {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(!listening, "a closed machine's ports stop listening");
 
     let halves = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let half_port = halves.local_addr().unwrap().port();
