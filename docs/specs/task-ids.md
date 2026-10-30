@@ -28,7 +28,7 @@ flowchart LR
 | `task-1dfb12c2`, `task-c0ffee00` | `task-1dfb`, `task-c0ff` |
 | `task-1dfb12c2`, `task-1dfb9a00` | `task-1dfb1`, `task-1dfb9` |
 
-- **Short like git's hashes.** A task shows as `task-` and its first 4 hex digits, or as many more as it takes to differ from every other open task (on the Shelf or a Desk), so every shown ID works as a command's TASK. The daemon makes the short form (`short` beside `id` in `backlog list`) and writes it in its own messages, such as the blocked note on the Desk; the CLI shows it in everything it prints. Full IDs stay in `--json`, `kanna.db`, `layout.json`, worktree folders and branches.
+- **Short like git's hashes.** A task shows as `task-` and its first 4 hex digits, or as many more as it takes to differ from every other open task (on the Shelf or a Desk), so every shown ID works as a command's TASK. The daemon makes the short form (`short` beside `id` in `tasks list`) and writes it in its own messages, such as the blocked note on the Desk; the CLI shows it in everything it prints. Full IDs stay in `--json`, `kanna.db`, `layout.json`, worktree folders and branches.
 
 ## Naming a task in a command
 
@@ -41,7 +41,7 @@ A command that takes a TASK (`kanna task start|stop|pick|shelve|edit|name|done|p
 | A start of its ID, with or without `task-` | `1dfb`, `task-1dfb` | only open tasks (on the Shelf or a Desk); any case |
 
 - **An ambiguous start fails** and lists the tasks it could be, by ID and name: `task-1d could be 2 tasks: task-1dfb12c2 "Search", task-1d0e44aa "Docs"; say more of its ID`.
-- **The daemon does the lookup** (`backlog.rs`), for its own commands and for the CLI, which asks it (`backlog resolve`) before a `park`, `activate`, `done` or `name`: a Shelf task goes to the daemon's `Backlog` (the Shelf) by its ID, one on a Desk goes to the layout by its agent's pane.
+- **The daemon does the lookup** (`tasks.rs`), for its own commands and for the CLI, which asks it (`tasks resolve`) before a `park`, `activate`, `done` or `name`: a Shelf task goes to the daemon's `Tasks` (the Shelf) by its ID, one on a Desk goes to the layout by its agent's pane.
 - **Old IDs like `t134` name nothing.** No aliases: a clean break.
 
 ## The migration
