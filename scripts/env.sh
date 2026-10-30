@@ -109,8 +109,13 @@ kanna_zig() {
 }
 
 kanna_ghostty_source_build() {
+  zig="$(kanna_zig "$2")" || return 1
   git clone -q --no-checkout --filter=blob:none --branch "$KANNA_GHOSTTY_BRANCH" "$KANNA_GHOSTTY_FORK" "$1" &&
-    git -C "$1" checkout -q --detach "$KANNA_GHOSTTY_COMMIT"
+    git -C "$1" checkout -q --detach "$KANNA_GHOSTTY_COMMIT" &&
+    (cd "$1" && "$zig" build --fetch=all --cache-dir "$1.fetch-cache")
+  status=$?
+  rm -rf "$1.fetch-cache"
+  return "$status"
 }
 
 kanna_ghostty_source() {
@@ -118,7 +123,7 @@ kanna_ghostty_source() {
     echo "$GHOSTTY_SOURCE_DIR"
     return
   fi
-  kanna_store "$1" ghostty-source "$(kanna_store_key "$KANNA_GHOSTTY_FORK" "$KANNA_GHOSTTY_COMMIT")" kanna_ghostty_source_build
+  kanna_store "$1" ghostty-source "$(kanna_store_key "$KANNA_GHOSTTY_FORK" "$KANNA_GHOSTTY_COMMIT" "$KANNA_ZIG_VERSION")" kanna_ghostty_source_build "$1"
 }
 
 kanna_ghostty_rev() {

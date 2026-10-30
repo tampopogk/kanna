@@ -81,6 +81,12 @@
           "description": "An absolute folder, usually on another volume, where build outputs live: a task worktree's target/ becomes a symlink to TARGETS/REPO/WORKTREE, and each folder in the main checkout's target/ except its .app bundles, built Ghostty and .offline/ (a copy of its dependencies, synced after each build) becomes a symlink to TARGETS/REPO/_main/NAME; real folders move there on the next build. While the folder's volume isn't mounted, builds go to the internal disk and move over on the next build with the volume. Only read from ~/.kanna-v4/config.json, not a repo's. Unset, target/ is a folder in the worktree.",
           "type": "string",
           "pattern": "^/"
+        },
+        "free": {
+          "description": "Gigabytes to keep free on the targets folder's volume: when a build starts with less, the build folders of stopped tasks are removed, least recently used first (docs/specs/build-store.md). Only read from ~/.kanna-v4/config.json.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 100
         }
       },
       "additionalProperties": false
