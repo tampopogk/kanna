@@ -57,14 +57,14 @@ pub struct Placement {
     pub from: Option<String>,
     pub opener: Option<String>,
     pub app: Option<String>,
-    pub backlog: bool,
+    pub shelf: bool,
     pub lead: bool,
     pub planner: bool,
 }
 
 impl Default for Placement {
     fn default() -> Placement {
-        Placement { window: None, workspace: None, split: SplitSide::Auto, size: 0.5, new_tab: false, dock: None, frozen: false, from: None, opener: None, app: None, backlog: false, lead: false, planner: false }
+        Placement { window: None, workspace: None, split: SplitSide::Auto, size: 0.5, new_tab: false, dock: None, frozen: false, from: None, opener: None, app: None, shelf: false, lead: false, planner: false }
     }
 }
 
@@ -170,8 +170,8 @@ pub fn place_request(pane: &Pane, at: &Placement) -> Value {
     if at.frozen {
         out.insert("frozen".into(), Value::Bool(true));
     }
-    if at.backlog {
-        out.insert("backlog".into(), Value::Bool(true));
+    if at.shelf {
+        out.insert("shelf".into(), Value::Bool(true));
     }
     if at.lead {
         out.insert("lead".into(), Value::Bool(true));
@@ -271,7 +271,7 @@ pub fn placement(at: &Value) -> Result<Placement, KmuxError> {
         Some(size) => size.as_f64().filter(|s| *s > 0.0 && *s < 1.0).ok_or_else(|| bad("size must be a fraction between 0 and 1"))?,
     };
     let dock = Edge::read(at.get("dock")).map_err(|_| bad("dock must be left or right"))?;
-    Ok(Placement { window: string(at, "window").map(String::from), workspace: string(at, "workspace").map(String::from), split, size, new_tab: at.get("tab") == Some(&Value::Bool(true)), dock, frozen: at.get("frozen") == Some(&Value::Bool(true)), from: string(at, "from").map(String::from), opener: string(at, "opener").map(String::from), app: string(at, "app").map(String::from), backlog: at.get("backlog") == Some(&Value::Bool(true)), lead: at.get("lead") == Some(&Value::Bool(true)), planner: at.get("planner") == Some(&Value::Bool(true)) })
+    Ok(Placement { window: string(at, "window").map(String::from), workspace: string(at, "workspace").map(String::from), split, size, new_tab: at.get("tab") == Some(&Value::Bool(true)), dock, frozen: at.get("frozen") == Some(&Value::Bool(true)), from: string(at, "from").map(String::from), opener: string(at, "opener").map(String::from), app: string(at, "app").map(String::from), shelf: at.get("shelf") == Some(&Value::Bool(true)), lead: at.get("lead") == Some(&Value::Bool(true)), planner: at.get("planner") == Some(&Value::Bool(true)) })
 }
 
 fn spot(reply: &mut Map, spot: Option<Spot>, window: Option<String>) {
