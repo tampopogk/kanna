@@ -1893,6 +1893,49 @@ dock_keeps_focus_through_tabs() {
   check test "$(ws agent focused)" == spec || return 1
 }
 
+scenario pane_cycle_keyboard M4
+pane_cycle_keyboard() {
+  start_daemon && start_app || return 1
+  desk() { raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}' | field "$1"; }
+  holds() { local id; id="$(pane "$1" id)"; [[ "$(dwin d1 focused)" == "$id" && "$(desk keyboard)" == "$id" && "$(desk highlighted)" == "$([[ "$(desk key)" == True ]] && echo "[\"$id\"]" || echo "[]")" ]]; }
+  cycle() {
+    key "$1"
+    check wait_for 5 holds "$2" || { echo "pane_cycle_keyboard: $1 to $2: focused $(dwin d1 focused), keyboard $(desk keyboard) ($(desk responder)), highlighted $(desk highlighted)"; return 1; }
+    [[ "$(pane "$2" type)" == term ]] || return 0
+    local typed="typed-$RANDOM"
+    raw "{\"id\":1,\"cmd\":\"debug.type\",\"args\":{\"focused\":true,\"text\":\"$typed\\n\"}}" >/dev/null
+    check wait_for 5 app_text "$2" "$typed" || { kanna read "$2"; return 1; }
+  }
+  printf '# Cycle\n\nA markdown pane.\n' >"$KANNA_STATE_DIR/cycle.md"
+  desk_task agent 'exec cat' || return 1
+  new_task waiting >/dev/null || return 1
+  KANNA_TERMINAL=agent kanna open --name left --cmd 'exec cat' >/dev/null || return 1
+  kanna task activate agent >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(dwin d1 dock.pane)" == "$(pane agent id)" ]]' || { app_view; return 1; }
+  kanna focus left >/dev/null || return 1
+  KANNA_TERMINAL=left kanna open md "$KANNA_STATE_DIR/cycle.md" --name doc --split right >/dev/null || return 1
+  kanna focus doc >/dev/null || return 1
+  KANNA_TERMINAL=left kanna open code "$KANNA_STATE_DIR/cycle.md" --name src --split down >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(dwin d1 tabs.0.panes)" == "[\"$(pane left id)\", \"$(pane doc id)\", \"$(pane src id)\"]" ]]' || { app_view; return 1; }
+  kanna focus agent >/dev/null || return 1
+  check wait_for 5 holds agent || return 1
+  cycle "cmd+]" left && cycle "cmd+]" doc && cycle "cmd+]" src && cycle "cmd+]" agent \
+    && cycle "cmd+[" src && cycle "cmd+[" doc && cycle "cmd+[" left && cycle "cmd+[" agent || return 1
+  click_tab "$(dwin d1 tabs.0.id)" 2
+  check wait_for 5 eval '[[ "$(desk responder)" == NSTextView ]]' || { echo "pane_cycle_keyboard: no tab rename field"; desk responder; return 1; }
+  kanna focus left >/dev/null || return 1
+  sleep 0.5
+  check test "$(desk responder)" == NSTextView || { echo "pane_cycle_keyboard: kanna focus took the keyboard from the tab rename"; return 1; }
+  cycle "cmd+]" doc && cycle "cmd+]" src && cycle "cmd+]" agent || return 1
+  key cmd+.
+  check wait_for 5 eval '[[ "$(desk empty)" == True && "$(desk search.shown)" == True ]]' || { desk search; return 1; }
+  key cmd+f
+  check wait_for 5 eval '[[ "$(desk search.focused)" == True ]]' || { echo "pane_cycle_keyboard: no Desk view search"; return 1; }
+  key cmd+.
+  check wait_for 5 eval '[[ "$(dwin d1 dock.pane)" == "$(pane agent id)" ]]' || { echo "pane_cycle_keyboard: ⌘. didn't show the active task"; return 1; }
+  cycle "cmd+]" left && cycle "cmd+[" agent
+}
+
 scenario desk_tasks M4
 desk_tasks() {
   start_daemon && start_app || return 1

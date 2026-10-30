@@ -176,7 +176,9 @@ extension AppController {
                     "lead": controller.leadShown.map { .string($0) } ?? .null, "pages": .array(controller.tabBar.pageItems.map { .string($0.title) }),
                     "machinesPage": .bool(!controller.machinesPage.isHidden), "machines": .array(controller.machinesPage.machines.map { ["name": .string($0.name), "detail": .string($0.detail), "path": .string($0.path), "note": .string($0.note), "tip": .string($0.explanation)] }),
                     "headerTip": controller.agentHeader.toolTip.map { .string($0) } ?? .null, "places": .array(controller.deskTasks.map { $0.place.map { .string($0) } ?? .null }), "window": window(id) ?? .null, "scroll": scrolled, "search": search, "times": page.times, "rows": page.deskRows,
-                    "responder": .string(controller.window.firstResponder.map { String(describing: type(of: $0)) } ?? "")]
+                    "responder": .string(controller.window.firstResponder.map { String(describing: type(of: $0)) } ?? ""),
+                    "keyboard": Self.paneHolding(controller.window.firstResponder).map { .string($0) } ?? .null,
+                    "highlighted": .array(controller.highlighted.map { .string($0) }), "key": .bool(controller.window.isKeyWindow)]
         }
         commands["debug.web"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let web = contents.web(id) else { throw KannaError("wrong_type", "not a web pane") }
@@ -319,6 +321,15 @@ extension AppController {
             if args["home"]?.bool == true { screen.pressHome() }
             return ["width": .number(screen.pixelSize.width), "height": .number(screen.pixelSize.height)]
         }
+    }
+
+    private static func paneHolding(_ responder: NSResponder?) -> String? {
+        var view = responder as? NSView
+        while let current = view {
+            if let pane = current as? PaneView { return pane.id }
+            view = current.superview
+        }
+        return nil
     }
 
     private func overview(_ view: OverviewView, wanted: @autoclosure () -> Bool, args: JSON) -> JSON {
