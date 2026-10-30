@@ -21,6 +21,15 @@ final class WindowController: NSObject, NSWindowDelegate {
     var onBecomeKey: (() -> Void)?
     /// The window moved or was resized.
     var onFrameChange: (() -> Void)?
+    /// A divider was dropped: the `resize` request's arguments.
+    var onResize: ((JSON) -> Void)?
+    /// A divider being dragged: drawn where it is until the core has the
+    /// `resize` it ends with.
+    var preview: Preview?
+    enum Preview {
+        case divider(Split, index: Int, share: Double)
+        case dock(width: Double)
+    }
 
     /// Named instances show their name in the title, to tell them apart.
     let instance: Instance
@@ -64,7 +73,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         for case let view as PaneView in dockStage.subviews where view.id != state.dock?.pane { view.removeFromSuperview() }
         dividers.forEach { $0.removeFromSuperview() }
         dividers = []
-        place(root, in: stage.bounds, host)
+        place(root, in: stage.bounds, host, tab: tab?.id ?? "", path: [])
         dividers.forEach { stage.addSubview($0) }
         if let dock = state.dock, let view = host.views[dock.pane] {
             if view.superview !== dockStage { dockStage.addSubview(view) }
@@ -102,13 +111,18 @@ final class WindowController: NSObject, NSWindowDelegate {
             } else if state.zoomed == nil {
                 let total = bounds.width - Self.divider
                 let low = min(DividerView.minimum, total / 2)
-                let width = min(max((total * dock.width).rounded(), low), total - low)
+                let share = if case .dock(let width)? = preview { width } else { dock.width }
+                let width = min(max((total * share).rounded(), low), total - low)
                 let left = dock.edge == .left
                 dockStage.frame = NSRect(x: left ? 0 : bounds.width - width, y: 0, width: width, height: bounds.height)
                 side = NSRect(x: left ? width + Self.divider : 0, y: 0, width: total - width, height: bounds.height)
                 let line = NSRect(x: left ? width : side.maxX, y: 0, width: Self.divider, height: bounds.height)
                 let handle = DockDividerView(window: state, line: line, span: total, extent: bounds.width)
-                handle.onChange = { [weak self] in self?.relayout?() }
+                handle.onPreview = { [weak self] width in
+                    self?.preview = .dock(width: width)
+                    self?.relayout?()
+                }
+                handle.onResize = { [weak self] args in self?.onResize?(args) }
                 content.addSubview(handle)
                 dockDivider = handle
             }
@@ -125,7 +139,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     /// The handles over the dividers of the tab on screen, rebuilt by each render.
     private(set) var dividers: [DividerView] = []
 
-    private func place(_ node: Node?, in rect: NSRect, _ host: ContentHost) {
+    private func place(_ node: Node?, in rect: NSRect, _ host: ContentHost, tab: String, path: [Int]) {
         switch node {
         case nil: return
         case .pane(let id):
@@ -138,18 +152,26 @@ final class WindowController: NSObject, NSWindowDelegate {
             let total = (horizontal ? rect.width : rect.height) - Self.divider * CGFloat(split.kids.count - 1)
             var offset: CGFloat = 0
             var previous: NSRect?
+            var sizes = split.kids.map(\.size)
+            if case .divider(let dragged, let index, let share)? = preview, dragged === split, index + 1 < sizes.count {
+                (sizes[index], sizes[index + 1]) = (share, sizes[index] + sizes[index + 1] - share)
+            }
             for (index, kid) in split.kids.enumerated() {
-                let length = (total * kid.size).rounded()
+                let length = (total * sizes[index]).rounded()
                 let frame = horizontal
                     ? NSRect(x: rect.minX + offset, y: rect.minY, width: length, height: rect.height)
                     : NSRect(x: rect.minX, y: rect.maxY - offset - length, width: rect.width, height: length)
-                place(kid.node, in: frame, host)
+                place(kid.node, in: frame, host, tab: tab, path: path + [index])
                 if let previous {
                     let line = horizontal
                         ? NSRect(x: previous.maxX, y: rect.minY, width: Self.divider, height: rect.height)
                         : NSRect(x: rect.minX, y: previous.minY - Self.divider, width: rect.width, height: Self.divider)
-                    let handle = DividerView(split: split, index: index - 1, line: line, first: previous, second: frame)
-                    handle.onChange = { [weak self] in self?.relayout?() }
+                    let handle = DividerView(split: split, tab: tab, path: path, index: index - 1, line: line, first: previous, second: frame)
+                    handle.onPreview = { [weak self] share in
+                        self?.preview = .divider(split, index: index - 1, share: share)
+                        self?.relayout?()
+                    }
+                    handle.onResize = { [weak self] args in self?.onResize?(args) }
                     dividers.append(handle)
                 }
                 previous = frame

@@ -214,6 +214,10 @@ impl Client {
         self.request(json!({"op": "close", "id": id}), |_, _| {}).map(|_| ())
     }
 
+    pub fn stop(&mut self) -> io::Result<()> {
+        self.request(json!({"op": "stop"}), |_, _| {}).map(|_| ())
+    }
+
     pub fn ack(&mut self, id: &str) -> io::Result<()> {
         self.request(json!({"op": "ack", "id": id}), |_, _| {}).map(|_| ())
     }
