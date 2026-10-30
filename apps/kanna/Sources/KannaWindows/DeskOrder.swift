@@ -3,14 +3,10 @@ public enum DeskOrder {
         recent.filter(needsYou) + recent.filter { !needsYou($0) }
     }
 
-    public static func byAge<T, Made: Comparable>(_ tasks: [T], made: (T) -> Made?) -> [T] {
+    public static func byAge<T, Made: Comparable>(_ tasks: [T], made: (T) -> Made) -> [T] {
         tasks.enumerated().sorted { a, b in
-            switch (made(a.element), made(b.element)) {
-            case let (x?, y?) where x != y: return x < y
-            case (_?, nil): return true
-            case (nil, _?): return false
-            default: return a.offset < b.offset
-            }
+            let (x, y) = (made(a.element), made(b.element))
+            return x != y ? x < y : a.offset < b.offset
         }.map(\.element)
     }
 

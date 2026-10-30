@@ -239,8 +239,8 @@ extension AppController {
 }
 
 extension AppController {
-    func made(_ pane: String) -> Int? {
-        deskMade[MachineIDs.machine(of: pane) ?? ""]?[pane]
+    func made(_ pane: String) -> Int {
+        deskMade[MachineIDs.machine(of: pane) ?? ""]?[pane] ?? .max
     }
 
     func backlogChanged(_ tasks: [JSON], desk: [JSON], on machine: String?) {

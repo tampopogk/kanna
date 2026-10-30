@@ -11,7 +11,7 @@ struct ShelfTask: Equatable {
     var agent: String?
     var place: String?
     var offline = false
-    var made: Int?
+    var made = 0
 
     @MainActor var meta: String { offline ? "offline" : status == "needs-you" ? "needs you" : Self.since(parkedAt) }
 

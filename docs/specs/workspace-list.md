@@ -32,7 +32,7 @@ flowchart LR
 
 - **A workspace has an ID of its own,** `ws-1`, `ws-2`, …, made by the layout. The dash keeps it from being read as a window (`win-1`).
 - **The task's record names its workspace** (a `workspace` key in its `doc` in `kanna.db`, so no migration). The daemon sets it from the workspace a start makes, and keeps it right from each listing, by the workspace its agent is docked in. The layout knows nothing of tasks: no `task` field, no lookup by a task's ID; the daemon turns a task given to `window assign` into its workspace.
-- **A workspace can have no task,** as a docked agent's (`kanna open --dock`) does.
+- **A workspace can have no task,** as a Desk's planner does.
 - **Replies** name the workspace by its ID; the daemon adds the task and its name (`task`, `name`) when one has it: `opened term-5 in ws-3 (task-1dfb, on the Desk), tab-9: running`.
 
 ## The output

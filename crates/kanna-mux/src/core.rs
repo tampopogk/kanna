@@ -43,6 +43,10 @@ pub trait TaskBook {
     fn sync(&self, workspaces: &[Value]) {
         let _ = workspaces;
     }
+    fn starting(&self, task: &str) -> bool {
+        let _ = task;
+        true
+    }
 }
 
 pub type CommandHandler = Rc<dyn Fn(Value, Responder)>;
@@ -791,6 +795,9 @@ impl CoreHandle {
         let dock = Edge::read(args.get("dock"))?;
         if dock.is_some() && (args.get("split").is_some() || args.get("size").is_some() || new_tab) {
             return Err(bad_request("a docked pane takes no split, size or tab"));
+        }
+        if dock.is_some() && !string(args, "task").is_some_and(|task| self.book().is_none_or(|book| book.starting(task))) {
+            return Err(KmuxError::new("not_a_task", "a docked pane is a task's agent, and only a task docks: make one with `kanna task new`, then `kanna task pick` or `kanna task start`"));
         }
         if args.get("frozen").is_some_and(|f| !f.is_null() && !f.is_boolean()) {
             return Err(bad_request("frozen must be true or false"));

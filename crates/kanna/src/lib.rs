@@ -239,8 +239,8 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
 fn unplaced(command: &str, request: &Value) -> Option<&'static str> {
     let given = |keys: &[&str]| keys.iter().any(|key| !request[*key].is_null());
     match command {
-        "open" if !given(&["window", "workspace", "dock", "from"]) => Some("add --window WINDOW (or --window new)"),
-        "markup" if !request["type"].is_null() && !given(&["window", "dock", "from"]) => Some("add --window WINDOW (or --window new)"),
+        "open" if !given(&["window", "workspace", "from"]) => Some("add --window WINDOW (or --window new)"),
+        "markup" if !request["type"].is_null() && !given(&["window", "from"]) => Some("add --window WINDOW (or --window new)"),
         "comment" if !given(&["window", "from"]) => Some("add --window WINDOW (or --window new)"),
         "arrange" if !given(&["window", "from"]) => Some("add --window WINDOW"),
         "screenshot" if !given(&["pane", "window", "from"]) => Some("say PANE or --window WINDOW"),
@@ -788,11 +788,6 @@ mod tests {
             ("kanna send-key p3 up up shift+tab ctrl+c", json!({ "pane": "p3", "keys": ["up", "up", "shift+tab", "ctrl+c"] })),
             ("kanna send p1 echo -- --mux -x", json!({ "pane": "p1", "text": "echo --mux -x" })),
             ("kanna open --cwd /tmp", json!({ "type": "term", "cwd": "/tmp" })),
-            ("kanna open --name agent --dock", json!({ "type": "term", "name": "agent", "dock": "left" })),
-            ("kanna open --name agent --dock --frozen", json!({ "type": "term", "name": "agent", "dock": "left", "frozen": true })),
-            ("kanna open --dock right --cmd claude", json!({ "type": "term", "dock": "right", "cmd": "claude" })),
-            ("kanna open --dock md /tmp/a.md", json!({ "type": "md", "dock": "left", "path": "/tmp/a.md" })),
-            ("kanna open web a.test --dock=right --window new", json!({ "type": "web", "url": "a.test", "dock": "right", "window": "new" })),
             ("kanna move agent --dock", json!({ "pane": "agent", "dock": "left" })),
             ("kanna move agent --dock right --window win-2", json!({ "pane": "agent", "dock": "right", "window": "win-2" })),
             ("kanna move agent --tab", json!({ "pane": "agent", "tab": "new" })),
@@ -832,8 +827,11 @@ mod tests {
             ("kanna read p1 --lines 0", "--lines needs a whole number"),
             ("kanna open ios", "need an app"),
             ("kanna open --app x", "only for iOS panes"),
-            ("kanna open --dock --split right", "--dock goes on its own"),
-            ("kanna open --dock --tab", "--dock goes on its own"),
+            ("kanna open --name agent --dock", "make a task with `kanna task new`"),
+            ("kanna open --dock right --cmd claude", "a docked pane is a task's agent"),
+            ("kanna open web a.test --dock=right --window new", "a docked pane is a task's agent"),
+            ("kanna open --frozen", "a docked pane is a task's agent"),
+            ("kanna markup a.md --dock", "a docked pane is a task's agent"),
             ("kanna move agent --dock --tab", "--dock goes on its own"),
             ("kanna move agent --dock --to b", "--dock goes on its own"),
         ] {

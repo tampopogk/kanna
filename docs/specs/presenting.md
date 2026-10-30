@@ -45,7 +45,7 @@ sequenceDiagram
 ## 3. How it's built
 
 - **A Shelf task's window is held on the Shelf** ([tasks](tasks.md#8-how-its-built)), not shown. `kanna open`, `kanna comment`, `kanna focus` and `kanna zoom` from its agent (or from a terminal in its window) land there:
-  - opening sends the caller as the `opener` (the CLI's `$KANNA_TERMINAL`) unless `--window` or `--dock` is given; a pane whose opener is in a held window, or a Desk task's that isn't shown, goes into a new tab of that window, whatever `--tab`, `--split` or `--size` say, and one whose opener is in a shown window goes into that window rather than the front one;
+  - opening sends the caller as the `opener` (the CLI's `$KANNA_TERMINAL`) unless `--window` is given; a pane whose opener is in a held window, or a Desk task's that isn't shown, goes into a new tab of that window, whatever `--tab`, `--split` or `--size` say, and one whose opener is in a shown window goes into that window rather than the front one;
   - focus and zoom of a pane, and focus of a tab, in a hidden window set that window's shown tab, focus and zoom without bringing anything to the front;
   - the app keeps the content of a held window's markdown, web, code and diff panes (the layout's `held` list), so they start and stay while hidden.
 - **Stopping** (`Backlog::stop`, and `Backlog::quit` when a runner's turn ends) asks the core to hang up the task's terminals (`CoreHandle::hang_up`): each running one is marked `hungUp`, saved with the terminals, and hung up; then the agent quits or is hung up. Nothing is closed.
