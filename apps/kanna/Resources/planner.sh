@@ -314,16 +314,11 @@ if [ -z "$chosen" ]; then
   name=${chosen%%	*}
   top=$(git rev-parse --show-toplevel 2>/dev/null)
   if [ -n "$top" ]; then
-    ask "Make $name the planning agent for $(basename "$top")? [Y/n]"
-    case $answer in
-      [nN]*) ;;
-      *)
-        if save "$top" "$name"; then
-          say "$name plans $(basename "$top") from now on (planning.agent in .kanna/config.json)."
-        else
-          say "Couldn't write $top/.kanna/config.json."
-        fi ;;
-    esac
+    if save "$top" "$name"; then
+      say "$name plans $(basename "$top") from now on (planning.agent in .kanna/config.json)."
+    else
+      say "Couldn't write $top/.kanna/config.json."
+    fi
   fi
   echo
 fi

@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Desk View Mockup</title>
+<style>
+:root {
+  --bg: #14161a; --panel: #1b1e24; --panel2: #22262d; --line: #2c313a; --text: #e6e8eb; --muted: #8b93a0;
+  --accent: #7aa2ff; --ok: #5fcf93; --warn: #f0b35a; --bad: #ef6b6b; --machine: #b48cff; --term: #16181c;
+  --tint: rgba(122, 162, 255, .18); --page: #0d0e10; --shadow: 0 20px 50px rgba(0,0,0,.5);
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --panel: #f4f5f7; --panel2: #eaecf0; --line: #d8dce2; --text: #1d2026; --muted: #6b7280;
+  --accent: #2f63d8; --ok: #1f9d5c; --warn: #b7791f; --bad: #cf3f3f; --machine: #7c4dcc; --term: #fbfbfc;
+  --tint: rgba(47, 99, 216, .14); --page: #dfe2e7; --shadow: 0 20px 50px rgba(0,0,0,.18);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro, body.picture .menubar { display: none; }
+.intro h1 { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--muted); margin: 0 0 12px; max-width: 920px; }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+button { font: 12px var(--sans); color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+.keys { color: var(--muted); font-size: 12px; margin: -6px 0 14px; display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.keys kbd { font: 11px var(--mono); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; background: var(--panel2); }
+
+.window { position: relative; border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: var(--shadow); background: var(--bg); height: 720px; display: flex; flex-direction: column; }
+body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 100vh; }
+.bar { height: 36px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 12px; background: var(--bg); }
+.lights { display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: var(--line); display: block; }
+.where { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.where b { color: var(--text); font-weight: 600; }
+
+.content { flex: 1; display: flex; min-height: 0; }
+.agent { flex: 0 0 38%; min-width: 0; display: flex; flex-direction: column; }
+.agent .head { flex: none; height: 34px; padding: 0 8px 0 14px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+.agent .head .spacer { flex: 1; }
+.pill.icon { border: 1px solid transparent; border-radius: 7px; padding: 4px 6px; display: inline-flex; color: var(--muted); cursor: pointer; }
+.pill.icon:hover { color: var(--text); border-color: var(--accent); }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.dot.working { background: var(--accent); }
+.dot.needs { background: var(--warn); }
+.dot.idle { background: var(--ok); }
+.term { flex: 1; min-height: 0; background: var(--term); font: 12px/1.6 var(--mono); padding: 10px 12px; white-space: pre-wrap; overflow: hidden; color: var(--text); }
+.term .c { color: var(--accent); } .term .p { color: var(--warn); } .term .g { color: var(--muted); } .term .m { color: var(--machine); } .term .out { color: var(--muted); }
+
+.docs { flex: 1; min-width: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); }
+.dtabs { height: 34px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 8px; overflow: hidden; border-bottom: 1px solid var(--line); }
+.dtab { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; color: var(--muted); white-space: nowrap; }
+.dtab.on { color: var(--text); }
+.dtabs .add { color: var(--muted); padding: 0 8px; font-size: 15px; }
+.doc { flex: 1; overflow: auto; padding: 26px 32px; }
+.doc h2 { font-size: 24px; margin: 0 0 6px; }
+.doc .sub { color: var(--muted); margin: 0 0 18px; }
+.doc p { opacity: .92; }
+
+.empty { flex: 1; overflow: auto; padding: 40px 48px; }
+.empty .sub { color: var(--muted); margin: 0 0 22px; }
+.group { margin-bottom: 22px; max-width: 760px; }
+.group .gh { padding: 0 0 6px; color: var(--muted); font-size: 12px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.group .gh b { color: var(--text); }
+.row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; margin: 0 -10px; border-radius: 8px; cursor: pointer; }
+.row:hover, .row.sel { background: var(--panel); }
+.row .t { flex: 1; min-width: 0; }
+.row .t .n { font-weight: 600; }
+.row .t .s { color: var(--muted); font-size: 12px; }
+.row .go { color: var(--accent); white-space: nowrap; visibility: hidden; }
+.row:hover .go { visibility: visible; }
+.row.active .go { visibility: visible; color: var(--muted); }
+.row.active .tag { font: 11px var(--sans); color: var(--accent); border: 1px solid var(--accent); border-radius: 5px; padding: 0 5px; margin-left: 6px; font-weight: 500; }
+.row.waiting .t .n { font-weight: 500; }
+.row.waiting .dot { background: transparent; border: 1.5px solid var(--muted); width: 9px; height: 9px; }
+.row.waiting .go { visibility: visible; color: var(--muted); }
+.row.waiting:hover .go:not(.off), .row.waiting.sel .go:not(.off) { color: var(--accent); }
+.row .go.off { color: var(--muted); }
+.row mark { background: var(--tint); color: inherit; border-radius: 2px; }
+.empty .note { color: var(--warn); font-size: 12px; margin: 6px 0 0; min-height: 16px; }
+.find { flex: 1; max-width: 320px; margin-left: auto; display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 6px 0 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--muted); }
+.find:focus-within { border-color: var(--accent); }
+.find input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: 12px var(--sans); }
+.find input::placeholder { color: var(--muted); }
+.find kbd { font: 11px var(--mono); color: var(--muted); }
+.nohit { color: var(--muted); padding: 8px 0; }
+
+.strip { height: 30px; flex: none; display: flex; align-items: center; gap: 4px; padding: 0 8px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); overflow: hidden; }
+.strip .hint { color: var(--muted); opacity: .75; white-space: nowrap; padding: 3px 8px; border-radius: 6px; cursor: pointer; }
+.strip .hint:hover { opacity: 1; color: var(--text); background: var(--panel); }
+.strip .hint kbd { font: 11px var(--mono); }
+.strip .sep { width: 1px; height: 14px; background: var(--line); margin: 0 4px; }
+.strip .item { display: flex; align-items: center; gap: 7px; padding: 3px 8px; border-radius: 6px; cursor: pointer; white-space: nowrap; min-width: 0; }
+.strip .item:hover { color: var(--text); background: var(--panel); }
+.strip .item.needs { color: var(--warn); }
+.strip .item .nm { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.strip .item .kb { display: none; font-size: 11px; }
+.strip .item:hover .kb { display: inline; }
+.strip .count { margin-left: auto; white-space: nowrap; padding: 3px 8px; }
+
+.menubar { position: relative; z-index: 5; height: 26px; display: flex; align-items: center; gap: 2px; padding: 0 10px; margin: 0 0 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
+body.menu .menubar { display: flex; margin: 0; border-radius: 0; border-width: 0 0 1px; }
+.menubar .m { position: relative; padding: 2px 9px; border-radius: 4px; cursor: default; }
+.menubar .m.app { font-weight: 700; }
+.menubar .m.open { background: var(--accent); color: #fff; }
+.drop { position: absolute; top: calc(100% + 3px); left: 0; min-width: 240px; padding: 5px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); color: var(--text); }
+.drop .i { display: flex; align-items: center; gap: 18px; padding: 3px 10px; border-radius: 4px; white-space: nowrap; }
+.drop .i .k { margin-left: auto; color: var(--muted); }
+.drop .i:hover { background: var(--accent); color: #fff; }
+.drop .i:hover .k { color: #fff; }
+.drop .i.off, .drop .i.off:hover { background: transparent; color: var(--muted); }
+.drop hr { border: 0; border-top: 1px solid var(--line); margin: 5px 4px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1>Desk view: the planner, the Desk's three tasks, the Shelf below</h1>
+    <p>The Desk holds up to three of a project's tasks, one of them active. The Desk view shows the planning agent on the left and, on the right, the Desk's tasks and, below them, the Shelf: the tasks Kanna has brought in, waiting and run a few at a time in the background. Make a Desk task active (click it, ⌘1 … ⌘3, ⇧⌘A) to see it as it was: its agent docked, its tabs, and the strip of the Desk's other tasks below. ⌘. toggles between the Desk view and the active task, which stays active (and running) while the Desk view shows. Move a Shelf task to the Desk from its row; Task › Move to Shelf moves the active task back.</p>
+    <div class="controls">
+      <button id="theme">Light / dark</button>
+      <button id="ring" title="A Desk task that isn't active stops to ask you something">Simulate: a Desk task needs you</button>
+      <button id="reset">Reset</button>
+    </div>
+    <div class="keys">
+      <span><kbd>⌘.</kbd> the Desk view ⇄ the active task</span>
+      <span><kbd>⌘1</kbd> <kbd>⌘2</kbd> <kbd>⌘3</kbd> make the Desk's 1st, 2nd, 3rd other task active</span>
+      <span><kbd>⇧⌘A</kbd> the Desk task waiting longest for you</span>
+      <span><kbd>⌘F</kbd> search the Shelf (Desk view): <kbd>↑</kbd> <kbd>↓</kbd> pick, <kbd>↩</kbd> Move to Desk, <kbd>esc</kbd> clear</span>
+    </div>
+  </div>
+  <div class="menubar" id="menubar"></div>
+  <div id="stage"></div>
+</main>
+<script>
+const MIN = 60000;
+const LIMIT = 3;
+const initial = () => {
+  const now = Date.now();
+  return {
+    repo: "~/work/kanna-v4",
+    view: "task",
+    active: "p1",
+    menu: false,
+    query: "", sel: 0, finding: false, note: "",
+    tasks: [
+      { id: "p1", place: "desk", title: "Doc markup reference model", branch: "task-doc-markup", agent: "claude", status: "working", leftAt: now - 2 * MIN,
+        tabs: ["doc-markup.md", "doc-markup.html", "tests"] },
+      { id: "p4", place: "desk", title: "Tab bar follows light mode", branch: "tab-bar-light", agent: "codex", status: "idle", leftAt: now - 12 * MIN,
+        tabs: ["localhost:5173", "s36-2-light.png"] },
+      { id: "p8", place: "shelf", title: "agent_status e2e is flaky", by: "the planning agent", madeAt: now - 40 * MIN,
+        prompt: "agent_status waits 5s for 'working' after answering the mock agent; make the wait follow the status" },
+      { id: "p9", place: "shelf", title: "kanna open infers the pane type", by: "Tab bar follows light mode", madeAt: now - 25 * MIN,
+        prompt: "kanna open FILE should pick md or web from the file's extension, so TYPE is optional" },
+      { id: "p11", place: "shelf", title: "Rename a task from the strip", by: "the planning agent", madeAt: now - 5 * MIN,
+        prompt: "Double-click a strip item to rename its task, as tabs rename" },
+      { id: "p12", place: "shelf", title: "Release notes", by: "the planning agent", madeAt: now - 3 * MIN, waits: "agent_status e2e is flaky",
+        prompt: "Write the 0.9 notes once the flaky test is fixed" },
+    ],
+  };
+};
+let s = initial();
+const cheers = ["Clear desk, clear mind. Pick what's next.", "Nice work. What's next?", "Fresh start. Pick a task when you're ready.", "Breathe. Then pick the next one."];
+let cheerAt = location.hash.includes("picture") ? 0 : Math.floor(Math.random() * cheers.length);
+const statusText = { working: "working", needs: "needs you", idle: "idle" };
+const task = id => s.tasks.find(t => t.id === id);
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const ago = at => { const m = Math.max(0, Math.round((Date.now() - at) / MIN)); return m < 1 ? "now" : m < 60 ? m + "m" : Math.round(m / 60) + "h"; };
+const onDesk = () => s.tasks.filter(t => t.place === "desk");
+const shelf = () => s.tasks.filter(t => t.place === "shelf");
+const active = () => task(s.active);
+const others = () => {
+  const rest = onDesk().filter(t => t.id !== s.active).sort((a, b) => b.leftAt - a.leftAt);
+  return rest.filter(t => t.status === "needs").concat(rest.filter(t => t.status !== "needs"));
+};
+const words = q => q.toLowerCase().split(/\s+/).filter(Boolean);
+const matches = (t, q) => { const hay = (t.title + "\n" + t.prompt).toLowerCase(); return words(q).every(x => hay.includes(x)); };
+const hits = () => shelf().filter(t => matches(t, s.query));
+function marked(text, q) {
+  const low = text.toLowerCase(), on = new Array(low.length).fill(false);
+  for (const x of words(q)) for (let i = low.indexOf(x); i >= 0; i = low.indexOf(x, i + 1)) on.fill(true, i, i + x.length);
+  let out = "", i = 0;
+  while (i < low.length) { let j = i; while (j < low.length && on[j] === on[i]) j++; const part = esc(text.slice(i, j)); out += on[i] ? `<mark>${part}</mark>` : part; i = j; }
+  return out;
+}
+
+function render() {
+  const t = s.view === "task" ? active() : null;
+  document.getElementById("stage").innerHTML = `<div class="window">
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="where"><b>${t ? esc(t.title) : "Desk"}</b></span></div>
+    <div style="flex:1;display:flex;flex-direction:column;min-height:0">${t ? taskHTML(t) : deskViewHTML()}</div>
+    ${t ? `<div class="strip">${stripHTML()}</div>` : ""}
+  </div>`;
+  const find = s.finding && document.querySelector("[data-find]");
+  if (find) { find.focus(); find.setSelectionRange(find.value.length, find.value.length); }
+  menubar();
+}
+
+const deskIcon = `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5.5 5.5 8 8l2.5-2.5"/><path d="M5 11h6" stroke-width="2"/></svg>`;
+
+function taskHTML(t) {
+  const log = t.id === "p1" ? [
+    `<span class="c">kanna-v4/.kanna-worktrees/task-p1</span> <span class="p">❯</span> claude`, ``,
+    `<span class="p">&gt;</span> [kanna comment c2 · docs/specs/doc-markup.md:58]`, `  Say what happens when the agent pane is closed.`, ``,
+    `<span class="m">●</span> Updated docs/specs/doc-markup.md`, ``,
+    `<span class="m">✻</span> <span class="g">Working… reading the prototype README</span>`,
+  ] : [
+    `<span class="c">kanna-v4/.kanna-worktrees/task-${t.id}</span> <span class="p">❯</span> ${t.agent}`, ``,
+    `<span class="m">●</span> ${t.status === "needs" ? "I need you to choose: keep the old colours as a fallback, or drop them?" : t.fresh ? "Reading the first message…" : "Done. chrome_and_drops passes; screenshots in light and dark attached."}`,
+  ];
+  return `<div class="content">
+    <div class="agent"><div class="head">.kanna-worktrees/task-${t.id} · ${esc(t.branch)}<span class="spacer"></span><span class="pill icon" data-toggle title="Desk view (⌘.)">${deskIcon}</span></div>
+      <div class="term">${log.join("\n")}</div></div>
+    <div class="docs"><div class="dtabs">${t.tabs.map((f, i) => `<div class="dtab ${i ? "" : "on"}">${esc(f)}</div>`).join("")}<span class="add">+</span></div>
+      <div class="doc"><h2>${esc(t.tabs[0])}</h2><p class="sub">The task's first tab, as it was when you left it.</p><p>Its tabs, focus, zoom and scroll positions stay as they were while the Desk view shows: the task is still active and running.</p></div></div>
+  </div>`;
+}
+
+function stripHTML() {
+  const waiting = shelf().length;
+  return `<span class="hint" data-toggle title="The Desk view: the planner, the Desk's tasks and the Shelf"><kbd>⌘.</kbd> Desk</span>${others().length ? `<span class="sep"></span>` : ""}` +
+    others().map((t, i) => `<span class="item ${t.status === "needs" ? "needs" : ""}" data-activate="${t.id}" title="${esc(t.title)}"><span class="dot ${t.status}"></span><span class="nm">${esc(t.title)}</span><span class="meta">· ${t.status === "needs" ? "needs you" : ago(t.leftAt) + " ago"}</span><span class="kb">⌘${i + 1}</span></span>`).join("") +
+    (waiting ? `<span class="count">${waiting} on the Shelf</span>` : "");
+}
+
+function plannerLog() {
+  const d = onDesk(), b = shelf();
+  return [
+    `<span class="p">&gt;</span> You are the Kanna planning agent.`, ``,
+    `<span class="m">●</span> In kanna-v4: ${d.length} on the Desk (${d.map(x => esc(x.title) + ", " + statusText[x.status]).join("; ") || "none"}), ${b.length} waiting on the Shelf. What are we working on?`,
+  ].join("\n");
+}
+
+function deskViewHTML() {
+  const a = active(), rest = others(), full = onDesk().length >= LIMIT, found = hits(), sel = Math.min(s.sel, Math.max(0, found.length - 1)), q = s.query;
+  const deskRow = (t, key, isActive) => `<div class="row ${isActive ? "active" : ""}" data-activate="${t.id}"><span class="dot ${t.status}"></span><div class="t"><div class="n">${esc(t.title)}${isActive ? `<span class="tag">active</span>` : ""}</div><div class="s">${t.agent} · ${statusText[t.status]}${isActive ? "" : ` · ${ago(t.leftAt)} ago`} · ${esc(t.branch)}</div></div><span class="go">${isActive ? "⌘. · Back to it" : `${key} · Make active →`}</span></div>`;
+  return `<div class="content">
+    <div class="agent"><div class="head">Planning · ${esc(s.repo)} · main</div><div class="term">${plannerLog()}</div></div>
+    <div class="docs"><div class="empty"><p class="sub">${cheers[cheerAt]}</p>
+      <div class="group"><div class="gh"><span><b>Desk</b> · ${esc(s.repo)}</span><span>${onDesk().length} of ${LIMIT} tasks</span></div>
+        ${(a ? deskRow(a, "", true) : "") + rest.map((t, i) => deskRow(t, "⌘" + (i + 1), false)).join("") || `<div class="s" style="color:var(--muted)">Nothing on the Desk. Move a task here from the Shelf.</div>`}</div>
+      <div class="group"><div class="gh"><span><b>Shelf</b></span>${shelf().length ? `<label class="find"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><input data-find value="${esc(q)}" placeholder="Search the Shelf" spellcheck="false" autocomplete="off"><kbd>⌘F</kbd></label>` : ""}<span>${q ? `${found.length} of ${shelf().length}` : `${shelf().length} waiting`}</span></div>
+        ${found.map((t, i) => `<div class="row waiting ${q && i === sel ? "sel" : ""}" data-move="${t.id}"><span class="dot"></span><div class="t"><div class="n">${marked(t.title, q)}</div><div class="s">${t.waits ? `waits for ${esc(t.waits)} · ` : ""}${marked(t.prompt, q)} · from ${esc(t.by)}, ${ago(t.madeAt)} ago</div></div><span class="go ${full || t.waits ? "off" : ""}">${t.waits ? "Blocked" : full ? "Desk full" : q && i === sel ? "↩ Move to Desk" : "Move to Desk →"}</span></div>`).join("") || (q ? `<div class="nohit">No Shelf task matches “${esc(q)}”.</div>` : `<div class="s" style="color:var(--muted)">Empty. Ask the planning agent for tasks.</div>`)}
+        <p class="note">${esc(s.note)}</p></div>
+    </div></div>
+  </div>`;
+}
+
+function menubar() {
+  const inTask = s.view === "task" && active(), slot = n => others()[n - 1];
+  const toggleOn = inTask || active() || onDesk().length;
+  const item = (label, key, on, act) => `<div class="i ${on ? "" : "off"}" ${on ? `data-menu="${act}"` : ""}>${label}<span class="k">${key}</span></div>`;
+  const drop = `<div class="drop">
+    ${item(inTask ? "Show Desk" : "Show Active Task", "⌘.", toggleOn, "toggle")}
+    ${item("Move to Shelf", "", inTask, "shelve")}
+    <hr>${item("Task Waiting Longest", "⇧⌘A", !!waitingLongest(), "waiting")}
+    <hr>${[1, 2, 3].map(n => item(`Desk Task ${n}`, `⌘${n}`, !!slot(n), "slot" + n)).join("")}
+  </div>`;
+  document.getElementById("menubar").innerHTML = ["Kanna", "File", "Edit", "Pane", "View", "Task", "Window"].map(m =>
+    `<span class="m ${m === "Kanna" ? "app" : ""} ${m === "Task" && s.menu ? "open" : ""}" data-top="${m}">${m}${m === "Task" && s.menu ? drop : ""}</span>`).join("");
+}
+
+function activate(id) {
+  const t = task(id);
+  if (!t || t.place !== "desk") return;
+  const was = active();
+  if (was && was.id !== id) was.leftAt = Date.now();
+  s.active = id;
+  if (t.status === "needs") t.status = "idle";
+  s.view = "task";
+  s.query = ""; s.sel = 0; s.finding = false;
+  render();
+}
+
+function toggle() {
+  if (s.view === "task" && active()) {
+    s.view = "desk";
+    cheerAt = (cheerAt + 1) % cheers.length;
+    return render();
+  }
+  if (active()) { s.view = "task"; s.finding = false; return render(); }
+  const first = others()[0];
+  if (first) activate(first.id);
+}
+
+function moveToDesk(id) {
+  const t = task(id);
+  if (!t || t.place !== "shelf") return;
+  if (t.waits) { s.note = `${t.title} waits for ${t.waits}`; return render(); }
+  if (onDesk().length >= LIMIT) { s.note = "The Desk is full: move a task to the Shelf first"; return render(); }
+  Object.assign(t, { place: "desk", agent: t.agent || "claude", status: "working", branch: "task-" + t.id, leftAt: Date.now(), tabs: ["shell"], fresh: true });
+  s.note = ""; s.query = ""; s.sel = 0;
+  render();
+}
+
+function moveToShelf() {
+  const t = s.view === "task" && active();
+  if (!t) return;
+  t.place = "shelf"; t.madeAt = t.madeAt || Date.now(); t.by = t.by || "the planning agent"; t.prompt = t.prompt || "(running, as it was)";
+  s.active = null;
+  s.view = "desk";
+  cheerAt = (cheerAt + 1) % cheers.length;
+  render();
+}
+
+function waitingLongest() { return others().filter(t => t.status === "needs").sort((a, b) => (a.needsAt || 0) - (b.needsAt || 0))[0]; }
+
+document.addEventListener("click", e => {
+  const el = sel => e.target.closest(sel);
+  const top = el("[data-top]"), mi = el("[data-menu]");
+  if (mi) {
+    e.stopPropagation(); s.menu = false;
+    const m = mi.dataset.menu;
+    if (m === "toggle") return toggle();
+    if (m === "shelve") return moveToShelf();
+    if (m === "waiting") return activate(waitingLongest().id);
+    if (m.startsWith("slot")) return activate(others()[Number(m.slice(4)) - 1].id);
+    return render();
+  }
+  if (top && top.dataset.top === "Task" && !el(".drop")) { s.menu = !s.menu; return menubar(); }
+  if (s.menu && !el(".drop")) { s.menu = false; menubar(); }
+  if (el("[data-toggle]")) return toggle();
+  if (el("[data-move]")) return moveToDesk(el("[data-move]").dataset.move);
+  if (el("[data-activate]")) return activate(el("[data-activate]").dataset.activate);
+});
+document.addEventListener("input", e => {
+  if (!e.target.closest("[data-find]")) return;
+  s.query = e.target.value; s.sel = 0; s.finding = true;
+  render();
+});
+document.addEventListener("keydown", e => {
+  const find = e.target.closest && e.target.closest("[data-find]");
+  if (find && !e.metaKey) {
+    const found = hits();
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); s.sel = Math.max(0, Math.min(found.length - 1, s.sel + (e.key === "ArrowDown" ? 1 : -1))); render(); }
+    else if (e.key === "Enter" && s.query && found.length) { e.preventDefault(); moveToDesk(found[Math.min(s.sel, found.length - 1)].id); }
+    else if (e.key === "Escape") { e.preventDefault(); if (s.query) { s.query = ""; s.sel = 0; render(); } else { s.finding = false; find.blur(); } }
+    return;
+  }
+  if (!e.metaKey) return;
+  if (!e.shiftKey && e.key === ".") { e.preventDefault(); return toggle(); }
+  if (!e.shiftKey && /^[1-3]$/.test(e.key)) { const t = others()[Number(e.key) - 1]; if (t) { e.preventDefault(); activate(t.id); } return; }
+  if (e.shiftKey && e.key.toLowerCase() === "a") { e.preventDefault(); const t = waitingLongest(); if (t) activate(t.id); return; }
+  if (!e.shiftKey && e.key.toLowerCase() === "f" && s.view === "desk") { const f = document.querySelector("[data-find]"); if (f) { e.preventDefault(); s.finding = true; f.focus(); f.select(); } }
+});
+document.getElementById("theme").onclick = () => { const r = document.documentElement; r.dataset.theme = r.dataset.theme === "light" ? "" : "light"; };
+document.getElementById("reset").onclick = () => { s = initial(); render(); };
+document.getElementById("ring").onclick = () => { const t = others().find(t => t.status !== "needs"); if (t) { t.status = "needs"; t.needsAt = Date.now(); render(); } };
+if (location.hash.includes("picture")) document.body.classList.add("picture");
+if (location.hash.includes("light")) document.documentElement.dataset.theme = "light";
+if (location.hash.includes("full")) moveToDesk("p9");
+if (location.hash.includes("needs")) { task("p4").status = "needs"; task("p4").needsAt = Date.now(); }
+if (location.hash.includes("desk")) s.view = "desk";
+const asked = location.hash.match(/q=([^&]*)/);
+if (asked) { s.query = decodeURIComponent(asked[1]); s.finding = true; }
+if (location.hash.includes("menu")) { document.body.classList.add("menu"); s.menu = true; }
+setInterval(() => { if (!s.finding) render(); }, 30000);
+render();
+</script>
+</body>
+</html>

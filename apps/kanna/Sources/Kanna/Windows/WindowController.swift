@@ -19,7 +19,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     let shelfStrip = ShelfStrip()
     let shelfPage = ShelfPage()
     let machinesPage = MachinesPage()
-    static let pages = ["Shelf", "Machines"]
+    static let pages = ["Desk", "Machines"]
     var page: String?
     var machines: [MachineRow] = []
     var stale: String?
@@ -29,6 +29,8 @@ final class WindowController: NSObject, NSWindowDelegate {
     private(set) var pages: [String] = []
     private var dockedTask: String?
     var shelf: [ShelfTask] = []
+    var active: String?
+    var others: [ShelfTask] { shelf.filter { $0.id != active } }
     var shelfDocks: [JSON] = []
     var backlog: [BacklogTask] = []
     var running = 0
@@ -110,7 +112,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         tab = state["tab"]?.string
         let instance = AppController.instanceName
         desk = state["desk"]?.bool == true
-        let named = desk ? taskTitle ?? "Shelf" : state["lead"]?["name"]?.string ?? "\(state["title"]?.string ?? "Kanna") — \(id)"
+        let named = desk ? taskTitle ?? "Desk" : state["lead"]?["name"]?.string ?? "\(state["title"]?.string ?? "Kanna") — \(id)"
         window.title = named + (instance == "default" ? "" : " · \(instance)")
         let root = state["root"] ?? .null
         let task = Self.side(state["dock"])
@@ -224,7 +226,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         let below = NSRect(x: side.minX, y: side.minY, width: side.width, height: max(0, side.height - bar))
         if showsShelf {
             shelfPage.frame = below
-            shelfPage.show(DeskPage(tasks: shelf, backlog: backlog, running: running, project: project, cheer: cheer, note: note))
+            shelfPage.show(DeskPage(active: shelf.first { $0.id == active }, tasks: others, backlog: backlog, running: running, project: project, cheer: cheer, note: note))
         } else if pageShown != nil {
             machinesPage.frame = below
             machinesPage.show(machines)

@@ -74,7 +74,7 @@ flowchart LR
 
 The shell script only asks and shows. `kanna __complete -- WORDS…` reads the command table that help and parsing use: the usage lines give the positional words (`open md FILE`), the options give their values (`--split right|down|auto`, `--window ID|new`). It prints one candidate a line, `value⇥description`, or asks the shell for files of some kinds, folders or commands. If zsh's completion system isn't loaded, the zsh script loads it.
 
-The same startup step reports the shell's folder (OSC 7, at the first prompt and on every `cd`), since Ghostty's own shell integration doesn't run under Kanna's; a Desk's header and a task's repo follow it (`desk_backlog`).
+The same startup step reports the shell's folder (OSC 7, at the first prompt and on every `cd`), since Ghostty's own shell integration doesn't run under Kanna's; a Desk's header and a task's repo follow it (`desk_shelf`).
 
 The code: `crates/kanna/src/complete.rs` with the shell scripts beside it, and `crates/kanna-daemon/src/shell.rs`; checked by their unit tests and `zsh_completion`.
 

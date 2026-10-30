@@ -182,7 +182,13 @@ const RUNNERS_MAX: usize = 10;
 
 pub fn runners(files: &[PathBuf]) -> usize {
     let read = |value: &Value| value.as_u64().map(|n| n as usize).filter(|n| *n <= RUNNERS_MAX);
-    configured(files, "backlog", "runners", read, "a number of tasks from 0 to 10").unwrap_or(RUNNERS)
+    files
+        .iter()
+        .find_map(|file| {
+            let file = std::slice::from_ref(file);
+            configured(file, "shelf", "runners", read, "a number of tasks from 0 to 10").or_else(|| configured(file, "backlog", "runners", read, "a number of tasks from 0 to 10"))
+        })
+        .unwrap_or(RUNNERS)
 }
 
 pub fn scripts(files: &[PathBuf]) -> Scripts {
@@ -516,7 +522,7 @@ fn started_here(task: &str, pane: &str, place: &str) -> Map {
 }
 
 fn not_found(id: &str) -> KmuxError {
-    KmuxError::new("not_found", format!("no task \"{id}\" in the backlog"))
+    KmuxError::new("not_found", format!("no task \"{id}\" on the Shelf"))
 }
 
 fn failed(value: &Value) -> Option<KmuxError> {
@@ -752,7 +758,7 @@ impl Backlog {
                     let entry = Entry::from_row(row);
                     let back = Change::new("deferred").moved(row.place, Place::Backlog).by(Some("daemon"));
                     if let Err(error) = db.put(&entry.row(Place::Backlog, None), Some(&back)) {
-                        log!("kanna-daemon: couldn't put {} back on the backlog: {error}", entry.id);
+                        log!("kanna-daemon: couldn't put {} back on the Shelf: {error}", entry.id);
                     }
                     entries.push(entry);
                 }
@@ -1009,7 +1015,7 @@ impl Backlog {
     fn edit(&self, args: &Value) -> Result<Map, KmuxError> {
         let reference = string(args, "task").ok_or_else(|| bad("say which task"))?;
         let Some(mut entry) = self.entries.borrow().iter().find(|e| e.id == reference).cloned() else {
-            return Err(KmuxError::new("not_found", format!("no backlog task \"{reference}\"")));
+            return Err(KmuxError::new("not_found", format!("no Shelf task \"{reference}\"")));
         };
         if entry.folder.is_some() {
             return Err(KmuxError::new("started", format!("{} has started: its branch is made, and nothing holds it back now", self.short(reference))));
@@ -1033,7 +1039,7 @@ impl Backlog {
         let waiting = self.entries.borrow().iter().find(|e| e.id == reference).cloned();
         let Some(entry) = waiting else {
             let running = self.running.borrow().iter().find(|r| r.entry.id == reference).map(|r| r.pane.clone());
-            let Some(pane) = running else { return responder.reply(Err(KmuxError::new("not_found", format!("no task \"{reference}\" in the backlog or on the Shelf")))) };
+            let Some(pane) = running else { return responder.reply(Err(KmuxError::new("not_found", format!("no task \"{reference}\" on the Shelf or on the Desk")))) };
             let id = reference.to_string();
             return core.handle(json!({ "cmd": "rename-pane", "args": { "pane": pane, "name": name } }), move |reply| match failed(&reply) {
                 Some(error) => responder.reply(Err(error)),
@@ -1345,7 +1351,7 @@ impl Backlog {
                     break;
                 }
                 busy += 1;
-                log!("kanna-daemon: {} has a message, so it runs in the backlog ({busy} of {slots} in {repo})", entry.id);
+                log!("kanna-daemon: {} has a message, so it runs on the Shelf ({busy} of {slots} in {repo})", entry.id);
                 self.wake(core, (*entry).clone());
             }
             let mut waiting: Vec<&&Entry> = mine.iter().filter(|e| e.folder.is_none() && e.held.is_none() && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && self.waits(e).is_empty()).collect();
@@ -1356,10 +1362,10 @@ impl Backlog {
                 }
                 busy += 1;
                 let (this, id) = (Rc::downgrade(self), entry.id.clone());
-                log!("kanna-daemon: {id} runs in the backlog ({busy} of {slots} in {repo})");
+                log!("kanna-daemon: {id} runs on the Shelf ({busy} of {slots} in {repo})");
                 self.prepare((*entry).clone(), None, Some("daemon".into()), Answer::Then(Box::new(move |result| {
                     if let (Err(error), Some(this)) = (result, this.upgrade()) {
-                        log!("kanna-daemon: {id} couldn't run in the backlog: {}", error.message);
+                        log!("kanna-daemon: {id} couldn't run on the Shelf: {}", error.message);
                         this.failed.borrow_mut().insert(id);
                     }
                 })));
@@ -2390,7 +2396,7 @@ impl Backlog {
                 return then(Err(error));
             }
             let listed = reply.get("tasks").and_then(Value::as_array).is_some_and(|tasks| tasks.iter().any(|t| string(t, "id") == Some(pane.as_str())));
-            then(if listed { Ok(pane) } else { Err(KmuxError::new("not_a_task", format!("{reference} isn't a task: a task is an agent docked on a Desk or the Shelf, or in the backlog"))) })
+            then(if listed { Ok(pane) } else { Err(KmuxError::new("not_a_task", format!("{reference} isn't a task: a task is an agent docked on a Desk, or on the Shelf"))) })
         });
     }
 
@@ -2638,7 +2644,7 @@ impl Backlog {
                 core.with_panes(|panes| ids.iter().filter_map(|id| panes.get(id)).filter(|p| project(p.cwd.as_deref()) == here).count())
             });
             if running >= TASKS_PER_PROJECT {
-                return responder.reply(Err(KmuxError::new("task_limit", format!("{} has {TASKS_PER_PROJECT} tasks on the Shelf: move one to the backlog with `kanna task defer TASK` first", entry.repo))));
+                return responder.reply(Err(KmuxError::new("task_limit", format!("{} has {TASKS_PER_PROJECT} tasks on the Desk: move one to the Shelf with `kanna task shelve TASK` first", entry.repo))));
             }
             this.prepare(entry, Some(app), by, responder);
         });
@@ -2794,7 +2800,7 @@ impl Backlog {
             let Some(command) = command else {
                 return this.with_branch(shelved.map(|_| Self::reply_out(&id, &pane, Some(&folder), Some(&app))), &folder, None, responder);
             };
-            log!("kanna-daemon: {id} is on {app}'s Shelf, and its agent and tabs start");
+            log!("kanna-daemon: {id} is on {app}'s Desk, and its agent and tabs start");
             let again = Rc::downgrade(&this);
             this.after_this_turn(move || {
                 let Some(this) = again.upgrade() else { return responder.reply(Err(gone())) };
@@ -2803,7 +2809,7 @@ impl Backlog {
                     let Some(this) = again.upgrade() else { return };
                     match &result {
                         Ok(_) => log!("kanna-daemon: {id}'s agent and tabs started"),
-                        Err(error) => log!("kanna-daemon: {id} is on the Shelf, but its agent didn't start: {}", error.message),
+                        Err(error) => log!("kanna-daemon: {id} is on the Desk, but its agent didn't start: {}", error.message),
                     }
                     let out = shelved.and(result).map(|pane| Self::reply_out(&id, &pane, Some(&folder), Some(&app)));
                     this.with_branch(out, &folder, None, responder);
@@ -3212,11 +3218,11 @@ mod tests {
     }
 
     #[test]
-    fn the_planner_script_asks_which_agent_offers_to_make_it_the_project_s_and_starts_it() {
+    fn the_planner_script_asks_which_agent_saves_it_as_the_project_s_and_starts_it() {
         let p = planner("ask", &["claude", "codex"]);
         let repo = p.repo("app");
-        let out = p.run(&repo, "2\ny\n");
-        assert!(out.contains("Choose an agent for planning and task creation\n\n  1  claude\n  2  codex\n\nChoose [1]: Make codex the planning agent for app? [Y/n] codex plans app from now on (planning.agent in .kanna/config.json).\n"), "{out}");
+        let out = p.run(&repo, "2\n");
+        assert!(out.contains("Choose an agent for planning and task creation\n\n  1  claude\n  2  codex\n\nChoose [1]: codex plans app from now on (planning.agent in .kanna/config.json).\n"), "{out}");
         assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/local/app: --yolo --no-daemon You are the Kanna planning agent.\n"), "{out}");
         assert!(out.contains("The planning agent quit. Start it again: codex --yolo --no-daemon 'You are the Kanna planning agent.'\nshell in ROOT/home/.kanna-v4/repos/local/app\n"), "{out}");
         let config: Value = serde_json::from_str(&fs::read_to_string(repo.join(".kanna/config.json")).unwrap()).unwrap();
@@ -3228,20 +3234,11 @@ mod tests {
         assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/local/app: --yolo --no-daemon You are the Kanna planning agent."), "{out}");
 
         let other = p.repo("other");
-        let out = p.run(&other, "\nn\n");
-        assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/other: --dangerously-skip-permissions You are the Kanna planning agent."), "Return takes the first: {out}");
-        assert!(!other.join(".kanna").exists(), "no saves nothing");
-
-        let enter = p.repo("enter");
-        let out = p.run(&enter, "2\n\n");
-        assert!(out.contains("Make codex the planning agent for enter? [Y/n] codex plans enter from now on"), "Return saves: {out}");
-        let config: Value = serde_json::from_str(&fs::read_to_string(enter.join(".kanna/config.json")).unwrap()).unwrap();
-        assert_eq!(config, json!({ "version": 1, "planning": { "agent": "codex" } }));
-
-        let declined = p.repo("declined");
-        let out = p.run(&declined, "2\nN\n");
-        assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/local/declined: --yolo") && !out.contains("codex plans declined"), "N declines: {out}");
-        assert!(!declined.join(".kanna").exists(), "N saves nothing");
+        let out = p.run(&other, "\n");
+        assert!(out.contains("Choose [1]: claude plans other from now on (planning.agent in .kanna/config.json).\n"), "Return takes the first and saves it: {out}");
+        assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/other: --dangerously-skip-permissions You are the Kanna planning agent."), "{out}");
+        let config: Value = serde_json::from_str(&fs::read_to_string(other.join(".kanna/config.json")).unwrap()).unwrap();
+        assert_eq!(config, json!({ "version": 1, "planning": { "agent": "claude" } }));
     }
 
     #[test]
@@ -3250,20 +3247,20 @@ mod tests {
         let repo = p.repo("app");
         fs::create_dir_all(repo.join(".kanna")).unwrap();
         fs::write(repo.join(".kanna/config.json"), r#"{"$schema": "x", "version": 1, "planning": {"context": 400000}}"#).unwrap();
-        p.run(&repo, "1\ny\n");
+        p.run(&repo, "1\n");
         let config: Value = serde_json::from_str(&fs::read_to_string(repo.join(".kanna/config.json")).unwrap()).unwrap();
         assert_eq!(config, json!({ "$schema": "x", "version": 1, "planning": { "context": 400000, "agent": "claude" } }));
 
         let cloned = p.repo("cloned");
         fs::create_dir_all(cloned.join(".kanna")).unwrap();
         std::os::unix::fs::symlink(p.home.join("elsewhere"), cloned.join(".kanna/config.json")).unwrap();
-        let out = p.run(&cloned, "1\ny\n");
+        let out = p.run(&cloned, "1\n");
         assert!(out.contains("Couldn't write ROOT/home/.kanna-v4/repos/local/cloned/.kanna/config.json."), "a repo's symlink isn't followed: {out}");
         assert!(!p.home.join("elsewhere").exists());
         fs::write(cloned.join(".kanna/config.json.real"), "{\"version\": 1, \"planning\": {\"agent\": \"evil\\u001b]0;x\\u0007\"}}").unwrap();
         fs::remove_file(cloned.join(".kanna/config.json")).unwrap();
         fs::rename(cloned.join(".kanna/config.json.real"), cloned.join(".kanna/config.json")).unwrap();
-        let out = p.run(&cloned, "1\nn\n");
+        let out = p.run(&cloned, "1\n");
         assert!(out.contains("planning.agent is evil]0;x, which isn't installed.") && !out.contains('\u{7}'), "a repo's text can't drive the terminal: {out:?}");
     }
 
@@ -3285,20 +3282,20 @@ mod tests {
         let out = p.run(&p.home, "recipe-box\n2\n");
         assert!(out.contains("Folder, repo or name: Made ~/.kanna-v4/repos/local/recipe-box\n"), "{out}");
         assert!(out.contains("\u{1b}]7;file://localhostROOT/home/.kanna-v4/repos/local/recipe-box\u{1b}\\"), "the window follows: {out}");
-        assert!(!out.contains("Make codex"), "a new project isn't a repo, so nothing is offered: {out}");
+        assert!(!out.contains("plans recipe-box"), "a new project isn't a repo, so nothing is saved: {out}");
         assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/local/recipe-box: --yolo --no-daemon You are the Kanna planning agent.") && out.ends_with("shell in ROOT/home/.kanna-v4/repos/local/recipe-box\n"), "{out}");
         let out = p.run(&p.home, "recipe-box\n1\n");
         assert!(out.contains("Opened ~/.kanna-v4/repos/local/recipe-box\n"), "{out}");
 
         let repo = p.repo("app");
         p.repo_at(&p.root.join("work/app"));
-        let out = p.run(&p.home, "~/nowhere\nbad name!\n../work/app\n.kanna-v4/repos/local/app\n1\nn\n");
+        let out = p.run(&p.home, "~/nowhere\nbad name!\n../work/app\n.kanna-v4/repos/local/app\n1\n");
         assert!(out.contains("No folder ~/nowhere.") && out.contains("A project's name is letters, digits"), "{out}");
         assert!(out.contains("ROOT/work/app isn't in ~/.kanna-v4/repos, where Kanna keeps its projects so each has the same place on every machine.\nImport a copy there: kanna project import ROOT/work/app\nFolder, repo or name: "), "a folder outside repos is refused: {out}");
         assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/app: --dangerously-skip-permissions You are"), "a folder is moved to: {out}");
-        let out = p.run(&p.home, &format!("{}\n1\nn\n", repo.display()));
+        let out = p.run(&p.home, &format!("{}\n1\n", repo.display()));
         assert!(out.contains("claude in ROOT/home/.kanna-v4/repos/local/app: --dangerously-skip-permissions You are"), "{out}");
-        let out = p.run(&repo, "1\nn\n");
+        let out = p.run(&repo, "1\n");
         assert!(!out.contains("Folder, repo or name"), "only in ~: {out}");
     }
 
@@ -3382,20 +3379,20 @@ mod tests {
         let bare = p.root.join("remote/kojo.git");
         assert!(Command::new("git").args(["clone", "-q", "--bare"]).arg(&source).arg(&bare).status().unwrap().success());
         let url = format!("file://{}", bare.display());
-        let out = p.run(&p.home, &format!("{url}\n2\nn\n"));
+        let out = p.run(&p.home, &format!("{url}\n2\n"));
         assert!(out.contains("Cloning file://ROOT/remote/kojo.git into ~/.kanna-v4/repos/local/kojo…"), "{out}");
-        assert!(out.contains("Make codex the planning agent for kojo? [Y/n]"), "a clone is a repo: {out}");
+        assert!(out.contains("codex plans kojo from now on"), "a clone is a repo: {out}");
         assert!(out.contains("codex in ROOT/home/.kanna-v4/repos/local/kojo: --yolo --no-daemon"), "{out}");
-        let out = p.run(&p.home, &format!("{url}\n2\nn\n"));
+        let out = p.run(&p.home, &format!("{url}\n2\n"));
         assert!(out.contains("Opened ~/.kanna-v4/repos/local/kojo (already cloned)"), "{out}");
 
         let out = p.run(&p.home, "someone/tool\nrecipe\n1\n");
         assert!(out.contains("gh isn't installed: give the repo's URL.") && out.contains("Made ~/.kanna-v4/repos/local/recipe"), "{out}");
         stub(&p.bin.join("gh"), &format!("[ \"$1 $2 $3\" = \"repo clone someone/tool\" ] && git clone -q {url} \"$4\""));
-        let out = p.run(&p.home, "someone/tool\n1\nn\n");
+        let out = p.run(&p.home, "someone/tool\n1\n");
         assert!(out.contains("Cloning someone/tool into ~/.kanna-v4/repos/someone/tool…") && out.contains("claude in ROOT/home/.kanna-v4/repos/someone/tool: --dangerously-skip-permissions You are"), "{out}");
         p.repo_at(&p.home.join(".kanna-v4/repos/other/kojo"));
-        let out = p.run(&p.home, "other/kojo\n1\nn\n");
+        let out = p.run(&p.home, "other/kojo\n1\n");
         assert!(out.contains("~/.kanna-v4/repos/other/kojo is already there, and isn't a clone of other/kojo."), "{out}");
         for (url, place) in [("https://example.invalid/team/site.git", "team/site"), ("git@example.invalid:team/site.git", "team/site"), ("ssh://git@example.invalid:22/team/site", "team/site"), ("git@example.invalid:site.git", "example.invalid/site")] {
             let out = p.run(&p.home, &format!("{url}\nrecipe\n1\n"));
@@ -3416,10 +3413,12 @@ mod tests {
         assert_eq!(keys, ["agent", "context"], "a key in the schema Kanna doesn't read, or the other way round");
         let names: Vec<&str> = AGENTS.iter().map(|a| a.names[0]).collect();
         assert_eq!(schema["properties"]["planning"]["properties"]["agent"]["enum"], json!(names), "planning.agent names the agents a planning terminal offers");
-        let runners = &schema["properties"]["backlog"]["properties"]["runners"];
-        assert_eq!((runners["default"].clone(), runners["minimum"].clone(), runners["maximum"].clone()), (json!(RUNNERS), json!(0), json!(RUNNERS_MAX)));
-        let keys: Vec<&String> = schema["properties"]["backlog"]["properties"].as_object().unwrap().keys().collect();
-        assert_eq!(keys, ["runners"]);
+        for section in ["shelf", "backlog"] {
+            let runners = &schema["properties"][section]["properties"]["runners"];
+            assert_eq!((runners["default"].clone(), runners["minimum"].clone(), runners["maximum"].clone()), (json!(RUNNERS), json!(0), json!(RUNNERS_MAX)));
+            let keys: Vec<&String> = schema["properties"][section]["properties"].as_object().unwrap().keys().collect();
+            assert_eq!(keys, ["runners"]);
+        }
         let tasks = &schema["properties"]["tasks"]["properties"];
         assert_eq!((tasks["timeout"]["default"].clone(), tasks["timeout"]["minimum"].clone(), tasks["timeout"]["maximum"].clone()), (json!(task_scripts::TIMEOUT), json!(1), json!(task_scripts::TIMEOUT_MAX)));
         let keys: Vec<&String> = tasks.as_object().unwrap().keys().collect();
@@ -3463,7 +3462,7 @@ mod tests {
     }
 
     #[test]
-    fn backlog_runners_come_from_the_repos_config_then_yours() {
+    fn shelf_runners_come_from_the_repos_config_then_yours() {
         let dir = std::env::temp_dir().join(format!("kanna-runners-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
@@ -3478,6 +3477,11 @@ mod tests {
         assert_eq!(runners(&files), 0, "a bad value leaves it to the next file");
         fs::write(&repo, r#"{"backlog": {"runners": -1}}"#).unwrap();
         assert_eq!(runners(&[repo.clone()]), RUNNERS);
+        fs::write(&repo, r#"{"shelf": {"runners": 2}, "backlog": {"runners": 5}}"#).unwrap();
+        assert_eq!(runners(&files), 2, "shelf.runners wins over its old name in the same file");
+        fs::write(&repo, r#"{"backlog": {"runners": 4}}"#).unwrap();
+        fs::write(&mine, r#"{"shelf": {"runners": 1}}"#).unwrap();
+        assert_eq!(runners(&files), 4, "the repo's old name wins over your new one");
         fs::remove_dir_all(&dir).unwrap();
     }
 

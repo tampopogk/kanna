@@ -63,4 +63,4 @@ flowchart LR
 - The app draws by `scene`, not by merman's diagram type. A new drawn type is a new `Scene` in Rust and its drawing in Swift.
 - `kanna_merman::check(markdown)` is the check: each diagram's line, type and failure, if any.
 
-Fixing what the renderer gets wrong is the backlog task "Diagrams draw what agents write", not this.
+Fixing what the renderer gets wrong is the Shelf task "Diagrams draw what agents write", not this.
