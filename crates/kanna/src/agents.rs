@@ -13,7 +13,8 @@ review comments.
   ~/.agents/skills/kanna-*      the skills (Codex)
   ~/.claude/skills/kanna-*      links to them (Claude)
   ~/.claude/settings.json       Kanna's socket in Claude's sandbox, which lets
-                                sandboxed agents control Kanna's terminals
+                                sandboxed agents control Kanna's terminals, and
+                                a deny on reading Kanna's device keys
 
 Kanna keeps them up to date and never changes a file you've edited.
 Undo it any time with kanna agents remove.

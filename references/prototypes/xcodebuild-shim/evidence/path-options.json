@@ -1,0 +1,9 @@
+{
+  "job": "6490ccda-e351-4690-8adb-65d75c15d708",
+  "cwd": "App",
+  "project_argument": "../ShimProbe.xcodeproj",
+  "result_argument": "../.kanna/explicit-result.xcresult",
+  "build_exit": 0,
+  "artifacts": "ready",
+  "linux_result_directory_verified": true
+}

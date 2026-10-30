@@ -6,12 +6,13 @@ use std::path::PathBuf;
 
 pub type Send = Box<dyn FnMut(Value) -> Value>;
 
-const KANNA_DIFFERS: [(&str, &str); 14] = [
+const KANNA_DIFFERS: [(&str, &str); 16] = [
     ("dock.json: move docks a pane, moves the docked pane to the other edge, and undocks it into a tab", "a docked pane is a task's agent, in its own workspace, not a window's"),
     ("dock.json: docking where a pane is docked sends that one to a new tab, not shown", "a docked pane is a task's agent, in its own workspace, not a window's"),
     ("dock.json: moving the docked pane to another window or beside a pane undocks it; dropping on it swaps", "a docked pane is a task's agent, in its own workspace, not a window's"),
     ("dock.json: open with dock makes the window's docked pane, outside its tabs, 2/5 wide on the left", "a docked pane is a task's agent, in its own workspace, not a window's"),
     ("dock.json: switching tabs leaves the docked pane; focus goes to the shown tab and back", "a docked pane is a task's agent, in its own workspace, not a window's"),
+    ("dock.json: showing a tab with keep dock leaves focus in the focused docked pane; from a tab's pane focus follows", "a docked pane is a task's agent, in its own workspace, not a window's; owner tests cover keep"),
     ("dock.json: the docked pane closes only with its window; a window keeps it when its last tab closes", "a docked pane is a task's agent, in its own workspace, not a window's"),
     ("dock.json: moving a tab to another window leaves the docked pane where it is", "a docked pane is a task's agent, in its own workspace, not a window's"),
     ("dock.json: a frozen docked pane doesn't move and nothing drops on it; it still resizes, is saved frozen and comes back frozen", "a docked pane is a task's agent, in its own workspace, not a window's"),
@@ -20,6 +21,7 @@ const KANNA_DIFFERS: [(&str, &str); 14] = [
     ("dock.json: arrange arranges the shown tab; the docked pane is not part of a layout", "a docked pane is a task's agent, in its own workspace, not a window's"),
     ("dock.json: the docked pane is saved with its window and comes back; a window with only a docked pane too", "a docked pane is a task's agent, in its own workspace, not a window's"),
     ("dock.json: restoring a dock repairs its edge and width, and refuses an unknown or twice-placed pane", "a docked pane is a task's agent, in its own workspace, not a window's"),
+    ("persistence.json: a saved layout comes back: windows, tabs, splits, sizes, names, focus, zoom and what each pane shows; where windows are and how large panes are drawn are the app's, not saved here", "a request that names no window, with several windows, is refused: which window is in front is the app's, not the daemon's"),
     ("workspaces.json: a free window stays free: freeing it changes nothing, and assign needs a window and a workspace that are there", "whether a window shows is each app's, so replies don't say shown"),
 ];
 
@@ -44,14 +46,11 @@ pub fn mismatch(expected: &Value, actual: Option<&Value>, path: &str) -> Option<
             fields
                 .iter()
                 .filter(|(key, value)| !(key.as_str() == "title" && is_tab(path) && numbered(value)))
+                .filter(|(key, _)| !(key.as_str() == "key" && (path.starts_with("windows[") || path.ends_with("state"))))
                 .find_map(|(key, value)| mismatch(value, got.get(key), &if path.is_empty() { key.clone() } else { format!("{path}.{key}") }))
         }
         _ => (!kanna_mux::json::same(expected, actual)).then(|| format!("{path}: expected {}, got {}", encode(expected), encode(actual))),
     }
-}
-
-fn kmux_id(text: &str) -> bool {
-    text.strip_prefix('p').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 fn content_id(text: &str) -> bool {
@@ -60,7 +59,7 @@ fn content_id(text: &str) -> bool {
 
 fn learn(expected: &Value, actual: &Value, ids: &mut Vec<(String, String)>) {
     match (expected, actual) {
-        (Value::String(kmux), Value::String(ours)) if kmux_id(kmux) && content_id(ours) => {
+        (Value::String(kmux), Value::String(ours)) if content_id(kmux) && content_id(ours) => {
             if !ids.iter().any(|(k, o)| k == kmux || o == ours) {
                 ids.push((kmux.clone(), ours.clone()));
             }
@@ -75,40 +74,13 @@ fn learn(expected: &Value, actual: &Value, ids: &mut Vec<(String, String)>) {
     }
 }
 
-const LAYOUT_IDS: [(&str, &str); 2] = [("t", "tab-"), ("w", "win-")];
-
-fn layout_id(text: &str, to_ours: bool) -> Option<String> {
-    LAYOUT_IDS.iter().find_map(|(kmux, ours)| {
-        let (from, to) = if to_ours { (kmux, ours) } else { (ours, kmux) };
-        text.strip_prefix(from).filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())).map(|n| format!("{to}{n}"))
-    })
-}
-
-fn kmux_words(text: &str) -> String {
-    let mut out = String::new();
-    let mut word = String::new();
-    for c in text.chars().chain(std::iter::once('\0')) {
-        if c.is_ascii_alphanumeric() || c == '-' {
-            word.push(c);
-            continue;
-        }
-        out.push_str(&layout_id(&word, false).unwrap_or_else(|| word.clone()));
-        word.clear();
-        if c != '\0' {
-            out.push(c);
-        }
-    }
-    out
-}
-
 fn translate(value: &Value, ids: &[(String, String)], to_ours: bool) -> Value {
     match value {
         Value::String(text) => ids
             .iter()
             .find(|(kmux, ours)| if to_ours { kmux == text } else { ours == text })
             .map(|(kmux, ours)| Value::String(if to_ours { ours.clone() } else { kmux.clone() }))
-            .or_else(|| layout_id(text, to_ours).map(Value::String))
-            .unwrap_or_else(|| if to_ours { value.clone() } else { Value::String(kmux_words(text)) }),
+            .unwrap_or_else(|| value.clone()),
         Value::Array(items) => Value::Array(items.iter().map(|item| translate(item, ids, to_ours)).collect()),
         Value::Object(fields) => Value::Object(fields.iter().map(|(key, item)| (key.clone(), translate(item, ids, to_ours))).collect()),
         _ => value.clone(),

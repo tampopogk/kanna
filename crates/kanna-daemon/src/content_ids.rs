@@ -32,7 +32,7 @@ pub fn migrate(state_dir: &Path, db: &Db) {
         }
         if !renamed.is_empty() && rename(&mut state, &renamed) {
             if let Err(error) = db.put_layout(&state) {
-                eprintln!("kanna-daemon: couldn't save the layout with content IDs: {error}");
+                log!("kanna-daemon: couldn't save the layout with content IDs: {error}");
             }
         }
     }
@@ -40,9 +40,9 @@ pub fn migrate(state_dir: &Path, db: &Db) {
         return;
     }
     if let Err(error) = db.rename_terminals(&renamed) {
-        eprintln!("kanna-daemon: couldn't rename the tasks' terminals: {error}");
+        log!("kanna-daemon: couldn't rename the tasks' terminals: {error}");
     }
-    eprintln!("kanna-daemon: named {} panes by their content (p1 → term-1, file-1, …)", renamed.len());
+    log!("kanna-daemon: named {} panes by their content (p1 → term-1, file-1, …)", renamed.len());
 }
 
 fn rename(value: &mut Value, renamed: &HashMap<String, String>) -> bool {

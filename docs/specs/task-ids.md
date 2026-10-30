@@ -21,27 +21,27 @@ flowchart LR
 
 - **Random, checked.** The daemon picks 32 random bits and keeps them only if no task in `kanna.db` has that ID (done ones too) and the repo has no `.kanna-worktrees/<ID>` folder or `<ID>` branch. There's no counter.
 - **One name everywhere.** Starting a task makes `<repo>/.kanna-worktrees/<ID>` on branch `<ID>`; the agent renames the branch later ([tasks](tasks.md#4-naming)), the folder keeps the ID. The task's [workspace](workspaces.md) has the same ID.
-- **Shown short, everywhere.** `kanna task list` shows it for backlog, Shelf and Desk tasks alike: a Shelf or Desk row is no longer its agent's pane ID (`p353`). A docked pane that isn't a task still shows its pane ID.
+- **Shown short, everywhere.** `kanna task list` shows it for Shelf and Desk tasks alike: a Desk row is no longer its agent's pane ID (`p353`). A docked pane that isn't a task still shows its pane ID.
 
 | Open tasks | Shown as |
 |---|---|
 | `task-1dfb12c2`, `task-c0ffee00` | `task-1dfb`, `task-c0ff` |
 | `task-1dfb12c2`, `task-1dfb9a00` | `task-1dfb1`, `task-1dfb9` |
 
-- **Short like git's hashes.** A task shows as `task-` and its first 4 hex digits, or as many more as it takes to differ from every other open task (backlog, Shelf, Desk), so every shown ID works as a command's TASK. The daemon makes the short form (`short` beside `id` in `backlog list`) and writes it in its own messages, such as the blocked note on the Desk; the CLI shows it in everything it prints. Full IDs stay in `--json`, `kanna.db`, `layout.json`, worktree folders and branches.
+- **Short like git's hashes.** A task shows as `task-` and its first 4 hex digits, or as many more as it takes to differ from every other open task (on the Shelf or a Desk), so every shown ID works as a command's TASK. The daemon makes the short form (`short` beside `id` in `backlog list`) and writes it in its own messages, such as the blocked note on the Desk; the CLI shows it in everything it prints. Full IDs stay in `--json`, `kanna.db`, `layout.json`, worktree folders and branches.
 
 ## Naming a task in a command
 
-A command that takes a TASK (`kanna task start|stop|shelve|defer|edit|name|done|park|pull`, `--after`) takes any of:
+A command that takes a TASK (`kanna task start|stop|pick|shelve|edit|name|done|park|activate`, `--after`) takes any of:
 
 | Reference | Example | Notes |
 |---|---|---|
 | Its ID | `task-1dfb12c2` | |
 | Its agent's pane, ID or name | `p353`, `agent` | as before; checked before a start of an ID, so a pane named `cafe` stays that pane |
-| A start of its ID, with or without `task-` | `1dfb`, `task-1dfb` | only open tasks (backlog, Shelf, Desk); any case |
+| A start of its ID, with or without `task-` | `1dfb`, `task-1dfb` | only open tasks (on the Shelf or a Desk); any case |
 
 - **An ambiguous start fails** and lists the tasks it could be, by ID and name: `task-1d could be 2 tasks: task-1dfb12c2 "Search", task-1d0e44aa "Docs"; say more of its ID`.
-- **The daemon does the lookup** (`backlog.rs`), for its own commands and for the CLI, which asks it (`backlog resolve`) before a `park`, `pull`, `done` or `name`: a backlog task goes to the backlog by its ID, one on the Shelf or a Desk goes to the layout by its agent's pane.
+- **The daemon does the lookup** (`backlog.rs`), for its own commands and for the CLI, which asks it (`backlog resolve`) before a `park`, `activate`, `done` or `name`: a Shelf task goes to the daemon's `Backlog` (the Shelf) by its ID, one on a Desk goes to the layout by its agent's pane.
 - **Old IDs like `t134` name nothing.** No aliases: a clean break.
 
 ## The migration
