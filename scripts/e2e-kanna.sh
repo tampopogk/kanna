@@ -4472,11 +4472,11 @@ PY
   local planner; planner="$(desk lead)"
   (cd "$repo" && KANNA_TERMINAL="${planner%@vm}" vmk task new "Remote spec" "Review the spec") >/dev/null || { echo "machine_remote_files line $LINENO"; return 1; }
   local task; task="$(sqlite3 -readonly "$vm/state/kanna.db" "select id from tasks order by rowid limit 1")@vm"
-  check wait_for 10 eval '[[ "$(desk backlog)" == "[\"$task\"]" ]]' || { echo "machine_remote_files: the Desk's backlog doesn't list vm's task"; return 1; }
-  raw '{"id":1,"cmd":"debug.click","args":{"backlog":"'"$task"'","window":"d1"}}' >/dev/null
-  check wait_for 10 eval '[[ "$(desk shelf.0.title)" == "Remote spec" ]]' || { echo "machine_remote_files: starting vm's task"; desk shelf; return 1; }
-  local agent; agent="$(desk shelf.0.task)"
-  raw '{"id":1,"cmd":"debug.click","args":{"shelf":"'"$agent"'","window":"d1"}}' >/dev/null
+  check wait_for 10 eval '[[ "$(desk shelf)" == "[\"$task\"]" ]]' || { echo "machine_remote_files: the Desk view's Shelf doesn't list vm's task"; return 1; }
+  raw '{"id":1,"cmd":"debug.click","args":{"shelf":"'"$task"'","window":"d1"}}' >/dev/null
+  check wait_for 10 eval '[[ "$(desk tasks.0.title)" == "Remote spec" ]]' || { echo "machine_remote_files: starting vm's task"; desk tasks; return 1; }
+  local agent; agent="$(desk tasks.0.task)"
+  raw '{"id":1,"cmd":"debug.click","args":{"task":"'"$agent"'","window":"d1"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk window.dock.pane)" == "$agent" ]]' || { echo "machine_remote_files: pulling vm's task"; return 1; }
   local worktree="$repo/.kanna-worktrees/${task%@vm}"
   check wait_for 10 test -f "$worktree/docs/spec.md" || { echo "machine_remote_files: no worktree"; return 1; }
