@@ -3,9 +3,6 @@ import KannaStatus
 
 extension AppController {
     func installAgentStatus() {
-        daemon?.onStatus = { [weak self] pane, status in self?.statusChanged(pane, status) }
-        daemon?.onFolder = { [weak self] pane, cwd in self?.folderChanged(pane, cwd) }
-        daemon?.onBacklog = { [weak self] tasks in self?.backlogChanged(tasks) }
         NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.statusSeen() }
         }
@@ -38,8 +35,13 @@ extension AppController {
         if isTask(pane) { refresh() }
     }
 
-    func folderChanged(_ pane: String, _ cwd: String) {
-        guard folders[pane] != cwd else { return }
+    func folderChanged(_ pane: String, _ cwd: String, _ place: JSON?) {
+        if let place, let main = place["main"]?.string, let project = place["project"]?.string {
+            identities[MachineIDs.location(MachineIDs.machine(of: pane) == nil ? canonical(main) : main, on: MachineIDs.machine(of: pane))] = project
+        }
+        let placeChanged = places[pane] != place
+        places[pane] = place
+        guard folders[pane] != cwd || placeChanged else { return }
         folders[pane] = cwd
         if isTask(pane) || windows.contains(where: { $0["lead"]?["pane"]?.string == pane }) { refresh() }
     }
