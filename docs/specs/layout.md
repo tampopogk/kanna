@@ -61,7 +61,7 @@ The app changes the layout only with the CLI's commands: a click is `focus`, a d
 
 ## 3. Saving and restoring
 
-**Saving.** The daemon saves the layout in kmux's state file format, Kanna's version 3 of it ([workspaces](workspaces.md#5-saved-state)), in `kanna.db` beside the tasks ([database](database.md)): half a second after a change, when it stops, and with a task's row when the task is done, only when something changed. A daemon started with `KANNA_FRESH=1` starts without it, and `KANNA_NO_STATE=1` neither reads nor writes one. An app passes its `--fresh` on to a daemon it starts. A `layout.json` left by an older Kanna is imported once and renamed `layout.json.imported`.
+**Saving.** The daemon saves the layout in kmux's state file format, Kanna's version 4 of it ([workspaces](workspaces.md#5-saved-state)), in `kanna.db` beside the tasks ([database](database.md)): half a second after a change, when it stops, and with a task's row when the task is done, only when something changed. A daemon started with `KANNA_FRESH=1` starts without it, and `KANNA_NO_STATE=1` neither reads nor writes one. An app passes its `--fresh` on to a daemon it starts. A `layout.json` left by an older Kanna is imported once and renamed `layout.json.imported`.
 
 **Restoring.** On start the daemon reads it (one it can't trust, or of an unknown version, isn't restored, and says so in its log), installs its panes, takes back the keeper's terminals, drops every pane that's gone and places every terminal it doesn't know as `open` would. Web, markdown, code, diff and iOS panes come back running: an app shows them when it attaches. An app that attaches gets the view in the hello reply and every change after it.
 

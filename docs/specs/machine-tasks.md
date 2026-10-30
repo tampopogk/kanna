@@ -51,7 +51,7 @@ A task moves between any two daemons, Macs included, at a boundary: not started,
 sequenceDiagram
     participant S as sender
     participant R as receiver
-    S->>S: agent quits by its keys (Backlog::end_agent), session ID kept
+    S->>S: agent quits by its keys (Tasks::end_agent), session ID kept
     S->>S: WIP commit on the task's branch
     S->>R: git bundle of the branch (objects the receiver lacks)
     S->>R: the transcript, from where the agent keeps it
