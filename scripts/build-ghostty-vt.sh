@@ -10,7 +10,7 @@ zig="$(kanna_zig "$repo_root")"
 host="$(rustc -vV | sed -n 's/^host: //p')"
 target="${1:-$host}"
 zig_target=()
-if [ "$target" != "$host" ]; then
+if [ "$target" != "$host" ] || [ "$(uname -s)" = Linux ]; then
   case "$target" in
     x86_64-unknown-linux-gnu) zig_target=(-Dtarget=x86_64-linux-gnu -Dcpu=baseline) ;;
     aarch64-unknown-linux-gnu) zig_target=(-Dtarget=aarch64-linux-gnu -Dcpu=baseline) ;;

@@ -1,4 +1,5 @@
 import AppKit
+import KannaOverview
 
 @MainActor
 public final class CodePaneView: NSView {
@@ -7,7 +8,8 @@ public final class CodePaneView: NSView {
     public let path: String
     public var keyView: NSView { textView }
     public private(set) var file = CodeFile(text: "")
-    public private(set) var failure: CodeFile.Failure?
+    public private(set) var failure: String?
+    public private(set) var loaded = false
     public private(set) var language: String?
     public private(set) var highlights = CodeHighlights()
     public var onHighlighted: (() -> Void)?
@@ -20,14 +22,19 @@ public final class CodePaneView: NSView {
     let textView: CodeTextView
     let gutter: CodeGutter
     let sticky = CodeStickyView()
+    public let overview = OverviewView()
+    public private(set) var overviewShown = false
+    public private(set) var overviewWanted = false
+    private var overviewStale = true
+    private var overviewQueued = false
+    private var settingObserver: NSObjectProtocol?
     private let layoutManager = NSLayoutManager()
-    private var stamp: (Date, Int)?
-    private var poll: Timer?
     private var fontSize = CodeTheme.fontSize
     private var scrollObserver: NSObjectProtocol?
     private var pendingLine: Int?
     public private(set) var comment: CodeComment?
     private var box: CodeCommentBox?
+    public var onTourStep: ((String) -> Void)?
     private var commentUnrevealed = false
 
     public init(path: String, line: Int?, zoom: CGFloat = 1, comment: CodeComment? = nil) {
@@ -47,13 +54,8 @@ public final class CodePaneView: NSView {
         layoutManager.delegate = self
         configure()
         gutter.textView = textView
-        load()
         pendingLine = line
         commentUnrevealed = comment != nil
-        if let line { textView.currentLine = min(max(line, 1), file.lineCount) }
-        poll = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.reloadIfChanged() }
-        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -77,6 +79,7 @@ public final class CodePaneView: NSView {
         textView.onMarks = { [weak self] in
             self?.gutter.needsDisplay = true
             self?.updateSticky()
+            self?.updateOverviewMarks()
         }
         scrollView.documentView = textView
         scrollView.hasVerticalScroller = true
@@ -92,10 +95,20 @@ public final class CodePaneView: NSView {
             MainActor.assumeIsolated {
                 self?.gutter.needsDisplay = true
                 self?.updateSticky()
+                self?.updateOverviewViewport()
             }
         }
         textView.startFinder(in: scrollView)
         addSubview(scrollView)
+        overview.background = CodeTheme.background
+        overview.edge = CodeTheme.line
+        overview.scrollTarget = scrollView
+        overview.onScroll = { [weak self] top in self?.scrollOverview(to: top) }
+        overview.isHidden = true
+        addSubview(overview)
+        settingObserver = NotificationCenter.default.addObserver(forName: OverviewSetting.changed, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.needsLayout = true }
+        }
         sticky.onPick = { [weak self] line in self?.reveal(line: line, toTop: true) }
         scrollView.onTile = { [weak self] in self?.updateSticky() }
         textView.onMove = { [weak self] move in self?.perform(move) }
@@ -103,22 +116,100 @@ public final class CodePaneView: NSView {
     }
 
     public func stop() {
-        poll?.invalidate()
-        poll = nil
         scrollObserver.map(NotificationCenter.default.removeObserver)
         scrollObserver = nil
+        settingObserver.map(NotificationCenter.default.removeObserver)
+        settingObserver = nil
     }
 
     public override func layout() {
         super.layout()
-        scrollView.frame = bounds
+        placeOverview()
         sizeText()
         placeComment()
         updateSticky()
-        if let line = pendingLine, bounds.height > 0 {
+        if loaded, let line = pendingLine, bounds.height > 0 {
             pendingLine = nil
             if comment != nil { revealComment() } else { reveal(line: line) }
         }
+        updateOverviewViewport()
+    }
+
+    private func placeOverview() {
+        var viewport = overviewViewport
+        viewport.height = bounds.height - scrollView.contentView.contentInsets.top
+        overviewWanted = loaded && failure == nil && OverviewLayout.wanted(enabled: OverviewSetting.enabled, viewport: viewport)
+        overviewShown = overviewWanted && !OverviewLayout.shown([.overview], width: bounds.width, columnWidth: OverviewLayout.columnWidth(CodeTheme.font(size: fontSize))).isEmpty
+        let width = overviewShown ? OverviewMetrics.width : 0
+        scrollView.frame = NSRect(x: 0, y: 0, width: bounds.width - width, height: bounds.height)
+        scrollView.hasVerticalScroller = !overviewShown
+        overview.frame = NSRect(x: bounds.width - OverviewMetrics.width, y: 0, width: OverviewMetrics.width, height: bounds.height)
+        overview.isHidden = !overviewShown
+        if overviewShown, overviewStale { updateOverviewContent() }
+    }
+
+    private var overviewViewport: OverviewViewport {
+        let clip = scrollView.contentView
+        let used = layoutManager.usedRect(for: textView.textContainer!).height + textView.textContainerInset.height * 2
+        return OverviewViewport(documentHeight: textView.frame.height, contentHeight: used, top: clip.bounds.minY + clip.contentInsets.top,
+                                height: clip.bounds.height - clip.contentInsets.top)
+    }
+
+    private func updateOverviewViewport() {
+        guard overviewShown else { return }
+        overview.viewport = overviewViewport
+    }
+
+    private func overviewChanged() {
+        overviewStale = true
+        guard !overviewQueued else { return }
+        overviewQueued = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            overviewQueued = false
+            if overviewShown, overviewStale { updateOverviewContent() } else { needsLayout = true }
+        }
+    }
+
+    private func updateOverviewContent() {
+        guard let storage = textView.textStorage else { return }
+        overviewStale = false
+        let string = NSAttributedString(attributedString: storage)
+        var lines: [OverviewLine] = []
+        lines.reserveCapacity(file.lineCount)
+        for line in 1...max(1, file.lineCount) {
+            guard let rect = textView.rect(forLine: line) else { continue }
+            var range = textView.range(ofLine: line)
+            if range.length > 0, (string.string as NSString).character(at: NSMaxRange(range) - 1) == 0x0a { range.length -= 1 }
+            lines.append(OverviewLine(y: rect.minY, height: rect.height, range: range, background: textView.comment?.contains(line) == true ? CodeTheme.tint : nil))
+        }
+        overview.content = .text([OverviewText(string: string, lines: lines)], lineHeight: lineHeight)
+        updateOverviewMarks()
+        updateOverviewViewport()
+    }
+
+    private func updateOverviewMarks() {
+        guard overviewShown else { return }
+        var marks: [OverviewMark] = []
+        func add(_ line: Int, _ kind: OverviewMarkKind, _ color: NSColor) {
+            guard let rect = textView.rect(forLine: line) else { return }
+            marks.append(OverviewMark(y: rect.minY, height: rect.height, kind: kind, color: color))
+        }
+        for line in textView.changed.sorted() { add(line, .changed, CodeTheme.changed) }
+        if let comment = textView.comment, comment.first <= file.lineCount { for line in comment.first...min(comment.last, file.lineCount) { add(line, .comment, CodeTheme.tintEdge) } }
+        var last = 0
+        for match in textView.matches {
+            let line = file.line(at: match.location)
+            if line != last { add(line, .hit, CodeTheme.hit) }
+            last = line
+        }
+        overview.marks = OverviewMark.runs(marks)
+    }
+
+    private func scrollOverview(to top: CGFloat) {
+        let clip = scrollView.contentView
+        clip.scroll(to: NSPoint(x: clip.bounds.minX, y: top - clip.contentInsets.top))
+        scrollView.reflectScrolledClipView(clip)
     }
 
     static let smallest: CGFloat = 9
@@ -144,6 +235,8 @@ public final class CodePaneView: NSView {
             scrollView.reflectScrolledClipView(scrollView.contentView)
         }
         gutter.needsDisplay = true
+        overviewChanged()
+        needsLayout = true
         onZoom?()
     }
 
@@ -155,32 +248,32 @@ public final class CodePaneView: NSView {
         }
     }
 
-    private func fileStamp() -> (Date, Int)? {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path) else { return nil }
-        return ((attributes[.modificationDate] as? Date) ?? .distantPast, (attributes[.size] as? Int) ?? 0)
-    }
-
-    private func reloadIfChanged() {
-        guard let now = fileStamp() else { return }
-        if let stamp, stamp == now { return }
+    public func show(text: String) {
+        guard loaded else {
+            loaded = true
+            load(CodeFile(text: text), failure: nil)
+            if let line = pendingLine { textView.currentLine = min(max(line, 1), file.lineCount) }
+            needsLayout = true
+            return
+        }
+        guard failure != nil || text != file.text else { return }
         let top = scrollView.contentView.bounds.origin
         let old = file
-        load()
+        load(CodeFile(text: text), failure: nil)
         textView.changed = file.changedLines(from: old)
         scrollView.contentView.scroll(to: top)
         scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
-    private func load() {
-        stamp = fileStamp()
-        switch CodeFile.read(path) {
-        case .success(let read):
-            failure = nil
-            file = read
-        case .failure(let error):
-            failure = error
-            file = CodeFile(text: "")
-        }
+    public func show(failure message: String) {
+        loaded = true
+        pendingLine = nil
+        load(CodeFile(text: ""), failure: message)
+    }
+
+    private func load(_ read: CodeFile, failure message: String?) {
+        failure = message
+        file = read
         textView.file = file
         textView.indents = CodeScopes.indents(file)
         textView.indentUnit = CodeScopes.unit(textView.indents)
@@ -191,6 +284,8 @@ public final class CodePaneView: NSView {
         applyComment()
         sizeText()
         highlight()
+        overviewChanged()
+        needsLayout = true
     }
 
     private func applyComment() {
@@ -200,7 +295,7 @@ public final class CodePaneView: NSView {
         let shown = comment.flatMap { failure == nil && $0.first <= file.lineCount ? $0 : nil }
         textView.comment = shown
         guard let shown else { return }
-        let made = CodeCommentBox(comment: shown)
+        let made = CodeCommentBox(comment: shown) { [weak self] to in self?.onTourStep?(to) }
         box = made
         textView.addSubview(made)
         placeComment()
@@ -220,6 +315,7 @@ public final class CodePaneView: NSView {
             storage.endEditing()
             textView.gap = gap
             sizeText()
+            overviewChanged()
         }
         placeBox()
         textView.needsDisplay = true
@@ -270,6 +366,7 @@ public final class CodePaneView: NSView {
             if span.capture.hasPrefix("comment") { storage.addAttribute(.font, value: italic, range: span.range) }
         }
         storage.endEditing()
+        overviewChanged()
         if commentUnrevealed, bounds.height > 0, pendingLine == nil {
             commentUnrevealed = false
             revealComment()
@@ -311,7 +408,7 @@ public final class CodePaneView: NSView {
         let clip = scrollView.contentView
         let height = CGFloat(rows.count) * lineHeight
         let edge = convert(clip.frame, from: scrollView).maxY - clip.contentInsets.top
-        sticky.frame = NSRect(x: 0, y: edge - height, width: bounds.width, height: height)
+        sticky.frame = NSRect(x: 0, y: edge - height, width: scrollView.frame.width, height: height)
         sticky.isHidden = rows.isEmpty
         sticky.gutterWidth = gutter.ruleThickness
         sticky.textX = clip.frame.minX - clip.bounds.minX + textView.textContainerInset.width
@@ -408,6 +505,21 @@ public final class CodePaneView: NSView {
     }
 
     public var commentText: String? { box?.text }
+
+    public var tourFooter: (at: Int, of: Int, back: Bool, next: String, visible: Bool)? {
+        guard let footer = box?.footer else { return nil }
+        let clip = scrollView.contentView.bounds
+        let frame = textView.convert(footer.next.frame, from: footer)
+        return (footer.step.at, footer.step.of, footer.back.enabled, footer.next.title, clip.contains(frame))
+    }
+
+    public func pressTour(_ to: String) -> Bool {
+        guard let footer = box?.footer else { return false }
+        let button = to == "back" ? footer.back : footer.next
+        guard button.enabled else { return false }
+        button.click()
+        return true
+    }
 
     public var topLine: Int {
         let y = scrollView.contentView.bounds.minY + scrollView.contentView.contentInsets.top + textView.textContainerInset.height

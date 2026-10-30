@@ -133,7 +133,7 @@ impl Feed {
             self.unsaved = true;
             self.changed();
             if let Err(error) = self.screen.resize(cols, rows) {
-                eprintln!("kanna-daemon: couldn't make {id}'s screen {cols}×{rows}: {error}");
+                log!("kanna-daemon: couldn't make {id}'s screen {cols}×{rows}: {error}");
             }
         }
         self.screen.take_replies()
