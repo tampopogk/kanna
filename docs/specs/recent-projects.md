@@ -1,6 +1,6 @@
 # Recent projects
 
-**Status:** built (2026-10-19) · **Tests:** `crates/kanna-daemon/src/projects.rs` (unit), `backlog.rs` (`planner.sh`), `scripts/e2e-kanna.sh` `recent_projects` · **Mockup:** [`references/mockups/desk.html`](../../references/mockups/desk.html) (the File menu; File › New Desk ⌘N) · **Part of:** [New Desk](new-desk.md), [menus](menus.md) · **Kept in:** [the database](database.md#recent-projects), [architecture](architecture.md#2-what-the-daemon-keeps-what-the-apps-keep)
+**Status:** built (2026-10-19) · **Tests:** `crates/kanna-daemon/src/projects.rs` (unit), `tasks.rs` (`planner.sh`), `scripts/e2e-kanna.sh` `recent_projects` · **Mockup:** [`references/mockups/desk.html`](../../references/mockups/desk.html) (the File menu; File › New Desk ⌘N) · **Part of:** [New Desk](new-desk.md), [menus](menus.md) · **Kept in:** [the database](database.md#recent-projects), [architecture](architecture.md#2-what-the-daemon-keeps-what-the-apps-keep)
 
 Reopen a project you've had open without setting it up again.
 
