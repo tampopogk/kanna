@@ -83,7 +83,7 @@ sequenceDiagram
 | Progress (OSC 9;4) | nothing | kept on the surface (`onProgress`) | `links_bell_notify` |
 | Font size (⌘+, ⌘−, ⌘0) | the surface's grid changes, and its pty with it | the surface asks the daemon for the new grid (`resize`), as a view resize does | `resize_arrange`, `font_size_scrollback` |
 | Synchronized output (mode 2026) | Ghostty's | Ghostty's; a snapshot taken mid-update ends it after Ghostty's timeout | by hand |
-| Scrollback | Ghostty's `scrollback-limit` (10 MB default) | the daemon keeps 10 MB, no line limit; `read --lines` | kanna-vt tests, `font_size_scrollback` |
+| Scrollback | Ghostty's `scrollback-limit-bytes` (50 MB default) | the daemon keeps 10 MB, no line limit; `read --lines` | kanna-vt tests, `font_size_scrollback` |
 | Search | none | none, as kmux | — |
 | Dropping files, images or text | Ghostty's: file paths, shell-escaped and space-separated, or the text, pasted | the same, plus what Ghostty drops: a file promise (a screenshot's thumbnail, Mail, Photos) is saved and an image with no file (a browser's) is written as a PNG, both in `$TMPDIR/kanna-drops`, and its path pasted, so an agent in the pane gets the image. A drop is a paste: bracketed paste and the unsafe-paste question apply as for ⌘V, and a path with a control character in its name is written as `$'…'` with `\xHH` escapes, so no name can run a command | KannaDrop tests, `chrome_and_drops` (`debug.drop`) |
 

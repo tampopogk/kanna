@@ -72,8 +72,7 @@ cargo test -p kanna-vt
 
 ## Known problems (Ghostty at the pinned commit)
 
-- **A widening reflow can lose history in the snapshot.** After some screens are widened (`tests/fixtures/reflow-drops-history.snap`, 126×1 → 204×86), the snapshot drops the oldest history rows: 128 rows of scrollback come back as 100. The screen itself and the newest history are intact. The ignored test `snapshot_after_widening_reflow_keeps_all_history` reproduces it. This needs fixing in the fork's snapshot encoder.
-- **No snapshot inside some APCs.** While the output is inside an unterminated APC that contains a C1 byte (`ESC _ a 0x9d`), `snapshot()` fails with an invalid value. It works again once the APC ends. The daemon must handle `snapshot()` errors, for example by retrying after more output.
+- **No snapshot inside an overlong sequence.** While the output is inside an unfinished sequence longer than `MAX_UNFINISHED_SEQUENCE_BYTES` (an unterminated OSC or APC past 1 MiB), `snapshot()` fails with an invalid value. It works again once the sequence ends. The daemon must handle `snapshot()` errors, for example by retrying after more output.
 
 ## Snapshot compatibility with the app
 

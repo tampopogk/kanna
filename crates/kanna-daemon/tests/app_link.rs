@@ -105,14 +105,15 @@ fn a_replica_misses_nothing_and_repeats_nothing() {
 #[test]
 fn a_snapshot_mid_sequence_waits_for_more_output() {
     let instance = Instance::start();
-    let pane = instance.open("apc", Some("printf 'before\\n\\033_a\\235'; read line; printf '\\033\\\\after\\n'; exec cat"));
+    let osc = format!("python3 -c 'import sys; sys.stdout.buffer.write(b\"\\033]2;\" + b\"x\" * {})'", kanna_vt::MAX_UNFINISHED_SEQUENCE_BYTES + 1);
+    let pane = instance.open("osc", Some(&format!("printf 'before\\n'; {osc}; read line; printf '\\007after\\n'; exec cat")));
     wait_for("the output", || instance.screen(&pane).contains("before"));
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(Duration::from_millis(500));
     let mut app = instance.app();
     app.tell("attach", json!({"terminal": pane}));
     app.stream.set_read_timeout(Some(Duration::from_millis(700))).unwrap();
     while let Some(message) = app.next() {
-        assert!(!is(&message, "snapshot", &pane) && !is(&message, "output", &pane), "sent mid-APC: {message}");
+        assert!(!is(&message, "snapshot", &pane) && !is(&message, "output", &pane), "sent mid-sequence: {message}");
     }
     app.stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     instance.call("send", json!({"pane": pane, "text": "go"}));

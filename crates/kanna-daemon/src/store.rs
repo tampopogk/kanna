@@ -494,11 +494,11 @@ mod tests {
         store.flush();
         let saved = || kanna_vt::Terminal::from_snapshot(&store.snapshot("p1").unwrap()).unwrap().text(kanna_vt::Lines::Screen);
         assert_eq!(saved(), "first");
-        Feed::lock(&feed).push(b" second\x1b_a\x9d");
+        Feed::lock(&feed).push(&[b" second".as_slice(), &crate::reader::tests::overlong_osc()].concat());
         store.flush();
         assert_eq!(saved(), "first");
         assert!(Feed::lock(&feed).unsaved);
-        Feed::lock(&feed).push(b"\x1b\\ third");
+        Feed::lock(&feed).push(b"\x07 third");
         store.flush();
         assert_eq!(saved(), "first second third");
         let mode = fs::metadata(store.dir().join("p1.snap")).unwrap().permissions().mode() & 0o777;
