@@ -15,6 +15,6 @@ public enum DeskOrder {
     }
 
     public static func keys(_ keyed: [String]) -> [String: String] {
-        Dictionary(uniqueKeysWithValues: keyed.prefix(3).enumerated().map { ($0.element, "⌘\($0.offset + 1)") })
+        Dictionary(uniqueKeysWithValues: keyed.prefix(2).enumerated().map { ($0.element, "⌘\($0.offset + 1)") })
     }
 }

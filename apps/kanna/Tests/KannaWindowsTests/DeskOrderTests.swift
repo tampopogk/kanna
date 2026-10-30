@@ -36,11 +36,11 @@ struct DeskOrderTests {
     @Test func keysNumberTheOthersLeftMostRecentlyFirstWithOnesThatNeedYouAhead() {
         let desk = Desk(active: "a", recent: ["c", "b", "d"], needs: ["d"])
         #expect(desk.keyed == ["d", "c", "b"])
-        #expect(DeskOrder.keys(desk.keyed) == ["d": "⌘1", "c": "⌘2", "b": "⌘3"])
+        #expect(DeskOrder.keys(desk.keyed) == ["d": "⌘1", "c": "⌘2"])
     }
 
-    @Test func onlyThreeKeys() {
-        #expect(DeskOrder.keys(["a", "b", "c", "d"]).count == 3)
+    @Test func withNoTaskActiveTheThirdHasNoKey() {
+        #expect(DeskOrder.keys(["a", "b", "c"]) == ["a": "⌘1", "b": "⌘2"])
     }
 
     @Test func commandOneTwiceGoesBackToTheFirstTask() {

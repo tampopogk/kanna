@@ -1995,6 +1995,8 @@ print(" ".join(r["task"] + (":active" if r["active"] else "") + (":lit" if r["hi
   check wait_for 5 docked "$third" || { echo "desk_shelf: ⌘2 (2)"; return 1; }
   key cmd+2
   check wait_for 5 docked "$first" || { echo "desk_shelf: ⌘2 three times didn't visit every task"; return 1; }
+  key cmd+3; sleep 0.5
+  check docked "$first" || { echo "desk_shelf: ⌘3 made a task active"; return 1; }
   key cmd+.
   check wait_for 5 eval '[[ "$(desk page)" == True && "$(rows)" == "$first:active:lit $second $third" ]]' || { echo "desk_shelf: the active task moved in the Desk view"; rows; return 1; }
   raw '{"id":1,"cmd":"debug.click","args":{"backlog":"'"$(tid 4)"'","window":"d1"}}' >/dev/null
