@@ -47,7 +47,7 @@ sequenceDiagram
     K->>K: unlinks keeper.sock, refuses spawns
     K->>P: SIGHUP to every process group, SIGKILL after the grace (1 s)
     K--xD: exits once every process is reaped (at most 5 s)
-    D->>D: saves the layout and screens, removes daemon.pid, then kanna.sock
+    D->>D: saves the layout and screens, removes daemon.pid, then kanna.sock, touches daemon.shutdown
     Note over C: polls until kanna.sock is gone
 ```
 
@@ -93,7 +93,7 @@ The variable is for tests. It's never set in a user's Kanna.
 |---|---|
 | A CLI command arrives during a stop | `stopping`. With nothing listening afterwards, it starts the app as usual (unless `KANNA_SOCKET` is set) |
 | An app connects during a stop | its hello is refused with `stopping`. Once the socket is gone it starts a daemon, as a freshly launched app does |
-| A daemon was waiting for `daemon.lock` while the holder shut down | it exits 0 without starting. The stopping daemon writes `daemon.shutdown`, and any daemon that starts normally removes it, so finding it after a wait means the daemon it waited on was stopped on purpose (seen in `daemon_restart`: the runner's daemon was queued behind one the app had started) |
+| A daemon was started before the holder's shutdown ended | it exits 0 without starting, however late it gets to `daemon.lock`. The stopping daemon writes `daemon.shutdown` when the shutdown begins and touches it once it has removed `kanna.sock`, just before it lets go of the lock; any daemon that starts normally removes it. A daemon that finds it and either waited for the lock or whose process is older than the file's mtime (its start time from the kernel, so a slow exec, such as macOS checking a freshly built binary, still counts) was started for a Kanna that was being stopped on purpose (seen in `daemon_restart`: the runner's daemon was queued behind one the app had started) |
 | The app sees the link close before it has handled `quit` | the 2 s grace before it starts a daemon covers it. `quit` stops the starter first |
 | `shutdown` sent twice | the second gets `ok` too. The shutdown is already under way |
 

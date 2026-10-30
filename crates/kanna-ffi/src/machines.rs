@@ -66,6 +66,33 @@ pub extern "C" fn kanna_machines_link(request: *const c_char) -> *mut c_char {
 }
 
 #[no_mangle]
+pub extern "C" fn kanna_machines_port_open(request: *const c_char) -> *mut c_char {
+    let request: Value = match text(request).map(|t| serde_json::from_str(&t)) {
+        Some(Ok(request)) => request,
+        _ => return give(failure("bad_request", "the port request isn't JSON")),
+    };
+    let machines = match machines() {
+        Ok(machines) => machines,
+        Err(error) => return give(error),
+    };
+    let Some(port) = request["port"].as_u64().and_then(|p| u16::try_from(p).ok()) else { return give(failure("bad_request", "no port")) };
+    let key = request["key"].as_str().unwrap_or_default().to_string();
+    let addrs: Vec<String> = request["addrs"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+    give(match machines.runtime.block_on(machines.client.port_open(&key, &addrs, &request["cert"], port)) {
+        Ok(local) => json!({ "port": local }),
+        Err(failed) => failure(&failed.code, failed.message),
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn kanna_machines_port_close(key: *const c_char) {
+    if let (Ok(machines), Some(key)) = (machines(), text(key)) {
+        let _guard = machines.runtime.enter();
+        machines.client.port_close(&key);
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn kanna_machines_path(key: *const c_char) -> *mut c_char {
     let (Ok(machines), Some(key)) = (machines(), text(key)) else { return give(Value::Null) };
     give(machines.client.path(&key))

@@ -556,7 +556,7 @@ final class CodeTextView: NSTextView {
     var changed: Set<Int> = [] { didSet { needsDisplay = true; onMarks?() } }
     var gap: CGFloat = 0
     let finder = NSTextFinder()
-    private lazy var finderClient = CodeFinderClient(textView: self)
+    private lazy var finderClient = TextFinderClient(textView: self)
     private var matchObserver: NSKeyValueObservation?
     private var keyObservers: [NSObjectProtocol] = []
     private var flashing: Int? { didSet { needsDisplay = true; onMarks?() } }

@@ -1,6 +1,7 @@
 import AppKit
 import GhosttyKit
 import KannaOverview
+import KannaWindows
 import UniformTypeIdentifiers
 
 extension AppController {
@@ -268,7 +269,8 @@ extension AppController {
         case #selector(toggleOverview):
             item.state = OverviewSetting.enabled ? .on : .off
             return true
-        case #selector(openURL), #selector(reloadPane): return contents.web(pane) != nil
+        case #selector(openURL): return contents.web(pane) != nil
+        case #selector(reloadPane): return contents.web(pane) != nil || contents.diff(pane) != nil
         case #selector(toggleComments):
             item.state = commentsOn(pane) ? .on : .off
             return contents.web(pane) != nil || contents.markdown(pane) != nil
@@ -346,6 +348,7 @@ extension AppController {
     @objc func reloadPane() {
         guard let pane = focusedPane else { return }
         contents.web(pane)?.webView.reload()
+        contents.diff(pane)?.refresh()
     }
 
     @objc func closeFocusedPane() {
@@ -461,7 +464,7 @@ extension AppController {
 
     private func keyedDeskTask(_ place: Int) -> (task: String, window: String)? {
         guard let window = keyWindow, window["desk"]?.bool == true, let id = window["id"]?.string, let tasks = controllers[id]?.others else { return nil }
-        return place <= tasks.count ? (tasks[place - 1].id, id) : nil
+        return DeskOrder.task(tasks, key: place).map { ($0.id, id) }
     }
 
     private func activateDeskTask(_ place: Int) {
