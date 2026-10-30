@@ -41,7 +41,7 @@ flowchart LR
 - **A planner is a workspace with no task:** a Desk's planning terminal docked, with no tabs. A pane opened from it or into it gets a new free window.
 - **A workspace has a Desk part and windows of its own.** The Desk part (the docked agent and its tabs) is what an app's Desk shows. Its own windows are ordinary windows with their own IDs; each app keeps their frames ([windows](windows.md#2-what-the-app-keeps)).
 - **A window isn't a workspace.** In the daemon it's one of a workspace's windows, or free (in no workspace); a Desk is the app's.
-- **`where`** is one of: on an app's Desk (`{"shelf": "mac"}`), on the Shelf (`"backlog"`), or a Desk's planner (`{"planner": "mac"}`). The values keep their names from before the [Desk view rename](desk-view.md#5-internal-names).
+- **`where`** is one of: on an app's Desk (`{"desk": "mac"}`), on the Shelf (`"shelf"`), or a Desk's planner (`{"planner": "mac"}`). A layout saved before version 4 has the old values (`"backlog"`, `{"shelf": app}`), read as these ([internal names](internal-names.md)).
 - **What shows is each app's.** An app shows a workspace, its windows included, while one of its Desks shows it as the active task; the rest of its claims are on its Desk, not shown. Hidden or not, panes keep running, the Desk part at the Desk's size ([pane sizes](pane-sizes.md)) and each window at the size it last had.
 
 Green: workspaces and their windows. Blue: the app's Desks and free windows. A Shelf task gets a workspace when it first starts; until then it's only a name and a first message ([tasks](tasks.md#3-the-shelf)).
@@ -117,22 +117,22 @@ Layout replies carry `workspace: {id, where}`, or null in a free window, beside 
 The saved layout (in `kanna.db`, [database](database.md)) is `version: 3`: `windows` holds free windows, and every workspace is in one list with its own windows. The app's Desks are in its `app-state.json` ([each app's Desks](app-desk.md)).
 
 ```json
-{ "kmux": "state", "version": 3, "counters": { "tab": 12, "window": 41, "workspace": 7 },
+{ "kmux": "state", "version": 4, "counters": { "tab": 12, "window": 41, "workspace": 7 },
   "windows": [
     { "id": "win-4", "tabs": [], "active": "tab-3", "focused": "term-7", "zoomed": null }],
   "workspaces": [
-    { "id": "ws-1", "where": { "shelf": "mac" }, "parkedAt": 1792183838,
+    { "id": "ws-1", "where": { "desk": "mac" }, "leftAt": 1792183838,
       "dock": { "pane": "term-12", "edge": "left", "width": 0.4, "frozen": true },
       "tabs": [], "active": "tab-9", "focused": "term-13", "zoomed": null,
       "windows": [{ "id": "win-41", "tabs": [], "active": "tab-12", "focused": "term-20", "zoomed": null }] },
-    { "id": "ws-5", "where": "backlog", "dock": {}, "tabs": [], "windows": [] },
+    { "id": "ws-5", "where": "shelf", "dock": {}, "tabs": [], "windows": [] },
     { "id": "ws-7", "where": { "planner": "mac" }, "dock": { "pane": "term-2", "edge": "left", "width": 0.4 }, "tabs": [], "windows": [] }] }
 ```
 
-- **Older files load.** Version 1's windows with a dock, and version 2's workspaces on a Desk or the old Shelf, become workspaces on `mac`'s Desk (`{"shelf": "mac"}`); a Desk's lead becomes a planner; version 2's task-named workspaces get `ws-N` IDs, their windows following. The app makes its Desks from the planners it hasn't seen. The next save writes version 3.
+- **Older files load.** Version 1's windows with a dock, and version 2's workspaces on a Desk or the old Shelf, become workspaces on `mac`'s Desk (`{"desk": "mac"}`); a Desk's lead becomes a planner; version 2's task-named workspaces get `ws-N` IDs, their windows following. Version 3's places keep their old names (`{"shelf": app}` a Desk, `"backlog"` the Shelf, `parkedAt`) and are read as version 4's ([internal names](internal-names.md)). The app makes its Desks from the planners it hasn't seen. The next save writes version 4.
 - **The daemon finds each task's workspace** from the listing it asks for once the app attaches: the workspace whose dock is the task's agent pane. A start records the workspace the reply to its docked, frozen `open` names. Both go in the task's `doc` in `kanna.db` ([database](database.md)).
 - **kmux's debug state stays kmux's version 1.** `debug.saveState` writes free windows plainly and each workspace in `parked` with its `where`, so `debug.restoreState` reads it back.
-- **`kanna.db`'s `place`** is the task's: `backlog` (the Shelf), `shelf` (on a Desk) or `done` ([database](database.md)).
+- **`kanna.db`'s `place`** is the task's: `shelf` (the Shelf), `desk` (on a Desk) or `done` ([database](database.md)).
 
 ## 6. Code and tests
 

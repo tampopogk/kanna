@@ -1,6 +1,6 @@
 # Project folder
 
-**Status:** built (2026-10-29) · **Tests:** `crates/kanna-daemon/src/projects.rs`, `project_import.rs`, `backlog.rs` (unit, the planner's offer), `scripts/e2e-kanna.sh` `project_import` · **Builds on:** [your machines](machines.md), [tasks](tasks.md), [new Desk](new-desk.md) · **Code:** `projects.rs` (places, the refusal), `project_import.rs` (the copy and what follows it), `backlog.rs` (`relocate`)
+**Status:** built (2026-10-29) · **Tests:** `crates/kanna-daemon/src/projects.rs`, `project_import.rs`, `tasks.rs` (unit, the planner's offer), `scripts/e2e-kanna.sh` `project_import` · **Builds on:** [your machines](machines.md), [tasks](tasks.md), [new Desk](new-desk.md) · **Code:** `projects.rs` (places, the refusal), `project_import.rs` (the copy and what follows it), `tasks.rs` (`relocate`)
 
 Every project Kanna works on lives in `~/.kanna-v4/repos`, at a place named after its origin remote. The projects stay tidy, and a project has the same path from `~` on each of your [machines](machines.md), so a replicated Shelf or a task sent to another machine finds its repo there. Kanna opens Desks and runs tasks only for a project in its place; `kanna project import` puts a copy of one there, and each planner offers it when it starts in a project outside.
 
@@ -90,7 +90,7 @@ Import it into ~/.kanna-v4/repos/tampopogk/app now? [Y/n/never]
 ```mermaid
 sequenceDiagram
     participant C as kanna project import
-    participant D as daemon (backlog.rs)
+    participant D as daemon (tasks.rs)
     participant F as files
     C->>D: project import PATH
     D->>D: plan: its place, not taken
@@ -134,8 +134,8 @@ These still name ~/work/app; change them yourself:
 
 ## 5. How it's built
 
-- **`projects.rs`:** `home_place` reads `origin` from the repo's `.git/config` and maps it (`place_of`); `outside` is the refusal. The backlog (the Shelf: `placed`, from `ready` and `mint`) and the `desk` command call it; `Backlog.repos` is set by `main.rs`, so tests run without it. Its `projects list` adds the outside projects with work in Kanna, marked `outside`.
-- **`project import`** is the daemon's `project` command (`import`, `path`, `by`), in `backlog.rs` (`import`), with the file work in `project_import.rs` (`plan`, `copy`, `Stores::carry`, `mentions`). While it runs, the Shelf refuses to make or start a task in the project (`importing`). The same command's `asked` and `never` (`path`) read and set never, for `planner.sh`.
+- **`projects.rs`:** `home_place` reads `origin` from the repo's `.git/config` and maps it (`place_of`); `outside` is the refusal. The Shelf (`tasks.rs`: `placed`, from `ready` and `mint`) and the `desk` command call it; `Tasks.repos` is set by `main.rs`, so tests run without it. Its `projects list` adds the outside projects with work in Kanna, marked `outside`.
+- **`project import`** is the daemon's `project` command (`import`, `path`, `by`), in `tasks.rs` (`import`), with the file work in `project_import.rs` (`plan`, `copy`, `Stores::carry`, `mentions`). While it runs, the Shelf refuses to make or start a task in the project (`importing`). The same command's `asked` and `never` (`path`) read and set never, for `planner.sh`.
 - **The agents' folders** are under `KANNA_AGENTS_HOME` when it's set, else `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`, `XDG_DATA_HOME` or their defaults in `~`. Rewritten files keep their modification time, which the session lookups go by.
 - **`planner.sh`** works out a place the same way (`place`, `misplaced`), so it can say where without the daemon, asks the daemon for never (`kanna raw`), and runs `kanna project import` when you say yes.
 

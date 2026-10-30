@@ -58,7 +58,7 @@ A Desk with nothing in it starts here: where it opens and how its planning termi
 
 - **The layout keeps it as a planner:** a workspace with no task (`where: {"planner": app}`), its terminal docked with its width and no tabs, saved in `kanna.db`; the app's Desk record names it ([each app's Desks](app-desk.md)). An older layout's Desk `lead` (or `planner`) loads as one. ⌘. and making a task active change which workspace the Desk shows and leave it in place. `move` and `move --dock` refuse it. The [Quiz window](quiz.md#2-rules)'s agent is a window's `lead`, which isn't a task either.
 - **The Desk view holds no tabs:** a pane opened from a planner or onto a Desk showing the Desk view goes in a new window.
-- **The app asks for one** (`backlog` `plan`) when a Desk shows the Desk view and has no planner, passing the window's folder; it follows the terminal's folder as it reports it, as for a task's agent.
+- **The app asks for one** (`tasks` `plan`) when a Desk shows the Desk view and has no planner, passing the window's folder; it follows the terminal's folder as it reports it, as for a task's agent.
 - **The daemon builds the terminal's command:** the [settings](settings.md), the [planner script](new-desk.md#3-how-its-built), then your login shell, with Kanna's zsh integration put back for it. It opens it with the `lead` placement, outside the task limit.
 
 ## 6. Rejected

@@ -75,7 +75,7 @@ sequenceDiagram
 
 `app-state.json` is in the daemon's state folder (`$KANNA_STATE_DIR`, or the socket's folder), saved half a second after a change and on quit, written atomically with mode 0600; `--fresh` starts without it and `KANNA_NO_STATE=1` neither reads nor writes it. Entries for panes, workspaces and windows the daemon no longer has are dropped when the app attaches.
 
-The `layout` view is `{windows: [{id, title, tab, tabs: [{id, title, panes}], focused, zoomed, root, lead, workspace}], workspaces: [{id, where, dock, parkedAt, windows, panes, title, tab, tabs, focused, zoomed, root}]}`: every window and every workspace, their tabs and panes, the tree to draw (the zoomed pane alone when zoomed; nothing when the docked pane is) with each split's shares and pane types, and a workspace's docked pane (`{pane, type, edge, width, name}`). The app adds its Desks, as windows with `desk`, `dock`, `shows`, `planner` and `project`, and the strip, from its own records. It's what to draw, not what a client sees (`list` shows names and fractions).
+The `layout` view is `{windows: [{id, title, tab, tabs: [{id, title, panes}], focused, zoomed, root, lead, workspace}], workspaces: [{id, where, dock, leftAt, windows, panes, title, tab, tabs, focused, zoomed, root}]}`: every window and every workspace, their tabs and panes, the tree to draw (the zoomed pane alone when zoomed; nothing when the docked pane is) with each split's shares and pane types, and a workspace's docked pane (`{pane, type, edge, width, name}`). The app adds its Desks, as windows with `desk`, `dock`, `shows`, `planner` and `project`, and the strip, from its own records. It's what to draw, not what a client sees (`list` shows names and fractions).
 
 ## 3. Windows, tabs, panes
 
