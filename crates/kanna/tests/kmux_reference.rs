@@ -43,7 +43,7 @@ const PRINTS_DIFFER: &[(&str, &str)] = &[("focus", "Kanna's daemon keeps no key 
 const CODE_PANES: &[(&str, &str)] = &[("open", "summary"), ("navigate", "summary")];
 
 fn from_kmux(text: &str) -> String {
-    text.replace(" [--dock [left|right] [--frozen]]", "").replace("kmux", "kanna")
+    text.replace(" [--dock [left|right] [--frozen]]", "").replace(" (open --dock --frozen)", "").replace("kmux", "kanna")
 }
 
 fn from_kanna(text: &str) -> String {

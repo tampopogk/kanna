@@ -2374,7 +2374,7 @@ assert {"kind": "added", "text": "one\r", "new": 1, "left": "blank", "right": "a
   check wait_for 5 eval '[[ "$(watchers)" == "[\"--staged\"]:1" ]]' || { echo "after navigating, watchers: $(watchers)"; return 1; }
   kanna navigate changes diff --no-such-flag >/dev/null || return 1
   check wait_for 5 eval '[[ "$(diffpane error)" == *no-such-flag* ]]' || { echo "a failed diff shows no error: $(diffpane error)"; return 1; }
-  kanna open --name diffagent --dock --cmd 'exec sleep 600' >/dev/null || return 1
+  desk_task diffagent 'exec sleep 600' || return 1
   (cd "$repo" && KANNA_TERMINAL=diffagent kanna open diff --merge-base main --name deskdiff >/dev/null) || return 1
   deskdiff() { raw '{"id":1,"cmd":"debug.diff","args":{"pane":"deskdiff"}}' | field "$1"; }
   kanna task activate diffagent >/dev/null || return 1
