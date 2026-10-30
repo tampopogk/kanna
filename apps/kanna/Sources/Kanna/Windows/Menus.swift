@@ -1,6 +1,7 @@
 import AppKit
 import GhosttyKit
 import KannaOverview
+import KannaWindows
 import UniformTypeIdentifiers
 
 extension AppController {
@@ -463,7 +464,7 @@ extension AppController {
 
     private func keyedDeskTask(_ place: Int) -> (task: String, window: String)? {
         guard let window = keyWindow, window["desk"]?.bool == true, let id = window["id"]?.string, let tasks = controllers[id]?.others else { return nil }
-        return place <= tasks.count ? (tasks[place - 1].id, id) : nil
+        return DeskOrder.task(tasks, key: place).map { ($0.id, id) }
     }
 
     private func activateDeskTask(_ place: Int) {

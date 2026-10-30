@@ -2108,6 +2108,15 @@ desk_shelf() {
   kanna task pick $(tid 2) >/dev/null || { echo "desk_shelf line $LINENO"; return 1; }
   (cd "$repo" && kanna task new "Third" && kanna task new "Fourth") >/dev/null || { echo "desk_shelf line $LINENO"; return 1; }
   check wait_for 5 eval '[[ "$(desk running)" == 2 && "$(desk shelf)" == "[\"$(tid 3)\", \"$(tid 4)\"]" ]]' || { desk running; desk shelf; return 1; }
+  strip() { desk stripLayout | python3 -c 'import json, sys; print(" ".join(i["task"] + ":" + str(i["key"]) for i in json.load(sys.stdin)["items"]))'; }
+  docked() { [[ "$(desk window.dock.pane)" == "$1" ]]; }
+  key cmd+2
+  check wait_for 5 docked "$(pane Second id)" || { echo "desk_shelf: with two tasks ⌘2 didn't switch to the other one"; return 1; }
+  check wait_for 5 eval '[[ "$(strip)" == "$(pane First id):⌘1" ]]' || { echo "desk_shelf: with two tasks the other shows ⌘1"; strip; return 1; }
+  key cmd+2
+  check wait_for 5 docked "$(pane First id)" || { echo "desk_shelf: with two tasks ⌘2 twice didn't go back"; return 1; }
+  key cmd+.
+  check wait_for 5 eval '[[ "$(desk page)" == True ]]' || { echo "desk_shelf line $LINENO"; return 1; }
   key cmd+t; key cmd+d
   check test "$(desk window.tabs)" == "[]" || { echo "desk_shelf: the Shelf got a tab"; desk window.tabs; return 1; }
   raw '{"id":1,"cmd":"debug.click","args":{"shelf":"'"$(tid 3)"'","window":"d1"}}' >/dev/null
@@ -2116,9 +2125,7 @@ desk_shelf() {
   local first second third; first="$(pane First id)"; second="$(pane Second id)"; third="$(pane Third id)"
   rows() { desk rows | python3 -c 'import json, sys
 print(" ".join(r["task"] + (":active" if r["active"] else "") + (":lit" if r["highlit"] else "") + (":" + r["go"] if r["goShown"] else "") for r in json.load(sys.stdin)))'; }
-  strip() { desk stripLayout | python3 -c 'import json, sys; print(" ".join(i["task"] + ":" + str(i["key"]) for i in json.load(sys.stdin)["items"]))'; }
   check wait_for 5 eval '[[ "$(rows)" == "$first:active:lit $second $third" ]]' || { echo "desk_shelf: the Desk view lists its tasks oldest first, the active one in its place, with no hint until hovered"; rows; return 1; }
-  docked() { [[ "$(desk window.dock.pane)" == "$1" ]]; }
   key cmd+1
   check wait_for 5 docked "$third" || { echo "desk_shelf: ⌘1 isn't the task that came to the Desk last"; return 1; }
   check wait_for 5 eval '[[ "$(strip)" == "$first:⌘1 $second:⌘2" ]]' || { echo "desk_shelf: the strip lists the others oldest first, keyed by recency"; strip; return 1; }
@@ -2130,7 +2137,7 @@ print(" ".join(r["task"] + (":active" if r["active"] else "") + (":lit" if r["hi
   key cmd+2
   check wait_for 5 docked "$third" || { echo "desk_shelf: ⌘2 (2)"; return 1; }
   key cmd+2
-  check wait_for 5 docked "$first" || { echo "desk_shelf: ⌘2 three times didn't visit every task"; return 1; }
+  check wait_for 5 docked "$first" || { echo "desk_shelf: with three tasks ⌘2 three times didn't visit every task"; return 1; }
   key cmd+3; sleep 0.5
   check docked "$first" || { echo "desk_shelf: ⌘3 made a task active"; return 1; }
   key cmd+.
