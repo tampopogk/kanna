@@ -29,6 +29,7 @@ done
 
 step "Preflight"
 cd "$repo_root"
+export KANNA_RUST_PROFILE=release RUSTC_WRAPPER=
 [[ "$(git remote get-url origin)" =~ github\.com[:/]$repo(\.git)?$ ]] || fail "origin is $(git remote get-url origin), not $repo: git remote set-url origin https://github.com/$repo.git"
 git fetch --quiet --tags origin main || fail "can't fetch origin ($repo)"
 problems=()

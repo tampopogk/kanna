@@ -21,7 +21,8 @@ Every run stops what it started however it ends, and first stops what runs
 it can't see anymore left behind (docs/specs/e2e-cleanup.md). Run it
 unsandboxed: it needs ps, signals, Unix sockets and /tmp.
 
-Uses target/release/{kanna,kanna-daemon,kanna-keeper,kanna-build} and target/Kanna.app (or $KANNA_E2E_APP)
+Uses target/PROFILE/{kanna,kanna-daemon,kanna-keeper,kanna-build} (debug in a worktree, release in the main checkout:
+docs/specs/build-store.md) and target/Kanna.app (or $KANNA_E2E_APP)
 (scripts/build.sh). The private instance gets:
   KANNA_SOCKET     the daemon's socket (the CLI and the app connect to it)
   KANNA_STATE_DIR  where the daemon, keeper and app keep their files
@@ -36,7 +37,7 @@ USAGE
 }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-bin="$repo_root/target/release"
+bin="$(. "$repo_root/scripts/env.sh" && kanna_rust_dir "$repo_root")"
 app="${KANNA_E2E_APP:-$repo_root/target/Kanna.app}/Contents/MacOS/Kanna"
 out="$repo_root/target/e2e-kanna"
 mkdir -p "$out"
