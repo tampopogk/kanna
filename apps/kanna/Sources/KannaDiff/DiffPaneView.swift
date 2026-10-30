@@ -102,7 +102,9 @@ public final class DiffPaneView: NSView {
         }
     }
 
-    public var listShown: Bool { bounds.width >= 640 && (result?.files.count ?? 0) > 0 }
+    public var listShown: Bool {
+        (result?.files.count ?? 0) > 0 && DiffAside.shown([.files], width: bounds.width, font: CodeTheme.font(size: fontSize)).contains(.files)
+    }
     public var selectedFile: String? { fileList.selected.flatMap { result?.files[safe: $0]?.path } }
     public var stickyFile: String? { sticky.isHidden ? nil : sticky.file?.path }
 
@@ -164,6 +166,7 @@ public final class DiffPaneView: NSView {
         let headerHeight: CGFloat = 34
         header.frame = NSRect(x: 0, y: bounds.height - headerHeight, width: bounds.width, height: headerHeight)
         var body = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height - headerHeight)
+        needsDisplay = true
         fileScroll.isHidden = !listShown
         if listShown {
             fileScroll.frame = NSRect(x: 0, y: 0, width: DiffFileList.width, height: body.height)

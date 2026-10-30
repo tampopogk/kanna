@@ -2279,7 +2279,20 @@ rows, current = json.loads(sys.argv[1]), int(sys.argv[2])
 assert rows[current]["kind"] in ("added", "removed") and rows[current]["text"].startswith("fn f5"), rows[current]' "$(diffpane rows)" "$(diffpane current)" || return 1
   diffpane current ',"keys":"]"' >/dev/null
   check test "$(diffpane selected)" == b.rs || { echo "selected $(diffpane selected)"; return 1; }
-  check test "$(diffpane list)" == True || { echo "no files list"; return 1; }
+  diffwin() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"win-1\",\"size\":[$1,700]}}" >/dev/null; }
+  diffwin 1400
+  check wait_for 5 eval '[[ "$(diffpane list)" == True ]]' || { echo "no files list at $(diffpane width) pt"; return 1; }
+  diffpane view ',"zoom":6' >/dev/null
+  check wait_for 5 eval '[[ "$(diffpane list)" == False ]]' || { echo "files list zoomed in at $(diffpane width) pt"; return 1; }
+  diffpane view ',"zoom":0' >/dev/null
+  check wait_for 5 eval '[[ "$(diffpane list)" == True ]]' || { echo "no files list back from zoom"; return 1; }
+  diffwin 960
+  check wait_for 5 eval '[[ "$(diffpane list)" == False ]]' || { echo "files list at $(diffpane width) pt"; return 1; }
+  diffpane current ',"keys":"["' >/dev/null
+  check test "$(diffpane selected)" == a.rs || { echo "without the list, [ selected $(diffpane selected)"; return 1; }
+  diffpane current ',"keys":"]"' >/dev/null
+  check test "$(diffpane selected)" == b.rs || { echo "without the list, ] selected $(diffpane selected)"; return 1; }
+  diffwin 1400
   check python3 -c 'import json, sys
 rows, current = json.loads(sys.argv[1]), int(sys.argv[2])
 assert rows[current]["text"] == "fn new() {}", rows[current]' "$(diffpane rows)" "$(diffpane current)" || return 1
@@ -2327,6 +2340,18 @@ assert {"kind": "added", "text": "one\r", "new": 1, "left": "blank", "right": "a
   check wait_for 5 eval '[[ "$(watchers)" == "[\"--staged\"]:1" ]]' || { echo "after navigating, watchers: $(watchers)"; return 1; }
   kanna navigate changes diff --no-such-flag >/dev/null || return 1
   check wait_for 5 eval '[[ "$(diffpane error)" == *no-such-flag* ]]' || { echo "a failed diff shows no error: $(diffpane error)"; return 1; }
+  kanna open --name diffagent --dock --cmd 'exec sleep 600' >/dev/null || return 1
+  (cd "$repo" && KANNA_TERMINAL=diffagent kanna open diff --merge-base main --name deskdiff >/dev/null) || return 1
+  deskdiff() { raw '{"id":1,"cmd":"debug.diff","args":{"pane":"deskdiff"}}' | field "$1"; }
+  kanna task activate diffagent >/dev/null || return 1
+  local agent; agent="$(pane diffagent id)"
+  deskwin() { app_view | python3 -c 'import json, sys; print(next((w["id"] for w in json.load(sys.stdin)["windows"] if (w.get("dock") or {}).get("pane") == sys.argv[1]), ""))' "$agent"; }
+  check wait_for 5 eval '[[ -n "$(deskwin)" ]]' || { echo "the agent's Desk isn't shown: $(app_view)"; return 1; }
+  raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$(deskwin)\",\"size\":[1728,1000]}}" >/dev/null
+  check wait_for 5 eval '[[ "$(deskdiff width)" == 1036* && "$(deskdiff files)" == *b.rs* ]]' || { echo "beside the agent at 2/5 in 1728 pt: $(deskdiff width) pt"; return 1; }
+  check test "$(deskdiff list)" == False || { echo "files list beside the agent at $(deskdiff width) pt"; return 1; }
+  kanna resize diffagent 1/5 >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(deskdiff list)" == True ]]' || { echo "no files list beside the agent at 1/5: $(deskdiff width) pt"; return 1; }
 }
 
 scenario code_tour M4
