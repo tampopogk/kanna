@@ -10,8 +10,8 @@ Skills for coding agents (Claude Code and Codex), usable in any project.
 | [`kanna-markup`](skills/kanna-markup/SKILL.md) | Answer the user's comments on a doc or mockup they review in Kanna, in the comment's thread. |
 | [`kanna-explain`](skills/kanna-explain/SKILL.md) | In a Kanna terminal: explain code in comments on it, one part at a time, and the big picture, or anything else the user asks to have explained, in markdown docs with diagrams in the worktree's `.kanna/tmp/`, opened in a tab; the chat stays a line or two. |
 | [`kanna-quiz`](skills/kanna-quiz/SKILL.md) | In Kanna: quiz the user on what landed on main, five multiple-choice questions, each answer explained with the code opened beside it; the planning agent offers it. |
-| [`kanna-tasks`](skills/kanna-tasks/SKILL.md) | In a Kanna terminal: keep your task's name, name your branch, present your work when it's done, and add follow-up work to the repo's backlog with a first message that stands alone. |
-| [`kanna-planning`](skills/kanna-planning/SKILL.md) | As a Kanna window's planning agent: say what's running and waiting, plan with the user, make backlog tasks, and start or end them only when asked. |
+| [`kanna-tasks`](skills/kanna-tasks/SKILL.md) | In a Kanna terminal: keep your task's name, name your branch, present your work when it's done, and add follow-up work to the repo's Shelf with a first message that stands alone. |
+| [`kanna-planning`](skills/kanna-planning/SKILL.md) | As a Kanna window's planning agent: say what's running and waiting, plan with the user, make Shelf tasks, and start or end them only when asked. |
 | [`kanna-new-project`](skills/kanna-new-project/SKILL.md) | As a planning agent in an empty folder or one that isn't a repo yet: decide what the project is, set it up with the user's say-so, and plan its first tasks. |
 
 ## Install into a project

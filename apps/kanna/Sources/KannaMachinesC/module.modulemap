@@ -1,0 +1,5 @@
+module KannaMachinesC {
+    header "../../../../crates/kanna-ffi/include/kanna_machines.h"
+    link "kanna_ffi"
+    export *
+}

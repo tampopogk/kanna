@@ -83,14 +83,22 @@ final class DividerView: NSView {
     static let minimum: CGFloat = 80
 
     let split: Split
+    /// The tab, and the way to the split from its root, for `resize`.
+    let tab: String
+    let path: [Int]
     let index: Int
     /// Where the pair of panes starts, and its length, along the split.
     private let start: CGFloat
     private let span: CGFloat
-    var onChange: (() -> Void)?
+    /// The first pane's share while the divider is dragged.
+    var onPreview: ((Double) -> Void)?
+    /// Dropped: the `resize` request's arguments.
+    var onResize: ((JSON) -> Void)?
 
-    init(split: Split, index: Int, line: NSRect, first: NSRect, second: NSRect) {
+    init(split: Split, tab: String, path: [Int], index: Int, line: NSRect, first: NSRect, second: NSRect) {
         self.split = split
+        self.tab = tab
+        self.path = path
         self.index = index
         let row = split.axis == .row
         start = row ? first.minX : first.maxY
@@ -106,7 +114,7 @@ final class DividerView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         guard let stage = superview else { return }
-        drag(in: stage)
+        onResize?(drag(in: stage))
     }
 
     /// The point `fraction` of the way along the pair of panes (stage coordinates).
@@ -124,7 +132,10 @@ final class DividerView: NSView {
         return Self.nice.first { abs(share - $0) < 0.015 && $0 < pair } ?? share
     }
 
-    func drag(in stage: NSView) {
+    /// Follows the mouse until it is let go, and returns the `resize` that
+    /// puts the divider there.
+    func drag(in stage: NSView) -> JSON {
+        var last = split.kids[index].size
         let tip = NSTextField(labelWithString: "")
         tip.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
         tip.textColor = .white
@@ -136,9 +147,8 @@ final class DividerView: NSView {
             let local = stage.convert(window.convertPoint(fromScreen: point), from: nil)
             let pair = split.kids[index].size + split.kids[index + 1].size
             let share = share(at: local)
-            split.kids[index].size = share
-            split.kids[index + 1].size = pair - share
-            onChange?()
+            last = share
+            onPreview?(share)
             tip.stringValue = " \(Fraction.format(share)) \(split.axis == .row ? "|" : "/") \(Fraction.format(pair - share)) "
             tip.sizeToFit()
             tip.frame.origin = NSPoint(x: local.x + 12, y: local.y - 12 - tip.frame.height)
@@ -146,6 +156,7 @@ final class DividerView: NSView {
         }
         move(trackMouse(move))
         tip.removeFromSuperview()
+        return ["tab": .string(tab), "path": .array(path.map { .number(Double($0)) }), "index": .number(Double(index)), "share": .number(last)]
     }
 }
 
@@ -154,7 +165,10 @@ final class DockDividerView: NSView {
     let state: Window
     private let span: CGFloat
     private let extent: CGFloat
-    var onChange: (() -> Void)?
+    /// The dock's width while its divider is dragged.
+    var onPreview: ((Double) -> Void)?
+    /// Dropped: the `resize` request's arguments.
+    var onResize: ((JSON) -> Void)?
 
     init(window: Window, line: NSRect, span: CGFloat, extent: CGFloat) {
         state = window
@@ -171,7 +185,7 @@ final class DockDividerView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         guard let content = superview else { return }
-        drag(in: content)
+        onResize?(drag(in: content))
     }
 
     func position(_ fraction: CGFloat) -> NSPoint {
@@ -188,7 +202,10 @@ final class DockDividerView: NSView {
         return (DividerView.nice + [Dock.defaultWidth]).first { abs(width - $0) < 0.015 } ?? width
     }
 
-    func drag(in content: NSView) {
+    /// Follows the mouse until it is let go, and returns the `resize` that
+    /// gives the dock that width.
+    func drag(in content: NSView) -> JSON {
+        var last = state.dock?.width ?? Dock.defaultWidth
         let tip = NSTextField(labelWithString: "")
         tip.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
         tip.textColor = .white
@@ -199,8 +216,8 @@ final class DockDividerView: NSView {
             guard let window = content.window, state.dock != nil else { return }
             let local = content.convert(window.convertPoint(fromScreen: point), from: nil)
             let width = width(at: local)
-            state.dock?.width = width
-            onChange?()
+            last = width
+            onPreview?(width)
             let left = state.dock?.edge != .right
             tip.stringValue = " \(Fraction.format(left ? width : 1 - width)) | \(Fraction.format(left ? 1 - width : width)) "
             tip.sizeToFit()
@@ -209,6 +226,7 @@ final class DockDividerView: NSView {
         }
         move(trackMouse(move))
         tip.removeFromSuperview()
+        return ["pane": .string(state.dock?.pane ?? ""), "size": .number(last)]
     }
 }
 
