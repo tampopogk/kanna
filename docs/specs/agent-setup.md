@@ -1,6 +1,6 @@
 # Agent Setup
 
-**Status:** built; agents are told in their first message, not a hook (2026-10-14) · **Tests:** `crates/kanna-daemon/src/agents.rs` and `backlog.rs` (unit), `scripts/e2e-kanna.sh` `desk_shelf`, `real_agent_tasks`, `real_agent_planners` · **Part of:** [tasks](tasks.md)
+**Status:** built; agents are told in their first message, not a hook (2026-10-14) · **Tests:** `crates/kanna-daemon/src/agents.rs` and `tasks.rs` (unit), `scripts/e2e-kanna.sh` `desk_shelf`, `real_agent_tasks`, `real_agent_planners` · **Part of:** [tasks](tasks.md)
 
 Kanna's skills teach an agent how to work in Kanna: name its branch, add tasks to the Shelf, plan, answer review comments. They live in this repo (`.agents/kanna-skills`), so today only agents working on Kanna itself have them. **Agent setup** puts them where Claude and Codex find them in any repo, once you agree.
 
