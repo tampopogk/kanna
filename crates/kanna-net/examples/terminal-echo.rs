@@ -199,7 +199,7 @@ fn main() {
     let stream = runtime.block_on(client.link(&args.peer, &args.addrs, args.relay.as_deref(), &cert)).unwrap_or_else(|f| panic!("can't link: {}: {}", f.code, f.message));
     let reader = BufReader::new(stream.try_clone().unwrap());
     let mut link = Link { stream, reader, next: 0, received: 0 };
-    link.send(json!({ "id": 0, "cmd": "app.hello", "args": { "client": "terminal-echo", "protocols": [1, 1] } }));
+    link.send(json!({ "id": 0, "cmd": "app.hello", "args": { "client": "terminal-echo", "protocols": [1, 99] } }));
     let (hello, _) = link.until(|m| m["id"] == 0);
     assert_eq!(hello["ok"], true, "hello: {hello}");
     let linked_ms = dialed.elapsed().as_secs_f64() * 1000.0;
