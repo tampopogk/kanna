@@ -16,6 +16,9 @@ public final class DiffPaneView: NSView {
     public private(set) var view: DiffView
     public private(set) var updating = false
     public private(set) var serial = 0
+    public private(set) var pending: (result: DiffResult, serial: Int)?
+    public private(set) var notice: String?
+    public var stale: Bool { pending != nil }
     public var zoom: CGFloat { fontSize / CodeTheme.fontSize }
     public var current: Int? { columns[0].textView.current }
     public var fresh: Set<Int> { columns[0].textView.fresh }
@@ -34,6 +37,7 @@ public final class DiffPaneView: NSView {
     private var columns: [DiffColumn] = []
     private var fontSize = CodeTheme.fontSize
     private var shown: Set<String> = []
+    private var waiting: Set<String> = []
     private var closed: Set<String> = []
     private var observers: [NSObjectProtocol] = []
     private var syncing = false
@@ -47,6 +51,7 @@ public final class DiffPaneView: NSView {
         super.init(frame: .zero)
         addSubview(header)
         header.onView = { [weak self] view in self?.switchView(to: view) }
+        header.onRefresh = { [weak self] in self?.refresh() }
         message.textColor = DiffTheme.muted
         message.alignment = .center
         message.font = DiffTheme.sans(size: 14)
@@ -327,12 +332,35 @@ public final class DiffPaneView: NSView {
         if listShown { NSRect(x: DiffFileList.width, y: 0, width: 1, height: bounds.height - 34).fill() }
     }
 
-    public func show(_ data: Data, serial: Int) {
+    public func receive(_ data: Data, serial: Int) {
         guard let result = DiffResult.decode(data) else { return }
-        show(result, serial: serial)
+        receive(result, serial: serial)
+    }
+
+    public func receive(_ result: DiffResult, serial: Int) {
+        let reading = self.result.map { $0.error == nil && !$0.files.isEmpty } ?? false
+        if reading, let error = result.error {
+            notice = error
+        } else if !reading || !waiting.isEmpty {
+            waiting = waiting.filter { path in result.files.contains { $0.path == path && $0.fold != nil } }
+            return show(result, serial: serial)
+        } else {
+            notice = nil
+            pending = result == self.result ? nil : (result, serial)
+        }
+        setUpdating(false)
+        header.mark(changed: stale, notice: notice)
+    }
+
+    public func refresh() {
+        guard let pending else { return }
+        show(pending.result, serial: pending.serial)
     }
 
     public func show(_ result: DiffResult, serial: Int) {
+        pending = nil
+        notice = nil
+        header.mark(changed: false, notice: nil)
         let old = document
         let oldFiles = self.result?.files ?? []
         let anchor = current.flatMap { old.rows[safe: $0] }.map { (oldFiles[safe: $0.file]?.path ?? "", $0) }
@@ -357,8 +385,8 @@ public final class DiffPaneView: NSView {
     }
 
     public func setUpdating(_ on: Bool) {
-        updating = on
-        header.updating = on
+        updating = on && (result == nil || !waiting.isEmpty)
+        header.updating = updating
     }
 
     private func path(of row: DiffRow) -> String { result?.files[safe: row.file]?.path ?? "" }
@@ -619,6 +647,7 @@ public final class DiffPaneView: NSView {
 
     public func showFolded(_ path: String) {
         shown.insert(path)
+        waiting.insert(path)
         setUpdating(true)
         onShowFiles?(Array(shown).sorted())
     }
@@ -662,10 +691,13 @@ extension DiffLineKind {
 @MainActor
 final class DiffHeader: NSView {
     var onView: ((DiffView) -> Void)?
-    var updating = false { didSet { busy.isHidden = !updating } }
+    var onRefresh: (() -> Void)?
+    var updating = false { didSet { busy.isHidden = !updating; needsLayout = true } }
     private let command = NSTextField(labelWithString: "")
     private let counts = NSTextField(labelWithString: "")
     private let busy = NSTextField(labelWithString: "updating")
+    private let changed = NSButton(title: "", target: nil, action: nil)
+    private let notice = NSTextField(labelWithString: "")
     private let switcher = NSSegmentedControl(labels: ["Unified", "Split"], trackingMode: .selectOne, target: nil, action: nil)
 
     override init(frame: NSRect) {
@@ -677,11 +709,31 @@ final class DiffHeader: NSView {
         busy.font = DiffTheme.sans(size: 12)
         busy.textColor = DiffTheme.muted
         busy.isHidden = true
+        changed.isBordered = false
+        changed.attributedTitle = NSAttributedString(string: "changed", attributes: [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: DiffTheme.accent, .underlineStyle: NSUnderlineStyle.single.rawValue])
+        changed.toolTip = "The worktree changed: ⌘R shows the newer diff"
+        changed.target = self
+        changed.action = #selector(refresh)
+        changed.isHidden = true
+        notice.font = DiffTheme.sans(size: 12)
+        notice.textColor = DiffTheme.bad
+        notice.lineBreakMode = .byTruncatingTail
+        notice.isHidden = true
         switcher.controlSize = .small
         switcher.target = self
         switcher.action = #selector(picked)
-        [command, counts, busy, switcher].forEach(addSubview)
+        [command, counts, busy, changed, notice, switcher].forEach(addSubview)
     }
+
+    func mark(changed stale: Bool, notice text: String?) {
+        changed.isHidden = !stale
+        notice.stringValue = text.map { $0.split(separator: "\n").first.map(String.init) ?? $0 } ?? ""
+        notice.toolTip = text
+        notice.isHidden = text == nil
+        needsLayout = true
+    }
+
+    @objc private func refresh() { onRefresh?() }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
@@ -705,11 +757,21 @@ final class DiffHeader: NSView {
         let height = bounds.height
         switcher.sizeToFit()
         switcher.frame.origin = NSPoint(x: bounds.width - switcher.frame.width - 10, y: (height - switcher.frame.height) / 2)
-        busy.sizeToFit()
-        busy.frame.origin = NSPoint(x: switcher.frame.minX - busy.frame.width - 12, y: (height - busy.frame.height) / 2)
+        var edge = switcher.frame.minX - 12
+        for status in [busy, changed] as [NSControl] where !status.isHidden {
+            status.sizeToFit()
+            status.frame.origin = NSPoint(x: edge - status.frame.width, y: (height - status.frame.height) / 2)
+            edge = status.frame.minX - 12
+        }
         command.sizeToFit()
         counts.sizeToFit()
-        let room = max(40, busy.frame.minX - 12 - counts.frame.width - 10 - 12)
+        if !notice.isHidden {
+            notice.sizeToFit()
+            let width = min(notice.frame.width, max(60, (edge - 12) / 2))
+            notice.frame = NSRect(x: edge - width, y: (height - notice.frame.height) / 2, width: width, height: notice.frame.height)
+            edge = notice.frame.minX - 12
+        }
+        let room = max(40, edge - counts.frame.width - 10 - 12)
         command.frame = NSRect(x: 12, y: (height - command.frame.height) / 2, width: min(command.frame.width, room), height: command.frame.height)
         counts.frame.origin = NSPoint(x: command.frame.maxX + 10, y: (height - counts.frame.height) / 2)
     }
