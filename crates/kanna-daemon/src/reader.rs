@@ -360,8 +360,14 @@ fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    pub(crate) fn overlong_osc() -> Vec<u8> {
+        let mut osc = b"\x1b]2;".to_vec();
+        osc.resize(osc.len() + kanna_vt::MAX_UNFINISHED_SEQUENCE_BYTES + 1, b'x');
+        osc
+    }
 
     fn feed(cols: u16, rows: u16, output: &str) -> Arc<Mutex<Feed>> {
         let feed = Feed::new(cols, rows, &Settings::default()).unwrap();
@@ -404,10 +410,10 @@ mod tests {
     fn a_snapshot_replaces_the_outbox_unless_it_fails() {
         let f = feed(20, 5, "before");
         let mut f = Feed::lock(&f);
-        f.push(b"\x1b_a\x9d");
+        f.push(&overlong_osc());
         assert!(f.snapshot().is_err());
-        assert!(matches!(f.take(), Some(Taken::Bytes(bytes)) if bytes == b"before\x1b_a\x9d"));
-        f.push(b"\x1b\\after");
+        assert!(matches!(f.take(), Some(Taken::Overflowed)));
+        f.push(b"\x07after");
         let snapshot = f.snapshot().unwrap();
         assert!(f.take().is_none());
         assert_eq!(Terminal::from_snapshot(&snapshot).unwrap().text(Lines::Screen), "beforeafter");

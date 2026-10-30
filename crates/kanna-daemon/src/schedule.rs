@@ -1,4 +1,4 @@
-use crate::backlog::Backlog;
+use crate::tasks::Tasks;
 use crate::db::{self, Db, Schedule};
 use crate::messages::{PLANNER, SCHEDULE};
 use kanna_mux::json::{json, num, opt, string, Map, Value};
@@ -188,17 +188,17 @@ pub trait Mailbox {
     fn label(&self, recipient: &str) -> String;
 }
 
-impl Mailbox for Backlog {
+impl Mailbox for Tasks {
     fn recipient(&self, target: &str) -> Result<String, KmuxError> {
-        Backlog::recipient(self, target)
+        Tasks::recipient(self, target)
     }
 
     fn post(&self, recipient: &str, repo: Option<&str>, from: &str, text: &str) -> Result<i64, KmuxError> {
-        Backlog::post(self, recipient, repo, from, text)
+        Tasks::post(self, recipient, repo, from, text)
     }
 
     fn waiting(&self, message: i64) -> bool {
-        Backlog::waiting(self, message)
+        Tasks::waiting(self, message)
     }
 
     fn label(&self, recipient: &str) -> String {
@@ -424,8 +424,8 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
-    pub fn new(db: Rc<Db>, backlog: Rc<Backlog>) -> Scheduler {
-        let schedules = Schedules::new(db.clone(), Box::new(Local), backlog);
+    pub fn new(db: Rc<Db>, tasks: Rc<Tasks>) -> Scheduler {
+        let schedules = Schedules::new(db.clone(), Box::new(Local), tasks);
         for repo in db.repos().unwrap_or_default() {
             if let Some(repo) = repo_of(&repo) {
                 schedules.seed(&repo);

@@ -376,7 +376,7 @@ pub fn lines(wants: &[Want], words: &[String], env: Env) -> Vec<String> {
             Want::Devices => out.extend(devices()),
             Want::Threads => out.extend(crate::threads::open_threads(words.iter().any(|w| w == "reopen")).into_iter().map(|(id, what)| line(&id, &what))),
             Want::Schedules => out.extend(schedules(&scheduled(words, env).unwrap_or(json!({})))),
-            Want::Tasks => out.extend(tasks(&backlog(words, env).unwrap_or(json!({})))),
+            Want::Tasks => out.extend(tasks(&task_list(words, env).unwrap_or(json!({})))),
         }
     }
     out
@@ -407,13 +407,13 @@ fn scheduled(words: &[String], env: Env) -> Option<Value> {
     target(words, env)?.try_connect()?.call("schedule", json!({ "action": "list" })).ok()
 }
 
-fn backlog(words: &[String], env: Env) -> Option<Value> {
-    target(words, env)?.try_connect()?.call("backlog", json!({ "action": "list" })).ok()
+fn task_list(words: &[String], env: Env) -> Option<Value> {
+    target(words, env)?.try_connect()?.call("tasks", json!({ "action": "list" })).ok()
 }
 
 pub fn tasks(list: &Value) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for task in list["tasks"].as_array().into_iter().flatten().chain(list["out"].as_array().into_iter().flatten()) {
+    for task in list["shelf"].as_array().into_iter().flatten().chain(list["desk"].as_array().into_iter().flatten()) {
         let Some(short) = task["short"].as_str() else { continue };
         if out.iter().any(|line| line.split('\t').next() == Some(short)) {
             continue;
@@ -652,8 +652,8 @@ mod tests {
         assert_eq!(words(&at("schedule add every ")), ["30m", "1h", "2h", "4h"]);
         let target = at("schedule add daily 09:00 ");
         assert_eq!((words(&target), target.contains(&Want::Tasks)), (vec!["planner".to_string()], true));
-        let backlog = json!({ "tasks": [{ "id": "task-71af0000", "short": "71af", "name": "Send spec" }], "out": [{ "id": "task-5e2c0000", "short": "5e2c" }, { "id": "task-71af0000", "short": "71af" }] });
-        assert_eq!(tasks(&backlog), ["71af\tSend spec", "5e2c"]);
+        let list = json!({ "shelf": [{ "id": "task-71af0000", "short": "71af", "name": "Send spec" }], "desk": [{ "id": "task-5e2c0000", "short": "5e2c" }, { "id": "task-71af0000", "short": "71af" }] });
+        assert_eq!(tasks(&list), ["71af\tSend spec", "5e2c"]);
         assert_eq!(at("schedule add 'daily 09:00' planner "), []);
         assert_eq!(at("schedule add daily 09:00 planner "), []);
         assert_eq!(at("schedule remove "), [Want::Schedules]);

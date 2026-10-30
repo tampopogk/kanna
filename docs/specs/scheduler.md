@@ -105,7 +105,7 @@ kanna schedule remove evening
 
 ## 7. How it's built
 
-- **`schedule.rs` in the daemon:** rule parsing and next times (pure, with the time zone behind a trait so tests can use a zone with DST without touching the process's `TZ`), and the scheduler, which leaves a due schedule's message through a `Mailbox`: the backlog's messaging (`Backlog::recipient`, `post`, `waiting`), faked in its tests.
+- **`schedule.rs` in the daemon:** rule parsing and next times (pure, with the time zone behind a trait so tests can use a zone with DST without touching the process's `TZ`), and the scheduler, which leaves a due schedule's message through a `Mailbox`: the tasks' messaging (`Tasks::recipient`, `post`, `waiting`), faked in its tests.
 - **Fire:** the daemon's loop asks the scheduler for its next deadline (at most a minute away, since the monotonic clock stops while the Mac sleeps) and calls it; a due schedule leaves its message, unless its last is still waiting, and gets its next time and the message's ID in one write.
 - **`schedules` table**, in [the database](database.md): `id`, `repo`, `name` (unique per repo), `target` (a task ID or `planner`), `rule`, `prompt`, `next`, `message` (→ `messages.id`, the last one left), `made_at`, and a JSON `doc` for the rest (who made it). `meta` keeps which repos have had the quiz schedule added.
 - **Messages from a schedule** are from `schedule NAME`, and the recipient's permission class is used for them, as for yours (`messages::yours`).
