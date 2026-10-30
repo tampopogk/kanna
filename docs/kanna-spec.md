@@ -21,7 +21,7 @@
 | G3 | Make it easy to script: predictable output, JSON output and clear exit codes. |
 | G4 | Open a whole dev setup (server, web preview, iOS app) with one command. |
 
-**Non-goals (for now):** showing panes itself (that is the mux's job); pixel-exact sizing (sizes are fractions of the space); controlling muxes on other machines **[Assumption]**.
+**Non-goals (for now):** showing panes itself (that is the mux's job); pixel-exact sizing (sizes are fractions of the space). Kanna on other machines is planned in [your machines](specs/machines.md).
 
 ## Architecture
 
@@ -56,14 +56,17 @@ flowchart TB
 | [The keeper](keeper.md) · [upgrading it](specs/keeper-upgrade.md) | The process that creates and holds the ptys |
 | [The app link](specs/app-link.md) | The app's connection to the daemon: messages, snapshots, the app starting the daemon |
 | [Daemon build](specs/daemon-build.md) | A relaunched app of another build replaces the daemon |
+| [Your machines](specs/machines.md) · [identity and pairing](specs/machine-identity.md) · [tasks across machines](specs/machine-tasks.md) · [agent sign-in](specs/agent-sign-in.md) | The machines your daemons trust, paired by code, sharing a backlog: free, LAN first |
+| [Kanna Cloud](specs/kanna-cloud.md) · [build Macs](specs/build-macs.md) | A service that hands you machines: Kanna-run VMs, enrollment by token, its directory and relays, build Macs; open source, so anyone can run one |
 | [Restarting the daemon](specs/daemon-restart.md) | Terminals on disk, adopting the keeper's ptys |
 | [Pane sizes](specs/pane-sizes.md) | A program sees its view's size across a relaunch and a restart, and on the Shelf and in the backlog |
 | [The daemon's socket](specs/daemon-socket.md) | The app keeps `kanna.sock`'s listener, so it answers through a daemon restart |
 | [The layout](specs/layout.md) | One layout model in the app; layout steps; saving, restoring; working with the app closed |
 | [Windows, tabs and splits](specs/windows.md) · [menus](specs/menus.md) · [zoom](specs/zoom.md) · [docked pane](specs/docked-pane.md) | The windows, their actions and debug commands |
-| [Web, markdown and iOS panes](specs/app-panes.md) · [markdown keys](specs/markdown-keys.md) | The app's panes, lent to the daemon |
+| [Web, markdown and iOS panes](specs/app-panes.md) · [markdown keys](specs/markdown-keys.md) · [markdown diff](specs/markdown-diff.md) | The app's panes, lent to the daemon |
 | [Code viewer](specs/code-viewer.md) · [code tour](specs/code-tour.md) | A highlighted code pane; the agent commenting on code |
 | [Diff viewer](specs/diff-viewer.md) | `git diff` in a native pane beside the agent, following the worktree |
+| [File panes](specs/file-panes.md) | the daemon reads and watches a markdown or code pane's file; the app only draws |
 | [Doc markup](specs/doc-markup.md) | Commenting on a doc with the agent beside it |
 | [Terminal behaviour](specs/terminal.md) · [terminal links](specs/terminal-links.md) | What a terminal does, who answers the program; which links open |
 | [The shell a command runs in](specs/command-shell.md) | Commands start in an interactive login shell |
@@ -73,20 +76,24 @@ flowchart TB
 | Spec | What it covers |
 |---|---|
 | [The kanna CLI](specs/cli.md) | A port of kmux's CLI; where it differs; reaching Kanna; errors and exit codes |
+| [The CLI acts on its caller](specs/cli-caller.md) | A command with no target acts on the terminal it runs in, or is refused; never the front window |
+| [The app owns the physical layout](specs/physical-layout.md) | The daemon keeps the logical layout and no key window; the app keeps which window is in front, the order and frames |
 | [Commands](specs/commands.md) | Every command and option; `send-key` |
 | [kanna send](specs/kanna-send.md) | Return pressed on its own, after a bracketed paste, so agents submit |
 | [Sizing and arranging panes](specs/arranging-panes.md) | Fractions, the layout expression, `kanna.yaml` |
 | [Mux backends](specs/backends.md) | kmux, tmux, cmux; choosing one; the adapter interface; open questions |
-| [Instances](specs/instances.md) · [build channels](specs/build-channels.md) | Separate Kannas for developing Kanna |
+| [Instances](specs/instances.md) · [build channels](specs/build-channels.md) · [stopping an instance](specs/instance-stop.md) | Separate Kannas for developing Kanna, and quitting one |
 | [Tab completion](specs/tab-completion.md) · [screenshot](specs/screenshot.md) | Completing commands in zsh and bash; a PNG of a pane or window |
 
 **Tasks and agents**
 
 | Spec | What it covers |
 |---|---|
-| [Desk](specs/desk.md) · [new Desk](specs/new-desk.md) · [planning terminal](specs/planning-agent.md) | A window showing one task, with the Shelf |
-| [Tasks](specs/tasks.md) · [backlog runners](specs/backlog-runners.md) · [backlog search](specs/backlog-search.md) · [blocked tasks](specs/task-dependencies.md) · [task IDs](specs/task-ids.md) · [task scripts](specs/task-scripts.md) · [agent messaging](specs/agent-messaging.md) | One agent in one worktree; the backlog |
+| [Desk](specs/desk.md) · [Desk view](specs/desk-view.md) · [new Desk](specs/new-desk.md) · [planning terminal](specs/planning-agent.md) · [planner resume](specs/planner-resume.md) | A window holding up to three tasks, one active; ⌘. shows the Desk view |
+| [Project folder](specs/project-folder.md) | Every project lives in `~/.kanna-v4/repos/OWNER/NAME`; `kanna project import` copies one there |
+| [Tasks](specs/tasks.md) · [Shelf runners](specs/shelf-runners.md) · [Shelf search](specs/shelf-search.md) · [blocked tasks](specs/task-dependencies.md) · [task IDs](specs/task-ids.md) · [task scripts](specs/task-scripts.md) · [agent messaging](specs/agent-messaging.md) | One agent in one worktree; the Shelf |
 | [Agent status](specs/agent-status.md) | Working, needs you, idle, exited |
+| [Toasts](specs/toasts.md) | Notices the daemon raises in the app, such as messages that wait |
 | [Agent setup](specs/agent-setup.md) | Kanna's skills where agents find them |
 | [Codex's app-server](specs/codex-app-server.md) | Every Codex runs attached to a server of its own, Kanna's door for messages |
 | [Quiz](specs/quiz.md) | Questions on what landed on main |
@@ -100,3 +107,4 @@ flowchart TB
 | [Deployment target](specs/deployment-target.md) | Everything built for the app's macOS |
 | [Build speed](specs/build-speed.md) · [build architectures](specs/build-architectures.md) · [build targets](specs/build-targets.md) | Fast worktree builds; arm64 and x86_64; worktree builds on another volume |
 | [Release](specs/release.md) | Signed, notarized DMGs published on GitHub |
+| [Kanna Cloud: installing a host](specs/cloud-provisioning.md) | Ubuntu on a Kanna Cloud R720 through its iDRAC alone |

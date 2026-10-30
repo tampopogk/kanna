@@ -8,6 +8,8 @@ final class DaemonConnection: @unchecked Sendable {
     }
 
     let path: String
+    private let dial: @Sendable () -> Int32?
+    private let remote: Bool
     private let hello: @MainActor @Sendable () -> JSON
     private let connected: @MainActor @Sendable () -> Void
     private let received: @MainActor @Sendable (JSON, Delivery) -> Void
@@ -26,11 +28,13 @@ final class DaemonConnection: @unchecked Sendable {
     private static let reconnectDelay: TimeInterval = 0.5
     private static let refusedDelayLimit: TimeInterval = 30
 
-    init(path: String, hello: @escaping @MainActor @Sendable () -> JSON, connected: @escaping @MainActor @Sendable () -> Void,
+    init(path: String, dial: (@Sendable () -> Int32?)? = nil, hello: @escaping @MainActor @Sendable () -> JSON, connected: @escaping @MainActor @Sendable () -> Void,
          received: @escaping @MainActor @Sendable (JSON, Delivery) -> Void, disconnected: @escaping @MainActor @Sendable () -> Void,
          unreachable: @escaping @Sendable () -> Void = {}, descriptor: @escaping @Sendable (Int32) -> Void = { close($0) }) {
         self.path = path
         self.descriptor = descriptor
+        self.dial = dial ?? { Self.connect(path) }
+        remote = dial != nil
         self.hello = hello
         self.connected = connected
         self.received = received
@@ -52,15 +56,16 @@ final class DaemonConnection: @unchecked Sendable {
         }
     }
 
-    func send(_ message: JSON) { send(message, generation: nil) }
+    func send(_ message: JSON, sent: (@Sendable () -> Void)? = nil) { send(message, generation: nil, sent: sent) }
 
-    func send(_ message: JSON, generation: Int?) {
+    func send(_ message: JSON, generation: Int?, sent: (@Sendable () -> Void)? = nil) {
         var encoded = message.encoded()
         encoded.append(UInt8(ascii: "\n"))
         let line = encoded
         writes.async { [self] in
             let fd = lock.withLock { generation == nil || generation == self.generation ? self.fd : -1 }
             if fd >= 0 { _ = Self.writeAll(fd, line) }
+            sent?()
         }
     }
 
@@ -82,9 +87,14 @@ final class DaemonConnection: @unchecked Sendable {
 
     private func run() {
         while !lock.withLock({ stopped }) {
-            guard let socket = Self.connect(path) else {
+            guard let socket = dial() else {
                 unreachable()
-                Thread.sleep(forTimeInterval: 0.2)
+                if remote {
+                    refused()
+                    sleepUntilRetry()
+                } else {
+                    Thread.sleep(forTimeInterval: 0.2)
+                }
                 continue
             }
             let hello = hello

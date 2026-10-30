@@ -169,6 +169,8 @@ fn daemon_command(dir: &Path, env: &[(String, String)]) -> Command {
         .env("KANNA_AGENT_RULES_URL", "none")
         .env("KANNA_KEEPER", keeper_binary())
         .env("KANNA_KEEPER_CLOSE_GRACE_MS", "300")
+            .env("KANNA_MACHINE_MDNS", "0")
+            .env("KANNA_MACHINE_PORT", "0")
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(Stdio::null())
         .stdout(Stdio::null())

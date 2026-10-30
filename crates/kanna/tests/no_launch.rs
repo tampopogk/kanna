@@ -35,6 +35,7 @@ fn kanna(dir: &std::path::Path, args: &[&str]) -> Command {
         .env("KMUX_APP", "/nonexistent/kmux.app")
         .env_remove("KANNA_INSTANCE")
         .env_remove("KANNA_PANE")
+        .env_remove("KANNA_TERMINAL")
         .env_remove("KMUX_SOCKET")
         .env_remove("KANNA_MUX");
     command
@@ -121,7 +122,7 @@ fn with_kanna_socket_set_a_command_that_needs_the_app_fails_with_6_and_starts_no
         _ => serde_json::json!({ "ok": false, "error": { "code": "no_app", "message": "opening a pane with --split, --size, --tab, --window or --dock needs Kanna.app, and none is attached to this daemon" } }),
     });
     let started = Instant::now();
-    let output = kanna(&dir, &["open", "--split", "right"]).output().unwrap();
+    let output = kanna(&dir, &["open", "--window", "win-1", "--split", "right"]).output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(6), "{stderr}");
     assert!(stderr.contains("[no_app]") && stderr.contains("KANNA_SOCKET is set, so kanna doesn't start Kanna.app"), "{stderr}");

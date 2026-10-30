@@ -29,7 +29,7 @@ fn brief(text: &str) -> String {
     if line.chars().count() > 60 { format!("{}…", line.chars().take(59).collect::<String>()) } else { line.to_string() }
 }
 
-/// Where a reply's window is: `window w1`, or `s1's w2` in a workspace, with
+/// Where a reply's window is: `win-1`, or `ws-1's win-2` in a workspace, with
 /// `(hidden)` after a hidden one.
 fn place(reply: &Value) -> String {
     let window = reply["window"].as_str().unwrap_or("?");
@@ -37,7 +37,7 @@ fn place(reply: &Value) -> String {
     match workspace["id"].as_str() {
         Some(id) if workspace["hidden"] == true => format!("{id}'s {window} (hidden)"),
         Some(id) => format!("{id}'s {window}"),
-        None => format!("window {window}"),
+        None => window.to_string(),
     }
 }
 
@@ -47,7 +47,7 @@ pub fn opened(request: &Value, reply: &Value) -> String {
         let frozen = if request["frozen"] == true { ", frozen," } else { "" };
         return format!("opened {} docked {edge}{frozen} in {place}: {}", label(&reply["pane"]), state(&reply["pane"]));
     }
-    format!("opened {} in {place}, tab {}: {}", label(&reply["pane"]), reply["tab"].as_str().unwrap_or("?"), state(&reply["pane"]))
+    format!("opened {} in {place}, {}: {}", label(&reply["pane"]), reply["tab"].as_str().unwrap_or("?"), state(&reply["pane"]))
 }
 
 fn workspace_label(workspace: &Value) -> String {
@@ -140,8 +140,8 @@ pub fn moved(reply: &Value) -> String {
 pub fn closed(args: &Value, reply: &Value) -> String {
     let panes = join(&reply["closed"]);
     match (args["window"].as_str(), args["tab"].as_str()) {
-        (Some(window), _) => format!("closed window {window} (panes {panes})"),
-        (_, Some(tab)) => format!("closed tab {tab} (panes {panes})"),
+        (Some(window), _) => format!("closed {window} (panes {panes})"),
+        (_, Some(tab)) => format!("closed {tab} (panes {panes})"),
         _ => format!("closed {panes}"),
     }
 }

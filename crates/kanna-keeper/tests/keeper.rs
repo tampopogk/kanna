@@ -1005,3 +1005,21 @@ fn the_upgrades_pause_counts_against_a_waiting_spawns_timeout() {
     assert!(error.contains("timed out"), "{error}");
     assert!(took < Duration::from_millis(3000), "the spawn failed after {took:?}, its timeout is 2 s");
 }
+
+#[test]
+fn stop_closes_every_pty_and_exits_once_they_are_gone() {
+    let mut f = Fixture::new();
+    let mut c = f.client();
+    let (sh, kid) = group(&mut c, "plain", "sleep 60 & echo \"kid:$!\"; wait");
+    let (sh2, kid2) = group(&mut c, "stubborn", "trap '' HUP; sleep 60 & echo \"kid:$!\"; wait");
+    c.spawn(&SpawnRequest::command("done", "true")).unwrap();
+    assert_eq!(next_exit(&mut c).status, ExitStatus::Code(0));
+    c.stop().unwrap();
+    assert!(!f.socket().exists(), "a stopping keeper takes no new clients");
+    assert!(c.spawn(&SpawnRequest::command("late", "true")).is_err());
+    wait_for("the keeper to exit", || f.keeper_exited());
+    for pid in [sh, kid, sh2, kid2] {
+        assert!(!alive(pid), "{pid} outlived its keeper");
+    }
+    assert!(!f.state().join("keeper.pid").exists());
+}

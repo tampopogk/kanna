@@ -8,9 +8,10 @@ final class DaemonStarter: @unchecked Sendable {
     private var isAttached = false
     private var lastStart: Date?
     private var scheduled = false
+    private var quit = false
 
     private static let startInterval: TimeInterval = 10
-    private static let passedThrough: Set<String> = ["KANNA_STATE_DIR", "KANNA_DEBUG", "KANNA_AGENTS_HOME", "KANNA_NO_STATE", "KANNA_FRESH"]
+    private static let passedThrough: Set<String> = ["KANNA_STATE_DIR", "KANNA_DEBUG", "KANNA_AGENTS_HOME", "KANNA_NO_STATE", "KANNA_FRESH", "KANNA_E2E_OWNER"]
     private static let listenerDescriptor: Int32 = 3
 
     init(socketPath: String) {
@@ -31,6 +32,10 @@ final class DaemonStarter: @unchecked Sendable {
         }
     }
 
+    func quitting() {
+        lock.withLock { quit = true }
+    }
+
     func lost() {
         lock.withLock { isAttached = false }
         startWhenDue()
@@ -44,14 +49,14 @@ final class DaemonStarter: @unchecked Sendable {
                 listener = -1
             }
         }
-        if FileManager.default.isExecutableFile(atPath: Self.daemon) { _ = socketListener() }
+        if !lock.withLock({ quit }), FileManager.default.isExecutableFile(atPath: Self.daemon) { _ = socketListener() }
         startWhenDue()
     }
 
     private func startWhenDue() {
         let now = Date()
         let wait = lock.withLock { () -> TimeInterval? in
-            if isAttached { return nil }
+            if isAttached || quit { return nil }
             if let lastStart, now.timeIntervalSince(lastStart) < Self.startInterval {
                 if scheduled { return nil }
                 scheduled = true

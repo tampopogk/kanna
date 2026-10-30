@@ -264,11 +264,13 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
         mouseButton(event, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT)
         if let surface { ghostty_surface_mouse_pressure(surface, 0, 0) }
     }
+    var paneMenu: NSMenu? {
+        guard let surface, !ghostty_surface_mouse_captured(surface) else { return nil }
+        return contextMenu?()
+    }
     override func rightMouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
-        if let surface, !ghostty_surface_mouse_captured(surface), let menu = contextMenu?() {
-            return NSMenu.popUpContextMenu(menu, with: event, for: self)
-        }
+        if let menu = paneMenu { return NSMenu.popUpContextMenu(menu, with: event, for: self) }
         mouseButton(event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_RIGHT)
     }
     override func rightMouseUp(with event: NSEvent) { mouseButton(event, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_RIGHT) }

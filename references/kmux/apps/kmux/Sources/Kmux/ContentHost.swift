@@ -9,8 +9,9 @@ import KmuxMarkdown
 final class ContentHost: PaneHost {
     let runtime: GhosttyRuntime
     weak var core: Core?
-    /// Terminals get `KMUX_INSTANCE`, `KMUX_SOCKET` and `KMUX_PANE` (`KANNA_…` in Kanna), so
-    /// `kmux` run inside a pane talks to the kmux that owns it.
+    /// Terminals get `KMUX_INSTANCE`, `KMUX_SOCKET` and `KMUX_TERMINAL`, their
+    /// own content ID (`KANNA_…` in Kanna), so `kmux` run inside a pane talks
+    /// to the kmux that owns it.
     var instance = Instance(name: Instance.defaultName)
     /// Panes started now come back from the saved layout: their terminals
     /// get `KMUX_RESTORED=1`, so a terminal wrapper can reattach a session.
@@ -28,8 +29,9 @@ final class ContentHost: PaneHost {
     /// Where each file was left in each markdown pane (scroll, magnification),
     /// so going back returns to it.
     private var markdownSpots: [String: [String: (y: CGFloat, zoom: CGFloat)]] = [:]
-    /// Markdown panes' zoom, kept when a pane moves to another file or restarts.
-    private var markdownZoom: [String: CGFloat] = [:]
+    /// Markdown panes' zoom, kept when a pane moves to another file or
+    /// restarts, and saved with the app's own state.
+    var markdownZoom: [String: CGFloat] = [:]
     /// The pane's ⋯ grip was pressed: a drag to move the pane begins.
     var onPaneDrag: ((String, NSEvent) -> Void)?
     /// The Pane menu, for right-clicks (acting on the pane, which takes focus first).
@@ -70,7 +72,7 @@ final class ContentHost: PaneHost {
                 failure = directory.boolValue ? "\(path) is a folder, not a markdown file" : "No such file: \(path)"
             } else {
                 let spot = markdownSpots[id]?[path]
-                let markdown = MarkdownPaneView(path: path, zoom: spot?.zoom ?? markdownZoom[id] ?? pane.zoom.map { CGFloat($0) } ?? 1)
+                let markdown = MarkdownPaneView(path: path, zoom: spot?.zoom ?? markdownZoom[id] ?? 1)
                 markdown.startScrollY = spot?.y
                 markdown.onHistory = { [weak self] back in self?.onMarkdownHistory?(id, back) }
                 markdown.onZoom = { [weak self] in self?.onPaneChange?() }
@@ -97,7 +99,7 @@ final class ContentHost: PaneHost {
             terminal.onFocus = { [weak self] in self?.onFocus?(id) }
             terminal.contextMenu = { [weak self] in self?.contextMenu?() }
             let brand = Brand.current
-            var environment = [(brand.variable("INSTANCE"), instance.name), (brand.variable("SOCKET"), instance.socketPath), (brand.variable("PANE"), id)]
+            var environment = [(brand.variable("INSTANCE"), instance.name), (brand.variable("SOCKET"), instance.socketPath), (brand.variable("TERMINAL"), id)]
             if restoring { environment.append((brand.variable("RESTORED"), "1")) }
             started = runtime.attach(terminal, command: pane.command, cwd: pane.cwd, environment: environment, wrapper: brand.terminalWrapper)
             content = terminal
@@ -126,7 +128,7 @@ final class ContentHost: PaneHost {
             do {
                 let device = try await Simulator.resolve(pane.device)
                 guard current() else { return }
-                pane.device = device.name
+                self?.core?.report(id, device: device.name)
                 view.show(device: device.name, app: appName)
                 view.show(status: "Booting \(device.name)…")
                 try await Simulator.boot(device)
