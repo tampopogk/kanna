@@ -1,0 +1,623 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overview Mockup</title>
+<style>
+:root {
+  --page: #111214; --ctl: #2a2c31; --ctl-line: #3a3d44; --ctl-text: #e6e6e6; --ctl-dim: #8b8f98; --ctl-accent: #3478f6;
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+.window.dark {
+  --bg: #14161a; --panel: #1b1e24; --fold: #191c21; --num: #4b5260; --fg: #e6e8eb; --line: #2c313a; --muted: #8b93a0;
+  --termbg: #16181c; --guide: #2a2f37; --sel: rgba(122,162,255,.28); --cur: #1b1e24; --tint: #1e2433; --tint-edge: #7aa2ff;
+  --ok: #5fcf93; --bad: #ef6b6b; --warn: #f0b35a; --hit: #e2c541;
+  --add-bg: rgba(95,207,147,.11); --add-num: rgba(95,207,147,.16); --del-bg: rgba(239,107,107,.11); --del-num: rgba(239,107,107,.16);
+  --ov-box: rgba(255,255,255,.12); --ov-box-on: rgba(255,255,255,.2); --ov-thumb: rgba(255,255,255,.22); --ov-edge: #2c313a;
+  --keyword: #c792ea; --function: #7aa2ff; --type: #e5c07b; --string: #a5d6a7; --number: #f78c6c; --constant: #f78c6c;
+  --comment: #6b7280; --macro: #56b6c2; --attribute: #8b93a0; --property: #c9d1e0; --operator: #89ddff; --punctuation: #8b93a0;
+}
+.window.light {
+  --bg: #ffffff; --panel: #f4f5f7; --fold: #f6f7f9; --num: #b4bac4; --fg: #1d2026; --line: #d8dce2; --muted: #6b7280;
+  --termbg: #fbfbfc; --guide: #e4e7eb; --sel: rgba(47,99,216,.2); --cur: #f4f5f7; --tint: #eef3fc; --tint-edge: #2f63d8;
+  --ok: #1f9d5c; --bad: #cf3f3f; --warn: #b7791f; --hit: #c9a400;
+  --add-bg: rgba(31,157,92,.09); --add-num: rgba(31,157,92,.14); --del-bg: rgba(207,63,63,.08); --del-num: rgba(207,63,63,.13);
+  --ov-box: rgba(0,0,0,.1); --ov-box-on: rgba(0,0,0,.16); --ov-thumb: rgba(0,0,0,.2); --ov-edge: #e4e7eb;
+  --keyword: #8839c4; --function: #2f63d8; --type: #a15c00; --string: #2d7d3a; --number: #c2410c; --constant: #c2410c;
+  --comment: #8a919c; --macro: #0e7490; --attribute: #6b7280; --property: #374151; --operator: #0369a1; --punctuation: #6b7280;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ctl-text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro { display: none; }
+h1 { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--ctl-dim); margin: 0 0 12px; max-width: 940px; }
+.intro code { font: 12px var(--mono); }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; align-items: center; }
+.controls .sep { width: 1px; height: 18px; background: var(--ctl-line); margin: 0 4px; }
+.controls label { color: var(--ctl-dim); font-size: 12px; display: flex; align-items: center; gap: 6px; }
+button { font: 12px var(--sans); color: var(--ctl-text); background: var(--ctl); border: 1px solid var(--ctl-line); border-radius: 5px; padding: 4px 9px; cursor: pointer; }
+button:hover { border-color: var(--ctl-accent); }
+button.on { background: var(--ctl-accent); border-color: var(--ctl-accent); }
+.readout { font: 12px var(--mono); color: var(--ctl-dim); margin: 0 0 12px; min-height: 18px; }
+.readout b { color: var(--ctl-text); font-weight: 500; }
+
+.window { border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: 0 20px 50px rgba(0,0,0,.5); background: var(--bg); color: var(--fg); height: 700px; display: flex; flex-direction: column; }
+body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 100vh; }
+.bar { height: 36px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 12px; }
+.lights { display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: var(--line); display: block; }
+.bar b { font-weight: 600; font-size: 13px; }
+.content { flex: 1; display: flex; min-height: 0; }
+.agent { flex: none; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
+.agent .head { flex: none; height: 34px; padding: 0 14px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); white-space: nowrap; overflow: hidden; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--function); flex: none; }
+.term { flex: 1; min-height: 0; background: var(--termbg); font: 12px/1.6 var(--mono); padding: 10px 12px; white-space: pre-wrap; overflow: hidden; color: var(--fg); }
+.term .c { color: var(--function); } .term .p { color: var(--type); } .term .a { color: var(--keyword); }
+.docs { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.dtabs { height: 34px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--line); overflow: hidden; }
+.dtab { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; color: var(--muted); white-space: nowrap; cursor: pointer; }
+.dtab.on { color: var(--fg); }
+
+.pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.crumbs { height: 26px; flex: none; display: flex; align-items: center; gap: 6px; padding: 0 14px 0 20px; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+.crumbs b { font-weight: 400; color: var(--fg); }
+.dhead { height: 34px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 12px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+.dhead code { font: 11.5px var(--mono); color: var(--fg); }
+.add-n { color: var(--ok); } .del-n { color: var(--bad); }
+.body { flex: 1; min-height: 0; display: flex; position: relative; }
+.files { flex: 0 0 230px; overflow: auto; border-right: 1px solid var(--line); padding: 6px 0; font-size: 12px; }
+.files .dir { color: var(--muted); padding: 6px 12px 2px; font: 11px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.files .f { display: flex; gap: 7px; padding: 3px 10px 3px 12px; white-space: nowrap; }
+.files .f .st { font: 600 10.5px var(--mono); width: 10px; }
+.st.M { color: var(--warn); } .st.A { color: var(--ok); } .st.D { color: var(--bad); }
+.files .f .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.files .f .ct { font: 10.5px var(--mono); }
+.scroller { flex: 1; min-width: 0; overflow: auto; position: relative; scrollbar-width: none; }
+.scroller::-webkit-scrollbar { display: none; }
+.body.no-ov .scroller { scrollbar-width: auto; }
+.body.no-ov .scroller::-webkit-scrollbar { display: initial; }
+
+.lines { padding: 8px 0 0; min-width: max-content; }
+.lines.code { padding-bottom: 60vh; }
+.ln { display: flex; white-space: pre; position: relative; }
+.ln .n { flex: none; width: 52px; padding-right: 14px; text-align: right; color: var(--num); user-select: none; background: var(--bg); position: sticky; left: 0; z-index: 1; }
+.ln .t { padding-right: 24px; }
+.ln.edited .n::before { content: ""; position: absolute; left: 3px; top: 3px; bottom: 3px; width: 3px; border-radius: 2px; background: var(--ok); }
+.ln.commented, .ln.commented .n { background: var(--tint); }
+.ln.commented .n { box-shadow: inset 2px 0 0 var(--tint-edge); color: var(--fg); }
+.hit { background: var(--hit); color: #000; border-radius: 2px; }
+.ig { box-shadow: inset 1px 0 0 var(--guide); }
+
+.file { border-bottom: 1px solid var(--line); }
+.fh { position: sticky; top: 0; z-index: 3; height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 12px; background: var(--panel); border-bottom: 1px solid var(--line); font: 12px var(--mono); white-space: nowrap; }
+.fh i { font-style: normal; color: var(--muted); }
+.fh .sp { flex: 1; }
+.r { display: flex; white-space: pre; }
+.r .n { flex: none; width: 44px; padding-right: 8px; text-align: right; color: var(--num); user-select: none; background: var(--bg); }
+.r .sg { flex: none; width: 18px; text-align: center; color: var(--muted); user-select: none; }
+.r .t { padding-right: 24px; }
+.r.add { background: var(--add-bg); } .r.add .n { background: var(--add-num); color: var(--ok); } .r.add .sg { color: var(--ok); }
+.r.del { background: var(--del-bg); } .r.del .n { background: var(--del-num); color: var(--bad); } .r.del .sg { color: var(--bad); }
+.r.fold { background: var(--fold); color: var(--muted); font: 11.5px/24px var(--sans); }
+.r.fold .n { background: var(--fold); }
+.r.fold .t { padding-left: 8px; }
+
+.ov { flex: none; display: flex; position: relative; border-left: 1px solid var(--ov-edge); background: var(--bg); }
+.body.no-ov .ov { display: none; }
+.ov canvas { display: block; }
+.ov .thumb { cursor: default; }
+.ov .marks { border-left: 1px solid var(--ov-edge); }
+
+.tk-keyword { color: var(--keyword); } .tk-function { color: var(--function); } .tk-type { color: var(--type); }
+.tk-string { color: var(--string); } .tk-number { color: var(--number); } .tk-constant { color: var(--constant); }
+.tk-comment { color: var(--comment); font-style: italic; } .tk-macro { color: var(--macro); } .tk-attribute { color: var(--attribute); }
+.tk-property { color: var(--property); } .tk-operator { color: var(--operator); } .tk-punctuation { color: var(--punctuation); }
+.tk-heading { color: var(--function); font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1>Overview: a thumbnail of the whole file down the right edge of code and diff panes</h1>
+    <p>As VS Code's minimap (<code>overview-vscode.png</code>): every line as tiny glyphs in the pane's colours, the part on screen as a box (shown while the pointer is over it), and a thin column of marks (changes, comments, find hits) that maps the whole file to the pane's height and carries the scroll thumb. Click the thumbnail to jump, drag the box to scroll. It's hidden when the file fits, and when the text beside it would keep fewer than 80 columns at the pane's font size; in a diff pane the file list (which wants 110 columns beside it) gives way first, and stays hidden while the overview is too narrow to show. <b>View › Overview</b> turns it off for every pane.</p>
+    <div class="controls">
+      <button data-scene="code" class="on">Code pane: fdpass.rs</button>
+      <button data-scene="short">Code pane: a file that fits</button>
+      <button data-scene="diff">Diff pane</button>
+      <span class="sep"></span>
+      <label>Agent column <input id="agentW" type="range" min="160" max="900" value="380"></label>
+      <button id="zoomOut">⌘−</button><button id="zoomIn">⌘=</button>
+      <span class="sep"></span>
+      <button id="find">Find “cmsg”</button>
+      <button id="comment">Comment on line 50</button>
+      <button id="edit">Agent edits the file</button>
+      <span class="sep"></span>
+      <button id="toggle" class="on">View › Overview</button>
+      <button id="theme">Light / dark</button>
+    </div>
+    <div class="readout" id="readout"></div>
+  </div>
+  <div class="window dark" id="window">
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><b>Overview</b></div>
+    <div class="content">
+      <div class="agent" id="agent">
+        <div class="head"><span class="dot"></span>~/work/kanna-v4 · overview</div>
+        <div class="term"><span class="c">~/work/kanna-v4</span> <span class="p">❯</span> claude
+<span class="a">●</span> The overview is the column down the
+  right edge of the code pane: hover it to
+  see the box, drag the box to scroll.
+</div>
+      </div>
+      <div class="docs">
+        <div class="dtabs" id="dtabs"></div>
+        <div class="pane" id="pane"></div>
+      </div>
+    </div>
+  </div>
+</main>
+<script>
+const SOURCE = `use std::io;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+
+const MAX_FDS: usize = 16;
+
+fn cmsg_space(n: usize) -> usize {
+    unsafe { libc::CMSG_SPACE((n * std::mem::size_of::<RawFd>()) as u32) as usize }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const SEND_FLAGS: libc::c_int = libc::MSG_NOSIGNAL;
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+const SEND_FLAGS: libc::c_int = 0;
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const RECV_FLAGS: libc::c_int = libc::MSG_CMSG_CLOEXEC;
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+const RECV_FLAGS: libc::c_int = 0;
+
+pub fn send(sock: RawFd, bytes: &[u8], fds: &[RawFd], nonblocking: bool) -> io::Result<usize> {
+    let mut iov = libc::iovec { iov_base: bytes.as_ptr() as *mut _, iov_len: bytes.len() };
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    let mut control = vec![0u64; cmsg_space(fds.len().max(1)).div_ceil(8)];
+    if !fds.is_empty() {
+        msg.msg_control = control.as_mut_ptr().cast();
+        msg.msg_controllen = cmsg_space(fds.len()) as _;
+        unsafe {
+            let cmsg = libc::CMSG_FIRSTHDR(&msg);
+            (*cmsg).cmsg_level = libc::SOL_SOCKET;
+            (*cmsg).cmsg_type = libc::SCM_RIGHTS;
+            (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of_val(fds) as u32) as _;
+            std::ptr::copy_nonoverlapping(fds.as_ptr(), libc::CMSG_DATA(cmsg).cast::<RawFd>(), fds.len());
+        }
+    }
+    let flags = SEND_FLAGS | if nonblocking { libc::MSG_DONTWAIT } else { 0 };
+    loop {
+        let n = unsafe { libc::sendmsg(sock, &msg, flags) };
+        if n >= 0 {
+            return Ok(n as usize);
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
+pub fn recv(sock: RawFd, buf: &mut [u8], nonblocking: bool) -> io::Result<(usize, Vec<OwnedFd>)> {
+    let mut iov = libc::iovec { iov_base: buf.as_mut_ptr().cast(), iov_len: buf.len() };
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    let mut control = vec![0u64; cmsg_space(MAX_FDS).div_ceil(8)];
+    msg.msg_control = control.as_mut_ptr().cast();
+    msg.msg_controllen = cmsg_space(MAX_FDS) as _;
+    let flags = RECV_FLAGS | if nonblocking { libc::MSG_DONTWAIT } else { 0 };
+    let n = loop {
+        let n = unsafe { libc::recvmsg(sock, &mut msg, flags) };
+        if n >= 0 {
+            break n as usize;
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    };
+    let mut fds = Vec::new();
+    unsafe {
+        let mut cmsg = libc::CMSG_FIRSTHDR(&msg);
+        while !cmsg.is_null() {
+            if (*cmsg).cmsg_level == libc::SOL_SOCKET && (*cmsg).cmsg_type == libc::SCM_RIGHTS {
+                let data = libc::CMSG_DATA(cmsg).cast::<RawFd>();
+                let len = (*cmsg).cmsg_len as usize - (data as usize - cmsg as usize);
+                for i in 0..len / std::mem::size_of::<RawFd>() {
+                    let fd = std::ptr::read_unaligned(data.add(i));
+                    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+                    crate::sig::set_cloexec(fd);
+                    fds.push(OwnedFd::from_raw_fd(fd));
+                }
+            }
+            cmsg = libc::CMSG_NXTHDR(&msg, cmsg);
+        }
+    }
+    if msg.msg_flags & libc::MSG_CTRUNC != 0 {
+        return Err(io::Error::other("too many file descriptors in one message"));
+    }
+    Ok((n, fds))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::net::UnixStream;
+
+    fn pair() -> (UnixStream, UnixStream) {
+        UnixStream::pair().expect("socketpair")
+    }
+
+    #[test]
+    fn sends_bytes_without_fds() {
+        let (a, b) = pair();
+        assert_eq!(send(a.as_raw_fd(), b"hello", &[], false).unwrap(), 5);
+        let mut buf = [0u8; 16];
+        let (n, fds) = recv(b.as_raw_fd(), &mut buf, false).unwrap();
+        assert_eq!(&buf[..n], b"hello");
+        assert!(fds.is_empty());
+    }
+
+    #[test]
+    fn passes_one_fd() {
+        let (a, b) = pair();
+        let (c, _d) = pair();
+        send(a.as_raw_fd(), b"x", &[c.as_raw_fd()], false).unwrap();
+        let mut buf = [0u8; 4];
+        let (_, fds) = recv(b.as_raw_fd(), &mut buf, false).unwrap();
+        assert_eq!(fds.len(), 1);
+    }
+
+    #[test]
+    fn passes_many_fds() {
+        let (a, b) = pair();
+        let keep: Vec<_> = (0..MAX_FDS).map(|_| pair().0).collect();
+        let raw: Vec<RawFd> = keep.iter().map(|s| s.as_raw_fd()).collect();
+        send(a.as_raw_fd(), b"x", &raw, false).unwrap();
+        let mut buf = [0u8; 4];
+        let (_, fds) = recv(b.as_raw_fd(), &mut buf, false).unwrap();
+        assert_eq!(fds.len(), MAX_FDS);
+    }
+
+    #[test]
+    fn nonblocking_recv_would_block() {
+        let (_a, b) = pair();
+        let mut buf = [0u8; 4];
+        let e = recv(b.as_raw_fd(), &mut buf, true).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::WouldBlock);
+    }
+}`;
+const SHORT = SOURCE.split("\n").slice(0, 13).join("\n");
+const EDITED_FROM = `        return Err(io::Error::other("too many file descriptors in one message"));`;
+const EDITED_TO = `        return Err(io::Error::other(format!("more than {MAX_FDS} file descriptors in one message")));`;
+
+const DIFF = [
+  { path: "crates/kanna-mux/src/pane.rs", st: "M", hunks: [
+    { o: 18, w: 18, scope: "pub enum PaneType {", lines: [" pub enum PaneType {", "     Term,", "     Web,", "     Ios,", "     Markdown,", "     Code,", "+    Diff,", " }"] },
+    { o: 64, w: 65, scope: "impl PaneType {", lines: ["     pub fn name(&self) -> &'static str {", "         match self {", "             PaneType::Markdown => \"md\",", "             PaneType::Code => \"code\",", "+            PaneType::Diff => \"diff\",", "         }", "     }"] },
+    { o: 140, w: 142, scope: "pub struct PaneRecord {", lines: ["     pub path: Option<PathBuf>,", "     pub line: Option<u32>,", "     pub zoom: Option<f64>,", "+    #[serde(skip_serializing_if = \"Option::is_none\")]", "+    pub base: Option<String>,", " }"] },
+  ]},
+  { path: "crates/kanna/src/open.rs", st: "M", hunks: [
+    { o: 31, w: 31, scope: "fn parse_kind(word: &str) -> Option<Kind> {", lines: ["     match word {", "         \"md\" | \"markdown\" => Some(Kind::Markdown),", "         \"code\" => Some(Kind::Code),", "+        \"diff\" => Some(Kind::Diff),", "         _ => None,", "     }"] },
+    { o: 88, w: 89, scope: "pub fn run(args: OpenArgs) -> Result<()> {", lines: ["     let target = match args.kind {", "-        Kind::Code => code_target(&args.rest)?,", "+        Kind::Code => code_target(&args.rest, args.line)?,", "         Kind::Web => json!({ \"url\": args.rest[0] }),", "+        Kind::Diff => json!({ \"base\": args.base.as_deref().unwrap_or(\"main\") }),", "     };"] },
+  ]},
+  { path: "apps/kanna/Sources/KannaDiff/DiffPaneView.swift", st: "A", hunks: [
+    { o: 0, w: 1, lines: ["+import AppKit", "+import KannaCode", "+", "+public final class DiffPaneView: NSView {", "+    public let worktree: URL", "+    public private(set) var base: String", "+    private let files = DiffFileList()", "+    private let text = DiffTextView()", "+", "+    public init(worktree: URL, base: String) {", "+        self.worktree = worktree", "+        self.base = base", "+        super.init(frame: .zero)", "+        addSubview(files)", "+        addSubview(text)", "+        reload()", "+    }", "+", "+    public func reload() {", "+        let result = DiffDocument.run(worktree: worktree, base: base)", "+        files.show(result.files)", "+        text.show(result)", "+    }", "+}"] },
+  ]},
+  { path: "apps/kanna/Sources/Kanna/Panes/Contents.swift", st: "M", hunks: [
+    { o: 52, w: 52, scope: "func makeView(for record: PaneRecord) -> NSView {", lines: ["         case .code:", "             return CodePaneView(path: record.path!, line: record.line)", "+        case .diff:", "+            return DiffPaneView(worktree: task.worktree, base: record.base ?? \"main\")", "         case .ios:"] },
+    { o: 120, w: 122, scope: "func close(_ pane: String) {", lines: ["         guard let view = views[pane] else { return }", "-        view.removeFromSuperview()", "-        views[pane] = nil", "+        views.removeValue(forKey: pane)?.removeFromSuperview()", "         layout.forget(pane)"] },
+  ]},
+  { path: "crates/kanna-daemon/src/diff.rs", st: "A", hunks: [
+    { o: 0, w: 1, lines: ["+use std::path::{Path, PathBuf};", "+use std::process::Command;", "+", "+pub struct Watcher {", "+    pub root: PathBuf,", "+    pub args: Vec<String>,", "+    serial: u64,", "+}", "+", "+impl Watcher {", "+    pub fn new(root: &Path, args: &[String]) -> Self {", "+        Self { root: root.to_path_buf(), args: args.to_vec(), serial: 0 }", "+    }", "+", "+    pub fn run(&mut self) -> std::io::Result<String> {", "+        self.serial += 1;", "+        let out = Command::new(\"git\").arg(\"diff\").args(&self.args).current_dir(&self.root).output()?;", "+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())", "+    }", "+}"] },
+  ]},
+  { path: "scripts/old-diff.sh", st: "D", hunks: [
+    { o: 1, w: 0, lines: ["-#!/bin/sh", "-git diff main...HEAD | less -R"] },
+  ]},
+];
+
+const KW = new Set("as break const continue crate else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while dyn Some None Ok Err import public private final class var func init guard nil override".split(" "));
+const PRIMS = new Set("u8 u16 u32 u64 usize i8 i16 i32 i64 isize bool char str f32 f64".split(" "));
+const RULES = [
+  [/^\/\/.*/, "comment"], [/^#!.*/, "comment"],
+  [/^#!?\[[^\]]*(\([^)]*(\([^)]*\))*[^)]*\))?[^\]]*\]/, "attribute"],
+  [/^"(\\.|[^"\\])*"/, "string"], [/^b"(\\.|[^"\\])*"/, "string"], [/^b?'(\\.|[^'\\])'/, "string"],
+  [/^\d[\d_]*(\.\d+)?(u8|u16|u32|u64|usize|i32|i64|f64)?/, "number"],
+  [/^[a-z_][a-z0-9_]*!/, "macro"],
+  [/^[A-Z][A-Z0-9_]+\b/, "constant"],
+  [/^[A-Z][A-Za-z0-9]*/, "type"],
+  [/^[a-z_][A-Za-z0-9_]*(?=\s*(::<[^>]*>)?\()/, "function"],
+  [/^[a-z_][A-Za-z0-9_]*/, "ident"],
+  [/^(->|=>|::|&&|\|\||[=!<>]=|[-+*\/%&|^!<>=?])/, "operator"],
+  [/^[{}()\[\];,.:]/, "punctuation"],
+  [/^\s+/, null], [/^./, null],
+];
+const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+function tokens(line) {
+  const out = []; let rest = line, prev = "";
+  while (rest.length) {
+    for (const [re, kind] of RULES) {
+      const m = rest.match(re); if (!m) continue;
+      let k = kind, t = m[0];
+      if (k === "ident") k = KW.has(t) ? "keyword" : PRIMS.has(t) ? "type" : prev === "." ? "property" : null;
+      if ((k === "type" || k === "function") && KW.has(t)) k = "keyword";
+      out.push([t, k]); if (!/^\s+$/.test(t)) prev = t; rest = rest.slice(t.length); break;
+    }
+  }
+  return out;
+}
+function paint(line, find) {
+  let out = "";
+  for (const [t, k] of tokens(line)) {
+    let s = esc(t);
+    if (find) s = s.replace(new RegExp(find, "g"), m => `<span class="hit">${m}</span>`);
+    out += k ? `<span class="tk-${k}">${s}</span>` : s;
+  }
+  return out || " ";
+}
+const guides = n => `<span class="ig">    </span>`.repeat(Math.floor(n / 4)) + " ".repeat(n % 4);
+
+const OV = { thumb: 84, marks: 12, lineH: 2, minCols: 80 };
+const state = { scene: "code", zoom: 1, find: null, comment: false, edited: false, enabled: true, hover: false, drag: null, scrolledAt: 0 };
+const win = document.getElementById("window");
+const paneEl = document.getElementById("pane");
+const agentEl = document.getElementById("agent");
+const agentW = document.getElementById("agentW");
+let scroller, bodyEl, thumbCv, marksCv, picture, listEl;
+
+function codeHTML() {
+  const text = state.scene === "short" ? SHORT : state.edited ? SOURCE.replace(EDITED_FROM, EDITED_TO) : SOURCE;
+  const lines = text.split("\n");
+  const fs = 12.5 * state.zoom, lh = Math.round(19 * state.zoom);
+  const rows = lines.map((l, i) => {
+    const n = i + 1, lead = l.match(/^ */)[0].length;
+    const cls = (state.edited && l === EDITED_TO ? " edited" : "") + (state.comment && n === 50 ? " commented" : "");
+    const t = l.trim() ? guides(lead) + paint(l.slice(lead), state.find) : guides((lines.slice(i + 1).find(x => x.trim()) || "").match(/^ */)[0].length) || " ";
+    return `<div class="ln${cls}" data-n="${n}"><span class="n">${n}</span><span class="t">${t}</span></div>`;
+  }).join("");
+  const name = state.scene === "short" ? "consts.rs" : "fdpass.rs";
+  return `<div class="crumbs"><span>crates</span>›<span>kanna-keeper</span>›<span>src</span>›<b>${name}</b></div>
+    <div class="body" id="body"><div class="scroller" id="scroller"><div class="lines code" style="font:${fs}px/${lh}px var(--mono)">${rows}</div></div>${ovHTML()}</div>`;
+}
+function diffHTML() {
+  const fs = 12 * state.zoom, lh = Math.round(19 * state.zoom);
+  let add = 0, del = 0, list = "", body = "";
+  for (const f of DIFF) {
+    let a = 0, d = 0, rows = "", prevEnd = 1;
+    for (const h of f.hunks) {
+      const gap = h.o - prevEnd;
+      if (h.o > 0 && gap > 0) rows += `<div class="r fold"><span class="n"></span><span class="n"></span><span class="t">⋯ ${gap} unchanged lines  ${esc(h.scope || "")}</span></div>`;
+      let o = h.o, w = h.w;
+      for (const l of h.lines) {
+        const sg = l[0], cls = sg === "+" ? "add" : sg === "-" ? "del" : "";
+        if (sg === "+") a++; if (sg === "-") d++;
+        rows += `<div class="r ${cls}"><span class="n">${sg === "+" ? "" : o}</span><span class="n">${sg === "-" ? "" : w}</span><span class="sg">${sg === "+" ? "+" : sg === "-" ? "−" : ""}</span><span class="t">${paint(l.slice(1), state.find)}</span></div>`;
+        if (sg !== "+") o++; if (sg !== "-") w++;
+      }
+      prevEnd = o;
+    }
+    add += a; del += d;
+    const cut = f.path.lastIndexOf("/");
+    list += `<div class="f"><span class="st ${f.st}">${f.st}</span><span class="nm">${esc(f.path.slice(cut + 1))}</span><span class="ct">${a ? `<span class="add-n">+${a}</span>` : ""} ${d ? `<span class="del-n">−${d}</span>` : ""}</span></div>`;
+    body += `<div class="file"><div class="fh"><i>${esc(f.path.slice(0, cut + 1))}</i>${esc(f.path.slice(cut + 1))}<span class="sp"></span>${a ? `<span class="add-n">+${a}</span>` : ""} ${d ? `<span class="del-n">−${d}</span>` : ""}</div><div class="rows" style="font:${fs}px/${lh}px var(--mono)">${rows}</div></div>`;
+  }
+  return `<div class="dhead"><code>git diff --merge-base main</code><span>${DIFF.length} files</span><span class="add-n">+${add}</span><span class="del-n">−${del}</span></div>
+    <div class="body" id="body"><div class="files" id="files"><div class="dir">changed files</div>${list}</div><div class="scroller" id="scroller">${body}</div>${ovHTML()}</div>`;
+}
+const ovHTML = () => `<div class="ov" id="ov"><canvas class="thumb" id="thumbCv"></canvas><canvas class="marks" id="marksCv"></canvas></div>`;
+
+function render() {
+  const top = scroller ? scroller.scrollTop : 0;
+  const tabs = [["fdpass.rs", "code"], ["consts.rs", "short"], ["diff --merge-base main", "diff"]];
+  document.getElementById("dtabs").innerHTML = tabs.map(([n, s]) => `<div class="dtab ${s === state.scene ? "on" : ""}" data-scene="${s}">${n}</div>`).join("");
+  paneEl.innerHTML = state.scene === "diff" ? diffHTML() : codeHTML();
+  scroller = document.getElementById("scroller"); bodyEl = document.getElementById("body"); listEl = document.getElementById("files");
+  thumbCv = document.getElementById("thumbCv"); marksCv = document.getElementById("marksCv");
+  scroller.scrollTop = top;
+  scroller.addEventListener("scroll", () => { state.scrolledAt = performance.now(); drawOverview(); setTimeout(drawOverview, 1100); });
+  wireOverview();
+  layout();
+}
+
+function charWidth() {
+  const probe = document.createElement("span");
+  probe.style.cssText = `font:${(state.scene === "diff" ? 12 : 12.5) * state.zoom}px var(--mono);position:absolute;visibility:hidden;white-space:pre`;
+  probe.textContent = "0".repeat(100); document.body.appendChild(probe);
+  const w = probe.getBoundingClientRect().width / 100; probe.remove(); return w;
+}
+function decide() {
+  const paneW = paneEl.clientWidth, cw = charWidth();
+  const cols = w => Math.floor(w / cw);
+  const docH = contentHeight();
+  const fits = docH - (state.scene === "diff" ? 0 : 0.6 * innerHeight) <= bodyEl.clientHeight;
+  const want = state.enabled && !fits;
+  const wanted = [...(state.scene === "diff" ? [{ name: "list", width: 231, columns: 110 }] : []), ...(want ? [{ name: "overview", width: OV.thumb + OV.marks + 2, columns: OV.minCols }] : [])];
+  const shown = asides(wanted, paneW, cw);
+  const has = n => shown.some(a => a.name === n);
+  return { paneW, cw, cols: cols(paneW - shown.reduce((t, a) => t + a.width, 0)), roomWithout: cols(paneW - OV.thumb - OV.marks - 2), fits, shown: has("overview"), want, list: has("list") };
+}
+function asides(wanted, paneW, cw) {
+  const shown = wanted.slice();
+  const beside = () => paneW - shown.reduce((t, a) => t + a.width, 0);
+  while (shown.length && shown.some(a => beside() < a.columns * cw)) shown.shift();
+  return shown;
+}
+function contentHeight() {
+  const inner = scroller.firstElementChild;
+  return state.scene === "diff" ? scroller.scrollHeight : inner.offsetHeight;
+}
+function layout() {
+  agentEl.style.width = agentW.value + "px";
+  if (listEl) listEl.style.display = "";
+  const d = decide();
+  bodyEl.classList.toggle("no-ov", !d.shown);
+  if (listEl) listEl.style.display = d.list ? "" : "none";
+  const why = !state.enabled ? "off (View › Overview)" : d.fits ? "hidden: the whole file fits" : d.shown ? "shown" : `hidden: only ${d.roomWithout} columns beside it (< ${OV.minCols})`;
+  document.getElementById("readout").innerHTML = `pane <b>${d.paneW}pt</b> · ${d.cw.toFixed(2)}pt a column at ${Math.round(state.zoom * 100)}% · text <b>${d.cols} columns</b> · overview <b>${why}</b>` + (state.scene === "diff" ? ` · file list <b>${d.list ? "shown" : "hidden"}</b>` : "");
+  if (d.shown) { buildPicture(); sizeCanvases(); drawOverview(); }
+}
+
+function cssVar(name) { return getComputedStyle(win).getPropertyValue(name).trim(); }
+function buildPicture() {
+  const lh = scroller.querySelector(".ln, .r").offsetHeight;
+  const scale = OV.lineH / lh;
+  const docH = scroller.scrollHeight;
+  const dpr = devicePixelRatio || 1;
+  const cv = document.createElement("canvas");
+  cv.width = OV.thumb * dpr; cv.height = Math.ceil(docH * scale * dpr);
+  const g = cv.getContext("2d"); g.scale(dpr, dpr);
+  const base = scroller.getBoundingClientRect().top - scroller.scrollTop;
+  const colours = {}; const colour = k => colours[k] ??= cssVar(k);
+  const rows = scroller.querySelectorAll(".ln, .r, .fh");
+  const marks = [];
+  let run = [];
+  const flushRun = () => { if (run.length) { const kind = run.some(r => r.k === "del") && run.some(r => r.k === "add") ? "changed" : null; for (const r of run) marks.push({ y: r.y, h: r.h, kind: kind || (r.k === "add" ? "added" : "removed"), lane: 0 }); } run = []; };
+  for (const el of rows) {
+    const y = (el.classList.contains("fh") ? el.parentElement.getBoundingClientRect().top : el.getBoundingClientRect().top) - base;
+    const h = el.offsetHeight;
+    const k = el.classList.contains("add") ? "add" : el.classList.contains("del") ? "del" : null;
+    if (k) run.push({ y, h, k }); else flushRun();
+    if (el.classList.contains("fh")) { g.fillStyle = colour("--panel"); g.fillRect(0, y * scale, OV.thumb, Math.max(2, h * scale)); }
+    if (el.classList.contains("fold")) { g.fillStyle = colour("--fold"); g.fillRect(0, y * scale, OV.thumb, h * scale); }
+    if (k) { g.fillStyle = colour(k === "add" ? "--add-bg" : "--del-bg"); g.fillRect(0, y * scale, OV.thumb, h * scale); }
+    if (el.classList.contains("commented")) { g.fillStyle = colour("--tint"); g.fillRect(0, y * scale, OV.thumb, h * scale); }
+    if (el.classList.contains("edited")) marks.push({ y, h, kind: "changed", lane: 0 });
+    if (el.classList.contains("commented")) marks.push({ y, h, kind: "comment", lane: 1 });
+    if (el.querySelector(".hit")) marks.push({ y, h, kind: "hit", lane: 1 });
+    if (el.classList.contains("fold")) continue;
+    const t = el.classList.contains("fh") ? el : el.querySelector(".t");
+    let col = el.classList.contains("fh") ? 2 : 1;
+    const walk = (node, tone) => {
+      for (const c of node.childNodes) {
+        if (c.nodeType === 3) {
+          g.fillStyle = tone;
+          for (const ch of c.data) {
+            if (ch !== " " && col < OV.thumb) { g.globalAlpha = /[a-zA-Z0-9]/.test(ch) ? 0.85 : 0.5; g.fillRect(col, y * scale + 0.25, 1, OV.lineH - 0.5); }
+            col++;
+          }
+          g.globalAlpha = 1;
+        } else {
+          const cls = [...c.classList].find(x => x.startsWith("tk-"));
+          walk(c, cls ? colour("--" + cls.slice(3)) : c.classList.contains("sp") ? tone : tone);
+          if (c.classList.contains("sp")) col += 4;
+        }
+      }
+    };
+    walk(t, el.classList.contains("fh") ? colour("--muted") : colour("--fg"));
+  }
+  flushRun();
+  picture = { canvas: cv, scale, docH, marks };
+}
+function sizeCanvases() {
+  const dpr = devicePixelRatio || 1, h = bodyEl.clientHeight;
+  for (const [cv, w] of [[thumbCv, OV.thumb], [marksCv, OV.marks]]) { cv.width = w * dpr; cv.height = h * dpr; cv.style.width = w + "px"; cv.style.height = h + "px"; }
+}
+function geometry() {
+  const viewH = scroller.clientHeight, ovH = bodyEl.clientHeight;
+  const docH = picture.docH, scale = picture.scale;
+  const thumbH = docH * scale;
+  const maxScroll = Math.max(0, docH - viewH);
+  const frac = maxScroll ? scroller.scrollTop / maxScroll : 0;
+  const offset = Math.max(0, thumbH - ovH) * frac;
+  const boxH = viewH * scale;
+  const boxY = scroller.scrollTop * scale - offset;
+  return { viewH, ovH, docH, scale, thumbH, maxScroll, offset, boxH, boxY };
+}
+function drawOverview() {
+  if (!picture || bodyEl.classList.contains("no-ov")) return;
+  const dpr = devicePixelRatio || 1, G = geometry();
+  const g = thumbCv.getContext("2d");
+  g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, thumbCv.width, thumbCv.height);
+  const sh = Math.min(G.ovH * dpr, picture.canvas.height - G.offset * dpr);
+  if (sh > 0) g.drawImage(picture.canvas, 0, G.offset * dpr, picture.canvas.width, sh, 0, 0, thumbCv.width, sh);
+  g.scale(dpr, dpr);
+  if (state.hover || state.drag) { g.fillStyle = cssVar(state.drag ? "--ov-box-on" : "--ov-box"); g.fillRect(0, G.boxY, OV.thumb, G.boxH); }
+  const m = marksCv.getContext("2d");
+  m.setTransform(1, 0, 0, 1, 0, 0); m.clearRect(0, 0, marksCv.width, marksCv.height); m.scale(dpr, dpr);
+  const k = G.ovH / Math.max(G.docH, G.viewH);
+  const tone = { added: "--ok", removed: "--bad", changed: "--warn", comment: "--tint-edge", hit: "--hit" };
+  for (const mk of picture.marks) {
+    m.fillStyle = cssVar(mk.kind === "changed" && state.scene !== "diff" ? "--ok" : tone[mk.kind]);
+    const lane = mk.lane ? [OV.marks / 2, OV.marks / 2 - 1] : [1, OV.marks / 2 - 1];
+    m.fillRect(lane[0], mk.y * k, lane[1], Math.max(2, mk.h * k));
+  }
+  if (state.hover || state.drag || performance.now() - state.scrolledAt < 1000) {
+    m.fillStyle = cssVar("--ov-thumb");
+    m.fillRect(1, scroller.scrollTop * k, OV.marks - 2, Math.max(8, G.viewH * k));
+  }
+}
+
+function wireOverview() {
+  const ov = document.getElementById("ov");
+  ov.addEventListener("mouseenter", () => { state.hover = true; drawOverview(); });
+  ov.addEventListener("mouseleave", () => { state.hover = false; drawOverview(); });
+  ov.addEventListener("wheel", e => { scroller.scrollTop += e.deltaY; e.preventDefault(); }, { passive: false });
+  thumbCv.addEventListener("mousedown", e => {
+    const G = geometry(), y = e.offsetY;
+    if (y < G.boxY || y > G.boxY + G.boxH) {
+      const docY = (y + G.offset) / G.scale;
+      scroller.scrollTop = Math.min(G.maxScroll, Math.max(0, docY - G.viewH / 2));
+    }
+    const G2 = geometry();
+    const track = Math.min(G2.thumbH, G2.ovH) - G2.boxH;
+    state.drag = { y0: e.clientY, top0: scroller.scrollTop, perPx: track > 0 ? G2.maxScroll / track : 0 };
+    drawOverview(); e.preventDefault();
+  });
+  marksCv.addEventListener("mousedown", e => {
+    const G = geometry(), k = G.ovH / Math.max(G.docH, G.viewH);
+    scroller.scrollTop = Math.min(G.maxScroll, Math.max(0, e.offsetY / k - G.viewH / 2));
+    state.drag = { y0: e.clientY, top0: scroller.scrollTop, perPx: 1 / k };
+    e.preventDefault();
+  });
+}
+addEventListener("mousemove", e => {
+  if (!state.drag) return;
+  scroller.scrollTop = state.drag.top0 + (e.clientY - state.drag.y0) * state.drag.perPx;
+});
+addEventListener("mouseup", () => { if (state.drag) { state.drag = null; drawOverview(); } });
+addEventListener("resize", layout);
+
+document.querySelectorAll("[data-scene]").forEach(b => b.onclick = () => setScene(b.dataset.scene));
+document.getElementById("dtabs").addEventListener("click", e => { const t = e.target.closest("[data-scene]"); if (t) setScene(t.dataset.scene); });
+function setScene(s) {
+  state.scene = s; if (scroller) scroller.scrollTop = 0;
+  document.querySelectorAll(".controls [data-scene]").forEach(b => b.classList.toggle("on", b.dataset.scene === s));
+  render();
+}
+agentW.oninput = layout;
+document.getElementById("zoomIn").onclick = () => { state.zoom = Math.min(32 / 12.5, state.zoom * 1.1); render(); };
+document.getElementById("zoomOut").onclick = () => { state.zoom = Math.max(9 / 12.5, state.zoom / 1.1); render(); };
+document.getElementById("find").onclick = e => { state.find = state.find ? null : "cmsg"; e.target.classList.toggle("on", !!state.find); render(); };
+document.getElementById("comment").onclick = e => { state.comment = !state.comment; e.target.classList.toggle("on", state.comment); render(); };
+document.getElementById("edit").onclick = e => { state.edited = !state.edited; e.target.classList.toggle("on", state.edited); render(); };
+document.getElementById("toggle").onclick = e => { state.enabled = !state.enabled; e.target.classList.toggle("on", state.enabled); layout(); };
+document.getElementById("theme").onclick = () => { win.classList.toggle("dark"); win.classList.toggle("light"); render(); };
+
+const params = new URLSearchParams(location.search);
+if (params.has("picture")) document.body.classList.add("picture");
+if (params.has("light")) { win.classList.remove("dark"); win.classList.add("light"); }
+if (params.has("agent")) agentW.value = params.get("agent");
+if (params.has("scene")) state.scene = params.get("scene");
+if (params.has("find")) state.find = "cmsg";
+if (params.has("comment")) state.comment = true;
+if (params.has("edited")) state.edited = true;
+document.querySelectorAll(".controls [data-scene]").forEach(b => b.classList.toggle("on", b.dataset.scene === state.scene));
+render();
+if (params.has("top")) { scroller.scrollTop = +params.get("top"); }
+if (params.has("hover")) { state.hover = true; }
+if (params.has("drag")) { state.hover = true; state.drag = { y0: 0, top0: scroller.scrollTop, perPx: 0 }; }
+drawOverview();
+</script>
+</body>
+</html>

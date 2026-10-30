@@ -1,0 +1,10 @@
+[package]
+name = "kanna-threads"
+version.workspace = true
+edition.workspace = true
+license = "FSL-1.1-MIT"
+description = "Kanna's doc comment threads: the thread file beside a doc, read and written safely, and the block a line of markdown is in."
+
+[dependencies]
+libc = "0.2"
+serde_json = "1"
