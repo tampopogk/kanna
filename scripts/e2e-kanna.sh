@@ -598,6 +598,127 @@ markdown_diff() {
   check grep -q "fresh.md isn't in work" <<<"$failed" || { echo "markdown_diff: a doc missing at B: $failed"; return 1; }
 }
 
+scenario markdown_overview M4
+markdown_overview() {
+  start_daemon && start_app || return 1
+  local dir="$KANNA_STATE_DIR/mdov" pictures top
+  mkdir -p "$dir/.git" "$dir/.kanna/docs"
+  {
+    printf '# Login\n\nHow sign-in works, from the button to the session.\n\n## The redirect\n\nThe app sends you to the provider and waits for the redirect back.\n\n'
+    printf '| Step | Who | What |\n|---|---|---|\n| 1 | app | opens the sign-in sheet |\n| 2 | provider | asks for the password |\n| 3 | app | reads the redirect |\n\n'
+    printf '```swift\nfunc signIn() async throws {\n    let url = try await provider.start()\n    try await session.open(url)\n}\n```\n\n'
+    printf '> The redirect must land on an allowed host.\n\n- Check it against the allow list.\n- Refuse anything else.\n\n'
+    printf '```mermaid\nflowchart LR\n    A[app] --> P[provider] --> R[redirect] --> S[session]\n```\n\n'
+    for i in $(seq 70); do printf '## Section %s\n\nParagraph %s about the session, the token and how the redirect is checked before the app trusts it.\n\n' "$i" "$i"; done
+  } >"$dir/login.md"
+  cat >"$dir/.kanna/docs/login.md.json" <<JSON
+{"file": "$dir/login.md", "agent": null, "socket": null, "next": 3, "threads": [
+ {"id": "c1", "quote": "allow list", "prefix": "", "suffix": "", "line": 22, "state": "open", "status": "unsent", "messages": [{"who": "you", "text": "Where does the allow list live?", "at": "2026-10-10T12:00:00"}], "error": null},
+ {"id": "c2", "quote": "Paragraph 40 about the session", "prefix": "", "suffix": "", "line": 200, "state": "resolved", "status": "replied", "messages": [{"who": "you", "text": "Fine.", "at": "2026-10-10T12:00:00"}], "error": null}]}
+JSON
+  printf '# Release\n\nA short note that fits.\n' >"$dir/release.md"
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null
+  kanna open --window new md "$dir/login.md" --name longdoc >/dev/null || return 1
+  mdo() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"${3:-longdoc}\"${2:-}}}" | field "$1"; }
+  mdwin() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"win-1\",\"size\":[$1,700]}}" >/dev/null; }
+  mdshot() { raw "{\"id\":1,\"cmd\":\"debug.snapshot\",\"args\":{\"path\":\"$1.png\"}}" >/dev/null; cp "$KANNA_STATE_DIR/$1.png" "$out/" 2>/dev/null; }
+  mdwin 1200
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == True ]]' || { echo "no overview: wanted $(mdo overview.wanted), width $(mdo width)"; return 1; }
+  check eval '(( $(mdo overview.box_height | cut -d. -f1) > 10 ))' || { echo "box $(mdo overview.box_y) $(mdo overview.box_height)"; return 1; }
+  check eval '(( $(mdo pictures) >= 1 ))' || return 1
+  pictures="$(mdo pictures)"
+  mdo scroll ',"scroll":2000' >/dev/null
+  check wait_for 5 eval '[[ "$(mdo overview.top | cut -d. -f1)" == 2000 ]]' || { echo "the box didn't follow the scroll: top $(mdo overview.top)"; return 1; }
+  sleep 0.3
+  check test "$(mdo pictures)" == "$pictures" || { echo "a scroll drew the picture again: $pictures, then $(mdo pictures)"; return 1; }
+  mdo zoom ',"zoom":1' >/dev/null; sleep 0.3
+  check test "$(mdo pictures)" == "$pictures" || { echo "a zoom drew the picture again: $pictures, then $(mdo pictures)"; return 1; }
+  mdo zoom ',"zoom":0' >/dev/null
+  mdo scroll ',"overview_click":3' >/dev/null
+  check wait_for 5 eval '[[ "$(mdo scroll)" == 0* ]]' || { echo "a click at the top of the thumbnail left the scroll at $(mdo scroll)"; return 1; }
+  mdo scroll ',"overview_marks_click":690' >/dev/null
+  check wait_for 5 eval '(( $(mdo scroll | cut -d. -f1) > 2000 ))' || { echo "a click at the foot of the marks left the scroll at $(mdo scroll)"; return 1; }
+  mdo scroll ',"overview_drag":[10,-400]' >/dev/null
+  check wait_for 5 eval '[[ "$(mdo scroll)" == 0* ]]' || { echo "dragging the box up left the scroll at $(mdo scroll)"; return 1; }
+  raw '{"id":1,"cmd":"debug.click","args":{"pane":"longdoc","at":[300,300]}}' >/dev/null; sleep 0.3
+  key cmd+f
+  raw '{"id":1,"cmd":"debug.type","args":{"focused":true,"text":"redirect"}}' >/dev/null
+  check wait_for 5 eval '(( $(mdo overview.marks_by_kind.hit 2>/dev/null || echo 0) > 3 ))' || { echo "find hits not marked: $(mdo overview.marks_by_kind)"; return 1; }
+  check test "$(mdo pictures)" == "$pictures" || { echo "a find drew the picture again: $pictures, then $(mdo pictures)"; return 1; }
+  mdo scroll ',"scroll":0' >/dev/null
+  mdo overview.shown ',"overview_hover":true' >/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.5
+  check wait_for 5 eval '(( $(mdo pictures) > pictures ))' || { echo "the appearance change didn't draw a picture"; return 1; }
+  mdshot markdown_overview-light
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null; sleep 0.5
+  mdshot markdown_overview-dark
+  mdo overview.shown ',"overview_hover":false' >/dev/null
+  key escape
+  check test "$(mdo overview.shown ',"overview_enabled":false')" == False || { echo "View › Overview off left it shown"; return 1; }
+  check test "$(mdo overview.shown ',"overview_enabled":true')" == True || { echo "View › Overview on didn't bring it back"; return 1; }
+  pictures="$(mdo pictures)"
+  mdwin 1000
+  check wait_for 5 eval '(( $(mdo pictures) > pictures ))' || { echo "a width change didn't draw a picture"; return 1; }
+  mdwin 700
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == False && "$(mdo overview.wanted)" == True ]]' || { echo "at 700 pt: shown $(mdo overview.shown)"; return 1; }
+  mdwin 1200
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == True ]]' || { echo "not back at 1200 pt"; return 1; }
+  kanna open --window win-1 md "$dir/release.md" --name shortdoc --tab >/dev/null || return 1
+  check wait_for 5 eval 'doc_text shortdoc "fits"' || return 1
+  check test "$(mdo overview.wanted '' shortdoc)" == False || { echo "a doc that fits wants the overview"; return 1; }
+  check test "$(mdo overview.shown '' shortdoc)" == False || return 1
+  kanna close shortdoc >/dev/null
+  kanna markup longdoc >/dev/null || return 1
+  mdwin 1500
+  check wait_for 5 eval '[[ "$(mdo markup)" == True && "$(mdo overview.shown)" == True && "$(mdo threads_shown)" == True ]]' || { echo "at 1500 pt with comments: overview $(mdo overview.shown), list $(mdo threads_shown)"; return 1; }
+  check wait_for 5 eval '[[ "$(mdo overview.marks_by_kind.comment)" == 1 ]]' || { echo "comment marks: $(mdo overview.marks_by_kind)"; return 1; }
+  mdo overview.shown ',"overview_hover":true' >/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.5
+  mdshot markdown_overview-threads-light
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null; sleep 0.5
+  mdshot markdown_overview-threads-dark
+  mdo overview.shown ',"overview_hover":false' >/dev/null
+  mdwin 1000
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == False && "$(mdo threads_shown)" == True ]]' || { echo "at 1000 pt the overview should go first: overview $(mdo overview.shown), list $(mdo threads_shown)"; return 1; }
+  mdshot markdown_overview-narrow
+  mdwin 500
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == False && "$(mdo threads_shown)" == False ]]' || { echo "at 500 pt: overview $(mdo overview.shown), list $(mdo threads_shown)"; return 1; }
+}
+
+scenario markdown_diff_overview M4
+markdown_diff_overview() {
+  start_daemon && start_app || return 1
+  local repo="$KANNA_STATE_DIR/mddiffov" git=(git -C "$KANNA_STATE_DIR/mddiffov" -c user.name=e2e -c user.email=e2e@example.invalid) pictures
+  mkdir -p "$repo" && "${git[@]}" init -q -b main || return 1
+  {
+    printf '# Login\n\nHow sign-in works.\n\n'
+    for i in $(seq 25); do printf 'Opening paragraph %s stays as it is.\n\n' "$i"; done
+    printf -- '- check the host\n- keep the old fallback\n- open the session\n\n'
+    for i in $(seq 25); do printf 'Middle paragraph %s stays as it is.\n\n' "$i"; done
+    printf '| Step | What |\n|---|---|\n| 1 | open the sheet |\n| 2 | read the token |\n\n'
+    for i in $(seq 25); do printf 'Closing paragraph %s stays as it is.\n\n' "$i"; done
+  } >"$repo/login.md"
+  "${git[@]}" add login.md && "${git[@]}" commit -qm base || return 1
+  perl -0pi -e 's/- keep the old fallback\n//; s/\| 2 \| read the token \|/| 2 | read and check the token |/; s/(Middle paragraph 10 stays as it is\.\n\n)/$1## A new section\n\nAdded under the middle.\n\n/' "$repo/login.md"
+  mdo() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"diffov\"${2:-}}}" | field "$1"; }
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null
+  kanna open --window new md "$repo/login.md" --name diffov --diff main >/dev/null || return 1
+  raw '{"id":1,"cmd":"debug.desk","args":{"window":"win-1","size":[1200,700]}}' >/dev/null
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == True ]]' || { echo "no overview on the diff: wanted $(mdo overview.wanted)"; return 1; }
+  check wait_for 5 eval '(( $(mdo overview.marks_by_kind.added) >= 1 && $(mdo overview.marks_by_kind.removed) >= 1 && $(mdo overview.marks_by_kind.changed) >= 1 ))' || { echo "diff marks: $(mdo overview.marks_by_kind), changes $(mdo changes)"; return 1; }
+  local added; added="$(mdo overview.marks_by_kind.added)"
+  mdo overview.shown ',"overview_hover":true' >/dev/null
+  mdo scroll ',"scroll":600' >/dev/null; sleep 0.4
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"markdown_diff_overview-dark.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/markdown_diff_overview-dark.png" "$out/" 2>/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.5
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"markdown_diff_overview-light.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/markdown_diff_overview-light.png" "$out/" 2>/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null
+  mdo overview.shown ',"overview_hover":false' >/dev/null
+  pictures="$(mdo pictures)"
+  perl -0pi -e 's/(Closing paragraph 20 stays as it is\.\n\n)/$1A paragraph added near the end.\n\n/' "$repo/login.md"
+  check wait_for 5 eval '(( $(mdo overview.marks_by_kind.added) > added && $(mdo pictures) > pictures ))' || { echo "the marks didn't follow the edit: $(mdo overview.marks_by_kind), pictures $pictures then $(mdo pictures)"; return 1; }
+}
+
 scenario cli_commands M4
 cli_commands() {
   start_daemon && start_app || return 1
@@ -2335,11 +2456,28 @@ assert {"kind": "added", "text": "fn f5() -> u32 { 500 }", "new": 5} in rows, ro
   local added
   added="$(diffpane rows | python3 -c 'import json, sys; print([i for i, r in enumerate(json.load(sys.stdin)) if r["kind"] == "added"][0])')"
   check eval '[[ "$(diffpane colors ",\"colors\":$added")" != "[]" ]]' || { echo "no colours on row $added"; return 1; }
+  refreshed() { check wait_for 5 eval '[[ "$(diffpane stale)" == True ]]' || { echo "no newer diff: stale $(diffpane stale)"; return 1; }; diffpane stale ',"refresh":true' >/dev/null; }
+  local before; before="$(diffpane rows)"
+  diffpane current ',"keys":"gn"' >/dev/null
+  local reading; reading="$(diffpane current)"
+  local row; row="$(diffpane rows | python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin)[int(sys.argv[1])]))' "$reading")"
   sed -i '' 's/fn f20() -> u32 { 20 }/fn f20() -> u32 { 2000 }/' "$repo/a.rs"
-  check wait_for 5 eval '[[ "$(diffpane rows)" == *"{ 2000 }"* ]]' || { echo "the edit didn't arrive"; return 1; }
+  check wait_for 5 eval '[[ "$(diffpane stale)" == True ]]' || { echo "the edit didn't set changed: stale $(diffpane stale)"; return 1; }
+  check test "$(diffpane rows)" == "$before" || { echo "the rows moved while reading"; return 1; }
+  check test "$(diffpane current)" == "$reading" || { echo "the current line moved while reading"; return 1; }
+  check test "$(diffpane fresh)" == "[]" || { echo "marked fresh before a refresh: $(diffpane fresh)"; return 1; }
+  check test "$(diffpane updating)" == False || { echo "updating shown while reading"; return 1; }
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"diff_pane-changed.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/diff_pane-changed.png" "$out/" 2>/dev/null
+  kanna focus changes >/dev/null
+  raw '{"id":1,"cmd":"debug.key","args":{"key":"cmd+r"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(diffpane rows)" == *"{ 2000 }"* && "$(diffpane stale)" == False ]]' || { echo "⌘R didn't bring the edit in"; return 1; }
   check eval '[[ "$(diffpane fresh)" != "[]" ]]' || { echo "nothing marked fresh"; return 1; }
+  check python3 -c 'import json, sys
+rows, current = json.loads(sys.argv[1]), int(sys.argv[2])
+assert rows[current] == json.loads(sys.argv[3]), (rows[current], sys.argv[3])' "$(diffpane rows)" "$(diffpane current)" "$row" || { echo "the refresh lost the place"; return 1; }
   touch "$repo/a.rs"
-  check wait_for 5 eval '[[ "$(diffpane updating)" == False ]]' || { echo "still updating after a re-diff with nothing new"; return 1; }
+  sleep 0.6
+  check test "$(diffpane stale)" == False || { echo "changed after a re-diff with nothing new"; return 1; }
   diffpane view ',"keys":"g"' >/dev/null
   raw '{"id":1,"cmd":"debug.key","args":{"key":"cmd+f"}}' >/dev/null
   local typed; typed=$(raw '{"id":1,"cmd":"debug.type","args":{"focused":true,"text":"2000"}}')
@@ -2413,11 +2551,13 @@ assert not any(r["text"].startswith("fn f5") for r in rows), "a.rs still open"' 
 for c in json.loads(sys.argv[1]): assert c["x"] == -c["inset_left"] and c["inset_left"] == c["gutter"], c' "$(diffpane columns)" || return 1
   diffpane view ',"zoom":0' >/dev/null
   printf 'one\r\ntwo\xe2\x80\xa8three\r\n' >"$repo/crlf.txt"
+  refreshed || return 1
   check wait_for 5 eval '[[ "$(diffpane files)" == *crlf.txt* ]]' || { echo "crlf.txt didn't arrive"; return 1; }
   check python3 -c 'import json, sys
 rows = json.loads(sys.argv[1])
 assert {"kind": "added", "text": "one\r", "new": 1, "left": "blank", "right": "added"} in rows, [r for r in rows if r.get("new") == 1]' "$(diffpane rows)" || return 1
   printf 'fn later() {}\n' >"$repo/c.rs"
+  refreshed || return 1
   check wait_for 5 eval '[[ "$(diffpane files)" == *c.rs* ]]' || { echo "the untracked c.rs didn't arrive"; return 1; }
   watchers() { raw '{"id":1,"cmd":"diffs"}' | python3 -c 'import json, sys; print(" ".join(json.dumps(d["args"]) + ":" + str(len(d["views"])) for d in json.load(sys.stdin)["diffs"]))'; }
   check wait_for 5 eval '[[ "$(watchers)" == "[\"--merge-base\", \"main\"]:1" ]]' || { echo "watchers: $(watchers)"; return 1; }
@@ -2429,9 +2569,17 @@ assert {"kind": "added", "text": "one\r", "new": 1, "left": "blank", "right": "a
   check wait_for 10 app_attached || return 1
   check wait_for 5 eval '[[ "$(watchers)" == "[\"--merge-base\", \"main\"]:1" ]]' || { echo "after a daemon restart, watchers: $(watchers)"; return 1; }
   printf 'fn restarted() {}\n' >"$repo/d.rs"
+  refreshed || return 1
   check wait_for 5 eval '[[ "$(diffpane files)" == *d.rs* ]]' || { echo "d.rs didn't arrive after a daemon restart: $(diffpane files)"; return 1; }
   stop_app; start_app || return 1
   check wait_for 5 eval '[[ "$(diffpane view)" == split && "$(diffpane files)" == *c.rs* ]]' || { echo "after relaunch: $(diffpane view) $(diffpane files) $(diffpane error) $(watchers)"; return 1; }
+  before="$(diffpane files)"
+  mv "$repo/.git" "$repo/.git-away"
+  check wait_for 5 eval '[[ "$(diffpane notice)" == *"not a git repository"* ]]' || { echo "git's error while reading: notice $(diffpane notice), error $(diffpane error)"; mv "$repo/.git-away" "$repo/.git"; return 1; }
+  check test "$(diffpane files)" == "$before" || { echo "git's error replaced the diff being read"; mv "$repo/.git-away" "$repo/.git"; return 1; }
+  check test "$(diffpane error)" == None || { echo "error $(diffpane error)"; mv "$repo/.git-away" "$repo/.git"; return 1; }
+  mv "$repo/.git-away" "$repo/.git"
+  check wait_for 5 eval '[[ "$(diffpane notice)" == None && "$(diffpane stale)" == False ]]' || { echo "git back: notice $(diffpane notice), stale $(diffpane stale)"; return 1; }
   kanna navigate changes diff --staged >/dev/null || return 1
   check wait_for 5 eval '[[ "$(diffpane command)" == "git diff --staged" && "$(diffpane files)" == "[]" ]]' || { echo "staged: $(diffpane command) $(diffpane files)"; return 1; }
   check wait_for 5 eval '[[ "$(watchers)" == "[\"--staged\"]:1" ]]' || { echo "after navigating, watchers: $(watchers)"; return 1; }
