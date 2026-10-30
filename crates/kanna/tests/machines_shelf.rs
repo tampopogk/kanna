@@ -86,12 +86,12 @@ fn within(seconds: u64, what: &str, mut ready: impl FnMut() -> bool) {
 
 /// The tasks a machine has started, from its own Shelf.
 fn started(daemon: &Daemon) -> Vec<String> {
-    let listed = ask(daemon, "backlog", json!({ "action": "list" }));
-    listed["tasks"].as_array().unwrap().iter().filter(|t| t["folder"].is_string()).map(|t| t["id"].as_str().unwrap().to_string()).collect()
+    let listed = ask(daemon, "tasks", json!({ "action": "list" }));
+    listed["shelf"].as_array().unwrap().iter().filter(|t| t["folder"].is_string()).map(|t| t["id"].as_str().unwrap().to_string()).collect()
 }
 
 fn holds(daemon: &Daemon, task: &str) -> bool {
-    ask(daemon, "backlog", json!({ "action": "list" }))["tasks"].as_array().unwrap().iter().any(|t| t["id"] == task)
+    ask(daemon, "tasks", json!({ "action": "list" }))["shelf"].as_array().unwrap().iter().any(|t| t["id"] == task)
 }
 
 fn record(daemon: &Daemon, task: &str) -> Value {
@@ -138,7 +138,7 @@ fn two_machines_share_one_repo_s_shelf_and_each_task_runs_once_oldest_first() {
     within(10, "mbp to see that vm owns and started the first task", || record(&mbp, &first)["state"] == "started");
     assert_eq!(record(&mbp, &first)["owner"].as_str(), Some(key(&vm).as_str()));
 
-    within(30, "the first task's turn to end", || ask(&vm, "backlog", json!({ "action": "list" }))["tasks"].as_array().unwrap().iter().any(|t| t["id"] == first.as_str() && t["running"] == false));
+    within(30, "the first task's turn to end", || ask(&vm, "tasks", json!({ "action": "list" }))["shelf"].as_array().unwrap().iter().any(|t| t["id"] == first.as_str() && t["running"] == false));
     vm.kanna(&["task", "done", &first, "--keep"]).ok();
     within(30, "vm to run the task that waited for the first", || started(&vm).contains(&blocked));
     std::thread::sleep(Duration::from_secs(4));
@@ -149,7 +149,7 @@ fn two_machines_share_one_repo_s_shelf_and_each_task_runs_once_oldest_first() {
     let birth = record(&mbp, &elsewhere)["birth"].as_str().unwrap().to_string();
     let later = json!({ "device": "mini-key", "ms": 32503680000000i64, "n": 0, "task": elsewhere, "birth": birth, "field": "name", "value": "Renamed on mini" });
     assert_eq!(ask(&mbp, "replica", json!({ "action": "ops", "peer": "mini-key", "ops": [later] }))["ok"], true);
-    let named = ask(&mbp, "backlog", json!({ "action": "list" }))["tasks"].as_array().unwrap().iter().find(|t| t["id"] == elsewhere.as_str()).unwrap()["name"].clone();
+    let named = ask(&mbp, "tasks", json!({ "action": "list" }))["shelf"].as_array().unwrap().iter().find(|t| t["id"] == elsewhere.as_str()).unwrap()["name"].clone();
     assert_eq!(named, "Renamed on mini", "a later edit from another machine reaches the task waiting here");
 
     let forged = ask(&mbp, "machine", json!({ "action": "call", "host": "vm", "cmd": "replica", "args": { "action": "grant", "task": first, "birth": "1.0.x", "epoch": 99, "peer": key(&mbp) } }));
