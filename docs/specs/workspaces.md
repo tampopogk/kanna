@@ -130,7 +130,7 @@ The saved layout (in `kanna.db`, [database](database.md)) is `version: 3`: `wind
 ```
 
 - **Older files load.** Version 1's windows with a dock, and version 2's workspaces on a Desk or the old Shelf, become workspaces on `mac`'s Desk (`{"shelf": "mac"}`); a Desk's lead becomes a planner; version 2's task-named workspaces get `ws-N` IDs, their windows following. The app makes its Desks from the planners it hasn't seen. The next save writes version 3.
-- **The daemon finds each task's workspace** from the listing it asks for once the app attaches: the workspace whose dock is the task's agent pane. A start records the workspace the `open --dock --frozen` reply names. Both go in the task's `doc` in `kanna.db` ([database](database.md)).
+- **The daemon finds each task's workspace** from the listing it asks for once the app attaches: the workspace whose dock is the task's agent pane. A start records the workspace the reply to its docked, frozen `open` names. Both go in the task's `doc` in `kanna.db` ([database](database.md)).
 - **kmux's debug state stays kmux's version 1.** `debug.saveState` writes free windows plainly and each workspace in `parked` with its `where`, so `debug.restoreState` reads it back.
 - **`kanna.db`'s `place`** is the task's: `backlog` (the Shelf), `shelf` (on a Desk) or `done` ([database](database.md)).
 

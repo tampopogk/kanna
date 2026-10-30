@@ -24,7 +24,7 @@ pub static COMMANDS: &[Command] = &[
         name: "open",
         group: "Panes",
         summary: "Open a terminal, web, iOS, markdown, code or diff pane and wait until it is running.",
-        usage: "kanna open [term] [--cmd CMD] [--cwd DIR] [--name NAME] [--split right|down|auto] [--size FRACTION] [--tab] [--window ID|new] [--dock [left|right] [--frozen]] [--no-wait]\n       kanna open web URL [--history] [same placement options]\n       kanna open md FILE [same placement options]\n       kanna open ios --app APP [--device DEVICE] [same placement options]\n       kanna open code FILE[:LINE] [same placement options]\n       kanna open diff [GIT-DIFF-ARGS] [same placement options]\n       kanna open md FILE --diff [REF|A..B] [same placement options]",
+        usage: "kanna open [term] [--cmd CMD] [--cwd DIR] [--name NAME] [--split right|down|auto] [--size FRACTION] [--tab] [--window ID|new] [--no-wait]\n       kanna open web URL [--history] [same placement options]\n       kanna open md FILE [same placement options]\n       kanna open ios --app APP [--device DEVICE] [same placement options]\n       kanna open code FILE[:LINE] [same placement options]\n       kanna open diff [GIT-DIFF-ARGS] [same placement options]\n       kanna open md FILE --diff [REF|A..B] [same placement options]",
         options: &[
             ("--cmd CMD", "Shell command line to run in your login shell, e.g. \"npm run dev\". Put it in single quotes if it uses $VARS or ;, so your own shell leaves it alone. Default: an interactive shell."),
             ("--cwd DIR", "Working directory."),
@@ -37,10 +37,8 @@ pub static COMMANDS: &[Command] = &[
             ("--app APP", "iOS panes: a .app built for the simulator (installed, then launched) or the bundle ID of an installed app, e.g. com.apple.Preferences."),
             ("--device DEVICE", "iOS panes: a simulator device name or UDID, e.g. \"iPhone 16\". Default: a booted iPhone, else the newest one. The device is booted if needed (this can take a minute) and stays booted after the pane closes."),
             ("--history", "Web panes only: keep back/forward history (off by default), for `kanna navigate PANE --back` and the Pane menu's Back and Forward."),
-            ("--dock [left|right]", "Make the pane the window's docked pane: along its left (default) or right edge, outside its tabs, shown whichever tab is. Not with --split, --size or --tab. A pane already docked there moves to a new tab."),
-            ("--frozen", "With --dock: the docked pane is frozen. It doesn't move, and nothing drops on it or docks in its place; it closes with its window."),
         ],
-        notes: "Prints the new pane's ID and name. A pane whose command exits stays on screen as `exited`. A docked pane closes only with its window.\nA terminal opened without --split, --size, --tab, --window or --dock opens even with Kanna.app closed, and takes its place when the app next opens; anything else starts the app.\nRun from a pane without --window or --dock, it opens in that pane's window, not the key one; from a task kept off-screen (on the Desk but not shown, or on the Shelf), in a new tab of the task's window. Run from outside a Kanna terminal, it needs --window (or --dock): there's no window of yours to open in.\n--diff [REF] marks what changed in a markdown doc since REF, inline: added text in green, removed text struck through in red, a bar beside each changed block; ]c and [c jump to the next and previous change. REF is any commit or branch, compared as `git diff REF...` compares: from where HEAD and REF meet, uncommitted changes included. Default: main (or master), so a task's doc shows everything the task changed. --diff A..B shows the doc as it is in commit B, marked against commit A (compared directly, not from where they meet); it's read-only, doesn't follow the file and takes no comments.",
+        notes: "Prints the new pane's ID and name. A pane whose command exits stays on screen as `exited`. A docked pane closes only with its window.\nA terminal opened without --split, --size, --tab or --window opens even with Kanna.app closed, and takes its place when the app next opens; anything else starts the app.\nRun from a pane without --window, it opens in that pane's window, not the key one; from a task kept off-screen (on the Desk but not shown, or on the Shelf), in a new tab of the task's window. Run from outside a Kanna terminal, it needs --window: there's no window of yours to open in.\nA docked pane is a task's agent, so open docks none: make a task with `kanna task new`, then `kanna task pick` or `kanna task start`.\n--diff [REF] marks what changed in a markdown doc since REF, inline: added text in green, removed text struck through in red, a bar beside each changed block; ]c and [c jump to the next and previous change. REF is any commit or branch, compared as `git diff REF...` compares: from where HEAD and REF meet, uncommitted changes included. Default: main (or master), so a task's doc shows everything the task changed. --diff A..B shows the doc as it is in commit B, marked against commit A (compared directly, not from where they meet); it's read-only, doesn't follow the file and takes no comments.",
         examples: &[
             ("kanna open --name server --cmd \"npm run dev\"", "Run a dev server in a pane named server."),
             ("kanna open --name logs --split right --size 1/3 --cmd \"tail -f app.log\"", "Put a log tail in the right third."),
@@ -49,7 +47,6 @@ pub static COMMANDS: &[Command] = &[
             ("kanna open --window new --name scratch", "Open a shell in a new window."),
             ("kanna open ios --name phone --app build/MyApp.app --split right --size 1/3", "Run your app in the simulator, in the right third."),
             ("kanna open md docs/spec.md --name spec --split right", "Show a markdown file (with mermaid diagrams) beside this pane; it reloads when the file changes."),
-            ("kanna open --name agent --cmd claude --dock", "Dock an agent on the window's left edge; it stays while you switch tabs."),
             ("kanna open md docs/specs/presenting.md --diff main --tab", "Show a spec with what this branch changed in it marked."),
             ("kanna open code src/main.rs:42", "Show a source file, highlighted, at line 42; it follows the file on disk."),
             ("kanna open diff --merge-base main", "Show everything this branch changed since it left main, committed or not, with untracked files; it follows the worktree."),
@@ -705,7 +702,7 @@ pub static COMMANDS: &[Command] = &[
         name: "markup",
         group: "Panes",
         summary: "Open a markdown file or a local page to comment on, turn comments on or off in a pane, and answer them; the comments come to this pane.",
-        usage: "kanna markup FILE.md|FILE.html [--to PANE] [--name NAME] [--split right|down|auto] [--size FRACTION] [--tab] [--window ID|new] [--dock [left|right]] [--no-wait]\n       kanna markup PANE [--to PANE | --off]\n       kanna markup comments [--all] [--doc FILE]\n       kanna markup show|resolve|reopen THREAD [--doc FILE]\n       kanna markup reply THREAD TEXT... [--doc FILE]",
+        usage: "kanna markup FILE.md|FILE.html [--to PANE] [--name NAME] [--split right|down|auto] [--size FRACTION] [--tab] [--window ID|new] [--no-wait]\n       kanna markup PANE [--to PANE | --off]\n       kanna markup comments [--all] [--doc FILE]\n       kanna markup show|resolve|reopen THREAD [--doc FILE]\n       kanna markup reply THREAD TEXT... [--doc FILE]",
         options: &[
             ("--to PANE", "The terminal comments go to, e.g. the pane an agent runs in. Default: this one."),
             ("--name NAME", "A name to refer to the pane by in later commands."),
@@ -713,7 +710,6 @@ pub static COMMANDS: &[Command] = &[
             ("--size FRACTION", "Share of the focused pane's space it takes, as for open."),
             ("--tab", "Open in a new tab instead of splitting."),
             ("--window ID|new", "Open in that window, or a new one."),
-            ("--dock [left|right]", "Make it the window's docked pane, as for open."),
             ("--no-wait", "Return as soon as the pane exists."),
             ("--off", "Turn comments off in PANE: it shows the doc alone again. Its comments are kept."),
             ("--all", "comments: resolved ones too."),
@@ -784,14 +780,9 @@ fn parse_markup(args: &mut Argv) -> Result<Value, Failure> {
             out.insert(key.into(), json!(value));
         }
     }
-    if let Some(edge) = args.optional("--dock", is_edge) {
-        out.insert("dock".into(), json!(edge.unwrap_or_else(|| "left".into())));
-    }
+    no_dock(args, "markup")?;
     if args.flag("--tab") {
         out.insert("tab".into(), json!(true));
-    }
-    if out.contains_key("dock") && ["split", "size", "tab"].iter().any(|k| out.contains_key(*k)) {
-        return Err(usage("markup", "--dock goes on its own: no --split, --size or --tab"));
     }
     if args.flag("--no-wait") {
         out.insert("wait".into(), json!(false));
@@ -1380,6 +1371,13 @@ pub fn absolute(path: &str) -> String {
         .unwrap_or(expanded)
 }
 
+fn no_dock(args: &mut Argv, command: &str) -> Result<(), Failure> {
+    if args.optional("--dock", is_edge).is_some() || args.flag("--frozen") {
+        return Err(usage(command, "a docked pane is a task's agent: make a task with `kanna task new`, then `kanna task pick` or `kanna task start`"));
+    }
+    Ok(())
+}
+
 fn parse_open(args: &mut Argv) -> Result<Value, Failure> {
     let mut out = Map::new();
     for (flag, key) in [("--cmd", "cmd"), ("--cwd", "cwd"), ("--name", "name"), ("--split", "split"), ("--size", "size"), ("--window", "window"), ("--app", "app"), ("--device", "device")] {
@@ -1399,20 +1397,9 @@ fn parse_open(args: &mut Argv) -> Result<Value, Failure> {
             }
         }
     }
-    if let Some(edge) = args.optional("--dock", is_edge) {
-        out.insert("dock".into(), json!(edge.unwrap_or_else(|| "left".into())));
-    }
+    no_dock(args, "open")?;
     if args.flag("--tab") {
         out.insert("tab".into(), json!(true));
-    }
-    if out.contains_key("dock") && ["split", "size", "tab"].iter().any(|k| out.contains_key(*k)) {
-        return Err(usage("open", "--dock goes on its own: no --split, --size or --tab"));
-    }
-    if args.flag("--frozen") {
-        if !out.contains_key("dock") {
-            return Err(usage("open", "--frozen goes with --dock: only a docked pane is frozen"));
-        }
-        out.insert("frozen".into(), json!(true));
     }
     if args.flag("--no-wait") {
         out.insert("wait".into(), json!(false));

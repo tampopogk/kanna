@@ -29,7 +29,7 @@ This is step one of splitting the logical layout (the daemon's: panes, tabs, win
 | Command, with no target | From a Kanna terminal | From anywhere else |
 |---|---|---|
 | `open` (any pane type, `--tab`, `--split`) | beside the caller, in its window or workspace ([workspaces](workspaces.md#3-commands-target-and-reply)); from a planning terminal, a new window | refused: `add --window WINDOW (or --window new)` |
-| `open --dock` | a new task on the Desk: it needs no window | the same |
+| `open --dock` | refused: a docked pane is a task's agent, so make a task (`task new`, then `task pick`) ([every task starts on the Shelf](tasks-start-on-the-shelf.md)) | the same |
 | `comment FILE:LINE`, `markup FILE` | the caller's window: a code or markdown pane already showing the file there is reused, else one opens beside the caller | refused: `add --window WINDOW (or --window new)`; with `--window W`, a pane showing the file in W is reused |
 | `open code FILE` | reuses a code pane showing FILE in the caller's window | needs `--window W`, and then reuses one in W |
 | `arrange LAYOUT` | the caller's window's shown tab | refused: `add --window WINDOW` |

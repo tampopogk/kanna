@@ -4,7 +4,7 @@ import Testing
 struct DeskOrderTests {
     struct Task: Equatable {
         let id: String
-        let madeAt: Double?
+        let madeAt: Double
         var needsYou = false
     }
 
@@ -28,9 +28,9 @@ struct DeskOrderTests {
         #expect(DeskOrder.byAge(tasks, made: \.madeAt).map(\.id) == ["a", "b", "c"])
     }
 
-    @Test func aTaskWithNoBirthdayGoesLastAndTiesKeepTheirOrder() {
-        let tasks = [Task(id: "x", madeAt: nil), Task(id: "b", madeAt: 5), Task(id: "a", madeAt: 5), Task(id: "y", madeAt: nil)]
-        #expect(DeskOrder.byAge(tasks, made: \.madeAt).map(\.id) == ["b", "a", "x", "y"])
+    @Test func tiesKeepTheirOrder() {
+        let tasks = [Task(id: "c", madeAt: 9), Task(id: "b", madeAt: 5), Task(id: "a", madeAt: 5)]
+        #expect(DeskOrder.byAge(tasks, made: \.madeAt).map(\.id) == ["b", "a", "c"])
     }
 
     @Test func keysNumberTheOthersLeftMostRecentlyFirstWithOnesThatNeedYouAhead() {

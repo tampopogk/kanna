@@ -742,6 +742,10 @@ impl TaskBook for Book {
             backlog.sync_workspaces(workspaces);
         }
     }
+
+    fn starting(&self, task: &str) -> bool {
+        self.0.upgrade().is_some_and(|backlog| backlog.launching.borrow().contains(task))
+    }
 }
 
 impl Backlog {
@@ -1454,14 +1458,6 @@ impl Backlog {
         if freed {
             self.changed();
         }
-    }
-
-    fn mint_for(&self, pane: &Pane) -> Result<Entry, KmuxError> {
-        let Some(folder) = pane.opened_in.clone().or(pane.cwd.clone()) else { return Err(bad(format!("{} has no folder to come back to", pane.id))) };
-        let repo = project(Some(&folder)).map(|r| r.to_string_lossy().to_string()).unwrap_or_default();
-        let agent = pane.command.as_deref().map(program).filter(|p| !p.is_empty()).map(String::from);
-        let args = json!({ "repo": repo, "agent": opt(agent.as_deref()) });
-        Ok(Entry { folder: Some(folder), ..self.mint(&args, pane.name.clone(), None)? })
     }
 
     fn renamed(&self, from: &str, to: &str) {
@@ -2694,14 +2690,8 @@ impl Backlog {
         let Some(core) = self.core.upgrade() else { return responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))) };
         let Some(reference) = string(args, "task") else { return responder.reply(Err(bad("say which running task"))) };
         let Some(pane) = core.pane(&self.pane_or(reference)) else { return responder.reply(Err(KmuxError::new("not_found", format!("no running task \"{reference}\"")))) };
-        let recorded = self.running.borrow().iter().find(|r| r.pane == pane.id).map(|r| (r.entry.clone(), Some(r.place)));
-        let (entry, from) = match recorded {
-            Some(found) => found,
-            None => match self.mint_for(&pane) {
-                Ok(entry) => (entry, None),
-                Err(error) => return responder.reply(Err(error)),
-            },
-        };
+        let recorded = self.running.borrow().iter().find(|r| r.pane == pane.id).map(|r| (r.entry.clone(), r.place));
+        let Some((entry, from)) = recorded else { return responder.reply(Err(KmuxError::new("not_found", format!("no running task \"{reference}\"")))) };
         let by = who(args).map(String::from);
         let this = Rc::downgrade(self);
         let id = pane.id.clone();
@@ -2712,12 +2702,8 @@ impl Backlog {
             }
             this.running.borrow_mut().retain(|r| r.pane != id);
             let entry = Entry { held: Some(id.clone()), ..entry };
-            let made = match from {
-                Some(_) => Ok(()),
-                None => this.store(&entry, Place::Backlog, Some(&id), Some(Change::new("made").by(Some("daemon")))),
-            };
-            let change = Change { from, to: Some(Place::Backlog), ..Change::new("deferred") }.by(by.as_deref());
-            let saved = made.and_then(|_| this.store(&entry, Place::Backlog, Some(&id), Some(change)));
+            let change = Change { from: Some(from), to: Some(Place::Backlog), ..Change::new("deferred") }.by(by.as_deref());
+            let saved = this.store(&entry, Place::Backlog, Some(&id), Some(change));
             let value = entry.to_value();
             this.entries.borrow_mut().push(entry);
             this.changed();
@@ -3900,7 +3886,7 @@ mod tests {
         }
 
         fn agent_with(&self, agent: &str, place: Place, session: Option<&str>) -> (String, Entry) {
-            let opened = self.core.handle_blocking(json!({ "cmd": "open", "args": { "type": "term", "cmd": agent, "dock": "left" } }));
+            let opened = self.core.handle_blocking(json!({ "cmd": "open", "args": { "type": "term", "cmd": agent, "dock": "left", "task": "task-1dfb12c2" } }));
             let pane = opened["pane"]["id"].as_str().unwrap_or_else(|| panic!("{opened}")).to_string();
             self.settle(|| alive(&self.core, &pane));
             let entry = Entry { id: "task-1dfb12c2".into(), repo: "/r".into(), agent: agent.into(), session: session.map(String::from), folder: Some("/r".into()), ..Default::default() };

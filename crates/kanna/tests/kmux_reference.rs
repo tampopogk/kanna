@@ -32,6 +32,10 @@ const EXTENDED: &[(&str, &str)] = &[
     ("move", "notes"),
 ];
 
+const KMUX_ONLY_OPTIONS: &[(&str, &str)] = &[("open", "--dock [left|right]"), ("open", "--frozen")];
+
+const KMUX_ONLY_EXAMPLES: &[&str] = &["kmux open --name agent --cmd claude --dock"];
+
 const OPTIONS_DIFFER: &[(&str, &str)] = &[("move", "--window WINDOW|new"), ("open", "--window ID|new"), ("arrange", "--window WINDOW")];
 
 const PRINTS_DIFFER: &[(&str, &str)] = &[("focus", "Kanna's daemon keeps no key window: a focus reply says which window the app brought forward")];
@@ -39,7 +43,7 @@ const PRINTS_DIFFER: &[(&str, &str)] = &[("focus", "Kanna's daemon keeps no key 
 const CODE_PANES: &[(&str, &str)] = &[("open", "summary"), ("navigate", "summary")];
 
 fn from_kmux(text: &str) -> String {
-    text.replace("kmux", "kanna")
+    text.replace(" [--dock [left|right] [--frozen]]", "").replace("kmux", "kanna")
 }
 
 fn from_kanna(text: &str) -> String {
@@ -119,7 +123,7 @@ fn kanna_has_every_kmux_command_in_kmux_order() {
 }
 
 fn same_options<'a>(command: &str, options: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
-    options.iter().filter(|(option, _)| !OPTIONS_DIFFER.contains(&(command, *option))).copied().collect()
+    options.iter().filter(|(option, _)| !OPTIONS_DIFFER.contains(&(command, *option)) && !KMUX_ONLY_OPTIONS.contains(&(command, *option))).copied().collect()
 }
 
 fn usage_lines(usage: &str) -> Vec<String> {
@@ -143,6 +147,23 @@ fn options_kanna_documents_differently_are_still_kmuxs_and_differ() {
         let ours = kanna::commands::find(name).unwrap().options.iter().find(|(o, _)| o == option);
         let (Some(theirs), Some(ours)) = (theirs, ours) else { panic!("{name} {option}: kmux or kanna no longer has it") };
         assert_ne!(from_kanna(ours.1), from_kmux(theirs.1), "{name} {option}: kanna documents it as kmux does now");
+    }
+}
+
+fn kmux_examples(command: &commands::Command) -> Vec<(&'static str, &'static str)> {
+    command.examples.iter().filter(|(e, _)| !KMUX_ONLY_EXAMPLES.contains(e)).copied().collect()
+}
+
+#[test]
+fn kanna_has_none_of_kmuxs_own_options_and_refuses_them() {
+    for (name, option) in KMUX_ONLY_OPTIONS {
+        assert!(commands::find(name).unwrap().options.iter().any(|(o, _)| o == option), "kmux's {name} has no {option} any more");
+        assert!(!kanna::commands::find(name).unwrap().options.iter().any(|(o, _)| o == option), "kanna's {name} has {option} now: compare it with kmux's");
+    }
+    for line in ["kmux open --dock", "kmux open --dock right --cmd claude", "kmux open --dock --frozen"] {
+        assert!(kmux_parse(line).is_ok(), "{line}");
+        let (code, message) = kanna_parse(line).expect_err(line);
+        assert!(code == 2 && message.contains("a docked pane is a task's agent"), "{line}: {message}");
     }
 }
 
@@ -173,14 +194,14 @@ fn every_command_is_documented_as_kmux_documents_it() {
             ("usage", theirs.usage.to_string(), ours.usage.to_string()),
             ("notes", theirs.notes.to_string(), ours.notes.to_string()),
             ("options", format!("{:?}", same_options(theirs.name, theirs.options)), format!("{:?}", same_options(theirs.name, ours.options))),
-            ("examples", format!("{:?}", theirs.examples), format!("{:?}", &ours.examples[..ours.examples.len().min(theirs.examples.len())])),
+            ("examples", format!("{:?}", kmux_examples(theirs)), format!("{:?}", &ours.examples[..ours.examples.len().min(kmux_examples(theirs).len())])),
         ];
         for (field, kmux, kanna) in fields {
             let (kmux, kanna) = (from_kmux(&kmux), from_kanna(&kanna));
             if CODE_PANES.contains(&(theirs.name, field)) {
                 assert!(kanna.contains("code") && kanna.contains("diff pane"), "{} {field}: kanna's names code and diff panes\nkanna: {kanna}", theirs.name);
             } else if EXTENDED.contains(&(theirs.name, field)) {
-                let added = if field == "examples" { ours.examples.len() > theirs.examples.len() } else { kanna.len() > kmux.len() };
+                let added = if field == "examples" { ours.examples.len() > kmux_examples(theirs).len() } else { kanna.len() > kmux.len() };
                 assert!(kanna.starts_with(&kmux) && added, "{} {field}: kanna should add to kmux's\nkmux:  {kmux}\nkanna: {kanna}", theirs.name);
             } else {
                 assert_eq!(kanna, kmux, "{} {field}", theirs.name);
@@ -192,7 +213,7 @@ fn every_command_is_documented_as_kmux_documents_it() {
 #[test]
 fn every_kmux_example_and_request_parses_the_same() {
     let kept = |c: &commands::Command, example: &str| SOME_ACTIONS.iter().find(|(n, _)| *n == c.name).is_none_or(|(n, actions)| actions.iter().any(|a| example.starts_with(&format!("kmux {n} {a}"))));
-    let mut lines: Vec<String> = commands::COMMANDS.iter().filter(|c| !KMUX_ONLY.contains(&c.name)).flat_map(|c| c.examples.iter().filter(|(e, _)| kept(c, e)).map(|(e, _)| e.to_string())).collect();
+    let mut lines: Vec<String> = commands::COMMANDS.iter().filter(|c| !KMUX_ONLY.contains(&c.name)).flat_map(|c| c.examples.iter().filter(|(e, _)| kept(c, e) && !KMUX_ONLY_EXAMPLES.contains(e)).map(|(e, _)| e.to_string())).collect();
     lines.extend(
         [
             "kmux open",
@@ -222,10 +243,6 @@ fn every_kmux_example_and_request_parses_the_same() {
             "kmux arrange '{\"split\":\"column\",\"children\":[{\"pane\":\"a\"}]}' --window win-1",
             "kmux workspace list --all --json",
             "kmux capabilities",
-            "kmux open --dock right --cmd claude",
-            "kmux open --dock --frozen --cmd claude",
-            "kmux open --dock md /tmp/a.md",
-            "kmux open web a.test --dock=right --window new",
             "kmux move agent --dock",
             "kmux move agent --dock right --window win-2",
             "kmux move agent --tab tab-3",
@@ -272,12 +289,9 @@ fn usage_errors_are_kmux_errors() {
         "kmux move-tab tab-1 --index x",
         "kmux open --name",
         "kmux capabilities extra",
-        "kmux open --dock --split right",
-        "kmux open --dock left --tab",
         "kmux move agent --dock --tab",
         "kmux move agent --dock --to b",
         "kmux move agent --dock top",
-        "kmux open --frozen",
     ] {
         let kmux = kmux_parse(line).expect_err(line);
         let kanna = kanna_parse(line).expect_err(line);

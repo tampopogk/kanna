@@ -50,7 +50,7 @@ sequenceDiagram
 | `kanna open diff -- crates/kanna` | any of these, for some paths only |
 
 - **Plus untracked files.** When the diff's new side is the worktree (no `--staged` or `--cached`, and at most one commit named), files git doesn't track yet and doesn't ignore are shown too, as added. An agent's new files are often most of its work, and plain `git diff` leaves them out.
-- It takes `open`'s placement options; with none, from a task's terminal it opens a tab on the task's Desk, as `open code` does. Kanna reads its own options (`--tab`, `--split`, `--size`, `--dock`, `--window`, `--name`) and passes everything else to git.
+- It takes `open`'s placement options; with none, from a task's terminal it opens a tab on the task's Desk, as `open code` does. Kanna reads its own options (`--tab`, `--split`, `--size`, `--window`, `--name`; `--dock` is refused, as for any `open`) and passes everything else to git.
 - The tab is named after the command (`diff --merge-base main`); the header shows the git command, the files and the lines added and removed.
 
 ## 2. Rules

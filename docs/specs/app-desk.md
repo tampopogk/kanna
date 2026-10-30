@@ -56,7 +56,7 @@ flowchart TB
 - **The active task and the Desk view are the app's.** Making a task active, showing the Desk view, and which Desk shows what never reach the daemon, so two apps can show the same task on their Desks, each its own way. The CLI's `task activate`, `task park` and `kanna PATH` are relayed to the CLI's instance's app, which the CLI starts if none is running.
 - **A task's windows show in an app while its task is on one of that app's Desks,** and are hidden there otherwise; free windows show in every app.
 - **A Desk's planner is a workspace with no task,** its planning terminal docked, made when the app asks for a planning terminal (`backlog plan`) and closed when the app closes that Desk. Its ID is the Desk's, kept by the app.
-- **`open --dock` makes a task claimed by the CLI's instance's app,** at the front of its Desk's tasks; `kanna task activate` shows it.
+- **A task reaches a Desk only from the Shelf,** with `kanna task pick` (claimed for the CLI's instance's app) or Move to Desk; `open` docks nothing ([every task starts on the Shelf](tasks-start-on-the-shelf.md)). `kanna task activate` shows it.
 - **`activate`, `park` and `kanna PATH` reply with the Desk's ID** (`d1`, `d2`, …, the app's own), as in `term-3 is active on d1`.
 - **The task list says Desk or Shelf,** and which app has it out; never which Desk window.
 - **History records claims, not which task is active:** a task's events keep `shelved` (moved to the Desk) and `deferred` (moved to the Shelf), and drop `pulled` and `parked`.

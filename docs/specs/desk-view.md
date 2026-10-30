@@ -56,7 +56,7 @@ stateDiagram-v2
 - **The agent header's Park button** stays, with the tooltip "Desk view (⌘.)".
 - **The encouraging line** moves on each time the Desk view shows (before: each time the Desk was cleared).
 - **Closing a Desk window** leaves its tasks on the Desk, none active (before: it parked its task).
-- **How the order is built.** The daemon's `backlog` notice to the app lists the Desk's tasks under `desk` (`id`, `pane`, `madeAt`) beside the Shelf's `tasks`, oldest first, two made in the same second in the order they were made, as the Shelf breaks ties. The app lists rows and strip items in that order and numbers keys from its own record of which task was left last (`KannaWindows/DeskOrder.swift`; tested in `DeskOrderTests`, the daemon's `the_view_lists_the_desk_s_tasks_with_when_each_was_made` and e2e `desk_shelf`). A Desk task the daemon has no record for (a docked pane that isn't a task) goes last.
+- **How the order is built.** The daemon's `backlog` notice to the app lists the Desk's tasks under `desk` (`id`, `pane`, `madeAt`) beside the Shelf's `tasks`, oldest first, two made in the same second in the order they were made, as the Shelf breaks ties. The app lists rows and strip items in that order and numbers keys from its own record of which task was left last (`KannaWindows/DeskOrder.swift`; tested in `DeskOrderTests`, the daemon's `the_view_lists_the_desk_s_tasks_with_when_each_was_made` and e2e `desk_shelf`).
 
 ## 3. CLI verbs
 
