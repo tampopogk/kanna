@@ -413,7 +413,7 @@ public final class CodePaneView: NSView {
         sticky.gutterWidth = gutter.ruleThickness
         sticky.textX = clip.frame.minX - clip.bounds.minX + textView.textContainerInset.width
         sticky.lineHeight = lineHeight
-        sticky.font = CodeTheme.font(size: fontSize)
+        sticky.fontSize = fontSize
         sticky.selectionColor = textView.selectionColor
         guard let storage = textView.textStorage else { return }
         sticky.rows = rows.compactMap { line in

@@ -1,4 +1,5 @@
 import AppKit
+import Synchronization
 
 public enum CodeTheme {
     public static let background = color(dark: 0x14161a, light: 0xffffff)
@@ -58,8 +59,35 @@ public enum CodeTheme {
     public static let fontSize: CGFloat = 12.5
     public static let gutterPadding: CGFloat = 14
 
-    public static func font(size: CGFloat) -> NSFont { NSFont.monospacedSystemFont(ofSize: size, weight: .regular) }
+    public static func font(size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont { cached(FontKey(monospaced: true, size: size, weight: weight.rawValue)) }
+    public static func sans(size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont { cached(FontKey(monospaced: false, size: size, weight: weight.rawValue)) }
     public static func italic(size: CGFloat) -> NSFont { NSFontManager.shared.convert(font(size: size), toHaveTrait: .italicFontMask) }
+
+    struct FontKey: Hashable {
+        let monospaced: Bool
+        let size: CGFloat
+        let weight: CGFloat
+    }
+
+    private struct Made: @unchecked Sendable {
+        let font: NSFont
+    }
+
+    private static let fonts = Mutex<[FontKey: Made]>([:])
+
+    static func cached(_ key: FontKey, make: (FontKey) -> NSFont = system) -> NSFont {
+        if let made = fonts.withLock({ $0[key] }) { return made.font }
+        guard let font = unsafeBitCast(make(key), to: NSFont?.self) else {
+            return CTFontCreateWithName((key.monospaced ? "Menlo-Regular" : "Helvetica") as CFString, key.size, nil) as NSFont
+        }
+        let made = Made(font: font)
+        fonts.withLock { $0[key] = made }
+        return font
+    }
+
+    private static func system(_ key: FontKey) -> NSFont {
+        key.monospaced ? NSFont.monospacedSystemFont(ofSize: key.size, weight: NSFont.Weight(key.weight)) : NSFont.systemFont(ofSize: key.size, weight: NSFont.Weight(key.weight))
+    }
 
     public static func isDark(_ appearance: NSAppearance) -> Bool { appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
 

@@ -388,7 +388,7 @@ final class DiffGutter: NSRulerView {
                 (text as NSString).draw(at: NSPoint(x: right - size.width, y: y + (fragment.height - size.height) / 2), withAttributes: attributes)
             }
             if row.kind == .header, let file = textView.files[safe: row.file] {
-                let status: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: font.pointSize - 1, weight: .semibold), .foregroundColor: DiffTheme.status(file.status)]
+                let status: [NSAttributedString.Key: Any] = [.font: CodeTheme.font(size: font.pointSize - 1, weight: .semibold), .foregroundColor: DiffTheme.status(file.status)]
                 let size = (file.status as NSString).size(withAttributes: status)
                 (file.status as NSString).draw(at: NSPoint(x: bounds.width - size.width - 8, y: y + (fragment.height - size.height) / 2), withAttributes: status)
                 continue
