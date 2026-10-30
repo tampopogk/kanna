@@ -1,0 +1,14 @@
+{
+  "disconnected_job": "0e2e1c8f-35a1-43b8-b9e8-49a72a471e4e",
+  "build_exit": 7,
+  "raw": "captured\nliteral spaces; $(never-execute) \"quotes\"\n",
+  "cancel": {
+    "job": "3941bd6d-b682-4a0a-baca-1916a05f85ac",
+    "state": "cancelled",
+    "build_exit": -15
+  },
+  "two_tasks": [
+    "df37a5f1-2f1e-41ee-b0da-582c7d9d8295",
+    "4b2b27f4-9c6b-46c7-a168-01c8ad6bd7e1"
+  ]
+}

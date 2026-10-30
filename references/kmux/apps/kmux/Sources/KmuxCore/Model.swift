@@ -1,35 +1,47 @@
 import Foundation
 
-public enum PaneType: String, Sendable { case term, web, ios, md }
+public enum PaneType: String, Sendable, CaseIterable {
+    case term, web, ios, md
+
+    /// The kind of content a pane of this type shows, which its content ID
+    /// starts with: term-1, page-1 (web), file-1 (md), ios-1.
+    public var kind: String {
+        switch self {
+        case .term: "term"
+        case .web: "page"
+        case .md: "file"
+        case .ios: "ios"
+        }
+    }
+}
 public enum PaneState: String, Sendable { case starting, running, exited, failed }
 public enum Axis: String, Sendable { case row, column }
 public enum Edge: String, Sendable { case left, right }
 
+/// A pane's content, by its content ID. A terminal is one program run, so
+/// restarting it gives it a new ID; a page, a file or an iOS app keeps its ID.
 public final class Pane {
-    public let id: String
-    public var name: String?
+    public internal(set) var id: String
+    public internal(set) var name: String?
     public let type: PaneType
-    public var state: PaneState = .starting
-    public var exitCode: Int?
-    public var error: String?
-    public var command: String?
-    public var cwd: String?
-    public var url: String?
+    public internal(set) var state: PaneState = .starting
+    public internal(set) var exitCode: Int?
+    public internal(set) var error: String?
+    public internal(set) var command: String?
+    public internal(set) var cwd: String?
+    public internal(set) var url: String?
     /// iOS panes: the app (a .app path or a bundle ID) and the simulator
     /// device it runs on (a name or UDID; the host fills in the one it chose).
-    public var app: String?
-    public var device: String?
+    public internal(set) var app: String?
+    public internal(set) var device: String?
     /// The markdown file a `md` pane shows.
-    public var path: String?
+    public internal(set) var path: String?
     /// Back/forward history: of URLs for web panes opened with `history: true`;
     /// of files, always, for markdown panes.
-    public var history: History?
-    /// Markdown panes: the magnification, kept across restarts (the host
-    /// fills it in before the layout is saved).
-    public var zoom: Double?
+    public internal(set) var history: History?
     /// Terminals: reserved for re-attaching a hosted terminal session. Saved
     /// and restored, unused for now.
-    public var session: String?
+    public internal(set) var session: String?
 
     init(id: String, name: String?, type: PaneType) {
         self.id = id
@@ -41,8 +53,8 @@ public final class Pane {
 }
 
 public final class Split {
-    public var axis: Axis
-    public var kids: [Child]
+    public internal(set) var axis: Axis
+    public internal(set) var kids: [Child]
 
     init(axis: Axis, kids: [Child]) {
         self.axis = axis
@@ -51,8 +63,8 @@ public final class Split {
 }
 
 public struct Child {
-    public var node: Node
-    public var size: Double
+    public internal(set) var node: Node
+    public internal(set) var size: Double
 }
 
 public enum Node {
@@ -62,9 +74,9 @@ public enum Node {
 
 public final class Tab {
     public let id: String
-    public var title: String
-    public var root: Node?
-    public var lastFocus: String?
+    public internal(set) var title: String
+    public internal(set) var root: Node?
+    public internal(set) var lastFocus: String?
 
     init(id: String, title: String) {
         self.id = id
@@ -74,16 +86,13 @@ public final class Tab {
 
 public final class Window {
     public let id: String
-    public var tabs: [Tab] = []
-    public var active: String?
-    public var focused: String?
-    public var zoom = false
-    /// Where the window is on screen, in the host's coordinates; saved with
-    /// the layout so a restored window comes back in place.
-    public var frame: Frame?
-    public var dock: Dock?
+    public internal(set) var tabs: [Tab] = []
+    public internal(set) var active: String?
+    public internal(set) var focused: String?
+    public internal(set) var zoom = false
+    public internal(set) var dock: Dock?
     /// The ID of the workspace the window is in, or nil: a free window.
-    public var workspace: String?
+    public internal(set) var workspace: String?
     /// Tabs are named "Tab 1", "Tab 2", … in the order the window made them.
     var tabCount = 0
 
@@ -104,8 +113,8 @@ public final class Window {
 /// windows are off screen, their panes still running.
 public final class Workspace {
     public let id: String
-    public var name: String?
-    public var hidden = false
+    public internal(set) var name: String?
+    public internal(set) var hidden = false
 
     init(id: String, name: String?) {
         self.id = id
@@ -117,27 +126,17 @@ public final class Workspace {
 
 public struct Dock: Sendable, Equatable {
     public static let defaultWidth = 2.0 / 5
-    public var pane: String
-    public var edge: Edge
-    public var width: Double
+    public internal(set) var pane: String
+    public internal(set) var edge: Edge
+    public internal(set) var width: Double
     /// A frozen docked pane doesn't move, and nothing drops on it.
-    public var frozen: Bool
+    public internal(set) var frozen: Bool
 
     public init(pane: String, edge: Edge, width: Double, frozen: Bool = false) {
         self.pane = pane
         self.edge = edge
         self.width = width
         self.frozen = frozen
-    }
-}
-
-public struct Frame: Sendable, Equatable {
-    public var x, y, w, h: Double
-    public init(x: Double, y: Double, w: Double, h: Double) {
-        self.x = x
-        self.y = y
-        self.w = w
-        self.h = h
     }
 }
 
@@ -156,8 +155,8 @@ public final class Model {
     public private(set) var paneOrder: [String] = []
     public private(set) var windows: [Window] = []
     public private(set) var workspaces: [Workspace] = []
-    public var key: String?
-    private var counters = (pane: 0, tab: 0, window: 0, workspace: 0)
+    public internal(set) var key: String?
+    private var counters = Counters()
 
     public init() {}
 
@@ -200,7 +199,7 @@ public final class Model {
 
     func makeWindow() -> Window {
         counters.window += 1
-        let window = Window(id: "w\(counters.window)")
+        let window = Window(id: "win-\(counters.window)")
         windows.append(window)
         key = window.id
         return window
@@ -210,33 +209,64 @@ public final class Model {
     func makeTab(in window: Window, activate: Bool = true) -> Tab {
         counters.tab += 1
         window.tabCount += 1
-        let tab = Tab(id: "t\(counters.tab)", title: "Tab \(window.tabCount)")
+        let tab = Tab(id: "tab-\(counters.tab)", title: "Tab \(window.tabCount)")
         window.tabs.append(tab)
         if activate || window.active == nil { window.active = tab.id }
         return tab
     }
 
     func makePane(type: PaneType, name: String?) -> Pane {
-        counters.pane += 1
-        let pane = Pane(id: "p\(counters.pane)", name: name, type: type)
+        let pane = Pane(id: nextContentID(type), name: name, type: type)
         panes[pane.id] = pane
         paneOrder.append(pane.id)
         return pane
     }
 
+    func nextContentID(_ type: PaneType) -> String {
+        counters.content[type.kind, default: 0] += 1
+        return "\(type.kind)-\(counters.content[type.kind]!)"
+    }
+
+    /// Gives a pane's content a new ID where it is shown: in its tab's tree or
+    /// its window's dock, as the focus and a tab's last focus. It keeps its
+    /// place in the list and its name.
+    func rename(_ pane: Pane, to id: String) {
+        let from = pane.id
+        panes[from] = nil
+        pane.id = id
+        panes[id] = pane
+        paneOrder = paneOrder.map { $0 == from ? id : $0 }
+        func renamed(_ node: Node?) -> Node? {
+            switch node {
+            case nil: return nil
+            case .pane(let leaf): return .pane(leaf == from ? id : leaf)
+            case .split(let split):
+                for i in split.kids.indices { split.kids[i].node = renamed(split.kids[i].node)! }
+                return node
+            }
+        }
+        for window in windows {
+            if window.dock?.pane == from { window.dock?.pane = id }
+            if window.focused == from { window.focused = id }
+            for tab in window.tabs {
+                if tab.lastFocus == from { tab.lastFocus = id }
+                tab.root = renamed(tab.root)
+            }
+        }
+    }
+
     /// Replaces everything with a restored layout. IDs are never reused while
     /// kmux runs, so the counters only move forward.
-    func install(panes: [Pane], windows: [Window], workspaces: [Workspace], key: String?, counters: (pane: Int, tab: Int, window: Int, workspace: Int)) {
+    func install(panes: [Pane], windows: [Window], workspaces: [Workspace], key: String?, counters: Counters) {
         self.panes = Dictionary(uniqueKeysWithValues: panes.map { ($0.id, $0) })
         paneOrder = panes.map(\.id)
         self.windows = windows
         self.workspaces = workspaces
         self.key = key
-        self.counters = (max(self.counters.pane, counters.pane), max(self.counters.tab, counters.tab), max(self.counters.window, counters.window),
-                         max(self.counters.workspace, counters.workspace))
+        self.counters = self.counters.max(counters)
     }
 
-    var savedCounters: (pane: Int, tab: Int, window: Int, workspace: Int) { counters }
+    var savedCounters: Counters { counters }
 
     func forget(_ pane: Pane) {
         panes[pane.id] = nil
@@ -425,7 +455,18 @@ public final class Model {
     }
 }
 
+/// The last number given to each kind of content, tab, window and workspace.
+struct Counters {
+    var content: [String: Int] = [:]
+    var tab = 0, window = 0, workspace = 0
+
+    func max(_ other: Counters) -> Counters {
+        Counters(content: content.merging(other.content, uniquingKeysWith: Swift.max), tab: Swift.max(tab, other.tab),
+                 window: Swift.max(window, other.window), workspace: Swift.max(workspace, other.workspace))
+    }
+}
+
 public struct History {
-    public var back: [String] = []
-    public var forward: [String] = []
+    public internal(set) var back: [String] = []
+    public internal(set) var forward: [String] = []
 }

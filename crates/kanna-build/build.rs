@@ -21,6 +21,23 @@ fn main() {
     println!("cargo::rustc-env=KANNA_BUILD_VERSION={version}");
     println!("cargo::rustc-env=KANNA_BUILD_CHECKOUT={}", checkout.display());
     println!("cargo::rustc-env=KANNA_BUILD_WORKTREE={worktree}");
+    println!("cargo::rerun-if-env-changed=KANNA_COMMIT");
+    let commit = std::env::var("KANNA_COMMIT").ok().filter(|c| !c.is_empty()).or_else(|| head(&checkout)).unwrap_or_else(|| "unknown".into());
+    println!("cargo::rustc-env=KANNA_BUILD_COMMIT={commit}");
+}
+
+fn head(checkout: &std::path::Path) -> Option<String> {
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git").arg("-C").arg(checkout).args(args).output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    let dir = git(&["rev-parse", "--absolute-git-dir"])?;
+    println!("cargo::rerun-if-changed={dir}/HEAD");
+    if let Some(reference) = git(&["symbolic-ref", "-q", "HEAD"]) {
+        let common = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]).unwrap_or(dir);
+        println!("cargo::rerun-if-changed={common}/{reference}");
+    }
+    git(&["rev-parse", "--short=12", "HEAD"])
 }
 
 fn valid_version(version: &str) -> bool {
