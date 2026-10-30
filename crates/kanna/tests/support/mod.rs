@@ -189,7 +189,7 @@ impl App {
         let stream = UnixStream::connect(socket).unwrap();
         let mut writer = stream.try_clone().unwrap();
         let reader = BufReader::new(stream.try_clone().unwrap());
-        writeln!(writer, "{}", json!({"id": 0, "cmd": "app.hello", "args": {"pid": std::process::id(), "panes": []}})).unwrap();
+        writeln!(writer, "{}", json!({"id": 0, "cmd": "app.hello", "args": {"pid": std::process::id(), "protocols": kanna_build::PROTOCOLS, "panes": []}})).unwrap();
         let (ready, hello) = std::sync::mpsc::channel();
         let diffs = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
         let heard = diffs.clone();
@@ -228,7 +228,7 @@ impl App {
                     let _ = writeln!(writer, "{reply}");
                 }
                 if message["cmd"] == "desk" && message["args"]["action"] != "desk" {
-                    let done = if message["args"]["action"] == "pull" { "moved" } else { "parked" };
+                    let done = if message["args"]["action"] == "activate" { "moved" } else { "parked" };
                     let _ = writeln!(writer, "{}", json!({"id": message["id"], "ok": true, "task": message["args"]["task"], done: true, "desk": "d1"}));
                 }
                 if message["cmd"] == "desk" && message["args"]["action"] == "desk" {

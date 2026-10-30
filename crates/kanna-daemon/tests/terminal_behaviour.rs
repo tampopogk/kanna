@@ -77,7 +77,7 @@ fn a_new_terminal_in_a_task_window_starts_in_the_tasks_folder() {
     git(&["init", "-q"]);
     git(&["add", "."]);
     git(&["commit", "-q", "-m", "first"]);
-    let added = instance.call("backlog", json!({"action": "new", "name": "task", "repo": repo, "agent": "cd sub; printf '\\033]7;file://localhost/usr\\007'; exec cat #"}));
+    let added = instance.call("tasks", json!({"action": "new", "name": "task", "repo": repo, "agent": "cd sub; printf '\\033]7;file://localhost/usr\\007'; exec cat #"}));
     assert_eq!(added["ok"], true, "{added}");
     let folder = repo.join(".kanna-worktrees").join(added["task"]["id"].as_str().unwrap());
     wait_for("the task, started by itself on the Shelf", || instance.pane("task")["cwd"] == "/usr");

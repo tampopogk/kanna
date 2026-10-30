@@ -281,11 +281,24 @@ fn bad_snapshots_are_refused() {
 }
 
 #[test]
-fn snapshot_waits_for_an_apc_holding_a_c1_byte_to_end() {
+fn snapshot_inside_an_apc_ended_by_a_c1_byte_keeps_the_new_sequence() {
     let mut t = terminal(20, 4, "before");
     t.write(b"\x1b_a\x9d");
+    let mut r = Terminal::from_snapshot(&t.snapshot().unwrap()).unwrap();
+    t.write(b"2;title\x07after");
+    r.write(b"2;title\x07after");
+    assert_eq!(r.text(Lines::Screen), "beforeafter");
+    assert_eq!(r.text(Lines::Screen), t.text(Lines::Screen));
+}
+
+#[test]
+fn snapshot_waits_for_an_overlong_unfinished_sequence_to_end() {
+    let mut t = terminal(20, 4, "before");
+    let mut osc = b"\x1b]2;".to_vec();
+    osc.resize(osc.len() + kanna_vt::MAX_UNFINISHED_SEQUENCE_BYTES + 1, b'x');
+    t.write(&osc);
     assert!(t.snapshot().is_err());
-    t.write(b"more\x1b\\after");
+    t.write(b"\x07after");
     let r = Terminal::from_snapshot(&t.snapshot().unwrap()).unwrap();
     assert_eq!(r.text(Lines::Screen), "beforeafter");
 }
@@ -526,3 +539,4 @@ fn a_record_without_an_app_takes_its_nearest_ancestor_s() {
     let apps: Vec<(String, String)> = t.program_statuses().into_iter().map(|r| (r.id, r.app)).collect();
     assert_eq!(apps, [("", "deploy"), ("eu", "eu-tool"), ("eu/db", "eu-tool"), ("us", "deploy")].map(|(i, a)| (i.to_string(), a.to_string())));
 }
+

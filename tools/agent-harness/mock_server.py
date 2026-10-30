@@ -17,7 +17,7 @@ def text_of(content):
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return " ".join(str(p.get("text", "")) for p in content if isinstance(p, dict) and "text" in p)
+        return " ".join(str(p["text"]) for p in content if isinstance(p, dict) and "text" in p and not str(p["text"]).lstrip().startswith("<system-reminder>"))
     return ""
 
 
@@ -103,7 +103,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def log(self, body, turn=None):
-        entry = {"time": time.time(), "path": self.path, "model": body.get("model"), "stream": body.get("stream"), "prompt": last_user_text(body)[:200], "history": user_texts(body), "tools": tool_names(body)[:40], "turn": turn}
+        entry = {"time": time.time(), "path": self.path, "model": body.get("model"), "stream": body.get("stream"), "prompt": last_user_text(body), "history": user_texts(body), "tools": tool_names(body)[:40], "turn": turn}
         with LOCK, LOG_PATH.open("a") as f:
             f.write(json.dumps(entry) + "\n")
 
@@ -154,7 +154,7 @@ class Handler(BaseHTTPRequestHandler):
             self.log(body)
             return self.send_json({"input_tokens": 10})
         turn = turn_for(body)
-        self.log(body, turn)
+        self.log(body, turn if tool_names(body) else None)
         if route == "/v1/messages":
             return self.anthropic(body, turn)
         if route == "/v1/responses":
