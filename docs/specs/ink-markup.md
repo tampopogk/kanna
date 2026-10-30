@@ -27,11 +27,11 @@ sequenceDiagram
     You->>Doc: Ink on, draw strokes
     Doc->>Doc: recognise each stroke, number it
     You->>Doc: optional note, ⌘↵
-    Doc->>F: new thread c3 with its marks
-    Doc->>A: types c3 (marks as text + marked-up picture)
+    Doc->>F: new thread c2 with its marks
+    Doc->>A: types c2 (marks as text + marked-up picture)
     A->>A: reads the picture, edits the file
-    A->>F: kanna markup reply c3 "1: … 2: …"
-    F->>Doc: c3 shows the reply, marks it acted on leave the page
+    A->>F: kanna markup reply c2 "1: … 2: …"
+    F->>Doc: c2 shows the reply, marks it acted on leave the page
     You->>Doc: read it, resolve
 ```
 
@@ -39,7 +39,7 @@ sequenceDiagram
 
 - **Where:** markdown files and HTML pages with comments on ([Doc Markup](doc-markup.md#2-rules)): they already anchor marks to text and parts of a page. Terminals, the diff viewer and code panes come later, once ink anchors to their lines.
 - **Ink mode:** the **Ink** button in the pane's toolbar turns it on; then dragging draws and the page doesn't respond to the pointer. ⌥-drag draws one stroke without it. Esc turns it off.
-- **One pen.** No palette: you draw, and Kanna recognises each stroke, keeps it as you drew it, numbers it, and labels it with what it saw. Click the label to correct it; × removes the mark.
+- **One pen.** No palette: you draw, and Kanna recognises each stroke, keeps it as you drew it, and numbers it. Each mark is listed in the **New ink** card, where clicking its kind corrects it and × removes it.
 
 | You draw | Recognised as | It points at |
 |---|---|---|
@@ -56,18 +56,18 @@ sequenceDiagram
 
 Both a picture and words: the picture shows what you meant (the gesture, your writing), the words say where it is in the source.
 
-![What c3 types into the agent, beside the marked-up picture it points to](ink-markup-sent.png)
+![What c2 types into the agent, beside the marked-up picture it points to](ink-markup-sent.png)
 
 - **The message** is a Doc Markup comment: one `>` line per mark, numbered as in the picture, then your note.
 
 ```
-[kanna comment c3 · docs/specs/tab-container.md:7]
+[kanna comment c2 · docs/specs/tab-container.md:7]
 > ink, 4 marks, numbered in the picture:
 > 1 circle around "Panes only:" (line 7)
 > 2 writing beside line 7, read it in the picture
-> 3 arrow from "The panes inside stay ordinary panes…" (line 23) to after "A tab container is a slot…" (line 3)
+> 3 arrow from "The panes inside stay ordinary pa…" (line 23) to after "A tab container is a slot in a sp…" (line 3)
 > 4 strike through "middle-click or × to close it." (line 14)
-> marked up: .kanna/docs/marks/docs__specs__tab-container.md-c3.png
+> marked up: .kanna/docs/marks/docs__specs__tab-container.md-c2.png
 ```
 
 - **On a page**, marks name parts by CSS path and text with a box in page pixels, as [page comments](doc-markup.md#3-reaching-the-agent) do.

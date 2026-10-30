@@ -1,0 +1,829 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ink Markup Mockup</title>
+<style>
+:root {
+  --chrome: #26282c; --tabbar: #1e1f22; --bar: #202226; --term: #292c33; --doc: #17181c; --panel: #1c1d22;
+  --line: #2c2e34; --text: #e6e6e6; --dim: #8b8f98; --soft: #c9ccd3; --accent: #3478f6;
+  --tint: rgba(52, 120, 246, 0.18); --ok: #4cb782; --warn: #d9a441; --page: #111214; --ink: #ff5f57;
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro, body.picture .sentbox { display: none; }
+body.shot-sent .intro { display: none; }
+body.shot-sent .window { position: absolute; left: -5000px; width: 1220px; }
+body.shot-sent .sentbox { display: grid; margin: 0; }
+body.shot-sent main { padding: 16px; }
+h1 { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--dim); margin: 0 0 10px; max-width: 980px; }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; align-items: center; }
+button { font: 12px var(--sans); color: var(--text); background: #2a2c31; border: 1px solid #3a3d44; border-radius: 5px; padding: 4px 9px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); }
+.seg { display: inline-flex; }
+.seg button { border-radius: 0; margin-left: -1px; }
+.seg button:first-child { border-radius: 5px 0 0 5px; } .seg button:last-child { border-radius: 0 5px 5px 0; }
+.seg button.on { background: var(--accent); border-color: var(--accent); }
+
+.window { border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: 0 20px 50px rgba(0,0,0,.5); background: var(--chrome); }
+body.picture .window { border-radius: 0; border: 0; box-shadow: none; }
+.titlebar { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 12px; color: var(--dim); font-weight: 600; }
+.lights { display: flex; gap: 7px; margin-right: 10px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: #4a4c52; display: block; }
+.wtabs { height: 32px; background: var(--tabbar); display: flex; padding-left: 14px; border-bottom: 1px solid #000; }
+.wtab { padding: 0 14px; display: flex; align-items: center; color: var(--dim); cursor: pointer; }
+.wtab.on { color: var(--text); font-weight: 600; border-bottom: 2px solid var(--accent); }
+.body { height: 640px; display: flex; }
+body.picture .body { height: calc(100vh - 67px); }
+.divider { width: 1px; background: #000; flex: none; }
+
+.term { flex: 0 0 34%; min-width: 0; background: var(--term); font: 12px/1.55 var(--mono); padding: 10px 12px; white-space: pre-wrap; overflow: auto; color: #d7dae0; }
+.term .c { color: #7fb4ca; } .term .p { color: #e5c07b; } .term .g { color: var(--dim); } .term .a { color: #d18ae6; }
+.term .box { border: 1px solid #555a64; border-radius: 6px; padding: 4px 8px; margin-top: 8px; }
+
+.doc { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--doc); }
+.toolbar { height: 34px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 10px; background: var(--bar); border-bottom: 1px solid #000; font-size: 12px; }
+.toolbar .path { font: 11.5px var(--mono); color: var(--soft); }
+.toolbar .spacer { flex: 1; }
+.toolbar .chip { border: 1px solid #3a3d44; border-radius: 5px; padding: 2px 8px; color: var(--soft); white-space: nowrap; cursor: pointer; }
+.toolbar .chip.on { border-color: var(--accent); color: var(--text); }
+.toolbar .inkbtn.on { border-color: var(--ink); background: rgba(255,95,87,.16); color: var(--text); }
+.toolbar .hint { color: var(--dim); font-size: 11.5px; }
+.split { flex: 1; display: flex; min-height: 0; }
+.editor { flex: 1; min-width: 0; overflow: auto; position: relative; }
+
+.surface { position: relative; padding: 26px 40px 160px; min-height: 100%; }
+.surface.inking { cursor: crosshair; user-select: none; -webkit-user-select: none; }
+.surface svg.ink { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
+.surface .md { max-width: 640px; }
+.surface .md h2 { font-size: 24px; margin: 0 0 12px; }
+.surface .md h3 { font-size: 16px; margin: 20px 0 8px; }
+.surface .md p, .surface .md li { color: var(--soft); }
+.surface .md p { margin: 0 0 10px; }
+.surface .md ul { padding-left: 20px; margin: 0 0 10px; }
+.surface .md .code { font: 12px/1.6 var(--mono); background: #23252b; padding: 4px 8px; border-radius: 4px; margin: 0 0 8px; color: var(--soft); }
+.surface .w.hl { background: var(--tint); border-bottom: 1.5px solid var(--accent); }
+
+.surface .pagebody { background: #f3f4f6; color: #1f2329; border-radius: 6px; padding: 26px; max-width: 560px; font-size: 13px; }
+.pagebody h1 { font-size: 20px; margin: 0 0 16px; }
+.pagebody .row { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: #fff; border: 1px solid #dfe1e6; border-radius: 6px; margin-bottom: 8px; }
+.pagebody .row .val { border: 1px solid #c9cbd1; border-radius: 5px; padding: 2px 10px; background: #fafafa; }
+.pagebody .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.pagebody .btn { border: 1px solid #c9cbd1; border-radius: 5px; padding: 4px 14px; background: #fff; }
+.pagebody .btn.primary { background: #3478f6; border-color: #3478f6; color: #fff; }
+
+
+.threads { flex: 0 0 310px; background: var(--panel); border-left: 1px solid #000; overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.threads .top { color: var(--dim); font-size: 11.5px; display: flex; justify-content: space-between; }
+.threads .top span:last-child { cursor: pointer; }
+.card { background: #23252b; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.card.on { border-color: var(--accent); }
+.card.new { border-color: var(--ink); }
+.card .head { display: flex; justify-content: space-between; color: var(--dim); font: 11px var(--mono); margin-bottom: 6px; }
+.card .quote { color: var(--dim); border-left: 2px solid var(--accent); padding-left: 7px; margin: 2px 0 6px; font-size: 12px; }
+.card .msg { margin: 4px 0; font-size: 12.5px; color: var(--soft); }
+.card .msg b { color: var(--text); font-weight: 600; }
+.card .msg b.agent { color: #d18ae6; }
+.card .reply { display: flex; gap: 6px; margin-top: 6px; }
+.card .reply input { flex: 1; min-width: 0; background: #1b1c21; border: 1px solid var(--line); border-radius: 5px; color: var(--text); padding: 3px 6px; font: 12px var(--sans); }
+.card .reply button { padding: 2px 7px; }
+.card .reply .res:hover { color: #5fbf7a; border-color: #5fbf7a; }
+.card textarea { width: 100%; min-height: 44px; resize: vertical; background: #1b1c21; color: var(--text); border: 1px solid var(--line); border-radius: 5px; outline: none; font: 12.5px var(--sans); padding: 4px 6px; margin-top: 4px; }
+.card .row { display: flex; justify-content: flex-end; gap: 6px; color: var(--dim); font-size: 11px; align-items: center; margin-top: 6px; }
+.card .row span { flex: 1; }
+.marks { list-style: none; margin: 4px 0 4px; padding: 0; }
+.marks li { display: flex; gap: 6px; align-items: baseline; font-size: 12px; color: var(--soft); padding: 1px 0; }
+.marks li.gone { color: var(--dim); }
+.marks li.gone .t { text-decoration: line-through; text-decoration-color: rgba(139,143,152,.6); }
+.num { flex: none; display: inline-flex; width: 16px; height: 16px; border-radius: 8px; background: var(--ink); color: #fff; font: 600 10px/16px var(--sans); justify-content: center; }
+.marks li.gone .num { background: #555a64; }
+.marks .k { color: #ff9d97; flex: none; }
+.marks .k[data-k] { cursor: pointer; border-bottom: 1px dotted #ff9d97; }
+.marks .x { margin-left: auto; color: var(--dim); cursor: pointer; padding: 0 3px; }
+.thumb { position: relative; overflow: hidden; border-radius: 5px; border: 1px solid var(--line); background: var(--doc); margin-bottom: 4px; cursor: zoom-in; }
+.thumb .inner { position: absolute; left: 0; top: 0; transform-origin: 0 0; pointer-events: none; }
+.typing { display: inline-flex; gap: 3px; align-items: center; margin: 2px 0 6px; }
+.typing i { width: 4px; height: 4px; border-radius: 50%; background: var(--dim); display: block; animation: blink 1.4s infinite ease-in-out; }
+.typing i:nth-child(2) { animation-delay: .15s; } .typing i:nth-child(3) { animation-delay: .3s; }
+@keyframes blink { 0%, 60%, 100% { opacity: .25; } 30% { opacity: .9; } }
+
+.sentbox { margin-top: 16px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
+.sentbox > h2 { grid-column: 1 / -1; font-size: 13px; margin: 0; color: var(--dim); font-weight: 600; }
+.sentbox pre { margin: 0; background: var(--term); border-radius: 8px; padding: 10px 12px; font: 12px/1.55 var(--mono); white-space: pre-wrap; color: #d7dae0; }
+.sentbox .pic { border-radius: 8px; overflow: hidden; position: relative; background: var(--doc); border: 1px solid #000; }
+.sentbox .cap { color: var(--dim); font: 11px var(--mono); margin-top: 4px; }
+.zoom { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: flex; align-items: center; justify-content: center; z-index: 10; }
+.zoom .pic { border-radius: 8px; overflow: hidden; position: relative; background: var(--doc); }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1>Ink markup: draw on a doc, and the agent beside it works out what the marks mean</h1>
+    <p>Turn on <b>Ink</b> (or hold ⌥ and drag) and draw: circle words, underline them, strike them out or zigzag over them, draw an arrow from a paragraph to where it should go, write in the margin. Each stroke is recognised and numbered, and listed in the New ink card: click its kind to correct it, × to remove it. ⌘Z undoes, ⌘↵ sends the batch as one thread, Esc leaves Ink.</p>
+    <p>Below the window: what Send types into the agent, and the marked-up picture it points to. The agent answers mark by mark; marks it acted on leave the page.</p>
+    <div class="controls">
+      <button id="example" class="primary">Draw the example</button>
+      <span class="seg" id="input"><button data-i="mouse">Mac: mouse</button><button data-i="pencil">iPad: Pencil</button></span>
+      <span class="seg" id="speed"><button data-s="auto">Agent answers</button><button data-s="hold">Agent waits</button></span>
+      <button id="answer">Agent answers now</button>
+      <button id="reset">Reset</button>
+    </div>
+  </div>
+  <div class="window">
+    <div class="titlebar"><span class="lights"><i></i><i></i><i></i></span><span>Ink markup with arrows</span></div>
+    <div class="wtabs"><div class="wtab" data-scene="md">tab-container.md</div><div class="wtab" data-scene="page">settings.html</div></div>
+    <div class="body">
+      <div class="term" id="term"></div>
+      <div class="divider"></div>
+      <div class="doc" id="doc" tabindex="0">
+        <div class="toolbar">
+          <span class="path" id="path"></span>
+          <span class="spacer"></span>
+          <span class="hint" id="hint"></span>
+          <span class="chip inkbtn" id="inkBtn" title="⇧⌘I">✎ Ink</span>
+          <span class="chip on" id="threadsBtn">Threads</span>
+        </div>
+        <div class="split">
+          <div class="editor" id="editor">
+            <div class="surface" id="surface"><div id="content"></div><svg class="ink" id="ink"></svg></div>
+          </div>
+          <div class="threads" id="threads"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="sentbox" id="sentbox"></div>
+</main>
+<script>
+const $ = q => document.querySelector(q);
+const INK = "#ff5f57";
+const KINDS = ["circle", "underline", "strike", "arrow", "writing"];
+const FILES = { md: "docs/specs/tab-container.md", page: "references/mockups/settings.html" };
+const MARKFILE = { md: "docs__specs__tab-container.md", page: "references__mockups__settings.html" };
+
+const mdBlocks = () => [
+  { id: "m1", kind: "h2", line: 1, text: "Tab Container" },
+  { id: "m2", kind: "p", line: 3, text: "A tab container is a slot in a split that holds several panes as tabs and shows one at a time." },
+  { id: "m3", kind: "h3", line: 5, text: "1. Rules" },
+  { id: "m4", kind: "li", line: 7, text: "Panes only: a container holds panes, not splits or other containers." },
+  { id: "m5", kind: "li", line: 8, text: "One active: one pane is shown; the others keep running." },
+  { id: "m6", kind: "li", line: 9, text: "Lifetime: it stays with one tab and goes away with its last." },
+  { id: "m7", kind: "h3", line: 11, text: "2. Using it" },
+  { id: "m8", kind: "li", line: 13, text: "Too many tabs: the strip scrolls, keeping the active tab in view." },
+  { id: "m9", kind: "li", line: 14, text: "Click a tab to show it; middle-click or × to close it." },
+  { id: "m10", kind: "li", line: 15, text: "Keys: ⌃Tab / ⌃⇧Tab for the next and previous tab; ⌘W closes the active one." },
+  { id: "m11", kind: "h3", line: 17, text: "3. CLI" },
+  { id: "m12", kind: "code", line: 19, text: "kanna open --in docs FILE opens a pane as a tab of the container named docs." },
+  { id: "m13", kind: "code", line: 21, text: "kanna move PANE --in docs moves an existing pane into it." },
+  { id: "m14", kind: "p", line: 23, text: "The panes inside stay ordinary panes, with their own IDs, names and processes, so every pane command still works on them." },
+];
+const pageBlocks = () => [
+  { id: "p1", kind: "title", line: 12, text: "Settings" },
+  { id: "p2", kind: "row", line: 15, label: "Name", text: "Name Jeremy Hale" },
+  { id: "p3", kind: "row", line: 19, label: "Theme", text: "Theme Dark ▾" },
+  { id: "p4", kind: "row", line: 23, label: "Font size", text: "Font size 13 pt" },
+  { id: "p5", kind: "row", line: 27, label: "Show the Shelf", text: "Show the Shelf Always ▾" },
+  { id: "p6", kind: "btn", line: 32, text: "Cancel" },
+  { id: "p7", kind: "btn", line: 33, text: "Save" },
+];
+
+const initial = () => ({
+  scene: "md", ink: false, input: "mouse", speed: "auto", active: null, showResolved: false,
+  docs: { md: mdBlocks(), page: pageBlocks() },
+  pending: { md: [], page: [] }, note: { md: "", page: "" },
+  touched: { md: new Set(), page: new Set() },
+  threads: [
+    { id: "c1", scene: "md", kind: "text", b: "m8", from: 2, to: 9, line: 13, quote: "the strip scrolls, keeping the active tab in view", status: "replied", state: "open",
+      messages: [{ who: "you", text: "Also say what ⌃Tab does when the strip has scrolled." }, { who: "agent", text: "Added: ⌃Tab scrolls the next tab into view." }] },
+  ],
+  next: { md: 2, page: 1 },
+});
+let s = initial();
+let live = null;
+
+const esc = t => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const words = b => b.text.split(" ").map((w, i) => `<span class="w" data-b="${b.id}" data-i="${i}">${esc(w)}</span>`).join(" ");
+const trunc = (t, n = 34) => t.length > n ? t.slice(0, n - 1).replace(/[\s,;:.]+$/, "") + "…" : t;
+const blocks = () => s.docs[s.scene];
+const blockById = (sc, id) => s.docs[sc].find(b => b.id === id);
+
+function renderContent() {
+  const c = $("#content");
+  if (s.scene === "md") {
+    c.className = "md";
+    let h = "", inList = false;
+    for (const b of blocks()) {
+      if (b.kind === "li" && !inList) { h += "<ul>"; inList = true; }
+      if (b.kind !== "li" && inList) { h += "</ul>"; inList = false; }
+      const tag = { h2: "h2", h3: "h3", p: "p", li: "li", code: "div" }[b.kind];
+      h += `<${tag} data-block="${b.id}"${b.kind === "code" ? ' class="code"' : ""}>${words(b)}</${tag}>`;
+    }
+    if (inList) h += "</ul>";
+    c.innerHTML = h;
+  } else {
+    c.className = "pagebody";
+    let h = "", btns = "";
+    for (const b of blocks()) {
+      if (b.kind === "title") h += `<h1 data-block="${b.id}">${words(b)}</h1>`;
+      if (b.kind === "row") {
+        const n = b.label.split(" ").length, ws = words(b).split(" <span");
+        const parts = b.text.split(" ").map((w, i) => `<span class="w" data-b="${b.id}" data-i="${i}">${esc(w)}</span>`);
+        h += `<div class="row" data-block="${b.id}"><span class="lab">${parts.slice(0, n).join(" ")}</span><span class="val">${parts.slice(n).join(" ")}</span></div>`;
+      }
+      if (b.kind === "btn") btns += `<span class="btn${b.primary ? " primary" : ""}" data-block="${b.id}">${words(b)}</span>`;
+    }
+    c.innerHTML = h + `<div class="btns">${btns}</div>`;
+  }
+  for (const t of s.threads) {
+    if (t.kind !== "text" || t.scene !== s.scene || t.state !== "open") continue;
+    for (let i = t.from; i <= t.to; i++) { const w = c.querySelector(`.w[data-b="${t.b}"][data-i="${i}"]`); if (w) w.classList.add("hl"); }
+  }
+}
+
+function rel(r) {
+  const o = $("#surface").getBoundingClientRect();
+  return { x: r.left - o.left, y: r.top - o.top, w: r.width, h: r.height, x2: r.right - o.left, y2: r.bottom - o.top };
+}
+function blockRect(id) { const el = $(`#content [data-block="${id}"]`); return el ? rel(el.getBoundingClientRect()) : null; }
+function wordRects() {
+  return [...document.querySelectorAll("#content .w")].map(el => ({ b: el.dataset.b, i: +el.dataset.i, text: el.textContent, r: rel(el.getBoundingClientRect()) }));
+}
+function blockRects() { return blocks().map(b => ({ b, r: blockRect(b.id) })).filter(x => x.r); }
+
+const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+function bbox(pts) {
+  let x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
+  for (const [x, y] of pts) { x1 = Math.min(x1, x); y1 = Math.min(y1, y); x2 = Math.max(x2, x); y2 = Math.max(y2, y); }
+  return { x1, y1, x2, y2, w: x2 - x1, h: y2 - y1, cx: (x1 + x2) / 2, cy: (y1 + y2) / 2 };
+}
+function bboxAll(strokes) { return bbox(strokes.flat()); }
+function pathLen(pts) { let l = 0; for (let i = 1; i < pts.length; i++) l += dist(pts[i - 1], pts[i]); return l; }
+function simplify(pts) { const out = [pts[0]]; for (const p of pts) if (dist(p, out[out.length - 1]) >= 2.5) out.push(p); if (out.length === 1 && pts.length > 1) out.push(pts[pts.length - 1]); return out; }
+function reversalsX(pts) {
+  let sign = 0, n = 0, acc = 0;
+  for (let i = 1; i < pts.length; i++) {
+    acc += pts[i][0] - pts[i - 1][0];
+    if (Math.abs(acc) < 6) continue;
+    const sg = Math.sign(acc); if (sign && sg !== sign) n++; sign = sg; acc = 0;
+  }
+  return n;
+}
+function headIndex(pts) {
+  const n = pts.length; if (n < 8) return -1;
+  const total = pathLen(pts); let run = 0;
+  for (let k = 3; k < n - 3; k++) {
+    run += dist(pts[k - 1], pts[k]);
+    if (run < total * 0.55) continue;
+    const a = [pts[k][0] - pts[k - 3][0], pts[k][1] - pts[k - 3][1]], b = [pts[k + 3][0] - pts[k][0], pts[k + 3][1] - pts[k][1]];
+    const cos = (a[0] * b[0] + a[1] * b[1]) / (Math.hypot(...a) * Math.hypot(...b) || 1);
+    if (cos < -0.35) { const main = pts.slice(0, k + 1); if (dist(main[0], main[k]) / pathLen(main) > 0.7) return k; }
+  }
+  return -1;
+}
+function inPoly(p, poly) {
+  let c = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if ((yi > p[1]) !== (yj > p[1]) && p[0] < (xj - xi) * (p[1] - yi) / (yj - yi) + xi) c = !c;
+  }
+  return c;
+}
+function wordsAlong(pts, mode) {
+  const bb = bbox(pts), y = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+  return wordRects().filter(w => {
+    const ov = Math.min(bb.x2, w.r.x2) - Math.max(bb.x1, w.r.x);
+    if (ov < w.r.w * 0.4) return false;
+    if (mode === "scratch") return bb.y2 >= w.r.y + 3 && bb.y1 <= w.r.y2 - 3;
+    return y >= w.r.y - 2 && y <= w.r.y2 + 9;
+  }).map(w => ({ ...w, rel: (y - w.r.y) / w.r.h })).filter((w, _, all) => mode === "scratch" || !all.some(o => o.rel >= 0.1) || w.rel >= 0.1);
+}
+
+function recognize(pts, pend) {
+  const bb = bbox(pts), size = Math.max(bb.w, bb.h);
+  const len = pathLen(pts), chord = dist(pts[0], pts[pts.length - 1]), straight = chord / (len || 1);
+  const arrows = pend.filter(m => m.kind === "arrow" && !m.drawnHead);
+  if (size < 36) {
+    const near = arrows.find(m => dist(tipOf(m), [bb.cx, bb.cy]) < 30);
+    if (near && size >= 6) return { head: near };
+  }
+  const lastW = pend[pend.length - 1];
+  if (lastW && lastW.kind === "writing" && size < 60 && distToBox([bb.cx, bb.cy], bboxAll(lastW.strokes)) < 40) return { joinWriting: lastW };
+  if (size < 4) return null;
+  if (chord < 0.3 * size && len > 1.8 * size && size > 16) return { kind: "circle" };
+  const rev = reversalsX(pts);
+  if (rev >= 3 && bb.h < 44 && bb.w > 24) return { kind: wordsAlong(pts, "scratch").length ? "strike" : "writing" };
+  if (straight > 0.9 && size > 20) {
+    const dx = Math.abs(pts[pts.length - 1][0] - pts[0][0]), dy = Math.abs(pts[pts.length - 1][1] - pts[0][1]);
+    if (dy < 0.25 * dx) {
+      const ws = wordsAlong(pts, "line");
+      if (ws.length) return { kind: ws.reduce((a, w) => a + w.rel, 0) / ws.length > 0.74 ? "underline" : "strike" };
+    }
+    return { kind: "arrow" };
+  }
+  const k = headIndex(pts);
+  if (k > 0) return { kind: "arrow", tip: k, drawnHead: true };
+  if (straight > 0.7 && rev <= 1 && size > 40) return { kind: "arrow" };
+  return { kind: "writing" };
+}
+function distToBox(p, b) { const dx = Math.max(b.x1 - p[0], 0, p[0] - b.x2), dy = Math.max(b.y1 - p[1], 0, p[1] - b.y2); return Math.hypot(dx, dy); }
+
+function anchorFor(pts, kind) {
+  const p = kind === "arrow" ? pts[0] : [bbox(pts).cx, bbox(pts).cy];
+  const br = nearestBlock(p);
+  return br ? { b: br.b.id, x: br.r.x, y: br.r.y } : null;
+}
+function nearestBlock(p) {
+  let best = null, bd = 1e9;
+  for (const br of blockRects()) {
+    const d = s.scene === "md" ? Math.max(br.r.y - p[1], 0, p[1] - br.r.y2) : distToBox(p, { x1: br.r.x, y1: br.r.y, x2: br.r.x2, y2: br.r.y2 });
+    if (d < bd) { bd = d; best = br; }
+  }
+  return best;
+}
+
+function placed(sc, m) {
+  if (!m.anchor) return m.strokes;
+  const r = sc === s.scene ? blockRect(m.anchor.b) : null;
+  if (!r) return null;
+  const dx = r.x - m.anchor.x, dy = r.y - m.anchor.y;
+  return m.strokes.map(st => st.map(([x, y]) => [x + dx, y + dy]));
+}
+function tipOf(m) { const st = m.strokes[0]; return m.tip != null ? st[m.tip] : st[st.length - 1]; }
+
+function analyze(m, strokes) {
+  const main = strokes[0], all = strokes.flat(), bb = bbox(all);
+  const out = { kind: m.kind, words: [] };
+  if (m.kind === "circle") out.words = wordRects().filter(w => inPoly([w.r.x + w.r.w / 2, w.r.y + w.r.h / 2], main));
+  if (m.kind === "underline" || m.kind === "strike") out.words = wordsAlong(main, reversalsX(main) >= 3 ? "scratch" : "line");
+  if (m.kind === "arrow") {
+    const tip = m.tip != null ? main[m.tip] : main[main.length - 1];
+    const f = nearestBlock(main[0]), t = nearestBlock(tip);
+    out.from = f && f.b; out.to = t && t.b;
+    if (t) out.where = s.scene === "page" && t.b.kind === "btn" ? (tip[0] < t.r.x + t.r.w / 2 ? "before" : "after") : (tip[1] < t.r.y + t.r.h / 2 ? "before" : "after");
+  }
+  if (m.kind === "writing" || ((m.kind === "circle" || m.kind === "underline" || m.kind === "strike") && !out.words.length)) out.near = nearestBlock([bb.cx, bb.cy]);
+  out.box = bb;
+  return out;
+}
+
+function quoteOf(ws) {
+  const byB = {};
+  for (const w of ws) (byB[w.b] = byB[w.b] || []).push(w);
+  return Object.values(byB).map(list => list.sort((a, b) => a.i - b.i).map(w => w.text).join(" ")).join(" … ");
+}
+function cssPath(b) {
+  if (b.kind === "title") return "#settings h1";
+  if (b.kind === "btn") return `#settings .btns .btn:nth-of-type(${s.docs.page.filter(x => x.kind === "btn").indexOf(b) + 1})`;
+  return `#settings .row:nth-of-type(${s.docs.page.filter(x => x.kind === "row").indexOf(b) + 1})`;
+}
+const px = r => `${Math.round(r.x)},${Math.round(r.y)} to ${Math.round(r.x2)},${Math.round(r.y2)} px`;
+function describe(m, a) {
+  const bl = ws => { const b = blockById(s.scene, ws[0].b); return b; };
+  if (s.scene === "md") {
+    const line = b => `line ${b.line}`;
+    if (a.words.length) {
+      const b = bl(a.words);
+      const verb = { circle: "circle around", underline: "underline under", strike: "strike through" }[a.kind];
+      return { long: `${verb} "${quoteOf(a.words)}" (${line(b)})`, short: `"${trunc(quoteOf(a.words), 30)}"`, line: b.line };
+    }
+    if (a.kind === "arrow" && a.from && a.to) return {
+      long: `arrow from "${trunc(a.from.text)}" (${line(a.from)}) to ${a.where} "${trunc(a.to.text)}" (${line(a.to)})`,
+      short: `"${trunc(a.from.text, 18)}" → ${a.where} "${trunc(a.to.text, 14)}"`, line: a.from.line };
+    const b = a.near && a.near.b;
+    if (a.kind === "writing") return { long: `writing beside ${line(b)}, read it in the picture`, short: `beside line ${b.line}`, line: b.line };
+    return { long: `${a.kind} at ${line(b)}, around nothing`, short: `at line ${b.line}`, line: b.line };
+  }
+  const el = b => `element ${cssPath(b)} "${b.text}"`;
+  if (a.words.length) {
+    const b = bl(a.words), r = blockRect(b.id);
+    const verb = { circle: "circle around", underline: "underline under", strike: "strike through" }[a.kind];
+    return { long: `${verb} ${el(b)}${quoteOf(a.words) !== b.text ? `, the text "${quoteOf(a.words)}"` : ""} at ${px(r)}`, short: `"${trunc(quoteOf(a.words), 30)}"`, line: b.line };
+  }
+  if (a.kind === "arrow" && a.from && a.to) return {
+    long: `arrow from ${el(a.from)} to ${a.where} ${el(a.to)}`, short: `${a.from.label || a.from.text} → ${a.where} ${a.to.label || a.to.text}`, line: a.from.line };
+  const b = a.near.b;
+  return { long: `${a.kind} near ${el(b)} at ${px({ x: a.box.x1, y: a.box.y1, x2: a.box.x2, y2: a.box.y2 })}${a.kind === "writing" ? ", read it in the picture" : ""}`, short: `near ${b.label || b.text}`, line: b.line };
+}
+
+function pathD(pts) {
+  if (pts.length < 3) return `M${pts[0][0]},${pts[0][1]} L${pts[pts.length - 1][0]},${pts[pts.length - 1][1]}`;
+  let d = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const mx = (pts[i][0] + pts[i + 1][0]) / 2, my = (pts[i][1] + pts[i + 1][1]) / 2;
+    d += ` Q${pts[i][0].toFixed(1)},${pts[i][1].toFixed(1)} ${mx.toFixed(1)},${my.toFixed(1)}`;
+  }
+  const l = pts[pts.length - 1];
+  return d + ` L${l[0].toFixed(1)},${l[1].toFixed(1)}`;
+}
+function headD(m, strokes) {
+  const st = strokes[0], n = st.length, tip = st[n - 1];
+  let j = n - 2; while (j > 0 && dist(st[j], tip) < 14) j--;
+  const ang = Math.atan2(tip[1] - st[j][1], tip[0] - st[j][0]), L = 11;
+  const a = [tip[0] - L * Math.cos(ang - 0.5), tip[1] - L * Math.sin(ang - 0.5)], b = [tip[0] - L * Math.cos(ang + 0.5), tip[1] - L * Math.sin(ang + 0.5)];
+  return `M${a[0]},${a[1]} L${tip[0]},${tip[1]} L${b[0]},${b[1]}`;
+}
+
+function inkSvg(groups) {
+  let h = "";
+  for (const g of groups) {
+    const op = g.opacity ?? 1;
+    for (const st of g.strokes) h += `<path d="${pathD(st)}" fill="none" stroke="${INK}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" opacity="${op}"/>`;
+    if (g.m.kind === "arrow" && !g.m.drawnHead) h += `<path d="${headD(g.m, g.strokes)}" fill="none" stroke="${INK}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" opacity="${op}"/>`;
+    if (g.num) {
+      const bb = bboxAll(g.strokes);
+      const p = g.m.kind === "arrow" ? g.strokes[0][0] : [bb.x1, bb.y1];
+      h += `<g opacity="${op}"><circle cx="${p[0] - 7}" cy="${p[1] - 7}" r="8" fill="${INK}"/><text x="${p[0] - 7}" y="${p[1] - 3.5}" text-anchor="middle" font-size="10" font-weight="600" font-family="-apple-system, sans-serif" fill="#fff">${g.num}</text></g>`;
+    }
+  }
+  return h;
+}
+
+function inkGroups() {
+  const groups = [];
+  for (const t of s.threads) {
+    if (t.kind !== "ink" || t.scene !== s.scene) continue;
+    if (t.state === "resolved" && t.id !== s.active) continue;
+    t.marks.forEach(m => {
+      if (m.gone) return;
+      const st = placed(s.scene, m); if (!st) return;
+      groups.push({ m, strokes: st, num: m.n, opacity: t.state === "resolved" ? 0.3 : (s.active && s.active !== t.id ? 0.55 : 1) });
+    });
+  }
+  s.pending[s.scene].forEach(m => groups.push({ m, strokes: m.strokes, num: m.n, pending: true }));
+  return groups;
+}
+
+function renderInk() {
+  const surf = $("#surface"), svg = $("#ink");
+  svg.setAttribute("width", surf.scrollWidth); svg.setAttribute("height", surf.scrollHeight);
+  const groups = inkGroups();
+  svg.innerHTML = inkSvg(groups) + (live ? `<path d="${pathD(live)}" fill="none" stroke="${INK}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>` : "");
+}
+
+function removeMark(m) {
+  const pend = s.pending[s.scene];
+  pend.splice(pend.indexOf(m), 1);
+  pend.forEach((x, i) => x.n = i + 1);
+  render();
+}
+
+function snapshot() {
+  const surf = $("#surface");
+  const clone = surf.cloneNode(true);
+  clone.removeAttribute("id");
+  clone.querySelectorAll("[id]").forEach(e => e.removeAttribute("id"));
+  clone.classList.remove("inking");
+  const ed = $("#editor");
+  return { html: clone.outerHTML, w: surf.scrollWidth, h: surf.scrollHeight, view: { x: 0, y: ed.scrollTop, w: ed.clientWidth, h: ed.clientHeight } };
+}
+function picture(snap, crop, width, maxH = 1e9) {
+  const k = Math.min(width / crop.w, maxH / crop.h);
+  width = Math.round(crop.w * k);
+  const outer = document.createElement("div");
+  outer.className = "pic";
+  outer.style.width = width + "px"; outer.style.height = Math.round(crop.h * k) + "px";
+  outer.innerHTML = `<div class="inner" style="position:absolute;left:0;top:0;width:${snap.w}px;transform-origin:0 0;transform:translate(${-crop.x * k}px,${-crop.y * k}px) scale(${k});pointer-events:none">${snap.html}</div>`;
+  return outer;
+}
+function cropFor(marks, snap) {
+  const all = marks.map(m => bboxAll(m.strokesAtSend || m.strokes));
+  const x1 = Math.max(0, Math.min(...all.map(b => b.x1)) - 50), y1 = Math.max(0, Math.min(...all.map(b => b.y1)) - 30);
+  const x2 = Math.min(snap.w, Math.max(...all.map(b => b.x2)) + 70), y2 = Math.max(...all.map(b => b.y2)) + 30;
+  const w = Math.max(x2 - x1, 260), h = Math.max(y2 - y1, 120);
+  return { x: x1, y: y1, w, h };
+}
+
+function message(t) {
+  const lines = [`[kanna comment ${t.id} · ${FILES[t.scene]}:${t.line}]`];
+  if (t.scene === "page") lines.push(`> the page at #general, in a 1220×816 view, scrolled to 0,0`);
+  lines.push(`> ink, ${t.marks.length} mark${t.marks.length === 1 ? "" : "s"}, numbered in the picture:`);
+  t.marks.forEach(m => lines.push(`> ${m.n} ${m.desc.long}`));
+  lines.push(`> marked up: .kanna/docs/marks/${MARKFILE[t.scene]}-${t.id}.png`);
+  if (t.note) lines.push(t.note);
+  return lines;
+}
+function draft() {
+  const pend = s.pending[s.scene];
+  if (!pend.length) return null;
+  const marks = pend.map(m => ({ ...m, desc: describe(m, analyze(m, m.strokes)) }));
+  return { id: `c${s.next[s.scene] + (s.scene === "md" ? 0 : 0)}`, scene: s.scene, marks, note: s.note[s.scene].trim(), line: marks[0].desc.line };
+}
+
+function send() {
+  const d = draft(); if (!d) return;
+  const snap = snapshot();
+  d.marks.forEach(m => { m.analysis = analyze(m, m.strokes); m.strokesAtSend = m.strokes; });
+  const t = { ...d, kind: "ink", status: "sent", state: "open", snap, crop: cropFor(d.marks, snap), messages: d.note ? [{ who: "you", text: d.note }] : [], phase: 0 };
+  s.next[s.scene]++;
+  s.threads.push(t);
+  s.pending[s.scene] = []; s.note[s.scene] = "";
+  s.active = t.id;
+  render();
+  if (s.speed === "auto") { setTimeout(() => { t.phase = 1; render(); }, 900); setTimeout(() => answer(t), 2400); }
+}
+
+function answer(t) {
+  if (!t || t.status !== "sent") return;
+  const sc = t.scene, doc = s.docs[sc], parts = [], say = (n, text) => parts.push({ n, text });
+  const strikes = {};
+  const writing = t.marks.filter(m => m.kind === "writing");
+  const paired = new Set();
+  for (const m of t.marks) {
+    const a = m.analysis;
+    if (m.kind === "strike" && a.words.length) {
+      const b = a.words[0].b;
+      if (sc === "page") { const i = doc.findIndex(x => x.id === b); if (i >= 0) doc.splice(i, 1); }
+      else (strikes[b] = strikes[b] || new Set()), a.words.forEach(w => strikes[w.b].add(w.i));
+      s.touched[sc].add(b); m.gone = true;
+      say(m.n, `${m.n}: cut “${trunc(quoteOf(a.words), 40)}”.`);
+    }
+  }
+  for (const [b, set] of Object.entries(strikes)) {
+    const blk = doc.find(x => x.id === b); if (!blk) continue;
+    const ws = blk.text.split(" ").filter((_, i) => !set.has(i));
+    if (!ws.length) doc.splice(doc.indexOf(blk), 1);
+    else { ws[ws.length - 1] = ws[ws.length - 1].replace(/[;,:]$/, "."); blk.text = ws.join(" "); }
+  }
+  for (const m of t.marks) {
+    const a = m.analysis;
+    if (m.kind === "arrow" && a.from && a.to && a.from !== a.to) {
+      const fi = doc.indexOf(a.from); if (fi < 0) continue;
+      doc.splice(fi, 1);
+      const ti = doc.indexOf(a.to); if (ti < 0) { doc.splice(fi, 0, a.from); continue; }
+      doc.splice(a.where === "before" ? ti : ti + 1, 0, a.from);
+      s.touched[sc].add(a.from.id); m.gone = true;
+      say(m.n, `${m.n}: moved “${trunc(a.from.label || a.from.text, 30)}” ${a.where} “${trunc(a.to.label || a.to.text, 26)}”.`);
+    }
+  }
+  for (const m of t.marks) {
+    const a = m.analysis;
+    if (m.kind !== "circle" && m.kind !== "underline") continue;
+    const q = quoteOf(a.words) || (a.near && a.near.b.text) || "";
+    const w = writing.find(w => distToBox([bboxAll(w.strokes).cx, bboxAll(w.strokes).cy], bboxAll(m.strokes)) < 120);
+    if (w) paired.add(w);
+    if (sc === "page" && /save/i.test(q) && t.note) {
+      const b = doc.find(x => x.text === "Save"); b.primary = true; s.touched[sc].add(b.id); m.gone = true;
+      say(m.n, `${m.n}: made Save the default button: blue, and ↵ presses it.`);
+    } else if (w && /Panes only/.test(q)) {
+      say(m.n, `${m.n}–${w.n}: you circled “Panes only” and wrote ? beside it. It means a container holds panes and nothing else: a split inside a tab would need its own tab strip. Want that sentence in the rule?`);
+    } else if (w) {
+      say(m.n, `${m.n}–${w.n}: you ${m.kind}d “${trunc(q, 30)}” and wrote beside it; I read your writing from the picture.`);
+    } else if (t.note) {
+      say(m.n, `${m.n}: “${trunc(q, 30)}”: done, as your note says.`);
+    } else {
+      say(m.n, `${m.n}: you ${m.kind}d “${trunc(q, 30)}”: what should change?`);
+    }
+  }
+  for (const w of writing) if (!paired.has(w)) say(w.n, `${w.n}: read your writing beside line ${w.desc.line} from the picture.`);
+  t.marks.forEach(m => { if (m.gone) return; if (m.anchor && s.touched[sc].has(m.anchor.b)) m.gone = true; });
+  t.status = "replied"; t.phase = 2;
+  t.messages.push({ who: "agent", text: parts.sort((a, b) => a.n - b.n).map(p => p.text).join(" ") || "Read the marks; nothing to change." });
+  render();
+}
+
+function markRow(m, pending) {
+  return `<li class="${m.gone ? "gone" : ""}"><span class="num">${m.n}</span><span class="k"${pending ? ` data-k="${m.n}" title="Click to change"` : ""}>${m.kind}</span><span class="t">${esc(m.desc.short)}</span>${pending ? `<span class="x" data-x="${m.n}" title="Remove">×</span>` : ""}</li>`;
+}
+
+function renderThreads() {
+  const panel = $("#threads");
+  const mine = s.threads.filter(t => t.scene === s.scene);
+  const resolved = mine.filter(t => t.state === "resolved").length;
+  panel.innerHTML = `<div class="top"><span>Threads</span><span id="showRes">${resolved ? (s.showResolved ? "Hide resolved" : `Show resolved (${resolved})`) : ""}</span></div>`;
+  panel.querySelector("#showRes").onclick = () => { s.showResolved = !s.showResolved; render(); };
+  const d = draft();
+  if (d) {
+    const card = document.createElement("div");
+    card.className = "card new";
+    card.innerHTML = `<div class="head"><span>New ink · ${d.marks.length} mark${d.marks.length === 1 ? "" : "s"}</span><span>${d.id}</span></div>
+      <ul class="marks">${d.marks.map(m => markRow(m, true)).join("")}</ul>
+      <textarea placeholder="Add a note (optional)">${esc(s.note[s.scene])}</textarea>
+      <div class="row"><span>${s.input === "pencil" ? "double-tap undoes" : "⌘Z undoes · Esc leaves Ink"}</span><button id="discard">Discard</button><button class="primary" id="send">Send ⌘↵</button></div>`;
+    const ta = card.querySelector("textarea");
+    ta.oninput = () => { s.note[s.scene] = ta.value; renderSent(); };
+    ta.onkeydown = e => { e.stopPropagation(); if (e.key === "Enter" && e.metaKey) send(); };
+    card.querySelectorAll("[data-k]").forEach(k => k.onclick = () => { const m = s.pending[s.scene][+k.dataset.k - 1]; m.kind = KINDS[(KINDS.indexOf(m.kind) + 1) % KINDS.length]; render(); });
+    card.querySelectorAll("[data-x]").forEach(x => x.onclick = () => removeMark(s.pending[s.scene][+x.dataset.x - 1]));
+    card.querySelector("#discard").onclick = () => { s.pending[s.scene] = []; s.note[s.scene] = ""; render(); };
+    card.querySelector("#send").onclick = send;
+    panel.appendChild(card);
+  }
+  for (const t of mine.slice().reverse()) {
+    if (t.state === "resolved" && !s.showResolved) continue;
+    const card = document.createElement("div");
+    card.className = "card" + (t.id === s.active ? " on" : "");
+    const head = `<div class="head"><span>${t.id}${t.kind === "ink" ? " · ink" : ""} · line ${t.line}</span><span>${t.state === "resolved" ? "resolved" : ""}</span></div>`;
+    const body = t.kind === "ink"
+      ? `<div class="thumbslot"></div><ul class="marks">${t.marks.map(m => markRow(m, false)).join("")}</ul>`
+      : `<div class="quote">${esc(t.quote)}</div>`;
+    const msgs = t.messages.map(m => `<div class="msg"><b class="${m.who}">${m.who}</b> ${esc(m.text)}</div>`).join("");
+    const wait = t.status === "sent" ? `<div class="typing"><i></i><i></i><i></i></div>` : "";
+    const actions = t.state === "resolved"
+      ? `<div class="reply"><button class="reopen">Reopen</button></div>`
+      : `<div class="reply"><input placeholder="Reply"><button>⌘↵</button><button class="res" title="Resolve">✓</button></div>`;
+    card.innerHTML = head + body + msgs + wait + actions;
+    if (t.kind === "ink") {
+      const pic = picture(t.snap, t.crop, 288, 200);
+      pic.classList.add("thumb");
+      pic.onclick = e => { e.stopPropagation(); zoom(t); };
+      card.querySelector(".thumbslot").replaceWith(pic);
+    }
+    card.onclick = e => { if (e.target.closest("input, button")) return; s.active = s.active === t.id ? null : t.id; render(); };
+    const res = card.querySelector(".res"); if (res) res.onclick = () => { t.state = "resolved"; if (s.active === t.id) s.active = null; render(); };
+    const reo = card.querySelector(".reopen"); if (reo) reo.onclick = () => { t.state = "open"; render(); };
+    const inp = card.querySelector("input");
+    if (inp) inp.onkeydown = e => { e.stopPropagation(); if (e.key === "Enter" && inp.value.trim()) { t.messages.push({ who: "you", text: inp.value.trim() }); t.status = "sent"; t.phase = 0; render(); } };
+    panel.appendChild(card);
+  }
+}
+
+function zoom(t) {
+  const z = document.createElement("div");
+  z.className = "zoom";
+  const w = Math.min(innerWidth - 80, t.snap.w);
+  z.appendChild(picture(t.snap, { x: 0, y: 0, w: t.snap.w, h: Math.min(t.snap.h, (innerHeight - 80) * t.snap.w / w) }, w));
+  z.onclick = () => z.remove();
+  document.body.appendChild(z);
+}
+
+function renderTerm() {
+  const lines = [`<span class="c">~/.kanna-v4/repos/tampopogk/kanna</span> <span class="p">❯</span> claude`, ``];
+  for (const t of s.threads) {
+    if (t.kind === "text") {
+      lines.push(`<span class="p">&gt;</span> [kanna comment ${t.id} · ${FILES[t.scene]}:${t.line}]`, `  &gt; ${esc(t.quote)}`, `  ${esc(t.messages[0].text)}`, ``,
+        `<span class="a">●</span> Updated ${FILES[t.scene]}`, `  kanna markup reply ${t.id} "${esc(t.messages[1].text)}"`, ``);
+      continue;
+    }
+    const msg = message(t);
+    lines.push(`<span class="p">&gt;</span> ${esc(msg[0])}`, ...msg.slice(1).map(l => `  ${esc(l)}`), ``);
+    if (t.phase >= 1) lines.push(`<span class="a">●</span> Read(.kanna/docs/marks/${MARKFILE[t.scene]}-${t.id}.png)`, ``);
+    if (t.phase >= 2) {
+      const a = t.messages.filter(m => m.who === "agent").pop();
+      lines.push(`<span class="a">●</span> Update(${FILES[t.scene]})`, `  kanna markup reply ${t.id} "${esc(trunc(a.text, 140))}"`, ``);
+      if (t.state === "resolved") lines.push(`  <span class="g">${t.id} resolved</span>`, ``);
+    }
+  }
+  const busy = s.threads.some(t => t.status === "sent");
+  lines.push(`<div class="box"><span class="p">&gt;</span> <span class="g">Try "fix the open questions"</span></div>`);
+  lines.push(`<span class="g">${busy ? "✻ Working…" : "? for shortcuts"}</span>`);
+  const term = $("#term");
+  term.innerHTML = lines.join("\n");
+  term.scrollTop = term.scrollHeight;
+}
+
+function renderSent() {
+  const box = $("#sentbox");
+  const d = draft();
+  const t = d ? null : s.threads.find(x => x.id === s.active && x.kind === "ink" && x.scene === s.scene) || s.threads.filter(x => x.kind === "ink" && x.scene === s.scene).pop();
+  box.innerHTML = "";
+  if (!d && !t) { box.innerHTML = `<h2>Draw on the doc to see what the agent would be sent.</h2>`; return; }
+  const src = d || t;
+  const snap = d ? snapshot() : t.snap;
+  box.innerHTML = `<h2>${d ? `Send will type this into the agent (term-817), then Enter` : `${t.id} typed into the agent`}</h2><div><pre></pre></div><div class="picslot"></div>`;
+  box.querySelector("pre").textContent = message(src).join("\n");
+  const slot = box.querySelector(".picslot");
+  const width = Math.min(slot.clientWidth || 640, 700);
+  const marks = src.marks.map(m => bboxAll(m.strokesAtSend || m.strokes));
+  const y1 = Math.min(snap.view.y, ...marks.map(b => b.y1 - 20)), y2 = Math.max(snap.view.y + snap.view.h, ...marks.map(b => b.y2 + 20));
+  const p = picture(snap, { x: 0, y: Math.max(0, y1), w: snap.view.w, h: y2 - Math.max(0, y1) }, width, 560);
+  slot.appendChild(p);
+  slot.insertAdjacentHTML("beforeend", `<div class="cap">.kanna/docs/marks/${MARKFILE[src.scene]}-${src.id}.png</div>`);
+}
+
+function render() {
+  document.querySelectorAll(".wtab").forEach(w => w.classList.toggle("on", w.dataset.scene === s.scene));
+  $("#path").textContent = FILES[s.scene];
+  renderContent();
+  const pencil = s.input === "pencil";
+  $("#inkBtn").style.display = pencil ? "none" : "";
+  $("#inkBtn").classList.toggle("on", s.ink);
+  $("#hint").textContent = pencil ? "Pencil draws · fingers scroll" : s.ink ? "Ink: drag to draw · Esc leaves" : "⌥-drag draws";
+  $("#surface").classList.toggle("inking", s.ink || pencil);
+  document.querySelectorAll("#input button").forEach(b => b.classList.toggle("on", b.dataset.i === s.input));
+  document.querySelectorAll("#speed button").forEach(b => b.classList.toggle("on", b.dataset.s === s.speed));
+  $("#threadsBtn").textContent = `Threads ${s.threads.filter(t => t.scene === s.scene && t.state === "open").length}`;
+  renderInk();
+  renderThreads();
+  renderTerm();
+  renderSent();
+}
+
+function pt(e) { const o = $("#surface").getBoundingClientRect(); return [e.clientX - o.left, e.clientY - o.top]; }
+const surf = $("#surface");
+surf.addEventListener("pointerdown", e => {
+  if (e.button !== 0) return;
+  if (!(s.ink || e.altKey || s.input === "pencil")) return;
+  e.preventDefault();
+  surf.setPointerCapture(e.pointerId);
+  live = [pt(e)];
+  renderInk();
+});
+surf.addEventListener("pointermove", e => {
+  if (!live) return;
+  live.push(pt(e));
+  const svg = $("#ink"), last = svg.lastElementChild;
+  if (last && live.length > 2) last.setAttribute("d", pathD(live)); else renderInk();
+});
+surf.addEventListener("pointerup", () => {
+  if (!live) return;
+  const pts = simplify(live); live = null;
+  addStroke(pts);
+});
+function addStroke(pts, forced) {
+  const pend = s.pending[s.scene];
+  const r = forced || recognize(pts, pend);
+  if (!r) { render(); return; }
+  if (r.head) { r.head.strokes.push(pts); r.head.drawnHead = true; render(); return; }
+  if (r.joinWriting) { r.joinWriting.strokes.push(pts); render(); return; }
+  pend.push({ n: pend.length + 1, kind: r.kind, strokes: [pts], tip: r.tip, drawnHead: !!r.drawnHead, anchor: anchorFor(pts, r.kind) });
+  render();
+}
+
+document.addEventListener("keydown", e => {
+  if (e.target.closest && e.target.closest("textarea, input")) return;
+  if (e.key === "Escape") { s.ink = false; render(); }
+  if (e.metaKey && e.shiftKey && e.key.toLowerCase() === "i") { e.preventDefault(); s.ink = !s.ink; render(); }
+  if (e.metaKey && e.key === "z") {
+    e.preventDefault();
+    const pend = s.pending[s.scene], m = pend[pend.length - 1];
+    if (!m) return;
+    if (m.strokes.length > 1) { m.strokes.pop(); if (m.kind === "arrow") m.drawnHead = m.tip != null; } else pend.pop();
+    render();
+  }
+  if (e.metaKey && e.key === "Enter") { e.preventDefault(); send(); }
+});
+
+function wr(b, i) { const el = $(`#content .w[data-b="${b}"][data-i="${i}"]`); return rel(el.getBoundingClientRect()); }
+function union(rs) { return { x: Math.min(...rs.map(r => r.x)), y: Math.min(...rs.map(r => r.y)), x2: Math.max(...rs.map(r => r.x2)), y2: Math.max(...rs.map(r => r.y2)) }; }
+function ellipse(r, padX, padY, seed = 0) {
+  const cx = (r.x + r.x2) / 2, cy = (r.y + r.y2) / 2, rx = (r.x2 - r.x) / 2 + padX, ry = (r.y2 - r.y) / 2 + padY, pts = [];
+  for (let a = -2.6; a <= -2.6 + Math.PI * 2.15; a += 0.12) pts.push([cx + rx * Math.cos(a) * (1 + 0.04 * Math.sin(a * 3 + seed)), cy + ry * Math.sin(a) * (1 + 0.05 * Math.cos(a * 2 + seed))]);
+  return pts;
+}
+function wobbleLine(x1, y1, x2, y2) { const pts = []; for (let t = 0; t <= 1.0001; t += 0.04) pts.push([x1 + (x2 - x1) * t, y1 + (y2 - y1) * t + Math.sin(t * 9) * 1.2]); return pts; }
+function curve(p0, c, p1) { const pts = []; for (let t = 0; t <= 1.0001; t += 0.04) pts.push([(1 - t) ** 2 * p0[0] + 2 * (1 - t) * t * c[0] + t * t * p1[0], (1 - t) ** 2 * p0[1] + 2 * (1 - t) * t * c[1] + t * t * p1[1]]); return pts; }
+function zigzag(r) { const pts = []; const n = 7; for (let i = 0; i <= n; i++) pts.push([r.x + (r.x2 - r.x) * i / n, i % 2 ? r.y + 4 : r.y2 - 4]); return pts; }
+function question(x, y) {
+  const arc = []; for (let a = Math.PI * 1.15; a <= Math.PI * 2.45; a += 0.15) arc.push([x + 6 * Math.cos(a), y - 6 + 6 * Math.sin(a)]);
+  arc.push([x + 0.5, y + 2], [x, y + 5]);
+  return [arc, [[x, y + 10], [x + 0.6, y + 11.2]]];
+}
+
+function example() {
+  s.pending[s.scene] = []; s.note[s.scene] = "";
+  render();
+  if (s.scene === "md") {
+    const c = union([wr("m4", 0), wr("m4", 1)]);
+    addStroke(ellipse(c, 3, 5, 1), { kind: "circle" });
+    const [q1, q2] = question(c.x2 + 22, (c.y + c.y2) / 2);
+    addStroke(q1, { kind: "writing" });
+    s.pending.md[1].strokes.push(q2); render();
+    const from = blockRect("m14"), to = blockRect("m2");
+    addStroke(curve([from.x - 6, from.y + 9], [from.x - 34, (from.y + to.y2) / 2], [to.x - 8, to.y2 + 4]), { kind: "arrow" });
+    const st = union([wr("m9", 6), wr("m9", 11)]);
+    addStroke(wobbleLine(st.x - 3, (st.y + st.y2) / 2 + 1, st.x2 + 3, (st.y + st.y2) / 2), { kind: "strike" });
+  } else {
+    const save = blockRect("p7");
+    addStroke(ellipse(save, 10, 8, 2), { kind: "circle" });
+    const from = blockRect("p4"), to = blockRect("p3");
+    addStroke(curve([from.x2 + 6, from.y + from.h / 2], [from.x2 + 40, from.y - 10], [to.x2 + 6, to.y + 6]), { kind: "arrow" });
+    const sh = blockRect("p5");
+    addStroke(zigzag({ x: sh.x + 8, y: sh.y, x2: sh.x2 - 8, y2: sh.y2 }), { kind: "strike" });
+    s.note.page = "Make Save the default button.";
+  }
+  render();
+}
+
+document.querySelectorAll(".wtab").forEach(w => w.onclick = () => { s.scene = w.dataset.scene; s.active = null; render(); });
+$("#inkBtn").onclick = () => { s.ink = !s.ink; render(); };
+document.querySelectorAll("#input button").forEach(b => b.onclick = () => { s.input = b.dataset.i; render(); });
+document.querySelectorAll("#speed button").forEach(b => b.onclick = () => { s.speed = b.dataset.s; render(); });
+$("#answer").onclick = () => { const t = s.threads.find(t => t.status === "sent" && t.kind === "ink"); if (t) { t.phase = 1; answer(t); } };
+$("#example").onclick = example;
+$("#reset").onclick = () => { s = initial(); render(); };
+addEventListener("resize", () => render());
+
+const hash = new URLSearchParams(location.hash.slice(1));
+if (hash.has("picture")) document.body.classList.add("picture");
+if (hash.has("sent")) document.body.classList.add("shot-sent");
+if (hash.get("scene")) s.scene = hash.get("scene");
+if (hash.get("input")) s.input = hash.get("input");
+render();
+const step = hash.get("step");
+if (step) {
+  s.speed = "hold";
+  example();
+  if (step === "pending") s.ink = true;
+  if (step !== "pending") { send(); const t = s.threads[s.threads.length - 1]; if (step === "answered" || step === "resolved") { t.phase = 1; answer(t); } if (step === "resolved") t.state = "resolved"; if (step === "sent") t.phase = 1; }
+  render();
+}
+</script>
+</body>
+</html>
