@@ -29,7 +29,7 @@ flowchart LR
 
 - **Only the daemon docks a pane,** when it starts a task: `open {dock, frozen, task}`. An `open` with a dock is refused (`not_a_task`) unless it names the task the daemon is starting just then, so a client can't dock one by naming a task either.
 - **The CLI has no `--dock` or `--frozen` on `open` or `markup`.** Typing them is a usage error that says what to do instead: `a docked pane is a task's agent: make a task with kanna task new, then kanna task pick or kanna task start`.
-- **Every Desk task has a record,** so the daemon's `backlog` notice lists every Desk task with its `madeAt`, and the [Desk view](desk-view.md#2--and-pull-back) sorts by that alone.
+- **Every Desk task has a record,** so the daemon's `tasks` notice lists every Desk task with its `madeAt`, and the [Desk view](desk-view.md#2--and-pull-back) sorts by that alone.
 - **Move to Shelf moves only a task:** the daemon no longer mints a record for a docked pane without one. `kanna task shelve PANE` on a pane that isn't a task's agent says `no running task "PANE"`.
 - **A task's agent is always frozen,** so `move --dock` now refuses every pane: a task's agent with `frozen`, any other pane with `not_a_task`.
 - **Planning and quiz agents aren't docked panes:** a Desk's planner (`planner`) and a Quiz window's agent (`lead`) are opened their own ways, and are unchanged.
