@@ -1533,7 +1533,7 @@ impl Backlog {
                     Some("start") => this.start(&args, responder),
                     Some("stop") => this.stop(&args, responder),
                     Some("setup") => this.setup(&args, responder),
-                    Some("pick") => this.shelve(&args, responder),
+                    Some("pick") => this.pick(&args, responder),
                     Some("shelve") => this.defer(&args, responder),
                     Some("plan") => this.plan(&args, responder),
                     Some("planner") => this.planner(&args, responder),
@@ -2002,7 +2002,7 @@ impl Backlog {
             })
             .collect();
         let out = self.running.borrow().iter().filter(|r| repo.is_none_or(|repo| r.entry.repo == repo)).map(|r| json!({ "id": r.entry.id, "short": self.short(&r.entry.id), "pane": r.pane })).collect();
-        let shelf: Map = self
+        let scripts: Map = self
             .running
             .borrow()
             .iter()
@@ -2012,7 +2012,7 @@ impl Backlog {
                 self.script_said(&r.entry, Some(&r.pane), running).map(|said| (r.pane.clone(), json!(said)))
             })
             .collect();
-        Map::from_iter([("shelf".to_string(), Value::Array(tasks)), ("desk".to_string(), Value::Array(out)), ("script".to_string(), Value::Object(shelf))])
+        Map::from_iter([("shelf".to_string(), Value::Array(tasks)), ("desk".to_string(), Value::Array(out)), ("script".to_string(), Value::Object(scripts))])
 
     }
 
@@ -2273,7 +2273,7 @@ impl Backlog {
         });
     }
 
-    fn shelve(self: &Rc<Self>, args: &Value, responder: Responder) {
+    fn pick(self: &Rc<Self>, args: &Value, responder: Responder) {
         let Some(id) = string(args, "task") else { return responder.reply(Err(bad("say which task"))) };
         let Some(entry) = self.entries.borrow().iter().find(|e| e.id == id).cloned() else { return responder.reply(Err(not_found(id))) };
         if self.pending.borrow().values().any(|p| p.entry.id == entry.id) {
@@ -2786,9 +2786,9 @@ impl Backlog {
             let command = (!live).then(|| this.again(&entry));
             let entry = if live { entry } else { entry.resumable() };
             let id = entry.id.clone();
-            let shelved = this.started(&pane, entry, &app, by.as_deref());
+            let picked = this.started(&pane, entry, &app, by.as_deref());
             let Some(command) = command else {
-                return this.with_branch(shelved.map(|_| Self::reply_out(&id, &pane, Some(&folder), Some(&app))), &folder, None, responder);
+                return this.with_branch(picked.map(|_| Self::reply_out(&id, &pane, Some(&folder), Some(&app))), &folder, None, responder);
             };
             log!("kanna-daemon: {id} is on {app}'s Desk, and its agent and tabs start");
             let again = Rc::downgrade(&this);
@@ -2801,7 +2801,7 @@ impl Backlog {
                         Ok(_) => log!("kanna-daemon: {id}'s agent and tabs started"),
                         Err(error) => log!("kanna-daemon: {id} is on the Desk, but its agent didn't start: {}", error.message),
                     }
-                    let out = shelved.and(result).map(|pane| Self::reply_out(&id, &pane, Some(&folder), Some(&app)));
+                    let out = picked.and(result).map(|pane| Self::reply_out(&id, &pane, Some(&folder), Some(&app)));
                     this.with_branch(out, &folder, None, responder);
                 });
             });
@@ -4014,8 +4014,8 @@ mod tests {
     }
 
     #[test]
-    fn a_stopped_task_is_on_the_shelf_before_its_agent_has_started_again() {
-        let t = Stopping::new("shelve");
+    fn a_stopped_task_is_on_the_desk_before_its_agent_has_started_again() {
+        let t = Stopping::new("pick");
         let (pane, entry) = t.agent("claude", Place::Shelf);
         let folder = t.state.to_string_lossy().to_string();
         t.backlog.entries.borrow_mut()[0] = Entry { folder: Some(folder.clone()), repo: folder, stopped: Some("idle".into()), ..entry.clone() };
@@ -4023,11 +4023,11 @@ mod tests {
         t.core.update(&pane, PaneState::Exited, Some(0), None);
         t.agents.slow.set(true);
         let (responder, reply) = kanna_mux::responder();
-        t.backlog.shelve(&json!({ "task": entry.id }), responder);
+        t.backlog.pick(&json!({ "task": entry.id }), responder);
         t.pump();
         assert!(t.backlog.entries.borrow().is_empty(), "it's off the backlog at once");
-        let shelf = t.backlog.running.borrow().iter().map(|r| (r.entry.id.clone(), r.place)).collect::<Vec<_>>();
-        assert_eq!(shelf, [(entry.id.clone(), Place::Desk)]);
+        let desk = t.backlog.running.borrow().iter().map(|r| (r.entry.id.clone(), r.place)).collect::<Vec<_>>();
+        assert_eq!(desk, [(entry.id.clone(), Place::Desk)]);
         let claimed = t.core.handle_blocking(json!({ "cmd": "task", "args": { "action": "list", "app": MAC_APP } }));
         let agent = t.backlog.running.borrow()[0].pane.clone();
         assert!(claimed["tasks"].as_array().unwrap().iter().any(|task| task["id"] == agent.as_str()), "the app's Shelf has it: {claimed}");

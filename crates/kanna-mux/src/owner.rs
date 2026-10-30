@@ -211,7 +211,7 @@ impl LayoutOwner {
                 out.insert("where".into(), ws.place.to_json());
                 out.insert("dock".into(), self.dock(&ws.dock));
                 out.insert("agent".into(), self.panes.get(&ws.dock.pane).and_then(|p| p.program()).map_or(Value::Null, Value::String));
-                out.insert("leftAt".into(), ws.parked_at.map_or(Value::Null, num));
+                out.insert("leftAt".into(), ws.left_at.map_or(Value::Null, num));
                 out.insert("windows".into(), model.workspace_windows(&ws.id).iter().map(|w| w.id.clone()).collect::<Vec<_>>().into());
                 out.insert("panes".into(), model.workspace_panes(s).into());
                 Value::Object(out)
@@ -468,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn a_parked_tasks_tabs_are_named_after_their_panes() {
+    fn a_hidden_tasks_tabs_are_named_after_their_panes() {
         let mut owner = LayoutOwner::new();
         owner.handle(&json!({ "call": "attach", "panes": [] }));
         open(&mut owner, json!({ "id": "p1", "name": null, "type": "term" }), json!({ "dock": "left" }));

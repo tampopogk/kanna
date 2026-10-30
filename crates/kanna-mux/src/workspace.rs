@@ -6,7 +6,7 @@ pub const MAC_APP: &str = "mac";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Where {
-    Shelf(String),
+    Desk(String),
     Backlog,
     Planner(String),
 }
@@ -14,7 +14,7 @@ pub enum Where {
 impl Where {
     pub fn to_json(&self) -> Value {
         match self {
-            Where::Shelf(app) => json!({ "desk": app }),
+            Where::Desk(app) => json!({ "desk": app }),
             Where::Backlog => "shelf".into(),
             Where::Planner(app) => json!({ "planner": app }),
         }
@@ -25,7 +25,7 @@ impl Where {
             Value::String(place) if place == "shelf" => Some(Where::Backlog),
             Value::Object(place) => {
                 let app = |key: &str| place.get(key).and_then(Value::as_str).map(String::from);
-                app("desk").map(Where::Shelf).or_else(|| app("planner").map(Where::Planner))
+                app("desk").map(Where::Desk).or_else(|| app("planner").map(Where::Planner))
             }
             _ => None,
         }
@@ -43,7 +43,7 @@ impl Where {
 
     pub fn app(&self) -> Option<&str> {
         match self {
-            Where::Shelf(app) | Where::Planner(app) => Some(app),
+            Where::Desk(app) | Where::Planner(app) => Some(app),
             Where::Backlog => None,
         }
     }
@@ -55,12 +55,12 @@ pub struct Workspace {
     pub dock: Dock,
     pub tabs: Tabs,
     pub place: Where,
-    pub parked_at: Option<f64>,
+    pub left_at: Option<f64>,
 }
 
 impl Workspace {
     pub(crate) fn new(id: String, dock: Dock, place: Where) -> Workspace {
-        Workspace { id, dock, tabs: Tabs::default(), place, parked_at: None }
+        Workspace { id, dock, tabs: Tabs::default(), place, left_at: None }
     }
 
     pub fn is_task(&self) -> bool {

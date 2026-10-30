@@ -59,7 +59,7 @@ fn window_json(window: &Window, tabs: &Tabs) -> Map {
 
 fn put_workspace(out: &mut Map, ws: &Workspace) {
     out.insert("dock".into(), dock_json(&ws.dock));
-    if let Some(at) = ws.parked_at {
+    if let Some(at) = ws.left_at {
         out.insert("leftAt".into(), num(at));
     }
 }
@@ -256,7 +256,7 @@ fn old_names(value: &Value, key: Option<&str>) -> Value {
 
 fn read_workspace(id: &str, item: &Value, dock: Dock, tabs: Tabs, place: Where) -> Workspace {
     let mut ws = Workspace::new(id.into(), dock, place);
-    ws.parked_at = item.get("leftAt").and_then(Value::as_f64);
+    ws.left_at = item.get("leftAt").and_then(Value::as_f64);
     ws.tabs = tabs;
     let side = Some(ws.dock.pane.clone());
     settle(&mut ws.tabs, item, side.as_ref());
@@ -285,8 +285,8 @@ pub fn read(state: &Value, panes: &HashSet<String>) -> Result<SavedLayout, KmuxE
                 let id = string(item, "shows").unwrap_or(&dock.pane).to_string();
                 claim(&id)?;
                 let tabs = std::mem::take(&mut window.tabs);
-                let mut ws = read_workspace(&id, item, dock, tabs, Where::Shelf(MAC_APP.into()));
-                ws.parked_at.get_or_insert(0.0);
+                let mut ws = read_workspace(&id, item, dock, tabs, Where::Desk(MAC_APP.into()));
+                ws.left_at.get_or_insert(0.0);
                 workspaces.push(ws);
             }
             None => {
@@ -302,14 +302,14 @@ pub fn read(state: &Value, panes: &HashSet<String>) -> Result<SavedLayout, KmuxE
         let place = match Where::read(item.get("where")) {
             Some(place) => place,
             None if item.get("backlog").and_then(Value::as_bool) == Some(true) => Where::Backlog,
-            None => Where::Shelf(MAC_APP.into()),
+            None => Where::Desk(MAC_APP.into()),
         };
         let ws_id = string(item, "workspace").unwrap_or(id);
         match reader.side(item, "dock", id, "docks")? {
             Some(dock) => {
                 claim(ws_id)?;
                 let mut ws = read_workspace(ws_id, item, dock, tabs, place);
-                ws.parked_at = Some(ws.parked_at.unwrap_or(0.0));
+                ws.left_at = Some(ws.left_at.unwrap_or(0.0));
                 workspaces.push(ws);
             }
             None => orphans.push(tabs),
@@ -318,7 +318,7 @@ pub fn read(state: &Value, panes: &HashSet<String>) -> Result<SavedLayout, KmuxE
     for item in state.get("workspaces").and_then(Value::as_array).into_iter().flatten() {
         let id = string(item, "id").filter(|id| item.is_object() && !id.is_empty()).ok_or_else(|| bad(&format!("workspace {}", quoted(item.get("id")))))?;
         let tabs = reader.tabs(item)?;
-        let place = Where::read(item.get("where")).unwrap_or_else(|| Where::Shelf(MAC_APP.into()));
+        let place = Where::read(item.get("where")).unwrap_or_else(|| Where::Desk(MAC_APP.into()));
         let dock = reader.side(item, "dock", id, "docks")?;
         let gone = dock.is_none();
         match dock {

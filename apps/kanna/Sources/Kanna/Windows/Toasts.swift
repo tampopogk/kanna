@@ -356,7 +356,7 @@ extension AppController {
     func open(_ toast: Toast) {
         let ws = toast.pane.flatMap(workspace(holding:))
         if let ws, claimed(ws, as: "desk"), let task = ws["dock"]?["pane"]?.string {
-            pullTask(task, into: frontDesk?.id)
+            activateTask(task, into: frontDesk?.id)
             if let pane = toast.pane { layoutCommand("focus", ["pane": .string(pane)]) }
         } else if let ws, claimed(ws, as: "planner"), let desk = physical.desks.first(where: { $0.planner == ws["id"]?.string }) {
             show(window: desk.id)
@@ -383,7 +383,7 @@ extension AppController {
     func showToastPane() {
         guard let (pane, desk) = toastShowing, let ws = workspace(holding: pane), claimed(ws, as: "desk"), let task = ws["dock"]?["pane"]?.string else { return }
         toastShowing = nil
-        pullTask(task, into: desk)
+        activateTask(task, into: desk)
         layoutCommand("focus", ["pane": .string(pane)])
     }
 }

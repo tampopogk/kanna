@@ -385,15 +385,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return nil
     }
 
-    var shelfEntries: [JSON] {
-        guard case .array(let list)? = state["shelf"] else { return [] }
+    var deskEntries: [JSON] {
+        guard case .array(let list)? = state["deskTasks"] else { return [] }
         return list
     }
 
-    var shelfTasks: [ShelfTask] {
-        let tasks = shelfEntries.compactMap { entry -> ShelfTask? in
+    var deskTasks: [DeskTask] {
+        let tasks = deskEntries.compactMap { entry -> DeskTask? in
             guard let id = entry["task"]?.string else { return nil }
-            return ShelfTask(id: id, title: taskTitle(id, name: entry["name"]?.string), parkedAt: entry["parkedAt"]?.number, status: agentStatuses.statuses[id], detail: taskDetail(id), agent: entry["agent"]?.string,
+            return DeskTask(id: id, title: taskTitle(id, name: entry["name"]?.string), leftAt: entry["leftAt"]?.number, status: agentStatuses.statuses[id], detail: taskDetail(id), agent: entry["agent"]?.string,
                              place: placeText(id), offline: offline(MachineIDs.machine(of: id)), made: made(id))
         }
         return DeskOrder.byRecency(tasks) { $0.status == "needs-you" }
@@ -408,7 +408,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var placed: Set<String> {
         var ids = Set(runningBacklog(in: nil).compactMap { $0["task"]?.string })
         if case .array(let held)? = state["held"] { ids.formUnion(held.compactMap(\.string)) }
-        for entry in shelfEntries {
+        for entry in deskEntries {
             guard case .array(let list)? = entry["panes"] else { continue }
             ids.formUnion(list.compactMap(\.string))
         }
@@ -554,7 +554,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             controllers[id] = nil
         }
         panes.keep(placed)
-        let tasks = shelfTasks
+        let tasks = deskTasks
         let rows = machineRows
         var held = Set<String>()
         for window in windows {
@@ -569,14 +569,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             if window["desk"]?.bool == true, let root = controller.projectRoot { deskMoved(id, to: root) }
             let mine = controller.projectRoot.map { root in tasks.filter { sameProject(projectRoot($0.id), root) } } ?? tasks
-            controller.shelf = mine
+            controller.deskTasks = mine
             controller.active = docked == nil ? window["active"]?.string : nil
             let ours = Set(mine.map(\.id))
             let docks = window["desk"]?.bool == true
-                ? (shelfEntries.filter { $0["task"]?.string.map(ours.contains) == true } + runningBacklog(in: controller.projectRoot)).filter { $0["task"]?.string.map(held.contains) == false }
+                ? (deskEntries.filter { $0["task"]?.string.map(ours.contains) == true } + runningBacklog(in: controller.projectRoot)).filter { $0["task"]?.string.map(held.contains) == false }
                 : []
             held.formUnion(docks.compactMap { $0["task"]?.string })
-            controller.shelfDocks = docks
+            controller.deskDocks = docks
             controller.backlog = backlogTasks(in: controller.projectRoot)
             controller.running = runningTasks(in: controller.projectRoot)
             controller.project = controller.projectRoot.map(displayName) ?? projectName(mine.map(\.id))
@@ -643,19 +643,19 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         controller.tabBar.onRename = { [weak self] tab, title in self?.layoutCommand("rename-tab", ["tab": .string(tab), "title": .string(title)]) }
         controller.onCloseRequest = { [weak self] in self?.close(window: id) }
-        controller.shelfStrip.onPull = { [weak self] task in
-            Clicks.pull(task)
-            self?.pullTask(task, into: id)
+        controller.deskStrip.onActivate = { [weak self] task in
+            Clicks.activate(task)
+            self?.activateTask(task, into: id)
         }
-        controller.agentHeader.onPark = { [weak self] in self?.park(desk: id) }
-        controller.shelfStrip.onDesk = { [weak self] in self?.park(desk: id) }
+        controller.agentHeader.onDeskView = { [weak self] in self?.showDeskView(desk: id) }
+        controller.deskStrip.onDesk = { [weak self] in self?.showDeskView(desk: id) }
         controller.agentHeader.onNew = { [weak self] in self?.newTab(in: id) }
-        controller.shelfPage.onPull = { [weak self] task in
-            Clicks.pull(task)
-            self?.pullTask(task, into: id)
+        controller.deskView.onActivate = { [weak self] task in
+            Clicks.activate(task)
+            self?.activateTask(task, into: id)
         }
-        controller.shelfPage.onStart = { [weak self] task in self?.startTask(task, from: id) }
-        controller.shelfPage.onLeaveSearch = { [weak self, weak controller] in
+        controller.deskView.onStart = { [weak self] task in self?.startTask(task, from: id) }
+        controller.deskView.onLeaveSearch = { [weak self, weak controller] in
             guard let self, let controller, let lead = controller.leadShown, let view = panes.keyView(lead) else { return }
             controller.window.makeFirstResponder(view)
         }

@@ -15,9 +15,9 @@ impl Model {
         (0..self.workspaces.len()).filter(|&s| self.workspaces[s].place == Where::Backlog)
     }
 
-    pub(crate) fn shelve(&mut self, pane: &str, edge: Edge, place: Where, frozen: bool) -> usize {
+    pub(crate) fn dock_workspace(&mut self, pane: &str, edge: Edge, place: Where, frozen: bool) -> usize {
         let mut ws = self.new_workspace(Dock { pane: pane.into(), edge, width: DOCK_WIDTH, frozen }, place);
-        ws.parked_at = Some(now());
+        ws.left_at = Some(now());
         ws.tabs.focused = Some(pane.into());
         self.workspaces.insert(0, ws);
         0
@@ -83,10 +83,10 @@ impl Model {
                 let app = string("app").ok_or_else(|| bad_request("claim needs the app that has it out"))?;
                 let s = self.task_workspace(reference, panes)?;
                 let was = self.workspaces[s].place.to_json();
-                if self.workspaces[s].place != Where::Shelf(app.into()) {
+                if self.workspaces[s].place != Where::Desk(app.into()) {
                     let mut ws = self.workspaces.remove(s);
-                    ws.place = Where::Shelf(app.into());
-                    ws.parked_at = Some(now());
+                    ws.place = Where::Desk(app.into());
+                    ws.left_at = Some(now());
                     self.workspaces.insert(0, ws);
                 }
                 Ok(reply([("task", self.agent(0).into()), ("workspace", self.workspaces[0].id.clone().into()), ("was", was)]))
@@ -103,11 +103,11 @@ impl Model {
                 ("name", panes.get(&ws.dock.pane).and_then(|p| p.name.clone()).map_or(Value::Null, Value::String)),
                 ("agent", panes.get(&ws.dock.pane).and_then(|p| p.program()).map_or(Value::Null, Value::String)),
                 ("where", ws.place.to_json()),
-                ("leftAt", ws.parked_at.map_or(Value::Null, num)),
+                ("leftAt", ws.left_at.map_or(Value::Null, num)),
                 ("tabs", num(ws.tabs.tabs.len() as f64)),
             ]))
         };
-        let out = |ws: &&Workspace| matches!(&ws.place, Where::Shelf(by) if app.is_none_or(|app| app == by));
+        let out = |ws: &&Workspace| matches!(&ws.place, Where::Desk(by) if app.is_none_or(|app| app == by));
         reply([("tasks", Value::Array(self.workspaces.iter().filter(out).map(entry).collect()))])
     }
 }

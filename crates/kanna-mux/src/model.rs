@@ -1002,13 +1002,13 @@ impl LayoutHost for Model {
             return self.lead(pane, at.window.as_deref()).map(Some);
         }
         if at.planner {
-            let s = self.shelve(pane, Edge::Left, Where::Planner(at.app.clone().unwrap_or_else(|| MAC_APP.into())), false);
-            self.workspaces[s].parked_at = None;
+            let s = self.dock_workspace(pane, Edge::Left, Where::Planner(at.app.clone().unwrap_or_else(|| MAC_APP.into())), false);
+            self.workspaces[s].left_at = None;
             return Ok(None);
         }
         if let Some(edge) = at.dock {
-            let place = if at.backlog { Where::Backlog } else { Where::Shelf(at.app.clone().unwrap_or_else(|| MAC_APP.into())) };
-            self.shelve(pane, edge, place, at.frozen);
+            let place = if at.backlog { Where::Backlog } else { Where::Desk(at.app.clone().unwrap_or_else(|| MAC_APP.into())) };
+            self.dock_workspace(pane, edge, place, at.frozen);
             return Ok(None);
         }
         let caller = at.opener.as_deref().or(at.from.as_deref()).and_then(|c| self.holder_of(c).map(|h| (c, h)));

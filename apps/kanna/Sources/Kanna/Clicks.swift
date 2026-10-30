@@ -3,17 +3,17 @@ import KannaPerf
 
 @MainActor
 enum Clicks {
-    private static var shelving: [String: (span: PerfSpan, before: Set<String>)] = [:]
-    private static var pulling: [String: PerfSpan] = [:]
+    private static var picking: [String: (span: PerfSpan, before: Set<String>)] = [:]
+    private static var activating: [String: PerfSpan] = [:]
 
-    static func shelve(_ task: String, shelf: [String]) -> PerfSpan {
-        let span = begin("click.shelve", "click.shelve.wait", task)
-        shelving[task] = (span, Set(shelf))
+    static func pick(_ task: String, desk: [String]) -> PerfSpan {
+        let span = begin("click.pick", "click.pick.wait", task)
+        picking[task] = (span, Set(desk))
         return span
     }
 
-    static func pull(_ task: String) {
-        pulling[task] = begin("click.pull", "click.pull.wait", task)
+    static func activate(_ task: String) {
+        activating[task] = begin("click.activate", "click.activate.wait", task)
     }
 
     private static func begin(_ name: StaticString, _ wait: String, _ task: String) -> PerfSpan {
@@ -26,20 +26,20 @@ enum Clicks {
 
     static func sent(_ span: PerfSpan) -> @Sendable () -> Void { { Perf.mark(span, "sent") } }
 
-    static func laid(shelf: [String], backlog: [String]) {
-        for (task, click) in shelving where !backlog.contains(task) && !Set(shelf).isSubset(of: click.before) {
-            shelving[task] = nil
+    static func laid(desk: [String], backlog: [String]) {
+        for (task, click) in picking where !backlog.contains(task) && !Set(desk).isSubset(of: click.before) {
+            picking[task] = nil
             HangWatch.afterDrawing { Perf.end(click.span, as: "shown") }
         }
     }
 
-    static func pulled(_ task: String) {
-        guard let span = pulling.removeValue(forKey: task) else { return }
+    static func activated(_ task: String) {
+        guard let span = activating.removeValue(forKey: task) else { return }
         HangWatch.afterDrawing { Perf.end(span, as: "shown") }
     }
 
     static func failed(_ task: String) {
-        guard let click = shelving.removeValue(forKey: task) else { return }
+        guard let click = picking.removeValue(forKey: task) else { return }
         Perf.end(click.span, as: "failed")
     }
 }

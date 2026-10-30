@@ -62,13 +62,13 @@ func tilde(_ path: String) -> String {
 @MainActor
 final class AgentHeader: NSView {
     static let height = TabBar.height
-    var onPark: (() -> Void)?
+    var onDeskView: (() -> Void)?
     var onNew: (() -> Void)?
     private let label = NSTextField(labelWithString: "")
-    private let park = HeaderButton(.park)
+    private let deskViewButton = HeaderButton(.deskView)
     private let plus = HeaderButton(.plus)
-    var parkable = true {
-        didSet { park.isHidden = !parkable; needsLayout = true }
+    var canShowDeskView = true {
+        didSet { deskViewButton.isHidden = !canShowDeskView; needsLayout = true }
     }
     var newable = false {
         didSet { plus.isHidden = !newable; needsLayout = true }
@@ -81,9 +81,9 @@ final class AgentHeader: NSView {
         label.textColor = .secondaryLabelColor
         label.lineBreakMode = .byTruncatingMiddle
         addSubview(label)
-        park.toolTip = "Desk view (⌘.)"
-        park.onPress = { [weak self] in self?.onPark?() }
-        addSubview(park)
+        deskViewButton.toolTip = "Desk view (⌘.)"
+        deskViewButton.onPress = { [weak self] in self?.onDeskView?() }
+        addSubview(deskViewButton)
         plus.toolTip = "New Tab"
         plus.onPress = { [weak self] in self?.onNew?() }
         plus.isHidden = true
@@ -101,7 +101,7 @@ final class AgentHeader: NSView {
     private func paint() { layer?.backgroundColor = resolved(.windowBackgroundColor) }
 
     var plusCenter: NSPoint { plus.convert(NSPoint(x: plus.bounds.midX, y: plus.bounds.midY), to: nil) }
-    var parkCenter: NSPoint { park.convert(NSPoint(x: park.bounds.midX, y: park.bounds.midY), to: nil) }
+    var deskViewCenter: NSPoint { deskViewButton.convert(NSPoint(x: deskViewButton.bounds.midX, y: deskViewButton.bounds.midY), to: nil) }
     var text: String { label.stringValue }
 
     func show(_ text: String, stale: String? = nil) {
@@ -113,8 +113,8 @@ final class AgentHeader: NSView {
 
     override func layout() {
         super.layout()
-        park.frame = NSRect(x: bounds.width - 30, y: (bounds.height - 22) / 2, width: 22, height: 22)
-        let right = parkable ? park.frame.minX : bounds.width - 8
+        deskViewButton.frame = NSRect(x: bounds.width - 30, y: (bounds.height - 22) / 2, width: 22, height: 22)
+        let right = canShowDeskView ? deskViewButton.frame.minX : bounds.width - 8
         plus.frame = NSRect(x: right - 26, y: (bounds.height - 22) / 2, width: 22, height: 22)
         let end = newable ? plus.frame.minX : right
         label.sizeToFit()
@@ -129,7 +129,7 @@ final class AgentHeader: NSView {
 
 @MainActor
 private final class HeaderButton: NSView {
-    enum Kind { case park, plus }
+    enum Kind { case deskView, plus }
     var onPress: (() -> Void)?
     private let kind: Kind
     private var hover = false
@@ -169,10 +169,10 @@ private final class HeaderButton: NSView {
         chevron.move(to: NSPoint(x: 5.5, y: 5.5))
         chevron.line(to: NSPoint(x: 8, y: 8))
         chevron.line(to: NSPoint(x: 10.5, y: 5.5))
-        let shelf = NSBezierPath()
-        shelf.move(to: NSPoint(x: 5, y: 11))
-        shelf.line(to: NSPoint(x: 11, y: 11))
-        for (path, width) in [(frame, 1.4), (chevron, 1.4), (shelf, 2.0)] {
+        let base = NSBezierPath()
+        base.move(to: NSPoint(x: 5, y: 11))
+        base.line(to: NSPoint(x: 11, y: 11))
+        for (path, width) in [(frame, 1.4), (chevron, 1.4), (base, 2.0)] {
             path.transform(using: transform)
             path.lineWidth = width
             path.lineCapStyle = .round
@@ -188,7 +188,7 @@ private final class HeaderButton: NSView {
 
 extension AppController {
     func isTask(_ pane: String) -> Bool {
-        windows.contains { $0["dock"]?["pane"]?.string == pane } || shelfEntries.contains { $0["task"]?.string == pane }
+        windows.contains { $0["dock"]?["pane"]?.string == pane } || deskEntries.contains { $0["task"]?.string == pane }
     }
 
     func place(of pane: String) -> (folder: String, git: GitPlace?)? {
@@ -270,7 +270,7 @@ extension AppController {
 
     private func taskName(_ pane: String) -> String? {
         if let window = windows.first(where: { $0["dock"]?["pane"]?.string == pane }) { return taskTitle(pane, name: window["dock"]?["name"]?.string) }
-        if let entry = shelfEntries.first(where: { $0["task"]?.string == pane }) { return taskTitle(pane, name: entry["name"]?.string) }
+        if let entry = deskEntries.first(where: { $0["task"]?.string == pane }) { return taskTitle(pane, name: entry["name"]?.string) }
         return nil
     }
 
@@ -293,7 +293,7 @@ extension AppController {
     }
 
     func runningTasks(in root: String?) -> Int {
-        let docked = windows.compactMap { $0["dock"]?["pane"]?.string } + shelfEntries.compactMap { $0["task"]?.string }
+        let docked = windows.compactMap { $0["dock"]?["pane"]?.string } + deskEntries.compactMap { $0["task"]?.string }
         return docked.filter { root == nil || sameProject(projectRoot($0), root) }.count
     }
 
@@ -305,7 +305,7 @@ extension AppController {
 
     func startTask(_ task: String, from window: String) {
         controllers[window]?.note = ""
-        let click = Clicks.shelve(task, shelf: controllers[window]?.shelf.map(\.id) ?? [])
+        let click = Clicks.pick(task, desk: controllers[window]?.deskTasks.map(\.id) ?? [])
         request("tasks", ["action": "pick", "task": .string(task)], reply: { [weak self] reply in
             if reply["ok"]?.bool != true { Clicks.failed(task) }
             self?.noted(window, reply)
