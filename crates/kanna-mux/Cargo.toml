@@ -9,3 +9,4 @@ description = "Kanna's mux core: kmux's control protocol, panes, the layout mode
 libc = "0.2"
 serde_json = "1"
 shlex = "2"
+kanna-threads = { path = "../kanna-threads" }

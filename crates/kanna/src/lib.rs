@@ -2,6 +2,8 @@ pub mod agents;
 pub mod args;
 pub mod commands;
 pub mod complete;
+pub mod diagrams;
+pub mod machine;
 pub mod output;
 pub mod target;
 pub mod threads;
@@ -38,6 +40,7 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
     let fresh = args.flag("--fresh");
     let instance = args.option("--instance")?;
     let mux = args.option("--mux")?;
+    let host = args.option("--host")?.or_else(|| env("KANNA_HOST"));
     let target = Target::resolve(&kanna_build::Build::current(), Choice { mux, instance, background, fresh }, env)?;
     let Some(name) = args.positional() else {
         if args.flag("--version") {
@@ -93,8 +96,10 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
                 println!("{INSTANCES_HELP}");
                 return Ok(());
             }
-            if args.positional().as_deref() == Some("prune") {
-                return prune(env);
+            match args.positional().as_deref() {
+                Some("prune") => return prune(env),
+                Some("stop") => return stop(&target, json_output),
+                _ => {}
             }
             return instances(&target, json_output, env);
         }
@@ -106,7 +111,9 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
             let text = args.positional().ok_or_else(|| fail(exit::USAGE, "raw: missing REQUEST, e.g. kanna raw '{\"cmd\":\"list\"}'"))?;
             let request: Value = serde_json::from_str(&text).map_err(|e| fail(exit::USAGE, format!("raw: REQUEST is not valid JSON: {e}")))?;
             let cmd = request["cmd"].as_str().ok_or_else(|| fail(exit::USAGE, "raw: REQUEST needs a \"cmd\""))?;
-            let reply = Session::connect(&target, env)?.call(cmd, request.get("args").cloned().unwrap_or(json!({})))?;
+            let mut session = Session::connect(&target, env)?;
+            session.host = host;
+            let reply = session.call(cmd, request.get("args").cloned().unwrap_or(json!({})))?;
             println!("{reply}");
             return Ok(());
         }
@@ -138,7 +145,17 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
     if command.name == "workspace" && request["all"] != true && request["pane"].is_null() {
         return Err(commands::usage("workspace", "outside a Kanna terminal there's no workspace of yours: add --all"));
     }
+    if let Some(flags) = unplaced(command.name, &request).filter(|_| target.backend == Backend::Kanna) {
+        return Err(commands::usage(command.name, &format!("outside a Kanna terminal there's no window of yours: {flags}")));
+    }
+    if command.name == "diagrams" {
+        return diagrams::run(&request, json_output);
+    }
     let mut mux = Session::connect(&target, env)?;
+    mux.host = host;
+    if command.name == "machine" && request["action"] == "offer" {
+        return machine::offer(&mut mux, json_output);
+    }
     if command.name == "comment" && request["doc"] == true {
         return threads::comment(&request, &mut mux, json_output);
     }
@@ -187,6 +204,13 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
     if let (true, Some(pane)) = (command.name == "workspace", request["pane"].as_str()) {
         reply = output::scoped(&reply, pane).ok_or_else(|| fail(exit::NOT_FOUND, format!("no pane \"{pane}\": your terminal isn't one of this Kanna's")))?;
     }
+    let undrawn = match request["path"].as_str() {
+        Some(path) if command.name == "open" && request["type"] == "md" => Some(diagrams::check(path).map(|r| r.failures).unwrap_or_default()),
+        _ => None,
+    };
+    if let Some(undrawn) = &undrawn {
+        reply["diagrams"] = Value::Array(undrawn.clone());
+    }
     if json_output {
         println!("{reply}");
     } else {
@@ -207,19 +231,40 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
         if !text.is_empty() {
             println!("{text}");
         }
+        for failure in undrawn.iter().flatten() {
+            eprintln!("{}", diagrams::line(failure));
+        }
+    }
+    if command.name == "machine" && request["action"] == "update" && reply["machines"].as_array().is_some_and(|m| m.iter().any(|m| m["ok"] == false)) {
+        return Err(fail(exit::FAILED, "not every machine took the update"));
     }
     Ok(())
 }
 
+fn unplaced(command: &str, request: &Value) -> Option<&'static str> {
+    let given = |keys: &[&str]| keys.iter().any(|key| !request[*key].is_null());
+    match command {
+        "open" if !given(&["window", "workspace", "from"]) => Some("add --window WINDOW (or --window new)"),
+        "markup" if !request["type"].is_null() && !given(&["window", "from"]) => Some("add --window WINDOW (or --window new)"),
+        "comment" if !given(&["window", "from"]) => Some("add --window WINDOW (or --window new)"),
+        "arrange" if !given(&["window", "from"]) => Some("add --window WINDOW"),
+        "screenshot" if !given(&["pane", "window", "from"]) => Some("say PANE or --window WINDOW"),
+        _ => None,
+    }
+}
+
 fn locate(request: &mut Value, mux: &mut Session) -> Result<Option<(String, Vec<(String, String)>)>, Failure> {
     let action = request["action"].as_str().unwrap_or("").to_string();
-    let Some(reference) = request["task"].as_str().filter(|_| ["park", "pull", "done", "name"].contains(&action.as_str())).map(String::from) else { return Ok(None) };
+    let Some(reference) = request["task"].as_str().filter(|_| ["park", "pull", "defer", "done", "name"].contains(&action.as_str())).map(String::from) else { return Ok(None) };
     let found = match mux.call("backlog", json!({ "action": "resolve", "task": reference })) {
         Ok(found) => Some(found["task"].clone()),
         Err(failure) if failure.message.ends_with("[ambiguous]") => return Err(failure),
         Err(_) => None,
     };
     let backlog = found.as_ref().is_some_and(|t| t["place"] == "backlog");
+    if action == "defer" && backlog {
+        return Err(fail(exit::FAILED, format!("{reference} is on the Shelf: `kanna task pick {reference}` moves it to the Desk")));
+    }
     let pane = found.as_ref().and_then(|t| t["pane"].as_str()).map(String::from);
     let id = found.as_ref().and_then(|t| t["id"].as_str()).map(String::from);
     match (action.as_str(), id.as_deref()) {
@@ -254,7 +299,7 @@ fn lookup(name: &str) -> Result<&'static Command, Failure> {
 
 fn explain(command: &Command, mut failure: Failure, mux: &mut Session, target: &Target) -> Failure {
     match failure.code {
-        exit::NOT_FOUND => failure.message += "\nRun `kanna workspace list --all` to see pane names and IDs (term-1, file-1, …), tabs (tab-1, …) and windows (win-1, …).",
+        exit::NOT_FOUND if !failure.message.contains("your machines") => failure.message += "\nRun `kanna workspace list --all` to see pane names and IDs (term-1, file-1, …), tabs (tab-1, …) and windows (win-1, …).",
         exit::UNSUPPORTED => {
             let supported = mux.call("capabilities", json!({})).map(|c| output::join(&c["commands"])).unwrap_or_default();
             failure.message = format!("the running {} doesn't support `{}` yet. It supports: {supported}", target.name(), command.name);
@@ -289,7 +334,7 @@ fn unsupported_mark(target: &Target) -> String {
 
 fn mark(command: &Command, supported: Option<&[String]>, target: &Target) -> String {
     match supported {
-        Some(names) if !names.iter().any(|n| n == commands::sent_as(command.name)) => unsupported_mark(target),
+        Some(names) if !names.iter().any(|n| n == commands::sent_as(command.name)) && !commands::LOCAL.contains(&command.name) => unsupported_mark(target),
         _ => String::new(),
     }
 }
@@ -298,7 +343,7 @@ const COMPLETIONS_HELP: &str = "usage: kanna completions zsh|bash\n\nPrints the 
 
 pub const CONFIG_SCHEMA: &str = include_str!("../../../schemas/config.schema.json");
 
-const CONFIG_HELP: &str = "usage: kanna config schema\n\nKanna's settings are ~/.kanna-v4/config.json, overridden key by key by a repo's .kanna/config.json, e.g.\n  { \"version\": 1, \"planning\": { \"context\": 300000 }, \"tasks\": { \"agent\": \"codex\" }, \"backlog\": { \"runners\": 3 } }\n\n`kanna config schema` prints their JSON Schema: every key, its type, default and what it does.";
+const CONFIG_HELP: &str = "usage: kanna config schema\n\nKanna's settings are ~/.kanna-v4/config.json, overridden key by key by a repo's .kanna/config.json, e.g.\n  { \"version\": 1, \"planning\": { \"context\": 300000 }, \"tasks\": { \"agent\": \"codex\" }, \"shelf\": { \"runners\": 3 } }\n\n`kanna config schema` prints their JSON Schema: every key, its type, default and what it does.";
 
 const RAW_HELP: &str = "usage: kanna raw REQUEST\n\nSends one control-protocol request as JSON and prints the reply, e.g.\n  kanna raw '{\"cmd\":\"list\"}'\n  kanna raw '{\"cmd\":\"open\",\"args\":{\"type\":\"term\",\"name\":\"a\"}}'";
 
@@ -306,6 +351,7 @@ const INSTANCES_HELP: &str = "kanna instances — List the running Kanna instanc
 \n\
 usage: kanna instances [--json]\n\
        kanna instances prune\n\
+       kanna [--instance NAME] instances stop [--json]\n\
 \n\
 Instances are a tool for developing and testing Kanna, not a user feature: the app\n\
 doesn't offer them. To work on another project, open a Desk on it (kanna PATH, or\n\
@@ -331,7 +377,9 @@ but never for $KANNA_SOCKET.\n\
 \n\
 kanna instances lists the running instances of every channel, with the worktree a dev\n\
 build came from. kanna instances prune deletes the folders of dev instances whose worktree\n\
-is gone, once nothing runs in them.\n\
+is gone, once nothing runs in them. kanna instances stop quits an instance: its Kanna.app\n\
+saves its windows and quits, its terminals are hung up (a task's resume when it starts\n\
+again), and its keeper and daemon exit. It waits until they have, and never starts one.\n\
 \n\
 examples:\n  \
   kanna instances\n      \
@@ -341,7 +389,9 @@ examples:\n  \
   KANNA_INSTANCE=test kanna workspace list --all\n      \
       The same choice, for every command in a test script.\n  \
   kanna instances prune\n      \
-      Clean up after worktrees you've removed.";
+      Clean up after worktrees you've removed.\n  \
+  kanna --instance test instances stop\n      \
+      Quit the scratch instance test: its app, daemon, keeper and terminals.";
 
 fn instances(target: &Target, json_output: bool, env: Env) -> Result<(), Failure> {
     let running: Vec<(target::Instance, Value)> = target::instances(env)
@@ -367,7 +417,7 @@ fn instances(target: &Target, json_output: bool, env: Env) -> Result<(), Failure
         return Ok(());
     }
     if running.is_empty() {
-        println!("No Kanna instances are running. Any command starts one, e.g. kanna open or kanna --instance work open.");
+        println!("No Kanna instances are running. Any command starts one, e.g. kanna . or kanna --instance work open --window new.");
         return Ok(());
     }
     let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
@@ -391,6 +441,33 @@ fn instances(target: &Target, json_output: bool, env: Env) -> Result<(), Failure
     }
     let variable = target.brand().variable("INSTANCE");
     println!("\n* the instance this shell's kanna commands talk to ({}). Pick another with --instance NAME or {variable}.", target.socket.display());
+    Ok(())
+}
+
+const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+fn stop(target: &Target, json_output: bool) -> Result<(), Failure> {
+    let shown = format!("{} ({})", target.instance, target.socket.display());
+    let report = |stopped: bool, text: String| {
+        if json_output {
+            println!("{}", json!({ "instance": target.instance, "socket": target.socket, "stopped": stopped }));
+        } else {
+            println!("{text}");
+        }
+    };
+    let Some(mut mux) = target.try_connect() else {
+        report(false, format!("{shown} isn't running"));
+        return Ok(());
+    };
+    mux.call("shutdown", json!({})).map_err(Failure::from)?;
+    let started = std::time::Instant::now();
+    while target.socket.exists() {
+        if started.elapsed() > STOP_WAIT {
+            return Err(fail(exit::FAILED, format!("asked {shown} to stop, but its socket is still there after {}s", STOP_WAIT.as_secs())));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    report(true, format!("stopped {shown}"));
     Ok(())
 }
 
@@ -427,7 +504,7 @@ fn overview(target: &Target) -> String {
     let mut out = String::from(
         "kanna — control the Kanna terminal multiplexer (windows → tabs → split panes).\n\
          \n\
-         usage: kanna [--mux kanna|kmux] [--instance NAME] [--bg] [--fresh] COMMAND [ARGS] [--json] [-- TEXT]\n\
+         usage: kanna [--mux kanna|kmux] [--instance NAME] [--host MACHINE] [--bg] [--fresh] COMMAND [ARGS] [--json] [-- TEXT]\n\
          \x20      kanna PATH                           (the Desk on folder PATH's project, opening one if none is open)\n",
     );
     for group in GROUPS {
@@ -535,7 +612,7 @@ pub fn describe(supported: Option<&[String]>) -> Value {
             "name": c.name,
             "group": c.group,
             "summary": c.summary,
-            "supported": supported.map(|names| names.iter().any(|n| n == commands::sent_as(c.name))),
+            "supported": supported.map(|names| names.iter().any(|n| n == commands::sent_as(c.name)) || commands::LOCAL.contains(&c.name)),
             "usage": c.usage,
             "options": c.options.iter().map(|(flag, text)| json!({ "flag": flag, "description": text })).collect::<Vec<_>>(),
             "notes": c.notes,
@@ -617,6 +694,34 @@ mod tests {
     }
 
     #[test]
+    fn a_tour_takes_pairs_of_a_spot_and_its_text() {
+        let (name, request) = parse("kanna tour /tmp/a.rs:50 'Waits for a message.' /tmp/b.md:3 'The big picture.' --tab").unwrap();
+        assert_eq!(name, "tour");
+        assert_eq!((request["action"].clone(), request["tab"].clone()), (json!("new"), json!(true)));
+        assert_eq!(request["stops"], json!([{ "path": "/tmp/a.rs", "line": 50, "text": "Waits for a message." }, { "path": "/tmp/b.md", "line": 3, "text": "The big picture." }]));
+        let (_, request) = parse("kanna tour add --next /tmp/a.rs:20-48 'Sends it.'").unwrap();
+        assert_eq!((request["action"].clone(), request["next"].clone(), request["stops"][0]["last"].clone()), (json!("add"), json!(true), json!(48)));
+        assert_eq!(parse("kanna tour").unwrap().1["action"], "show");
+        assert_eq!(parse("kanna tour go back").unwrap().1["to"], "back");
+        assert_eq!(parse("kanna tour go 3").unwrap().1["to"], 3);
+        assert_eq!(parse("kanna tour end").unwrap().1["action"], "end");
+        for bad in [
+            "kanna tour /tmp/a.rs:5 Waits for a message.",
+            "kanna tour /tmp/a.rs:5",
+            "kanna tour /tmp/a.rs 'No line.'",
+            "kanna tour /tmp/a.rs:9-3 'Backwards.'",
+            "kanna tour /tmp/a.md:3-5 'A doc block.'",
+            "kanna tour add",
+            "kanna tour go",
+            "kanna tour go sideways",
+            "kanna tour --next /tmp/a.rs:5 'Next of nothing.'",
+            "kanna tour end now",
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn a_local_page_opens_as_a_file_url_and_markup_opens_or_switches_comments() {
         let dir = std::env::temp_dir().join(format!("kanna-page-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -648,6 +753,23 @@ mod tests {
     }
 
     #[test]
+    fn a_markdown_pane_marks_changes_since_a_ref_and_a_bare_diff_means_main() {
+        assert_eq!(parse("kanna open md /tmp/notes.md --diff HEAD").unwrap().1["diff"], json!("HEAD"));
+        let (_, request) = parse("kanna open md --diff abc123 /tmp/notes.md --tab").unwrap();
+        assert_eq!((request["path"].clone(), request["diff"].clone()), (json!("/tmp/notes.md"), json!("abc123")));
+        assert_eq!(parse("kanna open md /tmp/notes.md --diff=origin/main").unwrap().1["diff"], json!("origin/main"));
+        assert_eq!(parse("kanna open md /tmp/notes.md --diff v1..main").unwrap().1["diff"], json!("v1..main"));
+        let here = env!("CARGO_MANIFEST_DIR");
+        let main = ["main", "master"].into_iter().find(|b| std::process::Command::new("git").args(["-C", here, "rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")]).output().is_ok_and(|o| o.status.success()));
+        if let Some(main) = main {
+            assert_eq!(parse(&format!("kanna open md {here}/README.md --diff")).unwrap().1["diff"], json!(main));
+        }
+        assert!(parse("kanna open md /no-repo-here/notes.md --diff").is_err());
+        assert!(parse("kanna open web a.test --diff main").is_err());
+        assert!(parse("kanna open md /tmp/notes.md").unwrap().1.get("diff").is_none());
+    }
+
+    #[test]
     fn requests() {
         let cases = [
             ("kanna open", json!({ "type": "term" })),
@@ -671,11 +793,6 @@ mod tests {
             ("kanna send-key p3 up up shift+tab ctrl+c", json!({ "pane": "p3", "keys": ["up", "up", "shift+tab", "ctrl+c"] })),
             ("kanna send p1 echo -- --mux -x", json!({ "pane": "p1", "text": "echo --mux -x" })),
             ("kanna open --cwd /tmp", json!({ "type": "term", "cwd": "/tmp" })),
-            ("kanna open --name agent --dock", json!({ "type": "term", "name": "agent", "dock": "left" })),
-            ("kanna open --name agent --dock --frozen", json!({ "type": "term", "name": "agent", "dock": "left", "frozen": true })),
-            ("kanna open --dock right --cmd claude", json!({ "type": "term", "dock": "right", "cmd": "claude" })),
-            ("kanna open --dock md /tmp/a.md", json!({ "type": "md", "dock": "left", "path": "/tmp/a.md" })),
-            ("kanna open web a.test --dock=right --window new", json!({ "type": "web", "url": "a.test", "dock": "right", "window": "new" })),
             ("kanna move agent --dock", json!({ "pane": "agent", "dock": "left" })),
             ("kanna move agent --dock right --window win-2", json!({ "pane": "agent", "dock": "right", "window": "win-2" })),
             ("kanna move agent --tab", json!({ "pane": "agent", "tab": "new" })),
@@ -715,8 +832,11 @@ mod tests {
             ("kanna read p1 --lines 0", "--lines needs a whole number"),
             ("kanna open ios", "need an app"),
             ("kanna open --app x", "only for iOS panes"),
-            ("kanna open --dock --split right", "--dock goes on its own"),
-            ("kanna open --dock --tab", "--dock goes on its own"),
+            ("kanna open --name agent --dock", "make a task with `kanna task new`"),
+            ("kanna open --dock right --cmd claude", "a docked pane is a task's agent"),
+            ("kanna open web a.test --dock=right --window new", "a docked pane is a task's agent"),
+            ("kanna open --frozen", "a docked pane is a task's agent"),
+            ("kanna markup a.md --dock", "a docked pane is a task's agent"),
             ("kanna move agent --dock --tab", "--dock goes on its own"),
             ("kanna move agent --dock --to b", "--dock goes on its own"),
         ] {
@@ -752,10 +872,10 @@ mod tests {
             "panes": [{ "id": "p1", "name": "agent", "type": "term", "state": "running", "cmd": "claude" }, { "id": "p2", "name": null, "type": "term", "state": "running" }]
         });
         let text = output::workspace(&all, &reply);
-        assert!(text.contains("\nws-1, on the Shelf\n  dock: p1 (agent)  left 2/5  frozen\n  focus: agent\n  *tab-1 \"Tab 1\"  p2"), "{text}");
+        assert!(text.contains("\nws-1, on the Desk\n  dock: p1 (agent)  left 2/5  frozen\n  focus: agent\n  *tab-1 \"Tab 1\"  p2"), "{text}");
         let opened = json!({ "pane": { "id": "p1", "name": "agent", "state": "running" }, "window": null, "tab": null, "dock": "left", "workspace": { "id": "ws-1", "where": { "shelf": "mac" } } });
-        assert_eq!(output::opened(&json!({}), &opened), "opened p1 (agent) docked left in ws-1 (on the Shelf): running");
-        assert_eq!(output::opened(&json!({ "frozen": true }), &opened), "opened p1 (agent) docked left, frozen, in ws-1 (on the Shelf): running");
+        assert_eq!(output::opened(&json!({}), &opened), "opened p1 (agent) docked left in ws-1 (on the Desk): running");
+        assert_eq!(output::opened(&json!({ "frozen": true }), &opened), "opened p1 (agent) docked left, frozen, in ws-1 (on the Desk): running");
         let moved = json!({ "window": null, "workspace": { "id": "ws-1" }, "dock": { "pane": "agent", "edge": "right", "width": "1/3" } });
         assert_eq!(output::moved(&moved), "agent is docked right in ws-1 (width 1/3)");
     }
