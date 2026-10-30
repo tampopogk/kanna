@@ -5,7 +5,7 @@
       { "send": { "cmd": "open", "args": { "type": "term", "name": "a" } } },
       { "send": { "cmd": "open", "args": { "type": "term", "name": "b", "split": "right" } } },
       { "send": { "cmd": "move", "args": { "pane": "a", "to": "b", "side": "bottom" } },
-        "expect": { "window": "w1", "tab": "t1", "layout": { "split": "column", "children": [ { "pane": "b", "size": "1/2" }, { "pane": "a", "size": "1/2" } ] } } },
+        "expect": { "window": "win-1", "tab": "tab-1", "layout": { "split": "column", "children": [ { "pane": "b", "size": "1/2" }, { "pane": "a", "size": "1/2" } ] } } },
       { "send": { "cmd": "move", "args": { "pane": "a", "to": "b", "side": "left" } },
         "expect": { "layout": { "split": "row", "children": [ { "pane": "a", "size": "1/2" }, { "pane": "b", "size": "1/2" } ] } } },
       { "send": { "cmd": "list" }, "expect": { "windows": [ { "focused": "a" } ] } }
@@ -25,12 +25,12 @@
     "steps": [
       { "send": { "cmd": "open", "args": { "type": "term", "name": "a" } } },
       { "send": { "cmd": "open", "args": { "type": "term", "name": "b", "split": "right" } } },
-      { "send": { "cmd": "move", "args": { "pane": "b", "tab": "new" } }, "expect": { "window": "w1", "tab": "t2", "layout": { "pane": "b" } } },
-      { "send": { "cmd": "move", "args": { "pane": "a", "tab": "t2" } },
-        "expect": { "tab": "t2", "layout": { "split": "row", "children": [ { "pane": "b", "size": "1/2" }, { "pane": "a", "size": "1/2" } ] } } },
-      { "send": { "cmd": "list" }, "expect": { "windows": [ { "focused": "a", "tabs": [ { "id": "t2", "title": "Tab 2", "active": true } ] } ] } },
-      { "send": { "cmd": "move", "args": { "pane": "b", "window": "new" } }, "expect": { "window": "w2", "layout": { "pane": "b" } } },
-      { "send": { "cmd": "list" }, "expect": { "windows": [ { "id": "w1", "key": false }, { "id": "w2", "key": true, "focused": "b" } ] } }
+      { "send": { "cmd": "move", "args": { "pane": "b", "tab": "new" } }, "expect": { "window": "win-1", "tab": "tab-2", "layout": { "pane": "b" } } },
+      { "send": { "cmd": "move", "args": { "pane": "a", "tab": "tab-2" } },
+        "expect": { "tab": "tab-2", "layout": { "split": "row", "children": [ { "pane": "b", "size": "1/2" }, { "pane": "a", "size": "1/2" } ] } } },
+      { "send": { "cmd": "list" }, "expect": { "windows": [ { "focused": "a", "tabs": [ { "id": "tab-2", "title": "Tab 2", "active": true } ] } ] } },
+      { "send": { "cmd": "move", "args": { "pane": "b", "window": "new" } }, "expect": { "window": "win-2", "layout": { "pane": "b" } } },
+      { "send": { "cmd": "list" }, "expect": { "windows": [ { "id": "win-1", "key": false }, { "id": "win-2", "key": true, "focused": "b" } ] } }
     ]
   },
   {
@@ -39,7 +39,7 @@
       { "send": { "cmd": "open", "args": { "type": "term", "name": "a" } } },
       { "send": { "cmd": "move", "args": { "pane": "a" } }, "expect": { "ok": false, "error": { "code": "bad_request" } } },
       { "send": { "cmd": "move", "args": { "pane": "a", "to": "zzz" } }, "expect": { "ok": false, "error": { "code": "not_found" } } },
-      { "send": { "cmd": "move", "args": { "pane": "a", "tab": "t9" } }, "expect": { "ok": false, "error": { "code": "not_found" } } }
+      { "send": { "cmd": "move", "args": { "pane": "a", "tab": "tab-9" } }, "expect": { "ok": false, "error": { "code": "not_found" } } }
     ]
   },
   {
@@ -48,13 +48,13 @@
       { "send": { "cmd": "open", "args": { "type": "term", "name": "a" } } },
       { "send": { "cmd": "open", "args": { "type": "term", "name": "b", "tab": true } } },
       { "send": { "cmd": "open", "args": { "type": "term", "name": "c", "tab": true } } },
-      { "send": { "cmd": "move-tab", "args": { "tab": "t3", "index": 0 } }, "expect": { "window": "w1", "tabs": [ "t3", "t1", "t2" ] } },
-      { "send": { "cmd": "move-tab", "args": { "tab": "t3", "index": 2 } }, "expect": { "tabs": [ "t1", "t3", "t2" ] } },
-      { "send": { "cmd": "move-tab", "args": { "tab": "t1", "window": "new" } }, "expect": { "window": "w2", "tabs": [ "t1" ] } },
-      { "send": { "cmd": "list" }, "expect": { "windows": [ { "id": "w1", "tabs": [ { "id": "t3" }, { "id": "t2" } ] }, { "id": "w2", "key": true, "focused": "a" } ] } },
-      { "send": { "cmd": "move-tab", "args": { "tab": "t1", "window": "w1", "index": 0 } }, "expect": { "window": "w1", "tabs": [ "t1", "t3", "t2" ] } },
-      { "send": { "cmd": "list" }, "expect": { "windows": [ { "id": "w1", "key": true } ] } },
-      { "send": { "cmd": "move-tab", "args": { "tab": "t1", "index": -1 } }, "expect": { "ok": false, "error": { "code": "bad_request" } } }
+      { "send": { "cmd": "move-tab", "args": { "tab": "tab-3", "index": 0 } }, "expect": { "window": "win-1", "tabs": [ "tab-3", "tab-1", "tab-2" ] } },
+      { "send": { "cmd": "move-tab", "args": { "tab": "tab-3", "index": 2 } }, "expect": { "tabs": [ "tab-1", "tab-3", "tab-2" ] } },
+      { "send": { "cmd": "move-tab", "args": { "tab": "tab-1", "window": "new" } }, "expect": { "window": "win-2", "tabs": [ "tab-1" ] } },
+      { "send": { "cmd": "list" }, "expect": { "windows": [ { "id": "win-1", "tabs": [ { "id": "tab-3" }, { "id": "tab-2" } ] }, { "id": "win-2", "key": true, "focused": "a" } ] } },
+      { "send": { "cmd": "move-tab", "args": { "tab": "tab-1", "window": "win-1", "index": 0 } }, "expect": { "window": "win-1", "tabs": [ "tab-1", "tab-3", "tab-2" ] } },
+      { "send": { "cmd": "list" }, "expect": { "windows": [ { "id": "win-1", "key": true } ] } },
+      { "send": { "cmd": "move-tab", "args": { "tab": "tab-1", "index": -1 } }, "expect": { "ok": false, "error": { "code": "bad_request" } } }
     ]
   },
   {
@@ -67,6 +67,27 @@
       { "send": { "cmd": "resize", "args": { "pane": "a", "size": "3/4" } },
         "expect": { "layout": { "split": "row", "children": [ { "pane": "a", "size": "3/4" }, { "pane": "b", "size": "1/8" }, { "pane": "c", "size": "1/8" } ] } } },
       { "send": { "cmd": "resize", "args": { "pane": "a", "size": "1" } }, "expect": { "ok": false, "error": { "code": "bad_request" } } }
+    ]
+  },
+  {
+    "name": "a divider dragged in a client is resize with tab, path and index: the panes either side share what they had, the first getting share",
+    "steps": [
+      { "send": { "cmd": "open", "args": { "type": "term", "name": "a" } } },
+      { "send": { "cmd": "open", "args": { "type": "term", "name": "b", "split": "right" } } },
+      { "send": { "cmd": "open", "args": { "type": "term", "name": "c", "split": "down" } } },
+      { "send": { "cmd": "open", "args": { "type": "term", "name": "d", "split": "down" } } },
+      { "send": { "cmd": "resize", "args": { "tab": "tab-1", "path": [], "index": 0, "share": 0.25 } },
+        "expect": { "ok": true, "tab": "tab-1", "layout": { "split": "row", "children": [ { "pane": "a", "size": "1/4" }, { "split": "column", "size": "3/4" } ] } } },
+      { "send": { "cmd": "resize", "args": { "tab": "tab-1", "path": [1], "index": 1, "share": 0.375 } },
+        "expect": { "ok": true, "tab": "tab-1" } },
+      { "send": { "cmd": "list" }, "expect": { "windows": [ { "tabs": [ { "layout": { "split": "row", "children": [
+        { "pane": "a", "size": "1/4" },
+        { "split": "column", "size": "3/4", "children": [ { "pane": "b", "size": "1/2" }, { "pane": "c", "size": "3/8" }, { "pane": "d", "size": "1/8" } ] }
+      ] } } ] } ] } },
+      { "send": { "cmd": "resize", "args": { "tab": "tab-1", "path": [1], "index": 1, "share": 0.5 } }, "expect": { "ok": false, "error": { "code": "bad_request", "message": "the share must leave both panes some space" } } },
+      { "send": { "cmd": "resize", "args": { "tab": "tab-1", "path": [1], "index": 2, "share": 0.1 } }, "expect": { "ok": false, "error": { "code": "bad_request", "message": "no divider at that index" } } },
+      { "send": { "cmd": "resize", "args": { "tab": "tab-1", "path": [0], "index": 0, "share": 0.1 } }, "expect": { "ok": false, "error": { "code": "bad_request", "message": "no split at that path" } } },
+      { "send": { "cmd": "resize", "args": { "tab": "tab-9", "path": [], "index": 0, "share": 0.1 } }, "expect": { "ok": false, "error": { "code": "not_found" } } }
     ]
   }
 ]

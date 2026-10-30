@@ -15,7 +15,7 @@ mod commands {
 use kanna::args::Argv;
 use serde_json::{json, Value};
 
-const KANNA_ONLY: &[&str] = &["read", "screenshot", "send-key", "status", "agents", "markup", "comment", "rename-pane", "task", "quiz", "projects", "schedule"];
+const KANNA_ONLY: &[&str] = &["read", "screenshot", "send-key", "status", "agents", "markup", "comment", "tour", "rename-pane", "task", "quiz", "projects", "project", "toast", "diagrams", "machine", "schedule"];
 
 const KMUX_ONLY: &[&str] = &[];
 
@@ -32,58 +32,28 @@ const EXTENDED: &[(&str, &str)] = &[
     ("move", "notes"),
 ];
 
-const OPTIONS_DIFFER: &[(&str, &str)] = &[("move", "--window WINDOW|new")];
+const KMUX_ONLY_OPTIONS: &[(&str, &str)] = &[("open", "--dock [left|right]"), ("open", "--frozen")];
+
+const KMUX_ONLY_EXAMPLES: &[&str] = &["kmux open --name agent --cmd claude --dock"];
+
+const OPTIONS_DIFFER: &[(&str, &str)] = &[("move", "--window WINDOW|new"), ("open", "--window ID|new"), ("arrange", "--window WINDOW")];
+
+const PRINTS_DIFFER: &[(&str, &str)] = &[("focus", "Kanna's daemon keeps no key window: a focus reply says which window the app brought forward")];
 
 const CODE_PANES: &[(&str, &str)] = &[("open", "summary"), ("navigate", "summary")];
 
 fn from_kmux(text: &str) -> String {
-    kanna_ids(&text.replace("kmux", "kanna"))
+    text.replace(" [--dock [left|right] [--frozen]]", "").replace(" (open --dock --frozen)", "").replace("kmux", "kanna")
 }
 
 fn from_kanna(text: &str) -> String {
-    kanna_ids(&text.replace("Kanna.app", "kanna").replace("Kanna", "kanna"))
-}
-
-fn kanna_ids(text: &str) -> String {
-    let id = |word: &str| {
-        [("p", "term-"), ("t", "tab-"), ("w", "win-")].iter().find_map(|(kmux, kanna)| {
-            word.strip_prefix(kmux).filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())).map(|n| format!("{kanna}{n}"))
-        })
-    };
-    let mut out = String::new();
-    let mut word = String::new();
-    for c in text.chars().chain(std::iter::once('\0')) {
-        if c.is_ascii_alphanumeric() || c == '-' {
-            word.push(c);
-            continue;
-        }
-        out.push_str(&id(&word).unwrap_or_else(|| word.clone()));
-        word.clear();
-        if c != '\0' {
-            out.push(c);
-        }
-    }
-    let mut named = out;
-    for (noun, prefix) in [("window ", "win-"), ("tab ", "tab-"), ("pane ", "term-")] {
-        let mut kept = String::new();
-        let mut rest = named.as_str();
-        while let Some(at) = rest.find(&format!("{noun}{prefix}")) {
-            let flag = rest[..at].ends_with('-');
-            kept.push_str(&rest[..at]);
-            if flag {
-                kept.push_str(noun);
-            }
-            rest = &rest[at + noun.len()..];
-        }
-        kept.push_str(rest);
-        named = kept;
-    }
-    named
+    text.replace("Kanna.app", "kanna").replace("Kanna", "kanna")
 }
 
 fn without_code_panes(text: &str) -> String {
     text.replace("\n       kanna open code FILE[:LINE] [same placement options]", "")
         .replace("\n       kanna open diff [GIT-DIFF-ARGS] [same placement options]", "")
+        .replace("\n       kanna open md FILE --diff [REF|A..B] [same placement options]", "")
         .replace("\n       kanna navigate PANE FILE[:LINE]", "")
         .replace("\n       kanna navigate PANE diff [GIT-DIFF-ARGS]", "")
 }
@@ -153,7 +123,7 @@ fn kanna_has_every_kmux_command_in_kmux_order() {
 }
 
 fn same_options<'a>(command: &str, options: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
-    options.iter().filter(|(option, _)| !OPTIONS_DIFFER.contains(&(command, *option))).copied().collect()
+    options.iter().filter(|(option, _)| !OPTIONS_DIFFER.contains(&(command, *option)) && !KMUX_ONLY_OPTIONS.contains(&(command, *option))).copied().collect()
 }
 
 fn usage_lines(usage: &str) -> Vec<String> {
@@ -177,6 +147,23 @@ fn options_kanna_documents_differently_are_still_kmuxs_and_differ() {
         let ours = kanna::commands::find(name).unwrap().options.iter().find(|(o, _)| o == option);
         let (Some(theirs), Some(ours)) = (theirs, ours) else { panic!("{name} {option}: kmux or kanna no longer has it") };
         assert_ne!(from_kanna(ours.1), from_kmux(theirs.1), "{name} {option}: kanna documents it as kmux does now");
+    }
+}
+
+fn kmux_examples(command: &commands::Command) -> Vec<(&'static str, &'static str)> {
+    command.examples.iter().filter(|(e, _)| !KMUX_ONLY_EXAMPLES.contains(e)).copied().collect()
+}
+
+#[test]
+fn kanna_has_none_of_kmuxs_own_options_and_refuses_them() {
+    for (name, option) in KMUX_ONLY_OPTIONS {
+        assert!(commands::find(name).unwrap().options.iter().any(|(o, _)| o == option), "kmux's {name} has no {option} any more");
+        assert!(!kanna::commands::find(name).unwrap().options.iter().any(|(o, _)| o == option), "kanna's {name} has {option} now: compare it with kmux's");
+    }
+    for line in ["kmux open --dock", "kmux open --dock right --cmd claude", "kmux open --dock --frozen"] {
+        assert!(kmux_parse(line).is_ok(), "{line}");
+        let (code, message) = kanna_parse(line).expect_err(line);
+        assert!(code == 2 && message.contains("a docked pane is a task's agent"), "{line}: {message}");
     }
 }
 
@@ -207,14 +194,14 @@ fn every_command_is_documented_as_kmux_documents_it() {
             ("usage", theirs.usage.to_string(), ours.usage.to_string()),
             ("notes", theirs.notes.to_string(), ours.notes.to_string()),
             ("options", format!("{:?}", same_options(theirs.name, theirs.options)), format!("{:?}", same_options(theirs.name, ours.options))),
-            ("examples", format!("{:?}", theirs.examples), format!("{:?}", &ours.examples[..ours.examples.len().min(theirs.examples.len())])),
+            ("examples", format!("{:?}", kmux_examples(theirs)), format!("{:?}", &ours.examples[..ours.examples.len().min(kmux_examples(theirs).len())])),
         ];
         for (field, kmux, kanna) in fields {
             let (kmux, kanna) = (from_kmux(&kmux), from_kanna(&kanna));
             if CODE_PANES.contains(&(theirs.name, field)) {
                 assert!(kanna.contains("code") && kanna.contains("diff pane"), "{} {field}: kanna's names code and diff panes\nkanna: {kanna}", theirs.name);
             } else if EXTENDED.contains(&(theirs.name, field)) {
-                let added = if field == "examples" { ours.examples.len() > theirs.examples.len() } else { kanna.len() > kmux.len() };
+                let added = if field == "examples" { ours.examples.len() > kmux_examples(theirs).len() } else { kanna.len() > kmux.len() };
                 assert!(kanna.starts_with(&kmux) && added, "{} {field}: kanna should add to kmux's\nkmux:  {kmux}\nkanna: {kanna}", theirs.name);
             } else {
                 assert_eq!(kanna, kmux, "{} {field}", theirs.name);
@@ -226,25 +213,25 @@ fn every_command_is_documented_as_kmux_documents_it() {
 #[test]
 fn every_kmux_example_and_request_parses_the_same() {
     let kept = |c: &commands::Command, example: &str| SOME_ACTIONS.iter().find(|(n, _)| *n == c.name).is_none_or(|(n, actions)| actions.iter().any(|a| example.starts_with(&format!("kmux {n} {a}"))));
-    let mut lines: Vec<String> = commands::COMMANDS.iter().filter(|c| !KMUX_ONLY.contains(&c.name)).flat_map(|c| c.examples.iter().filter(|(e, _)| kept(c, e)).map(|(e, _)| e.to_string())).collect();
+    let mut lines: Vec<String> = commands::COMMANDS.iter().filter(|c| !KMUX_ONLY.contains(&c.name)).flat_map(|c| c.examples.iter().filter(|(e, _)| kept(c, e) && !KMUX_ONLY_EXAMPLES.contains(e)).map(|(e, _)| e.to_string())).collect();
     lines.extend(
         [
             "kmux open",
             "kmux open --name logs --split right --size 1/3 --cmd 'tail -f a.log'",
             "kmux open web localhost:3000 --split down",
             "kmux open --tab --no-wait",
-            "kmux open --window w2 --name x",
+            "kmux open --window win-2 --name x",
             "kmux close logs",
-            "kmux close --window w2",
-            "kmux close --tab t3",
-            "kmux focus --window w1",
-            "kmux rename-tab t1 my servers",
+            "kmux close --window win-2",
+            "kmux close --tab tab-3",
+            "kmux focus --window win-1",
+            "kmux rename-tab tab-1 my servers",
             "kmux send server npm test",
             "kmux send server ls --color",
             "kmux move logs --to server --side bottom",
-            "kmux move logs --tab new --window w2",
-            "kmux move-tab t2 --index 0",
-            "kmux move-tab t2 --window=new",
+            "kmux move logs --tab new --window win-2",
+            "kmux move-tab tab-2 --index 0",
+            "kmux move-tab tab-2 --window=new",
             "kmux open web a.test --history",
             "kmux navigate site --back",
             "kmux navigate site --forward",
@@ -253,20 +240,16 @@ fn every_kmux_example_and_request_parses_the_same() {
             "kmux navigate spec /tmp/b.md",
             "kmux open ios --app com.apple.Preferences --device 'iPhone 16'",
             "kmux resize logs 25%",
-            "kmux arrange '{\"split\":\"column\",\"children\":[{\"pane\":\"a\"}]}' --window w1",
+            "kmux arrange '{\"split\":\"column\",\"children\":[{\"pane\":\"a\"}]}' --window win-1",
             "kmux workspace list --all --json",
             "kmux capabilities",
-            "kmux open --dock right --cmd claude",
-            "kmux open --dock --frozen --cmd claude",
-            "kmux open --dock md /tmp/a.md",
-            "kmux open web a.test --dock=right --window new",
             "kmux move agent --dock",
-            "kmux move agent --dock right --window w2",
-            "kmux move agent --tab t3",
-            "kmux move agent --tab --window w2",
+            "kmux move agent --dock right --window win-2",
+            "kmux move agent --tab tab-3",
+            "kmux move agent --tab --window win-2",
             "kmux resize agent 1/3",
-            "kmux window assign w4 s1",
-            "kmux window free w4",
+            "kmux window assign win-4 ws-1",
+            "kmux window free win-4",
         ]
         .map(String::from),
     );
@@ -296,22 +279,19 @@ fn usage_errors_are_kmux_errors() {
         "kmux navigate site --back x",
         "kmux navigate site --back --forward",
         "kmux navigate site",
-        "kmux send p1",
-        "kmux resize p1",
+        "kmux send term-1",
+        "kmux resize term-1",
         "kmux arrange",
         "kmux arrange '{nope'",
         "kmux rename-tab",
-        "kmux rename-tab t1",
+        "kmux rename-tab tab-1",
         "kmux move-tab",
-        "kmux move-tab t1 --index x",
+        "kmux move-tab tab-1 --index x",
         "kmux open --name",
         "kmux capabilities extra",
-        "kmux open --dock --split right",
-        "kmux open --dock left --tab",
         "kmux move agent --dock --tab",
         "kmux move agent --dock --to b",
         "kmux move agent --dock top",
-        "kmux open --frozen",
     ] {
         let kmux = kmux_parse(line).expect_err(line);
         let kanna = kanna_parse(line).expect_err(line);
@@ -330,36 +310,36 @@ fn an_unknown_pane_type_lists_code_and_diff_panes_too() {
 
 #[test]
 fn replies_print_as_kmux_prints_them() {
-    let pane = json!({ "id": "p3", "name": "logs", "type": "term", "state": "running", "cmd": "tail -f a.log" });
-    let layout = json!({ "split": "row", "children": [{ "pane": "p1", "size": "2/3" }, { "pane": "logs", "size": "1/3" }] });
+    let pane = json!({ "id": "term-3", "name": "logs", "type": "term", "state": "running", "cmd": "tail -f a.log" });
+    let layout = json!({ "split": "row", "children": [{ "pane": "term-1", "size": "2/3" }, { "pane": "logs", "size": "1/3" }] });
     let cases: Vec<(&str, Value, Value)> = vec![
-        ("open", json!({ "type": "term" }), json!({ "pane": pane, "window": "w1", "tab": "t1" })),
-        ("open", json!({ "type": "term" }), json!({ "pane": { "id": "p5", "state": "failed", "error": "No such file" }, "window": "w1", "tab": "t1" })),
-        ("close", json!({ "pane": "logs" }), json!({ "closed": ["p3"] })),
-        ("close", json!({ "tab": "t2" }), json!({ "closed": ["p3", "p4"] })),
-        ("close", json!({ "window": "w2" }), json!({ "closed": ["p5"] })),
-        ("focus", json!({ "pane": "logs" }), json!({ "window": "w1" })),
-        ("focus", json!({ "tab": "t2" }), json!({ "window": "w1" })),
-        ("focus", json!({ "window": "w2" }), json!({ "window": "w2" })),
+        ("open", json!({ "type": "term" }), json!({ "pane": pane, "window": "win-1", "tab": "tab-1" })),
+        ("open", json!({ "type": "term" }), json!({ "pane": { "id": "term-5", "state": "failed", "error": "No such file" }, "window": "win-1", "tab": "tab-1" })),
+        ("close", json!({ "pane": "logs" }), json!({ "closed": ["term-3"] })),
+        ("close", json!({ "tab": "tab-2" }), json!({ "closed": ["term-3", "term-4"] })),
+        ("close", json!({ "window": "win-2" }), json!({ "closed": ["term-5"] })),
+        ("focus", json!({ "pane": "logs" }), json!({ "window": "win-1" })),
+        ("focus", json!({ "tab": "tab-2" }), json!({ "window": "win-1" })),
+        ("focus", json!({ "window": "win-2" }), json!({ "window": "win-2" })),
         ("zoom", json!({ "pane": "logs" }), json!({ "zoomed": true })),
         ("zoom", json!({ "pane": "logs" }), json!({ "zoomed": false })),
         ("restart", json!({ "pane": "logs" }), json!({ "pane": pane })),
         ("send", json!({ "pane": "logs", "text": "x" }), json!({})),
         ("resize", json!({ "pane": "logs", "size": "1/3" }), json!({ "layout": layout })),
-        ("move", json!({ "pane": "logs", "to": "p1" }), json!({ "layout": layout })),
+        ("move", json!({ "pane": "logs", "to": "term-1" }), json!({ "layout": layout })),
         ("arrange", json!({ "layout": layout }), json!({ "layout": layout })),
-        ("rename-tab", json!({ "tab": "t1", "title": "servers" }), json!({ "tab": "t1", "title": "servers" })),
-        ("move-tab", json!({ "tab": "t2", "index": 0 }), json!({ "window": "w1", "tabs": ["t2", "t1"] })),
-        ("navigate", json!({ "pane": "site", "url": "x" }), json!({ "pane": { "id": "p2", "name": "site", "state": "running", "url": "http://x/" } })),
-        ("navigate", json!({ "pane": "doc", "path": "/tmp/a.md" }), json!({ "pane": { "id": "p7", "name": "doc", "state": "running", "path": "/tmp/a.md" } })),
-        ("open", json!({ "type": "term", "dock": "left" }), json!({ "pane": pane, "window": "w1", "tab": null, "dock": "left" })),
-        ("move", json!({ "pane": "logs", "dock": "right" }), json!({ "window": "w1", "dock": { "pane": "logs", "edge": "right", "width": "2/5" } })),
-        ("resize", json!({ "pane": "logs", "size": "1/4" }), json!({ "window": "w1", "dock": { "pane": "logs", "edge": "left", "width": "1/4" } })),
+        ("rename-tab", json!({ "tab": "tab-1", "title": "servers" }), json!({ "tab": "tab-1", "title": "servers" })),
+        ("move-tab", json!({ "tab": "tab-2", "index": 0 }), json!({ "window": "win-1", "tabs": ["tab-2", "tab-1"] })),
+        ("navigate", json!({ "pane": "site", "url": "x" }), json!({ "pane": { "id": "page-2", "name": "site", "state": "running", "url": "http://x/" } })),
+        ("navigate", json!({ "pane": "doc", "path": "/tmp/a.md" }), json!({ "pane": { "id": "file-7", "name": "doc", "state": "running", "path": "/tmp/a.md" } })),
+        ("open", json!({ "type": "term", "dock": "left" }), json!({ "pane": pane, "window": "win-1", "tab": null, "dock": "left" })),
+        ("move", json!({ "pane": "logs", "dock": "right" }), json!({ "window": "win-1", "dock": { "pane": "logs", "edge": "right", "width": "2/5" } })),
+        ("resize", json!({ "pane": "logs", "size": "1/4" }), json!({ "window": "win-1", "dock": { "pane": "logs", "edge": "left", "width": "1/4" } })),
         ("capabilities", json!({}), json!({ "mux": "kmux", "paneTypes": ["term", "web"], "commands": ["capabilities", "list"] })),
-        ("window", json!({ "action": "free", "window": "w2" }), json!({ "window": "w2", "was": null, "shown": true })),
-        ("window", json!({ "action": "free", "window": "w2" }), json!({ "window": "w2", "was": { "id": "s1", "hidden": false }, "shown": true })),
+        ("window", json!({ "action": "free", "window": "win-2" }), json!({ "window": "win-2", "was": null, "shown": true })),
+        ("window", json!({ "action": "free", "window": "win-2" }), json!({ "window": "win-2", "was": { "id": "ws-1", "hidden": false }, "shown": true })),
     ];
-    for (name, args, reply) in cases {
+    for (name, args, reply) in cases.into_iter().filter(|(name, _, _)| !PRINTS_DIFFER.iter().any(|(differs, _)| differs == name)) {
         let kmux = (commands::find(name).unwrap().show)(&args, &reply);
         let kanna = (kanna::commands::find(name).unwrap().show)(&args, &reply);
         assert_eq!(from_kanna(&kanna), from_kmux(&kmux), "{name} {reply}");
@@ -368,6 +348,6 @@ fn replies_print_as_kmux_prints_them() {
 
 #[test]
 fn kmux_cannot_type_what_kanna_can_after_a_double_dash() {
-    let kanna = kanna_parse("kanna send p1 -- --json --mux").unwrap();
-    assert_eq!(kanna, json!({ "pane": "p1", "text": "--json --mux" }));
+    let kanna = kanna_parse("kanna send term-1 -- --json --mux").unwrap();
+    assert_eq!(kanna, json!({ "pane": "term-1", "text": "--json --mux" }));
 }

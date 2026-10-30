@@ -111,7 +111,7 @@ The upgrade request and the state are versioned apart from the protocol:
 ## 8. Testing
 
 - `cargo test -p kanna-keeper`: an upgrade with live sessions (same pid, parent, pty and output; exits after it report codes; a connection crosses it), a spawn waiting for its exec answered by the new code, the pause counting against a spawn's timeout, an exit straight after and one during, a binary that refuses leaves the old code running, `--upgrade` by hand, a state too new refused.
-- `scripts/e2e-kanna.sh keeper_upgrade`: a claude agent on the Desk, a shell in a tab and a parked task under a keeper of another build; a new daemon upgrades it, takes every terminal back, claude carries on its conversation, and the shell's `exit 7` reports 7.
+- `scripts/e2e-kanna.sh keeper_upgrade`: a claude agent on the Desk, a shell in a tab and a Desk task not active under a keeper of another build; a new daemon upgrades it, takes every terminal back, claude carries on its conversation, and the shell's `exit 7` reports 7.
 
 ## 9. Glossary
 

@@ -169,7 +169,7 @@ fn bad(message: impl Into<String>) -> KmuxError {
 }
 
 fn failed(what: &str, error: rusqlite::Error) -> KmuxError {
-    eprintln!("kanna-daemon: couldn't {what} in {}: {error}", db::FILE);
+    log!("kanna-daemon: couldn't {what} in {}: {error}", db::FILE);
     KmuxError::new("failed", format!("couldn't {what}: {error}"))
 }
 
@@ -372,10 +372,10 @@ impl Schedules {
         match self.db.seed_once(&format!("quiz_schedule:{repo}"), &schedule) {
             Ok(true) => {
                 self.changed();
-                eprintln!("kanna-daemon: added the daily quiz schedule for {repo}")
+                log!("kanna-daemon: added the daily quiz schedule for {repo}")
             }
             Ok(false) => {}
-            Err(error) => eprintln!("kanna-daemon: couldn't add the quiz schedule for {repo}: {error}"),
+            Err(error) => log!("kanna-daemon: couldn't add the quiz schedule for {repo}: {error}"),
         }
     }
 
@@ -392,7 +392,7 @@ impl Schedules {
             let rule = match Rule::parse(&schedule.rule) {
                 Ok(rule) => rule,
                 Err(error) => {
-                    eprintln!("kanna-daemon: schedule s{} can't run: {error}", schedule.id);
+                    log!("kanna-daemon: schedule s{} can't run: {error}", schedule.id);
                     continue;
                 }
             };
@@ -401,14 +401,14 @@ impl Schedules {
                 false => match self.mailbox.post(&schedule.target, schedule.repo.as_deref(), &format!("{SCHEDULE}{}", label(schedule)), &schedule.prompt) {
                     Ok(id) => Some(id),
                     Err(error) => {
-                        eprintln!("kanna-daemon: schedule {} couldn't leave its message for {}: {}", label(schedule), schedule.target, error.message);
+                        log!("kanna-daemon: schedule {} couldn't leave its message for {}: {}", label(schedule), schedule.target, error.message);
                         None
                     }
                 },
             };
             match self.db.schedule_fired(schedule.id, rule.next(schedule.next, now, &*self.zone), message) {
                 Ok(()) => fired += 1,
-                Err(error) => eprintln!("kanna-daemon: couldn't fire schedule s{}: {error}", schedule.id),
+                Err(error) => log!("kanna-daemon: couldn't fire schedule s{}: {error}", schedule.id),
             }
         }
         fired

@@ -40,7 +40,7 @@ stateDiagram-v2
     message_waiting --> waiting_for_time: its agent takes the message
 ```
 
-- **Delivered like any message:** at the agent's turn's end, never mid-turn or into your draft; a stopped backlog task runs for it; with no planner open, it waits for one ([agent messaging](agent-messaging.md#2-delivery)). Only Claude and Codex take messages.
+- **Delivered like any message:** at the agent's turn's end, never mid-turn or into your draft; a stopped Shelf task runs for it; with no planner open, it waits for one ([agent messaging](agent-messaging.md#2-delivery)). Only Claude and Codex take messages.
 - **One message waiting, never a pile.** A time that comes while the schedule's last message is still waiting leaves no second one.
 - **A schedule's message is yours:** it carries your permissions, as one you send yourself, since you made the schedule (or asked an agent to).
 
