@@ -21,12 +21,12 @@ flowchart TB
         CLI["kanna CLI, agents"]
     end
     subgraph APP["Kanna app process (one of any number)"]
-        L1["1 · UI<br/>its Desk, the Shelf<br/>review · editor"]
+        L1["1 · UI<br/>its Desk, the Desk view<br/>review · editor"]
         L2["2 · Views<br/>windows · panes<br/>terminal · web · iOS · markdown"]
         L1 --> L2
     end
     subgraph DAEMON["Kanna daemon process (headless)"]
-        L3["3 · Logical presentation<br/>workspaces · tabs · Shelf"]
+        L3["3 · Logical presentation<br/>workspaces · tabs · Desk and Shelf"]
         L4["4 · Work<br/>tasks · agents · worktrees<br/>terminals · diffs · files · pages"]
         L3 --> L4
     end
@@ -57,14 +57,15 @@ flowchart TB
 
 | Layer | What's in it | Process |
 |---|---|---|
-| 1 · UI | the app's Desk, the Shelf, markdown review, code editor | each app |
+| 1 · UI | the app's Desk, the Desk view, markdown review, code editor | each app |
 | 2 · Views | windows and panes: views of the daemon's content, their sizes, focus and zoom; Swift, started from kmux's views | each app |
-| 3 · Logical presentation | each task's workspace and tabs, what they show, the Shelf; Rust, kanna-mux's model | daemon |
+| 3 · Logical presentation | each task's workspace and tabs, what they show, whether it's on a Desk or the Shelf; Rust, kanna-mux's model | daemon |
 | 4 · Work | tasks, agents, worktrees, and content: terminals (each screen kept by libghostty-vt), diffs, files, pages; the commands (kmux's protocol); Rust | daemon |
 | 5 · Keeper | creates the ptys and holds a copy of each; Rust | keeper |
 | 6 · macOS | ptys and shells, WebKit, iOS Simulator devices | — |
 
 - **The CLI and the apps are clients, not layers:** each calls down into the daemon with the same commands ([app link](app-link.md), [CLI](cli.md)); an app also subscribes, so the daemon publishes every change to it. None serves another, and the daemon never asks an app for anything.
+- **Daemons on other machines:** an app holds one link per machine, the CLI reaches one with `--host`, and daemons talk to each other over iroh ([your machines](machines.md)).
 - **The keeper isn't in the path of any byte:** it hands each pty to the daemon, which reads and writes it.
 - **How a terminal starts:** the daemon asks the keeper of its state folder (`keeper.sock`, started as `$KANNA_KEEPER` or the `kanna-keeper` beside the daemon if none runs) to spawn the program; the keeper answers with the pid and the pty's master (`SCM_RIGHTS`), and later with the exit code, which the daemon records and acknowledges. `close` and `restart` end the program through the keeper; the daemon sets the size itself (`TIOCSWINSZ`). If the keeper goes away the daemon logs it and stops ([keeper](../keeper.md)). Stopping or crashing the daemon ends no terminal: the next daemon takes them back ([restarting the daemon](daemon-restart.md)).
 - **A terminal's environment is the session's**, not whoever started the keeper. The keeper keeps only session-wide variables from its own environment (`HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, `LC_*`, `__CF_USER_TEXT_ENCODING`, `SSH_AUTH_SOCK`, and on Linux `DISPLAY`, `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, `XDG_SESSION_TYPE`, `DBUS_SESSION_BUS_ADDRESS`), sets `PATH` to the login default (`/usr/bin:/bin:/usr/sbin:/sbin`), and adds Ghostty's variables (`TERM=xterm-ghostty`, `TERMINFO`, `COLORTERM`, shell integration) and the daemon's (`KANNA_SOCKET`, `KANNA_TERMINAL`, `KANNA_INSTANCE`). The shell is a login and interactive one, so the user's profile and rc files build the rest, as when Ghostty or kmux is opened from the Dock. Why: the first daemon may have been started from a terminal, whose variables would otherwise leak into every pane for as long as the keeper lives (`EDITOR=nvim` alone puts zsh in vi mode, where Ctrl-A and Ctrl-K insert themselves).
@@ -104,8 +105,8 @@ flowchart LR
 | | What it is | Kept by | After an app restarts |
 |---|---|---|---|
 | **Work** | tasks; content: terminals (pty, screen, scrollback, cwd, exit code), diffs, files, pages, iOS devices | the daemon | exactly as it was, still running |
-| **Logical presentation** | workspaces, their logical windows, tabs and arrangement, what each tab shows, the shown tab, focus and zoom, which app has each task out or whether it's in the backlog | the daemon | as it was, changed meanwhile by tasks and the CLI |
-| **Physical presentation** | window frames, the app's Desks (d1, d2, …) and its Shelf, sizes, magnification, font, the dock's width | each app | reopened from the app's own file |
+| **Logical presentation** | workspaces, their logical windows, tabs and arrangement, what each tab shows, the shown tab, focus and zoom, which app's Desk each task is on, or whether it's on the Shelf | the daemon | as it was, changed meanwhile by tasks and the CLI |
+| **Physical presentation** | window frames, the app's Desks (d1, d2, …) and their tasks, sizes, magnification, font, the dock's width | each app | reopened from the app's own file |
 | **History** | the recent projects, newest first (File → Open Recent, a new Desk's where prompt) | the daemon, in `kanna.db` | as it was, shared by every app |
 
 **Recent projects are the daemon's, though only an app knows a Desk's project** ([recent projects](recent-projects.md)). A Desk is physical, so the app that has it says when a Desk opens on a project or moves to one (`projects touch FOLDER`); the daemon keeps the list in `kanna.db`, makes each folder its project (the main repo for a worktree, as `project()` does), and answers anyone who asks (`projects`): each app's Open Recent menu and a planning terminal's script, so every app and every new Desk shows the same list.
@@ -144,6 +145,8 @@ flowchart LR
     F --> APP["Kanna.app"]
     F --> T["Swift tests"]
 ```
+
+**Where the app's time goes is measured inside it:** signposts, a main-thread hang detector, `debug.perf`, and the daemon's slow-request log ([performance monitoring](performance-monitoring.md)).
 
 ## 4. Glossary
 

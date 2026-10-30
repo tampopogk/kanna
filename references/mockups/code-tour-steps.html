@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Code Tour Steps</title>
+<style>
+:root {
+  --page: #111214; --text: #e6e6e6; --dim: #8b8f98; --accent: #3478f6;
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+.window.dark {
+  --bg: #14161a; --gutter: #14161a; --num: #4b5260; --num-on: #c9ccd3; --cur: #1b1e24; --sel: rgba(122,162,255,.28);
+  --fg: #e6e8eb; --bar-bg: #1b1e24; --line: #2c313a; --muted: #8b93a0;
+  --keyword: #c792ea; --function: #7aa2ff; --type: #e5c07b; --string: #a5d6a7; --number: #f78c6c; --constant: #f78c6c;
+  --comment: #6b7280; --macro: #56b6c2; --attribute: #8b93a0; --property: #c9d1e0; --operator: #89ddff; --punctuation: #8b93a0;
+  --termbg: #16181c; --tour: rgba(122,162,255,.12); --tour-edge: #7aa2ff; --card: #1f232a; --guide: #2a2f37; --shadow: rgba(0,0,0,.55);
+}
+.window.light {
+  --bg: #ffffff; --gutter: #ffffff; --num: #b4bac4; --num-on: #1d2026; --cur: #f4f5f7; --sel: rgba(47,99,216,.2);
+  --fg: #1d2026; --bar-bg: #f4f5f7; --line: #d8dce2; --muted: #6b7280;
+  --keyword: #8839c4; --function: #2f63d8; --type: #a15c00; --string: #2d7d3a; --number: #c2410c; --constant: #c2410c;
+  --comment: #8a919c; --macro: #0e7490; --attribute: #6b7280; --property: #374151; --operator: #0369a1; --punctuation: #6b7280;
+  --termbg: #fbfbfc; --tour: rgba(47,99,216,.08); --tour-edge: #2f63d8; --card: #ffffff; --guide: #e4e7eb; --shadow: rgba(0,0,0,.14);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro { display: none; }
+h1 { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--dim); margin: 0 0 14px; max-width: 900px; }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; align-items: center; }
+.controls .sep { width: 1px; height: 18px; background: #3a3d44; margin: 0 4px; }
+button { font: 12px var(--sans); color: var(--text); background: #2a2c31; border: 1px solid #3a3d44; border-radius: 5px; padding: 4px 9px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.on { background: var(--accent); border-color: var(--accent); }
+
+.window { border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: 0 20px 50px rgba(0,0,0,.5); background: var(--bg); color: var(--fg); height: 720px; display: flex; flex-direction: column; }
+body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 100vh; }
+.bar { height: 36px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 12px; }
+.lights { display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: var(--line); display: block; }
+.bar b { font-weight: 600; font-size: 13px; }
+.content { flex: 1; display: flex; min-height: 0; }
+.agent { flex: 0 0 32%; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
+.agent .head { flex: none; height: 34px; padding: 0 14px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--function); }
+.term { flex: 1; min-height: 0; background: var(--termbg); font: 12px/1.6 var(--mono); padding: 10px 12px; white-space: pre-wrap; overflow: auto; color: var(--fg); }
+.term .c { color: var(--function); } .term .p { color: var(--type); } .term .g { color: var(--muted); } .term .a { color: var(--keyword); } .term .ok { color: var(--string); }
+.term .prompt { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 6px; display: block; }
+.term .typed { background: var(--tour); border-radius: 3px; }
+.docs { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.dtabs { height: 34px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--line); }
+.dtab { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; color: var(--muted); white-space: nowrap; cursor: pointer; }
+.dtab.on { color: var(--fg); }
+.dtab .x { color: var(--muted); font-size: 11px; visibility: hidden; }
+.dtab.on .x { visibility: visible; }
+.dtab .tag { font-size: 10.5px; color: var(--tour-edge); border: 1px solid var(--tour-edge); border-radius: 8px; padding: 0 6px; }
+.dtabs .add { color: var(--muted); padding: 0 8px; font-size: 15px; }
+.cmt { margin: 6px 24px 6px 66px; max-width: 620px; background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--tour-edge); border-radius: 6px; padding: 7px 11px; font: 12.5px/1.5 var(--sans); color: var(--fg); white-space: normal; position: sticky; left: 66px; }
+.cmt .who { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+.cmt code { font: 11.5px var(--mono); color: var(--function); }
+.code { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); outline: none; }
+.crumbs { height: 26px; flex: none; display: flex; align-items: center; gap: 6px; padding: 0 14px 0 20px; font-size: 12px; color: var(--muted); }
+.crumbs i { font-style: normal; opacity: .6; }
+.crumbs b { font-weight: 400; color: var(--fg); }
+
+.split { flex: 1; display: flex; min-height: 0; position: relative; }
+.scroller { flex: 1; min-width: 0; overflow: auto; position: relative; }
+.lines { font: 12.5px/19px var(--mono); padding: 8px 0 80vh; min-width: max-content; }
+.ln { display: flex; white-space: pre; position: relative; }
+.ln .n { flex: none; width: 52px; padding-right: 14px; text-align: right; color: var(--num); user-select: none; background: var(--gutter); position: sticky; left: 0; z-index: 1; }
+.ln .t { padding-right: 24px; }
+.ig { box-shadow: inset 1px 0 0 var(--guide); }
+.sticky { position: sticky; top: 0; z-index: 3; height: 0; font: 12.5px/19px var(--mono); min-width: max-content; }
+.sticky .rows { background: var(--bg); }
+.sticky .rows:not(:empty) { box-shadow: 0 3px 6px -1px var(--shadow); border-bottom: 1px solid var(--line); }
+.sticky .ln { cursor: pointer; }
+.sticky .ig { box-shadow: none; }
+.ln.cur { background: var(--cur); }
+.ln.cur .n { color: var(--num-on); background: var(--cur); }
+::selection { background: var(--sel); }
+
+.tk-keyword { color: var(--keyword); } .tk-function { color: var(--function); } .tk-type { color: var(--type); }
+.tk-string { color: var(--string); } .tk-number { color: var(--number); } .tk-constant { color: var(--constant); }
+.tk-comment { color: var(--comment); font-style: italic; } .tk-macro { color: var(--macro); } .tk-attribute { color: var(--attribute); }
+.tk-property { color: var(--property); } .tk-operator { color: var(--operator); } .tk-punctuation { color: var(--punctuation); }
+
+.ln.in-tour { background: var(--tour); }
+.ln.in-tour .n { background: var(--tour); box-shadow: inset 2px 0 0 var(--tour-edge); color: var(--num-on); }
+.ln.dimmed .t { opacity: .38; transition: opacity .2s; }
+.ln .t { transition: opacity .2s; }
+
+.cmt .foot, .card .foot { display: flex; align-items: center; gap: 6px; margin-top: 7px; padding-top: 6px; border-top: 1px solid var(--line); }
+.foot .where { font: 11px var(--sans); color: var(--muted); margin-right: auto; }
+.foot .where b { color: var(--fg); font-weight: 600; }
+.foot button { font: 11.5px var(--sans); background: transparent; color: var(--fg); border: 1px solid var(--line); border-radius: 5px; padding: 2px 9px; }
+.foot button:hover { border-color: var(--tour-edge); }
+.foot button.primary { background: var(--tour-edge); border-color: var(--tour-edge); color: #fff; }
+.foot button:disabled { opacity: .35; cursor: default; }
+.foot .key { font: 10.5px var(--sans); color: var(--muted); }
+.md { flex: 1; min-height: 0; display: flex; }
+.md .doc { flex: 1; overflow: auto; padding: 22px 34px; font: 14px/1.6 var(--sans); }
+.md .doc h1 { font-size: 22px; margin: 0 0 10px; }
+.md .doc p { margin: 0 0 12px; }
+.md .doc .hl { background: var(--sel); border-radius: 2px; }
+.md .threads { flex: 0 0 280px; border-left: 1px solid var(--line); background: var(--bar-bg); padding: 10px; overflow: auto; }
+.md .threads .top { color: var(--muted); font-size: 11.5px; margin-bottom: 8px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: 12.5px/1.5 var(--sans); }
+.card.on { border-color: var(--tour-edge); }
+.card .head { display: flex; justify-content: space-between; color: var(--muted); font: 11px var(--mono); margin-bottom: 4px; }
+.card .msg b.agent { color: var(--keyword); }
+.card .reply { margin-top: 6px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); padding: 2px 6px; font-size: 12px; }
+.seq { display: block; margin: 6px 0 14px; }
+.seq text { font: 12px var(--sans); fill: var(--fg); }
+.seq .box { fill: var(--card); stroke: var(--line); }
+.seq .life { stroke: var(--line); stroke-dasharray: 3 3; }
+.seq .arrow { stroke: var(--function); fill: none; marker-end: url(#ah); }
+.seq .lbl { fill: var(--muted); font-size: 11px; }
+.term .tour { color: var(--tour-edge); }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1>Code tour steps: the agent queues a tour, you step through it</h1>
+    <p>The agent fills the tour up front: it queues every stop at once with <code>kanna tour FILE:LINE "comment" …</code> (code or markdown), and can keep adding stops with <code>kanna tour add</code> while you read. Each comment has <b>Back</b>, where you are (<b>2 of 5</b>) and <b>Next</b>; Next opens or selects the next stop's tab and scrolls to it. Stepping never bothers the agent, so there's no round trip between stops. When you ask a question, the agent runs <code>kanna tour</code> to see which stop you're on, and answers with a stop added right after it (<code>kanna tour add --next</code>), shown at once; Next then carries on with the tour. Click Back / Next on the comment itself.</p>
+    <div class="controls">
+      <button id="bAsk">1 · You ask; the agent queues a tour</button>
+      <button id="bQ" disabled>You ask a question mid-tour</button>
+      <span class="sep"></span>
+      <button id="bTheme">Light / dark</button>
+    </div>
+  </div>
+  <div class="window dark" id="window">
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><b>keeper-fds</b></div>
+    <div class="content">
+      <div class="agent">
+        <div class="head"><span class="dot"></span>~/work/kanna-v4 · keeper-fds</div>
+        <div class="term" id="term"></div>
+      </div>
+      <div class="docs" id="docs">
+        <div class="dtabs" id="dtabs"></div>
+        <div class="code" id="code" tabindex="0">
+          <div class="crumbs" id="crumbs"></div>
+          <div class="split">
+            <div class="scroller" id="scroller"><div class="sticky"><div class="rows" id="sticky"></div></div><div class="lines" id="lines"></div></div>
+          </div>
+        </div>
+        <div class="md" id="md" hidden>
+          <div class="doc" id="mddoc"></div>
+          <div class="threads"><div class="top">Threads</div><div id="mdthreads"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+<script>
+const FILES = {"crates/kanna-keeper/src/server.rs": {"text": "use crate::pty::{self, What};\nuse crate::{fdpass, paths, sig, ExitStatus, PROTOCOL_VERSION};\nuse anyhow::{Context, Result};\nuse serde_json::{json, Map, Value};\nuse std::collections::{BTreeMap, VecDeque};\nuse std::io::Read;\nuse std::os::fd::{AsRawFd, FromRawFd, OwnedFd};\nuse std::rc::Rc;\nuse std::os::unix::fs::{OpenOptionsExt, PermissionsExt};\nuse std::os::unix::net::{UnixListener, UnixStream};\nuse std::path::{Path, PathBuf};\nuse std::time::{Duration, Instant};\n\nconst MAX_CONNS: usize = 16;\nconst ACCEPT_PAUSE: Duration = Duration::from_millis(100);\nconst MAX_LINE: usize = 1 << 20;\nconst MAX_OUT: usize = 8 << 20;\n\npub struct Settings {\n    pub state_dir: PathBuf,\n    pub idle: Duration,\n    pub close_grace: Duration,\n    pub max_ptys: usize,\n    pub spawn_timeout: Duration,\n}\n\nfn env_u64(key: &str, default: u64) -> u64 {\n    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)\n}\n\nimpl Settings {\n    pub fn from_env(state_dir: PathBuf) -> Self {\n        Settings {\n            state_dir,\n            idle: Duration::from_millis(env_u64(\"KANNA_KEEPER_IDLE_MS\", 60_000)),\n            close_grace: Duration::from_millis(env_u64(\"KANNA_KEEPER_CLOSE_GRACE_MS\", 1_000)),\n            max_ptys: env_u64(\"KANNA_KEEPER_MAX_PTYS\", 256) as usize,\n            spawn_timeout: Duration::from_millis(env_u64(\"KANNA_KEEPER_SPAWN_TIMEOUT_MS\", 5_000)),\n        }\n    }\n}\n\nfn expected_uid() -> libc::uid_t {\n    #[cfg(debug_assertions)]\n    if let Some(uid) = std::env::var(\"KANNA_KEEPER_TEST_PEER_UID\").ok().and_then(|v| v.parse().ok()) {\n        return uid;\n    }\n    unsafe { libc::getuid() }\n}\n\nstruct Pty {\n    pid: i32,\n    cmd: Vec<String>,\n    cwd: String,\n    master: Rc<OwnedFd>,\n    exit: Option<ExitStatus>,\n}\n\nimpl Pty {\n    fn foreground(&self) -> Option<i32> {\n        let fg = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };\n        (fg > 0 && fg != self.pid).then_some(fg)\n    }\n\n    fn describe(&self, id: &str) -> Value {\n        let mut v = json!({\"id\": id, \"pid\": self.pid, \"cmd\": self.cmd, \"cwd\": self.cwd});\n        if let Some(exit) = self.exit {\n            v[\"exit\"] = exit.to_json();\n        }\n        v\n    }\n}\n\nstruct Out {\n    bytes: Vec<u8>,\n    sent: usize,\n    fds: Vec<Rc<OwnedFd>>,\n}\n\nstruct Conn {\n    serial: u64,\n    stream: UnixStream,\n    inbuf: Vec<u8>,\n    out: VecDeque<Out>,\n    out_bytes: usize,\n    out_fds: usize,\n    max_out_fds: usize,\n    dead: bool,\n}\n\nimpl Conn {\n    fn send(&mut self, value: Value, fds: Vec<Rc<OwnedFd>>) {\n        let mut bytes = serde_json::to_vec(&value).unwrap_or_default();\n        bytes.push(b'\\n');\n        self.out_bytes += bytes.len();\n        self.out_fds += fds.len();\n        if self.out_bytes > MAX_OUT || self.out_fds > self.max_out_fds {\n            eprintln!(\"kanna-keeper: dropped a client that isn't reading\");\n            self.dead = true;\n            return;\n        }\n        self.out.push_back(Out { bytes, sent: 0, fds });\n    }\n\n    fn flush(&mut self) {\n        while let Some(out) = self.out.front_mut() {\n            let fds: Vec<_> = if out.sent == 0 { out.fds.iter().map(|f| f.as_raw_fd()).collect() } else { vec![] };\n            match fdpass::send(self.stream.as_raw_fd(), &out.bytes[out.sent..], &fds, true) {\n                Ok(n) => {\n                    out.sent += n;\n                    self.out_fds -= out.fds.len();\n                    out.fds.clear();\n                    if out.sent == out.bytes.len() {\n                        self.out_bytes -= out.bytes.len();\n                        self.out.pop_front();\n                    }\n                }\n                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,\n                Err(_) => {\n                    self.dead = true;\n                    break;\n                }\n            }\n        }\n    }\n}\n\nstruct Pending {\n    conn: u64,\n    tag: Value,\n    id: String,\n    pid: i32,\n    cmd: Vec<String>,\n    cwd: String,\n    master: OwnedFd,\n    exec: OwnedFd,\n    deadline: Instant,\n    exit: Option<ExitStatus>,\n}\n\nstruct Closed {\n    pid: i32,\n    foreground: Option<i32>,\n    kill_at: Option<Instant>,\n}\n\nstruct Keeper {\n    listener: UnixListener,\n    sigs: OwnedFd,\n    conns: Vec<Conn>,\n    ptys: BTreeMap<String, Pty>,\n    pending: Vec<Pending>,\n    base: pty::Base,\n    next_serial: u64,\n    closed: Vec<Closed>,\n    settings: Settings,\n    idle_since: Instant,\n    accept_paused_until: Option<Instant>,\n    peer_uid: libc::uid_t,\n    stop: bool,\n}\n\npub const LISTENING: u8 = b'1';\npub const ALREADY_RUNNING: u8 = b'2';\npub const FAILED: u8 = b'E';\n\nfn tell(ready: Option<&OwnedFd>, bytes: &[u8]) {\n    if let Some(fd) = ready {\n        unsafe { libc::write(fd.as_raw_fd(), bytes.as_ptr().cast(), bytes.len()) };\n    }\n}\n\npub fn run(settings: Settings, ready: Option<&OwnedFd>) -> Result<()> {\n    sig::cloexec_inherited();\n    pty::raise_nofile();\n    let dir = settings.state_dir.clone();\n    paths::ensure_dir(&dir).with_context(|| format!(\"state directory {}\", dir.display()))?;\n    let lock = std::fs::OpenOptions::new()\n        .create(true)\n        .truncate(false)\n        .write(true)\n        .mode(0o600)\n        .open(paths::lock(&dir))?;\n    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {\n        tell(ready, &[ALREADY_RUNNING]);\n        return Ok(());\n    }\n    unsafe {\n        libc::signal(libc::SIGHUP, libc::SIG_IGN);\n        libc::signal(libc::SIGPIPE, libc::SIG_IGN);\n        let mut set: libc::sigset_t = std::mem::zeroed();\n        libc::sigemptyset(&mut set);\n        for signo in [libc::SIGCHLD, libc::SIGTERM, libc::SIGINT] {\n            libc::sigaddset(&mut set, signo);\n        }\n        libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());\n    }\n    let sigs = sig::pipe(&[libc::SIGCHLD, libc::SIGTERM, libc::SIGINT])?;\n    let sock = paths::socket(&dir);\n    let listener = listen(&sock)?;\n    let pid_file = paths::pid(&dir);\n    std::fs::write(&pid_file, format!(\"{}\\n\", std::process::id()))?;\n    tell(ready, &[LISTENING]);\n    let mut keeper = Keeper {\n        listener,\n        sigs,\n        conns: Vec::new(),\n        ptys: BTreeMap::new(),\n        pending: Vec::new(),\n        base: pty::Base::load(),\n        next_serial: 0,\n        closed: Vec::new(),\n        settings,\n        idle_since: Instant::now(),\n        accept_paused_until: None,\n        peer_uid: expected_uid(),\n        stop: false,\n    };\n    let result = keeper.run();\n    drop(keeper);\n    let _ = std::fs::remove_file(&sock);\n    if std::fs::read_to_string(&pid_file).is_ok_and(|p| p.trim() == std::process::id().to_string()) {\n        let _ = std::fs::remove_file(&pid_file);\n    }\n    drop(lock);\n    result\n}\n\nfn listen(sock: &Path) -> Result<UnixListener> {\n    let _ = std::fs::remove_file(sock);\n    let old = unsafe { libc::umask(0o177) };\n    let listener = UnixListener::bind(sock);\n    unsafe { libc::umask(old) };\n    let listener = listener.with_context(|| format!(\"binding {}\", sock.display()))?;\n    std::fs::set_permissions(sock, std::fs::Permissions::from_mode(0o600))?;\n    listener.set_nonblocking(true)?;\n    Ok(listener)\n}\n\nfn pollfd(fd: libc::c_int, events: libc::c_short) -> libc::pollfd {\n    libc::pollfd { fd, events, revents: 0 }\n}\n\nimpl Keeper {\n    fn run(&mut self) -> Result<()> {\n        while !self.stop {\n            if self.accept_paused_until.is_some_and(|until| Instant::now() >= until) {\n                self.accept_paused_until = None;\n            }\n            let listening = if self.accept_paused_until.is_none() { self.listener.as_raw_fd() } else { -1 };\n            let mut fds = vec![pollfd(self.sigs.as_raw_fd(), libc::POLLIN), pollfd(listening, libc::POLLIN)];\n            for c in &self.conns {\n                let events = if c.out.is_empty() { libc::POLLIN } else { libc::POLLIN | libc::POLLOUT };\n                fds.push(pollfd(c.stream.as_raw_fd(), events));\n            }\n            let conns = self.conns.len();\n            for p in &self.pending {\n                fds.push(pollfd(p.exec.as_raw_fd(), libc::POLLIN));\n            }\n            let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, self.timeout()) };\n            if n < 0 {\n                let e = std::io::Error::last_os_error();\n                if e.kind() != std::io::ErrorKind::Interrupted {\n                    return Err(e.into());\n                }\n                continue;\n            }\n            if fds[0].revents != 0 {\n                for signo in sig::drain(&self.sigs) {\n                    match signo {\n                        libc::SIGTERM | libc::SIGINT => self.stop = true,\n                        libc::SIGCHLD => self.reap(),\n                        _ => {}\n                    }\n                }\n            }\n            for i in 0..conns {\n                if fds[2 + i].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {\n                    self.read_conn(i);\n                }\n            }\n            for k in (0..fds.len() - 2 - conns).rev() {\n                if fds[2 + conns + k].revents != 0 {\n                    self.exec_heard(k);\n                }\n            }\n            self.spawn_timeouts();\n            if fds[1].revents != 0 {\n                self.accept();\n            }\n            for c in &mut self.conns {\n                c.flush();\n            }\n            self.conns.retain(|c| !c.dead);\n            if self.run_kills() {\n                self.reap();\n            }\n            self.check_idle();\n        }\n        Ok(())\n    }\n\n    fn timeout(&self) -> libc::c_int {\n        let now = Instant::now();\n        let mut wait = Duration::from_secs(1);\n        if let Some(at) = self.closed.iter().filter_map(|c| c.kill_at).min() {\n            wait = wait.min(at.saturating_duration_since(now));\n        }\n        if let Some(at) = self.pending.iter().map(|p| p.deadline).min() {\n            wait = wait.min(at.saturating_duration_since(now));\n        }\n        if let Some(until) = self.accept_paused_until {\n            wait = wait.min(until.saturating_duration_since(now));\n        }\n        if self.idle() {\n            wait = wait.min((self.idle_since + self.settings.idle).saturating_duration_since(now));\n        }\n        wait.as_millis() as libc::c_int + 1\n    }\n\n    fn idle(&self) -> bool {\n        self.conns.is_empty()\n            && self.pending.is_empty()\n            && self.closed.is_empty()\n            && self.ptys.values().all(|p| p.exit.is_some())\n    }\n\n    fn check_idle(&mut self) {\n        if !self.idle() {\n            self.idle_since = Instant::now();\n            return;\n        }\n        if self.idle_since.elapsed() < self.settings.idle {\n            return;\n        }\n        let sock = paths::socket(&self.settings.state_dir);\n        let _ = std::fs::remove_file(&sock);\n        self.accept();\n        if self.conns.is_empty() {\n            self.stop = true;\n            return;\n        }\n        match listen(&sock) {\n            Ok(listener) => self.listener = listener,\n            Err(e) => {\n                eprintln!(\"kanna-keeper: {e:#}\");\n                self.stop = true;\n            }\n        }\n        self.idle_since = Instant::now();\n    }\n\n    fn run_kills(&mut self) -> bool {\n        let now = Instant::now();\n        let mut killed = false;\n        for c in &mut self.closed {\n            if c.kill_at.is_none_or(|at| at > now) {\n                continue;\n            }\n            unsafe { libc::killpg(c.pid, libc::SIGKILL) };\n            if let Some(fg) = c.foreground.filter(|&fg| unsafe { libc::getsid(fg) } == c.pid) {\n                unsafe { libc::killpg(fg, libc::SIGKILL) };\n            }\n            c.kill_at = None;\n            killed = true;\n        }\n        killed\n    }\n\n    fn accept(&mut self) {\n        loop {\n            match self.listener.accept() {\n                Ok((stream, _)) => {\n                    match fdpass::peer_uid(&stream) {\n                        Ok(uid) if uid == self.peer_uid => {}\n                        _ => {\n                            eprintln!(\"kanna-keeper: refused a connection from another user\");\n                            continue;\n                        }\n                    }\n                    if self.conns.len() >= MAX_CONNS {\n                        eprintln!(\"kanna-keeper: refused a connection: too many clients\");\n                        continue;\n                    }\n                    let _ = stream.set_nonblocking(true);\n                    self.next_serial += 1;\n                    let mut conn = Conn {\n                        serial: self.next_serial,\n                        stream,\n                        inbuf: Vec::new(),\n                        out: VecDeque::new(),\n                        out_bytes: 0,\n                        out_fds: 0,\n                        max_out_fds: 2 * self.settings.max_ptys + 16,\n                        dead: false,\n                    };\n                    for (id, p) in &self.ptys {\n                        if let Some(exit) = p.exit {\n                            conn.send(exited_event(id, p.pid, exit), vec![]);\n                        }\n                    }\n                    self.conns.push(conn);\n                }\n                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}\n                Err(e) if matches!(e.raw_os_error(), Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM)) => {\n                    eprintln!(\"kanna-keeper: can't accept a connection: {e}\");\n                    self.accept_paused_until = Some(Instant::now() + ACCEPT_PAUSE);\n                    break;\n                }\n                Err(_) => break,\n            }\n        }\n    }\n\n    fn read_conn(&mut self, i: usize) {\n        let mut buf = [0u8; 65536];\n        let n = match self.conns[i].stream.read(&mut buf) {\n            Ok(0) => {\n                self.conns[i].dead = true;\n                return;\n            }\n            Ok(n) => n,\n            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => return,\n            Err(_) => {\n                self.conns[i].dead = true;\n                return;\n            }\n        };\n        self.conns[i].inbuf.extend_from_slice(&buf[..n]);\n        while let Some(end) = self.conns[i].inbuf.iter().position(|&b| b == b'\\n') {\n            let line: Vec<u8> = self.conns[i].inbuf.drain(..=end).collect();\n            if self.conns[i].dead {\n                return;\n            }\n            match serde_json::from_slice::<Value>(&line) {\n                Ok(req) => self.request(i, &req),\n                Err(e) => self.conns[i].send(json!({\"ok\": false, \"error\": format!(\"bad request: {e}\")}), vec![]),\n            }\n        }\n        if self.conns[i].inbuf.len() > MAX_LINE {\n            eprintln!(\"kanna-keeper: dropped a client: request too long\");\n            self.conns[i].dead = true;\n        }\n    }\n\n    fn request(&mut self, i: usize, req: &Value) {\n        let tag = req.get(\"req\").cloned().unwrap_or(Value::Null);\n        let id = req[\"id\"].as_str().unwrap_or(\"\");\n        let result: Result<(Value, Vec<Rc<OwnedFd>>), String> = match req[\"op\"].as_str().unwrap_or(\"\") {\n            \"hello\" => Ok((json!({\"version\": PROTOCOL_VERSION, \"pid\": std::process::id()}), vec![])),\n            \"spawn\" => match self.spawn(i, &tag, id, req) {\n                Ok(()) => return,\n                Err(error) => Err(error),\n            },\n            \"adopt\" => {\n                let lines: Vec<_> = self\n                    .ptys\n                    .iter()\n                    .map(|(id, p)| (json!({\"req\": tag, \"pty\": p.describe(id), \"fds\": 1}), p.master.clone()))\n                    .collect();\n                let count = lines.len();\n                for (line, fd) in lines {\n                    self.conns[i].send(line, vec![fd]);\n                }\n                Ok((json!({\"ptys\": count}), vec![]))\n            }\n            \"close\" => self.close(id),\n            \"ack\" => self.ack(id),\n            op => Err(format!(\"unknown op {op:?}\")),\n        };\n        let (mut reply, fds) = match result {\n            Ok((body, fds)) => {\n                let mut reply = json!({\"ok\": true});\n                if let Value::Object(body) = body {\n                    reply.as_object_mut().unwrap().extend(body);\n                }\n                if !fds.is_empty() {\n                    reply[\"fds\"] = json!(fds.len());\n                }\n                (reply, fds)\n            }\n            Err(error) => (json!({\"ok\": false, \"error\": error}), vec![]),\n        };\n        if !tag.is_null() {\n            reply[\"req\"] = tag;\n        }\n        self.conns[i].send(reply, fds);\n    }\n\n    fn spawn(&mut self, i: usize, tag: &Value, id: &str, req: &Value) -> Result<(), String> {\n        valid_id(id)?;\n        if self.ptys.contains_key(id) || self.pending.iter().any(|p| p.id == id) {\n            return Err(format!(\"pty {id:?} exists\"));\n        }\n        if self.ptys.len() + self.pending.len() + self.closed.len() >= self.settings.max_ptys {\n            return Err(format!(\"too many ptys ({})\", self.settings.max_ptys));\n        }\n        let what = match (req[\"command\"].as_str(), req[\"shell\"].as_str()) {\n            (Some(_), Some(_)) => return Err(\"give command or shell, not both\".into()),\n            (Some(command), None) => What::Command(command),\n            (None, shell) => What::Shell(shell),\n        };\n        let size = |key: &str, default: u16| req[key].as_u64().map_or(default, |v| v.clamp(1, 10_000) as u16);\n        let env: Option<&Map<String, Value>> = req[\"env\"].as_object();\n        let (spawned, argv) = pty::spawn(&self.base, &what, req[\"cwd\"].as_str(), env, size(\"rows\", 24), size(\"cols\", 80))\n            .map_err(|e| format!(\"{e:#}\"))?;\n        self.pending.push(Pending {\n            conn: self.conns[i].serial,\n            tag: tag.clone(),\n            id: id.to_string(),\n            pid: spawned.pid,\n            cmd: argv.iter().map(|a| a.to_string_lossy().into_owned()).collect(),\n            cwd: req[\"cwd\"].as_str().unwrap_or(\"\").to_string(),\n            master: spawned.master,\n            exec: spawned.exec,\n            deadline: Instant::now() + self.settings.spawn_timeout,\n            exit: None,\n        });\n        Ok(())\n    }\n\n    fn exec_heard(&mut self, k: usize) {\n        let mut errno = 0 as libc::c_int;\n        let size = std::mem::size_of::<libc::c_int>();\n        let n = unsafe { libc::read(self.pending[k].exec.as_raw_fd(), (&mut errno as *mut libc::c_int).cast(), size) };\n        if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock {\n            return;\n        }\n        let p = self.pending.remove(k);\n        if n == 0 {\n            self.started(p);\n            return;\n        }\n        let error = if n as usize == size { std::io::Error::from_raw_os_error(errno).to_string() } else { \"exec failed\".into() };\n        let program = p.cmd.first().cloned().unwrap_or_default();\n        self.spawn_failed(p, format!(\"cannot run {program}: {error}\"));\n    }\n\n    fn spawn_timeouts(&mut self) {\n        let now = Instant::now();\n        while let Some(k) = self.pending.iter().position(|p| p.deadline <= now) {\n            let p = self.pending.remove(k);\n            if p.exit.is_none() {\n                unsafe { libc::kill(p.pid, libc::SIGKILL) };\n            }\n            let program = p.cmd.first().cloned().unwrap_or_default();\n            let after = self.settings.spawn_timeout;\n            self.spawn_failed(p, format!(\"spawning {program} timed out after {after:?}\"));\n        }\n    }\n\n    fn spawn_failed(&mut self, p: Pending, error: String) {\n        if p.exit.is_none() {\n            self.closed.push(Closed { pid: p.pid, foreground: None, kill_at: None });\n        }\n        let mut reply = json!({\"ok\": false, \"error\": error});\n        if !p.tag.is_null() {\n            reply[\"req\"] = p.tag;\n        }\n        if let Some(c) = self.conns.iter_mut().find(|c| c.serial == p.conn) {\n            c.send(reply, vec![]);\n        }\n        self.reap();\n    }\n\n    fn started(&mut self, p: Pending) {\n        let master = Rc::new(p.master);\n        let mut reply = json!({\"ok\": true, \"id\": p.id, \"pid\": p.pid, \"cmd\": p.cmd, \"fds\": 1});\n        if !p.tag.is_null() {\n            reply[\"req\"] = p.tag;\n        }\n        if let Some(c) = self.conns.iter_mut().find(|c| c.serial == p.conn) {\n            c.send(reply, vec![master.clone()]);\n        }\n        self.ptys.insert(p.id.clone(), Pty { pid: p.pid, cmd: p.cmd, cwd: p.cwd, master, exit: p.exit });\n        if let Some(exit) = p.exit {\n            let event = exited_event(&p.id, p.pid, exit);\n            for c in &mut self.conns {\n                c.send(event.clone(), vec![]);\n            }\n        }\n    }\n\n    fn close(&mut self, id: &str) -> Result<(Value, Vec<Rc<OwnedFd>>), String> {\n        if self.pending.iter().any(|p| p.id == id) {\n            return Err(format!(\"pty {id:?} is still starting\"));\n        }\n        let Some(p) = self.ptys.remove(id) else {\n            return Err(format!(\"no pty {id:?}\"));\n        };\n        if p.exit.is_none() {\n            let foreground = p.foreground();\n            for pg in std::iter::once(p.pid).chain(foreground) {\n                unsafe { libc::killpg(pg, libc::SIGHUP) };\n            }\n            self.closed.push(Closed { pid: p.pid, foreground, kill_at: Some(Instant::now() + self.settings.close_grace) });\n        }\n        Ok((json!({}), vec![]))\n    }\n\n    fn ack(&mut self, id: &str) -> Result<(Value, Vec<Rc<OwnedFd>>), String> {\n        match self.ptys.get(id) {\n            Some(p) if p.exit.is_none() => Err(format!(\"pty {id:?} is still running\")),\n            Some(_) => {\n                self.ptys.remove(id);\n                Ok((json!({}), vec![]))\n            }\n            None => Ok((json!({}), vec![])),\n        }\n    }\n\n    fn reap(&mut self) {\n        self.closed.retain(|c| c.kill_at.is_some() || wait(c.pid).is_none());\n        for p in self.pending.iter_mut().filter(|p| p.exit.is_none()) {\n            p.exit = wait(p.pid);\n        }\n        let mut events = Vec::new();\n        for (id, p) in self.ptys.iter_mut().filter(|(_, p)| p.exit.is_none()) {\n            if let Some(exit) = wait(p.pid) {\n                p.exit = Some(exit);\n                events.push(exited_event(id, p.pid, exit));\n            }\n        }\n        for event in events {\n            for c in &mut self.conns {\n                c.send(event.clone(), vec![]);\n            }\n        }\n    }\n}\n\nfn wait(pid: i32) -> Option<ExitStatus> {\n    let mut raw = 0;\n    if unsafe { libc::waitpid(pid, &mut raw, libc::WNOHANG) } != pid {\n        return None;\n    }\n    Some(if libc::WIFSIGNALED(raw) {\n        ExitStatus::Signal(libc::WTERMSIG(raw))\n    } else {\n        ExitStatus::Code(libc::WEXITSTATUS(raw))\n    })\n}\n\nfn exited_event(id: &str, pid: i32, exit: ExitStatus) -> Value {\n    let mut v = json!({\"exited\": id, \"pid\": pid});\n    v.as_object_mut().unwrap().extend(exit.to_json().as_object().unwrap().clone());\n    v\n}\n\nfn valid_id(id: &str) -> Result<(), String> {\n    if id.is_empty() || id.len() > 128 || id.chars().any(char::is_control) {\n        return Err(format!(\"bad id {id:?}\"));\n    }\n    Ok(())\n}\n\npub fn detach(mut settings: Settings) -> Result<()> {\n    paths::ensure_dir(&settings.state_dir).with_context(|| format!(\"state directory {}\", settings.state_dir.display()))?;\n    settings.state_dir = std::path::absolute(&settings.state_dir)?;\n    let log = std::fs::OpenOptions::new()\n        .create(true)\n        .append(true)\n        .mode(0o600)\n        .open(paths::log(&settings.state_dir))?;\n    let mut fds = [-1; 2];\n    if unsafe { libc::pipe(fds.as_mut_ptr()) } < 0 {\n        return Err(std::io::Error::last_os_error().into());\n    }\n    let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };\n    sig::set_cloexec(read.as_raw_fd());\n    sig::set_cloexec(write.as_raw_fd());\n    match unsafe { libc::fork() } {\n        -1 => Err(std::io::Error::last_os_error().into()),\n        0 => {\n            drop(read);\n            unsafe { libc::setsid() };\n            match unsafe { libc::fork() } {\n                -1 => unsafe { libc::_exit(1) },\n                0 => {}\n                _ => unsafe { libc::_exit(0) },\n            }\n            unsafe { libc::chdir(c\"/\".as_ptr()) };\n            let null = std::fs::OpenOptions::new().read(true).write(true).open(\"/dev/null\");\n            unsafe {\n                if let Ok(null) = &null {\n                    libc::dup2(null.as_raw_fd(), 0);\n                    libc::dup2(null.as_raw_fd(), 1);\n                }\n                libc::dup2(log.as_raw_fd(), 2);\n            }\n            drop(null);\n            drop(log);\n            sig::close_inherited(&[write.as_raw_fd()]);\n            let code = match run(settings, Some(&write)) {\n                Ok(()) => 0,\n                Err(e) => {\n                    eprintln!(\"kanna-keeper: {e:#}\");\n                    tell(Some(&write), format!(\"{}{e:#}\", FAILED as char).as_bytes());\n                    1\n                }\n            };\n            std::process::exit(code);\n        }\n        child => {\n            drop(write);\n            let mut status = 0;\n            unsafe { libc::waitpid(child, &mut status, 0) };\n            let mut read = std::fs::File::from(read);\n            let mut byte = [0u8; 1];\n            match read.read(&mut byte) {\n                Ok(1) if byte[0] == LISTENING || byte[0] == ALREADY_RUNNING => Ok(()),\n                Ok(1) if byte[0] == FAILED => {\n                    let mut error = String::new();\n                    let _ = read.read_to_string(&mut error);\n                    Err(anyhow::anyhow!(error))\n                }\n                _ => Err(anyhow::anyhow!(\n                    \"the keeper stopped before it listened; see {}\",\n                    paths::log(&settings.state_dir).display()\n                )),\n            }\n        }\n    }\n}"}, "crates/kanna-keeper/src/fdpass.rs": {"text": "use std::io;\nuse std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};\n\nconst MAX_FDS: usize = 16;\n\nfn cmsg_space(n: usize) -> usize {\n    unsafe { libc::CMSG_SPACE((n * std::mem::size_of::<RawFd>()) as u32) as usize }\n}\n\n#[cfg(any(target_os = \"linux\", target_os = \"android\"))]\nconst SEND_FLAGS: libc::c_int = libc::MSG_NOSIGNAL;\n#[cfg(not(any(target_os = \"linux\", target_os = \"android\")))]\nconst SEND_FLAGS: libc::c_int = 0;\n\n#[cfg(any(target_os = \"linux\", target_os = \"android\"))]\nconst RECV_FLAGS: libc::c_int = libc::MSG_CMSG_CLOEXEC;\n#[cfg(not(any(target_os = \"linux\", target_os = \"android\")))]\nconst RECV_FLAGS: libc::c_int = 0;\n\npub fn send(sock: RawFd, bytes: &[u8], fds: &[RawFd], nonblocking: bool) -> io::Result<usize> {\n    let mut iov = libc::iovec { iov_base: bytes.as_ptr() as *mut _, iov_len: bytes.len() };\n    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };\n    msg.msg_iov = &mut iov;\n    msg.msg_iovlen = 1;\n    let mut control = vec![0u64; cmsg_space(fds.len().max(1)).div_ceil(8)];\n    if !fds.is_empty() {\n        msg.msg_control = control.as_mut_ptr().cast();\n        msg.msg_controllen = cmsg_space(fds.len()) as _;\n        unsafe {\n            let cmsg = libc::CMSG_FIRSTHDR(&msg);\n            (*cmsg).cmsg_level = libc::SOL_SOCKET;\n            (*cmsg).cmsg_type = libc::SCM_RIGHTS;\n            (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of_val(fds) as u32) as _;\n            std::ptr::copy_nonoverlapping(fds.as_ptr(), libc::CMSG_DATA(cmsg).cast::<RawFd>(), fds.len());\n        }\n    }\n    let flags = SEND_FLAGS | if nonblocking { libc::MSG_DONTWAIT } else { 0 };\n    loop {\n        let n = unsafe { libc::sendmsg(sock, &msg, flags) };\n        if n >= 0 {\n            return Ok(n as usize);\n        }\n        let e = io::Error::last_os_error();\n        if e.kind() != io::ErrorKind::Interrupted {\n            return Err(e);\n        }\n    }\n}\n\npub fn recv(sock: RawFd, buf: &mut [u8], nonblocking: bool) -> io::Result<(usize, Vec<OwnedFd>)> {\n    let mut iov = libc::iovec { iov_base: buf.as_mut_ptr().cast(), iov_len: buf.len() };\n    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };\n    msg.msg_iov = &mut iov;\n    msg.msg_iovlen = 1;\n    let mut control = vec![0u64; cmsg_space(MAX_FDS).div_ceil(8)];\n    msg.msg_control = control.as_mut_ptr().cast();\n    msg.msg_controllen = cmsg_space(MAX_FDS) as _;\n    let flags = RECV_FLAGS | if nonblocking { libc::MSG_DONTWAIT } else { 0 };\n    let n = loop {\n        let n = unsafe { libc::recvmsg(sock, &mut msg, flags) };\n        if n >= 0 {\n            break n as usize;\n        }\n        let e = io::Error::last_os_error();\n        if e.kind() != io::ErrorKind::Interrupted {\n            return Err(e);\n        }\n    };\n    let mut fds = Vec::new();\n    unsafe {\n        let mut cmsg = libc::CMSG_FIRSTHDR(&msg);\n        while !cmsg.is_null() {\n            if (*cmsg).cmsg_level == libc::SOL_SOCKET && (*cmsg).cmsg_type == libc::SCM_RIGHTS {\n                let data = libc::CMSG_DATA(cmsg).cast::<RawFd>();\n                let len = (*cmsg).cmsg_len as usize - (data as usize - cmsg as usize);\n                for i in 0..len / std::mem::size_of::<RawFd>() {\n                    let fd = std::ptr::read_unaligned(data.add(i));\n                    #[cfg(not(any(target_os = \"linux\", target_os = \"android\")))]\n                    crate::sig::set_cloexec(fd);\n                    fds.push(OwnedFd::from_raw_fd(fd));\n                }\n            }\n            cmsg = libc::CMSG_NXTHDR(&msg, cmsg);\n        }\n    }\n    if msg.msg_flags & libc::MSG_CTRUNC != 0 {\n        return Err(io::Error::other(\"too many file descriptors in one message\"));\n    }\n    Ok((n, fds))\n}\n\npub fn peer_uid(sock: &impl AsRawFd) -> io::Result<libc::uid_t> {\n    #[cfg(any(target_os = \"linux\", target_os = \"android\"))]\n    {\n        let mut cred: libc::ucred = unsafe { std::mem::zeroed() };\n        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;\n        let rc = unsafe {\n            libc::getsockopt(\n                sock.as_raw_fd(),\n                libc::SOL_SOCKET,\n                libc::SO_PEERCRED,\n                (&mut cred as *mut libc::ucred).cast(),\n                &mut len,\n            )\n        };\n        if rc != 0 {\n            return Err(io::Error::last_os_error());\n        }\n        Ok(cred.uid)\n    }\n    #[cfg(not(any(target_os = \"linux\", target_os = \"android\")))]\n    {\n        let (mut uid, mut gid) = (0, 0);\n        if unsafe { libc::getpeereid(sock.as_raw_fd(), &mut uid, &mut gid) } != 0 {\n            return Err(io::Error::last_os_error());\n        }\n        Ok(uid)\n    }\n}"}, "crates/kanna-keeper/src/client.rs": {"text": "use crate::{fdpass, paths, ExitStatus};\nuse serde_json::{json, Map, Value};\nuse std::collections::{BTreeMap, VecDeque};\nuse std::io;\nuse std::os::fd::{AsRawFd, OwnedFd, RawFd};\nuse std::os::unix::net::UnixStream;\nuse std::path::{Path, PathBuf};\nuse std::time::{Duration, Instant};\n\npub const START_TIMEOUT: Duration = Duration::from_secs(5);\n\n#[derive(Debug)]\npub struct Pty {\n    pub id: String,\n    pub pid: i32,\n    pub cmd: Vec<String>,\n    pub cwd: String,\n    pub master: OwnedFd,\n    pub exit: Option<ExitStatus>,\n}\n\n#[derive(Clone, Debug, PartialEq, Eq)]\npub struct Exited {\n    pub id: String,\n    pub pid: i32,\n    pub status: ExitStatus,\n}\n\n#[derive(Clone, Debug, Default)]\npub struct SpawnRequest {\n    pub id: String,\n    pub command: Option<String>,\n    pub shell: Option<String>,\n    pub cwd: Option<PathBuf>,\n    pub env: BTreeMap<String, Option<String>>,\n    pub cols: u16,\n    pub rows: u16,\n}\n\nimpl SpawnRequest {\n    pub fn shell(id: &str) -> Self {\n        SpawnRequest { id: id.into(), cols: 80, rows: 24, ..Default::default() }\n    }\n\n    pub fn command(id: &str, command: &str) -> Self {\n        SpawnRequest { command: Some(command.into()), ..Self::shell(id) }\n    }\n\n    fn to_json(&self) -> Value {\n        let mut v = json!({\"op\": \"spawn\", \"id\": self.id, \"cols\": self.cols, \"rows\": self.rows});\n        if let Some(c) = &self.command {\n            v[\"command\"] = c.as_str().into();\n        }\n        if let Some(s) = &self.shell {\n            v[\"shell\"] = s.as_str().into();\n        }\n        if let Some(cwd) = &self.cwd {\n            v[\"cwd\"] = cwd.to_string_lossy().into();\n        }\n        if !self.env.is_empty() {\n            let env: Map<String, Value> =\n                self.env.iter().map(|(k, v)| (k.clone(), v.as_deref().map_or(Value::Null, Value::from))).collect();\n            v[\"env\"] = Value::Object(env);\n        }\n        v\n    }\n}\n\npub struct Client {\n    stream: UnixStream,\n    inbuf: Vec<u8>,\n    readbuf: Box<[u8]>,\n    fds: VecDeque<OwnedFd>,\n    events: VecDeque<Exited>,\n    next_req: u64,\n}\n\nfn strings(v: &Value) -> Vec<String> {\n    v.as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect()).unwrap_or_default()\n}\n\nfn keeper_error(msg: impl Into<String>) -> io::Error {\n    io::Error::other(msg.into())\n}\n\nimpl Client {\n    pub fn connect(socket: &Path) -> io::Result<Self> {\n        let stream = UnixStream::connect(socket)?;\n        if fdpass::peer_uid(&stream)? != unsafe { libc::getuid() } {\n            return Err(io::Error::new(io::ErrorKind::PermissionDenied, \"the keeper runs as another user\"));\n        }\n        Ok(Client { stream, inbuf: Vec::new(), readbuf: vec![0u8; 65536].into_boxed_slice(), fds: VecDeque::new(), events: VecDeque::new(), next_req: 1 })\n    }\n\n    pub fn connect_or_start(state_dir: &Path, keeper_bin: &Path) -> io::Result<Self> {\n        let socket = paths::socket(state_dir);\n        let deadline = Instant::now() + START_TIMEOUT;\n        let mut backoff = Duration::from_millis(5);\n        loop {\n            let error = match Self::connect(&socket) {\n                Ok(client) => return Ok(client),\n                Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Err(e),\n                Err(e) => e,\n            };\n            if Instant::now() >= deadline {\n                return Err(keeper_error(format!(\"no keeper is listening on {}: {error}\", socket.display())));\n            }\n            let out = std::process::Command::new(keeper_bin)\n                .arg(\"--state-dir\")\n                .arg(state_dir)\n                .arg(\"--detach\")\n                .stdin(std::process::Stdio::null())\n                .stdout(std::process::Stdio::null())\n                .stderr(std::process::Stdio::piped())\n                .output()?;\n            if !out.status.success() {\n                let stderr = String::from_utf8_lossy(&out.stderr);\n                return Err(keeper_error(format!(\n                    \"{} --detach failed ({}): {}\",\n                    keeper_bin.display(),\n                    out.status,\n                    stderr.trim()\n                )));\n            }\n            if let Ok(client) = Self::connect(&socket) {\n                return Ok(client);\n            }\n            std::thread::sleep(backoff.min(deadline.saturating_duration_since(Instant::now())));\n            backoff = (backoff * 2).min(Duration::from_millis(200));\n        }\n    }\n\n    pub fn set_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {\n        self.stream.set_read_timeout(timeout)?;\n        self.stream.set_write_timeout(timeout)\n    }\n\n    pub fn hello(&mut self) -> io::Result<(u64, i32)> {\n        let (reply, _) = self.request(json!({\"op\": \"hello\"}), |_, _| {})?;\n        Ok((reply[\"version\"].as_u64().unwrap_or(0), reply[\"pid\"].as_i64().unwrap_or(0) as i32))\n    }\n\n    pub fn spawn(&mut self, req: &SpawnRequest) -> io::Result<Pty> {\n        let (reply, mut fds) = self.request(req.to_json(), |_, _| {})?;\n        let master = fds.pop().ok_or_else(|| keeper_error(\"spawn: no pty in the reply\"))?;\n        Ok(Pty {\n            id: req.id.clone(),\n            pid: reply[\"pid\"].as_i64().unwrap_or(0) as i32,\n            cmd: strings(&reply[\"cmd\"]),\n            cwd: req.cwd.as_ref().map(|c| c.to_string_lossy().into_owned()).unwrap_or_default(),\n            master,\n            exit: None,\n        })\n    }\n\n    pub fn adopt(&mut self) -> io::Result<Vec<Pty>> {\n        let mut ptys = Vec::new();\n        let mut missing = Vec::new();\n        let (reply, _) = self.request(json!({\"op\": \"adopt\"}), |line, fds| {\n            let p = &line[\"pty\"];\n            let id: String = p[\"id\"].as_str().unwrap_or(\"\").into();\n            match fds.pop() {\n                Some(master) => ptys.push(Pty {\n                    id,\n                    pid: p[\"pid\"].as_i64().unwrap_or(0) as i32,\n                    cmd: strings(&p[\"cmd\"]),\n                    cwd: p[\"cwd\"].as_str().unwrap_or(\"\").into(),\n                    master,\n                    exit: p.get(\"exit\").and_then(ExitStatus::from_json),\n                }),\n                None => missing.push(id),\n            }\n        })?;\n        if !missing.is_empty() {\n            return Err(keeper_error(format!(\"adopt: no pty came with {}\", missing.join(\", \"))));\n        }\n        if reply[\"ptys\"].as_u64() != Some(ptys.len() as u64) {\n            return Err(keeper_error(format!(\"adopt: the keeper holds {} ptys, {} came\", reply[\"ptys\"], ptys.len())));\n        }\n        Ok(ptys)\n    }\n\n    pub fn close(&mut self, id: &str) -> io::Result<()> {\n        self.request(json!({\"op\": \"close\", \"id\": id}), |_, _| {}).map(|_| ())\n    }\n\n    pub fn ack(&mut self, id: &str) -> io::Result<()> {\n        self.request(json!({\"op\": \"ack\", \"id\": id}), |_, _| {}).map(|_| ())\n    }\n\n    pub fn poll_events(&mut self) -> io::Result<Vec<Exited>> {\n        while self.fill(false)? {}\n        self.parse_lines(None, &mut |_, _| {});\n        Ok(self.events.drain(..).collect())\n    }\n\n    pub fn wait_event(&mut self, timeout: Option<Duration>) -> io::Result<Option<Exited>> {\n        let deadline = timeout.map(|t| Instant::now() + t);\n        loop {\n            self.parse_lines(None, &mut |_, _| {});\n            if let Some(e) = self.events.pop_front() {\n                return Ok(Some(e));\n            }\n            let wait = match deadline {\n                Some(d) => {\n                    let left = d.saturating_duration_since(Instant::now());\n                    if left.is_zero() {\n                        return Ok(None);\n                    }\n                    left.as_millis() as libc::c_int + 1\n                }\n                None => -1,\n            };\n            let mut pfd = libc::pollfd { fd: self.stream.as_raw_fd(), events: libc::POLLIN, revents: 0 };\n            if unsafe { libc::poll(&mut pfd, 1, wait) } > 0 {\n                self.fill(true)?;\n            }\n        }\n    }\n\n    fn fill(&mut self, block: bool) -> io::Result<bool> {\n        match fdpass::recv(self.stream.as_raw_fd(), &mut self.readbuf, !block) {\n            Ok((0, _)) => Err(io::Error::new(io::ErrorKind::UnexpectedEof, \"the keeper closed the connection\")),\n            Ok((n, fds)) => {\n                self.inbuf.extend_from_slice(&self.readbuf[..n]);\n                self.fds.extend(fds);\n                Ok(true)\n            }\n            Err(e) if e.kind() == io::ErrorKind::WouldBlock && !block => Ok(false),\n            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {\n                Err(io::Error::new(io::ErrorKind::TimedOut, \"the keeper didn't answer in time\"))\n            }\n            Err(e) => Err(e),\n        }\n    }\n\n    fn parse_lines(\n        &mut self,\n        req: Option<u64>,\n        on_line: &mut dyn FnMut(&Value, &mut Vec<OwnedFd>),\n    ) -> Option<(Value, Vec<OwnedFd>)> {\n        while let Some(end) = self.inbuf.iter().position(|&b| b == b'\\n') {\n            let line: Vec<u8> = self.inbuf.drain(..=end).collect();\n            let Ok(v) = serde_json::from_slice::<Value>(&line) else { continue };\n            let n = v[\"fds\"].as_u64().unwrap_or(0) as usize;\n            let mut fds: Vec<OwnedFd> = (0..n).filter_map(|_| self.fds.pop_front()).collect();\n            if let Some(id) = v[\"exited\"].as_str() {\n                if let Some(status) = ExitStatus::from_json(&v) {\n                    self.events.push_back(Exited { id: id.into(), pid: v[\"pid\"].as_i64().unwrap_or(0) as i32, status });\n                }\n                continue;\n            }\n            if req.is_some() && v[\"req\"].as_u64() == req {\n                if v.get(\"ok\").is_some() {\n                    return Some((v, fds));\n                }\n                on_line(&v, &mut fds);\n            }\n        }\n        None\n    }\n\n    fn request(\n        &mut self,\n        mut body: Value,\n        mut on_line: impl FnMut(&Value, &mut Vec<OwnedFd>),\n    ) -> io::Result<(Value, Vec<OwnedFd>)> {\n        let tag = self.next_req;\n        self.next_req += 1;\n        body[\"req\"] = tag.into();\n        let mut bytes = serde_json::to_vec(&body).map_err(io::Error::other)?;\n        bytes.push(b'\\n');\n        let mut sent = 0;\n        while sent < bytes.len() {\n            sent += fdpass::send(self.stream.as_raw_fd(), &bytes[sent..], &[], false)?;\n        }\n        loop {\n            if let Some((reply, fds)) = self.parse_lines(Some(tag), &mut on_line) {\n                if reply[\"ok\"].as_bool() == Some(true) {\n                    return Ok((reply, fds));\n                }\n                return Err(keeper_error(reply[\"error\"].as_str().unwrap_or(\"keeper error\").to_string()));\n            }\n            self.fill(true)?;\n        }\n    }\n}\n\nimpl AsRawFd for Client {\n    fn as_raw_fd(&self) -> RawFd {\n        self.stream.as_raw_fd()\n    }\n}"}};
+
+const KEYWORDS = new Set("as break const continue crate else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while dyn".split(" "));
+const PRIMS = new Set("u8 u16 u32 u64 usize i8 i16 i32 i64 isize bool char str f32 f64".split(" "));
+const RULES = [
+  [/^\/\/.*/, "comment"],
+  [/^#!?\[[^\]]*(\([^)]*(\([^)]*\))*[^)]*\))?[^\]]*\]/, "attribute"],
+  [/^"(\\.|[^"\\])*"/, "string"],
+  [/^b?'(\\.|[^'\\])'/, "string"],
+  [/^\d[\d_]*(\.\d+)?(u8|u16|u32|u64|usize|i32|i64|f64)?/, "number"],
+  [/^[a-z_][a-z0-9_]*!/, "macro"],
+  [/^[A-Z][A-Z0-9_]+\b/, "constant"],
+  [/^[A-Z][A-Za-z0-9]*/, "type"],
+  [/^[a-z_][a-z0-9_]*(?=\s*(::<[^>]*>)?\()/, "function"],
+  [/^[a-z_][a-z0-9_]*/, "ident"],
+  [/^(->|=>|::|&&|\|\||[=!<>]=|[-+*\/%&|^!<>=?])/, "operator"],
+  [/^[{}()\[\];,.:]/, "punctuation"],
+  [/^\s+/, null],
+  [/^./, null],
+];
+function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+function guides(n) { return `<span class="ig">    </span>`.repeat(Math.floor(n / 4)) + " ".repeat(n % 4); }
+function highlight(line) {
+  const lead = line.match(/^ */)[0].length;
+  let out = guides(lead), rest = line.slice(lead), prev = "";
+  while (rest.length) {
+    for (const [re, kind] of RULES) {
+      const m = rest.match(re);
+      if (!m) continue;
+      let k = kind, text = m[0];
+      if (k === "ident") k = KEYWORDS.has(text) ? "keyword" : PRIMS.has(text) ? "type" : prev === "." ? "property" : null;
+      if (k === "type" && KEYWORDS.has(text)) k = "keyword";
+      out += k ? `<span class="tk-${k}">${esc(text)}</span>` : esc(text);
+      if (!/^\s+$/.test(text)) prev = text;
+      rest = rest.slice(text.length);
+      break;
+    }
+  }
+  return out;
+}
+
+function parseScopes(lines) {
+  const stack = [], ranges = [];
+  const indent = l => l.match(/^ */)[0].length;
+  lines.forEach((l, i) => {
+    const bare = l.replace(/\/\/.*$/, "").replace(/"(\\.|[^"\\])*"/g, "").replace(/'(\\.|[^'\\])'/g, "");
+    for (const ch of bare) {
+      if (ch === "{") {
+        let start = i;
+        if (/^\s*\)/.test(l)) { for (let j = i - 1; j >= 0; j--) if (indent(lines[j]) === indent(l) && !/^\s*\)/.test(lines[j])) { start = j; break; } }
+        stack.push({ start: start + 1, sameLine: stack.some(s => s.start === start + 1) });
+      } else if (ch === "}") {
+        const s = stack.pop();
+        if (s && !s.sameLine && i + 1 > s.start) ranges.push({ from: s.start, to: i + 1 });
+      }
+    }
+  });
+  return ranges;
+}
+function openAt(ranges, n) { return ranges.filter(r => r.from < n && r.to >= n).sort((a, b) => a.from - b.from).map(r => r.from); }
+function snap(ranges, n) {
+  const starting = ranges.filter(r => r.from === n).sort((a, b) => (a.to - a.from) - (b.to - b.from));
+  if (starting.length) return starting[starting.length - 1];
+  const around = ranges.filter(r => r.from <= n && r.to >= n).sort((a, b) => (a.to - a.from) - (b.to - b.from));
+  return around[0] || { from: n, to: n };
+}
+
+for (const f of Object.values(FILES)) { f.lines = f.text.split("\n"); f.scopes = parseScopes(f.lines); }
+
+const KEEPER = "crates/kanna-keeper/src/";
+const DOC = ".kanna/tmp/keeper-fds.md";
+const TOUR = [
+  [DOC + ":5", "The whole trip: the keeper queues a message with its terminals, sends them in one go, and the daemon takes them off the socket."],
+  ["server.rs:92", "When the keeper has something to tell the daemon, like \"here's the terminal you asked for\", it puts the message and the open terminals that go with it in a queue."],
+  ["server.rs:105", "Whenever the connection can take more, `flush` sends what's queued. A long message can go out in pieces; the terminals ride along with the first piece."],
+  ["fdpass.rs:20", "This is where an open terminal crosses from one program to another: the message gets an extra envelope (`SCM_RIGHTS`) holding the terminals, and macOS copies them into the daemon."],
+  ["fdpass.rs:50", "The other side: the daemon waits for a message and takes whatever terminals came with it."],
+];
+const ASIDE = ["client.rs:244", "Each line says how many terminals belong to it (`fds`) and takes that many from the queue, in order. That's how a terminal finds its message."];
+
+const code = document.getElementById("code");
+const md = document.getElementById("md");
+const linesEl = document.getElementById("lines");
+const scroller = document.getElementById("scroller");
+const stickyEl = document.getElementById("sticky");
+const LH = 19, PAD = 8, MAX_STICKY = 5;
+let path = null, tabsOpen = [], stops = [], cur = -1, asked = false;
+
+function rowHtml(l, n) { return `<div class="ln" data-n="${n}"><span class="n">${n}</span><span class="t">${highlight(l) || " "}</span></div>`; }
+function fmt(s) { return esc(s).replace(/`([^`]+)`/g, "<code>$1</code>"); }
+function short(p) { return p.split("/").pop(); }
+function foot(i) {
+  const last = i === stops.length - 1;
+  return `<div class="foot"><span class="where"><b>${i + 1} of ${stops.length}</b> · tour</span>
+    <button data-go="back" ${i === 0 ? "disabled" : ""}>‹ Back</button>
+    <button data-go="next" class="primary">${last ? "Done" : "Next ›"}</button></div>`;
+}
+
+function render() {
+  const isMd = path === DOC;
+  code.hidden = isMd; md.hidden = !isMd;
+  tabs();
+  if (isMd) return renderMd();
+  const f = FILES[path];
+  linesEl.innerHTML = f.lines.map((l, i) => {
+    if (l.trim()) return rowHtml(l, i + 1);
+    const next = f.lines.slice(i + 1).find(x => x.trim()) || "";
+    return `<div class="ln" data-n="${i + 1}"><span class="n">${i + 1}</span><span class="t">${guides(next.match(/^ */)[0].length) || " "}</span></div>`;
+  }).join("");
+  const parts = path.split("/");
+  document.getElementById("crumbs").innerHTML = parts.map((p, i) => i === parts.length - 1 ? `<b>${p}</b>` : `<span>${p}</span><i>›</i>`).join("");
+  applyTour();
+  stick();
+}
+function renderMd() {
+  const s = stops[cur];
+  const on = s && s.path === DOC;
+  document.getElementById("mddoc").innerHTML = `<h1>How a terminal gets to the daemon</h1>
+    <svg class="seq" width="460" height="170" viewBox="0 0 460 170">
+      <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor" style="fill:var(--function)"/></marker></defs>
+      <rect class="box" x="10" y="4" width="120" height="28" rx="5"/><text x="70" y="23" text-anchor="middle">keeper</text>
+      <rect class="box" x="170" y="4" width="120" height="28" rx="5"/><text x="230" y="23" text-anchor="middle">socket</text>
+      <rect class="box" x="330" y="4" width="120" height="28" rx="5"/><text x="390" y="23" text-anchor="middle">daemon</text>
+      <line class="life" x1="70" y1="32" x2="70" y2="165"/><line class="life" x1="230" y1="32" x2="230" y2="165"/><line class="life" x1="390" y1="32" x2="390" y2="165"/>
+      <path class="arrow" d="M70,60 h-0 c30,0 30,20 0,20"/><text class="lbl" x="104" y="74">send: queue msg + fds</text>
+      <line class="arrow" x1="70" y1="110" x2="228" y2="110"/><text class="lbl" x="80" y="104">flush · SCM_RIGHTS</text>
+      <line class="arrow" x1="230" y1="145" x2="388" y2="145"/><text class="lbl" x="240" y="139">recv: msg + fds</text>
+    </svg>
+    <p><span class="${on ? "hl" : ""}">The keeper never hands over a file path or a number: it hands over the open terminal itself, inside a message on the socket.</span></p>
+    <p>Kanna stops the daemon and starts a new one freely; the terminals live in the keeper and are handed over again.</p>`;
+  document.getElementById("mdthreads").innerHTML = on ? `<div class="card on">
+      <div class="head"><span>c1 · line 5</span><span>Resolve</span></div>
+      <div class="msg"><b class="agent">agent</b> ${fmt(s.note)}</div>
+      ${foot(cur)}
+      <div class="reply">Reply</div></div>` : "";
+}
+function tabs() {
+  document.getElementById("dtabs").innerHTML =
+    tabsOpen.map(p => `<div class="dtab ${p === path ? "on" : ""}" data-p="${p}"><span>${short(p)}</span><span class="x">✕</span></div>`).join("") +
+    `<span class="add">+</span>`;
+}
+function stick() {
+  const f = FILES[path];
+  const at = y => { let n = 1; for (const el of linesEl.querySelectorAll(".ln")) { if (el.offsetTop + LH > y) return +el.dataset.n; n = +el.dataset.n; } return n; };
+  let rows = [];
+  for (let k = 1; k <= MAX_STICKY; k++) {
+    const open = openAt(f.scopes, at(scroller.scrollTop + k * LH));
+    if (open.length >= k) rows = open.slice(0, k);
+  }
+  if (scroller.scrollTop <= PAD) rows = [];
+  stickyEl.innerHTML = rows.map(h => rowHtml(f.lines[h - 1], h)).join("");
+}
+scroller.addEventListener("scroll", () => path !== DOC && stick());
+function line(n) { return linesEl.querySelector(`.ln[data-n="${n}"]`); }
+function scrollTo(n) {
+  let el = line(n); if (!el) return;
+  if (el.previousElementSibling && el.previousElementSibling.classList.contains("cmt")) el = el.previousElementSibling;
+  scroller.scrollTop = el.offsetTop - Math.min(MAX_STICKY, openAt(FILES[path].scopes, n).length) * LH - 8;
+}
+function applyTour() {
+  linesEl.querySelectorAll(".cmt").forEach(e => e.remove());
+  const s = stops[cur];
+  const touring = s && s.path === path;
+  linesEl.querySelectorAll(".ln").forEach(el => {
+    const n = +el.dataset.n;
+    const inside = touring && n >= s.from && n <= s.to;
+    el.classList.toggle("in-tour", inside);
+    el.classList.toggle("dimmed", touring && !inside);
+  });
+  if (!touring) return;
+  const card = document.createElement("div");
+  card.className = "cmt";
+  card.innerHTML = `<div class="who">claude · lines ${s.from}–${s.to}</div>${fmt(s.note)}${foot(cur)}`;
+  line(s.from).before(card);
+}
+
+function stop(spec, note) {
+  const m = spec.match(/^(.*):(\d+)(?:-(\d+))?$/);
+  if (m[1] === DOC) return { path: DOC, from: +m[2], to: +m[2], note, spec };
+  const p = KEEPER + m[1], f = FILES[p];
+  const r = m[3] ? { from: +m[2], to: +m[3] } : snap(f.scopes, +m[2]);
+  return { path: p, from: r.from, to: r.to, note, spec };
+}
+function where(s) { return s.path === DOC ? `${DOC}:${s.from}` : `${short(s.path)}:${s.from}–${s.to}`; }
+function show(i) {
+  cur = i;
+  const s = stops[i];
+  if (!tabsOpen.includes(s.path)) tabsOpen.push(s.path);
+  path = s.path;
+  render();
+  if (s.path !== DOC) scrollTo(s.from);
+
+}
+
+const term = document.getElementById("term");
+let log = `<span class="c">~/work/kanna-v4</span> <span class="p">❯</span> claude
+`;
+function term_() { term.innerHTML = log + `<span class="prompt"><span class="g">&gt;</span> </span>`; term.scrollTop = term.scrollHeight; }
+term_();
+function sh(n) { return n.length > 30 ? n.slice(0, 28) + "…" : n; }
+
+function ask() {
+  log += `<span class="g">&gt;</span> how does the keeper hand a terminal to the daemon?\n`;
+  log += `\n<span class="a">●</span> It hands over the open terminal itself. I've written a short doc and queued a tour.\n`;
+  log += `\n<span class="g">  Write(</span><span class="c">${DOC}</span><span class="g">)</span>\n`;
+  log += `\n<span class="g">  Bash(</span><span class="c">kanna tour \\\n` + TOUR.map(t => `    ${t[0]} "${esc(sh(t[1]))}"`).join(" \\\n") + `</span><span class="g">)</span>\n`;
+  log += `<span class="ok">  ⎿ tour of 5 · 1 of 5 · c1 · keeper-fds.md:5 in p86</span>\n`;
+  log += `\n<span class="a">●</span> Five stops. Next on the comment when you've read one; ask here any time.\n`;
+  stops = TOUR.map(t => stop(t[0], t[1]));
+  show(0);
+  term_();
+  document.getElementById("bAsk").disabled = true;
+  document.getElementById("bQ").disabled = false;
+}
+function question() {
+  if (asked || cur < 0) return;
+  asked = true;
+  document.getElementById("bQ").disabled = true;
+  log += `\n<span class="g">&gt;</span> how does it know which terminal goes with which message?\n`;
+  log += `\n<span class="g">  Bash(</span><span class="c">kanna tour</span><span class="g">)</span>\n`;
+  log += `<span class="ok">  ⎿ at ${cur + 1} of ${stops.length} · ${where(stops[cur])}</span>\n`;
+  log += `\n<span class="a">●</span> Each message says how many terminals it carries.\n`;
+  log += `\n<span class="g">  Bash(</span><span class="c">kanna tour add --next ${ASIDE[0]} "${esc(sh(ASIDE[1]))}"</span><span class="g">)</span>\n`;
+  const s = stop(ASIDE[0], ASIDE[1]); s.aside = true;
+  stops.splice(cur + 1, 0, s);
+  log += `<span class="ok">  ⎿ added ${cur + 2} of ${stops.length} · opened p89 · client.rs:${s.from}–${s.to}</span>\n`;
+  log += `\n<span class="a">●</span> Next carries on with the tour.\n`;
+  show(cur + 1);
+  term_();
+}
+document.getElementById("docs").addEventListener("click", e => {
+  const b = e.target.closest("button[data-go]");
+  if (b) {
+    if (b.dataset.go === "back") return show(cur - 1);
+    if (cur < stops.length - 1) return show(cur + 1);
+    cur = -1; render(); term_();
+    return;
+  }
+  const t = e.target.closest(".dtab");
+  if (t && t.dataset.p !== path) { path = t.dataset.p; render(); }
+});
+document.getElementById("bAsk").onclick = ask;
+document.getElementById("bQ").onclick = question;
+const win = document.getElementById("window");
+document.getElementById("bTheme").onclick = () => { win.classList.toggle("dark"); win.classList.toggle("light"); };
+
+path = KEEPER + "server.rs"; tabsOpen = [];
+code.hidden = true;
+tabs();
+const params = new URLSearchParams(location.search);
+if (params.has("picture")) document.body.classList.add("picture");
+if (params.has("light")) document.getElementById("bTheme").click();
+if (params.has("ask")) ask();
+for (let i = 0; i < +(params.get("next") || 0); i++) show(cur + 1);
+if (params.has("question")) question();
+</script>
+</body>
+</html>

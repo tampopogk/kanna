@@ -14,7 +14,7 @@ final class DiffFileList: NSView {
     var selected: Int? { didSet { if selected != oldValue { needsDisplay = true } } }
     var fresh: Set<Int> = [] { didSet { needsDisplay = true } }
     static let rowHeight: CGFloat = 22
-    static let width: CGFloat = 230
+    nonisolated static let width: CGFloat = 230
 
     override var isFlipped: Bool { true }
 
