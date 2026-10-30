@@ -33,7 +33,7 @@ A run stops its instances the way a user quits Kanna: `kanna instances stop` ([s
 
 ```mermaid
 flowchart LR
-    A["scenario subshell:<br/>TERM (its own child)"] --> B["its EXIT trap:<br/>stop_instances, stop_jobs"]
+    A["scenario subshell:<br/>TERM (its own child)"] --> B["its EXIT trap:<br/>stop_instances, stop_agents, stop_jobs"]
     B --> C["runner: stop_instances<br/>(catches what the subshell missed)"]
     C --> D["stop_tied --last-resort<br/>(each process found: 'bug: … still running')"]
     D --> E["rm -rf the folder"]
@@ -41,8 +41,8 @@ flowchart LR
 
 - **`stop_instances`** runs `kanna instances stop` at once for every socket under `$KANNA_STATE_DIR`: its own `kanna.sock`, and each `home/Library/Application Support/kanna-dev*/kanna.sock` a scenario started (`cli_starts_app`, `instances`). It waits for all of them. Each returns once its socket is gone, so the app, keeper and terminals are gone too. Errors go to `target/e2e-kanna/stop.log`.
 - **`stop_jobs`** then stops the scenario's own background jobs that are still running, such as the mock model server (`stop_pid`: TERM, then KILL after 5 s, logged). It names any job that is a daemon or an app, since `instances stop` should already have ended those.
-- **Scenarios** run through `run_scenario`, which sets those traps (`exit 143` on TERM, then `stop_instances; stop_jobs` on EXIT), so they run when a scenario ends and when it's stopped. The runner gives the subshell 30 s, then KILLs it.
-- **`stop_tied PATH…`** finds processes tied to a folder (section 1) and stops them: TERM, then KILL after 5 s, scanning again up to 4 rounds. It remains for `stop_agents` (`agents/` and `codex/`, inside real-agent scenarios), for the sweep, and as the last resort, where it prints `bug:` for each process it finds.
+- **Scenarios** run through `run_scenario`, which sets those traps (`exit 143` on TERM, then `stop_instances; stop_agents; stop_jobs` on EXIT), so they run when a scenario ends and when it's stopped. It ends with `exit`: macOS's bash 3.2 skips the EXIT trap of a function run with `&` that just returns, which left a failed scenario's mock model running. The runner gives the subshell 30 s, then KILLs it.
+- **`stop_tied PATH…`** finds processes tied to a folder (section 1) and stops them: TERM, then KILL after 5 s, scanning again up to 4 rounds. It remains for `stop_agents` (`agents/` and `codex/`: at the end of real-agent scenarios, and when any scenario ends, for what the agents started that no instance owns, such as codex's app-server), for the sweep, and as the last resort, where it prints `bug:` for each process it finds.
 - **Inside scenarios**, `stop_app` and `stop_daemon` still TERM the one PID they started: those scenarios test what Kanna does on SIGTERM.
 
 How a run ends:
