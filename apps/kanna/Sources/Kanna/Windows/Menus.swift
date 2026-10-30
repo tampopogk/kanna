@@ -1,5 +1,6 @@
 import AppKit
 import GhosttyKit
+import KannaOverview
 import UniformTypeIdentifiers
 
 extension AppController {
@@ -86,16 +87,17 @@ extension AppController {
             ("Zoom In", #selector(zoomIn), "increase_font_size:1", .cmd("=")),
             ("Zoom Out", #selector(zoomOut), "decrease_font_size:1", .cmd("-")),
             ("Actual Size", #selector(actualSize), "reset_font_size", .cmd("0")),
+            nil,
+            ("Overview", #selector(toggleOverview), nil, nil),
         ])
         _ = menu("Task", [
-            ("Park", #selector(parkTask), nil, .cmd(".")),
-            ("Move to Backlog", #selector(deferTask), nil, nil),
+            ("Show Desk", #selector(parkTask), nil, .cmd(".")),
+            ("Move to Shelf", #selector(deferTask), nil, nil),
             nil,
             ("Task Waiting Longest", #selector(pullWaitingTask), nil, .shiftCmd("A")),
             nil,
-            ("Pull Shelf Task 1", #selector(pullShelf1), "goto_tab:1", .cmd("1")),
-            ("Pull Shelf Task 2", #selector(pullShelf2), "goto_tab:2", .cmd("2")),
-            ("Pull Shelf Task 3", #selector(pullShelf3), "goto_tab:3", .cmd("3")),
+            ("Desk Task 1", #selector(pullShelf1), "goto_tab:1", .cmd("1")),
+            ("Desk Task 2", #selector(pullShelf2), "goto_tab:2", .cmd("2")),
         ])
         let windowMenu = menu("Window", [
             ("New Window", #selector(newWindow), nil, nil),
@@ -162,8 +164,8 @@ extension AppController {
 
     func choose(menuItem title: String) throws {
         for menu in allMenus {
-            guard let at = menu.items.firstIndex(where: { $0.title == title }) else { continue }
             menu.update()
+            guard let at = menu.items.firstIndex(where: { $0.title == title }) else { continue }
             guard menu.items[at].isEnabled else { throw KannaError("disabled", "\(title) is disabled") }
             menu.performActionForItem(at: at)
             return
@@ -263,6 +265,9 @@ extension AppController {
         switch item.action {
         case #selector(zoomIn), #selector(zoomOut), #selector(actualSize): return panes.terminal(pane) != nil || contents.markdown(pane) != nil || contents.web(pane) != nil || contents.code(pane) != nil
         case #selector(pressHome): return contents.ios(pane)?.screen != nil
+        case #selector(toggleOverview):
+            item.state = OverviewSetting.enabled ? .on : .off
+            return true
         case #selector(openURL), #selector(reloadPane): return contents.web(pane) != nil
         case #selector(toggleComments):
             item.state = commentsOn(pane) ? .on : .off
@@ -278,13 +283,12 @@ extension AppController {
         case #selector(newTabInKeyWindow), #selector(splitRight), #selector(splitDown), #selector(webRight), #selector(webDown),
              #selector(iosRight), #selector(iosDown), #selector(markdownRight), #selector(markdownDown): return !onShelf
         case #selector(parkTask):
-            item.title = lastParked == nil ? "Park" : "Unpark"
-            return keyWindow?["dock"]?["pane"] != nil || lastParked != nil
+            item.title = keyWindow?["dock"]?["pane"] != nil || deskBack == nil ? "Show Desk" : "Show Active Task"
+            return keyWindow?["dock"]?["pane"] != nil || deskBack != nil
         case #selector(deferTask): return keyWindow?["dock"]?["pane"] != nil
         case #selector(pullWaitingTask): return waitingTask != nil
         case #selector(pullShelf1): return shelfPull(1) != nil
         case #selector(pullShelf2): return shelfPull(2) != nil
-        case #selector(pullShelf3): return shelfPull(3) != nil
         default: return true
         }
     }
@@ -298,6 +302,13 @@ extension AppController {
         guard !ids.isEmpty else { return }
         let at = window["focused"]?.string.flatMap { ids.firstIndex(of: $0) } ?? 0
         layoutCommand("focus", ["pane": .string(ids[((at + step) % ids.count + ids.count) % ids.count])])
+    }
+
+    @objc func toggleOverview() { setOverview(!OverviewSetting.enabled) }
+
+    func setOverview(_ on: Bool) {
+        OverviewSetting.enabled = on
+        physical.setOverview(on)
     }
 
     @objc func toggleZoom() {
@@ -373,7 +384,7 @@ extension AppController {
     func cycleTab(_ step: Int) {
         guard let window = keyWindow, let id = window["id"]?.string else { return }
         let controller = controllers[id]
-        let pages = isDesk(id) ? WindowController.pages.map { "page:\($0)" } : []
+        let pages = (controller?.pages ?? []).map { "page:\($0)" }
         let stops = pages + (window["tabs"]?.array ?? []).compactMap { $0["id"]?.string }
         guard !stops.isEmpty else { return }
         let current = controller?.shownPage.map { "page:\($0)" } ?? window["tab"]?.string
@@ -411,7 +422,7 @@ extension AppController {
     }
 
     @objc func parkTask() {
-        if let (task, window) = lastParked {
+        if let (task, window) = deskBack {
             pullTask(task, into: window)
             return
         }
@@ -419,14 +430,12 @@ extension AppController {
         park(desk: window)
     }
 
-    private var lastParked: (task: String, window: String)? {
-        guard let window = keyWindow, window["desk"]?.bool == true, window["dock"]?["pane"] == nil,
-              let id = window["id"]?.string, let tasks = controllers[id]?.shelf,
-              let task = tasks.max(by: { ($0.parkedAt ?? 0) < ($1.parkedAt ?? 0) }) else { return nil }
-        return (task.id, id)
+    private var deskBack: (task: String, window: String)? {
+        guard let window = keyWindow, window["desk"]?.bool == true, window["dock"]?["pane"] == nil, let id = window["id"]?.string else { return nil }
+        if let active = controllers[id]?.active { return (active, id) }
+        return shelfPull(1)
     }
 
-    /// Puts the Desk's task back on its repo's backlog, its agent and tabs still running until it's started again.
     @objc func deferTask() {
         guard let window = keyWindow?["id"]?.string, let pane = keyWindow?["dock"]?["pane"]?.string else { return }
         request("backlog", ["action": "defer", "task": .string(pane)]) { [weak self] reply in
@@ -438,10 +447,9 @@ extension AppController {
 
     @objc func pullShelf1() { pullShelf(1) }
     @objc func pullShelf2() { pullShelf(2) }
-    @objc func pullShelf3() { pullShelf(3) }
 
     private var waitingTask: (task: String, window: String)? {
-        guard let (_, window) = shelfPull(1), let tasks = controllers[window]?.shelf,
+        guard let window = keyWindow, window["desk"]?.bool == true, let window = window["id"]?.string, let tasks = controllers[window]?.shelf,
               let task = agentStatuses.waitingLongest(among: tasks.map(\.id)) else { return nil }
         return (task, window)
     }
@@ -452,7 +460,7 @@ extension AppController {
     }
 
     private func shelfPull(_ place: Int) -> (task: String, window: String)? {
-        guard let window = keyWindow, window["desk"]?.bool == true, let id = window["id"]?.string, let tasks = controllers[id]?.shelf else { return nil }
+        guard let window = keyWindow, window["desk"]?.bool == true, let id = window["id"]?.string, let tasks = controllers[id]?.others else { return nil }
         return place <= tasks.count ? (tasks[place - 1].id, id) : nil
     }
 
@@ -467,9 +475,9 @@ extension AppController {
     private func cycleWindow(_ step: Int) {
         let ids = windows.compactMap { $0["id"]?.string }
         guard !ids.isEmpty else { return }
-        let at = ids.firstIndex { $0 == state["key"]?.string } ?? 0
+        let at = ids.firstIndex { $0 == keyWindow?["id"]?.string } ?? 0
         let next = ids[((at + step) % ids.count + ids.count) % ids.count]
-        if isDesk(next) { show(desk: next) } else { layoutCommand("focus", ["window": .string(next)]) }
+        show(window: next)
     }
 
     func ghosttyAction(_ pane: String, _ action: ghostty_action_s) -> Bool {
@@ -487,7 +495,7 @@ extension AppController {
             let target = action.action.goto_tab
             let place = Int(target.rawValue)
             perform = target == GHOSTTY_GOTO_TAB_PREVIOUS ? previousTab : target == GHOSTTY_GOTO_TAB_NEXT ? nextTab
-                : (1...3).contains(place) && shelfPull(place) != nil ? { [weak self] in self?.pullShelf(place) } : nil
+                : (1...2).contains(place) && shelfPull(place) != nil ? { [weak self] in self?.pullShelf(place) } : nil
         case GHOSTTY_ACTION_NEW_WINDOW: perform = newWindow
         case GHOSTTY_ACTION_CLOSE_WINDOW: perform = closeWindow
         case GHOSTTY_ACTION_GOTO_WINDOW:

@@ -53,7 +53,7 @@ sequenceDiagram
 
 ## 3. Your relay
 
-- **`kanna fleet relay URL`** (`kanna machine relay` after the rename) names the iroh-relay this machine meets the others through; `none` turns it off. It takes effect at once (`Endpoint::insert_relay`), is kept with the fleet state in kanna.db, goes in this machine's descriptor, and shows in `kanna fleet` status with whether the machine is connected to it.
+- **`kanna machine relay URL`** names the iroh-relay this machine meets the others through; `none` turns it off. It takes effect at once (`Endpoint::insert_relay`), is kept with the machine state in kanna.db, goes in this machine's descriptor, and shows in `kanna machine list` with whether the machine is connected to it.
 - **Endpoints start with an empty relay map,** not n0's: no third party's relay, as before.
 - **Peers are dialed with the relay set now and the one in their peer-log entry,** so moving every machine to a new relay works without pairing again.
 - **The app's endpoint** gets the relay from the local daemon's peer list and adds it before dialing.
@@ -62,7 +62,7 @@ sequenceDiagram
 
 ## 4. Echo delay
 
-**Method:** `crates/kanna-net/examples/terminal-echo.rs`, run by `scripts/fleet/terminal-echo.sh DIR LABEL [--remote HOST] [--relay URL [--relay-only]]`. Two private daemons are paired; the tool is an app-link client certified by the first and dials the second over kanna-net, like Kanna.app. On a `cat` terminal it sends one key and times until that key comes back as `output`: keystroke → link → pty → the daemon's screen → link. Ten warm-ups, then 100 samples 10 ms apart, idle and while another terminal on the same link floods output (`seq` in a loop). The link round trip is a `capabilities` request. The app's drawing is the same on every path and isn't in these numbers (at most a frame, 8 ms at 120 Hz).
+**Method:** `crates/kanna-net/examples/terminal-echo.rs`, run by `scripts/machines/terminal-echo.sh DIR LABEL [--remote HOST] [--relay URL [--relay-only]]`. Two private daemons are paired; the tool is an app-link client certified by the first and dials the second over kanna-net, like Kanna.app. On a `cat` terminal it sends one key and times until that key comes back as `output`: keystroke → link → pty → the daemon's screen → link. Ten warm-ups, then 100 samples 10 ms apart, idle and while another terminal on the same link floods output (`seq` in a loop). The link round trip is a `capabilities` request. The app's drawing is the same on every path and isn't in these numbers (at most a frame, 8 ms at 120 Hz).
 
 | Path | Link RTT p50 / p95 ms | Echo idle p50 / p95 ms | Echo while flooding p50 / p95 ms | Full attach | Bounded attach | Reconnect |
 |---|---:|---:|---:|---:|---:|---:|

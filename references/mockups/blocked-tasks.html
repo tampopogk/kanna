@@ -69,8 +69,8 @@ body.picture .cmd input::placeholder { color: transparent; }
 <body>
 <main>
   <div class="intro">
-    <h1>Blocked tasks: a backlog task waits until its blockers are Done</h1>
-    <p>An empty Desk: the planning agent on the left, the project's Shelf and backlog on the right. A blocked row shows what it waits for and can't be moved to the Shelf; clicking it says why. Type a <code>kanna</code> command in the planning pane as the agent would: <code>kanna task new "NAME" "MESSAGE" --after t12</code>, <code>kanna task edit t14 --after none</code>, <code>kanna task done t12</code>, <code>kanna task start t13</code>, <code>kanna task list</code>.</p>
+    <h1>Blocked tasks: a Shelf task waits until its blockers are Done</h1>
+    <p>The Desk view: the planning agent on the left, the Desk's tasks and the Shelf on the right. A blocked row shows what it waits for and can't be moved to the Desk; clicking it says why. Type a <code>kanna</code> command in the planning pane as the agent would: <code>kanna task new "NAME" "MESSAGE" --after t12</code>, <code>kanna task edit t14 --after none</code>, <code>kanna task done t12</code>, <code>kanna task start t13</code>, <code>kanna task list</code>.</p>
     <div class="controls">
       <button id="theme">Light / dark</button>
       <button id="finish" title="kanna task done t12: Diff viewer can start, Release notes still waits for the status fix">Screenshot command is done</button>
@@ -78,7 +78,7 @@ body.picture .cmd input::placeholder { color: transparent; }
     </div>
   </div>
   <div class="window">
-    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><b>Shelf</b></div>
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><b>Desk</b></div>
     <div class="content">
       <div class="agent">
         <div class="head">Planning · ~/work/kanna-v4 · main</div>
@@ -103,8 +103,8 @@ const initial = () => {
       { id: "t4", name: "Tab bar follows light mode", place: "shelf", agent: "codex", status: "idle", branch: "tab-bar-light", at: now - 12 * MIN },
       { id: "t8", name: "agent_status e2e is flaky", place: "backlog", at: now - 40 * MIN, by: "Doc markup", after: [],
         message: "agent_status waits 5s for 'working' after answering the mock agent; make the wait follow the status" },
-      { id: "t11", name: "Rename a task from the Shelf", place: "backlog", at: now - 5 * MIN, by: "Doc markup", after: [],
-        message: "Double-click a Shelf item to rename its task, as tabs rename" },
+      { id: "t11", name: "Rename a task from the strip", place: "backlog", at: now - 5 * MIN, by: "Doc markup", after: [],
+        message: "Double-click a Desk task in the strip to rename it, as tabs rename" },
       { id: "t13", name: "Diff viewer", place: "backlog", at: now - 2 * MIN, by: "the planning agent", after: ["t12"],
         message: "Show a task's branch diff in a tab, using kanna screenshot to snapshot each side" },
       { id: "t14", name: "Release notes for 0.9", place: "backlog", at: now - 1 * MIN, by: "the planning agent", after: ["t8", "t12"],
@@ -114,10 +114,10 @@ const initial = () => {
       `<span class="c">kanna-v4</span> <span class="p">❯</span> claude`, ``,
       `<span class="p">&gt;</span> the diff viewer needs the screenshot command; release notes once the status fix and screenshots are in`,
       `<span class="m">●</span> kanna task new "Diff viewer" "…" --after t12`,
-      `  <span class="out">added t13 "Diff viewer" to the backlog of ~/work/kanna-v4; it waits for t12</span>`,
+      `  <span class="out">added t13 "Diff viewer" to the Shelf of ~/work/kanna-v4; it waits for t12</span>`,
       `<span class="m">●</span> kanna task new "Release notes for 0.9" "…" --after t8,t12`,
-      `  <span class="out">added t14 "Release notes for 0.9" to the backlog of ~/work/kanna-v4; it waits for t8, t12</span>`,
-      `<span class="m">●</span> Both wait in the backlog. Diff viewer can start once Screenshot command is done; Release notes once the status fix is done too.`,
+      `  <span class="out">added t14 "Release notes for 0.9" to the Shelf of ~/work/kanna-v4; it waits for t8, t12</span>`,
+      `<span class="m">●</span> Both wait on the Shelf. Diff viewer can start once Screenshot command is done; Release notes once the status fix is done too.`,
     ],
   };
 };
@@ -130,13 +130,13 @@ const why = t => { const w = waits(t); return w.length ? `${t.id} waits for ${w.
 function render() {
   const shelf = s.tasks.filter(t => t.place === "shelf"), backlog = s.tasks.filter(t => t.place === "backlog"), full = shelf.length >= LIMIT;
   document.getElementById("page").innerHTML = `<p class="sub">Clear desk, clear mind. Pick what's next.</p>
-    <div class="group"><div class="gh"><span><b>Shelf</b> · ~/work/kanna-v4</span><span>${shelf.length} of ${LIMIT} tasks</span></div>
-      ${shelf.map(t => `<div class="row"><span class="dot ${t.status}"></span><div class="t"><div class="n">${esc(t.name)}</div><div class="s">${t.agent} · ${t.status} · parked ${ago(t.at)} · ${esc(t.branch)}</div></div></div>`).join("") || `<div class="s">Nothing on the Shelf.</div>`}</div>
-    <div class="group"><div class="gh"><span><b>Backlog</b></span><span>${backlog.length} waiting</span></div>
+    <div class="group"><div class="gh"><span><b>Desk</b> · ~/work/kanna-v4</span><span>${shelf.length} of ${LIMIT} tasks</span></div>
+      ${shelf.map(t => `<div class="row"><span class="dot ${t.status}"></span><div class="t"><div class="n">${esc(t.name)}</div><div class="s">${t.agent} · ${t.status} · ${ago(t.at)} ago · ${esc(t.branch)}</div></div></div>`).join("") || `<div class="s">Nothing on the Desk. Move a task here from the Shelf.</div>`}</div>
+    <div class="group"><div class="gh"><span><b>Shelf</b></span><span>${backlog.length} waiting</span></div>
       ${backlog.map(t => {
         const w = waits(t);
         const line = w.length ? `<span class="wait">waits for ${w.map(id => esc(task(id).name)).join(", ")}</span> · ` : "";
-        const go = w.length ? "Blocked" : full ? "Shelf full" : "Move to Shelf →";
+        const go = w.length ? "Blocked" : full ? "Desk full" : "Move to Desk →";
         return `<div class="row waiting ${w.length ? "blocked" : ""}" data-shelve="${t.id}"><span class="dot"></span><div class="t"><div class="n">${esc(t.name)}</div><div class="s">${line}${esc(t.message)} · from ${esc(t.by)}, ${ago(t.at)} ago</div></div><span class="go">${go}</span></div>`;
       }).join("") || `<div class="s">Empty. Ask the planning agent for tasks.</div>`}
       <p class="note">${esc(s.note)}</p></div>`;
@@ -147,9 +147,9 @@ function render() {
 
 function shelve(id) {
   const t = task(id);
-  if (!t || t.place !== "backlog") return `no backlog task "${id}"`;
+  if (!t || t.place !== "backlog") return `no Shelf task "${id}"`;
   if (why(t)) return why(t);
-  if (s.tasks.filter(x => x.place === "shelf").length >= LIMIT) return `~/work/kanna-v4 has ${LIMIT} tasks on the Shelf: move one to the backlog first`;
+  if (s.tasks.filter(x => x.place === "shelf").length >= LIMIT) return `~/work/kanna-v4 has ${LIMIT} tasks on the Desk: move one to the Shelf with \`kanna task shelve TASK\` first`;
   Object.assign(t, { place: "shelf", agent: "claude", status: "working", branch: "task-" + Math.random().toString(16).slice(2, 10), at: Date.now() });
   return "";
 }
@@ -167,10 +167,10 @@ function run(line) {
     if (bad) { say(`kanna: no task "${bad}"`); return render(); }
     const t = { id: "t" + s.next++, name: quoted[0], message: quoted[1] || quoted[0], place: "backlog", at: Date.now(), by: "the planning agent", after: ids };
     s.tasks.push(t);
-    say(`added ${t.id} "${t.name}" to the backlog of ~/work/kanna-v4${ids.length ? `; it waits for ${ids.join(", ")}` : ""}`);
+    say(`added ${t.id} "${t.name}" to the Shelf of ~/work/kanna-v4${ids.length ? `; it waits for ${ids.join(", ")}` : ""}`);
   } else if (sub === "edit") {
     const t = task(arg), ids = after();
-    if (!t || t.place !== "backlog") say(`kanna: no backlog task "${arg || ""}"`);
+    if (!t || t.place !== "backlog") say(`kanna: no Shelf task "${arg || ""}"`);
     else if (!ids) say(`kanna: task: edit needs --after TASK,... or --after none`);
     else {
       const bad = ids.find(id => !task(id));
@@ -180,22 +180,22 @@ function run(line) {
       else if (cycle) say(`kanna: ${cycle} waits for ${t.id}: they'd wait for each other`);
       else { t.after = ids; say(waits(t).length ? `${t.id} waits for ${waits(t).join(", ")}` : `${t.id} waits for nothing: it can start`); }
     }
-  } else if (sub === "start" || sub === "shelve") {
+  } else if (sub === "start" || sub === "pick") {
     const error = shelve(arg);
-    say(error ? `kanna: ${error}` : `moved ${arg} to the Shelf`);
+    say(error ? `kanna: ${error}` : `moved ${arg} to the Desk`);
   } else if (sub === "done") {
     const t = task(arg);
     if (!t) say(`kanna: no task "${arg || ""}"`);
     else {
       const freed = s.tasks.filter(x => x.place === "backlog" && waits(x).length === 1 && waits(x)[0] === arg);
       s.tasks = s.tasks.filter(x => x !== t);
-      say((t.place === "backlog" ? `took ${arg} off the backlog` : `${arg} is done: closed its agent and tabs`) + freed.map(x => `\n${x.id} "${x.name}" can start now: nothing it waits for is left`).join(""));
+      say((t.place === "backlog" ? `took ${arg} off the Shelf` : `${arg} is done: closed its agent and tabs`) + freed.map(x => `\n${x.id} "${x.name}" can start now: nothing it waits for is left`).join(""));
     }
   } else if (sub === "list") {
-    const rows = s.tasks.map(t => [t.id, t.name, t.place === "shelf" ? "Shelf" : "Backlog", t.place === "shelf" ? t.status : waits(t).length ? "blocked" : "stopped", waits(t).length ? "waits for " + waits(t).join(", ") : ""]);
+    const rows = s.tasks.map(t => [t.id, t.name, t.place === "shelf" ? "Desk" : "Shelf", t.place === "shelf" ? t.status : waits(t).length ? "blocked" : "stopped", waits(t).length ? "waits for " + waits(t).join(", ") : ""]);
     const head = ["TASK", "NAME", "WHERE", "STATE", ""], w = i => Math.max(head[i].length, ...rows.map(r => r[i].length));
     say([head, ...rows].map(r => r.map((c, i) => i < 4 ? c.padEnd(w(i)) : c).join("  ").trimEnd()).join("\n"));
-  } else say(`kanna: task new|edit|start|shelve|done|list`);
+  } else say(`kanna: task new|edit|start|pick|done|list`);
   render();
 }
 

@@ -101,7 +101,7 @@ fn is(message: &Value, cmd: &str, terminal: &str) -> bool {
 
 fn certify(socket: &str, key: &str) -> Value {
     let stream = UnixStream::connect(socket).unwrap_or_else(|e| panic!("can't reach the local daemon at {socket}: {e}"));
-    (&stream).write_all(format!("{}\n", json!({ "id": 1, "cmd": "fleet", "args": { "action": "certify", "key": key } })).as_bytes()).unwrap();
+    (&stream).write_all(format!("{}\n", json!({ "id": 1, "cmd": "machine", "args": { "action": "certify", "key": key } })).as_bytes()).unwrap();
     let mut text = String::new();
     BufReader::new(&stream).read_line(&mut text).unwrap();
     let reply: Value = serde_json::from_str(&text).unwrap();

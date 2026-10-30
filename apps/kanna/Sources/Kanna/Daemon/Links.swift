@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import KannaFleetC
+import KannaMachinesC
 
 final class Dial: @unchecked Sendable {
     private let lock = NSLock()
@@ -16,7 +16,7 @@ final class Dial: @unchecked Sendable {
 
     func callAsFunction() -> Int32? {
         guard let request = lock.withLock({ request }) else { return nil }
-        let reply = Links.call { kanna_fleet_link(request) }
+        let reply = Links.call { kanna_machines_link(request) }
         lock.withLock { failure = reply["error"] }
         guard let fd = reply["fd"]?.number.flatMap({ Int32(exactly: $0) }) else { return nil }
         var on: Int32 = 1
@@ -52,8 +52,8 @@ final class Links: TerminalLink {
     }
 
     nonisolated static func call(_ body: () -> UnsafeMutablePointer<CChar>?) -> JSON {
-        guard let raw = body() else { return ["error": ["code": "failed", "message": "the fleet endpoint didn't answer"]] }
-        defer { kanna_fleet_free(raw) }
+        guard let raw = body() else { return ["error": ["code": "failed", "message": "the app's endpoint didn't answer"]] }
+        defer { kanna_machines_free(raw) }
         return (try? JSON.parse(Data(String(cString: raw).utf8))) ?? .null
     }
 
@@ -78,12 +78,12 @@ final class Links: TerminalLink {
 
     func refresh() {
         guard local.attached else { return }
-        local.request("fleet", ["action": "status"]) { [weak self] status in self?.arrived(status) }
+        local.request("machine", ["action": "status"]) { [weak self] status in self?.arrived(status) }
     }
 
     func path(of machine: String) -> JSON {
         guard let key = peers.first(where: { $0["name"]?.string == machine })?["key"]?.string, appKey != nil else { return .null }
-        return Self.call { kanna_fleet_path(key) }
+        return Self.call { kanna_machines_path(key) }
     }
 
     func failure(of machine: String) -> JSON? {
@@ -98,11 +98,11 @@ final class Links: TerminalLink {
             peer["trusted"]?.bool == true && peer["revoked"]?.bool != true && peer["conflict"]?.bool != true && peer["name"]?.string != nil
         } : []
         if !wanted.isEmpty, appKey == nil, let keyPath {
-            appKey = Self.call { kanna_fleet_client(keyPath) }["key"]?.string
+            appKey = Self.call { kanna_machines_client(keyPath) }["key"]?.string
         }
         if !wanted.isEmpty, cert == nil, let appKey, !certifying {
             certifying = true
-            local.request("fleet", ["action": "certify", "key": .string(appKey)]) { [weak self] reply in
+            local.request("machine", ["action": "certify", "key": .string(appKey)]) { [weak self] reply in
                 guard let self else { return }
                 certifying = false
                 if reply["ok"]?.bool == true, let cert = reply["cert"] {
@@ -132,7 +132,7 @@ final class Links: TerminalLink {
     }
 
     private func open(_ machine: String, _ dial: Dial) {
-        let link = DaemonLink(socketPath: "fleet:\(machine)", commands: commands, machine: machine, dial: { dial() })
+        let link = DaemonLink(socketPath: "machine:\(machine)", commands: commands, machine: machine, dial: { dial() })
         link.client = name
         configure?(link)
         remotes[machine] = link
