@@ -150,8 +150,8 @@ public final class OverviewView: NSView {
         switch content {
         case .empty:
             break
-        case .image(let image, let scale):
-            let size = NSSize(width: OverviewMetrics.thumbWidth, height: viewport.documentHeight * scale)
+        case .image(let image, _):
+            let size = NSSize(width: OverviewMetrics.thumbWidth, height: image.width > 0 ? CGFloat(image.height) * OverviewMetrics.thumbWidth / CGFloat(image.width) : 0)
             NSImage(cgImage: image, size: size).draw(in: NSRect(x: thumbX, y: -g.offset, width: size.width, height: size.height), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
         case .text:
             let first = Int((g.offset / Self.tileHeight).rounded(.down))
