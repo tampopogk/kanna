@@ -4451,7 +4451,7 @@ machine_remote_web() {
   local vm vm_pid
   machine_vm machine_remote_web || return 1
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/team/devserver"
-  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "machine_remote_web line $LINENO"; return 1; }
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first && git -C "$repo" remote add origin https://example.com/team/devserver.git || { echo "machine_remote_web line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   (cd / && vmk "$repo") >/dev/null || { echo "machine_remote_web line $LINENO"; return 1; }
   desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"d1\"}}" | field "$1"; }
@@ -4459,12 +4459,12 @@ machine_remote_web() {
   local planner; planner="$(desk lead)"
   (cd "$repo" && KANNA_TERMINAL="${planner%@vm}" vmk task new "Dev server" "Run the dev server") >/dev/null || { echo "machine_remote_web line $LINENO"; return 1; }
   local task; task="$(sqlite3 -readonly "$vm/state/kanna.db" "select id from tasks order by rowid limit 1")@vm"
-  check wait_for 10 eval '[[ "$(desk backlog)" == "[\"$task\"]" ]]' || { echo "machine_remote_web: the Desk's backlog doesn't list vm's task"; return 1; }
+  check wait_for 10 eval '[[ "$(desk backlog)" == "[\"$task\"]" ]]' || { echo "machine_remote_web: the Shelf doesn't list vm's task"; return 1; }
   raw '{"id":1,"cmd":"debug.click","args":{"backlog":"'"$task"'","window":"d1"}}' >/dev/null
-  check wait_for 10 eval '[[ "$(desk shelf.0.title)" == "Dev server" ]]' || { echo "machine_remote_web: starting vm's task didn't put it on the Shelf"; return 1; }
+  check wait_for 10 eval '[[ "$(desk shelf.0.title)" == "Dev server" ]]' || { echo "machine_remote_web: picking vm's task didn't put it on the Desk"; return 1; }
   local agent; agent="$(desk shelf.0.task)"
   raw '{"id":1,"cmd":"debug.click","args":{"shelf":"'"$agent"'","window":"d1"}}' >/dev/null
-  check wait_for 5 eval '[[ "$(desk window.dock.pane)" == "$agent" ]]' || { echo "machine_remote_web: pulling vm's task didn't dock its agent"; return 1; }
+  check wait_for 5 eval '[[ "$(desk window.dock.pane)" == "$agent" ]]' || { echo "machine_remote_web: activating vm's task didn't dock its agent"; return 1; }
 
   local worktree="$repo/.kanna-worktrees/${task%@vm}" port
   port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
