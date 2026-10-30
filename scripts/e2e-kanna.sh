@@ -3641,7 +3641,7 @@ scenario stays_behind M4
 stays_behind() {
   start_daemon && start_app || { echo "stays_behind line $LINENO"; return 1; }
   front() { app_view | field key; }
-  local repo="$KANNA_STATE_DIR/repo"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "stays_behind line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   expected="opened term-1 (a) in win-1, tab-1: running"; says kanna open --window new --name a || return 1
