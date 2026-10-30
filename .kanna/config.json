@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "tasks": {
+    "teardown": "\"$KANNA_REPO/scripts/teardown.sh\""
+  }
+}

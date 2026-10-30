@@ -1,6 +1,6 @@
 # Build Targets
 
-**Status:** built · **Builds on:** [build speed](build-speed.md), [settings](settings.md) · **Why:** each checkout's `target/` grows to 10 GB, and 57 task worktrees filled the internal disk until a task stopped
+**Status:** built · **Tested:** `scripts/test-teardown.sh` · **Builds on:** [build speed](build-speed.md), [settings](settings.md) · **Why:** each checkout's `target/` grows to 10 GB, and 57 task worktrees filled the internal disk until a task stopped
 
 Build outputs can live on another volume, such as an external SSD: every task worktree's, and all of the main checkout's except the app it runs. Sources stay where they are.
 
@@ -60,4 +60,19 @@ flowchart LR
 
 ## 3. Removing a task
 
-`git worktree remove` and `rm -rf target` remove only the link. Whatever removes a done task's build folders (the Shelf task *Task setup and teardown scripts*) also removes the folder the link points to, skips it when its volume isn't mounted, and never touches the main checkout's `target/`, `_main/` or `.offline/`.
+`git worktree remove` and `rm -rf target` remove only the link, so Done's teardown removes the folder it points to. The repo's `.kanna/config.json` sets `tasks.teardown` to `scripts/teardown.sh` ([task scripts](task-scripts.md#3-teardown-and-cleanup)), which runs on every Done, also when the worktree is kept: the folder is a cache, and the next build makes it again.
+
+```mermaid
+flowchart TD
+    A["target/ in the worktree"] -->|"a real folder, or none"| K["leave it: git worktree remove takes it"]
+    A -->|a link| B{"build.targets set,<br/>its volume mounted?"}
+    B -->|no| K2["leave it"]
+    B -->|yes| C{"links to exactly<br/>ROOT/REPO/WORKTREE?"}
+    C -->|"no: another worktree's, _main, .offline, elsewhere"| K2
+    C -->|yes| D["rm -rf the folder (not a link there), then the link"]
+```
+
+- **Only the worktree's own folder:** the link must read exactly `ROOT/REPO/WORKTREE` as `kanna_targets` makes it (`ROOT` from your `build.targets`, `REPO` the main checkout's folder name, `WORKTREE` this worktree's), and that path must be a folder, not a link. It never follows anything else, and never touches the main checkout, `_main/`, `.offline/` or another worktree's folder.
+- **Nothing to remove exits 0:** a real `target/`, no `target/`, `build.targets` unset, its volume unmounted, a link anywhere else, a folder already gone (then it removes the dangling link). A failed teardown keeps the task from being Done, so only a failed `rm` exits non-zero.
+- **The tracked `.kanna/config.json`** carries it to every clone. It runs main's copy, `"$KANNA_REPO/scripts/teardown.sh"`, so a worktree made before the script existed is torn down too. `.gitignore` ignores the rest of `.kanna/`; your `planning.agent` lives in your own `~/.kanna-v4/config.json`.
+- **Tested** by `scripts/test-teardown.sh`, against a fake `ROOT` and `KANNA_AGENTS_HOME`.
