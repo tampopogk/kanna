@@ -21,7 +21,7 @@ Every run stops what it started however it ends, and first stops what runs
 it can't see anymore left behind (docs/specs/e2e-cleanup.md). Run it
 unsandboxed: it needs ps, signals, Unix sockets and /tmp.
 
-Uses target/release/{kanna,kanna-daemon,kanna-keeper,kanna-build} and target/Kanna.app (or $KANNA_E2E_APP)
+Uses target/Kanna.app (or $KANNA_E2E_APP) and its Contents/Helpers/{kanna,kanna-daemon,kanna-keeper}, and target/release/kanna-build
 (scripts/build.sh). The private instance gets:
   KANNA_SOCKET     the daemon's socket (the CLI and the app connect to it)
   KANNA_STATE_DIR  where the daemon, keeper and app keep their files
@@ -36,8 +36,8 @@ USAGE
 }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-bin="$repo_root/target/release"
 app="${KANNA_E2E_APP:-$repo_root/target/Kanna.app}/Contents/MacOS/Kanna"
+bin="${app%/MacOS/Kanna}/Helpers"
 out="$repo_root/target/e2e-kanna"
 mkdir -p "$out"
 
@@ -482,8 +482,8 @@ web_md_ios_panes() {
 scenario cli_starts_app M1
 cli_starts_app() {
   local home="$KANNA_STATE_DIR/home" socket folder instance
-  folder="$("$bin/kanna-build" | sed -n 's/^folder=//p')"
-  instance="$("$bin/kanna-build" | sed -n 's/^instance=//p')"
+  folder="$("$repo_root/target/release/kanna-build" | sed -n 's/^folder=//p')"
+  instance="$("$repo_root/target/release/kanna-build" | sed -n 's/^instance=//p')"
   [[ "$instance" == default ]] || folder="$folder-$instance"
   socket="$home/Library/Application Support/$folder/kanna.sock"
   mkdir -p "$(dirname "$socket")"
