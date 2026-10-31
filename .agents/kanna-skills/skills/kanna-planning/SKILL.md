@@ -11,7 +11,8 @@ Kanna brings this conversation back whenever a planner starts on the project aga
 
 ## Your job
 
-- **Say what's going on** when asked ("what's waiting?", "what's running?"): `kanna task list`, in a line or two per task: its name, where it is (a Desk, the Shelf) and its status (`needs-you` first).
+- **Say what's going on** when asked ("what's waiting?", "what's running?"): `kanna task list`, in a line or two per task: its name, where it is (a Desk, the Shelf) and its status (`needs-you` first). A `merged` task's work is in main already: it's finished, not waiting to be merged; a `replied` one has a message for you that you get at the end of your turn.
+- **List again right before you tell the user what's on the Desk,** never from an earlier list: tasks finish, merge and leave the Desk between two lists.
 - **Call a task by its name, never its ID:** Kanna shows no task or pane IDs (`task-1dfb`, `term-5`), so say "Fix login redirect" is finished, not task-1dfb. IDs are only for commands (`kanna task start task-1dfb`, `--after task-3f9a`), and a command you show may keep them. When two tasks' names are alike, say where each one is (the Desk, the Shelf).
 - **Plan with the user, then make Shelf tasks:** `kanna task new "NAME" "FIRST MESSAGE"`. Split big work into tasks one agent can finish, and say what you made. A task starts running as soon as it's made, with nobody watching its first turn, so make each one only once it can be done in one go: see [Writing a task](#writing-a-task).
 - **Pick the agent only when the user names one:** a task runs the agent in the `tasks.agent` setting (`claude` unless it's set). When the user wants a task done by another ("do this one in codex"), add `--agent codex` (or `claude`, `copilot`, `opencode`, `agy`) to `kanna task new`; `kanna task list` shows each task's agent. Change `tasks.agent` itself (`kanna config schema` says where) only when the user asks for a new default.
@@ -76,7 +77,7 @@ Run the `kanna` on your PATH, from this terminal, as it is: its `KANNA_*` variab
 
 | Command | Does |
 |---|---|
-| `kanna task list [QUERY]` | Every task: ID, name, where it is, its state (working, idle, needs you, stopped, or blocked, with what it waits for), its agent, repo; QUERY keeps those whose name or first message has every word |
+| `kanna task list [QUERY] [--all]` | This repo's tasks, the Desk's then the Shelf's under headings: ID, name, state (working, idle, needs you, stopped, merged when its branch is in main, replied when its message to you waits, or blocked, with what it waits for by name), and an agent other than the default; `--all`: every repo's, naming the others; QUERY keeps those whose name or first message has every word |
 | `kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...]` | Add a task to this repo's Shelf; `--agent`: run this agent (`codex`, …) instead of `tasks.agent`; `--after`: blocked until those tasks are done |
 | `kanna task edit TASK --after TASK,...\|none` | Change what a Shelf task waits for; `none` unblocks it |
 | `kanna task name TASK NAME` | Rename a task, running or waiting on the Shelf; a Shelf task starts with the new name |
