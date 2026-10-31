@@ -3295,6 +3295,32 @@ print("loop.request max %sms" % i.get("max"))')"
   (( worst < 300 )) || { echo "task_list_speed: a list of $n tasks took ${worst}ms"; return 1; }
 }
 
+scenario loop_latency M4
+loop_latency() {
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude" n=40 rounds="${KANNA_LOOP_ROUNDS:-5}" i r t mark readings
+  mkdir -p "$repo" "${agent%/*}" && ln -s "$mock_agent" "$agent" || { echo "loop_latency line $LINENO"; return 1; }
+  git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "loop_latency line $LINENO"; return 1; }
+  start_daemon && start_app || { echo "loop_latency line $LINENO"; return 1; }
+  for ((i = 1; i <= n; i++)); do (cd "$repo" && kanna task new "Task $i" "say hi" --agent "$agent") >/dev/null || { echo "loop_latency line $LINENO"; return 1; }; done
+  for ((i = 1; i <= n; i++)); do kanna task start "$(tid $i)" >/dev/null && kanna task stop "$(tid $i)" >/dev/null || { echo "loop_latency: task $i didn't start and stop"; return 1; }; done
+  mark="$(wc -l <"$out/daemon.log")"
+  raw '{"id":1,"cmd":"debug.daemon.perf","args":{"reset":true}}' >/dev/null
+  for ((r = 0; r < rounds; r++)); do
+    kanna task list --json >/dev/null || { echo "loop_latency line $LINENO"; return 1; }
+    for i in 1 2 3; do kanna task pick "$(tid $((r * 3 + i)))" >/dev/null || { echo "loop_latency: round $r, pick $i failed"; return 1; }; done
+    (cd "$repo" && kanna task list >/dev/null) || { echo "loop_latency line $LINENO"; return 1; }
+    for i in 1 2 3; do kanna task shelve "$(tid $((r * 3 + i)))" >/dev/null || { echo "loop_latency: round $r, shelve $i failed"; return 1; }; done
+  done
+  readings="$(raw '{"id":1,"cmd":"debug.daemon.perf"}' | python3 -c 'import json, sys
+r = json.load(sys.stdin); r = r.get("result", r)
+loop = [i for i in r["intervals"] if i["name"].startswith("loop.")]
+for i in loop: print("%s p99 %sms max %sms (%s)" % (i["name"], i["p99"], i["max"], i["count"]))
+print("worst", max(i["p99"] for i in loop))')"
+  echo "loop_latency: $n tasks, $rounds rounds of list, pick 3, list, shelve 3:"; grep -v '^worst' <<<"$readings" | sed 's/^/  /'
+  tail -n +"$((mark + 1))" "$out/daemon.log" | grep 'kanna-daemon: slow: ' | sed 's/^/  /'
+  python3 -c 'import sys; sys.exit(float(sys.argv[1]) > 20)' "$(grep '^worst' <<<"$readings" | cut -d' ' -f2)" || { echo "loop_latency: the loop's p99 is over 20ms"; return 1; }
+}
+
 scenario typing_latency M4
 typing_latency() {
   local keys="${KANNA_LATENCY_KEYS:-60}" floods="${KANNA_LATENCY_FLOODS:-1}" hidden="${KANNA_LATENCY_HIDDEN:-4}" agents="${KANNA_LATENCY_AGENTS:-0}" burners="${KANNA_LATENCY_CPU:-0}"
