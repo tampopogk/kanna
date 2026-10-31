@@ -88,6 +88,13 @@ fn frame_line(index: usize, frame: &Value) -> String {
     }
 }
 
+fn local_time(at: SystemTime) -> String {
+    let seconds = at.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&seconds, &mut tm) };
+    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
+}
+
 pub fn summary(record: &Value) -> String {
     format!("{}: {}", string(record, "process").unwrap_or("?"), string(record, "reason").unwrap_or("?"))
 }
@@ -181,13 +188,12 @@ impl Crashes {
             Some("keeper") => "the keeper",
             _ => "Kanna",
         };
-        let time = string(&record, "time").unwrap_or_default();
-        let mut detail = format!("{process} · {time}");
+        let reason = string(&record, "reason").unwrap_or("?");
+        let mut detail = format!("{reason} · {process} at {}", local_time(written(&path)));
         if waiting.len() > 1 {
             detail.push_str(&format!(" · and {} more", waiting.len() - 1));
         }
         self.banners.set(self.banners.get() + 1);
-        let reason = string(&record, "reason").unwrap_or("?");
         let title: String = format!("Kanna crashed: {reason}").chars().take(160).collect();
         Some(json!({ "id": format!("crash-{}", self.banners.get()), "title": title, "detail": detail, "pane": null, "task": null, "about": null, "sticky": true, "record": path }))
     }

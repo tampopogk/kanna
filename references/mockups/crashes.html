@@ -71,7 +71,7 @@ function render() {
   const more = waiting.length - 1;
   document.getElementById("stack").innerHTML = newest ? `<div class="toast${location.hash.includes("hover") ? " hovered" : ""}">${ICON}
     <div class="body"><div class="title">Kanna crashed: ${newest.reason}</div>
-    <div class="detail">${newest.process} · ${newest.time}${more ? ` · and ${more} more` : ""}</div>
+    <div class="detail">${newest.reason} · ${newest.process} at ${newest.time}${more ? ` · and ${more} more` : ""}</div>
     <div class="where">Open the crash record</div></div><button class="x" title="Dismiss">×</button></div>` : "";
   term.textContent = s.opened ? `opened ${s.opened} in a new window` : (s.crashes.length ? "kanna-daemon: the app crashed (pid 4242): NSInternalInconsistencyException: debug.crash in a draw; relaunching it in 1s" : "$ ");
 }

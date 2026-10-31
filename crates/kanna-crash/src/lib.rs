@@ -35,9 +35,9 @@ const MACHINERY: &[&str] = &[
     "std::sys::backtrace",
     "kanna_crash::install",
     "kanna_ffi::crash",
-    "Kanna.Crashes.",
-    "Kanna.CrashHandlers.",
 ];
+
+const MACHINERY_IMAGES: &[&str] = &["CoreFoundation", "libobjc.A.dylib", "libsystem_kernel.dylib", "libsystem_platform.dylib", "libsystem_c.dylib"];
 
 pub struct Crash {
     pub process: String,
@@ -109,7 +109,11 @@ fn symbol(frame: &Value) -> &str {
 
 fn machinery(frame: &Value) -> bool {
     let symbol = symbol(frame).trim_start_matches('<');
-    MACHINERY.iter().any(|m| symbol.starts_with(m)) || symbol.contains("as core::ops::function::Fn") && symbol.contains("Box<")
+    let image = frame.get("image").and_then(Value::as_str).unwrap_or("");
+    MACHINERY.iter().any(|m| symbol.starts_with(m))
+        || MACHINERY_IMAGES.contains(&image)
+        || symbol.contains("Kanna.CrashHandlers.")
+        || symbol.contains("as core::ops::function::Fn") && symbol.contains("Box<")
 }
 
 pub fn site(stack: &[Value]) -> &[Value] {
@@ -389,6 +393,14 @@ mod tests {
         assert_ne!(signature("app", &raised), signature("daemon", &raised));
         assert_ne!(signature("app", &raised), signature("app", &frames(&["Kanna.Other.draw()"])));
         assert_eq!(signature("app", &raised).len(), 16);
+        let preprocessed = vec![
+            json!({ "image": "CoreFoundation", "symbol": "__exceptionPreprocess" }),
+            json!({ "image": "Kanna", "symbol": "closure #1 in static Kanna.CrashHandlers.install() -> ()" }),
+            json!({ "image": "libobjc.A.dylib", "symbol": "objc_exception_throw" }),
+            json!({ "image": "CoreFoundation", "symbol": "_CFBundleGetValueForInfoKey", "offset": 0 }),
+            json!({ "image": "Kanna", "symbol": "Kanna.CrashView.draw(__C.CGRect) -> ()" }),
+        ];
+        assert_eq!(site(&preprocessed)[0]["symbol"], "Kanna.CrashView.draw(__C.CGRect) -> ()");
         let all_machinery = frames(&["abort", "__pthread_kill"]);
         assert_eq!(site(&all_machinery).len(), 2);
     }

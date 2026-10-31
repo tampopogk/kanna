@@ -118,9 +118,9 @@ stateDiagram-v2
 
 ## 4. Surface
 
-**The banner.** On every `app.hello`, the daemon sends the newest crash record not yet dismissed as a toast that doesn't fade (`sticky`), titled `Kanna crashed: REASON`, with the process, time and how many others wait. Clicking it opens the record in a code pane in a new window; ×, or the click, dismisses it and every older one (`crashes dismiss`).
+**The banner.** On every `app.hello`, the daemon sends the newest crash record not yet dismissed as a toast that doesn't fade (`sticky`), titled `Kanna crashed: REASON`, with the whole reason, the process, its local time and how many others wait below. Clicking it opens the record in a code pane in a new window; ×, or the click, dismisses it and every older one (`crashes dismiss`).
 
-![The crash banner below the title bar: "Kanna crashed: NSInternalInconsistencyException: debug.crash in a draw", "Kanna.app · 08:31:19 · and 1 more", "Open the crash record"](crashes.png)
+![The crash banner below the title bar: "Kanna crashed: NSInternalInconsistencyException: debug.crash in a draw", "NSInternalInconsistencyException: debug.crash in a draw · Kanna.app at 11:24:07", "Open the crash record"](crashes.png)
 
 **`kanna crashes`** (protocol `crashes {action: list|dismiss}`) lists the records, newest first, each with its reason, record, matching `.ips` (the file in `~/Library/Logs/DiagnosticReports` of the process's name whose `pid` is the record's) and stack; `--json` prints them as the daemon gives them, `--all` lists dismissed ones too.
 

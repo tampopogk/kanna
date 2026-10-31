@@ -31,7 +31,8 @@ enum CrashHandlers {
         kanna_crash_install(stateDir)
         NSSetUncaughtExceptionHandler { exception in CrashHandlers.record(exception) }
         preprocessor = objc_setExceptionPreprocessor { object in
-            let result = CrashHandlers.preprocessor.map { $0(object) } ?? object
+            var result = object
+            if let previous = CrashHandlers.preprocessor { result = previous(object) }
             if let object, let exception = Unmanaged<AnyObject>.fromOpaque(object).takeUnretainedValue() as? NSException {
                 CrashHandlers.thrown = (exception, Date())
             }

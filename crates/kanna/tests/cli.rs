@@ -250,7 +250,7 @@ fn every_command_works_through_the_daemon_and_the_app() {
     assert_eq!(daemon.kanna(&["markup", "doc", "--off"]).ok(), "comments off in file-1 (doc)");
 
     let capabilities = daemon.kanna(&["capabilities"]).ok();
-    assert!(capabilities.starts_with("pane types: term, web, ios, md, code, diff\ncommands: agents, arrange, capabilities, close, comment, desk, diffs, files, focus, list, machine, markup, move, move-tab, navigate, open, project, projects, quiz, read, rename-pane, rename-tab, resize, restart, screenshot, send, send-key, status, task, tasks, toast, tour, window, zoom"), "{capabilities}");
+    assert!(capabilities.starts_with("pane types: term, web, ios, md, code, diff\ncommands: agents, arrange, capabilities, close, comment, crashes, desk, diffs, files, focus, list, machine, markup, move, move-tab, navigate, open, project, projects, quiz, read, rename-pane, rename-tab, resize, restart, screenshot, send, send-key, status, task, tasks, toast, tour, window, zoom"), "{capabilities}");
     assert!(capabilities.ends_with("Kanna.app: attached"), "{capabilities}");
     assert_eq!(daemon.kanna(&["toast", "Build finished", "it took", "3m"]).ok(), "raised toast-1");
     assert_eq!(daemon.kanna(&["toast", "Messages wait", "--pane", "a", "--key", "k1"]).ok(), "raised toast-2");
@@ -686,7 +686,8 @@ fn a_shelf_task_is_renamed_and_starts_with_its_new_name() {
 
 #[test]
 fn a_daemon_that_panics_leaves_a_crash_record_that_kanna_crashes_lists_and_the_planner_hears_of_once() {
-    let mut daemon = Daemon::start_with(&[("KANNA_DEBUG", "1")]);
+    let reports = scratch("reports");
+    let mut daemon = Daemon::start_with(&[("KANNA_DEBUG", "1"), ("KANNA_DIAGNOSTIC_REPORTS", reports.to_str().unwrap())]);
     assert_eq!(daemon.kanna(&["crashes"]).ok(), "no crashes (kanna crashes --all lists the dismissed ones)");
     let _ = daemon.kanna(&["raw", r#"{"cmd":"debug.panic"}"#]);
     assert!(!daemon.exited().success());
@@ -700,12 +701,15 @@ fn a_daemon_that_panics_leaves_a_crash_record_that_kanna_crashes_lists_and_the_p
     assert!(top.contains("kanna_daemon::crashes"), "{top}");
     assert_eq!(record["signature"].as_str().map(str::len), Some(16));
 
+    let ips = reports.join("kanna-daemon-2026-10-31-083119.ips");
+    std::fs::write(&ips, format!("{{\"app_name\":\"kanna-daemon\",\"bug_type\":\"309\"}}\n{}", json!({ "pid": record["pid"], "procName": "kanna-daemon" }))).unwrap();
+    std::fs::write(reports.join("kanna-daemon-2026-10-31-083120.ips"), format!("{{}}\n{}", json!({ "pid": 1 }))).unwrap();
     daemon.again();
     let listed = daemon.kanna(&["crashes"]).ok();
     let lines: Vec<&str> = listed.lines().collect();
     assert!(lines[0].contains("  daemon (pid ") && lines[0].contains("  debug.panic in the daemon's main loop at "), "{listed}");
     assert_eq!(lines[1], format!("  record  {}", records[0].display()));
-    assert_eq!(lines[2], "  report  none");
+    assert_eq!(lines[2], format!("  report  {}", ips.display()));
     assert!(lines[3].contains("kanna_daemon::crashes"), "{listed}");
     let json = daemon.kanna(&["crashes", "--json"]).json();
     assert_eq!(json["crashes"][0]["file"], json!(records[0].to_string_lossy()));
@@ -718,7 +722,7 @@ fn a_daemon_that_panics_leaves_a_crash_record_that_kanna_crashes_lists_and_the_p
     assert_eq!(messages.len(), 1, "{messages:?}");
     let text = messages[0]["text"].as_str().unwrap();
     assert!(text.starts_with("Kanna crashed: daemon (pid "), "{text}");
-    assert!(text.contains(&format!("record: {}", records[0].display())) && text.contains(&format!("signature: {}", record["signature"].as_str().unwrap())) && text.contains("kanna_daemon::crashes"), "{text}");
+    assert!(text.contains(&format!("record: {}", records[0].display())) && text.contains(&format!("signature: {}", record["signature"].as_str().unwrap())) && text.contains(&format!("report: {}", ips.display())) && text.contains("kanna_daemon::crashes"), "{text}");
 
     let _ = daemon.kanna(&["raw", r#"{"cmd":"debug.panic"}"#]);
     daemon.exited();
@@ -731,4 +735,5 @@ fn a_daemon_that_panics_leaves_a_crash_record_that_kanna_crashes_lists_and_the_p
     for record in daemon.crash_records() {
         std::fs::remove_file(record).unwrap();
     }
+    std::fs::remove_dir_all(reports).unwrap();
 }
