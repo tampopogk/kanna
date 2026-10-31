@@ -49,6 +49,7 @@ sequenceDiagram
 
 - **The echo** is the first output read from the pty after the keystroke was written to it, and on the app the first `output` for that terminal after the key; a key whose echo doesn't come within 1s is dropped (`key.lost`).
 - **The main loop** is timed too: `loop.chores` (each turn's housekeeping) and `loop.EVENT` per kind of event (`loop.output`, `loop.request`, `loop.app.message`, …), so a stall shows which work held it.
+- **e2e `task_list_speed`:** 40 stopped tasks with worktrees; `kanna task list` answers within 300ms (1330ms before the fix).
 - **e2e `typing_latency`** types 60 keys into `cat` with `debug.type` while other panes load the instance, then prints every stage's p50/p95/p99. Its knobs: `KANNA_LATENCY_FLOODS` (`yes` panes beside it, default 1), `_HIDDEN` (`yes` in hidden tabs, 4), `_AGENTS` (panes redrawing 40 lines at 30 fps, 0), `_CPU` (CPU burners, 0), `_KEYS`, `_BOUND`.
 
 ## 3. The byte path
@@ -101,7 +102,7 @@ flowchart LR
 | `yes` beside it and 4 in hidden tabs (the e2e) | — | 6.1 / 7.5 / 12.8 |
 | all of the above at once | — | 10.8 / 77 / 120 |
 
-`tasks list` on the dev Kanna (about 40 tasks) held the main loop 1.1–1.6s; in a 1ms sample of one, 875 of its 908 samples were in the two git calls per task that `git_dir` no longer makes, which leaves about 33ms.
+`tasks list` on the dev Kanna (about 40 tasks) held the main loop 1.1–1.6s; in a 1ms sample of one, 875 of its 908 samples were in the two git calls per task that `git_dir` no longer makes, which leaves about 33ms. e2e `task_list_speed` reproduces it on a private instance: with 40 stopped tasks that have worktrees, `kanna task list` took 1330ms with the old `git_dir` and takes at most 10ms (4ms on the main loop) now.
 
 ## 6. Tested
 

@@ -3265,6 +3265,29 @@ sys.exit(not any(h[\"ms\"] >= 300 and \"command.debug.hang\" in h[\"open\"] for 
   check wait_for 5 grep -qE 'kanna: the main thread hung [0-9]{3}ms; open: .*command\.debug\.hang' "$out/app.log" || { echo "perf_intervals: the hang isn't in the app's log"; tail -5 "$out/app.log"; return 1; }
 }
 
+scenario task_list_speed M4
+task_list_speed() {
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude" n=40 i started ms worst=0
+  mkdir -p "$repo" "${agent%/*}" && ln -s "$mock_agent" "$agent" || { echo "task_list_speed line $LINENO"; return 1; }
+  git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "task_list_speed line $LINENO"; return 1; }
+  start_daemon || { echo "task_list_speed line $LINENO"; return 1; }
+  for ((i = 1; i <= n; i++)); do (cd "$repo" && kanna task new "Task $i" "say hi" --agent "$agent") >/dev/null || { echo "task_list_speed line $LINENO"; return 1; }; done
+  for ((i = 1; i <= n; i++)); do kanna task start "$(tid $i)" >/dev/null || { echo "task_list_speed: task $i didn't start"; return 1; }; done
+  for ((i = 1; i <= n; i++)); do kanna task stop "$(tid $i)" >/dev/null || { echo "task_list_speed: task $i didn't stop"; return 1; }; done
+  started="$(find "$repo/.kanna-worktrees" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+  (( started == n )) || { echo "task_list_speed: $started of $n tasks have a worktree"; return 1; }
+  raw '{"id":1,"cmd":"debug.daemon.perf","args":{"reset":true}}' >/dev/null
+  for i in 1 2 3 4 5; do
+    ms="$( { /usr/bin/time -p kanna task list --json >/dev/null; } 2>&1 | awk '/^real/ {printf "%d", $2 * 1000}')"
+    (( ms > worst )) && worst=$ms
+  done
+  echo "task_list_speed: $n stopped tasks with worktrees; kanna task list took at most ${worst}ms; daemon $(raw '{"id":1,"cmd":"debug.daemon.perf"}' | python3 -c 'import json, sys
+r = json.load(sys.stdin); r = r.get("result", r)
+i = {i["name"]: i for i in r["intervals"]}.get("loop.request", {})
+print("loop.request max %sms" % i.get("max"))')"
+  (( worst < 300 )) || { echo "task_list_speed: a list of $n tasks took ${worst}ms"; return 1; }
+}
+
 scenario typing_latency M4
 typing_latency() {
   local keys="${KANNA_LATENCY_KEYS:-60}" floods="${KANNA_LATENCY_FLOODS:-1}" hidden="${KANNA_LATENCY_HIDDEN:-4}" agents="${KANNA_LATENCY_AGENTS:-0}" burners="${KANNA_LATENCY_CPU:-0}"
