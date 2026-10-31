@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crash banner</title>
+<style>
+:root {
+  --bg: #14161a; --panel2: #22262d; --line: #2c313a; --text: #e6e8eb; --muted: #8b93a0;
+  --accent: #7aa2ff; --bad: #ff6b6b; --term: #16181c; --page: #0d0e10;
+  --shadow: 0 20px 50px rgba(0,0,0,.5); --toast: rgba(34,38,45,.97); --toast-shadow: 0 8px 24px rgba(0,0,0,.45);
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --panel2: #eaecf0; --line: #d8dce2; --text: #1d2026; --muted: #6b7280;
+  --accent: #2f63d8; --bad: #d63c3c; --term: #fbfbfc; --page: #dfe2e7;
+  --shadow: 0 20px 50px rgba(0,0,0,.18); --toast: rgba(255,255,255,.98); --toast-shadow: 0 8px 24px rgba(0,0,0,.16);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1100px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro { display: none; }
+.intro h1 { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--muted); margin: 0 0 12px; max-width: 880px; }
+.intro code { font: 12px var(--mono); }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+button { font: 12px var(--sans); color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+.window { position: relative; border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: var(--shadow); background: var(--bg); height: 420px; display: flex; flex-direction: column; }
+body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 100vh; }
+.bar { height: 36px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 12px; border-bottom: 1px solid var(--line); }
+.lights { display: flex; gap: 6px; }
+.lights i { width: 11px; height: 11px; border-radius: 50%; background: var(--line); display: block; }
+.term { flex: 1; padding: 10px 12px; font: 12px/1.6 var(--mono); white-space: pre-wrap; background: var(--term); color: var(--muted); }
+.stack { position: absolute; top: 46px; right: 12px; width: 340px; display: flex; flex-direction: column; gap: 8px; z-index: 5; }
+.toast { display: flex; gap: 10px; align-items: flex-start; background: var(--toast); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; box-shadow: var(--toast-shadow); cursor: pointer; }
+.toast:hover, .toast.hovered { border-color: var(--accent); }
+.toast .icon { flex: none; width: 18px; height: 18px; color: var(--bad); margin-top: 1px; }
+.toast .body { flex: 1; min-width: 0; }
+.toast .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.toast .detail { color: var(--muted); font-size: 12px; }
+.toast .where { color: var(--accent); font-size: 11px; margin-top: 3px; }
+.toast .x { flex: none; border: 0; background: transparent; color: var(--muted); padding: 0 2px; font-size: 14px; line-height: 1; visibility: hidden; }
+.toast:hover .x, .toast.hovered .x { visibility: visible; }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1>The crash banner: a toast that stays until it's dismissed</h1>
+    <p>After a crash, the daemon sends the newest crash record not yet dismissed when the relaunched app says hello. It doesn't fade. Clicking it opens the record (a code pane in a new window) and dismisses it with every older one; × only dismisses. <code>kanna crashes</code> lists them all.</p>
+    <div class="controls">
+      <button id="crash">The app crashes in a draw</button>
+      <button id="again">Another crash first (and 1 more)</button>
+      <button id="theme">Light / dark</button>
+    </div>
+  </div>
+  <div class="window">
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><b id="title">Kanna Dev</b></div>
+    <div class="term" id="term"></div>
+    <div class="stack" id="stack"></div>
+  </div>
+</main>
+<script>
+const ICON = `<svg class="icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M6.7 2.5h6.6l4.7 4.7v6.6l-4.7 4.7H6.7L2 13.8V7.2z"/><path d="M7.5 7.5l5 5M12.5 7.5l-5 5" stroke-linecap="round"/></svg>`;
+let s = { crashes: [], dismissed: 0, opened: null };
+const term = document.getElementById("term");
+function render() {
+  const waiting = s.crashes.slice(s.dismissed);
+  const newest = waiting[waiting.length - 1];
+  const more = waiting.length - 1;
+  document.getElementById("stack").innerHTML = newest ? `<div class="toast${location.hash.includes("hover") ? " hovered" : ""}">${ICON}
+    <div class="body"><div class="title">Kanna crashed: ${newest.reason}</div>
+    <div class="detail">${newest.reason} · ${newest.process} at ${newest.time}${more ? ` · and ${more} more` : ""}</div>
+    <div class="where">Open the crash record</div></div><button class="x" title="Dismiss">×</button></div>` : "";
+  term.textContent = s.opened ? `opened ${s.opened} in a new window` : (s.crashes.length ? "kanna-daemon: the app crashed (pid 4242): NSInternalInconsistencyException: debug.crash in a draw; relaunching it in 1s" : "$ ");
+}
+const crash = (reason, time) => s.crashes.push({ reason, time, process: "Kanna.app", file: `crashes/20261031T${time.replaceAll(":", "")}.412Z-app.json` });
+document.getElementById("crash").onclick = () => { crash("NSInternalInconsistencyException: debug.crash in a draw", "08:31:19"); render(); };
+document.getElementById("again").onclick = () => { crash("SIGSEGV", "08:29:02"); crash("NSInternalInconsistencyException: debug.crash in a draw", "08:31:19"); render(); };
+document.getElementById("stack").addEventListener("click", e => {
+  const newest = s.crashes[s.crashes.length - 1];
+  if (!e.target.closest(".x")) s.opened = newest.file;
+  s.dismissed = s.crashes.length;
+  render();
+});
+document.getElementById("theme").onclick = () => { const r = document.documentElement; r.dataset.theme = r.dataset.theme === "light" ? "" : "light"; };
+if (location.hash.includes("picture")) document.body.classList.add("picture");
+if (location.hash.includes("light")) document.documentElement.dataset.theme = "light";
+if (location.hash.includes("banner")) { crash("SIGSEGV", "08:29:02"); crash("NSInternalInconsistencyException: debug.crash in a draw", "08:31:19"); }
+render();
+</script>
+</body>
+</html>

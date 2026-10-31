@@ -1528,7 +1528,7 @@ impl Tasks {
                     Some("resolve") => responder.reply(this.find(&args)),
                     Some("edit") => responder.reply(this.edit(&args)),
                     Some("name") => this.name(&args, responder),
-                    Some("list") => responder.reply(Ok(this.list(&args))),
+                    Some("list") => this.listed(&args, responder),
                     Some("done") => this.done(&args, responder),
                     Some("start") => this.start(&args, responder),
                     Some("stop") => this.stop(&args, responder),
@@ -1799,6 +1799,15 @@ impl Tasks {
         Ok(Map::from_iter([("message".to_string(), json!(message.id)), ("to".to_string(), to), ("state".to_string(), json!(state)), ("warning".to_string(), opt(warning.as_deref()))]))
     }
 
+    pub fn post(&self, from: &str, repo: &str, text: &str) -> Result<i64, String> {
+        let message = self.db.put_message(PLANNER, repo, from, text, None).map_err(|error| format!("couldn't save the message in {}: {error}", db::FILE))?;
+        log!("kanna-daemon: a message from {from} waits for {PLANNER} of {repo}");
+        let id = message.id;
+        self.waiting.borrow_mut().push(message);
+        self.refill();
+        Ok(id)
+    }
+
     fn messages(&self, args: &Value) -> Result<Map, KmuxError> {
         let task = match string(args, "task") {
             Some(reference) => Some(self.task_of(reference).or(self.resolve(reference)?).ok_or_else(|| not_found(reference))?),
@@ -1986,10 +1995,40 @@ impl Tasks {
         Ok(Map::from_iter([("task".to_string(), value)]))
     }
 
+    fn listed(&self, args: &Value, responder: Responder) {
+        let mut listed = self.list(args);
+        if args.get("merged") != Some(&Value::Bool(true)) {
+            return responder.reply(Ok(listed));
+        }
+        let repo = string(args, "repo");
+        let worktrees: Vec<(String, PathBuf, PathBuf)> = self
+            .entries
+            .borrow()
+            .iter()
+            .chain(self.running.borrow().iter().map(|r| &r.entry))
+            .filter(|e| repo.is_none_or(|r| e.repo == r))
+            .map(|e| (e.id.clone(), PathBuf::from(&e.repo), e.folder.as_ref().map_or_else(|| Path::new(&e.repo).join(WORKTREES).join(&e.id), PathBuf::from)))
+            .collect();
+        std::thread::spawn(move || {
+            let merged: HashSet<String> = std::thread::scope(|scope| {
+                let checks: Vec<_> = worktrees.iter().map(|(id, repo, worktree)| scope.spawn(move || task_scripts::merged(repo, worktree).then(|| id.clone()))).collect();
+                checks.into_iter().filter_map(|check| check.join().ok().flatten()).collect()
+            });
+            for list in ["shelf", "desk"] {
+                for task in listed.get_mut(list).and_then(Value::as_array_mut).into_iter().flatten() {
+                    let id = task["id"].as_str().unwrap_or_default().to_string();
+                    task["merged"] = json!(merged.contains(&id));
+                }
+            }
+            responder.reply(Ok(listed));
+        });
+    }
+
     fn list(&self, args: &Value) -> Map {
         let repo = string(args, "repo");
         let core = self.core.upgrade();
         let entries = self.entries.borrow().clone();
+        let replied: HashSet<String> = self.waiting.borrow().iter().filter(|m| m.recipient == PLANNER).map(|m| m.sender.clone()).collect();
         let tasks = entries
             .iter()
             .filter(|e| repo.is_none_or(|r| e.repo == r))
@@ -1998,10 +2037,18 @@ impl Tasks {
                 let pane = e.held.as_deref().zip(core.as_ref()).and_then(|(pane, core)| core.pane(pane).map(|p| (alive(core, pane), p)));
                 value["running"] = json!(pane.as_ref().is_some_and(|(running, _)| *running));
                 value["status"] = opt(pane.as_ref().and_then(|(_, p)| p.status()));
+                value["replied"] = json!(replied.contains(&e.id));
                 value
             })
             .collect();
-        let out = self.running.borrow().iter().filter(|r| repo.is_none_or(|repo| r.entry.repo == repo)).map(|r| json!({ "id": r.entry.id, "short": self.short(&r.entry.id), "pane": r.pane })).collect();
+        let out = self
+            .running
+            .borrow()
+            .iter()
+            .filter(|r| repo.is_none_or(|repo| r.entry.repo == repo))
+            .map(|r| json!({ "id": r.entry.id, "short": self.short(&r.entry.id), "pane": r.pane, "repo": r.entry.repo, "replied": replied.contains(&r.entry.id) }))
+            .collect();
+        let agent = task_agent(&repo.map_or_else(|| vec![crate::agents::home().join(".kanna-v4/config.json")], |repo| config_files(Path::new(repo))));
         let scripts: Map = self
             .running
             .borrow()
@@ -2012,7 +2059,7 @@ impl Tasks {
                 self.script_said(&r.entry, Some(&r.pane), running).map(|said| (r.pane.clone(), json!(said)))
             })
             .collect();
-        Map::from_iter([("shelf".to_string(), Value::Array(tasks)), ("desk".to_string(), Value::Array(out)), ("script".to_string(), Value::Object(scripts))])
+        Map::from_iter([("shelf".to_string(), Value::Array(tasks)), ("desk".to_string(), Value::Array(out)), ("script".to_string(), Value::Object(scripts)), ("agent".to_string(), json!(agent))])
 
     }
 
