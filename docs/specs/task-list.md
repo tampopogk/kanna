@@ -45,10 +45,10 @@ task-7804  Reload changed images in markdown            stopped
 task-151a  send-key                                     stopped  ~/work/kmux
 ```
 
-With `--done`, a third heading lists the done tasks of the same repos, newest first, each ending with when it was done, so an agent can check whether work was done already before it makes a task:
+With `--include-done` and a QUERY, a third heading lists the done tasks of the same repos that match, newest first, each ending with when it was done, so an agent can check whether work was done already before it makes a task:
 
 ```text
-$ kanna task list --done send enter
+$ kanna task list send enter --include-done
 Shelf
 task-7804  kanna send presses Enter                     stopped
 
@@ -91,7 +91,7 @@ flowchart TD
 - **The caller's repo by default:** the repo the CLI runs in (its git common dir, as `kanna task new` finds it). Outside a git repo, every repo's.
 - **`--all`:** every repo's, as the list was before.
 - **QUERY** filters as before ([Shelf search](shelf-search.md#cli)).
-- **`--done`:** the done tasks too, from `kanna.db` ([database](database.md)), with `done` and `doneAt` in `--json`.
+- **`--include-done`:** the done tasks that match QUERY too, from `kanna.db` ([database](database.md)), with `done` and `doneAt` in `--json`. It needs a QUERY: every task ever made would swamp an agent's context, so the CLI refuses it alone.
 
 ## 5. --json
 
