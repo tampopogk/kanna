@@ -26,6 +26,7 @@ case "$arch" in x86_64|aarch64) ;; *) usage ;; esac
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$repo_root/scripts/env.sh"
+. "$repo_root/scripts/store.sh"
 kanna_targets "$repo_root" || exit 1
 target="$arch-unknown-linux-gnu"
 glibc=2.35
@@ -45,7 +46,7 @@ if command -v rustup >/dev/null 2>&1 && ! rustup target list --installed | grep 
 fi
 if [[ ! -f "$repo_root/target/ghostty-vt/$target/lib/libghostty-vt.a" ]] || [[ "$(cat "$repo_root/target/ghostty-vt/$target/ghostty.rev" 2>/dev/null)" != "$KANNA_GHOSTTY_COMMIT" ]]; then
   step "libghostty-vt for $target"
-  "$repo_root/scripts/build-ghostty-vt.sh" "$target"
+  kanna_ghostty_vt "$repo_root" "$target"
 fi
 
 step "Build Kanna $version ($channel, $commit) for $target"
