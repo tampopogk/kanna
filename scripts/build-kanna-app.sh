@@ -27,7 +27,7 @@ kanna_borrow_built "$repo_root" ghosttykit
 kanna_borrow_built "$repo_root" "ghostty-vt/$triple"
 ghosttykit="$repo_root/target/ghosttykit"
 built="$(cat "$ghosttykit/ghostty.rev" 2>/dev/null || true)"
-if [[ -n "${GHOSTTY_SOURCE_DIR:-}" || ! -d "$ghosttykit/GhosttyKit.xcframework" || "$built" != "$KANNA_GHOSTTY_COMMIT" ]]; then
+if [[ -n "${GHOSTTY_SOURCE_DIR:-}" || ! -d "$ghosttykit/GhosttyKit.xcframework" ]] || ! kanna_ghostty_built "$ghosttykit"; then
   "$repo_root/scripts/build-ghosttykit.sh"
   built="$(cat "$ghosttykit/ghostty.rev" 2>/dev/null || true)"
 fi

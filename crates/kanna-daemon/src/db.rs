@@ -118,6 +118,14 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         from_place = case from_place when 'shelf' then 'desk' when 'backlog' then 'shelf' else from_place end,
         to_place = case to_place when 'shelf' then 'desk' when 'backlog' then 'shelf' else to_place end,
         what = case what when 'shelved' then 'picked' when 'deferred' then 'shelved' when 'pulled' then 'activated' when 'parked' then 'left' else what end;
+"), Step::Sql("
+    create table crashes (
+        file text primary key,
+        signature text not null,
+        at real not null,
+        dismissed real,
+        reported real
+    );
 ")];
 
 pub const RECENT: usize = 10;
@@ -629,6 +637,24 @@ impl Db {
 
     pub fn clear_projects(&self) -> rusqlite::Result<()> {
         self.conn.execute("delete from projects", []).map(|_| ())
+    }
+
+    pub fn crashes(&self) -> rusqlite::Result<Vec<(String, String, bool, bool)>> {
+        let mut statement = self.conn.prepare("select file, signature, dismissed is not null, reported is not null from crashes order by file")?;
+        let rows = statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        rows.collect()
+    }
+
+    pub fn put_crash(&self, file: &str, signature: &str) -> rusqlite::Result<()> {
+        self.conn.execute("insert or ignore into crashes (file, signature, at) values (?1, ?2, ?3)", params![file, signature, now()]).map(|_| ())
+    }
+
+    pub fn crash_reported(&self, signature: &str) -> rusqlite::Result<()> {
+        self.conn.execute("update crashes set reported = ?2 where signature = ?1 and reported is null", params![signature, now()]).map(|_| ())
+    }
+
+    pub fn dismiss_crashes(&self, through: &str) -> rusqlite::Result<usize> {
+        self.conn.execute("update crashes set dismissed = ?2 where file <= ?1 and dismissed is null", params![through, now()])
     }
 
     pub fn never_import(&self, path: &str) -> rusqlite::Result<()> {

@@ -26,7 +26,7 @@ if [[ -n "$arch" ]]; then triple="$(kanna_arch_triple "$arch")" || usage; else t
 arch_dir="$(kanna_arch_dir "$repo_root" "$triple")"
 echo "==> Architecture: $(kanna_triple_arch "$triple") (${arch_dir#"$repo_root/"}/Kanna.app)"
 kanna_rust_target "$triple"
-pinned() { [[ -z "${GHOSTTY_SOURCE_DIR:-}" && "$(cat "$1/ghostty.rev" 2>/dev/null)" == "$KANNA_GHOSTTY_COMMIT" ]]; }
+pinned() { [[ -z "${GHOSTTY_SOURCE_DIR:-}" ]] && kanna_ghostty_built "$1"; }
 
 echo "==> Ghostty: using the main checkout's pinned builds, if this is a worktree"
 kanna_borrow_built "$repo_root" ghosttykit

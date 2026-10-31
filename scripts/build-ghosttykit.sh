@@ -11,7 +11,7 @@ optimize="${KANNA_GHOSTTY_OPTIMIZE:-ReleaseSafe}"
 work="$repo_root/target/ghosttykit-build"
 mkdir -p "$work/macos"
 (cd "$work" && "$zig" build --build-file "$source_dir/build.zig" --cache-dir "$work/.zig-cache" -p "$work/zig-out" \
-  -Demit-xcframework=true -Demit-macos-app=false -Doptimize="$optimize")
+  -Demit-xcframework=true -Demit-macos-app=false -Doptimize="$optimize" $KANNA_GHOSTTYKIT_OPTIONS)
 
 out="$repo_root/target/ghosttykit"
 xcframework="$out/GhosttyKit.xcframework"
@@ -20,6 +20,7 @@ mkdir -p "$out"
 rm -rf "$xcframework"
 cp -R "$work/macos/GhosttyKit.xcframework" "$out/"
 kanna_ghostty_rev "$source_dir" > "$out/ghostty.rev"
+echo "$KANNA_GHOSTTYKIT_OPTIONS" > "$out/ghostty.options"
 
 add_lib_prefix_swiftpm_needs() {
   local plist="$xcframework/Info.plist"

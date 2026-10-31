@@ -2,6 +2,7 @@
 KANNA_GHOSTTY_FORK="${KANNA_GHOSTTY_FORK:-https://github.com/jemdiggity/ghostty.git}"
 KANNA_GHOSTTY_BRANCH="kanna4"
 KANNA_GHOSTTY_COMMIT="4e28443e32fe8b0f88934d6a1159c42561f1931a"
+KANNA_GHOSTTYKIT_OPTIONS="-Dsentry=false"
 
 KANNA_ZIG_VERSION="0.17.0"
 KANNA_ZIG_SHA256_aarch64_macos="b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
@@ -112,6 +113,15 @@ kanna_ghostty_pinned() {
     [ -z "$(git -C "$1" status --porcelain 2>/dev/null)" ]
 }
 
+kanna_ghostty_options() {
+  case "$1" in */ghosttykit) echo "$KANNA_GHOSTTYKIT_OPTIONS" ;; *) echo "" ;; esac
+}
+
+kanna_ghostty_built() {
+  [ "$(cat "$1/ghostty.rev" 2>/dev/null)" = "$KANNA_GHOSTTY_COMMIT" ] &&
+    [ "$(cat "$1/ghostty.options" 2>/dev/null)" = "$(kanna_ghostty_options "$1")" ]
+}
+
 kanna_ghostty_rev() {
   rev="$(git -C "$1" rev-parse HEAD 2>/dev/null)" || { echo unknown; return; }
   if [ -n "$(git -C "$1" status --porcelain 2>/dev/null)" ]; then rev="$rev-dirty"; fi
@@ -127,7 +137,7 @@ kanna_borrow_built() {
   common="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
   main="$(dirname "$common")/target/$2"
   [ "$main" != "$here" ] && [ -d "$main" ] || return 0
-  [ "$(cat "$main/ghostty.rev" 2>/dev/null)" = "$KANNA_GHOSTTY_COMMIT" ] || return 0
+  kanna_ghostty_built "$main" || return 0
   mkdir -p "$(dirname "$here")" && ln -s "$main" "$here"
 }
 

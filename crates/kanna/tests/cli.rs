@@ -425,11 +425,11 @@ fn help_never_starts_anything_and_marks_what_the_running_kanna_lacks() {
     assert!(kanna_at(&dir, Some(&nowhere), &["raw", "--help"]).ok().starts_with("usage: kanna raw REQUEST"));
     kanna_at(&dir, Some(&nowhere), &["help", "nope"]).fails(2, "unknown command \"nope\"");
     let commands = kanna_at(&dir, Some(&nowhere), &["commands"]).ok();
-    assert_eq!(commands.lines().count(), 31);
+    assert_eq!(commands.lines().count(), 32);
     assert!(commands.starts_with("open          Open a terminal"), "{commands}");
     let described = kanna_at(&dir, Some(&nowhere), &["commands", "--json"]).json();
     assert_eq!(described["running"], false);
-    assert_eq!(described["commands"].as_array().unwrap().len(), 31);
+    assert_eq!(described["commands"].as_array().unwrap().len(), 32);
     assert_eq!(described["exitCodes"]["6"], "needs Kanna.app, which isn't attached and wasn't started");
     assert!(described["globalOptions"].as_array().unwrap().iter().any(|o| o["flag"] == "--"));
 
@@ -682,4 +682,53 @@ fn a_shelf_task_is_renamed_and_starts_with_its_new_name() {
     assert_eq!(daemon.kanna(&["task", "name", &id, "Newer name"]).ok(), format!("named task-{short} \"Newer name\""));
     assert!(daemon.kanna(&["workspace", "list", "--all", "--json"]).json()["panes"].as_array().unwrap().iter().any(|p| p["id"] == pane.as_str() && p["name"] == "Newer name"));
     assert_eq!(daemon.kanna(&["--json", "task", "list"]).json()["shelf"][0]["name"], json!("Newer name"));
+}
+
+#[test]
+fn a_daemon_that_panics_leaves_a_crash_record_that_kanna_crashes_lists_and_the_planner_hears_of_once() {
+    let mut daemon = Daemon::start_with(&[("KANNA_DEBUG", "1")]);
+    assert_eq!(daemon.kanna(&["crashes"]).ok(), "no crashes (kanna crashes --all lists the dismissed ones)");
+    let _ = daemon.kanna(&["raw", r#"{"cmd":"debug.panic"}"#]);
+    assert!(!daemon.exited().success());
+    let records = daemon.crash_records();
+    assert_eq!(records.len(), 1, "one record");
+    let record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&records[0]).unwrap()).unwrap();
+    assert_eq!((record["process"].as_str(), record["kind"].as_str(), record["executable"].as_str()), (Some("daemon"), Some("panic"), Some("kanna-daemon")));
+    assert!(record["reason"].as_str().unwrap().starts_with("debug.panic in the daemon's main loop at crates/kanna-daemon/src/crashes.rs:"), "{}", record["reason"]);
+    assert!(records[0].file_name().unwrap().to_string_lossy().ends_with("Z-daemon.json"));
+    let top = kanna_crash::site(record["stack"].as_array().unwrap())[0]["symbol"].as_str().unwrap().to_string();
+    assert!(top.contains("kanna_daemon::crashes"), "{top}");
+    assert_eq!(record["signature"].as_str().map(str::len), Some(16));
+
+    daemon.again();
+    let listed = daemon.kanna(&["crashes"]).ok();
+    let lines: Vec<&str> = listed.lines().collect();
+    assert!(lines[0].contains("  daemon (pid ") && lines[0].contains("  debug.panic in the daemon's main loop at "), "{listed}");
+    assert_eq!(lines[1], format!("  record  {}", records[0].display()));
+    assert_eq!(lines[2], "  report  none");
+    assert!(lines[3].contains("kanna_daemon::crashes"), "{listed}");
+    let json = daemon.kanna(&["crashes", "--json"]).json();
+    assert_eq!(json["crashes"][0]["file"], json!(records[0].to_string_lossy()));
+    assert_eq!(json["crashes"][0]["dismissed"], json!(false));
+    let told = |daemon: &Daemon| -> Vec<serde_json::Value> {
+        let messages = daemon.kanna(&["raw", r#"{"cmd":"tasks","args":{"action":"messages"}}"#]).json()["messages"].as_array().cloned().unwrap();
+        messages.into_iter().filter(|m| m["from"] == "kanna" && m["to"] == "planner").collect()
+    };
+    let messages = told(&daemon);
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    let text = messages[0]["text"].as_str().unwrap();
+    assert!(text.starts_with("Kanna crashed: daemon (pid "), "{text}");
+    assert!(text.contains(&format!("record: {}", records[0].display())) && text.contains(&format!("signature: {}", record["signature"].as_str().unwrap())) && text.contains("kanna_daemon::crashes"), "{text}");
+
+    let _ = daemon.kanna(&["raw", r#"{"cmd":"debug.panic"}"#]);
+    daemon.exited();
+    daemon.again();
+    assert_eq!(daemon.crash_records().len(), 2);
+    assert_eq!(told(&daemon).len(), 1, "a second crash of the same signature isn't sent");
+    assert_eq!(daemon.kanna(&["crashes", "dismiss"]).ok(), "dismissed 2 crash records");
+    assert_eq!(daemon.kanna(&["crashes"]).ok(), "no crashes (kanna crashes --all lists the dismissed ones)");
+    assert!(daemon.kanna(&["crashes", "--all"]).ok().contains("(dismissed)"));
+    for record in daemon.crash_records() {
+        std::fs::remove_file(record).unwrap();
+    }
 }

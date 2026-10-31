@@ -19,7 +19,7 @@ flowchart LR
         K2["kanna-build/<br/>Swift compiled here"]
     end
     S -.->|"read in place, when clean at the pinned commit"| B
-    G -->|"symlink, when ghostty.rev is the pinned commit"| G2
+    G -->|"symlink, when ghostty.rev is the pinned commit<br/>and ghostty.options the pinned options"| G2
     R -->|"APFS clone (cp -c), kanna-* fingerprints dropped"| R2
     K -->|"APFS clone, workspace-state paths rewritten"| K2
 ```
@@ -36,6 +36,7 @@ With build outputs on another volume ([build targets](build-targets.md)), a work
 - **One Ghostty source builds every target.** `zig build -Dtarget=...` writes wherever `-p` says, so a worktree clones the fork only when it has to. The source is `GHOSTTY_SOURCE_DIR` if set, else the main checkout's source if it's clean at `KANNA_GHOSTTY_COMMIT`, else (in the main checkout, or when main's is missing, stale or edited) its own `target/ghostty-source`.
 - **Builds never write into the shared source.** Each build passes `--cache-dir` under its own checkout's `target/` (`ghostty-vt/.zig-cache-TRIPLE`, `ghosttykit-build/.zig-cache`), so two worktrees can build at once. GhosttyKit's build writes `macos/GhosttyKit.xcframework` relative to the directory zig runs in, so `build-ghosttykit.sh` runs zig from `target/ghosttykit-build/` with `--build-file`. Zig fetches packages into the source's `zig-pkg/` only when one is missing, and the main checkout's build has already fetched them.
 - **`ghostty.rev` stays right.** `kanna_ghostty_rev` reads the source it built from, and a borrowed source is clean at the pinned commit, so a worktree's builds carry the same rev as main's.
+- **`ghostty.options` too.** GhosttyKit is built with `KANNA_GHOSTTYKIT_OPTIONS` (`-Dsentry=false`, [crashes](crashes.md#2-capture)), written beside `ghostty.rev`; `kanna_ghostty_built` reuses or borrows a build only when both match, so changing the options rebuilds it.
 - **Our crates always rebuild.** Dropping their fingerprints makes cargo compile every `kanna-*` crate from the worktree's own source, whatever the main checkout last built; only registry crates, whose fingerprints don't depend on paths, are reused. Binaries and `libkanna_ffi.a` come out byte-identical to a from-scratch build.
 - **Built for the same macOS.** The clone carries the main checkout's `macos-deployment-target` stamp; `kanna_cargo_release_for` runs after the borrow and cleans the clone if it was built for another deployment target ([deployment target](deployment-target.md)).
 - **Clones, not links.** A clone shares disk blocks until either side writes, so the worktree's builds never write to the main checkout's `target/`, and neither side waits on the other's cargo lock.

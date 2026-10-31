@@ -4746,6 +4746,95 @@ machine_remote_web() {
   check wait_for 10 eval 'web text | grep -q "after the restart"' || { echo "machine_remote_web: hot reload after the app restarted"; web text; return 1; }
 }
 
+shows_file() { kanna workspace list --all --json | python3 -c 'import json, sys; sys.exit(not any(p.get("path") == sys.argv[1] for p in json.load(sys.stdin)["panes"]))' "$1"; }
+
+scenario crash_app_draw M4
+crash_app_draw() {
+  start_daemon && start_app || { echo "crash_app_draw line $LINENO"; return 1; }
+  kanna open --window new --name crashing --cmd 'exec /bin/sh' >/dev/null || { echo "crash_app_draw line $LINENO"; return 1; }
+  local pane; pane="$(pane crashing id)"
+  check wait_for 10 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"debug.app\"}" | field windows)" == *win-* ]]' || { echo "crash_app_draw: the window didn't open"; return 1; }
+  local crashed="$app_pid"
+  check test "$(raw '{"id":1,"cmd":"debug.crash"}' | field crashing)" == True || return 1
+  local record=""
+  check wait_for 20 eval 'record="$(ls "$KANNA_STATE_DIR"/crashes/*-app.json 2>/dev/null | head -1)"; [[ -n "$record" ]]' || { echo "crash_app_draw: no crash record"; tail -5 "$out/app.log"; return 1; }
+  python3 - "$record" "$crashed" "$pane" <<'PY' || { echo "crash_app_draw: the record"; cat "$record"; return 1; }
+import json, sys
+r = json.load(open(sys.argv[1]))
+site = [f for f in r["stack"]]
+skip = ("__exceptionPreprocess", "objc_exception_throw", "-[NSException raise]", "+[NSException raise:format:")
+while site and site[0]["symbol"].startswith(skip):
+    site.pop(0)
+assert (r["process"], r["kind"], r["pid"]) == ("app", "exception", int(sys.argv[2])), r
+assert r["reason"] == "NSInternalInconsistencyException: debug.crash in a draw", r["reason"]
+assert "CrashView.draw" in site[0]["symbol"], site[:3]
+assert any("drawRect" in f["symbol"] or "display" in f["symbol"].lower() for f in site[:40]), "no drawing frames"
+assert r["build"]["channel"] == "dev" and len(r["build"]["id"] or "") == 64, r["build"]
+assert sys.argv[3] in [p["id"] for p in r["panes"]], r["panes"]
+assert len(r["signature"]) == 16
+PY
+  check wait_for 30 eval '! kill -0 '"$crashed"' 2>/dev/null || [[ "$(ps -o stat= -p '"$crashed"')" == Z* ]]' || { echo "crash_app_draw: the app didn't die"; return 1; }
+  wait "$crashed" 2>/dev/null
+  check wait_for 40 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"debug.app\"}" | field pid)" =~ ^[0-9]+$ && "$(raw "{\"id\":1,\"cmd\":\"debug.app\"}" | field pid)" != "$crashed" ]]' || { echo "crash_app_draw: the app wasn't relaunched"; grep "kanna-daemon: the app" "$out/daemon.log" | tail -5; return 1; }
+  grep -q "kanna-daemon: the app crashed: NSInternalInconsistencyException: debug.crash in a draw ($record); relaunching it in 1s" "$out/daemon.log" || { echo "crash_app_draw: the daemon didn't log the crash"; grep "kanna-daemon: the app" "$out/daemon.log" | tail -5; return 1; }
+  local relaunched; relaunched="$(raw '{"id":1,"cmd":"debug.app"}' | field pid)"
+  check wait_for 10 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"debug.app\"}" | field windows)" == *win-* ]]' || { echo "crash_app_draw: the relaunched app didn't restore its window"; return 1; }
+  banner() { raw '{"id":1,"cmd":"debug.toasts"}' | python3 -c 'import json, sys
+t = [t for t in json.load(sys.stdin)["toasts"] if t.get("record")]
+print(t[0][sys.argv[1]] if t else "")' "$1"; }
+  check wait_for 10 eval '[[ "$(banner title)" == "Kanna crashed: NSInternalInconsistencyException: debug.crash in a draw" ]]' || { echo "crash_app_draw: no banner: $(raw '{"id":1,"cmd":"debug.toasts"}')"; return 1; }
+  check test "$(banner record)" == "$record" -a "$(banner sticky)" == True || return 1
+  [[ "$(banner detail)" == "Kanna.app · "* ]] || { echo "crash_app_draw: the banner's detail: $(banner detail)"; return 1; }
+  raw '{"id":1,"cmd":"debug.toasts","args":{"png":"crash-banner.png"}}' >/dev/null && cp "$KANNA_STATE_DIR/crash-banner.png" "$out/crash-banner.png"
+  local listed ips=""
+  check wait_for 30 eval 'listed="$(kanna crashes)"; [[ "$listed" == *"  report  "*".ips"* ]]' || { echo "crash_app_draw: kanna crashes found no .ips: $listed"; return 1; }
+  ips="$(sed -n 's/^  report  //p' <<<"$listed" | head -1)"; ips="${ips/#\~/$HOME}"
+  [[ "$listed" == *"  app (pid $crashed, dev "*")  NSInternalInconsistencyException: debug.crash in a draw"* && "$listed" == *"  record  "*"/crashes/$(basename "$record")"* && "$listed" == *"CrashView.draw"* ]] || { echo "crash_app_draw: kanna crashes: $listed"; return 1; }
+  [[ "$(python3 -c 'import json, sys; print(json.loads(open(sys.argv[1]).read().split("\n", 1)[1])["pid"])' "$ips")" == "$crashed" ]] || { echo "crash_app_draw: $ips isn't the crashed app's"; return 1; }
+  local told; told="$(raw '{"id":1,"cmd":"tasks","args":{"action":"messages"}}' | python3 -c 'import json, sys
+m = [m for m in json.load(sys.stdin)["messages"] if m["from"] == "kanna" and m["to"] == "planner"]
+print(len(m)); print(m[0]["repo"] if m else ""); print(m[0]["text"] if m else "")')"
+  [[ "$(head -1 <<<"$told")" == 1 && "$(sed -n 2p <<<"$told")" == "$(cd "$(git -C "$repo_root" rev-parse --git-common-dir)/.." && pwd -P)" ]] || { echo "crash_app_draw: the planner's message: $told"; return 1; }
+  [[ "$told" == *"Kanna crashed: app (pid $crashed): NSInternalInconsistencyException: debug.crash in a draw"* && "$told" == *"record: $record"* && "$told" == *"CrashView.draw"* ]] || { echo "crash_app_draw: the message says: $told"; return 1; }
+  raw '{"id":1,"cmd":"debug.toasts","args":{"click":"'"$(banner id)"'"}}' >/dev/null
+  check wait_for 10 shows_file "$record" || { echo "crash_app_draw: clicking the banner didn't open the record"; kanna workspace list --all; return 1; }
+  check wait_for 5 eval '[[ -z "$(banner id)" ]]' || { echo "crash_app_draw: the banner stayed"; return 1; }
+  check wait_for 5 eval '[[ "$(kanna crashes)" == "no crashes"* ]]' || { echo "crash_app_draw: the clicked banner didn't dismiss the record"; kanna crashes; return 1; }
+  stop_pid "$relaunched"
+  check wait_for 10 eval 'grep -q "kanna-daemon: the app quit" "$out/daemon.log"' || { echo "crash_app_draw: quitting the relaunched app wasn't a clean quit"; return 1; }
+  rm -f "$record" "$ips"
+}
+
+scenario crash_daemon_panic M4
+crash_daemon_panic() {
+  start_daemon && start_app || { echo "crash_daemon_panic line $LINENO"; return 1; }
+  local crashed="$daemon_pid"
+  raw '{"id":1,"cmd":"debug.panic"}' >/dev/null 2>&1
+  wait "$crashed" 2>/dev/null; daemon_pid=""
+  local record; record="$(ls "$KANNA_STATE_DIR"/crashes/*-daemon.json 2>/dev/null | head -1)"
+  [[ -n "$record" ]] || { echo "crash_daemon_panic: no crash record"; tail -5 "$out/daemon.log"; return 1; }
+  python3 - "$record" "$crashed" <<'PY' || { echo "crash_daemon_panic: the record"; cat "$record"; return 1; }
+import json, sys
+r = json.load(open(sys.argv[1]))
+assert (r["process"], r["kind"], r["pid"], r["executable"]) == ("daemon", "panic", int(sys.argv[2]), "kanna-daemon"), r
+assert r["reason"].startswith("debug.panic in the daemon's main loop at crates/kanna-daemon/src/crashes.rs:"), r["reason"]
+assert any("kanna_daemon::crashes" in f["symbol"] for f in r["stack"]), r["stack"]
+PY
+  check wait_for 30 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"debug.app\"}" | field attached)" == True ]]' || { echo "crash_daemon_panic: the app didn't start another daemon"; return 1; }
+  check test "$(raw '{"id":1,"cmd":"debug.app"}' | field pid)" == "$app_pid" || { echo "crash_daemon_panic: the app was restarted"; return 1; }
+  banner() { raw '{"id":1,"cmd":"debug.toasts"}' | python3 -c 'import json, sys
+t = [t for t in json.load(sys.stdin)["toasts"] if t.get("record")]
+print(t[0][sys.argv[1]] if t else "")' "$1"; }
+  check wait_for 10 eval '[[ "$(banner title)" == "Kanna crashed: debug.panic in the daemon"* && "$(banner record)" == "$record" ]]' || { echo "crash_daemon_panic: no banner: $(raw '{"id":1,"cmd":"debug.toasts"}')"; return 1; }
+  [[ "$(banner detail)" == "the daemon · "* ]] || { echo "crash_daemon_panic: the banner's detail: $(banner detail)"; return 1; }
+  [[ "$(kanna crashes)" == *"  daemon (pid $crashed, dev "*"debug.panic in the daemon's main loop"*"  report  none"* ]] || { echo "crash_daemon_panic: kanna crashes: $(kanna crashes)"; return 1; }
+  raw '{"id":1,"cmd":"tasks","args":{"action":"messages"}}' | grep -q "Kanna crashed: daemon (pid $crashed)" || { echo "crash_daemon_panic: the planner wasn't told"; return 1; }
+  raw '{"id":1,"cmd":"debug.toasts","args":{"click":"'"$(banner id)"'","close":true}}' >/dev/null
+  check wait_for 5 eval '[[ "$(kanna crashes)" == "no crashes"* && -z "$(banner id)" ]]' || { echo "crash_daemon_panic: × didn't dismiss it"; return 1; }
+  shows_file "$record" && { echo "crash_daemon_panic: × opened the record"; return 1; }
+  rm -f "$record"
+}
+
 for s in ${only[@]+"${only[@]}"}; do due "$s" >/dev/null || { echo "e2e-kanna: no scenario named $s (see --help)" >&2; exit 2; }; done
 if [[ ${#only[@]} -gt 0 ]]; then run=("${only[@]}"); else run=("${scenarios[@]%%:*}"); fi
 passed=0 failed=0 limit="${KANNA_E2E_TIMEOUT:-600}"
@@ -4762,6 +4851,16 @@ for s in "${run[@]}"; do
     echo "$s didn't finish in ${limit}s (KANNA_E2E_TIMEOUT)" >>"$out/$s.log"; result=1
   else
     wait "$scenario_pid"; result=$?; scenario_pid=""
+  fi
+  crashed="$(find "$KANNA_STATE_DIR" -path '*/crashes/*.json' 2>/dev/null)"
+  if [[ -n "$crashed" ]]; then
+    result=1
+    while IFS= read -r record; do
+      echo "a crash record appeared in $s's instance: $record" | tee -a "$out/$s.log"
+      python3 -c 'import json, sys
+r = json.load(open(sys.argv[1])); print("  " + r.get("process", "?") + ": " + r.get("reason", "?"))
+for f in r.get("stack", [])[:12]: print("    " + f.get("image", "?") + "  " + f.get("symbol", "?"))' "$record" 2>/dev/null | tee -a "$out/$s.log"
+    done <<<"$crashed"
   fi
   if [[ $result -eq 0 ]]; then
     printf '%-20s PASS (%s)\n' "$s" "$m"; passed=$((passed + 1))

@@ -54,6 +54,7 @@ One JSON file per crash, `<state folder>/crashes/<time>-<process>.json`, such as
 {
   "version": 1,
   "process": "app",
+  "executable": "Kanna",
   "pid": 4242,
   "time": "2026-10-31T08:31:19.412Z",
   "kind": "exception",
@@ -67,6 +68,7 @@ One JSON file per crash, `<state folder>/crashes/<time>-<process>.json`, such as
 
 | Field | Holds |
 |---|---|
+| `process`, `executable`, `pid` | which Kanna process (`app`, `daemon`, `keeper`), its executable's name and pid, which find its `.ips` |
 | `kind` | `exception` (an uncaught Objective-C exception), `signal` (SIGSEGV, SIGABRT, a Swift trap's SIGTRAP, …), `panic` (Rust) |
 | `reason` | `NAME: reason` of an exception, the signal's name, or a panic's message and `file:line` |
 | `stack` | the crashing thread's frames, innermost first, symbolised (Swift demangled): `image`, `symbol`, and `offset` or `at` (a Rust `file:line`) |
@@ -80,9 +82,11 @@ One JSON file per crash, `<state folder>/crashes/<time>-<process>.json`, such as
 
 | Process | How it catches a crash | Then |
 |---|---|---|
-| app | `NSApplicationCrashOnExceptions` (registered before `NSApplication` exists), so an exception AppKit would log and swallow, in an event or a draw or layer display, is uncaught; `NSSetUncaughtExceptionHandler` writes the record from the exception's own stack. Handlers for SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGFPE and SIGABRT, on an alternate stack, write one for a signal unless an exception's record was just written. A Rust panic in the app's library goes through the same hook as the daemon's. | the default handler runs again: the process dies of the signal and macOS writes its `.ips` |
+| app | `NSApplicationCrashOnExceptions` (registered at launch), so an exception AppKit would log and swallow, in an event or a draw or layer display, ends in `+[NSApplication _crashOnException:]`, which traps (SIGTRAP). An exception preprocessor (`objc_setExceptionPreprocessor`) keeps the last exception thrown, so that SIGTRAP, or a SIGABRT, within 5 s of one is recorded as the exception, with its own stack; `NSSetUncaughtExceptionHandler` and `reportException:` record the others. Handlers for SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGFPE and SIGABRT, on an alternate stack, record the rest. A Rust panic in the app's library goes through the same hook as the daemon's. | the default handler runs again: the process dies of the signal and macOS writes its `.ips` |
 | daemon | a panic hook | the panic goes on as before: on the main thread the daemon exits, and the app starts another ([app link §4](app-link.md#4-the-app-starts-the-daemon)) |
 | keeper | a panic hook | as before; a crash never restarts the keeper |
+
+**GhosttyKit is built without Sentry** (`-Dsentry=false`, `KANNA_GHOSTTYKIT_OPTIONS` in `scripts/env.sh`). Ghostty's own crash reporter starts on a thread of its own from `ghostty_init`, takes over the crash signals, writes a `.ghosttycrash` minidump in `~/.local/state/ghostty/crash` and exits with status 6. That is what happened at 08:31:19: no handler of Kanna's ran and macOS wrote no `.ips`. GhosttyKit's `ghostty.options` records the options it was built with, and a build reuses a GhosttyKit only when they match ([build speed](build-speed.md)).
 
 Writing a record from a signal handler isn't async-signal-safe; it is best effort, and the `.ips` stays the full evidence.
 
