@@ -2046,6 +2046,10 @@ desk_tasks() {
   key cmd+n
   check wait_for 5 eval '[[ "$(dwin d2 key)" == True ]]' || { app_view; return 1; }
   check wait_for 10 eval '[[ "$(desk lead d2)" == term-* ]]' || { echo "desk_tasks: d2 has no planning terminal"; return 1; }
+  check wait_for 10 shows "$(desk lead d2)" "Folder, repo" || { kanna read "$(desk lead d2)"; return 1; }
+  kanna send "$(desk lead d2)" "$(e2e_repo)" >/dev/null || return 1
+  local tasks; tasks="$(e2e_repo)"
+  check wait_for 10 eval '[[ "$(desk window.project d2)" == *"${tasks#/private}" ]]' || { echo "desk_tasks: d2 didn't move to the repo"; return 1; }
   KANNA_TERMINAL="$(desk lead d2)" kanna task activate second >/dev/null || return 1
   check wait_for 5 eval '[[ "$(dwin d2 dock.pane)" == "$(pane second id)" ]]' || return 1
   expected="$(sid 1) is on d1; brought it forward"; says kanna task activate agent || return 1
@@ -2918,6 +2922,7 @@ new_desk() {
   check wait_for 10 eval '[[ "$(desk header d1)" == "Planning · "*"${repo#/private} · main" ]]' || { desk header d1; return 1; }
   (cd "$repo" && KANNA_TERMINAL="$planner" kanna task new "Here") >/dev/null || { echo "new_desk line $LINENO"; return 1; }
   check wait_for 5 eval '[[ "$(desk shelf d1)" == "[\"$(tid 1)\"]" ]]' || { echo "new_desk: the Shelf didn't follow the planning terminal"; desk shelf d1; return 1; }
+  check eval '[[ "$(desk window.project d1)" == *"${repo#/private}" ]]' || { echo "new_desk: the Desk's project didn't follow the planning terminal"; desk window d1; return 1; }
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"New Desk"}}' | grep -q '"ok":true' || { echo "new_desk: File > New Desk didn't run"; return 1; }
   check wait_for 5 eval '[[ "$(app_view | field windows | count)" == 3 && "$(desk desk d2)" == True ]]' || { echo "new_desk: New Desk opened no Desk"; kanna workspace list --all; return 1; }
   check wait_for 10 eval '[[ "$(desk lead d2)" == term-* ]]' || { echo "new_desk line $LINENO"; return 1; }
@@ -3995,6 +4000,14 @@ path_reuses_desk() {
   [[ "$said" == "brought forward d1 on "*"${repo#/private}" ]] || { echo "stays_behind: kanna PATH said: $said"; return 1; }
   check wait_for 5 eval '[[ "$(dwin d1 key)" == True ]]' || { echo "path_reuses_desk: the project's Desk isn't the key window"; app_view; return 1; }
   check test "$(app_view | field windows | count)" == 2 || { kanna workspace list --all; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$2\"}}" | field "$1"; }
+  check wait_for 10 eval '[[ "$(desk lead d1)" == term-* ]]' || { echo "path_reuses_desk: d1 has no planning terminal"; return 1; }
+  desk_task t1 "" other || { echo "path_reuses_desk line $LINENO"; return 1; }
+  expected="$(sid 1) is active on d2"; KANNA_TERMINAL="$(desk lead d1)" says kanna task activate t1 || { echo "path_reuses_desk: a task from another project went onto the caller's Desk"; return 1; }
+  check eval '[[ "$(desk window.project d1)" == *"${repo#/private}" ]]' || { echo "path_reuses_desk: d1 isn't on its project"; desk window d1; return 1; }
+  said="$(kanna "$repo")"
+  [[ "$said" == "brought forward d1 on "*"${repo#/private}" ]] || { echo "path_reuses_desk: after another project's task, kanna PATH said: $said"; return 1; }
+  check test "$(app_view | field windows | count)" == 2 || { kanna workspace list --all; return 1; }
 }
 
 scenario path_last_in_front M4
@@ -4013,6 +4026,9 @@ path_last_in_front() {
   check wait_for 5 eval '[[ "$(dwin d2 key)" == True ]]' || { app_view; return 1; }
   check wait_for 10 eval '[[ "$(desk lead d2)" == term-* ]]' || { echo "path_last_in_front: d2 has no planning terminal"; return 1; }
   local two; two="$(desk lead d2)"
+  check wait_for 10 shows "$two" "Folder, repo" || { kanna read "$two"; return 1; }
+  kanna send "$two" "$repo" >/dev/null || { echo "path_last_in_front line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(desk window.project d2)" == *"${repo#/private}" ]]' || { echo "path_last_in_front: d2 didn't follow its planning terminal to the repo"; desk window d2; return 1; }
   expected="$(sid 2) is active on d2"; KANNA_TERMINAL="$two" says kanna task activate t2 || { echo "path_last_in_front: a pull from d2's planning terminal went elsewhere"; return 1; }
   local said; said="$(kanna "$repo")"
   [[ "$said" == "brought forward d2 on "*"${repo#/private}" ]] || { echo "path_last_in_front: two Desks on the project, d2 in front: $said"; return 1; }
