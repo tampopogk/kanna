@@ -168,6 +168,9 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
         return agents::run(&request, &mut io);
     }
     let mut request = request;
+    if target.backend == Backend::Kanna && commands::caller().is_none() && matches!(wire(command, &request), "focus" | "open" | "move" | "move-tab" | "desk") {
+        request["user"] = json!(true);
+    }
     let located = if command.name == "task" { locate(&mut request, &mut mux)? } else { None };
     let waiting = if command.name == "task" && request["action"] == "done" { mux.call("tasks", serde_json::json!({ "action": "list" })).ok() } else { None };
     let (mut shorts, mut listed) = (located.as_ref().map(|(_, known)| known.clone()).unwrap_or_default(), false);

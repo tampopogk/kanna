@@ -450,6 +450,7 @@ impl Node {
             return;
         }
         let cert = header.get("cert").filter(|c| c.is_object()).cloned();
+        let mut revoked = self.0.revoked.subscribe();
         let from = match self.admit(&remote, cert.as_ref()) {
             Ok(name) => name,
             Err(failure) => {
@@ -466,7 +467,36 @@ impl Node {
             let _ = send.finish();
             return;
         };
-        if write_line(&mut send, &json!({ "ok": true, "kind": kind, "name": self.state().name, "protocol": protocol, "release": self.0.release })).await.is_err() {
+        let name = self.state().name.clone();
+        let target = match header.get("port").filter(|_| kind == "port") {
+            Some(port) => match loopback(port, &name).await {
+                Ok(tcp) => Some(tcp),
+                Err(failure) => {
+                    let _ = write_line(&mut send, &refusal(&failure)).await;
+                    let _ = send.finish();
+                    return;
+                }
+            },
+            None => None,
+        };
+        if write_line(&mut send, &json!({ "ok": true, "kind": kind, "name": name, "protocol": protocol, "release": self.0.release })).await.is_err() {
+            return;
+        }
+        if let Some(tcp) = target {
+            let (node, cert) = (self.clone(), cert.clone());
+            let watched = async move {
+                revoked.mark_changed();
+                while revoked.changed().await.is_ok() {
+                    if node.admit(&remote, cert.as_ref()).is_err() {
+                        return;
+                    }
+                }
+                std::future::pending::<()>().await
+            };
+            tokio::select! {
+                () = splice(tcp, send, recv) => {}
+                () = watched => {}
+            }
             return;
         }
         if kind == "sync" && cert.is_some() {
@@ -1017,6 +1047,30 @@ impl Node {
         let _ = write_line(send, &json!({ "ok": true })).await;
         self.settle(Ok(json!({ "name": inviter, "key": remote, "log": id })));
     }
+}
+
+async fn loopback(port: &Value, name: &str) -> Result<tokio::net::TcpStream, Failure> {
+    let port = port.as_u64().and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0).ok_or_else(|| Failure::new("bad_request", format!("{port} isn't a port")))?;
+    for ip in [std::net::IpAddr::from([127, 0, 0, 1]), std::net::IpAddr::from(std::net::Ipv6Addr::LOCALHOST)] {
+        if let Ok(Ok(tcp)) = tokio::time::timeout(Duration::from_secs(3), tokio::net::TcpStream::connect((ip, port))).await {
+            let _ = tcp.set_nodelay(true);
+            return Ok(tcp);
+        }
+    }
+    Err(Failure::new("nothing_listening", format!("nothing listens on port {port} on {name}")))
+}
+
+pub(crate) async fn splice(tcp: tokio::net::TcpStream, mut send: SendStream, mut recv: BufReader<RecvStream>) {
+    let (mut from_tcp, mut to_tcp) = tcp.into_split();
+    let inbound = async move {
+        let _ = tokio::io::copy(&mut recv, &mut to_tcp).await;
+        let _ = to_tcp.shutdown().await;
+    };
+    let outbound = async move {
+        let _ = tokio::io::copy(&mut from_tcp, &mut send).await;
+        let _ = send.finish();
+    };
+    tokio::join!(inbound, outbound);
 }
 
 async fn refuse(send: &mut SendStream, failure: Failure) -> Result<Value, Failure> {

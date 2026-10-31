@@ -113,20 +113,22 @@ pub fn closed(args: &Value, reply: &Value) -> String {
 pub fn focused(args: &Value, reply: &Value) -> String {
     let window = reply["window"].as_str().unwrap_or("?");
     let front = !reply["front"].is_null();
+    let shown = if reply["behind"] == true { "behind the app you're in" } else { "in front" };
     let place = match (whose(reply), reply["window"].as_str()) {
         (Some((name, mut tags)), _) => {
             if front {
-                tags.push("in front".into());
+                tags.push(shown.into());
             }
             format!(" in {}", tagged(&name, &tags))
         }
-        (None, Some(window)) if front => format!(" in {window} (in front)"),
+        (None, Some(window)) if front => format!(" in {window} ({shown})"),
         (None, Some(window)) => format!(" in {window}"),
         (None, None) => String::new(),
     };
     match (args["pane"].as_str(), args["tab"].as_str()) {
         (Some(pane), _) => format!("focused {pane}{place}"),
         (_, Some(tab)) => format!("switched to {tab}{place}"),
+        _ if front && reply["behind"] == true => format!("put {window} {shown}"),
         _ if front => format!("brought {window} forward"),
         _ => format!("{window} isn't on screen"),
     }
@@ -998,6 +1000,8 @@ mod workspace_tests {
         assert_eq!(opened(&json!({}), &windowed), "opened p5 in ws-3's win-31 (task-1dfb, on the Desk), tab-9: running");
         assert_eq!(focused(&json!({ "pane": "spec" }), &windowed), "focused spec in ws-3's win-31 (task-1dfb, on the Desk)");
         assert_eq!(focused(&json!({ "pane": "spec" }), &json!({ "window": "win-31", "front": "win-31", "workspace": null })), "focused spec in win-31 (in front)");
+        assert_eq!(focused(&json!({ "pane": "spec" }), &json!({ "window": "win-31", "front": "win-31", "behind": true, "workspace": null })), "focused spec in win-31 (behind the app you're in)");
+        assert_eq!(focused(&json!({ "window": "win-31" }), &json!({ "window": "win-31", "front": "win-31", "behind": true, "workspace": null })), "put win-31 behind the app you're in");
         assert_eq!(zoomed(&json!({ "pane": "spec" }), &json!({ "zoomed": true, "workspace": windowless["workspace"] })), "spec is zoomed in ws-3 (task-1dfb, on the Desk; run again to unzoom)");
         let free = json!({ "pane": { "id": "p5", "state": "running" }, "window": "win-4", "tab": "tab-9", "workspace": null });
         assert_eq!(opened(&json!({}), &free), "opened p5 in win-4, tab-9: running");

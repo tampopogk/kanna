@@ -16,6 +16,12 @@ fn exits_within(instance: &mut Instance, limit: Duration) -> bool {
     false
 }
 
+fn cpu_seconds(pid: i32) -> f64 {
+    let out = Command::new("ps").args(["-o", "time=", "-p", &pid.to_string()]).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.trim().split(':').rev().zip([1.0, 60.0, 3600.0]).map(|(f, scale)| f.parse::<f64>().unwrap_or(0.0) * scale).sum()
+}
+
 fn saved(instance: &Instance) -> Value {
     let text = std::fs::read_to_string(instance.dir.join("state/terminals/terminals.json")).unwrap_or_default();
     serde_json::from_str(&text).unwrap_or(Value::Null)
@@ -83,6 +89,31 @@ fn the_daemon_shuts_down_when_its_owner_exits_even_with_an_app_that_doesnt_quit(
 }
 
 #[test]
+fn a_keeper_left_by_a_sigtermed_daemon_stops_when_their_owner_exits() {
+    let mut owner = Command::new("/bin/sleep").arg("600").stdin(Stdio::null()).spawn().unwrap();
+    let mut instance = Instance::start_with(&[("KANNA_E2E_OWNER", &owner.id().to_string())]);
+    instance.open("sleeper", Some("exec sleep 600"));
+    let pid = instance.pane("sleeper")["pid"].as_i64().unwrap();
+    let keeper = instance.keeper_pid();
+    let _app = instance.app();
+
+    instance.stop(libc::SIGTERM);
+    std::thread::sleep(Duration::from_millis(500));
+    let before = cpu_seconds(keeper);
+    std::thread::sleep(Duration::from_secs(2));
+    let used = cpu_seconds(keeper) - before;
+    assert!(used < 0.3, "the orphaned keeper used {used} s of CPU in 2 s");
+    assert!(alive(keeper as i64) && alive(pid), "{}", instance.log());
+    unsafe { libc::kill(owner.id() as i32, libc::SIGKILL) };
+    let _ = owner.wait();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while alive(keeper as i64) || alive(pid) {
+        assert!(Instant::now() < deadline, "the keeper outlived its owner");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
 fn a_daemon_waiting_for_the_folder_while_it_shuts_down_doesnt_start() {
     let mut instance = Instance::start_with(&[("KANNA_KEEPER_CLOSE_GRACE_MS", "2000")]);
     instance.open("stubborn", Some("trap '' HUP; sleep 600 & wait"));
@@ -107,4 +138,33 @@ fn a_daemon_waiting_for_the_folder_while_it_shuts_down_doesnt_start() {
         std::thread::sleep(Duration::from_millis(50));
     };
     assert!(status.success() && !instance.socket().exists());
+}
+
+#[test]
+fn a_daemon_started_during_the_shutdown_doesnt_start_however_late_it_gets_to_the_folder() {
+    let mut instance = Instance::start_with(&[("KANNA_KEEPER_CLOSE_GRACE_MS", "2000")]);
+    instance.open("stubborn", Some("trap '' HUP; sleep 600 & wait"));
+    let mut late = Command::new("/bin/sh")
+        .args(["-c", "while [ -e \"$KANNA_SOCKET\" ]; do sleep 0.05; done; sleep 0.5; exec \"$0\"", env!("CARGO_BIN_EXE_kanna-daemon")])
+        .env("HOME", instance.dir.join("home"))
+        .env("KANNA_SOCKET", instance.socket())
+        .env("KANNA_STATE_DIR", instance.dir.join("state"))
+        .env("KANNA_AGENT_RULES_URL", "none")
+        .stdin(Stdio::null())
+        .stderr(std::fs::File::create(instance.dir.join("late.log")).unwrap())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(1000));
+    instance.call("shutdown", json!({}));
+    assert!(exits_within(&mut instance, Duration::from_secs(10)), "{}", instance.log());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = late.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "the late daemon started: {}", std::fs::read_to_string(instance.dir.join("late.log")).unwrap_or_default());
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let log = std::fs::read_to_string(instance.dir.join("late.log")).unwrap_or_default();
+    assert!(status.success() && !instance.socket().exists() && log.contains("not starting"), "{log}");
 }
