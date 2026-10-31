@@ -45,6 +45,14 @@ impl PaneHost for Host {
         }
     }
 
+    fn update(&self, pane: &Pane) {
+        if pane.kind != PaneType::Term {
+            if let Some(app) = self.app() {
+                app.changed(pane);
+            }
+        }
+    }
+
     fn end(&self, pane: &Pane) {
         if pane.kind == PaneType::Term {
             self.terminals.end(pane);
