@@ -1,8 +1,11 @@
 import AppKit
+import CryptoKit
 import KannaCode
 import KannaDiff
 import KannaDocs
+import KannaLinks
 import KannaMarkdown
+import WebKit
 
 @MainActor
 final class PaneSlot: NSView {
@@ -43,6 +46,7 @@ final class Contents {
     var onNotice: ((String, [String: JSON]) -> Void)?
     var onCall: ((String, [String: JSON], @escaping (JSON) -> Void) -> Void)?
     var onFocus: ((String) -> Void)?
+    var portOpen: ((Int, String) -> Result<Int, KannaError>)?
     var contextMenu: (() -> NSMenu?)?
     var agentStatus: ((String) -> String?)?
     private var markdownSpots: [String: [String: (y: CGFloat, zoom: CGFloat)]] = [:]
@@ -72,6 +76,29 @@ final class Contents {
         }
     }
 
+    func update(_ pane: JSON) {
+        guard let id = pane["id"]?.string else { return }
+        let agent = pane["agent"]?.string
+        if let markdown = markdown(id) {
+            markdown.set(markup: pane["markup"]?.bool == true)
+            if markdown.markup, threadSources[id] == nil {
+                threadSources[id] = markdown.path
+                subscribe(threads: id)
+            }
+            if markdown.agent != agent {
+                markdown.agent = agent
+                markdown.agentStatus = agent.flatMap { agentStatus?($0) }
+            }
+        }
+        if let web = web(id) {
+            web.markable = pane["markup"]?.bool == true
+            if web.agent != agent {
+                web.agent = agent
+                web.agentStatus = agent.flatMap { agentStatus?($0) }
+            }
+        }
+    }
+
     func shows(_ id: String) -> Bool { slots[id]?.content != nil }
     var ids: [String] { slots.keys.filter { slots[$0]?.content != nil }.sorted() }
 
@@ -81,6 +108,7 @@ final class Contents {
     func code(_ id: String) -> CodePaneView? { slots[id]?.content as? CodePaneView }
     func diff(_ id: String) -> DiffPaneView? { slots[id]?.content as? DiffPaneView }
     func keyView(_ id: String) -> NSView? { web(id)?.webView ?? ios(id) ?? markdown(id)?.keyView ?? code(id)?.keyView ?? diff(id)?.keyView }
+    func keyViews(_ id: String) -> [NSView] { diff(id)?.keyViews ?? keyView(id).map { [$0] } ?? [] }
 
     private func send(_ text: String, to agent: String, done: @escaping (String?) -> Void) {
         guard let onCall else { return done("not connected to the daemon") }
@@ -104,13 +132,17 @@ final class Contents {
             guard let url = pane["url"]?.string.flatMap(URL.init(string:)), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
                 return "a page from \(machine) opens only over http or https"
             }
-            let host = url.host?.lowercased() ?? ""
-            if host.isEmpty || host == "localhost" || host.hasSuffix(".localhost") || host == "::1" || host.hasPrefix("127.") || host == "0.0.0.0" {
-                return "\(machine)'s \(host.isEmpty ? "page" : host) is on \(machine), and this Mac can't reach it yet"
-            }
-            return nil
+            return url.host?.isEmpty == false ? nil : "\(machine)'s page has no host"
         default: return nil
         }
+    }
+
+    static func store(of machine: String) -> WKWebsiteDataStore {
+        var bytes = Array(SHA256.hash(data: Data("kanna.machine.\(machine)".utf8)).prefix(16))
+        bytes[6] = bytes[6] & 0x0f | 0x50
+        bytes[8] = bytes[8] & 0x3f | 0x80
+        let uuid = UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
+        return WKWebsiteDataStore(forIdentifier: uuid)
     }
 
     private func report(_ id: String, _ fields: [String: JSON]) {
@@ -208,11 +240,29 @@ final class Contents {
             content = diff
             subscribe(diff: diff, id)
         case "web":
-            let web = WebPaneView(url: pane["url"]?.string ?? "about:blank", markup: pane["markup"]?.bool == true)
+            var url = pane["url"]?.string ?? "about:blank"
+            var unmap: (URL) -> URL = { $0 }
+            var waitingFor: String?
+            if let machine = MachineIDs.machine(of: id), let tunnel = PortTunnelURL(url) {
+                switch portOpen?(tunnel.port, machine) ?? .failure(KannaError("unavailable", "this Mac has no machines endpoint")) {
+                case .success(let local):
+                    url = tunnel.local(local).absoluteString
+                    unmap = { tunnel.remote($0, local: local) }
+                    waitingFor = "\(tunnel.address) on \(machine)"
+                case .failure(let failure):
+                    stop(id)
+                    states[id] = "failed"
+                    return report(id, ["state": "failed", "error": .string(failure.message)])
+                }
+            }
+            let store: WKWebsiteDataStore = if waitingFor != nil, let machine = MachineIDs.machine(of: id) { Self.store(of: machine) } else { .default() }
+            let web = WebPaneView(url: url, markup: pane["markup"]?.bool == true, store: store)
+            web.waitingFor = waitingFor
+            web.unmap = unmap
             web.onFocus = { [weak self] in self?.onFocus?(id) }
             web.webView.contextMenu = { [weak self] in self?.contextMenu?() }
-            web.onNavigate = { [weak self] url in self?.onRequest?("navigate", ["pane": .string(id), "url": .string(url)]) }
-            web.onURLChange = { [weak self] url in self?.onUpdate?(id, ["url": .string(url)]) }
+            web.onNavigate = { [weak self] url in self?.onRequest?("navigate", ["pane": .string(id), "url": .string(URL(string: url).map(unmap)?.absoluteString ?? url)]) }
+            web.onURLChange = { [weak self] url in self?.onUpdate?(id, ["url": .string(URL(string: url).map(unmap)?.absoluteString ?? url)]) }
             web.onTitleChange = { [weak self] title in self?.onUpdate?(id, ["title": .string(title)]) }
             web.agent = pane["agent"]?.string
             web.agentStatus = web.agent.flatMap { self.agentStatus?($0) }
@@ -312,12 +362,12 @@ final class Contents {
     private func subscribe(diff view: DiffPaneView, _ id: String) {
         guard let source = diffSources[id] else { return }
         let args: [String: JSON] = ["view": .string(id), "path": .string(source.path), "args": .array(source.args.map { .string($0) })]
-        guard let onCall else { return view.show(DiffResult.failed(folder: source.path, args: source.args, error: "Kanna.app isn't connected to its daemon"), serial: 0) }
+        guard let onCall else { return view.receive(DiffResult.failed(folder: source.path, args: source.args, error: "Kanna.app isn't connected to its daemon"), serial: 0) }
         onCall("diff.subscribe", args) { [weak self, weak view] answer in
             guard let self, let view, slots[id]?.content === view else { return }
             guard answer["ok"]?.bool == true, let content = answer["content"]?.string else {
                 let message = answer["error"]?["message"]?.string ?? "The daemon couldn't show this diff"
-                return view.show(DiffResult.failed(folder: source.path, args: source.args, error: message), serial: 0)
+                return view.receive(DiffResult.failed(folder: source.path, args: source.args, error: message), serial: 0)
             }
             diffContents[id] = content
             let latest = diffLatest[content]
@@ -337,7 +387,7 @@ final class Contents {
             if let updating = message["updating"]?.bool { view.setUpdating(updating) }
             return
         }
-        view.show(found.encoded(), serial: Int(message["serial"]?.number ?? 0))
+        view.receive(found.encoded(), serial: Int(message["serial"]?.number ?? 0))
         if message["updating"]?.bool == true { view.setUpdating(true) }
     }
 

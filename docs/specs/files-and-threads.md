@@ -78,5 +78,5 @@ On the [app link](app-link.md#2-messages). Requests name the pane as `view` (or 
 
 ## 5. Not in this change
 
-- **Web pages of another machine** need port tunnels ([Machines 5](machines-build-order.md)); until then a remote task's web pane is refused as before, so page comments are this Mac's only.
+- **Page comments** are for a page from this Mac's disk (`file:`); a remote task's page comes through a [port tunnel](port-tunnels.md) over `http`, which has no comments, as any `http` page.
 - **A Desk's branch** for a folder on this Mac is still read from `.git/HEAD` by the app; a remote checkout's branch comes with its folder notices ([machine links §8](machine-links.md#8-limits)).
