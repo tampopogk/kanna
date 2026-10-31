@@ -126,7 +126,7 @@ body.picture .body { height: calc(100vh - 67px); }
 <main>
   <div class="intro">
     <h1>Ink markup: draw on a doc, and the agent beside it works out what the marks mean</h1>
-    <p>Turn on <b>Ink</b> (or hold ⌥ and drag) and draw: circle words, underline them, strike them out or zigzag over them, draw an arrow from a paragraph to where it should go, write in the margin. Each stroke is recognised and numbered, and listed in the New ink card: click its kind to correct it, × to remove it. ⌘Z undoes, ⌘↵ sends the batch as one thread, Esc leaves Ink.</p>
+    <p>Turn on <b>Ink</b> (or hold ⌥ and drag) and draw: circle words, underline them, strike them out, zigzag over them or cross them out with an X, draw an arrow from a paragraph to where it should go, write in the margin. Each stroke is recognised and numbered, and listed in the New ink card: click its kind to correct it, × to remove it. ⌘Z undoes, ⌘↵ sends the batch as one thread, Esc leaves Ink.</p>
     <p>Below the window: what Send types into the agent, and the marked-up picture it points to. The agent answers mark by mark; marks it acted on leave the page.</p>
     <div class="controls">
       <button id="example" class="primary">Draw the example</button>
@@ -164,7 +164,7 @@ body.picture .body { height: calc(100vh - 67px); }
 <script>
 const $ = q => document.querySelector(q);
 const INK = "#ff5f57";
-const KINDS = ["circle", "underline", "strike", "arrow", "writing"];
+const KINDS = ["circle", "underline", "strike", "cross", "arrow", "writing"];
 const FILES = { md: "docs/specs/tab-container.md", page: "references/mockups/settings.html" };
 const MARKFILE = { md: "docs__specs__tab-container.md", page: "references__mockups__settings.html" };
 
@@ -309,6 +309,11 @@ function recognize(pts, pend) {
   const bb = bbox(pts), size = Math.max(bb.w, bb.h);
   const len = pathLen(pts), chord = dist(pts[0], pts[pts.length - 1]), straight = chord / (len || 1);
   const arrows = pend.filter(m => m.kind === "arrow" && !m.drawnHead);
+  const prev = pend[pend.length - 1];
+  if (prev && ["arrow", "strike", "underline"].includes(prev.kind) && prev.strokes.length === 1 && !prev.drawnHead && straight > 0.85 && size > 12) {
+    const a = prev.strokes[0], la = pathLen(a);
+    if (dist(a[0], a[a.length - 1]) / la > 0.85 && crosses(a[0], a[a.length - 1], pts[0], pts[pts.length - 1]) && len / la > 0.4 && len / la < 2.5) return { cross: prev };
+  }
   if (size < 36) {
     const near = arrows.find(m => dist(tipOf(m), [bb.cx, bb.cy]) < 30);
     if (near && size >= 6) return { head: near };
@@ -331,6 +336,10 @@ function recognize(pts, pend) {
   if (k > 0) return { kind: "arrow", tip: k, drawnHead: true };
   if (straight > 0.7 && rev <= 1 && size > 40) return { kind: "arrow" };
   return { kind: "writing" };
+}
+function crosses(p1, p2, p3, p4) {
+  const d = (a, b, c) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+  return d(p1, p2, p3) * d(p1, p2, p4) < 0 && d(p3, p4, p1) * d(p3, p4, p2) < 0;
 }
 function distToBox(p, b) { const dx = Math.max(b.x1 - p[0], 0, p[0] - b.x2), dy = Math.max(b.y1 - p[1], 0, p[1] - b.y2); return Math.hypot(dx, dy); }
 
@@ -361,6 +370,7 @@ function analyze(m, strokes) {
   const main = strokes[0], all = strokes.flat(), bb = bbox(all);
   const out = { kind: m.kind, words: [] };
   if (m.kind === "circle") out.words = wordRects().filter(w => inPoly([w.r.x + w.r.w / 2, w.r.y + w.r.h / 2], main));
+  if (m.kind === "cross") out.words = wordRects().filter(w => { const c = [w.r.x + w.r.w / 2, w.r.y + w.r.h / 2]; return c[0] > bb.x1 && c[0] < bb.x2 && c[1] > bb.y1 && c[1] < bb.y2; });
   if (m.kind === "underline" || m.kind === "strike") out.words = wordsAlong(main, reversalsX(main) >= 3 ? "scratch" : "line");
   if (m.kind === "arrow") {
     const tip = m.tip != null ? main[m.tip] : main[main.length - 1];
@@ -368,7 +378,7 @@ function analyze(m, strokes) {
     out.from = f && f.b; out.to = t && t.b;
     if (t) out.where = s.scene === "page" && t.b.kind === "btn" ? (tip[0] < t.r.x + t.r.w / 2 ? "before" : "after") : (tip[1] < t.r.y + t.r.h / 2 ? "before" : "after");
   }
-  if (m.kind === "writing" || ((m.kind === "circle" || m.kind === "underline" || m.kind === "strike") && !out.words.length)) out.near = nearestBlock([bb.cx, bb.cy]);
+  if (m.kind === "writing" || ((m.kind === "circle" || m.kind === "underline" || m.kind === "strike" || m.kind === "cross") && !out.words.length)) out.near = nearestBlock([bb.cx, bb.cy]);
   out.box = bb;
   return out;
 }
@@ -390,7 +400,7 @@ function describe(m, a) {
     const line = b => `line ${b.line}`;
     if (a.words.length) {
       const b = bl(a.words);
-      const verb = { circle: "circle around", underline: "underline under", strike: "strike through" }[a.kind];
+      const verb = { circle: "circle around", underline: "underline under", strike: "strike through", cross: "cross over" }[a.kind];
       return { long: `${verb} "${quoteOf(a.words)}" (${line(b)})`, short: `"${trunc(quoteOf(a.words), 30)}"`, line: b.line };
     }
     if (a.kind === "arrow" && a.from && a.to) return {
@@ -403,7 +413,7 @@ function describe(m, a) {
   const el = b => `element ${cssPath(b)} "${b.text}"`;
   if (a.words.length) {
     const b = bl(a.words), r = blockRect(b.id);
-    const verb = { circle: "circle around", underline: "underline under", strike: "strike through" }[a.kind];
+    const verb = { circle: "circle around", underline: "underline under", strike: "strike through", cross: "cross over" }[a.kind];
     return { long: `${verb} ${el(b)}${quoteOf(a.words) !== b.text ? `, the text "${quoteOf(a.words)}"` : ""} at ${px(r)}`, short: `"${trunc(quoteOf(a.words), 30)}"`, line: b.line };
   }
   if (a.kind === "arrow" && a.from && a.to) return {
@@ -537,7 +547,7 @@ function answer(t) {
   const paired = new Set();
   for (const m of t.marks) {
     const a = m.analysis;
-    if (m.kind === "strike" && a.words.length) {
+    if ((m.kind === "strike" || m.kind === "cross") && a.words.length) {
       const b = a.words[0].b;
       if (sc === "page") { const i = doc.findIndex(x => x.id === b); if (i >= 0) doc.splice(i, 1); }
       else (strikes[b] = strikes[b] || new Set()), a.words.forEach(w => strikes[w.b].add(w.i));
@@ -740,6 +750,7 @@ function addStroke(pts, forced) {
   const pend = s.pending[s.scene];
   const r = forced || recognize(pts, pend);
   if (!r) { render(); return; }
+  if (r.cross) { r.cross.kind = "cross"; r.cross.strokes.push(pts); render(); return; }
   if (r.head) { r.head.strokes.push(pts); r.head.drawnHead = true; render(); return; }
   if (r.joinWriting) { r.joinWriting.strokes.push(pts); render(); return; }
   pend.push({ n: pend.length + 1, kind: r.kind, strokes: [pts], tip: r.tip, drawnHead: !!r.drawnHead, anchor: anchorFor(pts, r.kind) });

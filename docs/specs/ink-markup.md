@@ -2,7 +2,7 @@
 
 **Status:** proposed · **Mockup:** [`references/mockups/ink-markup.html`](../../references/mockups/ink-markup.html) · **Builds on:** [Doc Markup](doc-markup.md)
 
-**Ink markup** lets you draw on a doc in Kanna (circle a word, strike out a sentence, draw an arrow from a paragraph to where it belongs, scribble a note in the margin) and have the agent beside it work out what the marks mean and make the changes. It is another way to post a [Doc Markup](doc-markup.md) thread: the same agent, the same reply and resolve. Today it's the Mac with a mouse or trackpad; the design carries over to an iPad with Apple Pencil.
+**Ink markup** lets you draw on a doc in Kanna (circle a word, strike out a sentence, cross out a part, draw an arrow from a paragraph to where it belongs, scribble a note in the margin) and have the agent beside it work out what the marks mean and make the changes. It is another way to post a [Doc Markup](doc-markup.md) thread: the same agent, the same reply and resolve. Today it's the Mac with a mouse or trackpad; the design carries over to an iPad with Apple Pencil.
 
 ![Ink on a markdown spec: a circle with a ? beside it, an arrow moving a paragraph up, a strike, numbered, waiting to be sent](ink-markup.png)
 
@@ -46,6 +46,7 @@ sequenceDiagram
 | A closed loop | **circle** | the words or part inside it |
 | A line under words | **underline** | those words |
 | A line through words, or a zigzag over them | **strike** | those words |
+| Two straight strokes crossing (an X) | **cross** | the words or part under it |
 | A line or curve, with or without a head | **arrow** | from what's at its start to before or after what's at its tip |
 | Anything else, in a run of strokes | **writing** | the nearest block; read from the picture |
 
@@ -72,7 +73,7 @@ Both a picture and words: the picture shows what you meant (the gesture, your wr
 
 - **On a page**, marks name parts by CSS path and text with a box in page pixels, as [page comments](doc-markup.md#3-reaching-the-agent) do.
 - **The picture** is the pane as shown, with the ink and its numbers drawn on, saved beside the threads (as `kanna screenshot` takes it).
-- **What marks mean is a skill.** The `kanna-markup` skill gives the conventions (strike: cut it; arrow: move it there; circle or underline: this, see the note or writing; writing: read it from the picture) and tells the agent to answer mark by mark, saying how it read each, so a misread shows in the reply.
+- **What marks mean is a skill.** The `kanna-markup` skill gives the conventions (strike or cross: cut it; arrow: move it there; circle or underline: this, see the note or writing; writing: read it from the picture) and tells the agent to answer mark by mark, saying how it read each, so a misread shows in the reply.
 
 ## 4. After it's sent
 
