@@ -52,7 +52,7 @@ sequenceDiagram
 
 - An arrow drawn without a head gets one, pointing the way you drew it; a small V near an arrow's tip is taken as its head.
 - **Sent when you stop.** Strokes collect in a **New ink** card at the top of the thread list. When you stop drawing for 2s, the card counts down and posts them all as one thread; drawing again adds to the batch and restarts it.
-  - **⌥-drag:** letting go of ⌥ sends at once.
+  - **⌥-drag:** the countdown waits while ⌥ is held, so you can draw several strokes, and starts when you let go.
   - **A note on a mark:** type straight after drawing it, with no click. The note shows on the doc beside the mark and in the card; clicking a mark in the card puts the note on that one instead. Typing stops the countdown, ↵ sends, Esc ends the note and restarts it, and drawing again keeps it.
   - **Esc** (not in a note) holds the batch: it waits for ↵ or **Send**, or **Discard**. ⌘Z undoes the last stroke.
 
@@ -86,7 +86,7 @@ Both a picture and words: the picture shows what you meant (the gesture, your wr
 ```mermaid
 stateDiagram-v2
     [*] --> drawing: first stroke
-    drawing --> sent: 2s pause, ⌥ let go, ↵
+    drawing --> sent: 2s pause, ↵
     drawing --> noting: you type
     noting --> drawing: Esc, or a new stroke
     noting --> sent: ↵

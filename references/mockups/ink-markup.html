@@ -139,7 +139,7 @@ body.picture .body { height: calc(100vh - 67px); }
 <main>
   <div class="intro">
     <h1>Ink markup: draw on a doc, and the agent beside it works out what the marks mean</h1>
-    <p>Turn on <b>Ink</b> (or hold ⌥ and drag) and draw: circle words, underline them, strike them out, zigzag over them or cross them out with an X, draw an arrow from a paragraph to where it should go, write in the margin. Each stroke is recognised and numbered, and listed in the New ink card: click its kind to correct it, × to remove it. ⌘Z undoes. Stop drawing for 2s and the batch is sent as one thread; let go of ⌥ and it's sent at once. Type straight after a mark to put a note on it (click a mark in the card to note another); ↵ sends. Esc ends a note, or holds the batch to send it yourself.</p>
+    <p>Turn on <b>Ink</b> (or hold ⌥ and drag) and draw: circle words, underline them, strike them out, zigzag over them or cross them out with an X, draw an arrow from a paragraph to where it should go, write in the margin. Each stroke is recognised and numbered, and listed in the New ink card: click its kind to correct it, × to remove it. ⌘Z undoes. Stop drawing for 2s (with ⌥-drag, 2s after you let go of ⌥) and the batch is sent as one thread. Type straight after a mark to put a note on it (click a mark in the card to note another); ↵ sends. Esc ends a note, or holds the batch to send it yourself.</p>
     <p>Below the window: what Send types into the agent, and the marked-up picture it points to. The agent answers mark by mark; marks it acted on leave the page.</p>
     <div class="controls">
       <button id="example" class="primary">Draw the example</button>
@@ -669,7 +669,7 @@ function renderThreads() {
       : s.editing
       ? `<div class="row"><span>Note on ${s.editing.n} · ↵ sends · Esc ends the note</span><button class="primary" id="send">Send ↵</button></div>`
       : s.altBatch && !s.held
-      ? `<div class="row"><span>Let go of ⌥ to send · ${undo}</span></div>`
+      ? `<div class="row"><span>Let go of ⌥ when done · ${undo}</span></div>`
       : `<div class="row"><span>${undo}</span><button id="discard">Discard</button><button class="primary" id="send">Send ↵</button></div>`;
     card.innerHTML = `<div class="head"><span>New ink · ${d.marks.length} mark${d.marks.length === 1 ? "" : "s"}</span><span>${d.id}</span></div>
       <ul class="marks">${d.marks.map(m => markRow(m, true)).join("")}</ul>${foot}`;
@@ -807,7 +807,7 @@ surf.addEventListener("pointerup", e => {
   if (!(s.altBatch && e.altKey)) { startCountdown(); renderThreads(); }
 });
 document.addEventListener("keyup", e => {
-  if (e.key === "Alt" && s.altBatch && !s.editing && !s.held && s.pending[s.scene].length && s.sendMode === "pause") send();
+  if (e.key === "Alt" && s.altBatch && !s.editing && !s.held && s.pending[s.scene].length) { s.altBatch = false; startCountdown(); renderThreads(); }
 });
 function addStroke(pts, forced) {
   const pend = s.pending[s.scene];
