@@ -68,7 +68,7 @@ extension AppController {
     func deskShowing(_ workspace: String) -> DeskRecord? { physical.desks.first { $0.shows == workspace } }
 
     @discardableResult
-    func activateTask(_ task: String, into window: String?, front: Bool = true, origin: Origin = .app) -> (moved: Bool, desk: String)? {
+    func activateTask(_ task: String, into window: String?, front: Bool = true, origin: Origin = .app, by: String? = nil) -> (moved: Bool, desk: String)? {
         guard let workspace = workspace(ofTask: task) else { return nil }
         if let there = deskShowing(workspace) {
             show(window: there.id, origin: origin)
@@ -76,9 +76,15 @@ extension AppController {
         }
         var desk = physical.desks.first { $0.active == workspace } ?? window.flatMap { physical.desk($0) } ?? (front ? frontDesk : nil) ?? physical.newDesk(project: nil)
         if let old = desk.shows ?? desk.active, old != workspace { physical.leave(old) }
+        let changed = desk.active != workspace
         desk.shows = workspace
         desk.active = workspace
         physical.setDesk(desk)
+        if changed {
+            var args: [String: JSON] = ["action": "activated", "task": .string(task)]
+            if let by { args["by"] = .string(by) }
+            request("tasks", args)
+        }
         show(window: desk.id, origin: origin)
         return (true, desk.id)
     }
@@ -174,7 +180,7 @@ extension AppController {
             case "activate":
                 guard let task = args["task"]?.string else { throw KannaError("bad_request", "activate needs a task") }
                 let desk = args["by"]?.string.flatMap { self.desk(of: $0) } ?? projectDesk(projectRoot(task))
-                guard let activated = activateTask(task, into: desk?.id, front: false, origin: origin(args)) else { throw KannaError("not_found", "\(task) isn't on this app's Desk") }
+                guard let activated = activateTask(task, into: desk?.id, front: false, origin: origin(args), by: args["by"]?.string) else { throw KannaError("not_found", "\(task) isn't on this app's Desk") }
                 return ["task": .string(task), "moved": .bool(activated.moved), "desk": .string(activated.desk)]
             case "park":
                 guard let task = args["task"]?.string else { throw KannaError("bad_request", "park needs a task") }

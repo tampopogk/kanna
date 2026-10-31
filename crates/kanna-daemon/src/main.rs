@@ -8,6 +8,7 @@ mod agents;
 mod app_link;
 mod tasks;
 mod db;
+mod desk_news;
 mod host;
 mod keeper;
 mod content_ids;
@@ -95,6 +96,7 @@ pub enum Event {
     Turn { token: u64 },
     Posted { token: u64, result: Result<(), String> },
     Finished { task: String, changes: Vec<db::Change> },
+    Merged { task: String, merge: desk_news::Merge },
     Diff { id: String, diff: Value },
     DiffUpdating { id: String },
     File { id: String, read: files::Read },
@@ -610,6 +612,7 @@ fn run() -> Result<Option<PathBuf>, String> {
             Event::Turn { token } => tasks.next_turn(token),
             Event::Posted { token, result } => tasks.posted(token, result),
             Event::Finished { task, changes } => tasks.finished(&task, changes),
+            Event::Merged { task, merge } => tasks.merged(&task, merge),
             Event::Diff { id, diff } => diffs.loaded(&id, diff),
             Event::DiffUpdating { id } => diffs.updating(&id),
             Event::File { id, read } => files.loaded(&id, read),

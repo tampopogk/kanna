@@ -58,6 +58,7 @@ sequenceDiagram
 - **Your prompt is left alone:** neither touches what's in the agent's input, so a draft you left there, or the agent's suggested next prompt, stays as it is, and a message doesn't wait on your typing.
 - **Never typed:** with no door (a Claude without a socket, a Codex started some other way, or any other agent), the message waits and Kanna warns: `kanna task send` and `kanna task messages` say why, and the daemon logs it. Kanna has no toasts yet.
 - **Once:** marked delivered when the agent took it; one that fails is tried again once the agent has been idle another 3s, and one with no door every 5s. A waiting message outlives a restart of the daemon.
+- **Kanna's own messages to the planner:** from `kanna` (a crash, [crashes](crashes.md)) and from `desk` (a Desk change it didn't make, [Desk news](desk-news.md)).
 - **The planner:** the planning terminal of a Desk whose folder is the sender's repo (the first, if several are). With none open, the message waits until one is.
 
 ## 3. Stopped tasks

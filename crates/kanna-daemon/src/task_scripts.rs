@@ -1,3 +1,4 @@
+use crate::desk_news::Merge;
 use crate::tasks::git;
 use std::fs;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -193,6 +194,21 @@ pub fn run(command: &str, cwd: &Path, vars: &[(&str, String)], timeout: Duration
     }
 }
 
+pub fn merged(repo: &Path, worktree: &Path) -> Merge {
+    if !worktree.is_dir() || !is_linked(worktree) {
+        return Merge::Unknown;
+    }
+    let into = git(repo, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_else(|_| "HEAD".into());
+    let Ok(tip) = git(worktree, &["rev-parse", "HEAD"]) else { return Merge::Unknown };
+    if base(worktree).is_some_and(|base| base == tip) {
+        return Merge::Not(into);
+    }
+    match git(repo, &["merge-base", "--is-ancestor", &tip, "HEAD"]) {
+        Ok(_) => Merge::Into(into),
+        Err(_) => Merge::Not(into),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cleanup {
     Removed { branch: String },
@@ -263,6 +279,20 @@ mod tests {
         assert!(!worktree.exists(), "the worktree is removed");
         assert_eq!(fs::read_to_string(elsewhere.join("kanna")).unwrap(), "built", "what its target links to is the repo's teardown's to remove");
         assert!(git(&repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_err(), "the branch is deleted");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_task_is_merged_once_its_own_commits_are_in_the_checked_out_branch() {
+        let (dir, worktree) = repo("merged");
+        let repo = dir.join("repo");
+        assert_eq!(merged(&repo, &worktree), Merge::Not("main".into()), "a branch with no commits of its own isn't merged");
+        sh(&worktree, "git -c user.email=e@e -c user.name=e commit -q --allow-empty -m work");
+        assert_eq!(merged(&repo, &worktree), Merge::Not("main".into()));
+        let branch = git(&worktree, &["branch", "--show-current"]).unwrap();
+        sh(&repo, &format!("git merge -q --ff-only {branch}"));
+        assert_eq!(merged(&repo, &worktree), Merge::Into("main".into()));
+        assert_eq!(merged(&repo, &repo), Merge::Unknown, "the main checkout is no task's");
         fs::remove_dir_all(&dir).unwrap();
     }
 
