@@ -45,7 +45,7 @@ stateDiagram-v2
 - **⌘. doesn't move a task**: it toggles the window between the active task and the Desk view, and the task stays active ([Desk view §2](desk-view.md#2--and-pull-back)).
 - **Its name** is the docked pane's name, else its terminal's title. **Its folder and branch** are the docked pane's working directory and that folder's git branch, shown, never changed.
 - **Done** closes the task's panes, ending its agent and terminals.
-- **A task belongs to a project**: the git repository its folder is in (else the folder), and a Desk holds only its project's tasks. Making and naming tasks: [tasks](tasks.md).
+- **A task belongs to a project**: the git repository its folder is in (else the folder), and a Desk holds only its project's tasks; a Desk's project is its planning terminal's ([a Desk's project](desk-project.md)). Making and naming tasks: [tasks](tasks.md).
 
 ## 2. The active task
 
@@ -87,7 +87,7 @@ The Desk view (pictured in [Desk view](desk-view.md)) shows the window's plannin
 | Command | Does |
 |---|---|
 | `kanna task list [QUERY] [--all]` | The caller's repo's tasks, the Desk's under a Desk heading, then the Shelf's: ID, name, state (`merged` once its branch is in main, `replied` while its message to the planner waits), and only what else matters: an agent other than the default, what it waits for by name, when a Desk task was last active; `--all` every repo's, naming the others' ([task list](task-list.md)); QUERY filters by name and first message |
-| `kanna task activate ID` | Make a Desk task active and show it: on the caller's Desk, else on a Desk on its project, else a new one (relayed to the app; [the CLI acts on its caller](cli-caller.md)) |
+| `kanna task activate ID` | Make a Desk task active and show it: on the caller's Desk if it's on the task's project, else on a Desk on its project, else a new one (relayed to the app; [the CLI acts on its caller](cli-caller.md)) |
 | `kanna task park [ID]` | ⌘.: show the Desk view of the task's Desk (default: the caller's own; outside a Kanna terminal ID is needed); the task stays active (relayed to the app) |
 | `kanna task done ID` | End a task: close its panes |
 | `kanna task new`, `start`, `stop`, `pick`, `shelve`, `name` | Make, run, stop, move and name tasks: [tasks](tasks.md#7-cli) |
