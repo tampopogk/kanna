@@ -289,9 +289,10 @@ fn every_command_works_through_the_daemon_and_the_app() {
     wait_for("the task's agent", || daemon.kanna(&["workspace", "list", "--all", "--json"]).json()["workspaces"][0]["dock"]["pane"] == "agent");
     let notes = daemon.kanna_as("term-6", &["open", "--name", "notes", "--no-wait"]).ok();
     assert!(notes.starts_with(&format!("opened term-7 (notes) in ws-1 ({task}, on the Desk), tab-")), "{notes}");
-    let listed = daemon.kanna(&["task", "list"]).ok();
-    assert_eq!(listed, format!("TASK       NAME   WHERE  STATE    AGENT\n{task}  agent  Desk   running  exec   just now"));
-    assert_eq!(daemon.kanna(&["task", "list", "AGE"]).ok(), listed);
+    let listed = daemon.kanna_in(&repo, &["task", "list"]).ok();
+    assert_eq!(listed, format!("Desk\n{task}  agent  running  exec  just now\n\nShelf\n(empty)"));
+    assert_eq!(daemon.kanna_in(&repo, &["task", "list", "AGE"]).ok(), format!("Desk\n{task}  agent  running  exec  just now"));
+    assert_eq!(daemon.kanna(&["task", "list", "--all"]).ok(), format!("Desk\n{task}  agent  running  exec  ~/.kanna-v4/repos/local/repo  just now\n\nShelf\n(empty)"));
     assert_eq!(daemon.kanna(&["task", "list", "agent", "notes"]).ok(), "no task matches \"agent notes\"");
     assert_eq!(daemon.kanna(&["--json", "task", "list", "nothing"]).json()["tasks"], json!([]));
     assert_eq!(daemon.kanna(&["task", "activate", "notes"]).ok(), "term-6 is active on d1", "a task's pane names its task, and the app is told its agent");

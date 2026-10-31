@@ -188,9 +188,17 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
         reply["freed"] = serde_json::Value::Array(output::freed(&waiting, done));
     }
     if command.name == "task" && request["action"] == "list" {
-        if let Ok(found) = mux.call("tasks", serde_json::json!({ "action": "list" })) {
+        let mut asked = json!({ "action": "list", "merged": true });
+        if let Some(repo) = request["repo"].as_str().filter(|_| request["all"] != true) {
+            asked["repo"] = json!(repo);
+        }
+        if let Ok(found) = mux.call("tasks", asked.clone()) {
             reply["shelf"] = found["shelf"].clone();
+            reply["agent"] = found["agent"].clone();
             output::name_out(&mut reply, &found["desk"]);
+            if asked["repo"].is_string() {
+                output::keep_named(&mut reply);
+            }
             shorts.extend(output::shorts(&found));
             listed = true;
             reply["script"] = found["script"].clone();
