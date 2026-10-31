@@ -281,10 +281,20 @@ kanna_target_link() {
   mkdir -p "$2" && ln -s "$2" "$1"
 }
 
+kanna_remove() {
+  if [ -L "$1" ]; then rm "$1"; return; fi
+  [ -e "$1" ] || return 0
+  chmod -R u+w "$1" 2>/dev/null
+  rm -rf "$1"
+}
+
 kanna_clone() {
-  cp -c -R -p "$1" "$2" 2>/dev/null && return
-  rm -rf "$2"
-  cp -R -p "$1" "$2"
+  kanna_remove "$2" || return 1
+  if cp -c -R -p "$1" "$2" 2>/dev/null || { kanna_remove "$2" && cp -R -p "$1" "$2"; }; then
+    chmod -R u+w "$2" && return
+  fi
+  kanna_remove "$2"
+  return 1
 }
 
 kanna_borrow_swiftpm() {

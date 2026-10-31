@@ -1,6 +1,6 @@
 # Build Store
 
-**Status:** built · **Tested:** `scripts/test-store.sh` (locking, publish, pruning, eviction against a fake `ROOT`), `scripts/test-teardown.sh` · **Builds on:** [build targets](build-targets.md), [build speed](build-speed.md) · **Why:** each task's build folder on the build volume grew to ~17 GB, and one merge-main round rebuilt ~40 of them, filling the external SSD to 98%
+**Status:** built · **Tested:** `scripts/test-store.sh` (locking, publish, pruning, eviction against a fake `ROOT`; the main checkout's copy from a store on another volume, a disk image, and with `cp -c` failing, and over a leftover read-only `.copying`), `scripts/test-teardown.sh` · **Builds on:** [build targets](build-targets.md), [build speed](build-speed.md) · **Why:** each task's build folder on the build volume grew to ~17 GB, and one merge-main round rebuilt ~40 of them, filling the external SSD to 98%
 
 A task worktree's build folder holds only what that task builds itself: one Rust profile and its Swift build. Everything pinned (Zig, Ghostty's source, GhosttyKit, libghostty-vt, and a build of main's Rust dependencies) is built once per pin into a shared, read-only **store** that worktrees link to or clone; Rust dependencies that differ from main's come from a shared compile cache; and build folders are caches that are evicted, least recently used first, when the volume runs low.
 
@@ -54,7 +54,7 @@ flowchart LR
 | Rust | `debug/` 3.6 GB **and** `release/` 4.4 GB | `debug/` only, deps optimised without debug info |
 | Rust dependencies | `release/` borrowed by clone, `debug/` compiled | `debug/` cloned from `_shared/cargo` (shared blocks); the rest from `_shared/sccache` |
 
-The main checkout keeps its `release/` profile and real, internal copies of GhosttyKit and libghostty-vt (cloned from the store), so its app still builds with the volume unplugged ([build targets](build-targets.md#2-rules)).
+The main checkout keeps its `release/` profile and real, internal copies of GhosttyKit and libghostty-vt (copied from the store, [§2.1](#21-the-main-checkout-copies)), so its app still builds with the volume unplugged ([build targets](build-targets.md#2-rules)).
 
 ## 2. The store
 
@@ -87,10 +87,20 @@ sequenceDiagram
 
 - **Built once, under a lock:** `kanna_store NAME KEY BUILDER` in `scripts/store.sh` returns the entry, building it first if it's missing. The lock is a folder, `KEY.lock`, made with `mkdir` (atomic) and holding the builder's pid. Others wait for it, saying who they wait for, then look again. A lock whose pid is dead is stale and is taken over.
 - **Atomic publish:** the builder writes `KEY.tmp-PID`, its contents are made read-only, one `mv` makes it `KEY`, then `KEY` itself is made read-only (macOS won't rename a folder you can't write). A failed build removes its temp folder and the lock and exits non-zero; nothing half-built is ever at `KEY`.
-- **Worktrees link** `target/ghosttykit` and `target/ghostty-vt/TRIPLE` to their entries, and `touch` an entry each time they use it. A worktree with no profile folder yet **clones** a `cargo` seed into it (`cp -c`: APFS shares the blocks until cargo rewrites a file), as the old `release/` borrowing did; cargo rewrites build scripts' `OUT_DIR` paths when the folder moves, and compiles our crates from the worktree's source. The main checkout clones them into real folders instead, marked with the key. Zig and the source aren't linked: only the store's builders use them.
+- **Worktrees link** `target/ghosttykit` and `target/ghostty-vt/TRIPLE` to their entries, and `touch` an entry each time they use it. A worktree with no profile folder yet **clones** a `cargo` seed into it (`cp -c`: APFS shares the blocks until cargo rewrites a file), as the old `release/` borrowing did; cargo rewrites build scripts' `OUT_DIR` paths when the folder moves, and compiles our crates from the worktree's source. The main checkout copies them into real folders instead ([§2.1](#21-the-main-checkout-copies)). Zig and the source aren't linked: only the store's builders use them.
 - **Seeds are built only for main's `Cargo.lock`:** when the worktree's `Cargo.lock`, `Cargo.toml` and `.cargo/config.toml` are the main checkout's committed ones, a missing seed is built (both `cargo build` and `cargo test --no-run`, so the app and the tests start warm). A worktree that changed them clones the newest seed of its family instead, and cargo recompiles only what differs, through the compile cache. So a task that adds a dependency costs no store build, and a merge to main costs one.
 - **Read-only:** entries are `a-w`, so a build can't change what other worktrees use. A worktree that builds Ghostty from its own source (`GHOSTTY_SOURCE_DIR`) builds into its own `target/`, as before.
 - **Pruned** in the eviction pass ([§5](#5-eviction)): an entry no link under `ROOT` points to and unused for a day is deleted, under its lock. `sccache/` is never pruned; it bounds itself.
+
+### 2.1 The main checkout copies
+
+The main checkout's `target/ghosttykit` and `target/ghostty-vt/TRIPLE` are real folders on the internal disk, copied from the store, not links into it:
+
+- **Why not link:** with the volume unplugged a link dangles, and the main checkout would have to build Ghostty again (about 5 minutes) before its app builds ([build targets](build-targets.md#2-rules)). A copy keeps the dev app and `scripts/release.sh` self-contained: release builds in the main checkout from these internal copies, never through a link onto a drive that can go away. Ghostty's copies are small (GhosttyKit 350 MB, libghostty-vt 15 MB) and change only with the pin.
+- **Marked with the key:** the copy's `.store-key` holds the entry's path; a build whose key matches does nothing, and a new key makes a new copy.
+- **Across volumes:** the store is usually on the build volume and the copy on the internal disk, where `cp -c` (APFS clone) can't clone: it makes the folders, fails every file with `Cross-device link`, and leaves the folders with the entry's read-only mode. So `kanna_clone` (in `scripts/env.sh`) removes what the clone left and copies with `cp -R -p`, then makes the copy writable (`chmod -R u+w`), so the store's `a-w` never carries over.
+- **Removing, writably:** every removal of a copy or a store folder goes through `kanna_remove`, which makes the tree writable before `rm -rf` (a read-only folder's entries can't be removed). A half-done `here.copying` from a failed build is removed that way before the next copy starts, then the copy is renamed over the old one.
+
 
 ## 3. One Rust profile per worktree
 

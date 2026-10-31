@@ -63,6 +63,41 @@ kanna_store_use "$store/thing/k1" "$main/target/thing" "$main"
 kanna_store_use "$store/thing/k2" "$main/target/thing" "$main"
 [[ "$(cat "$main/target/thing/out")" == two ]] || fail "main checkout: didn't replace the copy for a new key"
 
+nested() { mkdir -p "$1/include/ghostty/vt" && echo "$2" >"$1/include/ghostty/vt/h.h" && echo "$2" >"$1/out"; }
+kanna_store "$wt" thing k7 nested seven >/dev/null 2>&1
+mkdir -p "$main/target/thing.copying/include/ghostty/vt" && echo stale >"$main/target/thing.copying/include/ghostty/vt/h.h"
+chmod -R a-w "$main/target/thing.copying"
+kanna_store_use "$store/thing/k7" "$main/target/thing" "$main" 2>"$dir/said" || fail "leftover .copying: exit $?: $(cat "$dir/said")"
+[[ "$(cat "$main/target/thing/include/ghostty/vt/h.h" 2>/dev/null)" == seven && ! -e "$main/target/thing.copying" ]] || fail "leftover .copying: $(ls -R "$main/target/thing")"
+
+cp() {
+  if [[ "$1" == -c ]]; then
+    local from="${*: -2:1}" to="${*: -1}"
+    (cd "$from" && find . -type d) | while IFS= read -r d; do mkdir -p "$to/$d"; done
+    chmod -R a-w "$to"
+    echo "cp: $to/out: clonefile failed: Cross-device link" >&2
+    return 1
+  fi
+  command cp "$@"
+}
+kanna_store "$wt" thing k8 nested eight >/dev/null 2>&1
+kanna_store_use "$store/thing/k8" "$main/target/thing" "$main" 2>"$dir/said" || fail "no clones: exit $?: $(cat "$dir/said")"
+[[ "$(cat "$main/target/thing/include/ghostty/vt/h.h" 2>/dev/null)" == eight && "$(cat "$main/target/thing/.store-key")" == "$store/thing/k8" ]] || fail "no clones: didn't copy: $(ls -R "$main/target/thing")"
+[[ -w "$main/target/thing/include/ghostty/vt" && -w "$main/target/thing/out" && ! -e "$main/target/thing.copying" ]] || fail "no clones: the copy is read-only, or .copying is left"
+unset -f cp
+
+if hdiutil create -size 16m -fs APFS -volname kanna-store-test -quiet "$dir/other.dmg" 2>/dev/null &&
+   hdiutil attach -nobrowse -noverify -mountpoint "$dir/other" -quiet "$dir/other.dmg" 2>/dev/null; then
+  trap 'hdiutil detach -force -quiet "$dir/other" 2>/dev/null; for p in ${pids[@]+"${pids[@]}"}; do kill "$p" 2>/dev/null; done; chmod -R u+w "$dir"; rm -rf "$dir"' EXIT
+  far="$dir/other/_shared/thing/k1"
+  mkdir -p "$far" && nested "$far" far && chmod -R a-w "$far"
+  kanna_store_use "$far" "$main/target/thing" "$main" 2>"$dir/said" || fail "another volume: exit $?: $(cat "$dir/said")"
+  [[ "$(cat "$main/target/thing/include/ghostty/vt/h.h" 2>/dev/null)" == far && -w "$main/target/thing/include/ghostty/vt" ]] || fail "another volume: $(ls -R "$main/target/thing")"
+  chmod -R u+w "$dir/other/_shared"
+else
+  echo "skip: no disk image (hdiutil can't attach here); the cp -c failure above stands in for it"
+fi
+
 old() { touch -h -t 202001010000 "$1"; }
 mkdir -p "$store/sccache" && old "$store/sccache"
 for k in k1 k2 k3 k4 k5; do old "$store/thing/$k"; done
