@@ -13,7 +13,11 @@ const KANNA: &str = env!("CARGO_BIN_EXE_kanna");
 fn sibling(name: &str, package: &str) -> PathBuf {
     let binary = Path::new(KANNA).with_file_name(name);
     if !binary.exists() {
-        let status = Command::new(env!("CARGO")).args(["build", "-p", package]).status().unwrap();
+        let profile = match binary.parent().and_then(Path::file_name).and_then(|d| d.to_str()) {
+            Some("debug") | None => "dev",
+            Some(dir) => dir,
+        };
+        let status = Command::new(env!("CARGO")).args(["build", "--profile", profile, "-p", package]).status().unwrap();
         assert!(status.success(), "building {package} failed");
     }
     binary
