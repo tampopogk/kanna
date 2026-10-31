@@ -270,7 +270,7 @@ fn hello_keeping_the_socket(instance: &Instance, build: &str) -> (Value, Option<
     use std::os::fd::AsRawFd;
     let stream = UnixStream::connect(instance.socket()).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    let hello = json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "build": build, "panes": [], "keepsSocket": true}});
+    let hello = json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "build": build, "panes": [], "protocols": kanna_build::PROTOCOLS, "keepsSocket": true}});
     (&stream).write_all(format!("{hello}\n").as_bytes()).unwrap();
     let (mut line, mut listener) = (Vec::new(), None);
     while !line.contains(&b'\n') {
@@ -329,7 +329,7 @@ fn an_app_that_does_not_keep_the_socket_gets_none_and_the_daemon_unlinks_it() {
     let mut instance = Instance::start();
     let build = instance.call("capabilities", json!({}))["build"].as_str().unwrap().to_string();
     let mut app = App::raw(&instance.socket());
-    app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "build": build, "panes": []}}));
+    app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "build": build, "panes": [], "protocols": kanna_build::PROTOCOLS}}));
     let hello = app.next().unwrap();
     assert_eq!((hello["ok"].as_bool(), hello["listener"].as_bool()), (Some(true), Some(false)), "{hello}");
     instance.stop(libc::SIGTERM);

@@ -4475,9 +4475,7 @@ restart_while_desk_opens() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "restart_while_desk_opens line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
-  "$app" --bg >>"$out/app.log" 2>&1 &
-  app_pid=$!
-  wait_for 15 app_attached || { echo "restart_while_desk_opens: the app did not start its daemon and attach"; return 1; }
+  start_daemon && start_app || { echo "restart_while_desk_opens line $LINENO"; return 1; }
   desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$2\"}}" | field "$1"; }
   local daemon opened w planner
   daemon="$(cat "$KANNA_STATE_DIR/daemon.pid")"
@@ -4489,7 +4487,7 @@ restart_while_desk_opens() {
   wait_for 5 eval "! kill -0 $daemon" || { echo "restart_while_desk_opens: the daemon didn't stop"; return 1; }
   kanna workspace list --all >/dev/null || { echo "restart_while_desk_opens: a call made while no daemon ran wasn't answered"; return 1; }
   check wait_for 15 eval '[[ "$(cat "$KANNA_STATE_DIR/daemon.pid")" != "$daemon" ]] && app_attached' || { echo "restart_while_desk_opens: the app didn't start the next daemon"; return 1; }
-  check wait_for 20 eval 'shows "$planner" "No agent Kanna knows is installed" || shows "$planner" "Choose an agent"' || { echo "restart_while_desk_opens: the planning terminal didn't get past agent setup"; kanna read "$planner"; return 1; }
+  check wait_for 20 shows "$planner" "No agent Kanna knows is installed" || { echo "restart_while_desk_opens: the planning terminal didn't get past agent setup"; kanna read "$planner"; return 1; }
   ! shows "$planner" "nothing answers" || { echo "restart_while_desk_opens: the planning terminal ran while nothing answered"; kanna read "$planner"; return 1; }
 }
 
