@@ -426,14 +426,7 @@ impl Terminals {
                     format!("term-{terminals}")
                 }
             };
-            let pane_id = match pane_number(&pty.id) {
-                Some(_) if !panes.iter().any(|p: &Pane| p.id == pty.id) => pty.id.clone(),
-                _ => {
-                    counter += 1;
-                    format!("p{counter}")
-                }
-            };
-            let mut pane = Pane::new(&pane_id, None, PaneType::Term);
+            let mut pane = Pane::new(&id, None, PaneType::Term);
             pane.terminal = Some(id.clone());
             pane.command = match pty.cmd.as_slice() {
                 [_, flags @ .., c, command] if c == "-c" && flags.first().is_some_and(|l| l == "-l") && flags.iter().all(|f| ["-l", "-i", "+m"].contains(&f.as_str())) => Some(command.clone()),
@@ -446,9 +439,9 @@ impl Terminals {
             pane.state = PaneState::Running;
             let keeper = pty.id.clone();
             exits.extend(pty.exit.map(|code| (keeper.clone(), pty.pid, code)));
-            match self.adopt(&id, &pane_id, &keeper, pty, None) {
+            match self.adopt(&id, &id, &keeper, pty, None) {
                 Ok(terminal) => {
-                    log!("kanna-daemon: took back {id} as {pane_id}, which the keeper had and the disk didn't know");
+                    log!("kanna-daemon: took back the keeper's {keeper} as {id}, which the disk didn't know");
                     self.live.borrow_mut().insert(id, terminal);
                     panes.push(pane);
                     restored.unknown += 1;
