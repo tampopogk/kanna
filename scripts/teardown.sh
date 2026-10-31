@@ -16,7 +16,7 @@ if volume="$(kanna_targets_unmounted "$root")"; then
   exit 0
 fi
 name="$(basename "$worktree")"
-case "$name" in _main|.offline) exit 0 ;; esac
+case "$name" in _main) exit 0 ;; esac
 folder="$root/$(basename "$main")/$name"
 if [ "$(readlink "$link")" != "$folder" ]; then
   echo "==> target/ links to $(readlink "$link"), not $folder: leaving it"

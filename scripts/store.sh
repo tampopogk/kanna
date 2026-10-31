@@ -82,15 +82,8 @@ kanna_store() {
 
 kanna_store_use() {
   entry="$1" here="$2"
-  if kanna_main_checkout "$3" >/dev/null; then
-    [ -L "$here" ] && [ "$(readlink "$here")" = "$entry" ] && return 0
-    kanna_remove "$here" && mkdir -p "$(dirname "$here")" && ln -s "$entry" "$here"
-    return
-  fi
-  [ ! -L "$here" ] && [ "$(cat "$here/.store-key" 2>/dev/null)" = "$entry" ] && return 0
-  mkdir -p "$(dirname "$here")" || return 1
-  kanna_clone "$entry" "$here.copying" && echo "$entry" > "$here.copying/.store-key" || { kanna_remove "$here.copying"; return 1; }
-  kanna_remove "$here" && mv "$here.copying" "$here"
+  [ -L "$here" ] && [ "$(readlink "$here")" = "$entry" ] && return 0
+  kanna_remove "$here" && mkdir -p "$(dirname "$here")" && ln -s "$entry" "$here"
 }
 
 kanna_store_refs() {

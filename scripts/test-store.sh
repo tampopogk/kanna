@@ -55,20 +55,29 @@ wait "$waiter"
 [[ "$(cat "$dir/waited")" == "$store/thing/k5" ]] || fail "live lock: didn't build once it was free"
 
 link="$(cd "$wt" && kanna_targets "$wt" 2>/dev/null; echo "$wt/target")"
-kanna_store_use "$store/thing/k1" "$wt/target/thing" "$wt"
+kanna_store_use "$store/thing/k1" "$wt/target/thing"
 [[ "$(readlink "$wt/target/thing")" == "$store/thing/k1" ]] || fail "worktree: didn't link the entry: $(ls -l "$wt/target/thing")"
-kanna_store_use "$store/thing/k1" "$main/target/thing" "$main"
-[[ ! -L "$main/target/thing" && "$(cat "$main/target/thing/out")" == one && -w "$main/target/thing/out" ]] || fail "main checkout: didn't copy the entry"
-[[ "$(cat "$main/target/thing/.store-key")" == "$store/thing/k1" ]] || fail "main checkout: didn't mark the copy"
-kanna_store_use "$store/thing/k2" "$main/target/thing" "$main"
-[[ "$(cat "$main/target/thing/out")" == two ]] || fail "main checkout: didn't replace the copy for a new key"
+kanna_store_use "$store/thing/k1" "$main/target/thing"
+[[ "$(readlink "$main/target/thing")" == "$store/thing/k1" ]] || fail "main checkout: didn't link the entry: $(ls -l "$main/target/thing")"
+kanna_store_use "$store/thing/k2" "$main/target/thing"
+[[ "$(readlink "$main/target/thing")" == "$store/thing/k2" ]] || fail "main checkout: didn't relink for a new key"
 
 nested() { mkdir -p "$1/include/ghostty/vt" && echo "$2" >"$1/include/ghostty/vt/h.h" && echo "$2" >"$1/out"; }
-kanna_store "$wt" thing k7 nested seven >/dev/null 2>&1
-mkdir -p "$main/target/thing.copying/include/ghostty/vt" && echo stale >"$main/target/thing.copying/include/ghostty/vt/h.h"
-chmod -R a-w "$main/target/thing.copying"
-kanna_store_use "$store/thing/k7" "$main/target/thing" "$main" 2>"$dir/said" || fail "leftover .copying: exit $?: $(cat "$dir/said")"
-[[ "$(cat "$main/target/thing/include/ghostty/vt/h.h" 2>/dev/null)" == seven && ! -e "$main/target/thing.copying" ]] || fail "leftover .copying: $(ls -R "$main/target/thing")"
+rm "$main/target/thing" && nested "$main/target/thing" old && chmod -R a-w "$main/target/thing"
+kanna_store_use "$store/thing/k1" "$main/target/thing" 2>"$dir/said" || fail "old read-only copy: exit $?: $(cat "$dir/said")"
+[[ "$(readlink "$main/target/thing")" == "$store/thing/k1" ]] || fail "old read-only copy: didn't replace it with a link"
+
+config "/Volumes/kanna-no-volume-$$/kanna-targets"
+fallback="$(kanna_store "$main" thing k1 slow internal 2>/dev/null)" || fail "unplugged: exit $?"
+[[ "$fallback" == "$main/target/_shared/thing/k1" && "$(cat "$fallback/out")" == internal ]] || fail "unplugged: didn't build in the internal store: $fallback"
+kanna_store_use "$fallback" "$main/target/thing"
+[[ "$(cat "$main/target/thing/out")" == internal ]] || fail "unplugged: didn't relink to the internal store"
+config "$root"
+
+nested "$dir/entry" cloned && chmod -R a-w "$dir/entry"
+mkdir -p "$dir/clone/include/ghostty" && chmod -R a-w "$dir/clone"
+kanna_clone "$dir/entry" "$dir/clone" 2>"$dir/said" || fail "clone over a read-only leftover: exit $?: $(cat "$dir/said")"
+[[ "$(cat "$dir/clone/include/ghostty/vt/h.h" 2>/dev/null)" == cloned && -w "$dir/clone/include/ghostty/vt" ]] || fail "clone over a read-only leftover: $(ls -R "$dir/clone")"
 
 cp() {
   if [[ "$1" == -c ]]; then
@@ -80,20 +89,17 @@ cp() {
   fi
   command cp "$@"
 }
-kanna_store "$wt" thing k8 nested eight >/dev/null 2>&1
-kanna_store_use "$store/thing/k8" "$main/target/thing" "$main" 2>"$dir/said" || fail "no clones: exit $?: $(cat "$dir/said")"
-[[ "$(cat "$main/target/thing/include/ghostty/vt/h.h" 2>/dev/null)" == eight && "$(cat "$main/target/thing/.store-key")" == "$store/thing/k8" ]] || fail "no clones: didn't copy: $(ls -R "$main/target/thing")"
-[[ -w "$main/target/thing/include/ghostty/vt" && -w "$main/target/thing/out" && ! -e "$main/target/thing.copying" ]] || fail "no clones: the copy is read-only, or .copying is left"
+kanna_clone "$dir/entry" "$dir/copied" 2>"$dir/said" || fail "no clones: exit $?: $(cat "$dir/said")"
+[[ "$(cat "$dir/copied/include/ghostty/vt/h.h" 2>/dev/null)" == cloned && -w "$dir/copied/include/ghostty/vt" && -w "$dir/copied/out" ]] || fail "no clones: didn't copy, or the copy is read-only: $(ls -lR "$dir/copied")"
 unset -f cp
 
 if hdiutil create -size 16m -fs APFS -volname kanna-store-test -quiet "$dir/other.dmg" 2>/dev/null &&
    hdiutil attach -nobrowse -noverify -mountpoint "$dir/other" -quiet "$dir/other.dmg" 2>/dev/null; then
   trap 'hdiutil detach -force -quiet "$dir/other" 2>/dev/null; for p in ${pids[@]+"${pids[@]}"}; do kill "$p" 2>/dev/null; done; chmod -R u+w "$dir"; rm -rf "$dir"' EXIT
-  far="$dir/other/_shared/thing/k1"
-  mkdir -p "$far" && nested "$far" far && chmod -R a-w "$far"
-  kanna_store_use "$far" "$main/target/thing" "$main" 2>"$dir/said" || fail "another volume: exit $?: $(cat "$dir/said")"
-  [[ "$(cat "$main/target/thing/include/ghostty/vt/h.h" 2>/dev/null)" == far && -w "$main/target/thing/include/ghostty/vt" ]] || fail "another volume: $(ls -R "$main/target/thing")"
-  chmod -R u+w "$dir/other/_shared"
+  nested "$dir/other/entry" far && chmod -R a-w "$dir/other/entry"
+  kanna_clone "$dir/other/entry" "$dir/far" 2>"$dir/said" || fail "another volume: exit $?: $(cat "$dir/said")"
+  [[ "$(cat "$dir/far/include/ghostty/vt/h.h" 2>/dev/null)" == far && -w "$dir/far/include/ghostty/vt" ]] || fail "another volume: $(ls -R "$dir/far")"
+  chmod -R u+w "$dir/other/entry"
 else
   echo "skip: no disk image (hdiutil can't attach here); the cp -c failure above stands in for it"
 fi
@@ -129,7 +135,7 @@ make_folder task-old 202001010000
 make_folder task-new 202501010000
 make_folder task-run 202001010000
 make_folder task-orphan 202501010000
-mkdir -p "$repo/_main/release" "$repo/.offline/release"
+mkdir -p "$repo/_main/release"
 (cd "$main/.kanna-worktrees/task-run" && exec sleep 60) & pids+=("$!"); disown "$!"
 kanna_targets_free_gb() { echo $((250 - 50 * $(ls "$repo" | grep -cv '^_'))); }
 config "$root" 100
@@ -144,7 +150,7 @@ config "$root" 100000
 [[ ! -e "$repo/task-new" ]] || fail "evict: kept a stopped task's folder under the threshold"
 [[ -d "$repo/task-run" ]] || fail "evict: removed a running task's folder"
 [[ -d "$repo/task-a" ]] || fail "evict: removed the building worktree's folder"
-[[ -d "$repo/_main/release" && -d "$repo/.offline/release" && -d "$store/thing/k1" ]] || fail "evict: removed _main, .offline or the store"
+[[ -d "$repo/_main/release" && -d "$store/thing/k1" ]] || fail "evict: removed _main or the store"
 [[ ! -e "$store/.evict.lock" ]] || fail "evict: left its lock"
 
 unset KANNA_EVICT_DONE
