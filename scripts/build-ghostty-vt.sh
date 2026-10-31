@@ -3,12 +3,21 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$repo_root/scripts/env.sh"
+. "$repo_root/scripts/store.sh"
 kanna_targets "$repo_root" || exit 1
+host="$(rustc -vV | sed -n 's/^host: //p')"
+target="${1:-$host}"
+if [[ "${2:-}" != --into ]]; then
+  [[ $# -le 1 ]] || { echo "usage: scripts/build-ghostty-vt.sh [TRIPLE [--into DIR]]" >&2; exit 2; }
+  kanna_ghostty_vt "$repo_root" "$target"
+  echo "libghostty-vt: $repo_root/target/ghostty-vt/$target -> $(cd "$repo_root/target/ghostty-vt/$target" && pwd -P)"
+  exit 0
+fi
+[[ $# == 3 ]] || { echo "usage: scripts/build-ghostty-vt.sh [TRIPLE [--into DIR]]" >&2; exit 2; }
+out="$3"
 source_dir="$(kanna_ghostty_source "$repo_root")"
 zig="$(kanna_zig "$repo_root")"
 
-host="$(rustc -vV | sed -n 's/^host: //p')"
-target="${1:-$host}"
 zig_target=()
 if [ "$target" != "$host" ] || [ "$(uname -s)" = Linux ]; then
   case "$target" in
@@ -22,18 +31,22 @@ if [ "$target" != "$host" ] || [ "$(uname -s)" = Linux ]; then
   esac
 fi
 
-out="$repo_root/target/ghostty-vt/$target"
-stage="$repo_root/target/ghostty-vt/.stage-$target"
-rm -rf "$stage"
+if [[ -n "${GHOSTTY_SOURCE_DIR:-}" ]]; then
+  work="$repo_root/target/ghostty-vt/.build-$target"
+else
+  work="$out.work"
+  rm -rf "$work"
+  trap 'rm -rf "$work"' EXIT
+fi
+mkdir -p "$work"
 optimize="${KANNA_GHOSTTY_OPTIMIZE:-ReleaseSafe}"
-(cd "$source_dir" && "$zig" build --cache-dir "$repo_root/target/ghostty-vt/.zig-cache-$target" \
+(cd "$source_dir" && "$zig" build --cache-dir "$work/.zig-cache" \
   -Demit-lib-vt=true -Demit-xcframework=false \
-  -Doptimize="$optimize" ${zig_target[@]+"${zig_target[@]}"} -p "$stage")
+  -Doptimize="$optimize" ${zig_target[@]+"${zig_target[@]}"} -p "$work/stage")
 
 rm -rf "$out"
 mkdir -p "$out/lib"
-cp -R "$stage/include" "$out/"
-cp "$stage/lib/libghostty-vt.a" "$out/lib/"
-rm -rf "$stage"
+cp -R "$work/stage/include" "$out/"
+cp "$work/stage/lib/libghostty-vt.a" "$out/lib/"
 kanna_ghostty_rev "$source_dir" > "$out/ghostty.rev"
 echo "Built $out (Ghostty $(cat "$out/ghostty.rev"))"

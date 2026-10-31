@@ -9,6 +9,7 @@ archs=(arm64 x86_64)
 usage() { echo "usage: scripts/release.sh [--major|--minor|--patch | VERSION] [--staging] [--dry-run]" >&2; exit 2; }
 fail() { echo "release: $*" >&2; exit 1; }
 step() { echo "==> $*"; }
+. "$repo_root/scripts/env.sh"
 
 bump=""
 explicit=""
@@ -29,6 +30,7 @@ done
 
 step "Preflight"
 cd "$repo_root"
+export KANNA_RUST_PROFILE=release RUSTC_WRAPPER=
 [[ "$(git remote get-url origin)" =~ github\.com[:/]$repo(\.git)?$ ]] || fail "origin is $(git remote get-url origin), not $repo: git remote set-url origin https://github.com/$repo.git"
 git fetch --quiet --tags origin main || fail "can't fetch origin ($repo)"
 problems=()
@@ -130,8 +132,8 @@ symbols=()
 for arch in "${archs[@]}"; do
   step "Build $app_name $version for $arch"
   KANNA_VERSION="$version" "$repo_root/scripts/build.sh" "$channel" --arch "$arch"
-  triple="$(. "$repo_root/scripts/env.sh" && kanna_arch_triple "$arch")"
-  if [[ "$triple" == "$(. "$repo_root/scripts/env.sh" && kanna_host_triple)" ]]; then built="$repo_root/target/Kanna.app"; else built="$repo_root/target/$triple/Kanna.app"; fi
+  triple="$(kanna_arch_triple "$arch")"
+  if [[ "$triple" == "$(kanna_host_triple)" ]]; then built="$repo_root/target/Kanna.app"; else built="$repo_root/target/$triple/Kanna.app"; fi
 
   stage="$dist/$arch"
   rm -rf "$stage"
@@ -157,13 +159,9 @@ for arch in "${archs[@]}"; do
   symbols+=("$zip")
 
   step "Sign $arch"
-  while IFS= read -r -d '' helper; do
-    file -b "$helper" | grep -q Mach-O || continue
-    codesign --force --sign "$sign_hash" --options runtime --timestamp "$helper"
-  done < <(find "$app/Contents/Helpers" -type f -print0)
-  stray="$(find "$app/Contents" -type f ! -path "*/Contents/Helpers/*" ! -path "*/Contents/MacOS/Kanna" -exec sh -c 'file -b "$1" | grep -q Mach-O && echo "$1"' _ {} \;)"
-  [[ -z "$stray" ]] || fail "Mach-O files outside Contents/Helpers would go unsigned: $stray"
-  codesign --force --sign "$sign_hash" --options runtime --timestamp --entitlements "$repo_root/apps/kanna/Resources/Kanna.entitlements" "$app"
+  stray="$(find "$app/Contents" -type f ! -regex '.*/Contents/Helpers/[^/]*' ! -path "*/Contents/MacOS/Kanna" -exec sh -c 'file -b "$1" | grep -q Mach-O && echo "$1"' _ {} \;)"
+  [[ -z "$stray" ]] || fail "Mach-O files other than Contents/MacOS/Kanna and those directly in Contents/Helpers would go unsigned: $stray"
+  kanna_sign_app "$repo_root" "$app" "$sign_hash" --options runtime --timestamp || fail "signing $app failed"
   codesign --verify --strict --deep --verbose=2 "$app"
 
   step "DMG $arch"
