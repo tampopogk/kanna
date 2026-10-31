@@ -16,14 +16,14 @@ worktree() { git -C "$main" worktree add -q "$main/.kanna-worktrees/$1" -b "$1" 
 link() { (. "$scripts/env.sh" && kanna_targets "$1") 2>/dev/null; echo built >"$1/target/out"; }
 teardown() { (cd "$1" && "$scripts/teardown.sh") >"$dir/said" 2>&1; }
 
-mkdir -p "$root/repo/_main/release" "$root/repo/.offline/release" "$root/repo/task-other"
+mkdir -p "$root/repo/_main/release" "$root/repo/task-other"
 
 wt="$(worktree task-a)" && link "$wt"
 [[ "$(readlink "$wt/target")" == "$root/repo/task-a" ]] || fail "kanna_targets didn't link task-a into ROOT/REPO: $(readlink "$wt/target")"
 teardown "$wt" || fail "linked worktree: exit $?: $(cat "$dir/said")"
 [[ ! -e "$root/repo/task-a" ]] || fail "linked worktree: its build folder is left"
 [[ ! -L "$wt/target" ]] || fail "linked worktree: target/ link is left"
-[[ -d "$root/repo/_main/release" && -d "$root/repo/.offline/release" && -d "$root/repo/task-other" ]] || fail "linked worktree: removed another folder"
+[[ -d "$root/repo/_main/release" && -d "$root/repo/task-other" ]] || fail "linked worktree: removed another folder"
 
 wt="$(worktree task-real)" && mkdir -p "$wt/target" && echo built >"$wt/target/out"
 teardown "$wt" || fail "real target/: exit $?"

@@ -53,11 +53,6 @@ kanna_lock_release() {
   rm -rf "$1"
 }
 
-kanna_store_writable() {
-  chmod -R u+w "$1" 2>/dev/null
-  rm -rf "$1"
-}
-
 kanna_store() {
   store="$(kanna_store_root "$1")"
   name="$2" key="$3" builder="$4"
@@ -68,13 +63,13 @@ kanna_store() {
     kanna_lock_wait "$entry.lock"
     if [ ! -d "$entry" ]; then
       tmp="$entry.tmp-$$"
-      kanna_store_writable "$tmp"
+      kanna_remove "$tmp"
       echo "==> Building $name/$key into the store ($store)" >&2
       if (cd "$store/$name" && "$builder" "$tmp" "$@") >&2 && [ -d "$tmp" ]; then
-        find "$tmp" -mindepth 1 -exec chmod a-w {} + && mv "$tmp" "$entry" && chmod a-w "$entry" || { kanna_store_writable "$tmp"; kanna_lock_release "$entry.lock"; return 1; }
+        find "$tmp" -mindepth 1 -exec chmod a-w {} + && mv "$tmp" "$entry" && chmod a-w "$entry" || { kanna_remove "$tmp"; kanna_lock_release "$entry.lock"; return 1; }
       else
         echo "==> Building $name/$key failed" >&2
-        kanna_store_writable "$tmp"
+        kanna_remove "$tmp"
         kanna_lock_release "$entry.lock"
         return 1
       fi
@@ -87,18 +82,8 @@ kanna_store() {
 
 kanna_store_use() {
   entry="$1" here="$2"
-  if kanna_main_checkout "$3" >/dev/null; then
-    [ -L "$here" ] && [ "$(readlink "$here")" = "$entry" ] && return 0
-    if [ -L "$here" ]; then rm "$here"; elif [ -e "$here" ]; then kanna_store_writable "$here"; fi
-    mkdir -p "$(dirname "$here")" && ln -s "$entry" "$here"
-    return
-  fi
-  [ ! -L "$here" ] && [ "$(cat "$here/.store-key" 2>/dev/null)" = "$entry" ] && return 0
-  rm -rf "$here.copying"
-  mkdir -p "$(dirname "$here")" || return 1
-  kanna_clone "$entry" "$here.copying" && chmod -R u+w "$here.copying" && echo "$entry" > "$here.copying/.store-key" || { kanna_store_writable "$here.copying"; return 1; }
-  if [ -L "$here" ]; then rm "$here"; elif [ -e "$here" ]; then kanna_store_writable "$here"; fi
-  mv "$here.copying" "$here"
+  [ -L "$here" ] && [ "$(readlink "$here")" = "$entry" ] && return 0
+  kanna_remove "$here" && mkdir -p "$(dirname "$here")" && ln -s "$entry" "$here"
 }
 
 kanna_store_refs() {
@@ -122,14 +107,14 @@ kanna_store_prune() {
       *.lock) continue ;;
       *.tmp-*)
         pid="${base##*.tmp-}"
-        kanna_pid_alive "${pid%%.*}" || kanna_store_writable "$entry"
+        kanna_pid_alive "${pid%%.*}" || kanna_remove "$entry"
         continue ;;
     esac
     printf '%s\n' "$refs" | grep -qxF "$entry" && continue
     [ -n "$(find "$entry" -maxdepth 0 -mmin "-$grace" 2>/dev/null)" ] && continue
     kanna_lock_try "$entry.lock" || continue
     echo "==> Pruning $entry: nothing links to it" >&2
-    kanna_store_writable "$entry"
+    kanna_remove "$entry"
     kanna_lock_release "$entry.lock"
   done
 }
@@ -253,10 +238,10 @@ kanna_cargo_seed() {
   from="$entry/$(cat "$entry/seed" 2>/dev/null)"
   [ -f "$entry/seed" ] && [ -d "$from" ] || return 0
   mkdir -p "$(dirname "$here")" || return 1
-  if kanna_clone "$from" "$here.seeding" && chmod -R u+w "$here.seeding"; then
+  if kanna_clone "$from" "$here.seeding"; then
     mv "$here.seeding" "$here"
     echo "==> Started ${here#"$1/"} from the store's $(basename "$entry")" >&2
   else
-    kanna_store_writable "$here.seeding"
+    kanna_remove "$here.seeding"
   fi
 }

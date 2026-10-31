@@ -1,6 +1,6 @@
 # Build Store
 
-**Status:** built · **Tested:** `scripts/test-store.sh` (locking, publish, pruning, eviction against a fake `ROOT`), `scripts/test-teardown.sh` · **Builds on:** [build targets](build-targets.md), [build speed](build-speed.md) · **Why:** each task's build folder on the build volume grew to ~17 GB, and one merge-main round rebuilt ~40 of them, filling the external SSD to 98%
+**Status:** built · **Tested:** `scripts/test-store.sh` (locking, publish, pruning, eviction against a fake `ROOT`; the main checkout's links, a read-only folder replaced by a link, the internal store with the volume unplugged, and `kanna_clone` from another volume, a disk image, and with `cp -c` failing), `scripts/test-teardown.sh` · **Builds on:** [build targets](build-targets.md), [build speed](build-speed.md) · **Why:** each task's build folder on the build volume grew to ~17 GB, and one merge-main round rebuilt ~40 of them, filling the external SSD to 98%
 
 A task worktree's build folder holds only what that task builds itself: one Rust profile and its Swift build. Everything pinned (Zig, Ghostty's source, GhosttyKit, libghostty-vt, and a build of main's Rust dependencies) is built once per pin into a shared, read-only **store** that worktrees link to or clone; Rust dependencies that differ from main's come from a shared compile cache; and build folders are caches that are evicted, least recently used first, when the volume runs low.
 
@@ -54,7 +54,7 @@ flowchart LR
 | Rust | `debug/` 3.6 GB **and** `release/` 4.4 GB | `debug/` only, deps optimised without debug info |
 | Rust dependencies | `release/` borrowed by clone, `debug/` compiled | `debug/` cloned from `_shared/cargo` (shared blocks); the rest from `_shared/sccache` |
 
-The main checkout keeps its `release/` profile and real, internal copies of GhosttyKit and libghostty-vt (cloned from the store), so its app still builds with the volume unplugged ([build targets](build-targets.md#2-rules)).
+The main checkout keeps its `release/` profile and links to the store's GhosttyKit and libghostty-vt like a worktree; with the volume unplugged it builds them from scratch into its own `target/_shared` ([build targets](build-targets.md#2-rules)).
 
 ## 2. The store
 
@@ -87,7 +87,7 @@ sequenceDiagram
 
 - **Built once, under a lock:** `kanna_store NAME KEY BUILDER` in `scripts/store.sh` returns the entry, building it first if it's missing. The lock is a folder, `KEY.lock`, made with `mkdir` (atomic) and holding the builder's pid. Others wait for it, saying who they wait for, then look again. A lock whose pid is dead is stale and is taken over.
 - **Atomic publish:** the builder writes `KEY.tmp-PID`, its contents are made read-only, one `mv` makes it `KEY`, then `KEY` itself is made read-only (macOS won't rename a folder you can't write). A failed build removes its temp folder and the lock and exits non-zero; nothing half-built is ever at `KEY`.
-- **Worktrees link** `target/ghosttykit` and `target/ghostty-vt/TRIPLE` to their entries, and `touch` an entry each time they use it. A worktree with no profile folder yet **clones** a `cargo` seed into it (`cp -c`: APFS shares the blocks until cargo rewrites a file), as the old `release/` borrowing did; cargo rewrites build scripts' `OUT_DIR` paths when the folder moves, and compiles our crates from the worktree's source. The main checkout clones them into real folders instead, marked with the key. Zig and the source aren't linked: only the store's builders use them.
+- **Checkouts link** `target/ghosttykit` and `target/ghostty-vt/TRIPLE` to their entries, the main checkout too,, and `touch` an entry each time they use it. A worktree with no profile folder yet **clones** a `cargo` seed into it (`cp -c`: APFS shares the blocks until cargo rewrites a file; `kanna_clone` in `scripts/env.sh` falls back to `cp -R -p` when it can't clone, as across volumes, where `cp -c` leaves read-only folders it removes first, and makes the clone writable), as the old `release/` borrowing did; cargo rewrites build scripts' `OUT_DIR` paths when the folder moves, and compiles our crates from the worktree's source. A link replaces whatever is there, a read-only folder included: removals go through `kanna_remove`, which makes the tree writable first. Zig and the source aren't linked: only the store's builders use them.
 - **Seeds are built only for main's `Cargo.lock`:** when the worktree's `Cargo.lock`, `Cargo.toml` and `.cargo/config.toml` are the main checkout's committed ones, a missing seed is built (both `cargo build` and `cargo test --no-run`, so the app and the tests start warm). A worktree that changed them clones the newest seed of its family instead, and cargo recompiles only what differs, through the compile cache. So a task that adds a dependency costs no store build, and a merge to main costs one.
 - **Read-only:** entries are `a-w`, so a build can't change what other worktrees use. A worktree that builds Ghostty from its own source (`GHOSTTY_SOURCE_DIR`) builds into its own `target/`, as before.
 - **Pruned** in the eviction pass ([§5](#5-eviction)): an entry no link under `ROOT` points to and unused for a day is deleted, under its lock. `sccache/` is never pruned; it bounds itself.
@@ -105,7 +105,7 @@ sequenceDiagram
 - **The `dev` profile is tuned** in `Cargo.toml` so one profile serves both: our crates at `opt-level = 1` with line tables, dependencies at `opt-level = 3` with no debug info. Debug assertions stay on, which the keeper's test hooks need.
 - **`Package.swift`** links `libkanna_ffi.a` from `KANNA_RUST_DIR`, or else `target/debug` in a worktree and `target/release` in the main checkout, so `swift test` works in both.
 - **A fresh worktree's profile folder** starts as a clone of the store's `cargo` seed ([§2](#2-the-store)), not of the main checkout's `release/`, which is another profile.
-- **Release builds stay clean:** `release.sh` sets `KANNA_RUST_PROFILE=release` and an empty `RUSTC_WRAPPER` (which overrides `.cargo/config.toml`), so every crate is compiled by `rustc` itself, and builds in the main checkout, whose Ghostty copies are real folders.
+- **Release builds stay clean:** `release.sh` sets `KANNA_RUST_PROFILE=release` and an empty `RUSTC_WRAPPER` (which overrides `.cargo/config.toml`), so every crate is compiled by `rustc` itself, and builds in the main checkout, linking Ghostty from the store like any build; GhosttyKit and libghostty-vt are static, so the app it makes needs nothing from the volume.
 
 ## 4. The compile cache
 
@@ -137,7 +137,7 @@ flowchart TD
     A["build starts"] --> P["prune _shared"]
     P --> B{"free on the volume<br/>below free (100 GB)?"}
     B -->|no| Z["build"]
-    B -->|yes| C["candidates: ROOT/REPO/* except _main, .offline,<br/>_* and this worktree's"]
+    B -->|yes| C["candidates: ROOT/REPO/* except _main,<br/>_* and this worktree's"]
     C --> D["drop running tasks': a process's cwd in<br/>the worktree, or its command naming it"]
     D --> E["oldest .used first; folders of worktrees<br/>that no longer exist before all"]
     E --> F["rm -rf one, then check free again"]
@@ -147,7 +147,7 @@ flowchart TD
 - **Why at build start:** that's when space is used, on every build, not once per task. Teardown only ever frees the task's own folder, and only on Done. Setup runs once per worktree, so a long task that builds a lot never triggers it. The daemon doesn't know a repo's build layout ([task scripts](task-scripts.md#5-rejected)); this repo's scripts do. The check is one `df` when there's room.
 - **Running** means some process has its working folder in the worktree, or names the worktree or its build folder in its command line (an agent, a terminal, a `--bg` app). A stopped task has no processes: its terminals are hung up. If `lsof` or `ps` fails, nothing is evicted.
 - **Last used** is `ROOT/REPO/WORKTREE/.used`, touched by every build.
-- **Never evicted:** `_main`, `.offline`, `_shared` (only pruned), the building worktree's own folder, a running task's.
+- **Never evicted:** `_main`, `_shared` (only pruned), the building worktree's own folder, a running task's.
 - **One at a time:** eviction holds `ROOT/_shared/.evict.lock`; a build that finds it taken skips eviction.
 - **An evicted worktree rebuilds** on its next build: its `target/` link is left dangling, and `kanna_targets` makes the folder again.
 - **`free`** sets the threshold in GB: 100 in the committed `build.json`, overridden by the main checkout's `build.local.json` ([build targets](build-targets.md#1-where-target-lives)). Without either, nothing is evicted. It's this repo's, not one of Kanna's settings.
