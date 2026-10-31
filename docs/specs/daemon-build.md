@@ -31,8 +31,8 @@ sequenceDiagram
     Note over D1: no app attached, its build is B1
     D1->>A: ok: false, other_build
     Note over D1: stops as on SIGTERM:<br/>saves terminals.json and the screens
-    D1--xA: link closes
-    Note over A: no 2 s grace: starts Helpers/kanna-daemon<br/>as soon as nothing answers
+    D1--xA: link closes (with the listener, which the app keeps)
+    Note over A: starts Helpers/kanna-daemon at once,<br/>on the socket it keeps
     A->>D2: spawn (waits for daemon.lock)
     D2->>K: adopt (same ptys, same pids)
     A->>D2: app.hello {build: B2}
@@ -41,7 +41,7 @@ sequenceDiagram
 
 - **Only with no app attached.** A second app gets `app_attached` as before, whatever its build, so two running apps of different builds can't take turns stopping each other's daemon.
 - **A hello without `build`** (an older app, the test apps) is accepted, as before.
-- **The app** answers `other_build` by retrying at once rather than backing off, and starts its daemon without the grace it gives a daemon restarted on purpose; at most one start every 10 s still holds, so an app whose bundle changed under it can't loop.
+- **The app** answers `other_build` by retrying at once rather than backing off, and starts its daemon at once on the socket the refusal handed it ([daemon socket](daemon-socket.md)); at most one start every 10 s still holds, so an app whose bundle changed under it can't loop.
 
 ## 3. The CLI meets another build
 

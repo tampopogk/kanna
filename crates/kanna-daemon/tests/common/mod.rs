@@ -59,6 +59,26 @@ impl Instance {
         wait_for("the daemon's socket", || UnixStream::connect(self.socket()).is_ok());
     }
 
+    pub fn start_on(&mut self, listener: std::os::fd::OwnedFd) {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        let fd = listener.as_raw_fd();
+        let mut command = daemon_command(&self.dir, &self.env);
+        command.env("KANNA_LISTEN_FD", "3");
+        unsafe {
+            command.pre_exec(move || {
+                if fd == 3 {
+                    libc::fcntl(3, libc::F_SETFD, 0);
+                } else if libc::dup2(fd, 3) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        self.daemon = command.spawn().unwrap();
+        drop(listener);
+    }
+
     pub fn restart(&mut self, signal: i32) {
         self.stop(signal);
         self.start_again();
@@ -145,6 +165,10 @@ fn stop_process(pid: i32) {
 }
 
 fn spawn_daemon(dir: &Path, env: &[(String, String)]) -> Child {
+    daemon_command(dir, env).spawn().unwrap()
+}
+
+fn daemon_command(dir: &Path, env: &[(String, String)]) -> Command {
     let log = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("daemon.log")).unwrap();
     let mut command = Command::new(DAEMON);
     command.env_clear();
@@ -168,7 +192,7 @@ fn spawn_daemon(dir: &Path, env: &[(String, String)]) -> Child {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(log);
-    command.spawn().unwrap()
+    command
 }
 
 pub struct App {
