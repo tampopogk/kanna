@@ -209,7 +209,7 @@ fn kmux_names(env: Env) -> Vec<String> {
 pub fn launch_command(target: &Target, env: Env) -> Command {
     let mut open = Command::new("/usr/bin/open");
     open.arg("-n");
-    if target.background {
+    if target.background || env("KANNA_TERMINAL").is_some_and(|t| !t.is_empty()) {
         open.arg("-g");
     }
     open.arg("--env").arg(format!("KANNA_SOCKET={}", target.socket.display()));
@@ -468,6 +468,8 @@ mod tests {
             _ => None,
         });
         assert_eq!(app, ["-n", "--env", "KANNA_SOCKET=/tmp/d/kanna.sock", "--env", "KANNA_STATE_DIR=/tmp/d", "--env", "KANNA_START_DIR=/work/app", "-a", "/x/Kanna.app", "--args", "--fresh"]);
+        let inside = args(&Target { background: false, ..target.clone() }, &|name| (name == "KANNA_TERMINAL").then(|| "term-3".into()));
+        assert_eq!(inside, ["-n", "-g", "--env", "KANNA_SOCKET=/tmp/d/kanna.sock", "-a", "/r/kanna/target/Kanna.app"]);
     }
 
     #[test]
