@@ -3231,7 +3231,7 @@ print("never")' "$KANNA_SOCKET" "$(tid 1)")"
 
 scenario perf_intervals M4
 perf_intervals() {
-  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude" card perf
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude" card shown i
   mkdir -p "$repo" "${agent%/*}" && ln -s "$mock_agent" "$agent" || { echo "perf_intervals line $LINENO"; return 1; }
   git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "perf_intervals line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
@@ -3247,13 +3247,24 @@ for want in sys.argv[1:]:
     if want not in names: print("missing", want, sorted(names)); sys.exit(1)
     print(want, names[want]["last"], "ms")' "$@"; }
   check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { echo "perf_intervals: no planning terminal"; return 1; }
-  (cd "$repo" && kanna task new "Timed" "say hi" --agent "$agent") >/dev/null || { echo "perf_intervals line $LINENO"; return 1; }
-  check wait_for 5 eval '[[ "$(desk shelf)" == "[\"$(tid 1)\"]" ]]' || { desk shelf; return 1; }
+  (cd "$repo" && kanna task new "Timed" "say hi" --agent "$agent") >/dev/null && kanna task start $(tid 1) >/dev/null || { echo "perf_intervals line $LINENO"; return 1; }
+  check wait_for 5 shows "Timed" "say hi" || { echo "perf_intervals: the task didn't start"; return 1; }
+  kanna task stop $(tid 1) >/dev/null && check wait_for 5 is "Timed" state exited || { echo "perf_intervals: the task didn't stop"; return 1; }
+  for i in $(seq 2 50); do
+    (cd "$repo" && kanna task new "Shelf task $i" "$(python3 -c 'import sys
+n = int(sys.argv[1])
+words = "the daemon moves a stopped task to the desk and its card shows at once while the agent and tabs start behind it".split()
+print(" ".join(words[(n + k) % len(words)] for k in range(450)))' "$i")") >/dev/null || { echo "perf_intervals line $LINENO"; return 1; }
+  done
+  check wait_for 10 eval '(( $(desk shelf | python3 -c "import json, sys; print(len(json.load(sys.stdin)))") == 50 ))' || { desk shelf; return 1; }
+  sleep 1
   raw '{"id":1,"cmd":"debug.perf","args":{"reset":true}}' >/dev/null
   raw '{"id":1,"cmd":"debug.click","args":{"shelf":"'"$(tid 1)"'","window":"d1"}}' >/dev/null
   check wait_for 5 perf click.pick.wait click.pick.sent click.pick.shown message.layout refresh render DeskView.lay command.debug.click >/dev/null \
     || { echo "perf_intervals: the click's intervals weren't recorded"; perf click.pick.shown; return 1; }
   echo "perf_intervals: $(perf click.pick.wait click.pick.sent click.pick.shown | tr '\n' ' ')"
+  shown="$(perf click.pick.shown | awk '{print $2}')"
+  python3 -c 'import sys; sys.exit(float(sys.argv[1]) > 100)' "$shown" || { echo "perf_intervals: with 50 tasks on the Shelf the card showed ${shown}ms after the click"; raw '{"id":1,"cmd":"debug.perf"}'; return 1; }
   card="$(desk tasks.0.task)"
   raw '{"id":1,"cmd":"debug.click","args":{"task":"'"$card"'","window":"d1"}}' >/dev/null
   check wait_for 5 perf click.activate.shown >/dev/null || { echo "perf_intervals: pulling it wasn't timed"; perf click.activate.shown; return 1; }

@@ -137,16 +137,19 @@ final class DaemonConnection: @unchecked Sendable {
     }
 
     private func readLines(_ socket: Int32, generation: Int) {
-        var buffer = Data()
+        var buffer = [UInt8]()
         var chunk = [UInt8](repeating: 0, count: 65536)
         while true {
             let count = read(socket, &chunk, chunk.count)
             if count < 0 && errno == EINTR { continue }
             if count <= 0 { return }
-            buffer.append(chunk, count: count)
-            while let newline = buffer.firstIndex(of: UInt8(ascii: "\n")) {
-                let line = Data(buffer[buffer.startIndex..<newline])
-                buffer.removeSubrange(buffer.startIndex...newline)
+            var searched = buffer.count
+            buffer.append(contentsOf: chunk[0..<count])
+            var start = 0
+            while let newline = Self.newline(in: buffer, from: searched) {
+                let line = Data(buffer[start..<newline])
+                start = newline + 1
+                searched = start
                 guard let message = try? JSON.parse(line) else {
                     FileHandle.standardError.write(Data("kanna: the daemon sent a line that isn't JSON\n".utf8))
                     continue
@@ -156,6 +159,14 @@ final class DaemonConnection: @unchecked Sendable {
                 let received = received
                 DispatchQueue.main.async { MainActor.assumeIsolated { received(message, delivery) } }
             }
+            if start > 0 { buffer.removeFirst(start) }
+        }
+    }
+
+    private static func newline(in buffer: [UInt8], from offset: Int) -> Int? {
+        guard offset < buffer.count else { return nil }
+        return buffer.withUnsafeBufferPointer { bytes in
+            memchr(bytes.baseAddress! + offset, Int32(UInt8(ascii: "\n")), bytes.count - offset).map { UnsafeRawPointer(bytes.baseAddress!).distance(to: $0) }
         }
     }
 
