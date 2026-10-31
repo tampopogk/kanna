@@ -80,7 +80,7 @@ Run the `kanna` on your PATH, from this terminal, as it is: its `KANNA_*` variab
 
 | Command | Does |
 |---|---|
-| `kanna task list [QUERY] [--all] [--include-done]` | This repo's tasks, the Desk's then the Shelf's under headings: ID, name, state (working, idle, needs you, stopped, merged when its branch is in main, replied when its message to you waits, or blocked, with what it waits for by name), and an agent other than the default; `--all`: every repo's, naming the others; QUERY keeps those whose name or first message has every word; `--include-done`, only with QUERY, adds the done ones that match under Done, newest first |
+| `kanna task list [QUERY] [--all] [--include-done]` | This repo's tasks, the Desk's then the Shelf's under headings: ID, name, state (working, idle, needs you, stopped, merged when its branch is in main, replied when its message to you waits, or blocked, with what it waits for by name), and an agent other than the default; `--all`: every repo's, naming the others; QUERY keeps those whose name or first message has every word; `--include-done` adds done tasks under Done, newest first: with QUERY every one that matches, without it the 5 done last |
 | `kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...]` | Add a task to this repo's Shelf; `--agent`: run this agent (`codex`, …) instead of `tasks.agent`; `--after`: blocked until those tasks are done |
 | `kanna task edit TASK --after TASK,...\|none` | Change what a Shelf task waits for; `none` unblocks it |
 | `kanna task name TASK NAME` | Rename a task, running or waiting on the Shelf; a Shelf task starts with the new name |

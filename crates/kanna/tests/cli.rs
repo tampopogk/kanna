@@ -334,7 +334,17 @@ fn task_list_done_also_lists_done_tasks_and_searches_them() {
     kanna(&["task", "done", &rate]).ok();
     let open = kanna(&["task", "list"]).ok();
     assert!(open.contains("Diff viewer") && !open.contains("Send presses") && !open.contains("Done"), "{open}");
-    kanna(&["task", "list", "--include-done"]).fails(2, "--include-done needs a QUERY");
+    for n in 1..=5 {
+        let old = made(&format!("Old {n}"), "an older one");
+        kanna(&["task", "done", &old]).ok();
+    }
+    let recent = kanna(&["task", "list", "--include-done"]).ok();
+    let recent = recent.split("\n\nDone\n").nth(1).unwrap_or_else(|| panic!("a Done heading last: {recent}"));
+    let names: Vec<&str> = recent.lines().map(|l| l.split("  ").nth(1).unwrap_or("").trim()).collect();
+    assert_eq!(names, ["Old 5", "Old 4", "Old 3", "Old 2", "Old 1", ""], "the 5 done last, newest first: {recent}");
+    assert_eq!(recent.lines().last(), Some("… 2 more done: add words to search them"), "{recent}");
+    let json = kanna(&["--json", "task", "list", "--include-done"]).json();
+    assert_eq!((json["done"].as_array().unwrap().len(), json["moreDone"].clone()), (5, json!(2)), "{json}");
     let all = kanna(&["task", "list", "fix", "--include-done"]).ok();
     let done = all.split("\n\nDone\n").nth(1).unwrap_or_else(|| panic!("a Done heading last: {all}"));
     assert!(all.split("\n\nDone\n").next().unwrap().contains("Diff viewer"), "{all}");
@@ -351,6 +361,7 @@ fn task_list_done_also_lists_done_tasks_and_searches_them() {
     assert_eq!(json["done"].as_array().unwrap().iter().map(|t| t["name"].clone()).collect::<Vec<_>>(), [json!("Rate limiting")]);
     assert!(json["done"][0]["doneAt"].is_number() && json["shelf"] == json!([]), "{json}");
     assert!(kanna(&["--json", "task", "list"]).json().get("done").is_none(), "no done key without --include-done");
+    assert!(kanna(&["--json", "task", "list", "fix"]).json().get("done").is_none(), "nor with a QUERY alone");
 }
 
 #[test]

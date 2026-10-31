@@ -348,7 +348,7 @@ pub static COMMANDS: &[Command] = &[
         options: &[
             ("--agent CMD", "new: the agent to start (default: claude)."),
             ("--after TASK,...|none", "new, edit: the tasks it waits for; it can't start until they're all done. edit: replaces the list, and none clears it."),
-            ("--include-done", "list, with QUERY: also the done tasks that match, newest first."),
+            ("--include-done", "list: also the done tasks, newest first: with QUERY, every one that matches; without, the 5 done last."),
             ("--keep", "done: end it without the repo's tasks.teardown, keeping its worktree and branch."),
             ("--all", "list: every repo's tasks, not only the one you're in."),
         ],
@@ -365,6 +365,7 @@ pub static COMMANDS: &[Command] = &[
             ("kanna task list --all", "Every repo's tasks, naming the repo of those that aren't this one's."),
             ("kanna task list resume agent", "Only the tasks with both words in their name or first message."),
             ("kanna task list send enter --include-done", "Also the done tasks with both words, to see if the work was done already."),
+            ("kanna task list --include-done", "Also the 5 tasks done last."),
             ("kanna task park agent", "Show the Desk view of the Desk the task docked as agent is active on; it stays active. From its terminal, leave out agent."),
             ("kanna task activate agent", "Make the task docked as agent the active one on your Desk (the one your terminal is on), else on its project's Desk."),
             ("kanna task name agent \"Tab bar light mode\"", "Name the task docked as agent; from its terminal, leave out agent."),
@@ -401,14 +402,11 @@ pub static COMMANDS: &[Command] = &[
                     if let Ok(repo) = repo_here() {
                         out["repo"] = json!(repo);
                     }
-                    let done = args.flag("--include-done");
-                    match args.rest() {
-                        Some(query) => out["query"] = json!(query),
-                        None if done => return Err(usage("task", "--include-done needs a QUERY: kanna task list WORDS --include-done")),
-                        None => {}
-                    }
-                    if done {
+                    if args.flag("--include-done") {
                         out["done"] = json!(true);
+                    }
+                    if let Some(query) = args.rest() {
+                        out["query"] = json!(query);
                     }
                 }
                 "new" => {

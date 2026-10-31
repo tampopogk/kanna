@@ -206,8 +206,9 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
                 reply["done"] = found["done"].clone();
             }
         }
-        if let Some(query) = request["query"].as_str() {
-            output::keep_matching(&mut reply, query);
+        match request["query"].as_str() {
+            Some(query) => output::keep_matching(&mut reply, query),
+            None => output::keep_recent_done(&mut reply),
         }
     }
     if let (true, Some(pane)) = (command.name == "workspace", request["pane"].as_str()) {

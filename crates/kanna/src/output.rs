@@ -228,7 +228,8 @@ pub fn task(request: &Value, reply: &Value) -> String {
                 (true, false) => Some(format!("{head}\n(empty)")),
                 (false, _) => Some(std::iter::once(head.to_string()).chain(rows.iter().map(line)).collect::<Vec<_>>().join("\n")),
             };
-            let finished = Some(&finished).filter(|_| request["done"] == true).and_then(|rows| section("Done", rows));
+            let more = reply["moreDone"].as_u64().map(|n| format!("\n… {n} more done: add words to search them"));
+            let finished = Some(&finished).filter(|_| request["done"] == true).and_then(|rows| section("Done", rows)).map(|s| s + more.as_deref().unwrap_or(""));
             [section("Desk", &desk), section("Shelf", &shelf), finished].into_iter().flatten().collect::<Vec<_>>().join("\n\n")
         }
         Some("park") if reply["parked"] == Value::Bool(true) => format!("parked {id}: {} shows the Desk view, and {id} stays active", reply["desk"].as_str().unwrap_or("its Desk")),
@@ -357,6 +358,17 @@ pub fn name_out(reply: &mut Value, out: &Value) {
     }
 }
 
+pub const RECENT_DONE: usize = 5;
+
+pub fn keep_recent_done(reply: &mut Value) {
+    let Some(done) = reply.get_mut("done").and_then(Value::as_array_mut) else { return };
+    let more = done.len().saturating_sub(RECENT_DONE);
+    done.truncate(RECENT_DONE);
+    if more > 0 {
+        reply["moreDone"] = more.into();
+    }
+}
+
 pub fn keep_named(reply: &mut Value) {
     if let Some(tasks) = reply["tasks"].as_array_mut() {
         tasks.retain(|task| task["task"].is_string());
@@ -406,7 +418,7 @@ pub fn keep_matching(reply: &mut Value, query: &str) {
         words.iter().all(|word| text.contains(word.as_str()))
     };
     for list in ["tasks", "shelf", "done"] {
-        if let Some(tasks) = reply[list].as_array_mut() {
+        if let Some(tasks) = reply.get_mut(list).and_then(Value::as_array_mut) {
             tasks.retain(matches);
         }
     }

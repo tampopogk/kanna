@@ -33,4 +33,4 @@ kanna task list resume agent
 
 ## Checked by
 
-e2e `shelf_search`: ⌘F from the planning terminal, filtering by name and by a first message's words in any case, no match, esc twice, ↑↓ at the ends, ↩ starting the selected task and clearing the search, `kanna task list QUERY`, and snapshots in light and dark; the CLI's own test for QUERY and `--json`, and for `--include-done`, refused without QUERY.
+e2e `shelf_search`: ⌘F from the planning terminal, filtering by name and by a first message's words in any case, no match, esc twice, ↑↓ at the ends, ↩ starting the selected task and clearing the search, `kanna task list QUERY`, and snapshots in light and dark; the CLI's own test for QUERY and `--json`, and for `--include-done` with QUERY and without (the 5 done last).
