@@ -188,7 +188,7 @@ fn run() -> Result<Option<PathBuf>, String> {
     let socket_path = socket.to_string_lossy().into_owned();
     let (_lock, waited) = lock(&state_dir)?;
     let marker = state_dir.join(SHUTDOWN_MARKER);
-    if waited && marker.exists() {
+    if marker.exists() && (waited || started_before(&marker)) {
         log!("kanna-daemon: the daemon before it shut this Kanna down while it waited; not starting");
         return Ok(None);
     }
@@ -683,6 +683,9 @@ fn run() -> Result<Option<PathBuf>, String> {
     let _ = std::fs::remove_file(&pid_file);
     std::mem::forget(rules_updater);
     server.stop();
+    if shutdown.is_some() {
+        let _ = std::fs::File::options().write(true).open(state_dir.join(SHUTDOWN_MARKER)).and_then(|file| file.set_modified(std::time::SystemTime::now()));
+    }
     match failure {
         Some(reason) => Err(format!("{reason}; stopping")),
         None => Ok(restart),
@@ -751,6 +754,11 @@ fn lock(state_dir: &Path) -> Result<(std::fs::File, bool), String> {
         std::thread::sleep(Duration::from_millis(50));
     }
     Ok((file, waited))
+}
+
+fn started_before(file: &Path) -> bool {
+    let since = std::fs::metadata(file).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
+    matches!((lifeline::age(), since), (Some(age), Some(since)) if age > since)
 }
 
 fn signal_set(signals: &[libc::c_int]) -> libc::sigset_t {

@@ -16,7 +16,7 @@ struct DeskOrderTests {
         var keyed: [String] { DeskOrder.byRecency(recent) { needs.contains($0) } }
 
         mutating func press(_ key: Int) {
-            let task = keyed[key - 1]
+            guard let task = DeskOrder.task(keyed, key: key) else { return }
             recent.removeAll { $0 == task }
             recent.insert(active, at: 0)
             active = task
@@ -33,14 +33,30 @@ struct DeskOrderTests {
         #expect(DeskOrder.byAge(tasks, made: \.madeAt).map(\.id) == ["b", "a", "c"])
     }
 
-    @Test func keysNumberTheOthersLeftMostRecentlyFirstWithOnesThatNeedYouAhead() {
+    @Test func commandOneIsTheTaskLeftLastAndCommandTwoTheOneLeftLongestAgoWithOnesThatNeedYouAhead() {
         let desk = Desk(active: "a", recent: ["c", "b", "d"], needs: ["d"])
         #expect(desk.keyed == ["d", "c", "b"])
-        #expect(DeskOrder.keys(desk.keyed) == ["d": "⌘1", "c": "⌘2"])
+        #expect(DeskOrder.task(desk.keyed, key: 1) == "d")
+        #expect(DeskOrder.task(desk.keyed, key: 2) == "b")
+        #expect(DeskOrder.task(desk.keyed, key: 3) == nil)
+        #expect(DeskOrder.keys(desk.keyed) == ["d": "⌘1", "b": "⌘2"])
     }
 
-    @Test func withNoTaskActiveTheThirdHasNoKey() {
-        #expect(DeskOrder.keys(["a", "b", "c"]) == ["a": "⌘1", "b": "⌘2"])
+    @Test func withNoTaskActiveCommandTwoIsTheTaskLeftLongestAgo() {
+        #expect(DeskOrder.task(["a", "b", "c"], key: 2) == "c")
+        #expect(DeskOrder.keys(["a", "b", "c"]) == ["a": "⌘1", "c": "⌘2"])
+    }
+
+    @Test func withOneOtherTaskBothKeysGoToItAndItShowsCommandOne() {
+        #expect(DeskOrder.task(["b"], key: 1) == "b")
+        #expect(DeskOrder.task(["b"], key: 2) == "b")
+        #expect(DeskOrder.keys(["b"]) == ["b": "⌘1"])
+    }
+
+    @Test func withNoOtherTaskNeitherKeyDoesAnything() {
+        #expect(DeskOrder.task([String](), key: 1) == nil)
+        #expect(DeskOrder.task([String](), key: 2) == nil)
+        #expect(DeskOrder.keys([]) == [:])
     }
 
     @Test func commandOneTwiceGoesBackToTheFirstTask() {
@@ -59,5 +75,15 @@ struct DeskOrderTests {
             seen.append(desk.active)
         }
         #expect(seen == ["c", "b", "a"])
+    }
+
+    @Test func withTwoTasksCommandTwoGoesBackAndForth() {
+        var desk = Desk(active: "a", recent: ["b"])
+        var seen: [String] = []
+        for _ in 0..<3 {
+            desk.press(2)
+            seen.append(desk.active)
+        }
+        #expect(seen == ["b", "a", "b"])
     }
 }
