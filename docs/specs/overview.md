@@ -117,7 +117,7 @@ The mapping between the pane and the thumbnail is `OverviewGeometry`, a value wi
 - **Glyphs:** each character is a block one point wide in its run's colour, letters and digits stronger than punctuation, as the mockup draws; spaces are gaps, so indentation and line shapes read as in VS Code.
 - **Side panels:** the overview's rule joins the diff pane's `DiffAside` as one rule for every pane's side panels, moved to `KannaOverview` so the code pane (overview only) and the markdown pane (with its comments list) use it too.
 - **The setting** is the app's (`Physical`, beside the text sizes, read into `OverviewSetting.enabled` at launch); View › Overview is a checked menu item, and every pane listens for `OverviewSetting.changed` and lays itself out again.
-- **Find hits in the diff pane** need the matches, which NSTextView's own find bar keeps to itself, so each diff column owns an `NSTextFinder`, as the code pane does, and draws its matches.
+- **Find hits in the diff pane** need the matches, which NSTextView's own find bar keeps to itself, so each diff column owns an `NSTextFinder`, as the code and markdown panes do, and draws its matches; they share one finder client, `TextFinderClient`.
 - **Checks:** `swift test` for `OverviewLayout` and the side-panel rule (fits, the 80-column cutoff at several font sizes, the list giving way first, and a sweep from wide to narrow that only ever hides) and `OverviewGeometry` (click to centre, drag across a short and a tall file, the marks column's mapping); e2e: the code and diff scenarios in `scripts/e2e-kanna.sh` read `overview` from `debug.code` and `debug.diff` (shown, box), scroll and read the box again, narrow the pane and see it hide, and snapshot it light and dark.
 
 ## 6. Glossary

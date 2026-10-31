@@ -95,6 +95,11 @@ final class PaneViews {
         return view.terminal ?? contents.keyView(id)
     }
 
+    func isKeyView(_ responder: NSResponder?) -> Bool {
+        guard let responder else { return false }
+        return views.contains { id, view in view.terminal === responder || contents.keyViews(id).contains { $0 === responder } }
+    }
+
     func exited(_ id: String, code: Int32) { views[id]?.message = "exited (\(code))" }
     func restarted(_ id: String) { views[id]?.message = nil }
     func report(_ id: String, state: String?, error: String?) {

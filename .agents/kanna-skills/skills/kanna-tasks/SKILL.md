@@ -15,6 +15,7 @@ A project (a repo) has **one Desk**: its window, which holds up to three of the 
 - `kanna task activate TASK` makes a Desk task the active one; `kanna task park` shows the Desk view (the task stays active). Only when the user asks.
 - Never make another Desk for a project (`--window new`): there's one.
 - **The Desk, Shelf and focus are shared:** the user may change them at the same time as you, so don't assume a change was yours, and don't undo one you didn't make; ask.
+- **Don't search the whole home folder** (`find ~`, `ls ~/*`, `grep -r ~`): macOS asks the user, in Kanna's name, once for every protected folder it walks into (Desktop, Documents, Downloads, Photos, Music, other apps' data). Look where the project or the user points, or ask where something is.
 
 If you've been told you're the Kanna planning agent, you're a window's **planning agent**, not a task: use the `kanna-planning` skill instead, and skip naming a branch.
 
