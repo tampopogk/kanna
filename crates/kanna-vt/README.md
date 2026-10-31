@@ -47,7 +47,7 @@ scripts/build-ghostty-vt.sh x86_64-unknown-linux-gnu  # Linux, cross-built with 
 cargo test -p kanna-vt
 ```
 
-- The script builds libghostty-vt from `kanna_ghostty_source` in `scripts/env.sh` (a clone of the Ghostty fork at `KANNA_GHOSTTY_COMMIT`), with the Zig from `kanna_zig`. It is the same source and commit that `scripts/build-ghosttykit.sh` builds the app's GhosttyKit from. It runs `zig build -Demit-lib-vt=true -Demit-xcframework=false -Doptimize=ReleaseSafe`, adding `-Dtarget=x86_64-linux-gnu -Dcpu=baseline` for Linux.
+- The script builds libghostty-vt into the [build store](../../docs/specs/build-store.md) from `kanna_ghostty_source` in `scripts/env.sh` (a clone of the Ghostty fork at `KANNA_GHOSTTY_COMMIT`), with the Zig from `kanna_zig`, and links `target/ghostty-vt/TRIPLE` to it. It is the same source and commit that `scripts/build-ghosttykit.sh` builds the app's GhosttyKit from. It runs `zig build -Demit-lib-vt=true -Demit-xcframework=false -Doptimize=ReleaseSafe`, adding `-Dtarget=x86_64-linux-gnu -Dcpu=baseline` for Linux.
 - It installs `include/`, `lib/libghostty-vt.a` and `ghostty.rev` (the commit) into `target/ghostty-vt/<rust target>/`.
 - `build.rs` links that library statically. It refuses to build if `ghostty.rev` isn't the commit `scripts/env.sh` pins, so the daemon's snapshots always come from the app's Ghostty. The snapshot format makes no compatibility promise between commits. To move Ghostty, change the pin in `env.sh` and rebuild both.
 - If the library is missing for this machine, the build stops and says which script to run. For another target, `cargo check` still works (it only warns), since checking never links.

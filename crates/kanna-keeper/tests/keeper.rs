@@ -438,6 +438,22 @@ fn a_keeper_started_with_its_signals_blocked_still_stops_on_sigterm() {
 }
 
 #[test]
+fn a_keeper_stops_its_ptys_and_exits_when_its_owner_exits() {
+    let mut owner = KilledOnDrop(Command::new("/bin/sleep").arg("600").stdin(Stdio::null()).spawn().unwrap());
+    let mut f = Fixture::with(&[("KANNA_E2E_OWNER", &owner.0.id().to_string())]);
+    let mut c = f.client();
+    let pty = c.spawn(&SpawnRequest::command("t1", "echo owned; sleep 600")).unwrap();
+    read_until(&pty.master, "owned");
+    drop(c);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!f.keeper_exited());
+    let _ = owner.0.kill();
+    let _ = owner.0.wait();
+    wait_for("the keeper to exit", || f.keeper_exited());
+    assert!(!alive(pty.pid) && !f.socket().exists());
+}
+
+#[test]
 fn a_request_to_a_keeper_that_doesnt_answer_times_out() {
     let dir = private_dir();
     let socket = dir.join("mute.sock");

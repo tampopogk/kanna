@@ -30,7 +30,7 @@ enum DiffTheme {
         }
     }
 
-    static func sans(size: CGFloat) -> NSFont { NSFont.systemFont(ofSize: size - 1) }
+    static func sans(size: CGFloat) -> NSFont { CodeTheme.sans(size: size - 1) }
 
     private static func color(dark: (UInt32, CGFloat), light: (UInt32, CGFloat)) -> NSColor {
         NSColor(name: nil) { appearance in
