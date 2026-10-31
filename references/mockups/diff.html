@@ -81,6 +81,7 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
 .live { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .live i { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
 .live.busy i { background: var(--accent); animation: pulse 1s infinite; }
+.changed { color: var(--accent); font-weight: 600; font-size: 11.5px; text-decoration: underline; cursor: pointer; white-space: nowrap; }
 @keyframes pulse { 50% { opacity: .3; } }
 
 .dbody { flex: 1; min-height: 0; display: flex; }
@@ -161,7 +162,7 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
 <main>
   <div class="intro">
     <h1>Diff viewer: what the task changed, as a tab beside its agent</h1>
-    <p><code>kanna open diff [ARGS]</code> opens a <b>diff pane</b> showing what <code>git diff [ARGS]</code> shows, in the task's worktree, file by file, highlighted. It takes git's arguments as git does: no arguments is what isn't staged; <code>--merge-base main</code> is everything the task changed since it left <code>main</code>, committed or not; <code>--staged</code>, <code>main...HEAD</code>, <code>-- PATH</code> as in git. It follows the worktree: when the agent edits or commits, the pane re-diffs and marks what moved. <b>Split</b> shows old and new side by side. Read-only: you review, select, copy, and open a file in a code pane.</p>
+    <p><code>kanna open diff [ARGS]</code> opens a <b>diff pane</b> showing what <code>git diff [ARGS]</code> shows, in the task's worktree, file by file, highlighted. It takes git's arguments as git does: no arguments is what isn't staged; <code>--merge-base main</code> is everything the task changed since it left <code>main</code>, committed or not; <code>--staged</code>, <code>main...HEAD</code>, <code>-- PATH</code> as in git. It holds still while you read: when the agent edits or commits, the header says <b>changed</b>, and ⌘R (or clicking it) brings the newer diff in at the same place and marks what moved. <b>Split</b> shows old and new side by side. Read-only: you review, select, copy, and open a file in a code pane.</p>
     <div class="controls">
       <button id="openIt">Agent: kanna open diff --merge-base main</button>
       <button id="openPlain">Agent: kanna open diff</button>
@@ -359,10 +360,18 @@ function wordRange(a, b) {
 }
 
 let state;
-const init = () => ({ open: false, mode: "unified", scope: "branch", list: true, edited: false, committed: false, closed: new Set(), sel: 0, theme: document.documentElement.dataset.theme || "dark" });
+const init = () => ({ open: false, mode: "unified", scope: "branch", list: true, edited: false, committed: false, seen: { edited: false, committed: false }, flash: false, closed: new Set(), sel: 0, theme: document.documentElement.dataset.theme || "dark" });
+const stale = () => state.seen.edited !== state.edited || state.seen.committed !== state.committed;
+const refresh = () => {
+  if (!stale()) return;
+  state.flash = state.edited && !state.seen.edited;
+  state.seen = { edited: state.edited, committed: state.committed };
+  render();
+  setTimeout(() => { state.flash = false; }, 2400);
+};
 state = init();
 
-const files = () => FILES.map(f => f.path === "crates/kanna-mux/src/pane.rs" && state.edited ? { ...f, committed: state.committed, hunks: [...f.hunks, EDIT_HUNK], fresh: !state.committed } : f.st === "A" || f.path.endsWith("Contents.swift") ? { ...f, committed: state.committed } : f)
+const files = () => FILES.map(f => f.path === "crates/kanna-mux/src/pane.rs" && state.seen.edited ? { ...f, committed: state.seen.committed, hunks: [...f.hunks, { ...EDIT_HUNK, fresh: state.flash }], fresh: state.flash } : f.st === "A" || f.path.endsWith("Contents.swift") ? { ...f, committed: state.seen.committed } : f)
   .filter(f => state.scope === "branch" || !f.committed)
   .map(f => state.scope === "uncommitted" && f.path.endsWith("pane.rs") ? { ...f, hunks: [EDIT_HUNK] } : f);
 const count = f => { if (f.big) return [f.big.add, f.big.del]; let a = 0, d = 0; f.hunks.forEach(h => h.lines.forEach(l => { if (l[0] === "+") a++; if (l[0] === "-") d++; })); return [a, d]; };
@@ -423,7 +432,7 @@ function render() {
   const head = `<div class="dhead">
     <span class="what">${what}</span><span class="tot">${fs.length} files · ${ct(tot)}</span>
     <span class="spacer"></span>
-    ${state.busy ? `<span class="live busy"><i></i>updating</span>` : ""}
+    ${stale() ? `<a class="changed" id="changed" title="The worktree changed: ⌘R shows the newer diff">changed</a>` : ""}
     <span class="seg" id="mode"><span data-v="unified" class="${state.mode === "unified" ? "on" : ""}">Unified</span><span data-v="split" class="${state.mode === "split" ? "on" : ""}">Split</span></span>
   </div>`;
   if (!fs.length) { el.innerHTML = head + `<div class="empty"><b>No changes</b>git diff shows nothing: the worktree matches the index.</div>`; bind(); return; }
@@ -481,7 +490,7 @@ document.getElementById("openIt").onclick = () => {
 <span class="m">●</span> That's everything on this branch against main, in
   the Diff tab. The two new files aren't committed yet.
 `);
-  state.open = true; render();
+  state.open = true; state.seen = { edited: state.edited, committed: state.committed }; render();
 };
 document.getElementById("openPlain").onclick = () => {
   say(`
@@ -490,7 +499,7 @@ document.getElementById("openPlain").onclick = () => {
 
 <span class="m">●</span> That's what I haven't staged yet.
 `);
-  state.open = true; state.scope = "uncommitted"; state.sel = 0; render();
+  state.open = true; state.scope = "uncommitted"; state.sel = 0; state.seen = { edited: state.edited, committed: state.committed }; render();
 };
 document.getElementById("edit").onclick = () => {
   if (!state.open) document.getElementById("openIt").click();
@@ -499,8 +508,7 @@ document.getElementById("edit").onclick = () => {
 <span class="g">  Update(</span><span class="c">crates/kanna-mux/src/pane.rs</span><span class="g">)</span>
 <span class="ok">  ⎿ Added 1 line</span>
 `);
-  state.edited = true; state.committed = false; state.busy = true; render();
-  setTimeout(() => { state.busy = false; render(); }, 600);
+  state.edited = true; state.committed = false; render();
 };
 document.getElementById("commit").onclick = () => {
   if (!state.open) document.getElementById("openIt").click();
@@ -520,7 +528,8 @@ if (q.has("light")) state.theme = "light";
 if (q.has("open")) document.getElementById("openIt").click();
 if (q.has("split")) state.mode = "split";
 if (q.has("uncommitted")) state.scope = "uncommitted";
-if (q.has("edited")) { state.edited = true; }
+if (q.has("edited")) { state.edited = true; state.seen.edited = true; }
+if (q.has("changed")) { state.edited = true; }
 let cur = null;
 function navRows() {
   const out = [];
@@ -562,7 +571,9 @@ render = function () {
   if (cur) { const rows = navRows(), i = curIndex(rows); if (i >= 0) rows[i].el.classList.add("cur"); }
   document.querySelectorAll("#scroller .r[data-k]").forEach(r => r.onclick = () => { const rows = navRows(); setCur(rows.findIndex(x => x.el === r), rows); });
 };
+document.addEventListener("click", e => { if (e.target.id === "changed") refresh(); });
 document.addEventListener("keydown", e => {
+  if (state.open && e.metaKey && e.key === "r") { e.preventDefault(); return refresh(); }
   if (!state.open || e.metaKey || e.ctrlKey || e.altKey) return;
   const rows = navRows(); if (!rows.length) return;
   const i = curIndex(rows);

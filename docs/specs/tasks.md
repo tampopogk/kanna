@@ -115,7 +115,7 @@ An agent not in the table starts again with its first message, its conversation 
 
 ## 6. Choosing the agent
 
-- **A task runs the agent it was made with,** kept with it from `kanna task new` to Done: `kanna task list` says which (an AGENT column; `agent` in `--json`). The Desk view's rows don't: their second line is what the task waits for, its first message, its status and when it was made or last active.
+- **A task runs the agent it was made with,** kept with it from `kanna task new` to Done: `kanna task list` names it on rows whose agent isn't the default (`agent` in `--json`). The Desk view's rows don't: their second line is what the task waits for, its first message, its status and when it was made or last active.
 - **By default, the `tasks.agent` setting** ([settings](settings.md#3-keys)): `claude` unless you set it. In your `~/.kanna-v4/config.json` it may be any command (`"codex"`, `"claude --model opus"`); a repo's `.kanna/config.json` may only name an agent Kanna knows (`claude`, `codex`, `copilot`, `opencode`, `agy`), so a repo you clone can't make Kanna run a command of its choosing.
 - **For one task, `--agent`:** `kanna task new NAME MSG --agent codex`. The planning agent and a task's agent add it when you ask for an agent ("do this one in codex"), as the `kanna-planning` and `kanna-tasks` skills say; otherwise they leave it to the setting.
 - **Every agent gets the same:** the first message as it starts, the [skills](agent-setup.md) (Codex reads them from `~/.agents/skills`), [status](agent-status.md) from its screen, `kanna send`, and [resume](#which-agents-resume).
@@ -133,7 +133,7 @@ An agent not in the table starts again with its first message, its conversation 
 | `kanna task stop [TASK]` | End a task's agent and hang up its terminals, leaving it where it is with its tabs as they are (default: the one you're in) |
 | `kanna task pick TASK` | Move a Shelf task to the Desk of the CLI's instance's app, starting it if it's stopped; refused when that Desk holds three of its project's |
 | `kanna task name [TASK] NAME` | Rename a task (default: the one you're in), running or on the Shelf (`task-3f9a`); a Shelf task starts with the new name |
-| `kanna task list [QUERY]` | Every task: ID, name, where (Desk or Shelf), how long ago it was last active ("12m ago"), state (working, idle, needs you, or stopped), agent, repo; with QUERY, only those whose name or first message has every word ([Shelf search](shelf-search.md#cli)) |
+| `kanna task list [QUERY] [--all]` | The caller's repo's tasks (`--all`: every repo's), the Desk's then the Shelf's, under headings: ID, name, state (working, idle, needs you, stopped, blocked, merged, replied), and an agent other than the default, another repo, what it waits for, how long ago a Desk task was last active ([task list](task-list.md)); with QUERY, only those whose name or first message has every word ([Shelf search](shelf-search.md#cli)) |
 | `kanna task shelve [TASK]` | Move a task from the Desk to the Shelf as it is, running or stopped (default: the one you're in); refused on a Shelf task, pointing to `pick` |
 | `kanna task send TASK\|planner TEXT` | Leave a task's agent or the repo's planner a message, typed in when its turn is over ([agent messaging](agent-messaging.md)) |
 | `kanna task messages [TASK]` | A task's messages, or every message |

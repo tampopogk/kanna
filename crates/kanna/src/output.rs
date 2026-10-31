@@ -113,20 +113,22 @@ pub fn closed(args: &Value, reply: &Value) -> String {
 pub fn focused(args: &Value, reply: &Value) -> String {
     let window = reply["window"].as_str().unwrap_or("?");
     let front = !reply["front"].is_null();
+    let shown = if reply["behind"] == true { "behind the app you're in" } else { "in front" };
     let place = match (whose(reply), reply["window"].as_str()) {
         (Some((name, mut tags)), _) => {
             if front {
-                tags.push("in front".into());
+                tags.push(shown.into());
             }
             format!(" in {}", tagged(&name, &tags))
         }
-        (None, Some(window)) if front => format!(" in {window} (in front)"),
+        (None, Some(window)) if front => format!(" in {window} ({shown})"),
         (None, Some(window)) => format!(" in {window}"),
         (None, None) => String::new(),
     };
     match (args["pane"].as_str(), args["tab"].as_str()) {
         (Some(pane), _) => format!("focused {pane}{place}"),
         (_, Some(tab)) => format!("switched to {tab}{place}"),
+        _ if front && reply["behind"] == true => format!("put {window} {shown}"),
         _ if front => format!("brought {window} forward"),
         _ => format!("{window} isn't on screen"),
     }
@@ -189,33 +191,39 @@ pub fn task(request: &Value, reply: &Value) -> String {
             let script = |t: &Value| t["script"].as_str().or_else(|| t["id"].as_str().and_then(|id| reply["script"][id].as_str())).map(String::from);
             let state = |t: &Value| match (t["running"].as_bool(), t["status"].as_str()) {
                 _ if script(t).is_some() => script(t).unwrap_or_default(),
+                (Some(true) | None, Some("needs-you")) => "needs you".to_string(),
+                (Some(true) | None, Some("working")) => "working".to_string(),
+                _ if t["merged"] == true => "merged".to_string(),
+                _ if t["replied"] == true => "replied".to_string(),
+                (Some(false), _) if !ids(&t["waits"]).is_empty() => "blocked".to_string(),
                 (Some(false), _) => "stopped".to_string(),
-                (_, Some("needs-you")) => "needs you".to_string(),
                 (_, Some(status)) if status != "exited" => status.to_string(),
                 _ => "running".to_string(),
             };
-            let agent = |t: &Value| t["agent"].as_str().and_then(|a| a.split_whitespace().next()).map_or(String::new(), |a| a.rsplit('/').next().unwrap_or(a).to_string());
-            let rows: Vec<[String; 6]> = tasks
-                .iter()
-                .map(|t| {
-                    let place = "Desk".to_string();
-                    let parked = t["leftAt"].as_f64().map_or(String::new(), |at| ago(now - at));
-                    [t["task"].as_str().or(t["id"].as_str()).unwrap_or("?").into(), t["name"].as_str().unwrap_or("").into(), place, state(t), agent(t), parked]
-                })
-                .chain(waiting.iter().map(|t| {
-                    let made = t["madeAt"].as_f64().map_or(String::new(), |at| format!("made {} · {}", ago(now - at), tilde(t["repo"].as_str().unwrap_or(""))));
-                    let waits = ids(&t["waits"]);
-                    let (state, made) = match (t["running"].as_bool(), waits.is_empty()) {
-                        (Some(false), false) => ("blocked".to_string(), format!("{made} · waits for {waits}")),
-                        _ => (state(t), made),
-                    };
-                    [t["id"].as_str().unwrap_or("?").into(), t["name"].as_str().unwrap_or("").into(), "Shelf".into(), state, agent(t), made]
-                }))
-                .collect();
-            let head = ["TASK", "NAME", "WHERE", "STATE", "AGENT", ""];
-            let width = |i: usize| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0).max(head[i].len());
-            let line = |r: [&str; 6]| format!("{:w0$}  {:w1$}  {:w2$}  {:w3$}  {:w4$}  {}", r[0], r[1], r[2], r[3], r[4], r[5], w0 = width(0), w1 = width(1), w2 = width(2), w3 = width(3), w4 = width(4)).trim_end().to_string();
-            std::iter::once(line(head)).chain(rows.iter().map(|r| line([&r[0], &r[1], &r[2], &r[3], &r[4], &r[5]]))).collect::<Vec<_>>().join("\n")
+            let program = |command: &str| command.split_whitespace().next().map(|a| a.rsplit('/').next().unwrap_or(a).to_string()).unwrap_or_default();
+            let default = Some(program(reply["agent"].as_str().unwrap_or("claude")));
+            let agent = |t: &Value| Some(program(t["agent"].as_str().unwrap_or(""))).filter(|a| !a.is_empty() && Some(a) != default.as_ref());
+            let here = request["repo"].as_str();
+            let repo = |t: &Value| t["repo"].as_str().filter(|r| here != Some(*r)).map(tilde);
+            let waits = |t: &Value| {
+                let named: Vec<String> = t["waits"].as_array().into_iter().flatten().filter_map(|w| w["name"].as_str().map(|n| format!("\"{n}\"")).or_else(|| w["id"].as_str().map(String::from))).collect();
+                Some(named.join(", ")).filter(|w| !w.is_empty() && t["running"] == false).map(|w| format!("waits for {w}"))
+            };
+            let row = |t: &Value, id: &str, last: Option<String>| -> [String; 4] {
+                let tail: Vec<String> = [agent(t), repo(t), waits(t).or(last)].into_iter().flatten().collect();
+                [id.into(), t["name"].as_str().unwrap_or("").into(), state(t), tail.join("  ")]
+            };
+            let desk: Vec<[String; 4]> = tasks.iter().map(|t| row(t, t["task"].as_str().or(t["id"].as_str()).unwrap_or("?"), t["leftAt"].as_f64().map(|at| ago(now - at)))).collect();
+            let shelf: Vec<[String; 4]> = waiting.iter().map(|t| row(t, t["id"].as_str().unwrap_or("?"), None)).collect();
+            let all: Vec<&[String; 4]> = desk.iter().chain(shelf.iter()).collect();
+            let width = |i: usize| all.iter().map(|r| r[i].chars().count()).max().unwrap_or(0);
+            let line = |r: &[String; 4]| format!("{:w0$}  {:w1$}  {:w2$}  {}", r[0], r[1], r[2], r[3], w0 = width(0), w1 = width(1), w2 = width(2)).trim_end().to_string();
+            let section = |head: &str, rows: &[[String; 4]]| match (rows.is_empty(), request["query"].is_string()) {
+                (true, true) => None,
+                (true, false) => Some(format!("{head}\n(empty)")),
+                (false, _) => Some(std::iter::once(head.to_string()).chain(rows.iter().map(line)).collect::<Vec<_>>().join("\n")),
+            };
+            [section("Desk", &desk), section("Shelf", &shelf)].into_iter().flatten().collect::<Vec<_>>().join("\n\n")
         }
         Some("park") if reply["parked"] == Value::Bool(true) => format!("parked {id}: {} shows the Desk view, and {id} stays active", reply["desk"].as_str().unwrap_or("its Desk")),
         Some("park") => format!("{id} isn't shown: its Desk shows the Desk view already"),
@@ -334,7 +342,18 @@ pub fn name_out(reply: &mut Value, out: &Value) {
     for task in tasks {
         if let Some(known) = out.as_array().into_iter().flatten().find(|o| o["pane"] == task["id"]) {
             task["task"] = known["id"].clone();
+            for key in ["repo", "merged", "replied"] {
+                if let Some(value) = known.get(key) {
+                    task[key] = value.clone();
+                }
+            }
         }
+    }
+}
+
+pub fn keep_named(reply: &mut Value) {
+    if let Some(tasks) = reply["tasks"].as_array_mut() {
+        tasks.retain(|task| task["task"].is_string());
     }
 }
 
@@ -768,6 +787,51 @@ pub fn quiz(request: &Value, reply: &Value) -> String {
     }
 }
 
+fn home_relative(path: &str) -> String {
+    match std::env::var("HOME").ok().filter(|h| !h.is_empty()).and_then(|home| path.strip_prefix(&home).map(String::from)) {
+        Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+        _ => path.to_string(),
+    }
+}
+
+pub fn crashes(args: &Value, reply: &Value) -> String {
+    if args["action"] == "dismiss" {
+        return match reply["dismissed"].as_u64().unwrap_or(0) {
+            1 => "dismissed 1 crash record".into(),
+            n => format!("dismissed {n} crash records"),
+        };
+    }
+    let list = reply["crashes"].as_array().cloned().unwrap_or_default();
+    if list.is_empty() {
+        return if args["all"] == true { "no crash records".into() } else { "no crashes (kanna crashes --all lists the dismissed ones)".into() };
+    }
+    let mut out = vec![];
+    for record in &list {
+        let text = |key: &str| record[key].as_str().unwrap_or("?").to_string();
+        let time = text("time").replace('T', " ");
+        let time = time.split('.').next().unwrap_or(&time).to_string();
+        let build = &record["build"];
+        let commit: String = build["commit"].as_str().unwrap_or("?").chars().take(8).collect();
+        let dismissed = if record["dismissed"] == true { "  (dismissed)" } else { "" };
+        out.push(format!("{time}  {} (pid {}, {} {commit})  {}{dismissed}", text("process"), record["pid"], build["channel"].as_str().unwrap_or("?"), text("reason")));
+        out.push(format!("  record  {}", home_relative(&text("file"))));
+        out.push(format!("  report  {}", record["ips"].as_str().map_or_else(|| "none".to_string(), home_relative)));
+        let stack = record["stack"].as_array().cloned().unwrap_or_default();
+        for (i, frame) in kanna_crash::site(&stack).iter().take(20).enumerate() {
+            let image = frame["image"].as_str().unwrap_or("?");
+            let symbol = frame["symbol"].as_str().unwrap_or("?");
+            out.push(match (frame["offset"].as_u64(), frame["at"].as_str()) {
+                (Some(offset), _) => format!("  {i:<2} {image}  {symbol} + {offset}"),
+                (None, Some(at)) => format!("  {i:<2} {image}  {symbol} ({at})"),
+                (None, None) => format!("  {i:<2} {image}  {symbol}"),
+            });
+        }
+        out.push(String::new());
+    }
+    out.pop();
+    out.join("\n")
+}
+
 pub fn toast(_: &Value, reply: &Value) -> String {
     match reply["toast"].as_str() {
         Some(id) if reply["shown"] == true => format!("raised {id}"),
@@ -896,15 +960,54 @@ mod blocked_tests {
             { "id": "t14", "name": "Release notes", "repo": "/r", "running": false, "waits": [{ "id": "t8" }, { "id": "t12", "pane": "p40" }] },
             { "id": "t15", "name": "Free", "repo": "/r", "running": false, "waits": [] }
         ] });
-        let text = task(&json!({ "action": "list" }), &json!({ "tasks": [], "shelf": listed["shelf"] }));
-        assert!(text.contains("t13   Diff viewer    Shelf  blocked") && text.contains("waits for t12"), "{text}");
-        assert!(text.contains("waits for t8, t12"), "{text}");
-        assert!(text.contains("t15   Free           Shelf  stopped"), "{text}");
+        let text = task(&json!({ "action": "list", "repo": "/r" }), &json!({ "tasks": [], "shelf": listed["shelf"] }));
+        assert!(text.contains("t13  Diff viewer    blocked  waits for t12\n"), "{text}");
+        assert!(text.contains("blocked  waits for t8, t12\n"), "{text}");
+        assert!(text.ends_with("t15  Free           stopped"), "{text}");
         assert_eq!(freed(&listed, "p40"), vec![json!({ "id": "t13", "name": "Diff viewer" })], "by its pane, and only where it was the last blocker");
         assert_eq!(freed(&listed, "t12").len(), 1);
         let done = task(&json!({ "action": "done", "task": "p40" }), &json!({ "closed": ["p40"], "freed": freed(&listed, "p40") }));
         assert_eq!(done, "p40 is done: closed p40\nt13 \"Diff viewer\" can start now: nothing it waits for is left");
         assert_eq!(task(&json!({ "action": "edit" }), &json!({ "task": { "id": "t14", "waits": [] } })), "t14 waits for nothing: it can start");
+    }
+}
+
+#[cfg(test)]
+mod list_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn the_desk_comes_first_then_the_shelf_saying_only_what_matters() {
+        let reply = json!({
+            "agent": "claude",
+            "tasks": [
+                { "id": "p1", "task": "t1", "name": "Fix login", "agent": "/usr/bin/claude --yolo", "running": true, "status": "idle", "merged": true, "repo": "/r" },
+                { "id": "p2", "task": "t2", "name": "Diff viewer", "agent": "claude", "running": true, "status": "working", "merged": true, "repo": "/r" }
+            ],
+            "shelf": [
+                { "id": "t3", "name": "Release notes", "repo": "/r", "agent": "claude", "running": false, "replied": true, "madeAt": 1, "waits": [] },
+                { "id": "t4", "name": "Port", "repo": "/other", "agent": "codex", "running": false, "waits": [] },
+                { "id": "t5", "name": "Later", "repo": "/r", "agent": "claude", "running": false, "waits": [{ "id": "t2", "name": "Diff viewer" }, { "id": "t9" }] }
+            ]
+        });
+        let text = task(&json!({ "action": "list", "repo": "/r" }), &reply);
+        assert_eq!(
+            text,
+            "Desk\nt1  Fix login      merged\nt2  Diff viewer    working\n\nShelf\nt3  Release notes  replied\nt4  Port           stopped  codex  /other\nt5  Later          blocked  waits for \"Diff viewer\", t9"
+        );
+        let empty = task(&json!({ "action": "list" }), &json!({ "tasks": [], "shelf": [reply["shelf"][0].clone()] }));
+        assert!(empty.starts_with("Desk\n(empty)\n\nShelf\nt3"), "{empty}");
+        let found = task(&json!({ "action": "list", "query": "release" }), &json!({ "tasks": [], "shelf": [reply["shelf"][0].clone()] }));
+        assert!(found.starts_with("Shelf\n"), "{found}");
+    }
+
+    #[test]
+    fn a_desk_task_is_named_with_its_repo_and_state_and_other_repos_go() {
+        let mut reply = json!({ "tasks": [{ "id": "p1" }, { "id": "p9" }] });
+        name_out(&mut reply, &json!([{ "id": "t1", "pane": "p1", "repo": "/r", "merged": true, "replied": false }]));
+        keep_named(&mut reply);
+        assert_eq!(reply["tasks"], json!([{ "id": "p1", "task": "t1", "repo": "/r", "merged": true, "replied": false }]));
     }
 }
 
@@ -992,6 +1095,8 @@ mod workspace_tests {
         assert_eq!(opened(&json!({}), &windowed), "opened p5 in ws-3's win-31 (task-1dfb, on the Desk), tab-9: running");
         assert_eq!(focused(&json!({ "pane": "spec" }), &windowed), "focused spec in ws-3's win-31 (task-1dfb, on the Desk)");
         assert_eq!(focused(&json!({ "pane": "spec" }), &json!({ "window": "win-31", "front": "win-31", "workspace": null })), "focused spec in win-31 (in front)");
+        assert_eq!(focused(&json!({ "pane": "spec" }), &json!({ "window": "win-31", "front": "win-31", "behind": true, "workspace": null })), "focused spec in win-31 (behind the app you're in)");
+        assert_eq!(focused(&json!({ "window": "win-31" }), &json!({ "window": "win-31", "front": "win-31", "behind": true, "workspace": null })), "put win-31 behind the app you're in");
         assert_eq!(zoomed(&json!({ "pane": "spec" }), &json!({ "zoomed": true, "workspace": windowless["workspace"] })), "spec is zoomed in ws-3 (task-1dfb, on the Desk; run again to unzoom)");
         let free = json!({ "pane": { "id": "p5", "state": "running" }, "window": "win-4", "tab": "tab-9", "workspace": null });
         assert_eq!(opened(&json!({}), &free), "opened p5 in win-4, tab-9: running");

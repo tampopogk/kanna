@@ -1,5 +1,6 @@
 import AppKit
 import KannaDocs
+import KannaOverview
 import KannaPerf
 import Markdown
 
@@ -14,7 +15,8 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     public var startScrollY: CGFloat?
     public var contextMenu: (() -> NSMenu?)? { didSet { textView.contextMenu = contextMenu } }
     public let path: String
-    public let markup: Bool
+    public private(set) var markup: Bool
+    public private(set) var loads = 0
     public let diffBase: String?
     public private(set) var diffError: String?
     public private(set) var changes: [NSRange] = []
@@ -27,8 +29,18 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     let scrollView = MarkdownScrollView()
     let textView: MarkdownTextView
     let layoutManager = MarkdownLayoutManager()
+    public let overview = OverviewView()
+    public internal(set) var overviewShown = false
+    public internal(set) var overviewWanted = false
+    public internal(set) var pictures = 0
+    var revision = 0
+    var drawnKey: MarkdownPictureKey?
+    var pictureMarks: [OverviewMark] = []
+    var overviewQueued = false
+    var overviewObservers: [NSObjectProtocol] = []
     private let diagrams = DiagramCache()
     private var document = Document(parsing: "")
+    private var imageStamps: [String: ImageStamp] = [:]
     private var entries: [DiffEntry]?
     private var baseCommit: String?
     private var ticks = 0
@@ -87,23 +99,19 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         scrollView.magnification = zoom
         scrollView.backgroundColor = MarkdownTheme.background
         addSubview(scrollView)
-        if markup || diff != nil {
-            addSubview(bar)
-            bar.path.stringValue = store.relativeName
-            bar.agent.isHidden = !self.markup
-            bar.threads.isHidden = !self.markup
-            bar.diff.isHidden = diff == nil
-            bar.diff.onPress = { [weak self] in self?.jump(by: 1) }
-            textView.onChangeKey = diff == nil ? nil : { [weak self] step in self?.jump(by: step) }
-        }
-        if self.markup {
-            addSubview(panel)
-            setUpComments()
-        }
+        setUpOverview()
+        bar.path.stringValue = store.relativeName
+        bar.diff.isHidden = diff == nil
+        bar.diff.onPress = { [weak self] in self?.jump(by: 1) }
+        textView.onChangeKey = diff == nil ? nil : { [weak self] step in self?.jump(by: step) }
+        showComments()
         textView.delegate = self
         scrollView.onSwipe = { [weak self] back in self?.onHistory?(back) }
         magnifyObserver = NotificationCenter.default.addObserver(forName: NSScrollView.didEndLiveMagnifyNotification, object: scrollView, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.onZoom?() }
+            MainActor.assumeIsolated {
+                self?.needsLayout = true
+                self?.onZoom?()
+            }
         }
         poll = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.check() }
@@ -126,8 +134,36 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         textView.autoresizingMask = [.width]
         textView.linkTextAttributes = [.foregroundColor: MarkdownTheme.accent, .cursor: NSCursor.pointingHand]
         textView.selectedTextAttributes = [.backgroundColor: NSColor.selectedTextBackgroundColor]
-        textView.usesFindBar = true
-        textView.isIncrementalSearchingEnabled = true
+        textView.startFinder(in: scrollView)
+    }
+
+    public func set(markup on: Bool) {
+        let on = on && diffRange == nil
+        guard on != markup else { return }
+        let position = readingPosition()
+        markup = on
+        showComments()
+        layoutSubtreeIfNeeded()
+        if let position { restoreReadingPosition(position) }
+    }
+
+    private func showComments() {
+        if markup || diffBase != nil {
+            if bar.superview == nil { addSubview(bar) }
+        } else {
+            bar.removeFromSuperview()
+        }
+        bar.agent.isHidden = !markup
+        bar.threads.isHidden = !markup
+        if markup {
+            if panel.superview == nil { addSubview(panel) }
+            setUpComments()
+            refreshMarks()
+        } else {
+            tearDownComments()
+            panel.removeFromSuperview()
+        }
+        needsLayout = true
     }
 
     func showHeld() {
@@ -139,25 +175,42 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         poll = nil
         magnifyObserver.map(NotificationCenter.default.removeObserver)
         magnifyObserver = nil
+        stopOverview()
     }
 
     public override func layout() {
         super.layout()
         let barHeight: CGFloat = markup || diffBase != nil ? 34 : 0
-        let side = markup && threadsVisible ? ThreadPanel.width : 0
+        let height = max(0, bounds.height - barHeight)
+        let shown = sides(height: height)
+        let side = shown.comments ? ThreadPanel.width : 0
+        let rule = shown.overview ? OverviewMetrics.width : 0
+        overviewShown = shown.overview
         bar.frame = NSRect(x: 0, y: bounds.height - barHeight, width: bounds.width, height: barHeight)
-        scrollView.frame = NSRect(x: 0, y: 0, width: max(0, bounds.width - side), height: max(0, bounds.height - barHeight))
+        scrollView.frame = NSRect(x: 0, y: 0, width: max(0, bounds.width - side - rule), height: height)
+        scrollView.hasVerticalScroller = !shown.overview
+        overview.frame = NSRect(x: bounds.width - side - OverviewMetrics.width, y: 0, width: OverviewMetrics.width, height: height)
+        overview.isHidden = !shown.overview
         panel.isHidden = side == 0
         if bar.threads.on != (side > 0) { bar.threads.on = side > 0 }
-        panel.frame = NSRect(x: bounds.width - side, y: 0, width: side, height: max(0, bounds.height - barHeight))
+        panel.frame = NSRect(x: bounds.width - side, y: 0, width: side, height: height)
         updateInset()
+        if overviewShown {
+            if drawnKey != pictureKey { overviewChanged() }
+            updateOverviewViewport()
+        }
         if let y = startScrollY, bounds.height > 0 {
             startScrollY = nil
             scroll(toY: y)
         }
     }
 
-    var threadsVisible: Bool { showThreads && (bounds.width >= ThreadPanel.width * 2 || forcedThreads) }
+    var threadsVisible: Bool { showThreads && sides().comments }
+
+    public override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        overviewChanged()
+    }
 
     public override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(textView)
@@ -173,7 +226,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
 
     private func updateInset() {
         let width = scrollView.contentSize.width
-        let inset = max(28, (width - (MarkdownTheme.maxTextWidth + 10)) / 2)
+        let inset = MarkdownOverviewLayout.inset(width)
         let size = NSSize(width: inset, height: 22)
         if textView.textContainerInset != size { textView.textContainerInset = size }
         textView.layoutWidth = width
@@ -194,12 +247,18 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         defer { Perf.end(span) }
         reloadThreadsIfChanged()
         refreshPanel()
+        if pending == nil, imagesChanged() { render() }
         guard pending == nil, diffRange == nil, let diffBase, let disk else { return }
         ticks += 1
         if ticks % 4 == 0, let commit = baseCommit,
            MarkdownDiff.mergeBase(URL(fileURLWithPath: path).resolvingSymlinksInPath().deletingLastPathComponent().path, diffBase) != commit {
             load(disk)
         }
+    }
+
+    private func imagesChanged() -> Bool {
+        let folder = URL(fileURLWithPath: path).deletingLastPathComponent()
+        return imageStamps.contains { ImageStamp($0.key, folder: folder) != $0.value }
     }
 
     private func load(_ disk: String) {
@@ -218,6 +277,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
             }
         }
         source = text
+        loads += 1
         let start = Date()
         document = Document(parsing: MarkdownRenderer.fencingFrontMatter(text), options: [.disableSmartOpts])
         entries = nil
@@ -245,11 +305,16 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         var renderer = MarkdownRenderer(folder: URL(fileURLWithPath: path).deletingLastPathComponent(), diagrams: diagrams)
         let text = entries.map { renderer.render($0) } ?? renderer.render(document)
         diagrams.keep(only: Set(renderer.diagramSources))
+        imageStamps = renderer.images
         updateInset()
+        textView.finder.noteClientStringWillChange()
         textView.textStorage?.setAttributedString(text)
+        revision += 1
         if let position { restoreReadingPosition(position) }
         refreshMarks()
         refreshChanges()
+        needsLayout = true
+        overviewChanged()
         renderMs = Date().timeIntervalSince(start) * 1000
     }
 
@@ -293,6 +358,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         let target = step == 0 ? 1 : step > 0 ? (steps.first { $0 > now + 0.001 } ?? steps.last!) : (steps.last { $0 < now - 0.001 } ?? steps.first!)
         let visible = scrollView.contentView.bounds
         scrollView.setMagnification(target, centeredAt: NSPoint(x: visible.midX, y: visible.midY))
+        needsLayout = true
         onZoom?()
     }
 
@@ -405,6 +471,15 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         return out
     }
 
+    public var drawnImages: [NSSize] {
+        guard let storage = textView.textStorage else { return [] }
+        var out: [NSSize] = []
+        storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
+            if let cell = (value as? NSTextAttachment)?.attachmentCell as? ImageCell { out.append(cell.picture.size) }
+        }
+        return out
+    }
+
     public var layoutWidth: CGFloat { textView.textContainer?.size.width ?? 0 }
 
     public var scrollTop: CGFloat { scrollView.contentView.bounds.minY }
@@ -454,8 +529,42 @@ public final class MarkdownTextView: NSTextView {
     var onPlainClick: ((NSPoint) -> Void)?
     var onCommentKey: (() -> Bool)?
     var onChangeKey: ((Int) -> Void)?
+    var onMatches: (() -> Void)?
+    let finder = NSTextFinder()
+    private lazy var finderClient = TextFinderClient(textView: self)
+    private var matchObserver: NSKeyValueObservation?
     private var bracket: Character?
     private var count = ""
+
+    func startFinder(in container: NSScrollView) {
+        finder.client = finderClient
+        finder.findBarContainer = container
+        finder.isIncrementalSearchingEnabled = true
+        finder.incrementalSearchingShouldDimContentView = false
+        matchObserver = finder.observe(\.incrementalMatchRanges) { [weak self] _, _ in
+            DispatchQueue.main.async {
+                self?.needsDisplay = true
+                self?.onMatches?()
+            }
+        }
+    }
+
+    var matches: [NSRange] { finder.incrementalMatchRanges.map(\.rangeValue) }
+
+    public override func performTextFinderAction(_ sender: Any?) {
+        guard let tag = (sender as? NSValidatedUserInterfaceItem)?.tag, let action = NSTextFinder.Action(rawValue: tag) else { return }
+        finder.performAction(action)
+    }
+
+    public override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(performTextFinderAction(_:)) { return NSTextFinder.Action(rawValue: item.tag).map(finder.validateAction) ?? false }
+        return super.validateUserInterfaceItem(item)
+    }
+
+    public override func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(performTextFinderAction(_:)) { return validateUserInterfaceItem(item) }
+        return super.validateMenuItem(item)
+    }
 
     public override func keyDown(with event: NSEvent) {
         let modifiers = event.modifierFlags.intersection([.command, .control, .option])
@@ -502,6 +611,20 @@ public final class MarkdownTextView: NSTextView {
     public override func drawBackground(in rect: NSRect) {
         super.drawBackground(in: rect)
         (layoutManager as? MarkdownLayoutManager)?.drawChangeBars(in: rect, origin: textContainerOrigin)
+        drawMatches(in: rect)
+    }
+
+    private func drawMatches(in rect: NSRect) {
+        guard let manager = layoutManager, let container = textContainer, !matches.isEmpty else { return }
+        let origin = textContainerOrigin
+        let glyphs = manager.glyphRange(forBoundingRect: rect.offsetBy(dx: -origin.x, dy: -origin.y), in: container)
+        let visible = manager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+        for match in matches where NSIntersectionRange(match, visible).length > 0 {
+            manager.enumerateEnclosingRects(forGlyphRange: manager.glyphRange(forCharacterRange: match, actualCharacterRange: nil),
+                                            withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0), in: container) { box, _ in
+                NSTextFinder.drawIncrementalMatchHighlight(in: box.offsetBy(dx: origin.x, dy: origin.y))
+            }
+        }
     }
 
     public override func becomeFirstResponder() -> Bool {

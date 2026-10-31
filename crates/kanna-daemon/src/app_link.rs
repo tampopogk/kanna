@@ -326,6 +326,10 @@ impl AppLink {
         self.app.borrow().is_some()
     }
 
+    pub fn is_here(&self, conn: u64) -> bool {
+        self.app.borrow().as_ref().is_some_and(|app| app.id == conn && app.remote.is_none())
+    }
+
     pub fn attached_here(&self) -> bool {
         self.app.borrow().as_ref().is_some_and(|app| app.remote.is_none())
     }
@@ -500,6 +504,10 @@ impl AppLink {
 
     pub fn layout(&self, view: &Value) {
         self.notify("layout", view.clone());
+    }
+
+    pub fn changed(&self, pane: &Pane) {
+        self.notify("pane", json!({ "pane": Value::Object(pane_record(pane)) }));
     }
 
     pub fn hide(&self, pane: &str) {

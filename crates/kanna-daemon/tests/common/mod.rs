@@ -15,7 +15,11 @@ const DAEMON: &str = env!("CARGO_BIN_EXE_kanna-daemon");
 fn keeper_binary() -> PathBuf {
     let keeper = Path::new(DAEMON).with_file_name("kanna-keeper");
     if !keeper.exists() {
-        let status = Command::new(env!("CARGO")).args(["build", "-p", "kanna-keeper"]).status().unwrap();
+        let profile = match keeper.parent().and_then(Path::file_name).and_then(|d| d.to_str()) {
+            Some("debug") | None => "dev",
+            Some(dir) => dir,
+        };
+        let status = Command::new(env!("CARGO")).args(["build", "--profile", profile, "-p", "kanna-keeper"]).status().unwrap();
         assert!(status.success(), "building kanna-keeper failed");
     }
     keeper
@@ -117,14 +121,22 @@ impl Drop for Instance {
     fn drop(&mut self) {
         let _ = self.daemon.kill();
         let _ = self.daemon.wait();
-        if let Ok(pid) = std::fs::read_to_string(self.dir.join("state/keeper.pid")) {
-            if let Ok(pid) = pid.trim().parse::<i32>() {
-                if pid > 0 {
-                    unsafe { libc::kill(pid, libc::SIGTERM) };
-                }
-            }
+        if let Some(keeper) = std::fs::read_to_string(self.dir.join("state/keeper.pid")).ok().and_then(|p| p.trim().parse::<i32>().ok()).filter(|p| *p > 0) {
+            stop_process(keeper);
         }
         let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn stop_process(pid: i32) {
+    unsafe { libc::kill(pid, libc::SIGTERM) };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while alive(pid as i64) {
+        if Instant::now() >= deadline {
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -145,8 +157,9 @@ fn spawn_daemon(dir: &Path, env: &[(String, String)]) -> Child {
         .env("KANNA_AGENT_RULES_URL", "none")
         .env("KANNA_KEEPER", keeper_binary())
         .env("KANNA_KEEPER_CLOSE_GRACE_MS", "300")
-            .env("KANNA_MACHINE_MDNS", "0")
-            .env("KANNA_MACHINE_PORT", "0")
+        .env("KANNA_MACHINE_MDNS", "0")
+        .env("KANNA_MACHINE_PORT", "0")
+        .env("KANNA_E2E_OWNER", std::process::id().to_string())
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(Stdio::null())
         .stdout(Stdio::null())

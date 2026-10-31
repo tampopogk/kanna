@@ -27,6 +27,7 @@ pub struct Settings {
     pub close_grace: Duration,
     pub max_ptys: usize,
     pub spawn_timeout: Duration,
+    pub owner: Option<i32>,
 }
 
 fn env_u64(key: &str, default: u64) -> u64 {
@@ -41,6 +42,7 @@ impl Settings {
             close_grace: Duration::from_millis(env_u64("KANNA_KEEPER_CLOSE_GRACE_MS", 1_000)),
             max_ptys: env_u64("KANNA_KEEPER_MAX_PTYS", 256) as usize,
             spawn_timeout: Duration::from_millis(env_u64("KANNA_KEEPER_SPAWN_TIMEOUT_MS", 5_000)),
+            owner: std::env::var("KANNA_E2E_OWNER").ok().and_then(|v| v.trim().parse().ok()).filter(|pid| *pid > 0),
         }
     }
 }
@@ -392,18 +394,26 @@ impl Keeper {
                 }
             }
             self.spawn_timeouts();
-            if fds[1].revents != 0 {
-                self.accept();
-            }
             for c in &mut self.conns {
                 c.flush();
             }
+            let before = self.conns.len();
             self.conns.retain(|c| !c.dead);
+            if self.conns.len() < before {
+                self.accept_paused_until = None;
+            }
+            if fds[1].revents != 0 {
+                self.accept();
+            }
             if self.run_kills() {
                 self.reap();
             }
             if let Some(wanted) = self.upgrade.take() {
                 self.upgrade(wanted);
+            }
+            if let Some(owner) = self.settings.owner.filter(|&pid| self.stopping.is_none() && self.conns.is_empty() && gone(pid)) {
+                eprintln!("kanna-keeper: its owner (pid {owner}) exited");
+                self.begin_stop();
             }
             if let Some(since) = self.stopping {
                 self.reap();
@@ -885,6 +895,10 @@ impl Keeper {
                 .collect(),
         }
     }
+}
+
+fn gone(pid: i32) -> bool {
+    unsafe { libc::kill(pid, 0) != 0 && *sig::errno() == libc::ESRCH }
 }
 
 fn wait(pid: i32) -> Option<ExitStatus> {

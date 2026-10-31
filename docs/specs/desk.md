@@ -66,7 +66,7 @@ flowchart LR
 
 - **The strip lists the Desk's tasks other than the active one**, after a muted "⌘. Desk", oldest first (by when each task was made, as the [Desk view](desk-view.md#2--and-pull-back) lists them), each with its [agent status](agent-status.md) and how long ago it was last active ("12m ago"), then how many are on the Shelf.
 - **Each task's time shows beside its name** (pictured above): how long ago it was last active, or needs you, muted, kept current while it's shown. Its ⌘ key shows on hover. When the strip is too narrow, titles truncate first, each in proportion to its length, down to a short floor; then the Shelf's count gives way; then the times.
-- **Click to make active:** the clicked task becomes active and the one before stays on the Desk. **⌘1** and **⌘2** make the Desk's other tasks active the same way, numbered by recency, not by place: the one left last first (a stack), **Needs you** ahead, so ⌘1 twice goes back where you were and ⌘2 again cycles through the Desk; ⌘3 does nothing. **⇧⌘A** makes active the task that has needed you longest. They're in the Task menu (Desk Task 1, 2, Task Waiting Longest).
+- **Click to make active:** the clicked task becomes active and the one before stays on the Desk. **⌘1** and **⌘2** make the Desk's other tasks active the same way, chosen by recency, not by place, with **Needs you** ahead: ⌘1 the one left last (a stack), ⌘2 the one left longest ago. So ⌘1 twice goes back where you were, and ⌘2 again cycles through the Desk, whatever its number of tasks: through all three, or back and forth between two (the same task as ⌘1). ⌘3 does nothing. **⇧⌘A** makes active the task that has needed you longest. They're in the Task menu (Desk Task 1, 2, Task Waiting Longest).
 - **At most three tasks per project on an app's Desk,** active or not, running or stopped; another app has its own three ([each app's Desks](app-desk.md)). Moving a fourth to the Desk is refused ("Desk full") until one goes back to the Shelf or is Done; any number run on the Shelf ([tasks](tasks.md#5-stop-done-or-back-to-the-shelf)).
 - **Not active means hidden, not stopped.** Its terminals keep running in the daemon, and its tabs, the shown one, focus, [zoom](zoom.md) and scroll positions come back as they were.
 - **The Desk view has its own zoom.** ⇧⌘↩ on it zooms the planner, and it stays zoomed (or not) whatever the tasks do:
@@ -86,11 +86,22 @@ The Desk view (pictured in [Desk view](desk-view.md)) shows the window's plannin
 
 | Command | Does |
 |---|---|
-| `kanna task list [QUERY]` | Every task: ID, name, where it is (Desk or Shelf), status, how long ago it was last active; QUERY filters by name and first message |
+| `kanna task list [QUERY] [--all]` | The caller's repo's tasks, the Desk's under a Desk heading, then the Shelf's: ID, name, state (`merged` once its branch is in main, `replied` while its message to the planner waits), and only what else matters: an agent other than the default, what it waits for by name, when a Desk task was last active; `--all` every repo's, naming the others' ([task list](task-list.md)); QUERY filters by name and first message |
 | `kanna task activate ID` | Make a Desk task active and show it: on the caller's Desk, else on a Desk on its project, else a new one (relayed to the app; [the CLI acts on its caller](cli-caller.md)) |
 | `kanna task park [ID]` | ⌘.: show the Desk view of the task's Desk (default: the caller's own; outside a Kanna terminal ID is needed); the task stays active (relayed to the app) |
 | `kanna task done ID` | End a task: close its panes |
 | `kanna task new`, `start`, `stop`, `pick`, `shelve`, `name` | Make, run, stop, move and name tasks: [tasks](tasks.md#7-cli) |
+
+```text
+$ kanna task list
+Desk
+task-ffb6  Fix the flaky keeper take-back restart test  idle     just now
+task-66b7  Crash capture and restart                    merged   3h ago
+
+Shelf
+task-9387  Agent permission prompts setting             replied
+task-3300  Desks are windows to ⌘` and the CLI          blocked  waits for "Next Window skips minimized windows"
+```
 
 A task's workspace has an ID of its own (ws-3), and commands take it, the task's ID or the task's docked pane. Run from a task's terminal, `park` and `done` mean that task, and `kanna open` without a placement opens a new tab in the task's workspace, on its Desk or, while it isn't active or is on the Shelf, among its hidden tabs; with `--tab`, `--split` or `--size` it opens there too, never in the front window, and `--window new` opens a window of the task's ([presenting](presenting.md#3-how-its-built), [workspaces](workspaces.md#3-commands-target-and-reply)). `done` leaves its Desk with no task active.
 

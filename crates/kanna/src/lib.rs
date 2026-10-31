@@ -168,6 +168,9 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
         return agents::run(&request, &mut io);
     }
     let mut request = request;
+    if target.backend == Backend::Kanna && commands::caller().is_none() && matches!(wire(command, &request), "focus" | "open" | "move" | "move-tab" | "desk") {
+        request["user"] = json!(true);
+    }
     let located = if command.name == "task" { locate(&mut request, &mut mux)? } else { None };
     let waiting = if command.name == "task" && request["action"] == "done" { mux.call("tasks", serde_json::json!({ "action": "list" })).ok() } else { None };
     let (mut shorts, mut listed) = (located.as_ref().map(|(_, known)| known.clone()).unwrap_or_default(), false);
@@ -185,9 +188,17 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
         reply["freed"] = serde_json::Value::Array(output::freed(&waiting, done));
     }
     if command.name == "task" && request["action"] == "list" {
-        if let Ok(found) = mux.call("tasks", serde_json::json!({ "action": "list" })) {
+        let mut asked = json!({ "action": "list", "merged": true });
+        if let Some(repo) = request["repo"].as_str().filter(|_| request["all"] != true) {
+            asked["repo"] = json!(repo);
+        }
+        if let Ok(found) = mux.call("tasks", asked.clone()) {
             reply["shelf"] = found["shelf"].clone();
+            reply["agent"] = found["agent"].clone();
             output::name_out(&mut reply, &found["desk"]);
+            if asked["repo"].is_string() {
+                output::keep_named(&mut reply);
+            }
             shorts.extend(output::shorts(&found));
             listed = true;
             reply["script"] = found["script"].clone();

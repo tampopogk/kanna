@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://kanna.dev/schemas/config/v1.schema.json",
   "title": "Kanna settings",
-  "description": "Kanna's settings, version 1: ~/.kanna-v4/config.json, overridden key by key by a repo's .kanna/config.json (except agents.prompts and build.targets, which only yours sets). Print this with `kanna config schema`.",
+  "description": "Kanna's settings, version 1: ~/.kanna-v4/config.json, overridden key by key by a repo's .kanna/config.json (except agents.prompts, which only yours sets). Print this with `kanna config schema`.",
   "type": "object",
   "properties": {
     "$schema": {
@@ -69,18 +69,6 @@
           "minimum": 0,
           "maximum": 10,
           "default": 3
-        }
-      },
-      "additionalProperties": false
-    },
-    "build": {
-      "description": "Building Kanna from a checkout (scripts/build.sh).",
-      "type": "object",
-      "properties": {
-        "targets": {
-          "description": "An absolute folder, usually on another volume, where build outputs live: a task worktree's target/ becomes a symlink to TARGETS/REPO/WORKTREE, and each folder in the main checkout's target/ except its .app bundles, built Ghostty and .offline/ (a copy of its dependencies, synced after each build) becomes a symlink to TARGETS/REPO/_main/NAME; real folders move there on the next build. While the folder's volume isn't mounted, builds go to the internal disk and move over on the next build with the volume. Only read from ~/.kanna-v4/config.json, not a repo's. Unset, target/ is a folder in the worktree.",
-          "type": "string",
-          "pattern": "^/"
         }
       },
       "additionalProperties": false

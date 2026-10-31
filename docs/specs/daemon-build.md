@@ -14,7 +14,7 @@ The **build ID** is the SHA-256 of the `kanna-daemon` binary, in hex. Three proc
 |---|---|---|
 | the daemon | its own executable | at start, before a rebuild can replace the file |
 | the app | `Contents/Helpers/kanna-daemon`, the daemon it would start | once, at its first hello |
-| the CLI | the `kanna-daemon` beside it (in the bundle, or `target/release`) | only when a command fails |
+| the CLI | the `kanna-daemon` beside it (in the bundle, or `target/release`, `target/debug` in a task worktree) | only when a command fails |
 
 - **Why the binary and not the version and commit:** a dev rebuild with uncommitted changes has the same commit and different code, and a commit that doesn't touch the daemon needn't replace it. The hash changes exactly when the daemon does; an app-only rebuild keeps its daemon.
 - **Why not a stamp per build:** every rebuild would replace a daemon that hadn't changed.
