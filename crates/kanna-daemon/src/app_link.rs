@@ -1,6 +1,7 @@
 use crate::diffs::Diffs;
 use crate::files::Files;
 use crate::layout::DaemonLayout;
+use crate::perf;
 use crate::settings::Settings;
 use crate::terminals::Terminals;
 use crate::Event;
@@ -29,8 +30,10 @@ const QUEUE_CAUGHT_UP: usize = 1 << 20;
 
 const QUEUE_LIMIT: usize = 64 << 20;
 
+type Line = (Vec<u8>, Option<Instant>);
+
 pub struct Outbox {
-    lines: Sender<Vec<u8>>,
+    lines: Sender<Line>,
     queue: Arc<Queue>,
 }
 
@@ -42,10 +45,14 @@ struct Queue {
 
 impl Outbox {
     fn push(&self, message: &Value) -> usize {
+        self.push_typed(message, None)
+    }
+
+    fn push_typed(&self, message: &Value, typed: Option<Instant>) -> usize {
         let mut line = encode(message).into_bytes();
         line.push(b'\n');
         let queued = self.queue.bytes.fetch_add(line.len(), Ordering::SeqCst) + line.len();
-        let _ = self.lines.send(line);
+        let _ = self.lines.send((line, typed));
         queued
     }
 }
@@ -66,14 +73,17 @@ pub fn takeover(events: Sender<Event>) -> Takeover {
 
 pub fn serve(events: Sender<Event>, hello: Value, mut reader: BufReader<UnixStream>, stream: UnixStream, remote: Option<String>) {
     let conn = CONNECTIONS.fetch_add(1, Ordering::SeqCst) + 1;
-    let (sender, lines) = mpsc::channel::<Vec<u8>>();
+    let (sender, lines) = mpsc::channel::<Line>();
     let out = Outbox { lines: sender, queue: Arc::default() };
     let (queue, caught_up) = (out.queue.clone(), events.clone());
     let (Ok(writer), Ok(closer)) = (stream.try_clone(), stream.try_clone()) else { return };
     let spawned = std::thread::Builder::new().name("kanna.app.write".into()).spawn(move || {
-        for line in lines {
+        for (line, typed) in lines {
             if !write_all(&writer, &line) {
                 break;
+            }
+            if let Some(typed) = typed {
+                perf::since("echo.sent", typed);
             }
             let left = queue.bytes.fetch_sub(line.len(), Ordering::SeqCst) - line.len();
             if left <= QUEUE_CAUGHT_UP && queue.behind.swap(false, Ordering::SeqCst) {
@@ -98,7 +108,7 @@ pub fn serve(events: Sender<Event>, hello: Value, mut reader: BufReader<UnixStre
         }
         match serde_json::from_slice::<Value>(&line) {
             Ok(message) => {
-                if events.send(Event::AppMessage { conn, message }).is_err() {
+                if events.send(Event::AppMessage { conn, message, at: Instant::now() }).is_err() {
                     break;
                 }
             }
@@ -157,9 +167,13 @@ impl AppLink {
     }
 
     fn send(&self, message: Value) {
+        self.send_typed(message, None);
+    }
+
+    fn send_typed(&self, message: Value, typed: Option<Instant>) {
         let app = self.app.borrow();
         let Some(app) = app.as_ref().filter(|app| !app.cut.get()) else { return };
-        let queued = app.out.push(&message);
+        let queued = app.out.push_typed(&message, typed);
         if queued > QUEUE_LIMIT {
             log!("kanna-daemon: the app is {} MiB behind; dropping it", queued >> 20);
             app.cut.set(true);
@@ -365,7 +379,7 @@ impl AppLink {
         }
     }
 
-    pub fn message(&self, conn: u64, message: Value) -> Option<Value> {
+    pub fn message(&self, conn: u64, message: Value, at: Instant) -> Option<Value> {
         if self.app.borrow().as_ref().map(|a| a.id) != Some(conn) {
             return None;
         }
@@ -419,8 +433,9 @@ impl AppLink {
                 self.unsent.borrow_mut().remove(&terminal);
             }
             "input" => {
+                perf::since("input.handled", at);
                 if let Some(bytes) = string(&args, "data").and_then(|d| BASE64.decode(d).ok()) {
-                    self.terminals.write(&terminal, bytes);
+                    self.terminals.type_in(&terminal, bytes, at);
                 }
             }
             "resize" => {
@@ -537,14 +552,14 @@ impl AppLink {
         }
     }
 
-    pub fn output(&self, pane: &str, bytes: &[u8]) {
+    pub fn output(&self, pane: &str, bytes: &[u8], typed: Option<Instant>) {
         if !self.shows(pane) {
             return;
         }
         if self.unsent.borrow().contains_key(pane) {
             return;
         }
-        self.notify("output", json!({ "terminal": pane, "data": BASE64.encode(bytes) }));
+        self.send_typed(json!({ "cmd": "output", "args": { "terminal": pane, "data": BASE64.encode(bytes) } }), typed);
     }
 
     pub fn exited(&self, pane: &str, code: i32) {

@@ -1,5 +1,5 @@
 use crate::pty::{self, Adopted, Spawned, Spawner, Spec};
-use crate::reader::{Feed, Reader, Taken};
+use crate::reader::{self, Feed, Reader, Taken, Typing};
 use crate::settings::Settings;
 use crate::status::Detector;
 use crate::store::{pane_number, Record, Saved, Store};
@@ -15,7 +15,7 @@ use std::os::fd::OwnedFd;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub type OnStart = Box<dyn Fn(&str)>;
 
@@ -38,6 +38,7 @@ const ENTER_GAP: Duration = Duration::from_millis(100);
 struct Pty {
     master: OwnedFd,
     input: Sender<Vec<u8>>,
+    typing: Typing,
     reader: Reader,
 }
 
@@ -163,17 +164,20 @@ impl Terminals {
         self.live.borrow().get(id).is_some_and(|t| t.serial == serial && t.exit_code.is_none())
     }
 
-    pub fn output(&self, id: &str, serial: u64) -> (Option<Taken>, Option<String>) {
-        let (taken, cwd) = {
+    pub fn output(&self, id: &str, serial: u64) -> (Option<Taken>, Option<String>, Option<Instant>) {
+        let (taken, cwd, echo) = {
             let live = self.live.borrow();
-            let Some(terminal) = live.get(id).filter(|t| t.serial == serial) else { return (None, None) };
+            let Some(terminal) = live.get(id).filter(|t| t.serial == serial) else { return (None, None, None) };
             let mut feed = Feed::lock(&terminal.feed);
-            (feed.take(), feed.take_cwd())
+            (feed.take(), feed.take_cwd(), feed.take_echo())
         };
+        if let Some(typed) = echo {
+            crate::perf::since("echo.taken", typed);
+        }
         if let Some(cwd) = &cwd {
             self.moved(id, cwd.clone());
         }
-        (taken, cwd)
+        (taken, cwd, echo)
     }
 
     fn moved(&self, id: &str, cwd: String) {
@@ -248,8 +252,9 @@ impl Terminals {
         Some(code)
     }
 
-    pub fn write(&self, id: &str, bytes: Vec<u8>) {
+    pub fn type_in(&self, id: &str, bytes: Vec<u8>, at: Instant) {
         if let Some(pty) = self.live.borrow().get(id).and_then(Terminal::running) {
+            reader::typed(&pty.typing, at);
             let _ = pty.input.send(bytes);
         }
     }
@@ -695,13 +700,16 @@ impl Terminals {
     fn run(&self, id: &str, pane: &str, keeper: &str, serial: u64, spawned: Spawned, feed: Arc<Mutex<Feed>>) -> std::io::Result<Terminal> {
         let Spawned { pid, master } = spawned;
         let (input, inputs) = mpsc::channel::<Vec<u8>>();
-        let reader = Reader::start(id, serial, master.try_clone()?, feed.clone(), input.clone(), self.events.clone())?;
+        let typing = Typing::default();
+        let reader = Reader::start(id, serial, master.try_clone()?, feed.clone(), typing.clone(), input.clone(), self.events.clone())?;
         let mut writer = File::from(master.try_clone()?);
+        let written = typing.clone();
         std::thread::Builder::new().name(format!("kanna.write.{id}")).spawn(move || {
             for bytes in inputs {
                 if writer.write_all(&bytes).is_err() {
                     return;
                 }
+                reader::written(&written);
             }
         })?;
         self.store.track(id, feed.clone());
@@ -713,7 +721,7 @@ impl Terminals {
             serial,
             pid,
             keeper: keeper.into(),
-            pty: Some(Pty { master, input, reader }),
+            pty: Some(Pty { master, input, typing, reader }),
             feed,
             pixels: (0, 0),
             exit_code: None,

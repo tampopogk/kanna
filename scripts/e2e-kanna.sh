@@ -3265,6 +3265,60 @@ sys.exit(not any(h[\"ms\"] >= 300 and \"command.debug.hang\" in h[\"open\"] for 
   check wait_for 5 grep -qE 'kanna: the main thread hung [0-9]{3}ms; open: .*command\.debug\.hang' "$out/app.log" || { echo "perf_intervals: the hang isn't in the app's log"; tail -5 "$out/app.log"; return 1; }
 }
 
+scenario typing_latency M4
+typing_latency() {
+  local keys="${KANNA_LATENCY_KEYS:-60}" floods="${KANNA_LATENCY_FLOODS:-1}" hidden="${KANNA_LATENCY_HIDDEN:-4}" agents="${KANNA_LATENCY_AGENTS:-0}" burners="${KANNA_LATENCY_CPU:-0}"
+  local bound="${KANNA_LATENCY_BOUND:-50}" flood="exec yes 'typing_latency flood ........................................................................'" i burner_pids=()
+  local agent="exec python3 $KANNA_STATE_DIR/redraw.py"
+  cat >"$KANNA_STATE_DIR/redraw.py" <<'PY'
+import random, sys, time
+while True:
+    rows = "".join("%3d %s\033[K\r\n" % (n, "x" * random.randrange(20, 100)) for n in range(40))
+    sys.stdout.write("\033[?2026h\033[H" + rows + "\033[?2026l")
+    sys.stdout.flush()
+    time.sleep(1 / 30)
+PY
+  start_daemon && start_app || { echo "typing_latency line $LINENO"; return 1; }
+  kanna open --window new --name typer --cmd 'echo TYPER-READY; exec cat' >/dev/null || { echo "typing_latency line $LINENO"; return 1; }
+  for ((i = 1; i <= floods; i++)); do kanna open --window win-1 --name "flood$i" --split right --cmd "$flood" >/dev/null || return 1; done
+  for ((i = 1; i <= agents; i++)); do kanna open --window win-1 --name "agent$i" --split down --cmd "$agent" >/dev/null || return 1; done
+  for ((i = 1; i <= hidden; i++)); do kanna open --window win-1 --name "hidden$i" --tab --cmd "$flood" >/dev/null || return 1; done
+  kanna focus typer >/dev/null || { echo "typing_latency line $LINENO"; return 1; }
+  check wait_for 10 shows typer TYPER-READY || return 1
+  for ((i = 1; i <= burners; i++)); do yes >/dev/null & burner_pids+=($!); done
+  sleep 2
+  raw '{"id":1,"cmd":"debug.perf","args":{"reset":true}}' >/dev/null
+  raw '{"id":1,"cmd":"debug.daemon.perf","args":{"reset":true}}' >/dev/null
+  for i in $(seq "$keys"); do
+    raw '{"id":1,"cmd":"debug.type","args":{"pane":"typer","text":"k"}}' >/dev/null
+    sleep 0.05
+  done
+  sleep 1
+  (( ${#burner_pids[@]} )) && kill "${burner_pids[@]}" 2>/dev/null
+  local readings
+  readings="$( { raw '{"id":1,"cmd":"debug.perf"}'; raw '{"id":1,"cmd":"debug.daemon.perf"}'; } | python3 -c 'import json, sys
+want = ["key.wait", "key.sent", "key.echo", "key.drawn", "key.lost", "input.handled", "input.written", "echo.read", "echo.parsed", "echo.taken", "echo.sent",
+        "loop.chores", "loop.output", "loop.app.message", "loop.status", "loop.request", "message.output", "message.status", "render"]
+rows = {}
+for line in sys.stdin:
+    r = json.loads(line); r = r.get("result", r)
+    if "intervals" not in r: print("no readings:", line.strip()[:200])
+    for i in r.get("intervals", []): rows.setdefault(i["name"], i)
+for name in want:
+    i = rows.get(name)
+    if i: print("%-16s n=%-6d p50=%7.2f p95=%7.2f p99=%7.2f max=%7.2f" % (name, i["count"], i["p50"], i["p95"], i.get("p99", i["p95"]), i["max"]))')"
+  echo "typing_latency: $keys keys into cat; $floods flooding beside it, $hidden flooding in hidden tabs, $agents redrawing at 30 fps, $burners CPU burners"
+  echo "$readings"
+  local drawn
+  drawn="$(raw '{"id":1,"cmd":"debug.perf"}' | python3 -c 'import json, sys
+r = json.load(sys.stdin); r = r.get("result", r)
+i = {i["name"]: i for i in r.get("intervals", [])}.get("key.drawn")
+print("%d %s" % (i["count"], i["p95"]) if i else "0 0")')"
+  (( ${drawn%% *} >= keys * 9 / 10 )) || { echo "typing_latency: only ${drawn%% *} of $keys keys were drawn"; return 1; }
+  python3 -c 'import sys; sys.exit(float(sys.argv[1]) > float(sys.argv[2]))' "${drawn#* }" "$bound" \
+    || { echo "typing_latency: a keystroke's echo took ${drawn#* }ms to draw (p95), over ${bound}ms"; return 1; }
+}
+
 scenario task_restart_typing M4
 task_restart_typing() {
   start_daemon && start_app || { echo "task_restart_typing line $LINENO"; return 1; }

@@ -3,7 +3,7 @@ import os
 import Synchronization
 
 public enum PerfArea: String, Sendable, CaseIterable {
-    case click, daemon, render, desk, markdown, commands, hang
+    case click, keys, daemon, render, desk, markdown, commands, hang
 }
 
 public struct PerfSpan: @unchecked Sendable {
@@ -22,6 +22,7 @@ public struct PerfStats: Sendable, Equatable {
     public let recent: Int
     public let p50: Double
     public let p95: Double
+    public let p99: Double
     public let max: Double
     public let last: Double
     public let detail: String?
@@ -169,7 +170,7 @@ struct Book {
             guard let ring = rings[key], let latest = ring.latest else { return nil }
             let sorted = ring.samples.map(\.ms).sorted()
             let at = { (q: Double) in sorted[min(sorted.count - 1, Int((Double(sorted.count) * q).rounded(.up)) - 1)] }
-            return PerfStats(name: key, count: ring.count, recent: sorted.count, p50: at(0.5), p95: at(0.95), max: sorted.last!, last: latest.ms, detail: latest.detail)
+            return PerfStats(name: key, count: ring.count, recent: sorted.count, p50: at(0.5), p95: at(0.95), p99: at(0.99), max: sorted.last!, last: latest.ms, detail: latest.detail)
         }
     }
 

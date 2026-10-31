@@ -14,6 +14,7 @@ mod content_ids;
 mod crashes;
 mod layout;
 mod lifeline;
+mod perf;
 mod pty;
 mod codex_remote;
 mod messages;
@@ -103,13 +104,34 @@ pub enum Event {
     KeeperLost(String),
     AppHello { conn: u64, hello: Value, out: Outbox, stream: UnixStream, remote: Option<String> },
     AppCaughtUp { conn: u64 },
-    AppMessage { conn: u64, message: Value },
+    AppMessage { conn: u64, message: Value, at: Instant },
     AppGone { conn: u64 },
     MachineConfirm { question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send> },
     MachinesSave(Value),
     Restart,
     Quit(i32),
     Shutdown(String),
+}
+
+impl Event {
+    fn kind(&self) -> &'static str {
+        match self {
+            Event::Request(..) => "loop.request",
+            Event::Wake => "loop.wake",
+            Event::Output { .. } => "loop.output",
+            Event::Drained { .. } => "loop.drained",
+            Event::Status { .. } => "loop.status",
+            Event::RulesUpdated { .. } => "loop.rules",
+            Event::Worktree { .. } | Event::Branch { .. } | Event::Turn { .. } | Event::Posted { .. } | Event::Finished { .. } => "loop.tasks",
+            Event::Diff { .. } | Event::DiffUpdating { .. } => "loop.diff",
+            Event::File { .. } => "loop.file",
+            Event::KeeperReadable | Event::KeeperExits | Event::KeeperLost(_) => "loop.keeper",
+            Event::AppHello { .. } | Event::AppCaughtUp { .. } | Event::AppGone { .. } => "loop.app",
+            Event::AppMessage { .. } => "loop.app.message",
+            Event::MachineConfirm { .. } | Event::MachinesSave(_) => "loop.machines",
+            Event::Restart | Event::Quit(_) | Event::Shutdown(_) => "loop.stop",
+        }
+    }
 }
 
 fn main() {
@@ -322,6 +344,7 @@ fn run() -> Result<Option<PathBuf>, String> {
     agents.install(&core);
     let diffs = Rc::new(diffs::Diffs::new(events.clone()));
     diffs.install(&core);
+    perf::install(&core);
     let files = Rc::new(files::Files::new(events.clone()));
     files.install(&core);
     let host = Rc::new(Host::new(terminals.clone()));
@@ -538,6 +561,7 @@ fn run() -> Result<Option<PathBuf>, String> {
             Some(Shutdown::Done) => break,
             _ => {}
         }
+        let chores = Instant::now();
         app.expire(Instant::now());
         terminals.save_if_changed();
         layout.flush();
@@ -549,6 +573,7 @@ fn run() -> Result<Option<PathBuf>, String> {
             Some(Instant::now() + Duration::from_millis(100))
         };
         let deadline = [core.poll(), app.next_deadline(), ticks, layout.next_deadline(), crashes.next_deadline()].into_iter().flatten().min();
+        perf::since("loop.chores", chores);
         let event = match deadline {
             Some(at) => inbox.recv_timeout(at.saturating_duration_since(Instant::now())),
             None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
@@ -558,6 +583,7 @@ fn run() -> Result<Option<PathBuf>, String> {
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
+        let (kind, handling) = (event.kind(), Instant::now());
         match event {
             Event::Request(request, reply) => timed(request_name(&request), "a client", || match request.get("cmd").and_then(Value::as_str) {
                 Some("shutdown") => {
@@ -582,12 +608,12 @@ fn run() -> Result<Option<PathBuf>, String> {
             }),
             Event::Wake => {}
             Event::Output { terminal, serial } => {
-                let (taken, cwd) = terminals.output(&terminal, serial);
+                let (taken, cwd, echo) = terminals.output(&terminal, serial);
                 if let (Some(cwd), Some(pane)) = (cwd, terminals.pane_of(&terminal)) {
                     app.folder(&pane, &cwd);
                 }
                 match taken {
-                    Some(Taken::Bytes(bytes)) => app.output(&terminal, &bytes),
+                    Some(Taken::Bytes(bytes)) => app.output(&terminal, &bytes, echo),
                     Some(Taken::Overflowed) => app.resync(&terminal),
                     None => {}
                 }
@@ -654,13 +680,13 @@ fn run() -> Result<Option<PathBuf>, String> {
                     crashes.attached(&hello);
                 }
             }
-            Event::AppMessage { conn, message } if message.get("cmd").and_then(Value::as_str) == Some("app.goodbye") => {
+            Event::AppMessage { conn, message, .. } if message.get("cmd").and_then(Value::as_str) == Some("app.goodbye") => {
                 if app.is_here(conn) {
                     crashes.goodbye();
                 }
             }
-            Event::AppMessage { conn, message } => {
-                if let Some(request) = app.message(conn, message) {
+            Event::AppMessage { conn, message, at } => {
+                if let Some(request) = app.message(conn, message, at) {
                     if let Some(refused) = machines::refuse_remote(&request).filter(|_| !app.attached_here()) {
                         app.answer_app(conn, refused);
                         continue;
@@ -703,6 +729,7 @@ fn run() -> Result<Option<PathBuf>, String> {
             Event::Quit(_) => continue,
             Event::Shutdown(why) => begin(&why, &mut shutdown),
         }
+        perf::since(kind, handling);
     }
 
     app.close();

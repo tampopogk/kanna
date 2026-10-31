@@ -1,3 +1,4 @@
+use crate::perf;
 use crate::settings::Settings;
 use crate::Event;
 use kanna_detect::{Activity, Screen};
@@ -19,6 +20,33 @@ const DRAIN: u8 = 1;
 
 const STOP: u8 = 2;
 
+const ECHO_LIMIT: Duration = Duration::from_secs(1);
+
+pub struct Keystroke {
+    typed: Instant,
+    written: Option<Instant>,
+}
+
+pub type Typing = Arc<Mutex<Option<Keystroke>>>;
+
+pub fn typed(typing: &Typing, at: Instant) {
+    typing.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert(Keystroke { typed: at, written: None });
+}
+
+pub fn written(typing: &Typing) {
+    if let Some(keystroke) = typing.lock().unwrap_or_else(PoisonError::into_inner).as_mut().filter(|k| k.written.is_none()) {
+        keystroke.written = Some(Instant::now());
+        perf::since("input.written", keystroke.typed);
+    }
+}
+
+fn echoed(typing: &Typing) -> Option<Instant> {
+    let mut pending = typing.lock().unwrap_or_else(PoisonError::into_inner);
+    let typed = pending.as_ref().filter(|k| k.written.is_some())?.typed;
+    *pending = None;
+    (typed.elapsed() < ECHO_LIMIT).then_some(typed)
+}
+
 pub struct Feed {
     screen: Terminal,
     outbox: Vec<u8>,
@@ -31,6 +59,7 @@ pub struct Feed {
     activity: Activity,
     statuses_serial: u64,
     statuses_owner: Option<i32>,
+    echo: Option<Instant>,
 }
 
 pub enum Taken {
@@ -54,7 +83,7 @@ impl Feed {
 
     fn with(screen: Terminal, unsaved: bool) -> io::Result<Arc<Mutex<Feed>>> {
         let (cols, rows) = screen.size();
-        Ok(Arc::new(Mutex::new(Feed { screen, outbox: Vec::new(), overflowed: false, posted: false, unsaved, cols, rows, cwd: None, activity: Activity::default(), statuses_serial: 0, statuses_owner: None })))
+        Ok(Arc::new(Mutex::new(Feed { screen, outbox: Vec::new(), overflowed: false, posted: false, unsaved, cols, rows, cwd: None, activity: Activity::default(), statuses_serial: 0, statuses_owner: None, echo: None })))
     }
 
     pub fn apply(&mut self, settings: &Settings) -> Vec<u8> {
@@ -104,6 +133,10 @@ impl Feed {
             self.outbox.extend_from_slice(bytes);
         }
         (!std::mem::replace(&mut self.posted, true), replies)
+    }
+
+    pub fn take_echo(&mut self) -> Option<Instant> {
+        self.echo.take()
     }
 
     pub fn take(&mut self) -> Option<Taken> {
@@ -245,12 +278,12 @@ pub struct Reader {
 }
 
 impl Reader {
-    pub fn start(id: &str, serial: u64, master: OwnedFd, feed: Arc<Mutex<Feed>>, replies: Sender<Vec<u8>>, events: Sender<Event>) -> io::Result<Reader> {
+    pub fn start(id: &str, serial: u64, master: OwnedFd, feed: Arc<Mutex<Feed>>, typing: Typing, replies: Sender<Vec<u8>>, events: Sender<Event>) -> io::Result<Reader> {
         let (asleep, wake) = pipe()?;
         let pane = id.to_string();
         let thread = std::thread::Builder::new()
             .name(format!("kanna.read.{id}"))
-            .spawn(move || read(Pty { pane, serial, master: File::from(master), wake: File::from(asleep), feed, replies, events }))?;
+            .spawn(move || read(Pty { pane, serial, master: File::from(master), wake: File::from(asleep), feed, typing, replies, events }))?;
         Ok(Reader { wake: File::from(wake), thread: Some(thread) })
     }
 
@@ -275,6 +308,7 @@ struct Pty {
     master: File,
     wake: File,
     feed: Arc<Mutex<Feed>>,
+    typing: Typing,
     replies: Sender<Vec<u8>>,
     events: Sender<Event>,
 }
@@ -331,12 +365,22 @@ fn read(mut pty: Pty) {
                 return;
             }
         };
+        let echo = echoed(&pty.typing);
+        if let Some(typed) = echo {
+            perf::since("echo.read", typed);
+        }
         let (post, replies) = {
             let mut feed = Feed::lock(&pty.feed);
             let pushed = feed.push(&buffer[..n]);
             feed.claim_statuses(|| kanna_detect::program::foreground_group(pty.master.as_raw_fd()));
+            if echo.is_some() {
+                feed.echo = feed.echo.or(echo);
+            }
             pushed
         };
+        if let Some(typed) = echo {
+            perf::since("echo.parsed", typed);
+        }
         if !replies.is_empty() {
             let _ = pty.replies.send(replies);
         }

@@ -168,7 +168,9 @@ final class DaemonLink: TerminalLink {
         case "output":
             if let terminal, let data = args["data"]?.string.flatMap({ Data(base64Encoded: $0) }) {
                 consumed = false
+                let echo = Keys.echoing(terminal.id)
                 terminal.output(data) { connection.consumed(delivery) }
+                if let echo { Keys.echoed(echo) }
             }
         case "snapshot":
             if let id = args["terminal"]?.string { onSnapshot?(id) }
@@ -233,7 +235,8 @@ final class DaemonLink: TerminalLink {
     }
 
     func input(_ bytes: Data, from terminal: ExternalTerminal) {
-        send("input", ["terminal": .string(terminal.id), "data": .string(bytes.base64EncodedString())])
+        let sent = terminal.view?.takeTyped().flatMap { Keys.typed(terminal.id, at: $0) }
+        connection.send(outbound(["cmd": "input", "args": ["terminal": .string(terminal.id), "data": .string(bytes.base64EncodedString())]]), sent: sent)
     }
 
     func resizeRequested(_ terminal: ExternalTerminal, cols: UInt16, rows: UInt16, width: UInt32, height: UInt32) {
@@ -250,6 +253,7 @@ final class DaemonLink: TerminalLink {
     func closed(_ terminal: ExternalTerminal) {
         terminals.removeValue(forKey: terminal.id)
         sizes.removeValue(forKey: terminal.id)
+        Keys.forget(terminal.id)
         send("detach", ["terminal": .string(terminal.id)])
     }
 }
