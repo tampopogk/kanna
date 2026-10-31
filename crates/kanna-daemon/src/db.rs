@@ -1078,13 +1078,14 @@ mod tests {
     fn a_db_from_before_the_desk_and_shelf_names_moves_each_task_and_event_to_the_place_it_was_in() {
         let dir = folder("place-names");
         let conn = connect(&dir.join(FILE)).unwrap();
-        for step in &MIGRATIONS[..MIGRATIONS.len() - 1] {
+        let renaming = MIGRATIONS.iter().position(|step| matches!(step, Step::Sql(sql) if sql.contains("when 'shelved' then 'picked'"))).unwrap();
+        for step in &MIGRATIONS[..renaming] {
             match step {
                 Step::Sql(sql) => conn.execute_batch(sql).unwrap(),
                 Step::Run(run) => run(&conn).unwrap(),
             }
         }
-        conn.pragma_update(None, "user_version", version() - 1).unwrap();
+        conn.pragma_update(None, "user_version", renaming as i64).unwrap();
         conn.execute_batch(r#"
             insert into tasks (id, repo, place, terminal, made_at, doc) values
                 ('task-00000001', '/r', 'shelf', 'term-4', 1.0, '{"name": "On the Desk"}'),
