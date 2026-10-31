@@ -37,11 +37,11 @@ It runs these in order, each of which also works on its own:
 ```sh
 scripts/build-ghostty-vt.sh       # libghostty-vt for the daemon (build.sh skips it when it's already the pinned Ghostty)
 scripts/build-ghosttykit.sh       # GhosttyKit for the app (likewise)
-cargo build --workspace --release # CLI, daemon, keeper, and libkanna_ffi (layout, highlighting, diagrams) for the app
+cargo build --workspace --release # CLI, daemon, keeper, and libkanna_ffi (layout, highlighting, diagrams) for the app; a worktree builds the dev profile instead
 scripts/build-kanna-app.sh        # the Swift app and target/Kanna.app, with the daemon and keeper inside (takes the channel too)
 ```
 
-A bare `cargo build` or `swift build` misses steps, so start with `scripts/build.sh`. A second run is quick: Ghostty is skipped and the rest is cargo's and SwiftPM's incremental builds. The first build compiles Ghostty with Zig (downloaded if the right version isn't installed), which takes a while. A git worktree of this repo (a Kanna task's, say) reuses the main checkout's Ghostty builds when they're the pinned commit, linking them into its own `target/`, and starts from clones of its cargo dependencies and Swift packages, so its first build takes about 20s. Dev builds compile the Swift app in debug; production and staging in release. See [build speed](docs/specs/build-speed.md).
+A bare `cargo build` or `swift build` misses steps, so start with `scripts/build.sh`. A second run is quick: Ghostty is skipped and the rest is cargo's and SwiftPM's incremental builds. The first build compiles Ghostty with Zig (downloaded if the right version isn't installed), which takes a while. Ghostty is built once per pinned commit into a shared build store that every checkout links to or copies from, Rust dependencies come from a shared compile cache (`sccache`, when it's installed), and a git worktree of this repo (a Kanna task's, say) builds one Rust profile, `target/debug`, for its tests and its app ([build store](docs/specs/build-store.md)). Dev builds compile the Swift app in debug; production and staging in release. See [build speed](docs/specs/build-speed.md).
 
 ## Use
 
@@ -62,7 +62,7 @@ Some tests check Kanna against kmux, the reference model, using kmux's source an
 
 ```sh
 cargo test --workspace
-swift test --package-path apps/kanna --scratch-path target/kanna-build   # the Swift tests, after scripts/build.sh (they link target/release/libkanna_ffi.a)
+swift test --package-path apps/kanna --scratch-path target/kanna-build   # the Swift tests, after scripts/build.sh (they link libkanna_ffi.a from target/release, or target/debug in a worktree)
 scripts/e2e-kanna.sh              # private instances on their own sockets; never touches yours
 ```
 

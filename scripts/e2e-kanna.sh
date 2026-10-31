@@ -21,7 +21,8 @@ Every run stops what it started however it ends, and first stops what runs
 it can't see anymore left behind (docs/specs/e2e-cleanup.md). Run it
 unsandboxed: it needs ps, signals, Unix sockets and /tmp.
 
-Uses target/release/{kanna,kanna-daemon,kanna-keeper,kanna-build} and target/Kanna.app (or $KANNA_E2E_APP)
+Uses target/Kanna.app (or $KANNA_E2E_APP) and the kanna, kanna-daemon and kanna-keeper inside it,
+and target/PROFILE/kanna-build (debug in a worktree, release in the main checkout: docs/specs/build-store.md)
 (scripts/build.sh). The private instance gets:
   KANNA_SOCKET     the daemon's socket (the CLI and the app connect to it)
   KANNA_STATE_DIR  where the daemon, keeper and app keep their files
@@ -36,8 +37,9 @@ USAGE
 }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-bin="$repo_root/target/release"
 app="${KANNA_E2E_APP:-$repo_root/target/Kanna.app}/Contents/MacOS/Kanna"
+bin="${app%/MacOS/Kanna}/Helpers"
+rust_dir="$(. "$repo_root/scripts/env.sh" && kanna_rust_dir "$repo_root")"
 out="$repo_root/target/e2e-kanna"
 mkdir -p "$out"
 
@@ -482,8 +484,8 @@ web_md_ios_panes() {
 scenario cli_starts_app M1
 cli_starts_app() {
   local home="$KANNA_STATE_DIR/home" socket folder instance
-  folder="$("$bin/kanna-build" | sed -n 's/^folder=//p')"
-  instance="$("$bin/kanna-build" | sed -n 's/^instance=//p')"
+  folder="$("$rust_dir/kanna-build" | sed -n 's/^folder=//p')"
+  instance="$("$rust_dir/kanna-build" | sed -n 's/^instance=//p')"
   [[ "$instance" == default ]] || folder="$folder-$instance"
   socket="$home/Library/Application Support/$folder/kanna.sock"
   mkdir -p "$(dirname "$socket")"
@@ -596,6 +598,127 @@ markdown_diff() {
   check wait_for 5 eval '[[ "$(mdd addeddoc changes)" == 1 ]]' || { echo "markdown_diff: a doc new in work: $(mdd addeddoc changes)"; return 1; }
   failed="$(kanna open --window win-1 md "$repo/fresh.md" --diff main..work --tab 2>&1)"
   check grep -q "fresh.md isn't in work" <<<"$failed" || { echo "markdown_diff: a doc missing at B: $failed"; return 1; }
+}
+
+scenario markdown_overview M4
+markdown_overview() {
+  start_daemon && start_app || return 1
+  local dir="$KANNA_STATE_DIR/mdov" pictures top
+  mkdir -p "$dir/.git" "$dir/.kanna/docs"
+  {
+    printf '# Login\n\nHow sign-in works, from the button to the session.\n\n## The redirect\n\nThe app sends you to the provider and waits for the redirect back.\n\n'
+    printf '| Step | Who | What |\n|---|---|---|\n| 1 | app | opens the sign-in sheet |\n| 2 | provider | asks for the password |\n| 3 | app | reads the redirect |\n\n'
+    printf '```swift\nfunc signIn() async throws {\n    let url = try await provider.start()\n    try await session.open(url)\n}\n```\n\n'
+    printf '> The redirect must land on an allowed host.\n\n- Check it against the allow list.\n- Refuse anything else.\n\n'
+    printf '```mermaid\nflowchart LR\n    A[app] --> P[provider] --> R[redirect] --> S[session]\n```\n\n'
+    for i in $(seq 70); do printf '## Section %s\n\nParagraph %s about the session, the token and how the redirect is checked before the app trusts it.\n\n' "$i" "$i"; done
+  } >"$dir/login.md"
+  cat >"$dir/.kanna/docs/login.md.json" <<JSON
+{"file": "$dir/login.md", "agent": null, "socket": null, "next": 3, "threads": [
+ {"id": "c1", "quote": "allow list", "prefix": "", "suffix": "", "line": 22, "state": "open", "status": "unsent", "messages": [{"who": "you", "text": "Where does the allow list live?", "at": "2026-10-10T12:00:00"}], "error": null},
+ {"id": "c2", "quote": "Paragraph 40 about the session", "prefix": "", "suffix": "", "line": 200, "state": "resolved", "status": "replied", "messages": [{"who": "you", "text": "Fine.", "at": "2026-10-10T12:00:00"}], "error": null}]}
+JSON
+  printf '# Release\n\nA short note that fits.\n' >"$dir/release.md"
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null
+  kanna open --window new md "$dir/login.md" --name longdoc >/dev/null || return 1
+  mdo() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"${3:-longdoc}\"${2:-}}}" | field "$1"; }
+  mdwin() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"win-1\",\"size\":[$1,700]}}" >/dev/null; }
+  mdshot() { raw "{\"id\":1,\"cmd\":\"debug.snapshot\",\"args\":{\"path\":\"$1.png\"}}" >/dev/null; cp "$KANNA_STATE_DIR/$1.png" "$out/" 2>/dev/null; }
+  mdwin 1200
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == True ]]' || { echo "no overview: wanted $(mdo overview.wanted), width $(mdo width)"; return 1; }
+  check eval '(( $(mdo overview.box_height | cut -d. -f1) > 10 ))' || { echo "box $(mdo overview.box_y) $(mdo overview.box_height)"; return 1; }
+  check eval '(( $(mdo pictures) >= 1 ))' || return 1
+  pictures="$(mdo pictures)"
+  mdo scroll ',"scroll":2000' >/dev/null
+  check wait_for 5 eval '[[ "$(mdo overview.top | cut -d. -f1)" == 2000 ]]' || { echo "the box didn't follow the scroll: top $(mdo overview.top)"; return 1; }
+  sleep 0.3
+  check test "$(mdo pictures)" == "$pictures" || { echo "a scroll drew the picture again: $pictures, then $(mdo pictures)"; return 1; }
+  mdo zoom ',"zoom":1' >/dev/null; sleep 0.3
+  check test "$(mdo pictures)" == "$pictures" || { echo "a zoom drew the picture again: $pictures, then $(mdo pictures)"; return 1; }
+  mdo zoom ',"zoom":0' >/dev/null
+  mdo scroll ',"overview_click":3' >/dev/null
+  check wait_for 5 eval '[[ "$(mdo scroll)" == 0* ]]' || { echo "a click at the top of the thumbnail left the scroll at $(mdo scroll)"; return 1; }
+  mdo scroll ',"overview_marks_click":690' >/dev/null
+  check wait_for 5 eval '(( $(mdo scroll | cut -d. -f1) > 2000 ))' || { echo "a click at the foot of the marks left the scroll at $(mdo scroll)"; return 1; }
+  mdo scroll ',"overview_drag":[10,-400]' >/dev/null
+  check wait_for 5 eval '[[ "$(mdo scroll)" == 0* ]]' || { echo "dragging the box up left the scroll at $(mdo scroll)"; return 1; }
+  raw '{"id":1,"cmd":"debug.click","args":{"pane":"longdoc","at":[300,300]}}' >/dev/null; sleep 0.3
+  key cmd+f
+  raw '{"id":1,"cmd":"debug.type","args":{"focused":true,"text":"redirect"}}' >/dev/null
+  check wait_for 5 eval '(( $(mdo overview.marks_by_kind.hit 2>/dev/null || echo 0) > 3 ))' || { echo "find hits not marked: $(mdo overview.marks_by_kind)"; return 1; }
+  check test "$(mdo pictures)" == "$pictures" || { echo "a find drew the picture again: $pictures, then $(mdo pictures)"; return 1; }
+  mdo scroll ',"scroll":0' >/dev/null
+  mdo overview.shown ',"overview_hover":true' >/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.5
+  check wait_for 5 eval '(( $(mdo pictures) > pictures ))' || { echo "the appearance change didn't draw a picture"; return 1; }
+  mdshot markdown_overview-light
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null; sleep 0.5
+  mdshot markdown_overview-dark
+  mdo overview.shown ',"overview_hover":false' >/dev/null
+  key escape
+  check test "$(mdo overview.shown ',"overview_enabled":false')" == False || { echo "View › Overview off left it shown"; return 1; }
+  check test "$(mdo overview.shown ',"overview_enabled":true')" == True || { echo "View › Overview on didn't bring it back"; return 1; }
+  pictures="$(mdo pictures)"
+  mdwin 1000
+  check wait_for 5 eval '(( $(mdo pictures) > pictures ))' || { echo "a width change didn't draw a picture"; return 1; }
+  mdwin 700
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == False && "$(mdo overview.wanted)" == True ]]' || { echo "at 700 pt: shown $(mdo overview.shown)"; return 1; }
+  mdwin 1200
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == True ]]' || { echo "not back at 1200 pt"; return 1; }
+  kanna open --window win-1 md "$dir/release.md" --name shortdoc --tab >/dev/null || return 1
+  check wait_for 5 eval 'doc_text shortdoc "fits"' || return 1
+  check test "$(mdo overview.wanted '' shortdoc)" == False || { echo "a doc that fits wants the overview"; return 1; }
+  check test "$(mdo overview.shown '' shortdoc)" == False || return 1
+  kanna close shortdoc >/dev/null
+  kanna markup longdoc >/dev/null || return 1
+  mdwin 1500
+  check wait_for 5 eval '[[ "$(mdo markup)" == True && "$(mdo overview.shown)" == True && "$(mdo threads_shown)" == True ]]' || { echo "at 1500 pt with comments: overview $(mdo overview.shown), list $(mdo threads_shown)"; return 1; }
+  check wait_for 5 eval '[[ "$(mdo overview.marks_by_kind.comment)" == 1 ]]' || { echo "comment marks: $(mdo overview.marks_by_kind)"; return 1; }
+  mdo overview.shown ',"overview_hover":true' >/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.5
+  mdshot markdown_overview-threads-light
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null; sleep 0.5
+  mdshot markdown_overview-threads-dark
+  mdo overview.shown ',"overview_hover":false' >/dev/null
+  mdwin 1000
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == False && "$(mdo threads_shown)" == True ]]' || { echo "at 1000 pt the overview should go first: overview $(mdo overview.shown), list $(mdo threads_shown)"; return 1; }
+  mdshot markdown_overview-narrow
+  mdwin 500
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == False && "$(mdo threads_shown)" == False ]]' || { echo "at 500 pt: overview $(mdo overview.shown), list $(mdo threads_shown)"; return 1; }
+}
+
+scenario markdown_diff_overview M4
+markdown_diff_overview() {
+  start_daemon && start_app || return 1
+  local repo="$KANNA_STATE_DIR/mddiffov" git=(git -C "$KANNA_STATE_DIR/mddiffov" -c user.name=e2e -c user.email=e2e@example.invalid) pictures
+  mkdir -p "$repo" && "${git[@]}" init -q -b main || return 1
+  {
+    printf '# Login\n\nHow sign-in works.\n\n'
+    for i in $(seq 25); do printf 'Opening paragraph %s stays as it is.\n\n' "$i"; done
+    printf -- '- check the host\n- keep the old fallback\n- open the session\n\n'
+    for i in $(seq 25); do printf 'Middle paragraph %s stays as it is.\n\n' "$i"; done
+    printf '| Step | What |\n|---|---|\n| 1 | open the sheet |\n| 2 | read the token |\n\n'
+    for i in $(seq 25); do printf 'Closing paragraph %s stays as it is.\n\n' "$i"; done
+  } >"$repo/login.md"
+  "${git[@]}" add login.md && "${git[@]}" commit -qm base || return 1
+  perl -0pi -e 's/- keep the old fallback\n//; s/\| 2 \| read the token \|/| 2 | read and check the token |/; s/(Middle paragraph 10 stays as it is\.\n\n)/$1## A new section\n\nAdded under the middle.\n\n/' "$repo/login.md"
+  mdo() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"diffov\"${2:-}}}" | field "$1"; }
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null
+  kanna open --window new md "$repo/login.md" --name diffov --diff main >/dev/null || return 1
+  raw '{"id":1,"cmd":"debug.desk","args":{"window":"win-1","size":[1200,700]}}' >/dev/null
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == True ]]' || { echo "no overview on the diff: wanted $(mdo overview.wanted)"; return 1; }
+  check wait_for 5 eval '(( $(mdo overview.marks_by_kind.added) >= 1 && $(mdo overview.marks_by_kind.removed) >= 1 && $(mdo overview.marks_by_kind.changed) >= 1 ))' || { echo "diff marks: $(mdo overview.marks_by_kind), changes $(mdo changes)"; return 1; }
+  local added; added="$(mdo overview.marks_by_kind.added)"
+  mdo overview.shown ',"overview_hover":true' >/dev/null
+  mdo scroll ',"scroll":600' >/dev/null; sleep 0.4
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"markdown_diff_overview-dark.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/markdown_diff_overview-dark.png" "$out/" 2>/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.5
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"markdown_diff_overview-light.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/markdown_diff_overview-light.png" "$out/" 2>/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null
+  mdo overview.shown ',"overview_hover":false' >/dev/null
+  pictures="$(mdo pictures)"
+  perl -0pi -e 's/(Closing paragraph 20 stays as it is\.\n\n)/$1A paragraph added near the end.\n\n/' "$repo/login.md"
+  check wait_for 5 eval '(( $(mdo overview.marks_by_kind.added) > added && $(mdo pictures) > pictures ))' || { echo "the marks didn't follow the edit: $(mdo overview.marks_by_kind), pictures $pictures then $(mdo pictures)"; return 1; }
 }
 
 scenario cli_commands M4
@@ -1287,15 +1410,23 @@ md_comments() {
   start_daemon && start_app || return 1
   kanna open --window new --name agent --cmd "$(probe '\033[?2004h' x 0)" >/dev/null || return 1
   check wait_for 5 shows agent READY || return 1
-  local dir="$KANNA_STATE_DIR/doc" fixture="$repo_root/references/prototypes/doc-markup/fixture" agent_id at xy
+  local dir="$KANNA_STATE_DIR/doc" fixture="$repo_root/references/prototypes/doc-markup/fixture" agent_id at xy kept
   mkdir -p "$dir/.git" "$dir/.kanna/docs"
   cp "$fixture/review.md" "$dir/review.md"
+  for at in $(seq 1 40); do printf '\nMore of the doc, paragraph %s, so it scrolls.\n' "$at"; done >>"$dir/review.md"
   sed "s|FILE|$dir/review.md|" "$fixture/review.threads.json" >"$dir/.kanna/docs/review.md.json"
   agent_id="$(pane agent id)"
   KANNA_TERMINAL="$agent_id" kanna open md --name doc --tab "$dir/review.md" >/dev/null || return 1
   md_comments_md() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"doc\"${1:-}}}"; }
-  check wait_for 5 eval '[[ "$(md_comments_md | field markup)" == False && "$(md_comments_md | field agent)" == None ]]' || { echo "open md should show the file without comments"; md_comments_md; return 1; }
+  check wait_for 5 eval '[[ "$(md_comments_md | field markup)" == False && "$(md_comments_md | field agent)" == None && "$(md_comments_md | field loads)" -ge 1 ]]' || { echo "open md should show the file without comments"; md_comments_md; return 1; }
+  md_comments_kept() { md_comments_md | python3 -c 'import json, sys; d = json.load(sys.stdin); print(d["view"], d["loads"], round(d["scroll"]))'; }
+  md_comments_md ',"scroll":120' >/dev/null
+  check wait_for 5 eval '[[ "$(md_comments_kept | cut -d " " -f 3)" == 120 ]]' || { echo "the doc should scroll to 120"; md_comments_md; return 1; }
+  kept="$(md_comments_kept)"
   KANNA_TERMINAL="$agent_id" kanna markup doc | grep -qF "comments on in" || return 1
+  check wait_for 5 eval '[[ "$(md_comments_md | field markup)" == True ]]' || return 1
+  check test "$(md_comments_kept)" == "$kept" || { echo "turning comments on should keep the view, its load and its scroll ($kept)"; return 1; }
+  md_comments_md ',"scroll":0' >/dev/null
   md_comments_count() { md_comments_md | field threads | python3 -c 'import json, sys; print(len(json.load(sys.stdin)))'; }
   md_comments_thread() { md_comments_md | field threads | python3 -c 'import json, sys
 t = [t for t in json.load(sys.stdin) if t["id"] == sys.argv[1]][0]
@@ -1353,8 +1484,10 @@ print(len(v) if isinstance(v, list) else v)' "$1" "$2"; }
   check wait_for 5 eval '[[ "$(md_comments_thread c4 state)" == resolved ]]' || return 1
   raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null
   sleep 0.5; md_comments_shot md_comments-dark
+  kept="$(md_comments_md | field view)"
   kanna markup doc --off | grep -qF "comments off in" || return 1
   check wait_for 5 eval '[[ "$(md_comments_md | field markup)" == False ]]' || return 1
+  check test "$(md_comments_md | field view)" == "$kept" || { echo "turning comments off should keep the view"; return 1; }
   KANNA_TERMINAL="$agent_id" kanna markup "$dir/review.md" --name doc2 --tab >/dev/null || return 1
   check wait_for 5 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"doc2\"}}" | field markup)" == True ]]'
 }
@@ -1507,7 +1640,7 @@ page_comments() {
   start_daemon && start_app || return 1
   kanna open --window new --name agent --cmd "$(probe '\033[?2004h' x 0)" >/dev/null || return 1
   check wait_for 5 shows agent READY || return 1
-  local dir="$KANNA_STATE_DIR/page" agent_id xy mark
+  local dir="$KANNA_STATE_DIR/page" agent_id xy mark kept page_comments_web_kept
   mkdir -p "$dir/.git"
   cat >"$dir/page.html" <<'HTML'
 <!doctype html>
@@ -1524,6 +1657,18 @@ HTML
   check test "$(pane plain url)" == "file://$dir/page.html" || return 1
   check wait_for 5 eval 'raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"plain\"}}" | grep -q "Ship it"' || return 1
   [[ "$(raw '{"id":1,"cmd":"debug.web","args":{"pane":"plain"}}')" != *threads* ]] || { echo "open web should show the page without comments"; return 1; }
+  page_comments_plain() { raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"plain\"${1:-}}}"; }
+  page_comments_kept() { page_comments_web_kept="$(page_comments_plain ',"js":"[window.scrollY, window.kept || 0]"' | field value)"; page_comments_plain | python3 -c 'import json, sys; d = json.load(sys.stdin); print(d["view"], d["web_view"], d["loads"], sys.argv[1])' "$page_comments_web_kept"; }
+  page_comments_plain ',"js":"window.kept = 42; window.scrollTo(0, 300); window.scrollY"' >/dev/null
+  check wait_for 5 eval '[[ "$(page_comments_plain ",\"js\":\"window.scrollY\"" | field value)" == 300 ]]' || { page_comments_plain ',"js":"window.scrollY"'; return 1; }
+  kept="$(page_comments_kept)"
+  KANNA_TERMINAL="$agent_id" kanna markup plain | grep -qF "comments on in" || return 1
+  check wait_for 5 eval '[[ "$(page_comments_plain | field markup)" == True ]]' && check wait_for 5 eval 'page_comments_plain | grep -q threads' || { page_comments_plain; return 1; }
+  check test "$(page_comments_kept)" == "$kept" || { echo "turning comments on should keep the web view, its page, its scroll and its JS state ($kept)"; return 1; }
+  kanna markup plain --off | grep -qF "comments off in" || return 1
+  check wait_for 5 eval '[[ "$(page_comments_plain | field markup)" == False ]]' || return 1
+  [[ "$(page_comments_plain)" != *threads* ]] || { echo "turning comments off should take the comment UI away"; return 1; }
+  check test "$(page_comments_kept)" == "$kept" || { echo "turning comments off should keep the page ($kept)"; return 1; }
   kanna close plain >/dev/null || return 1
   KANNA_TERMINAL="$agent_id" kanna markup --name page --tab "$dir/page.html" >/dev/null || return 1
   page_comments_web() { raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"page\"${1:-}}}"; }
@@ -1772,6 +1917,49 @@ dock_keeps_focus_through_tabs() {
   check test "$(ws agent focused)" == spec || return 1
 }
 
+scenario pane_cycle_keyboard M4
+pane_cycle_keyboard() {
+  start_daemon && start_app || return 1
+  desk() { raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}' | field "$1"; }
+  holds() { local id; id="$(pane "$1" id)"; [[ "$(dwin d1 focused)" == "$id" && "$(desk keyboard)" == "$id" && "$(desk highlighted)" == "$([[ "$(desk key)" == True ]] && echo "[\"$id\"]" || echo "[]")" ]]; }
+  cycle() {
+    key "$1"
+    check wait_for 5 holds "$2" || { echo "pane_cycle_keyboard: $1 to $2: focused $(dwin d1 focused), keyboard $(desk keyboard) ($(desk responder)), highlighted $(desk highlighted)"; return 1; }
+    [[ "$(pane "$2" type)" == term ]] || return 0
+    local typed="typed-$RANDOM"
+    raw "{\"id\":1,\"cmd\":\"debug.type\",\"args\":{\"focused\":true,\"text\":\"$typed\\n\"}}" >/dev/null
+    check wait_for 5 app_text "$2" "$typed" || { kanna read "$2"; return 1; }
+  }
+  printf '# Cycle\n\nA markdown pane.\n' >"$KANNA_STATE_DIR/cycle.md"
+  desk_task agent 'exec cat' || return 1
+  new_task waiting >/dev/null || return 1
+  KANNA_TERMINAL=agent kanna open --name left --cmd 'exec cat' >/dev/null || return 1
+  kanna task activate agent >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(dwin d1 dock.pane)" == "$(pane agent id)" ]]' || { app_view; return 1; }
+  kanna focus left >/dev/null || return 1
+  KANNA_TERMINAL=left kanna open md "$KANNA_STATE_DIR/cycle.md" --name doc --split right >/dev/null || return 1
+  kanna focus doc >/dev/null || return 1
+  KANNA_TERMINAL=left kanna open code "$KANNA_STATE_DIR/cycle.md" --name src --split down >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(dwin d1 tabs.0.panes)" == "[\"$(pane left id)\", \"$(pane doc id)\", \"$(pane src id)\"]" ]]' || { app_view; return 1; }
+  kanna focus agent >/dev/null || return 1
+  check wait_for 5 holds agent || return 1
+  cycle "cmd+]" left && cycle "cmd+]" doc && cycle "cmd+]" src && cycle "cmd+]" agent \
+    && cycle "cmd+[" src && cycle "cmd+[" doc && cycle "cmd+[" left && cycle "cmd+[" agent || return 1
+  click_tab "$(dwin d1 tabs.0.id)" 2
+  check wait_for 5 eval '[[ "$(desk responder)" == NSTextView ]]' || { echo "pane_cycle_keyboard: no tab rename field"; desk responder; return 1; }
+  kanna focus left >/dev/null || return 1
+  sleep 0.5
+  check test "$(desk responder)" == NSTextView || { echo "pane_cycle_keyboard: kanna focus took the keyboard from the tab rename"; return 1; }
+  cycle "cmd+]" doc && cycle "cmd+]" src && cycle "cmd+]" agent || return 1
+  key cmd+.
+  check wait_for 5 eval '[[ "$(desk empty)" == True && "$(desk search.shown)" == True ]]' || { desk search; return 1; }
+  key cmd+f
+  check wait_for 5 eval '[[ "$(desk search.focused)" == True ]]' || { echo "pane_cycle_keyboard: no Desk view search"; return 1; }
+  key cmd+.
+  check wait_for 5 eval '[[ "$(dwin d1 dock.pane)" == "$(pane agent id)" ]]' || { echo "pane_cycle_keyboard: ⌘. didn't show the active task"; return 1; }
+  cycle "cmd+]" left && cycle "cmd+[" agent
+}
+
 scenario desk_tasks M4
 desk_tasks() {
   start_daemon && start_app || return 1
@@ -1987,6 +2175,15 @@ desk_shelf() {
   kanna task pick $(tid 2) >/dev/null || { echo "desk_shelf line $LINENO"; return 1; }
   (cd "$repo" && kanna task new "Third" && kanna task new "Fourth") >/dev/null || { echo "desk_shelf line $LINENO"; return 1; }
   check wait_for 5 eval '[[ "$(desk running)" == 2 && "$(desk shelf)" == "[\"$(tid 3)\", \"$(tid 4)\"]" ]]' || { desk running; desk shelf; return 1; }
+  strip() { desk stripLayout | python3 -c 'import json, sys; print(" ".join(i["task"] + ":" + str(i["key"]) for i in json.load(sys.stdin)["items"]))'; }
+  docked() { [[ "$(desk window.dock.pane)" == "$1" ]]; }
+  key cmd+2
+  check wait_for 5 docked "$(pane Second id)" || { echo "desk_shelf: with two tasks ⌘2 didn't switch to the other one"; return 1; }
+  check wait_for 5 eval '[[ "$(strip)" == "$(pane First id):⌘1" ]]' || { echo "desk_shelf: with two tasks the other shows ⌘1"; strip; return 1; }
+  key cmd+2
+  check wait_for 5 docked "$(pane First id)" || { echo "desk_shelf: with two tasks ⌘2 twice didn't go back"; return 1; }
+  key cmd+.
+  check wait_for 5 eval '[[ "$(desk page)" == True ]]' || { echo "desk_shelf line $LINENO"; return 1; }
   key cmd+t; key cmd+d
   check test "$(desk window.tabs)" == "[]" || { echo "desk_shelf: the Shelf got a tab"; desk window.tabs; return 1; }
   raw '{"id":1,"cmd":"debug.click","args":{"shelf":"'"$(tid 3)"'","window":"d1"}}' >/dev/null
@@ -1995,9 +2192,7 @@ desk_shelf() {
   local first second third; first="$(pane First id)"; second="$(pane Second id)"; third="$(pane Third id)"
   rows() { desk rows | python3 -c 'import json, sys
 print(" ".join(r["task"] + (":active" if r["active"] else "") + (":lit" if r["highlit"] else "") + (":" + r["go"] if r["goShown"] else "") for r in json.load(sys.stdin)))'; }
-  strip() { desk stripLayout | python3 -c 'import json, sys; print(" ".join(i["task"] + ":" + str(i["key"]) for i in json.load(sys.stdin)["items"]))'; }
   check wait_for 5 eval '[[ "$(rows)" == "$first:active:lit $second $third" ]]' || { echo "desk_shelf: the Desk view lists its tasks oldest first, the active one in its place, with no hint until hovered"; rows; return 1; }
-  docked() { [[ "$(desk window.dock.pane)" == "$1" ]]; }
   key cmd+1
   check wait_for 5 docked "$third" || { echo "desk_shelf: ⌘1 isn't the task that came to the Desk last"; return 1; }
   check wait_for 5 eval '[[ "$(strip)" == "$first:⌘1 $second:⌘2" ]]' || { echo "desk_shelf: the strip lists the others oldest first, keyed by recency"; strip; return 1; }
@@ -2009,7 +2204,7 @@ print(" ".join(r["task"] + (":active" if r["active"] else "") + (":lit" if r["hi
   key cmd+2
   check wait_for 5 docked "$third" || { echo "desk_shelf: ⌘2 (2)"; return 1; }
   key cmd+2
-  check wait_for 5 docked "$first" || { echo "desk_shelf: ⌘2 three times didn't visit every task"; return 1; }
+  check wait_for 5 docked "$first" || { echo "desk_shelf: with three tasks ⌘2 three times didn't visit every task"; return 1; }
   key cmd+3; sleep 0.5
   check docked "$first" || { echo "desk_shelf: ⌘3 made a task active"; return 1; }
   key cmd+.
@@ -2328,11 +2523,28 @@ assert {"kind": "added", "text": "fn f5() -> u32 { 500 }", "new": 5} in rows, ro
   local added
   added="$(diffpane rows | python3 -c 'import json, sys; print([i for i, r in enumerate(json.load(sys.stdin)) if r["kind"] == "added"][0])')"
   check eval '[[ "$(diffpane colors ",\"colors\":$added")" != "[]" ]]' || { echo "no colours on row $added"; return 1; }
+  refreshed() { check wait_for 5 eval '[[ "$(diffpane stale)" == True ]]' || { echo "no newer diff: stale $(diffpane stale)"; return 1; }; diffpane stale ',"refresh":true' >/dev/null; }
+  local before; before="$(diffpane rows)"
+  diffpane current ',"keys":"gn"' >/dev/null
+  local reading; reading="$(diffpane current)"
+  local row; row="$(diffpane rows | python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin)[int(sys.argv[1])]))' "$reading")"
   sed -i '' 's/fn f20() -> u32 { 20 }/fn f20() -> u32 { 2000 }/' "$repo/a.rs"
-  check wait_for 5 eval '[[ "$(diffpane rows)" == *"{ 2000 }"* ]]' || { echo "the edit didn't arrive"; return 1; }
+  check wait_for 5 eval '[[ "$(diffpane stale)" == True ]]' || { echo "the edit didn't set changed: stale $(diffpane stale)"; return 1; }
+  check test "$(diffpane rows)" == "$before" || { echo "the rows moved while reading"; return 1; }
+  check test "$(diffpane current)" == "$reading" || { echo "the current line moved while reading"; return 1; }
+  check test "$(diffpane fresh)" == "[]" || { echo "marked fresh before a refresh: $(diffpane fresh)"; return 1; }
+  check test "$(diffpane updating)" == False || { echo "updating shown while reading"; return 1; }
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"diff_pane-changed.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/diff_pane-changed.png" "$out/" 2>/dev/null
+  kanna focus changes >/dev/null
+  raw '{"id":1,"cmd":"debug.key","args":{"key":"cmd+r"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(diffpane rows)" == *"{ 2000 }"* && "$(diffpane stale)" == False ]]' || { echo "⌘R didn't bring the edit in"; return 1; }
   check eval '[[ "$(diffpane fresh)" != "[]" ]]' || { echo "nothing marked fresh"; return 1; }
+  check python3 -c 'import json, sys
+rows, current = json.loads(sys.argv[1]), int(sys.argv[2])
+assert rows[current] == json.loads(sys.argv[3]), (rows[current], sys.argv[3])' "$(diffpane rows)" "$(diffpane current)" "$row" || { echo "the refresh lost the place"; return 1; }
   touch "$repo/a.rs"
-  check wait_for 5 eval '[[ "$(diffpane updating)" == False ]]' || { echo "still updating after a re-diff with nothing new"; return 1; }
+  sleep 0.6
+  check test "$(diffpane stale)" == False || { echo "changed after a re-diff with nothing new"; return 1; }
   diffpane view ',"keys":"g"' >/dev/null
   raw '{"id":1,"cmd":"debug.key","args":{"key":"cmd+f"}}' >/dev/null
   local typed; typed=$(raw '{"id":1,"cmd":"debug.type","args":{"focused":true,"text":"2000"}}')
@@ -2406,11 +2618,13 @@ assert not any(r["text"].startswith("fn f5") for r in rows), "a.rs still open"' 
 for c in json.loads(sys.argv[1]): assert c["x"] == -c["inset_left"] and c["inset_left"] == c["gutter"], c' "$(diffpane columns)" || return 1
   diffpane view ',"zoom":0' >/dev/null
   printf 'one\r\ntwo\xe2\x80\xa8three\r\n' >"$repo/crlf.txt"
+  refreshed || return 1
   check wait_for 5 eval '[[ "$(diffpane files)" == *crlf.txt* ]]' || { echo "crlf.txt didn't arrive"; return 1; }
   check python3 -c 'import json, sys
 rows = json.loads(sys.argv[1])
 assert {"kind": "added", "text": "one\r", "new": 1, "left": "blank", "right": "added"} in rows, [r for r in rows if r.get("new") == 1]' "$(diffpane rows)" || return 1
   printf 'fn later() {}\n' >"$repo/c.rs"
+  refreshed || return 1
   check wait_for 5 eval '[[ "$(diffpane files)" == *c.rs* ]]' || { echo "the untracked c.rs didn't arrive"; return 1; }
   watchers() { raw '{"id":1,"cmd":"diffs"}' | python3 -c 'import json, sys; print(" ".join(json.dumps(d["args"]) + ":" + str(len(d["views"])) for d in json.load(sys.stdin)["diffs"]))'; }
   check wait_for 5 eval '[[ "$(watchers)" == "[\"--merge-base\", \"main\"]:1" ]]' || { echo "watchers: $(watchers)"; return 1; }
@@ -2422,9 +2636,17 @@ assert {"kind": "added", "text": "one\r", "new": 1, "left": "blank", "right": "a
   check wait_for 10 app_attached || return 1
   check wait_for 5 eval '[[ "$(watchers)" == "[\"--merge-base\", \"main\"]:1" ]]' || { echo "after a daemon restart, watchers: $(watchers)"; return 1; }
   printf 'fn restarted() {}\n' >"$repo/d.rs"
+  refreshed || return 1
   check wait_for 5 eval '[[ "$(diffpane files)" == *d.rs* ]]' || { echo "d.rs didn't arrive after a daemon restart: $(diffpane files)"; return 1; }
   stop_app; start_app || return 1
   check wait_for 5 eval '[[ "$(diffpane view)" == split && "$(diffpane files)" == *c.rs* ]]' || { echo "after relaunch: $(diffpane view) $(diffpane files) $(diffpane error) $(watchers)"; return 1; }
+  before="$(diffpane files)"
+  mv "$repo/.git" "$repo/.git-away"
+  check wait_for 5 eval '[[ "$(diffpane notice)" == *"not a git repository"* ]]' || { echo "git's error while reading: notice $(diffpane notice), error $(diffpane error)"; mv "$repo/.git-away" "$repo/.git"; return 1; }
+  check test "$(diffpane files)" == "$before" || { echo "git's error replaced the diff being read"; mv "$repo/.git-away" "$repo/.git"; return 1; }
+  check test "$(diffpane error)" == None || { echo "error $(diffpane error)"; mv "$repo/.git-away" "$repo/.git"; return 1; }
+  mv "$repo/.git-away" "$repo/.git"
+  check wait_for 5 eval '[[ "$(diffpane notice)" == None && "$(diffpane stale)" == False ]]' || { echo "git back: notice $(diffpane notice), stale $(diffpane stale)"; return 1; }
   kanna navigate changes diff --staged >/dev/null || return 1
   check wait_for 5 eval '[[ "$(diffpane command)" == "git diff --staged" && "$(diffpane files)" == "[]" ]]' || { echo "staged: $(diffpane command) $(diffpane files)"; return 1; }
   check wait_for 5 eval '[[ "$(watchers)" == "[\"--staged\"]:1" ]]' || { echo "after navigating, watchers: $(watchers)"; return 1; }
@@ -2442,6 +2664,33 @@ assert {"kind": "added", "text": "one\r", "new": 1, "left": "blank", "right": "a
   check test "$(deskdiff list)" == False || { echo "files list beside the agent at $(deskdiff width) pt"; return 1; }
   kanna resize diffagent 1/5 >/dev/null || return 1
   check wait_for 5 eval '[[ "$(deskdiff list)" == True ]]' || { echo "no files list beside the agent at 1/5: $(deskdiff width) pt"; return 1; }
+}
+
+scenario diff_pane_worktree_gone M4
+diff_pane_worktree_gone() {
+  start_daemon && start_app || return 1
+  local repo="$KANNA_STATE_DIR/gone_repo" tree="$KANNA_STATE_DIR/gone_tree"
+  mkdir -p "$repo" && cd "$repo" || return 1
+  dgit() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@" >/dev/null; }
+  dgit init -q -b main
+  for i in $(seq 200); do echo "fn f$i() -> u32 { $i }"; done >a.rs
+  dgit add . && dgit commit -qm first && dgit worktree add -q -b task "$tree"
+  cd - >/dev/null
+  for i in $(seq 200); do echo "fn f$i() -> u64 { $i }"; done >"$tree/a.rs"
+  gone() { raw "{\"id\":1,\"cmd\":\"debug.diff\",\"args\":{\"pane\":\"gone\"${2:-}}}" | field "$1"; }
+  (cd "$tree" && kanna open --window new diff --merge-base main --name gone >/dev/null) || return 1
+  check wait_for 5 eval '[[ "$(gone files)" == *a.rs* ]]' || { echo "files $(gone files) error $(gone error)"; return 1; }
+  gone view ',"zoom":-40' >/dev/null
+  check wait_for 5 eval '[[ "$(gone zoom)" == 0.72 ]]' || { echo "zoomed out to $(gone zoom)"; return 1; }
+  gone view ',"keys":"G"' >/dev/null
+  check wait_for 5 eval '[[ "$(gone sticky)" == a.rs ]]' || { echo "no sticky header zoomed out: $(gone sticky)"; return 1; }
+  git -C "$repo" worktree remove --force "$tree" || return 1
+  check wait_for 5 eval '[[ "$(gone notice)" != None || "$(gone error)" != None ]]' || { echo "the removed worktree went unnoticed: notice $(gone notice), error $(gone error)"; return 1; }
+  for keys in g G g G; do gone view ",\"keys\":\"$keys\"" >/dev/null; done
+  gone view ',"zoom":-1' >/dev/null
+  check app_attached || { echo "the app died after its worktree went"; return 1; }
+  check test "$(gone sticky)" == a.rs || { echo "sticky $(gone sticky) after the worktree went"; return 1; }
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"diff_pane_worktree_gone.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/diff_pane_worktree_gone.png" "$out/" 2>/dev/null
 }
 
 scenario code_tour M4
@@ -3635,7 +3884,8 @@ path_reuses_desk() {
   check test "$(app_view | field windows | count)" == 1 || { echo "path_reuses_desk: more than one window"; kanna workspace list --all; return 1; }
   expected="opened d2 on $other"; says kanna "$other" || { echo "path_reuses_desk: another project didn't open a new Desk"; return 1; }
   check wait_for 5 eval '[[ "$(dwin d2 key)" == True ]]' || { app_view; return 1; }
-  expected="brought forward d1 on $repo"; says kanna "$repo" || return 1
+  local said; said="$(kanna "$repo")"
+  [[ "$said" == "brought forward d1 on "*"${repo#/private}" ]] || { echo "stays_behind: kanna PATH said: $said"; return 1; }
   check wait_for 5 eval '[[ "$(dwin d1 key)" == True ]]' || { echo "path_reuses_desk: the project's Desk isn't the key window"; app_view; return 1; }
   check test "$(app_view | field windows | count)" == 2 || { kanna workspace list --all; return 1; }
 }
@@ -3667,6 +3917,32 @@ path_last_in_front() {
   check wait_for 5 eval '[[ "$(dwin d1 key)" == True ]]' || { app_view; return 1; }
   expected="parked $(sid 2): d2 shows the Desk view, and $(sid 2) stays active"; KANNA_TERMINAL="$(pane t2 id)" says kanna task park || { echo "path_last_in_front: park from a task's terminal"; return 1; }
   check test "$(app_view | field windows | count)" == 2 || { kanna workspace list --all; return 1; }
+}
+
+scenario stays_behind M4
+stays_behind() {
+  start_daemon && start_app || { echo "stays_behind line $LINENO"; return 1; }
+  front() { app_view | field key; }
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "stays_behind line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  expected="opened term-1 (a) in win-1, tab-1: running"; says kanna open --window new --name a || return 1
+  check wait_for 5 eval '[[ "$(front)" == win-1 ]]' || { echo "stays_behind: the user's new window isn't in front"; return 1; }
+  local a; a="$(pane a id)"
+  expected="opened term-2 (b) in win-2, tab-2: running"; KANNA_TERMINAL="$a" says kanna open --window new --name b || return 1
+  check wait_for 5 eval '[[ "$(app_view | field windows | count)" == 2 ]]' || { echo "stays_behind: win-2 never came"; return 1; }
+  sleep 0.5; check test "$(front)" == win-1 || { echo "stays_behind: a new window from a Kanna terminal came forward: $(front)"; return 1; }
+  expected="focused b in win-2 (behind the app you're in)"; KANNA_TERMINAL="$a" says kanna focus b || return 1
+  sleep 0.5; check test "$(front)" == win-1 || { echo "stays_behind: kanna focus from a Kanna terminal brought $(front) forward"; return 1; }
+  expected="opened d1 on $repo"; KANNA_TERMINAL="$a" says kanna "$repo" || return 1
+  check wait_for 5 eval '[[ "$(app_view | field windows | count)" == 3 ]]' || { echo "stays_behind: d1 never came"; return 1; }
+  sleep 0.5; check test "$(front)" == win-1 || { echo "stays_behind: a Desk opened from a Kanna terminal came forward: $(front)"; return 1; }
+  expected="focused b in win-2 (in front)"; says kanna focus b || return 1
+  check wait_for 5 eval '[[ "$(front)" == win-2 ]]' || { echo "stays_behind: the user's kanna focus didn't bring win-2 forward"; return 1; }
+  local said; said="$(kanna "$repo")"
+  [[ "$said" == "brought forward d1 on "*"${repo#/private}" ]] || { echo "stays_behind: kanna PATH said: $said"; return 1; }
+  check wait_for 5 eval '[[ "$(front)" == d1 ]]' || { echo "stays_behind: the user's kanna PATH didn't bring d1 forward"; return 1; }
+  check wait_for 5 python3 -c 'import json, sys; sys.exit(json.load(open(sys.argv[1])).get("order", [None])[:3] != ["d1", "win-2", "win-1"])' "$KANNA_STATE_DIR/app-state.json" || { echo "stays_behind: app-state.json doesn't have d1, win-2, win-1 in front"; cat "$KANNA_STATE_DIR/app-state.json"; return 1; }
 }
 
 scenario cli_caller M4
@@ -4273,18 +4549,17 @@ sys.exit(not (a[1] > b[1] and abs(a[0] - b[0]) < 1 and a[2] == 340))' || { echo 
   check wait_for 2 eval '[[ "$(toasted)" == "d1 " ]]' || { echo "toasts: × didn't close it"; return 1; }
 }
 
-scenario machine_remote_task M4
-machine_remote_task() {
+machine_vm() {
   export KANNA_MACHINE_MDNS=0 KANNA_MACHINE_PORT=0
-  start_daemon || { echo "machine_remote_task line $LINENO"; return 1; }
-  local vm="$KANNA_STATE_DIR/machine-vm"
+  start_daemon || { echo "$1 line $LINENO"; return 1; }
+  vm="$KANNA_STATE_DIR/machine-vm"
   mkdir -p "$vm/state" && chmod 700 "$vm"
   vmk() { KANNA_SOCKET="$vm/kanna.sock" KANNA_STATE_DIR="$vm/state" "$bin/kanna" "$@"; }
   vraw() { KANNA_SOCKET="$vm/kanna.sock" raw "$@"; }
   KANNA_SOCKET="$vm/kanna.sock" KANNA_STATE_DIR="$vm/state" KANNA_KEEPER="$bin/kanna-keeper" "$bin/kanna-daemon" >>"$out/daemon-vm.log" 2>&1 &
-  local vm_pid=$!
-  wait_for 5 test -S "$vm/kanna.sock" || { echo "machine_remote_task: the second daemon didn't open its socket"; return 1; }
-  kanna machine name mbp >/dev/null && vmk machine name vm >/dev/null || { echo "machine_remote_task line $LINENO"; return 1; }
+  vm_pid=$!
+  wait_for 5 test -S "$vm/kanna.sock" || { echo "$1: the second daemon didn't open its socket"; return 1; }
+  kanna machine name mbp >/dev/null && vmk machine name vm >/dev/null || { echo "$1 line $LINENO"; return 1; }
   python3 - "$KANNA_SOCKET" >"$KANNA_STATE_DIR/confirmed" <<'PY' &
 import json, socket, sys
 s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); f = s.makefile("rw")
@@ -4299,18 +4574,23 @@ PY
   local confirmer=$!
   vmk machine pair --json >"$KANNA_STATE_DIR/offer" &
   local waiting=$!
-  check wait_for 5 test -s "$KANNA_STATE_DIR/offer" || { echo "machine_remote_task: no pairing code"; return 1; }
+  check wait_for 5 test -s "$KANNA_STATE_DIR/offer" || { echo "$1: no pairing code"; return 1; }
   local code peer
   code="$(head -1 "$KANNA_STATE_DIR/offer" | field code)"
   peer="$(head -1 "$KANNA_STATE_DIR/offer" | python3 -c 'import json, sys; o = json.load(sys.stdin); print("%s@127.0.0.1:%s" % (o["key"], o["port"]))')"
   expected="added vm to your machines"; says kanna machine pair "$code" --peer "$peer" || return 1
   wait "$waiting" "$confirmer"
-  check test "$(cat "$KANNA_STATE_DIR/confirmed")" == vm || { echo "machine_remote_task: the pairing wasn't confirmed in an app"; return 1; }
-  start_app || { echo "machine_remote_task line $LINENO"; return 1; }
+  check test "$(cat "$KANNA_STATE_DIR/confirmed")" == vm || { echo "$1: the pairing wasn't confirmed in an app"; return 1; }
+  start_app || { echo "$1 line $LINENO"; return 1; }
   machines() { raw '{"id":1,"cmd":"debug.machines"}' | field "$1"; }
-  check wait_for 20 eval '[[ "$(machines links.0.attached)" == True ]]' || { echo "machine_remote_task: the app didn't link to vm"; raw '{"id":1,"cmd":"debug.machines"}'; return 1; }
+  check wait_for 20 eval '[[ "$(machines links.0.attached)" == True ]]' || { echo "$1: the app didn't link to vm"; raw '{"id":1,"cmd":"debug.machines"}'; return 1; }
   check test "$(machines links.0.machine) $(machines links.0.daemon.machine) $(machines links.0.path.path)" == "vm vm direct" || { raw '{"id":1,"cmd":"debug.machines"}'; return 1; }
+}
 
+scenario machine_remote_task M4
+machine_remote_task() {
+  local vm vm_pid
+  machine_vm machine_remote_task || return 1
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/team/notes"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first && git -C "$repo" remote add origin https://example.com/team/notes.git || { echo "machine_remote_task line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
@@ -4474,6 +4754,79 @@ project_import() {
   (cd "$there" && kanna task new "Next" "hi") >/dev/null || { echo "project_import: a task in the copy"; return 1; }
   refused="$(cd / && kanna project import "$there" 2>&1)"; [[ "$refused" == *"is in its place already"* ]] || { echo "project_import: $refused"; return 1; }
   refused="$(cd / && kanna project import "$repo" 2>&1)"; [[ "$refused" == *"is already there"* || "$refused" == *"both clones of example.com/team/app"* ]] || { echo "project_import: importing the original again: $refused"; return 1; }
+}
+
+scenario machine_remote_web M4
+machine_remote_web() {
+  local vm vm_pid
+  machine_vm machine_remote_web || return 1
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/team/devserver"
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first && git -C "$repo" remote add origin https://example.com/team/devserver.git || { echo "machine_remote_web line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  (cd / && vmk "$repo") >/dev/null || { echo "machine_remote_web line $LINENO"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"d1\"}}" | field "$1"; }
+  check wait_for 10 eval '[[ "$(desk lead)" == term-*@vm ]]' || { echo "machine_remote_web: the Desk's planner isn't on vm"; return 1; }
+  local planner; planner="$(desk lead)"
+  (cd "$repo" && KANNA_TERMINAL="${planner%@vm}" vmk task new "Dev server" "Run the dev server") >/dev/null || { echo "machine_remote_web line $LINENO"; return 1; }
+  local task; task="$(sqlite3 -readonly "$vm/state/kanna.db" "select id from tasks order by rowid limit 1")@vm"
+  check wait_for 10 eval '[[ "$(desk shelf)" == "[\"$task\"]" ]]' || { echo "machine_remote_web: the Shelf doesn't list vm's task"; return 1; }
+  raw '{"id":1,"cmd":"debug.click","args":{"shelf":"'"$task"'","window":"d1"}}' >/dev/null
+  check wait_for 10 eval '[[ "$(desk tasks.0.title)" == "Dev server" ]]' || { echo "machine_remote_web: picking vm's task didn't put it on the Desk"; return 1; }
+  local agent; agent="$(desk tasks.0.task)"
+  raw '{"id":1,"cmd":"debug.click","args":{"task":"'"$agent"'","window":"d1"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk window.dock.pane)" == "$agent" ]]' || { echo "machine_remote_web: activating vm's task didn't dock its agent"; return 1; }
+
+  local worktree="$repo/.kanna-worktrees/${task%@vm}" port
+  port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+  echo "hello from vm" >"$worktree/message.txt"
+  local opened; opened="$(cd "$worktree" && KANNA_TERMINAL="${agent%@vm}" vmk open web "http://localhost:$port/" --tab --name devpage --json)" || { echo "machine_remote_web: opening the dev server's page: $opened"; return 1; }
+  local page; page="$(echo "$opened" | field pane.id)@vm"
+  web() { raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"$page\"}}" | field "$1"; }
+  tunnel() { raw '{"id":1,"cmd":"debug.machines"}' | python3 -c 'import json, sys; print(json.load(sys.stdin)["links"][0]["ports"].get(sys.argv[1], ""))' "$port"; }
+  check wait_for 10 eval '[[ "$(tunnel)" =~ ^[0-9]+$ ]]' || { echo "machine_remote_web: the app opened no tunnel to vm's port $port"; raw '{"id":1,"cmd":"debug.machines"}'; return 1; }
+  check wait_for 10 eval '[[ "$(web notice)" == "Waiting for localhost:$port on vm…"* ]]' || { echo "machine_remote_web: a page before its dev server is up should wait for it"; web notice; return 1; }
+  (cd "$worktree" && KANNA_TERMINAL="${agent%@vm}" vmk open --tab --name devserver --cmd "python3 '$repo_root/tools/hmr-server/hmr-server.py' $port '$worktree'") >/dev/null || { echo "machine_remote_web line $LINENO"; return 1; }
+  check wait_for 10 eval 'vmk read devserver | grep -q "hmr-server on"' || { echo "machine_remote_web: the task's dev server didn't start"; vmk read devserver; return 1; }
+  local local_port; local_port="$(tunnel)"
+  [[ "$local_port" != "$port" ]] || { echo "machine_remote_web: the tunnel listens on the dev server's own port"; return 1; }
+  check wait_for 10 eval 'web text | grep -q "hello from vm"' || { echo "machine_remote_web: the web pane didn't load vm's dev server"; web url; web text; return 1; }
+  check test "$(web url)" == "http://127.0.0.1:$local_port/" || { echo "machine_remote_web: the web pane isn't on this Mac's loopback"; web url; return 1; }
+  check web text | grep -q "served for 127.0.0.1:$local_port" || { echo "machine_remote_web: the dev server didn't see a localhost Host"; web text; return 1; }
+  check wait_for 10 eval 'web text | grep -qx connected' || { echo "machine_remote_web: the page's HMR socket didn't connect"; web text; return 1; }
+  vmurl() { KANNA_SOCKET="$vm/kanna.sock" pane devpage url; }
+  check test "$(vmurl)" == "http://localhost:$port/" || { echo "machine_remote_web: vm's daemon doesn't keep the dev server's own URL"; vmurl; return 1; }
+  sleep 0.5; snap d1 machine_remote_web >/dev/null
+
+  echo "hot reloaded on vm" >"$worktree/message.txt"
+  check wait_for 10 eval 'web text | grep -q "hot reloaded on vm"' || { echo "machine_remote_web: editing the file on vm didn't hot reload the page"; web text; return 1; }
+  check web text | grep -q "hot updated" || { web text; return 1; }
+  check web text | grep -q "loads 1" || { echo "machine_remote_web: the page reloaded instead of taking a hot update"; web text; return 1; }
+
+  raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"$page\",\"js\":\"location.href = '/next?x=2'; 1\"}}" >/dev/null
+  check wait_for 10 eval 'web text | grep -q "loads 2"' || { echo "machine_remote_web: following a link on the page"; web text; return 1; }
+  check wait_for 5 eval '[[ "$(vmurl)" == "http://localhost:$port/next?x=2" ]]' || { echo "machine_remote_web: a page followed in the app didn't reach vm's daemon with the dev server's own address"; vmurl; return 1; }
+  raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"$page\",\"js\":\"document.body.append('stale view'); 1\"}}" >/dev/null
+  check wait_for 5 eval 'web text | grep -q "stale view"' || return 1
+  local shown; shown="$(raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"$page\",\"edit\":\"{shown}\"}}" | field editor)"
+  [[ "$shown" == "http://localhost:$port/next?x=2" ]] || { echo "machine_remote_web: the URL editor shows the tunnel's address: $shown"; return 1; }
+  check wait_for 10 eval 'web text | grep -q "hot reloaded on vm" && ! web text | grep -q "stale view"' || { echo "machine_remote_web: submitting the URL editor didn't load the page again"; web text; return 1; }
+  check test "$(vmurl)" == "http://localhost:$port/next?x=2" || { echo "machine_remote_web: submitting the URL editor gave vm's daemon the tunnel's address"; vmurl; return 1; }
+
+  kill "$vm_pid"; wait_for 10 eval '! kill -0 '"$vm_pid" || { echo "machine_remote_web: vm's daemon didn't stop"; return 1; }
+  check wait_for 10 eval '[[ "$(machines links.0.attached)" == False ]]' || { echo "machine_remote_web: the app didn't see vm go"; return 1; }
+  KANNA_MACHINE_PORT="$(head -1 "$KANNA_STATE_DIR/offer" | field port)" KANNA_SOCKET="$vm/kanna.sock" KANNA_STATE_DIR="$vm/state" KANNA_KEEPER="$bin/kanna-keeper" "$bin/kanna-daemon" >>"$out/daemon-vm.log" 2>&1 &
+  vm_pid=$!
+  check wait_for 30 eval '[[ "$(machines links.0.attached)" == True ]]' || { echo "machine_remote_web: the app didn't link to vm again"; return 1; }
+  check test "$(tunnel)" == "$local_port" || { echo "machine_remote_web: vm coming back changed the page's origin"; tunnel; return 1; }
+  echo "after vm came back" >"$worktree/message.txt"
+  raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"$page\",\"js\":\"location.reload(); 1\"}}" >/dev/null
+  check wait_for 10 eval 'web text | grep -q "after vm came back"' || { echo "machine_remote_web: the page didn't load through the tunnel after vm came back"; web text; return 1; }
+
+  stop_app; start_app || { echo "machine_remote_web line $LINENO"; return 1; }
+  check wait_for 30 eval '[[ "$(machines links.0.attached)" == True ]]' || { echo "machine_remote_web: the app didn't link to vm again"; return 1; }
+  check wait_for 15 eval 'web text | grep -q "after vm came back"' || { echo "machine_remote_web: the restored web pane didn't load vm's dev server again"; web url; web text; return 1; }
+  echo "after the restart" >"$worktree/message.txt"
+  check wait_for 10 eval 'web text | grep -q "after the restart"' || { echo "machine_remote_web: hot reload after the app restarted"; web text; return 1; }
 }
 
 for s in ${only[@]+"${only[@]}"}; do due "$s" >/dev/null || { echo "e2e-kanna: no scenario named $s (see --help)" >&2; exit 2; }; done
