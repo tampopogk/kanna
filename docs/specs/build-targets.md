@@ -12,10 +12,10 @@ Build outputs can live on another volume, such as an external SSD: every task wo
 
 ## 1. Where `target/` lives
 
-Set `build.targets` in your `~/.kanna-v4/config.json` ([settings](settings.md#3-keys)) to a folder on that volume.
+Set `targets` in `build.local.json` at the root of the main checkout to a folder on that volume (`free` is for [eviction](build-store.md#5-eviction)):
 
 ```json
-{ "build": { "targets": "/Volumes/VHS/kanna-targets" } }
+{ "targets": "/Volumes/VHS/kanna-targets", "free": 100 }
 ```
 
 ```mermaid
@@ -53,7 +53,7 @@ flowchart LR
 - **`.offline/` is a copy of main's dependencies:** after each main build with the volume, `kanna_targets_offline` syncs `release/` and SwiftPM's `repositories/`, `checkouts/` and `workspace-state.json` into it with `rsync -a --delete`. With the volume unplugged, main clones them back into real folders, and a worktree borrows SwiftPM's packages from it when main's `kanna-build/` isn't there.
 - **The `kanna` on your PATH** should be `target/Kanna.app/Contents/Helpers/kanna`, not `target/release/kanna`, which is on the volume.
 - **Unset, nothing changes:** `target/` is a folder in each checkout.
-- **Set by `kanna_targets`** in `scripts/env.sh`, which `build.sh` and each `build-*.sh` run first. It reads only your file (`$KANNA_AGENTS_HOME/.kanna-v4/config.json` when that's set): the drive belongs to this Mac, not the repo, so a repo's `.kanna/config.json` can't set it.
+- **Set by `kanna_targets`** in `scripts/env.sh`, which `build.sh` and each `build-*.sh` run first. It reads the main checkout's `build.local.json` for every worktree, with `plutil`. The file is git-ignored: the drive belongs to this Mac, not the repo. It isn't in Kanna's settings (`~/.kanna-v4/config.json`), which are for Kanna building any project; only this repo's scripts read it.
 - **A missing volume falls back to the internal disk,** in the main checkout too. When the root is under `/Volumes/NAME` and `NAME` isn't mounted (absent, or an empty folder left on the internal disk), the build says so, removes the links that point at the missing volume, and builds in real folders. Nothing builds cold in the main checkout: its Ghostty is already internal, and `release/` and the packages come from `.offline/`. A root that isn't an absolute path falls back the same way.
 - **The next build with the volume moves them there.** A real folder moves over (`mv` to `DEST.moving`, rename, link), keeping what it built. If the volume still has an older copy from before it was unplugged, the moved one replaces it. A link to another root moves the same way.
 - **A worktree builds one Rust profile,** `debug/`, with its dependencies from a shared compile cache, and folders on the volume are evicted when it runs low ([build store](build-store.md)).
@@ -66,7 +66,7 @@ flowchart LR
 ```mermaid
 flowchart TD
     A["target/ in the worktree"] -->|"a real folder, or none"| K["leave it: git worktree remove takes it"]
-    A -->|a link| B{"build.targets set,<br/>its volume mounted?"}
+    A -->|a link| B{"targets set,<br/>its volume mounted?"}
     B -->|no| K2["leave it"]
     B -->|yes| C{"links to exactly<br/>ROOT/REPO/WORKTREE?"}
     C -->|"no: another worktree's, _main, .offline, elsewhere"| K2
@@ -74,7 +74,7 @@ flowchart TD
 ```
 
 - **Never the store:** the folder's `ghosttykit` and `ghostty-vt/TRIPLE` are links into `ROOT/_shared`, and `rm -rf` removes links, not what they point to. Unused store entries are pruned by [eviction](build-store.md#5-eviction).
-- **Only the worktree's own folder:** the link must read exactly `ROOT/REPO/WORKTREE` as `kanna_targets` makes it (`ROOT` from your `build.targets`, `REPO` the main checkout's folder name, `WORKTREE` this worktree's), and that path must be a folder, not a link. It never follows anything else, and never touches the main checkout, `_main/`, `.offline/` or another worktree's folder.
-- **Nothing to remove exits 0:** a real `target/`, no `target/`, `build.targets` unset, its volume unmounted, a link anywhere else, a folder already gone (then it removes the dangling link). A failed teardown keeps the task from being Done, so only a failed `rm` exits non-zero.
+- **Only the worktree's own folder:** the link must read exactly `ROOT/REPO/WORKTREE` as `kanna_targets` makes it (`ROOT` from `targets` in `build.local.json`, `REPO` the main checkout's folder name, `WORKTREE` this worktree's), and that path must be a folder, not a link. It never follows anything else, and never touches the main checkout, `_main/`, `.offline/` or another worktree's folder.
+- **Nothing to remove exits 0:** a real `target/`, no `target/`, `targets` unset, its volume unmounted, a link anywhere else, a folder already gone (then it removes the dangling link). A failed teardown keeps the task from being Done, so only a failed `rm` exits non-zero.
 - **The tracked `.kanna/config.json`** carries it to every clone. It runs main's copy, `"$KANNA_REPO/scripts/teardown.sh"`, so a worktree made before the script existed is torn down too. `.gitignore` ignores the rest of `.kanna/`; your `planning.agent` lives in your own `~/.kanna-v4/config.json`.
 - **Tested** by `scripts/test-teardown.sh`, against a fake `ROOT` and `KANNA_AGENTS_HOME`.

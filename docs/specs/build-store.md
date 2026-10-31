@@ -1,6 +1,6 @@
 # Build Store
 
-**Status:** built · **Tested:** `scripts/test-store.sh` (locking, publish, pruning, eviction against a fake `ROOT`), `scripts/test-teardown.sh` · **Builds on:** [build targets](build-targets.md), [build speed](build-speed.md) · **Why:** each task's build folder on `build.targets` grew to ~17 GB, and one merge-main round rebuilt ~40 of them, filling the external SSD to 98%
+**Status:** built · **Tested:** `scripts/test-store.sh` (locking, publish, pruning, eviction against a fake `ROOT`), `scripts/test-teardown.sh` · **Builds on:** [build targets](build-targets.md), [build speed](build-speed.md) · **Why:** each task's build folder on the build volume grew to ~17 GB, and one merge-main round rebuilt ~40 of them, filling the external SSD to 98%
 
 A task worktree's build folder holds only what that task builds itself: one Rust profile and its Swift build. Everything pinned (Zig, Ghostty's source, GhosttyKit, libghostty-vt, and a build of main's Rust dependencies) is built once per pin into a shared, read-only **store** that worktrees link to or clone; Rust dependencies that differ from main's come from a shared compile cache; and build folders are caches that are evicted, least recently used first, when the volume runs low.
 
@@ -22,7 +22,7 @@ flowchart LR
     subgraph W["task worktree"]
         T["target (link)"]
     end
-    subgraph V["build.targets (ROOT)"]
+    subgraph V["targets (ROOT)"]
         subgraph F["kanna/task-1dfb12c2"]
             D["debug/ (the one Rust profile)"]
             K["kanna-build/ (SwiftPM), Kanna.app"]
@@ -58,7 +58,7 @@ The main checkout keeps its `release/` profile and real, internal copies of Ghos
 
 ## 2. The store
 
-- **Where:** `ROOT/_shared/NAME/KEY`, `ROOT` being `build.targets`. With `build.targets` unset or its volume unmounted, it's `MAIN/target/_shared` on the internal disk (`MAIN` the main checkout).
+- **Where:** `ROOT/_shared/NAME/KEY`, `ROOT` being `targets` in the main checkout's `build.local.json` ([build targets](build-targets.md#1-where-target-lives)). With `targets` unset or its volume unmounted, it's `MAIN/target/_shared` on the internal disk (`MAIN` the main checkout).
 - **Names and keys:** a key is the first 16 hex digits of the SHA-256 of what decides the output, so a Ghostty bump (or a change to a build script) is a new key and one build, and an old key is never overwritten.
 
 | Name | Key from | Holds |
@@ -135,7 +135,7 @@ Run at the start of every build, by `kanna_targets` (`kanna_evict` in `scripts/s
 ```mermaid
 flowchart TD
     A["build starts"] --> P["prune _shared"]
-    P --> B{"free on the volume<br/>below build.free (100 GB)?"}
+    P --> B{"free on the volume<br/>below free (100 GB)?"}
     B -->|no| Z["build"]
     B -->|yes| C["candidates: ROOT/REPO/* except _main, .offline,<br/>_* and this worktree's"]
     C --> D["drop running tasks': a process's cwd in<br/>the worktree, or its command naming it"]
@@ -150,7 +150,7 @@ flowchart TD
 - **Never evicted:** `_main`, `.offline`, `_shared` (only pruned), the building worktree's own folder, a running task's.
 - **One at a time:** eviction holds `ROOT/_shared/.evict.lock`; a build that finds it taken skips eviction.
 - **An evicted worktree rebuilds** on its next build: its `target/` link is left dangling, and `kanna_targets` makes the folder again.
-- **`build.free`** in your `~/.kanna-v4/config.json` sets the threshold in GB ([settings](settings.md#3-keys)).
+- **`free`** in the main checkout's `build.local.json` sets the threshold in GB. It's this repo's, not one of Kanna's settings.
 
 ## 6. Measured
 
@@ -173,7 +173,7 @@ Fresh worktrees of main on the external SSD (arm64), each running `scripts/build
 
 - **A shared `CARGO_TARGET_DIR`:** one cargo lock for every worktree serialises their builds, and their different sources keep invalidating each other's fingerprints.
 - **Keeping both profiles, only sharing Ghostty:** `release/` and `debug/` are each 4 GB; tests can't run in `release` because `cargo test` uses `dev` unless every agent remembers `--release`, and the keeper's test hooks need debug assertions.
-- **Eviction in the daemon:** it would have to know this repo's `build.targets` layout.
+- **Eviction in the daemon:** it would have to know this repo's build layout, and Kanna's settings are for building any project.
 - **Hard links instead of symlinks into the store:** a folder can't be hard-linked, and a link shows where an entry came from.
 
 ## 8. Glossary

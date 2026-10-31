@@ -1,7 +1,7 @@
 #!/bin/sh
 
 kanna_store_root() {
-  root="$(kanna_targets_root)"
+  root="$(kanna_targets_root "$1")"
   case "$root" in
     /*) if ! kanna_targets_unmounted "$root" >/dev/null; then echo "$root/_shared"; return; fi ;;
   esac
@@ -102,7 +102,7 @@ kanna_store_use() {
 }
 
 kanna_store_refs() {
-  root="$(kanna_targets_root)"
+  root="$(kanna_targets_root "$1")"
   case "$root" in /*) [ -d "$root" ] && find "$root" -maxdepth 4 -type l -exec readlink {} \; 2>/dev/null ;; esac
   git -C "$1" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | while IFS= read -r wt; do
     [ -d "$wt/target" ] && find "$wt/target/" -maxdepth 2 -type l -exec readlink {} \; 2>/dev/null
@@ -139,9 +139,7 @@ kanna_targets_free_gb() {
 }
 
 kanna_targets_floor_gb() {
-  config="$(kanna_targets_config)"
-  floor=""
-  [ -f "$config" ] && floor="$(plutil -extract build.free raw -o - "$config" 2>/dev/null)"
+  floor="$(kanna_targets_setting "$1" free)" || floor=""
   case "$floor" in ""|*[!0-9]*) floor=100 ;; esac
   echo "$floor"
 }
@@ -159,18 +157,18 @@ kanna_evict() {
   [ -n "${KANNA_EVICT_DONE:-}" ] && return 0
   export KANNA_EVICT_DONE=1
   kanna_store_prune "$1"
-  root="$(kanna_targets_root)"
+  root="$(kanna_targets_root "$1")"
   case "$root" in /*) ;; *) return 0 ;; esac
   kanna_targets_unmounted "$root" >/dev/null && return 0
   if main="$(kanna_main_checkout "$1")"; then self="$(basename "$1")"; else main="$1"; self=""; fi
   repo="$root/$(basename "$main")"
   [ -d "$repo" ] || return 0
-  floor="$(kanna_targets_floor_gb)"
+  floor="$(kanna_targets_floor_gb "$1")"
   free="$(kanna_targets_free_gb "$root")"
   [ -n "$free" ] && [ "$free" -lt "$floor" ] || return 0
   mkdir -p "$root/_shared"
   kanna_lock_try "$root/_shared/.evict.lock" || return 0
-  echo "==> $root has ${free} GB free, under build.free (${floor} GB): removing build folders of stopped tasks, least recently used first" >&2
+  echo "==> $root has ${free} GB free, under free in $(kanna_targets_config "$1") (${floor} GB): removing build folders of stopped tasks, least recently used first" >&2
   if ! running="$(kanna_running_paths)" || [ -z "$running" ]; then
     echo "==> Can't list running processes: removing nothing" >&2
     kanna_lock_release "$root/_shared/.evict.lock"

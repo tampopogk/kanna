@@ -8,14 +8,12 @@ trap 'for p in ${pids[@]+"${pids[@]}"}; do kill "$p" 2>/dev/null; done; chmod -R
 failed=0
 fail() { echo "FAIL: $*"; failed=1; }
 
-export KANNA_AGENTS_HOME="$dir/home" KANNA_LOCK_POLL=0.1
-mkdir -p "$KANNA_AGENTS_HOME/.kanna-v4"
-config() { printf '{"version": 1, "build": {"targets": "%s"%s}}\n' "$1" "${2:+, \"free\": $2}" >"$KANNA_AGENTS_HOME/.kanna-v4/config.json"; }
-root="$dir/volume/kanna-targets"
-config "$root"
-
+export KANNA_LOCK_POLL=0.1
 main="$dir/repo"
 git init -q -b main "$main" && git -C "$main" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || exit 1
+config() { printf '{"targets": "%s"%s}\n' "$1" "${2:+, \"free\": $2}" >"$main/build.local.json"; }
+root="$dir/volume/kanna-targets"
+config "$root"
 worktree() { git -C "$main" worktree add -q "$main/.kanna-worktrees/$1" -b "$1" >/dev/null 2>&1 && echo "$main/.kanna-worktrees/$1"; }
 
 . "$scripts/env.sh"

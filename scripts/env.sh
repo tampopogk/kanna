@@ -174,15 +174,17 @@ kanna_main_checkout() {
 }
 
 kanna_targets_config() {
-  echo "${KANNA_AGENTS_HOME:-$HOME}/.kanna-v4/config.json"
+  checkout="$(kanna_main_checkout "$1")" || checkout="$(cd "$1" && pwd -P)"
+  echo "$checkout/build.local.json"
+}
+
+kanna_targets_setting() {
+  config="$(kanna_targets_config "$1")"
+  [ -f "$config" ] && command -v plutil >/dev/null 2>&1 && plutil -extract "$2" raw -o - "$config" 2>/dev/null
 }
 
 kanna_targets_root() {
-  config="$(kanna_targets_config)"
-  root=""
-  if [ -f "$config" ] && command -v plutil >/dev/null 2>&1 && [ "$(plutil -extract version raw -o - "$config" 2>/dev/null || echo 1)" -le 1 ] 2>/dev/null; then
-    root="$(plutil -extract build.targets raw -o - "$config" 2>/dev/null)" || root=""
-  fi
+  root="$(kanna_targets_setting "$1" targets)" || root=""
   echo "${root%/}"
 }
 
@@ -201,10 +203,10 @@ kanna_targets_unmounted() {
 
 kanna_targets() {
   if main="$(kanna_main_checkout "$1")"; then worktree=1; else main="$1"; worktree=""; fi
-  root="$(kanna_targets_root)"
+  root="$(kanna_targets_root "$1")"
   case "$root" in
     ""|/*) ;;
-    *) echo "==> build.targets in $(kanna_targets_config) is $root, not an absolute folder: building in target/" >&2; root="" ;;
+    *) echo "==> targets in $(kanna_targets_config "$1") is $root, not an absolute folder: building in target/" >&2; root="" ;;
   esac
   if [ -n "$root" ] && volume="$(kanna_targets_unmounted "$root")"; then
     echo "==> The volume $volume isn't mounted: building in target/ on this disk until it is" >&2
