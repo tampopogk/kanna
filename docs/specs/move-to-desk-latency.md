@@ -81,7 +81,7 @@ With a debug daemon, as the main checkout's dev build has, `click.pick.shown` is
 
 What was slow:
 
-- **git on the daemon's main thread:** `again()` (the restart command) and the Shelf's `described()` (every Shelf task, on every change) ran `git rev-parse --absolute-git-dir` to find each worktree's setup and teardown records, about 20ms a call. The Shelf view alone took 40–80ms per change for each stopped task with a worktree.
+- **git on the daemon's main thread:** `again()` (the restart command) and the Shelf's `described()` (every Shelf task, on every change) ran `git rev-parse --absolute-git-dir` to find each worktree's setup and teardown records, about 20ms a call. The Shelf view alone took 40–80ms per change for each stopped task with a worktree, and every `tasks list` and `tasks new` paid it for the whole Shelf: with 55 tasks, 20 of them stopped with worktrees, and a debug daemon, they took 750–1000ms (1.2–1.4s in the dev Kanna's daemon.log); after, `tasks list` is under 50ms and `tasks new` 50–60ms.
 - **`short()`** copied every open task, first messages and all, for each task the Shelf view described.
 - **The app's reader** searched the whole buffer for a newline after every read, quadratic in the length of the 127kB `tasks` line.
 - **Each daemon notice refreshed and re-laid the whole Desk view**, then AppKit redrew all 50 new rows, three times per click.
