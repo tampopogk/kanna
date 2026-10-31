@@ -148,7 +148,9 @@ fn scene_layout(source: &str, measure: Option<MeasureFn>, context: *mut c_void) 
                 let diagram_type = rest.split(';').next().unwrap_or(rest).trim();
                 serde_json::json!({ "meta": { "diagram_type": diagram_type }, "semantic": {}, "layout": {} })
             }
-            None if message.starts_with("Diagram parse error (sequence): unexpected statement separator") => {
+            None if message.starts_with("Diagram parse error (sequence)")
+                && source.lines().any(|line| line.split_once(':').is_some_and(|(_, text)| text.contains(';'))) =>
+            {
                 return Err(format!("{message} (in a sequence diagram ; ends a statement: write #59; for a semicolon)"))
             }
             None => return Err(message),
@@ -281,8 +283,11 @@ mod tests {
 
     #[test]
     fn a_semicolon_in_sequence_text_says_how_to_write_it() {
-        let message = layout("sequenceDiagram\n    Note over A: one; two").unwrap_err();
-        assert!(message.ends_with("(in a sequence diagram ; ends a statement: write #59; for a semicolon)"), "{message}");
+        for source in ["sequenceDiagram\n    Note over A: one; two", "sequenceDiagram\n    A->>B: one; two\n    B->>A: three\n"] {
+            let message = layout(source).unwrap_err();
+            assert!(message.ends_with("(in a sequence diagram ; ends a statement: write #59; for a semicolon)"), "{message}");
+        }
+        assert!(!layout("sequenceDiagram\n    A->>B:").is_err_and(|message| message.contains("#59;")));
     }
 
     #[test]
