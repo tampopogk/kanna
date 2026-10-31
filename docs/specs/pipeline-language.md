@@ -31,7 +31,7 @@ join    = merge build
 check   = run scripts/check.sh
 review  = codex:high prompt review verdict
 fix     = claude prompt fix guard check
-e2e     = run scripts/e2e-kanna.sh
+e2e     = run scripts/e2e-kanna.sh on mini
 land    = merge main
 
 spec -> approve
@@ -66,16 +66,17 @@ e2e    -> land -> done
 
 ## 3. Attributes
 
-Any order after the agent, for agent stages.
+Any order at the end of a stage line. `on` and `within` apply to every kind; the others to agent stages.
 
 | Attribute | Does |
 |---|---|
 | `prompt NAME` | `.kanna/prompts/NAME.md` is the stage's prompt instead of the stage's own name |
 | `verdict` | the stage ends with `VERDICT: PASS` or `FAIL`; the request is appended to its prompt |
-| `each STAGE.KEY` | one instance per item of a named list a previous stage produced ([5](#5-inputs-and-outputs)), each a child task in a worktree branched from the run's; the next stage waits for them all ([software factory §3](software-factory.md#3-fan-out-and-join)) |
+| `each STAGE.KEY` | one instance per item of a named list a previous stage produced ([5](#5-inputs-and-outputs)), each a child task in a worktree branched from the run's; the next stage waits for them all ([software factory §3](software-factory.md#3-fan-out-join-and-other-machines)) |
 | `xN by STAGE` | N attempts of the stage from the same code (2 to 10), each in its own worktree; the `run` stage named scores each (its output's last line `score: 0.83`, else pass 1 and fail 0) and the best is kept, ties to the first |
 | `guard STAGE` | that `run` stage scores the code before and after; a result that scores lower is discarded and the code before carries on, recorded as a rollback |
 | `emits` | the stage's answer may add stages and arrows to the run ([7](#7-changing-a-pipeline-while-it-runs)) |
+| `on PLACEMENT` | where the stage runs: a machine's name (`mini`), a role your machines declare (`mac`, `linux`, `e2e`), `any` (whichever has a free slot) or `here`, the run's machine, the default. The stage runs there as a child task; its result comes back ([software factory §3](software-factory.md#3-fan-out-join-and-other-machines)) |
 | `within DURATION` | the stage is abandoned after that long: an agent is stopped and its worktree reset to the stage's start, a command killed; the stage's verdict is fail with `timed out` as feedback |
 | `resume STAGE` | continue STAGE's last session rather than starting fresh |
 
@@ -116,6 +117,7 @@ Read when the run starts and on every revision, with errors as `FILE:LINE: messa
 - every stage is reachable from the start, and `done` is reachable;
 - every loop has a `max` on at least one of its arrows, so the run ends;
 - `each` names a stage that runs before it, `merge STAGE` names a stage with `each`, `by` and `guard` name `run` stages, prompts exist;
+- `on` names `here`, `any`, this machine, or a machine or role in your peer log ([your machines](machines.md)); until machines are built, anything else is `no such machine`;
 - the worst case over every verdict sequence fits the budget (kojo's `max_sessions`: checks and asks cost nothing, `xN` costs N, `each` costs the budget's `sessions` as its bound since the list's length isn't known).
 
 ## 7. Changing a pipeline while it runs
@@ -155,3 +157,4 @@ sequenceDiagram
 | **Instance** | One of a fanned-out stage's runs (`each`) or attempts (`xN`) |
 | **Revision** | One version of a run's pipeline; a stage's emission or your edit makes the next |
 | **Budget** | The sessions and time a run may spend |
+| **Placement** | Where a stage runs: `here`, `any`, a machine, or a role |

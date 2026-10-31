@@ -1,6 +1,6 @@
 # Software factory
 
-**Status:** designed, not built (the build tasks are in [§9](#9-build-tasks)) · **Mockup:** [`references/mockups/pipeline.html`](../../references/mockups/pipeline.html) (Definition, A run on the Desk, waiting on you, Runs compared; `#light`) · **Language:** [pipeline language](pipeline-language.md) · **Why this design:** [research](../research/software-factory.md) · **Builds on:** [tasks](tasks.md), [Shelf runners](shelf-runners.md), [task scripts](task-scripts.md), [agent messaging](agent-messaging.md), [database](database.md), the Stats tab (task "Stats tab on the Desk") and [code quality metrics](code-quality-metrics.md) (task "Code quality metrics")
+**Status:** designed, not built (the build tasks: [build order](software-factory-build-order.md)) · **Mockup:** [`references/mockups/pipeline.html`](../../references/mockups/pipeline.html) (Definition, A run on the Desk, waiting on you, Runs compared; `#light`) · **Language:** [pipeline language](pipeline-language.md) · **Why this design:** [research](../research/software-factory.md) · **Builds on:** [tasks](tasks.md), [Shelf runners](shelf-runners.md), [task scripts](task-scripts.md), [agent messaging](agent-messaging.md), [database](database.md), the Stats tab (task "Stats tab on the Desk") and [code quality metrics](code-quality-metrics.md) (task "Code quality metrics")
 
 A **pipeline** says how a change gets built: which stages it goes through (spec, your approval, plan, build, review, tests, merge), who does each one (an agent, a command, you, git), and what happens when a stage fails (a bounded loop back to a fix). A task made with a pipeline is a **run**: the daemon drives it, stage by stage, in the task's worktree and docked pane, so you watch and steer it as you would any task. Every stage's time, turns, tokens, verdicts and your interventions are kept in `kanna.db`, so pipelines can be compared on the Stats tab and tuned.
 
@@ -10,7 +10,7 @@ A **pipeline** says how a change gets built: which stages it goes through (spec,
 
 1. [What a run is](#1-what-a-run-is)
 2. [Who drives it](#2-who-drives-it)
-3. [Fan-out and join](#3-fan-out-and-join)
+3. [Fan-out, join and other machines](#3-fan-out-join-and-other-machines)
 4. [Seeing and steering a run](#4-seeing-and-steering-a-run)
 5. [Metrics](#5-metrics)
 6. [How it's built](#6-how-its-built)
@@ -36,7 +36,7 @@ stateDiagram-v2
 ```
 
 - **A run is a task** ([tasks](tasks.md)) made with `--pipeline NAME`: the same row, worktree, branch, Desk place, Shelf runner, stop and start, messages and Done. What differs is what runs in its docked pane: not one agent for the task's life but **the current stage**, one after another. The task's first message is the run's **request**, given to every agent stage.
-- **One run per task, one task per run.** A run's children ([3](#3-fan-out-and-join)) are tasks of their own, marked as the run's.
+- **One run per task, one task per run.** A run's children ([3](#3-fan-out-join-and-other-machines)) are tasks of their own, marked as the run's.
 - **A stage visit runs in the task's pane:** an agent stage starts the agent there with the stage's prompt as its first message, in a fresh session (the pane's command becomes that session's resuming one, so stop and start bring it back, as [which agents resume](tasks.md#which-agents-resume) says); a `run` stage runs its command there, as [setup](task-scripts.md#2-setup) does; an `ask` prints the question there and waits; a `merge` runs git there. The pane's header says the run, the stage, how far along and how long.
 - **The turn's end moves the run on.** For an agent stage, the agent's turn ending ([Shelf runners](shelf-runners.md#2-how-its-built): its own report, or idle for 3s) ends the visit: the daemon reads the answer, quits the agent as a runner would, records the visit and picks the next arrow. An agent that stops to ask you makes the run **waiting**; your answer in its pane resumes the stage, and counts as an intervention. On the Shelf, a run keeps its runner from stage to stage; it's stopped only when it waits for you or ends.
 - **The budget stops a run** that would exceed its sessions or time before the next stage starts: it waits for you, saying so.
@@ -53,17 +53,19 @@ flowchart LR
         RUN["the run: current stage, visits, budget"]
         PIPE --> RUN
     end
-    RUN -->|"start the stage in the task's pane"| T["tasks.rs: the task's agent or command"]
-    T -->|"turn's end · exit code · answer"| RUN
+    RUN -->|"local: the stage in the task's pane"| T["tasks.rs: the task's agent or command"]
+    RUN -->|"child task: a fan-out item,<br/>or a stage on another machine"| C["tasks.rs: a child task,<br/>here or on a peer"]
+    T & C -->|"the visit ends: verdict, answer, commits"| RUN
     RUN --> DB[("kanna.db<br/>runs · run_revisions · run_stages · run_events")]
 ```
 
 - **The daemon, not an agent.** The planning agent makes runs (`kanna task new … --pipeline`) and reads them (`kanna run list`); it never advances one. No agent sees the whole pipeline but through its stage's prompt and `{{STAGE.KEY}}` ([pipeline language §5](pipeline-language.md#5-inputs-and-outputs)); an `emits` stage proposes a revision that the daemon validates ([pipeline language §7](pipeline-language.md#7-changing-a-pipeline-while-it-runs)).
 - **Driven by events, not a clock:** a stage ends when its agent's turn ends, its command exits (the keeper's exit code), you answer, or its `within` passes. The Shelf runners' tick (every 2s) is where a run's next stage is started, so a run that was waiting starts within 2s of your answer.
 - **A restart of the daemon loses nothing:** the run's state is the rows; a stage mid-visit carries on (its agent still runs in the keeper's pty; a command too), and a visit whose pane is gone is recorded `interrupted` and run again.
+- **Every visit runs through one of two executors,** and the run sees only visits ending: the **local** one, the stage in the task's own pane and worktree; and the **child task**, a task of its own that starts from the run's branch, runs the stage, and hands back its verdict, answer and commits. Fan-out uses the child task here; a stage placed on another machine ([3](#3-fan-out-join-and-other-machines)) uses the same child task on a peer, so the run's state machine, records and Run tab never depend on where a stage ran. Every visit records its `machine`.
 - **One stage at a time per run,** except a fan-out's instances. Several runs run at once as tasks do: `shelf.runners` bounds how many on the Shelf, the Desk's three on the Desk.
 
-## 3. Fan-out and join
+## 3. Fan-out, join and other machines
 
 ```mermaid
 flowchart LR
@@ -79,6 +81,23 @@ flowchart LR
 - **The next stage after a fanned-out one waits for every instance.** `merge STAGE` joins their branches into the run's branch (one merge commit per instance, in item order); a conflict is a `fail` with the conflicting files as feedback, for a `fix` arrow to resolve, and the run's worktree is left at the conflict for it. Children are Done once joined, their worktrees and branches cleaned up as merged tasks'.
 - **`xN by STAGE`** fans out the same way (N children named `· attempt K`), scores each with the `run` stage named, keeps the winner's branch as the run's and ends the others, recording every score.
 - **Budget:** each instance is a session; a list longer than the sessions left is refused before any child starts, and the stage fails with that as feedback.
+
+```mermaid
+sequenceDiagram
+    participant R as the run, on mbp
+    participant M as mini (a peer)
+    R->>M: child task "… · e2e", owned by mini: the branch as a git bundle at the visit's start commit
+    M->>M: worktree, the stage in the child's pane (an agent, or a command)
+    M-->>R: the child's record replicates: verdict, answer, feedback
+    M->>R: its commits as a bundle
+    R->>R: the run's branch fast-forwards, its worktree resets to the new head
+    R->>R: the visit ends, pick the next arrow
+```
+
+- **`on PLACEMENT`** ([pipeline language §3](pipeline-language.md#3-attributes)) sends one stage to another of your machines the same way: a child task owned by that machine ([tasks across machines](machine-tasks.md)), its branch carried over as a git bundle as a transfer carries one, the stage run there in the child's pane, and the result back as the child's replicated record and a bundle of its commits. A command stage needs only the repo's clone there; an agent stage needs the machine signed in to the agent ([agent sign-in](agent-sign-in.md)). The run itself never moves: its records, Run tab and Desk place stay on its machine, and the stage shows there over the link as any remote task does.
+- **The placement is a policy, as the machines spec says:** a name picks that machine, a role (`mac`, `e2e`) any machine declaring it with a free slot, `any` whichever asks first, `here` the run's own. Matching by capability beyond roles is [Kanna Cloud's](kanna-cloud.md#5-directory-and-relays). A stage whose placement is offline waits, and the run says so; `within` bounds the wait.
+- **Why a whole stage, never a command over the link:** the machines spec's rule is that a task runs whole on one machine, and the boundary a task may cross is a turn's end. A stage visit is exactly that unit: it starts from a commit and ends at a turn's end or an exit code, so it travels as a child task with no new protocol, gets a pane to watch and a worktree of its own there, and comes back as commits.
+- **Until machines are built,** every placement resolves to this machine and `on` with any other name fails the check. What's built now is the executor boundary and the `machine` column; the remote executor is a Machines task ([build order](software-factory-build-order.md)). The first use is the one that prompted it: `e2e` on a second Mac, so an e2e run's private Kanna instance never shares a machine with the dev Kanna.
 
 ## 4. Seeing and steering a run
 
@@ -98,7 +117,7 @@ Every visit writes a row; everything below is a query over them, shown on the Ru
 
 | Per visit | From |
 |---|---|
-| wall time, time waiting on you | the visit's events |
+| wall time, time waiting on you; the machine it ran on | the visit's events; its record |
 | agent turns, tool calls, tokens in, out and cached, cost | the agent's session file at the turn's end (Claude's JSONL `usage`, Codex's `token_count` events); the cost from the agent when it reports one, else the pricing table in the repo's settings |
 | verdict, feedback size, review findings by severity, failing tests | the verdict; the review's `findings` block; the command's failure lines |
 | commits, files and lines changed | git, between the visit's start and end |
@@ -115,12 +134,12 @@ Every visit writes a row; everything below is a query over them, shown on the Ru
 | outcome | landed, stopped (why), stuck |
 | bugs traced back; changed lines covered; quality delta | from [code quality metrics](code-quality-metrics.md): fix commits on main blamed to the run's merge (SZZ), lines its merge changed that a test executes, erosion and verbosity before and after, each sampled later and joined by the merge commit |
 
-- **Compared by pipeline and revision:** runs, landed share, medians of the rest, and a dot per run over time, so a change to the pipeline shows as a step. The Code quality metrics task's noise caveats (SZZ at F1 about 0.6) are shown with the column.
+- **Compared by pipeline and revision:** runs, landed share, medians of the rest, and a dot per run over time, so a change to the pipeline shows as a step. A stage's times split by machine, so `e2e` on `mini` and on `here` compare. The Code quality metrics task's noise caveats (SZZ at F1 about 0.6) are shown with the column.
 - **`kanna run show RUN --json` and `kanna stats pipelines --json`** give the same numbers to agents, so a planning agent asked "which pipeline lands faster" can answer.
 
 ## 6. How it's built
 
-- **`crates/kanna-pipe`:** the language, a port of kojo's `factory_spec.py` ([research](../research/software-factory.md#1-kojo); provenance in `NOTICE` once kojo has a licence): parse, validate, `pick(stage, verdict, taken, stalled)`, `worst()` for the budget, revisions (merge an emission or an edit, then validate). Pure, tested on the example files and on every error.
+- **`crates/kanna-pipe`:** the language, a port of kojo's `factory_spec.py` ([research](../research/software-factory.md#1-kojo); kojo gets an MIT licence first, and the port's provenance goes in `NOTICE`): parse, validate, `pick(stage, verdict, taken, stalled)`, `worst()` for the budget, revisions (merge an emission or an edit, then validate). Pure, tested on the example files and on every error.
 - **`runs.rs` in the daemon** owns runs as `tasks.rs` owns tasks: start a stage in the task's pane (an agent command built as a task's is, with the stage prompt written to `.kanna/tmp/stage-N.md` and passed as the first message; a command under the task-script timeout wrapper), watch for the visit's end, read the answer from the session file, pick the next arrow, start children, join, land.
 - **Tables** in `kanna.db` ([database](database.md)), the daemon the only writer:
 
@@ -128,7 +147,7 @@ Every visit writes a row; everything below is a query over them, shown on the Ru
 |---|---|---|
 | `runs` | `id` (`run-7f3a1c2e`), `task`, `repo`, `pipeline`, `revision_hash`, `state`, `started_at`, `ended_at`, `outcome` | request, budget, counts |
 | `run_revisions` | `run`, `n`, `at`, `by` (`file`, `stage:NAME`, `user`), `hash` | the text, the diff |
-| `run_stages` | `id`, `run`, `stage`, `visit`, `instance`, `kind`, `agent`, `started_at`, `ended_at`, `verdict`, `session`, `terminal`, `task` (a child's) | answer path, feedback, tokens, turns, cost, lines, findings, failures, guard, score, interventions |
+| `run_stages` | `id`, `run`, `stage`, `visit`, `instance`, `kind`, `agent`, `machine`, `started_at`, `ended_at`, `verdict`, `session`, `terminal`, `task` (a child's) | answer path, feedback, tokens, turns, cost, lines, findings, failures, guard, score, interventions |
 | `run_events` | `id`, `run`, `at`, `what` (`started`, `stage`, `verdict`, `revision`, `paused`, `resumed`, `answered`, `skipped`, `retried`, `typed`, `stopped`, `landed`), `by` | details |
 
 - **Settings:** `pipelines.default` (a pipeline every `kanna task new` uses unless `--pipeline none`), `pipelines.pricing` (per-model token prices for agents that don't report cost), `tasks.land` (the command that lands a branch when a plain merge isn't the repo's way), in the repo's `.kanna/config.json` ([settings](settings.md)). Pipelines and prompts in a cloned repo run only agents Kanna knows and commands in its worktree, as `tasks.setup` does.
@@ -156,22 +175,15 @@ RUN is a run's ID, its task, or the terminal the command runs in.
 - **An agent as the orchestrator** (a planner that calls stages as subagents): the plan would live in one context window, the user couldn't see or steer between stages, and every step's cost would be inside one session. The daemon keeps the graph, the records and the gates; agents do stages.
 - **Headless agents** (`claude -p`, `codex exec`, as kojo runs them): nothing to watch, no resume, no typing into a stage, no messages. A stage's agent runs in the task's pane like any task's agent, which the rest of Kanna already handles.
 - **YAML or JSON pipelines:** the arrows are the point; a flow line reads as the diagram. kojo's grammar is proven on 30 factories.
+- **A stage on another machine as a command over the link** (`kanna --host mini -- scripts/e2e-kanna.sh`): no pane to watch, no worktree of its own, nothing to resume, and an agent stage couldn't run that way at all. A child task gives all of that with the transfer protocol already designed.
+- **Moving the whole run to a stage's machine:** the Run tab, the records and the Desk place stay put; only the stage travels.
 - **A run that rewrites its own file:** revisions by a declared `emits` stage or by you, validated and bounded ([pipeline language §7](pipeline-language.md#7-changing-a-pipeline-while-it-runs)).
 - **Child runs for fan-out:** one change, one run, one graph and one set of numbers; children are tasks.
 - **Test count and pass rate as quality:** all tests must pass to land; the quality columns are the Code quality metrics task's.
 
 ## 9. Build tasks
 
-For the planner, in order; each builds on the ones before and is testable alone.
-
-1. **Pipeline language crate** (`kanna-pipe`): parser, validator, worst case, `pick`, revisions; port of kojo's `factory_spec.py` with the licence settled and `NOTICE` written; `kanna pipeline check` and `list`. Tests on the three example files and every rule.
-2. **Runs in the daemon, sequential stages:** `runs` tables and migration; `kanna task new --pipeline`; `runs.rs` starts agent and `run` stages in the task's pane, reads answers from session files, picks arrows, bounds loops, `progress`, `reset`, the budget, `merge main`; `kanna run list`, `show`, `log`, `stop`. e2e `pipeline_run` with the mock agent.
-3. **Gates and steering:** `ask` stages, waiting and needs you, `kanna run answer`, `pause`, `resume`, `skip`, `retry`; typed prompts recorded as interventions; stop and start of a running task mid-stage; daemon restart mid-stage.
-4. **The Run tab:** the fixed tab in the app: graph, numbers, revision, visits; its buttons and the `ask` card; the header, Desk view row and strip saying the stage; `kanna open run`.
-5. **Fan-out and join:** `each`, child tasks from a stage's named output, `merge STAGE`, conflicts as a fail, `xN by`, `guard`.
-6. **Revisions:** `emits` blocks merged and validated, `kanna run edit` in a code pane, revisions on the Run tab with diffs.
-7. **Metrics:** tokens, turns, tool calls and cost from Claude's and Codex's session files per visit; lines and files; findings and failures parsed; `kanna stats pipelines`; the Pipelines section of the Stats tab with the dataviz rules (after "Stats tab on the Desk"); the quality columns joined by merge commit (after "Code quality metrics").
-8. **Dogfood:** run `feature.pipe` on a real feature and `bugfix.pipe` on a real bug, with `scripts/check.sh` written for stage use; compare with the numbers; tune the prompts and arrows; write up what changed and why in the pipeline files' comments.
+The tasks for the planner, in order, are in [software factory build order](software-factory-build-order.md).
 
 ## 10. Glossary
 
@@ -184,4 +196,6 @@ For the planner, in order; each builds on the ones before and is testable alone.
 | **Revision** | One version of a run's pipeline |
 | **Intervention** | Anything you did to a run: an answer, a pause, a skip, a retry, an edit, a message, a typed prompt |
 | **Landed** | The run's branch merged on main by its `merge main` stage |
+| **Executor** | How a visit runs: in the task's own pane, or as a child task, here or on another machine |
+| **Placement** | Where a stage runs (`on`): `here`, `any`, a machine, or a role |
 | **Stuck** | A run with no eligible arrow, waiting for you |

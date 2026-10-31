@@ -187,7 +187,7 @@ join    = merge build                          # the parts' branches into the ru
 check   = run scripts/check.sh                 # build and unit tests; exit 0 passes
 review  = codex:high prompt review verdict     # fresh reviewer; ends VERDICT: PASS|FAIL
 fix     = claude prompt fix guard check        # rolled back if check gets worse
-e2e     = run scripts/e2e-kanna.sh
+e2e     = run scripts/e2e-kanna.sh on mini     # on another Mac, off your dev Mac
 land    = merge main
 
 spec -> approve
@@ -226,7 +226,7 @@ const NODES = [
   { id: "join", x: 378, y: 60, w: 58, kind: "merge", who: "git" },
   { id: "check", x: 458, y: 60, w: 72, kind: "cmd", who: "check.sh" },
   { id: "review", x: 552, y: 60, w: 72, kind: "agent", who: "codex" },
-  { id: "e2e", x: 646, y: 60, w: 66, kind: "cmd", who: "e2e-kanna" },
+  { id: "e2e", x: 646, y: 60, w: 66, kind: "cmd", who: "e2e · mini" },
   { id: "land", x: 734, y: 60, w: 58, kind: "merge", who: "main" },
   { id: "done", x: 814, y: 60, w: 56, kind: "done", who: "" },
   { id: "fix", x: 552, y: 152, w: 72, kind: "agent", who: "claude" },
@@ -292,7 +292,7 @@ function defineHTML() {
         <div class="src">${lines.map((l, i) => `<div class="ln"><i>${i + 1}</i><span class="t">${hl(l)}</span></div>`).join("")}</div></div>
       <div class="docs"><div class="dtabs"><div class="dtab on">Pipeline</div><div class="dtab">prompts/spec.md</div><div class="dtab">prompts/review.md</div><span class="add">+</span></div>
         <div class="doc">
-          <div class="runhead"><h2>feature</h2><span class="sub">11 stages · 3 loops · 1 question for you · fan-out at <span class="mono">build</span></span></div>
+          <div class="runhead"><h2>feature</h2><span class="sub">11 stages · 3 loops · 1 question for you · fan-out at <span class="mono">build</span> · <span class="mono">e2e</span> on mini</span></div>
           <div class="graph">${graphSVG({})}</div>${LEGEND}
           <div class="sec">What each kind does</div>
           <table class="t wrap">
@@ -302,6 +302,7 @@ function defineHTML() {
             <tr><td class="mono">check, e2e</td><td>a command in the worktree</td><td>exit 0 passes</td><td>the output's tail, failures first</td></tr>
             <tr><td class="mono">approve</td><td>you, on the Desk (needs you)</td><td>yes or no</td><td>your note</td></tr>
             <tr><td class="mono">join, land</td><td>git</td><td>clean merge passes</td><td>the conflicts</td></tr>
+            <tr><td class="mono">… on mini</td><td>any stage on another of your machines: a child task there, the branch sent over, its result and commits brought back</td><td>as its kind</td><td>as its kind</td></tr>
           </table>
           <div class="sec">Rules the file is checked against</div>
           <p class="rev">From a stage, the first arrow in file order whose condition holds and whose <span class="mono">max</span> isn't spent is taken. Every loop needs a <span class="mono">max</span>; every stage must be reachable; <span class="mono">pass</span>/<span class="mono">fail</span> need a stage with a verdict; the worst case must fit the budget. Errors name the file and line.</p>
