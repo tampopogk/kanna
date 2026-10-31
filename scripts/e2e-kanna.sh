@@ -1492,6 +1492,34 @@ print(len(v) if isinstance(v, list) else v)' "$1" "$2"; }
   check wait_for 5 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"doc2\"}}" | field markup)" == True ]]'
 }
 
+scenario md_image_reload M4
+md_image_reload() {
+  start_daemon && start_app || return 1
+  local dir="$KANNA_STATE_DIR/imgdoc" top
+  mkdir -p "$dir"
+  png() { python3 -c 'import struct, sys, zlib
+w, h = int(sys.argv[2]), int(sys.argv[3])
+chunk = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+raw = b"".join(b"\0" + b"\x40\x80\xc0" * w for _ in range(h))
+open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))' "$dir/shot.png" "$1" "$2"; }
+  { echo "# md_image_reload"; for i in $(seq 120); do echo; echo "Line $i of the doc."; done; echo; echo "![shot](shot.png)"; } >"$dir/doc.md"
+  png 40 30
+  kanna open --window new md "$dir/doc.md" --name doc --tab >/dev/null || return 1
+  md_image_reload_md() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"doc\"${1:-}}}"; }
+  check wait_for 5 eval '[[ "$(md_image_reload_md | field images)" == "[[40, 30]]" ]]' || { md_image_reload_md; return 1; }
+  md_image_reload_md ',"scroll":600' >/dev/null
+  top="$(md_image_reload_md | field scroll)"
+  check test "$top" != 0 || return 1
+  png 80 60
+  check wait_for 1 eval '[[ "$(md_image_reload_md | field images)" == "[[80, 60]]" ]]' || { md_image_reload_md | field images; return 1; }
+  check test "$(md_image_reload_md | field scroll)" == "$top" || return 1
+  rm "$dir/shot.png"
+  check wait_for 1 eval '[[ "$(md_image_reload_md | field images)" == "[]" ]]' || return 1
+  png 50 20
+  check wait_for 1 eval '[[ "$(md_image_reload_md | field images)" == "[[50, 20]]" ]]' || return 1
+  check test "$(md_image_reload_md | field scroll)" == "$top"
+}
+
 scenario docked_pane M4
 docked_pane() {
   start_daemon && start_app || return 1
