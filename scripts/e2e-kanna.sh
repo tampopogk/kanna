@@ -74,7 +74,7 @@ new_state_dir() {
   [[ -n "$KANNA_STATE_DIR" && -d "$KANNA_STATE_DIR" ]] || { echo "e2e-kanna: mktemp gave no folder" >&2; exit 1; }
   export KANNA_STATE_DIR KANNA_SOCKET="$KANNA_STATE_DIR/kanna.sock"
   mkdir -p "$KANNA_AGENTS_HOME/.kanna-v4" && echo '{"version": 2, "setup": false}' >"$KANNA_AGENTS_HOME/.kanna-v4/agents.json"
-  printf '{"version": 1, "shelf": {"runners": 0}, "tasks": {"agent": "%s"}}\n' "$mock_agent" >"$KANNA_AGENTS_HOME/.kanna-v4/config.json"
+  printf '{"version": 1, "shelf": {"runners": 0}, "tasks": {"agent": "%s"}, "agents": {"prompts": "skip"}}\n' "$mock_agent" >"$KANNA_AGENTS_HOME/.kanna-v4/config.json"
 }
 KANNA_STATE_DIR=""
 export KANNA_IGNORE_OCCLUSION=1
@@ -1034,6 +1034,13 @@ windows_tabs_ui() {
   sleep 1
   check drawn "$(snap win-2 windows_tabs_ui-second-window)" 1 || return 1
   key 'cmd+`'; check test "$(dwin win-1 key)" == True || return 1
+  minimized() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"win-2\"${1:-}}}" | field minimized; }
+  minimized ',"minimize":true' >/dev/null; check wait_for 5 eval '[[ "$(minimized)" == True ]]' || return 1
+  key 'cmd+`'; check test "$(minimized)" == True || return 1
+  check test "$(dwin win-1 key)" == True || return 1
+  key 'cmd+shift+`'; check test "$(minimized)" == True || return 1
+  check test "$(dwin win-1 key)" == True || return 1
+  minimized ',"minimize":false' >/dev/null; check wait_for 5 eval '[[ "$(minimized)" == False ]]' || return 1
   key cmd+w; check test "$(win win-1 tabs | count)" == 1 || return 1
   key cmd+shift+w; check test "$(state | field windows | count)" == 1 || return 1
   local menus
@@ -3730,6 +3737,8 @@ planner_choice() {
   mkdir -p "$fake" "$repo" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/claude" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/codex" || { echo "planner_choice line $LINENO"; return 1; }
   git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "planner_choice line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
+  local mine="$KANNA_AGENTS_HOME/.kanna-v4/config.json"
+  local kept; kept="$(jq 'del(.agents)' "$mine")" && printf '%s\n' "$kept" >"$mine" || { echo "planner_choice line $LINENO"; return 1; }
   KANNA_PLANNING_AGENTS="$fake/claude $fake/codex" start_daemon || { echo "planner_choice line $LINENO"; return 1; }
   env -u KANNA_NO_INITIAL_WINDOW KANNA_START_DIR="$repo" "$app" --bg >>"$out/app.log" 2>&1 &
   app_pid=$!
@@ -3742,7 +3751,12 @@ planner_choice() {
   ! shows "$planner" "Folder, repo or name" || { echo "planner_choice: a Desk on a repo asked where"; return 1; }
   kanna send "$planner" 2 >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
   check wait_for 5 shows "$planner" "codex plans repo from now on" || { kanna read "$planner"; return 1; }
+  check wait_for 5 shows "$planner" "Let Kanna's agents work without permission prompts?" || { echo "planner_choice: the first Desk didn't ask about permission prompts"; kanna read "$planner"; return 1; }
+  ! shows "$planner" "args:" || { echo "planner_choice: the agent started before the question was answered"; return 1; }
+  kanna send "$planner" y >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
+  check wait_for 5 shows "$planner" "Kanna's agents work without permission prompts from now on" || { kanna read "$planner"; return 1; }
   check wait_for 10 spaceless "$planner" "args: -c approval_policy=\"never\" -c sandbox_mode=\"danger-full-access\" -c model_auto_compact_token_limit=300000 You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: codex didn't start as the planner"; kanna read "$planner"; return 1; }
+  check grep -Eq '"prompts" ?: "skip"' "$mine" && check grep -Eq '"runners" ?: 0' "$mine" || { echo "planner_choice: the answer wasn't saved with the file's other keys"; cat "$mine"; return 1; }
   check grep -Eq '"agent" ?: "codex"' "$repo/.kanna/config.json" || { cat "$repo/.kanna/config.json"; return 1; }
   kanna send "$planner" exit >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
   check wait_for 5 shows "$planner" "The planning agent quit. Start it again:" || { kanna read "$planner"; return 1; }
@@ -3758,6 +3772,7 @@ planner_choice() {
   check wait_for 10 shows "$planner" "^resumed $session" || { echo "planner_choice: the next Desk didn't come back to the project's planner"; kanna read "$planner"; return 1; }
   spaceless "$planner" "Back to repo's planning conversation." && ! spaceless "$planner" "You are the Kanna planning agent." || { echo "planner_choice: the next Desk's planner was told again"; kanna read "$planner"; return 1; }
   ! shows "$planner" "Choose an agent" || { echo "planner_choice: the next Desk asked again"; return 1; }
+  ! shows "$planner" "permission prompts?" || { echo "planner_choice: the next Desk asked about permission prompts again"; return 1; }
   key cmd+n
   check wait_for 10 eval '[[ "$(desk lead d3)" == term-* ]]' || { echo "planner_choice: ⌘N opened no Desk"; kanna workspace list --all; return 1; }
   planner="$(desk lead d3)"

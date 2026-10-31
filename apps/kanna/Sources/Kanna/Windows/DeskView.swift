@@ -204,8 +204,9 @@ final class DeskStrip: NSView {
         hint.frame.origin = NSPoint(x: 8, y: (Self.height - hint.frame.height) / 2)
         let start = hint.frame.maxX + (items.isEmpty ? 0 : 9)
         var room = bounds.width - start - gaps - chrome - metas.reduce(0, +)
+        let titleFloors = titles.map { min($0, Self.titleFloor) }.reduce(0, +)
         count.isHidden = waiting == 0
-        if !count.isHidden, room - count.frame.width - 20 < titles.map { min($0, Self.titleFloor) }.reduce(0, +) {
+        if !count.isHidden, room - count.frame.width - 20 < titleFloors {
             count.isHidden = true
         }
         if !count.isHidden { room -= count.frame.width + 20 }

@@ -280,7 +280,7 @@ extension AppController {
         case #selector(movePaneToNewWindow): return focusedPane.map { !frozen($0) } ?? false
         case #selector(closeFocusedPane): return focusedPane.map { !docked($0) } ?? false
         case #selector(nextTab), #selector(previousTab), #selector(moveTabToNewWindow), #selector(closeWindow): return keyWindow != nil
-        case #selector(nextWindow), #selector(previousWindow): return windows.count > 1
+        case #selector(nextWindow), #selector(previousWindow): return cyclable.count > 1
         case #selector(freeWindow): return keyWindow?["workspace"]?.string != nil
         case #selector(newTabInKeyWindow), #selector(splitRight), #selector(splitDown), #selector(webRight), #selector(webDown),
              #selector(iosRight), #selector(iosDown), #selector(markdownRight), #selector(markdownDown): return !showingDeskView
@@ -477,10 +477,14 @@ extension AppController {
     @objc func nextWindow() { cycleWindow(1) }
     @objc func previousWindow() { cycleWindow(-1) }
 
+    private var cyclable: [String] {
+        windows.compactMap { $0["id"]?.string }.filter { controllers[$0].map { !$0.window.isMiniaturized } ?? false }
+    }
+
     private func cycleWindow(_ step: Int) {
-        let ids = windows.compactMap { $0["id"]?.string }
+        let ids = cyclable
         guard !ids.isEmpty else { return }
-        let at = ids.firstIndex { $0 == keyWindow?["id"]?.string } ?? 0
+        let at = ids.firstIndex { $0 == keyWindow?["id"]?.string } ?? (step > 0 ? -1 : 0)
         let next = ids[((at + step) % ids.count + ids.count) % ids.count]
         show(window: next)
         if let pane = window(next)?["focused"]?.string { giveKeyboard(pane) }

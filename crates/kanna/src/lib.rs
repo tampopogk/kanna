@@ -349,7 +349,7 @@ const COMPLETIONS_HELP: &str = "usage: kanna completions zsh|bash\n\nPrints the 
 
 pub const CONFIG_SCHEMA: &str = include_str!("../../../schemas/config.schema.json");
 
-const CONFIG_HELP: &str = "usage: kanna config schema\n\nKanna's settings are ~/.kanna-v4/config.json, overridden key by key by a repo's .kanna/config.json, e.g.\n  { \"version\": 1, \"planning\": { \"context\": 300000 }, \"tasks\": { \"agent\": \"codex\" }, \"shelf\": { \"runners\": 3 } }\n\n`kanna config schema` prints their JSON Schema: every key, its type, default and what it does.";
+const CONFIG_HELP: &str = "usage: kanna config schema\n\nKanna's settings are ~/.kanna-v4/config.json, overridden key by key by a repo's .kanna/config.json, e.g.\n  { \"version\": 1, \"planning\": { \"context\": 300000 }, \"tasks\": { \"agent\": \"codex\" }, \"shelf\": { \"runners\": 3 } }\n(agents.prompts, whether agents skip permission prompts, is read only from ~/.kanna-v4/config.json.)\n\n`kanna config schema` prints their JSON Schema: every key, its type, default and what it does.";
 
 const RAW_HELP: &str = "usage: kanna raw REQUEST\n\nSends one control-protocol request as JSON and prints the reply, e.g.\n  kanna raw '{\"cmd\":\"list\"}'\n  kanna raw '{\"cmd\":\"open\",\"args\":{\"type\":\"term\",\"name\":\"a\"}}'";
 
