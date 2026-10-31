@@ -166,7 +166,7 @@ public final class DiffPaneView: NSView {
         let headerVisible = headerRect.map { $0.minY >= clip.bounds.minY + clip.contentInsets.top - 1 } ?? false
         sticky.isHidden = headerVisible
         sticky.file = file
-        sticky.font = CodeTheme.font(size: fontSize)
+        sticky.fontSize = fontSize
         sticky.gutterWidth = column.gutter.ruleThickness
         let left = columns.first!.scrollView.frame.minX
         let right = columns.last!.scrollView.frame.maxX

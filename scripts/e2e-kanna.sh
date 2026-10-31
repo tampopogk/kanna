@@ -21,7 +21,8 @@ Every run stops what it started however it ends, and first stops what runs
 it can't see anymore left behind (docs/specs/e2e-cleanup.md). Run it
 unsandboxed: it needs ps, signals, Unix sockets and /tmp.
 
-Uses target/Kanna.app (or $KANNA_E2E_APP) and its Contents/Helpers/{kanna,kanna-daemon,kanna-keeper}, and target/release/kanna-build
+Uses target/Kanna.app (or $KANNA_E2E_APP) and the kanna, kanna-daemon and kanna-keeper inside it,
+and target/PROFILE/kanna-build (debug in a worktree, release in the main checkout: docs/specs/build-store.md)
 (scripts/build.sh). The private instance gets:
   KANNA_SOCKET     the daemon's socket (the CLI and the app connect to it)
   KANNA_STATE_DIR  where the daemon, keeper and app keep their files
@@ -38,6 +39,7 @@ USAGE
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app="${KANNA_E2E_APP:-$repo_root/target/Kanna.app}/Contents/MacOS/Kanna"
 bin="${app%/MacOS/Kanna}/Helpers"
+rust_dir="$(. "$repo_root/scripts/env.sh" && kanna_rust_dir "$repo_root")"
 out="$repo_root/target/e2e-kanna"
 mkdir -p "$out"
 
@@ -482,8 +484,8 @@ web_md_ios_panes() {
 scenario cli_starts_app M1
 cli_starts_app() {
   local home="$KANNA_STATE_DIR/home" socket folder instance
-  folder="$("$repo_root/target/release/kanna-build" | sed -n 's/^folder=//p')"
-  instance="$("$repo_root/target/release/kanna-build" | sed -n 's/^instance=//p')"
+  folder="$("$rust_dir/kanna-build" | sed -n 's/^folder=//p')"
+  instance="$("$rust_dir/kanna-build" | sed -n 's/^instance=//p')"
   [[ "$instance" == default ]] || folder="$folder-$instance"
   socket="$home/Library/Application Support/$folder/kanna.sock"
   mkdir -p "$(dirname "$socket")"
@@ -1408,15 +1410,23 @@ md_comments() {
   start_daemon && start_app || return 1
   kanna open --window new --name agent --cmd "$(probe '\033[?2004h' x 0)" >/dev/null || return 1
   check wait_for 5 shows agent READY || return 1
-  local dir="$KANNA_STATE_DIR/doc" fixture="$repo_root/references/prototypes/doc-markup/fixture" agent_id at xy
+  local dir="$KANNA_STATE_DIR/doc" fixture="$repo_root/references/prototypes/doc-markup/fixture" agent_id at xy kept
   mkdir -p "$dir/.git" "$dir/.kanna/docs"
   cp "$fixture/review.md" "$dir/review.md"
+  for at in $(seq 1 40); do printf '\nMore of the doc, paragraph %s, so it scrolls.\n' "$at"; done >>"$dir/review.md"
   sed "s|FILE|$dir/review.md|" "$fixture/review.threads.json" >"$dir/.kanna/docs/review.md.json"
   agent_id="$(pane agent id)"
   KANNA_TERMINAL="$agent_id" kanna open md --name doc --tab "$dir/review.md" >/dev/null || return 1
   md_comments_md() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"doc\"${1:-}}}"; }
-  check wait_for 5 eval '[[ "$(md_comments_md | field markup)" == False && "$(md_comments_md | field agent)" == None ]]' || { echo "open md should show the file without comments"; md_comments_md; return 1; }
+  check wait_for 5 eval '[[ "$(md_comments_md | field markup)" == False && "$(md_comments_md | field agent)" == None && "$(md_comments_md | field loads)" -ge 1 ]]' || { echo "open md should show the file without comments"; md_comments_md; return 1; }
+  md_comments_kept() { md_comments_md | python3 -c 'import json, sys; d = json.load(sys.stdin); print(d["view"], d["loads"], round(d["scroll"]))'; }
+  md_comments_md ',"scroll":120' >/dev/null
+  check wait_for 5 eval '[[ "$(md_comments_kept | cut -d " " -f 3)" == 120 ]]' || { echo "the doc should scroll to 120"; md_comments_md; return 1; }
+  kept="$(md_comments_kept)"
   KANNA_TERMINAL="$agent_id" kanna markup doc | grep -qF "comments on in" || return 1
+  check wait_for 5 eval '[[ "$(md_comments_md | field markup)" == True ]]' || return 1
+  check test "$(md_comments_kept)" == "$kept" || { echo "turning comments on should keep the view, its load and its scroll ($kept)"; return 1; }
+  md_comments_md ',"scroll":0' >/dev/null
   md_comments_count() { md_comments_md | field threads | python3 -c 'import json, sys; print(len(json.load(sys.stdin)))'; }
   md_comments_thread() { md_comments_md | field threads | python3 -c 'import json, sys
 t = [t for t in json.load(sys.stdin) if t["id"] == sys.argv[1]][0]
@@ -1474,8 +1484,10 @@ print(len(v) if isinstance(v, list) else v)' "$1" "$2"; }
   check wait_for 5 eval '[[ "$(md_comments_thread c4 state)" == resolved ]]' || return 1
   raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null
   sleep 0.5; md_comments_shot md_comments-dark
+  kept="$(md_comments_md | field view)"
   kanna markup doc --off | grep -qF "comments off in" || return 1
   check wait_for 5 eval '[[ "$(md_comments_md | field markup)" == False ]]' || return 1
+  check test "$(md_comments_md | field view)" == "$kept" || { echo "turning comments off should keep the view"; return 1; }
   KANNA_TERMINAL="$agent_id" kanna markup "$dir/review.md" --name doc2 --tab >/dev/null || return 1
   check wait_for 5 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"doc2\"}}" | field markup)" == True ]]'
 }
@@ -1628,7 +1640,7 @@ page_comments() {
   start_daemon && start_app || return 1
   kanna open --window new --name agent --cmd "$(probe '\033[?2004h' x 0)" >/dev/null || return 1
   check wait_for 5 shows agent READY || return 1
-  local dir="$KANNA_STATE_DIR/page" agent_id xy mark
+  local dir="$KANNA_STATE_DIR/page" agent_id xy mark kept page_comments_web_kept
   mkdir -p "$dir/.git"
   cat >"$dir/page.html" <<'HTML'
 <!doctype html>
@@ -1645,6 +1657,18 @@ HTML
   check test "$(pane plain url)" == "file://$dir/page.html" || return 1
   check wait_for 5 eval 'raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"plain\"}}" | grep -q "Ship it"' || return 1
   [[ "$(raw '{"id":1,"cmd":"debug.web","args":{"pane":"plain"}}')" != *threads* ]] || { echo "open web should show the page without comments"; return 1; }
+  page_comments_plain() { raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"plain\"${1:-}}}"; }
+  page_comments_kept() { page_comments_web_kept="$(page_comments_plain ',"js":"[window.scrollY, window.kept || 0]"' | field value)"; page_comments_plain | python3 -c 'import json, sys; d = json.load(sys.stdin); print(d["view"], d["web_view"], d["loads"], sys.argv[1])' "$page_comments_web_kept"; }
+  page_comments_plain ',"js":"window.kept = 42; window.scrollTo(0, 300); window.scrollY"' >/dev/null
+  check wait_for 5 eval '[[ "$(page_comments_plain ",\"js\":\"window.scrollY\"" | field value)" == 300 ]]' || { page_comments_plain ',"js":"window.scrollY"'; return 1; }
+  kept="$(page_comments_kept)"
+  KANNA_TERMINAL="$agent_id" kanna markup plain | grep -qF "comments on in" || return 1
+  check wait_for 5 eval '[[ "$(page_comments_plain | field markup)" == True ]]' && check wait_for 5 eval 'page_comments_plain | grep -q threads' || { page_comments_plain; return 1; }
+  check test "$(page_comments_kept)" == "$kept" || { echo "turning comments on should keep the web view, its page, its scroll and its JS state ($kept)"; return 1; }
+  kanna markup plain --off | grep -qF "comments off in" || return 1
+  check wait_for 5 eval '[[ "$(page_comments_plain | field markup)" == False ]]' || return 1
+  [[ "$(page_comments_plain)" != *threads* ]] || { echo "turning comments off should take the comment UI away"; return 1; }
+  check test "$(page_comments_kept)" == "$kept" || { echo "turning comments off should keep the page ($kept)"; return 1; }
   kanna close plain >/dev/null || return 1
   KANNA_TERMINAL="$agent_id" kanna markup --name page --tab "$dir/page.html" >/dev/null || return 1
   page_comments_web() { raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"page\"${1:-}}}"; }
@@ -2640,6 +2664,33 @@ assert {"kind": "added", "text": "one\r", "new": 1, "left": "blank", "right": "a
   check test "$(deskdiff list)" == False || { echo "files list beside the agent at $(deskdiff width) pt"; return 1; }
   kanna resize diffagent 1/5 >/dev/null || return 1
   check wait_for 5 eval '[[ "$(deskdiff list)" == True ]]' || { echo "no files list beside the agent at 1/5: $(deskdiff width) pt"; return 1; }
+}
+
+scenario diff_pane_worktree_gone M4
+diff_pane_worktree_gone() {
+  start_daemon && start_app || return 1
+  local repo="$KANNA_STATE_DIR/gone_repo" tree="$KANNA_STATE_DIR/gone_tree"
+  mkdir -p "$repo" && cd "$repo" || return 1
+  dgit() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@" >/dev/null; }
+  dgit init -q -b main
+  for i in $(seq 200); do echo "fn f$i() -> u32 { $i }"; done >a.rs
+  dgit add . && dgit commit -qm first && dgit worktree add -q -b task "$tree"
+  cd - >/dev/null
+  for i in $(seq 200); do echo "fn f$i() -> u64 { $i }"; done >"$tree/a.rs"
+  gone() { raw "{\"id\":1,\"cmd\":\"debug.diff\",\"args\":{\"pane\":\"gone\"${2:-}}}" | field "$1"; }
+  (cd "$tree" && kanna open --window new diff --merge-base main --name gone >/dev/null) || return 1
+  check wait_for 5 eval '[[ "$(gone files)" == *a.rs* ]]' || { echo "files $(gone files) error $(gone error)"; return 1; }
+  gone view ',"zoom":-40' >/dev/null
+  check wait_for 5 eval '[[ "$(gone zoom)" == 0.72 ]]' || { echo "zoomed out to $(gone zoom)"; return 1; }
+  gone view ',"keys":"G"' >/dev/null
+  check wait_for 5 eval '[[ "$(gone sticky)" == a.rs ]]' || { echo "no sticky header zoomed out: $(gone sticky)"; return 1; }
+  git -C "$repo" worktree remove --force "$tree" || return 1
+  check wait_for 5 eval '[[ "$(gone notice)" != None || "$(gone error)" != None ]]' || { echo "the removed worktree went unnoticed: notice $(gone notice), error $(gone error)"; return 1; }
+  for keys in g G g G; do gone view ",\"keys\":\"$keys\"" >/dev/null; done
+  gone view ',"zoom":-1' >/dev/null
+  check app_attached || { echo "the app died after its worktree went"; return 1; }
+  check test "$(gone sticky)" == a.rs || { echo "sticky $(gone sticky) after the worktree went"; return 1; }
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"diff_pane_worktree_gone.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/diff_pane_worktree_gone.png" "$out/" 2>/dev/null
 }
 
 scenario code_tour M4

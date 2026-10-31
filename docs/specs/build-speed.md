@@ -2,54 +2,49 @@
 
 **Status:** built · **Builds on:** [build channels](build-channels.md) · **Why:** every task's agent runs `scripts/build.sh` in a fresh worktree, and each worktree has its own `target/`, so cargo and SwiftPM used to start cold every time
 
-## 1. What a fresh worktree borrows
+## 1. What a fresh worktree starts from
 
 ```mermaid
 flowchart LR
+    subgraph S["build store (ROOT/_shared)"]
+        G["ghosttykit/KEY, ghostty-vt/KEY"]
+        D["cargo/FAMILY-KEY<br/>(main's dependencies)"]
+        C["sccache/<br/>(compiled dependencies)"]
+    end
     subgraph M["main checkout's target/"]
-        S["ghostty-source/<br/>(the fork at the pinned commit)"]
-        G["ghosttykit/, ghostty-vt/HOST"]
-        R["release/<br/>(cargo: ~270 dependencies)"]
         K["kanna-build/<br/>repositories/, checkouts/,<br/>workspace-state.json"]
     end
     subgraph W["worktree's target/"]
-        B["ghostty-vt/OTHER, ghosttykit-build/<br/>+ their .zig-cache"]
-        G2["ghosttykit/, ghostty-vt/HOST"]
-        R2["release/<br/>kanna-* rebuilt"]
+        G2["ghosttykit, ghostty-vt/HOST (links)"]
+        R2["debug/<br/>dependencies from the cache, kanna-* compiled"]
         K2["kanna-build/<br/>Swift compiled here"]
     end
-    S -.->|"read in place, when clean at the pinned commit"| B
-    G -->|"symlink, when ghostty.rev is the pinned commit<br/>and ghostty.options the pinned options"| G2
-    R -->|"APFS clone (cp -c), kanna-* fingerprints dropped"| R2
+    G -->|"symlink"| G2
+    D -->|"APFS clone"| R2
+    C -->|"sccache hits, for the rest"| R2
     K -->|"APFS clone, workspace-state paths rewritten"| K2
 ```
 
-With build outputs on another volume ([build targets](build-targets.md)), a worktree clones from the main checkout's copy there.
+| From | How | Saves |
+|---|---|---|
+| Ghostty's builds, Zig and source ([build store](build-store.md#2-the-store)) | built once per pin, then a symlink | the Zig build, cloning the fork |
+| Rust dependencies ([seed](build-store.md#2-the-store)) | `cp -c` of the store's dev-profile build of main's `Cargo.lock`, without our crates | compiling ~270 registry crates |
+| Dependencies that differ from main's ([compile cache](build-store.md#4-the-compile-cache)) | `sccache` as `rustc`'s wrapper | recompiling them in every worktree |
+| SwiftPM's packages (`kanna_borrow_swiftpm`) | `cp -c -R -p` of `repositories/` and `checkouts/`; `workspace-state.json` with the main checkout's path replaced by the worktree's | package resolve 3.5s → 0.2s |
 
-| Borrowed | When | How | Saves |
-|---|---|---|---|
-| Ghostty's source (`kanna_ghostty_source`) | the worktree builds Ghostty itself (another arch, or main's builds are stale) and the main checkout's `ghostty-source` is clean at the pinned commit | used where it is, read-only | cloning the fork |
-| Ghostty builds (`kanna_borrow_built`) | the worktree has none and the main checkout's are the pinned commit | symlink | the Zig build |
-| cargo's `target/release` (`kanna_borrow_cargo`) | the worktree has no `target/release` | `cp -c -R -p`, then `rm -rf .fingerprint/kanna-*` | the dependencies: cargo 43s → 7s |
-| SwiftPM's packages (`kanna_borrow_swiftpm`) | the worktree has no `target/kanna-build` | `cp -c -R -p` of `repositories/` and `checkouts/`; `workspace-state.json` with the main checkout's path replaced by the worktree's | package resolve 3.5s → 0.2s |
-
-- **One Ghostty source builds every target.** `zig build -Dtarget=...` writes wherever `-p` says, so a worktree clones the fork only when it has to. The source is `GHOSTTY_SOURCE_DIR` if set, else the main checkout's source if it's clean at `KANNA_GHOSTTY_COMMIT`, else (in the main checkout, or when main's is missing, stale or edited) its own `target/ghostty-source`.
-- **Builds never write into the shared source.** Each build passes `--cache-dir` under its own checkout's `target/` (`ghostty-vt/.zig-cache-TRIPLE`, `ghosttykit-build/.zig-cache`), so two worktrees can build at once. GhosttyKit's build writes `macos/GhosttyKit.xcframework` relative to the directory zig runs in, so `build-ghosttykit.sh` runs zig from `target/ghosttykit-build/` with `--build-file`. Zig fetches packages into the source's `zig-pkg/` only when one is missing, and the main checkout's build has already fetched them.
-- **`ghostty.rev` stays right.** `kanna_ghostty_rev` reads the source it built from, and a borrowed source is clean at the pinned commit, so a worktree's builds carry the same rev as main's.
-- **`ghostty.options` too.** GhosttyKit is built with `KANNA_GHOSTTYKIT_OPTIONS` (`-Dsentry=false`, [crashes](crashes.md#2-capture)), written beside `ghostty.rev`; `kanna_ghostty_built` reuses or borrows a build only when both match, so changing the options rebuilds it.
-- **Our crates always rebuild.** Dropping their fingerprints makes cargo compile every `kanna-*` crate from the worktree's own source, whatever the main checkout last built; only registry crates, whose fingerprints don't depend on paths, are reused. Binaries and `libkanna_ffi.a` come out byte-identical to a from-scratch build.
-- **Built for the same macOS.** The clone carries the main checkout's `macos-deployment-target` stamp; `kanna_cargo_release_for` runs after the borrow and cleans the clone if it was built for another deployment target ([deployment target](deployment-target.md)).
-- **Clones, not links.** A clone shares disk blocks until either side writes, so the worktree's builds never write to the main checkout's `target/`, and neither side waits on the other's cargo lock.
+- **One Rust profile.** A worktree builds `target/debug` for its app and its tests alike; the main checkout builds `release` ([build store](build-store.md#3-one-rust-profile-per-worktree)).
+- **Our crates always compile in the worktree,** from its own source: the seed carries none of their artifacts or fingerprints, and sccache doesn't cache incremental crates.
 - **Only resolution state from SwiftPM.** Its build products record absolute paths (the module cache refuses to load from a different path), so a whole clone of `kanna-build` fails to build; the Swift modules compile in the worktree.
 
 ## 2. Dev builds the Swift app in debug
 
-| Channel | Rust (`target/release`) | Swift app |
+| Channel | Rust | Swift app |
 |---|---|---|
 | production, staging | release | release |
-| dev (main checkout and tasks) | release | **debug** |
+| dev, main checkout | release | **debug** |
+| dev, task worktree | `dev` profile (`target/debug`) | **debug** |
 
-SwiftPM's release build compiles each module whole, on one core: the `Kanna` module (6k lines) takes ~10s whatever changed. Debug compiles files in parallel batches and only what an edit affects. Rust stays release everywhere: its dependencies cost the same either way, the daemon parses every terminal byte, and a dev build's `target/release` is what a worktree borrows. `KANNA_CONFIGURATION=release scripts/build.sh` builds a dev app in release.
+SwiftPM's release build compiles each module whole, on one core: the `Kanna` module (6k lines) takes ~10s whatever changed. Debug compiles files in parallel batches and only what an edit affects. Rust is release in the main checkout, whose app you run all day. A task worktree builds one profile, `dev`, for its tests and its app alike, tuned so the daemon still keeps up: dependencies at `opt-level = 3`, our crates at 1 ([build store](build-store.md#3-one-rust-profile-per-worktree)). `KANNA_CONFIGURATION=release scripts/build.sh` builds a dev app in release.
 
 ## 3. Line tables in release
 
@@ -57,7 +52,6 @@ The workspace's `[profile.release]` sets `debug = "line-tables-only"`: optimisat
 
 - **On macOS the line tables stay in the `.o` files** (`split-debuginfo = "unpacked"`, cargo's default there). The linked binary gets only a debug map pointing at them, so tools find file:line while `target/release/deps` is there.
 - **Shipped builds strip the map** and keep dSYMs beside the DMGs ([release: stripping](release.md#stripping)).
-- **A worktree borrows dependencies built with the same profile.** The setting is in every crate's fingerprint, so a main checkout built before it rebuilds all dependencies once, and until then a worktree rebuilds them too.
 
 Measured with `scripts/build.sh`, dev channel, arm64:
 

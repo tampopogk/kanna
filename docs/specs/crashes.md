@@ -86,7 +86,7 @@ One JSON file per crash, `<state folder>/crashes/<time>-<process>.json`, such as
 | daemon | a panic hook | the panic goes on as before: on the main thread the daemon exits, and the app starts another ([app link §4](app-link.md#4-the-app-starts-the-daemon)) |
 | keeper | a panic hook | as before; a crash never restarts the keeper |
 
-**GhosttyKit is built without Sentry** (`-Dsentry=false`, `KANNA_GHOSTTYKIT_OPTIONS` in `scripts/env.sh`). Ghostty's own crash reporter starts on a thread of its own from `ghostty_init`, takes over the crash signals, writes a `.ghosttycrash` minidump in `~/.local/state/ghostty/crash` and exits with status 6. That is what happened at 08:31:19: no handler of Kanna's ran and macOS wrote no `.ips`. GhosttyKit's `ghostty.options` records the options it was built with, and a build reuses a GhosttyKit only when they match ([build speed](build-speed.md)).
+**GhosttyKit is built without Sentry** (`-Dsentry=false` in `scripts/build-ghosttykit.sh`). Ghostty's own crash reporter starts on a thread of its own from `ghostty_init`, takes over the crash signals, writes a `.ghosttycrash` minidump in `~/.local/state/ghostty/crash` and exits with status 6. That is what happened at 08:31:19: no handler of Kanna's ran and macOS wrote no `.ips`. The build store keys GhosttyKit by that script's hash, so the flag rebuilds it everywhere ([build store](build-store.md)).
 
 Writing a record from a signal handler isn't async-signal-safe; it is best effort, and the `.ips` stays the full evidence.
 

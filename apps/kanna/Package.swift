@@ -1,7 +1,12 @@
 // swift-tools-version: 6.0
+import Foundation
 import PackageDescription
 
-let kannaFFI = LinkerSetting.unsafeFlags(["-L", Context.environment["KANNA_RUST_RELEASE_DIR"] ?? Context.packageDirectory + "/../../target/release"])
+let checkout = Context.packageDirectory + "/../.."
+var gitIsFolder: ObjCBool = false
+let inWorktree = FileManager.default.fileExists(atPath: checkout + "/.git", isDirectory: &gitIsFolder) && !gitIsFolder.boolValue
+let rustProfile = Context.environment["KANNA_RUST_PROFILE"] ?? (inWorktree ? "debug" : "release")
+let kannaFFI = LinkerSetting.unsafeFlags(["-L", Context.environment["KANNA_RUST_DIR"] ?? checkout + "/target/" + rustProfile])
 
 let package = Package(
     name: "kanna",
