@@ -1,2 +1,5 @@
 [env]
 MACOSX_DEPLOYMENT_TARGET = { value = "15.0", force = true }
+
+[build]
+rustc-wrapper = "scripts/rustc-wrapper.sh"

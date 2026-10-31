@@ -47,11 +47,13 @@ public struct OverviewPanel: Equatable, Sendable {
     public var name: String
     public var width: CGFloat
     public var columns: CGFloat
+    public var room: CGFloat
 
-    public init(name: String, width: CGFloat, columns: CGFloat) {
+    public init(name: String, width: CGFloat, columns: CGFloat, room: CGFloat = 0) {
         self.name = name
         self.width = width
         self.columns = columns
+        self.room = room
     }
 
     public static let overview = OverviewPanel(name: "overview", width: OverviewMetrics.width, columns: OverviewMetrics.columns)
@@ -62,10 +64,11 @@ public enum OverviewLayout {
 
     public static func wanted(enabled: Bool, viewport: OverviewViewport) -> Bool { enabled && !viewport.fits }
 
-    public static func shown(_ wanted: [OverviewPanel], width: CGFloat, columnWidth: CGFloat) -> [OverviewPanel] {
+    public static func shown(_ wanted: [OverviewPanel], width: CGFloat, columnWidth: CGFloat, column: (CGFloat) -> CGFloat = { $0 }) -> [OverviewPanel] {
         var shown = wanted
         func beside() -> CGFloat { width - shown.map(\.width).reduce(0, +) }
-        while !shown.isEmpty, shown.contains(where: { beside() < $0.columns * columnWidth }) { shown.removeFirst() }
+        func lacks(_ panel: OverviewPanel) -> Bool { beside() < panel.room || column(beside()) < panel.columns * columnWidth }
+        while !shown.isEmpty, shown.contains(where: lacks) { shown.removeFirst() }
         return shown
     }
 }
