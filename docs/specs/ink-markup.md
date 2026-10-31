@@ -104,7 +104,7 @@ stateDiagram-v2
 - **Marks the agent acted on leave the page.** When the text or part under a mark changes, its ink goes; the thread keeps the picture as sent, so you can still see what you drew.
 - **Resolving clears the rest.** A resolved thread's ink is hidden, and shows faintly when you open the thread from **Show resolved**.
 - **Erasing:** before sending, ⌘Z or ×; Esc then Discard drops the batch. After, ink goes with its thread: resolve it.
-- **The thread card** shows the picture cropped to the marks and the numbered list in place of a quote ([threads UI](doc-markup.md#2-rules)).
+- **The thread card** shows the numbered list of marks in place of a quote ([threads UI](doc-markup.md#2-rules)), not the picture: the ink is on the doc beside it.
 
 ![Ink on a mockup page: an arrow moving a row, a zigzag over another, a circle round Save with a typed note](ink-markup-page.png)
 
