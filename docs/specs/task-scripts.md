@@ -75,7 +75,7 @@ stateDiagram-v2
 - **With no pane to run in** (the agent's pane was closed by hand), teardown runs in the background as the task goes, its output in the daemon's log.
 - **Then Kanna cleans up a finished task:** when the worktree has no changes (`git status` is empty: ignored files such as builds don't count) and its branch is merged into the repo's checked-out branch, Kanna removes the worktree (`git worktree remove`) and deletes the branch (`git branch -d`).
 - **Otherwise both stay,** and the task's events and the daemon's log say why (`has changes`, `isn't merged into main`), so nothing unmerged is lost.
-- **Only the worktree and branch.** Whatever the repo's setup made elsewhere is its teardown's to remove: `git worktree remove` removes a link in the worktree, not what it links to. Kanna's own repo's teardown removes the task's build folder ([build targets](build-targets.md#3-removing-a-task)).
+- **Only the worktree and branch.** Whatever the repo's setup made elsewhere is its teardown's to remove: `git worktree remove` removes a link in the worktree, not what it links to. Kanna's own repo's teardown removes the task's build folder, and never the shared [build store](build-store.md) it links to ([build targets](build-targets.md#3-removing-a-task)); a build evicts stopped tasks' folders when the volume runs low ([build store](build-store.md#5-eviction)).
 
 ## 4. How it's built
 

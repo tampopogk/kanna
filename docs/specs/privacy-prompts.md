@@ -61,14 +61,14 @@ Before this, the build never signed the bundle: the main executable kept the lin
 
 ```mermaid
 flowchart LR
-    R["target/release/<br/>kanna, kanna-daemon, kanna-keeper"] -->|"copy, sign once per<br/>(sha256, identifier, identity)"| G["target/signed/"]
+    R["target/PROFILE/<br/>kanna, kanna-daemon, kanna-keeper"] -->|"copy, sign once per<br/>(sha256, identifier, identity)"| G["target/signed/"]
     G -->|copy| H["Kanna.app/Contents/Helpers/"]
     H --> B["sign the bundle<br/>-i BUNDLE_ID + Kanna.entitlements"]
 ```
 
 - **One signing step for dev and release:** `kanna_sign_app` in `scripts/env.sh` signs each helper with `--identifier BUNDLE_ID.HELPER` (`dev.kanna.app.dev.kanna-keeper`), then the bundle with `--identifier BUNDLE_ID` and `apps/kanna/Resources/Kanna.entitlements`. A release passes `--options runtime --timestamp` and its Developer ID ([release](release.md#signing-and-the-dmg)). A dev build has neither: no hardened runtime, so a debugger can attach, and no timestamp, which needs Apple's server.
 - **Unchanged code keeps its bytes.** Kanna tells builds apart by the SHA-256 of the binary ([daemon build](daemon-build.md)), and a certificate signature carries its signing time, so re-signing an unchanged daemon would make the app replace it after every build. The signed helpers are kept in `target/signed/` with a stamp of the unsigned binary's hash, its identifier and the identity, and signed again only when one changes.
-- **Signatures stay out of `target/release`:** cargo links its binaries there again on every build, even a no-op one. So the bundle's helpers aren't `target/release`'s: the e2e scenarios and `scripts/run-kanna.sh` run the bundle's (`Contents/Helpers`).
+- **Signatures stay out of the Rust profile folder** (`target/release`, or `target/debug` in a worktree: [build store](build-store.md#3-one-rust-profile-per-worktree)): cargo links its binaries there again on every build, even a no-op one. So the bundle's helpers aren't the profile folder's: the e2e scenarios and `scripts/run-kanna.sh` run the bundle's (`Contents/Helpers`).
 
 ## 5. Watching and resetting
 
