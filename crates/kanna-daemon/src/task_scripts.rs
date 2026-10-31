@@ -51,7 +51,14 @@ fn quote(text: &str) -> String {
 }
 
 pub fn git_dir(worktree: &Path) -> Option<PathBuf> {
-    git(worktree, &["rev-parse", "--absolute-git-dir"]).ok().map(PathBuf::from)
+    let marker = worktree.join(".git");
+    let meta = fs::metadata(&marker).ok()?;
+    if meta.is_dir() {
+        return Some(marker);
+    }
+    let text = fs::read_to_string(&marker).ok().filter(|_| meta.len() <= 4096)?;
+    let dir = text.lines().next()?.strip_prefix("gitdir:")?.trim();
+    Some(worktree.join(dir)).filter(|dir| dir.is_dir())
 }
 
 pub fn is_linked(worktree: &Path) -> bool {
@@ -260,6 +267,18 @@ mod tests {
         sh(&repo, "git init -q -b main && printf 'target\\n' > .gitignore && git add .gitignore && git -c user.email=e@e -c user.name=e commit -q -m first");
         let (folder, _) = crate::tasks::make_worktree(&repo, "task-1dfb12c2").unwrap();
         (fs::canonicalize(dir).unwrap(), PathBuf::from(folder))
+    }
+
+    #[test]
+    fn the_git_dir_is_read_without_running_git() {
+        let (dir, worktree) = repo("gitdir");
+        let repo = dir.join("repo");
+        for folder in [&repo, &worktree] {
+            let said = git(folder, &["rev-parse", "--absolute-git-dir"]).unwrap();
+            assert_eq!(fs::canonicalize(git_dir(folder).unwrap()).unwrap(), fs::canonicalize(said).unwrap(), "{}", folder.display());
+        }
+        assert_eq!(git_dir(&dir.join("nowhere")), None);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
