@@ -100,7 +100,8 @@ sequenceDiagram
 | main checkout | `release` | `dev` | `release` |
 | `scripts/release.sh` | `release`, without the compile cache | | `release` |
 
-- **`kanna_rust_profile`** in `scripts/env.sh` says which: `debug` in a worktree, `release` in the main checkout; `KANNA_RUST_PROFILE=release|debug` overrides it. `kanna_rust_dir` is its folder (`target/[TRIPLE/]PROFILE`), which `build.sh`, `build-kanna-app.sh` (as `KANNA_RUST_DIR` for SwiftPM), `e2e-kanna.sh` and `run-kanna.sh` use instead of `target/release`.
+- **`kanna_rust_profile`** in `scripts/env.sh` says which: `debug` in a worktree, `release` in the main checkout; `KANNA_RUST_PROFILE=release|debug` overrides it. `kanna_rust_dir` is its folder (`target/[TRIPLE/]PROFILE`), which `build.sh` and `build-kanna-app.sh` (as `KANNA_RUST_DIR` for SwiftPM) build into instead of `target/release`.
+- **What runs the app's build takes its binaries from the bundle:** `cargo test` can rebuild the profile's `kanna`, `kanna-daemon` and `kanna-keeper` (measured: after it they no longer matched the app's copies), so `e2e-kanna.sh` and `run-kanna.sh` use `Kanna.app/Contents/Helpers/`, which match the app (only `kanna-build` comes from the profile folder).
 - **The `dev` profile is tuned** in `Cargo.toml` so one profile serves both: our crates at `opt-level = 1` with line tables, dependencies at `opt-level = 3` with no debug info. Debug assertions stay on, which the keeper's test hooks need.
 - **`Package.swift`** links `libkanna_ffi.a` from `KANNA_RUST_DIR`, or else `target/debug` in a worktree and `target/release` in the main checkout, so `swift test` works in both.
 - **A fresh worktree's profile folder** starts as a clone of the store's `cargo` seed ([§2](#2-the-store)), not of the main checkout's `release/`, which is another profile.
