@@ -21,12 +21,13 @@ flowchart LR
 
 | `--arch` on an arm64 Mac | Rust | Swift build | libghostty-vt | App |
 |---|---|---|---|---|
-| left out, or `arm64` | `target/release` | `target/kanna-build` | `target/ghostty-vt/aarch64-apple-darwin` | `target/Kanna.app` |
-| `x86_64` | `target/x86_64-apple-darwin/release` | `target/x86_64-apple-darwin/kanna-build` | `target/ghostty-vt/x86_64-apple-darwin` | `target/x86_64-apple-darwin/Kanna.app` |
+| left out, or `arm64` | `target/PROFILE` | `target/kanna-build` | `target/ghostty-vt/aarch64-apple-darwin` | `target/Kanna.app` |
+| `x86_64` | `target/x86_64-apple-darwin/PROFILE` | `target/x86_64-apple-darwin/kanna-build` | `target/ghostty-vt/x86_64-apple-darwin` | `target/x86_64-apple-darwin/Kanna.app` |
 
+- **`PROFILE`** is `release` in the main checkout and `debug` in a task worktree ([build store](build-store.md#3-one-rust-profile-per-worktree)).
 - **The native build stays where it was;** another architecture's goes in `target/<rust triple>/`, beside cargo's own output for it, so building one never cleans or overwrites the other.
 - **GhosttyKit is shared:** Ghostty's xcframework already holds arm64 and x86_64, and SwiftPM links the slice it needs.
-- **The identity comes from the host:** the Info.plist is written from `target/release/kanna-build`, built for this Mac, since the other architecture's binaries may not run here.
-- **Borrowing in a worktree is per architecture:** cargo's dependencies come from the main checkout's `target/<triple>/release` when it has one; Ghostty and the Swift packages are borrowed as for a native build ([build speed](build-speed.md)).
+- **The identity comes from the host:** the Info.plist is written from `target/PROFILE/kanna-build`, built for this Mac, since the other architecture's binaries may not run here.
+- **A worktree builds another architecture like its own:** cargo writes `target/<triple>/debug`, its dependencies come from the compile cache, and libghostty-vt for the triple is a store entry of its own ([build store](build-store.md)).
 - **The Rust target** is added with `rustup target add` the first time it's needed.
 - **A non-native dev build** is for checking that it builds: its CLI still opens `target/Kanna.app`.

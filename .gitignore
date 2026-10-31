@@ -6,3 +6,4 @@ target/
 /.kanna/*
 !/.kanna/config.json
 .DS_Store
+/build.local.json
