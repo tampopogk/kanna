@@ -51,17 +51,14 @@ fn quote(text: &str) -> String {
 }
 
 pub fn git_dir(worktree: &Path) -> Option<PathBuf> {
-    let marker = worktree.join(".git");
-    let meta = fs::metadata(&marker).ok()?;
-    if meta.is_dir() {
+    let root = worktree.ancestors().find(|dir| dir.join(".git").exists())?;
+    let marker = root.join(".git");
+    if marker.is_dir() {
         return Some(marker);
     }
-    if !meta.is_file() || meta.len() > 4096 {
-        return None;
-    }
-    let text = fs::read_to_string(&marker).ok()?;
-    let dir = text.lines().next()?.strip_prefix("gitdir:")?.trim();
-    Some(worktree.join(dir)).filter(|dir| dir.is_dir())
+    let text = fs::metadata(&marker).ok().filter(|m| m.len() <= 4096).and_then(|_| fs::read_to_string(&marker).ok())?;
+    let dir = root.join(text.lines().next()?.strip_prefix("gitdir:")?.trim());
+    dir.is_dir().then_some(dir)
 }
 
 pub fn is_linked(worktree: &Path) -> bool {
@@ -273,15 +270,18 @@ mod tests {
     }
 
     #[test]
-    fn the_git_dir_is_read_without_running_git() {
+    fn a_worktrees_git_folder_is_found_without_running_git() {
         let (dir, worktree) = repo("gitdir");
         let repo = dir.join("repo");
-        for folder in [&repo, &worktree] {
-            let said = git(folder, &["rev-parse", "--absolute-git-dir"]).unwrap();
-            assert_eq!(fs::canonicalize(git_dir(folder).unwrap()).unwrap(), fs::canonicalize(said).unwrap(), "{}", folder.display());
+        fs::create_dir_all(worktree.join("src/deep")).unwrap();
+        let canonical = |p: PathBuf| fs::canonicalize(p).unwrap();
+        for folder in [&repo, &worktree, &worktree.join("src/deep")] {
+            let asked = git(folder, &["rev-parse", "--absolute-git-dir"]).unwrap();
+            assert_eq!(canonical(git_dir(folder).unwrap()), canonical(PathBuf::from(asked)), "{}", folder.display());
         }
-        assert_eq!(git_dir(&dir.join("nowhere")), None);
-        let _ = fs::remove_dir_all(dir);
+        assert!(is_linked(&worktree) && !is_linked(&repo));
+        assert_eq!(git_dir(Path::new("/")), None);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
