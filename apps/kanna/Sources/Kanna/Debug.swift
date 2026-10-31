@@ -176,7 +176,9 @@ extension AppController {
                     "lead": controller.leadShown.map { .string($0) } ?? .null, "pages": .array(controller.tabBar.pageItems.map { .string($0.title) }),
                     "machinesPage": .bool(!controller.machinesPage.isHidden), "machines": .array(controller.machinesPage.machines.map { ["name": .string($0.name), "detail": .string($0.detail), "path": .string($0.path), "note": .string($0.note), "tip": .string($0.explanation)] }),
                     "headerTip": controller.agentHeader.toolTip.map { .string($0) } ?? .null, "places": .array(controller.deskTasks.map { $0.place.map { .string($0) } ?? .null }), "window": window(id) ?? .null, "scroll": scrolled, "search": search, "times": page.times, "rows": page.deskRows,
-                    "responder": .string(controller.window.firstResponder.map { String(describing: type(of: $0)) } ?? "")]
+                    "responder": .string(controller.window.firstResponder.map { String(describing: type(of: $0)) } ?? ""),
+                    "keyboard": Self.paneHolding(controller.window.firstResponder).map { .string($0) } ?? .null,
+                    "highlighted": .array(controller.highlighted.map { .string($0) }), "key": .bool(controller.window.isKeyWindow)]
         }
         commands["debug.web"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let web = contents.web(id) else { throw KannaError("wrong_type", "not a web pane") }
@@ -243,6 +245,7 @@ extension AppController {
                  "status": thread.status.map { .string($0) } ?? .null, "error": thread.error.map { .string($0) } ?? .null,
                  "messages": .array(thread.messages.map { .string("\($0.who): \($0.text)") })]
             }
+            let overview = self.overview(markdown.overview, wanted: markdown.overviewWanted, args: args)
             let diagrams: [JSON] = markdown.drawnDiagrams.map { ["type": .string($0.type), "labels": .array($0.labels.map { .string($0) })] }
             return ["text": .string(markdown.text), "zoom": .number(Double(markdown.zoom)), "diagrams": .array(diagrams),
                     "render_ms": .number(markdown.renderMs), "parse_ms": .number(markdown.parseMs), "scroll": .number(Double(markdown.scrollTop)),
@@ -253,7 +256,8 @@ extension AppController {
                     "changes": markdown.diffBase == nil ? .null : .number(Double(markdown.changes.count)), "diff_error": markdown.diffError.map { .string($0) } ?? .null,
                     "box_parts": Self.boxParts(markdown.commentBoxParts), "box_shown": .bool(markdown.commentBoxShown),
                     "cards": .object(markdown.cards.mapValues { ["typing": .bool($0.typing), "waiting": $0.waiting.map { .string($0) } ?? .null, "reply": .bool($0.reply)] }),
-                    "tour": footer, "pressed": pressed]
+                    "tour": footer, "pressed": pressed, "overview": overview, "pictures": .number(Double(markdown.pictures)),
+                    "threads_shown": .bool(markdown.threadsShown), "width": .number(Double(markdown.bounds.width))]
         }
         commands["debug.code"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let code = contents.code(id) else { throw KannaError("wrong_type", "not a running code pane") }
@@ -286,6 +290,7 @@ extension AppController {
             if let step = args["zoom"]?.number { diff.zoom(by: Int(step)) }
             if let path = args["fold"]?.string { diff.toggle(file: path, all: false) }
             if let path = args["show"]?.string { diff.showFolded(path) }
+            if args["refresh"]?.bool == true { diff.refresh() }
             let overview = self.overview(diff.overview, wanted: diff.overviewWanted, args: args)
             let rows: [JSON] = diff.debugRows.map { row in
                 .object(row.mapValues { value in
@@ -300,7 +305,8 @@ extension AppController {
             }
             return ["command": .string(diff.result?.command ?? ""), "error": diff.result?.error.map { .string($0) } ?? .null, "files": .array(files), "rows": .array(rows),
                     "current": diff.current.map { .number(Double($0)) } ?? .null, "view": .string(diff.view.rawValue), "updating": .bool(diff.updating),
-                    "serial": .number(Double(diff.serial)), "fresh": .array(diff.fresh.sorted().map { .number(Double($0)) }), "zoom": .number(Double(diff.zoom)),
+                    "serial": .number(Double(diff.serial)), "stale": .bool(diff.stale), "latest": diff.pending.map { .number(Double($0.serial)) } ?? .null, "notice": diff.notice.map { .string($0) } ?? .null,
+                    "fresh": .array(diff.fresh.sorted().map { .number(Double($0)) }), "zoom": .number(Double(diff.zoom)),
                     "highlighted": .number(Double(diff.highlightedFiles)), "list": .bool(diff.listShown), "width": .number(diff.bounds.width),
                     "selected": diff.selectedFile.map { .string($0) } ?? .null, "sticky": diff.stickyFile.map { .string($0) } ?? .null,
                     "columns": .array(diff.debugColumns.map { .object($0.mapValues { .number($0) }) }), "overview": overview,
@@ -316,6 +322,15 @@ extension AppController {
             if args["home"]?.bool == true { screen.pressHome() }
             return ["width": .number(screen.pixelSize.width), "height": .number(screen.pixelSize.height)]
         }
+    }
+
+    private static func paneHolding(_ responder: NSResponder?) -> String? {
+        var view = responder as? NSView
+        while let current = view {
+            if let pane = current as? PaneView { return pane.id }
+            view = current.superview
+        }
+        return nil
     }
 
     private func overview(_ view: OverviewView, wanted: @autoclosure () -> Bool, args: JSON) -> JSON {

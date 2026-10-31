@@ -24,6 +24,7 @@ extension MarkdownPaneView {
         textView.onPlainClick = nil
         layoutManager.marks = []
         textView.needsDisplay = true
+        overviewChanged()
     }
 
     func agentChanged() {
@@ -81,7 +82,7 @@ extension MarkdownPaneView {
     }
 
     func toggleThreads() {
-        if bounds.width < ThreadPanel.width * 2 {
+        if !sides(comments: true, forced: false).comments {
             forcedThreads = !threadsVisible
             showThreads = forcedThreads
         } else {
@@ -116,6 +117,7 @@ extension MarkdownPaneView {
         if let pending { marks.append(DocMark(range: pending.range, kind: .active)) } else if let active, let range = anchors[active] { marks.append(DocMark(range: range, kind: .active)) }
         layoutManager.marks = marks
         textView.needsDisplay = true
+        overviewChanged()
         refreshPanel()
         bar.threads.set("Threads \(record.threads.filter(\.isOpen).count)")
         bar.needsLayout = true
