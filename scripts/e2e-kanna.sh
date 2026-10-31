@@ -2642,6 +2642,33 @@ assert {"kind": "added", "text": "one\r", "new": 1, "left": "blank", "right": "a
   check wait_for 5 eval '[[ "$(deskdiff list)" == True ]]' || { echo "no files list beside the agent at 1/5: $(deskdiff width) pt"; return 1; }
 }
 
+scenario diff_pane_worktree_gone M4
+diff_pane_worktree_gone() {
+  start_daemon && start_app || return 1
+  local repo="$KANNA_STATE_DIR/gone_repo" tree="$KANNA_STATE_DIR/gone_tree"
+  mkdir -p "$repo" && cd "$repo" || return 1
+  dgit() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@" >/dev/null; }
+  dgit init -q -b main
+  for i in $(seq 200); do echo "fn f$i() -> u32 { $i }"; done >a.rs
+  dgit add . && dgit commit -qm first && dgit worktree add -q -b task "$tree"
+  cd - >/dev/null
+  for i in $(seq 200); do echo "fn f$i() -> u64 { $i }"; done >"$tree/a.rs"
+  gone() { raw "{\"id\":1,\"cmd\":\"debug.diff\",\"args\":{\"pane\":\"gone\"${2:-}}}" | field "$1"; }
+  (cd "$tree" && kanna open --window new diff --merge-base main --name gone >/dev/null) || return 1
+  check wait_for 5 eval '[[ "$(gone files)" == *a.rs* ]]' || { echo "files $(gone files) error $(gone error)"; return 1; }
+  gone view ',"zoom":-40' >/dev/null
+  check wait_for 5 eval '[[ "$(gone zoom)" == 0.72 ]]' || { echo "zoomed out to $(gone zoom)"; return 1; }
+  gone view ',"keys":"G"' >/dev/null
+  check wait_for 5 eval '[[ "$(gone sticky)" == a.rs ]]' || { echo "no sticky header zoomed out: $(gone sticky)"; return 1; }
+  git -C "$repo" worktree remove --force "$tree" || return 1
+  check wait_for 5 eval '[[ "$(gone notice)" != None || "$(gone error)" != None ]]' || { echo "the removed worktree went unnoticed: notice $(gone notice), error $(gone error)"; return 1; }
+  for keys in g G g G; do gone view ",\"keys\":\"$keys\"" >/dev/null; done
+  gone view ',"zoom":-1' >/dev/null
+  check app_attached || { echo "the app died after its worktree went"; return 1; }
+  check test "$(gone sticky)" == a.rs || { echo "sticky $(gone sticky) after the worktree went"; return 1; }
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"diff_pane_worktree_gone.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/diff_pane_worktree_gone.png" "$out/" 2>/dev/null
+}
+
 scenario code_tour M4
 code_tour() {
   start_daemon && start_app || return 1
