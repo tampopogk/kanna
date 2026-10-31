@@ -13,6 +13,7 @@ pub struct FakeHost {
     pub fail: RefCell<HashSet<String>>,
     pub stopped: RefCell<Vec<String>>,
     pub sent: RefCell<Vec<String>>,
+    pub updated: RefCell<Vec<String>>,
 }
 
 impl PaneHost for FakeHost {
@@ -31,6 +32,10 @@ impl PaneHost for FakeHost {
 
     fn stop(&self, pane: &Pane) {
         self.stopped.borrow_mut().push(pane.id.clone());
+    }
+
+    fn update(&self, pane: &Pane) {
+        self.updated.borrow_mut().push(format!("{} markup={} agent={}", pane.id, pane.markup, pane.agent.as_deref().unwrap_or("-")));
     }
 
     fn send(&self, pane: &Pane, text: &str, done: Responder) {

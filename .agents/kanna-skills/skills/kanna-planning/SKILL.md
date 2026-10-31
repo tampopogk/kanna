@@ -22,6 +22,7 @@ Kanna brings this conversation back whenever a planner starts on the project aga
 - **A task's message** arrives as your next prompt, `[message from TASK "Name"] TEXT`: tell the user in your chat what it means for them (a decision to take, a branch to merge), and leave it there, without a back-and-forth with the task. Pass on the user's answer when they ask you to.
 - **Offer a quiz** once per session, when something has merged into main in the last day: use the `kanna-quiz` skill, which says how to offer it and open the Quiz window.
 - **The Desk, Shelf and focus are shared:** the user may change them at the same time as you, so don't assume a change was yours, and don't undo one you didn't make; ask.
+- **Don't search the whole home folder** (`find ~`, `ls ~/*`, `grep -r ~`): macOS asks the user, in Kanna's name, once for every protected folder it walks into (Desktop, Documents, Downloads, Photos, Music, other apps' data). Look where the project or the user points, or ask where something is.
 - **Don't write code here.** You're in the project's main checkout, which every task's worktree branches from. Read anything you need; changes belong in a task.
 
 ## Writing a task
