@@ -26,7 +26,7 @@ sequenceDiagram
     participant A as agent
     You->>Doc: Ink on, draw strokes
     Doc->>Doc: recognise each stroke
-    You->>Doc: stop drawing (or type a note, ↵)
+    You->>Doc: maybe a typed note on a mark, then stop drawing or ↵
     Doc->>F: new thread c2 with its marks
     Doc->>A: types c2 (marks as text + marked-up picture)
     A->>A: reads the picture, edits the file
@@ -53,8 +53,8 @@ sequenceDiagram
 - An arrow drawn without a head gets one, pointing the way you drew it; a small V near an arrow's tip is taken as its head.
 - **Sent when you stop.** Strokes collect in a **New ink** card at the top of the thread list. When you stop drawing for 2s, the card counts down and posts them all as one thread; drawing again adds to the batch and restarts it.
   - **⌥-drag:** letting go of ⌥ sends at once.
-  - **Typing** adds a note to the batch, with no click: the first key goes to the note, ↵ sends.
-  - **Esc** holds the batch: it waits for ↵ or **Send**, or **Discard**. ⌘Z undoes the last stroke.
+  - **A note on a mark:** type straight after drawing it, with no click. The note shows on the doc beside the mark and in the card; clicking a mark in the card puts the note on that one instead. Typing stops the countdown, ↵ sends, Esc ends the note and restarts it, and drawing again keeps it.
+  - **Esc** (not in a note) holds the batch: it waits for ↵ or **Send**, or **Discard**. ⌘Z undoes the last stroke.
 
 ## 3. What the agent gets
 
@@ -62,7 +62,7 @@ Both a picture and words: the picture shows what you meant (the gesture, your wr
 
 ![What c2 types into the agent, beside the marked-up picture it points to](ink-markup-sent.png)
 
-- **The message** is a Doc Markup comment: one `>` line per mark, numbered as in the picture, then your note.
+- **The message** is a Doc Markup comment: one `>` line per mark, numbered as in the picture, each followed by its note if it has one.
 
 ```
 [kanna comment c2 · docs/specs/tab-container.md:7]
@@ -70,12 +70,13 @@ Both a picture and words: the picture shows what you meant (the gesture, your wr
 > 1 circle around "Panes only:" (line 7)
 > 2 writing beside line 7, read it in the picture
 > 3 arrow from "The panes inside stay ordinary pa…" (line 23) to after "A tab container is a slot in a sp…" (line 3)
+>   note: say this up front
 > 4 strike through "middle-click or × to close it." (line 14)
 > marked up: .kanna/docs/marks/docs__specs__tab-container.md-c2.png
 ```
 
 - **On a page**, marks name parts by CSS path and text with a box in page pixels, as [page comments](doc-markup.md#3-reaching-the-agent) do.
-- **The picture** is the pane as shown, with the ink drawn on and each mark numbered as in the message, saved beside the threads (as `kanna screenshot` takes it). The numbers are only in the picture, to tie its strokes to the lines; the doc shows the ink alone.
+- **The picture** is the pane as shown, with the ink and the notes drawn on and each mark numbered as in the message, saved beside the threads (as `kanna screenshot` takes it). The numbers are only in the picture, to tie its strokes to the lines; the doc shows the ink alone.
 - **What marks mean is a skill.** The `kanna-markup` skill gives the conventions (strike or cross: cut it; arrow: move it there; circle or underline: this, see the note or writing; writing: read it from the picture) and tells the agent to answer mark by mark, naming what each touched and how it read it, so a misread shows in the reply.
 
 ## 4. After it's sent
@@ -85,8 +86,11 @@ Both a picture and words: the picture shows what you meant (the gesture, your wr
 ```mermaid
 stateDiagram-v2
     [*] --> drawing: first stroke
-    drawing --> sent: 2s pause, ⌥ let go
-    drawing --> held: Esc, or you type a note
+    drawing --> sent: 2s pause, ⌥ let go, ↵
+    drawing --> noting: you type
+    noting --> drawing: Esc, or a new stroke
+    noting --> sent: ↵
+    drawing --> held: Esc
     held --> sent: ↵ or Send
     held --> [*]: Discard
     sent --> replied: kanna markup reply

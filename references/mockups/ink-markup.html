@@ -100,6 +100,16 @@ body.picture .body { height: calc(100vh - 67px); }
 .count { height: 3px; background: #3a2a2a; border-radius: 2px; overflow: hidden; margin-top: 8px; }
 .count i { display: block; height: 100%; background: var(--ink); animation: drain linear forwards; }
 @keyframes drain { from { width: 100%; } to { width: 0; } }
+.notes { position: absolute; left: 0; top: 0; width: 0; height: 0; }
+.mnote { position: absolute; max-width: 230px; width: max-content; font: 12px/1.35 var(--sans); color: #ffd2cf; background: rgba(40,22,22,.92); border: 1px solid var(--ink); border-radius: 6px; padding: 2px 7px; white-space: pre-wrap; }
+.pagebody ~ .notes .mnote, .notes .mnote.onpage { }
+.mnote.editing { box-shadow: 0 0 0 3px rgba(255,95,87,.25); }
+.mnote .ph { color: #a77; }
+.mnote .caret { display: inline-block; width: 1px; height: 13px; background: #ffd2cf; vertical-align: -2px; animation: caret 1s steps(1) infinite; }
+@keyframes caret { 50% { opacity: 0; } }
+.marks li .t { cursor: text; }
+.marks li.editing .t { color: var(--text); }
+.marks .nt { display: block; color: #ffb3ae; font-size: 11.5px; margin: 0 0 2px 22px; }
 .marks { list-style: none; margin: 4px 0 4px; padding: 0; }
 .marks li { display: flex; gap: 6px; align-items: baseline; font-size: 12px; color: var(--soft); padding: 1px 0; }
 .marks li.gone { color: var(--dim); }
@@ -129,7 +139,7 @@ body.picture .body { height: calc(100vh - 67px); }
 <main>
   <div class="intro">
     <h1>Ink markup: draw on a doc, and the agent beside it works out what the marks mean</h1>
-    <p>Turn on <b>Ink</b> (or hold ⌥ and drag) and draw: circle words, underline them, strike them out, zigzag over them or cross them out with an X, draw an arrow from a paragraph to where it should go, write in the margin. Each stroke is recognised and numbered, and listed in the New ink card: click its kind to correct it, × to remove it. ⌘Z undoes. Stop drawing for 2s and the batch is sent as one thread; let go of ⌥ and it's sent at once. Start typing to add a note (↵ sends), or press Esc to hold the batch and send it yourself.</p>
+    <p>Turn on <b>Ink</b> (or hold ⌥ and drag) and draw: circle words, underline them, strike them out, zigzag over them or cross them out with an X, draw an arrow from a paragraph to where it should go, write in the margin. Each stroke is recognised and numbered, and listed in the New ink card: click its kind to correct it, × to remove it. ⌘Z undoes. Stop drawing for 2s and the batch is sent as one thread; let go of ⌥ and it's sent at once. Type straight after a mark to put a note on it (click a mark in the card to note another); ↵ sends. Esc ends a note, or holds the batch to send it yourself.</p>
     <p>Below the window: what Send types into the agent, and the marked-up picture it points to. The agent answers mark by mark; marks it acted on leave the page.</p>
     <div class="controls">
       <button id="example" class="primary">Draw the example</button>
@@ -156,7 +166,7 @@ body.picture .body { height: calc(100vh - 67px); }
         </div>
         <div class="split">
           <div class="editor" id="editor">
-            <div class="surface" id="surface"><div id="content"></div><svg class="ink" id="ink"></svg></div>
+            <div class="surface" id="surface"><div id="content"></div><svg class="ink" id="ink"></svg><div class="notes" id="notes"></div></div>
           </div>
           <div class="threads" id="threads"></div>
         </div>
@@ -201,7 +211,7 @@ const pageBlocks = () => [
 const initial = () => ({
   scene: "md", ink: false, input: "mouse", speed: "auto", sendMode: "pause", sendAt: null, held: false, altBatch: false, active: null, showResolved: false,
   docs: { md: mdBlocks(), page: pageBlocks() },
-  pending: { md: [], page: [] }, note: { md: "", page: "" },
+  pending: { md: [], page: [] }, editing: null,
   touched: { md: new Set(), page: new Set() },
   threads: [
     { id: "c1", scene: "md", kind: "text", b: "m8", from: 2, to: 9, line: 13, quote: "the strip scrolls, keeping the active tab in view", status: "replied", state: "open",
@@ -493,6 +503,17 @@ function renderInk() {
   svg.setAttribute("width", surf.scrollWidth); svg.setAttribute("height", surf.scrollHeight);
   const groups = inkGroups();
   svg.innerHTML = inkSvg(groups) + (live ? `<path d="${pathD(live)}" fill="none" stroke="${INK}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>` : "");
+  let h = "";
+  for (const g of groups) {
+    const m = g.m, editing = g.pending && m === s.editing;
+    if (!m.note && !editing) continue;
+    const bb = bboxAll(g.strokes), tip = m.kind === "arrow" ? (m.tip != null ? g.strokes[0][m.tip] : g.strokes[0][g.strokes[0].length - 1]) : null;
+    let x = tip ? tip[0] + 10 : bb.x2 + 8, y = tip ? tip[1] - 8 : bb.y1 - 4, shift = "";
+    if (x > $("#editor").clientWidth - 170) { x = (tip ? tip[0] : bb.x2); y = (tip ? tip[1] : bb.y2) + 6; shift = "transform:translateX(-100%);"; }
+    const body = (m.note ? esc(m.note) : (editing && !s.numbers ? `<span class="ph">note</span>` : "")) + (editing && !s.numbers ? `<span class="caret"></span>` : "");
+    h += `<div class="mnote${editing && !s.numbers ? " editing" : ""}" style="left:${x}px;top:${y}px;${shift}opacity:${g.opacity ?? 1}">${body}</div>`;
+  }
+  $("#notes").innerHTML = h;
 }
 
 function removeMark(m) {
@@ -534,16 +555,15 @@ function message(t) {
   const lines = [`[kanna comment ${t.id} · ${FILES[t.scene]}:${t.line}]`];
   if (t.scene === "page") lines.push(`> the page at #general, in a 1220×816 view, scrolled to 0,0`);
   lines.push(`> ink, ${t.marks.length} mark${t.marks.length === 1 ? "" : "s"}, numbered in the picture:`);
-  t.marks.forEach(m => lines.push(`> ${m.n} ${m.desc.long}`));
+  t.marks.forEach(m => { lines.push(`> ${m.n} ${m.desc.long}`); if (m.note) lines.push(`>   note: ${m.note}`); });
   lines.push(`> marked up: .kanna/docs/marks/${MARKFILE[t.scene]}-${t.id}.png`);
-  if (t.note) lines.push(t.note);
   return lines;
 }
 function draft() {
   const pend = s.pending[s.scene];
   if (!pend.length) return null;
   const marks = pend.map(m => ({ ...m, desc: describe(m, analyze(m, m.strokes)) }));
-  return { id: `c${s.next[s.scene] + (s.scene === "md" ? 0 : 0)}`, scene: s.scene, marks, note: s.note[s.scene].trim(), line: marks[0].desc.line };
+  return { id: `c${s.next[s.scene] + (s.scene === "md" ? 0 : 0)}`, scene: s.scene, marks, line: marks[0].desc.line };
 }
 
 let sendTimer = null;
@@ -556,14 +576,14 @@ function startCountdown() {
   sendTimer = setTimeout(() => { s.sendAt = null; send(); }, PAUSE);
 }
 function send() {
-  stopCountdown(); s.held = false; s.altBatch = false; s.typing = false;
+  stopCountdown(); s.held = false; s.altBatch = false; s.editing = null;
   const d = draft(); if (!d) return;
   const snap = snapshot();
   d.marks.forEach(m => { m.analysis = analyze(m, m.strokes); m.strokesAtSend = m.strokes; });
-  const t = { ...d, kind: "ink", status: "sent", state: "open", snap, crop: cropFor(d.marks, snap), messages: d.note ? [{ who: "you", text: d.note }] : [], phase: 0 };
+  const t = { ...d, kind: "ink", status: "sent", state: "open", snap, crop: cropFor(d.marks, snap), messages: [], phase: 0 };
   s.next[s.scene]++;
   s.threads.push(t);
-  s.pending[s.scene] = []; s.note[s.scene] = "";
+  s.pending[s.scene] = []; s.editing = null;
   s.active = t.id;
   render();
   if (s.speed === "auto") { setTimeout(() => { t.phase = 1; render(); }, 900); setTimeout(() => answer(t), 2400); }
@@ -608,15 +628,15 @@ function answer(t) {
     const q = quoteOf(a.words) || (a.near && a.near.b.text) || "";
     const w = writing.find(w => distToBox([bboxAll(w.strokes).cx, bboxAll(w.strokes).cy], bboxAll(m.strokes)) < 120);
     if (w) paired.add(w);
-    if (sc === "page" && /save/i.test(q) && t.note) {
+    if (sc === "page" && /save/i.test(q) && m.note) {
       const b = doc.find(x => x.text === "Save"); b.primary = true; s.touched[sc].add(b.id); m.gone = true;
       say(m.n, `made Save the default button: blue, and ↵ presses it.`);
     } else if (w && /Panes only/.test(q)) {
       say(m.n, `you circled “Panes only” and wrote ? beside it. It means a container holds panes and nothing else: a split inside a tab would need its own tab strip. Want that sentence in the rule?`);
     } else if (w) {
       say(m.n, `you ${m.kind}d “${trunc(q, 30)}” and wrote beside it; I read your writing from the picture.`);
-    } else if (t.note) {
-      say(m.n, `“${trunc(q, 30)}”: done, as your note says.`);
+    } else if (m.note) {
+      say(m.n, `“${trunc(q, 30)}”: done, as your note on it says.`);
     } else {
       say(m.n, `you ${m.kind}d “${trunc(q, 30)}”: what should change?`);
     }
@@ -629,7 +649,7 @@ function answer(t) {
 }
 
 function markRow(m, pending) {
-  return `<li class="${m.gone ? "gone" : ""}"><span class="num">${m.n}</span><span class="k"${pending ? ` data-k="${m.n}" title="Click to change"` : ""}>${m.kind}</span><span class="t">${esc(m.desc.short)}</span>${pending ? `<span class="x" data-x="${m.n}" title="Remove">×</span>` : ""}</li>`;
+  return `<li class="${m.gone ? "gone" : ""}${pending && m === s.editing ? " editing" : ""}"${pending ? ` data-e="${m.n}" title="Click to add a note"` : ""}><span class="num">${m.n}</span><span class="k"${pending ? ` data-k="${m.n}" title="Click to change"` : ""}>${m.kind}</span><span class="t">${esc(m.desc.short)}</span>${pending ? `<span class="x" data-x="${m.n}" title="Remove">×</span>` : ""}</li>${m.note ? `<span class="nt">${esc(m.note)}</span>` : ""}`;
 }
 
 function renderThreads() {
@@ -645,20 +665,18 @@ function renderThreads() {
     const counting = s.sendAt != null, left = counting ? Math.max(0, s.sendAt - Date.now()) : 0;
     const undo = s.input === "pencil" ? "double-tap undoes" : "⌘Z undoes";
     const foot = counting
-      ? `<div class="count"><i style="animation-duration:${PAUSE}ms;animation-delay:${left - PAUSE}ms"></i></div><div class="row"><span>Sending · draw to add · type a note · Esc holds</span></div>`
-      : s.altBatch && !s.held && !s.typing
+      ? `<div class="count"><i style="animation-duration:${PAUSE}ms;animation-delay:${left - PAUSE}ms"></i></div><div class="row"><span>Sending · type to add a note to ${d.marks.length} · draw to add · Esc holds</span></div>`
+      : s.editing
+      ? `<div class="row"><span>Note on ${s.editing.n} · ↵ sends · Esc ends the note</span><button class="primary" id="send">Send ↵</button></div>`
+      : s.altBatch && !s.held
       ? `<div class="row"><span>Let go of ⌥ to send · ${undo}</span></div>`
       : `<div class="row"><span>${undo}</span><button id="discard">Discard</button><button class="primary" id="send">Send ↵</button></div>`;
     card.innerHTML = `<div class="head"><span>New ink · ${d.marks.length} mark${d.marks.length === 1 ? "" : "s"}</span><span>${d.id}</span></div>
-      <ul class="marks">${d.marks.map(m => markRow(m, true)).join("")}</ul>
-      <textarea placeholder="Type to add a note">${esc(s.note[s.scene])}</textarea>${foot}`;
-    const ta = card.querySelector("textarea");
-    ta.onfocus = () => { if (!s.typing) { s.typing = true; s.held = true; stopCountdown(); renderThreads(); const t2 = $("#threads textarea"); t2.focus(); t2.setSelectionRange(t2.value.length, t2.value.length); } };
-    ta.oninput = () => { s.note[s.scene] = ta.value; renderSent(); };
-    ta.onkeydown = e => { e.stopPropagation(); if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); s.typing = false; send(); } if (e.key === "Escape") { s.typing = false; ta.blur(); render(); } };
+      <ul class="marks">${d.marks.map(m => markRow(m, true)).join("")}</ul>${foot}`;
+    card.querySelectorAll("[data-e]").forEach(li => li.onclick = e => { if (e.target.closest("[data-k], [data-x]")) return; stopCountdown(); s.editing = s.pending[s.scene][+li.dataset.e - 1]; render(); });
     card.querySelectorAll("[data-k]").forEach(k => k.onclick = () => { const m = s.pending[s.scene][+k.dataset.k - 1]; m.kind = KINDS[(KINDS.indexOf(m.kind) + 1) % KINDS.length]; render(); });
     card.querySelectorAll("[data-x]").forEach(x => x.onclick = () => removeMark(s.pending[s.scene][+x.dataset.x - 1]));
-    const dis = card.querySelector("#discard"); if (dis) dis.onclick = () => { stopCountdown(); s.held = false; s.altBatch = false; s.typing = false; s.pending[s.scene] = []; s.note[s.scene] = ""; render(); };
+    const dis = card.querySelector("#discard"); if (dis) dis.onclick = () => { stopCountdown(); s.held = false; s.altBatch = false; s.editing = null; s.pending[s.scene] = []; render(); };
     const sb = card.querySelector("#send"); if (sb) sb.onclick = send;
     panel.appendChild(card);
   }
@@ -770,6 +788,7 @@ surf.addEventListener("pointerdown", e => {
   if (!(s.ink || e.altKey || s.input === "pencil")) return;
   e.preventDefault();
   stopCountdown();
+  s.editing = null;
   if (!s.ink && s.input !== "pencil") s.altBatch = true;
   surf.setPointerCapture(e.pointerId);
   live = [pt(e)];
@@ -785,10 +804,10 @@ surf.addEventListener("pointerup", e => {
   if (!live) return;
   const pts = simplify(live); live = null;
   addStroke(pts);
-  if (!(s.altBatch && e.altKey) && !s.typing) { startCountdown(); renderThreads(); }
+  if (!(s.altBatch && e.altKey)) { startCountdown(); renderThreads(); }
 });
 document.addEventListener("keyup", e => {
-  if (e.key === "Alt" && s.altBatch && !s.typing && !s.held && s.pending[s.scene].length && s.sendMode === "pause") send();
+  if (e.key === "Alt" && s.altBatch && !s.editing && !s.held && s.pending[s.scene].length && s.sendMode === "pause") send();
 });
 function addStroke(pts, forced) {
   const pend = s.pending[s.scene];
@@ -803,8 +822,15 @@ function addStroke(pts, forced) {
 
 document.addEventListener("keydown", e => {
   if (e.target.closest && e.target.closest("textarea, input")) return;
+  if (e.key === "Escape" && s.editing) { if (s.editing.note) s.editing.note = s.editing.note.trim(); s.editing = null; render(); startCountdown(); renderThreads(); return; }
   if (e.key === "Escape") { if (s.sendAt != null || (s.altBatch && s.pending[s.scene].length)) { stopCountdown(); s.held = true; s.altBatch = false; } else s.ink = false; render(); return; }
-  if (s.pending[s.scene].length && e.key.length === 1 && !e.metaKey && !e.ctrlKey) { $("#threads textarea").focus(); return; }
+  const pend = s.pending[s.scene];
+  if (pend.length && e.key.length === 1 && !e.metaKey && !e.ctrlKey) {
+    e.preventDefault();
+    if (!s.editing) s.editing = pend[pend.length - 1];
+    stopCountdown(); s.editing.note = (s.editing.note || "") + e.key; render(); return;
+  }
+  if (s.editing && e.key === "Backspace") { e.preventDefault(); s.editing.note = (s.editing.note || "").slice(0, -1); render(); return; }
   if (e.key === "Enter" && !e.metaKey && s.pending[s.scene].length) { e.preventDefault(); send(); return; }
   if (e.metaKey && e.shiftKey && e.key.toLowerCase() === "i") { e.preventDefault(); s.ink = !s.ink; render(); }
   if (e.metaKey && e.key === "z") {
@@ -835,7 +861,7 @@ function question(x, y) {
 }
 
 function example() {
-  s.pending[s.scene] = []; s.note[s.scene] = "";
+  s.pending[s.scene] = []; s.editing = null;
   render();
   if (s.scene === "md") {
     const c = union([wr("m4", 0), wr("m4", 1)]);
@@ -845,6 +871,7 @@ function example() {
     s.pending.md[1].strokes.push(q2); render();
     const from = blockRect("m14"), to = blockRect("m2");
     addStroke(curve([from.x - 6, from.y + 9], [from.x - 34, (from.y + to.y2) / 2], [to.x - 8, to.y2 + 4]), { kind: "arrow" });
+    s.pending.md[2].note = "say this up front";
     const st = union([wr("m9", 6), wr("m9", 11)]);
     addStroke(wobbleLine(st.x - 3, (st.y + st.y2) / 2 + 1, st.x2 + 3, (st.y + st.y2) / 2), { kind: "strike" });
   } else {
@@ -854,7 +881,7 @@ function example() {
     addStroke(curve([from.x2 + 6, from.y + from.h / 2], [from.x2 + 40, from.y - 10], [to.x2 + 6, to.y + 6]), { kind: "arrow" });
     const sh = blockRect("p5");
     addStroke(zigzag({ x: sh.x + 8, y: sh.y, x2: sh.x2 - 8, y2: sh.y2 }), { kind: "strike" });
-    s.note.page = "Make Save the default button.";
+    s.pending.page[0].note = "make this the default button";
   }
   render();
 }
