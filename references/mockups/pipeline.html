@@ -158,7 +158,7 @@ table.t.wrap td { white-space: normal; }
 <main>
   <div class="intro">
     <h1>The software factory: a pipeline's definition, a run on the Desk, and runs compared</h1>
-    <p>A pipeline is a small text file in the repo (<code>.kanna/pipelines/feature.pipe</code>) that says which stages a change goes through: an agent session, a command, a question for you, or a merge, joined by arrows with gates and bounded loops. A task made with a pipeline runs it in its own worktree, driven by the daemon, in the task's docked pane; the task's <b>Run</b> tab draws where it is. Every stage's time, turns, tokens, verdicts and your interventions are kept, so pipelines can be compared on the Stats tab and tuned.</p>
+    <p>A run is one task wherever tasks show: the Shelf, the Desk, the strip and <code>kanna task list</code>. Its fanned-out parts are workers inside it, shown on the Run tab, never tasks. A pipeline is a small text file in the repo (<code>.kanna/pipelines/feature.pipe</code>) that says which stages a change goes through: an agent session, a command, a question for you, or a merge, joined by arrows with gates and bounded loops. A task made with a pipeline runs it in its own worktree, driven by the daemon, in the task's docked pane; the task's <b>Run</b> tab draws where it is. Every stage's time, turns, tokens, verdicts and your interventions are kept, so pipelines can be compared on the Stats tab and tuned.</p>
     <div class="controls">
       <button data-scene="define">Definition</button>
       <button data-scene="run">A run on the Desk</button>
@@ -182,7 +182,7 @@ budget  = 40 sessions, 8h
 spec    = claude:high prompt spec              # docs/specs/X.md, references/mockups/X.html
 approve = ask "Spec and mockup right?"         # you, on the Desk; a note goes back to spec
 plan    = claude prompt plan emits             # splits the work; may add stages
-build   = claude prompt build each plan.parts  # a worktree per part, run as Shelf tasks
+build   = claude prompt build each plan.parts  # a worktree and pane per part, inside the run
 join    = merge build                          # the parts' branches into the run's
 check   = run scripts/check.sh                 # build and unit tests; exit 0 passes
 review  = codex:high prompt review verdict     # fresh reviewer; ends VERDICT: PASS|FAIL
@@ -302,7 +302,7 @@ function defineHTML() {
             <tr><td class="mono">check, e2e</td><td>a command in the worktree</td><td>exit 0 passes</td><td>the output's tail, failures first</td></tr>
             <tr><td class="mono">approve</td><td>you, on the Desk (needs you)</td><td>yes or no</td><td>your note</td></tr>
             <tr><td class="mono">join, land</td><td>git</td><td>clean merge passes</td><td>the conflicts</td></tr>
-            <tr><td class="mono">… on mini</td><td>any stage on another of your machines: a child task there, the branch sent over, its result and commits brought back</td><td>as its kind</td><td>as its kind</td></tr>
+            <tr><td class="mono">… on mini</td><td>any stage on another of your machines: a worker there, the branch sent over, its result and commits brought back</td><td>as its kind</td><td>as its kind</td></tr>
           </table>
           <div class="sec">Rules the file is checked against</div>
           <p class="rev">From a stage, the first arrow in file order whose condition holds and whose <span class="mono">max</span> isn't spent is taken. Every loop needs a <span class="mono">max</span>; every stage must be reachable; <span class="mono">pass</span>/<span class="mono">fail</span> need a stage with a verdict; the worst case must fit the budget. Errors name the file and line.</p>
@@ -320,7 +320,7 @@ const RUN = {
     { stage: "spec", visit: 2, who: "claude:high", took: "6m", verdict: "—", turns: 4, tok: "96k", note: "mockup and spec updated" },
     { stage: "approve", visit: 2, who: "you", took: "12m", verdict: "yes", turns: "", tok: "", note: "" },
     { stage: "plan", visit: 1, who: "claude", took: "5m", verdict: "—", turns: 3, tok: "71k", note: "3 parts: tokens, split view, e2e scenario · revision 2: added e2e-dark" },
-    { stage: "build", visit: 1, who: "claude ×3", took: "31m", verdict: "—", turns: 51, tok: "1.9M", note: "3 Shelf tasks, in parallel" },
+    { stage: "build", visit: 1, who: "claude ×3", took: "31m", verdict: "—", turns: 51, tok: "1.9M", note: "3 workers in parallel, each a tab of this window while it ran" },
     { stage: "join", visit: 1, who: "git", took: "2s", verdict: "pass", turns: "", tok: "", note: "" },
     { stage: "check", visit: 1, who: "check.sh", took: "4m", verdict: "fail", turns: "", tok: "", note: "2 tests failed: diff_theme, gutter_colors" },
     { stage: "fix", visit: 1, who: "claude", took: "9m", verdict: "—", turns: 7, tok: "180k", note: "guard check: 0.98 → 1.00, kept" },
@@ -391,7 +391,7 @@ function runHTML(gate) {
       <div class="docs"><div class="dtabs">${tabs.map((f, i) => `<div class="dtab ${i ? "" : "on"}">${esc(f)}${i === 0 ? `<span class="n">${gate ? "2/11" : "7/11"}</span>` : ""}</div>`).join("")}<span class="add">+</span></div>
       ${runTabHTML(gate)}</div>
     </div>
-    <div class="strip"><span class="hint"><kbd>⌘.</kbd> Desk</span><span class="sep"></span><span class="item"><span class="dot idle"></span><span>Typing lag in terminals</span><span style="color:var(--muted)">· 40m ago</span></span><span class="item"><span class="dot working"></span><span>Dark mode · tokens</span><span style="color:var(--muted)">· build, part 1 of 3</span></span><span class="count">7 on the Shelf</span></div>
+    <div class="strip"><span class="hint"><kbd>⌘.</kbd> Desk</span><span class="sep"></span><span class="item"><span class="dot idle"></span><span>Typing lag in terminals</span><span style="color:var(--muted)">· 40m ago</span></span><span class="item"><span class="dot idle"></span><span>Commit graph pane</span><span style="color:var(--muted)">· 2h ago</span></span><span class="count">7 on the Shelf</span></div>
   </div>`;
 }
 

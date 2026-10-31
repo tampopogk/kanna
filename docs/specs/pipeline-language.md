@@ -72,11 +72,11 @@ Any order at the end of a stage line. `on` and `within` apply to every kind; the
 |---|---|
 | `prompt NAME` | `.kanna/prompts/NAME.md` is the stage's prompt instead of the stage's own name |
 | `verdict` | the stage ends with `VERDICT: PASS` or `FAIL`; the request is appended to its prompt |
-| `each STAGE.KEY` | one instance per item of a named list a previous stage produced ([5](#5-inputs-and-outputs)), each a child task in a worktree branched from the run's; the next stage waits for them all ([software factory §3](software-factory.md#3-fan-out-join-and-other-machines)) |
-| `xN by STAGE` | N attempts of the stage from the same code (2 to 10), each in its own worktree; the `run` stage named scores each (its output's last line `score: 0.83`, else pass 1 and fail 0) and the best is kept, ties to the first |
+| `each STAGE.KEY` | one instance per item of a named list a previous stage produced ([5](#5-inputs-and-outputs)), each a worker of the run (a worktree branched from the run's and a pane in the run's window, never a task of its own); the next stage waits for them all ([software factory §3](software-factory.md#3-fan-out-join-and-other-machines)) |
+| `xN by STAGE` | N attempts of the stage from the same code (2 to 10), each a worker in its own worktree; the `run` stage named scores each (its output's last line `score: 0.83`, else pass 1 and fail 0) and the best is kept, ties to the first |
 | `guard STAGE` | that `run` stage scores the code before and after; a result that scores lower is discarded and the code before carries on, recorded as a rollback |
 | `emits` | the stage's answer may add stages and arrows to the run ([7](#7-changing-a-pipeline-while-it-runs)) |
-| `on PLACEMENT` | where the stage runs: a machine's name (`mini`), a role your machines declare (`mac`, `linux`, `e2e`), `any` (whichever has a free slot) or `here`, the run's machine, the default. The stage runs there as a child task; its result comes back ([software factory §3](software-factory.md#3-fan-out-join-and-other-machines)) |
+| `on PLACEMENT` | where the stage runs: a machine's name (`mini`), a role your machines declare (`mac`, `linux`, `e2e`), `any` (whichever has a free slot) or `here`, the run's machine, the default. The stage runs there as a worker of the run; its result comes back ([software factory §3](software-factory.md#3-fan-out-join-and-other-machines)) |
 | `within DURATION` | the stage is abandoned after that long: an agent is stopped and its worktree reset to the stage's start, a command killed; the stage's verdict is fail with `timed out` as feedback |
 | `resume STAGE` | continue STAGE's last session rather than starting fresh |
 
@@ -103,7 +103,7 @@ flowchart LR
 ```
 
 - **An agent stage's prompt** is, in order: the stage's prompt file, the request under `# The task`, the feedback under `# Feedback from STAGE` (a review's text, a command's output tail, your note, the conflicts), and the verdict request when the stage has `verdict`. `{{STAGE.answer}}` and `{{STAGE.KEY}}` in a prompt file are replaced by that stage's last answer or named output; a prompt that names a stage that hasn't run is an error at validation.
-- **Named outputs:** a fenced block in an agent's answer whose info string is `json name=KEY` (or any fenced JSON block when the stage has one `each` consumer) is kept as `STAGE.KEY`. `each` wants a list; each item is given to the instance as `# Your part`, and an object with `name` names the child task.
+- **Named outputs:** a fenced block in an agent's answer whose info string is `json name=KEY` (or any fenced JSON block when the stage has one `each` consumer) is kept as `STAGE.KEY`. `each` wants a list; each item is given to the instance as `# Your part`, and an object with `name` names the worker.
 - **The answer** is read from the agent's own session file when its turn ends (Claude's JSONL, Codex's rollout), as [agent messaging](agent-messaging.md) finds the session; an agent whose session Kanna can't read gives an empty answer and the Run tab says so.
 - **A command's feedback** is its last 80 lines, with lines matching the failure pattern (`FAILED|error\[|panic|✗|failed`) moved first, capped at 8000 characters; `KANNA_FEEDBACK` holds the full text for the next command.
 - **Nothing else is shared between stages but the worktree.** A stage that wants a plan reads it from the branch, or from `{{plan.answer}}`.
