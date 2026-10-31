@@ -11,6 +11,7 @@ mod db;
 mod host;
 mod keeper;
 mod content_ids;
+mod crashes;
 mod layout;
 mod lifeline;
 mod pty;
@@ -193,6 +194,7 @@ fn run() -> Result<Option<PathBuf>, String> {
         return Ok(None);
     }
     let _ = std::fs::remove_file(&marker);
+    kanna_crash::install("daemon", state_dir.clone());
     let _ = std::fs::write(state_dir.join(kanna_build::RECORD), format!("{:#}\n", build.record(app_bundle().as_deref())));
 
     let stop_signals = signal_set(&[libc::SIGTERM, libc::SIGINT, libc::SIGHUP]);
@@ -324,12 +326,16 @@ fn run() -> Result<Option<PathBuf>, String> {
     files.install(&core);
     let host = Rc::new(Host::new(terminals.clone()));
     core.set_host(Some(host.clone()));
+    let noted = core.weak();
     let on_change = Rc::downgrade(&terminals);
     let tasks_changed = Rc::downgrade(&tasks);
     let layout_changed = Rc::downgrade(&layout);
     core.set_on_change(Some(Rc::new(move || {
         if let Some(terminals) = on_change.upgrade() {
             terminals.mark_changed();
+        }
+        if let Some(core) = noted.upgrade() {
+            kanna_crash::note_panes(core.with_panes(|panes| panes.iter().map(|p| json!({ "id": p.id, "name": p.name, "type": p.kind.as_str() })).collect()));
         }
         if let Some(layout) = layout_changed.upgrade() {
             layout.panes_changed();
@@ -387,6 +393,13 @@ fn run() -> Result<Option<PathBuf>, String> {
     let toast_link = Rc::downgrade(&app);
     *toasts.on_toast.borrow_mut() = Some(Box::new(move |record| toast_link.upgrade().is_some_and(|app| app.toast(record))));
     host.connect(&app);
+    let crashes = Rc::new(crashes::Crashes::new(db.clone(), &state_dir, build.clone()));
+    crashes.install(&core);
+    let posting = Rc::downgrade(&tasks);
+    *crashes.post.borrow_mut() = Some(Box::new(move |repo, text| posting.upgrade().ok_or_else(|| "the daemon is stopping".to_string())?.post("kanna", repo, text)));
+    let banner_link = Rc::downgrade(&app);
+    *crashes.show.borrow_mut() = Some(Box::new(move |record| banner_link.upgrade().is_some_and(|app| app.toast(record))));
+    crashes.scan();
     let diff_link = Rc::downgrade(&app);
     *diffs.on_diff.borrow_mut() = Some(Box::new(move |views, payload| {
         if let Some(app) = diff_link.upgrade() {
@@ -489,6 +502,7 @@ fn run() -> Result<Option<PathBuf>, String> {
         log!("kanna-daemon: shutting down: {why}");
         let _ = std::fs::write(state_dir.join(SHUTDOWN_MARKER), format!("{why}\n"));
         *shutdown = Some(Shutdown::App(Instant::now() + APP_QUIT_WAIT));
+        crashes.stopping();
         app.quit();
     };
     loop {
@@ -528,12 +542,13 @@ fn run() -> Result<Option<PathBuf>, String> {
         terminals.save_if_changed();
         layout.flush();
         let ticks = if shutdown.is_none() {
+            crashes.tick(Instant::now(), app.attached());
             tasks.sweep();
             tasks.tick()
         } else {
             Some(Instant::now() + Duration::from_millis(100))
         };
-        let deadline = [core.poll(), app.next_deadline(), ticks, layout.next_deadline()].into_iter().flatten().min();
+        let deadline = [core.poll(), app.next_deadline(), ticks, layout.next_deadline(), crashes.next_deadline()].into_iter().flatten().min();
         let event = match deadline {
             Some(at) => inbox.recv_timeout(at.saturating_duration_since(Instant::now())),
             None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
@@ -631,10 +646,18 @@ fn run() -> Result<Option<PathBuf>, String> {
                 break;
             }
             Event::AppHello { conn, hello, out, stream, remote } => {
-                if app.hello(conn, hello, out, stream, remote) {
+                if app.hello(conn, hello.clone(), out, stream, remote) {
                     break;
                 }
                 toasts.attached();
+                if app.is_here(conn) {
+                    crashes.attached(&hello);
+                }
+            }
+            Event::AppMessage { conn, message } if message.get("cmd").and_then(Value::as_str) == Some("app.goodbye") => {
+                if app.is_here(conn) {
+                    crashes.goodbye();
+                }
             }
             Event::AppMessage { conn, message } => {
                 if let Some(request) = app.message(conn, message) {
@@ -652,7 +675,13 @@ fn run() -> Result<Option<PathBuf>, String> {
                     });
                 }
             }
-            Event::AppGone { conn } => app.gone(conn),
+            Event::AppGone { conn } => {
+                let here = app.is_here(conn);
+                app.gone(conn);
+                if here {
+                    crashes.gone();
+                }
+            }
             Event::AppCaughtUp { conn } => app.caught_up(conn),
             Event::MachineConfirm { question, answer } => match &machines {
                 Some(machines) => machines.confirm(&app, question, answer),

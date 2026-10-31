@@ -46,6 +46,26 @@ final class DiagramCache {
     func keep(only sources: Set<String>) { layouts = layouts.filter { sources.contains($0.key) } }
 }
 
+struct ImageStamp: Equatable {
+    var path: String?
+    var regular = false
+    var inode: UInt64 = 0
+    var size: Int64 = 0
+    var seconds = 0
+    var nanoseconds = 0
+
+    init(_ source: String, folder: URL) {
+        path = MarkdownRenderer.localImagePath(source, folder: folder)
+        var info = stat()
+        guard let path, stat(path, &info) == 0 else { return }
+        regular = info.st_mode & S_IFMT == S_IFREG
+        inode = info.st_ino
+        size = info.st_size
+        seconds = info.st_mtimespec.tv_sec
+        nanoseconds = info.st_mtimespec.tv_nsec
+    }
+}
+
 @MainActor
 struct MarkdownRenderer {
     var folder: URL
@@ -55,6 +75,7 @@ struct MarkdownRenderer {
     private var old = false
     private var slugs: [String: Int] = [:]
     private(set) var diagramSources: [String] = []
+    private(set) var images: [String: ImageStamp] = [:]
 
     init(folder: URL, diagrams: DiagramCache) {
         self.folder = folder
@@ -432,9 +453,8 @@ struct MarkdownRenderer {
                 default: style.alignment = .left
                 }
                 let font = head ? NSFontManager.shared.convert(bodyFont, toHaveTrait: .boldFontMask) : bodyFont
-                let renderer = self
-                let cell = { (node: (any Markup)?) in
-                    let text = renderer.inline(node.map { Array($0.children) } ?? [], renderer.attributes(context, font: font))
+                func cell(_ node: (any Markup)?) -> NSMutableAttributedString {
+                    let text = inline(node.map { Array($0.children) } ?? [], attributes(context, font: font))
                     text.append(NSAttributedString(string: "\n", attributes: [.font: font]))
                     text.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: text.length))
                     return text
@@ -458,13 +478,13 @@ struct MarkdownRenderer {
         out.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 4), .paragraphStyle: paragraph(context, after: 6)]))
     }
 
-    private func inline(_ children: some Sequence<any Markup>, _ base: [NSAttributedString.Key: Any]) -> NSMutableAttributedString {
+    private mutating func inline(_ children: some Sequence<any Markup>, _ base: [NSAttributedString.Key: Any]) -> NSMutableAttributedString {
         let out = NSMutableAttributedString()
         for child in children { inline(child, base, into: out) }
         return out
     }
 
-    private func inline(_ markup: any Markup, _ base: [NSAttributedString.Key: Any], into out: NSMutableAttributedString) {
+    private mutating func inline(_ markup: any Markup, _ base: [NSAttributedString.Key: Any], into out: NSMutableAttributedString) {
         var attributes = base
         let font = base[.font] as? NSFont ?? bodyFont
         switch markup {
@@ -510,9 +530,12 @@ struct MarkdownRenderer {
         for child in markup.children { inline(child, attributes, into: out) }
     }
 
-    private func imageAttachment(_ source: String?) -> NSTextAttachment? {
-        guard let source, let path = Self.localImagePath(source, folder: folder),
-              let image = NSImage(contentsOf: URL(fileURLWithPath: path)) else { return nil }
+    private mutating func imageAttachment(_ source: String?) -> NSTextAttachment? {
+        guard let source else { return nil }
+        let stamp = ImageStamp(source, folder: folder)
+        images[source] = stamp
+        guard stamp.regular, let path = stamp.path, let data = FileManager.default.contents(atPath: path),
+              let image = NSImage(data: data) else { return nil }
         let attachment = NSTextAttachment()
         attachment.attachmentCell = ImageCell(image: image)
         return attachment

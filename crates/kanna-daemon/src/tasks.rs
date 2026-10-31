@@ -1799,6 +1799,15 @@ impl Tasks {
         Ok(Map::from_iter([("message".to_string(), json!(message.id)), ("to".to_string(), to), ("state".to_string(), json!(state)), ("warning".to_string(), opt(warning.as_deref()))]))
     }
 
+    pub fn post(&self, from: &str, repo: &str, text: &str) -> Result<i64, String> {
+        let message = self.db.put_message(PLANNER, repo, from, text, None).map_err(|error| format!("couldn't save the message in {}: {error}", db::FILE))?;
+        log!("kanna-daemon: a message from {from} waits for {PLANNER} of {repo}");
+        let id = message.id;
+        self.waiting.borrow_mut().push(message);
+        self.refill();
+        Ok(id)
+    }
+
     fn messages(&self, args: &Value) -> Result<Map, KmuxError> {
         let task = match string(args, "task") {
             Some(reference) => Some(self.task_of(reference).or(self.resolve(reference)?).ok_or_else(|| not_found(reference))?),
