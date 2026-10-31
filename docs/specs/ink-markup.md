@@ -1,6 +1,6 @@
 # Ink Markup
 
-**Status:** proposed · **Mockup:** [`references/mockups/ink-markup.html`](../../references/mockups/ink-markup.html) · **Builds on:** [Doc Markup](doc-markup.md)
+**Status:** proposed; the thread format, its message and the anchor check are built, drawing isn't yet · **Mockup:** [`references/mockups/ink-markup.html`](../../references/mockups/ink-markup.html) · **Builds on:** [Doc Markup](doc-markup.md)
 
 **Ink markup** lets you draw on a doc in Kanna (circle a word, strike out a sentence, cross out a part, draw an arrow from a paragraph to where it belongs, scribble a note in the margin) and have the agent beside it work out what the marks mean and make the changes. It is another way to post a [Doc Markup](doc-markup.md) thread: the same agent, the same reply and resolve. Today it's the Mac with a mouse or trackpad; the design carries over to an iPad with Apple Pencil.
 
@@ -122,6 +122,34 @@ Only the input differs, so the recognition, the anchors and the thread format ar
 ## 6. How it's built
 
 - **A thread with marks.** An ink thread is a Doc Markup thread whose target is a list of marks instead of a quote; each mark has its kind, its strokes (points relative to the block or part it's anchored to) and what it points at. The same thread file, CLI and skill.
+- **In the thread file** it's an `ink` object on the thread; the thread keeps `quote: ""`, so Kannas that don't know ink still read the file, and its `line` is its first mark's. A mark's number is its place in `marks`:
+
+```json
+{ "id": "c2", "quote": "", "line": 7, "state": "open", "status": "sent", "messages": [],
+  "mark": ".kanna/docs/marks/docs__specs__tab-container.md-c2.png",
+  "ink": { "marks": [
+    { "kind": "circle", "strokes": [[[2, 1], [80, 0], [84, 14], [1, 16], [2, 1]]],
+      "anchor": { "line": 7, "text": "Panes only: a container holds panes, not splits or other containers." },
+      "words": "Panes only:" },
+    { "kind": "arrow", "strokes": [[[-12, 4], [-30, -200], [-10, -390]]],
+      "anchor": { "line": 23, "text": "The panes inside stay ordinary panes, with their own IDs, …" },
+      "to": { "line": 3, "text": "A tab container is a slot in a split that holds several panes …" }, "side": "after",
+      "note": "say this up front" } ] } }
+```
+
+| Field | Is |
+|---|---|
+| `view` | On a page only: the view (`#…`), its size and scroll, as a page comment has; a markdown thread has none |
+| `kind` | `circle`, `underline`, `strike`, `cross`, `arrow` or `writing`; an unknown kind reads as `writing` |
+| `strokes` | Each stroke's points, relative to the anchor's top-left: points at 100% zoom in markdown, CSS pixels on a page |
+| `anchor` | The block (markdown: its first `line` and plain `text`) or part (page: also its CSS `selector` and `box` in page pixels) the strokes are kept on: an arrow's start, else the block of the words it covers, else the one nearest the strokes' middle. It's also what the mark points at |
+| `words` | The words a circle, underline, strike or cross covers, in the anchor; none when it's around nothing |
+| `to`, `side` | An arrow's tip: the block or part, and `before` or `after` it |
+| `tip` | An arrow's tip, as an index into its first stroke, when its head was drawn as a V |
+| `note` | The note typed on the mark |
+
+- **The message** is made from these fields alone (`DocStore.message`, `DocInk.lines`; the CLI's `kanna markup show` prints the same lines), so it reads the same after a restart. A page mark around nothing gives its box as the strokes' bounds in page pixels.
+- **Whether a mark stays** (`DocInk.stays`) is a pure check against the doc's blocks as they are now, in order: a markdown block by its text (the one nearest the mark's line when several match), a page part by its CSS path and text. A mark stays while its anchor is there unchanged; an arrow also needs its tip's block there, and goes once its start sits `side` of it (the move was made). A block that only moved keeps its marks, which follow it. Shared with the iOS app, so it uses no AppKit.
 - **Recognition runs where you draw** (the app, later the iPad), from the stroke alone plus what's under it; the kind you correct wins.
 - **The picture** is the pane's own capture with the ink layer on, the same as [`kanna screenshot`](screenshot.md).
 - **Not yet decided:** whether the thread store moves to the daemon first (task-4053), which this would follow.
