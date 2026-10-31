@@ -158,11 +158,12 @@ table.t.wrap td { white-space: normal; }
 <main>
   <div class="intro">
     <h1>The software factory: a pipeline's definition, a run on the Desk, and runs compared</h1>
-    <p>A run is one task wherever tasks show: the Shelf, the Desk, the strip and <code>kanna task list</code>. Its fanned-out parts are workers inside it, shown on the Run tab, never tasks. A pipeline is a small text file in the repo (<code>.kanna/pipelines/feature.pipe</code>) that says which stages a change goes through: an agent session, a command, a question for you, or a merge, joined by arrows with gates and bounded loops. A task made with a pipeline runs it in its own worktree, driven by the daemon, in the task's docked pane; the task's <b>Run</b> tab draws where it is. Every stage's time, turns, tokens, verdicts and your interventions are kept, so pipelines can be compared on the Stats tab and tuned.</p>
+    <p>A pipeline is a small text file in the repo (<code>.kanna/pipelines/feature.pipe</code>) that says which stages a change goes through: an agent session, a command, a question for you, or a merge, joined by arrows with gates and bounded loops. Any task's agent can run one (<code>kanna run start feature</code>): the task looks as it always does, its agent on the left and tabs on the right, and the pipeline builds under the hood in workers, agent sessions and commands in hidden terminals, driven by the daemon. The <b>Run</b> tab draws where it is; a <b>watch</b> tab shows the current stage's agent at work. A run is one task wherever tasks show. Every stage's time, turns, tokens, verdicts and your interventions are kept, so pipelines can be compared on the Stats tab and tuned.</p>
     <div class="controls">
       <button data-scene="define">Definition</button>
       <button data-scene="run">A run on the Desk</button>
       <button data-scene="gate">… waiting on you</button>
+      <button data-scene="watch">… watching a stage</button>
       <button data-scene="metrics">Runs compared</button>
       <span style="width:12px"></span>
       <button id="theme">Light / dark</button>
@@ -337,19 +338,34 @@ const runMarks = () => ({
 });
 const runTaken = ["spec>approve", "approve>spec", "approve>plan", "plan>build", "build>join", "join>check", "check>fix", "fix>check", "check>review", "review>fix"];
 
-function agentPane(gate) {
+function agentPane(gate, watch) {
   const log = gate ? [
-    `<span class="c">kanna-v4/.kanna-worktrees/task-7f3a</span> <span class="p">❯</span> <span class="g">run feature · stage approve</span>`, ``,
-    `<span class="p">?</span> <b>Spec and mockup right?</b>`, `  <span class="g">spec wrote docs/specs/diff-dark.md and references/mockups/diff-dark.html;</span>`, `  <span class="g">both are open in the tabs. yes goes on to plan; no, with a note, goes back to spec (2 of 3 left).</span>`, ``,
-    `  <span class="g">kanna run answer yes · kanna run answer no "…"</span>`, ``,
+    `<span class="c">kanna-v4/.kanna-worktrees/task-7f3a</span> <span class="p">❯</span> claude`, ``,
+    `<span class="p">&gt;</span> [message from run-7f3a] approve asks: Spec and mockup right? (2nd time; no goes back to spec, 2 of 3 left)`, ``,
+    `<span class="m">●</span> The pipeline is at <b>approve</b>. The spec and mockup are in the tabs: docs/specs/diff-dark.md and the mockup with the gutter now the code's hue, as you asked last time.`, ``,
+    `  Yes goes on to plan and build; no, with a note, sends it back to spec.`, ``,
     `<span class="p">❯</span> ▍`,
   ] : [
-    `<span class="c">kanna-v4/.kanna-worktrees/task-7f3a</span> <span class="p">❯</span> <span class="g">run feature · stage review (2nd visit) · codex</span>`, ``,
-    `<span class="p">&gt;</span> Review the change on this branch against docs/specs/diff-dark.md …`, `  <span class="g"># Feedback from the previous fix</span>`, `  <span class="g">Fixed the gutter hue (DiffView.swift:214) and the two nits; check passes.</span>`, ``,
-    `<span class="m">●</span> Reading the diff against main (3 files, +212 −48)`, `<span class="m">●</span> Ran scripts/check.sh: <span class="ok">ok</span>`, `<span class="m">●</span> Comparing DiffView.swift:214 with the mockup's --gutter token`, ``,
+    `<span class="c">kanna-v4/.kanna-worktrees/task-7f3a</span> <span class="p">❯</span> claude`, ``,
+    `<span class="p">&gt;</span> Build it with the feature pipeline.`, ``,
+    `<span class="m">●</span> Started <b>run-7f3a</b> (feature): spec → approve → plan → build → … → land. The Run tab shows where it is; I'll tell you when it lands or needs a decision.`, ``,
+    `<span class="p">&gt;</span> [message from run-7f3a] check failed (2 tests), fix running`, ``,
+    `<span class="m">●</span> Two unit tests failed after the three build parts were joined; the pipeline is fixing and will re-check. Nothing for you yet.`, ``,
+    `<span class="p">&gt;</span> what's it doing now?`, ``,
+    `<span class="m">●</span> Review, second visit (codex): the first found a gutter-hue bug and two nits, fixed since. I opened a watch tab on it.`, ``,
+    `<span class="p">❯</span> ▍`,
+  ];
+  return `<div class="agent"><div class="head"><span class="dot ${gate ? "needs" : "idle"}"></span>task-7f3a · ${RUN.branch} · claude<span class="spacer"></span><span class="g">${gate ? "needs you" : "idle"}</span></div><div class="term">${log.join("\n")}</div></div>`;
+}
+
+function watchHTML() {
+  const log = [
+    `<span class="c">.kanna-worktrees/task-7f3a-run-1</span> <span class="p">❯</span> <span class="g">worker review · 2nd visit · codex:high</span>`, ``,
+    `<span class="p">&gt;</span> Review the change on this branch against main: the spec and mockup it implements …`, `  <span class="g"># Feedback from fix</span>`, `  <span class="g">Fixed the gutter hue (DiffView.swift:214) and the two nits; check passes.</span>`, ``,
+    `<span class="m">●</span> Reading the diff against main (3 files, +212 −48)`, `<span class="m">●</span> Ran scripts/check.sh: <span class="ok">ok</span>`, `<span class="m">●</span> Comparing DiffView.swift:214 with the mockup's --gutter token`, `<span class="m">●</span> Opening references/mockups/diff-dark.html#light in a headless page`, ``,
     `<span class="m">✻</span> <span class="g">Working… checking the split view in light mode</span>`,
   ];
-  return `<div class="agent"><div class="head"><span class="dot ${gate ? "needs" : "working"}"></span>task-7f3a · ${RUN.branch}<span class="spacer"></span>run feature · <b>${gate ? "approve" : "review"}</b> ${gate ? "2/11" : "7/11 · loop 2/3"} · <span class="g">${gate ? "waiting 12m" : "4m"}</span></div><div class="term">${log.join("\n")}</div></div>`;
+  return `<div class="doc" style="padding:0;display:flex;flex-direction:column"><div class="head" style="border-bottom:1px solid var(--line)"><span class="dot working"></span>watch · <b>review</b> · codex · 2nd visit · 4m<span class="spacer"></span><span class="g">follows the run: the next stage's worker shows here</span></div><div class="term" style="flex:1">${log.join("\n")}</div></div>`;
 }
 
 function runTabHTML(gate) {
@@ -361,8 +377,8 @@ function runTabHTML(gate) {
   const vcls = v => v === "pass" || v === "yes" ? "v-pass" : v === "fail" || v === "no" ? "v-fail" : v === "now" ? "v-now" : v === "wait" ? "v-wait" : "";
   const vtxt = v => v === "now" ? "running" : v === "wait" ? "waiting" : v;
   return `<div class="doc">
-    <div class="runhead"><h2>${esc(RUN.task)}</h2><span class="sub">run-7f3a · pipeline <b>feature</b> rev ${gate ? 1 : 2} · started ${RUN.started} · ${gate ? "1h 45m" : "3h 02m"}</span>
-      <span class="acts"><button>Pause</button><button>Skip stage</button><button>Retry stage</button><button>Edit pipeline</button><button>Stop</button></span></div>
+    <div class="runhead"><h2>${esc(RUN.task)}</h2><span class="sub">run-7f3a · pipeline <b>feature</b> rev ${gate ? 1 : 2} · started ${RUN.started} by the task's agent · ${gate ? "1h 45m" : "3h 02m"}</span>
+      <span class="acts"><button>Watch</button><button>Pause</button><button>Skip stage</button><button>Retry stage</button><button>Edit pipeline</button><button>Stop</button></span></div>
     ${gate ? `<div class="gate"><span class="dot needs"></span><div class="q"><b>Spec and mockup right?</b><div class="rev">approve · 2nd time · no goes back to <span class="mono">spec</span> (2 of 3 left) · the spec and mockup are in the tabs</div></div><button class="on">Yes</button><button>No</button><input placeholder="a note for spec (with No)"></div>` : ""}
     <div class="graph">${graphSVG(marks, taken)}</div>${LEGEND}
     <div class="kpis">
@@ -383,13 +399,14 @@ function runTabHTML(gate) {
   </div>`;
 }
 
-function runHTML(gate) {
-  const tabs = gate ? ["Run", "diff-dark.md", "diff-dark.html"] : ["Run", "diff", "diff-dark.md", "diff-dark.html"];
+function runHTML(gate, watch) {
+  const tabs = gate ? ["Run", "diff-dark.md", "diff-dark.html"] : ["Run", "review · codex", "diff", "diff-dark.md", "diff-dark.html"];
+  const on = watch ? 1 : 0;
   return `<div class="window">
-    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="where"><b>${esc(RUN.task)}</b> · ${gate ? "approve · waiting on you" : "review · running"}</span></div>
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="where"><b>${esc(RUN.task)}</b> · claude · ${gate ? "needs you" : "idle"}</span></div>
     <div class="content">${agentPane(gate)}
-      <div class="docs"><div class="dtabs">${tabs.map((f, i) => `<div class="dtab ${i ? "" : "on"}">${esc(f)}${i === 0 ? `<span class="n">${gate ? "2/11" : "7/11"}</span>` : ""}</div>`).join("")}<span class="add">+</span></div>
-      ${runTabHTML(gate)}</div>
+      <div class="docs"><div class="dtabs">${tabs.map((f, i) => `<div class="dtab ${i === on ? "on" : ""}">${esc(f)}${i === 0 ? `<span class="n">${gate ? "2/11" : "7/11"}</span>` : ""}${i === 1 && !gate ? `<span class="dot working" style="width:6px;height:6px"></span>` : ""}</div>`).join("")}<span class="add">+</span></div>
+      ${watch ? watchHTML() : runTabHTML(gate)}</div>
     </div>
     <div class="strip"><span class="hint"><kbd>⌘.</kbd> Desk</span><span class="sep"></span><span class="item"><span class="dot idle"></span><span>Typing lag in terminals</span><span style="color:var(--muted)">· 40m ago</span></span><span class="item"><span class="dot idle"></span><span>Commit graph pane</span><span style="color:var(--muted)">· 2h ago</span></span><span class="count">7 on the Shelf</span></div>
   </div>`;
@@ -456,7 +473,7 @@ function metricsHTML() {
 
 function render() {
   document.querySelectorAll("[data-scene]").forEach(b => b.classList.toggle("on", b.dataset.scene === scene));
-  document.getElementById("stage").innerHTML = scene === "define" ? defineHTML() : scene === "metrics" ? metricsHTML() : runHTML(scene === "gate");
+  document.getElementById("stage").innerHTML = scene === "define" ? defineHTML() : scene === "metrics" ? metricsHTML() : runHTML(scene === "gate", scene === "watch");
 }
 document.addEventListener("click", e => { const b = e.target.closest("[data-scene]"); if (b) { scene = b.dataset.scene; render(); } });
 document.getElementById("theme").onclick = () => { const r = document.documentElement; r.dataset.theme = r.dataset.theme === "light" ? "" : "light"; };
@@ -468,7 +485,7 @@ document.addEventListener("mousemove", e => {
 });
 if (location.hash.includes("picture")) document.body.classList.add("picture");
 if (location.hash.includes("light")) document.documentElement.dataset.theme = "light";
-for (const s of ["define", "gate", "metrics", "run"]) if (location.hash.includes(s)) { scene = s; break; }
+for (const s of ["define", "gate", "metrics", "watch", "run"]) if (location.hash.includes(s)) { scene = s; break; }
 render();
 </script>
 </body>

@@ -54,9 +54,9 @@ e2e    -> land -> done
 
 | Form | Runs | Verdict | Feedback it leaves |
 |---|---|---|---|
-| `NAME = AGENT[:EFFORT] [attrs]` | a fresh session of that agent (`claude`, `codex`, `copilot`, `opencode`, `agy`; `:low`, `:medium`, `:high` as the agent takes it) in the run's worktree, in the task's docked pane, with the stage's prompt as its first message | with `verdict`, its answer's last line, `VERDICT: PASS` or `VERDICT: FAIL` (missing counts as fail) | its final answer |
-| `NAME = run COMMAND…` | the command in the worktree with your login shell, as [task scripts](task-scripts.md) run, with the same variables plus `KANNA_RUN`, `KANNA_STAGE` and `KANNA_FEEDBACK` (a file holding the previous feedback) | exit 0 passes | its output's tail, lines matching the repo's failure pattern first |
-| `NAME = ask "QUESTION"` | nothing: the task shows needs you with the question in its pane and the Run tab, until you answer | yes passes, no fails | your note |
+| `NAME = AGENT[:EFFORT] [attrs]` | a fresh session of that agent (`claude`, `codex`, `copilot`, `opencode`, `agy`; `:low`, `:medium`, `:high` as the agent takes it) in a worker: the run's worktree and a terminal nothing shows unless you watch it, with the stage's prompt as its first message | with `verdict`, its answer's last line, `VERDICT: PASS` or `VERDICT: FAIL` (missing counts as fail) | its final answer |
+| `NAME = run COMMAND…` | the command in the run's worker with your login shell, as [task scripts](task-scripts.md) run, with the same variables plus `KANNA_RUN`, `KANNA_STAGE` and `KANNA_FEEDBACK` (a file holding the previous feedback) | exit 0 passes | its output's tail, lines matching the repo's failure pattern first |
+| `NAME = ask "QUESTION"` | nothing: the task's agent is told and asks you in its chat, the Run tab shows a card, and the task shows needs you until one of you answers | yes passes, no fails | your note |
 | `NAME = merge main` | lands the run's branch on the repo's checked-out branch (`git merge --no-ff`, or the repo's `tasks.land` command when set) | a clean merge passes | the conflicts |
 | `NAME = merge STAGE` | joins every instance of a fanned-out STAGE into the run's branch | a clean merge passes | the conflicts |
 
@@ -72,11 +72,11 @@ Any order at the end of a stage line. `on` and `within` apply to every kind; the
 |---|---|
 | `prompt NAME` | `.kanna/prompts/NAME.md` is the stage's prompt instead of the stage's own name |
 | `verdict` | the stage ends with `VERDICT: PASS` or `FAIL`; the request is appended to its prompt |
-| `each STAGE.KEY` | one instance per item of a named list a previous stage produced ([5](#5-inputs-and-outputs)), each a worker of the run (a worktree branched from the run's and a pane in the run's window, never a task of its own); the next stage waits for them all ([software factory §3](software-factory.md#3-fan-out-join-and-other-machines)) |
+| `each STAGE.KEY` | one instance per item of a named list a previous stage produced ([5](#5-inputs-and-outputs)), each a worker of the run (a worktree branched from the run's and a hidden terminal, never a task of its own); the next stage waits for them all ([software factory §3](software-factory.md#3-workers-fan-out-join-and-other-machines)) |
 | `xN by STAGE` | N attempts of the stage from the same code (2 to 10), each a worker in its own worktree; the `run` stage named scores each (its output's last line `score: 0.83`, else pass 1 and fail 0) and the best is kept, ties to the first |
 | `guard STAGE` | that `run` stage scores the code before and after; a result that scores lower is discarded and the code before carries on, recorded as a rollback |
 | `emits` | the stage's answer may add stages and arrows to the run ([7](#7-changing-a-pipeline-while-it-runs)) |
-| `on PLACEMENT` | where the stage runs: a machine's name (`mini`), a role your machines declare (`mac`, `linux`, `e2e`), `any` (whichever has a free slot) or `here`, the run's machine, the default. The stage runs there as a worker of the run; its result comes back ([software factory §3](software-factory.md#3-fan-out-join-and-other-machines)) |
+| `on PLACEMENT` | where the stage runs: a machine's name (`mini`), a role your machines declare (`mac`, `linux`, `e2e`), `any` (whichever has a free slot) or `here`, the run's machine, the default. The stage runs there as a worker of the run; its result comes back ([software factory §3](software-factory.md#3-workers-fan-out-join-and-other-machines)) |
 | `within DURATION` | the stage is abandoned after that long: an agent is stopped and its worktree reset to the stage's start, a command killed; the stage's verdict is fail with `timed out` as feedback |
 | `resume STAGE` | continue STAGE's last session rather than starting fresh |
 
@@ -93,7 +93,7 @@ Any order at the end of a stage line. `on` and `within` apply to every kind; the
 
 ```mermaid
 flowchart LR
-    T["the task's first message<br/>(the request)"] --> S
+    T["the request: what kanna run start was given,<br/>else the task's first message"] --> S
     P["the stage's prompt<br/>.kanna/prompts/NAME.md"] --> S
     F["the previous verdict stage's feedback<br/>under a heading"] --> S["stage"]
     S --> A["answer: its final response"]
@@ -141,7 +141,7 @@ sequenceDiagram
 ```
 
 - **A stage with `emits`** may put a fenced block with the info string `pipe` in its answer: stage lines and flow lines in this language. New stages are added; a flow line from the emitting stage goes **ahead** of that stage's own arrows (so what it emits is taken first, and its static arrow is the fallback when it emits nothing); every other flow line is appended. A stage name that exists already is an error, so a run can't redefine a stage behind your back.
-- **You** edit the run's current revision in a code pane (`kanna run edit RUN`, or Edit pipeline on the Run tab); saving it makes a revision if it's valid, else the pane shows the errors. Editing the file in the repo changes the next run, not this one.
+- **You** (or the task's agent, when you tell it to) edit the run's current revision in a code pane (`kanna run edit RUN`, or Edit pipeline on the Run tab); saving it makes a revision if it's valid, else the pane shows the errors. Editing the file in the repo changes the next run, not this one.
 - **Every revision is kept** with who made it and when ([software factory §6](software-factory.md#6-how-its-built)), shown on the Run tab with its diff, and counted as an intervention when it's yours.
 - **Why not child runs or a free-form rewrite:** a child run would be a second task with its own view and metrics for what is one change; a free-form rewrite could drop the gates. Adding stages and arrows under the same validation and budget keeps one graph the user can read, and nothing the file promised can be removed by a stage.
 
