@@ -601,12 +601,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let controller = controllers[id] ?? makeController(id, window)
             let docked = window["dock"]?["pane"]?.string
             let lead = window["lead"]?["pane"]?.string
-            if let root = docked.flatMap(projectRoot) ?? lead.flatMap(projectRoot) {
-                controller.projectRoot = root
-            } else if controller.projectRoot == nil, let folder = window["project"]?.string {
-                controller.projectRoot = rootLocation(folder)
-            }
-            if window["desk"]?.bool == true, let root = controller.projectRoot { deskMoved(id, to: root) }
+            if let root = lead.flatMap(projectRoot) { deskMoved(id, to: root) }
+            controller.projectRoot = physical.desk(id).flatMap(deskProject)
             let mine = controller.projectRoot.map { root in tasks.filter { sameProject(projectRoot($0.id), root) } } ?? tasks
             controller.deskTasks = mine
             controller.active = docked == nil ? window["active"]?.string : nil
