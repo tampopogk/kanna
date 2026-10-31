@@ -7,14 +7,11 @@ trap 'rm -rf "$dir"' EXIT
 failed=0
 fail() { echo "FAIL: $*"; failed=1; }
 
-export KANNA_AGENTS_HOME="$dir/home"
-mkdir -p "$KANNA_AGENTS_HOME/.kanna-v4"
-targets() { printf '{"version": 1, "build": {"targets": "%s"}}\n' "$1" >"$KANNA_AGENTS_HOME/.kanna-v4/config.json"; }
-root="$dir/volume/kanna-targets"
-targets "$root"
-
 main="$dir/repo"
 git init -q -b main "$main" && git -C "$main" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || exit 1
+targets() { printf '{"targets": "%s"}\n' "$1" >"$main/build.local.json"; }
+root="$dir/volume/kanna-targets"
+targets "$root"
 worktree() { git -C "$main" worktree add -q "$main/.kanna-worktrees/$1" -b "$1" >/dev/null 2>&1 && echo "$main/.kanna-worktrees/$1"; }
 link() { (. "$scripts/env.sh" && kanna_targets "$1") 2>/dev/null; echo built >"$1/target/out"; }
 teardown() { (cd "$1" && "$scripts/teardown.sh") >"$dir/said" 2>&1; }
@@ -57,8 +54,8 @@ teardown "$wt" || fail "folder already gone: exit $?"
 
 wt="$(worktree task-unset)" && link "$wt"
 targets ""
-teardown "$wt" || fail "build.targets unset: exit $?"
-[[ -f "$root/repo/task-unset/out" ]] || fail "build.targets unset: removed the folder"
+teardown "$wt" || fail "targets unset: exit $?"
+[[ -f "$root/repo/task-unset/out" ]] || fail "targets unset: removed the folder"
 
 missing="/Volumes/kanna-teardown-missing-$$/kanna-targets"
 targets "$missing"
@@ -71,6 +68,12 @@ targets "$root"
 mkdir -p "$root/repo/repo" && ln -s "$root/repo/repo" "$main/target"
 teardown "$main" || fail "main checkout: exit $?"
 [[ -d "$root/repo/repo" && -L "$main/target" ]] || fail "main checkout: removed its target/"
+
+targets "$dir/outside"
+git -C "$main" add -f build.local.json && git -C "$main" -c user.email=e@e -c user.name=e commit -q -m tracked
+wt="$(worktree task-tracked)" && mkdir -p "$dir/outside/repo/task-tracked" && ln -s "$dir/outside/repo/task-tracked" "$wt/target"
+teardown "$wt" || fail "committed build.local.json: exit $?"
+[[ -d "$dir/outside/repo/task-tracked" ]] || fail "committed build.local.json: used it"
 
 [[ $failed == 0 ]] && echo "teardown: ok"
 exit "$failed"
