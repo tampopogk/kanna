@@ -1,6 +1,6 @@
 # Overview
 
-**Status:** built · **Mockup:** [`references/mockups/overview.html`](../../references/mockups/overview.html) · **Look:** VS Code's minimap ([`overview-vscode.png`](../../references/mockups/overview-vscode.png)) · **Used by:** [code viewer](code-viewer.md), [diff viewer](diff-viewer.md); markdown next
+**Status:** built · **Mockup:** [`references/mockups/overview.html`](../../references/mockups/overview.html) · **Look:** VS Code's minimap ([`overview-vscode.png`](../../references/mockups/overview-vscode.png)) · **Used by:** [code viewer](code-viewer.md), [diff viewer](diff-viewer.md), [markdown pane](markdown-overview.md)
 
 The **overview** is a thumbnail of the whole file down the right edge of a pane: every line in tiny glyphs in the pane's colours, the part on screen as a box, and a thin column of marks (changes, comments, find hits). It shows where you are in a long file and what's where, and takes you there with a click. It's one view, `OverviewView`, that every pane with an overview uses: the pane supplies a picture of its content, its marks and what's on screen; the overview draws them and handles the mouse.
 
@@ -17,7 +17,7 @@ The **overview** is a thumbnail of the whole file down the right edge of a pane:
 
 ## 1. Rules
 
-- **On every code and diff pane** by default; markdown and markdown diff panes get it next, through the same interface.
+- **On every code, diff and markdown pane** by default, markdown diff included; the markdown pane gives a picture of its rendered page ([markdown overview](markdown-overview.md)).
 - **The thumbnail** draws each line at 2 pt high, at any zoom, its text as tiny glyphs in the pane's syntax colours, with the line's background (a diff's added and removed tints, a comment's tint, a file header, a fold). A line longer than the thumbnail is cut off.
 - **A file taller than the thumbnail** scrolls the thumbnail with the text, proportionally, as VS Code does: at the top of the file it shows the top, at the end the end.
 - **The box** shades the lines on screen. It shows while the pointer is over the overview and while you drag.
@@ -78,7 +78,7 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    subgraph P["a pane (code, diff, later markdown)"]
+    subgraph P["a pane (code, diff, markdown)"]
         T["its text view"]
     end
     subgraph O["OverviewView (KannaOverview)"]
@@ -106,16 +106,16 @@ Everything is in the pane's **document coordinates**: points down the full heigh
 |---|---|
 | `onScroll(y)` | the document `y` to put at the top of the pane; the pane scrolls itself |
 | `OverviewLayout.decide(...)` | whether the overview is wanted (on, and the content doesn't fit); which side panels show is then the pane's one rule over its panels, with the overview's width and its 80 columns |
-| `debugState` | for `debug.code` and `debug.diff`'s `overview`: shown, wanted, enabled, the thumbnail's offset, the box's `y` and height, the top, the marks by kind, the tiles drawn; their `overview_click`, `overview_marks_click`, `overview_drag: [from, to]`, `overview_hover` and `overview_enabled` arguments drive it |
+| `debugState` | for `debug.code`, `debug.diff` and `debug.md`'s `overview`: shown, wanted, enabled, the thumbnail's offset, the box's `y` and height, the top, the marks by kind, the tiles drawn; their `overview_click`, `overview_marks_click`, `overview_drag: [from, to]`, `overview_hover` and `overview_enabled` arguments drive it |
 
 The mapping between the pane and the thumbnail is `OverviewGeometry`, a value with no AppKit in it, so the click and drag mapping and the layout are unit-tested on their own.
 
 ## 5. How it's built
 
-- **A new Swift target, `KannaOverview`** (`apps/kanna/Sources/KannaOverview`), AppKit only; `KannaCode` and `KannaDiff` depend on it, and `KannaMarkdown` will.
+- **A new Swift target, `KannaOverview`** (`apps/kanna/Sources/KannaOverview`), AppKit only; `KannaCode`, `KannaDiff` and `KannaMarkdown` depend on it.
 - **Fast on large files.** The picture is drawn once per content, font-size or appearance change, into tiles 256 pt tall (128 lines) that are made as they come into view and kept; a scroll only moves the thumbnail and the box. The pane hands over a copy of its highlighted text and one `OverviewLine` per line (its place and character range); the tiles read the colours from the text when they're drawn. Content changes that come in a burst (the diff pane highlights one file at a time) are coalesced into one rebuild.
 - **Glyphs:** each character is a block one point wide in its run's colour, letters and digits stronger than punctuation, as the mockup draws; spaces are gaps, so indentation and line shapes read as in VS Code.
-- **Side panels:** the overview's rule joins the diff pane's `DiffAside` as one rule for every pane's side panels, moved to `KannaOverview` so the code pane (overview only) and later the markdown pane use it too.
+- **Side panels:** the overview's rule joins the diff pane's `DiffAside` as one rule for every pane's side panels, moved to `KannaOverview` so the code pane (overview only) and the markdown pane (with its comments list) use it too.
 - **The setting** is the app's (`Physical`, beside the text sizes, read into `OverviewSetting.enabled` at launch); View › Overview is a checked menu item, and every pane listens for `OverviewSetting.changed` and lays itself out again.
 - **Find hits in the diff pane** need the matches, which NSTextView's own find bar keeps to itself, so each diff column owns an `NSTextFinder`, as the code pane does, and draws its matches.
 - **Checks:** `swift test` for `OverviewLayout` and the side-panel rule (fits, the 80-column cutoff at several font sizes, the list giving way first, and a sweep from wide to narrow that only ever hides) and `OverviewGeometry` (click to centre, drag across a short and a tall file, the marks column's mapping); e2e: the code and diff scenarios in `scripts/e2e-kanna.sh` read `overview` from `debug.code` and `debug.diff` (shown, box), scroll and read the box again, narrow the pane and see it hide, and snapshot it light and dark.
