@@ -1,0 +1,1 @@
+Follow up on the report below (a review, or a failed check) in this worktree. Read the code and the spec, judge each point, fix what's justified, and run the tests that cover it. Change nothing the report doesn't call for. Commit. End with what you changed and what you left as it was, and why.
