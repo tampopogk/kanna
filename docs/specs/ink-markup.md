@@ -25,12 +25,12 @@ sequenceDiagram
     participant F as thread file
     participant A as agent
     You->>Doc: Ink on, draw strokes
-    Doc->>Doc: recognise each stroke, number it
-    You->>Doc: optional note, ⌘↵
+    Doc->>Doc: recognise each stroke
+    You->>Doc: stop drawing (or type a note, ↵)
     Doc->>F: new thread c2 with its marks
     Doc->>A: types c2 (marks as text + marked-up picture)
     A->>A: reads the picture, edits the file
-    A->>F: kanna markup reply c2 "1: … 2: …"
+    A->>F: kanna markup reply c2 "Cut … Moved …"
     F->>Doc: c2 shows the reply, marks it acted on leave the page
     You->>Doc: read it, resolve
 ```
@@ -39,19 +39,22 @@ sequenceDiagram
 
 - **Where:** markdown files and HTML pages with comments on ([Doc Markup](doc-markup.md#2-rules)): they already anchor marks to text and parts of a page. Terminals, the diff viewer and code panes come later, once ink anchors to their lines.
 - **Ink mode:** the **Ink** button in the pane's toolbar turns it on; then dragging draws and the page doesn't respond to the pointer. ⌥-drag draws one stroke without it. Esc turns it off.
-- **One pen.** No palette: you draw, and Kanna recognises each stroke, keeps it as you drew it, and numbers it. Each mark is listed in the **New ink** card, where clicking its kind corrects it and × removes it.
+- **One pen.** No palette: you draw, and Kanna recognises each stroke, keeps it as you drew it. Each mark is listed in the **New ink** card, where clicking its kind corrects it and × removes it.
 
 | You draw | Recognised as | It points at |
 |---|---|---|
 | A closed loop | **circle** | the words or part inside it |
 | A line under words | **underline** | those words |
 | A line through words, or a zigzag over them | **strike** | those words |
-| Two straight strokes crossing (an X) | **cross** | the words or part under it |
+| An X: two straight strokes crossing, or one stroke crossing itself | **cross** | the words or part under it |
 | A line or curve, with or without a head | **arrow** | from what's at its start to before or after what's at its tip |
 | Anything else, in a run of strokes | **writing** | the nearest block; read from the picture |
 
 - An arrow drawn without a head gets one, pointing the way you drew it; a small V near an arrow's tip is taken as its head.
-- **A batch, then send.** Strokes collect in a **New ink** card at the top of the thread list, numbered, with a box for an optional typed note. ⌘↵ (or **Send**) posts them all as one thread; **Discard** drops them. ⌘Z undoes the last stroke.
+- **Sent when you stop.** Strokes collect in a **New ink** card at the top of the thread list. When you stop drawing for 2s, the card counts down and posts them all as one thread; drawing again adds to the batch and restarts it.
+  - **⌥-drag:** letting go of ⌥ sends at once.
+  - **Typing** adds a note to the batch, with no click: the first key goes to the note, ↵ sends.
+  - **Esc** holds the batch: it waits for ↵ or **Send**, or **Discard**. ⌘Z undoes the last stroke.
 
 ## 3. What the agent gets
 
@@ -72,8 +75,8 @@ Both a picture and words: the picture shows what you meant (the gesture, your wr
 ```
 
 - **On a page**, marks name parts by CSS path and text with a box in page pixels, as [page comments](doc-markup.md#3-reaching-the-agent) do.
-- **The picture** is the pane as shown, with the ink and its numbers drawn on, saved beside the threads (as `kanna screenshot` takes it).
-- **What marks mean is a skill.** The `kanna-markup` skill gives the conventions (strike or cross: cut it; arrow: move it there; circle or underline: this, see the note or writing; writing: read it from the picture) and tells the agent to answer mark by mark, saying how it read each, so a misread shows in the reply.
+- **The picture** is the pane as shown, with the ink drawn on and each mark numbered as in the message, saved beside the threads (as `kanna screenshot` takes it). The numbers are only in the picture, to tie its strokes to the lines; the doc shows the ink alone.
+- **What marks mean is a skill.** The `kanna-markup` skill gives the conventions (strike or cross: cut it; arrow: move it there; circle or underline: this, see the note or writing; writing: read it from the picture) and tells the agent to answer mark by mark, naming what each touched and how it read it, so a misread shows in the reply.
 
 ## 4. After it's sent
 
@@ -82,8 +85,10 @@ Both a picture and words: the picture shows what you meant (the gesture, your wr
 ```mermaid
 stateDiagram-v2
     [*] --> drawing: first stroke
-    drawing --> [*]: Discard
-    drawing --> sent: ⌘↵
+    drawing --> sent: 2s pause, ⌥ let go
+    drawing --> held: Esc, or you type a note
+    held --> sent: ↵ or Send
+    held --> [*]: Discard
     sent --> replied: kanna markup reply
     replied --> sent: you reply
     sent --> resolved: you resolve
@@ -94,7 +99,7 @@ stateDiagram-v2
 - **Ink stays on what it touched**, the way a comment's mark does: each stroke is kept relative to the block or part under it, so it follows edits, reloads and zoom.
 - **Marks the agent acted on leave the page.** When the text or part under a mark changes, its ink goes; the thread keeps the picture as sent, so you can still see what you drew.
 - **Resolving clears the rest.** A resolved thread's ink is hidden, and shows faintly when you open the thread from **Show resolved**.
-- **Erasing:** before sending, ⌘Z, × or Discard. After, ink goes with its thread: resolve it.
+- **Erasing:** before sending, ⌘Z or ×; Esc then Discard drops the batch. After, ink goes with its thread: resolve it.
 - **The thread card** shows the picture cropped to the marks and the numbered list in place of a quote ([threads UI](doc-markup.md#2-rules)).
 
 ![Ink on a mockup page: an arrow moving a row, a zigzag over another, a circle round Save with a typed note](ink-markup-page.png)
