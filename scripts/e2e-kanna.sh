@@ -1410,15 +1410,23 @@ md_comments() {
   start_daemon && start_app || return 1
   kanna open --window new --name agent --cmd "$(probe '\033[?2004h' x 0)" >/dev/null || return 1
   check wait_for 5 shows agent READY || return 1
-  local dir="$KANNA_STATE_DIR/doc" fixture="$repo_root/references/prototypes/doc-markup/fixture" agent_id at xy
+  local dir="$KANNA_STATE_DIR/doc" fixture="$repo_root/references/prototypes/doc-markup/fixture" agent_id at xy kept
   mkdir -p "$dir/.git" "$dir/.kanna/docs"
   cp "$fixture/review.md" "$dir/review.md"
+  for at in $(seq 1 40); do printf '\nMore of the doc, paragraph %s, so it scrolls.\n' "$at"; done >>"$dir/review.md"
   sed "s|FILE|$dir/review.md|" "$fixture/review.threads.json" >"$dir/.kanna/docs/review.md.json"
   agent_id="$(pane agent id)"
   KANNA_TERMINAL="$agent_id" kanna open md --name doc --tab "$dir/review.md" >/dev/null || return 1
   md_comments_md() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"doc\"${1:-}}}"; }
-  check wait_for 5 eval '[[ "$(md_comments_md | field markup)" == False && "$(md_comments_md | field agent)" == None ]]' || { echo "open md should show the file without comments"; md_comments_md; return 1; }
+  check wait_for 5 eval '[[ "$(md_comments_md | field markup)" == False && "$(md_comments_md | field agent)" == None && "$(md_comments_md | field loads)" -ge 1 ]]' || { echo "open md should show the file without comments"; md_comments_md; return 1; }
+  md_comments_kept() { md_comments_md | python3 -c 'import json, sys; d = json.load(sys.stdin); print(d["view"], d["loads"], round(d["scroll"]))'; }
+  md_comments_md ',"scroll":120' >/dev/null
+  check wait_for 5 eval '[[ "$(md_comments_kept | cut -d " " -f 3)" == 120 ]]' || { echo "the doc should scroll to 120"; md_comments_md; return 1; }
+  kept="$(md_comments_kept)"
   KANNA_TERMINAL="$agent_id" kanna markup doc | grep -qF "comments on in" || return 1
+  check wait_for 5 eval '[[ "$(md_comments_md | field markup)" == True ]]' || return 1
+  check test "$(md_comments_kept)" == "$kept" || { echo "turning comments on should keep the view, its load and its scroll ($kept)"; return 1; }
+  md_comments_md ',"scroll":0' >/dev/null
   md_comments_count() { md_comments_md | field threads | python3 -c 'import json, sys; print(len(json.load(sys.stdin)))'; }
   md_comments_thread() { md_comments_md | field threads | python3 -c 'import json, sys
 t = [t for t in json.load(sys.stdin) if t["id"] == sys.argv[1]][0]
@@ -1476,8 +1484,10 @@ print(len(v) if isinstance(v, list) else v)' "$1" "$2"; }
   check wait_for 5 eval '[[ "$(md_comments_thread c4 state)" == resolved ]]' || return 1
   raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null
   sleep 0.5; md_comments_shot md_comments-dark
+  kept="$(md_comments_md | field view)"
   kanna markup doc --off | grep -qF "comments off in" || return 1
   check wait_for 5 eval '[[ "$(md_comments_md | field markup)" == False ]]' || return 1
+  check test "$(md_comments_md | field view)" == "$kept" || { echo "turning comments off should keep the view"; return 1; }
   KANNA_TERMINAL="$agent_id" kanna markup "$dir/review.md" --name doc2 --tab >/dev/null || return 1
   check wait_for 5 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"doc2\"}}" | field markup)" == True ]]'
 }
@@ -1630,7 +1640,7 @@ page_comments() {
   start_daemon && start_app || return 1
   kanna open --window new --name agent --cmd "$(probe '\033[?2004h' x 0)" >/dev/null || return 1
   check wait_for 5 shows agent READY || return 1
-  local dir="$KANNA_STATE_DIR/page" agent_id xy mark
+  local dir="$KANNA_STATE_DIR/page" agent_id xy mark kept page_comments_web_kept
   mkdir -p "$dir/.git"
   cat >"$dir/page.html" <<'HTML'
 <!doctype html>
@@ -1647,6 +1657,18 @@ HTML
   check test "$(pane plain url)" == "file://$dir/page.html" || return 1
   check wait_for 5 eval 'raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"plain\"}}" | grep -q "Ship it"' || return 1
   [[ "$(raw '{"id":1,"cmd":"debug.web","args":{"pane":"plain"}}')" != *threads* ]] || { echo "open web should show the page without comments"; return 1; }
+  page_comments_plain() { raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"plain\"${1:-}}}"; }
+  page_comments_kept() { page_comments_web_kept="$(page_comments_plain ',"js":"[window.scrollY, window.kept || 0]"' | field value)"; page_comments_plain | python3 -c 'import json, sys; d = json.load(sys.stdin); print(d["view"], d["web_view"], d["loads"], sys.argv[1])' "$page_comments_web_kept"; }
+  page_comments_plain ',"js":"window.kept = 42; window.scrollTo(0, 300); window.scrollY"' >/dev/null
+  check wait_for 5 eval '[[ "$(page_comments_plain ",\"js\":\"window.scrollY\"" | field value)" == 300 ]]' || { page_comments_plain ',"js":"window.scrollY"'; return 1; }
+  kept="$(page_comments_kept)"
+  KANNA_TERMINAL="$agent_id" kanna markup plain | grep -qF "comments on in" || return 1
+  check wait_for 5 eval '[[ "$(page_comments_plain | field markup)" == True ]]' && check wait_for 5 eval 'page_comments_plain | grep -q threads' || { page_comments_plain; return 1; }
+  check test "$(page_comments_kept)" == "$kept" || { echo "turning comments on should keep the web view, its page, its scroll and its JS state ($kept)"; return 1; }
+  kanna markup plain --off | grep -qF "comments off in" || return 1
+  check wait_for 5 eval '[[ "$(page_comments_plain | field markup)" == False ]]' || return 1
+  [[ "$(page_comments_plain)" != *threads* ]] || { echo "turning comments off should take the comment UI away"; return 1; }
+  check test "$(page_comments_kept)" == "$kept" || { echo "turning comments off should keep the page ($kept)"; return 1; }
   kanna close plain >/dev/null || return 1
   KANNA_TERMINAL="$agent_id" kanna markup --name page --tab "$dir/page.html" >/dev/null || return 1
   page_comments_web() { raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"page\"${1:-}}}"; }
