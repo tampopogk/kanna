@@ -10,7 +10,16 @@ public enum DeskOrder {
         }.map(\.element)
     }
 
+    public static func task<T>(_ keyed: [T], key: Int) -> T? {
+        switch key {
+        case 1: keyed.first
+        case 2: keyed.last
+        default: nil
+        }
+    }
+
     public static func keys(_ keyed: [String]) -> [String: String] {
-        Dictionary(uniqueKeysWithValues: keyed.prefix(2).enumerated().map { ($0.element, "⌘\($0.offset + 1)") })
+        guard let first = keyed.first, let last = keyed.last else { return [:] }
+        return first == last ? [first: "⌘1"] : [first: "⌘1", last: "⌘2"]
     }
 }

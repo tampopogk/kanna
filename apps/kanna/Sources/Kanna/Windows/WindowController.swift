@@ -1,5 +1,4 @@
 import AppKit
-import KannaMarkdown
 import KannaPerf
 import KannaWindows
 
@@ -56,6 +55,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     var onDockWidth: ((String, Double) -> Void)?
     private(set) var shown: [String] = []
     private(set) var tab: String?
+    var highlighted: [String] { (dockStage.subviews + stage.subviews).compactMap { ($0 as? PaneView).flatMap { $0.focused ? $0.id : nil } } }
 
     init(id: String, cascadeFrom previous: NSWindow?) {
         self.id = id
@@ -169,16 +169,16 @@ final class WindowController: NSObject, NSWindowDelegate {
             view.grip.isHidden = id == docked && dock?["frozen"]?.bool == true
         }
         if let focusedID, let target = panes.keyView(focusedID) {
-            if Keyboard.moves(from: holder(of: target), keyed: keyed) { window.makeFirstResponder(target) }
+            if Keyboard.moves(from: holder(of: target, panes), keyed: keyed) { window.makeFirstResponder(target) }
             keyed = keyed || window.firstResponder === target
         }
     }
 
-    private func holder(of target: NSView) -> Keyboard.Holder {
+    private func holder(of target: NSView, _ panes: PaneViews) -> Keyboard.Holder {
         let responder = window.firstResponder
         if responder === target { return .target }
         if responder == nil || responder === window { return .nothing }
-        if responder is TerminalSurfaceView || responder is FocusReportingWebView || responder is MarkdownTextView || responder is IosPaneView { return .pane }
+        if panes.isKeyView(responder) { return .pane }
         return responder is NSText ? .text : .other
     }
 
