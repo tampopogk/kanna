@@ -389,6 +389,11 @@ extension AppController {
         }
         guard let window else { throw KannaError("not_found", "no window") }
         guard let event = SyntheticKey.event(name, window: window) else { throw KannaError("bad_request", "unknown key \"\(name)\"") }
+        if args["real"]?.bool == true {
+            NSApp.sendEvent(event)
+            if let up = NSEvent.keyEvent(with: .keyUp, location: .zero, modifierFlags: event.modifierFlags, timestamp: event.timestamp, windowNumber: event.windowNumber, context: nil, characters: event.characters ?? "", charactersIgnoringModifiers: event.charactersIgnoringModifiers ?? "", isARepeat: false, keyCode: event.keyCode) { NSApp.sendEvent(up) }
+            return ["real": true]
+        }
         if !event.modifierFlags.intersection([.command, .control, .option]).isEmpty, window.performKeyEquivalent(with: event)
             || Self.performResponderItem(event, in: window) || NSApp.mainMenu?.performKeyEquivalent(with: event) == true {
             return ["characters": .string(event.characters ?? ""), "charactersIgnoringModifiers": .string(event.charactersIgnoringModifiers ?? ""), "menu": true]

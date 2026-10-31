@@ -107,7 +107,7 @@ extension AppController {
             ("Free Window", #selector(freeWindow), nil, nil),
             nil,
             ("Next Window", #selector(nextWindow), nil, .cmd("`")),
-            ("Previous Window", #selector(previousWindow), nil, .shiftCmd("`")),
+            ("Previous Window", #selector(previousWindow), nil, .cmd("~")),
             nil,
         ])
         if let at = windowMenu.items.firstIndex(where: { $0.title == "Free Window" }) {

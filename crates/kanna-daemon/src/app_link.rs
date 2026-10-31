@@ -353,6 +353,7 @@ impl AppLink {
             responder.reply(Err(KmuxError::new("app_gone", "Kanna.app went away before answering")));
         }
         let Some(core) = self.core.upgrade() else { return };
+        core.handle(json!({ "id": 0, "cmd": "desks", "args": { "desks": [] } }), |_| {});
         let starting: Vec<Pane> = core.with_panes(|panes| panes.iter().filter(|p| p.kind != PaneType::Term && p.state == PaneState::Starting).cloned().collect());
         for pane in starting {
             self.terminals.unshown(&pane);

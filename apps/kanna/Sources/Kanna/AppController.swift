@@ -39,6 +39,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var windowOrder = WindowOrder()
     var closingPlanners: Set<String> = []
     var givenPlanners: Set<String> = []
+    var sentDesks: JSON?
     var recentProjects: [RecentProject] = []
     var recentBy: [String: [RecentProject]] = [:]
     var recentMenu: NSMenu?
@@ -285,6 +286,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func attached(_ hello: JSON, on machine: String?) {
+        if machine == nil { sentDesks = nil }
         let panes = hello["panes"] ?? []
         if case .array(let list) = panes { learn(records: list) }
         if let view = hello["layout"] {
@@ -519,6 +521,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let view = composed(published)
         plain = focusing.map { Self.view(view, focusing: $0) } ?? view
         state = physical.applied(plain)
+        publishDesks()
     }
 
     func redraw(_ controller: WindowController) {
