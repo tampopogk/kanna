@@ -303,7 +303,9 @@ extension AppController {
         let ids = WindowController.shownPanes(window)
         guard !ids.isEmpty else { return }
         let at = window["focused"]?.string.flatMap { ids.firstIndex(of: $0) } ?? 0
-        layoutCommand("focus", ["pane": .string(ids[((at + step) % ids.count + ids.count) % ids.count])])
+        let pane = ids[((at + step) % ids.count + ids.count) % ids.count]
+        userFocused(pane)
+        giveKeyboard(pane)
     }
 
     @objc func toggleOverview() { setOverview(!OverviewSetting.enabled) }
@@ -481,6 +483,7 @@ extension AppController {
         let at = ids.firstIndex { $0 == keyWindow?["id"]?.string } ?? 0
         let next = ids[((at + step) % ids.count + ids.count) % ids.count]
         show(window: next)
+        if let pane = window(next)?["focused"]?.string { giveKeyboard(pane) }
     }
 
     func ghosttyAction(_ pane: String, _ action: ghostty_action_s) -> Bool {

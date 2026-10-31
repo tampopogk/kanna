@@ -304,3 +304,30 @@ kanna_borrow_swiftpm() {
     rm -rf "$here.borrowing"
   fi
 }
+
+kanna_dev_identity() {
+  security find-identity -p codesigning 2>/dev/null | sed -n 's/^ *[0-9]*) \([0-9A-F]\{40\}\) "Kanna Dev Signing".*/\1/p' | head -1
+}
+
+kanna_signed() {
+  [ "$3" != - ] && sign_requirement="$(codesign -d -r- "$1" 2>&1)" && printf '%s\n' "$sign_requirement" | grep -qx "designated => identifier \"$2\" and certificate leaf = H\"$(printf '%s' "$3" | tr A-F a-f)\""
+}
+
+kanna_sign_helper() {
+  sign_bundle_id="$1" sign_identity="$2" sign_helper="$3"
+  shift 3
+  sign_identifier="$sign_bundle_id.$(basename "$sign_helper")"
+  if [ $# -eq 0 ] && kanna_signed "$sign_helper" "$sign_identifier" "$sign_identity"; then return 0; fi
+  codesign --force --sign "$sign_identity" --identifier "$sign_identifier" "$@" "$sign_helper"
+}
+
+kanna_sign_app() {
+  sign_root="$1" sign_app="$2" sign_identity="$3"
+  shift 3
+  sign_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$sign_app/Contents/Info.plist")" || return 1
+  for sign_file in "$sign_app"/Contents/Helpers/*; do
+    file -b "$sign_file" | grep -q Mach-O || continue
+    kanna_sign_helper "$sign_bundle_id" "$sign_identity" "$sign_file" "$@" || return 1
+  done
+  codesign --force --sign "$sign_identity" --identifier "$sign_bundle_id" "$@" --entitlements "$sign_root/apps/kanna/Resources/Kanna.entitlements" "$sign_app"
+}

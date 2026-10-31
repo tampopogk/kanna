@@ -505,6 +505,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    func giveKeyboard(_ pane: String) {
+        guard let view = panes.keyView(pane), let window = view.window, window.firstResponder !== view else { return }
+        window.makeFirstResponder(view)
+    }
+
     func restate() {
         let view = composed(published)
         plain = focusing.map { Self.view(view, focusing: $0) } ?? view

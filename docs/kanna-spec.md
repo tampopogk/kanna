@@ -106,4 +106,5 @@ flowchart TB
 | [Deployment target](specs/deployment-target.md) | Everything built for the app's macOS |
 | [Build speed](specs/build-speed.md) · [build architectures](specs/build-architectures.md) · [build targets](specs/build-targets.md) · [build store](specs/build-store.md) | Fast worktree builds; arm64 and x86_64; worktree builds on another volume; shared pinned builds, one profile, eviction |
 | [Release](specs/release.md) | Signed, notarized DMGs published on GitHub |
+| [Privacy prompts](specs/privacy-prompts.md) | What macOS asks Kanna for, and dev builds signed so the answers last |
 | [Kanna Cloud: installing a host](specs/cloud-provisioning.md) | Ubuntu on a Kanna Cloud R720 through its iDRAC alone |

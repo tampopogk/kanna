@@ -11,6 +11,7 @@ public final class DiffPaneView: NSView {
     public var onShowFiles: (([String]) -> Void)?
     public var contextMenu: (() -> NSMenu?)? { didSet { columns.forEach { $0.textView.contextMenu = contextMenu } } }
     public var keyView: NSView { columns[0].textView }
+    public var keyViews: [NSView] { columns.map(\.textView) }
     public private(set) var result: DiffResult?
     public private(set) var document = DiffDocument(result: nil, view: .unified)
     public private(set) var view: DiffView
@@ -165,7 +166,7 @@ public final class DiffPaneView: NSView {
         let headerVisible = headerRect.map { $0.minY >= clip.bounds.minY + clip.contentInsets.top - 1 } ?? false
         sticky.isHidden = headerVisible
         sticky.file = file
-        sticky.font = CodeTheme.font(size: fontSize)
+        sticky.fontSize = fontSize
         sticky.gutterWidth = column.gutter.ruleThickness
         let left = columns.first!.scrollView.frame.minX
         let right = columns.last!.scrollView.frame.maxX
