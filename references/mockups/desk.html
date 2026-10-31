@@ -222,6 +222,7 @@ body.picture.menu .menubar { display: flex; }
       <button id="first" title="Kanna's first launch: the planner script asks about Kanna's skills before the agent">Simulate: first launch</button>
       <button id="onlyone" title="Which agents your shell finds: with one, the script doesn't ask">Installed: claude, codex</button>
       <button id="forget" title="Unset planning.agent in the project's .kanna/config.json, so the next Desk asks again">Forget the project's planner</button>
+      <button id="forgetprompts" title="Unset agents.prompts in ~/.kanna-v4/config.json, so the next Desk asks again">Forget agents.prompts</button>
       <button id="reset">Reset</button>
     </div>
     <div class="keys">
@@ -252,6 +253,7 @@ const initial = () => {
     installed: ["claude", "codex"],
     made: [],
     config: {},
+    prompts: "skip",
     skills: true,
     order: ["p4", "p7"],
     nextWindow: 2,
@@ -412,6 +414,8 @@ function agentTerm(t) {
 const ROLE = "You are the Kanna planning agent.";
 const KNOWN = ["claude", "codex", "copilot", "opencode", "agy"];
 const START = { claude: "claude --dangerously-skip-permissions", codex: "codex --yolo --no-daemon", copilot: "copilot --yolo -i", opencode: "opencode --prompt", agy: "agy --dangerously-skip-permissions -i" };
+const ASKING = { claude: "claude", codex: "codex --no-daemon", copilot: "copilot -i", opencode: "opencode --prompt", agy: "agy -i" };
+const startOf = agent => (s.prompts === "skip" ? START : ASKING)[agent] || agent;
 const out = text => `<span class="out">${esc(text)}</span>`;
 const short = repo => repo.replace("~/work/", "");
 const shellPrompt = (t, line) => `<span class="c">${esc(short(t.repo))}</span> <span class="p">❯</span> ${esc(line)}`;
@@ -429,7 +433,7 @@ const setupText = [
   `Undo it any time with kanna agents remove.`,
   ``,
 ];
-const questions = { setup: "Install Kanna's skills? [Y/n]", project: "Folder, repo or name:", choose: "Choose [1]:", save: null };
+const questions = { setup: "Install Kanna's skills? [Y/n]", project: "Folder, repo or name:", choose: "Choose [1]:", save: null, prompts: "Let Kanna's agents work without permission prompts? They'll run commands and edit files without asking. [y/N]" };
 function plannerHead(t) { return []; }
 
 function plannerStart(t) {
@@ -462,6 +466,7 @@ function plannerChoose(t) {
   t.ask = "choose";
 }
 function plannerRun(t, agent, greet) {
+  if (greet && !s.prompts) { t.chosen = agent; t.ask = "prompts"; return; }
   t.ask = null; t.agent = agent; t.role = greet;
   if (!greet) return;
   const r = inRepo(t.repo), b = backlog(t.repo);
@@ -524,11 +529,17 @@ function plannerAnswer(t, line) {
     t.log.push(out(`${agent} plans ${short(t.repo).split("/").pop()} from now on (planning.agent in .kanna/config.json).`), ``);
     return plannerRun(t, agent, true);
   }
+  if (t.ask === "prompts") {
+    t.log.push(`${esc(questions.prompts)} ${esc(a)}`);
+    s.prompts = /^y/i.test(a) ? "skip" : "ask";
+    t.log.push(out(`Kanna's agents ${s.prompts === "skip" ? "work without permission prompts" : "ask permission"} from now on (agents.prompts in ~/.kanna-v4/config.json).`), ``);
+    return plannerRun(t, t.chosen, true);
+  }
 }
 function plannerQuit(t) {
   const agent = t.agent;
   t.agent = null;
-  t.log.push(``, out(`The planning agent quit. Start it again: ${START[agent] || agent} ${quote(ROLE)}`));
+  t.log.push(``, out(`The planning agent quit. Start it again: ${startOf(agent)} ${quote(ROLE)}`));
 }
 
 function plannerShell(t, line) {
@@ -973,8 +984,9 @@ const long = () => {
 document.getElementById("long").onclick = () => { s = initial(); long(); render(); };
 const fresh = () => { s.tasks = []; s.order = []; s.windows.forEach(w => { w.desk = null; w.planner = null; w.repo = "~/work/kanna-v4"; }); };
 document.getElementById("fresh").onclick = () => { fresh(); render(); };
-document.getElementById("first").onclick = () => { s.skills = false; fresh(); render(); };
+document.getElementById("first").onclick = () => { s.skills = false; s.prompts = null; fresh(); render(); };
 document.getElementById("onlyone").onclick = e => { s.installed = s.installed.length > 1 ? ["claude"] : ["claude", "codex"]; e.target.textContent = "Installed: " + s.installed.join(", "); };
+document.getElementById("forgetprompts").onclick = () => { s.prompts = null; s.note = "agents.prompts unset: the next Desk asks once"; render(); };
 document.getElementById("forget").onclick = () => { s.config = {}; s.note = "planning.agent unset: the next Desk on this project asks"; render(); };
 if (location.hash.includes("picture")) document.body.classList.add("picture");
 if (location.hash.includes("menu")) { document.body.classList.add("menu"); s.menu = "recent"; }

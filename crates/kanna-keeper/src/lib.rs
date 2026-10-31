@@ -1,5 +1,5 @@
 pub mod client;
-mod fdpass;
+pub mod fdpass;
 mod ghostty_env;
 pub mod paths;
 mod pty;

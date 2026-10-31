@@ -49,12 +49,16 @@ final class DaemonLink: TerminalLink {
                 if machine == nil, let build = KannaBuild.daemonBuild { args["build"] = .string(build) }
                 if let client = self?.client { args["client"] = .string(client) }
                 if machine == nil { args["relaunch"] = Self.relaunch }
+                if machine == nil { args["keepsSocket"] = true }
                 return ["id": 0, "cmd": "app.hello", "args": .object(args)]
             },
             connected: { [weak self] in self?.connected() },
             received: { [weak self] message, delivery in self?.received(message, delivery) },
             disconnected: { [weak self] in self?.disconnected() },
-            unreachable: { starter?.unreachable() })
+            unreachable: { starter?.unreachable() },
+            descriptor: { fd in
+                if let starter { starter.keep(fd) } else { close(fd) }
+            })
     }
 
     static var relaunch: JSON {
@@ -87,7 +91,6 @@ final class DaemonLink: TerminalLink {
     }
 
     private func connected() {
-        starter?.connected()
         if let settings = GhosttyRuntime.shared?.settings { send("settings", settings.objectFields) }
         for terminal in terminals.keys.sorted() {
             send("attach", ["terminal": .string(terminal)])
@@ -102,6 +105,7 @@ final class DaemonLink: TerminalLink {
         if attached { FileHandle.standardError.write(Data("kanna: lost the daemon at \(socketPath)\n".utf8)) }
         onLost?()
         attached = false
+        starter?.lost()
     }
 
     private func received(_ raw: JSON, _ delivery: DaemonConnection.Delivery) {
@@ -119,6 +123,7 @@ final class DaemonLink: TerminalLink {
             }
             attached = ok
             if ok {
+                starter?.attached()
                 refusal = nil
                 daemonInfo = message["daemon"]
                 connection.accepted()
@@ -129,7 +134,7 @@ final class DaemonLink: TerminalLink {
                 FileHandle.standardError.write(Data("kanna: \(machine ?? "the daemon") speaks another protocol: \(message["error"]?["message"]?.string ?? "")\n".utf8))
             } else if message["error"]?["code"]?.string == "other_build" {
                 connection.accepted()
-                starter?.replacing()
+                starter?.lost()
                 FileHandle.standardError.write(Data("kanna: the daemon is from another build and is stopping; starting this build's\n".utf8))
             } else {
                 refusal = message

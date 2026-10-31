@@ -60,13 +60,15 @@ $KANNA_STATE_DIR (default: that socket's folder). Gets its ptys from the
 keeper of that folder, starting $KANNA_KEEPER (default: the kanna-keeper
 beside this binary) if none runs. Stopping the daemon leaves the terminals
 running in the keeper; it saves them in that folder (terminals/), and the
-next daemon takes them back.
+next daemon takes them back. With $KANNA_LISTEN_FD (Kanna.app sets it), it
+serves on that listening socket, which the app keeps, instead of binding one.
 
   --uses-keeper   exits 0: this daemon gets its ptys from a keeper";
 
 const APP_TIMEOUT: Duration = Duration::from_secs(10);
 
 const LOCK_WAIT: Duration = Duration::from_secs(5);
+const LISTEN_FD: &str = "KANNA_LISTEN_FD";
 
 const STOP_GRACE: libc::c_uint = 5;
 const SLOW_REQUEST: Duration = Duration::from_millis(50);
@@ -228,7 +230,12 @@ fn run() -> Result<Option<PathBuf>, String> {
         }),
     );
     server.take_over(HELLO, app_link::takeover(events.clone()));
-    server.start().map_err(|e| e.message)?;
+    let server = std::mem::ManuallyDrop::new(server);
+    match inherited_listener()? {
+        Some(listener) => server.start_with(listener),
+        None => server.start(),
+    }
+    .map_err(|e| e.message)?;
 
     let keeper_bin = keeper::binary();
     let keeper = match keeper::Keeper::connect(&state_dir, &keeper_bin, events.clone()) {
@@ -371,7 +378,7 @@ fn run() -> Result<Option<PathBuf>, String> {
     }
 
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
-    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), files.clone(), layout.clone(), app_timeout, build_id.clone()));
+    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), files.clone(), layout.clone(), app_timeout, build_id.clone(), server.listener()));
     if let Some(machines) = &machines {
         let machines = Rc::downgrade(machines);
         *app.machine.borrow_mut() = Some(Box::new(move || machines.upgrade().map_or(Value::Null, |m| m.machine())));
@@ -705,6 +712,7 @@ fn run() -> Result<Option<PathBuf>, String> {
         }
     }
 
+    let keep_socket = shutdown.is_none() && app.holds_socket();
     app.close();
     layout.flush();
     layout.save_now();
@@ -714,7 +722,11 @@ fn run() -> Result<Option<PathBuf>, String> {
     }
     let _ = std::fs::remove_file(&pid_file);
     std::mem::forget(rules_updater);
-    server.stop();
+    if keep_socket {
+        server.stop_leaving_path();
+    } else {
+        server.stop();
+    }
     if shutdown.is_some() {
         let _ = std::fs::File::options().write(true).open(state_dir.join(SHUTDOWN_MARKER)).and_then(|file| file.set_modified(std::time::SystemTime::now()));
     }
@@ -747,6 +759,24 @@ fn ended(terminals: &Terminals, tasks: &Rc<tasks::Tasks>, app: &AppLink, termina
         tasks.exited(&pane, code);
         app.status(&pane, Some("exited"));
     }
+}
+
+fn inherited_listener() -> Result<Option<std::os::unix::net::UnixListener>, String> {
+    use std::os::fd::FromRawFd;
+    let Some(value) = std::env::var_os(LISTEN_FD) else { return Ok(None) };
+    std::env::remove_var(LISTEN_FD);
+    let fd: libc::c_int = value.to_str().and_then(|v| v.parse().ok()).filter(|fd| *fd > 2).ok_or_else(|| format!("{LISTEN_FD} isn't a descriptor: {value:?}"))?;
+    let mut kind: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    let stream = unsafe { libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_TYPE, (&mut kind as *mut libc::c_int).cast(), &mut size) } == 0 && kind == libc::SOCK_STREAM;
+    let mut address: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut length = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+    let local = unsafe { libc::getsockname(fd, (&mut address as *mut libc::sockaddr_storage).cast(), &mut length) } == 0 && address.ss_family as libc::c_int == libc::AF_UNIX;
+    if !stream || !local {
+        return Err(format!("{LISTEN_FD}={fd} isn't a Unix stream socket"));
+    }
+    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    Ok(Some(unsafe { std::os::unix::net::UnixListener::from_raw_fd(fd) }))
 }
 
 fn instance_name(socket: &Path) -> String {

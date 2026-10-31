@@ -12,6 +12,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
 use std::net::Shutdown;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -115,6 +116,17 @@ struct Connection {
     stream: UnixStream,
     behind: Cell<bool>,
     cut: Cell<bool>,
+    keeps: bool,
+}
+
+fn write_with(stream: &UnixStream, reply: &Value, listener: Option<&OwnedFd>) -> bool {
+    let mut line = encode(reply).into_bytes();
+    line.push(b'\n');
+    let Some(listener) = listener else { return write_all(stream, &line) };
+    match kanna_keeper::fdpass::send(stream.as_raw_fd(), &line, &[listener.as_raw_fd()], false) {
+        Ok(sent) => write_all(stream, &line[sent..]),
+        Err(_) => false,
+    }
 }
 
 pub struct AppLink {
@@ -132,13 +144,17 @@ pub struct AppLink {
     stopping: Cell<bool>,
     tasks: RefCell<Option<Weak<crate::tasks::Tasks>>>,
     build: Option<String>,
+    listener: Option<OwnedFd>,
+    handed: Cell<bool>,
     pub machine: RefCell<Option<Box<dyn Fn() -> Value>>>,
 }
 
 impl AppLink {
-    pub fn new(core: WeakCore, terminals: Rc<Terminals>, diffs: Rc<Diffs>, files: Rc<Files>, layout: Rc<DaemonLayout>, timeout: Duration, build: Option<String>) -> AppLink {
+    pub fn new(core: WeakCore, terminals: Rc<Terminals>, diffs: Rc<Diffs>, files: Rc<Files>, layout: Rc<DaemonLayout>, timeout: Duration, build: Option<String>, listener: Option<OwnedFd>) -> AppLink {
         AppLink {
             build,
+            listener,
+            handed: Cell::new(false),
             core,
             terminals,
             diffs,
@@ -237,13 +253,13 @@ impl AppLink {
             return false;
         }
         let app_build = args.get("build").and_then(Value::as_str).filter(|_| remote.is_none());
+        let keeps = remote.is_none() && args.get("keepsSocket") == Some(&Value::Bool(true));
+        let listener = self.listener.as_ref().filter(|_| keeps);
         if let (Some(app_build), Some(build)) = (app_build, self.build.as_deref()) {
             if app_build != build {
                 log!("kanna-daemon: the app is from another build ({app_build}, this daemon is {build}); stopping so it starts its own");
-                let reply = json!({ "id": id, "ok": false, "error": { "code": "other_build", "message": format!("this daemon is from another build ({build}); it is stopping so the app can start its own") } });
-                let mut line = encode(&reply).into_bytes();
-                line.push(b'\n');
-                write_all(&stream, &line);
+                let reply = json!({ "id": id, "ok": false, "listener": listener.is_some(), "error": { "code": "other_build", "message": format!("this daemon is from another build ({build}); it is stopping so the app can start its own") } });
+                self.handed.set(write_with(&stream, &reply, listener) && listener.is_some());
                 let _ = stream.shutdown(Shutdown::Both);
                 return true;
             }
@@ -261,12 +277,20 @@ impl AppLink {
             daemon["machine"] = machine["name"].clone();
             daemon["capabilities"] = machine["capabilities"].clone();
         }
-        answer(json!({ "id": id, "ok": true, "protocol": protocol, "daemon": daemon, "panes": panes, "layout": self.layout.view() }));
+        let reply = json!({ "id": id, "ok": true, "protocol": protocol, "listener": listener.is_some(), "daemon": daemon, "panes": panes, "layout": self.layout.view() });
+        if listener.is_some() {
+            if !write_with(&stream, &reply, listener) {
+                let _ = stream.shutdown(Shutdown::Both);
+                return false;
+            }
+        } else {
+            answer(reply);
+        }
         let claimant = remote.as_ref().map(|from| args.get("client").and_then(Value::as_str).unwrap_or(from).to_string());
         if let Some(tasks) = self.tasks.borrow().as_ref().and_then(|b| b.upgrade()) {
             *tasks.claimant.borrow_mut() = claimant.unwrap_or_else(|| kanna_mux::MAC_APP.into());
         }
-        *self.app.borrow_mut() = Some(Connection { id: conn, remote, out, stream, behind: Cell::new(false), cut: Cell::new(false) });
+        *self.app.borrow_mut() = Some(Connection { id: conn, remote, out, stream, behind: Cell::new(false), cut: Cell::new(false), keeps: listener.is_some() });
         let statuses: Vec<(String, String)> = self.core.upgrade().map_or(vec![], |core| {
             core.with_panes(|panes| panes.iter().filter_map(|p| p.status().map(|s| (p.id.clone(), s.to_string()))).collect())
         });
@@ -328,6 +352,10 @@ impl AppLink {
 
     pub fn is_here(&self, conn: u64) -> bool {
         self.app.borrow().as_ref().is_some_and(|app| app.id == conn && app.remote.is_none())
+    }
+
+    pub fn holds_socket(&self) -> bool {
+        self.handed.get() || self.app.borrow().as_ref().is_some_and(|app| app.keeps)
     }
 
     pub fn attached_here(&self) -> bool {
