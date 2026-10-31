@@ -230,6 +230,7 @@ fn run() -> Result<Option<PathBuf>, String> {
         }),
     );
     server.take_over(HELLO, app_link::takeover(events.clone()));
+    let server = std::mem::ManuallyDrop::new(server);
     match inherited_listener()? {
         Some(listener) => server.start_with(listener),
         None => server.start(),
@@ -711,7 +712,7 @@ fn run() -> Result<Option<PathBuf>, String> {
         }
     }
 
-    let keep_socket = app.holds_socket();
+    let keep_socket = shutdown.is_none() && app.holds_socket();
     app.close();
     layout.flush();
     layout.save_now();

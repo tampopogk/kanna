@@ -86,7 +86,7 @@ sequenceDiagram
 ```
 
 - **A daemon of an older build** sends no listener: the app binds a new socket once nothing answers, as before. That one upgrade has the old gap; every later one doesn't.
-- **A daemon whose app holds the socket doesn't unlink it** when it stops: with an app attached, or after refusing one for another build. Otherwise (no app, or the app has quit and closed its copy) it unlinks it as before.
+- **A daemon whose app holds the socket doesn't unlink it** when it stops: with an app attached, or after refusing one for another build. Otherwise (no app, the app has quit and closed its copy, or a shutdown on purpose such as `kanna instances stop`, after which the app quits rather than starting another) it unlinks it as before, whether it bound the socket or was handed it.
 
 ## 4. Losing the daemon
 
@@ -127,6 +127,7 @@ The fd travels as `SCM_RIGHTS` on the reply line's first byte, as the keeper sen
 ## 6. Limits
 
 - **A daemon started by hand while the app holds the socket** finds it answering and exits ("another kmux is already listening"); the app's own daemon serves it. Before, the app restarted it after 2 s anyway.
+- **A daemon that crashes leaves `kanna.sock` in place,** whoever bound it, so the app's copy keeps answering. Before using its copy, the app checks that the path still answers; if something removed the file, its copy no longer has a path, so it binds a new socket rather than start a daemon nobody can reach.
 - **With the app quit,** nobody holds a spare copy: a daemon that stops then leaves nothing listening, and the CLI starts the app as before.
 - **Linux** has no app; its daemon binds the socket itself, as before.
 

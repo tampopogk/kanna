@@ -82,7 +82,7 @@ impl SocketServer {
         if running.is_some() {
             return Err(KmuxError::new("bad_request", format!("already listening on {}", self.path)));
         }
-        *running = Some(self.serve(listener, None)?);
+        *running = Some(self.serve(listener, identity_of(&self.path))?);
         Ok(())
     }
 
@@ -412,11 +412,10 @@ mod tests {
         assert!(Path::new(&path).exists());
         let mut waiting = UnixStream::connect(&path).unwrap();
         waiting.write_all(b"{\"id\":7}\n").unwrap();
-        let (second, _) = server("handover-next", limits());
-        second.start_with(kept).unwrap();
+        first.start_with(kept).unwrap();
         waiting.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         assert!(read_reply(&waiting).unwrap().contains("\"id\":7"));
-        second.stop();
-        assert!(Path::new(&path).exists());
+        first.stop();
+        assert!(!Path::new(&path).exists());
     }
 }

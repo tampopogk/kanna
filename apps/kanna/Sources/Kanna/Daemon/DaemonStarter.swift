@@ -76,8 +76,18 @@ final class DaemonStarter: @unchecked Sendable {
     }
 
     private func socketListener() -> Int32? {
-        if let held = lock.withLock({ listener >= 0 ? listener : nil }) { return held }
-        if SocketServer.isListening(socketPath) { return nil }
+        let answers = SocketServer.isListening(socketPath)
+        if let held = lock.withLock({ listener >= 0 ? listener : nil }) {
+            if answers { return held }
+            lock.withLock {
+                if listener == held {
+                    close(listener)
+                    listener = -1
+                }
+            }
+        } else if answers {
+            return nil
+        }
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else {
             report("can't make a socket for \(socketPath): \(String(cString: strerror(errno)))")
