@@ -26,9 +26,7 @@ rust_dir="$(kanna_rust_dir "$repo_root" "$triple")"
 host_rust_dir="$(kanna_rust_dir "$repo_root")"
 cargo_profile="$(kanna_cargo_profile "$repo_root")"
 kanna_rust_target "$triple"
-if [[ -n "${GHOSTTY_SOURCE_DIR:-}" || ! -d "$repo_root/target/ghosttykit/GhosttyKit.xcframework" || "$(cat "$repo_root/target/ghosttykit/ghostty.rev" 2>/dev/null)" != "$KANNA_GHOSTTY_COMMIT" ]]; then
-  kanna_ghosttykit "$repo_root"
-fi
+kanna_ghosttykit "$repo_root" || exit 1
 built="$(cat "$repo_root/target/ghosttykit/ghostty.rev" 2>/dev/null || true)"
 if [[ "$built" != "$KANNA_GHOSTTY_COMMIT" ]]; then
   if [[ -z "${GHOSTTY_SOURCE_DIR:-}" ]]; then
@@ -39,10 +37,7 @@ if [[ "$built" != "$KANNA_GHOSTTY_COMMIT" ]]; then
 fi
 
 if [[ -z "${KANNA_GHOSTTY_VT_DIR:-}" ]]; then
-  ghostty_vt="$repo_root/target/ghostty-vt/$triple"
-  if [[ -n "${GHOSTTY_SOURCE_DIR:-}" || ! -f "$ghostty_vt/lib/libghostty-vt.a" || "$(cat "$ghostty_vt/ghostty.rev" 2>/dev/null)" != "$KANNA_GHOSTTY_COMMIT" ]]; then
-    kanna_ghostty_vt "$repo_root" "$triple"
-  fi
+  kanna_ghostty_vt "$repo_root" "$triple" || exit 1
 fi
 
 kanna_cargo_seed "$repo_root" "" "$macos_target"

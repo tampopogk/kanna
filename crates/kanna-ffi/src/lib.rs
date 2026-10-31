@@ -1,3 +1,4 @@
+mod crash;
 mod machines;
 
 pub use kanna_layout;

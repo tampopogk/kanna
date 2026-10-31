@@ -7,6 +7,7 @@ description = "Kanna's daemon: kanna-mux on Kanna's socket, with the terminals a
 
 [dependencies]
 kanna-build = { path = "../kanna-build" }
+kanna-crash = { path = "../kanna-crash" }
 kanna-mux = { path = "../kanna-mux" }
 kanna-keeper = { path = "../kanna-keeper" }
 kanna-vt = { path = "../kanna-vt" }
