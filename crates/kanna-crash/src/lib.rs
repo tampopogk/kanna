@@ -113,6 +113,7 @@ fn machinery(frame: &Value) -> bool {
     MACHINERY.iter().any(|m| symbol.starts_with(m))
         || MACHINERY_IMAGES.contains(&image)
         || symbol.contains("Kanna.CrashHandlers.")
+        || frame.get("at").and_then(Value::as_str).is_some_and(|at| at.starts_with("crates/kanna-crash/"))
         || symbol.contains("as core::ops::function::Fn") && symbol.contains("Box<")
 }
 
