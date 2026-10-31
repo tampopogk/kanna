@@ -120,12 +120,12 @@ fn an_app_on_another_machine_attaches_over_the_network_and_another_protocol_leav
     let cert = certified["cert"].clone();
 
     let (_, refused) = link(&runtime, &client, &vm_key, port, &cert, json!({ "pid": 1, "client": "mbp", "protocols": [7, 9], "build": "another" }));
-    assert_eq!((refused["ok"].clone(), refused["error"]["code"].clone(), refused["mine"].clone()), (json!(false), json!("other_protocol"), json!([2, 2])), "{refused}");
+    assert_eq!((refused["ok"].clone(), refused["error"]["code"].clone(), refused["mine"].clone()), (json!(false), json!("other_protocol"), json!(kanna_build::PROTOCOLS)), "{refused}");
     assert_eq!(vm.kanna(&["machine", "--json"]).json()["name"], "vm", "the daemon keeps running");
 
     vm.kanna(&["open", "--window", "new", "--name", "far", "--no-wait", "--cmd", "/bin/cat"]).ok();
-    let (mut far, hello) = link(&runtime, &client, &vm_key, port, &cert, json!({ "pid": 1, "client": "mbp", "protocols": [1, 3], "build": "another", "commit": "abc" }));
-    assert_eq!((hello["ok"].clone(), hello["protocol"].clone(), hello["daemon"]["machine"].clone()), (json!(true), json!(2), json!("vm")), "{hello}");
+    let (mut far, hello) = link(&runtime, &client, &vm_key, port, &cert, json!({ "pid": 1, "client": "mbp", "protocols": [kanna_build::PROTOCOLS[0] - 1, kanna_build::PROTOCOLS[1] + 1], "build": "another", "commit": "abc" }));
+    assert_eq!((hello["ok"].clone(), hello["protocol"].clone(), hello["daemon"]["machine"].clone()), (json!(true), json!(kanna_build::PROTOCOLS[1]), json!("vm")), "{hello}");
     let terminal = hello["panes"].as_array().unwrap().iter().find(|p| p["name"] == "far").unwrap()["id"].as_str().unwrap().to_string();
     far.send(json!({ "cmd": "attach", "args": { "terminal": terminal } }));
     far.next(|m| m["cmd"] == "snapshot" && m["args"]["terminal"] == terminal.as_str());
@@ -166,7 +166,7 @@ fn an_update_moves_a_machine_to_another_commit_and_its_terminals_carry_on() {
     let shell: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
     let daemon_pid = std::fs::read_to_string(vm.dir.join("state/daemon.pid")).unwrap();
 
-    let release = |commit: &str| json!({ "commit": commit, "version": "0.1.0", "channel": "dev", "os": std::env::consts::OS, "arch": std::env::consts::ARCH, "protocols": [2, 2] });
+    let release = |commit: &str| json!({ "commit": commit, "version": "0.1.0", "channel": "dev", "os": std::env::consts::OS, "arch": std::env::consts::ARCH, "protocols": kanna_build::PROTOCOLS });
     let stage = vm.dir.join("stage");
     Daemon::build(&stage.join("kanna"), &release(&b));
     let tarball = vm.dir.join("Kanna-test.tar.gz");
