@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app="$repo_root/target/Kanna.app"
-kanna="$repo_root/target/release/kanna"
+kanna="$app/Contents/Helpers/kanna"
 
 case "${1:-}" in
   -h|--help)

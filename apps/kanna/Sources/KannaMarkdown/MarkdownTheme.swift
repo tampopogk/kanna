@@ -13,6 +13,7 @@ enum MarkdownTheme {
     static let addedBar = color(dark: 0x3fb950, light: 0x1a7f37)
     static let removedText = color(dark: 0xf47067, light: 0xcf222e)
     static let changedBar = color(dark: 0xd29922, light: 0xbf8700)
+    static let hit = color(dark: 0xe2c541, light: 0xc9a400)
 
     static let bodySize: CGFloat = 14
     static let monoSize: CGFloat = 12.5
