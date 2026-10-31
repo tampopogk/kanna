@@ -40,8 +40,8 @@ final class DiffFileList: NSView {
     override func draw(_ dirtyRect: NSRect) {
         DiffTheme.background.setFill()
         dirtyRect.fill()
-        let mono = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular)
-        let sans = NSFont.systemFont(ofSize: 12)
+        let mono = CodeTheme.font(size: 10.5)
+        let sans = CodeTheme.sans(size: 12)
         for (index, entry) in entries.enumerated() {
             let row = NSRect(x: 0, y: 6 + CGFloat(index) * Self.rowHeight, width: bounds.width, height: Self.rowHeight)
             guard row.intersects(dirtyRect) else { continue }
@@ -53,7 +53,7 @@ final class DiffFileList: NSView {
                 let file = files[number]
                 if number == selected { DiffTheme.tint.setFill(); row.fill() }
                 if fresh.contains(number) { DiffTheme.addedWord.setFill(); row.fill(using: .sourceOver) }
-                let status = NSAttributedString(string: file.status, attributes: [.font: NSFont.monospacedSystemFont(ofSize: 10.5, weight: .semibold), .foregroundColor: DiffTheme.status(file.status)])
+                let status = NSAttributedString(string: file.status, attributes: [.font: CodeTheme.font(size: 10.5, weight: .semibold), .foregroundColor: DiffTheme.status(file.status)])
                 status.draw(at: NSPoint(x: 12, y: row.minY + 4))
                 let counts = NSMutableAttributedString()
                 if file.added > 0 { counts.append(NSAttributedString(string: "+\(file.added)", attributes: [.font: mono, .foregroundColor: DiffTheme.ok])) }
@@ -87,7 +87,7 @@ final class DiffStickyHeader: NSView {
     var onClick: ((Bool) -> Void)?
     var file: DiffFile? { didSet { needsDisplay = true } }
     var gutterWidth: CGFloat = 0
-    var font = CodeTheme.font(size: CodeTheme.fontSize)
+    var fontSize = CodeTheme.fontSize { didSet { if fontSize != oldValue { needsDisplay = true } } }
 
     override var isFlipped: Bool { true }
 
@@ -97,7 +97,8 @@ final class DiffStickyHeader: NSView {
         DiffTheme.line.setFill()
         NSRect(x: 0, y: bounds.maxY - 1, width: bounds.width, height: 1).fill()
         guard let file else { return }
-        let status = NSAttributedString(string: file.status, attributes: [.font: NSFont.monospacedSystemFont(ofSize: font.pointSize - 1, weight: .semibold), .foregroundColor: DiffTheme.status(file.status)])
+        let font = CodeTheme.font(size: fontSize)
+        let status = NSAttributedString(string: file.status, attributes: [.font: CodeTheme.font(size: fontSize - 1, weight: .semibold), .foregroundColor: DiffTheme.status(file.status)])
         let y = (bounds.height - status.size().height) / 2
         status.draw(at: NSPoint(x: gutterWidth - status.size().width - 8, y: y))
         let slash = (file.path as NSString).range(of: "/", options: .backwards)

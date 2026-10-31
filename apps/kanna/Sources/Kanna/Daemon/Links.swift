@@ -12,7 +12,21 @@ final class Dial: @unchecked Sendable {
         lock.withLock { request = text }
     }
 
+    func portOpen(_ port: Int) -> JSON {
+        guard let request = lock.withLock({ request }), case .object(var fields) = try? JSON.parse(Data(request.utf8)) else {
+            return ["error": ["code": "unavailable", "message": "the machine isn't linked yet"]]
+        }
+        fields["port"] = .number(Double(port))
+        let text = String(decoding: JSON.object(fields).encoded(), as: UTF8.self)
+        return Links.call { kanna_machines_port_open(text) }
+    }
+
     var lastFailure: JSON? { lock.withLock { failure } }
+
+    var key: String? {
+        guard let request = lock.withLock({ request }) else { return nil }
+        return (try? JSON.parse(Data(request.utf8)))?["key"]?.string
+    }
 
     func callAsFunction() -> Int32? {
         guard let request = lock.withLock({ request }) else { return nil }
@@ -31,6 +45,7 @@ final class Links: TerminalLink {
     let local: DaemonLink
     private(set) var remotes: [String: DaemonLink] = [:]
     private var dials: [String: Dial] = [:]
+    private(set) var ports: [String: [Int: Int]] = [:]
     private(set) var peers: [JSON] = []
     private(set) var name: String?
     var configure: ((DaemonLink) -> Void)?
@@ -86,6 +101,16 @@ final class Links: TerminalLink {
         return Self.call { kanna_machines_path(key) }
     }
 
+    func portOpen(_ port: Int, on machine: String) -> Result<Int, KannaError> {
+        guard let dial = dials[machine] else { return .failure(KannaError("unavailable", "\(machine) isn't one of your linked machines")) }
+        let reply = dial.portOpen(port)
+        guard let local = reply["port"]?.number.flatMap({ Int(exactly: $0) }) else {
+            return .failure(KannaError(reply["error"]?["code"]?.string ?? "failed", reply["error"]?["message"]?.string ?? "can't open \(machine)'s port \(port)"))
+        }
+        ports[machine, default: [:]][port] = local
+        return .success(local)
+    }
+
     func failure(of machine: String) -> JSON? {
         remotes[machine]?.refusal?["error"] ?? (remotes[machine]?.attached == true ? nil : dials[machine]?.lastFailure)
     }
@@ -125,7 +150,8 @@ final class Links: TerminalLink {
         }
         for machine in remotes.keys where !kept.contains(machine) {
             remotes.removeValue(forKey: machine)?.stop()
-            dials.removeValue(forKey: machine)
+            if let key = dials.removeValue(forKey: machine)?.key { kanna_machines_port_close(key) }
+            ports.removeValue(forKey: machine)
             onGone?(machine)
         }
         onPeers?()

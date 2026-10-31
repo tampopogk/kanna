@@ -95,7 +95,8 @@ flowchart LR
     N --> S["stapler staple"]
 ```
 
-- **Inside out, no `--deep`:** every Mach-O in `Contents/Helpers` first, then the app; a Mach-O anywhere else stops the release, since it would go unsigned.
+- **Inside out, no `--deep`:** every Mach-O in `Contents/Helpers` first, then the app, through `kanna_sign_app` (`scripts/env.sh`), which dev builds use too ([privacy prompts](privacy-prompts.md#4-how-dev-builds-are-signed)); a Mach-O anywhere else stops the release, since it would go unsigned.
+- **Explicit identifiers:** the app is its bundle ID (`dev.kanna.app`), each helper `BUNDLE_ID.HELPER` (`dev.kanna.app.kanna-keeper`), not what codesign makes up from the file name.
 - **Entitlements** (`apps/kanna/Resources/Kanna.entitlements`), on the app only. Programs in Kanna's terminals are attributed to Kanna by macOS privacy controls, and under the hardened runtime they're refused without an entitlement:
 
   | Entitlement | For |
