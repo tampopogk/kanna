@@ -9,6 +9,7 @@ final class DaemonLink: TerminalLink {
     private var terminals: [String: ExternalTerminal] = [:]
     private var sizes: [String: JSON] = [:]
     private(set) var attached = false
+    private var acks = false
     let machine: String?
     var client: String?
     private(set) var refusal: JSON?
@@ -119,6 +120,7 @@ final class DaemonLink: TerminalLink {
             }
             attached = ok
             if ok {
+                acks = (message["protocol"]?.number ?? 0) >= Double(Protocols.flow)
                 refusal = nil
                 daemonInfo = message["daemon"]
                 connection.accepted()
@@ -166,11 +168,20 @@ final class DaemonLink: TerminalLink {
         case "pane":
             if let pane = args["pane"] { onPane?(pane) }
         case "output":
+            let ack: () -> Void = { [weak self, acks] in
+                guard acks, let id = args["terminal"]?.string else { return }
+                self?.send("taken", ["terminal": .string(id)])
+            }
             if let terminal, let data = args["data"]?.string.flatMap({ Data(base64Encoded: $0) }) {
                 consumed = false
                 let echo = Keys.echoing(terminal.id)
-                terminal.output(data) { connection.consumed(delivery) }
+                terminal.output(data) {
+                    connection.consumed(delivery)
+                    ack()
+                }
                 if let echo { Keys.echoed(echo) }
+            } else {
+                ack()
             }
         case "snapshot":
             if let id = args["terminal"]?.string { onSnapshot?(id) }

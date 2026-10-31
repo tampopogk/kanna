@@ -56,7 +56,10 @@ pub fn git_dir(worktree: &Path) -> Option<PathBuf> {
     if meta.is_dir() {
         return Some(marker);
     }
-    let text = fs::read_to_string(&marker).ok().filter(|_| meta.len() <= 4096)?;
+    if !meta.is_file() || meta.len() > 4096 {
+        return None;
+    }
+    let text = fs::read_to_string(&marker).ok()?;
     let dir = text.lines().next()?.strip_prefix("gitdir:")?.trim();
     Some(worktree.join(dir)).filter(|dir| dir.is_dir())
 }

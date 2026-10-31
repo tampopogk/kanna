@@ -33,6 +33,7 @@ mod store;
 mod task_scripts;
 mod terminals;
 mod toasts;
+mod wire;
 
 use app_link::{AppLink, Outbox, APP_ASK, APP_PREFIX, HELLO};
 use kanna_mux::json::{Map, Value};
@@ -47,7 +48,6 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use reader::Taken;
 use pty::Spawner;
 use store::Store;
 use terminals::{Restored, Terminals};
@@ -104,7 +104,8 @@ pub enum Event {
     KeeperLost(String),
     AppHello { conn: u64, hello: Value, out: Outbox, stream: UnixStream, remote: Option<String> },
     AppCaughtUp { conn: u64 },
-    AppMessage { conn: u64, message: Value, at: Instant },
+    AppBehind { conn: u64, queued: usize },
+    AppMessage { conn: u64, message: Value },
     AppGone { conn: u64 },
     MachineConfirm { question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send> },
     MachinesSave(Value),
@@ -126,7 +127,7 @@ impl Event {
             Event::Diff { .. } | Event::DiffUpdating { .. } => "loop.diff",
             Event::File { .. } => "loop.file",
             Event::KeeperReadable | Event::KeeperExits | Event::KeeperLost(_) => "loop.keeper",
-            Event::AppHello { .. } | Event::AppCaughtUp { .. } | Event::AppGone { .. } => "loop.app",
+            Event::AppHello { .. } | Event::AppCaughtUp { .. } | Event::AppBehind { .. } | Event::AppGone { .. } => "loop.app",
             Event::AppMessage { .. } => "loop.app.message",
             Event::MachineConfirm { .. } | Event::MachinesSave(_) => "loop.machines",
             Event::Restart | Event::Quit(_) | Event::Shutdown(_) => "loop.stop",
@@ -249,7 +250,8 @@ fn run() -> Result<Option<PathBuf>, String> {
             }
         }),
     );
-    server.take_over(HELLO, app_link::takeover(events.clone()));
+    let wire = Arc::new(wire::Wire::new(events.clone()));
+    server.take_over(HELLO, app_link::takeover(events.clone(), wire.clone()));
     server.start().map_err(|e| e.message)?;
 
     let keeper_bin = keeper::binary();
@@ -271,7 +273,7 @@ fn run() -> Result<Option<PathBuf>, String> {
 
     let mut env = vec![("KANNA_SOCKET".to_string(), socket_path.clone()), ("KANNA_INSTANCE".to_string(), instance.clone())];
     env.extend(shell::env(&state_dir, &kanna_keeper::login_shell(), std::env::var("ZDOTDIR").ok()));
-    let terminals = Rc::new(Terminals::new(keeper.clone(), store, events.clone(), env));
+    let terminals = Rc::new(Terminals::new(keeper.clone(), store, events.clone(), env, wire.clone()));
     *terminals.core.borrow_mut() = Some(core.weak());
     let renaming = Rc::downgrade(&terminals);
     core.on_renamed(Rc::new(move |from, to| {
@@ -327,7 +329,7 @@ fn run() -> Result<Option<PathBuf>, String> {
     }));
     let quiz = Rc::new(quiz::Quiz::new(db.clone(), Some(core.weak())));
     quiz.install(&core);
-    let machines = match machines::Machines::start(&state_dir, &db, events.clone()) {
+    let machines = match machines::Machines::start(&state_dir, &db, events.clone(), wire.clone()) {
         Ok(machines) => {
             log!("kanna-daemon: {}", machines.describe());
             let machines = Rc::new(machines);
@@ -608,14 +610,12 @@ fn run() -> Result<Option<PathBuf>, String> {
             }),
             Event::Wake => {}
             Event::Output { terminal, serial } => {
-                let (taken, cwd, echo) = terminals.output(&terminal, serial);
-                if let (Some(cwd), Some(pane)) = (cwd, terminals.pane_of(&terminal)) {
+                let Some(noticed) = terminals.noticed(&terminal, serial) else { continue };
+                if let (Some(cwd), Some(pane)) = (noticed.cwd, terminals.pane_of(&terminal)) {
                     app.folder(&pane, &cwd);
                 }
-                match taken {
-                    Some(Taken::Bytes(bytes)) => app.output(&terminal, &bytes, echo),
-                    Some(Taken::Overflowed) => app.resync(&terminal),
-                    None => {}
+                if noticed.overflowed {
+                    app.resync(&terminal);
                 }
             }
             Event::Drained { terminal, serial } => {
@@ -680,13 +680,13 @@ fn run() -> Result<Option<PathBuf>, String> {
                     crashes.attached(&hello);
                 }
             }
-            Event::AppMessage { conn, message, .. } if message.get("cmd").and_then(Value::as_str) == Some("app.goodbye") => {
+            Event::AppMessage { conn, message } if message.get("cmd").and_then(Value::as_str) == Some("app.goodbye") => {
                 if app.is_here(conn) {
                     crashes.goodbye();
                 }
             }
-            Event::AppMessage { conn, message, at } => {
-                if let Some(request) = app.message(conn, message, at) {
+            Event::AppMessage { conn, message } => {
+                if let Some(request) = app.message(conn, message) {
                     if let Some(refused) = machines::refuse_remote(&request).filter(|_| !app.attached_here()) {
                         app.answer_app(conn, refused);
                         continue;
@@ -709,6 +709,11 @@ fn run() -> Result<Option<PathBuf>, String> {
                 }
             }
             Event::AppCaughtUp { conn } => app.caught_up(conn),
+            Event::AppBehind { conn, queued } => {
+                if app.is_current(conn) {
+                    app.fell_behind(queued);
+                }
+            }
             Event::MachineConfirm { question, answer } => match &machines {
                 Some(machines) => machines.confirm(&app, question, answer),
                 None => answer(Err("this daemon has no endpoint".into())),
