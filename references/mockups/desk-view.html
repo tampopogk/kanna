@@ -101,7 +101,9 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
 .strip .item .nm { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
 .strip .item .kb { display: none; font-size: 11px; }
 .strip .item:hover .kb { display: inline; }
-.strip .count { margin-left: auto; white-space: nowrap; padding: 3px 8px; }
+.strip .count { white-space: nowrap; padding: 3px 8px; }
+.strip .spacer { flex: 1; }
+.strip .hint { flex: none; }
 
 .menubar { position: relative; z-index: 5; height: 26px; display: flex; align-items: center; gap: 2px; padding: 0 10px; margin: 0 0 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
 body.menu .menubar { display: flex; margin: 0; border-radius: 0; border-width: 0 0 1px; }
@@ -121,7 +123,7 @@ body.menu .menubar { display: flex; margin: 0; border-radius: 0; border-width: 0
 <main>
   <div class="intro">
     <h1>Desk view: the planner, the Desk's three tasks, the Shelf below</h1>
-    <p>The Desk holds up to three of a project's tasks, one of them active. The Desk view shows the planning agent on the left and, on the right, the Desk's tasks and, below them, the Shelf: the tasks Kanna has brought in, waiting and run a few at a time in the background. The Desk's tasks are listed oldest first, by when each was made, the active one in its place; hover a row for its key. Make a Desk task active (click it, ⌘1, ⌘2, ⇧⌘A) to see it as it was: its agent docked, its tabs, and the strip of the Desk's other tasks below. ⌘. toggles between the Desk view and the active task, which stays active (and running) while the Desk view shows. Move a Shelf task to the Desk from its row; Task › Move to Shelf moves the active task back.</p>
+    <p>The Desk holds up to three of a project's tasks, one of them active. The Desk view shows the planning agent on the left and, on the right, the Desk's tasks and, below them, the Shelf: the tasks Kanna has brought in, waiting and run a few at a time in the background. The Desk's tasks are listed oldest first, by when each was made, the active one in its place; hover a row for its key. Make a Desk task active (click it, ⌘1, ⌘2, ⇧⌘A) to see it as it was: its agent docked, its tabs, and the strip of the Desk's other tasks below, ⌘. Desk at its right end. ⌘. toggles between the Desk view and the active task, which stays active (and running) while the Desk view shows. Move a Shelf task to the Desk from its row; Task › Move to Shelf moves the active task back.</p>
     <div class="controls">
       <button id="theme">Light / dark</button>
       <button id="ring" title="A Desk task that isn't active stops to ask you something">Simulate: a Desk task needs you</button>
@@ -228,9 +230,10 @@ function taskHTML(t) {
 
 function stripHTML() {
   const waiting = shelf().length;
-  return `<span class="hint" data-toggle title="The Desk view: the planner, the Desk's tasks and the Shelf"><kbd>⌘.</kbd> Desk</span>${others().length ? `<span class="sep"></span>` : ""}` +
-    byAge(others()).map(t => `<span class="item ${t.status === "needs" ? "needs" : ""}" data-activate="${t.id}" title="${esc(t.title)}"><span class="dot ${t.status}"></span><span class="nm">${esc(t.title)}</span><span class="meta">· ${t.status === "needs" ? "needs you" : ago(t.leftAt) + " ago"}</span><span class="kb">${keyOf(t)}</span></span>`).join("") +
-    (waiting ? `<span class="count">${waiting} on the Shelf</span>` : "");
+  return byAge(others()).map(t => `<span class="item ${t.status === "needs" ? "needs" : ""}" data-activate="${t.id}" title="${esc(t.title)}"><span class="dot ${t.status}"></span><span class="nm">${esc(t.title)}</span><span class="meta">· ${t.status === "needs" ? "needs you" : ago(t.leftAt) + " ago"}</span><span class="kb">${keyOf(t)}</span></span>`).join("") +
+    `<span class="spacer"></span>` + (waiting ? `<span class="count">${waiting} on the Shelf</span>` : "") +
+    (waiting || others().length ? `<span class="sep"></span>` : "") +
+    `<span class="hint" data-toggle title="The Desk view: the planner, the Desk's tasks and the Shelf"><kbd>⌘.</kbd> Desk</span>`;
 }
 
 function plannerLog() {

@@ -64,8 +64,8 @@ flowchart LR
 
 ## 3. The Desk's tasks
 
-- **The strip lists the Desk's tasks other than the active one**, after a muted "⌘. Desk", oldest first (by when each task was made, as the [Desk view](desk-view.md#2--and-pull-back) lists them), each with its [agent status](agent-status.md) and how long ago it was last active ("12m ago"), then how many are on the Shelf.
-- **Each task's time shows beside its name** (pictured above): how long ago it was last active, or needs you, muted, kept current while it's shown. Its ⌘ key shows on hover. When the strip is too narrow, titles truncate first, each in proportion to its length, down to a short floor; then the Shelf's count gives way; then the times.
+- **The strip lists the Desk's tasks other than the active one** from its left edge, oldest first (by when each task was made, as the [Desk view](desk-view.md#2--and-pull-back) lists them), each with its [agent status](agent-status.md) and how long ago it was last active ("12m ago"). Its right end shows how many are on the Shelf, then a muted "⌘. Desk" that shows the Desk view when clicked.
+- **Each task's time shows beside its name** (pictured above): how long ago it was last active, or needs you, muted, kept current while it's shown. Its ⌘ key shows on hover. When the strip is too narrow, titles truncate first, each in proportion to its length, down to a short floor; then the Shelf's count gives way; then the times. "⌘. Desk" always stays.
 - **Click to make active:** the clicked task becomes active and the one before stays on the Desk. **⌘1** and **⌘2** make the Desk's other tasks active the same way, chosen by recency, not by place, with **Needs you** ahead: ⌘1 the one left last (a stack), ⌘2 the one left longest ago. So ⌘1 twice goes back where you were, and ⌘2 again cycles through the Desk, whatever its number of tasks: through all three, or back and forth between two (the same task as ⌘1). ⌘3 does nothing. **⇧⌘A** makes active the task that has needed you longest. They're in the Task menu (Desk Task 1, 2, Task Waiting Longest).
 - **At most three tasks per project on an app's Desk,** active or not, running or stopped; another app has its own three ([each app's Desks](app-desk.md)). Moving a fourth to the Desk is refused ("Desk full") until one goes back to the Shelf or is Done; any number run on the Shelf ([tasks](tasks.md#5-stop-done-or-back-to-the-shelf)).
 - **Not active means hidden, not stopped.** Its terminals keep running in the daemon, and its tabs, the shown one, focus, [zoom](zoom.md) and scroll positions come back as they were.
@@ -148,7 +148,7 @@ flowchart TB
 | **Desk** | An app's window for a project, and the up to three tasks it holds |
 | **Active task** | The Desk task shown with its agent and tabs; stays active while the Desk view shows |
 | **Desk view** | The planning agent, the Desk's tasks and the Shelf, in the Desk window ([Desk view](desk-view.md)) |
-| **Strip** | The line under the active task: ⌘. Desk, the Desk's other tasks, the Shelf's count |
+| **Strip** | The line under the active task: the Desk's other tasks, then at its right end the Shelf's count and ⌘. Desk |
 | **Shelf** | A project's tasks Kanna has brought in, waiting, off the Desk ([tasks](tasks.md#3-the-shelf)) |
 | **Agent pane** | The docked pane where the task's agent runs: the Desk's one chat |
 | **Planning agent** | The Desk's own agent (its planner), docked in the Desk view; not a task |
