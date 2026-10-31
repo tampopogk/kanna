@@ -12,11 +12,16 @@ Build outputs can live on another volume, such as an external SSD: every task wo
 
 ## 1. Where `target/` lives
 
-Set `targets` in `build.local.json` at the root of the main checkout to a folder on that volume (`free` is for [eviction](build-store.md#5-eviction)):
+Set `targets` in `build.local.json` at the root of the main checkout to a folder on that volume:
 
 ```json
-{ "targets": "/Volumes/VHS/kanna-targets", "free": 100 }
+{ "targets": "/Volumes/VHS/kanna-targets" }
 ```
+
+| File | Tracked | Holds |
+|---|---|---|
+| `build.json` | yes | the repo's defaults: `free`, the GB [eviction](build-store.md#5-eviction) keeps free (100) |
+| `build.local.json` (main checkout) | no, ignored | this Mac's: `targets`, and any key of `build.json` to override |
 
 ```mermaid
 flowchart LR
@@ -53,7 +58,7 @@ flowchart LR
 - **`.offline/` is a copy of main's dependencies:** after each main build with the volume, `kanna_targets_offline` syncs `release/` and SwiftPM's `repositories/`, `checkouts/` and `workspace-state.json` into it with `rsync -a --delete`. With the volume unplugged, main clones them back into real folders, and a worktree borrows SwiftPM's packages from it when main's `kanna-build/` isn't there.
 - **The `kanna` on your PATH** should be `target/Kanna.app/Contents/Helpers/kanna`, not `target/release/kanna`, which is on the volume.
 - **Unset, nothing changes:** `target/` is a folder in each checkout.
-- **Set by `kanna_targets`** in `scripts/env.sh`, which `build.sh` and each `build-*.sh` run first. It reads the main checkout's `build.local.json` for every worktree, with `plutil`. The file is git-ignored: the drive belongs to this Mac, not the repo. A committed `build.local.json` is ignored, since it says what teardown and eviction may delete. It isn't in Kanna's settings (`~/.kanna-v4/config.json`), which are for Kanna building any project; only this repo's scripts read it.
+- **Set by `kanna_targets`** in `scripts/env.sh`, which `build.sh` and each `build-*.sh` run first. Each key comes from the main checkout's `build.local.json` (for every worktree), else the building checkout's `build.json`, read with `plutil`. `targets` is only ever local: the drive belongs to this Mac, not the repo, and it says what teardown and eviction may delete, so a `targets` in `build.json` is ignored, and so is a `build.local.json` that's committed. It isn't in Kanna's settings (`~/.kanna-v4/config.json`), which are for Kanna building any project; only this repo's scripts read it.
 - **A missing volume falls back to the internal disk,** in the main checkout too. When the root is under `/Volumes/NAME` and `NAME` isn't mounted (absent, or an empty folder left on the internal disk), the build says so, removes the links that point at the missing volume, and builds in real folders. Nothing builds cold in the main checkout: its Ghostty is already internal, and `release/` and the packages come from `.offline/`. A root that isn't an absolute path falls back the same way.
 - **The next build with the volume moves them there.** A real folder moves over (`mv` to `DEST.moving`, rename, link), keeping what it built. If the volume still has an older copy from before it was unplugged, the moved one replaces it. A link to another root moves the same way.
 - **A worktree builds one Rust profile,** `debug/`, with its dependencies from a shared compile cache, and folders on the volume are evicted when it runs low ([build store](build-store.md)).

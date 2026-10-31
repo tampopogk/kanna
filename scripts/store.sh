@@ -139,8 +139,8 @@ kanna_targets_free_gb() {
 }
 
 kanna_targets_floor_gb() {
-  floor="$(kanna_targets_setting "$1" free)" || floor=""
-  case "$floor" in ""|*[!0-9]*) floor=100 ;; esac
+  floor="$(kanna_targets_setting "$1" free)" || return 1
+  case "$floor" in ""|*[!0-9]*) return 1 ;; esac
   echo "$floor"
 }
 
@@ -163,7 +163,7 @@ kanna_evict() {
   if main="$(kanna_main_checkout "$1")"; then self="$(basename "$1")"; else main="$1"; self=""; fi
   repo="$root/$(basename "$main")"
   [ -d "$repo" ] || return 0
-  floor="$(kanna_targets_floor_gb "$1")"
+  floor="$(kanna_targets_floor_gb "$1")" || return 0
   free="$(kanna_targets_free_gb "$root")"
   [ -n "$free" ] && [ "$free" -lt "$floor" ] || return 0
   mkdir -p "$root/_shared"

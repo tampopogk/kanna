@@ -150,7 +150,7 @@ flowchart TD
 - **Never evicted:** `_main`, `.offline`, `_shared` (only pruned), the building worktree's own folder, a running task's.
 - **One at a time:** eviction holds `ROOT/_shared/.evict.lock`; a build that finds it taken skips eviction.
 - **An evicted worktree rebuilds** on its next build: its `target/` link is left dangling, and `kanna_targets` makes the folder again.
-- **`free`** in the main checkout's `build.local.json` sets the threshold in GB. It's this repo's, not one of Kanna's settings.
+- **`free`** sets the threshold in GB: 100 in the committed `build.json`, overridden by the main checkout's `build.local.json` ([build targets](build-targets.md#1-where-target-lives)). Without either, nothing is evicted. It's this repo's, not one of Kanna's settings.
 
 ## 6. Measured
 

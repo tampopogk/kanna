@@ -78,6 +78,15 @@ kanna_store_prune "$wt" 2>/dev/null
 [[ -d "$store/sccache" ]] || fail "prune: removed sccache"
 rm -rf "$store/thing/k3.lock"
 
+config "$root"
+[[ -z "$(kanna_targets_floor_gb "$wt")" ]] || fail "settings: a threshold with no build.json or build.local.json"
+printf '{"free": 40, "targets": "%s"}\n' "$dir/elsewhere" >"$wt/build.json"
+[[ "$(kanna_targets_floor_gb "$wt")" == 40 ]] || fail "settings: build.json's default isn't used"
+[[ "$(kanna_targets_root "$wt")" == "$root" ]] || fail "settings: targets came from build.json"
+config "$root" 70
+[[ "$(kanna_targets_floor_gb "$wt")" == 70 ]] || fail "settings: build.local.json doesn't override build.json"
+rm "$wt/build.json"
+
 repo="$root/repo"
 make_folder() { mkdir -p "$repo/$1/debug" && echo built >"$repo/$1/debug/out" && touch -t "$2" "$repo/$1/.used"; }
 for name in task-old task-new task-run; do worktree "$name" >/dev/null; done
