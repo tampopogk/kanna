@@ -44,9 +44,9 @@ To walk the user through a change (yours, or a diff) that crosses more than one 
 ```mermaid
 sequenceDiagram
     participant P as CLI: parse<br/>kanna commands.rs:440
-    participant W as CLI: wire()<br/>kanna lib.rs:313
+    participant W as CLI: wire()<br/>kanna lib.rs:316
     participant B as daemon: Tasks::name<br/>tasks.rs:1043
-    participant C as daemon: rename_pane<br/>kanna-mux core.rs:1337
+    participant C as daemon: rename_pane<br/>kanna-mux core.rs:1371
     P->>W: task name TASK NAME
     W->>B: tasks, action name
     B->>C: rename-pane (its held agent)
