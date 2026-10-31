@@ -68,7 +68,7 @@ extension AppController {
             let ms = { (value: Double) -> JSON in .number((value * 10).rounded() / 10) }
             let intervals = Perf.stats().map { stats -> JSON in
                 ["name": .string(stats.name), "count": .number(Double(stats.count)), "recent": .number(Double(stats.recent)),
-                 "p50": ms(stats.p50), "p95": ms(stats.p95), "max": ms(stats.max), "last": ms(stats.last), "detail": stats.detail.map { .string($0) } ?? .null]
+                 "p50": ms(stats.p50), "p95": ms(stats.p95), "p99": ms(stats.p99), "max": ms(stats.max), "last": ms(stats.last), "detail": stats.detail.map { .string($0) } ?? .null]
             }
             let hangs = Perf.hangs().reversed().map { hang -> JSON in
                 ["at": .string(ISO8601DateFormatter().string(from: hang.at)), "ms": ms(hang.ms),
@@ -156,6 +156,9 @@ extension AppController {
                 controller.window.setContentSize(NSSize(width: width, height: height))
             }
             if let y = args["scroll"]?.number { controller.deskView.scroll(toY: CGFloat(y)) }
+            if let minimize = args["minimize"]?.bool {
+                if minimize { controller.window.miniaturize(nil) } else { controller.window.deminiaturize(nil) }
+            }
             if let later = args["later"]?.number {
                 DeskTask.skew = later
                 controller.deskView.tick()
@@ -170,6 +173,7 @@ extension AppController {
             let tasks = controller.deskTasks.map { task -> JSON in ["task": .string(task.id), "title": .string(task.title), "status": task.status.map { .string($0) } ?? .null, "agent": task.agent.map { .string($0) } ?? .null] }
             return ["desk": .bool(controller.desk), "empty": .bool(controller.emptyDesk), "tasks": .array(tasks), "active": controller.active.map { .string($0) } ?? .null,
                     "strip": .bool(!controller.deskStrip.isHidden), "page": .bool(!controller.deskView.isHidden), "title": .string(controller.window.title),
+                    "minimized": .bool(controller.window.isMiniaturized),
                     "header": controller.agentHeader.isHidden ? .null : .string(controller.agentHeader.text),
                     "shelf": .array(controller.shelf.map { .string($0.id) }), "agents": .array(controller.shelf.map { $0.agent.map { .string($0) } ?? .null }), "running": .number(Double(controller.running)),
                     "waiting": .string(controller.deskStrip.waitingText), "stripLayout": controller.deskStrip.geometry, "note": .string(controller.note), "cheer": .string(controller.cheer),

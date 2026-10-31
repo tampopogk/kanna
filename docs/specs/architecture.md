@@ -152,6 +152,8 @@ flowchart LR
 
 **Where the app's time goes is measured inside it:** signposts, a main-thread hang detector, `debug.perf`, and the daemon's slow-request log ([performance monitoring](performance-monitoring.md)).
 
+**Terminal bytes go around the daemon's main loop:** input from the app link's reader thread to the pty, output from each pty's reader to the app, flow-controlled per terminal ([input latency](input-latency.md)).
+
 ## 4. Glossary
 
 | Term | Meaning |

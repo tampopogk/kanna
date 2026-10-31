@@ -74,7 +74,7 @@ new_state_dir() {
   [[ -n "$KANNA_STATE_DIR" && -d "$KANNA_STATE_DIR" ]] || { echo "e2e-kanna: mktemp gave no folder" >&2; exit 1; }
   export KANNA_STATE_DIR KANNA_SOCKET="$KANNA_STATE_DIR/kanna.sock"
   mkdir -p "$KANNA_AGENTS_HOME/.kanna-v4" && echo '{"version": 2, "setup": false}' >"$KANNA_AGENTS_HOME/.kanna-v4/agents.json"
-  printf '{"version": 1, "shelf": {"runners": 0}, "tasks": {"agent": "%s"}}\n' "$mock_agent" >"$KANNA_AGENTS_HOME/.kanna-v4/config.json"
+  printf '{"version": 1, "shelf": {"runners": 0}, "tasks": {"agent": "%s"}, "agents": {"prompts": "skip"}}\n' "$mock_agent" >"$KANNA_AGENTS_HOME/.kanna-v4/config.json"
 }
 KANNA_STATE_DIR=""
 export KANNA_IGNORE_OCCLUSION=1
@@ -1034,6 +1034,13 @@ windows_tabs_ui() {
   sleep 1
   check drawn "$(snap win-2 windows_tabs_ui-second-window)" 1 || return 1
   key 'cmd+`'; check test "$(dwin win-1 key)" == True || return 1
+  minimized() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"win-2\"${1:-}}}" | field minimized; }
+  minimized ',"minimize":true' >/dev/null; check wait_for 5 eval '[[ "$(minimized)" == True ]]' || return 1
+  key 'cmd+`'; check test "$(minimized)" == True || return 1
+  check test "$(dwin win-1 key)" == True || return 1
+  key 'cmd+shift+`'; check test "$(minimized)" == True || return 1
+  check test "$(dwin win-1 key)" == True || return 1
+  minimized ',"minimize":false' >/dev/null; check wait_for 5 eval '[[ "$(minimized)" == False ]]' || return 1
   key cmd+w; check test "$(win win-1 tabs | count)" == 1 || return 1
   key cmd+shift+w; check test "$(state | field windows | count)" == 1 || return 1
   local menus
@@ -3276,6 +3283,83 @@ sys.exit(not any(h[\"ms\"] >= 300 and \"command.debug.hang\" in h[\"open\"] for 
   check wait_for 5 grep -qE 'kanna: the main thread hung [0-9]{3}ms; open: .*command\.debug\.hang' "$out/app.log" || { echo "perf_intervals: the hang isn't in the app's log"; tail -5 "$out/app.log"; return 1; }
 }
 
+scenario task_list_speed M4
+task_list_speed() {
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude" n=40 i started ms worst=0
+  mkdir -p "$repo" "${agent%/*}" && ln -s "$mock_agent" "$agent" || { echo "task_list_speed line $LINENO"; return 1; }
+  git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "task_list_speed line $LINENO"; return 1; }
+  start_daemon || { echo "task_list_speed line $LINENO"; return 1; }
+  for ((i = 1; i <= n; i++)); do (cd "$repo" && kanna task new "Task $i" "say hi" --agent "$agent") >/dev/null || { echo "task_list_speed line $LINENO"; return 1; }; done
+  for ((i = 1; i <= n; i++)); do kanna task start "$(tid $i)" >/dev/null || { echo "task_list_speed: task $i didn't start"; return 1; }; done
+  for ((i = 1; i <= n; i++)); do kanna task stop "$(tid $i)" >/dev/null || { echo "task_list_speed: task $i didn't stop"; return 1; }; done
+  started="$(find "$repo/.kanna-worktrees" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+  (( started == n )) || { echo "task_list_speed: $started of $n tasks have a worktree"; return 1; }
+  raw '{"id":1,"cmd":"debug.daemon.perf","args":{"reset":true}}' >/dev/null
+  for i in 1 2 3 4 5; do
+    ms="$( { /usr/bin/time -p kanna task list --json >/dev/null; } 2>&1 | awk '/^real/ {printf "%d", $2 * 1000}')"
+    (( ms > worst )) && worst=$ms
+  done
+  echo "task_list_speed: $n stopped tasks with worktrees; kanna task list took at most ${worst}ms; daemon $(raw '{"id":1,"cmd":"debug.daemon.perf"}' | python3 -c 'import json, sys
+r = json.load(sys.stdin); r = r.get("result", r)
+i = {i["name"]: i for i in r["intervals"]}.get("loop.request", {})
+print("loop.request max %sms" % i.get("max"))')"
+  (( worst < 300 )) || { echo "task_list_speed: a list of $n tasks took ${worst}ms"; return 1; }
+}
+
+scenario typing_latency M4
+typing_latency() {
+  local keys="${KANNA_LATENCY_KEYS:-60}" floods="${KANNA_LATENCY_FLOODS:-1}" hidden="${KANNA_LATENCY_HIDDEN:-4}" agents="${KANNA_LATENCY_AGENTS:-0}" burners="${KANNA_LATENCY_CPU:-0}"
+  local bound="${KANNA_LATENCY_BOUND:-100}" flood="exec yes 'typing_latency flood ........................................................................'" i burner_pids=()
+  local agent="exec python3 $KANNA_STATE_DIR/redraw.py"
+  cat >"$KANNA_STATE_DIR/redraw.py" <<'PY'
+import random, sys, time
+while True:
+    rows = "".join("%3d %s\033[K\r\n" % (n, "x" * random.randrange(20, 100)) for n in range(40))
+    sys.stdout.write("\033[?2026h\033[H" + rows + "\033[?2026l")
+    sys.stdout.flush()
+    time.sleep(1 / 30)
+PY
+  start_daemon && start_app || { echo "typing_latency line $LINENO"; return 1; }
+  kanna open --window new --name typer --cmd 'echo TYPER-READY; exec cat' >/dev/null || { echo "typing_latency line $LINENO"; return 1; }
+  for ((i = 1; i <= floods; i++)); do kanna open --window win-1 --name "flood$i" --split right --cmd "$flood" >/dev/null || return 1; done
+  for ((i = 1; i <= agents; i++)); do kanna open --window win-1 --name "agent$i" --split down --cmd "$agent" >/dev/null || return 1; done
+  for ((i = 1; i <= hidden; i++)); do kanna open --window win-1 --name "hidden$i" --tab --cmd "$flood" >/dev/null || return 1; done
+  kanna focus typer >/dev/null || { echo "typing_latency line $LINENO"; return 1; }
+  check wait_for 10 shows typer TYPER-READY || return 1
+  for ((i = 1; i <= burners; i++)); do yes >/dev/null & burner_pids+=($!); done
+  sleep 2
+  raw '{"id":1,"cmd":"debug.perf","args":{"reset":true}}' >/dev/null
+  raw '{"id":1,"cmd":"debug.daemon.perf","args":{"reset":true}}' >/dev/null
+  for i in $(seq "$keys"); do
+    raw '{"id":1,"cmd":"debug.type","args":{"pane":"typer","text":"k"}}' >/dev/null
+    sleep 0.05
+  done
+  sleep 1
+  (( ${#burner_pids[@]} )) && kill "${burner_pids[@]}" 2>/dev/null
+  local readings
+  readings="$( { raw '{"id":1,"cmd":"debug.perf"}'; raw '{"id":1,"cmd":"debug.daemon.perf"}'; } | python3 -c 'import json, sys
+want = ["key.wait", "key.sent", "key.echo", "key.drawn", "key.lost", "input.handled", "input.written", "echo.read", "echo.parsed", "echo.taken", "echo.sent",
+        "loop.chores", "loop.output", "loop.app.message", "loop.status", "loop.request", "message.output", "message.status", "render"]
+rows = {}
+for line in sys.stdin:
+    r = json.loads(line); r = r.get("result", r)
+    if "intervals" not in r: print("no readings:", line.strip()[:200])
+    for i in r.get("intervals", []): rows.setdefault(i["name"], i)
+for name in want:
+    i = rows.get(name)
+    if i: print("%-16s n=%-6d p50=%7.2f p95=%7.2f p99=%7.2f max=%7.2f" % (name, i["count"], i["p50"], i["p95"], i.get("p99", i["p95"]), i["max"]))')"
+  echo "typing_latency: $keys keys into cat; $floods flooding beside it, $hidden flooding in hidden tabs, $agents redrawing at 30 fps, $burners CPU burners"
+  echo "$readings"
+  local drawn
+  drawn="$(raw '{"id":1,"cmd":"debug.perf"}' | python3 -c 'import json, sys
+r = json.load(sys.stdin); r = r.get("result", r)
+i = {i["name"]: i for i in r.get("intervals", [])}.get("key.drawn")
+print("%d %s" % (i["count"], i["p95"]) if i else "0 0")')"
+  (( ${drawn%% *} >= keys * 9 / 10 )) || { echo "typing_latency: only ${drawn%% *} of $keys keys were drawn"; return 1; }
+  python3 -c 'import sys; sys.exit(float(sys.argv[1]) > float(sys.argv[2]))' "${drawn#* }" "$bound" \
+    || { echo "typing_latency: a keystroke's echo took ${drawn#* }ms to draw (p95), over ${bound}ms"; return 1; }
+}
+
 scenario task_restart_typing M4
 task_restart_typing() {
   start_daemon && start_app || { echo "task_restart_typing line $LINENO"; return 1; }
@@ -3741,6 +3825,8 @@ planner_choice() {
   mkdir -p "$fake" "$repo" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/claude" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/codex" || { echo "planner_choice line $LINENO"; return 1; }
   git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "planner_choice line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
+  local mine="$KANNA_AGENTS_HOME/.kanna-v4/config.json"
+  local kept; kept="$(jq 'del(.agents)' "$mine")" && printf '%s\n' "$kept" >"$mine" || { echo "planner_choice line $LINENO"; return 1; }
   KANNA_PLANNING_AGENTS="$fake/claude $fake/codex" start_daemon || { echo "planner_choice line $LINENO"; return 1; }
   env -u KANNA_NO_INITIAL_WINDOW KANNA_START_DIR="$repo" "$app" --bg >>"$out/app.log" 2>&1 &
   app_pid=$!
@@ -3753,7 +3839,12 @@ planner_choice() {
   ! shows "$planner" "Folder, repo or name" || { echo "planner_choice: a Desk on a repo asked where"; return 1; }
   kanna send "$planner" 2 >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
   check wait_for 5 shows "$planner" "codex plans repo from now on" || { kanna read "$planner"; return 1; }
+  check wait_for 5 shows "$planner" "Let Kanna's agents work without permission prompts?" || { echo "planner_choice: the first Desk didn't ask about permission prompts"; kanna read "$planner"; return 1; }
+  ! shows "$planner" "args:" || { echo "planner_choice: the agent started before the question was answered"; return 1; }
+  kanna send "$planner" y >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
+  check wait_for 5 shows "$planner" "Kanna's agents work without permission prompts from now on" || { kanna read "$planner"; return 1; }
   check wait_for 10 spaceless "$planner" "args: -c approval_policy=\"never\" -c sandbox_mode=\"danger-full-access\" -c model_auto_compact_token_limit=300000 You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: codex didn't start as the planner"; kanna read "$planner"; return 1; }
+  check grep -Eq '"prompts" ?: "skip"' "$mine" && check grep -Eq '"runners" ?: 0' "$mine" || { echo "planner_choice: the answer wasn't saved with the file's other keys"; cat "$mine"; return 1; }
   check grep -Eq '"agent" ?: "codex"' "$repo/.kanna/config.json" || { cat "$repo/.kanna/config.json"; return 1; }
   kanna send "$planner" exit >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
   check wait_for 5 shows "$planner" "The planning agent quit. Start it again:" || { kanna read "$planner"; return 1; }
@@ -3769,6 +3860,7 @@ planner_choice() {
   check wait_for 10 shows "$planner" "^resumed $session" || { echo "planner_choice: the next Desk didn't come back to the project's planner"; kanna read "$planner"; return 1; }
   spaceless "$planner" "Back to repo's planning conversation." && ! spaceless "$planner" "You are the Kanna planning agent." || { echo "planner_choice: the next Desk's planner was told again"; kanna read "$planner"; return 1; }
   ! shows "$planner" "Choose an agent" || { echo "planner_choice: the next Desk asked again"; return 1; }
+  ! shows "$planner" "permission prompts?" || { echo "planner_choice: the next Desk asked about permission prompts again"; return 1; }
   key cmd+n
   check wait_for 10 eval '[[ "$(desk lead d3)" == term-* ]]' || { echo "planner_choice: ⌘N opened no Desk"; kanna workspace list --all; return 1; }
   planner="$(desk lead d3)"
@@ -4515,6 +4607,27 @@ done_leaves_no_window() {
   kanna task done "$(tid 1)" >/dev/null || { echo "done_leaves_no_window line $LINENO"; return 1; }
   leftovers() { kanna workspace list --all --json | python3 -c 'import json, sys; s = json.load(sys.stdin); print(len(s["windows"]) + len(s.get("hiddenWindows") or []), len(s["panes"]))'; }
   check wait_for 5 eval '[[ "$(leftovers)" == "0 0" ]]' || { echo "done_leaves_no_window: windows and panes left: $(leftovers)"; kanna workspace list --all; return 1; }
+}
+
+scenario restart_while_desk_opens M4
+restart_while_desk_opens() {
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "restart_while_desk_opens line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  start_daemon && start_app || { echo "restart_while_desk_opens line $LINENO"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$2\"}}" | field "$1"; }
+  local daemon opened w planner
+  daemon="$(cat "$KANNA_STATE_DIR/daemon.pid")"
+  opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "restart_while_desk_opens line $LINENO: $opened"; return 1; }
+  w="${BASH_REMATCH[1]}"
+  check wait_for 10 eval '[[ "$(desk lead "$w")" == term-* ]]' || { echo "restart_while_desk_opens: no planning terminal"; kanna workspace list --all; return 1; }
+  planner="$(desk lead "$w")"
+  kill "$daemon" || { echo "restart_while_desk_opens line $LINENO"; return 1; }
+  wait_for 5 eval "! kill -0 $daemon" || { echo "restart_while_desk_opens: the daemon didn't stop"; return 1; }
+  kanna workspace list --all >/dev/null || { echo "restart_while_desk_opens: a call made while no daemon ran wasn't answered"; return 1; }
+  check wait_for 15 eval '[[ "$(cat "$KANNA_STATE_DIR/daemon.pid")" != "$daemon" ]] && app_attached' || { echo "restart_while_desk_opens: the app didn't start the next daemon"; return 1; }
+  check wait_for 20 shows "$planner" "No agent Kanna knows is installed" || { echo "restart_while_desk_opens: the planning terminal didn't get past agent setup"; kanna read "$planner"; return 1; }
+  ! shows "$planner" "nothing answers" || { echo "restart_while_desk_opens: the planning terminal ran while nothing answered"; kanna read "$planner"; return 1; }
 }
 
 scenario toasts M4

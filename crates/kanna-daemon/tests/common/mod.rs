@@ -59,6 +59,26 @@ impl Instance {
         wait_for("the daemon's socket", || UnixStream::connect(self.socket()).is_ok());
     }
 
+    pub fn start_on(&mut self, listener: std::os::fd::OwnedFd) {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        let fd = listener.as_raw_fd();
+        let mut command = daemon_command(&self.dir, &self.env);
+        command.env("KANNA_LISTEN_FD", "3");
+        unsafe {
+            command.pre_exec(move || {
+                if fd == 3 {
+                    libc::fcntl(3, libc::F_SETFD, 0);
+                } else if libc::dup2(fd, 3) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        self.daemon = command.spawn().unwrap();
+        drop(listener);
+    }
+
     pub fn restart(&mut self, signal: i32) {
         self.stop(signal);
         self.start_again();
@@ -115,6 +135,10 @@ impl Instance {
     pub fn app(&self) -> App {
         App::connect(&self.socket())
     }
+
+    pub fn app_speaking(&self, protocols: [u32; 2]) -> App {
+        App::connect_speaking(&self.socket(), json!([]), protocols)
+    }
 }
 
 impl Drop for Instance {
@@ -141,6 +165,10 @@ fn stop_process(pid: i32) {
 }
 
 fn spawn_daemon(dir: &Path, env: &[(String, String)]) -> Child {
+    daemon_command(dir, env).spawn().unwrap()
+}
+
+fn daemon_command(dir: &Path, env: &[(String, String)]) -> Command {
     let log = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("daemon.log")).unwrap();
     let mut command = Command::new(DAEMON);
     command.env_clear();
@@ -164,7 +192,7 @@ fn spawn_daemon(dir: &Path, env: &[(String, String)]) -> Child {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(log);
-    command.spawn().unwrap()
+    command
 }
 
 pub struct App {
@@ -172,6 +200,7 @@ pub struct App {
     reader: BufReader<UnixStream>,
     pub view: Value,
     pub shows: bool,
+    pub acks: bool,
 }
 
 impl App {
@@ -180,10 +209,14 @@ impl App {
     }
 
     pub fn connect_with(socket: &Path, panes: Value) -> App {
+        App::connect_speaking(socket, panes, kanna_build::PROTOCOLS)
+    }
+
+    pub fn connect_speaking(socket: &Path, panes: Value, protocols: [u32; 2]) -> App {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let mut app = App::raw(socket);
-            app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": std::process::id(), "protocols": kanna_build::PROTOCOLS, "panes": panes}}));
+            app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": std::process::id(), "protocols": protocols, "panes": panes}}));
             let hello = app.next().expect("no answer to app.hello");
             if hello["ok"] == true {
                 return app;
@@ -197,7 +230,7 @@ impl App {
         let stream = UnixStream::connect(socket).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let reader = BufReader::new(stream.try_clone().unwrap());
-        App { stream, reader, view: Value::Null, shows: true }
+        App { stream, reader, view: Value::Null, shows: true, acks: true }
     }
 
     pub fn answering(self) -> std::thread::JoinHandle<()> {
@@ -228,6 +261,10 @@ impl App {
             }
             if message["cmd"] == "layout" {
                 self.view = message["args"].clone();
+            }
+            if message["cmd"] == "output" && self.acks {
+                let terminal = message["args"]["terminal"].clone();
+                self.tell("taken", json!({"terminal": terminal}));
             }
             if message["cmd"] == "start" && self.shows {
                 let pane = message["args"]["pane"]["id"].clone();
