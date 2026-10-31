@@ -344,10 +344,11 @@ pub static COMMANDS: &[Command] = &[
         name: "task",
         group: "Tabs and windows",
         summary: "Make, edit, list, start, stop, set up, pick, shelve, activate, park, name, message or end tasks: an agent docked with its tabs, on Kanna.app's Desk or on its repo's Shelf.",
-        usage: "kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...]\n       kanna task edit TASK --after TASK,...|none\n       kanna task start TASK\n       kanna task stop [TASK]\n       kanna task setup [TASK]\n       kanna task pick TASK\n       kanna task shelve [TASK]\n       kanna task list [QUERY] [--all]\n       kanna task activate TASK\n       kanna task park [TASK]\n       kanna task name [TASK] NAME\n       kanna task send TASK|planner TEXT\n       kanna task messages [TASK]\n       kanna task done [TASK] [--keep]",
+        usage: "kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...]\n       kanna task edit TASK --after TASK,...|none\n       kanna task start TASK\n       kanna task stop [TASK]\n       kanna task setup [TASK]\n       kanna task pick TASK\n       kanna task shelve [TASK]\n       kanna task list [QUERY] [--all] [--include-done]\n       kanna task activate TASK\n       kanna task park [TASK]\n       kanna task name [TASK] NAME\n       kanna task send TASK|planner TEXT\n       kanna task messages [TASK]\n       kanna task done [TASK] [--keep]",
         options: &[
             ("--agent CMD", "new: the agent to start (default: claude)."),
             ("--after TASK,...|none", "new, edit: the tasks it waits for; it can't start until they're all done. edit: replaces the list, and none clears it."),
+            ("--include-done", "list: also the done tasks, newest first: with QUERY, every one that matches; without, the 5 done last."),
             ("--keep", "done: end it without the repo's tasks.teardown, keeping its worktree and branch."),
             ("--all", "list: every repo's tasks, not only the one you're in."),
         ],
@@ -363,6 +364,8 @@ pub static COMMANDS: &[Command] = &[
             ("kanna task list", "This repo's tasks, the Desk's then the Shelf's, and their state: working, idle, needs you, stopped, blocked, merged (its branch is in main) or replied (its message to the planner waits)."),
             ("kanna task list --all", "Every repo's tasks, naming the repo of those that aren't this one's."),
             ("kanna task list resume agent", "Only the tasks with both words in their name or first message."),
+            ("kanna task list send enter --include-done", "Also the done tasks with both words, to see if the work was done already."),
+            ("kanna task list --include-done", "Also the 5 tasks done last."),
             ("kanna task park agent", "Show the Desk view of the Desk the task docked as agent is active on; it stays active. From its terminal, leave out agent."),
             ("kanna task activate agent", "Make the task docked as agent the active one on your Desk (the one your terminal is on), else on its project's Desk."),
             ("kanna task name agent \"Tab bar light mode\"", "Name the task docked as agent; from its terminal, leave out agent."),
@@ -398,6 +401,9 @@ pub static COMMANDS: &[Command] = &[
                     }
                     if let Ok(repo) = repo_here() {
                         out["repo"] = json!(repo);
+                    }
+                    if args.flag("--include-done") {
+                        out["done"] = json!(true);
                     }
                     if let Some(query) = args.rest() {
                         out["query"] = json!(query);

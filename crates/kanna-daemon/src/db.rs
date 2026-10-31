@@ -449,6 +449,18 @@ impl Db {
         rows.collect()
     }
 
+    pub fn done_tasks(&self) -> rusqlite::Result<Vec<(Row, f64)>> {
+        let mut statement = self.conn.prepare(
+            "select t.id, t.repo, t.terminal, t.made_at, t.doc, coalesce((select max(at) from task_events e where e.task = t.id and e.what = 'done'), t.made_at) as done_at \
+             from tasks t where t.place = 'done' order by done_at desc, t.rowid desc",
+        )?;
+        let rows = statement.query_map([], |r| {
+            let doc: String = r.get(4)?;
+            Ok((Row { id: r.get(0)?, repo: r.get(1)?, place: Place::Done, terminal: r.get(2)?, made_at: r.get(3)?, doc: serde_json::from_str(&doc).unwrap_or(Value::Null) }, r.get(5)?))
+        })?;
+        rows.collect()
+    }
+
     pub fn made_order(&self) -> rusqlite::Result<Vec<String>> {
         let mut statement = self.conn.prepare("select id from tasks where place != 'done' order by made_at, rowid")?;
         let ids = statement.query_map([], |r| r.get(0))?;
@@ -927,6 +939,26 @@ mod tests {
         assert_eq!(db.layout().unwrap(), Some(json!({ "workspaces": [] })));
         db.put_layout(&json!({ "workspaces": [{ "id": "ws-1" }] })).unwrap();
         assert_eq!(Db::open(&dir).layout().unwrap(), Some(json!({ "workspaces": [{ "id": "ws-1" }] })));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn done_tasks_come_newest_done_first_with_when_they_were_done() {
+        let dir = folder("done");
+        let db = Db::open(&dir);
+        for (id, made, done) in [("t1", 1.0, Some(30.0)), ("t2", 2.0, Some(20.0)), ("t3", 3.0, None), ("t4", 4.0, Some(40.0))] {
+            let row = Row { id: id.into(), repo: "/r".into(), place: Place::Shelf, terminal: None, made_at: made, doc: json!({ "name": id }) };
+            db.put(&row, Some(&Change::new("made"))).unwrap();
+            if let Some(at) = done {
+                let mut change = Change::new("done").moved(Place::Shelf, Place::Done);
+                change.at = Some(at);
+                db.put(&Row { place: Place::Done, ..row }, Some(&change)).unwrap();
+            }
+        }
+        let done = db.done_tasks().unwrap();
+        assert_eq!(done.iter().map(|(r, at)| (r.id.as_str(), *at)).collect::<Vec<_>>(), [("t4", 40.0), ("t1", 30.0), ("t2", 20.0)]);
+        assert_eq!(done[0].0.doc["name"], "t4");
+        assert_eq!(db.tasks().unwrap().len(), 1, "the open tasks leave out the done ones");
         fs::remove_dir_all(&dir).unwrap();
     }
 

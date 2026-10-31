@@ -32,6 +32,9 @@ Kanna brings this conversation back whenever a planner starts on the project aga
 A Shelf task runs by itself, unattended, until its agent finishes or has to ask. Whatever the agent has to guess, it guesses alone, and the user finds out only when they make the task active. Put the effort in here, with the user, so the agent can do the whole task in one go.
 
 1. **Read first.** Look at the code, specs and mockups the work touches, so you know what exists, what it's called and how it's tested, and ask only what the repo can't tell you.
+   - **Search the tasks:** `kanna task list WORDS` with two or three words for the work, then again in other words ("send enter", then "submit codex"), and `kanna task list WORDS --include-done` to see whether it was done already.
+   - **If a task covers it,** tell the user and add to that one instead of making another: tell a running one with `kanna task send TASK "..."`; a Shelf task that hasn't started can't have its first message edited, so make a new one with both and end the old one (`kanna task done TASK`).
+   - **If one overlaps,** say so in both, or make the new one wait for it (`--after`).
 2. **Ask the user until the task is clear,** a few questions at a time, each with your recommendation:
    - **The outcome:** what's different when it's done, and why it matters.
    - **Scope:** what's in, what's out, what mustn't change.
@@ -77,7 +80,7 @@ Run the `kanna` on your PATH, from this terminal, as it is: its `KANNA_*` variab
 
 | Command | Does |
 |---|---|
-| `kanna task list [QUERY] [--all]` | This repo's tasks, the Desk's then the Shelf's under headings: ID, name, state (working, idle, needs you, stopped, merged when its branch is in main, replied when its message to you waits, or blocked, with what it waits for by name), and an agent other than the default; `--all`: every repo's, naming the others; QUERY keeps those whose name or first message has every word |
+| `kanna task list [QUERY] [--all] [--include-done]` | This repo's tasks, the Desk's then the Shelf's under headings: ID, name, state (working, idle, needs you, stopped, merged when its branch is in main, replied when its message to you waits, or blocked, with what it waits for by name), and an agent other than the default; `--all`: every repo's, naming the others; QUERY keeps those whose name or first message has every word; `--include-done` adds done tasks under Done, newest first: with QUERY every one that matches, without it the 5 done last |
 | `kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...]` | Add a task to this repo's Shelf; `--agent`: run this agent (`codex`, …) instead of `tasks.agent`; `--after`: blocked until those tasks are done |
 | `kanna task edit TASK --after TASK,...\|none` | Change what a Shelf task waits for; `none` unblocks it |
 | `kanna task name TASK NAME` | Rename a task, running or waiting on the Shelf; a Shelf task starts with the new name |

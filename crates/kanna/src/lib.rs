@@ -188,7 +188,7 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
         reply["freed"] = serde_json::Value::Array(output::freed(&waiting, done));
     }
     if command.name == "task" && request["action"] == "list" {
-        let mut asked = json!({ "action": "list", "merged": true });
+        let mut asked = json!({ "action": "list", "merged": true, "done": request["done"] == true });
         if let Some(repo) = request["repo"].as_str().filter(|_| request["all"] != true) {
             asked["repo"] = json!(repo);
         }
@@ -202,9 +202,13 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
             shorts.extend(output::shorts(&found));
             listed = true;
             reply["script"] = found["script"].clone();
+            if request["done"] == true {
+                reply["done"] = found["done"].clone();
+            }
         }
-        if let Some(query) = request["query"].as_str() {
-            output::keep_matching(&mut reply, query);
+        match request["query"].as_str() {
+            Some(query) => output::keep_matching(&mut reply, query),
+            None => output::keep_recent_done(&mut reply),
         }
     }
     if let (true, Some(pane)) = (command.name == "workspace", request["pane"].as_str()) {

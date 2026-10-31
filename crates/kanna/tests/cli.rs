@@ -318,6 +318,53 @@ fn every_command_works_through_the_daemon_and_the_app() {
 }
 
 #[test]
+fn task_list_done_also_lists_done_tasks_and_searches_them() {
+    let daemon = Daemon::start();
+    let _app = daemon.app();
+    let repo = daemon.dir.join("home/.kanna-v4/repos/local/repo");
+    std::fs::create_dir_all(repo.join(".kanna")).unwrap();
+    std::fs::write(repo.join(".kanna/config.json"), r#"{ "shelf": { "runners": 0 } }"#).unwrap();
+    assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(&repo).status().unwrap().success());
+    let kanna = |args: &[&str]| daemon.kanna_in(&repo, args);
+    let made = |name: &str, message: &str| kanna(&["--json", "task", "new", name, message, "--agent", "/bin/cat"]).json()["task"]["id"].as_str().unwrap().to_string();
+    let send = made("Send presses Enter", "fix: kanna send submits in codex");
+    let rate = made("Rate limiting", "fix: limit the login endpoint");
+    made("Diff viewer", "fix: show a diff");
+    kanna(&["task", "done", &send]).ok();
+    kanna(&["task", "done", &rate]).ok();
+    let open = kanna(&["task", "list"]).ok();
+    assert!(open.contains("Diff viewer") && !open.contains("Send presses") && !open.contains("Done"), "{open}");
+    for n in 1..=5 {
+        let old = made(&format!("Old {n}"), "an older one");
+        kanna(&["task", "done", &old]).ok();
+    }
+    let recent = kanna(&["task", "list", "--include-done"]).ok();
+    let recent = recent.split("\n\nDone\n").nth(1).unwrap_or_else(|| panic!("a Done heading last: {recent}"));
+    let names: Vec<&str> = recent.lines().map(|l| l.split("  ").nth(1).unwrap_or("").trim()).collect();
+    assert_eq!(names, ["Old 5", "Old 4", "Old 3", "Old 2", "Old 1", ""], "the 5 done last, newest first: {recent}");
+    assert_eq!(recent.lines().last(), Some("… 2 more done: add words to search them"), "{recent}");
+    let json = kanna(&["--json", "task", "list", "--include-done"]).json();
+    assert_eq!((json["done"].as_array().unwrap().len(), json["moreDone"].clone()), (5, json!(2)), "{json}");
+    let all = kanna(&["task", "list", "fix", "--include-done"]).ok();
+    let done = all.split("\n\nDone\n").nth(1).unwrap_or_else(|| panic!("a Done heading last: {all}"));
+    assert!(all.split("\n\nDone\n").next().unwrap().contains("Diff viewer"), "{all}");
+    let lines: Vec<&str> = done.lines().collect();
+    assert_eq!(lines.len(), 2, "{all}");
+    assert!(lines[0].contains("Rate limiting") && lines[0].ends_with("done just now"), "newest done first: {all}");
+    assert!(lines[1].contains("Send presses Enter"), "{all}");
+    let found = kanna(&["task", "list", "codex", "SEND", "--include-done"]).ok();
+    assert_eq!(found.lines().count(), 2, "{found}");
+    assert!(found.starts_with("Done\n"), "{found}");
+    assert!(found.lines().nth(1).unwrap().contains("Send presses Enter"), "{found}");
+    assert_eq!(kanna(&["task", "list", "codex"]).ok(), "no task matches \"codex\"", "done tasks only with --include-done");
+    let json = kanna(&["--json", "task", "list", "login", "--include-done"]).json();
+    assert_eq!(json["done"].as_array().unwrap().iter().map(|t| t["name"].clone()).collect::<Vec<_>>(), [json!("Rate limiting")]);
+    assert!(json["done"][0]["doneAt"].is_number() && json["shelf"] == json!([]), "{json}");
+    assert!(kanna(&["--json", "task", "list"]).json().get("done").is_none(), "no done key without --include-done");
+    assert!(kanna(&["--json", "task", "list", "fix"]).json().get("done").is_none(), "nor with a QUERY alone");
+}
+
+#[test]
 fn errors_exit_as_kmux_says() {
     let daemon = Daemon::start();
     let _app = daemon.app();
