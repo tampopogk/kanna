@@ -66,7 +66,7 @@ sequenceDiagram
 - **Pausing is leaving.** Close the window or go back to your Desk.
 - **Every round and answer is kept** in Kanna's database ([quiz results](database.md#quiz-results)): the quiz agent records them with `kanna quiz start` and `kanna quiz answer`, and reads them back with `kanna quiz history`, so a round covers what's new since the last one and misses come back in a later round.
 - **Nothing interrupts a round.** A task that needs you shows on the Desk in your Desk window, as always; the quiz doesn't stop for it.
-- **No score to protect.** No streaks, no totals over time: the end of a round says what you knew of *these* changes ("You knew 4 of 5 about today's changes"). The kept answers are for the agent picking questions, never shown to you as a score.
+- **The round says only this round.** The end of a round says what you knew of *these* changes ("You knew 4 of 5 about today's changes"), with no streaks or totals. Your totals over time (the share right, by kind and area, the misses to come back) are on the Desk view's [Stats](stats.md) tab, where you go to look.
 - **Light and dark** follow the system, as every pane does.
 
 ![Light mode](quiz-light.png)

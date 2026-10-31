@@ -132,7 +132,11 @@ sequenceDiagram
 - **An answer** has a kind (`architecture`, `drawing`, `behaviour`, `where`, `why`, `bug`; the daemon refuses others), the file and lines it's about (`FILE:LINE[-LAST]`, kept relative to the repo, the lines in the doc), and right or wrong.
 - **A miss stays a miss until it's asked again:** `history --misses` answers the wrong answers that no later answer names as `again`. A miss asked again and missed is a new miss, standing for the old one. `again` is a column because that query joins on it; an answer from another repo's quiz is refused.
 - **`history`** answers this repo's rounds, newest first, each with its commit, doc and answers (with `--misses`, only rounds with misses); the newest round's `head` is where the next round's "what's new" starts.
-- **Still no score:** the end of a round says what you knew of these changes; `history` is for the agent picking questions, not a total shown to you.
+- **The totals are on the Stats tab:** the end of a round says what you knew of these changes; `history` is for the agent picking questions, and [Stats](stats.md) reads the answers for your totals over time.
+
+## Samples
+
+**Planned.** A metric's value at each of main's first-parent commits, written by the Stats sampler ([stats §3](stats.md#3-where-they-come-from)).
 
 ## Recent projects
 
