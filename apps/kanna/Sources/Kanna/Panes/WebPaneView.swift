@@ -22,7 +22,8 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
     var agentStatus: String? { didSet { markup?.agentStatus = agentStatus } }
     var onSend: ((String, String, @escaping (String?) -> Void) -> Void)? { didSet { markup?.onSend = onSend } }
 
-    let markable: Bool
+    var markable: Bool { didSet { if markable != oldValue { markUp(webView.url ?? url) } } }
+    private(set) var loads = 0
 
     init(url: String, markup: Bool = false, store: WKWebsiteDataStore = .default()) {
         markable = markup
@@ -110,6 +111,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        loads += 1
         notice.isHidden = true
         if let current = webView.url, current != url {
             url = current

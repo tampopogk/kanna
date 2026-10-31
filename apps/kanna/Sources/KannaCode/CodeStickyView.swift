@@ -14,7 +14,7 @@ final class CodeStickyView: NSView {
     var gutterWidth: CGFloat = 0
     var textX: CGFloat = 0
     var lineHeight: CGFloat = 16
-    var font = CodeTheme.font(size: CodeTheme.fontSize)
+    var fontSize = CodeTheme.fontSize
     var selectionColor = NSColor.selectedTextBackgroundColor
     var onPick: ((Int) -> Void)?
 
@@ -24,6 +24,7 @@ final class CodeStickyView: NSView {
         guard !rows.isEmpty else { return }
         CodeTheme.background.setFill()
         bounds.fill()
+        let font = CodeTheme.font(size: fontSize)
         for (index, row) in rows.enumerated() {
             let y = CGFloat(index) * lineHeight
             row.marks.drawGutter(line: row.line, in: NSRect(x: 0, y: y, width: gutterWidth, height: lineHeight), font: font)

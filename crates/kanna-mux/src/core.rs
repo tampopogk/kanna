@@ -31,6 +31,9 @@ pub trait PaneHost {
     fn end(&self, pane: &Pane) {
         let _ = pane;
     }
+    fn update(&self, pane: &Pane) {
+        let _ = pane;
+    }
     fn read(&self, pane: &Pane, lines: Option<usize>) -> Result<String, KmuxError> {
         let _ = lines;
         Err(KmuxError::new("unsupported", format!("{} can't be read here", pane.label())))
@@ -1353,8 +1356,16 @@ impl CoreHandle {
                 pane.agent = agent;
             }
         }
-        let snapshot = self.reload(&pane.id, false).await;
-        Ok(reply([("pane", self.summary(&pane.id, &snapshot))]))
+        if !matches!(pane.state, PaneState::Starting | PaneState::Running) {
+            let snapshot = self.reload(&pane.id, false).await;
+            return Ok(reply([("pane", self.summary(&pane.id, &snapshot))]));
+        }
+        self.changed();
+        let updated = self.state().panes.get(&pane.id).cloned().unwrap_or(pane);
+        if let Some(host) = self.host() {
+            host.update(&updated);
+        }
+        Ok(reply([("pane", self.summary(&updated.id, &updated))]))
     }
 
     async fn rename_pane(&self, args: &Value) -> Result<Map, KmuxError> {

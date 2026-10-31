@@ -73,6 +73,25 @@ final class Contents {
         }
     }
 
+    func update(_ pane: JSON) {
+        guard let id = pane["id"]?.string else { return }
+        let agent = pane["agent"]?.string
+        if let markdown = markdown(id) {
+            markdown.set(markup: pane["markup"]?.bool == true)
+            if markdown.agent != agent {
+                markdown.agent = agent
+                markdown.agentStatus = agent.flatMap { agentStatus?($0) }
+            }
+        }
+        if let web = web(id) {
+            web.markable = pane["markup"]?.bool == true
+            if web.agent != agent {
+                web.agent = agent
+                web.agentStatus = agent.flatMap { agentStatus?($0) }
+            }
+        }
+    }
+
     func shows(_ id: String) -> Bool { slots[id]?.content != nil }
     var ids: [String] { slots.keys.filter { slots[$0]?.content != nil }.sorted() }
 

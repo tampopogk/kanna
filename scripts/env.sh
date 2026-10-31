@@ -46,20 +46,55 @@ kanna_rust_target() {
   rustup target add "$1" >&2
 }
 
-kanna_cargo_release_for() {
+kanna_rust_profile() {
+  case "${KANNA_RUST_PROFILE:-}" in
+    debug|release) echo "$KANNA_RUST_PROFILE"; return ;;
+    "") ;;
+    *) echo "KANNA_RUST_PROFILE is $KANNA_RUST_PROFILE: use debug or release" >&2; return 1 ;;
+  esac
+  if kanna_main_checkout "$1" >/dev/null; then echo debug; else echo release; fi
+}
+
+kanna_cargo_profile() {
+  case "$(kanna_rust_profile "$1")" in debug) echo dev ;; release) echo release ;; *) return 1 ;; esac
+}
+
+kanna_rust_dir() {
+  profile="$(kanna_rust_profile "$1")" || return 1
+  echo "$(kanna_arch_dir "$1" "${2:-$(kanna_host_triple)}")/$profile"
+}
+
+kanna_cargo_stamp() {
   cargo_triple="${3:-$(kanna_host_triple)}"
-  cargo_release="$(kanna_arch_dir "$1" "$cargo_triple")/release"
-  stamp="$cargo_release/macos-deployment-target"
+  cargo_dir="$(kanna_rust_dir "$1" "$cargo_triple")" || return 1
+  stamp="$cargo_dir/macos-deployment-target"
   [ "$(cat "$stamp" 2>/dev/null)" = "$2" ] && return
-  if [ -d "$cargo_release" ]; then
-    echo "==> $cargo_release was built for macOS $(cat "$stamp" 2>/dev/null || echo "the default"), not $2: cleaning it" >&2
+  if [ -d "$cargo_dir" ]; then
+    echo "==> $cargo_dir was built for macOS $(cat "$stamp" 2>/dev/null || echo "the default"), not $2: cleaning it" >&2
     if [ "$cargo_triple" = "$(kanna_host_triple)" ]; then
-      cargo clean --manifest-path "$1/Cargo.toml" --release >&2 || return 1
+      cargo clean --manifest-path "$1/Cargo.toml" --profile "$(kanna_cargo_profile "$1")" >&2 || return 1
     else
-      cargo clean --manifest-path "$1/Cargo.toml" --release --target "$cargo_triple" >&2 || return 1
+      cargo clean --manifest-path "$1/Cargo.toml" --profile "$(kanna_cargo_profile "$1")" --target "$cargo_triple" >&2 || return 1
     fi
   fi
-  mkdir -p "$cargo_release" && echo "$2" > "$stamp"
+  mkdir -p "$cargo_dir" && echo "$2" > "$stamp"
+}
+
+kanna_zig_build() {
+  arch="$2" os="$3"
+  name="zig-$arch-$os-$KANNA_ZIG_VERSION"
+  eval "sum=\${KANNA_ZIG_SHA256_${arch}_$os:-}"
+  [ -n "$sum" ] || { echo "no Zig download for $arch-$os" >&2; return 1; }
+  echo "Downloading Zig $KANNA_ZIG_VERSION ($(zig version 2>/dev/null || echo "no zig") on PATH)"
+  mkdir -p "$1.download" || return 1
+  curl -fsSL "https://ziglang.org/download/$KANNA_ZIG_VERSION/$name.tar.xz" -o "$1.download/$name.tar.xz" &&
+    echo "$sum  $1.download/$name.tar.xz" | shasum -a 256 -c - >/dev/null &&
+    tar -xJf "$1.download/$name.tar.xz" -C "$1.download" &&
+    mv "$1.download/$name" "$1"
+  status=$?
+  rm -rf "$1.download"
+  [ "$status" = 0 ] || echo "Zig download failed or its checksum didn't match" >&2
+  return "$status"
 }
 
 kanna_zig() {
@@ -69,19 +104,18 @@ kanna_zig() {
   fi
   arch="$(uname -m)"; [ "$arch" = arm64 ] && arch=aarch64
   case "$(uname -s)" in Darwin) os=macos ;; Linux) os=linux ;; *) echo "no Zig download for $(uname -s)" >&2; return 1 ;; esac
-  dir="$1/target/zig-$KANNA_ZIG_VERSION"
-  if [ ! -x "$dir/zig" ]; then
-    name="zig-$arch-$os-$KANNA_ZIG_VERSION"
-    eval "sum=\${KANNA_ZIG_SHA256_${arch}_$os:-}"
-    [ -n "$sum" ] || { echo "no Zig download for $arch-$os" >&2; return 1; }
-    echo "Downloading Zig $KANNA_ZIG_VERSION ($(zig version 2>/dev/null || echo "no zig") on PATH)" >&2
-    mkdir -p "$1/target"
-    curl -fsSL "https://ziglang.org/download/$KANNA_ZIG_VERSION/$name.tar.xz" -o "$1/target/$name.tar.xz" || return 1
-    echo "$sum  $1/target/$name.tar.xz" | shasum -a 256 -c - >/dev/null || { echo "Zig download checksum mismatch" >&2; return 1; }
-    tar -xJf "$1/target/$name.tar.xz" -C "$1/target" && rm "$1/target/$name.tar.xz"
-    mv "$1/target/$name" "$dir"
-  fi
-  echo "$dir/zig"
+  entry="$(kanna_store "$1" zig "$(kanna_store_key "$KANNA_ZIG_VERSION" "$arch" "$os")" kanna_zig_build "$arch" "$os")" || return 1
+  echo "$entry/zig"
+}
+
+kanna_ghostty_source_build() {
+  zig="$(kanna_zig "$2")" || return 1
+  git clone -q --no-checkout --filter=blob:none --branch "$KANNA_GHOSTTY_BRANCH" "$KANNA_GHOSTTY_FORK" "$1" &&
+    git -C "$1" checkout -q --detach "$KANNA_GHOSTTY_COMMIT" &&
+    (cd "$1" && "$zig" build --fetch=all --cache-dir "$1.fetch-cache")
+  status=$?
+  rm -rf "$1.fetch-cache"
+  return "$status"
 }
 
 kanna_ghostty_source() {
@@ -89,27 +123,7 @@ kanna_ghostty_source() {
     echo "$GHOSTTY_SOURCE_DIR"
     return
   fi
-  if main="$(kanna_main_checkout "$1")" && kanna_ghostty_pinned "$main/target/ghostty-source"; then
-    echo "$main/target/ghostty-source"
-    return
-  fi
-  dir="$1/target/ghostty-source"
-  if [ ! -f "$dir/build.zig" ]; then
-    mkdir -p "$1/target"
-    git clone -q --no-checkout --filter=blob:none --branch "$KANNA_GHOSTTY_BRANCH" "$KANNA_GHOSTTY_FORK" "$dir" >&2 || return 1
-  fi
-  if [ "$(git -C "$dir" rev-parse HEAD 2>/dev/null)" != "$KANNA_GHOSTTY_COMMIT" ] || [ ! -f "$dir/build.zig" ]; then
-    git -C "$dir" remote set-url origin "$KANNA_GHOSTTY_FORK" >&2 || return 1
-    git -C "$dir" fetch -q origin "$KANNA_GHOSTTY_BRANCH" >&2 || return 1
-    git -C "$dir" checkout -q --detach "$KANNA_GHOSTTY_COMMIT" >&2 || return 1
-  fi
-  echo "$dir"
-}
-
-kanna_ghostty_pinned() {
-  [ -f "$1/build.zig" ] &&
-    [ "$(git -C "$1" rev-parse HEAD 2>/dev/null)" = "$KANNA_GHOSTTY_COMMIT" ] &&
-    [ -z "$(git -C "$1" status --porcelain 2>/dev/null)" ]
+  kanna_store "$1" ghostty-source "$(kanna_store_key "$KANNA_GHOSTTY_FORK" "$KANNA_GHOSTTY_COMMIT" "$KANNA_ZIG_VERSION")" kanna_ghostty_source_build "$1"
 }
 
 kanna_ghostty_rev() {
@@ -118,17 +132,38 @@ kanna_ghostty_rev() {
   echo "$rev"
 }
 
-# A worktree uses the main checkout's prebuilt Ghostty pieces (target/ghosttykit, target/ghostty-vt/HOST)
-# instead of building its own, when the main checkout's were built from the pinned commit. It links them
-# into its own target/, so nothing there is copied and a rebuild here replaces the link, never the original.
-kanna_borrow_built() {
-  here="$1/target/$2"
-  [ -e "$here" ] && return
-  common="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
-  main="$(dirname "$common")/target/$2"
-  [ "$main" != "$here" ] && [ -d "$main" ] || return 0
-  [ "$(cat "$main/ghostty.rev" 2>/dev/null)" = "$KANNA_GHOSTTY_COMMIT" ] || return 0
-  mkdir -p "$(dirname "$here")" && ln -s "$main" "$here"
+kanna_ghostty_key() {
+  kanna_store_key "$KANNA_GHOSTTY_FORK" "$KANNA_GHOSTTY_COMMIT" "$KANNA_ZIG_VERSION" "${KANNA_GHOSTTY_OPTIMIZE:-ReleaseSafe}" "$(kanna_file_hash "$1/scripts/$2")" "${3:-}"
+}
+
+kanna_ghosttykit_store_build() {
+  "$2/scripts/build-ghosttykit.sh" --into "$1"
+}
+
+kanna_ghostty_vt_store_build() {
+  "$2/scripts/build-ghostty-vt.sh" "$3" --into "$1"
+}
+
+kanna_ghosttykit() {
+  here="$1/target/ghosttykit"
+  if [ -n "${GHOSTTY_SOURCE_DIR:-}" ]; then
+    if [ -L "$here" ]; then rm "$here"; fi
+    "$1/scripts/build-ghosttykit.sh" --into "$here"
+    return
+  fi
+  entry="$(kanna_store "$1" ghosttykit "$(kanna_ghostty_key "$1" build-ghosttykit.sh)" kanna_ghosttykit_store_build "$1")" || return 1
+  kanna_store_use "$entry" "$here"
+}
+
+kanna_ghostty_vt() {
+  here="$1/target/ghostty-vt/$2"
+  if [ -n "${GHOSTTY_SOURCE_DIR:-}" ]; then
+    if [ -L "$here" ]; then rm "$here"; fi
+    "$1/scripts/build-ghostty-vt.sh" "$2" --into "$here"
+    return
+  fi
+  entry="$(kanna_store "$1" ghostty-vt "$(kanna_ghostty_key "$1" build-ghostty-vt.sh "$2")" kanna_ghostty_vt_store_build "$1" "$2")" || return 1
+  kanna_store_use "$entry" "$here"
 }
 
 kanna_main_checkout() {
@@ -139,15 +174,26 @@ kanna_main_checkout() {
 }
 
 kanna_targets_config() {
-  echo "${KANNA_AGENTS_HOME:-$HOME}/.kanna-v4/config.json"
+  checkout="$(kanna_main_checkout "$1")" || checkout="$(cd "$1" && pwd -P)"
+  echo "$checkout/build.local.json"
+}
+
+kanna_targets_setting() {
+  command -v plutil >/dev/null 2>&1 || return 1
+  config="$(kanna_targets_config "$1")"
+  if [ -f "$config" ]; then
+    if git -C "$(dirname "$config")" ls-files --error-unmatch build.local.json >/dev/null 2>&1; then
+      echo "==> $config is committed to git: ignoring it, since it says what builds may delete" >&2
+    elif value="$(plutil -extract "$2" raw -o - "$config" 2>/dev/null)"; then
+      echo "$value"
+      return 0
+    fi
+  fi
+  [ "$2" != targets ] && [ -f "$1/build.json" ] && plutil -extract "$2" raw -o - "$1/build.json" 2>/dev/null
 }
 
 kanna_targets_root() {
-  config="$(kanna_targets_config)"
-  root=""
-  if [ -f "$config" ] && command -v plutil >/dev/null 2>&1 && [ "$(plutil -extract version raw -o - "$config" 2>/dev/null || echo 1)" -le 1 ] 2>/dev/null; then
-    root="$(plutil -extract build.targets raw -o - "$config" 2>/dev/null)" || root=""
-  fi
+  root="$(kanna_targets_setting "$1" targets)" || root=""
   echo "${root%/}"
 }
 
@@ -166,10 +212,10 @@ kanna_targets_unmounted() {
 
 kanna_targets() {
   if main="$(kanna_main_checkout "$1")"; then worktree=1; else main="$1"; worktree=""; fi
-  root="$(kanna_targets_root)"
+  root="$(kanna_targets_root "$1")"
   case "$root" in
     ""|/*) ;;
-    *) echo "==> build.targets in $(kanna_targets_config) is $root, not an absolute folder: building in target/" >&2; root="" ;;
+    *) echo "==> targets in $(kanna_targets_config "$1") is $root, not an absolute folder: building in target/" >&2; root="" ;;
   esac
   if [ -n "$root" ] && volume="$(kanna_targets_unmounted "$root")"; then
     echo "==> The volume $volume isn't mounted: building in target/ on this disk until it is" >&2
@@ -177,38 +223,20 @@ kanna_targets() {
   fi
   repo="$root/$(basename "$main")"
   if [ -n "$worktree" ]; then
-    kanna_target_link "$1/target" "$repo/$(basename "$1")" "$root"
-    return
+    kanna_target_link "$1/target" "$repo/$(basename "$1")" "$root" || return 1
+    if [ -n "$root" ]; then touch "$repo/$(basename "$1")/.used"; fi
+    if command -v kanna_targets_ready >/dev/null 2>&1; then kanna_targets_ready "$1"; fi
+    return 0
   fi
   [ -n "$root" ] && mkdir -p "$1/target"
   for entry in "$1"/target/* "$1"/target/.[!.]*; do
-    case "$(basename "$entry")" in *.app|ghosttykit|ghostty-vt|.offline) continue ;; esac
+    case "$(basename "$entry")" in *.app|ghosttykit|ghostty-vt|_shared) continue ;; esac
     if [ -L "$entry" ] || [ -d "$entry" ]; then
       kanna_target_link "$entry" "$repo/_main/$(basename "$entry")" "$root" || return 1
     fi
   done
-  offline="$1/target/.offline"
-  if [ -z "$root" ]; then
-    if [ ! -e "$1/target/release" ] && [ -d "$offline/release" ]; then
-      kanna_clone "$offline/release" "$1/target/release" && echo "==> Restored target/release from target/.offline" >&2
-    fi
-    if [ ! -e "$1/target/kanna-build" ] && [ -f "$offline/kanna-build/workspace-state.json" ]; then
-      kanna_clone "$offline/kanna-build" "$1/target/kanna-build" && echo "==> Restored target/kanna-build's packages from target/.offline" >&2
-    fi
-  fi
+  if command -v kanna_targets_ready >/dev/null 2>&1; then kanna_targets_ready "$1"; fi
   return 0
-}
-
-kanna_targets_offline() {
-  kanna_main_checkout "$1" >/dev/null && return 0
-  release="$1/target/release" kanna_build="$1/target/kanna-build" offline="$1/target/.offline"
-  [ -L "$release" ] && [ -d "$release/.fingerprint" ] || return 0
-  mkdir -p "$offline/kanna-build"
-  rsync -a --delete "$release/" "$offline/release/" || return 1
-  if [ -L "$kanna_build" ] && [ -f "$kanna_build/workspace-state.json" ]; then
-    rsync -a --delete "$kanna_build/repositories" "$kanna_build/checkouts" "$offline/kanna-build/" &&
-      cp -p "$kanna_build/workspace-state.json" "$offline/kanna-build/" || return 1
-  fi
 }
 
 kanna_target_link() {
@@ -232,29 +260,20 @@ kanna_target_link() {
   mkdir -p "$2" && ln -s "$2" "$1"
 }
 
-kanna_clone() {
-  cp -c -R -p "$1" "$2" 2>/dev/null && return
-  rm -rf "$2"
-  cp -R -p "$1" "$2"
+kanna_remove() {
+  if [ -L "$1" ]; then rm "$1"; return; fi
+  [ -e "$1" ] || return 0
+  chmod -R u+w "$1" 2>/dev/null
+  rm -rf "$1"
 }
 
-kanna_borrow_cargo() {
-  borrow_triple="${2:-$(kanna_host_triple)}"
-  here="$(kanna_arch_dir "$1" "$borrow_triple")/release"
-  [ -e "$here" ] && return
-  main="$(kanna_main_checkout "$1")" || return 0
-  from="$(kanna_arch_dir "$main" "$borrow_triple")/release"
-  if [ ! -d "$from/.fingerprint" ] && [ "$borrow_triple" = "$(kanna_host_triple)" ]; then from="$main/target/.offline/release"; fi
-  [ -d "$from/.fingerprint" ] || return 0
-  from="$(cd "$from" && pwd -P)"
-  mkdir -p "$(dirname "$here")"
-  if kanna_clone "$from" "$here.borrowing"; then
-    rm -rf "$here.borrowing"/.fingerprint/kanna-*
-    mv "$here.borrowing" "$here"
-    echo "Borrowed $from's dependencies"
-  else
-    rm -rf "$here.borrowing"
+kanna_clone() {
+  kanna_remove "$2" || return 1
+  if cp -c -R -p "$1" "$2" 2>/dev/null || { kanna_remove "$2" && cp -R -p "$1" "$2"; }; then
+    chmod -R u+w "$2" && return
   fi
+  kanna_remove "$2"
+  return 1
 }
 
 kanna_borrow_swiftpm() {
@@ -263,7 +282,6 @@ kanna_borrow_swiftpm() {
   [ -e "$here" ] && return
   main="$(kanna_main_checkout "$1")" || return 0
   from="$main/target/kanna-build"
-  [ -f "$from/workspace-state.json" ] || from="$main/target/.offline/kanna-build"
   [ -f "$from/workspace-state.json" ] && [ -d "$from/checkouts" ] && [ -d "$from/repositories" ] || return 0
   mkdir -p "$here.borrowing"
   if kanna_clone "$from/repositories" "$here.borrowing/repositories" && kanna_clone "$from/checkouts" "$here.borrowing/checkouts" &&
