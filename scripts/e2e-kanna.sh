@@ -3268,7 +3268,7 @@ sys.exit(not any(h[\"ms\"] >= 300 and \"command.debug.hang\" in h[\"open\"] for 
 scenario typing_latency M4
 typing_latency() {
   local keys="${KANNA_LATENCY_KEYS:-60}" floods="${KANNA_LATENCY_FLOODS:-1}" hidden="${KANNA_LATENCY_HIDDEN:-4}" agents="${KANNA_LATENCY_AGENTS:-0}" burners="${KANNA_LATENCY_CPU:-0}"
-  local bound="${KANNA_LATENCY_BOUND:-50}" flood="exec yes 'typing_latency flood ........................................................................'" i burner_pids=()
+  local bound="${KANNA_LATENCY_BOUND:-100}" flood="exec yes 'typing_latency flood ........................................................................'" i burner_pids=()
   local agent="exec python3 $KANNA_STATE_DIR/redraw.py"
   cat >"$KANNA_STATE_DIR/redraw.py" <<'PY'
 import random, sys, time

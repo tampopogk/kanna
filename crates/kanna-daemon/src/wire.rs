@@ -116,7 +116,7 @@ impl Wire {
             return;
         }
         let Some((bytes, typed)) = feed.chunk(if link.flow { CHUNK } else { usize::MAX }) else { return };
-        let queued = link.out.push_typed(&output(id, &bytes), typed);
+        let queued = link.out.push_for(Some(id), &output(id, &bytes), typed);
         feed.inflight = link.flow;
         if queued > QUEUE_BEHIND && link.out.fell_behind() {
             let _ = self.events.lock().unwrap_or_else(PoisonError::into_inner).send(Event::AppBehind { conn: link.conn, queued });
@@ -127,7 +127,7 @@ impl Wire {
         let state = self.state();
         let Some(link) = state.link.as_ref() else { return };
         for message in messages {
-            link.out.push(message);
+            link.out.push_for(Some(id), message, None);
         }
         feed.shown = true;
         feed.inflight = false;
@@ -140,10 +140,10 @@ impl Wire {
         let Some(link) = state.link.as_ref() else { return };
         if feed.shown && !feed.overflowed() && !link.out.behind() {
             while let Some((bytes, typed)) = feed.chunk(usize::MAX) {
-                link.out.push_typed(&output(id, &bytes), typed);
+                link.out.push_for(Some(id), &output(id, &bytes), typed);
             }
         }
-        link.out.push(message);
+        link.out.push_for(Some(id), message, None);
     }
 }
 

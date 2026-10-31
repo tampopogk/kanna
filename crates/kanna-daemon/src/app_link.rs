@@ -11,14 +11,14 @@ use base64::Engine;
 use kanna_mux::json::{encode, json, string, Map, Value};
 use kanna_mux::{pane_record, pane_table, write_all, KmuxError, Pane, PaneState, PaneType, Responder, Takeover, WeakCore};
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Read};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Sender};
-use std::sync::Arc;
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 pub const HELLO: &str = "app.hello";
@@ -31,23 +31,35 @@ const QUEUE_CAUGHT_UP: usize = 1 << 20;
 
 const QUEUE_LIMIT: usize = 64 << 20;
 
-type Line = (Vec<u8>, Option<Instant>);
+struct Line {
+    bytes: Vec<u8>,
+    typed: Option<Instant>,
+    terminal: Option<String>,
+}
 
-#[derive(Clone)]
-pub struct Outbox {
-    lines: Sender<Line>,
-    queue: Arc<Queue>,
+#[derive(Default)]
+struct Lanes {
+    urgent: VecDeque<Line>,
+    bulk: VecDeque<Line>,
+    queued: HashMap<String, usize>,
 }
 
 #[derive(Default)]
 struct Queue {
+    lanes: Mutex<Lanes>,
+    ready: Condvar,
     bytes: AtomicUsize,
     behind: AtomicBool,
 }
 
+#[derive(Clone, Default)]
+pub struct Outbox {
+    queue: Arc<Queue>,
+}
+
 impl Outbox {
     pub fn push(&self, message: &Value) -> usize {
-        self.push_typed(message, None)
+        self.push_for(None, message, None)
     }
 
     pub fn behind(&self) -> bool {
@@ -58,12 +70,49 @@ impl Outbox {
         !self.queue.behind.swap(true, Ordering::SeqCst)
     }
 
-    pub fn push_typed(&self, message: &Value, typed: Option<Instant>) -> usize {
-        let mut line = encode(message).into_bytes();
-        line.push(b'\n');
-        let queued = self.queue.bytes.fetch_add(line.len(), Ordering::SeqCst) + line.len();
-        let _ = self.lines.send((line, typed));
+    pub fn push_for(&self, terminal: Option<&str>, message: &Value, typed: Option<Instant>) -> usize {
+        let mut bytes = encode(message).into_bytes();
+        bytes.push(b'\n');
+        let queued = self.queue.bytes.fetch_add(bytes.len(), Ordering::SeqCst) + bytes.len();
+        let mut lanes = self.queue.lanes.lock().unwrap_or_else(PoisonError::into_inner);
+        let alone = terminal.is_none_or(|terminal| !lanes.queued.contains_key(terminal));
+        if let Some(terminal) = terminal {
+            *lanes.queued.entry(terminal.to_string()).or_default() += 1;
+        }
+        let line = Line { bytes, typed, terminal: terminal.map(String::from) };
+        if typed.is_some() && alone {
+            lanes.urgent.push_back(line);
+        } else {
+            lanes.bulk.push_back(line);
+        }
+        self.queue.ready.notify_one();
         queued
+    }
+
+    fn next(&self) -> Option<Line> {
+        let mut lanes = self.queue.lanes.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if let Some(line) = lanes.urgent.pop_front().or_else(|| lanes.bulk.pop_front()) {
+                return Some(line);
+            }
+            if Arc::strong_count(&self.queue) == 1 {
+                return None;
+            }
+            lanes = self.queue.ready.wait_timeout(lanes, Duration::from_millis(500)).unwrap_or_else(PoisonError::into_inner).0;
+        }
+    }
+
+    fn written(&self, line: &Line) -> usize {
+        if let Some(terminal) = &line.terminal {
+            let mut lanes = self.queue.lanes.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(count) = lanes.queued.get_mut(terminal) {
+                *count -= 1;
+                if *count == 0 {
+                    lanes.queued.remove(terminal);
+                }
+            }
+        }
+        self.queue.bytes.fetch_sub(line.bytes.len(), Ordering::SeqCst) - line.bytes.len()
     }
 }
 
@@ -104,20 +153,19 @@ fn on_the_wire(wire: &Wire, conn: u64, message: &Value, at: Instant) -> bool {
 
 pub fn serve(events: Sender<Event>, wire: Arc<Wire>, hello: Value, mut reader: BufReader<UnixStream>, stream: UnixStream, remote: Option<String>) {
     let conn = CONNECTIONS.fetch_add(1, Ordering::SeqCst) + 1;
-    let (sender, lines) = mpsc::channel::<Line>();
-    let out = Outbox { lines: sender, queue: Arc::default() };
-    let (queue, caught_up) = (out.queue.clone(), events.clone());
+    let out = Outbox::default();
+    let (lines, caught_up) = (Outbox { queue: out.queue.clone() }, events.clone());
     let (Ok(writer), Ok(closer)) = (stream.try_clone(), stream.try_clone()) else { return };
     let spawned = std::thread::Builder::new().name("kanna.app.write".into()).spawn(move || {
-        for (line, typed) in lines {
-            if !write_all(&writer, &line) {
+        while let Some(line) = lines.next() {
+            if !write_all(&writer, &line.bytes) {
                 break;
             }
-            if let Some(typed) = typed {
+            if let Some(typed) = line.typed {
                 perf::since("echo.sent", typed);
             }
-            let left = queue.bytes.fetch_sub(line.len(), Ordering::SeqCst) - line.len();
-            if left <= QUEUE_CAUGHT_UP && queue.behind.swap(false, Ordering::SeqCst) {
+            let left = lines.written(&line);
+            if left <= QUEUE_CAUGHT_UP && lines.queue.behind.swap(false, Ordering::SeqCst) {
                 let _ = caught_up.send(Event::AppCaughtUp { conn });
             }
         }
@@ -676,4 +724,40 @@ fn view_prefix(conn: u64) -> String {
 
 fn no_app(what: &str) -> KmuxError {
     KmuxError::new("no_app", format!("{what} needs Kanna.app, and none is attached to this daemon"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn order(out: &Outbox) -> Vec<String> {
+        let mut seen = vec![];
+        loop {
+            let waiting = {
+                let lanes = out.queue.lanes.lock().unwrap();
+                lanes.urgent.len() + lanes.bulk.len()
+            };
+            if waiting == 0 {
+                return seen;
+            }
+            let line = out.next().unwrap();
+            out.written(&line);
+            let message: Value = serde_json::from_slice(&line.bytes).unwrap();
+            seen.push(format!("{} {}", message["cmd"].as_str().unwrap(), message["args"]["terminal"].as_str().unwrap_or("-")));
+        }
+    }
+
+    #[test]
+    fn an_echo_goes_ahead_of_other_terminals_output_but_never_its_own() {
+        let out = Outbox::default();
+        let typed = Some(Instant::now());
+        out.push_for(Some("term-1"), &json!({ "cmd": "output", "args": { "terminal": "term-1" } }), None);
+        out.push(&json!({ "cmd": "layout", "args": {} }));
+        out.push_for(Some("term-2"), &json!({ "cmd": "output", "args": { "terminal": "term-2" } }), typed);
+        out.push_for(Some("term-3"), &json!({ "cmd": "snapshot", "args": { "terminal": "term-3" } }), None);
+        out.push_for(Some("term-3"), &json!({ "cmd": "output", "args": { "terminal": "term-3" } }), typed);
+        assert_eq!(order(&out), ["output term-2", "output term-1", "layout -", "snapshot term-3", "output term-3"]);
+        assert_eq!(out.queue.bytes.load(Ordering::SeqCst), 0);
+        assert!(out.queue.lanes.lock().unwrap().queued.is_empty());
+    }
 }
