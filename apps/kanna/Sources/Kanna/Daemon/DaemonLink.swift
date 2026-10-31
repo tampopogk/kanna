@@ -48,6 +48,7 @@ final class DaemonLink: TerminalLink {
                 var args: [String: JSON] = ["pid": .number(Double(ProcessInfo.processInfo.processIdentifier)), "protocols": .array(Self.protocols), "commit": .string(KannaBuild.commit)]
                 if machine == nil, let build = KannaBuild.daemonBuild { args["build"] = .string(build) }
                 if let client = self?.client { args["client"] = .string(client) }
+                if machine == nil { args["relaunch"] = Self.relaunch }
                 if machine == nil { args["keepsSocket"] = true }
                 return ["id": 0, "cmd": "app.hello", "args": .object(args)]
             },
@@ -58,6 +59,18 @@ final class DaemonLink: TerminalLink {
             descriptor: { fd in
                 if let starter { starter.keep(fd) } else { close(fd) }
             })
+    }
+
+    static var relaunch: JSON {
+        let environment = ProcessInfo.processInfo.environment.filter { $0.key.hasPrefix("KANNA_") && $0.key != "KANNA_FRESH" }
+        return ["path": .string(Bundle.main.executablePath ?? CommandLine.arguments[0]),
+                "args": .array(CommandLine.arguments.dropFirst().filter { $0 != "--fresh" }.map { .string($0) }),
+                "env": .object(environment.mapValues { .string($0) })]
+    }
+
+    func goodbye() {
+        guard attached else { return }
+        connection.sendNow(["cmd": "app.goodbye", "args": [:]])
     }
 
     func start() { connection.start() }

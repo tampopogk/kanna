@@ -15,7 +15,11 @@ const DAEMON: &str = env!("CARGO_BIN_EXE_kanna-daemon");
 fn keeper_binary() -> PathBuf {
     let keeper = Path::new(DAEMON).with_file_name("kanna-keeper");
     if !keeper.exists() {
-        let status = Command::new(env!("CARGO")).args(["build", "-p", "kanna-keeper"]).status().unwrap();
+        let profile = match keeper.parent().and_then(Path::file_name).and_then(|d| d.to_str()) {
+            Some("debug") | None => "dev",
+            Some(dir) => dir,
+        };
+        let status = Command::new(env!("CARGO")).args(["build", "--profile", profile, "-p", "kanna-keeper"]).status().unwrap();
         assert!(status.success(), "building kanna-keeper failed");
     }
     keeper

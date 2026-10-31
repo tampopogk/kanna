@@ -247,7 +247,8 @@ extension AppController {
             }
             let overview = self.overview(markdown.overview, wanted: markdown.overviewWanted, args: args)
             let diagrams: [JSON] = markdown.drawnDiagrams.map { ["type": .string($0.type), "labels": .array($0.labels.map { .string($0) })] }
-            return ["text": .string(markdown.text), "zoom": .number(Double(markdown.zoom)), "diagrams": .array(diagrams),
+            let images: [JSON] = markdown.drawnImages.map { .array([.number(Double($0.width)), .number(Double($0.height))]) }
+            return ["text": .string(markdown.text), "zoom": .number(Double(markdown.zoom)), "diagrams": .array(diagrams), "images": .array(images),
                     "render_ms": .number(markdown.renderMs), "parse_ms": .number(markdown.parseMs), "scroll": .number(Double(markdown.scrollTop)),
                     "layout_width": .number(Double(markdown.layoutWidth)), "threads": .array(threads),
                     "box": markdown.commentBoxThread.map { .string($0) } ?? .null, "box_text": markdown.commentBoxText.map { .string($0) } ?? .null,

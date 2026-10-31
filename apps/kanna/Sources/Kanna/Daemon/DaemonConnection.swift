@@ -69,6 +69,15 @@ final class DaemonConnection: @unchecked Sendable {
         }
     }
 
+    func sendNow(_ message: JSON) {
+        var line = message.encoded()
+        line.append(UInt8(ascii: "\n"))
+        writes.sync { [self] in
+            let fd = lock.withLock { self.fd }
+            if fd >= 0 { _ = Self.writeAll(fd, line) }
+        }
+    }
+
     func consumed(_ delivery: Delivery) {
         lock.withLock {
             guard delivery.generation == generation else { return }

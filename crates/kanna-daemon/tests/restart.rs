@@ -153,6 +153,7 @@ fn what_the_keeper_has_and_the_disk_does_not_is_taken_back_and_the_reverse_dropp
     let panes = instance.call("list", json!({}))["panes"].clone();
     let panes = panes.as_array().unwrap();
     assert_eq!(panes.len(), 1, "{panes:?}");
+    assert_eq!(panes[0]["id"].as_str(), Some(kept.as_str()), "{panes:?}");
     assert_eq!((panes[0]["terminal"].as_str(), panes[0]["pid"].as_i64(), panes[0]["cmd"].as_str()), (Some(kept.as_str()), Some(kept_pid), Some("echo kept; exec sleep 600")));
     assert!(panes[0]["name"].is_null());
     let new = instance.open("new", None);

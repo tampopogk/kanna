@@ -56,6 +56,8 @@ sequenceDiagram
 - **With no app attached** a toast is held, at most 8 and for 60 seconds, and sent when an app says hello. Older ones are dropped.
 - **The app link message** is the notice `toast {id, title, detail, pane, task, about}` ([app link](app-link.md#2-messages)); `detail`, `pane`, `task` and `about` may be null. The app replies nothing.
 
+**The crash banner** is a toast too: `sticky` (it never fades) with a `record` it opens ([crashes](crashes.md#4-surface)).
+
 ## The CLI
 
 `kanna toast TITLE [DETAIL] [--pane PANE] [--task TASK] [--key KEY]` (protocol: `toast {title, detail?, pane?, task?, key?}`) prints `raised toast-3`, `raised toast-3; no app is attached, …` or `already raised a toast with key KEY`. Tests and scripts use it; agents may too.

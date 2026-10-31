@@ -70,6 +70,18 @@ pub fn base(worktree: &Path) -> Option<String> {
     fs::read_to_string(git_dir(worktree)?.join(BASE)).ok().map(|b| b.trim().to_string())
 }
 
+pub fn merged(repo: &Path, worktree: &Path) -> bool {
+    if !worktree.is_dir() || worktree == repo {
+        return false;
+    }
+    let Ok(tip) = git(worktree, &["rev-parse", "--verify", "--quiet", "HEAD"]) else { return false };
+    let moved = match base(worktree).filter(|base| !base.is_empty()) {
+        Some(base) => base != tip,
+        None => git(worktree, &["reflog", "show", "--format=%gs", "HEAD"]).is_ok_and(|log| log.lines().any(|line| line.starts_with("commit"))),
+    };
+    moved && git(repo, &["merge-base", "--is-ancestor", &tip, "HEAD"]).is_ok()
+}
+
 pub fn setup_record(worktree: &Path) -> Option<PathBuf> {
     git_dir(worktree).map(|dir| dir.join(RECORD))
 }
@@ -280,6 +292,25 @@ mod tests {
         assert!(matches!(clean_up(&repo, &worktree), Cleanup::Removed { .. }));
         assert_eq!(clean_up(&repo, &worktree), Cleanup::Kept("its worktree is gone".into()));
         assert_eq!(clean_up(&repo, &repo), Cleanup::Kept(format!("{} isn't a task's worktree", repo.display())), "the main checkout is never removed");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_worktree_is_merged_once_its_own_commits_are_in_main() {
+        let (dir, worktree) = repo("merged");
+        let repo = dir.join("repo");
+        assert!(!merged(&repo, &worktree), "a worktree with no commit of its own is still at main, and isn't finished");
+        sh(&worktree, "echo work > notes.txt && git add notes.txt && git -c user.email=e@e -c user.name=e commit -q -m work");
+        assert!(!merged(&repo, &worktree), "its commit isn't in main yet");
+        let branch = git(&worktree, &["branch", "--show-current"]).unwrap();
+        sh(&repo, &format!("git -c user.email=e@e -c user.name=e merge -q --no-ff -m merged {branch}"));
+        assert!(merged(&repo, &worktree));
+        sh(&worktree, "echo more >> notes.txt && git -c user.email=e@e -c user.name=e commit -qam more");
+        assert!(!merged(&repo, &worktree), "a commit beyond main");
+        sh(&repo, &format!("git -c user.email=e@e -c user.name=e merge -q --no-ff -m again {branch}"));
+        fs::remove_file(git_dir(&worktree).unwrap().join(BASE)).unwrap();
+        assert!(merged(&repo, &worktree), "without a recorded base, its reflog says it has commits of its own");
+        assert!(!merged(&repo, &repo) && !merged(&repo, &dir.join("gone")));
         fs::remove_dir_all(&dir).unwrap();
     }
 

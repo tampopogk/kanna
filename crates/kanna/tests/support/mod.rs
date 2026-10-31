@@ -13,7 +13,11 @@ const KANNA: &str = env!("CARGO_BIN_EXE_kanna");
 fn sibling(name: &str, package: &str) -> PathBuf {
     let binary = Path::new(KANNA).with_file_name(name);
     if !binary.exists() {
-        let status = Command::new(env!("CARGO")).args(["build", "-p", package]).status().unwrap();
+        let profile = match binary.parent().and_then(Path::file_name).and_then(|d| d.to_str()) {
+            Some("debug") | None => "dev",
+            Some(dir) => dir,
+        };
+        let status = Command::new(env!("CARGO")).args(["build", "--profile", profile, "-p", package]).status().unwrap();
         assert!(status.success(), "building {package} failed");
     }
     binary
@@ -22,6 +26,10 @@ fn sibling(name: &str, package: &str) -> PathBuf {
 pub struct Daemon {
     pub dir: PathBuf,
     child: Child,
+    daemon: PathBuf,
+    keeper: PathBuf,
+    port: u16,
+    extra: Vec<(String, String)>,
 }
 
 impl Daemon {
@@ -34,7 +42,37 @@ impl Daemon {
     }
 
     pub fn start() -> Daemon {
-        Daemon::run(Daemon::folder(), sibling("kanna-daemon", "kanna-daemon"), sibling("kanna-keeper", "kanna-keeper"), 0)
+        Daemon::start_with(&[])
+    }
+
+    pub fn start_with(extra: &[(&str, &str)]) -> Daemon {
+        let extra = extra.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        Daemon::run(Daemon::folder(), sibling("kanna-daemon", "kanna-daemon"), sibling("kanna-keeper", "kanna-keeper"), 0, extra)
+    }
+
+    pub fn exited(&mut self) -> std::process::ExitStatus {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                return status;
+            }
+            assert!(Instant::now() < deadline, "the daemon didn't exit");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    pub fn again(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        self.child = Daemon::spawn(&self.dir, &self.daemon, &self.keeper, self.port, &self.extra);
+        wait_for("the daemon's socket", || UnixStream::connect(self.socket()).is_ok());
+    }
+
+    pub fn crash_records(&self) -> Vec<PathBuf> {
+        let Ok(entries) = std::fs::read_dir(self.dir.join("state/crashes")) else { return vec![] };
+        let mut found: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
+        found.sort();
+        found
     }
 
     pub fn installed(commit: &str) -> Daemon {
@@ -43,7 +81,7 @@ impl Daemon {
         Daemon::build(&prefix.join(commit), &json!({ "commit": commit }));
         std::os::unix::fs::symlink(commit, prefix.join("current")).unwrap();
         let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        Daemon::run(dir, prefix.join("current/kanna-daemon"), prefix.join("current/kanna-keeper"), port)
+        Daemon::run(dir, prefix.join("current/kanna-daemon"), prefix.join("current/kanna-keeper"), port, vec![])
     }
 
     pub fn build(dir: &Path, release: &Value) {
@@ -54,8 +92,15 @@ impl Daemon {
         std::fs::write(dir.join("release.json"), release.to_string()).unwrap();
     }
 
-    fn run(dir: PathBuf, daemon: PathBuf, keeper: PathBuf, port: u16) -> Daemon {
-        let log = std::fs::File::create(dir.join("daemon.log")).unwrap();
+    fn run(dir: PathBuf, daemon: PathBuf, keeper: PathBuf, port: u16, extra: Vec<(String, String)>) -> Daemon {
+        let child = Daemon::spawn(&dir, &daemon, &keeper, port, &extra);
+        let daemon = Daemon { dir, child, daemon, keeper, port, extra };
+        wait_for("the daemon's socket", || UnixStream::connect(daemon.socket()).is_ok());
+        daemon
+    }
+
+    fn spawn(dir: &Path, daemon: &Path, keeper: &Path, port: u16, extra: &[(String, String)]) -> Child {
+        let log = std::fs::File::options().create(true).append(true).open(dir.join("daemon.log")).unwrap();
         let mut command = Command::new(daemon);
         command.env_clear();
         for key in ["PATH", "USER", "LOGNAME", "TMPDIR"] {
@@ -63,7 +108,8 @@ impl Daemon {
                 command.env(key, value);
             }
         }
-        let child = command
+        command.envs(extra.iter().map(|(k, v)| (k, v)));
+        command
             .env("HOME", dir.join("home"))
             .env("SHELL", "/bin/sh")
             .env("KANNA_SOCKET", dir.join("kanna.sock"))
@@ -77,10 +123,7 @@ impl Daemon {
             .stdout(Stdio::null())
             .stderr(log)
             .spawn()
-            .unwrap();
-        let daemon = Daemon { dir, child };
-        wait_for("the daemon's socket", || UnixStream::connect(daemon.socket()).is_ok());
-        daemon
+            .unwrap()
     }
 
     pub fn socket(&self) -> PathBuf {
@@ -111,6 +154,7 @@ impl Drop for Daemon {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let crashed: Vec<String> = self.crash_records().iter().map(|p| format!("{}:\n{}", p.display(), std::fs::read_to_string(p).unwrap_or_default())).collect();
         if let Ok(pid) = std::fs::read_to_string(self.dir.join("state/keeper.pid")) {
             if let Ok(pid) = pid.trim().parse::<i32>() {
                 if pid > 0 {
@@ -119,6 +163,9 @@ impl Drop for Daemon {
             }
         }
         let _ = std::fs::remove_dir_all(&self.dir);
+        if !crashed.is_empty() && !std::thread::panicking() {
+            panic!("a crash record appeared in the test's daemon:\n{}", crashed.join("\n"));
+        }
     }
 }
 

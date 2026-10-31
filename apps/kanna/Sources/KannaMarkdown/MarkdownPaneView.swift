@@ -40,6 +40,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     var overviewObservers: [NSObjectProtocol] = []
     private let diagrams = DiagramCache()
     private var document = Document(parsing: "")
+    private var imageStamps: [String: ImageStamp] = [:]
     private var entries: [DiffEntry]?
     private var baseCommit: String?
     private var ticks = 0
@@ -246,12 +247,18 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         defer { Perf.end(span) }
         reloadThreadsIfChanged()
         refreshPanel()
+        if pending == nil, imagesChanged() { render() }
         guard pending == nil, diffRange == nil, let diffBase, let disk else { return }
         ticks += 1
         if ticks % 4 == 0, let commit = baseCommit,
            MarkdownDiff.mergeBase(URL(fileURLWithPath: path).resolvingSymlinksInPath().deletingLastPathComponent().path, diffBase) != commit {
             load(disk)
         }
+    }
+
+    private func imagesChanged() -> Bool {
+        let folder = URL(fileURLWithPath: path).deletingLastPathComponent()
+        return imageStamps.contains { ImageStamp($0.key, folder: folder) != $0.value }
     }
 
     private func load(_ disk: String) {
@@ -298,6 +305,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         var renderer = MarkdownRenderer(folder: URL(fileURLWithPath: path).deletingLastPathComponent(), diagrams: diagrams)
         let text = entries.map { renderer.render($0) } ?? renderer.render(document)
         diagrams.keep(only: Set(renderer.diagramSources))
+        imageStamps = renderer.images
         updateInset()
         textView.finder.noteClientStringWillChange()
         textView.textStorage?.setAttributedString(text)
@@ -459,6 +467,15 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         var out: [(String, [String])] = []
         storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
             if let cell = (value as? NSTextAttachment)?.attachmentCell as? DiagramCell { out.append((cell.diagramType, cell.scene.texts)) }
+        }
+        return out
+    }
+
+    public var drawnImages: [NSSize] {
+        guard let storage = textView.textStorage else { return [] }
+        var out: [NSSize] = []
+        storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
+            if let cell = (value as? NSTextAttachment)?.attachmentCell as? ImageCell { out.append(cell.picture.size) }
         }
         return out
     }

@@ -148,6 +148,8 @@ flowchart LR
 
 **macOS privacy prompts are Kanna's:** every program in its terminals asks as the app that started the daemon, and dev builds are signed so the answers last ([privacy prompts](privacy-prompts.md)).
 
+**Crashes are caught:** each process writes a crash record in its state folder before it dies, the daemon relaunches a crashed app, and the app shows a banner ([crashes](crashes.md)).
+
 **Where the app's time goes is measured inside it:** signposts, a main-thread hang detector, `debug.perf`, and the daemon's slow-request log ([performance monitoring](performance-monitoring.md)).
 
 ## 4. Glossary
