@@ -592,6 +592,17 @@ pub static COMMANDS: &[Command] = &[
         show: output::toast,
     },
     Command {
+        name: "crashes",
+        group: "Information",
+        summary: "List Kanna's crash records, newest first, with their stacks and the macOS crash report that matches each.",
+        usage: "kanna crashes [--all]\n       kanna crashes dismiss [RECORD]",
+        options: &[("--all", "Also list the records already dismissed (from the crash banner, or with dismiss).")],
+        notes: "Kanna.app, the daemon and the keeper each write a record in the state folder's crashes/ before they die of a bug: the reason, the crashing thread's stack, the build and the panes open. A record's report is the .ips in ~/Library/Logs/DiagnosticReports of the same process and pid, when macOS wrote one. dismiss takes away the crash banner: for RECORD and every older record, or all of them.",
+        examples: &[("kanna crashes", "The crashes not yet dismissed."), ("kanna crashes --all --json", "Every record, as the daemon has it.")],
+        parse: parse_crashes,
+        show: output::crashes,
+    },
+    Command {
         name: "quiz",
         group: "Information",
         summary: "Open this repo's Quiz window, and keep a quiz's rounds and answers, so misses come back in a later round and a round can cover what's new since the last.",
@@ -1152,6 +1163,21 @@ fn parse_status(args: &mut Argv) -> Result<Value, Failure> {
         },
         Some(other) => Err(usage("status", &format!("unknown action \"{other}\" (explain or update)"))),
         None => Err(usage("status", "say what: explain PANE, explain --file SCREEN --agent AGENT, or update")),
+    }
+}
+
+fn parse_crashes(args: &mut Argv) -> Result<Value, Failure> {
+    let all = args.flag("--all");
+    match args.positional().as_deref() {
+        None | Some("list") => Ok(json!({ "action": "list", "all": all })),
+        Some("dismiss") => {
+            let mut out = json!({ "action": "dismiss" });
+            if let Some(file) = args.positional() {
+                out["file"] = json!(absolute(&file));
+            }
+            Ok(out)
+        }
+        Some(other) => Err(usage("crashes", &format!("unknown action \"{other}\" (list or dismiss)"))),
     }
 }
 

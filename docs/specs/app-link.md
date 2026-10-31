@@ -49,7 +49,8 @@ sequenceDiagram
 
 | Message | From | What it says |
 |---|---|---|
-| `app.hello {pid, build, protocols, commit, client}` | app | I'm the app, of this build; the reply accepts or refuses it (`app_attached`, `other_build`, `other_protocol`) and has the protocol, the daemon's machine and capabilities, its panes and layout; over the network `build` is left out ([links §2](machine-links.md#2-the-hello)) |
+| `app.hello {pid, build, protocols, commit, client, relaunch}` | app | I'm the app, of this build; the reply accepts or refuses it (`app_attached`, `other_build`, `other_protocol`) and has the protocol, the daemon's machine and capabilities, its panes and layout; over the network `build` and `relaunch` are left out ([links §2](machine-links.md#2-the-hello)); `relaunch {path, args, env}` is how to start this app again after a crash ([crashes](crashes.md#3-detect-and-relaunch)) |
+| `app.goodbye` | app | I'm quitting on purpose; sent and written before the link closes, so an app gone without it crashed or was killed ([crashes](crashes.md#3-detect-and-relaunch)) |
 | `layout {windows, …}` | daemon | the layout changed; this is the whole view to draw ([layout](layout.md)) |
 | `attach {terminal}` / `detach {terminal}` | app | I show (or no longer show) this terminal, by its terminal ID (`term-41`, [presentation layers](presentation-layers.md#3-ids)) |
 | `snapshot {terminal, data}` | daemon | the terminal's whole screen as a GHOSTSNP snapshot; sent on attach, before anything else for that terminal |
@@ -67,7 +68,7 @@ sequenceDiagram
 | `file.subscribe {view, path, kind}` (with an `id`), `file.unsubscribe {view}` | app | this view shows that file as `md` or `code`; the reply has its content ID and latest read ([file panes](file-panes.md#2-messages)) |
 | `diff {content, serial, diff, updating}` | daemon | a subscribed diff changed |
 | `quit` | daemon | the daemon is shutting down on purpose: quit, and don't start a daemon ([stopping an instance](instance-stop.md)) |
-| `toast {id, title, detail, pane, task, about}` | daemon | show a toast; also each one held while no app was attached, after `app.hello` ([toasts](toasts.md)) |
+| `toast {id, title, detail, pane, task, about, sticky?, record?}` | daemon | show a toast; also each one held while no app was attached, after `app.hello` ([toasts](toasts.md)); a `sticky` one with a `record` is the crash banner ([crashes](crashes.md#4-surface)) |
 | `file {content, path, serial, text\|error}` | daemon | a subscribed file was read and differs ([file panes](file-panes.md#2-messages)) |
 
 ## 3. Rules

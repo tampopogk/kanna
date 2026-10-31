@@ -174,6 +174,20 @@ sequenceDiagram
 
 - **The daemon writes them** (`project` `never`, from `planner.sh`) and reads them (`project` `asked`); importing the project deletes its row.
 
+## Crashes
+
+**Built.** Each crash record the daemon has seen in `crashes/` ([crashes](crashes.md)).
+
+**crashes**: one row per record.
+
+| Column | Type | Holds |
+|---|---|---|
+| `file` | text, key | the record's file name in `crashes/` (they sort by time) |
+| `signature` | text | the record's signature |
+| `at` | real | when the daemon first saw it |
+| `dismissed` | real | when its banner was dismissed (it and every older one), or null |
+| `reported` | real | when the planner was told of its signature, or null: a signature is told once |
+
 **Later candidates,** not built: agent session IDs per task over time; agent status history (how long a task waited on you); build timings.
 
 **Checked by** `db.rs`'s tests (a real `backlog.json` imported with every task and the counter; a held task; a change and its event together; unknown doc keys kept; a corrupt, missing or newer db; a `backlog.json` beside the db; a version 1 db taking the quiz tables with its tasks kept; a miss kept until it's asked again; a project's planner kept across a restart), `quiz.rs`'s tests (a round and its answers read back; a bad answer refused), the CLI's tests (`kanna quiz` requests, the history's text), the layout owner's tests (park and pull, a swap, report their moves: the internal moves behind ⌘. and making a task active), e2e `task_history` (import, every event of a task's life with who did it, the app's park (⌘.), a corrupt db at restart) and e2e `quiz_results` (a round recorded, read back after a restart, a miss asked again).
