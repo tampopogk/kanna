@@ -46,6 +46,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var focusing: String?
     private var focusCalls = 0
     private var rendering = false
+    private var refreshDue = false
+    private var layoutDue = false
     var paneMenu: NSMenu?
     var testingDrag = false
     var agentStatuses = AgentStatuses()
@@ -173,6 +175,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self, let id = panes.id(of: view) else { return }
             closePane(id)
         }
+        commands.prepare = { [weak self] in self?.refreshIfDue() }
+        let due = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, true, 0) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.refreshIfDue() }
+        }
+        CFRunLoopAddObserver(CFRunLoopGetMain(), due, .commonModes)
         installAppCommands()
         installCommands()
         installScreenshot()
@@ -263,7 +270,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         views[machine ?? ""] = view
         published = merged()
         restate()
-        layoutChanged()
+        layoutDue = true
     }
 
     func merged() -> JSON {
@@ -442,11 +449,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         learn(pane)
         if let id = pane["id"]?.string { panes.restarted(id) }
         contents.start(pane)
-        refresh()
+        refreshSoon()
     }
 
     private func learn(_ pane: JSON) {
-        if learn(records: [pane]) { refresh() }
+        if learn(records: [pane]) { refreshSoon() }
     }
 
     @discardableResult
@@ -538,7 +545,20 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return .object(fields)
     }
 
+    func refreshSoon() {
+        refreshDue = true
+    }
+
+    func refreshIfDue() {
+        if layoutDue {
+            layoutChanged()
+        } else if refreshDue {
+            refresh()
+        }
+    }
+
     func layoutChanged() {
+        layoutDue = false
         guard daemon != nil else { return }
         refresh()
         showToastPane()
@@ -548,6 +568,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func refresh() {
+        refreshDue = false
         guard daemon != nil else { return }
         Perf.measure(.render, "refresh") {
             rendering = true

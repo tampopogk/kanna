@@ -937,7 +937,8 @@ impl Tasks {
     }
 
     fn short(&self, id: &str) -> String {
-        db::short_id(id, self.open_tasks().iter().map(|e| e.id.as_str()))
+        let (entries, running) = (self.entries.borrow(), self.running.borrow());
+        db::short_id(id, entries.iter().map(|e| e.id.as_str()).chain(running.iter().map(|r| r.entry.id.as_str())))
     }
 
     fn pane_or(&self, reference: &str) -> String {

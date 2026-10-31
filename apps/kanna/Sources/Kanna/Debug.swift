@@ -68,7 +68,7 @@ extension AppController {
             let ms = { (value: Double) -> JSON in .number((value * 10).rounded() / 10) }
             let intervals = Perf.stats().map { stats -> JSON in
                 ["name": .string(stats.name), "count": .number(Double(stats.count)), "recent": .number(Double(stats.recent)),
-                 "p50": ms(stats.p50), "p95": ms(stats.p95), "max": ms(stats.max), "last": ms(stats.last), "detail": stats.detail.map { .string($0) } ?? .null]
+                 "p50": ms(stats.p50), "p95": ms(stats.p95), "p99": ms(stats.p99), "max": ms(stats.max), "last": ms(stats.last), "detail": stats.detail.map { .string($0) } ?? .null]
             }
             let hangs = Perf.hangs().reversed().map { hang -> JSON in
                 ["at": .string(ISO8601DateFormatter().string(from: hang.at)), "ms": ms(hang.ms),
