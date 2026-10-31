@@ -20,29 +20,29 @@ A pipeline is a short text file, `.kanna/pipelines/NAME.pipe`, that names its **
 ## 1. A file
 
 ```
-# Kanna's usual flow: spec and mockup first, then build, review, e2e, merge.
+# Kanna's usual flow, once the spec and mockup are approved in the task's chat:
+# plan, build, review, e2e, your go-ahead, merge.
 budget  = 40 sessions, 8h
 
-spec    = claude:high prompt spec
-approve = ask "Spec and mockup right?"
-plan    = claude prompt plan emits
-build   = claude prompt build each plan.parts
-join    = merge build
-check   = run scripts/check.sh
-review  = codex:high prompt review verdict
-fix     = claude prompt fix guard check
-e2e     = run scripts/e2e-kanna.sh on mini
+plan    = claude prompt plan emits             # splits the work; may add stages
+build   = claude prompt build each plan.parts  # a worktree and pane per part, inside the run
+join    = merge build                          # the parts' branches into the run's
+check   = run scripts/check.sh                 # build and unit tests; exit 0 passes
+review  = codex:high prompt review verdict     # fresh reviewer; ends VERDICT: PASS|FAIL
+fix     = claude prompt fix guard check        # rolled back if check gets worse
+e2e     = run scripts/e2e-kanna.sh on mini     # on another Mac, off your dev Mac
+ship    = ask "Land it on main?"               # you, with the diff in the tabs
 land    = merge main
 
-spec -> approve
-approve -[fail, max 3]-> spec
-approve -> plan -> build -> join -> check
+plan -> build -> join -> check
 check  -[fail, max 3, progress]-> fix -> check
 check  -> review
 review -[fail, max 3]-> fix
 review -> e2e
 e2e    -[fail, max 2]-> fix
-e2e    -> land -> done
+e2e    -> ship
+ship   -[fail, max 2]-> fix
+ship   -> land -> done
 ```
 
 - **Lines** are a stage (`NAME = …`), a flow (`a -> b -> c`), the budget, a comment (`#` to the end of the line) or blank, in any order. Names are `[a-z][a-z0-9_]*`; `done` and `budget` are reserved.
@@ -56,7 +56,7 @@ e2e    -> land -> done
 |---|---|---|---|
 | `NAME = AGENT[:EFFORT] [attrs]` | a fresh session of that agent (`claude`, `codex`, `copilot`, `opencode`, `agy`; `:low`, `:medium`, `:high` as the agent takes it) in a worker: the run's worktree and a terminal nothing shows unless you watch it, with the stage's prompt as its first message | with `verdict`, its answer's last line, `VERDICT: PASS` or `VERDICT: FAIL` (missing counts as fail) | its final answer |
 | `NAME = run COMMAND…` | the command in the run's worker with your login shell, as [task scripts](task-scripts.md) run, with the same variables plus `KANNA_RUN`, `KANNA_STAGE` and `KANNA_FEEDBACK` (a file holding the previous feedback) | exit 0 passes | its output's tail, lines matching the repo's failure pattern first |
-| `NAME = ask "QUESTION"` | nothing: the task's agent is told and asks you in its chat, the Run tab shows a card, and the task shows needs you until one of you answers | yes passes, no fails | your note |
+| `NAME = ask "QUESTION"` | nothing: the task's agent is told and asks you in its chat, the Run tab shows a card, and the task shows needs you until one of you answers (`ship = ask "Land it on main?"` before `merge main`) | yes passes, no fails | your note |
 | `NAME = merge main` | lands the run's branch on the repo's checked-out branch (`git merge --no-ff`, or the repo's `tasks.land` command when set) | a clean merge passes | the conflicts |
 | `NAME = merge STAGE` | joins every instance of a fanned-out STAGE into the run's branch | a clean merge passes | the conflicts |
 

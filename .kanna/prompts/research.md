@@ -1,1 +1,0 @@
-Research the question this task asks, with sources, and write it up in `docs/research/<topic>.md`: what was found, with links, what it means for Kanna, and what's rejected and why. Keep it under 200 lines. Don't design or build yet; that's the next stage's.
